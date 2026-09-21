@@ -1,13 +1,17 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Check, ChevronDown, CircleDashed, ExternalLink, GitBranch, GitMerge, Loader2, MinusCircle, RefreshCw, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Check, ChevronDown, CircleDashed, ExternalLink, GitBranch, GitMerge, Image as ImageIcon, Loader2, MinusCircle, RefreshCw, X } from "lucide-react";
+import { type ComponentProps, useCallback, useMemo, useState } from "react";
+import type { Components } from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { api, errorMessage, github, type MergeMethod, type Pull, type PullCheck, type PullDetail, type PullFiles } from "@/lib/api";
+import { api, errorMessage, github, type MergeMethod, type Pull, type PullCheck, type PullDetail } from "@/lib/api";
+import { revalidate, useGitHubData } from "@/lib/githubCache";
+import { isGitHubHosted, markdownLink } from "@/lib/markdown";
 import type { Selection } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
 import { FileIcon } from "./FileIcon";
+import { followLink, MarkdownBody } from "./MarkdownView";
 import { isoToUnix, notifyPullsChanged, PullStateIcon } from "./PullsPanel";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
@@ -17,29 +21,21 @@ const METHODS: Record<MergeMethod, string> = { merge: "Create a merge commit", s
 const repoOf = (url: string) => url.replace("https://github.com/", "").split("/pull/")[0];
 
 export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) => void }) {
-  const [detail, setDetail] = useState<PullDetail | null>(null);
-  const [files, setFiles] = useState<PullFiles | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const d = await github.detail(pull.number);
-      setDetail(d);
-      setError(null);
-      // Fetching the PR's commits can take a moment; the page shows without waiting for it.
-      github
-        .files(d)
-        .then(setFiles)
-        .catch((e) => toast("error", "Could not load PR files", errorMessage(e)));
-    } catch (e) {
-      setError(errorMessage(e));
-    }
-  }, [pull.number]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  const detail = useGitHubData(
+    `pr:${pull.url}`,
+    useCallback(() => github.detail(pull.number), [pull.number]),
+  );
+  const d = detail.data ?? null;
+  const error = detail.error === undefined ? null : errorMessage(detail.error);
+  // Fetching the PR's commits can take a moment; the page shows without waiting for it.
+  // The result depends only on the two commits, so it's rarely worth recomputing.
+  const files = useGitHubData(
+    d && `files:${pull.url}:${d.baseSha}:${d.headSha}`,
+    useCallback(() => (d ? github.files(d) : Promise.reject(new Error("no pull request"))), [d]),
+    600_000,
+  );
+  const load = () => detail.refresh(true);
 
   const act = async (label: string, fn: () => Promise<unknown>, done: string) => {
     setBusy(label);
@@ -55,7 +51,6 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
     }
   };
 
-  const d = detail;
   const p = d ?? pull;
   const sameRepo = p.headRepo === repoOf(p.url);
 
@@ -83,7 +78,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
     );
   };
 
-  if (error) {
+  if (error && !d) {
     return <div className="p-8 text-center text-[12.5px] text-muted-foreground">{error}</div>;
   }
 
@@ -125,12 +120,18 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
           <Button variant="secondary" size="sm" onClick={() => github.openUrl(p.url).catch((e) => toast("error", "Could not open", errorMessage(e)))}>
             <ExternalLink /> Open on GitHub
           </Button>
-          <Button variant="ghost" size="icon-sm" onClick={load} disabled={!!busy}>
-            <RefreshCw />
+          <Button variant="ghost" size="icon-sm" onClick={load} disabled={!!busy || detail.loading}>
+            <RefreshCw className={cn(detail.loading && "animate-spin")} />
           </Button>
           {busy && (
             <span className="flex items-center gap-1.5 text-[12px] text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" /> {busy}…
+            </span>
+          )}
+          {/* Cached data stays on screen; a failed refresh (a rate limit, say) is noted beside it. */}
+          {error && !busy && (
+            <span className="min-w-0 truncate text-[12px] text-removed" title={error}>
+              Couldn't refresh: {error}
             </span>
           )}
         </div>
@@ -153,17 +154,20 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
           </Section>
         )}
 
-        <Section title="Files changed" aside={files ? `${files.files.length}` : d ? `${d.changedFiles}` : undefined}>
-          {!files && (
-            <div className="flex items-center gap-2 px-3 py-2 text-[12px] text-subtle">
-              <Loader2 className="size-3.5 animate-spin" /> Fetching the PR's commits…
-            </div>
-          )}
-          {files?.files.map((f) => (
+        <Section title="Files changed" aside={files.data ? `${files.data.files.length}` : d ? `${d.changedFiles}` : undefined}>
+          {!files.data &&
+            (files.error !== undefined && !files.loading ? (
+              <div className="px-3 py-2 text-[12px] text-removed">Could not load the PR's files: {errorMessage(files.error)}</div>
+            ) : (
+              <div className="flex items-center gap-2 px-3 py-2 text-[12px] text-subtle">
+                <Loader2 className="size-3.5 animate-spin" /> Fetching the PR's commits…
+              </div>
+            ))}
+          {files.data?.files.map((f) => (
             <div
               key={f.path}
               role="button"
-              onClick={() => onOpen({ kind: "pr-file", range: { number: p.number, base: files.base, head: files.head }, file: f })}
+              onClick={() => onOpen({ kind: "pr-file", range: { number: p.number, base: files.data!.base, head: files.data!.head }, file: f })}
               className="flex h-7 cursor-pointer items-center gap-2 px-3 text-[12px] hover:bg-hover"
             >
               <FileIcon path={f.path} />
@@ -175,7 +179,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
         </Section>
 
         <Section title="Description">
-          <Markdownish text={d?.body || ""} empty="No description provided." />
+          <PullMarkdown pull={pull} idPrefix="pr-d-" text={d?.body || ""} empty={d ? "No description provided." : ""} />
         </Section>
 
         {d && d.comments.length > 0 && (
@@ -187,7 +191,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
                   {c.review && <ReviewBadge state={c.review} />}
                   <span className="text-subtle">{relativeTime(isoToUnix(c.createdAt))}</span>
                 </div>
-                {c.body && <Markdownish text={c.body} className="mt-1.5 px-0 py-0" />}
+                {c.body && <PullMarkdown pull={pull} idPrefix={`pr-c${i}-`} text={c.body} className="mt-1.5 px-0 py-0" />}
               </div>
             ))}
           </Section>
@@ -317,8 +321,77 @@ function Section({ title, aside, children }: { title: string; aside?: string; ch
   );
 }
 
-/** PR text as written. Rendered as plain text on purpose: nothing from GitHub becomes HTML. */
-function Markdownish({ text, empty, className }: { text: string; empty?: string; className?: string }) {
-  if (!text.trim()) return <div className={cn("px-3 py-2.5 text-[12px] text-subtle italic", className)}>{empty}</div>;
-  return <div className={cn("px-3 py-2.5 text-[12.5px] leading-relaxed whitespace-pre-wrap text-foreground/90 select-text", className)}>{text.replace(/\r\n/g, "\n")}</div>;
+/** A PR description or comment, rendered like GitHub does (see MarkdownBody for what's allowed). */
+function PullMarkdown({ pull, idPrefix, text, empty, className }: { pull: Pick<Pull, "url" | "number">; idPrefix: string; text: string; empty?: string; className?: string }) {
+  // Keyed on the tab's PR, not its refreshed detail: new components would remount every image.
+  const components = useMemo<Components>(() => {
+    // Relative links in PR text are relative to the PR page, as on github.com.
+    const absolute = (href: string) => {
+      try {
+        return new URL(href, pull.url).href;
+      } catch {
+        return "";
+      }
+    };
+    return {
+      a: markdownLink((href) => followLink(href, (href) => followLink(absolute(href), () => {}), idPrefix)),
+      img: ({ src, alt, width, height, title }) => (typeof src === "string" && absolute(src) ? <GitHubImage src={absolute(src)} pull={pull} alt={alt} width={width} height={height} title={title} /> : null),
+    };
+  }, [pull, idPrefix]);
+  if (!text.trim()) return empty ? <div className={cn("px-3 py-2.5 text-[12px] text-subtle italic", className)}>{empty}</div> : null;
+  return (
+    <div className={cn("markdown px-3 py-2.5 select-text", className)}>
+      <MarkdownBody text={text} components={components} idPrefix={idPrefix} repo={pull.url.split("/pull/")[0]} />
+    </div>
+  );
+}
+
+// Attachments uploaded to GitHub: github.com/user-attachments/assets/<id>, or the older
+// github.com/<owner>/<repo>/assets/<n>/<id>.
+const ATTACHMENT = /^https:\/\/github\.com\/(?:user-attachments\/assets|[^/]+\/[^/]+\/assets\/\d+)\/([0-9a-f-]{36})(?:[?#]|$)/i;
+
+/**
+ * Public repos' attachments load as they are. A private repo's need a github.com login the
+ * webview doesn't have; on failure, swap in the signed link the API hands out instead.
+ */
+function GitHubImage({ src, pull, ...props }: { src: string; pull: Pick<Pull, "url" | "number"> } & Omit<ComponentProps<"img">, "src">) {
+  const [signed, setSigned] = useState<string | null>(null);
+  if (!isGitHubHosted(src)) return <ExternalImage src={src} {...props} />;
+  const id = ATTACHMENT.exec(src)?.[1];
+  const onError = () => {
+    if (!id || signed) return;
+    // Signed links expire after 5 minutes; reuse a lookup for 4.
+    revalidate(`attachments:${pull.url}`, () => github.attachments(pull.number), 240_000)
+      .then((urls) => urls[id] && setSigned(urls[id]))
+      .catch(() => {});
+  };
+  return <img src={signed ?? src} onError={onError} {...props} />;
+}
+
+/**
+ * An image hosted outside GitHub loads only on click: fetching it tells that host your IP
+ * and when you read the PR. github.com hides both behind its image proxy; GitViber has none.
+ */
+function ExternalImage({ src, alt, ...props }: { src: string } & Omit<ComponentProps<"img">, "src">) {
+  const [load, setLoad] = useState(false);
+  if (load) return <img src={src} alt={alt} {...props} />;
+  let host = src;
+  try {
+    host = new URL(src).hostname;
+  } catch {
+    // Shown as written.
+  }
+  return (
+    <button
+      type="button"
+      title={src}
+      onClick={() => setLoad(true)}
+      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-panel px-2 py-1 align-middle text-[12px] text-muted-foreground hover:text-foreground"
+    >
+      <ImageIcon className="size-3.5 shrink-0" />
+      <span className="truncate">
+        {alt ? `${alt} · ` : ""}Load image from {host}
+      </span>
+    </button>
+  );
 }

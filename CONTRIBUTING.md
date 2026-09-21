@@ -27,7 +27,7 @@ These are the product, not style preferences. A PR that breaks one will be sent 
 
 - **Plain git.** Every repo action shells out to the `git` CLI so the user's config, hooks, credentials and signing apply. Don't add libgit2, and don't write any GitViber-specific state (files, refs, config) into the user's repo.
 - **Stay inside the repo.** Paths from the frontend are resolved and checked in `fs.rs`. New file access goes through that, never around it.
-- **No stored secrets.** The GitHub token is borrowed from `gh` or git's credential store and kept in memory only. Text from GitHub is rendered as plain text, never as HTML.
+- **No stored secrets.** The GitHub token is borrowed from `gh` or git's credential store and kept in memory only. Text from GitHub is rendered as markdown whose inline HTML is cut down to GitHub's own allowlist (`rehype-sanitize`'s default schema); raw HTML never reaches the page and nothing from it runs.
 - **Fast.** Heavy work (diffs, highlighting) stays off the UI thread. If a change makes scrolling or a large diff slower, say so in the PR.
 - **Few dependencies.** Explain a new package in the PR, and pin its exact version like the existing ones.
 

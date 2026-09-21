@@ -29,18 +29,23 @@ pnpm tauri build    # release bundle
 
 ## Shortcuts
 
+Every shortcut can be rebound in Settings (⌘,) → Keyboard Shortcuts. The defaults follow VS Code where it has an equivalent. Shortcuts without ⌘ are ignored while you type in a text field.
+
 | Keys | Action |
 | --- | --- |
+| ⌘, | Settings |
 | ⌘1 / ⌘2 / ⌘3 | Changes / History / PRs (left panel) |
 | J / K | Next / previous changed file |
+| ↓ / ↑, ↵ | Move through the Changes list once it has focus; ↵ keeps the tab open |
 | V | Mark file viewed |
-| ⌥↓ / ⌥↑ | Next / previous change |
+| F7 / ⇧F7, ⌥↓ / ⌥↑ | Next / previous change |
 | ⌥S / ⌥C / ⌥Z | Split view / collapse unchanged / word wrap |
 | ⌘B / ⌥⌘B | Hide or show the git panel / the file explorer |
 | ⇧⌘E | Show the file explorer |
-| ⌘+ / ⌘− / ⌘0 | Code font size |
+| ⌘= / ⌘− / ⌘0 | Zoom the whole interface in / out / reset |
+| ⌥⌘= / ⌥⌘− / ⌥⌘0 | Code font size up / down / reset |
 | ⌘W | Close tab |
-| ⌘↵ | Commit |
+| ⌘↵ | Commit (in the commit message) |
 | ⌘R | Refresh |
 | ⌘O | Open repository |
 
