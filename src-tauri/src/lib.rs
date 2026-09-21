@@ -3,6 +3,7 @@ mod display;
 mod fs;
 mod git;
 mod github;
+mod pty;
 #[cfg(test)]
 mod scenario_tests;
 mod watch;
@@ -16,6 +17,7 @@ struct AppState {
     repo: Mutex<Option<PathBuf>>,
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
     github: github::Session,
+    ptys: pty::Ptys,
 }
 
 type Res<T> = Result<T, String>;
@@ -157,6 +159,12 @@ async fn switch_branch(state: State<'_, AppState>, name: String, create: bool) -
 async fn worktrees(state: State<'_, AppState>) -> Res<Vec<git::Worktree>> {
     let r = repo(&state)?;
     blocking(move || git::worktrees(&r)).await
+}
+
+#[tauri::command]
+async fn add_worktree(state: State<'_, AppState>, branch: String) -> Res<String> {
+    let r = repo(&state)?;
+    blocking(move || git::add_worktree(&r, &branch)).await
 }
 
 #[tauri::command]
@@ -336,6 +344,34 @@ async fn pr_checkout(
     blocking(move || github::checkout(&r, number, &head_ref, same_repo)).await
 }
 
+/// Any folder, unlike the repo commands: the shell can `cd` anywhere the user can anyway.
+#[tauri::command]
+fn pty_spawn(
+    state: State<'_, AppState>,
+    cwd: String,
+    cols: u16,
+    rows: u16,
+    output: tauri::ipc::Channel<tauri::ipc::Response>,
+    exit: tauri::ipc::Channel<Option<u32>>,
+) -> Res<u32> {
+    state.ptys.spawn(Path::new(&cwd), cols, rows, output, exit)
+}
+
+#[tauri::command]
+fn pty_write(state: State<'_, AppState>, id: u32, data: String) -> Res<()> {
+    state.ptys.write(id, &data)
+}
+
+#[tauri::command]
+fn pty_resize(state: State<'_, AppState>, id: u32, cols: u16, rows: u16) -> Res<()> {
+    state.ptys.resize(id, cols, rows)
+}
+
+#[tauri::command]
+fn pty_kill(state: State<'_, AppState>, id: u32) {
+    state.ptys.kill(id)
+}
+
 #[tauri::command]
 fn open_url(url: String) -> Res<()> {
     github::open_url(&url)
@@ -377,6 +413,7 @@ pub fn run() {
             switch_branch,
             worktrees,
             worktree_changes,
+            add_worktree,
             stage,
             unstage,
             discard,
@@ -398,7 +435,11 @@ pub fn run() {
             pr_create,
             pr_merge,
             pr_checkout,
-            open_url
+            open_url,
+            pty_spawn,
+            pty_write,
+            pty_resize,
+            pty_kill
         ])
         .run(tauri::generate_context!())
         .expect("error while running GitViber");
