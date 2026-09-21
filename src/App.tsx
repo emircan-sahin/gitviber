@@ -2,10 +2,12 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useState } from "react";
 import { Toaster } from "@/components/Toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { openSettings, SettingsDialog } from "@/features/SettingsDialog";
 import { Welcome } from "@/features/Welcome";
 import { Workspace } from "@/features/Workspace";
 import { api, errorMessage, type OpenedRepo } from "@/lib/api";
-import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder } from "@/lib/settings";
+import { useCommands } from "@/lib/keybindings";
+import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder, stepUiScale } from "@/lib/settings";
 import { toast } from "@/lib/toast";
 
 export function App() {
@@ -54,9 +56,19 @@ export function App() {
     setRecent(recentRepos());
   }, []);
 
+  // App-wide commands, so they also work on the welcome screen.
+  useCommands({
+    "file.openRepo": () => onOpen(),
+    "workbench.openSettings": () => openSettings(),
+    "view.zoomIn": () => stepUiScale(1),
+    "view.zoomOut": () => stepUiScale(-1),
+    "view.zoomReset": () => stepUiScale(0),
+  });
+
   return (
     <TooltipProvider>
       {opened ? <Workspace key={opened.root} root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} /> : !booting && <Welcome recent={recent} onOpenRepo={onOpen} />}
+      <SettingsDialog />
       <Toaster />
     </TooltipProvider>
   );

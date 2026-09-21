@@ -716,3 +716,199 @@ fn worktree_of_a_moved_repo_is_still_nested() {
     assert!(err.contains("separate git repository"), "{err}");
     assert!(stage(&moved, &[".claude".into()]).is_err());
 }
+
+#[test]
+fn undo_last_commit_keeps_its_changes_staged() {
+    let sb = Sandbox::new("undo");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "one\n", "base");
+    write_commit(&r, "a.txt", "one\ntwo\n", "second");
+    let commits = log(&r, 0, 5).unwrap();
+    // Only the commit the user saw as HEAD may be undone.
+    assert!(undo_commit(&r, &commits[1].sha).is_err());
+    undo_commit(&r, &commits[0].sha).unwrap();
+    assert_eq!(log(&r, 0, 5).unwrap().len(), 1);
+    assert_eq!(status(&r).unwrap().staged.len(), 1);
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "one\ntwo\n");
+}
+
+#[test]
+fn revert_clean_conflicting_empty_and_merge() {
+    let sb = Sandbox::new("revert");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "1\n2\n3\n", "base");
+    write_commit(&r, "b.txt", "b\n", "add b");
+    let add_b = log(&r, 0, 1).unwrap()[0].sha.clone();
+    assert!(!revert(&r, &add_b).unwrap());
+    assert!(!r.join("b.txt").exists());
+    assert!(log(&r, 0, 1).unwrap()[0].subject.starts_with("Revert"));
+
+    // Reverting x after y changed the same line conflicts and uses the normal op flow.
+    write_commit(&r, "a.txt", "1\nx\n3\n", "x");
+    let x = log(&r, 0, 1).unwrap()[0].sha.clone();
+    write_commit(&r, "a.txt", "1\ny\n3\n", "y");
+    let y = log(&r, 0, 1).unwrap()[0].sha.clone();
+    assert!(revert(&r, &x).unwrap(), "should stop on the conflict");
+    assert_eq!(operation(&r).unwrap().kind, "revert");
+    assert_eq!(status(&r).unwrap().conflicted.len(), 1);
+    assert!(revert(&r, &y).is_err(), "busy repo refuses a second revert");
+    op_abort(&r).unwrap();
+    assert!(operation(&r).is_none());
+
+    // Reverting something already undone is an error that leaves no operation behind.
+    assert!(!revert(&r, &y).unwrap());
+    let err = revert(&r, &y).unwrap_err();
+    assert!(err.contains("already undone"), "{err}");
+    assert!(operation(&r).is_none());
+
+    // Resolved conflicts finish through the same Continue as merges.
+    write_commit(&r, "a.txt", "1\nz\n3\n", "z");
+    assert!(revert(&r, &x).unwrap());
+    resolve_side(&r, "a.txt", "theirs").unwrap();
+    assert!(!op_continue(&r).unwrap());
+    assert!(operation(&r).is_none());
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n2\n3\n");
+    assert!(log(&r, 0, 1).unwrap()[0]
+        .subject
+        .starts_with("Revert \"x\""));
+
+    // Merge commits revert against their first parent.
+    switch_branch(&r, "feature", true).unwrap();
+    write_commit(&r, "f.txt", "f\n", "feature");
+    switch_branch(&r, "main", false).unwrap();
+    write_commit(&r, "m.txt", "m\n", "main");
+    run(&r, &["merge", "-q", "--no-edit", "feature"]).unwrap();
+    let merge = log(&r, 0, 1).unwrap()[0].sha.clone();
+    assert!(!revert(&r, &merge).unwrap());
+    assert!(!r.join("f.txt").exists() && r.join("m.txt").exists());
+}
+
+#[test]
+fn reset_modes() {
+    let sb = Sandbox::new("reset");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "1\n", "base");
+    let base = log(&r, 0, 1).unwrap()[0].sha.clone();
+    write_commit(&r, "a.txt", "1\n2\n", "two");
+    let two = log(&r, 0, 1).unwrap()[0].sha.clone();
+    assert!(reset(&r, &base, "--hard", &two).is_err());
+    // The HEAD the user saw must still be HEAD, or an agent's newer commit would be dropped.
+    assert!(reset(&r, &base, "hard", &base).is_err());
+    assert_eq!(log(&r, 0, 5).unwrap().len(), 2);
+
+    reset(&r, &base, "soft", &two).unwrap();
+    let st = status(&r).unwrap();
+    assert_eq!((st.staged.len(), st.unstaged.len()), (1, 0));
+
+    reset(&r, &two, "mixed", &base).unwrap();
+    reset(&r, &base, "mixed", &two).unwrap();
+    let st = status(&r).unwrap();
+    assert_eq!((st.staged.len(), st.unstaged.len()), (0, 1));
+
+    reset(&r, &base, "hard", &base).unwrap();
+    let st = status(&r).unwrap();
+    assert!(st.staged.is_empty() && st.unstaged.is_empty());
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
+    assert_eq!(log(&r, 0, 5).unwrap().len(), 1);
+}
+
+#[test]
+fn checkout_branch_and_tag_at_a_commit() {
+    let sb = Sandbox::new("refs");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "1\n", "base");
+    let base = log(&r, 0, 1).unwrap()[0].sha.clone();
+    write_commit(&r, "a.txt", "2\n", "two");
+
+    assert!(create_tag(&r, "-f", &base).is_err());
+    assert!(create_tag(&r, "bad..name", &base).is_err());
+    create_tag(&r, "v1.0", &base).unwrap();
+    assert!(
+        create_tag(&r, "v1.0", &base).is_err(),
+        "existing tag is not moved"
+    );
+    assert!(log(&r, 0, 2).unwrap()[1]
+        .refs
+        .iter()
+        .any(|x| x == "tag: v1.0"));
+
+    checkout_commit(&r, &base).unwrap();
+    assert!(status(&r).unwrap().branch.is_none());
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
+
+    switch_branch(&r, "main", false).unwrap();
+    create_branch_at(&r, "from-base", &base).unwrap();
+    assert_eq!(status(&r).unwrap().branch.as_deref(), Some("from-base"));
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
+    assert!(create_branch_at(&r, "--evil", &base).is_err());
+    assert!(create_branch_at(&r, "@", &base).is_err());
+    assert!(create_tag(&r, "@", &base).is_err());
+}
+
+fn commit_dated(repo: &Path, path: &str, content: &str, msg: &str, date: &str) {
+    fs::write(repo.join(path), content).unwrap();
+    stage(repo, &[path.into()]).unwrap();
+    let ok = std::process::Command::new("git")
+        .current_dir(repo)
+        .args(["commit", "-q", "-m", msg])
+        .env("GIT_AUTHOR_DATE", date)
+        .env("GIT_COMMITTER_DATE", date)
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+}
+
+#[test]
+fn drops_pushed_follows_ancestry_not_log_order() {
+    let sb = Sandbox::new("drops");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    // P is pushed but dated long ago, so the log lists it below newer local commits.
+    commit_dated(a, "p.txt", "p\n", "old pushed", "2000-01-01T00:00:00Z");
+    run(a, &["push", "-q"]).unwrap();
+    write_commit(b, "t.txt", "t\n", "target");
+    run(b, &["fetch", "-q"]).unwrap();
+    run(b, &["merge", "-q", "--no-edit", "origin/main"]).unwrap();
+
+    let commits = log(b, 0, 10).unwrap();
+    let subjects: Vec<&str> = commits.iter().map(|x| x.subject.as_str()).collect();
+    assert_eq!(subjects[1..], ["target", "base", "old pushed"]);
+    let (merge, target) = (&commits[0].sha, &commits[1].sha);
+    // Only unpushed commits sit above "target", yet resetting to it drops the pushed P.
+    assert!(commits[0].unpushed && commits[1].unpushed && !commits[3].unpushed);
+    assert!(drops_pushed(b, target).unwrap());
+    assert!(!drops_pushed(b, merge).unwrap());
+    // Undoing the merge (moving to its first parent) drops P as well.
+    assert!(drops_pushed(b, &commits[0].parents[0]).unwrap());
+    assert!(commits[3].on_origin && !commits[1].on_origin);
+}
+
+#[test]
+fn gone_upstream_is_unknown_not_pushed() {
+    let sb = Sandbox::new("gone");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    switch_branch(a, "feat", true).unwrap();
+    write_commit(a, "f.txt", "f\n", "feature");
+    push(a).unwrap();
+    run(a, &["push", "-q", "origin", "--delete", "feat"]).unwrap();
+    fetch(a).unwrap();
+    write_commit(a, "g.txt", "g\n", "after the branch was deleted");
+
+    let commits = log(a, 0, 10).unwrap();
+    assert!(commits.iter().all(|x| !x.unpushed));
+    assert!(!drops_pushed(a, &commits[2].sha).unwrap());
+    // "feature" was only ever on the deleted branch; base is still on origin/main.
+    let on: Vec<bool> = commits.iter().map(|x| x.on_origin).collect();
+    assert_eq!(on, [false, false, true]);
+
+    let local = sb.path("local");
+    init(&local);
+    write_commit(&local, "x.txt", "x\n", "x");
+    assert!(!log(&local, 0, 5).unwrap()[0].on_origin);
+}

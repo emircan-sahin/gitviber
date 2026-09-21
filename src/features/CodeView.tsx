@@ -2,7 +2,8 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { ChevronsUpDown } from "lucide-react";
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DiffPair, DiffRow } from "@/lib/api";
-import { languageFor, type TokenLine, tokenLookup, useHighlight } from "@/lib/highlight";
+import { showLanguage, type TokenLine, tokenLookup, useHighlight } from "@/lib/highlight";
+import { languageFor } from "@/lib/language";
 import { CODE_FONTS, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { type Lane, type Mark, OverviewRuler } from "./OverviewRuler";
@@ -129,7 +130,11 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
 
   const oldLines = useMemo(() => splitLines(pair.original.text), [pair.original.text]);
   const newLines = useMemo(() => splitLines(pair.modified.text), [pair.modified.text]);
-  const lang = languageFor(path);
+  const lang = useMemo(() => languageFor(path, pair.modified.exists ? pair.modified.text : pair.original.text), [path, pair]);
+  useEffect(() => {
+    showLanguage(lang);
+    return () => showLanguage(null);
+  }, [lang]);
   const oldHl = useHighlight(mode === "file" ? null : pair.original.text, lang, s.codeTheme);
   const newHl = useHighlight(pair.modified.text, lang, s.codeTheme);
   const oldTok = useMemo(() => tokenLookup(oldHl), [oldHl]);
@@ -348,7 +353,7 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
     if (!virtual) fill(nearChunks(), 1);
   };
 
-  const gutterW = mode === "file" ? `calc(${digits}ch + 28px)` : `calc(${digits * 2}ch + 60px)`;
+  const gutterW = mode === "file" ? fileGutterW(digits) : `calc(${digits * 2}ch + 64px)`;
 
   const overview = useMemo(() => overviewMarks(items, mode === "file"), [items, mode]);
   const prefix = useMemo(() => {
@@ -521,6 +526,9 @@ const GUTTER_BG = [
   "bg-del-gutter shadow-[inset_2px_0_0_var(--removed)]",
 ] as const;
 const SIGN = [" ", "+", "−"] as const;
+// 16px lead before the number (like VS Code's gutter), 12px after it, the 3px change bar, a 12px gap.
+// Diff gutters get the same lead from `pl-1` plus Num's `pl-3`.
+const fileGutterW = (digits: number) => `calc(${digits}ch + 43px)`;
 
 const Line = memo(function Line({ item, ctx }: { item: Exclude<Item, { t: "gap" }>; ctx: Ctx }) {
   if (item.t === "pair") {
@@ -539,8 +547,8 @@ const Line = memo(function Line({ item, ctx }: { item: Exclude<Item, { t: "gap" 
   if (ctx.mode === "file") {
     return (
       <div className="flex min-h-full w-full">
-        <span className="sticky left-0 z-10 flex shrink-0 bg-background select-none" style={{ width: `calc(${ctx.digits}ch + 28px)` }}>
-          <span className="flex-1 pr-3 text-right text-subtle/80">{r.n}</span>
+        <span className="sticky left-0 z-10 flex shrink-0 bg-background select-none" style={{ width: fileGutterW(ctx.digits) }}>
+          <span className="flex-1 pr-3 pl-4 text-right text-subtle/80">{r.n}</span>
           <span
             className={cn(
               "relative w-[3px] shrink-0",
@@ -561,7 +569,7 @@ const Line = memo(function Line({ item, ctx }: { item: Exclude<Item, { t: "gap" 
 
   return (
     <div className={cn("flex min-h-full w-full", ROW_BG[r.k])}>
-      <span className={cn("sticky left-0 z-10 flex shrink-0 select-none", GUTTER_BG[r.k])}>
+      <span className={cn("sticky left-0 z-10 flex shrink-0 pl-1 select-none", GUTTER_BG[r.k])}>
         {/* Old numbers stay faint except on removed lines, where they're the only reference. */}
         <Num n={r.o} digits={ctx.digits} k={r.k} faint={r.k === 0} />
         <Num n={r.n} digits={ctx.digits} k={r.k} />
@@ -582,7 +590,7 @@ function Half({ row, side, ctx, border }: { row: DiffRow | null; side: "old" | "
   const tokens = side === "old" ? ctx.oldTok(n - 1, text) : ctx.newTok(n - 1, text);
   return (
     <div className={cn("flex min-w-0", ROW_BG[row.k], borderCls)}>
-      <span className={cn("flex shrink-0 select-none", GUTTER_BG[row.k])}>
+      <span className={cn("flex shrink-0 pl-1 select-none", GUTTER_BG[row.k])}>
         <Num n={n} digits={ctx.digits} k={row.k} />
         <span className={cn("w-5 shrink-0 text-center", row.k === 1 ? "text-added" : row.k === 2 ? "text-removed" : "")}>{SIGN[row.k]}</span>
       </span>

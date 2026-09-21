@@ -3,6 +3,7 @@ mod display;
 mod fs;
 mod git;
 mod github;
+mod navigation;
 mod pty;
 #[cfg(test)]
 mod scenario_tests;
@@ -253,10 +254,98 @@ async fn write_file(state: State<'_, AppState>, path: String, content: String) -
     blocking(move || fs::write_file(&r, &path, &content)).await
 }
 
+// ---------------------------------------------------------------- Explorer file actions
+
+#[tauri::command]
+async fn create_file(state: State<'_, AppState>, path: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || fs::create_file(&r, &path)).await
+}
+
+#[tauri::command]
+async fn create_dir(state: State<'_, AppState>, path: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || fs::create_dir(&r, &path)).await
+}
+
+#[tauri::command]
+async fn rename_path(state: State<'_, AppState>, from: String, to: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || fs::rename_entry(&r, &from, &to)).await
+}
+
+#[tauri::command]
+async fn trash_path(state: State<'_, AppState>, path: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || fs::trash(&r, &path)).await
+}
+
+#[tauri::command]
+async fn reveal_path(state: State<'_, AppState>, path: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || fs::reveal(&r, &path)).await
+}
+
 #[tauri::command]
 async fn fetch(state: State<'_, AppState>) -> Res<()> {
     let r = repo(&state)?;
     blocking(move || git::fetch(&r)).await
+}
+
+// ---------------------------------------------------------------- history actions
+
+#[tauri::command]
+async fn undo_commit(state: State<'_, AppState>, sha: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::undo_commit(&r, &sha)).await
+}
+
+#[tauri::command]
+async fn reset(state: State<'_, AppState>, sha: String, mode: String, head: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::reset(&r, &sha, &mode, &head)).await
+}
+
+#[tauri::command]
+async fn drops_pushed(state: State<'_, AppState>, sha: String) -> Res<bool> {
+    let r = repo(&state)?;
+    blocking(move || git::drops_pushed(&r, &sha)).await
+}
+
+#[tauri::command]
+async fn revert(state: State<'_, AppState>, sha: String) -> Res<bool> {
+    let r = repo(&state)?;
+    blocking(move || git::revert(&r, &sha)).await
+}
+
+#[tauri::command]
+async fn checkout_commit(state: State<'_, AppState>, sha: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::checkout_commit(&r, &sha)).await
+}
+
+#[tauri::command]
+async fn create_branch_at(state: State<'_, AppState>, name: String, sha: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::create_branch_at(&r, &name, &sha)).await
+}
+
+#[tauri::command]
+async fn create_tag(state: State<'_, AppState>, name: String, sha: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::create_tag(&r, &name, &sha)).await
+}
+
+/// https://github.com/owner/name when origin is on GitHub, for "Open on GitHub" links.
+#[tauri::command]
+async fn github_web_url(state: State<'_, AppState>) -> Res<Option<String>> {
+    let r = repo(&state)?;
+    blocking(move || {
+        Ok(git::remote_url(&r, "origin")
+            .and_then(|u| github::parse_remote(&u))
+            .map(|g| format!("https://github.com/{}/{}", g.owner, g.name)))
+    })
+    .await
 }
 
 // ---------------------------------------------------------------- GitHub
@@ -285,6 +374,18 @@ async fn pr_detail(app: AppHandle, number: u64) -> Res<github::PullDetail> {
     blocking(move || {
         let state = app.state::<AppState>();
         github::detail(&state.github, &repo(&state)?, number)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn pr_attachments(
+    app: AppHandle,
+    number: u64,
+) -> Res<std::collections::HashMap<String, String>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::attachments(&state.github, &repo(&state)?, number)
     })
     .await
 }
@@ -380,7 +481,15 @@ fn open_url(url: String) -> Res<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    // Release builds load the bundled app; only debug builds are served from the dev server.
+    let dev_url = if cfg!(debug_assertions) {
+        context.config().build.dev_url.clone()
+    } else {
+        None
+    };
     tauri::Builder::default()
+        .plugin(navigation::guard(dev_url))
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
@@ -430,9 +539,23 @@ pub fn run() {
             rebase_skip,
             resolve_side,
             write_file,
+            create_file,
+            create_dir,
+            rename_path,
+            trash_path,
+            reveal_path,
+            undo_commit,
+            reset,
+            drops_pushed,
+            revert,
+            checkout_commit,
+            create_branch_at,
+            create_tag,
+            github_web_url,
             gh_account,
             pr_list,
             pr_detail,
+            pr_attachments,
             pr_files,
             pr_create,
             pr_merge,
@@ -443,6 +566,6 @@ pub fn run() {
             pty_resize,
             pty_kill
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running GitViber");
 }

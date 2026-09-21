@@ -35,9 +35,10 @@ credentials and signing, and GitViber writes nothing of its own into the repo.
 | **Terminal** | Your login shell under the diff (`⌘J`), with tabs and splits. Each worktree keeps its own terminals |
 | **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase |
 | **Conflicts** | Resolve block by block (current, incoming, both, or edit by hand), then continue, skip or abort |
-| **Pull requests** | List, read, review in the same viewer, create, merge, check out. GitHub only for now |
-| **Explorer** | Browse any file with change bars in the gutter and ignored files dimmed |
-| **Look** | Light and dark themes, eight syntax themes, SF Mono, Geist Mono or JetBrains Mono |
+| **Pull requests** | List, read (with GitHub markdown), review in the same viewer, create, merge, check out. GitHub only for now |
+| **History** | Right-click a commit to undo, revert, reset, check out or tag it. Anything that rewrites pushed commits asks first |
+| **Explorer** | Browse any file with change bars in the gutter. Rename, delete to Trash, create and reveal from the right-click menu |
+| **Settings** | Light and dark themes, eight syntax themes, interface scale, fonts, and every shortcut rebindable (`⌘,`) |
 
 Worktrees and repos nested inside the project show up in Changes but are kept out of staging, so a
 stray `git add` can't turn them into gitlinks.
@@ -64,20 +65,26 @@ GitViber is built and tested on macOS. The code compiles elsewhere, but nobody h
 
 ## Shortcuts
 
+Every shortcut in the list below except the terminal ones can be rebound in Settings (`⌘,`).
+Shortcuts without `⌘` are ignored while you type.
+
 | Keys | |
 | --- | --- |
+| `⌘,` | Settings |
 | `⌘1` `⌘2` `⌘3` | Changes, History, PRs |
 | `J` `K` | Next / previous changed file |
+| `↓` `↑` `↵` | Move through the focused Changes list, `↵` keeps the tab open |
 | `V` | Mark file viewed |
-| `⌥↓` `⌥↑` | Next / previous change |
+| `F7` `⇧F7`, `⌥↓` `⌥↑` | Next / previous change |
 | `⌥S` `⌥C` `⌥Z` | Split view, collapse unchanged, word wrap |
 | `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
 | `⇧⌘E` | Show the file explorer |
 | `⌘J` or `⌃` `` ` `` | Toggle the terminal |
 | `⌘T` `⌘D` `⌘K` | New terminal, split, clear (in the terminal) |
-| `⌘+` `⌘−` `⌘0` | Code font size |
+| `⌘=` `⌘−` `⌘0` | Zoom the interface |
+| `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |
-| `⌘↵` | Commit |
+| `⌘↵` | Commit (in the commit message) |
 | `⌘R` | Refresh |
 | `⌘O` | Open repository |
 
@@ -89,9 +96,10 @@ Credential Manager). The token stays in memory.
 
 ## Privacy
 
-No API keys, no telemetry. The app talks to your git remotes and, for pull requests,
-`api.github.com`. It only reads files inside the repository you open, and text from GitHub is
-never rendered as HTML.
+No API keys, no telemetry. The app talks to your git remotes and, for pull requests, GitHub.
+It only reads files inside the repository you open. Markdown from GitHub is cut down to
+GitHub's own HTML allowlist (no scripts, styles or forms), and an image hosted outside GitHub
+loads only when you click it.
 
 ## Stack
 

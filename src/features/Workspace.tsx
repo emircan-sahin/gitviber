@@ -1,17 +1,21 @@
-import { ArrowDown, ArrowUp, GitBranch, PanelLeftClose, PanelRightClose, WrapText } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, ChevronsDownUp, GitBranch, PanelLeftClose, PanelRightClose, WrapText } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import type { FileChange, RepoStatus } from "@/lib/api";
-import { type Selection, selectionKey } from "@/lib/selection";
+import { resetGitHubCache } from "@/lib/githubCache";
+import { useShownLanguage } from "@/lib/highlight";
+import { useCommands, useShortcut } from "@/lib/keybindings";
+import { languageLabel } from "@/lib/language";
+import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
 import { DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { arrayMove } from "@dnd-kit/sortable";
 import { useTerminals } from "@/lib/terminals";
 import { useRepo } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
 import { ChangesPanel, changeList } from "./ChangesPanel";
-import { FileTree } from "./FileTree";
+import { FileTree, type FileTreeHandle } from "./FileTree";
 import { HistoryPanel } from "./HistoryPanel";
 import { PullsPanel } from "./PullsPanel";
 import { TerminalPanel, useTerminalSetup } from "./TerminalPanel";
@@ -54,15 +58,10 @@ function relocate(status: RepoStatus, sel: Selection & { kind: ChangeKind }): Se
   return null;
 }
 
-/** Focus is somewhere that owns its keystrokes: text fields, menus, dialogs, pickers. */
-export function isTyping(e: KeyboardEvent) {
-  const el = e.target instanceof HTMLElement ? e.target : null;
-  return !!el && (el.isContentEditable || !!el.closest("input,textarea,select,[role=menu],[role=listbox],[role=dialog]"));
-}
-
 export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos }: Props) {
   // Diffs are cached by revision, which restarts per repo.
   useState(resetPairCache);
+  useState(resetGitHubCache);
   const repo = useRepo(root);
   const { status } = repo;
   const s = useSettings();
@@ -73,9 +72,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const setActiveKey = useCallback((key: string | null) => setTabState((t) => ({ ...t, active: key })), []);
   // Viewed marks remember the file's content id; a new edit by the agent clears them.
   const [viewedMap, setViewedMap] = useState<Map<string, string>>(() => new Map());
-  // Git work on the left, files on the right; both collapse (⌘B / ⌥⌘B) to give code the room.
+  // Git work on the left, files on the right; both collapse to give code the room.
   const listPanel = usePanelRef();
   const filesPanel = usePanelRef();
+  const fileTree = useRef<FileTreeHandle>(null);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   const toggle = useCallback((panel: typeof listPanel) => panel.current?.[panel.current.isCollapsed() ? "expand" : "collapse"](), []);
@@ -108,6 +108,31 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const moveTab = useCallback((from: number, to: number) => setTabState((st) => ({ ...st, tabs: arrayMove(st.tabs, from, to) })), []);
 
   const pin = useCallback((key: string) => setTabState((st) => ({ ...st, tabs: st.tabs.map((t) => (t.key === key ? { ...t, preview: false } : t)) })), []);
+
+  // Explorer rename/trash: file tabs at or under `from` move to `to` in place, or close when it's null.
+  const onPathMoved = useCallback((from: string, to: string | null) => {
+    setTabState(({ tabs: prev, active }) => {
+      const hit = (t: Tab) => t.sel.kind === "file" && (t.sel.path === from || t.sel.path.startsWith(`${from}/`));
+      const i = prev.findIndex((t) => t.key === active);
+      if (to === null) {
+        // Like closing a tab: the next surviving one to the right, else to the left.
+        const near = prev.slice(i + 1).find((t) => !hit(t)) ?? prev.slice(0, Math.max(i, 0)).reverse().find((t) => !hit(t));
+        return { tabs: prev.filter((t) => !hit(t)), active: i >= 0 && hit(prev[i]) ? (near?.key ?? null) : active };
+      }
+      // A tab already open at the new path absorbs the moved one, as in the git sync below.
+      const tabs: Tab[] = [];
+      let nextActive = active;
+      for (const t of prev) {
+        const sel: Selection = hit(t) ? { kind: "file", path: to + selectionPath(t.sel).slice(from.length) } : t.sel;
+        const key = selectionKey(sel);
+        if (t.key === active) nextActive = key;
+        const twin = tabs.findIndex((x) => x.key === key);
+        if (twin >= 0) tabs[twin] = { ...tabs[twin], preview: tabs[twin].preview && t.preview };
+        else tabs.push(key === t.key ? t : { ...t, key, sel });
+      }
+      return { tabs, active: nextActive };
+    });
+  }, []);
 
   // Keep change tabs in sync with git: a staged or resolved file moves lists, a
   // committed/discarded one disappears. Two tabs that land on the same file merge.
@@ -175,68 +200,38 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     for (const n of [changes[i + 1], changes[i - 1]]) if (n) prefetchSelection(n, repo.revision, s.codeTheme);
   }, [changes, activeKey, repo.revision, s.codeTheme]);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const typing = isTyping(e);
-      // ⌘ shortcuts work everywhere; plain/⌥ keys only when not typing, since ⌥+letter
-      // types characters (ç, ß) and menus/dialogs own their own keys.
-      if (typing && !e.metaKey) return;
-      // e.code, not e.key: Option+letter types symbols on macOS.
-      const toggles: Record<string, Partial<typeof s>> = {
-        KeyZ: { wordWrap: !s.wordWrap },
-        KeyS: { sideBySide: !s.sideBySide },
-        KeyC: { hideUnchanged: !s.hideUnchanged },
-      };
-      if (e.altKey && !e.metaKey && toggles[e.code]) {
-        e.preventDefault();
-        updateSettings(toggles[e.code]);
-        return;
-      }
-      // J/K walk the changed files, the core loop of reviewing an agent's work.
-      if (!typing && !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === "j" || e.key === "k") && changes.length) {
-        const i = changes.findIndex((c) => selectionKey(c) === activeKey);
-        const next = e.key === "j" ? Math.min(changes.length - 1, i + 1) : Math.max(0, i - 1);
-        open(changes[i < 0 ? 0 : next]);
-        setListTab("changes");
-        return;
-      }
-      if (!typing && e.key === "v" && !e.metaKey && activeKey) {
-        const t = tabs.find((x) => x.key === activeKey);
-        if (t) toggleViewed(t.sel);
-        return;
-      }
-      // ⌘ only: Ctrl+letters are macOS text-editing keys (Ctrl+B back a char, Ctrl+O open line).
-      if (!e.metaKey) return;
-      // Physical keys: with ⌥ held, macOS turns "b" into "∫".
-      if (e.code === "KeyB" && e.altKey) {
-        e.preventDefault();
-        toggle(filesPanel);
-        return;
-      }
-      if (e.code === "KeyE" && e.shiftKey) {
-        e.preventDefault();
-        filesPanel.current?.expand();
-        return;
-      }
-      const k = e.key;
-      if (k === "=" || k === "+") updateSettings({ codeFontSize: s.codeFontSize + 0.5 });
-      else if (k === "-") updateSettings({ codeFontSize: s.codeFontSize - 0.5 });
-      else if (k === "0") updateSettings({ codeFontSize: DEFAULT_FONT_SIZE });
-      else if (k === "1") setListTab("changes");
-      else if (k === "2") setListTab("history");
-      else if (k === "3") setListTab("pulls");
-      else if (k === "b") toggle(listPanel);
-      else if (k === "o") onOpenRepo();
-      // Always swallow ⌘W: with no tab open it would close the window.
-      else if (k === "w") activeKey && close(activeKey);
-      // Cmd+R would reload the webview; make it a git refresh instead.
-      else if (k === "r") repo.refresh();
-      else return;
-      e.preventDefault();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [s, listPanel, filesPanel, toggle, onOpenRepo, repo, changes, activeKey, open, close, tabs, toggleViewed]);
+  // J/K walk the changed files, the core loop of reviewing an agent's work.
+  const step = (dir: 1 | -1) => {
+    if (!changes.length) return;
+    const i = changes.findIndex((c) => selectionKey(c) === activeKey);
+    open(changes[i < 0 ? 0 : Math.min(changes.length - 1, Math.max(0, i + dir))]);
+    setListTab("changes");
+  };
+
+  useCommands({
+    "review.nextFile": () => step(1),
+    "review.prevFile": () => step(-1),
+    "review.toggleViewed": () => {
+      const t = tabs.find((x) => x.key === activeKey);
+      if (t) toggleViewed(t.sel);
+    },
+    "diff.toggleSplit": () => updateSettings({ sideBySide: !s.sideBySide }),
+    "diff.toggleCollapse": () => updateSettings({ hideUnchanged: !s.hideUnchanged }),
+    "editor.toggleWrap": () => updateSettings({ wordWrap: !s.wordWrap }),
+    "editor.fontZoomIn": () => updateSettings({ codeFontSize: s.codeFontSize + 0.5 }),
+    "editor.fontZoomOut": () => updateSettings({ codeFontSize: s.codeFontSize - 0.5 }),
+    "editor.fontZoomReset": () => updateSettings({ codeFontSize: DEFAULT_FONT_SIZE }),
+    "view.changes": () => setListTab("changes"),
+    "view.history": () => setListTab("history"),
+    "view.pulls": () => setListTab("pulls"),
+    "view.toggleGitPanel": () => toggle(listPanel),
+    "view.toggleExplorer": () => toggle(filesPanel),
+    "view.showExplorer": () => filesPanel.current?.expand(),
+    // Registered even with no tab open: an unhandled ⌘W would close the window.
+    "tab.close": () => activeKey && close(activeKey),
+    // ⌘R would reload the webview; make it a git refresh instead.
+    "repo.refresh": () => repo.refresh(),
+  });
 
   const active = tabs.find((t) => t.key === activeKey) ?? null;
   const changeCount = changes.length;
@@ -295,7 +290,19 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     refreshRepo={() => repo.refresh()}
                   />
                 )}
-                {listTab === "history" && <HistoryPanel commits={repo.commits} remotes={remoteNames} hasMore={repo.hasMore} loadMore={repo.loadMore} activeKey={activeKey} onOpen={open} onHover={prefetch} />}
+                {listTab === "history" && (
+                  <HistoryPanel
+                    commits={repo.commits}
+                    status={status}
+                    remotes={remoteNames}
+                    hasMore={repo.hasMore}
+                    loadMore={repo.loadMore}
+                    refresh={() => repo.refresh()}
+                    activeKey={activeKey}
+                    onOpen={open}
+                    onHover={prefetch}
+                  />
+                )}
               </div>
             </div>
           </ResizablePanel>
@@ -342,10 +349,15 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
             <div className="flex h-full flex-col bg-panel">
               <div className="flex h-9 shrink-0 items-center border-b border-border pr-1 pl-3">
                 <span className="text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Explorer</span>
+                <Tip label="Collapse folders">
+                  <button aria-label="Collapse folders" onClick={() => fileTree.current?.collapseAll()} className="ml-auto flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground">
+                    <ChevronsDownUp className="size-3.5" />
+                  </button>
+                </Tip>
                 <CollapseButton side="right" onClick={() => toggle(filesPanel)} />
               </div>
               <div className="min-h-0 flex-1">
-                <FileTree status={status} revision={repo.revision} activeKey={activeKey} onOpen={open} onHover={prefetch} />
+                <FileTree ref={fileTree} status={status} revision={repo.revision} activeKey={activeKey} onOpen={open} onHover={prefetch} onPathMoved={onPathMoved} />
               </div>
             </div>
           </ResizablePanel>
@@ -358,8 +370,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
 
 function CollapseButton({ side, onClick }: { side: "left" | "right"; onClick: () => void }) {
   const Icon = side === "left" ? PanelLeftClose : PanelRightClose;
+  const shortcut = useShortcut(side === "left" ? "view.toggleGitPanel" : "view.toggleExplorer");
   return (
-    <Tip label={side === "left" ? "Hide panel" : "Hide explorer"} shortcut={side === "left" ? "⌘B" : "⌥⌘B"}>
+    <Tip label={side === "left" ? "Hide panel" : "Hide explorer"} shortcut={shortcut}>
       <button onClick={onClick} className="ml-auto flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground">
         <Icon className="size-3.5" />
       </button>
@@ -384,6 +397,8 @@ function ListTabButton({ active, onClick, count, children }: { active: boolean; 
 
 function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; reviewed: number }) {
   const s = useSettings();
+  const language = useShownLanguage();
+  const wrapKey = useShortcut("editor.toggleWrap");
   const { status } = repo;
   const totals = changeTotals(repo);
   return (
@@ -422,7 +437,7 @@ function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; revie
         {s.codeFont} {s.codeFontSize}
       </span>
       <span>{s.sideBySide ? "Split" : "Unified"}</span>
-      <Tip label="Word wrap" shortcut="⌥Z">
+      <Tip label="Word wrap" shortcut={wrapKey}>
         <button
           onClick={() => updateSettings({ wordWrap: !s.wordWrap })}
           className={cn("flex items-center gap-1 hover:text-foreground", s.wordWrap && "text-primary hover:text-primary")}
@@ -431,6 +446,7 @@ function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; revie
           Wrap
         </button>
       </Tip>
+      {language && <span>{languageLabel(language)}</span>}
     </div>
   );
 }

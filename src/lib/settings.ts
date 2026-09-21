@@ -1,4 +1,6 @@
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { cleanOverrides } from "./commands";
 import { useSyncExternalStore } from "react";
 
 export const CODE_FONTS = {
@@ -53,9 +55,16 @@ export interface Settings {
   hideUnchanged: boolean;
   wordWrap: boolean;
   ligatures: boolean;
+  /** Whole-app zoom, one of UI_SCALES. Separate from the code font size. */
+  uiScale: number;
+  /** Markdown files open rendered rather than as source (diffs always start on the diff). */
+  markdownPreview: boolean;
+  /** Per-command overrides of the default key bindings; an empty list unbinds. */
+  keybindings: Record<string, string[]>;
 }
 
 export const DEFAULT_FONT_SIZE = 12.5;
+export const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
 
 const DEFAULTS: Settings = {
   codeFont: "SF Mono",
@@ -68,6 +77,9 @@ const DEFAULTS: Settings = {
   hideUnchanged: false,
   wordWrap: false,
   ligatures: false,
+  uiScale: 1,
+  markdownPreview: true,
+  keybindings: {},
 };
 
 // v2: the Monaco-era settings had different fonts and sizes.
@@ -81,6 +93,9 @@ function load(): Settings {
     if (!(s.syntaxTheme in SYNTAX_THEMES)) s.syntaxTheme = DEFAULTS.syntaxTheme;
     if (!(s.lightSyntaxTheme in LIGHT_SYNTAX_THEMES)) s.lightSyntaxTheme = DEFAULTS.lightSyntaxTheme;
     if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
+    if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
+    if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
+    s.keybindings = cleanOverrides(s.keybindings);
     return s;
   } catch {
     return DEFAULTS;
@@ -121,13 +136,31 @@ function applyTheme() {
   }
 }
 
+let appliedScale: number | null = null;
+function applyScale() {
+  if (current.uiScale === appliedScale) return;
+  appliedScale = current.uiScale;
+  // Native page zoom (WKWebView pageZoom, like Safari's ⌘+): layout, viewport units and
+  // pointer coordinates all stay consistent, which CSS `zoom` on the root doesn't guarantee.
+  document.documentElement.style.setProperty("--ui-scale", String(current.uiScale));
+  try {
+    getCurrentWebview()
+      .setZoom(current.uiScale)
+      .catch(() => {});
+  } catch {
+    // Not in a Tauri webview.
+  }
+}
+
 function emit() {
   resolved = resolve();
   applyTheme();
+  applyScale();
   listeners.forEach((l) => l());
 }
 
 applyTheme();
+applyScale();
 systemDark.addEventListener("change", () => current.appearance === "system" && emit());
 
 export function updateSettings(patch: Partial<Settings>) {
@@ -152,7 +185,17 @@ export function subscribeSettings(l: () => void) {
   };
 }
 
-export const getSettings = () => resolved;
+/** Moves the interface scale one step along UI_SCALES; 0 resets it. */
+export function stepUiScale(dir: -1 | 0 | 1) {
+  const i = UI_SCALES.indexOf(current.uiScale);
+  const next = dir === 0 ? 1 : UI_SCALES[Math.min(UI_SCALES.length - 1, Math.max(0, i + dir))];
+  updateSettings({ uiScale: next });
+}
+
+/** Snapshot for non-React code such as the global key handler. */
+export function getSettings() {
+  return resolved;
+}
 
 export function useSettings() {
   return useSyncExternalStore(subscribeSettings, getSettings);
