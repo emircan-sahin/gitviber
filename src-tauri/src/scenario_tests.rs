@@ -587,3 +587,132 @@ fn watcher_ignores_nested_worktrees() {
     // Opened as the repo itself, the worktree's own files count.
     assert_eq!(classify(&agent, &agent.join("a.txt")), Some(Kind::Worktree));
 }
+
+/// `r` with a submodule at `sub` (its `.git` is a file pointing into .git/modules/).
+fn repo_with_submodule(sb: &Sandbox) -> PathBuf {
+    let lib = sb.path("lib");
+    init(&lib);
+    write_commit(&lib, "l.txt", "l\n", "lib");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let url = lib.to_str().unwrap();
+    let add = [
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        url,
+        "sub",
+    ];
+    run(&r, &add).unwrap();
+    commit(&r, "add sub", false).unwrap();
+    r
+}
+
+#[test]
+fn watcher_still_follows_submodules() {
+    use crate::watch::{classify, Kind};
+    let sb = Sandbox::new("wtsubwatch");
+    let r = repo_with_submodule(&sb);
+    assert!(r.join("sub/.git").is_file());
+    assert_eq!(
+        classify(&r, &r.join("sub/l.txt")),
+        Some(Kind::Worktree),
+        "edits in a submodule are part of this repo's status"
+    );
+    // A plain nested repo (a .git dir) is still ignored.
+    init(&r.join("vendor/x"));
+    assert_eq!(classify(&r, &r.join("vendor/x/f.txt")), None);
+}
+
+#[test]
+fn stage_refuses_a_tracked_path_that_became_a_repo() {
+    let sb = Sandbox::new("wtgitlink");
+    let r = repo_with_submodule(&sb);
+    write_commit(&r, "dep", "a file\n", "dep");
+    fs::remove_file(r.join("dep")).unwrap();
+    init(&r.join("dep"));
+    write_commit(&r.join("dep"), "y.txt", "y\n", "inner");
+
+    // git shows a type change to a gitlink, not an untracked folder.
+    let st = status(&r).unwrap();
+    let dep = st.unstaged.iter().find(|f| f.path == "dep").unwrap();
+    assert_eq!(dep.status, "T");
+    assert!(dep.nested.is_some());
+    assert!(stage(&r, &["dep".into()]).is_err());
+    assert!(stage(&r, &[".".into()]).is_err());
+    assert!(status(&r).unwrap().staged.is_empty());
+
+    // A real submodule already is a gitlink: recording its new commit is fine.
+    write_commit(&r.join("sub"), "l.txt", "l2\n", "lib moves on");
+    stage(&r, &["sub".into()]).unwrap();
+    assert!(status(&r).unwrap().staged.iter().any(|f| f.path == "sub"));
+}
+
+#[test]
+fn staging_no_paths_stages_nothing() {
+    let sb = Sandbox::new("wtempty");
+    let r = repo_with_worktrees(&sb);
+    fs::write(r.join("new.txt"), "n\n").unwrap();
+    stage(&r, &[]).unwrap();
+    assert!(
+        status(&r).unwrap().staged.is_empty(),
+        "`git add -A --` would take everything, nested repos too"
+    );
+}
+
+#[test]
+fn bare_main_repo_is_not_a_worktree_to_open() {
+    let sb = Sandbox::new("wtbare");
+    sb.remote_with_clones(0);
+    let origin = sb.path("origin.git");
+    let wt = sb.path("wt");
+    run(
+        &origin,
+        &["worktree", "add", "-q", "-b", "feat", wt.to_str().unwrap()],
+    )
+    .unwrap();
+
+    let list = worktrees(&wt).unwrap();
+    assert!(list[0].main && list[0].bare);
+    assert_eq!(
+        main_worktree(&wt),
+        None,
+        "the projects list keys by the worktree then"
+    );
+    let br = branches(&wt).unwrap();
+    let main = br.iter().find(|b| b.name == "main").unwrap();
+    assert_eq!(
+        main.worktree, None,
+        "bare HEAD holds main but can't be opened"
+    );
+
+    // An unborn branch has no HEAD to show (git prints all zeros).
+    let empty = sb.path("empty");
+    init(&empty);
+    assert_eq!(worktrees(&empty).unwrap()[0].head, None);
+}
+
+#[test]
+fn worktree_of_a_moved_repo_is_still_nested() {
+    let sb = Sandbox::new("wtmoved");
+    let r = repo_with_worktrees(&sb);
+    let moved = sb.path("moved");
+    fs::rename(&r, &moved).unwrap();
+
+    // The worktree's .git now points at the old place; git lists its files as untracked.
+    let st = status(&moved).unwrap();
+    let agent: Vec<_> = st
+        .unstaged
+        .iter()
+        .filter(|f| f.path.starts_with(".claude/worktrees/agent"))
+        .collect();
+    assert_eq!(agent.len(), 1, "one entry for the folder, not its files");
+    assert_eq!(agent[0].path, ".claude/worktrees/agent/");
+    assert!(agent[0].nested.is_some());
+    let err = stage(&moved, &[".claude/worktrees/agent/a.txt".into()]).unwrap_err();
+    assert!(err.contains("separate git repository"), "{err}");
+    assert!(stage(&moved, &[".claude".into()]).is_err());
+}

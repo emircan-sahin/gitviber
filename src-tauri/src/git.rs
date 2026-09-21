@@ -317,6 +317,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         operation: operation(repo),
     };
 
+    let mut nested_roots = std::collections::HashSet::new();
     let mut records = raw
         .split(|b| *b == 0)
         .map(|t| String::from_utf8_lossy(t).into_owned());
@@ -356,7 +357,11 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
                 }
                 if y != '.' {
                     // In the worktree the rename is already recorded in the index, so show it as M.
-                    st.unstaged.push(change(path, None, y));
+                    let mut f = change(path, None, y);
+                    if new_gitlink(&fields) {
+                        f.nested = Some(nested(repo, path));
+                    }
+                    st.unstaged.push(f);
                 }
             }
             'u' => {
@@ -371,15 +376,13 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
             '?' => {
                 let path = &rec[2..];
                 let mut f = change(path, None, '?');
-                if is_nested_repo(repo, path) {
-                    f.nested = Some(Nested {
-                        path: repo
-                            .join(path.trim_end_matches('/'))
-                            .to_string_lossy()
-                            .into(),
-                        worktree: false,
-                        branch: None,
-                    });
+                if let Some(root) = untracked_nested_root(repo, path) {
+                    // Files of a broken worktree collapse into one entry for its folder.
+                    if !nested_roots.insert(root.clone()) {
+                        continue;
+                    }
+                    f.path = format!("{root}/");
+                    f.nested = Some(nested(repo, &root));
                 } else {
                     f.additions = count_lines(repo, path);
                     f.deletions = Some(0);
@@ -420,16 +423,47 @@ fn is_nested_repo(repo: &Path, path: &str) -> bool {
     path.ends_with('/') && repo.join(path).join(".git").exists()
 }
 
+/// Root of the nested repository an untracked path is, or lies in. The second case is a
+/// worktree whose `.git` link broke (e.g. the main repo moved): git then lists its files
+/// one by one as if they were ours, and `git worktree repair` would reconnect it.
+fn untracked_nested_root(repo: &Path, path: &str) -> Option<String> {
+    if is_nested_repo(repo, path) {
+        return Some(path.trim_end_matches('/').to_string());
+    }
+    Path::new(path)
+        .ancestors()
+        .skip(1)
+        .filter(|a| !a.as_os_str().is_empty() && repo.join(a).join(".git").exists())
+        .last()
+        .map(|a| a.to_string_lossy().into_owned())
+}
+
+/// A tracked path that became a repository with commits shows as a type change to a gitlink
+/// (mode 160000); `git add` would record it. A submodule already has one in the index.
+/// `fields` is a split porcelain v2 `1`/`2` record: mI at 4, mW at 5.
+fn new_gitlink(fields: &[&str]) -> bool {
+    fields.get(5) == Some(&"160000") && fields.get(4) != Some(&"160000")
+}
+
+fn nested(repo: &Path, rel: &str) -> Nested {
+    Nested {
+        path: repo.join(rel).to_string_lossy().into(),
+        worktree: false,
+        branch: None,
+    }
+}
+
 /// Tells this repo's own linked worktrees apart from unrelated nested repositories.
 fn mark_worktrees(repo: &Path, files: &mut [FileChange]) {
     let Ok(list) = worktrees(repo) else { return };
     let real = |p: &str| Path::new(p).canonicalize().ok();
+    let known: Vec<_> = list
+        .iter()
+        .filter_map(|w| Some((real(&w.path)?, w)))
+        .collect();
     for n in files.iter_mut().filter_map(|f| f.nested.as_mut()) {
-        let here = real(&n.path);
-        if let Some(w) = list
-            .iter()
-            .find(|w| here.is_some() && real(&w.path) == here)
-        {
+        let Some(here) = real(&n.path) else { continue };
+        if let Some((_, w)) = known.iter().find(|(p, _)| *p == here) {
             n.worktree = true;
             n.branch = w.branch.clone();
         }
@@ -480,7 +514,10 @@ pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, String> {
         for field in fields.by_ref().take_while(|f| !f.is_empty()) {
             let (key, val) = field.split_once(' ').unwrap_or((field, ""));
             match key {
-                "HEAD" => w.head = Some(val.chars().take(7).collect()),
+                // An unborn branch reports an all-zero HEAD.
+                "HEAD" if val.chars().any(|c| c != '0') => {
+                    w.head = Some(val.chars().take(7).collect())
+                }
                 "branch" => w.branch = Some(val.trim_start_matches("refs/heads/").to_string()),
                 "detached" => w.detached = true,
                 "bare" => w.bare = true,
@@ -1070,10 +1107,19 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
             "refs/remotes",
         ],
     )?;
+    // A bare main repo "holds" its HEAD branch too, but has no working tree to open.
+    let bare: Vec<String> = worktrees(repo)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|w| w.bare)
+        .map(|w| w.path)
+        .collect();
     Ok(raw
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\x1f').collect();
+            let elsewhere =
+                f.len() == 6 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
             // Skip the symbolic origin/HEAD pointer.
             (f.len() == 6 && !f[0].ends_with("/HEAD")).then(|| Branch {
                 name: f[1].to_string(),
@@ -1081,7 +1127,7 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
                 current: f[2] == "*",
                 upstream: (!f[3].is_empty()).then(|| f[3].to_string()),
                 timestamp: f[4].parse().unwrap_or(0),
-                worktree: (f[2] != "*" && !f[5].is_empty()).then(|| f[5].to_string()),
+                worktree: elsewhere.then(|| f[5].to_string()),
             })
         })
         .collect())
@@ -1112,6 +1158,10 @@ pub fn stage(repo: &Path, paths: &[String]) -> Result<(), String> {
 /// Refuses untracked nested repositories (an agent's worktree) unless `allow_nested`: git
 /// would stage one as a gitlink, a pointer to its current commit, and none of its files.
 pub fn stage_with(repo: &Path, paths: &[String], allow_nested: bool) -> Result<(), String> {
+    // `git add -A --` with no paths stages the whole tree, nested repos included.
+    if paths.is_empty() {
+        return Ok(());
+    }
     if !allow_nested {
         if let Some(p) = nested_repos(repo, paths)?.first() {
             return Err(format!(
@@ -1124,22 +1174,36 @@ pub fn stage_with(repo: &Path, paths: &[String], allow_nested: bool) -> Result<(
     run(repo, &with_paths(vec!["add", "-A"], paths)).map(|_| ())
 }
 
-/// Untracked nested repositories at or under `paths`. Only a directory can hold one, so
-/// plain file paths skip the extra status call.
+/// Nested repositories at or under `paths` that `git add` would turn into new gitlinks (or
+/// whose files it would take as ours). Plain files outside any nested repo skip the status call.
 fn nested_repos(repo: &Path, paths: &[String]) -> Result<Vec<String>, String> {
-    if !paths.iter().any(|p| repo.join(p).is_dir()) {
+    if !paths
+        .iter()
+        .any(|p| repo.join(p).is_dir() || untracked_nested_root(repo, p).is_some())
+    {
         return Ok(vec![]);
     }
     let args = with_paths(
         vec!["status", "--porcelain=v2", "-z", "--untracked-files=all"],
         paths,
     );
-    Ok(run_text(repo, &args)?
-        .split('\0')
-        .filter_map(|r| r.strip_prefix("? "))
-        .filter(|p| is_nested_repo(repo, p))
-        .map(|p| p.trim_end_matches('/').to_string())
-        .collect())
+    let raw = run_text(repo, &args)?;
+    let mut found = vec![];
+    let mut records = raw.split('\0');
+    while let Some(rec) = records.next() {
+        if let Some(p) = rec.strip_prefix("? ") {
+            found.extend(untracked_nested_root(repo, p));
+        } else if let Some(kind @ ('1' | '2')) = rec.chars().next() {
+            let fields: Vec<&str> = rec.splitn(if kind == '1' { 9 } else { 10 }, ' ').collect();
+            if kind == '2' {
+                records.next();
+            }
+            if new_gitlink(&fields) {
+                found.extend(fields.last().map(|p| p.to_string()));
+            }
+        }
+    }
+    Ok(found)
 }
 
 pub fn unstage(repo: &Path, paths: &[String]) -> Result<(), String> {
