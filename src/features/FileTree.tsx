@@ -386,12 +386,14 @@ function Row({ depth, path, className, children, ...props }: { depth: number; pa
 function NameInput({ initial, selectStem, onDone }: { initial: string; selectStem?: boolean; onDone: (name: string | null, refocus: boolean) => void }) {
   const done = useRef(false);
   // Unmounted by the tree (entry vanished): a blur fired during removal must not commit.
-  useLayoutEffect(
-    () => () => {
+  // Reset on mount too: StrictMode's mount/unmount/mount would otherwise leave it true, and the
+  // input then ignored Enter, Escape and blur.
+  useLayoutEffect(() => {
+    done.current = false;
+    return () => {
       done.current = true;
-    },
-    [],
-  );
+    };
+  }, []);
   const finish = (name: string | null, refocus: boolean) => {
     if (done.current) return;
     done.current = true;
