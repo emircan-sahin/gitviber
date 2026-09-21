@@ -3,6 +3,7 @@ mod display;
 mod fs;
 mod git;
 mod github;
+mod navigation;
 #[cfg(test)]
 mod scenario_tests;
 mod watch;
@@ -418,7 +419,15 @@ fn open_url(url: String) -> Res<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    // Release builds load the bundled app; only debug builds are served from the dev server.
+    let dev_url = if cfg!(debug_assertions) {
+        context.config().build.dev_url.clone()
+    } else {
+        None
+    };
     tauri::Builder::default()
+        .plugin(navigation::guard(dev_url))
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
@@ -487,6 +496,6 @@ pub fn run() {
             pr_checkout,
             open_url
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running GitViber");
 }
