@@ -208,6 +208,8 @@ export const github = {
   account: () => invoke<GitHubAccount>("gh_account"),
   list: (filter: "open" | "closed" | "all") => invoke<Pull[]>("pr_list", { filter }),
   detail: (number: number) => invoke<PullDetail>("pr_detail", { number }),
+  /** Signed image links for a private repo's attachments, by attachment id. */
+  attachments: (number: number) => invoke<Record<string, string>>("pr_attachments", { number }),
   files: (p: Pick<Pull, "number" | "baseRef" | "baseSha" | "headSha">) =>
     invoke<PullFiles>("pr_files", { number: p.number, baseRef: p.baseRef, baseSha: p.baseSha, headSha: p.headSha }),
   create: (title: string, body: string, head: string, base: string, draft: boolean) => invoke<Pull>("pr_create", { title, body, head, base, draft }),

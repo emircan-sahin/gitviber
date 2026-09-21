@@ -4,15 +4,16 @@ import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type DiffKind, type DiffPair, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { type Selection, selectionPath } from "@/lib/selection";
+import { bindingsFor, type CommandId, formatChord, useCommands, useShortcut } from "@/lib/keybindings";
 import { updateSettings, useSettings } from "@/lib/settings";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
 import { CodeView, type CodeViewHandle } from "./CodeView";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ConflictView } from "./ConflictView";
-import { isTyping } from "./Workspace";
 import { PullView } from "./PullView";
-import { languageFor, prefetchHighlight } from "@/lib/highlight";
+import { prefetchHighlight } from "@/lib/highlight";
+import { languageFor } from "@/lib/language";
 import { FileIcon } from "./FileIcon";
 import { MediaView, mediaKind } from "./MediaView";
 import { isMarkdown, MarkdownView } from "./MarkdownView";
@@ -186,7 +187,8 @@ export function prefetchSelection(sel: Selection, revision: number, theme: strin
     .diffPair(kind, path, oldPath, sha, base)
     .then((p) => {
       remember(key, p, gen);
-      const lang = languageFor(path);
+      // Same text CodeView detects from, so the prefetched tokens are the ones it asks for.
+      const lang = languageFor(path, p.modified.exists ? p.modified.text : p.original.text);
       if (kind !== "worktree") prefetchHighlight(p.original.text, lang, theme);
       prefetchHighlight(p.modified.text, lang, theme);
     })
@@ -236,6 +238,7 @@ function findChange(status: RepoStatus | null, path: string): Selection | null {
 
 function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: ViewerProps & { tab: Tab; sel: FileSelection }) {
   const s = useSettings();
+  const splitKey = useShortcut("diff.toggleSplit");
   const { pair, error } = usePair(sel, revision);
   const view = useRef<CodeViewHandle>(null);
   const isFile = sel.kind === "file";
@@ -243,24 +246,15 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
   const change = isFile ? findChange(status, sel.path) : null;
   const media = mediaKind(selectionPath(sel)) !== null;
   const markdown = isMarkdown(selectionPath(sel));
-  // Reading a markdown file starts rendered; reviewing its changes starts on the diff.
-  const [preview, setPreview] = useState(isFile);
+  // Reading a markdown file starts rendered (unless turned off); reviewing its changes starts on the diff.
+  const [preview, setPreview] = useState(isFile && s.markdownPreview);
   const rendered = markdown && preview;
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile));
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // ⌥↑/⌥↓ move by paragraph inside text fields; leave them alone there.
-      if (isTyping(e)) return;
-      if (e.key === "F7" || (e.altKey && (e.key === "ArrowDown" || e.key === "ArrowUp"))) {
-        e.preventDefault();
-        if (e.shiftKey || e.key === "ArrowUp") view.current?.prev();
-        else view.current?.next();
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  useCommands({
+    "diff.nextChange": () => view.current?.next(),
+    "diff.prevChange": () => view.current?.prev(),
+  });
 
   return (
     <>
@@ -279,14 +273,14 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
         <div className="ml-auto flex shrink-0 items-center gap-1">
           {!isFile && !media && !rendered && (
             <>
-              <IconBtn label="Previous change" shortcut="⌥↑" onClick={() => view.current?.prev()}>
+              <IconBtn label="Previous change" command="diff.prevChange" onClick={() => view.current?.prev()}>
                 <ArrowUp />
               </IconBtn>
-              <IconBtn label="Next change" shortcut="⌥↓" onClick={() => view.current?.next()}>
+              <IconBtn label="Next change" command="diff.nextChange" onClick={() => view.current?.next()}>
                 <ArrowDown />
               </IconBtn>
               <Sep />
-              <Tip label="Unified / split" shortcut="⌥S">
+              <Tip label="Unified / split" shortcut={splitKey}>
                 <div>
                   <Segmented
                     value={s.sideBySide ? "split" : "unified"}
@@ -298,7 +292,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
                   />
                 </div>
               </Tip>
-              <IconBtn label="Collapse unchanged lines" shortcut="⌥C" active={s.hideUnchanged} onClick={() => updateSettings({ hideUnchanged: !s.hideUnchanged })}>
+              <IconBtn label="Collapse unchanged lines" command="diff.toggleCollapse" active={s.hideUnchanged} onClick={() => updateSettings({ hideUnchanged: !s.hideUnchanged })}>
                 <FoldVertical />
               </IconBtn>
               <Sep />
@@ -411,20 +405,27 @@ function EmptyViewer({ hasTabs }: { hasTabs: boolean }) {
       <GitCompareArrows className="size-8 text-border-strong" strokeWidth={1.5} />
       <div className="text-[12.5px] text-muted-foreground">{hasTabs ? "No tab selected" : "Select a file to review"}</div>
       <div className="grid grid-cols-[auto_auto] gap-x-4 gap-y-1.5 text-left text-[11.5px] text-subtle">
-        <Kbd k="⌘1 ⌘2 ⌘3" /> <span>Changes · History · PRs</span>
-        <Kbd k="⌘B ⌥⌘B" /> <span>Toggle git panel · explorer</span>
-        <Kbd k="J / K" /> <span>Next / previous file</span>
-        <Kbd k="⌥↓ ⌥↑" /> <span>Next / previous change</span>
-        <Kbd k="⌘+ ⌘−" /> <span>Code size</span>
-        <Kbd k="⌥S ⌥C ⌥Z" /> <span>Split · Collapse · Wrap</span>
-        <Kbd k="V" /> <span>Mark file viewed</span>
-        <Kbd k="⌘W" /> <span>Close tab</span>
+        <Kbd ids={["view.changes", "view.history", "view.pulls"]} /> <span>Changes · History · PRs</span>
+        <Kbd ids={["view.toggleGitPanel", "view.toggleExplorer"]} /> <span>Toggle git panel · explorer</span>
+        <Kbd ids={["review.nextFile", "review.prevFile"]} /> <span>Next / previous file</span>
+        <Kbd ids={["diff.nextChange", "diff.prevChange"]} /> <span>Next / previous change</span>
+        <Kbd ids={["diff.toggleSplit", "diff.toggleCollapse", "editor.toggleWrap"]} /> <span>Split · Collapse · Wrap</span>
+        <Kbd ids={["review.toggleViewed"]} /> <span>Mark file viewed</span>
+        <Kbd ids={["view.zoomIn", "view.zoomOut"]} /> <span>Zoom</span>
+        <Kbd ids={["workbench.openSettings"]} /> <span>Settings & shortcuts</span>
       </div>
     </div>
   );
 }
 
-function Kbd({ k }: { k: string }) {
+/** Shows the user's current bindings, not the defaults. */
+function Kbd({ ids }: { ids: CommandId[] }) {
+  const { keybindings } = useSettings();
+  const k = ids
+    .map((id) => bindingsFor(id, keybindings)[0])
+    .filter(Boolean)
+    .map(formatChord)
+    .join(" ");
   return <span className="text-right font-mono text-muted-foreground">{k}</span>;
 }
 
@@ -437,9 +438,9 @@ function Placeholder({ title, detail }: { title: string; detail?: string }) {
   );
 }
 
-function IconBtn({ label, shortcut, active, onClick, children }: { label: string; shortcut?: string; active?: boolean; onClick: () => void; children: React.ReactNode }) {
+function IconBtn({ label, command, active, onClick, children }: { label: string; command: CommandId; active?: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <Tip label={label} shortcut={shortcut}>
+    <Tip label={label} shortcut={useShortcut(command)}>
       <Button variant="ghost" size="icon-sm" onClick={onClick} className={cn(active && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary")}>
         {children}
       </Button>

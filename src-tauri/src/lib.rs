@@ -3,6 +3,7 @@ mod display;
 mod fs;
 mod git;
 mod github;
+mod navigation;
 #[cfg(test)]
 mod scenario_tests;
 mod watch;
@@ -344,6 +345,18 @@ async fn pr_detail(app: AppHandle, number: u64) -> Res<github::PullDetail> {
 }
 
 #[tauri::command]
+async fn pr_attachments(
+    app: AppHandle,
+    number: u64,
+) -> Res<std::collections::HashMap<String, String>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::attachments(&state.github, &repo(&state)?, number)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn pr_files(
     state: State<'_, AppState>,
     number: u64,
@@ -406,7 +419,15 @@ fn open_url(url: String) -> Res<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    // Release builds load the bundled app; only debug builds are served from the dev server.
+    let dev_url = if cfg!(debug_assertions) {
+        context.config().build.dev_url.clone()
+    } else {
+        None
+    };
     tauri::Builder::default()
+        .plugin(navigation::guard(dev_url))
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
@@ -468,12 +489,13 @@ pub fn run() {
             gh_account,
             pr_list,
             pr_detail,
+            pr_attachments,
             pr_files,
             pr_create,
             pr_merge,
             pr_checkout,
             open_url
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running GitViber");
 }

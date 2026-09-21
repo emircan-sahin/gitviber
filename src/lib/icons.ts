@@ -10,7 +10,7 @@ import {
   iconDefinitions,
   languageIds,
 } from "material-icon-theme/dist/material-icons.json";
-import { languageFor } from "./highlight";
+import { languageFor } from "./language";
 
 const byFileName = fileNames as Record<string, string>;
 const byExtension = fileExtensions as Record<string, string>;
@@ -33,7 +33,8 @@ const fileCache = new Map<string, string>();
 export function fileIconUrl(path: string): string {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const lower = name.toLowerCase();
-  const hit = fileCache.get(lower);
+  // Keyed by the whole path: the language fallback depends on it (`.ssh/config`, `.git/config`).
+  const hit = fileCache.get(path);
   if (hit) return hit;
   let id = byFileName[name] ?? byFileName[lower];
   // Longest compound extension first: "vault.controller.ts" → "controller.ts" → "ts".
@@ -42,7 +43,7 @@ export function fileIconUrl(path: string): string {
   }
   id ??= byLanguage[languageFor(path)];
   const url = urlFor(id) ?? urlFor(defaultFile)!;
-  fileCache.set(lower, url);
+  fileCache.set(path, url);
   return url;
 }
 
