@@ -2,7 +2,8 @@ import { Children, type ComponentProps, isValidElement, type ReactNode } from "r
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { github } from "@/lib/api";
-import { languageFor, useHighlight } from "@/lib/highlight";
+import { useHighlight } from "@/lib/highlight";
+import { languageFor } from "@/lib/language";
 import type { Selection } from "@/lib/selection";
 import { useSettings } from "@/lib/settings";
 import { toast } from "@/lib/toast";

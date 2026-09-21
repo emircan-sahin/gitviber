@@ -4,6 +4,8 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import type { FileChange, RepoStatus } from "@/lib/api";
+import { useShownLanguage } from "@/lib/highlight";
+import { languageLabel } from "@/lib/language";
 import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
 import { DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { arrayMove } from "@dnd-kit/sortable";
@@ -406,6 +408,7 @@ function ListTabButton({ active, onClick, count, children }: { active: boolean; 
 
 function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; reviewed: number }) {
   const s = useSettings();
+  const language = useShownLanguage();
   const { status } = repo;
   const totals = changeTotals(repo);
   return (
@@ -453,6 +456,7 @@ function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; revie
           Wrap
         </button>
       </Tip>
+      {language && <span>{languageLabel(language)}</span>}
     </div>
   );
 }

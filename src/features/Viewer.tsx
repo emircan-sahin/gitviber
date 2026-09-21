@@ -12,7 +12,8 @@ import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ConflictView } from "./ConflictView";
 import { isTyping } from "./Workspace";
 import { PullView } from "./PullView";
-import { languageFor, prefetchHighlight } from "@/lib/highlight";
+import { prefetchHighlight } from "@/lib/highlight";
+import { languageFor } from "@/lib/language";
 import { FileIcon } from "./FileIcon";
 import { MediaView, mediaKind } from "./MediaView";
 import { isMarkdown, MarkdownView } from "./MarkdownView";
@@ -186,7 +187,8 @@ export function prefetchSelection(sel: Selection, revision: number, theme: strin
     .diffPair(kind, path, oldPath, sha, base)
     .then((p) => {
       remember(key, p, gen);
-      const lang = languageFor(path);
+      // Same text CodeView detects from, so the prefetched tokens are the ones it asks for.
+      const lang = languageFor(path, p.modified.exists ? p.modified.text : p.original.text);
       if (kind !== "worktree") prefetchHighlight(p.original.text, lang, theme);
       prefetchHighlight(p.modified.text, lang, theme);
     })

@@ -10,7 +10,7 @@ import {
   iconDefinitions,
   languageIds,
 } from "material-icon-theme/dist/material-icons.json";
-import { languageFor } from "./highlight";
+import { languageFor } from "./language";
 
 const byFileName = fileNames as Record<string, string>;
 const byExtension = fileExtensions as Record<string, string>;
