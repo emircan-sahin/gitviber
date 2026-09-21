@@ -46,9 +46,26 @@ impl Ptys {
         let pair = native_pty_system()
             .openpty(size(cols, rows))
             .map_err(|e| e.to_string())?;
-        // $SHELL as a login shell, like Terminal.app: a Finder-launched app has a bare PATH.
+        // The user's login shell, like Terminal.app: a Finder-launched app has a bare PATH.
         let mut cmd = CommandBuilder::new_default_prog();
         cmd.cwd(cwd);
+        // Start from the environment launchd gives any app, not ours: run from `pnpm tauri dev`
+        // we carry npm_config_prefix, which makes nvm refuse to load, so pnpm went missing.
+        cmd.env_clear();
+        for key in [
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "TMPDIR",
+            "SSH_AUTH_SOCK",
+            "LANG",
+            "LC_ALL",
+        ] {
+            if let Some(value) = std::env::var_os(key) {
+                cmd.env(key, value);
+            }
+        }
+        cmd.env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin");
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "GitViber");
