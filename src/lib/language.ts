@@ -194,6 +194,8 @@ const EXTENSIONS: Record<string, string> = {
   "code-snippets": "jsonc",
   gradle: "groovy",
   tf: "hcl",
+  // composer.lock, flake.lock, deno.lock…; the non-JSON lock files are listed by name above.
+  lock: "json",
   jsonc: "jsonc",
   json5: "json5",
 };
@@ -210,11 +212,15 @@ for (const info of bundledLanguagesInfo) {
  */
 export function languageFor(path: string, text?: string): string {
   const byName = languageByName(path);
-  const head = text == null ? null : text.slice(0, 4096).replace(/^﻿/, "");
-  if (byName === JSON_OR_YAML) return head != null && looksLikeJson(head) ? "jsonc" : "yaml";
-  if (byName) return byName;
-  return (head != null && sniff(head)) || "text";
+  if (byName && byName !== JSON_OR_YAML) return byName;
+  if (text == null) return byName ? "yaml" : "text";
+  const head = text.slice(0, HEAD).replace(/^﻿/, "");
+  const truncated = text.length > HEAD;
+  if (byName) return jsonKind(head, truncated) ? "jsonc" : "yaml";
+  return sniff(head, truncated) ?? "text";
 }
+
+const HEAD = 4096;
 
 function languageByName(path: string): string | undefined {
   const lower = path.toLowerCase();
@@ -266,27 +272,83 @@ const INTERPRETERS: Record<string, string> = {
 };
 
 /** Language from the start of a file's content, or undefined when nothing is recognizable. */
-export function sniff(head: string): string | undefined {
+function sniff(head: string, truncated: boolean): string | undefined {
   const shebang = /^#!\s*(\S+)([^\n]*)/.exec(head);
   if (shebang) {
-    let cmd = shebang[1].slice(shebang[1].lastIndexOf("/") + 1);
-    // `#!/usr/bin/env -S node --flag` and `env FOO=1 python`: the first plain word is the interpreter.
-    if (cmd === "env") cmd = shebang[2].split(/\s+/).find((w) => w && !w.startsWith("-") && !w.includes("=")) ?? "";
+    const prog = shebang[1].slice(shebang[1].lastIndexOf("/") + 1);
+    const cmd = prog === "env" ? envCommand(shebang[2]) : prog;
     return INTERPRETERS[cmd.toLowerCase().replace(/[\d.]+$/, "")];
   }
   const start = head.trimStart();
   if (/^<\?xml\b/.test(start) || /^<svg\b/i.test(start)) return "xml";
   if (/^<!doctype\s+html\b|^<html\b/i.test(start)) return "html";
-  if (/^(?:---[ \t]*$|%YAML\b)/m.test(head.split("\n", 1)[0])) return "yaml";
-  if (looksLikeJson(head)) return /^\s*\/[/*]/m.test(head) ? "jsonc" : "json";
+  const first = head.split("\n", 1)[0];
+  if (/^%YAML\b/.test(first)) return "yaml";
+  // A closed `---` block with more after it is front matter (markdown); otherwise a YAML document.
+  if (/^---[ \t]*\r?$/.test(first)) return /\n---[ \t]*\r?\n\s*\S/.test(head) ? "markdown" : "yaml";
+  return jsonKind(head, truncated);
 }
 
+// env options that take a value: `env -u VAR node`, `env -C dir python`.
+const ENV_VALUE_OPTIONS = new Set(["-u", "--unset", "-C", "--chdir", "-P"]);
+
+/** The program `#!/usr/bin/env …` runs: the first word that isn't an option or an assignment. */
+function envCommand(args: string) {
+  const words = args.split(/\s+/).filter(Boolean);
+  for (let i = 0; i < words.length; i++) {
+    if (ENV_VALUE_OPTIONS.has(words[i])) i++;
+    else if (!words[i].startsWith("-") && !words[i].includes("=")) return words[i];
+  }
+  return "";
+}
+
+// One JSON(C) token per match. Every alternative is linear: comments can't run past `*/`,
+// strings past a quote or newline. An unterminated comment or string may run to the end of the head.
+const JSON_TOKEN = /\s+|\/\/[^\n]*|\/\*(?:[^*]|\*(?!\/))*(?:\*\/|$)|"(?:[^"\\\n]|\\.)*(?:"|$)|-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null|[{}[\]:,]/y;
+
 /**
- * The opening of a JSON document. Only the head is available, so this checks structure
- * instead of parsing: `{"`, `{}`, `[{`, `[1`… but not an INI `[section]` or a `{{ template }}`.
+ * "json" or "jsonc" (it has comments) when `head` is the start of an object or array document,
+ * checked token by token against JSON's grammar, so `[ -z "$X" ]`, `[section]`, `[1]: url`
+ * and `{{ template }}` don't pass. A head cut off mid-document still counts.
  */
-function looksLikeJson(head: string) {
-  return /^\s*(?:\/\/[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*(?:\{\s*(?:["}]|\/[/*]|$)|\[\s*(?:[[{"\]\d-]|true\b|false\b|null\b|$))/.test(head);
+function jsonKind(head: string, truncated: boolean): "json" | "jsonc" | undefined {
+  // What may come next: a top-level value, an array item or `]`, a key or `}`, `:`, or `,`/close.
+  let expect: "doc" | "value" | "item" | "key" | "colon" | "next" = "doc";
+  const stack: string[] = [];
+  let comments = false;
+  for (let i = 0; i < head.length; ) {
+    JSON_TOKEN.lastIndex = i;
+    const t = JSON_TOKEN.exec(head)?.[0];
+    // A token cut off by the head limit (`tru`, `1.`) isn't a reason to reject.
+    if (!t) return truncated && expect !== "doc" && head.length - i < 8 ? (comments ? "jsonc" : "json") : undefined;
+    i += t.length;
+    const c = t[0];
+    if (c === "/") comments = true;
+    if (c === "/" || /\s/.test(c)) continue;
+    if (expect !== "doc" && !stack.length) return undefined; // content after the document
+    const close = c === "}" || c === "]";
+    if (close && (expect === "next" || expect === (c === "}" ? "key" : "item"))) {
+      if (stack.pop() !== (c === "}" ? "{" : "[")) return undefined;
+      expect = "next";
+    } else if (expect === "colon") {
+      if (c !== ":") return undefined;
+      expect = "value";
+    } else if (expect === "next") {
+      if (c !== ",") return undefined;
+      expect = stack[stack.length - 1] === "{" ? "key" : "item";
+    } else if (expect === "key") {
+      if (c !== '"') return undefined;
+      expect = "colon";
+    } else if (c === "{" || c === "[") {
+      stack.push(c);
+      expect = c === "{" ? "key" : "item";
+    } else if (expect === "doc" || close || c === ":" || c === ",") {
+      return undefined;
+    } else {
+      expect = "next"; // a string, number or literal
+    }
+  }
+  return expect === "doc" ? undefined : comments ? "jsonc" : "json";
 }
 
 const LABELS: Record<string, string> = { text: "Plain Text", [IGNORE]: "Ignore" };

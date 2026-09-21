@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { oursText, parseConflicts } from "./conflicts.ts";
 import { languageFor, languageLabel } from "./language.ts";
 
 test("well-known file names", () => {
@@ -47,6 +48,9 @@ test("shebangs", () => {
     ["#!/usr/bin/env -S deno run --allow-net\n", "typescript"],
     ["#!/usr/bin/python3.11\n", "python"],
     ["#!/usr/bin/env FOO=1 python3\n", "python"],
+    ["#!/usr/bin/env -u VAR node\n", "javascript"],
+    ["#!/usr/bin/env --unset VAR -C /tmp ruby\n", "ruby"],
+    ["#!/usr/bin/env --unset=VAR python\n", "python"],
     ["#!/bin/bash\nset -e", "shellscript"],
     ["#!/bin/sh\n", "shellscript"],
     ["#!/usr/bin/env ruby\n", "ruby"],
@@ -59,17 +63,71 @@ test("shebangs", () => {
 test("content sniffing for unknown files", () => {
   assert.equal(languageFor("data", '﻿{"a": 1}'), "json");
   assert.equal(languageFor("data", "[\n  1, 2\n]"), "json");
-  assert.equal(languageFor("settings", '{\n  // comment\n  "a": 1\n}'), "jsonc");
-  assert.equal(languageFor("x.lock", '{\n  "version": 3\n}'), "json");
+  assert.equal(languageFor("data", '[{"a": [true, null, -1.5e3]}, "x"]'), "json");
+  assert.equal(languageFor("settings", '{\n  // comment\n  "a": 1,\n}'), "jsonc");
+  assert.equal(languageFor("settings", '{"url": "http://x//y"}'), "json");
   assert.equal(languageFor("feed", '<?xml version="1.0"?>\n<rss/>'), "xml");
   assert.equal(languageFor("page", "<!DOCTYPE html>\n<html>"), "html");
   assert.equal(languageFor("config", "---\nkey: value\n"), "yaml");
-  // Not JSON: an INI section, a template, prose.
-  assert.equal(languageFor("setup", "[metadata]\nname = x\n"), "text");
-  assert.equal(languageFor("tpl", "{{ name }}\n"), "text");
-  assert.equal(languageFor("NOTES", "Remember the milk.\n"), "text");
   // The name wins over content, as in VS Code.
   assert.equal(languageFor("notes.md", "#!/bin/sh\n"), "markdown");
+});
+
+test("lock files and markdown fences", () => {
+  assert.equal(languageFor("composer.lock"), "json");
+  assert.equal(languageFor("x.lock"), "json"); // MarkdownView's ```lock fence
+  assert.equal(languageFor("yarn.lock"), "yaml");
+});
+
+test("text that only starts like JSON stays plain", () => {
+  const cases = [
+    "[metadata]\nname = x\n",
+    "{{ name }}\n",
+    '[ -z "$X" ] && exit 0\n',
+    "[[ -n $CI ]] || exit 1\n",
+    "[1]: http://example.com\n",
+    "[2.0.0] - 2024-01-01\n",
+    "[]\nmore\n",
+    '{"a": 1} trailing',
+    "{ key: 1 }\n",
+    "[01]\n",
+    '["line\nbreak"]',
+    "Remember the milk.\n",
+  ];
+  for (const text of cases) assert.equal(languageFor("NOTES", text), "text", text);
+});
+
+test("a head cut off mid-document is still JSON", () => {
+  const big = `[${'{"name": "value", "n": 12.5},'.repeat(300)}`;
+  assert.equal(languageFor("data", big), "json");
+  assert.equal(languageFor("data", `${big.slice(0, 4094)}tr${"x".repeat(100)}`), "json");
+});
+
+test("comments can't make the JSON check backtrack", () => {
+  for (const unit of ["/* */\n", "/* * / */", "// c\n"]) {
+    const text = unit.repeat(40) + "x";
+    const t = performance.now();
+    assert.equal(languageFor("data", text), "text");
+    assert.ok(performance.now() - t < 50, unit);
+  }
+  assert.equal(languageFor("data", "/* a */ /* b */\n{}"), "jsonc");
+  const t = performance.now();
+  languageFor("page", "\n---\n".repeat(1000) + " ".repeat(2000));
+  assert.ok(performance.now() - t < 50);
+});
+
+test("front matter is markdown, a bare YAML document is YAML", () => {
+  assert.equal(languageFor("post", "---\ntitle: x\n---\n# Heading\n"), "markdown");
+  assert.equal(languageFor("post", "---\r\ntitle: x\r\n---\r\n\r\nText\r\n"), "markdown");
+  assert.equal(languageFor("config", "---\nkey: value\nlist:\n  - a\n"), "yaml");
+  assert.equal(languageFor("config", "%YAML 1.2\n---\na: 1\n"), "yaml");
+});
+
+test("conflicted files are sniffed without their markers", () => {
+  const detect = (path: string, text: string) => languageFor(path, oursText(parseConflicts(text)!.segments));
+  const json = '{\n<<<<<<< HEAD\n  "semi": false\n=======\n  "semi": true\n>>>>>>> main\n}\n';
+  assert.equal(detect(".prettierrc", json), "jsonc");
+  assert.equal(detect("bin/run", "<<<<<<< HEAD\n#!/usr/bin/env node\n=======\n#!/usr/bin/env bun\n>>>>>>> main\n"), "javascript");
 });
 
 test("labels", () => {
