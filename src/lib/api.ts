@@ -44,7 +44,10 @@ export interface Commit {
   refs: string[];
   subject: string;
   body: string;
+  /** Ahead of the upstream; false when there is none or it is gone (unknown). */
   unpushed: boolean;
+  /** Reachable from an origin remote-tracking branch, so it exists on the origin host. */
+  onOrigin: boolean;
 }
 
 export interface FileText {
@@ -124,9 +127,11 @@ export const api = {
   trashPath: (path: string) => invoke<void>("trash_path", { path }),
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   fetch: () => invoke<void>("fetch"),
-  // History actions. `sha` on undo is the commit the user saw as HEAD (refused if HEAD moved).
+  // History actions. `sha` on undo and `head` on reset are the HEAD the user saw (refused if it moved).
   undoCommit: (sha: string) => invoke<void>("undo_commit", { sha }),
-  reset: (sha: string, mode: ResetMode) => invoke<void>("reset", { sha, mode }),
+  reset: (sha: string, mode: ResetMode, head: string) => invoke<void>("reset", { sha, mode, head }),
+  /** Moving HEAD to `sha` would drop commits the upstream already has (needs a force-push). */
+  dropsPushed: (sha: string) => invoke<boolean>("drops_pushed", { sha }),
   revert: (sha: string) => invoke<boolean>("revert", { sha }),
   checkoutCommit: (sha: string) => invoke<void>("checkout_commit", { sha }),
   createBranchAt: (name: string, sha: string) => invoke<void>("create_branch_at", { name, sha }),

@@ -37,6 +37,8 @@ interface Props {
 /** What a commit's context menu needs from the panel. */
 interface Actions {
   status: RepoStatus | null;
+  /** HEAD as the history shows it; the backend refuses to move HEAD if it has changed since. */
+  headSha: string;
   webUrl: string | null;
   /** An action is running or a merge/rebase/revert waits: nothing else may move HEAD. */
   locked: boolean;
@@ -71,9 +73,15 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     }
   };
 
-  const actions: Actions = { status, webUrl, locked: busy || !!status?.operation, run, name: (kind, commit) => setNaming({ kind, commit }) };
-  // Commits above the first pushed one are local only; resetting below it rewrites published history.
-  const firstPushed = status?.upstream ? commits.findIndex((c) => !c.unpushed) : -1;
+  // History is logged from HEAD, so the first row is the HEAD the user sees.
+  const actions: Actions = {
+    status,
+    headSha: commits[0]?.sha ?? "",
+    webUrl,
+    locked: busy || !!status?.operation,
+    run,
+    name: (kind, commit) => setNaming({ kind, commit }),
+  };
 
   // Opening a commit collapses the one above it; WebKit has no scroll anchoring, so without
   // this the clicked row jumps up by the collapsed file list, often out of view.
@@ -106,7 +114,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
           activeKey={activeKey}
           onOpen={onOpen}
           onHover={onHover}
-          menu={<CommitMenu commit={c} head={i === 0} dropsPushed={firstPushed >= 0 && firstPushed < i} actions={actions} />}
+          menu={<CommitMenu commit={c} head={i === 0} actions={actions} />}
         />
       ))}
       {hasMore && (
@@ -121,29 +129,41 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
   );
 }
 
-const PUSHED_WARNING = "It is already pushed, so you'd have to force-push, which rewrites history for everyone else on this branch.";
+const PUSHED_WARNING = "Some of these commits are already pushed, so you'd have to force-push, which rewrites history for everyone else on this branch.";
+const MERGE_WARNING = "This is a merge: the merged-in commits leave the branch too, and all of their changes end up staged together.";
 
-/**
- * Right-click actions on a commit. `head`: the first row, i.e. the checked-out commit.
- * `dropsPushed`: resetting here would drop commits that are already on the upstream.
- */
-function CommitMenu({ commit: c, head, dropsPushed, actions }: { commit: Commit; head: boolean; dropsPushed: boolean; actions: Actions }) {
-  const { status, webUrl, locked, run } = actions;
+/** Asked at click time: only ancestry, not log order, tells which pushed commits a move drops. */
+async function dropsPushed(sha: string) {
+  try {
+    return await api.dropsPushed(sha);
+  } catch (e) {
+    toast("error", "Could not compare with the upstream", errorMessage(e));
+    return null;
+  }
+}
+
+/** Right-click actions on a commit. `head`: the first row, i.e. the checked-out commit. */
+function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolean; actions: Actions }) {
+  const { status, headSha, webUrl, locked, run } = actions;
   const short = c.shortSha;
-  const pushed = !!status?.upstream && !c.unpushed;
   const target = status?.branch ?? "HEAD";
 
   const undo = async () => {
-    if (pushed && !(await ask(`Undo "${c.subject}"? ${PUSHED_WARNING}`, { title: "Undo pushed commit", kind: "warning", okLabel: "Undo" }))) return;
+    const drops = await dropsPushed(c.parents[0]);
+    if (drops === null) return;
+    const warnings = [...(c.parents.length > 1 ? [MERGE_WARNING] : []), ...(drops ? [PUSHED_WARNING] : [])];
+    if (warnings.length && !(await ask(`Undo "${c.subject}"?\n\n${warnings.join("\n\n")}`, { title: "Undo commit", kind: "warning", okLabel: "Undo" }))) return;
     await run("Undo", () => api.undoCommit(c.sha), "Commit undone; its changes are staged");
   };
 
   const reset = async (mode: ResetMode) => {
+    const drops = await dropsPushed(c.sha);
+    if (drops === null) return;
     const lines = [`Move ${target} to ${short}?`];
     if (mode === "hard") lines.push("Uncommitted changes to tracked files are discarded, and commits after this one leave the branch. This cannot be undone from GitViber.");
-    if (dropsPushed) lines.push(PUSHED_WARNING);
-    if ((mode === "hard" || dropsPushed) && !(await ask(lines.join("\n\n"), { title: `${mode[0].toUpperCase()}${mode.slice(1)} reset`, kind: "warning", okLabel: "Reset" }))) return;
-    await run("Reset", () => api.reset(c.sha, mode), `${target} reset to ${short}`);
+    if (drops) lines.push(PUSHED_WARNING);
+    if ((mode === "hard" || drops) && !(await ask(lines.join("\n\n"), { title: `${mode[0].toUpperCase()}${mode.slice(1)} reset`, kind: "warning", okLabel: "Reset" }))) return;
+    await run("Reset", () => api.reset(c.sha, mode, headSha), `${target} reset to ${short}`);
   };
 
   const checkout = async () => {
@@ -155,7 +175,11 @@ function CommitMenu({ commit: c, head, dropsPushed, actions }: { commit: Commit;
     if (ok) await run("Checkout", () => api.checkoutCommit(c.sha), `Checked out ${short}`);
   };
 
-  const copy = (text: string, what: string) => navigator.clipboard.writeText(text).then(() => toast("success", what));
+  const copy = (text: string, what: string) =>
+    navigator.clipboard.writeText(text).then(
+      () => toast("success", what),
+      (e) => toast("error", "Could not copy", errorMessage(e)),
+    );
 
   return (
     // Focus has nowhere useful to return to, and restoring it would steal it from the name dialog.
@@ -199,9 +223,9 @@ function CommitMenu({ commit: c, head, dropsPushed, actions }: { commit: Commit;
         <Copy /> Copy message
       </ContextMenuItem>
       {webUrl && (
-        // Unpushed commits don't exist on GitHub yet.
+        // GitHub only has commits that reached one of origin's branches.
         <ContextMenuItem
-          disabled={c.unpushed}
+          disabled={!c.onOrigin}
           onSelect={() => github.openUrl(`${webUrl}/commit/${c.sha}`).catch((e) => toast("error", "Could not open GitHub", errorMessage(e)))}
         >
           <ExternalLink /> Open on GitHub
