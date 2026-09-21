@@ -1,0 +1,19 @@
+name: Feature request
+description: Suggest something GitViber should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How you'd like it to work. Mention it if you want to build it yourself.
+    validations:
+      required: true

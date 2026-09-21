@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a problem in GitViber
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: GitViber version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and version
+      placeholder: "macOS 15.5"
+    validations:
+      required: true
+
+  - type: input
+    id: git-version
+    attributes:
+      label: git version
+      description: Output of `git --version`.
+      placeholder: "git version 2.50.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: If it depends on repo state (a conflict, a rebase, a big file), describe how to get there.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
