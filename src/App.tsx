@@ -19,19 +19,29 @@ export function App() {
     try {
       const repo = await api.openRepo(target);
       // Projects are keyed by the main worktree; its other worktrees are reached from the top bar.
+      // An older entry saved under this worktree's path turns into its project.
+      if (repo.root !== repo.main) setRepoOrder([...new Set(recentRepos().map((p) => (p === repo.root ? repo.main : p)))]);
       rememberRepo(repo.main);
       setLastRepo(repo.root);
       setRecent(recentRepos());
       setOpened(repo);
+      return true;
     } catch (e) {
       if (!quiet) toast("error", "Could not open repository", errorMessage(e));
+      return false;
     }
   }, []);
 
-  // Reopen the last repository on launch.
+  // Reopen the last repository on launch. Agent worktrees are short-lived: if the last one
+  // is gone, fall back to the project it was under, else the first project.
   useEffect(() => {
-    const last = lastRepo() ?? recentRepos()[0];
-    (last ? openRepo(last, true) : Promise.resolve()).finally(() => setBooting(false));
+    const last = lastRepo();
+    const projects = recentRepos();
+    const fallback = projects.find((p) => last?.startsWith(`${p}/`)) ?? projects[0];
+    (async () => {
+      if (last && (await openRepo(last, true))) return;
+      if (fallback && fallback !== last) await openRepo(fallback, true);
+    })().finally(() => setBooting(false));
   }, [openRepo]);
 
   const onOpen = useCallback((p?: string) => void openRepo(p), [openRepo]);
