@@ -69,53 +69,65 @@ impl Session {
     fn forget(&self) {
         *self.token.lock().unwrap() = None;
         // Responses seen with the old token are not the next token's to reuse.
-        self.etags.lock().unwrap().0.clear();
+        *self.etags.lock().unwrap() = Etags::default();
     }
 }
 
 /// Last good GET responses by path, revalidated with `If-None-Match`. GitHub answers 304
 /// when nothing changed, and a 304 doesn't count against the rate limit.
 #[derive(Default)]
-struct Etags(HashMap<String, (String, Value)>);
+struct Etags {
+    entries: HashMap<String, Cached>,
+    /// Bumped on every store; the entry stored longest ago is evicted first.
+    clock: u64,
+}
 
-/// A few PR views' worth of requests; past this the cache simply starts over.
+struct Cached {
+    tag: String,
+    body: Value,
+    stored: u64,
+}
+
+/// A few dozen PR views' worth of requests.
 const ETAG_CAP: usize = 256;
+/// A body this large is rare and costly to keep around; it's simply fetched again.
+const ETAG_MAX_BODY: usize = 1 << 20;
 
 impl Etags {
     fn tag(&self, path: &str) -> Option<String> {
-        self.0.get(path).map(|(tag, _)| tag.clone())
+        self.entries.get(path).map(|c| c.tag.clone())
     }
 
-    /// The body a response stands for: the remembered one on 304, otherwise `body`,
-    /// remembered when it came with an ETag.
-    fn resolve(
-        &mut self,
-        path: &str,
-        status: u16,
-        etag: Option<&str>,
-        body: Value,
-    ) -> Result<Value, String> {
-        if status == 304 {
-            // Only possible if the cache was cleared while the request was in flight.
-            return self
-                .0
-                .get(path)
-                .map(|(_, v)| v.clone())
-                .ok_or_else(|| "GitHub sent no data (304); refresh again.".to_string());
-        }
-        match etag {
-            Some(tag) if (200..300).contains(&status) => {
-                if self.0.len() >= ETAG_CAP && !self.0.contains_key(path) {
-                    self.0.clear();
-                }
-                self.0
-                    .insert(path.to_string(), (tag.to_string(), body.clone()));
-            }
-            _ => {
-                self.0.remove(path);
+    /// The body a 304 stands for, if it's still kept.
+    fn cached(&self, path: &str) -> Option<Value> {
+        self.entries.get(path).map(|c| c.body.clone())
+    }
+
+    /// Remembers a fresh 2xx response that has an ETag and fits; otherwise forgets the path.
+    fn store(&mut self, path: &str, etag: Option<&str>, body: &Value, size: usize) {
+        let Some(tag) = etag.filter(|_| size <= ETAG_MAX_BODY) else {
+            self.entries.remove(path);
+            return;
+        };
+        if self.entries.len() >= ETAG_CAP && !self.entries.contains_key(path) {
+            let oldest = self
+                .entries
+                .iter()
+                .min_by_key(|(_, c)| c.stored)
+                .map(|(k, _)| k.clone());
+            if let Some(k) = oldest {
+                self.entries.remove(&k);
             }
         }
-        Ok(body)
+        self.clock += 1;
+        self.entries.insert(
+            path.to_string(),
+            Cached {
+                tag: tag.to_string(),
+                body: body.clone(),
+                stored: self.clock,
+            },
+        );
     }
 }
 
@@ -155,7 +167,7 @@ fn request(
     let auth = format!("Bearer {}", token.value);
     let agent = agent();
     let cacheable = matches!(method, Method::Get) && accept == JSON;
-    let etag = if cacheable {
+    let mut etag = if cacheable {
         session.etags.lock().unwrap().tag(path)
     } else {
         None
@@ -168,58 +180,71 @@ fn request(
                 .header("User-Agent", "GitViber")
         };
     }
-    let result = match method {
-        Method::Get => {
-            let mut req = headers!(agent.get(&url));
-            if let Some(tag) = &etag {
-                req = req.header("If-None-Match", tag);
+    loop {
+        let result = match &method {
+            Method::Get => {
+                let mut req = headers!(agent.get(&url));
+                if let Some(tag) = &etag {
+                    req = req.header("If-None-Match", tag);
+                }
+                req.call()
             }
-            req.call()
+            Method::Post(body) => headers!(agent.post(&url)).send_json(body),
+            Method::Put(body) => headers!(agent.put(&url)).send_json(body),
+        };
+        let mut resp = result.map_err(|e| format!("GitHub request failed: {e}"))?;
+        let status = resp.status().as_u16();
+        if status == 304 {
+            if let Some(body) = session.etags.lock().unwrap().cached(path) {
+                return Ok(body);
+            }
+            // Evicted while the request was in flight: ask again, unconditionally.
+            if etag.take().is_some() {
+                continue;
+            }
+            return Err("GitHub sent no data (304).".into());
         }
-        Method::Post(body) => headers!(agent.post(&url)).send_json(body),
-        Method::Put(body) => headers!(agent.put(&url)).send_json(body),
-    };
-    let mut resp = result.map_err(|e| format!("GitHub request failed: {e}"))?;
-    let status = resp.status().as_u16();
-    let header = |name: &str| {
-        resp.headers()
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_string)
-    };
-    let new_etag = header("etag");
-    let limited = rate_limit_error(
-        status,
-        header("x-ratelimit-remaining").as_deref(),
-        header("x-ratelimit-reset").as_deref(),
-        header("retry-after").as_deref(),
-        now(),
-    );
-    let body: Value = resp.body_mut().read_json().unwrap_or(Value::Null);
-    if status == 401 {
-        // Expired or revoked; look for a fresh one next time.
-        session.forget();
-        return Err(NOT_CONNECTED.to_string());
-    }
-    if let Some(msg) = limited {
-        return Err(msg);
-    }
-    if status >= 400 {
-        let msg = body["message"].as_str().unwrap_or("request failed");
-        let detail = body["errors"][0]["message"]
-            .as_str()
-            .map(|d| format!(": {d}"))
-            .unwrap_or_default();
-        return Err(format!("GitHub {status}: {msg}{detail}"));
-    }
-    if !cacheable {
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        let new_etag = header("etag");
+        let limited = rate_limit_error(
+            status,
+            header("x-ratelimit-remaining").as_deref(),
+            header("x-ratelimit-reset").as_deref(),
+            header("retry-after").as_deref(),
+            now(),
+        );
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        if status == 401 {
+            // Expired or revoked; look for a fresh one next time.
+            session.forget();
+            return Err(NOT_CONNECTED.to_string());
+        }
+        if let Some(msg) = limited {
+            return Err(msg);
+        }
+        if status >= 400 {
+            let msg = body["message"].as_str().unwrap_or("request failed");
+            let detail = body["errors"][0]["message"]
+                .as_str()
+                .map(|d| format!(": {d}"))
+                .unwrap_or_default();
+            return Err(format!("GitHub {status}: {msg}{detail}"));
+        }
+        if cacheable {
+            session
+                .etags
+                .lock()
+                .unwrap()
+                .store(path, new_etag.as_deref(), &body, text.len());
+        }
         return Ok(body);
     }
-    session
-        .etags
-        .lock()
-        .unwrap()
-        .resolve(path, status, new_etag.as_deref(), body)
 }
 
 fn now() -> u64 {
@@ -568,9 +593,10 @@ pub fn attachments(
 
 /// `…githubusercontent.com/<user>/<n>-<id>.<ext>?jwt=…`: the id is the attachment's UUID.
 fn signed_images(html: &str, out: &mut HashMap<String, String>) {
-    const HOST: &str = "https://private-user-images.githubusercontent.com/";
-    for (i, _) in html.match_indices(HOST) {
-        let url = html[i..]
+    // Only image sources: the same URL as link text or an href is anyone's to write.
+    const SRC: &str = "src=\"https://private-user-images.githubusercontent.com/";
+    for (i, _) in html.match_indices(SRC) {
+        let url = html[i + 5..]
             .split(['"', '\'', ' ', '<', '>'])
             .next()
             .unwrap_or_default()
@@ -586,7 +612,9 @@ fn signed_images(html: &str, out: &mut HashMap<String, String>) {
             _ => c.is_ascii_hexdigit(),
         });
         if uuid {
-            out.insert(id.to_string(), url);
+            // The description comes first, then comments in order: a later comment reusing
+            // an id can't replace the link the description's image resolves to.
+            out.entry(id.to_string()).or_insert(url);
         }
     }
 }
@@ -714,20 +742,23 @@ pub fn checkout(repo: &Path, number: u64, head_ref: &str, same_repo: bool) -> Re
     }
 }
 
-/// Links in GitHub text are written by anyone, so only http(s) with plain URL characters
-/// pass: no quotes, spaces, `$`, backticks or backslashes for any launcher to reinterpret.
-fn openable(url: &str) -> bool {
+/// Links in GitHub text are written by anyone, so only http(s) passes, in the canonical
+/// form a browser would use: scheme and host lowercased, spaces, quotes and non-ASCII
+/// percent-encoded. The launchers get it as one argument, never through a shell.
+fn openable(url: &str) -> Option<String> {
+    let parsed = tauri::Url::parse(url).ok()?;
+    let url = String::from(parsed);
+    let plain = url
+        .bytes()
+        .all(|b| b.is_ascii_graphic() && !b"\"<>\\`".contains(&b));
     (url.starts_with("https://") || url.starts_with("http://"))
-        && url
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || "-._~/:?=#%+&@!,;*()".contains(c))
+        .then_some(url)
+        .filter(|_| plain)
 }
 
 /// Opens a web page in the default browser.
 pub fn open_url(url: &str) -> Result<(), String> {
-    if !openable(url) {
-        return Err("refusing to open this URL".into());
-    }
+    let url = openable(url).ok_or("refusing to open this URL")?;
     #[cfg(target_os = "macos")]
     let mut cmd = Command::new("open");
     // Not `cmd /C start`: cmd.exe re-parses the argument.
@@ -739,7 +770,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
     };
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut cmd = Command::new("xdg-open");
-    cmd.arg(url).spawn().map(|_| ()).map_err(|e| e.to_string())
+    cmd.arg(&url).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -879,23 +910,11 @@ mod tests {
     fn etags_revalidate() {
         let mut c = Etags::default();
         let v = json!({ "n": 1 });
-        assert_eq!(
-            c.resolve("/a", 200, Some("W/\"1\""), v.clone()),
-            Ok(v.clone())
-        );
+        c.store("/a", Some("W/\"1\""), &v, 10);
         assert_eq!(c.tag("/a").as_deref(), Some("W/\"1\""));
-        // A 304 has no body: the remembered one stands in.
-        assert_eq!(c.resolve("/a", 304, None, Value::Null), Ok(v.clone()));
-        assert!(c.resolve("/b", 304, None, Value::Null).is_err());
-        // No ETag on a fresh response: nothing left to revalidate against.
-        c.resolve("/a", 200, None, json!(2)).unwrap();
-        assert_eq!(c.tag("/a"), None);
-        // Full: start over rather than grow.
-        for i in 0..ETAG_CAP + 1 {
-            c.resolve(&format!("/{i}"), 200, Some("t"), Value::Null)
-                .unwrap();
-        }
-        assert_eq!(c.0.len(), 1);
+        // A 304 has no body: the remembered one stands in; none kept means ask again.
+        assert_eq!(c.cached("/a"), Some(v));
+        assert_eq!(c.cached("/b"), None);
     }
 
     #[test]
@@ -932,11 +951,67 @@ mod tests {
 
     #[test]
     fn openable_links() {
-        assert!(openable("https://github.com/a/b/pull/1#issuecomment-2"));
-        assert!(openable("https://docs.rs/ureq/latest/ureq/?search=a&b=c"));
-        assert!(!openable("javascript:alert(1)"));
-        assert!(!openable("file:///etc/passwd"));
-        assert!(!openable("https://x.com/\"; rm -rf ~"));
-        assert!(!openable("https://x.com/$(id)"));
+        let ok = |u: &str| openable(u).unwrap_or_else(|| panic!("{u}"));
+        assert_eq!(
+            ok("https://github.com/a/b/pull/1#issuecomment-2"),
+            "https://github.com/a/b/pull/1#issuecomment-2"
+        );
+        assert_eq!(ok("HTTPS://Docs.RS/a?b=c&d"), "https://docs.rs/a?b=c&d");
+        // Characters raw-HTML hrefs carry that a URL keeps as they are.
+        assert_eq!(ok("https://x.com/it's/[1]|a"), "https://x.com/it's/[1]|a");
+        assert_eq!(ok("https://x.com/ça va"), "https://x.com/%C3%A7a%20va");
+        // Quotes and spaces can't survive into the argument.
+        assert_eq!(
+            ok("https://x.com/\"; rm -rf ~"),
+            "https://x.com/%22;%20rm%20-rf%20~"
+        );
+        assert_eq!(openable("javascript:alert(1)"), None);
+        assert_eq!(openable("file:///etc/passwd"), None);
+        assert_eq!(openable("mailto:a@b.c"), None);
+        assert_eq!(openable("not a url"), None);
+    }
+
+    #[test]
+    fn etag_cache_evicts_oldest_and_skips_big_bodies() {
+        let mut c = Etags::default();
+        for i in 0..ETAG_CAP {
+            c.store(&format!("/{i}"), Some("t"), &json!(i), 10);
+        }
+        // Touch /0 so /1 is now the oldest.
+        c.store("/0", Some("t2"), &json!(0), 10);
+        c.store("/new", Some("t"), &Value::Null, 10);
+        assert_eq!(c.entries.len(), ETAG_CAP);
+        assert!(c.cached("/1").is_none());
+        assert_eq!(c.tag("/0").as_deref(), Some("t2"));
+        assert!(c.cached("/new").is_some());
+        // Too big to keep, and a stale copy must not outlive it.
+        c.store("/0", Some("t3"), &json!(0), ETAG_MAX_BODY + 1);
+        assert!(c.cached("/0").is_none());
+        // No ETag: nothing to revalidate against.
+        c.store("/2", None, &json!(2), 10);
+        assert!(c.tag("/2").is_none());
+    }
+
+    #[test]
+    fn signed_links_first_wins_and_only_from_images() {
+        let id = "012a2451-fa01-4fe5-8736-33f4a4d179f1";
+        let url = |n: u32| {
+            format!("https://private-user-images.githubusercontent.com/1/{n}-{id}.png?jwt=x{n}")
+        };
+        let mut out = HashMap::new();
+        signed_images(&format!(r#"<img src="{}">"#, url(1)), &mut out);
+        signed_images(
+            &format!(
+                r#"<img src="{}"> <a href="{}">{}</a>"#,
+                url(2),
+                url(3),
+                url(4)
+            ),
+            &mut out,
+        );
+        assert_eq!(out[id], url(1));
+        let mut out = HashMap::new();
+        signed_images(&format!(r#"<a href="{}">{}</a>"#, url(3), url(4)), &mut out);
+        assert!(out.is_empty());
     }
 }
