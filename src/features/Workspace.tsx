@@ -1,5 +1,5 @@
-import { ArrowDown, ArrowUp, GitBranch, PanelLeftClose, PanelRightClose, WrapText } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, ChevronsDownUp, GitBranch, PanelLeftClose, PanelRightClose, WrapText } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
@@ -10,7 +10,7 @@ import { arrayMove } from "@dnd-kit/sortable";
 import { useRepo } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
 import { ChangesPanel, changeList } from "./ChangesPanel";
-import { FileTree } from "./FileTree";
+import { FileTree, type FileTreeHandle } from "./FileTree";
 import { HistoryPanel } from "./HistoryPanel";
 import { PullsPanel } from "./PullsPanel";
 import { changeTotals, TopBar } from "./TopBar";
@@ -72,6 +72,7 @@ export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRep
   // Git work on the left, files on the right; both collapse (⌘B / ⌥⌘B) to give code the room.
   const listPanel = usePanelRef();
   const filesPanel = usePanelRef();
+  const fileTree = useRef<FileTreeHandle>(null);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   const toggle = useCallback((panel: typeof listPanel) => panel.current?.[panel.current.isCollapsed() ? "expand" : "collapse"](), []);
@@ -321,10 +322,15 @@ export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRep
             <div className="flex h-full flex-col bg-panel">
               <div className="flex h-9 shrink-0 items-center border-b border-border pr-1 pl-3">
                 <span className="text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Explorer</span>
+                <Tip label="Collapse folders">
+                  <button onClick={() => fileTree.current?.collapseAll()} className="ml-auto flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground">
+                    <ChevronsDownUp className="size-3.5" />
+                  </button>
+                </Tip>
                 <CollapseButton side="right" onClick={() => toggle(filesPanel)} />
               </div>
               <div className="min-h-0 flex-1">
-                <FileTree status={status} revision={repo.revision} activeKey={activeKey} onOpen={open} onHover={prefetch} />
+                <FileTree ref={fileTree} status={status} revision={repo.revision} activeKey={activeKey} onOpen={open} onHover={prefetch} />
               </div>
             </div>
           </ResizablePanel>
