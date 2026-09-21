@@ -207,25 +207,63 @@ pub fn create_dir(root: &Path, rel: &str) -> Result<(), String> {
 pub fn rename_entry(root: &Path, from: &str, to: &str) -> Result<(), String> {
     let (src, dst) = (resolve_entry(root, from)?, resolve_entry(root, to)?);
     src.symlink_metadata().map_err(|e| e.to_string())?;
-    // fs::rename silently replaces an existing file. On APFS a case-only rename finds itself.
-    if dst.symlink_metadata().is_ok() && !same_entry(&src, &dst) {
-        return Err(format!("{to} already exists"));
+    // On APFS a case-only rename finds the source itself at the destination.
+    if dst.symlink_metadata().is_ok() {
+        if !same_entry(&src, &dst) {
+            return Err(format!("{to} already exists"));
+        }
+        return std::fs::rename(src, dst).map_err(|e| e.to_string());
     }
-    std::fs::rename(src, dst).map_err(|e| e.to_string())
+    rename_exclusive(&src, &dst).map_err(|e| io_error(to, e))
 }
 
+/// `dst` is `src` spelled differently (APFS ignores case and Unicode normalization): same
+/// inode, and no entry with exactly `dst`'s name exists, so it isn't a hard link.
 #[cfg(unix)]
-fn same_entry(a: &Path, b: &Path) -> bool {
+fn same_entry(src: &Path, dst: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
-    match (a.symlink_metadata(), b.symlink_metadata()) {
+    let same_inode = match (src.symlink_metadata(), dst.symlink_metadata()) {
         (Ok(x), Ok(y)) => x.dev() == y.dev() && x.ino() == y.ino(),
         _ => false,
-    }
+    };
+    let (Some(parent), Some(name)) = (dst.parent(), dst.file_name()) else {
+        return false;
+    };
+    same_inode
+        && std::fs::read_dir(parent)
+            .is_ok_and(|mut entries| !entries.any(|e| e.is_ok_and(|e| e.file_name() == name)))
 }
 
 #[cfg(not(unix))]
 fn same_entry(_: &Path, _: &Path) -> bool {
     false
+}
+
+/// fs::rename silently replaces an existing file; RENAME_EXCL makes the kernel refuse
+/// instead, with no window between checking and renaming.
+#[cfg(target_os = "macos")]
+fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use std::ffi::{c_char, c_int, c_uint, CString};
+    use std::os::unix::ffi::OsStrExt;
+    extern "C" {
+        fn renamex_np(from: *const c_char, to: *const c_char, flags: c_uint) -> c_int;
+    }
+    const RENAME_EXCL: c_uint = 0x4;
+    let c_path = |p: &Path| CString::new(p.as_os_str().as_bytes()).map_err(std::io::Error::other);
+    let (from, to) = (c_path(src)?, c_path(dst)?);
+    match unsafe { renamex_np(from.as_ptr(), to.as_ptr(), RENAME_EXCL) } {
+        0 => Ok(()),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
+/// Elsewhere a file created between this check and the rename is still replaced.
+#[cfg(not(target_os = "macos"))]
+fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if dst.symlink_metadata().is_ok() {
+        return Err(std::io::ErrorKind::AlreadyExists.into());
+    }
+    std::fs::rename(src, dst)
 }
 
 pub fn trash(root: &Path, rel: &str) -> Result<(), String> {
@@ -253,6 +291,10 @@ fn move_to_trash(path: &Path) -> Result<(), String> {
     );
     objc2::rc::autoreleasepool(|_| unsafe {
         let string: *mut AnyObject = msg_send![ns_string, stringWithUTF8String: c_path.as_ptr()];
+        // nil for a non-UTF-8 name; passing nil on to NSURL would raise.
+        if string.is_null() {
+            return Err("Can't move this name to the Trash".to_string());
+        }
         let url: *mut AnyObject = msg_send![ns_url, fileURLWithPath: string];
         let manager: *mut AnyObject = msg_send![file_manager, defaultManager];
         let mut error: *mut AnyObject = null_mut();
@@ -260,11 +302,15 @@ fn move_to_trash(path: &Path) -> Result<(), String> {
         if ok.as_bool() {
             return Ok(());
         }
+        let fallback = || Err("Could not move to Trash".to_string());
         if error.is_null() {
-            return Err("Could not move to Trash".to_string());
+            return fallback();
         }
         let description: *mut AnyObject = msg_send![error, localizedDescription];
         let utf8: *const c_char = msg_send![description, UTF8String];
+        if utf8.is_null() {
+            return fallback();
+        }
         Err(CStr::from_ptr(utf8).to_string_lossy().into_owned())
     })
 }
@@ -276,7 +322,12 @@ fn move_to_trash(_: &Path) -> Result<(), String> {
 
 /// Selects the entry in a Finder window. `rel` may be empty for the repo root.
 pub fn reveal(root: &Path, rel: &str) -> Result<(), String> {
-    let path = resolve(root, rel)?;
+    // Like the other entry actions, a link is revealed itself, wherever it points.
+    let path = if rel.is_empty() {
+        resolve(root, rel)?
+    } else {
+        resolve_entry(root, rel)?
+    };
     // Waited on (it returns at once) so no zombie is left behind per click.
     #[cfg(target_os = "macos")]
     return match std::process::Command::new("open")
@@ -419,6 +470,19 @@ mod tests {
             "keep"
         );
         assert!(create_file(root, "missing/x.txt").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rename_onto_a_hard_link_is_refused() {
+        let sb = Sandbox::new("hardlink");
+        let root = &sb.0;
+        fs::write(root.join("a.txt"), "a").unwrap();
+        fs::hard_link(root.join("a.txt"), root.join("b.txt")).unwrap();
+        assert!(rename_entry(root, "a.txt", "b.txt")
+            .unwrap_err()
+            .contains("already exists"));
+        assert!(root.join("a.txt").exists() && root.join("b.txt").exists());
     }
 
     #[test]
