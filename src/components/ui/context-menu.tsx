@@ -1,18 +1,48 @@
 import { ChevronRightIcon } from "lucide-react";
 import { ContextMenu as ContextMenuPrimitive } from "radix-ui";
 import type * as React from "react";
+import { createContext, useContext, useState } from "react";
 import { cn } from "@/lib/utils";
 import { WINDOW_SAFE_AREA } from "./dropdown-menu";
 
-const ContextMenu = ContextMenuPrimitive.Root;
-const ContextMenuTrigger = ContextMenuPrimitive.Trigger;
+// Distance from the cursor down to the bottom of the right-clicked row. Radix opens the menu at
+// the cursor, which puts it over the row's own label; this drops it just below the row instead.
+const RowOffset = createContext<[number, (offset: number) => void]>([0, () => {}]);
+
+// Non-modal: see DropdownMenu.
+function ContextMenu({ modal = false, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Root>) {
+  const offset = useState(0);
+  return (
+    <RowOffset.Provider value={offset}>
+      <ContextMenuPrimitive.Root modal={modal} {...props} />
+    </RowOffset.Provider>
+  );
+}
+
+/** Rows are the `role="button"` elements inside the trigger; empty space keeps the menu at the cursor. */
+function ContextMenuTrigger({ onContextMenu, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Trigger>) {
+  const [, setOffset] = useContext(RowOffset);
+  return (
+    <ContextMenuPrimitive.Trigger
+      {...props}
+      onContextMenu={(ev) => {
+        onContextMenu?.(ev);
+        const row = (ev.target as HTMLElement).closest('[role="button"]');
+        setOffset(row && ev.currentTarget.contains(row) ? row.getBoundingClientRect().bottom - ev.clientY : 0);
+      }}
+    />
+  );
+}
+
 const ContextMenuGroup = ContextMenuPrimitive.Group;
 const ContextMenuSub = ContextMenuPrimitive.Sub;
 
 function ContextMenuContent({ className, collisionPadding = WINDOW_SAFE_AREA, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
+  const [offset] = useContext(RowOffset);
   return (
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.Content
+        alignOffset={offset}
         collisionPadding={collisionPadding}
         className={cn(
           "z-50 max-h-(--radix-context-menu-content-available-height) min-w-48 overflow-y-auto rounded-md border border-border-strong bg-elevated p-1 text-foreground shadow-lg shadow-black/50 animate-in fade-in-0 zoom-in-95",
