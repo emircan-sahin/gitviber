@@ -17,12 +17,13 @@ pub struct RepoChanged {
     pub git: bool,
 }
 
-enum Kind {
+#[derive(Debug, PartialEq)]
+pub(crate) enum Kind {
     Worktree,
     Git,
 }
 
-fn classify(root: &Path, path: &Path) -> Option<Kind> {
+pub(crate) fn classify(root: &Path, path: &Path) -> Option<Kind> {
     let rel = path.strip_prefix(root).ok()?;
     let mut parts = rel.components().map(|c| c.as_os_str().to_string_lossy());
     let first = parts.next()?;
@@ -36,10 +37,20 @@ fn classify(root: &Path, path: &Path) -> Option<Kind> {
             _ => None,
         };
     }
-    if rel.components().any(|c| c.as_os_str() == "node_modules") {
+    if rel.components().any(|c| c.as_os_str() == "node_modules") || in_nested_repo(root, path) {
         return None;
     }
     Some(Kind::Worktree)
+}
+
+/// Agents work in worktrees under the repo (.claude/worktrees/*); their writes and git
+/// churn would otherwise refresh this window nonstop. Git shows such a folder as one
+/// untracked entry, and creating or removing it is still an event on the folder itself.
+fn in_nested_repo(root: &Path, path: &Path) -> bool {
+    path.ancestors()
+        .skip(1)
+        .take_while(|dir| *dir != root && dir.starts_with(root))
+        .any(|dir| dir.join(".git").exists())
 }
 
 /// Git dirs that live outside the worktree (linked worktrees: `.git` is a file and HEAD/index
