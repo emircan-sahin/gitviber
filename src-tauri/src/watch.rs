@@ -50,7 +50,27 @@ fn in_nested_repo(root: &Path, path: &Path) -> bool {
     path.ancestors()
         .skip(1)
         .take_while(|dir| *dir != root && dir.starts_with(root))
-        .any(|dir| dir.join(".git").exists())
+        .any(is_untracked_repo_root)
+}
+
+/// A nested repo has a `.git` dir, a linked worktree a `.git` file pointing at
+/// `<repo>/.git/worktrees/<name>`. A submodule's points into `.git/modules/`: it is part of
+/// this repo, and edits in it are ours to show.
+fn is_untracked_repo_root(dir: &Path) -> bool {
+    let git = dir.join(".git");
+    if git.is_dir() {
+        return true;
+    }
+    std::fs::read_to_string(&git).ok().is_some_and(|s| {
+        s.strip_prefix("gitdir:")
+            .and_then(|d| {
+                Path::new(d.trim())
+                    .parent()?
+                    .file_name()
+                    .map(|n| n == "worktrees")
+            })
+            .unwrap_or(false)
+    })
 }
 
 /// Git dirs that live outside the worktree (linked worktrees: `.git` is a file and HEAD/index
