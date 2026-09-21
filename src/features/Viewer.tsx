@@ -319,7 +319,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
               variant={viewed(sel) ? "default" : "secondary"}
               size="sm"
               onClick={() => toggleViewed(sel)}
-              className={cn(viewed(sel) && "bg-added text-black hover:bg-added/85")}
+              className={cn(viewed(sel) && "bg-added-fill text-on-status hover:bg-added-fill/85")}
             >
               <Check /> Viewed
             </Button>

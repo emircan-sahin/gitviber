@@ -106,7 +106,7 @@ function CodeBlock({ className, children }: ComponentProps<"code">) {
 
 function Fence({ code, lang }: { code: string; lang: string }) {
   const s = useSettings();
-  const hl = useHighlight(code, lang, s.syntaxTheme);
+  const hl = useHighlight(code, lang, s.codeTheme);
   const lines = hl?.fresh ? hl.data.lines : null;
   return (
     <pre>

@@ -2,14 +2,14 @@ import type { ChangeStatus, FileChange } from "@/lib/api";
 import { cn, splitPath } from "@/lib/utils";
 
 const STATUS: Record<ChangeStatus, { letter: string; label: string; text: string; bg: string }> = {
-  M: { letter: "M", label: "Modified", text: "text-modified", bg: "bg-modified" },
-  A: { letter: "A", label: "Added", text: "text-added", bg: "bg-added" },
-  "?": { letter: "U", label: "Untracked", text: "text-added", bg: "bg-added" },
-  D: { letter: "D", label: "Deleted", text: "text-removed", bg: "bg-removed" },
-  R: { letter: "R", label: "Renamed", text: "text-renamed", bg: "bg-renamed" },
-  C: { letter: "C", label: "Copied", text: "text-renamed", bg: "bg-renamed" },
-  T: { letter: "T", label: "Type changed", text: "text-modified", bg: "bg-modified" },
-  U: { letter: "!", label: "Conflict", text: "text-conflict", bg: "bg-conflict" },
+  M: { letter: "M", label: "Modified", text: "text-modified", bg: "bg-modified-fill" },
+  A: { letter: "A", label: "Added", text: "text-added", bg: "bg-added-fill" },
+  "?": { letter: "U", label: "Untracked", text: "text-added", bg: "bg-added-fill" },
+  D: { letter: "D", label: "Deleted", text: "text-removed", bg: "bg-removed-fill" },
+  R: { letter: "R", label: "Renamed", text: "text-renamed", bg: "bg-renamed-fill" },
+  C: { letter: "C", label: "Copied", text: "text-renamed", bg: "bg-renamed-fill" },
+  T: { letter: "T", label: "Type changed", text: "text-modified", bg: "bg-modified-fill" },
+  U: { letter: "!", label: "Conflict", text: "text-conflict", bg: "bg-conflict-fill" },
 };
 
 export function statusInfo(status: ChangeStatus) {
@@ -28,7 +28,7 @@ export function StatusLetter({ status, className }: { status: ChangeStatus; clas
 /** Solid label like GitButler's "Modified" chip. */
 export function StatusPill({ status }: { status: ChangeStatus }) {
   const s = statusInfo(status);
-  return <span className={cn("rounded-sm px-1.5 py-px text-[10.5px] font-semibold text-black/85", s.bg)}>{s.label}</span>;
+  return <span className={cn("rounded-sm px-1.5 py-px text-[10.5px] font-semibold text-on-status", s.bg)}>{s.label}</span>;
 }
 
 export function LineCounts({ file, className }: { file: Pick<FileChange, "additions" | "deletions">; className?: string }) {

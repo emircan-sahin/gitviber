@@ -115,7 +115,7 @@ export function ConflictView({ file, operation, revision }: Props) {
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border pr-2 pl-3">
         <FileIcon path={file.path} />
         <PathLabel path={file.path} className="min-w-0 text-[12px]" />
-        <span className="rounded-sm bg-conflict px-1.5 py-px text-[10.5px] font-semibold text-black/85">Conflict</span>
+        <span className="rounded-sm bg-conflict-fill px-1.5 py-px text-[10.5px] font-semibold text-on-status">Conflict</span>
         {blocks.length > 0 && (
           <span className="text-[11.5px] text-muted-foreground">
             <span className={cn("font-semibold", resolved === blocks.length ? "text-added" : "text-foreground")}>{resolved}</span>/{blocks.length} resolved
@@ -243,7 +243,7 @@ function useCodeStyle() {
 function CodeLines({ lines, path, className }: { lines: string[]; path: string; className?: string }) {
   const s = useSettings();
   const style = useCodeStyle();
-  const hl = useHighlight(lines.join("\n"), languageFor(path), s.syntaxTheme);
+  const hl = useHighlight(lines.join("\n"), languageFor(path), s.codeTheme);
   const tok = useMemo(() => tokenLookup(hl), [hl]);
   return (
     <div className={cn("overflow-x-auto px-4 whitespace-pre select-text", className)} style={{ ...style, color: hl?.data.fg }}>

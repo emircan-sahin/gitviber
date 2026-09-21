@@ -1,3 +1,4 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSyncExternalStore } from "react";
 
 export const CODE_FONTS = {
@@ -25,11 +26,29 @@ export const SYNTAX_THEMES = {
 } as const;
 export type SyntaxTheme = keyof typeof SYNTAX_THEMES;
 
+export const LIGHT_SYNTAX_THEMES = {
+  "github-light-default": "GitHub Light",
+  "light-plus": "VS Code Light+",
+  "one-light": "One Light",
+  "vitesse-light": "Vitesse Light",
+  "catppuccin-latte": "Catppuccin Latte",
+  "min-light": "Min Light",
+  "solarized-light": "Solarized Light",
+  "rose-pine-dawn": "Rosé Pine Dawn",
+  "kanagawa-lotus": "Kanagawa Lotus",
+  "everforest-light": "Everforest Light",
+} as const;
+export type LightSyntaxTheme = keyof typeof LIGHT_SYNTAX_THEMES;
+
+export type Appearance = "system" | "light" | "dark";
+
 export interface Settings {
   codeFont: CodeFont;
   codeFontSize: number;
   lineHeight: number;
+  appearance: Appearance;
   syntaxTheme: SyntaxTheme;
+  lightSyntaxTheme: LightSyntaxTheme;
   sideBySide: boolean;
   hideUnchanged: boolean;
   wordWrap: boolean;
@@ -42,7 +61,9 @@ const DEFAULTS: Settings = {
   codeFont: "SF Mono",
   codeFontSize: DEFAULT_FONT_SIZE,
   lineHeight: 1.6,
+  appearance: "system",
   syntaxTheme: "nord",
+  lightSyntaxTheme: "github-light-default",
   sideBySide: false,
   hideUnchanged: false,
   wordWrap: false,
@@ -58,14 +79,56 @@ function load(): Settings {
     const s = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS;
     if (!(s.codeFont in CODE_FONTS)) s.codeFont = DEFAULTS.codeFont;
     if (!(s.syntaxTheme in SYNTAX_THEMES)) s.syntaxTheme = DEFAULTS.syntaxTheme;
+    if (!(s.lightSyntaxTheme in LIGHT_SYNTAX_THEMES)) s.lightSyntaxTheme = DEFAULTS.lightSyntaxTheme;
+    if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
     return s;
   } catch {
     return DEFAULTS;
   }
 }
 
+/** Settings plus what they resolve to right now: `system` follows the OS appearance. */
+export interface ResolvedSettings extends Settings {
+  dark: boolean;
+  /** The Shiki theme for the active appearance. */
+  codeTheme: SyntaxTheme | LightSyntaxTheme;
+}
+
+const systemDark = window.matchMedia("(prefers-color-scheme: dark)");
+
 let current = load();
+let resolved = resolve();
 const listeners = new Set<() => void>();
+
+function resolve(): ResolvedSettings {
+  const dark = current.appearance === "system" ? systemDark.matches : current.appearance === "dark";
+  return { ...current, dark, codeTheme: dark ? current.syntaxTheme : current.lightSyntaxTheme };
+}
+
+let appliedAppearance: Appearance | null = null;
+function applyTheme() {
+  document.documentElement.dataset.theme = resolved.dark ? "dark" : "light";
+  if (current.appearance === appliedAppearance) return;
+  appliedAppearance = current.appearance;
+  // Native chrome (traffic lights, dialogs, context menus) follows the window theme; null = OS.
+  // getCurrentWindow() throws outside Tauri (the browser-only dev fixture).
+  try {
+    getCurrentWindow()
+      .setTheme(current.appearance === "system" ? null : current.appearance)
+      .catch(() => {});
+  } catch {
+    // Not in a Tauri window.
+  }
+}
+
+function emit() {
+  resolved = resolve();
+  applyTheme();
+  listeners.forEach((l) => l());
+}
+
+applyTheme();
+systemDark.addEventListener("change", () => current.appearance === "system" && emit());
 
 export function updateSettings(patch: Partial<Settings>) {
   current = { ...current, ...patch };
@@ -75,7 +138,7 @@ export function updateSettings(patch: Partial<Settings>) {
   } catch {
     // Settings still apply for this session.
   }
-  listeners.forEach((l) => l());
+  emit();
 }
 
 export function resetSettings() {
@@ -88,7 +151,7 @@ export function useSettings() {
       listeners.add(l);
       return () => listeners.delete(l);
     },
-    () => current,
+    () => resolved,
   );
 }
 

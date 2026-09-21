@@ -130,8 +130,8 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
   const oldLines = useMemo(() => splitLines(pair.original.text), [pair.original.text]);
   const newLines = useMemo(() => splitLines(pair.modified.text), [pair.modified.text]);
   const lang = languageFor(path);
-  const oldHl = useHighlight(mode === "file" ? null : pair.original.text, lang, s.syntaxTheme);
-  const newHl = useHighlight(pair.modified.text, lang, s.syntaxTheme);
+  const oldHl = useHighlight(mode === "file" ? null : pair.original.text, lang, s.codeTheme);
+  const newHl = useHighlight(pair.modified.text, lang, s.codeTheme);
   const oldTok = useMemo(() => tokenLookup(oldHl), [oldHl]);
   const newTok = useMemo(() => tokenLookup(newHl), [newHl]);
 
@@ -560,7 +560,7 @@ const Line = memo(function Line({ item, ctx }: { item: Exclude<Item, { t: "gap" 
 function Half({ row, side, ctx, border }: { row: DiffRow | null; side: "old" | "new"; ctx: Ctx; border?: boolean }) {
   const borderCls = border && "border-l border-border-strong";
   if (!row) {
-    return <div className={cn(borderCls, "bg-[repeating-linear-gradient(135deg,transparent_0_5px,#ffffff08_5px_6px)]")} />;
+    return <div className={cn(borderCls, "bg-[repeating-linear-gradient(135deg,transparent_0_5px,var(--hatch)_5px_6px)]")} />;
   }
   const n = side === "old" ? row.o : row.n;
   const text = side === "old" ? ctx.oldLines[n - 1] ?? "" : ctx.newLines[n - 1] ?? "";

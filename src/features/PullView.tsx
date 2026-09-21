@@ -281,12 +281,12 @@ function CheckIcon({ state }: { state: string }) {
 function StatePill({ pull }: { pull: Pick<Pull, "state" | "draft"> }) {
   const [label, cls] =
     pull.state === "merged"
-      ? ["Merged", "bg-renamed text-black/85"]
+      ? ["Merged", "bg-renamed-fill text-on-status"]
       : pull.state === "closed"
-        ? ["Closed", "bg-removed text-black/85"]
+        ? ["Closed", "bg-removed-fill text-on-status"]
         : pull.draft
           ? ["Draft", "bg-elevated text-muted-foreground border border-border-strong"]
-          : ["Open", "bg-added text-black/85"];
+          : ["Open", "bg-added-fill text-on-status"];
   return <span className={cn("rounded-sm px-1.5 py-px text-[10.5px] font-semibold", cls)}>{label}</span>;
 }
 

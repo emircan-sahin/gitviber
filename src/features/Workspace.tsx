@@ -5,7 +5,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Tip } from "@/components/ui/tooltip";
 import type { FileChange, RepoStatus } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/selection";
-import { DEFAULT_FONT_SIZE, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
+import { DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { arrayMove } from "@dnd-kit/sortable";
 import { useRepo } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
@@ -159,14 +159,14 @@ export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRep
     if (conflictCount > 0) setListTab("changes");
   }, [conflictCount]);
 
-  const prefetch = useCallback((sel: Selection) => prefetchSelection(sel, repo.revision, s.syntaxTheme), [repo.revision, s.syntaxTheme]);
+  const prefetch = useCallback((sel: Selection) => prefetchSelection(sel, repo.revision, s.codeTheme), [repo.revision, s.codeTheme]);
 
   // Reviewing is sequential: have the neighbours of the open file ready before J/K.
   useEffect(() => {
     const i = changes.findIndex((c) => selectionKey(c) === activeKey);
     if (i < 0) return;
-    for (const n of [changes[i + 1], changes[i - 1]]) if (n) prefetchSelection(n, repo.revision, s.syntaxTheme);
-  }, [changes, activeKey, repo.revision, s.syntaxTheme]);
+    for (const n of [changes[i + 1], changes[i - 1]]) if (n) prefetchSelection(n, repo.revision, s.codeTheme);
+  }, [changes, activeKey, repo.revision, s.codeTheme]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -356,7 +356,7 @@ function ListTabButton({ active, onClick, count, children }: { active: boolean; 
       )}
     >
       {children}
-      {!!count && <span className={cn("rounded-sm px-1 font-mono text-[10px] leading-4", active ? "bg-modified text-black" : "bg-elevated text-muted-foreground")}>{count}</span>}
+      {!!count && <span className={cn("rounded-sm px-1 font-mono text-[10px] leading-4", active ? "bg-modified-fill text-on-status" : "bg-elevated text-muted-foreground")}>{count}</span>}
     </button>
   );
 }
@@ -396,7 +396,7 @@ function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; revie
           {totals.files} reviewed
         </span>
       )}
-      <span className="ml-auto">{SYNTAX_THEMES[s.syntaxTheme]}</span>
+      <span className="ml-auto">{s.dark ? SYNTAX_THEMES[s.syntaxTheme] : LIGHT_SYNTAX_THEMES[s.lightSyntaxTheme]}</span>
       <span>
         {s.codeFont} {s.codeFontSize}
       </span>

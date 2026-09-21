@@ -37,7 +37,18 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage } from "@/lib/api";
-import { CODE_FONTS, type CodeFont, resetSettings, SYNTAX_THEMES, type SyntaxTheme, updateSettings, useSettings } from "@/lib/settings";
+import {
+  type Appearance,
+  CODE_FONTS,
+  type CodeFont,
+  LIGHT_SYNTAX_THEMES,
+  type LightSyntaxTheme,
+  resetSettings,
+  SYNTAX_THEMES,
+  type SyntaxTheme,
+  updateSettings,
+  useSettings,
+} from "@/lib/settings";
 import { toast } from "@/lib/toast";
 import type { RepoData } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
@@ -294,9 +305,26 @@ function SettingsMenu() {
         </DropdownMenuTrigger>
       </Tip>
       <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuLabel>Appearance</DropdownMenuLabel>
+        <DropdownMenuRadioGroup value={s.appearance} onValueChange={(v) => updateSettings({ appearance: v as Appearance })}>
+          {[
+            ["system", "System"],
+            ["light", "Light"],
+            ["dark", "Dark"],
+          ].map(([id, label]) => (
+            <DropdownMenuRadioItem key={id} value={id}>
+              {label}
+            </DropdownMenuRadioItem>
+          ))}
+        </DropdownMenuRadioGroup>
+        <DropdownMenuSeparator />
+        {/* Each appearance remembers its own syntax theme; this edits the active one. */}
         <DropdownMenuLabel>Syntax theme</DropdownMenuLabel>
-        <DropdownMenuRadioGroup value={s.syntaxTheme} onValueChange={(v) => updateSettings({ syntaxTheme: v as SyntaxTheme })}>
-          {Object.entries(SYNTAX_THEMES).map(([id, label]) => (
+        <DropdownMenuRadioGroup
+          value={s.codeTheme}
+          onValueChange={(v) => updateSettings(s.dark ? { syntaxTheme: v as SyntaxTheme } : { lightSyntaxTheme: v as LightSyntaxTheme })}
+        >
+          {Object.entries(s.dark ? SYNTAX_THEMES : LIGHT_SYNTAX_THEMES).map(([id, label]) => (
             <DropdownMenuRadioItem key={id} value={id}>
               {label}
             </DropdownMenuRadioItem>

@@ -294,7 +294,7 @@ function Row({
           }}
           className={cn(
             "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border",
-            viewed ? "border-added bg-added text-black" : "border-border-strong hover:border-muted-foreground",
+            viewed ? "border-added-fill bg-added-fill text-on-status" : "border-border-strong hover:border-muted-foreground",
           )}
         >
           {viewed && <Check className="size-2.5" strokeWidth={3} />}

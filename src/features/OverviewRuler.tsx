@@ -114,7 +114,7 @@ export function OverviewRuler({
   return (
     <div onPointerDown={onPointerDown} className="relative w-3.5 shrink-0 cursor-pointer border-l border-border bg-panel">
       <canvas ref={canvasRef} className="absolute inset-0 size-full" />
-      <div ref={thumbRef} className="pointer-events-none absolute inset-x-0 border-y border-white/15 bg-white/[0.08]" />
+      <div ref={thumbRef} className="pointer-events-none absolute inset-x-0 border-y border-foreground/15 bg-foreground/[0.08]" />
     </div>
   );
 }
