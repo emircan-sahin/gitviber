@@ -1,0 +1,54 @@
+import type { ChangeStatus, FileChange } from "@/lib/api";
+import { cn, splitPath } from "@/lib/utils";
+
+const STATUS: Record<ChangeStatus, { letter: string; label: string; text: string; bg: string }> = {
+  M: { letter: "M", label: "Modified", text: "text-modified", bg: "bg-modified" },
+  A: { letter: "A", label: "Added", text: "text-added", bg: "bg-added" },
+  "?": { letter: "U", label: "Untracked", text: "text-added", bg: "bg-added" },
+  D: { letter: "D", label: "Deleted", text: "text-removed", bg: "bg-removed" },
+  R: { letter: "R", label: "Renamed", text: "text-renamed", bg: "bg-renamed" },
+  C: { letter: "C", label: "Copied", text: "text-renamed", bg: "bg-renamed" },
+  T: { letter: "T", label: "Type changed", text: "text-modified", bg: "bg-modified" },
+  U: { letter: "!", label: "Conflict", text: "text-conflict", bg: "bg-conflict" },
+};
+
+export function statusInfo(status: ChangeStatus) {
+  return STATUS[status] ?? STATUS.M;
+}
+
+export function StatusLetter({ status, className }: { status: ChangeStatus; className?: string }) {
+  const s = statusInfo(status);
+  return (
+    <span title={s.label} className={cn("w-3 shrink-0 text-center font-mono text-[11px] font-bold", s.text, className)}>
+      {s.letter}
+    </span>
+  );
+}
+
+/** Solid label like GitButler's "Modified" chip. */
+export function StatusPill({ status }: { status: ChangeStatus }) {
+  const s = statusInfo(status);
+  return <span className={cn("rounded-sm px-1.5 py-px text-[10.5px] font-semibold text-black/85", s.bg)}>{s.label}</span>;
+}
+
+export function LineCounts({ file, className }: { file: Pick<FileChange, "additions" | "deletions">; className?: string }) {
+  if (file.additions == null && file.deletions == null) return null;
+  return (
+    <span className={cn("shrink-0 font-mono text-[11px] tabular-nums", className)}>
+      {!!file.additions && <span className="text-added">+{file.additions}</span>}
+      {!!file.additions && !!file.deletions && " "}
+      {!!file.deletions && <span className="text-removed">-{file.deletions}</span>}
+    </span>
+  );
+}
+
+/** "dir/**name**": the directory gives way first; the file name keeps its full width when it can. */
+export function PathLabel({ path, className }: { path: string; className?: string }) {
+  const { dir, name } = splitPath(path);
+  return (
+    <span className={cn("flex min-w-0 items-baseline", className)} title={path}>
+      {dir && <span className="min-w-0 truncate text-subtle">{dir}</span>}
+      <span className="max-w-full shrink-0 truncate text-foreground">{name}</span>
+    </span>
+  );
+}
