@@ -1,0 +1,24 @@
+# Secrets: never commit these. The app itself needs no API keys or env vars.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.p8
+*.keystore
+*.mobileprovision
+.npmrc
+
+# Build output
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
