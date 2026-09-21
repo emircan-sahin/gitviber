@@ -1,12 +1,12 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Check, ChevronDown, CircleDashed, ExternalLink, GitBranch, GitMerge, Loader2, MinusCircle, RefreshCw, X } from "lucide-react";
+import { Check, ChevronDown, CircleDashed, ExternalLink, GitBranch, GitMerge, Image as ImageIcon, Loader2, MinusCircle, RefreshCw, X } from "lucide-react";
 import { type ComponentProps, useCallback, useMemo, useState } from "react";
 import type { Components } from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { api, errorMessage, github, type MergeMethod, type Pull, type PullCheck, type PullDetail } from "@/lib/api";
 import { revalidate, useGitHubData } from "@/lib/githubCache";
-import { remarkGithubRefs } from "@/lib/remarkGithubRefs";
+import { isGitHubHosted, markdownLink } from "@/lib/markdown";
 import type { Selection } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
@@ -29,11 +29,11 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   const d = detail.data ?? null;
   const error = detail.error === undefined ? null : errorMessage(detail.error);
   // Fetching the PR's commits can take a moment; the page shows without waiting for it.
-  // The result depends only on the two commits, so it's kept for as long as they are.
+  // The result depends only on the two commits, so it's rarely worth recomputing.
   const files = useGitHubData(
     d && `files:${pull.url}:${d.baseSha}:${d.headSha}`,
     useCallback(() => (d ? github.files(d) : Promise.reject(new Error("no pull request"))), [d]),
-    Infinity,
+    600_000,
   );
   const load = () => detail.refresh(true);
 
@@ -179,7 +179,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
         </Section>
 
         <Section title="Description">
-          <PullMarkdown pull={pull} text={d?.body || ""} empty={d ? "No description provided." : ""} />
+          <PullMarkdown pull={pull} idPrefix="pr-d-" text={d?.body || ""} empty={d ? "No description provided." : ""} />
         </Section>
 
         {d && d.comments.length > 0 && (
@@ -191,7 +191,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
                   {c.review && <ReviewBadge state={c.review} />}
                   <span className="text-subtle">{relativeTime(isoToUnix(c.createdAt))}</span>
                 </div>
-                {c.body && <PullMarkdown pull={pull} text={c.body} className="mt-1.5 px-0 py-0" />}
+                {c.body && <PullMarkdown pull={pull} idPrefix={`pr-c${i}-`} text={c.body} className="mt-1.5 px-0 py-0" />}
               </div>
             ))}
           </Section>
@@ -322,7 +322,7 @@ function Section({ title, aside, children }: { title: string; aside?: string; ch
 }
 
 /** A PR description or comment, rendered like GitHub does (see MarkdownBody for what's allowed). */
-function PullMarkdown({ pull, text, empty, className }: { pull: Pick<Pull, "url" | "number">; text: string; empty?: string; className?: string }) {
+function PullMarkdown({ pull, idPrefix, text, empty, className }: { pull: Pick<Pull, "url" | "number">; idPrefix: string; text: string; empty?: string; className?: string }) {
   // Keyed on the tab's PR, not its refreshed detail: new components would remount every image.
   const components = useMemo<Components>(() => {
     // Relative links in PR text are relative to the PR page, as on github.com.
@@ -334,30 +334,17 @@ function PullMarkdown({ pull, text, empty, className }: { pull: Pick<Pull, "url"
       }
     };
     return {
-      a: ({ href = "", children }) => (
-        <a
-          href={href}
-          onClick={(e) => {
-            e.preventDefault();
-            followLink(href, (href) => followLink(absolute(href), () => {}));
-          }}
-        >
-          {children}
-        </a>
-      ),
+      a: markdownLink((href) => followLink(href, (href) => followLink(absolute(href), () => {}), idPrefix)),
       img: ({ src, alt, width, height, title }) => (typeof src === "string" && absolute(src) ? <GitHubImage src={absolute(src)} pull={pull} alt={alt} width={width} height={height} title={title} /> : null),
     };
-  }, [pull]);
-  const refs = useMemo(() => [[remarkGithubRefs, { repo: repoUrlOf(pull.url) }] as [typeof remarkGithubRefs, { repo: string }]], [pull.url]);
+  }, [pull, idPrefix]);
   if (!text.trim()) return empty ? <div className={cn("px-3 py-2.5 text-[12px] text-subtle italic", className)}>{empty}</div> : null;
   return (
     <div className={cn("markdown px-3 py-2.5 select-text", className)}>
-      <MarkdownBody text={text} components={components} remarkPlugins={refs} />
+      <MarkdownBody text={text} components={components} idPrefix={idPrefix} repo={pull.url.split("/pull/")[0]} />
     </div>
   );
 }
-
-const repoUrlOf = (url: string) => url.split("/pull/")[0];
 
 // Attachments uploaded to GitHub: github.com/user-attachments/assets/<id>, or the older
 // github.com/<owner>/<repo>/assets/<n>/<id>.
@@ -369,6 +356,7 @@ const ATTACHMENT = /^https:\/\/github\.com\/(?:user-attachments\/assets|[^/]+\/[
  */
 function GitHubImage({ src, pull, ...props }: { src: string; pull: Pick<Pull, "url" | "number"> } & Omit<ComponentProps<"img">, "src">) {
   const [signed, setSigned] = useState<string | null>(null);
+  if (!isGitHubHosted(src)) return <ExternalImage src={src} {...props} />;
   const id = ATTACHMENT.exec(src)?.[1];
   const onError = () => {
     if (!id || signed) return;
@@ -378,4 +366,32 @@ function GitHubImage({ src, pull, ...props }: { src: string; pull: Pick<Pull, "u
       .catch(() => {});
   };
   return <img src={signed ?? src} onError={onError} {...props} />;
+}
+
+/**
+ * An image hosted outside GitHub loads only on click: fetching it tells that host your IP
+ * and when you read the PR. github.com hides both behind its image proxy; GitViber has none.
+ */
+function ExternalImage({ src, alt, ...props }: { src: string } & Omit<ComponentProps<"img">, "src">) {
+  const [load, setLoad] = useState(false);
+  if (load) return <img src={src} alt={alt} {...props} />;
+  let host = src;
+  try {
+    host = new URL(src).hostname;
+  } catch {
+    // Shown as written.
+  }
+  return (
+    <button
+      type="button"
+      title={src}
+      onClick={() => setLoad(true)}
+      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-panel px-2 py-1 align-middle text-[12px] text-muted-foreground hover:text-foreground"
+    >
+      <ImageIcon className="size-3.5 shrink-0" />
+      <span className="truncate">
+        {alt ? `${alt} · ` : ""}Load image from {host}
+      </span>
+    </button>
+  );
 }

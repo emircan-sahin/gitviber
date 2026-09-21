@@ -1,11 +1,9 @@
-import { Children, type ComponentProps, isValidElement, type ReactNode } from "react";
-import Markdown, { type Components, type Options } from "react-markdown";
-import rehypeRaw from "rehype-raw";
-import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
-import remarkGfm from "remark-gfm";
+import { Children, type ComponentProps, isValidElement, type ReactNode, useMemo } from "react";
+import Markdown, { type Components } from "react-markdown";
 import { github } from "@/lib/api";
 import { useHighlight } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
+import { markdownLink, markdownOptions, safeDecode } from "@/lib/markdown";
 import type { Selection } from "@/lib/selection";
 import { useSettings } from "@/lib/settings";
 import { toast } from "@/lib/toast";
@@ -18,7 +16,7 @@ export function isMarkdown(path: string) {
 /** Resolves a link written in `from` (a repo-relative file) to a repo-relative path, or null if it leaves the repo. */
 function resolve(from: string, href: string) {
   const parts = href.startsWith("/") ? [] : from.split("/").slice(0, -1);
-  for (const seg of decodeURIComponent(href.split(/[?#]/)[0]).split("/")) {
+  for (const seg of safeDecode(href.split(/[?#]/)[0]).split("/")) {
     if (seg === "..") {
       if (!parts.pop()) return null;
     } else if (seg && seg !== ".") parts.push(seg);
@@ -40,26 +38,43 @@ const slug = (children: ReactNode) =>
     .replace(/[^\p{L}\p{N}\s_-]/gu, "")
     .replace(/\s/g, "-");
 
-const heading = (Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") =>
+const heading = (Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6", prefix: string) =>
   function Heading({ children }: ComponentProps<"h1">) {
-    return <Tag id={slug(children)}>{children}</Tag>;
+    return <Tag id={prefix + slug(children)}>{children}</Tag>;
   };
 
-const headings = { h1: heading("h1"), h2: heading("h2"), h3: heading("h3"), h4: heading("h4"), h5: heading("h5"), h6: heading("h6") };
+// One set per id prefix, so re-renders keep the same component types and code blocks stay mounted.
+const bases = new Map<string, Components>();
+function baseComponents(prefix: string) {
+  let base = bases.get(prefix);
+  if (!base) {
+    const h = (tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => heading(tag, prefix);
+    base = { h1: h("h1"), h2: h("h2"), h3: h("h3"), h4: h("h4"), h5: h("h5"), h6: h("h6"), pre: ({ children }) => <>{children}</>, code: CodeBlock };
+    bases.set(prefix, base);
+  }
+  return base;
+}
 
-const isExternal =(href: string) => /^[a-z][a-z0-9+.-]*:/i.test(href);
+const isExternal = (href: string) => /^[a-z][a-z0-9+.-]*:/i.test(href);
 
 /**
  * Follows a link in rendered markdown. Letting the webview follow it would navigate the
  * whole app away: in-page anchors scroll, web links open in the browser, the rest is `local`.
+ * `idPrefix` is the rendered block's (see MarkdownBody): anchors point at bare ids.
  */
-export function followLink(href: string, local: (href: string) => void) {
+export function followLink(href: string, local: (href: string) => void, idPrefix = "") {
   if (href.startsWith("#")) {
-    const id = decodeURIComponent(href.slice(1));
-    // The sanitizer prefixes ids from the text itself (footnotes) the way GitHub does.
-    (document.getElementById(id) ?? document.getElementById(`user-content-${id}`))?.scrollIntoView();
+    const id = safeDecode(href.slice(1));
+    (document.getElementById(idPrefix + id) ?? document.getElementById(id))?.scrollIntoView();
   } else if (/^https?:/i.test(href)) {
-    github.openUrl(href).catch(() => navigator.clipboard.writeText(href).then(() => toast("info", "Link copied", "It can't be opened from here.")));
+    let url = href;
+    try {
+      // Canonical form: lowercase scheme and host, non-ASCII and spaces percent-encoded.
+      url = new URL(href).href;
+    } catch {
+      // Left as written; the backend refuses it and it's copied instead.
+    }
+    github.openUrl(url).catch(() => navigator.clipboard.writeText(href).then(() => toast("info", "Link copied", "It can't be opened from here.")));
   } else if (isExternal(href)) {
     navigator.clipboard.writeText(href).then(() => toast("success", "Link copied"));
   } else {
@@ -67,20 +82,14 @@ export function followLink(href: string, local: (href: string) => void) {
   }
 }
 
-type PluggableList = NonNullable<Options["remarkPlugins"]>;
-
-// Inline HTML is common in markdown (<details>, pasted <img> tags), so it's parsed, then cut
-// down to GitHub's own allowlist: no scripts, styles, event handlers, iframes or forms, and
-// only http(s)/mailto URLs. Nothing from the text ever runs.
-const rehypePlugins: PluggableList = [rehypeRaw, [rehypeSanitize, defaultSchema]];
-
-// Module-level so re-renders keep the same component types and code blocks stay mounted.
-const base: Components = { ...headings, pre: ({ children }) => <>{children}</>, code: CodeBlock };
-
-/** GitHub-flavored markdown with code highlighting. Wrap it in `.markdown` for styling. */
-export function MarkdownBody({ text, components, remarkPlugins = [] }: { text: string; components: Components; remarkPlugins?: PluggableList }) {
+/**
+ * GitHub-flavored markdown with code highlighting; wrap it in `.markdown` for styling. Every
+ * id in it gets `idPrefix`, so give each block on a page its own. `repo` links @mentions and #123.
+ */
+export function MarkdownBody({ text, components, idPrefix = "user-content-", repo }: { text: string; components: Components; idPrefix?: string; repo?: string }) {
+  const options = useMemo(() => markdownOptions({ idPrefix, repo }), [idPrefix, repo]);
   return (
-    <Markdown remarkPlugins={[remarkGfm, ...remarkPlugins]} rehypePlugins={rehypePlugins} components={{ ...base, ...components }}>
+    <Markdown {...options} components={{ ...baseComponents(idPrefix), ...components }}>
       {text}
     </Markdown>
   );
@@ -89,19 +98,15 @@ export function MarkdownBody({ text, components, remarkPlugins = [] }: { text: s
 /** Rendered markdown. Relative links open in a tab, relative images load from the same revision. */
 export function MarkdownView({ text, src, onOpen }: { text: string; src: MediaSource; onOpen: (s: Selection) => void }) {
   const components: Components = {
-    a: ({ href = "", children }) => (
-      <a
-        href={href}
-        onClick={(e) => {
-          e.preventDefault();
-          followLink(href, (href) => {
-            const path = resolve(src.path, href);
-            if (path) onOpen({ kind: "file", path });
-          });
-        }}
-      >
-        {children}
-      </a>
+    a: markdownLink((href) =>
+      followLink(
+        href,
+        (href) => {
+          const path = resolve(src.path, href);
+          if (path) onOpen({ kind: "file", path });
+        },
+        "user-content-",
+      ),
     ),
     img: ({ src: href, alt, width, height }) => {
       if (typeof href !== "string" || !href) return null;
