@@ -344,6 +344,18 @@ async fn pr_detail(app: AppHandle, number: u64) -> Res<github::PullDetail> {
 }
 
 #[tauri::command]
+async fn pr_attachments(
+    app: AppHandle,
+    number: u64,
+) -> Res<std::collections::HashMap<String, String>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::attachments(&state.github, &repo(&state)?, number)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn pr_files(
     state: State<'_, AppState>,
     number: u64,
@@ -468,6 +480,7 @@ pub fn run() {
             gh_account,
             pr_list,
             pr_detail,
+            pr_attachments,
             pr_files,
             pr_create,
             pr_merge,

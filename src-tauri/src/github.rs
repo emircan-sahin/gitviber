@@ -5,10 +5,11 @@
 use crate::git;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const API: &str = "https://api.github.com";
 
@@ -20,7 +21,10 @@ pub struct Token {
 }
 
 #[derive(Default)]
-pub struct Session(Mutex<Option<Token>>);
+pub struct Session {
+    token: Mutex<Option<Token>>,
+    etags: Mutex<Etags>,
+}
 
 fn gh_token() -> Option<String> {
     let mut cmd = Command::new("gh");
@@ -43,7 +47,7 @@ fn gh_token() -> Option<String> {
 
 impl Session {
     fn token(&self, repo: &Path) -> Result<Token, String> {
-        if let Some(t) = self.0.lock().unwrap().clone() {
+        if let Some(t) = self.token.lock().unwrap().clone() {
             return Ok(t);
         }
         let token = gh_token()
@@ -58,12 +62,60 @@ impl Session {
                 })
             })
             .ok_or_else(|| NOT_CONNECTED.to_string())?;
-        *self.0.lock().unwrap() = Some(token.clone());
+        *self.token.lock().unwrap() = Some(token.clone());
         Ok(token)
     }
 
     fn forget(&self) {
-        *self.0.lock().unwrap() = None;
+        *self.token.lock().unwrap() = None;
+        // Responses seen with the old token are not the next token's to reuse.
+        self.etags.lock().unwrap().0.clear();
+    }
+}
+
+/// Last good GET responses by path, revalidated with `If-None-Match`. GitHub answers 304
+/// when nothing changed, and a 304 doesn't count against the rate limit.
+#[derive(Default)]
+struct Etags(HashMap<String, (String, Value)>);
+
+/// A few PR views' worth of requests; past this the cache simply starts over.
+const ETAG_CAP: usize = 256;
+
+impl Etags {
+    fn tag(&self, path: &str) -> Option<String> {
+        self.0.get(path).map(|(tag, _)| tag.clone())
+    }
+
+    /// The body a response stands for: the remembered one on 304, otherwise `body`,
+    /// remembered when it came with an ETag.
+    fn resolve(
+        &mut self,
+        path: &str,
+        status: u16,
+        etag: Option<&str>,
+        body: Value,
+    ) -> Result<Value, String> {
+        if status == 304 {
+            // Only possible if the cache was cleared while the request was in flight.
+            return self
+                .0
+                .get(path)
+                .map(|(_, v)| v.clone())
+                .ok_or_else(|| "GitHub sent no data (304); refresh again.".to_string());
+        }
+        match etag {
+            Some(tag) if (200..300).contains(&status) => {
+                if self.0.len() >= ETAG_CAP && !self.0.contains_key(path) {
+                    self.0.clear();
+                }
+                self.0
+                    .insert(path.to_string(), (tag.to_string(), body.clone()));
+            }
+            _ => {
+                self.0.remove(path);
+            }
+        }
+        Ok(body)
     }
 }
 
@@ -84,31 +136,73 @@ enum Method {
     Put(Value),
 }
 
+const JSON: &str = "application/vnd.github+json";
+
 fn call(session: &Session, repo: &Path, method: Method, path: &str) -> Result<Value, String> {
+    request(session, repo, method, path, JSON)
+}
+
+/// Only default-JSON GETs go through the ETag cache: it's keyed by path alone.
+fn request(
+    session: &Session,
+    repo: &Path,
+    method: Method,
+    path: &str,
+    accept: &str,
+) -> Result<Value, String> {
     let token = session.token(repo)?;
     let url = format!("{API}{path}");
     let auth = format!("Bearer {}", token.value);
     let agent = agent();
+    let cacheable = matches!(method, Method::Get) && accept == JSON;
+    let etag = if cacheable {
+        session.etags.lock().unwrap().tag(path)
+    } else {
+        None
+    };
     macro_rules! headers {
         ($req:expr) => {
             $req.header("Authorization", &auth)
-                .header("Accept", "application/vnd.github+json")
+                .header("Accept", accept)
                 .header("X-GitHub-Api-Version", "2022-11-28")
                 .header("User-Agent", "GitViber")
         };
     }
     let result = match method {
-        Method::Get => headers!(agent.get(&url)).call(),
+        Method::Get => {
+            let mut req = headers!(agent.get(&url));
+            if let Some(tag) = &etag {
+                req = req.header("If-None-Match", tag);
+            }
+            req.call()
+        }
         Method::Post(body) => headers!(agent.post(&url)).send_json(body),
         Method::Put(body) => headers!(agent.put(&url)).send_json(body),
     };
     let mut resp = result.map_err(|e| format!("GitHub request failed: {e}"))?;
     let status = resp.status().as_u16();
+    let header = |name: &str| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let new_etag = header("etag");
+    let limited = rate_limit_error(
+        status,
+        header("x-ratelimit-remaining").as_deref(),
+        header("x-ratelimit-reset").as_deref(),
+        header("retry-after").as_deref(),
+        now(),
+    );
     let body: Value = resp.body_mut().read_json().unwrap_or(Value::Null);
     if status == 401 {
         // Expired or revoked; look for a fresh one next time.
         session.forget();
         return Err(NOT_CONNECTED.to_string());
+    }
+    if let Some(msg) = limited {
+        return Err(msg);
     }
     if status >= 400 {
         let msg = body["message"].as_str().unwrap_or("request failed");
@@ -118,7 +212,56 @@ fn call(session: &Session, repo: &Path, method: Method, path: &str) -> Result<Va
             .unwrap_or_default();
         return Err(format!("GitHub {status}: {msg}{detail}"));
     }
-    Ok(body)
+    if !cacheable {
+        return Ok(body);
+    }
+    session
+        .etags
+        .lock()
+        .unwrap()
+        .resolve(path, status, new_etag.as_deref(), body)
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+/// GitHub signals the primary limit with `x-ratelimit-remaining: 0` (reset time in
+/// `x-ratelimit-reset`) and secondary limits with `retry-after`, on a 403 or 429.
+fn rate_limit_error(
+    status: u16,
+    remaining: Option<&str>,
+    reset: Option<&str>,
+    retry_after: Option<&str>,
+    now: u64,
+) -> Option<String> {
+    if status != 403 && status != 429 {
+        return None;
+    }
+    let wait = |secs: u64| {
+        if secs < 60 {
+            format!("{secs}s")
+        } else {
+            format!("{} min", secs.div_ceil(60))
+        }
+    };
+    if let Some(secs) = retry_after.and_then(|r| r.trim().parse::<u64>().ok()) {
+        return Some(format!(
+            "GitHub is throttling requests (secondary rate limit). Try again in {}.",
+            wait(secs)
+        ));
+    }
+    if remaining.map(str::trim) == Some("0") {
+        let when = reset
+            .and_then(|r| r.trim().parse::<u64>().ok())
+            .map(|r| format!(" It resets in {}.", wait(r.saturating_sub(now))))
+            .unwrap_or_default();
+        return Some(format!("GitHub API rate limit reached.{when}"));
+    }
+    (status == 429).then(|| "GitHub rate limit reached. Try again in a minute.".to_string())
 }
 
 // ---------------------------------------------------------------- repo identity
@@ -389,6 +532,65 @@ pub fn detail(session: &Session, repo: &Path, number: u64) -> Result<PullDetail,
     })
 }
 
+/// Signed image links for a PR's attachments, by attachment id. In a private repo,
+/// `github.com/user-attachments/assets/<id>` needs a github.com login the webview doesn't
+/// have; the API's rendered HTML carries short-lived signed links instead, so the token
+/// itself never leaves api.github.com.
+pub fn attachments(
+    session: &Session,
+    repo: &Path,
+    number: u64,
+) -> Result<HashMap<String, String>, String> {
+    const HTML: &str = "application/vnd.github.html+json";
+    let r = repo_ref(repo)?;
+    let base = format!("/repos/{}/{}", r.owner, r.name);
+    let mut out = HashMap::new();
+    let pull = request(
+        session,
+        repo,
+        Method::Get,
+        &format!("{base}/pulls/{number}"),
+        HTML,
+    )?;
+    signed_images(pull["body_html"].as_str().unwrap_or_default(), &mut out);
+    for path in [
+        format!("{base}/issues/{number}/comments?per_page=100"),
+        format!("{base}/pulls/{number}/reviews?per_page=100"),
+    ] {
+        if let Ok(list) = request(session, repo, Method::Get, &path, HTML) {
+            for c in list.as_array().into_iter().flatten() {
+                signed_images(c["body_html"].as_str().unwrap_or_default(), &mut out);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// `…githubusercontent.com/<user>/<n>-<id>.<ext>?jwt=…`: the id is the attachment's UUID.
+fn signed_images(html: &str, out: &mut HashMap<String, String>) {
+    const HOST: &str = "https://private-user-images.githubusercontent.com/";
+    for (i, _) in html.match_indices(HOST) {
+        let url = html[i..]
+            .split(['"', '\'', ' ', '<', '>'])
+            .next()
+            .unwrap_or_default()
+            .replace("&amp;", "&");
+        let name = url.split('?').next().unwrap_or_default();
+        let stem = name.rsplit('/').next().unwrap_or_default();
+        let stem = stem.split('.').next().unwrap_or_default();
+        let Some(id) = stem.len().checked_sub(36).and_then(|n| stem.get(n..)) else {
+            continue;
+        };
+        let uuid = id.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        });
+        if uuid {
+            out.insert(id.to_string(), url);
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PullFiles {
@@ -512,13 +714,18 @@ pub fn checkout(repo: &Path, number: u64, head_ref: &str, same_repo: bool) -> Re
     }
 }
 
-/// Opens a github.com page in the default browser. The URL comes from API data, so it's
-/// restricted to plain URL characters: no quotes, spaces or shell metacharacters.
+/// Links in GitHub text are written by anyone, so only http(s) with plain URL characters
+/// pass: no quotes, spaces, `$`, backticks or backslashes for any launcher to reinterpret.
+fn openable(url: &str) -> bool {
+    (url.starts_with("https://") || url.starts_with("http://"))
+        && url
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-._~/:?=#%+&@!,;*()".contains(c))
+}
+
+/// Opens a web page in the default browser.
 pub fn open_url(url: &str) -> Result<(), String> {
-    let plain = url
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "-._~/:?=#%+".contains(c));
-    if !url.starts_with("https://github.com/") || !plain {
+    if !openable(url) {
         return Err("refusing to open this URL".into());
     }
     #[cfg(target_os = "macos")]
@@ -666,5 +873,70 @@ mod tests {
         }
         assert!(parse_remote("https://gitlab.com/a/b.git").is_none());
         assert!(parse_remote("https://github.com/a").is_none());
+    }
+
+    #[test]
+    fn etags_revalidate() {
+        let mut c = Etags::default();
+        let v = json!({ "n": 1 });
+        assert_eq!(
+            c.resolve("/a", 200, Some("W/\"1\""), v.clone()),
+            Ok(v.clone())
+        );
+        assert_eq!(c.tag("/a").as_deref(), Some("W/\"1\""));
+        // A 304 has no body: the remembered one stands in.
+        assert_eq!(c.resolve("/a", 304, None, Value::Null), Ok(v.clone()));
+        assert!(c.resolve("/b", 304, None, Value::Null).is_err());
+        // No ETag on a fresh response: nothing left to revalidate against.
+        c.resolve("/a", 200, None, json!(2)).unwrap();
+        assert_eq!(c.tag("/a"), None);
+        // Full: start over rather than grow.
+        for i in 0..ETAG_CAP + 1 {
+            c.resolve(&format!("/{i}"), 200, Some("t"), Value::Null)
+                .unwrap();
+        }
+        assert_eq!(c.0.len(), 1);
+    }
+
+    #[test]
+    fn rate_limits() {
+        let now = 1_000;
+        assert_eq!(
+            rate_limit_error(403, Some("0"), Some("1600"), None, now).as_deref(),
+            Some("GitHub API rate limit reached. It resets in 10 min.")
+        );
+        assert_eq!(
+            rate_limit_error(429, Some("12"), None, Some("30"), now).as_deref(),
+            Some("GitHub is throttling requests (secondary rate limit). Try again in 30s.")
+        );
+        // A plain permission error is GitHub's own message, not a rate limit.
+        assert_eq!(
+            rate_limit_error(403, Some("4999"), Some("1600"), None, now),
+            None
+        );
+        assert_eq!(rate_limit_error(200, Some("0"), None, None, now), None);
+    }
+
+    #[test]
+    fn signed_image_links() {
+        let id = "012a2451-fa01-4fe5-8736-33f4a4d179f1";
+        let url = format!("https://private-user-images.githubusercontent.com/23744935/650874155-{id}.png?jwt=eyJ.x&amp;y=1");
+        let html = format!(
+            r#"<a href="{url}"><img src="{url}" alt="x"></a> <img src="https://private-user-images.githubusercontent.com/1/2-nope.png?jwt=z">"#
+        );
+        let mut out = HashMap::new();
+        signed_images(&html, &mut out);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[id], url.replace("&amp;", "&"));
+    }
+
+    #[test]
+    fn openable_links() {
+        assert!(openable("https://github.com/a/b/pull/1#issuecomment-2"));
+        assert!(openable("https://docs.rs/ureq/latest/ureq/?search=a&b=c"));
+        assert!(!openable("javascript:alert(1)"));
+        assert!(!openable("file:///etc/passwd"));
+        assert!(!openable("https://x.com/\"; rm -rf ~"));
+        assert!(!openable("https://x.com/$(id)"));
     }
 }
