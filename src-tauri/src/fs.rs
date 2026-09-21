@@ -3,7 +3,9 @@
 
 use crate::git::{self, FileText};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel_path = Path::new(rel);
@@ -37,7 +39,43 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
     if !real.starts_with(&real_root) {
         return Err(escape());
     }
+    // The name check above misses a link like `docs -> .git`, which survives a clone.
+    if in_git_dir(root, &real_root, &real) {
+        return Err(format!("refusing to touch git internals: {rel}"));
+    }
     Ok(full)
+}
+
+fn in_git_dir(root: &Path, real_root: &Path, real: &Path) -> bool {
+    // A worktree nested inside its own git dir must still be usable.
+    git_dirs(root)
+        .iter()
+        .any(|d| real.starts_with(d) && !real_root.starts_with(d))
+}
+
+/// Canonical git dir and common dir (they differ in linked worktrees). Cached: resolve() runs
+/// per file and they never change for a repo. Outside a repo (unit tests) there is none.
+fn git_dirs(root: &Path) -> Vec<PathBuf> {
+    static CACHE: OnceLock<Mutex<HashMap<PathBuf, Vec<PathBuf>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(dirs) = cache.lock().unwrap().get(root) {
+        return dirs.clone();
+    }
+    let Ok(out) = git::run(
+        root,
+        &["rev-parse", "--absolute-git-dir", "--git-common-dir"],
+    ) else {
+        return vec![];
+    };
+    let dirs: Vec<PathBuf> = String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|l| root.join(l).canonicalize().ok())
+        .collect();
+    cache
+        .lock()
+        .unwrap()
+        .insert(root.to_path_buf(), dirs.clone());
+    dirs
 }
 
 #[derive(Serialize)]
@@ -51,6 +89,7 @@ pub struct Entry {
 
 pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<Entry>, String> {
     let dir = resolve(root, rel)?;
+    let real_root = root.canonicalize().map_err(|e| e.to_string())?;
     let mut entries: Vec<Entry> = std::fs::read_dir(&dir)
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
@@ -62,8 +101,13 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<Entry>, String> {
             } else {
                 format!("{rel}/{name}")
             };
-            // Follows symlinks, so a linked folder expands like a folder.
-            let is_dir = e.path().is_dir();
+            // Follows symlinks, so a linked folder expands like a folder, unless it leads
+            // into the git dir (resolve() would refuse to list it anyway).
+            let is_dir = e.path().is_dir()
+                && !(e.file_type().is_ok_and(|t| t.is_symlink())
+                    && e.path()
+                        .canonicalize()
+                        .is_ok_and(|p| in_git_dir(root, &real_root, &p)));
             Entry {
                 name,
                 path,
@@ -326,6 +370,33 @@ mod tests {
         rename_entry(&sb.0, "out", "out2").unwrap();
         assert!(sb.0.join("out2").symlink_metadata().is_ok());
         assert!(outside.0.exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_link_to_the_git_dir_is_off_limits() {
+        let sb = Sandbox::new("gitlink");
+        let root = &sb.0;
+        git::run(root, &["init", "-q"]).unwrap();
+        std::os::unix::fs::symlink(".git", root.join("docs")).unwrap();
+        fs::write(root.join("hook.sh"), "#!/bin/sh\n").unwrap();
+
+        assert!(create_file(root, "docs/hooks/pre-commit").is_err());
+        assert!(create_dir(root, "docs/hooks/x").is_err());
+        assert!(write_file(root, "docs/config", "[core]").is_err());
+        assert!(rename_entry(root, "hook.sh", "docs/hooks/pre-commit").is_err());
+        assert!(rename_entry(root, "docs/config", "config").is_err());
+        assert!(trash(root, "docs/config").is_err());
+        assert!(list_dir(root, "docs").is_err());
+        assert!(!read_file(root, "docs/config").exists);
+        let docs = list_dir(root, "").unwrap();
+        assert!(!docs.iter().find(|e| e.name == "docs").unwrap().is_dir);
+
+        assert!(!root.join(".git/hooks/pre-commit").exists());
+        assert!(root.join(".git/config").exists());
+        assert!(root.join("hook.sh").exists());
+        // Ordinary files next to the link are unaffected.
+        create_file(root, "notes.txt").unwrap();
     }
 
     #[test]
