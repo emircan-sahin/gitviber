@@ -266,9 +266,15 @@ async fn undo_commit(state: State<'_, AppState>, sha: String) -> Res<()> {
 }
 
 #[tauri::command]
-async fn reset(state: State<'_, AppState>, sha: String, mode: String) -> Res<()> {
+async fn reset(state: State<'_, AppState>, sha: String, mode: String, head: String) -> Res<()> {
     let r = repo(&state)?;
-    blocking(move || git::reset(&r, &sha, &mode)).await
+    blocking(move || git::reset(&r, &sha, &mode, &head)).await
+}
+
+#[tauri::command]
+async fn drops_pushed(state: State<'_, AppState>, sha: String) -> Res<bool> {
+    let r = repo(&state)?;
+    blocking(move || git::drops_pushed(&r, &sha)).await
 }
 
 #[tauri::command]
@@ -453,6 +459,7 @@ pub fn run() {
             reveal_path,
             undo_commit,
             reset,
+            drops_pushed,
             revert,
             checkout_commit,
             create_branch_at,
