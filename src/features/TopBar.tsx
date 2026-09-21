@@ -53,10 +53,13 @@ import { toast } from "@/lib/toast";
 import type { RepoData } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
 import { BranchPicker } from "./BranchPicker";
+import { WorktreePicker } from "./WorktreePicker";
 
 interface Props {
   repo: RepoData;
   root: string;
+  /** The main worktree: the project this window belongs to, even inside a linked worktree. */
+  main: string;
   recent: string[];
   onOpenRepo: (path?: string) => void;
   onForgetRepo: (path: string) => void;
@@ -85,8 +88,8 @@ export function changeTotals(repo: RepoData) {
  * Its 40px height and 86px left inset match trafficLightPosition in tauri.conf.json:
  * buttons are 14pt and sit 13pt from the top/left, so they're centred with a 13pt gap after.
  */
-export function TopBar({ repo, root, recent, onOpenRepo, onForgetRepo, onReorderRepos, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
-  const { status, branches } = repo;
+export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
+  const { status, branches, worktrees } = repo;
   const [busy, setBusy] = useState<string | null>(null);
 
   // Operations that can stop on conflicts resolve to true; that's a state to handle, not an error.
@@ -106,19 +109,28 @@ export function TopBar({ repo, root, recent, onOpenRepo, onForgetRepo, onReorder
 
   const branchName = status?.branch ?? (status?.head ? `detached @ ${status.head}` : "…");
 
+  // git refuses to check out a branch another worktree has; going to that worktree is the way.
+  const openWorktree = (path: string) => {
+    if (worktrees.find((w) => w.path === path)?.prunable) {
+      toast("error", "That worktree's folder is gone", `${path} no longer exists but still holds the branch. git worktree prune releases it.`);
+    } else onOpenRepo(path);
+  };
+
   return (
     <header data-tauri-drag-region className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 pl-[86px]">
-      <ProjectSwitcher repo={repo} root={root} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} />
+      <ProjectSwitcher repo={repo} root={root} main={main} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} />
       <span className="text-[13px] text-border-strong select-none">/</span>
       <BranchPicker
         label={branchName}
         branches={branches}
         current={status?.branch ?? null}
+        onOpenWorktree={openWorktree}
         onSwitch={(name) => run("Switch branch", () => api.switchBranch(name, false), `Switched to ${name}`)}
         onCreate={(name) => run("Create branch", () => api.switchBranch(name, true), `Switched to new branch ${name}`)}
         onMerge={(name) => run("Merge", () => api.merge(name), `Merged ${name}`)}
         onRebase={(name) => run("Rebase", () => api.rebase(name), `Rebased onto ${name}`)}
       />
+      <WorktreePicker worktrees={worktrees} onOpen={onOpenRepo} />
       {status && !status.upstream && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
           <CloudOff className="size-3" /> Not published
@@ -192,10 +204,10 @@ export function TopBar({ repo, root, recent, onOpenRepo, onForgetRepo, onReorder
   );
 }
 
-function ProjectSwitcher({ repo, root, recent, onOpenRepo, onForgetRepo, onReorderRepos }: Props) {
+function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReorderRepos }: Props) {
   const [open, setOpen] = useState(false);
   const totals = changeTotals(repo);
-  const name = root.split("/").pop() ?? root;
+  const name = main.split("/").pop() ?? main;
   const pick = (p?: string) => {
     setOpen(false);
     onOpenRepo(p);
@@ -219,7 +231,7 @@ function ProjectSwitcher({ repo, root, recent, onOpenRepo, onForgetRepo, onReord
         <div className="max-h-[360px] min-h-0 overflow-x-hidden overflow-y-auto p-1">
           <SortableList ids={recent} axis="y" onMove={(from, to) => onReorderRepos(arrayMove(recent, from, to))}>
             {recent.map((p) => (
-              <ProjectRow key={p} path={p} current={p === root} onOpen={pick} onForget={onForgetRepo} />
+              <ProjectRow key={p} path={p} current={p === main} onOpen={pick} onForget={onForgetRepo} />
             ))}
           </SortableList>
         </div>

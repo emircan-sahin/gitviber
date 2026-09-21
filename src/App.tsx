@@ -4,12 +4,12 @@ import { Toaster } from "@/components/Toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Welcome } from "@/features/Welcome";
 import { Workspace } from "@/features/Workspace";
-import { api, errorMessage } from "@/lib/api";
+import { api, errorMessage, type OpenedRepo } from "@/lib/api";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder } from "@/lib/settings";
 import { toast } from "@/lib/toast";
 
 export function App() {
-  const [root, setRoot] = useState<string | null>(null);
+  const [opened, setOpened] = useState<OpenedRepo | null>(null);
   const [recent, setRecent] = useState(recentRepos);
   const [booting, setBooting] = useState(true);
 
@@ -17,11 +17,12 @@ export function App() {
     const target = path ?? (await open({ directory: true, title: "Open a git repository" }));
     if (typeof target !== "string") return;
     try {
-      const top = await api.openRepo(target);
-      rememberRepo(top);
-      setLastRepo(top);
+      const repo = await api.openRepo(target);
+      // Projects are keyed by the main worktree; its other worktrees are reached from the top bar.
+      rememberRepo(repo.main);
+      setLastRepo(repo.root);
       setRecent(recentRepos());
-      setRoot(top);
+      setOpened(repo);
     } catch (e) {
       if (!quiet) toast("error", "Could not open repository", errorMessage(e));
     }
@@ -45,7 +46,7 @@ export function App() {
 
   return (
     <TooltipProvider>
-      {root ? <Workspace key={root} root={root} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} /> : !booting && <Welcome recent={recent} onOpenRepo={onOpen} />}
+      {opened ? <Workspace key={opened.root} root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} /> : !booting && <Welcome recent={recent} onOpenRepo={onOpen} />}
       <Toaster />
     </TooltipProvider>
   );

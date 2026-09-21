@@ -1,6 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type Branch, type Commit, errorMessage, type RepoStatus } from "./api";
+import { api, type Branch, type Commit, errorMessage, type RepoStatus, type Worktree } from "./api";
 import { toast } from "./toast";
 
 const PAGE = 200;
@@ -16,19 +16,22 @@ export function useRepo(root: string) {
   const [commits, setCommits] = useState<Commit[]>([]);
   const [hasMore, setHasMore] = useState(false);
   const [branches, setBranches] = useState<Branch[]>([]);
+  const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   // Bumped on every change on disk so open views can reload their content.
   const [revision, setRevision] = useState(0);
   const inFlight = useRef<Promise<void> | null>(null);
   const queued = useRef<{ history: boolean } | null>(null);
 
   const load = useCallback(async (history: boolean) => {
-    const [st, br, log] = await Promise.all([
+    const [st, br, log, wt] = await Promise.all([
       api.status(),
       history ? api.branches() : null,
       history ? api.log(0, PAGE) : null,
+      history ? api.worktrees() : null,
     ]);
     setStatus(st);
     if (br) setBranches(br);
+    if (wt) setWorktrees(wt);
     if (log) {
       setCommits(log);
       setHasMore(log.length === PAGE);
@@ -89,7 +92,7 @@ export function useRepo(root: string) {
     };
   }, [root, refresh]);
 
-  return { status, commits, hasMore, branches, revision, refresh, loadMore };
+  return { status, commits, hasMore, branches, worktrees, revision, refresh, loadMore };
 }
 
 export type RepoData = ReturnType<typeof useRepo>;

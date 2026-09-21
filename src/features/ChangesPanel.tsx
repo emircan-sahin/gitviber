@@ -1,14 +1,15 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ArrowLeftToLine, ArrowRightToLine, Check, ChevronDown, GitMerge, Minus, Plus, Undo2 } from "lucide-react";
+import { ArrowLeftToLine, ArrowRightToLine, Check, ChevronDown, FolderGit2, FolderOpen, GitMerge, Minus, Plus, Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { api, errorMessage, type FileChange, type Nested, type RepoStatus } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { folderName, NESTED_EXPLAINED, nestedLabel, stageable } from "@/lib/worktrees";
 import { FileIcon } from "./FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
@@ -16,6 +17,8 @@ interface Props {
   status: RepoStatus;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
+  /** Opens another repo path in this window (a nested worktree's row). */
+  onOpenRepo: (path: string) => void;
   /** Hovering a row starts loading it, so the click feels instant. */
   onHover: (s: Selection) => void;
   refresh: () => Promise<void>;
@@ -33,19 +36,27 @@ async function attempt(title: string, fn: () => Promise<unknown>) {
   }
 }
 
-/** Every reviewable change in display order; J/K walk this list. */
+/** Every reviewable change in display order; J/K walk this list. Nested repos have no diff to review. */
 export function changeList(status: RepoStatus): (Selection & { kind: "conflict" | "staged" | "unstaged" })[] {
   return [
     ...status.conflicted.map((file) => ({ kind: "conflict" as const, file })),
     ...status.staged.map((file) => ({ kind: "staged" as const, file })),
-    ...status.unstaged.map((file) => ({ kind: "unstaged" as const, file })),
+    ...status.unstaged.filter((f) => !f.nested).map((file) => ({ kind: "unstaged" as const, file })),
   ];
 }
 
-export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, viewed, toggleViewed }: Props) {
+const leftOut = (n: number) => `Left out ${n} nested ${n === 1 ? "repository" : "repositories"}`;
+
+export function ChangesPanel({ status, activeKey, onOpen, onOpenRepo, onHover, refresh, viewed, toggleViewed }: Props) {
   const act = async (title: string, fn: () => Promise<unknown>) => {
     await attempt(title, fn);
     await refresh();
+  };
+
+  const stageAll = () => {
+    const { paths, skipped } = stageable(status.unstaged);
+    if (skipped) toast("info", leftOut(skipped), NESTED_EXPLAINED);
+    if (paths.length) act("Stage failed", () => api.stage(paths));
   };
 
   const discard = async (files: FileChange[]) => {
@@ -89,7 +100,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2">
-        {!all.length && <AllCaughtUp />}
+        {!all.length && !status.unstaged.length && <AllCaughtUp />}
         {status.conflicted.length > 0 && (
           <Section title="Conflicts" count={status.conflicted.length} tone="text-conflict">
             {status.conflicted.map((file) =>
@@ -133,11 +144,14 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
             action={
               <>
                 <SectionBtn onClick={() => discard(status.unstaged)}>Discard</SectionBtn>
-                <SectionBtn onClick={() => act("Stage failed", () => api.stage(status.unstaged.map((f) => f.path)))}>Stage all</SectionBtn>
+                <SectionBtn onClick={stageAll}>Stage all</SectionBtn>
               </>
             }
           >
             {status.unstaged.map((file) =>
+              file.nested ? (
+                <NestedRow key={file.path} file={file} nested={file.nested} onOpenRepo={onOpenRepo} />
+              ) : (
               row(
                 { kind: "unstaged", file },
                 <>
@@ -150,6 +164,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
                     <Plus />
                   </RowAction>
                 </>,
+              )
               ),
             )}
           </Section>
@@ -312,6 +327,39 @@ function Row({
   );
 }
 
+/**
+ * An untracked folder that is another repository, usually an agent's worktree. Git lists it,
+ * so we do too, but it has no diff here: clicking a worktree opens it instead.
+ */
+function NestedRow({ file, nested, onOpenRepo }: { file: FileChange; nested: Nested; onOpenRepo: (path: string) => void }) {
+  const open = nested.worktree ? () => onOpenRepo(nested.path) : undefined;
+  return (
+    <div
+      role={open ? "button" : undefined}
+      onClick={open}
+      className={cn("group/row relative flex h-[26px] items-center gap-2 pr-2 pl-2 text-[12px]", open ? "cursor-pointer hover:bg-hover" : "cursor-default")}
+    >
+      <span className="size-3.5 shrink-0" />
+      <FolderGit2 className="size-4 shrink-0 text-subtle" />
+      <PathLabel path={file.path.replace(/\/$/, "")} className="flex-1" />
+      <span className="max-w-32 shrink-0 truncate rounded-sm bg-elevated px-1 font-mono text-[10.5px] leading-4 text-muted-foreground group-hover/row:hidden">
+        {nestedLabel(nested)}
+      </span>
+      <div className="hidden items-center group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
+        {open && (
+          <RowAction label={`Open worktree ${folderName(nested.path)}`} onClick={open}>
+            <FolderOpen />
+          </RowAction>
+        )}
+        <RowAction label="Can't stage a separate git repository" onClick={() => toast("info", "Not stageable", NESTED_EXPLAINED)}>
+          <Plus className="opacity-40" />
+        </RowAction>
+      </div>
+      <StatusLetter status={file.status} />
+    </div>
+  );
+}
+
 function RowAction({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (
     <Tip label={label}>
@@ -339,9 +387,12 @@ function CommitBox({ status, refresh }: Pick<Props, "status" | "refresh">) {
   const [busy, setBusy] = useState(false);
 
   const hasStaged = status.staged.length > 0;
-  const hasAny = hasStaged || status.unstaged.length > 0;
+  const all = stageable(status.unstaged);
+  const hasAny = hasStaged || all.paths.length > 0;
   const canCommit = !busy && !status.conflicted.length && (amend || (summary.trim() !== "" && hasAny));
   const label = amend ? "Amend" : hasStaged ? `Commit ${status.staged.length} staged` : "Commit all";
+  const target = status.branch ? `${label} to ${status.branch}` : label;
+  const skipped = !hasStaged && !amend && all.skipped > 0;
 
   const commit = async () => {
     if (!canCommit) return;
@@ -349,7 +400,7 @@ function CommitBox({ status, refresh }: Pick<Props, "status" | "refresh">) {
     const message = body.trim() ? `${summary.trim()}\n\n${body.trim()}` : summary.trim();
     const ok = await attempt("Commit failed", async () => {
       // Nothing staged means "commit everything", the common case after an agent run.
-      if (!hasStaged && !amend) await api.stage(status.unstaged.map((f) => f.path));
+      if (!hasStaged && !amend) await api.stage(all.paths);
       await api.commit(message, amend);
     });
     setBusy(false);
@@ -378,7 +429,7 @@ function CommitBox({ status, refresh }: Pick<Props, "status" | "refresh">) {
           <input type="checkbox" checked={amend} onChange={(e) => setAmend(e.target.checked)} className="accent-primary" />
           Amend
         </label>
-        <Tip label={status.branch ? `${label} to ${status.branch}` : label} shortcut="⌘↵">
+        <Tip label={skipped ? `${target} (${leftOut(all.skipped).toLowerCase()})` : target} shortcut="⌘↵">
           <Button className="ml-auto flex-1" disabled={!canCommit} onClick={commit}>
             {busy ? "Committing…" : label}
           </Button>

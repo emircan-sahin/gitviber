@@ -20,6 +20,8 @@ type ListTab = "changes" | "history" | "pulls";
 
 interface Props {
   root: string;
+  /** The main worktree; differs from root when a linked worktree is open. */
+  main: string;
   recent: string[];
   onOpenRepo: (path?: string) => void;
   onForgetRepo: (path: string) => void;
@@ -56,7 +58,7 @@ export function isTyping(e: KeyboardEvent) {
   return !!el && (el.isContentEditable || !!el.closest("input,textarea,select,[role=menu],[role=listbox],[role=dialog]"));
 }
 
-export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRepos }: Props) {
+export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos }: Props) {
   // Diffs are cached by revision, which restarts per repo.
   useState(resetPairCache);
   const repo = useRepo(root);
@@ -239,6 +241,7 @@ export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRep
       <TopBar
         repo={repo}
         root={root}
+        main={main}
         recent={recent}
         onOpenRepo={onOpenRepo}
         onForgetRepo={onForgetRepo}
@@ -275,7 +278,7 @@ export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRep
               </div>
               <div className="min-h-0 flex-1">
                 {listTab === "changes" && status && (
-                  <ChangesPanel status={status} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} toggleViewed={toggleViewed} />
+                  <ChangesPanel status={status} activeKey={activeKey} onOpen={open} onOpenRepo={onOpenRepo} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} toggleViewed={toggleViewed} />
                 )}
                 {listTab === "pulls" && (
                   <PullsPanel

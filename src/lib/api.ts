@@ -12,6 +12,36 @@ export interface FileChange {
   oid: string | null;
   /** Conflicts only: UU both modified, AA both added, UD/DU deleted by them/us, AU/UA, DD. */
   conflict: string | null;
+  /** Untracked entry that is another repository's root, e.g. an agent's worktree. */
+  nested: Nested | null;
+}
+
+export interface Nested {
+  /** Absolute path, openable as a repo. */
+  path: string;
+  /** One of this repo's linked worktrees (else an unrelated nested repo). */
+  worktree: boolean;
+  branch: string | null;
+}
+
+export interface Worktree {
+  path: string;
+  head: string | null;
+  /** Null when detached (or bare). */
+  branch: string | null;
+  detached: boolean;
+  bare: boolean;
+  locked: boolean;
+  /** Its folder is gone; `git worktree prune` would drop it. */
+  prunable: boolean;
+  current: boolean;
+  main: boolean;
+}
+
+export interface OpenedRepo {
+  root: string;
+  /** The main worktree, which the projects list is keyed by. */
+  main: string;
 }
 
 export interface Operation {
@@ -83,6 +113,8 @@ export interface Branch {
   current: boolean;
   upstream: string | null;
   timestamp: number;
+  /** Checked out in another worktree (its path); git won't switch to it here. */
+  worktree: string | null;
 }
 
 export type PullMode = "ff" | "merge" | "rebase";
@@ -90,7 +122,7 @@ export type PullMode = "ff" | "merge" | "rebase";
 export type DiffKind = "unstaged" | "staged" | "worktree" | "commit" | "range";
 
 export const api = {
-  openRepo: (path: string) => invoke<string>("open_repo", { path }),
+  openRepo: (path: string) => invoke<OpenedRepo>("open_repo", { path }),
   status: () => invoke<RepoStatus>("status"),
   log: (skip: number, limit: number) => invoke<Commit[]>("log", { skip, limit }),
   commitFiles: (sha: string) => invoke<FileChange[]>("commit_files", { sha }),
@@ -103,7 +135,11 @@ export const api = {
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
   branches: () => invoke<Branch[]>("branches"),
   switchBranch: (name: string, create: boolean) => invoke<void>("switch_branch", { name, create }),
-  stage: (paths: string[]) => invoke<void>("stage", { paths }),
+  worktrees: () => invoke<Worktree[]>("worktrees"),
+  /** Changed files in one of this repo's worktrees (a `git status` there). */
+  worktreeChanges: (path: string) => invoke<number>("worktree_changes", { path }),
+  /** Nested repositories are refused unless `allowNested`: git would stage only a gitlink. */
+  stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
   unstage: (paths: string[]) => invoke<void>("unstage", { paths }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
   commit: (message: string, amend: boolean) => invoke<void>("commit", { message, amend }),

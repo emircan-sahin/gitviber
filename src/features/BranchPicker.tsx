@@ -1,15 +1,18 @@
-import { Check, ChevronsUpDown, Cloud, GitBranch, GitMerge, GitPullRequestArrow, Plus, Search } from "lucide-react";
+import { Check, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitMerge, GitPullRequestArrow, Plus, Search } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
 import type { Branch } from "@/lib/api";
 import { cn, relativeTime } from "@/lib/utils";
+import { folderName } from "@/lib/worktrees";
 
 interface Props {
   label: string;
   current: string | null;
   branches: Branch[];
   onSwitch: (name: string) => void;
+  /** For a branch checked out in another worktree, which git won't switch to here. */
+  onOpenWorktree: (path: string) => void;
   onCreate: (name: string) => void;
   onMerge: (name: string) => void;
   onRebase: (name: string) => void;
@@ -26,7 +29,7 @@ const localName = (b: Branch) => (b.remote ? b.name.slice(b.name.indexOf("/") + 
  * Searchable branch switcher: type to filter, ↑/↓ + Enter to switch, or create what you
  * typed. The highlighted row also offers merging it into, or rebasing onto it.
  */
-export function BranchPicker({ label, current, branches, onSwitch, onCreate, onMerge, onRebase, side = "bottom" }: Props) {
+export function BranchPicker({ label, current, branches, onSwitch, onOpenWorktree, onCreate, onMerge, onRebase, side = "bottom" }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -54,9 +57,14 @@ export function BranchPicker({ label, current, branches, onSwitch, onCreate, onM
     setQuery("");
   };
 
+  // Switching to origin/x means switching to x, so a remote row follows its local branch.
+  const elsewhere = (b: Branch) => b.worktree ?? branches.find((l) => !l.remote && l.name === localName(b))?.worktree ?? null;
+
   const choose = (o: Option | undefined) => {
     if (!o) return;
+    const worktree = o.kind === "branch" ? elsewhere(o.branch) : null;
     if (o.kind === "create") onCreate(o.name);
+    else if (worktree) onOpenWorktree(worktree);
     else if (!o.branch.current) onSwitch(localName(o.branch));
     else return;
     close();
@@ -132,6 +140,8 @@ export function BranchPicker({ label, current, branches, onSwitch, onCreate, onM
                         <Check className="size-3.5 shrink-0" />
                       ) : o.branch.remote ? (
                         <Cloud className="size-3.5 shrink-0 opacity-60" />
+                      ) : o.branch.worktree ? (
+                        <FolderGit2 className="size-3.5 shrink-0 opacity-60" />
                       ) : (
                         <GitBranch className="size-3.5 shrink-0 opacity-60" />
                       )}
@@ -150,8 +160,8 @@ export function BranchPicker({ label, current, branches, onSwitch, onCreate, onM
                           </Tip>
                         </span>
                       ) : (
-                        <span className={cn("ml-auto shrink-0 text-[10.5px]", hot ? "opacity-80" : "text-subtle")}>
-                          {o.branch.current ? "current" : relativeTime(o.branch.timestamp)}
+                        <span className={cn("ml-auto max-w-40 shrink-0 truncate text-[10.5px]", hot ? "opacity-80" : "text-subtle")}>
+                          {o.branch.current ? "current" : o.branch.worktree ? `in ${folderName(o.branch.worktree)}` : relativeTime(o.branch.timestamp)}
                         </span>
                       )}
                     </>
