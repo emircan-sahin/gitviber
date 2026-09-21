@@ -1,6 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { ChevronRight, Copy, File, FilePlus, FolderPlus, FolderSearch, Pencil, Trash2, Undo2 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/selection";
@@ -106,6 +106,15 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     return out;
   }, [children, expanded]);
 
+  // The edited entry (or the folder a new one goes into) vanished on a refresh: drop the input,
+  // or keyboard navigation stays disabled with nothing to type into.
+  useEffect(() => {
+    const path = editing && (editing.mode === "rename" ? editing.entry.path : editing.parent);
+    if (!path || rows.some((r) => r.entry.path === path)) return;
+    setEditing(null);
+    if (document.activeElement === document.body) treeRef.current?.focus();
+  }, [rows, editing]);
+
   useEffect(() => {
     if (selected) treeRef.current?.querySelector(`[data-path="${CSS.escape(selected)}"]`)?.scrollIntoView({ block: "nearest" });
   }, [selected]);
@@ -143,7 +152,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
         await api.renamePath(ed.entry.path, path);
         // Keep the renamed folder (and anything open inside it) expanded under its new name.
         const from = ed.entry.path;
+        const moved = [...expanded].filter((p) => isInside(p, from));
         setExpanded((x) => new Set([...x].map((p) => (isInside(p, from) ? path + p.slice(from.length) : p))));
+        // Their listings are cached under the old paths; the watcher skips node_modules, so list now.
+        moved.forEach((p) => loadDir(path + p.slice(from.length)));
         onPathMoved(from, path);
       } else {
         await (ed.isDir ? api.createDir(path) : api.createFile(path));
@@ -191,6 +203,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
 
   const onKeyDown = (ev: React.KeyboardEvent) => {
     if (ev.target !== ev.currentTarget || editing) return;
+    // ⌥↑/⌥↓ (next/previous change) and ⌘-arrows belong to the global shortcuts.
+    if (ev.key.startsWith("Arrow") && (ev.altKey || ev.metaKey)) return;
     const i = rows.findIndex((r) => r.entry.path === selected);
     const cur = rows[i]?.entry;
     const move = (to: number) => {
@@ -371,6 +385,13 @@ function Row({ depth, path, className, children, ...props }: { depth: number; pa
 /** Inline name editor: Enter or blur commits, Escape cancels (VS Code behavior). */
 function NameInput({ initial, selectStem, onDone }: { initial: string; selectStem?: boolean; onDone: (name: string | null, refocus: boolean) => void }) {
   const done = useRef(false);
+  // Unmounted by the tree (entry vanished): a blur fired during removal must not commit.
+  useLayoutEffect(
+    () => () => {
+      done.current = true;
+    },
+    [],
+  );
   const finish = (name: string | null, refocus: boolean) => {
     if (done.current) return;
     done.current = true;
@@ -391,7 +412,8 @@ function NameInput({ initial, selectStem, onDone }: { initial: string; selectSte
       onClick={(ev) => ev.stopPropagation()}
       onKeyDown={(ev) => {
         ev.stopPropagation();
-        if (ev.key === "Enter") finish(ev.currentTarget.value, true);
+        // Enter that confirms an IME composition (e.g. Japanese input) isn't a commit.
+        if (ev.key === "Enter" && !ev.nativeEvent.isComposing && ev.keyCode !== 229) finish(ev.currentTarget.value, true);
         else if (ev.key === "Escape") finish(null, true);
       }}
       onBlur={(ev) => finish(ev.currentTarget.value, false)}
