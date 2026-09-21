@@ -7,7 +7,7 @@ mod github;
 mod scenario_tests;
 mod watch;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 
@@ -36,14 +36,27 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Res<T> + Send + 'static
         .map_err(|e| e.to_string())?
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenedRepo {
+    root: String,
+    /// The main worktree; the projects list is keyed by it, so agent worktrees don't pile up there.
+    main: String,
+}
+
 #[tauri::command]
-async fn open_repo(app: AppHandle, state: State<'_, AppState>, path: String) -> Res<String> {
-    let root = blocking(move || git::toplevel(PathBuf::from(path).as_path())).await?;
+async fn open_repo(app: AppHandle, state: State<'_, AppState>, path: String) -> Res<OpenedRepo> {
+    let (root, main) = blocking(move || {
+        let root = git::toplevel(PathBuf::from(path).as_path())?;
+        let main = git::main_worktree(Path::new(&root)).unwrap_or_else(|| root.clone());
+        Ok((root, main))
+    })
+    .await?;
     let root_path = PathBuf::from(&root);
     let watcher = watch::start(app, root_path.clone())?;
     *state.watcher.lock().unwrap() = Some(watcher);
     *state.repo.lock().unwrap() = Some(root_path);
-    Ok(root)
+    Ok(OpenedRepo { root, main })
 }
 
 #[tauri::command]
@@ -141,9 +154,21 @@ async fn switch_branch(state: State<'_, AppState>, name: String, create: bool) -
 }
 
 #[tauri::command]
-async fn stage(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
+async fn worktrees(state: State<'_, AppState>) -> Res<Vec<git::Worktree>> {
     let r = repo(&state)?;
-    blocking(move || git::stage(&r, &paths)).await
+    blocking(move || git::worktrees(&r)).await
+}
+
+#[tauri::command]
+async fn worktree_changes(state: State<'_, AppState>, path: String) -> Res<u32> {
+    let r = repo(&state)?;
+    blocking(move || git::worktree_changes(&r, &path)).await
+}
+
+#[tauri::command]
+async fn stage(state: State<'_, AppState>, paths: Vec<String>, allow_nested: bool) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::stage_with(&r, &paths, allow_nested)).await
 }
 
 #[tauri::command]
@@ -350,6 +375,8 @@ pub fn run() {
             read_file,
             branches,
             switch_branch,
+            worktrees,
+            worktree_changes,
             stage,
             unstage,
             discard,

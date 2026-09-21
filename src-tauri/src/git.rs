@@ -192,6 +192,19 @@ pub struct FileChange {
     /// For conflicts, git's two-letter code: UU both modified, AA both added,
     /// UD deleted by them, DU deleted by us, AU/UA added by one side, DD both deleted.
     pub conflict: Option<String>,
+    /// Untracked entries that are another repository's root (e.g. an agent's worktree).
+    pub nested: Option<Nested>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Nested {
+    /// Absolute path of the nested repository.
+    pub path: String,
+    /// A linked worktree of this repository (listed by `git worktree list`).
+    pub worktree: bool,
+    /// Its checked-out branch, when it's a worktree on a branch.
+    pub branch: Option<String>,
 }
 
 /// A merge, rebase, cherry-pick or revert that stopped and waits for the user.
@@ -231,6 +244,7 @@ fn change(path: &str, old_path: Option<&str>, status: char) -> FileChange {
         deletions: None,
         oid: None,
         conflict: None,
+        nested: None,
     }
 }
 
@@ -357,8 +371,19 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
             '?' => {
                 let path = &rec[2..];
                 let mut f = change(path, None, '?');
-                f.additions = count_lines(repo, path);
-                f.deletions = Some(0);
+                if is_nested_repo(repo, path) {
+                    f.nested = Some(Nested {
+                        path: repo
+                            .join(path.trim_end_matches('/'))
+                            .to_string_lossy()
+                            .into(),
+                        worktree: false,
+                        branch: None,
+                    });
+                } else {
+                    f.additions = count_lines(repo, path);
+                    f.deletions = Some(0);
+                }
                 st.unstaged.push(f);
             }
             _ => {}
@@ -375,6 +400,9 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
             f.oid = Some(format!("{}:{mtime}", meta.len()));
         }
     }
+    if st.unstaged.iter().any(|f| f.nested.is_some()) {
+        mark_worktrees(repo, &mut st.unstaged);
+    }
     if !st.unstaged.is_empty() {
         let stats = parse_numstat(&run(repo, &["diff", "--numstat", "-z"])?);
         apply_numstat(&mut st.unstaged, &stats);
@@ -384,6 +412,125 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         apply_numstat(&mut st.staged, &stats);
     }
     Ok(st)
+}
+
+/// With `--untracked-files=all` git lists a directory only when it is another repository's
+/// root, which it won't descend into. The `.git` check confirms it.
+fn is_nested_repo(repo: &Path, path: &str) -> bool {
+    path.ends_with('/') && repo.join(path).join(".git").exists()
+}
+
+/// Tells this repo's own linked worktrees apart from unrelated nested repositories.
+fn mark_worktrees(repo: &Path, files: &mut [FileChange]) {
+    let Ok(list) = worktrees(repo) else { return };
+    let real = |p: &str| Path::new(p).canonicalize().ok();
+    for n in files.iter_mut().filter_map(|f| f.nested.as_mut()) {
+        let here = real(&n.path);
+        if let Some(w) = list
+            .iter()
+            .find(|w| here.is_some() && real(&w.path) == here)
+        {
+            n.worktree = true;
+            n.branch = w.branch.clone();
+        }
+    }
+}
+
+// ---------------------------------------------------------------- worktrees
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Worktree {
+    pub path: String,
+    pub head: Option<String>,
+    /// Short branch name; None when detached (or bare).
+    pub branch: Option<String>,
+    pub detached: bool,
+    pub bare: bool,
+    pub locked: bool,
+    /// Its directory is gone; `git worktree prune` would drop the entry.
+    pub prunable: bool,
+    /// The worktree this window has open.
+    pub current: bool,
+    /// The main worktree (git always lists it first).
+    pub main: bool,
+}
+
+pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, String> {
+    let raw = run_text(repo, &["worktree", "list", "--porcelain", "-z"])?;
+    let here = repo.canonicalize().ok();
+    let mut list: Vec<Worktree> = vec![];
+    // NUL-separated fields; an empty field ends each worktree's record.
+    let mut fields = raw.split('\0');
+    while let Some(first) = fields.next() {
+        let Some(path) = first.strip_prefix("worktree ") else {
+            continue;
+        };
+        let mut w = Worktree {
+            path: path.to_string(),
+            head: None,
+            branch: None,
+            detached: false,
+            bare: false,
+            locked: false,
+            prunable: false,
+            current: here.is_some() && Path::new(path).canonicalize().ok() == here,
+            main: list.is_empty(),
+        };
+        for field in fields.by_ref().take_while(|f| !f.is_empty()) {
+            let (key, val) = field.split_once(' ').unwrap_or((field, ""));
+            match key {
+                "HEAD" => w.head = Some(val.chars().take(7).collect()),
+                "branch" => w.branch = Some(val.trim_start_matches("refs/heads/").to_string()),
+                "detached" => w.detached = true,
+                "bare" => w.bare = true,
+                "locked" => w.locked = true,
+                "prunable" => w.prunable = true,
+                _ => {}
+            }
+        }
+        list.push(w);
+    }
+    Ok(list)
+}
+
+/// What the projects list keys this repo by: its main worktree, unless that is bare or gone.
+pub fn main_worktree(repo: &Path) -> Option<String> {
+    worktrees(repo)
+        .ok()?
+        .into_iter()
+        .find(|w| w.main && !w.bare && Path::new(&w.path).is_dir())
+        .map(|w| w.path)
+}
+
+/// Changed files in one of this repo's worktrees. Only paths `git worktree list` reports are
+/// accepted, so the frontend can't point git at an arbitrary folder.
+pub fn worktree_changes(repo: &Path, path: &str) -> Result<u32, String> {
+    let w = worktrees(repo)?
+        .into_iter()
+        .find(|w| w.path == path)
+        .ok_or_else(|| format!("not a worktree of this repository: {path}"))?;
+    if w.bare || w.prunable {
+        return Err(format!("this worktree has no files on disk: {path}"));
+    }
+    let raw = run(
+        Path::new(&w.path),
+        &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+    )?;
+    let mut count = 0;
+    let mut records = raw.split(|b| *b == 0);
+    while let Some(rec) = records.next() {
+        match rec.first() {
+            Some(b'1' | b'u' | b'?') => count += 1,
+            // A rename's original path follows as its own record.
+            Some(b'2') => {
+                count += 1;
+                records.next();
+            }
+            _ => {}
+        }
+    }
+    Ok(count)
 }
 
 // ---------------------------------------------------------------- history
@@ -908,6 +1055,8 @@ pub struct Branch {
     pub current: bool,
     pub upstream: Option<String>,
     pub timestamp: i64,
+    /// Checked out in another worktree (its path), where git refuses to switch to it.
+    pub worktree: Option<String>,
 }
 
 pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
@@ -916,7 +1065,7 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         &[
             "for-each-ref",
             "--sort=-committerdate",
-            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)",
+            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)",
             "refs/heads",
             "refs/remotes",
         ],
@@ -926,12 +1075,13 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\x1f').collect();
             // Skip the symbolic origin/HEAD pointer.
-            (f.len() == 5 && !f[0].ends_with("/HEAD")).then(|| Branch {
+            (f.len() == 6 && !f[0].ends_with("/HEAD")).then(|| Branch {
                 name: f[1].to_string(),
                 remote: f[0].starts_with("refs/remotes/"),
                 current: f[2] == "*",
                 upstream: (!f[3].is_empty()).then(|| f[3].to_string()),
                 timestamp: f[4].parse().unwrap_or(0),
+                worktree: (f[2] != "*" && !f[5].is_empty()).then(|| f[5].to_string()),
             })
         })
         .collect())
@@ -956,7 +1106,40 @@ fn with_paths<'a>(mut args: Vec<&'a str>, paths: &'a [String]) -> Vec<&'a str> {
 }
 
 pub fn stage(repo: &Path, paths: &[String]) -> Result<(), String> {
+    stage_with(repo, paths, false)
+}
+
+/// Refuses untracked nested repositories (an agent's worktree) unless `allow_nested`: git
+/// would stage one as a gitlink, a pointer to its current commit, and none of its files.
+pub fn stage_with(repo: &Path, paths: &[String], allow_nested: bool) -> Result<(), String> {
+    if !allow_nested {
+        if let Some(p) = nested_repos(repo, paths)?.first() {
+            return Err(format!(
+                "{p} is a separate git repository (a worktree or nested repo), so it was not staged. \
+                 git would record only a pointer to its current commit, not its files. \
+                 Commit inside it instead."
+            ));
+        }
+    }
     run(repo, &with_paths(vec!["add", "-A"], paths)).map(|_| ())
+}
+
+/// Untracked nested repositories at or under `paths`. Only a directory can hold one, so
+/// plain file paths skip the extra status call.
+fn nested_repos(repo: &Path, paths: &[String]) -> Result<Vec<String>, String> {
+    if !paths.iter().any(|p| repo.join(p).is_dir()) {
+        return Ok(vec![]);
+    }
+    let args = with_paths(
+        vec!["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+        paths,
+    );
+    Ok(run_text(repo, &args)?
+        .split('\0')
+        .filter_map(|r| r.strip_prefix("? "))
+        .filter(|p| is_nested_repo(repo, p))
+        .map(|p| p.trim_end_matches('/').to_string())
+        .collect())
 }
 
 pub fn unstage(repo: &Path, paths: &[String]) -> Result<(), String> {

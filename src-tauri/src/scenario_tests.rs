@@ -467,3 +467,123 @@ fn pr_checkout_fast_forwards_and_never_resets() {
     assert_eq!(status(b).unwrap().branch.as_deref(), Some("pr/7"));
     checkout(b, 7, "someones-branch", false).unwrap();
 }
+
+/// A repo with an agent-style worktree inside it (.claude/worktrees/agent), a detached one
+/// next to it, and one whose folder was deleted (prunable).
+fn repo_with_worktrees(sb: &Sandbox) -> PathBuf {
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let add = |args: &[&str]| {
+        let mut all = vec!["worktree", "add", "-q"];
+        all.extend(args);
+        run(&r, &all).unwrap();
+    };
+    add(&["-b", "agent", ".claude/worktrees/agent"]);
+    add(&["--detach", sb.path("det").to_str().unwrap()]);
+    add(&["-b", "gone", sb.path("gone").to_str().unwrap()]);
+    fs::remove_dir_all(sb.path("gone")).unwrap();
+    r
+}
+
+fn same_dir(a: &str, b: &Path) -> bool {
+    Path::new(a)
+        .canonicalize()
+        .is_ok_and(|a| a == b.canonicalize().unwrap())
+}
+
+#[test]
+fn worktree_list_detached_prunable_and_counts() {
+    let sb = Sandbox::new("wtlist");
+    let r = repo_with_worktrees(&sb);
+    let agent = r.join(".claude/worktrees/agent");
+    fs::write(agent.join("a.txt"), "changed\n").unwrap();
+    fs::write(agent.join("new.txt"), "new\n").unwrap();
+
+    let list = worktrees(&r).unwrap();
+    assert_eq!(list.len(), 4);
+    let find = |dir: &Path| list.iter().find(|w| same_dir(&w.path, dir)).unwrap();
+    let main = find(&r);
+    assert!(main.main && main.current && main.branch.as_deref() == Some("main"));
+    let a = find(&agent);
+    assert!(!a.main && !a.current && a.branch.as_deref() == Some("agent"));
+    let det = find(&sb.path("det"));
+    assert!(det.detached && det.branch.is_none() && det.head.is_some());
+    let gone = list.iter().find(|w| w.path.ends_with("/gone")).unwrap();
+    assert!(gone.prunable);
+
+    assert_eq!(worktree_changes(&r, &a.path).unwrap(), 2);
+    assert_eq!(worktree_changes(&r, &det.path).unwrap(), 0);
+    assert!(worktree_changes(&r, &gone.path).is_err());
+    // Only listed worktrees: never an arbitrary folder.
+    assert!(worktree_changes(&r, sb.path("det/..").to_str().unwrap()).is_err());
+
+    // From inside a linked worktree the main one is still the project.
+    assert!(same_dir(&main_worktree(&agent).unwrap(), &r));
+    assert!(worktrees(&agent)
+        .unwrap()
+        .iter()
+        .any(|w| w.current && w.branch.as_deref() == Some("agent")));
+    // Branches checked out elsewhere say where, so the UI can open that worktree instead.
+    let br = branches(&r).unwrap();
+    let wt = |n: &str| br.iter().find(|b| b.name == n).unwrap().worktree.clone();
+    assert!(same_dir(&wt("agent").unwrap(), &agent));
+    assert_eq!(wt("main"), None, "the current branch is not 'elsewhere'");
+    assert!(switch_branch(&r, "agent", false).is_err());
+}
+
+#[test]
+fn nested_worktrees_show_in_status_and_are_never_staged() {
+    let sb = Sandbox::new("wtnested");
+    let r = repo_with_worktrees(&sb);
+    init(&r.join("vendor/lib"));
+    fs::write(r.join("vendor/lib/x.txt"), "x\n").unwrap();
+    fs::write(r.join("plain.txt"), "p\n").unwrap();
+
+    let st = status(&r).unwrap();
+    let entry = |p: &str| st.unstaged.iter().find(|f| f.path == p).unwrap();
+    let agent = entry(".claude/worktrees/agent/");
+    let n = agent.nested.as_ref().expect("marked as nested");
+    assert!(n.worktree && n.branch.as_deref() == Some("agent"));
+    assert!(same_dir(&n.path, &r.join(".claude/worktrees/agent")));
+    let lib = entry("vendor/lib/").nested.as_ref().expect("nested repo");
+    assert!(!lib.worktree && lib.branch.is_none());
+    assert!(entry("plain.txt").nested.is_none());
+
+    // Staging one directly, or a folder above it, is refused; plain files still stage.
+    for p in [".claude/worktrees/agent/", ".claude", "vendor/lib"] {
+        let err = stage(&r, &[p.into()]).unwrap_err();
+        assert!(err.contains("separate git repository"), "{p}: {err}");
+    }
+    assert!(stage(&r, &["plain.txt".into(), "vendor/lib/".into()]).is_err());
+    assert!(
+        status(&r).unwrap().staged.is_empty(),
+        "a refusal stages nothing"
+    );
+    stage(&r, &["plain.txt".into()]).unwrap();
+    // Explicitly allowed, it does what git does: a gitlink to its commit, not its files.
+    write_commit(&r.join("vendor/lib"), "x.txt", "x\n", "lib");
+    stage_with(&r, &["vendor/lib".into()], true).unwrap();
+    let ls = run(&r, &["ls-files", "-s", "vendor/lib"]).unwrap();
+    assert!(String::from_utf8_lossy(&ls).starts_with("160000"));
+}
+
+#[test]
+fn watcher_ignores_nested_worktrees() {
+    use crate::watch::{classify, Kind};
+    let sb = Sandbox::new("wtwatch");
+    let r = repo_with_worktrees(&sb);
+    let agent = r.join(".claude/worktrees/agent");
+    for p in ["a.txt", "src/deep/x.rs", ".git"] {
+        assert_eq!(classify(&r, &agent.join(p)), None, "{p}");
+    }
+    // The worktree folder appearing or going away does change this repo's status.
+    assert_eq!(classify(&r, &agent), Some(Kind::Worktree));
+    assert_eq!(
+        classify(&r, &r.join(".claude/notes.md")),
+        Some(Kind::Worktree)
+    );
+    assert_eq!(classify(&r, &r.join(".git/HEAD")), Some(Kind::Git));
+    // Opened as the repo itself, the worktree's own files count.
+    assert_eq!(classify(&agent, &agent.join("a.txt")), Some(Kind::Worktree));
+}
