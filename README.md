@@ -56,7 +56,8 @@ There are no release builds yet. You need Rust (stable), Node 22+, pnpm and git.
 
 ```sh
 pnpm install
-pnpm tauri dev      # run the app
+pnpm tauri dev      # run the app (takes the next free port if 1420 is in use)
+pnpm tauri dev --port 1421   # or pick one
 pnpm tauri build    # release bundle
 pnpm check          # what CI runs: build, tests, rustfmt, clippy
 ```
