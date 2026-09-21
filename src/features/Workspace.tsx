@@ -313,7 +313,19 @@ export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRep
                     refreshRepo={() => repo.refresh()}
                   />
                 )}
-                {listTab === "history" && <HistoryPanel commits={repo.commits} remotes={remoteNames} hasMore={repo.hasMore} loadMore={repo.loadMore} activeKey={activeKey} onOpen={open} onHover={prefetch} />}
+                {listTab === "history" && (
+                  <HistoryPanel
+                    commits={repo.commits}
+                    status={status}
+                    remotes={remoteNames}
+                    hasMore={repo.hasMore}
+                    loadMore={repo.loadMore}
+                    refresh={() => repo.refresh()}
+                    activeKey={activeKey}
+                    onOpen={open}
+                    onHover={prefetch}
+                  />
+                )}
               </div>
             </div>
           </ResizablePanel>

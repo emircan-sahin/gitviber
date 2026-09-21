@@ -1,7 +1,20 @@
-import { Cloud, Tag } from "lucide-react";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, RotateCcw, Tag, Undo2 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { api, type Commit, errorMessage, type FileChange } from "@/lib/api";
+import {
+  ContextMenu,
+  ContextMenuContent,
+  ContextMenuItem,
+  ContextMenuSeparator,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
+  ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { api, type Commit, errorMessage, type FileChange, github, type RepoStatus, type ResetMode } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
@@ -10,19 +23,57 @@ import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
 interface Props {
   commits: Commit[];
+  status: RepoStatus | null;
   /** Remote-tracking branch names (origin/main…), to group decorations. */
   remotes: Set<string>;
   hasMore: boolean;
   loadMore: () => Promise<void>;
+  refresh: () => Promise<void>;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
 }
 
-export function HistoryPanel({ commits, remotes, hasMore, loadMore, activeKey, onOpen, onHover }: Props) {
+/** What a commit's context menu needs from the panel. */
+interface Actions {
+  status: RepoStatus | null;
+  webUrl: string | null;
+  /** An action is running or a merge/rebase/revert waits: nothing else may move HEAD. */
+  locked: boolean;
+  run: (label: string, fn: () => Promise<void | boolean>, done: string) => Promise<void>;
+  name: (kind: "branch" | "tag", commit: Commit) => void;
+}
+
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover }: Props) {
   const [open, setOpen] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ el: HTMLElement; top: number } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [webUrl, setWebUrl] = useState<string | null>(null);
+  const [naming, setNaming] = useState<{ kind: "branch" | "tag"; commit: Commit } | null>(null);
+
+  useEffect(() => {
+    api.githubWebUrl().then(setWebUrl, () => setWebUrl(null));
+  }, []);
+
+  // Operations that can stop on conflicts resolve to true; Workspace then brings Changes into view.
+  const run = async (label: string, fn: () => Promise<void | boolean>, done: string) => {
+    setBusy(true);
+    try {
+      const stopped = await fn();
+      if (stopped) toast("info", `${label} stopped on conflicts`, "Resolve them in Changes, then continue.");
+      else toast("success", done);
+    } catch (e) {
+      toast("error", `${label} failed`, errorMessage(e));
+    } finally {
+      setBusy(false);
+      await refresh();
+    }
+  };
+
+  const actions: Actions = { status, webUrl, locked: busy || !!status?.operation, run, name: (kind, commit) => setNaming({ kind, commit }) };
+  // Commits above the first pushed one are local only; resetting below it rewrites published history.
+  const firstPushed = status?.upstream ? commits.findIndex((c) => !c.unpushed) : -1;
 
   // Opening a commit collapses the one above it; WebKit has no scroll anchoring, so without
   // this the clicked row jumps up by the collapsed file list, often out of view.
@@ -55,6 +106,7 @@ export function HistoryPanel({ commits, remotes, hasMore, loadMore, activeKey, o
           activeKey={activeKey}
           onOpen={onOpen}
           onHover={onHover}
+          menu={<CommitMenu commit={c} head={i === 0} dropsPushed={firstPushed >= 0 && firstPushed < i} actions={actions} />}
         />
       ))}
       {hasMore && (
@@ -64,7 +116,131 @@ export function HistoryPanel({ commits, remotes, hasMore, loadMore, activeKey, o
           </Button>
         </div>
       )}
+      {naming && <NameDialog {...naming} onClose={() => setNaming(null)} run={run} />}
     </div>
+  );
+}
+
+const PUSHED_WARNING = "It is already pushed, so you'd have to force-push, which rewrites history for everyone else on this branch.";
+
+/**
+ * Right-click actions on a commit. `head`: the first row, i.e. the checked-out commit.
+ * `dropsPushed`: resetting here would drop commits that are already on the upstream.
+ */
+function CommitMenu({ commit: c, head, dropsPushed, actions }: { commit: Commit; head: boolean; dropsPushed: boolean; actions: Actions }) {
+  const { status, webUrl, locked, run } = actions;
+  const short = c.shortSha;
+  const pushed = !!status?.upstream && !c.unpushed;
+  const target = status?.branch ?? "HEAD";
+
+  const undo = async () => {
+    if (pushed && !(await ask(`Undo "${c.subject}"? ${PUSHED_WARNING}`, { title: "Undo pushed commit", kind: "warning", okLabel: "Undo" }))) return;
+    await run("Undo", () => api.undoCommit(c.sha), "Commit undone; its changes are staged");
+  };
+
+  const reset = async (mode: ResetMode) => {
+    const lines = [`Move ${target} to ${short}?`];
+    if (mode === "hard") lines.push("Uncommitted changes to tracked files are discarded, and commits after this one leave the branch. This cannot be undone from GitViber.");
+    if (dropsPushed) lines.push(PUSHED_WARNING);
+    if ((mode === "hard" || dropsPushed) && !(await ask(lines.join("\n\n"), { title: `${mode[0].toUpperCase()}${mode.slice(1)} reset`, kind: "warning", okLabel: "Reset" }))) return;
+    await run("Reset", () => api.reset(c.sha, mode), `${target} reset to ${short}`);
+  };
+
+  const checkout = async () => {
+    const ok = await ask(`Check out ${short} without a branch (detached HEAD)? New commits made there belong to no branch until you create one.`, {
+      title: "Checkout commit",
+      kind: "warning",
+      okLabel: "Checkout",
+    });
+    if (ok) await run("Checkout", () => api.checkoutCommit(c.sha), `Checked out ${short}`);
+  };
+
+  const copy = (text: string, what: string) => navigator.clipboard.writeText(text).then(() => toast("success", what));
+
+  return (
+    // Focus has nowhere useful to return to, and restoring it would steal it from the name dialog.
+    <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
+      <ContextMenuItem disabled={locked || !head || !c.parents.length} onSelect={undo}>
+        <Undo2 /> Undo commit
+      </ContextMenuItem>
+      <ContextMenuItem disabled={locked} onSelect={() => run("Revert", () => api.revert(c.sha), `Reverted ${short}`)}>
+        <RotateCcw /> Revert commit
+      </ContextMenuItem>
+      <ContextMenuSub>
+        <ContextMenuSubTrigger disabled={locked}>
+          <History /> Reset {target} to here
+        </ContextMenuSubTrigger>
+        <ContextMenuSubContent>
+          <ContextMenuItem onSelect={() => reset("soft")}>Soft · keep changes staged</ContextMenuItem>
+          <ContextMenuItem onSelect={() => reset("mixed")}>Mixed · keep changes unstaged</ContextMenuItem>
+          <ContextMenuItem className="text-destructive" onSelect={() => reset("hard")}>
+            Hard · discard changes
+          </ContextMenuItem>
+        </ContextMenuSubContent>
+      </ContextMenuSub>
+      <ContextMenuSeparator />
+      <ContextMenuItem disabled={locked || head} onSelect={checkout}>
+        <GitCommitHorizontal /> Checkout commit
+      </ContextMenuItem>
+      <ContextMenuItem disabled={locked} onSelect={() => actions.name("branch", c)}>
+        <GitBranchPlus /> Create branch from here…
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => actions.name("tag", c)}>
+        <Tag /> Create tag here…
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={() => copy(c.sha, "SHA copied")}>
+        <Copy /> Copy SHA
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => copy(short, "Short SHA copied")}>
+        <Copy /> Copy short SHA
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => copy(c.body ? `${c.subject}\n\n${c.body}` : c.subject, "Message copied")}>
+        <Copy /> Copy message
+      </ContextMenuItem>
+      {webUrl && (
+        // Unpushed commits don't exist on GitHub yet.
+        <ContextMenuItem
+          disabled={c.unpushed}
+          onSelect={() => github.openUrl(`${webUrl}/commit/${c.sha}`).catch((e) => toast("error", "Could not open GitHub", errorMessage(e)))}
+        >
+          <ExternalLink /> Open on GitHub
+        </ContextMenuItem>
+      )}
+    </ContextMenuContent>
+  );
+}
+
+function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "tag"; commit: Commit; onClose: () => void; run: Actions["run"] }) {
+  const [name, setName] = useState("");
+  const submit = () => {
+    const n = name.trim();
+    onClose();
+    if (kind === "branch") run("Create branch", () => api.createBranchAt(n, commit.sha), `Switched to new branch ${n}`);
+    else run("Create tag", () => api.createTag(n, commit.sha), `Tagged ${commit.shortSha} as ${n}`);
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogTitle>{kind === "branch" ? "Create branch" : "Create tag"}</DialogTitle>
+        <DialogDescription>
+          At <span className="font-mono">{commit.shortSha}</span> {commit.subject}
+          {kind === "branch" && ". You'll be switched to it; uncommitted changes come along."}
+        </DialogDescription>
+        <form
+          className="mt-4 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (name.trim()) submit();
+          }}
+        >
+          <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === "branch" ? "Branch name" : "Tag name, e.g. v1.2.0"} spellCheck={false} />
+          <Button type="submit" disabled={!name.trim()}>
+            Create
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -78,6 +254,7 @@ function CommitRow({
   activeKey,
   onOpen,
   onHover,
+  menu,
 }: {
   commit: Commit;
   remotes: Set<string>;
@@ -88,6 +265,7 @@ function CommitRow({
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
+  menu: React.ReactNode;
 }) {
   const [files, setFiles] = useState<FileChange[] | null>(null);
 
@@ -116,25 +294,34 @@ function CommitRow({
   return (
     <div className="relative">
       <div className={cn("absolute left-[15px] w-px bg-border-strong", first ? "top-3" : "top-0", last && !open ? "h-3" : "bottom-0")} />
-      <div role="button" onClick={(e) => onToggle(e.currentTarget)} className={cn("relative flex cursor-pointer items-start gap-2.5 py-1.5 pr-2 pl-3", open ? "bg-active" : "hover:bg-hover")}>
-        <span
-          className={cn(
-            "relative z-10 mt-[3px] size-[9px] shrink-0 rounded-full border-2",
-            commit.unpushed ? "border-primary bg-primary" : merge ? "border-renamed bg-sidebar" : "border-subtle bg-sidebar",
-          )}
-          title={commit.unpushed ? "Not pushed yet" : undefined}
-        />
-        <div className="min-w-0 flex-1">
-          <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
-          <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] text-subtle">
-            <span className="min-w-0 truncate">{commit.authorName}</span>
-            <span>·</span>
-            <span className="shrink-0">{relativeTime(commit.timestamp)}</span>
-            <span className="ml-auto shrink-0 font-mono">{commit.shortSha}</span>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <div
+            role="button"
+            onClick={(e) => onToggle(e.currentTarget)}
+            className={cn("relative flex cursor-pointer items-start gap-2.5 py-1.5 pr-2 pl-3 data-[state=open]:bg-hover", open ? "bg-active" : "hover:bg-hover")}
+          >
+            <span
+              className={cn(
+                "relative z-10 mt-[3px] size-[9px] shrink-0 rounded-full border-2",
+                commit.unpushed ? "border-primary bg-primary" : merge ? "border-renamed bg-sidebar" : "border-subtle bg-sidebar",
+              )}
+              title={commit.unpushed ? "Not pushed yet" : undefined}
+            />
+            <div className="min-w-0 flex-1">
+              <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
+              <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] text-subtle">
+                <span className="min-w-0 truncate">{commit.authorName}</span>
+                <span>·</span>
+                <span className="shrink-0">{relativeTime(commit.timestamp)}</span>
+                <span className="ml-auto shrink-0 font-mono">{commit.shortSha}</span>
+              </div>
+              <RefBadges refs={commit.refs} remotes={remotes} />
+            </div>
           </div>
-          <RefBadges refs={commit.refs} remotes={remotes} />
-        </div>
-      </div>
+        </ContextMenuTrigger>
+        {menu}
+      </ContextMenu>
       {open && (
         <div className="relative border-y border-border bg-panel py-0.5">
           {!files && <div className="py-1 pl-8 text-[11.5px] text-subtle">Loading…</div>}
