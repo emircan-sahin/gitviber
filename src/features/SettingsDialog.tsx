@@ -1,11 +1,11 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Code2, GitCompareArrows, Keyboard, Palette, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
-import { useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { Code2, GitCompareArrows, Keyboard, Palette, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
+import { useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
-import { bindingsFor, COMMANDS, type Command, type CommandId, eventChord, formatChord } from "@/lib/keybindings";
+import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventChord, formatChord, RESERVED } from "@/lib/commands";
 import {
   type Appearance,
   CODE_FONTS,
@@ -32,12 +32,15 @@ type Section = (typeof SECTIONS)[number]["id"];
 
 // Open state lives outside React so the top bar and ⌘, can open it from anywhere.
 let openSection: Section | null = null;
+let lastSection: Section = "appearance";
 const listeners = new Set<() => void>();
 function setOpen(s: Section | null) {
   openSection = s;
+  if (s) lastSection = s;
   listeners.forEach((l) => l());
 }
-export function openSettings(section: Section = openSection ?? "appearance") {
+/** Opens on the given section, else where the user left it. */
+export function openSettings(section: Section = lastSection) {
   setOpen(section);
 }
 
@@ -49,7 +52,8 @@ export function SettingsDialog() {
     },
     () => openSection,
   );
-  const [recording, setRecording] = useState<CommandId | null>(null);
+  const [recording, setRecording] = useState<Recording>(null);
+  const content = useRef<HTMLDivElement>(null);
   const current = SECTIONS.find((s) => s.id === section);
 
   const resetAll = async () => {
@@ -62,9 +66,15 @@ export function SettingsDialog() {
       <DialogContent
         // Escape cancels a shortcut recording rather than closing the window.
         onEscapeKeyDown={(e) => recording && e.preventDefault()}
-        // Focusing the first nav item on open would draw a focus ring on it.
-        onOpenAutoFocus={(e) => e.preventDefault()}
-        className="top-1/2 flex h-[min(620px,calc(100vh-64px))] w-[calc(100vw-48px)] max-w-[880px] -translate-y-1/2 overflow-hidden p-0"
+        // Take focus off the workspace (its lists and tree react to keys) without ringing
+        // the first nav item, as the default auto-focus would.
+        ref={content}
+        tabIndex={-1}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          content.current?.focus();
+        }}
+        className="top-1/2 flex outline-none h-[min(620px,calc(100vh-64px))] w-[calc(100vw-48px)] max-w-[880px] -translate-y-1/2 overflow-hidden p-0"
       >
         <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar p-2">
           <DialogTitle className="px-2 pt-1.5 pb-2.5">Settings</DialogTitle>
@@ -221,6 +231,8 @@ function DiffSection() {
   );
 }
 
+type Recording = { id: CommandId; index: number } | null;
+
 function setBinding(id: CommandId, keys: string[] | null, overrides: Record<string, string[]>) {
   const next = { ...overrides };
   const defaults = COMMANDS.find((c) => c.id === id)!.keys as readonly string[];
@@ -230,16 +242,21 @@ function setBinding(id: CommandId, keys: string[] | null, overrides: Record<stri
   updateSettings({ keybindings: next });
 }
 
-function ShortcutsSection({ recording, setRecording }: { recording: CommandId | null; setRecording: (id: CommandId | null) => void }) {
+/** Why a chord is ambiguous, naming which command actually runs. */
+function clashNote(c: Command, chord: string, overrides: Record<string, string[]>): string | null {
+  const others = COMMANDS.filter((o) => o.id !== c.id && bindingsFor(o.id, overrides).includes(chord));
+  if (!others.length) return null;
+  const k = formatChord(chord);
+  if ("local" in c) return `${k} also runs ${others.map((o) => o.title).join(", ")} outside the commit message`;
+  const global = others.filter((o) => !("local" in o));
+  if (!global.length) return `${k} also commits while typing a commit message`;
+  const winner = commandFor(chord, overrides);
+  return winner?.id === c.id ? `${k} is also bound to ${global.map((o) => o.title).join(", ")}; this command takes precedence` : `${k} is also bound to ${winner?.title}, which takes precedence`;
+}
+
+function ShortcutsSection({ recording, setRecording }: { recording: Recording; setRecording: (r: Recording) => void }) {
   const { keybindings } = useSettings();
   const [query, setQuery] = useState("");
-
-  // chord → commands using it, to flag conflicts.
-  const users = useMemo(() => {
-    const m = new Map<string, Command[]>();
-    for (const c of COMMANDS) for (const k of bindingsFor(c.id, keybindings)) m.set(k, [...(m.get(k) ?? []), c]);
-    return m;
-  }, [keybindings]);
 
   const q = query.trim().toLowerCase();
   const rows = COMMANDS.filter((c) => {
@@ -262,7 +279,15 @@ function ShortcutsSection({ recording, setRecording }: { recording: CommandId | 
       <div className="overflow-hidden rounded-md border border-border">
         {rows.map((c) => {
           const keys = bindingsFor(c.id, keybindings);
-          const clashes = keys.flatMap((k) => (users.get(k) ?? []).filter((o) => o.id !== c.id).map((o) => `${formatChord(k)} is also bound to ${o.title}`));
+          const clashes = keys.map((k) => clashNote(c, k, keybindings)).filter(Boolean);
+          const record = (index: number) => ({
+            active: recording?.id === c.id && recording.index === index,
+            onStart: () => setRecording({ id: c.id, index }),
+            onStop: () => setRecording(null),
+            // Replaces the clicked key only (or adds one); duplicates collapse.
+            onRecord: (chord: string) => setBinding(c.id, [...new Set([...keys.slice(0, index), chord, ...keys.slice(index + 1)])], keybindings),
+          });
+          const adding = record(keys.length);
           return (
             <div key={c.id} className="group flex min-h-9 items-center gap-3 border-b border-border px-3 py-1 last:border-0 hover:bg-hover/50">
               <div className="min-w-0 flex-1">
@@ -274,7 +299,17 @@ function ShortcutsSection({ recording, setRecording }: { recording: CommandId | 
                   <TriangleAlert className="size-3.5 shrink-0 text-modified" />
                 </Tip>
               )}
-              <Recorder keys={keys} recording={recording === c.id} onStart={() => setRecording(c.id)} onStop={() => setRecording(null)} onRecord={(k) => setBinding(c.id, [k], keybindings)} />
+              <div className="flex shrink-0 items-center gap-1">
+                {keys.map((k, i) => (
+                  <Recorder key={k} label={<Kbd>{formatChord(k)}</Kbd>} title="Change this key" {...record(i)} />
+                ))}
+                <Recorder
+                  label={keys.length ? <Plus className="size-3.5" /> : <span className="text-[11.5px] text-subtle">Unbound</span>}
+                  title="Add a key"
+                  className={cn(keys.length > 0 && !adding.active && "text-subtle opacity-0 group-hover:opacity-100 focus-visible:opacity-100")}
+                  {...adding}
+                />
+              </div>
               <div className="flex w-12 shrink-0 justify-end gap-0.5">
                 {c.id in keybindings && (
                   <Tip label="Reset to default">
@@ -284,7 +319,7 @@ function ShortcutsSection({ recording, setRecording }: { recording: CommandId | 
                   </Tip>
                 )}
                 {keys.length > 0 && (
-                  <Tip label="Remove binding">
+                  <Tip label="Remove all keys">
                     <Button variant="ghost" size="icon-sm" className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100" onClick={() => setBinding(c.id, [], keybindings)}>
                       <X />
                     </Button>
@@ -297,16 +332,46 @@ function ShortcutsSection({ recording, setRecording }: { recording: CommandId | 
         {!rows.length && <div className="px-3 py-6 text-center text-[12px] text-subtle">No matching commands</div>}
       </div>
       <p className="mt-3 text-[11.5px] leading-relaxed text-subtle">
-        Click a binding and press the new keys; Esc cancels. Shortcuts without ⌘ are ignored while typing in a text field. Commit only applies in the commit message.
+        Click a key to change it, or + to add one; Esc cancels. When two commands share a key, the one higher in this list runs. Shortcuts without ⌘ are ignored while
+        typing in a text field, and Commit only applies in the commit message.
       </p>
     </>
   );
 }
 
-function Recorder({ keys, recording, onStart, onStop, onRecord }: { keys: readonly string[]; recording: boolean; onStart: () => void; onStop: () => void; onRecord: (chord: string) => void }) {
-  const ref = useRef<HTMLButtonElement>(null);
+function Recorder({
+  label,
+  title,
+  className,
+  active,
+  onStart,
+  onStop,
+  onRecord,
+}: {
+  label: React.ReactNode;
+  title: string;
+  className?: string;
+  active: boolean;
+  onStart: () => void;
+  onStop: () => void;
+  onRecord: (chord: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [refused, setRefused] = useState<string | null>(null);
+  const start = () => {
+    setRefused(null);
+    // WebKit doesn't focus on click, and keys only reach a focused element.
+    ref.current?.focus();
+    onStart();
+  };
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (!recording) return;
+    if (!active) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        start();
+      }
+      return;
+    }
     const chord = eventChord(e.nativeEvent);
     // Tab still moves focus (and blurring cancels), so it can't lock the user in.
     if (chord === "tab" || chord === "shift+tab") return;
@@ -315,33 +380,29 @@ function Recorder({ keys, recording, onStart, onStop, onRecord }: { keys: readon
     e.stopPropagation();
     if (e.key === "Escape") return onStop();
     if (!chord) return;
+    if (RESERVED.includes(chord)) return setRefused(`${formatChord(chord)} is reserved by macOS`);
     onRecord(chord);
     onStop();
   };
+  // A div, not a button: a button would turn the Space keyup after recording into a click
+  // that starts recording again.
   return (
-    <button
+    <div
       ref={ref}
-      // WebKit doesn't focus buttons on click, and keys only reach a focused element.
-      onClick={() => {
-        if (recording) return onStop();
-        ref.current?.focus();
-        onStart();
-      }}
-      onBlur={() => recording && onStop()}
+      role="button"
+      tabIndex={0}
+      aria-label={title}
+      onClick={() => (active ? onStop() : start())}
+      onBlur={() => active && onStop()}
       onKeyDown={onKeyDown}
       className={cn(
-        "flex h-7 min-w-32 shrink-0 items-center justify-end gap-1 rounded-md px-1.5 outline-none",
-        recording ? "ring-1 ring-primary" : "hover:bg-active",
+        "flex h-7 min-w-7 cursor-pointer items-center justify-center rounded-md px-1 outline-none select-none focus-visible:ring-1 focus-visible:ring-ring",
+        active ? "ring-1 ring-primary" : "hover:bg-active",
+        className,
       )}
     >
-      {recording ? (
-        <span className="text-[11.5px] text-primary">Press keys…</span>
-      ) : keys.length ? (
-        keys.map((k) => <Kbd key={k}>{formatChord(k)}</Kbd>)
-      ) : (
-        <span className="text-[11.5px] text-subtle">Unbound</span>
-      )}
-    </button>
+      {active ? <span className={cn("px-1 text-[11.5px]", refused ? "text-destructive" : "text-primary")}>{refused ?? "Press keys…"}</span> : label}
+    </div>
   );
 }
 
