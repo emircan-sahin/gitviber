@@ -79,6 +79,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   const toggle = useCallback((panel: typeof listPanel) => panel.current?.[panel.current.isCollapsed() ? "expand" : "collapse"](), []);
+  const revealInExplorer = useCallback((path: string) => {
+    filesPanel.current?.expand();
+    fileTree.current?.reveal(path);
+  }, []);
   const layout = useDefaultLayout({ id: "gitviber-main-v4", storage: localStorage });
   useTerminalSetup(root);
   const terminalOpen = useTerminals().open;
@@ -278,7 +282,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
               </div>
               <div className="min-h-0 flex-1">
                 {listTab === "changes" && status && (
-                  <ChangesPanel status={status} activeKey={activeKey} onOpen={open} onOpenRepo={onOpenRepo} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} toggleViewed={toggleViewed} />
+                  <ChangesPanel status={status} activeKey={activeKey} onOpen={open} onOpenRepo={onOpenRepo} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} toggleViewed={toggleViewed} onRevealInExplorer={revealInExplorer} />
                 )}
                 {listTab === "pulls" && (
                   <PullsPanel

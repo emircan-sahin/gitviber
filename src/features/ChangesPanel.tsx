@@ -1,7 +1,8 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ArrowLeftToLine, ArrowRightToLine, Check, ChevronDown, FolderGit2, FolderOpen, GitMerge, Minus, Plus, Undo2 } from "lucide-react";
+import { ArrowLeftToLine, ArrowRightToLine, Check, ChevronDown, Copy, Diff, EyeOff, File, FolderGit2, FolderOpen, FolderSearch, GitMerge, ListTree, Minus, Plus, SquareCheck, Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
@@ -25,6 +26,8 @@ interface Props {
   refresh: () => Promise<void>;
   viewed: (s: Selection) => boolean;
   toggleViewed: (s: Selection) => void;
+  /** Shows the file in the explorer, opening the panel if it's hidden. */
+  onRevealInExplorer: (path: string) => void;
 }
 
 async function attempt(title: string, fn: () => Promise<unknown>) {
@@ -48,7 +51,7 @@ export function changeList(status: RepoStatus): (Selection & { kind: "conflict" 
 
 const leftOut = (n: number) => `Left out ${n} nested ${n === 1 ? "repository" : "repositories"}`;
 
-export function ChangesPanel({ status, activeKey, onOpen, onOpenRepo, onHover, refresh, viewed, toggleViewed }: Props) {
+export function ChangesPanel({ status, activeKey, onOpen, onOpenRepo, onHover, refresh, viewed, toggleViewed, onRevealInExplorer }: Props) {
   const act = async (title: string, fn: () => Promise<unknown>) => {
     await attempt(title, fn);
     await refresh();
@@ -66,6 +69,110 @@ export function ChangesPanel({ status, activeKey, onOpen, onOpenRepo, onHover, r
     const what = tracked.length === 1 ? tracked[0].path : `${tracked.length} files`;
     const ok = await ask(`Discard changes to ${what}? This cannot be undone.`, { title: "Discard changes", kind: "warning", okLabel: "Discard" });
     if (ok) await act("Discard failed", () => api.discard(tracked.map((f) => f.path)));
+  };
+
+  // Untracked files have nothing to restore; like VS Code, discarding one deletes it (to the Trash here).
+  const trash = async (file: FileChange) => {
+    const ok = await ask(`Move ${file.path} to the Trash? It is untracked, so git has no copy of it.`, { title: "Delete file", kind: "warning", okLabel: "Move to Trash" });
+    if (ok) await act("Could not move to Trash", () => api.trashPath(file.path));
+  };
+
+  const ignore = (file: FileChange) =>
+    act("Could not update .gitignore", async () => {
+      const cur = await api.readFile(".gitignore");
+      if (cur.exists && (cur.binary || cur.lossy || cur.tooLarge)) throw new Error(".gitignore is not a plain text file");
+      const sep = cur.text && !cur.text.endsWith("\n") ? "\n" : "";
+      // Leading slash: this exact path, not every file of that name.
+      await api.writeFile(".gitignore", `${cur.text}${sep}/${file.path}\n`);
+    });
+
+  const copy = (text: string, what: string) =>
+    navigator.clipboard.writeText(text).then(
+      () => toast("success", what),
+      (e) => toast("error", "Could not copy", errorMessage(e)),
+    );
+
+  // Set by "Reveal in Explorer", so the closing menu doesn't pull focus back from the tree.
+  const keepFocus = useRef(false);
+
+  /** The row's right-click menu, modeled on VS Code's Source Control view. */
+  const menu = (sel: Selection & { kind: "staged" | "unstaged" | "conflict" }) => {
+    const { file } = sel;
+    const onDisk = file.status !== "D";
+    return (
+      <ContextMenuContent
+        onCloseAutoFocus={(e) => {
+          if (keepFocus.current) e.preventDefault();
+          keepFocus.current = false;
+        }}
+      >
+        <ContextMenuItem onSelect={() => onOpen(sel, true)}>
+          {sel.kind === "conflict" ? <GitMerge /> : <Diff />} {sel.kind === "conflict" ? "Open Conflict" : "Open Changes"}
+        </ContextMenuItem>
+        <ContextMenuItem disabled={!onDisk} onSelect={() => onOpen({ kind: "file", path: file.path }, true)}>
+          <File /> Open File
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        {sel.kind === "unstaged" && (
+          <>
+            <ContextMenuItem onSelect={() => act("Stage failed", () => api.stage([file.path]))}>
+              <Plus /> Stage Changes
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => (file.status === "?" ? trash(file) : discard([file]))}>
+              <Undo2 /> Discard Changes
+            </ContextMenuItem>
+            {file.status === "?" && (
+              <ContextMenuItem onSelect={() => ignore(file)}>
+                <EyeOff /> Add to .gitignore
+              </ContextMenuItem>
+            )}
+          </>
+        )}
+        {sel.kind === "staged" && (
+          <ContextMenuItem onSelect={() => act("Unstage failed", () => api.unstage([file.path]))}>
+            <Minus /> Unstage Changes
+          </ContextMenuItem>
+        )}
+        {sel.kind === "conflict" && (
+          <>
+            <ContextMenuItem onSelect={() => act("Stage failed", () => api.stage([file.path]))}>
+              <Check /> Mark as Resolved
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => act("Resolve failed", () => api.resolveSide(file.path, "ours"))}>
+              <ArrowLeftToLine /> Take Current Version
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={() => act("Resolve failed", () => api.resolveSide(file.path, "theirs"))}>
+              <ArrowRightToLine /> Take Incoming Version
+            </ContextMenuItem>
+          </>
+        )}
+        {sel.kind !== "conflict" && (
+          <ContextMenuItem onSelect={() => toggleViewed(sel)}>
+            <SquareCheck /> {viewed(sel) ? "Mark as Not Viewed" : "Mark as Viewed"}
+          </ContextMenuItem>
+        )}
+        <ContextMenuSeparator />
+        <ContextMenuItem
+          disabled={!onDisk}
+          onSelect={() => {
+            keepFocus.current = true;
+            onRevealInExplorer(file.path);
+          }}
+        >
+          <ListTree /> Reveal in Explorer View
+        </ContextMenuItem>
+        <ContextMenuItem disabled={!onDisk} onSelect={() => api.revealPath(file.path).catch((e) => toast("error", "Could not reveal in Finder", errorMessage(e)))}>
+          <FolderSearch /> Reveal in Finder
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => copy(`${status.root}/${file.path}`, "Path copied")}>
+          <Copy /> Copy Path
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => copy(file.path, "Relative path copied")}>
+          <Copy /> Copy Relative Path
+        </ContextMenuItem>
+      </ContextMenuContent>
+    );
   };
 
   const all = changeList(status);
@@ -86,7 +193,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onOpenRepo, onHover, r
   };
 
   const row = (sel: Selection & { kind: "staged" | "unstaged" | "conflict" }, actions: React.ReactNode) => (
-    <Row key={selectionKey(sel)} sel={sel} active={activeKey === selectionKey(sel)} viewed={viewed(sel)} onOpen={onOpen} onHover={onHover} onToggleViewed={() => toggleViewed(sel)}>
+    <Row key={selectionKey(sel)} sel={sel} active={activeKey === selectionKey(sel)} viewed={viewed(sel)} onOpen={onOpen} onHover={onHover} onToggleViewed={() => toggleViewed(sel)} menu={menu(sel)}>
       {actions}
     </Row>
   );
@@ -282,6 +389,7 @@ function Row({
   onOpen,
   onHover,
   onToggleViewed,
+  menu,
   children,
 }: {
   sel: Selection & { kind: "staged" | "unstaged" | "conflict" };
@@ -290,6 +398,7 @@ function Row({
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
   onToggleViewed: () => void;
+  menu: React.ReactNode;
   children?: React.ReactNode;
 }) {
   const file = sel.file;
@@ -299,44 +408,49 @@ function Row({
     if (active) ref.current?.scrollIntoView({ block: "nearest" });
   }, [active]);
   return (
-    <div
-      ref={ref}
-      role="button"
-      onClick={() => onOpen(sel)}
-      onDoubleClick={() => onOpen(sel, true)}
-      onMouseEnter={() => onHover(sel)}
-      className={cn(
-        "group/row relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px]",
-        active ? "bg-primary/15" : "hover:bg-hover",
-      )}
-    >
-      {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
-      {sel.kind === "conflict" ? (
-        <GitMerge className="size-3.5 shrink-0 text-conflict" />
-      ) : (
-      <Tip label={viewed ? "Mark as not viewed" : "Mark as viewed"}>
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleViewed();
-          }}
+    <ContextMenu>
+      <ContextMenuTrigger asChild>
+        <div
+          ref={ref}
+          role="button"
+          onClick={() => onOpen(sel)}
+          onDoubleClick={() => onOpen(sel, true)}
+          onMouseEnter={() => onHover(sel)}
           className={cn(
-            "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border",
-            viewed ? "border-added-fill bg-added-fill text-on-status" : "border-border-strong hover:border-muted-foreground",
+            "group/row relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px]",
+            active ? "bg-primary/15" : "hover:bg-hover data-[state=open]:bg-hover",
           )}
         >
-          {viewed && <Check className="size-2.5" strokeWidth={3} />}
-        </button>
-      </Tip>
-      )}
-      <FileIcon path={file.path} />
-      <PathLabel path={file.path} className={cn("flex-1", viewed && "opacity-45")} />
-      <LineCounts file={file} className="group-hover/row:hidden" />
-      <div className="hidden items-center group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
-        {children}
-      </div>
-      <StatusLetter status={file.status} />
-    </div>
+          {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
+          {sel.kind === "conflict" ? (
+            <GitMerge className="size-3.5 shrink-0 text-conflict" />
+          ) : (
+          <Tip label={viewed ? "Mark as not viewed" : "Mark as viewed"}>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleViewed();
+              }}
+              className={cn(
+                "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border",
+                viewed ? "border-added-fill bg-added-fill text-on-status" : "border-border-strong hover:border-muted-foreground",
+              )}
+            >
+              {viewed && <Check className="size-2.5" strokeWidth={3} />}
+            </button>
+          </Tip>
+          )}
+          <FileIcon path={file.path} />
+          <PathLabel path={file.path} className={cn("flex-1", viewed && "opacity-45")} />
+          <LineCounts file={file} className="group-hover/row:hidden" />
+          <div className="hidden items-center group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
+            {children}
+          </div>
+          <StatusLetter status={file.status} />
+        </div>
+      </ContextMenuTrigger>
+      {menu}
+    </ContextMenu>
   );
 }
 
