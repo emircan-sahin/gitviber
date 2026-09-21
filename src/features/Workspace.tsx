@@ -109,15 +109,22 @@ export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRep
       const hit = (t: Tab) => t.sel.kind === "file" && (t.sel.path === from || t.sel.path.startsWith(`${from}/`));
       const i = prev.findIndex((t) => t.key === active);
       if (to === null) {
-        const tabs = prev.filter((t) => !hit(t));
-        return { tabs, active: i >= 0 && hit(prev[i]) ? (tabs[Math.min(i, tabs.length - 1)]?.key ?? null) : active };
+        // Like closing a tab: the next surviving one to the right, else to the left.
+        const near = prev.slice(i + 1).find((t) => !hit(t)) ?? prev.slice(0, Math.max(i, 0)).reverse().find((t) => !hit(t));
+        return { tabs: prev.filter((t) => !hit(t)), active: i >= 0 && hit(prev[i]) ? (near?.key ?? null) : active };
       }
-      const tabs = prev.map((t) => {
-        if (!hit(t)) return t;
-        const sel: Selection = { kind: "file", path: to + selectionPath(t.sel).slice(from.length) };
-        return { ...t, key: selectionKey(sel), sel };
-      });
-      return { tabs, active: i >= 0 ? tabs[i].key : active };
+      // A tab already open at the new path absorbs the moved one, as in the git sync below.
+      const tabs: Tab[] = [];
+      let nextActive = active;
+      for (const t of prev) {
+        const sel: Selection = hit(t) ? { kind: "file", path: to + selectionPath(t.sel).slice(from.length) } : t.sel;
+        const key = selectionKey(sel);
+        if (t.key === active) nextActive = key;
+        const twin = tabs.findIndex((x) => x.key === key);
+        if (twin >= 0) tabs[twin] = { ...tabs[twin], preview: tabs[twin].preview && t.preview };
+        else tabs.push(key === t.key ? t : { ...t, key, sel });
+      }
+      return { tabs, active: nextActive };
     });
   }, []);
 
