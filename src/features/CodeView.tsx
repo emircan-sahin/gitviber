@@ -262,7 +262,15 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
     if (saved != null) return Math.floor(saved / lh / CHUNK);
     return Math.floor(Math.max(0, (changeStarts[0] ?? 0) - CONTEXT) / CHUNK);
   });
-  const filledRef = useRef<Set<number>>(new Set([origin - 1, origin, origin + 1].filter((c) => c >= 0 && c < chunkCount)));
+  const around = (c: number) => new Set([c - 1, c, c + 1].filter((x) => x >= 0 && x < chunkCount));
+  const filledRef = useRef<Set<number>>(around(origin));
+  // New items (unified ⇄ split, a gap expanded) re-render every mounted row: start again from
+  // the chunks on screen, measured 0.5–3s of frozen UI on a 1500-line file otherwise.
+  const filledFor = useRef(items);
+  if (filledFor.current !== items) {
+    filledFor.current = items;
+    filledRef.current = around(Math.floor((scrollRef.current?.scrollTop ?? 0) / lh / CHUNK));
+  }
   const [, setFillTick] = useState(0);
   const lastScroll = useRef(0);
   const anchor = useRef<{ el: Element; top: number } | null>(null);
@@ -402,7 +410,7 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
             ) : (
               Array.from({ length: chunkCount }, (_, c) =>
                 filledRef.current.has(c) ? (
-                  <Chunk key={c} items={items} start={c * CHUNK} ctx={ctx} lh={lh} gapH={gapH} measured={measured} onExpand={expand} />
+                  <Chunk key={c} items={items} start={c * CHUNK} height={chunkHeight(items, c * CHUNK, lh, gapH)} ctx={ctx} lh={lh} gapH={gapH} measured={measured} onExpand={expand} />
                 ) : (
                   <div key={c} data-chunk={c} style={{ height: chunkHeight(items, c * CHUNK, lh, gapH) }} />
                 ),
@@ -476,7 +484,7 @@ function chunkHeight(items: Item[], start: number, lh: number, gapH: number) {
 }
 
 /** A block of rows, mounted as a unit by the viewport buffer above. */
-const Chunk = memo(function Chunk({ items, start, ...rest }: ItemProps & { items: Item[]; start: number }) {
+const Chunk = memo(function Chunk({ items, start, height, ...rest }: ItemProps & { items: Item[]; start: number; height: number }) {
   const rows: React.ReactNode[] = [];
   for (let i = start; i < Math.min(items.length, start + CHUNK); i++) {
     rows.push(
@@ -485,8 +493,15 @@ const Chunk = memo(function Chunk({ items, start, ...rest }: ItemProps & { items
       </div>,
     );
   }
-  return <div data-chunk={start / CHUNK}>{rows}</div>;
-})
+  // Off-screen chunks skip layout and paint: with every row mounted, scrolling a 1500-line
+  // diff took 27ms a frame (sticky gutters, all laid out each frame); this brings it to ~9ms.
+  // The intrinsic size stands in until the chunk has been rendered once, then `auto` keeps its real size.
+  return (
+    <div data-chunk={start / CHUNK} style={{ contentVisibility: "auto", containIntrinsicSize: `auto ${height}px` }}>
+      {rows}
+    </div>
+  );
+});
 
 type Ctx = {
   oldLines: string[];
