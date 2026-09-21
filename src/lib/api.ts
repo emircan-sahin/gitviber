@@ -117,6 +117,12 @@ export const api = {
   rebaseSkip: () => invoke<boolean>("rebase_skip"),
   resolveSide: (path: string, side: "ours" | "theirs") => invoke<void>("resolve_side", { path, side }),
   writeFile: (path: string, content: string) => invoke<void>("write_file", { path, content }),
+  createFile: (path: string) => invoke<void>("create_file", { path }),
+  createDir: (path: string) => invoke<void>("create_dir", { path }),
+  renamePath: (from: string, to: string) => invoke<void>("rename_path", { from, to }),
+  /** Moves to the macOS Trash, so it can be put back. */
+  trashPath: (path: string) => invoke<void>("trash_path", { path }),
+  revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   fetch: () => invoke<void>("fetch"),
 };
 

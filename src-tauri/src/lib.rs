@@ -219,6 +219,38 @@ async fn write_file(state: State<'_, AppState>, path: String, content: String) -
     blocking(move || fs::write_file(&r, &path, &content)).await
 }
 
+// ---------------------------------------------------------------- Explorer file actions
+
+#[tauri::command]
+async fn create_file(state: State<'_, AppState>, path: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || fs::create_file(&r, &path)).await
+}
+
+#[tauri::command]
+async fn create_dir(state: State<'_, AppState>, path: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || fs::create_dir(&r, &path)).await
+}
+
+#[tauri::command]
+async fn rename_path(state: State<'_, AppState>, from: String, to: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || fs::rename_entry(&r, &from, &to)).await
+}
+
+#[tauri::command]
+async fn trash_path(state: State<'_, AppState>, path: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || fs::trash(&r, &path)).await
+}
+
+#[tauri::command]
+async fn reveal_path(state: State<'_, AppState>, path: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || fs::reveal(&r, &path)).await
+}
+
 #[tauri::command]
 async fn fetch(state: State<'_, AppState>) -> Res<()> {
     let r = repo(&state)?;
@@ -364,6 +396,11 @@ pub fn run() {
             rebase_skip,
             resolve_side,
             write_file,
+            create_file,
+            create_dir,
+            rename_path,
+            trash_path,
+            reveal_path,
             gh_account,
             pr_list,
             pr_detail,
