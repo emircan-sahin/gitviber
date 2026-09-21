@@ -467,3 +467,129 @@ fn pr_checkout_fast_forwards_and_never_resets() {
     assert_eq!(status(b).unwrap().branch.as_deref(), Some("pr/7"));
     checkout(b, 7, "someones-branch", false).unwrap();
 }
+
+#[test]
+fn undo_last_commit_keeps_its_changes_staged() {
+    let sb = Sandbox::new("undo");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "one\n", "base");
+    write_commit(&r, "a.txt", "one\ntwo\n", "second");
+    let commits = log(&r, 0, 5).unwrap();
+    // Only the commit the user saw as HEAD may be undone.
+    assert!(undo_commit(&r, &commits[1].sha).is_err());
+    undo_commit(&r, &commits[0].sha).unwrap();
+    assert_eq!(log(&r, 0, 5).unwrap().len(), 1);
+    assert_eq!(status(&r).unwrap().staged.len(), 1);
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "one\ntwo\n");
+}
+
+#[test]
+fn revert_clean_conflicting_empty_and_merge() {
+    let sb = Sandbox::new("revert");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "1\n2\n3\n", "base");
+    write_commit(&r, "b.txt", "b\n", "add b");
+    let add_b = log(&r, 0, 1).unwrap()[0].sha.clone();
+    assert!(!revert(&r, &add_b).unwrap());
+    assert!(!r.join("b.txt").exists());
+    assert!(log(&r, 0, 1).unwrap()[0].subject.starts_with("Revert"));
+
+    // Reverting x after y changed the same line conflicts and uses the normal op flow.
+    write_commit(&r, "a.txt", "1\nx\n3\n", "x");
+    let x = log(&r, 0, 1).unwrap()[0].sha.clone();
+    write_commit(&r, "a.txt", "1\ny\n3\n", "y");
+    let y = log(&r, 0, 1).unwrap()[0].sha.clone();
+    assert!(revert(&r, &x).unwrap(), "should stop on the conflict");
+    assert_eq!(operation(&r).unwrap().kind, "revert");
+    assert_eq!(status(&r).unwrap().conflicted.len(), 1);
+    assert!(revert(&r, &y).is_err(), "busy repo refuses a second revert");
+    op_abort(&r).unwrap();
+    assert!(operation(&r).is_none());
+
+    // Reverting something already undone is an error that leaves no operation behind.
+    assert!(!revert(&r, &y).unwrap());
+    assert!(revert(&r, &y).is_err());
+    assert!(operation(&r).is_none());
+
+    // Resolved conflicts finish through the same Continue as merges.
+    write_commit(&r, "a.txt", "1\nz\n3\n", "z");
+    assert!(revert(&r, &x).unwrap());
+    resolve_side(&r, "a.txt", "theirs").unwrap();
+    assert!(!op_continue(&r).unwrap());
+    assert!(operation(&r).is_none());
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n2\n3\n");
+    assert!(log(&r, 0, 1).unwrap()[0]
+        .subject
+        .starts_with("Revert \"x\""));
+
+    // Merge commits revert against their first parent.
+    switch_branch(&r, "feature", true).unwrap();
+    write_commit(&r, "f.txt", "f\n", "feature");
+    switch_branch(&r, "main", false).unwrap();
+    write_commit(&r, "m.txt", "m\n", "main");
+    run(&r, &["merge", "-q", "--no-edit", "feature"]).unwrap();
+    let merge = log(&r, 0, 1).unwrap()[0].sha.clone();
+    assert!(!revert(&r, &merge).unwrap());
+    assert!(!r.join("f.txt").exists() && r.join("m.txt").exists());
+}
+
+#[test]
+fn reset_modes() {
+    let sb = Sandbox::new("reset");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "1\n", "base");
+    let base = log(&r, 0, 1).unwrap()[0].sha.clone();
+    write_commit(&r, "a.txt", "1\n2\n", "two");
+    let two = log(&r, 0, 1).unwrap()[0].sha.clone();
+    assert!(reset(&r, &base, "--hard").is_err());
+
+    reset(&r, &base, "soft").unwrap();
+    let st = status(&r).unwrap();
+    assert_eq!((st.staged.len(), st.unstaged.len()), (1, 0));
+
+    reset(&r, &two, "mixed").unwrap();
+    reset(&r, &base, "mixed").unwrap();
+    let st = status(&r).unwrap();
+    assert_eq!((st.staged.len(), st.unstaged.len()), (0, 1));
+
+    reset(&r, &base, "hard").unwrap();
+    let st = status(&r).unwrap();
+    assert!(st.staged.is_empty() && st.unstaged.is_empty());
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
+    assert_eq!(log(&r, 0, 5).unwrap().len(), 1);
+}
+
+#[test]
+fn checkout_branch_and_tag_at_a_commit() {
+    let sb = Sandbox::new("refs");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "1\n", "base");
+    let base = log(&r, 0, 1).unwrap()[0].sha.clone();
+    write_commit(&r, "a.txt", "2\n", "two");
+
+    assert!(create_tag(&r, "-f", &base).is_err());
+    assert!(create_tag(&r, "bad..name", &base).is_err());
+    create_tag(&r, "v1.0", &base).unwrap();
+    assert!(
+        create_tag(&r, "v1.0", &base).is_err(),
+        "existing tag is not moved"
+    );
+    assert!(log(&r, 0, 2).unwrap()[1]
+        .refs
+        .iter()
+        .any(|x| x == "tag: v1.0"));
+
+    checkout_commit(&r, &base).unwrap();
+    assert!(status(&r).unwrap().branch.is_none());
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
+
+    switch_branch(&r, "main", false).unwrap();
+    create_branch_at(&r, "from-base", &base).unwrap();
+    assert_eq!(status(&r).unwrap().branch.as_deref(), Some("from-base"));
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
+    assert!(create_branch_at(&r, "--evil", &base).is_err());
+}

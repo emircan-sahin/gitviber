@@ -897,6 +897,74 @@ pub fn resolve_side(repo: &Path, path: &str, side: &str) -> Result<(), String> {
     }
 }
 
+// ---------------------------------------------------------------- history actions
+
+/// Undoes the last commit, keeping its changes staged. `sha` is the commit the user saw as
+/// HEAD: an agent may have committed since, and that commit must not be the one undone.
+pub fn undo_commit(repo: &Path, sha: &str) -> Result<(), String> {
+    validate_rev(sha)?;
+    ensure_idle(repo)?;
+    let head = run_text(repo, &["rev-parse", "HEAD"])?;
+    if head.trim() != sha {
+        return Err("HEAD has moved since the history was loaded. Refresh and try again.".into());
+    }
+    run(repo, &["reset", "--soft", "HEAD~1"]).map(|_| ())
+}
+
+/// Moves the current branch (or detached HEAD) to `sha`. `mode` is "soft", "mixed" or "hard".
+pub fn reset(repo: &Path, sha: &str, mode: &str) -> Result<(), String> {
+    validate_rev(sha)?;
+    ensure_idle(repo)?;
+    let flag = match mode {
+        "soft" => "--soft",
+        "mixed" => "--mixed",
+        "hard" => "--hard",
+        other => return Err(format!("unknown reset mode: {other}")),
+    };
+    run(repo, &["reset", "-q", flag, sha]).map(|_| ())
+}
+
+/// `git revert`, returning true if it stopped on conflicts.
+pub fn revert(repo: &Path, sha: &str) -> Result<bool, String> {
+    validate_rev(sha)?;
+    ensure_idle(repo)?;
+    // A merge commit needs a mainline; relative to its first parent is what "this commit" means.
+    let merge = run(repo, &["rev-parse", "--verify", "-q", &format!("{sha}^2")]).is_ok();
+    let mut args = vec!["revert", "--no-edit"];
+    if merge {
+        args.extend(["-m", "1"]);
+    }
+    args.push(sha);
+    let result = stoppable(repo, run(repo, &args));
+    // An empty revert (already undone) fails without conflicts but leaves REVERT_HEAD behind;
+    // unwind it so the user isn't stuck in an operation with nothing to resolve.
+    if result.is_err() && operation(repo).is_some() {
+        let _ = run(repo, &["revert", "--abort"]);
+    }
+    result
+}
+
+/// Detached checkout of a commit. Git refuses if local changes would be overwritten.
+pub fn checkout_commit(repo: &Path, sha: &str) -> Result<(), String> {
+    validate_rev(sha)?;
+    run(repo, &["switch", "--detach", sha]).map(|_| ())
+}
+
+pub fn create_branch_at(repo: &Path, name: &str, sha: &str) -> Result<(), String> {
+    validate_rev(sha)?;
+    validate_branch(repo, name)?;
+    run(repo, &["switch", "-c", name, sha]).map(|_| ())
+}
+
+pub fn create_tag(repo: &Path, name: &str, sha: &str) -> Result<(), String> {
+    validate_rev(sha)?;
+    let full = format!("refs/tags/{name}");
+    if name.starts_with('-') || run(repo, &["check-ref-format", &full]).is_err() {
+        return Err(format!("invalid tag name: {name}"));
+    }
+    run(repo, &["tag", name, sha]).map(|_| ())
+}
+
 // ---------------------------------------------------------------- branches
 
 #[derive(Serialize)]

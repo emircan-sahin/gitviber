@@ -124,7 +124,18 @@ export const api = {
   trashPath: (path: string) => invoke<void>("trash_path", { path }),
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   fetch: () => invoke<void>("fetch"),
+  // History actions. `sha` on undo is the commit the user saw as HEAD (refused if HEAD moved).
+  undoCommit: (sha: string) => invoke<void>("undo_commit", { sha }),
+  reset: (sha: string, mode: ResetMode) => invoke<void>("reset", { sha, mode }),
+  revert: (sha: string) => invoke<boolean>("revert", { sha }),
+  checkoutCommit: (sha: string) => invoke<void>("checkout_commit", { sha }),
+  createBranchAt: (name: string, sha: string) => invoke<void>("create_branch_at", { name, sha }),
+  createTag: (name: string, sha: string) => invoke<void>("create_tag", { name, sha }),
+  /** https://github.com/owner/name, or null when origin isn't on GitHub. */
+  githubWebUrl: () => invoke<string | null>("github_web_url"),
 };
+
+export type ResetMode = "soft" | "mixed" | "hard";
 
 // ---------------------------------------------------------------- GitHub
 

@@ -257,6 +257,56 @@ async fn fetch(state: State<'_, AppState>) -> Res<()> {
     blocking(move || git::fetch(&r)).await
 }
 
+// ---------------------------------------------------------------- history actions
+
+#[tauri::command]
+async fn undo_commit(state: State<'_, AppState>, sha: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::undo_commit(&r, &sha)).await
+}
+
+#[tauri::command]
+async fn reset(state: State<'_, AppState>, sha: String, mode: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::reset(&r, &sha, &mode)).await
+}
+
+#[tauri::command]
+async fn revert(state: State<'_, AppState>, sha: String) -> Res<bool> {
+    let r = repo(&state)?;
+    blocking(move || git::revert(&r, &sha)).await
+}
+
+#[tauri::command]
+async fn checkout_commit(state: State<'_, AppState>, sha: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::checkout_commit(&r, &sha)).await
+}
+
+#[tauri::command]
+async fn create_branch_at(state: State<'_, AppState>, name: String, sha: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::create_branch_at(&r, &name, &sha)).await
+}
+
+#[tauri::command]
+async fn create_tag(state: State<'_, AppState>, name: String, sha: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::create_tag(&r, &name, &sha)).await
+}
+
+/// https://github.com/owner/name when origin is on GitHub, for "Open on GitHub" links.
+#[tauri::command]
+async fn github_web_url(state: State<'_, AppState>) -> Res<Option<String>> {
+    let r = repo(&state)?;
+    blocking(move || {
+        Ok(git::remote_url(&r, "origin")
+            .and_then(|u| github::parse_remote(&u))
+            .map(|g| format!("https://github.com/{}/{}", g.owner, g.name)))
+    })
+    .await
+}
+
 // ---------------------------------------------------------------- GitHub
 // Tauri state is borrowed, so these hop to the blocking pool via the app handle.
 
@@ -401,6 +451,13 @@ pub fn run() {
             rename_path,
             trash_path,
             reveal_path,
+            undo_commit,
+            reset,
+            revert,
+            checkout_commit,
+            create_branch_at,
+            create_tag,
+            github_web_url,
             gh_account,
             pr_list,
             pr_detail,
