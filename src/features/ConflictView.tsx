@@ -2,9 +2,10 @@ import { Check, ChevronsUpDown, GitMerge, Pencil, Undo2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, errorMessage, type FileChange, type Operation } from "@/lib/api";
-import { languageFor, type TokenLine, tokenLookup, useHighlight } from "@/lib/highlight";
+import { showLanguage, type TokenLine, tokenLookup, useHighlight } from "@/lib/highlight";
+import { languageFor } from "@/lib/language";
 import { CODE_FONTS, useSettings } from "@/lib/settings";
-import { type Block, parseConflicts, type Segment } from "@/lib/conflicts";
+import { type Block, oursText, parseConflicts, type Segment } from "@/lib/conflicts";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { FileIcon } from "./FileIcon";
@@ -40,6 +41,13 @@ export function ConflictView({ file, operation, revision }: Props) {
   // Non-UTF-8 text can't be edited safely here (it was decoded lossily): whole-file only.
   const parsed = useMemo(() => (text == null || lossy ? null : parseConflicts(text)), [text, lossy]);
   const unterminated = text != null && !lossy && parsed === null;
+  // Detected once from the whole file (the fragments are too short to sniff), minus the markers,
+  // which would make JSON look like YAML. Without a parse only the name decides.
+  const lang = useMemo(() => languageFor(file.path, parsed ? oursText(parsed.segments) : undefined), [file.path, parsed]);
+  useEffect(() => {
+    showLanguage(lang);
+    return () => showLanguage(null);
+  }, [lang]);
   // CRLF files: the textarea normalises to \n, so custom edits get \r added back on save.
   const crlf = useMemo(() => !!text && text.split("\n").filter((l) => l.endsWith("\r")).length * 2 > text.split("\n").length, [text]);
   const blocks = parsed?.segments.filter((s): s is Extract<Segment, { t: "conflict" }> => s.t === "conflict") ?? [];
@@ -142,7 +150,7 @@ export function ConflictView({ file, operation, revision }: Props) {
           <div className="py-2">
             {parsed!.segments.map((seg, i) =>
               seg.t === "text" ? (
-                <TextRun key={`t${i}`} lines={seg.lines} path={file.path} />
+                <TextRun key={`t${i}`} lines={seg.lines} lang={lang} />
               ) : (
                 <ConflictCard
                   key={`c${seg.id}`}
@@ -150,7 +158,7 @@ export function ConflictView({ file, operation, revision }: Props) {
                   index={seg.id + 1}
                   total={blocks.length}
                   choice={choices.get(seg.id)}
-                  path={file.path}
+                  lang={lang}
                   oursName={oursName}
                   theirsName={theirsName}
                   onChoose={(k, lines) => choose(seg, k, lines)}
@@ -240,10 +248,10 @@ function useCodeStyle() {
   return { fontFamily: CODE_FONTS[s.codeFont], fontSize: s.codeFontSize, lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`, tabSize: 4 } as const;
 }
 
-function CodeLines({ lines, path, className }: { lines: string[]; path: string; className?: string }) {
+function CodeLines({ lines, lang, className }: { lines: string[]; lang: string; className?: string }) {
   const s = useSettings();
   const style = useCodeStyle();
-  const hl = useHighlight(lines.join("\n"), languageFor(path), s.codeTheme);
+  const hl = useHighlight(lines.join("\n"), lang, s.codeTheme);
   const tok = useMemo(() => tokenLookup(hl), [hl]);
   return (
     <div className={cn("overflow-x-auto px-4 whitespace-pre select-text", className)} style={{ ...style, color: hl?.data.fg }}>
@@ -272,16 +280,16 @@ function Tokens({ tokens, text }: { tokens?: TokenLine; text: string }) {
 const CONTEXT = 3;
 
 /** Unchanged text between conflicts, folded to a few lines of context. */
-function TextRun({ lines, path }: { lines: string[]; path: string }) {
+function TextRun({ lines, lang }: { lines: string[]; lang: string }) {
   const [open, setOpen] = useState(false);
-  if (open || lines.length <= CONTEXT * 2 + 1) return <CodeLines lines={lines} path={path} className="text-foreground/70" />;
+  if (open || lines.length <= CONTEXT * 2 + 1) return <CodeLines lines={lines} lang={lang} className="text-foreground/70" />;
   return (
     <>
-      <CodeLines lines={lines.slice(0, CONTEXT)} path={path} className="text-foreground/70" />
+      <CodeLines lines={lines.slice(0, CONTEXT)} lang={lang} className="text-foreground/70" />
       <button onClick={() => setOpen(true)} className="flex w-full items-center gap-2 border-y border-border bg-panel px-4 py-1 text-[11.5px] text-subtle hover:bg-elevated hover:text-foreground">
         <ChevronsUpDown className="size-3.5" /> {lines.length - CONTEXT * 2} unchanged lines
       </button>
-      <CodeLines lines={lines.slice(-CONTEXT)} path={path} className="text-foreground/70" />
+      <CodeLines lines={lines.slice(-CONTEXT)} lang={lang} className="text-foreground/70" />
     </>
   );
 }
@@ -291,7 +299,7 @@ function ConflictCard({
   index,
   total,
   choice,
-  path,
+  lang,
   oursName,
   theirsName,
   onChoose,
@@ -301,7 +309,7 @@ function ConflictCard({
   index: number;
   total: number;
   choice?: Choice;
-  path: string;
+  lang: string;
   oursName: string;
   theirsName: string;
   onChoose: (kind: Choice["kind"], lines?: string[]) => void;
@@ -357,7 +365,7 @@ function ConflictCard({
         </div>
       </div>
       {choice ? (
-        <CodeLines lines={choice.lines} path={path} className="bg-add-bg py-1" />
+        <CodeLines lines={choice.lines} lang={lang} className="bg-add-bg py-1" />
       ) : editing != null ? (
         <textarea
           autoFocus
@@ -370,23 +378,23 @@ function ConflictCard({
         />
       ) : (
         <>
-          <Side title={oursName} ref_={block.oursLabel} tone="bg-primary/10 border-primary" lines={block.ours} path={path} />
-          {block.base && <Side title="Common ancestor" ref_="" tone="bg-hover border-subtle" lines={block.base} path={path} />}
-          <Side title={theirsName} ref_={block.theirsLabel} tone="bg-renamed/10 border-renamed" lines={block.theirs} path={path} />
+          <Side title={oursName} ref_={block.oursLabel} tone="bg-primary/10 border-primary" lines={block.ours} lang={lang} />
+          {block.base && <Side title="Common ancestor" ref_="" tone="bg-hover border-subtle" lines={block.base} lang={lang} />}
+          <Side title={theirsName} ref_={block.theirsLabel} tone="bg-renamed/10 border-renamed" lines={block.theirs} lang={lang} />
         </>
       )}
     </div>
   );
 }
 
-function Side({ title, ref_, tone, lines, path }: { title: string; ref_: string; tone: string; lines: string[]; path: string }) {
+function Side({ title, ref_, tone, lines, lang }: { title: string; ref_: string; tone: string; lines: string[]; lang: string }) {
   return (
     <div className={cn("border-l-2", tone)}>
       <div className="px-4 pt-1.5 text-[10.5px] font-semibold tracking-[0.06em] text-muted-foreground uppercase">
         {title}
         {ref_ && <span className="ml-2 font-mono tracking-normal normal-case text-subtle">{ref_}</span>}
       </div>
-      {lines.length ? <CodeLines lines={lines} path={path} className="pb-1.5" /> : <div className="px-4 pb-1.5 text-[11.5px] text-subtle italic">(empty)</div>}
+      {lines.length ? <CodeLines lines={lines} lang={lang} className="pb-1.5" /> : <div className="px-4 pb-1.5 text-[11.5px] text-subtle italic">(empty)</div>}
     </div>
   );
 }

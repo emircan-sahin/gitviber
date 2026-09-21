@@ -15,7 +15,6 @@ import {
   PanelRightDashed,
   Plus,
   RefreshCw,
-  RotateCcw,
   Settings2,
   UploadCloud,
   X,
@@ -23,36 +22,16 @@ import {
 import { useState } from "react";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage } from "@/lib/api";
-import {
-  type Appearance,
-  CODE_FONTS,
-  type CodeFont,
-  LIGHT_SYNTAX_THEMES,
-  type LightSyntaxTheme,
-  resetSettings,
-  SYNTAX_THEMES,
-  type SyntaxTheme,
-  updateSettings,
-  useSettings,
-} from "@/lib/settings";
+import { useShortcut } from "@/lib/keybindings";
 import { toast } from "@/lib/toast";
 import type { RepoData } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
 import { BranchPicker } from "./BranchPicker";
+import { openSettings } from "./SettingsDialog";
 
 interface Props {
   repo: RepoData;
@@ -84,6 +63,8 @@ export function changeTotals(repo: RepoData) {
  * lights), sync actions and settings on the right. Empty space drags the window.
  * Its 40px height and 86px left inset match trafficLightPosition in tauri.conf.json:
  * buttons are 14pt and sit 13pt from the top/left, so they're centred with a 13pt gap after.
+ * The traffic lights ignore page zoom, so both are divided by --ui-scale to stay in points
+ * (the height only grows: at 150% a 40pt bar can't fit its buttons).
  */
 export function TopBar({ repo, root, recent, onOpenRepo, onForgetRepo, onReorderRepos, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
   const { status, branches } = repo;
@@ -107,7 +88,7 @@ export function TopBar({ repo, root, recent, onOpenRepo, onForgetRepo, onReorder
   const branchName = status?.branch ?? (status?.head ? `detached @ ${status.head}` : "…");
 
   return (
-    <header data-tauri-drag-region className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 pl-[86px]">
+    <header data-tauri-drag-region className="flex h-[max(40px,calc(40px/var(--ui-scale,1)))] shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 pl-[calc(86px/var(--ui-scale,1))]">
       <ProjectSwitcher repo={repo} root={root} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} />
       <span className="text-[13px] text-border-strong select-none">/</span>
       <BranchPicker
@@ -177,17 +158,17 @@ export function TopBar({ repo, root, recent, onOpenRepo, onForgetRepo, onReorder
         </Tip>
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
-      <Tip label={leftOpen ? "Hide git panel" : "Show git panel"} shortcut="⌘B">
+      <Tip label={leftOpen ? "Hide git panel" : "Show git panel"} shortcut={useShortcut("view.toggleGitPanel")}>
         <Button variant="ghost" size="icon" onClick={onToggleLeft} className={cn(leftOpen && "text-foreground")}>
           {leftOpen ? <PanelLeft /> : <PanelLeftDashed />}
         </Button>
       </Tip>
-      <Tip label={rightOpen ? "Hide explorer" : "Show explorer"} shortcut="⌥⌘B">
+      <Tip label={rightOpen ? "Hide explorer" : "Show explorer"} shortcut={useShortcut("view.toggleExplorer")}>
         <Button variant="ghost" size="icon" onClick={onToggleRight} className={cn(rightOpen && "text-foreground")}>
           {rightOpen ? <PanelRight /> : <PanelRightDashed />}
         </Button>
       </Tip>
-      <SettingsMenu />
+      <SettingsButton />
     </header>
   );
 }
@@ -196,6 +177,7 @@ function ProjectSwitcher({ repo, root, recent, onOpenRepo, onForgetRepo, onReord
   const [open, setOpen] = useState(false);
   const totals = changeTotals(repo);
   const name = root.split("/").pop() ?? root;
+  const openKey = useShortcut("file.openRepo");
   const pick = (p?: string) => {
     setOpen(false);
     onOpenRepo(p);
@@ -226,7 +208,7 @@ function ProjectSwitcher({ repo, root, recent, onOpenRepo, onForgetRepo, onReord
         <div className="border-t border-border p-1">
           <button onClick={() => pick()} className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover">
             <Plus className="size-3.5 text-muted-foreground" /> Open repository…
-            <span className="ml-auto font-mono text-[11px] text-subtle">⌘O</span>
+            <span className="ml-auto font-mono text-[11px] text-subtle">{openKey}</span>
           </button>
         </div>
       </PopoverContent>
@@ -293,85 +275,12 @@ function ProjectTile({ name, large }: { name: string; large?: boolean }) {
   );
 }
 
-function SettingsMenu() {
-  const s = useSettings();
+function SettingsButton() {
   return (
-    <DropdownMenu>
-      <Tip label="Settings">
-        <DropdownMenuTrigger asChild>
-          <Button variant="ghost" size="icon">
-            <Settings2 />
-          </Button>
-        </DropdownMenuTrigger>
-      </Tip>
-      <DropdownMenuContent align="end" className="w-64">
-        <DropdownMenuLabel>Appearance</DropdownMenuLabel>
-        <DropdownMenuRadioGroup value={s.appearance} onValueChange={(v) => updateSettings({ appearance: v as Appearance })}>
-          {[
-            ["system", "System"],
-            ["light", "Light"],
-            ["dark", "Dark"],
-          ].map(([id, label]) => (
-            <DropdownMenuRadioItem key={id} value={id}>
-              {label}
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-        <DropdownMenuSeparator />
-        {/* Each appearance remembers its own syntax theme; this edits the active one. */}
-        <DropdownMenuLabel>Syntax theme</DropdownMenuLabel>
-        <DropdownMenuRadioGroup
-          value={s.codeTheme}
-          onValueChange={(v) => updateSettings(s.dark ? { syntaxTheme: v as SyntaxTheme } : { lightSyntaxTheme: v as LightSyntaxTheme })}
-        >
-          {Object.entries(s.dark ? SYNTAX_THEMES : LIGHT_SYNTAX_THEMES).map(([id, label]) => (
-            <DropdownMenuRadioItem key={id} value={id}>
-              {label}
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuLabel>Code font</DropdownMenuLabel>
-        <DropdownMenuRadioGroup value={s.codeFont} onValueChange={(v) => updateSettings({ codeFont: v as CodeFont })}>
-          {Object.keys(CODE_FONTS).map((f) => (
-            <DropdownMenuRadioItem key={f} value={f} style={{ fontFamily: CODE_FONTS[f as CodeFont] }}>
-              {f}
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-        <div className="flex items-center gap-2 px-2 py-1 text-[12px]">
-          <span>Size</span>
-          <div className="ml-auto flex items-center gap-1">
-            <Button variant="secondary" size="icon-sm" onClick={() => updateSettings({ codeFontSize: s.codeFontSize - 0.5 })}>
-              −
-            </Button>
-            <span className="w-9 text-center font-mono text-[11.5px]">{s.codeFontSize}</span>
-            <Button variant="secondary" size="icon-sm" onClick={() => updateSettings({ codeFontSize: s.codeFontSize + 0.5 })}>
-              +
-            </Button>
-          </div>
-        </div>
-        <DropdownMenuLabel>Line height</DropdownMenuLabel>
-        <DropdownMenuRadioGroup value={String(s.lineHeight)} onValueChange={(v) => updateSettings({ lineHeight: Number(v) })}>
-          {[
-            ["1.4", "Compact"],
-            ["1.6", "Comfortable"],
-            ["1.8", "Relaxed"],
-          ].map(([v, l]) => (
-            <DropdownMenuRadioItem key={v} value={v}>
-              {l}
-            </DropdownMenuRadioItem>
-          ))}
-        </DropdownMenuRadioGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuCheckboxItem checked={s.ligatures} onCheckedChange={(v) => updateSettings({ ligatures: !!v })}>
-          Font ligatures
-        </DropdownMenuCheckboxItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={resetSettings}>
-          <RotateCcw /> Reset to defaults
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <Tip label="Settings" shortcut={useShortcut("workbench.openSettings")}>
+      <Button variant="ghost" size="icon" onClick={() => openSettings()}>
+        <Settings2 />
+      </Button>
+    </Tip>
   );
 }

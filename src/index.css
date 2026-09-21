@@ -161,20 +161,31 @@
     cursor: default;
   }
 }
-/* No custom scrollbar styling: macOS keeps its native overlay scrollbars, which scroll smoothest. */
+/* Panels keep macOS's native overlay scrollbars, themed through color-scheme above. Any
+   ::-webkit-scrollbar rule turns WebKit's bar into a classic one that takes layout space,
+   so custom styling stays scoped to the code views below. */
 
-/* Code views: the overview ruler replaces the vertical scrollbar; keep a thin horizontal one. */
+/* Code views: the overview ruler replaces the vertical scrollbar; the horizontal one is a thin
+   rounded thumb on a clear track. Hover is on the thumb itself: WebKit doesn't repaint a thumb
+   whose style depends on an ancestor's :hover. */
 .code-scroll::-webkit-scrollbar {
   width: 0;
   height: 10px;
   background: transparent;
 }
 .code-scroll::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--foreground) 16%, transparent);
-  border: 2px solid transparent;
+  min-width: 28px;
+  background: color-mix(in srgb, var(--foreground) 18%, transparent);
+  border: 3px solid transparent;
   border-radius: 999px;
-  background-clip: content-box;
+  background-clip: padding-box;
 }
+.code-scroll::-webkit-scrollbar-thumb:hover,
+.code-scroll::-webkit-scrollbar-thumb:active {
+  background-color: color-mix(in srgb, var(--foreground) 36%, transparent);
+  border-width: 2px;
+}
+.code-scroll::-webkit-scrollbar-track,
 .code-scroll::-webkit-scrollbar-corner {
   background: transparent;
 }
@@ -268,6 +279,11 @@
 .markdown img {
   display: inline-block;
   max-width: 100%;
+  /* Pasted GitHub images carry width and height; keep the ratio when max-width shrinks them. */
+  height: auto;
+}
+.markdown summary {
+  cursor: pointer;
 }
 .markdown code {
   font-family: var(--font-mono);

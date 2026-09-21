@@ -104,7 +104,11 @@ pub(crate) fn exec(
     if status.success() || ok_codes.contains(&code) {
         Ok(stdout)
     } else {
-        let e = String::from_utf8_lossy(&stderr).trim().to_string();
+        // Some failures (e.g. "nothing to commit") are explained only on stdout.
+        let text = |b: &[u8]| String::from_utf8_lossy(b).trim().to_string();
+        let e = Some(text(&stderr))
+            .filter(|e| !e.is_empty())
+            .unwrap_or_else(|| text(&stdout));
         Err(if e.is_empty() {
             format!("{label} failed ({code})")
         } else {
@@ -170,6 +174,10 @@ fn validate_rev(rev: &str) -> Result<(), String> {
 
 fn validate_branch(repo: &Path, name: &str) -> Result<(), String> {
     // check-ref-format also rejects a leading '-', so the name can't be read as a flag.
+    // "@" means HEAD wherever a revision is read, so a branch by that name is a trap.
+    if name == "@" {
+        return Err(format!("invalid branch name: {name}"));
+    }
     run(repo, &["check-ref-format", "--branch", name])
         .map(|_| ())
         .map_err(|_| format!("invalid branch name: {name}"))
@@ -400,17 +408,32 @@ pub struct Commit {
     pub refs: Vec<String>,
     pub subject: String,
     pub body: String,
+    /// Ahead of the upstream. False when there is no upstream or it is gone: unknown, not pushed.
     pub unpushed: bool,
+    /// Reachable from a remote-tracking branch of origin, so it exists on the origin host.
+    pub on_origin: bool,
 }
 
 pub fn log(repo: &Path, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
     if !has_head(repo) {
         return Ok(vec![]);
     }
-    let unpushed: std::collections::HashSet<String> =
-        run_text(repo, &["rev-list", "@{upstream}..HEAD"])
-            .map(|s| s.lines().map(str::to_string).collect())
-            .unwrap_or_default();
+    let lines = |s: String| -> std::collections::HashSet<String> {
+        s.lines().map(str::to_string).collect()
+    };
+    let unpushed = run_text(repo, &["rev-list", "@{upstream}..HEAD"])
+        .map(lines)
+        .unwrap_or_default();
+    // rev-list keeps log order, so the first skip+limit entries cover this page. No origin
+    // refs at all means nothing is on origin; skip the walk, it would list the whole history.
+    let has_origin = run_text(repo, &["for-each-ref", "--count=1", "refs/remotes/origin"])
+        .is_ok_and(|s| !s.trim().is_empty());
+    let off_origin = if has_origin {
+        let n = format!("-n{}", skip + limit);
+        Some(run_text(repo, &["rev-list", &n, "HEAD", "--not", "--remotes=origin"]).map(lines)?)
+    } else {
+        None
+    };
 
     let skip = format!("--skip={skip}");
     let limit = format!("-n{limit}");
@@ -445,6 +468,7 @@ pub fn log(repo: &Path, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
                 subject: f[7].to_string(),
                 body: f[8].trim().to_string(),
                 unpushed: unpushed.contains(f[0]),
+                on_origin: off_origin.as_ref().is_some_and(|off| !off.contains(f[0])),
             })
         })
         .collect())
@@ -895,6 +919,101 @@ pub fn resolve_side(repo: &Path, path: &str, side: &str) -> Result<(), String> {
     } else {
         run(repo, &with_paths(vec!["rm", "-q"], &paths)).map(|_| ())
     }
+}
+
+// ---------------------------------------------------------------- history actions
+
+/// `seen` is the HEAD the user saw: an agent may have committed since, and moving HEAD
+/// based on the old history would silently drop that commit.
+fn ensure_head(repo: &Path, seen: &str) -> Result<(), String> {
+    validate_rev(seen)?;
+    let head = run_text(repo, &["rev-parse", "HEAD"])?;
+    if head.trim() != seen {
+        return Err("HEAD has moved since the history was loaded. Refresh and try again.".into());
+    }
+    Ok(())
+}
+
+/// Undoes the last commit (`sha`, the HEAD the user saw), keeping its changes staged.
+pub fn undo_commit(repo: &Path, sha: &str) -> Result<(), String> {
+    ensure_idle(repo)?;
+    ensure_head(repo, sha)?;
+    run(repo, &["reset", "--soft", "HEAD~1"]).map(|_| ())
+}
+
+/// Whether moving HEAD to `sha` takes commits off the branch that its upstream already has,
+/// i.e. would need a force-push. Decided by ancestry, not log order, so merges count right.
+/// No upstream, or one that is gone, counts as not pushed.
+pub fn drops_pushed(repo: &Path, sha: &str) -> Result<bool, String> {
+    validate_rev(sha)?;
+    // Commits both sides have: everything reachable from their merge bases.
+    let Ok(bases) = run_text(repo, &["merge-base", "--all", "HEAD", "@{upstream}"]) else {
+        return Ok(false);
+    };
+    let mut args = vec!["rev-list", "-n1"];
+    args.extend(bases.split_whitespace());
+    args.extend(["--not", sha]);
+    Ok(!run_text(repo, &args)?.trim().is_empty())
+}
+
+/// Moves the current branch (or detached HEAD) from `head` (as the user saw it) to `sha`.
+/// `mode` is "soft", "mixed" or "hard".
+pub fn reset(repo: &Path, sha: &str, mode: &str, head: &str) -> Result<(), String> {
+    validate_rev(sha)?;
+    ensure_idle(repo)?;
+    ensure_head(repo, head)?;
+    let flag = match mode {
+        "soft" => "--soft",
+        "mixed" => "--mixed",
+        "hard" => "--hard",
+        other => return Err(format!("unknown reset mode: {other}")),
+    };
+    run(repo, &["reset", "-q", flag, sha]).map(|_| ())
+}
+
+/// `git revert`, returning true if it stopped on conflicts.
+pub fn revert(repo: &Path, sha: &str) -> Result<bool, String> {
+    validate_rev(sha)?;
+    ensure_idle(repo)?;
+    // A merge commit needs a mainline; relative to its first parent is what "this commit" means.
+    let merge = run(repo, &["rev-parse", "--verify", "-q", &format!("{sha}^2")]).is_ok();
+    let mut args = vec!["revert", "--no-edit"];
+    if merge {
+        args.extend(["-m", "1"]);
+    }
+    args.push(sha);
+    let result = stoppable(repo, run(repo, &args));
+    // An empty revert (already undone) fails with no conflicts, no operation left and nothing
+    // changed, explaining why only on stdout. Other failures leave one of those behind.
+    if result.is_err()
+        && operation(repo).is_none()
+        && run(repo, &["diff", "--quiet", "HEAD"]).is_ok()
+    {
+        return Err("This commit's changes are already undone; nothing to revert.".into());
+    }
+    result
+}
+
+/// Detached checkout of a commit. Git refuses if local changes would be overwritten.
+pub fn checkout_commit(repo: &Path, sha: &str) -> Result<(), String> {
+    validate_rev(sha)?;
+    run(repo, &["switch", "--detach", sha]).map(|_| ())
+}
+
+pub fn create_branch_at(repo: &Path, name: &str, sha: &str) -> Result<(), String> {
+    validate_rev(sha)?;
+    validate_branch(repo, name)?;
+    run(repo, &["switch", "-c", name, sha]).map(|_| ())
+}
+
+pub fn create_tag(repo: &Path, name: &str, sha: &str) -> Result<(), String> {
+    validate_rev(sha)?;
+    let full = format!("refs/tags/{name}");
+    // "@" alone is valid in a full ref but means HEAD wherever a revision is read.
+    if name == "@" || name.starts_with('-') || run(repo, &["check-ref-format", &full]).is_err() {
+        return Err(format!("invalid tag name: {name}"));
+    }
+    run(repo, &["tag", name, sha]).map(|_| ())
 }
 
 // ---------------------------------------------------------------- branches

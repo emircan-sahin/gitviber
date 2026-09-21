@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { matchesCommand, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -61,6 +62,18 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
   const add = all.reduce((n, s) => n + (s.file.additions ?? 0), 0);
   const del = all.reduce((n, s) => n + (s.file.deletions ?? 0), 0);
 
+  // ↑/↓ once the list has focus (clicking a row gives it focus); Enter keeps the preview tab.
+  const onListKey = (e: React.KeyboardEvent) => {
+    if (e.target !== e.currentTarget || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey || !all.length) return;
+    const i = all.findIndex((c) => selectionKey(c) === activeKey);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      const next = e.key === "ArrowDown" ? Math.min(all.length - 1, i + 1) : Math.max(0, i - 1);
+      onOpen(all[i < 0 ? 0 : next]);
+    } else if (e.key === "Enter" && i >= 0) onOpen(all[i], true);
+    else return;
+    e.preventDefault();
+  };
+
   const row = (sel: Selection & { kind: "staged" | "unstaged" | "conflict" }, actions: React.ReactNode) => (
     <Row key={selectionKey(sel)} sel={sel} active={activeKey === selectionKey(sel)} viewed={viewed(sel)} onOpen={onOpen} onHover={onHover} onToggleViewed={() => toggleViewed(sel)}>
       {actions}
@@ -88,7 +101,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
           </div>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2">
+      <div tabIndex={0} onKeyDown={onListKey} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
         {!all.length && <AllCaughtUp />}
         {status.conflicted.length > 0 && (
           <Section title="Conflicts" count={status.conflicted.length} tone="text-conflict">
@@ -362,8 +375,9 @@ function CommitBox({ status, refresh }: Pick<Props, "status" | "refresh">) {
     await refresh();
   };
 
+  const commitKey = useShortcut("git.commit");
   const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+    if (matchesCommand("git.commit", e.nativeEvent)) {
       e.preventDefault();
       commit();
     }
@@ -378,7 +392,7 @@ function CommitBox({ status, refresh }: Pick<Props, "status" | "refresh">) {
           <input type="checkbox" checked={amend} onChange={(e) => setAmend(e.target.checked)} className="accent-primary" />
           Amend
         </label>
-        <Tip label={status.branch ? `${label} to ${status.branch}` : label} shortcut="⌘↵">
+        <Tip label={status.branch ? `${label} to ${status.branch}` : label} shortcut={commitKey}>
           <Button className="ml-auto flex-1" disabled={!canCommit} onClick={commit}>
             {busy ? "Committing…" : label}
           </Button>

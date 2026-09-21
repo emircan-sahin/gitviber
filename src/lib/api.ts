@@ -44,7 +44,10 @@ export interface Commit {
   refs: string[];
   subject: string;
   body: string;
+  /** Ahead of the upstream; false when there is none or it is gone (unknown). */
   unpushed: boolean;
+  /** Reachable from an origin remote-tracking branch, so it exists on the origin host. */
+  onOrigin: boolean;
 }
 
 export interface FileText {
@@ -124,7 +127,20 @@ export const api = {
   trashPath: (path: string) => invoke<void>("trash_path", { path }),
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   fetch: () => invoke<void>("fetch"),
+  // History actions. `sha` on undo and `head` on reset are the HEAD the user saw (refused if it moved).
+  undoCommit: (sha: string) => invoke<void>("undo_commit", { sha }),
+  reset: (sha: string, mode: ResetMode, head: string) => invoke<void>("reset", { sha, mode, head }),
+  /** Moving HEAD to `sha` would drop commits the upstream already has (needs a force-push). */
+  dropsPushed: (sha: string) => invoke<boolean>("drops_pushed", { sha }),
+  revert: (sha: string) => invoke<boolean>("revert", { sha }),
+  checkoutCommit: (sha: string) => invoke<void>("checkout_commit", { sha }),
+  createBranchAt: (name: string, sha: string) => invoke<void>("create_branch_at", { name, sha }),
+  createTag: (name: string, sha: string) => invoke<void>("create_tag", { name, sha }),
+  /** https://github.com/owner/name, or null when origin isn't on GitHub. */
+  githubWebUrl: () => invoke<string | null>("github_web_url"),
 };
+
+export type ResetMode = "soft" | "mixed" | "hard";
 
 // ---------------------------------------------------------------- GitHub
 
@@ -192,6 +208,8 @@ export const github = {
   account: () => invoke<GitHubAccount>("gh_account"),
   list: (filter: "open" | "closed" | "all") => invoke<Pull[]>("pr_list", { filter }),
   detail: (number: number) => invoke<PullDetail>("pr_detail", { number }),
+  /** Signed image links for a private repo's attachments, by attachment id. */
+  attachments: (number: number) => invoke<Record<string, string>>("pr_attachments", { number }),
   files: (p: Pick<Pull, "number" | "baseRef" | "baseSha" | "headSha">) =>
     invoke<PullFiles>("pr_files", { number: p.number, baseRef: p.baseRef, baseSha: p.baseSha, headSha: p.headSha }),
   create: (title: string, body: string, head: string, base: string, draft: boolean) => invoke<Pull>("pr_create", { title, body, head, base, draft }),

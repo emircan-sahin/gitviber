@@ -1,7 +1,9 @@
 import { FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useShortcut } from "@/lib/keybindings";
 
 export function Welcome({ recent, onOpenRepo }: { recent: string[]; onOpenRepo: (path?: string) => void }) {
+  const openKey = useShortcut("file.openRepo");
   return (
     <div data-tauri-drag-region className="flex h-full items-center justify-center bg-background">
       <div className="w-[400px]">
@@ -14,7 +16,7 @@ export function Welcome({ recent, onOpenRepo }: { recent: string[]; onOpenRepo: 
         </div>
         <Button size="lg" className="mt-6 w-full justify-start" onClick={() => onOpenRepo()}>
           <FolderOpen /> Open repository
-          <span className="ml-auto font-mono text-[11px] opacity-70">⌘O</span>
+          <span className="ml-auto font-mono text-[11px] opacity-70">{openKey}</span>
         </Button>
         {recent.length > 0 && (
           <div className="mt-6 border-t border-border pt-3">

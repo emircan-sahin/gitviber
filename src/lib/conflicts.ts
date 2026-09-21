@@ -47,3 +47,8 @@ export function parseConflicts(text: string): { segments: Segment[]; trailingNew
   if (buf.length) segments.push({ t: "text", lines: buf });
   return { segments, trailingNewline };
 }
+
+/** The file as "current" would leave it, for sniffing its language without the marker lines. */
+export function oursText(segments: Segment[]): string {
+  return segments.flatMap((s) => (s.t === "text" ? s.lines : s.ours)).join("\n");
+}

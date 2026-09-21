@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
-import { bundledLanguagesInfo } from "shiki/langs";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 
 /** One line of highlighted code: [text, color, fontStyle bitmask (1 italic, 2 bold, 4 underline)]. */
 export type TokenLine = [string, string, number][];
@@ -8,52 +7,19 @@ export interface Highlighted {
   fg: string;
 }
 
-const EXT_OVERRIDES: Record<string, string> = {
-  js: "javascript",
-  mjs: "javascript",
-  cjs: "javascript",
-  htm: "html",
-  h: "c",
-  hpp: "cpp",
-  cc: "cpp",
-  kt: "kotlin",
-  kts: "kotlin",
-  py: "python",
-  rb: "ruby",
-  env: "dotenv",
-  lock: "json",
-  svg: "xml",
-  plist: "xml",
-  gradle: "groovy",
-  tf: "hcl",
-  jsonc: "jsonc",
-  json5: "json5",
-};
-const FILE_OVERRIDES: Record<string, string> = {
-  dockerfile: "docker",
-  makefile: "make",
-  "cmakelists.txt": "cmake",
-  "cargo.lock": "toml",
-  "pnpm-lock.yaml": "yaml",
-  ".zshrc": "shellscript",
-  ".bashrc": "shellscript",
-  ".gitignore": "text",
-};
-
-const byAlias = new Map<string, string>();
-for (const info of bundledLanguagesInfo) {
-  byAlias.set(info.id, info.id);
-  for (const a of info.aliases ?? []) byAlias.set(a, info.id);
+// The language of the code view on screen, for the status bar (which sits outside the viewer).
+let shownLanguage: string | null = null;
+const languageListeners = new Set<() => void>();
+export function showLanguage(lang: string | null) {
+  shownLanguage = lang;
+  languageListeners.forEach((l) => l());
 }
-
-export function languageFor(path: string): string {
-  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
-  if (FILE_OVERRIDES[name]) return FILE_OVERRIDES[name];
-  if (name.startsWith(".env")) return "dotenv";
-  const dot = name.lastIndexOf(".");
-  if (dot < 0) return "text";
-  const ext = name.slice(dot + 1);
-  return EXT_OVERRIDES[ext] ?? byAlias.get(ext) ?? "text";
+function subscribeLanguage(listener: () => void) {
+  languageListeners.add(listener);
+  return () => void languageListeners.delete(listener);
+}
+export function useShownLanguage() {
+  return useSyncExternalStore(subscribeLanguage, () => shownLanguage);
 }
 
 // Minified or giant files: tokenizing them costs more than it helps.

@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Branch, errorMessage, type GitHubAccount, github, isNotConnected, type Pull, type RepoStatus } from "@/lib/api";
+import { invalidate, useGitHubData } from "@/lib/githubCache";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
@@ -14,7 +15,10 @@ type Filter = "open" | "closed" | "all";
 
 // PR views elsewhere (merge, create) tell the list to reload.
 const listeners = new Set<() => void>();
-export const notifyPullsChanged = () => listeners.forEach((l) => l());
+export const notifyPullsChanged = () => {
+  invalidate("pulls:");
+  listeners.forEach((l) => l());
+};
 
 export const isoToUnix = (iso: string) => Date.parse(iso) / 1000;
 
@@ -36,32 +40,23 @@ interface Props {
 
 export function PullsPanel({ status, branches, lastSubject, activeKey, onOpen, refreshRepo }: Props) {
   const [filter, setFilter] = useState<Filter>("open");
-  const [pulls, setPulls] = useState<Pull[] | null>(null);
-  const [account, setAccount] = useState<GitHubAccount | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notConnected, setNotConnected] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  // The account only changes with a new sign-in: rechecked every 10 minutes and on every
+  // manual refresh or retry (a 304 when nothing changed, so free).
+  const acct = useGitHubData("account", github.account, 600_000);
+  const list = useGitHubData(`pulls:${filter}`, useCallback(() => github.list(filter), [filter]));
+  const account = acct.data ?? null;
+  const pulls = list.data ?? null;
+  const failure = acct.error ?? list.error;
+  const error = failure === undefined ? null : errorMessage(failure);
+  const loading = acct.loading || list.loading;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const acct = account ?? (await github.account());
-      setAccount(acct);
-      setPulls(await github.list(filter));
-      setError(null);
-      setNotConnected(false);
-    } catch (e) {
-      setNotConnected(isNotConnected(e));
-      setError(errorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  }, [account, filter]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
+  const { refresh: refreshAccount } = acct;
+  const { refresh: refreshList } = list;
+  const load = useCallback(() => {
+    refreshAccount(true);
+    refreshList(true);
+  }, [refreshAccount, refreshList]);
   useEffect(() => {
     listeners.add(load);
     return () => {
@@ -69,7 +64,7 @@ export function PullsPanel({ status, branches, lastSubject, activeKey, onOpen, r
     };
   }, [load]);
 
-  if (notConnected) return <ConnectGitHub onRetry={load} />;
+  if (isNotConnected(failure)) return <ConnectGitHub onRetry={load} />;
 
   const currentPull = status?.branch ? pulls?.find((p) => p.headRef === status.branch && p.state === "open") : undefined;
 
@@ -99,8 +94,10 @@ export function PullsPanel({ status, branches, lastSubject, activeKey, onOpen, r
         </div>
       </div>
       <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto py-1">
-        {error && <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{error}</div>}
-        {!error && pulls?.length === 0 && <div className="px-4 pt-16 text-center text-[12px] text-subtle">No {filter === "all" ? "" : filter} pull requests.</div>}
+        {/* With a cached list on screen, a failed refresh is a note above it, not a blank panel. */}
+        {error && !pulls && <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{error}</div>}
+        {error && pulls && <div className="mx-2 mb-1 rounded-sm bg-removed/10 px-2 py-1.5 text-[11.5px] text-removed">{error}</div>}
+        {pulls?.length === 0 && <div className="px-4 pt-16 text-center text-[12px] text-subtle">No {filter === "all" ? "" : filter} pull requests.</div>}
         {pulls?.map((p) => {
           const sel: Selection = { kind: "pull", pull: p };
           const active = activeKey === selectionKey(sel);
@@ -143,8 +140,8 @@ export function PullsPanel({ status, branches, lastSubject, activeKey, onOpen, r
           onClose={() => setCreating(false)}
           onCreated={async (p) => {
             setCreating(false);
+            // The dialog's notifyPullsChanged reloads the list.
             await refreshRepo();
-            await load();
             onOpen({ kind: "pull", pull: p }, true);
           }}
         />
