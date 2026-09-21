@@ -11,6 +11,8 @@ import { statusInfo } from "./StatusBadge";
 
 export interface FileTreeHandle {
   collapseAll: () => void;
+  /** Opens the folders down to `path`, selects it and focuses the tree. */
+  reveal: (path: string) => void;
 }
 
 interface Props {
@@ -44,6 +46,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   const treeRef = useRef<HTMLDivElement>(null);
   // Set when a menu item starts inline editing, so the closing menu doesn't steal the input's focus.
   const keepFocus = useRef(false);
+  // A revealed path's folders may still be loading; scroll to it once its row exists.
+  const revealing = useRef<string | null>(null);
 
   // Per-path request counter: a slow, older listing must not overwrite a newer one.
   const requests = useRef(new Map<string, number>());
@@ -76,6 +80,15 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     collapseAll: () => {
       setExpanded(new Set([""]));
       setSelected((s) => s && s.split("/")[0]);
+    },
+    reveal: (path) => {
+      const parts = path.split("/");
+      const dirs = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/"));
+      setExpanded((x) => new Set([...x, ...dirs]));
+      dirs.forEach((d) => loadDir(d));
+      revealing.current = path;
+      setSelected(path);
+      treeRef.current?.focus();
     },
   }));
 
@@ -115,9 +128,18 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     if (document.activeElement === document.body) treeRef.current?.focus();
   }, [rows, editing]);
 
+  const rowOf = (path: string) => treeRef.current?.querySelector(`[data-path="${CSS.escape(path)}"]`);
+
   useEffect(() => {
-    if (selected) treeRef.current?.querySelector(`[data-path="${CSS.escape(selected)}"]`)?.scrollIntoView({ block: "nearest" });
+    if (selected) rowOf(selected)?.scrollIntoView({ block: "nearest" });
   }, [selected]);
+
+  useEffect(() => {
+    const row = revealing.current && rowOf(revealing.current);
+    if (!row) return;
+    row.scrollIntoView({ block: "center" });
+    revealing.current = null;
+  }, [rows]);
 
   const setOpen = (path: string, open: boolean) => {
     setExpanded((x) => {
