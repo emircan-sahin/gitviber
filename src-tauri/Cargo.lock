@@ -1165,6 +1165,7 @@ dependencies = [
 name = "gitviber"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "notify",
  "objc2",
  "portable-pty",

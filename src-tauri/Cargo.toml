@@ -32,3 +32,5 @@ strip = true
 [target.'cfg(target_os = "macos")'.dependencies]
 # Same version wry already links; used to lift WebKit's 60fps cap (see display.rs).
 objc2 = "=0.6.4"
+# Also already linked; wraps the full-screen notification handlers (see titlebar.rs).
+block2 = "=0.6.2"

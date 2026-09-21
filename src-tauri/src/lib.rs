@@ -6,6 +6,7 @@ mod github;
 mod pty;
 #[cfg(test)]
 mod scenario_tests;
+mod titlebar;
 mod watch;
 
 use std::path::{Path, PathBuf};
@@ -385,6 +386,7 @@ pub fn run() {
         .setup(|app| {
             if let Some(webview) = app.get_webview_window("main") {
                 display::unlock_high_refresh_rate(&webview);
+                titlebar::setup(&webview);
                 // TEMP dev probe: evaluates JS dropped into GITVIBER_PROBE (debug builds only).
                 #[cfg(debug_assertions)]
                 if let Ok(path) = std::env::var("GITVIBER_PROBE") {

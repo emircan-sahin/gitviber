@@ -1,5 +1,6 @@
 import { arrayMove } from "@dnd-kit/sortable";
 import { ask } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -22,7 +23,7 @@ import {
   UploadCloud,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { Button } from "@/components/ui/button";
 import {
@@ -87,16 +88,37 @@ export function changeTotals(repo: RepoData) {
   };
 }
 
+/** titlebar.rs emits "fullscreen" as the transition starts (leaving) or ends (entering). */
+function useFullscreen() {
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    // getCurrentWindow() throws outside Tauri (the browser-only dev fixture).
+    let win;
+    try {
+      win = getCurrentWindow();
+    } catch {
+      return;
+    }
+    // A reload while in full screen gets no event, so ask once.
+    win.isFullscreen().then(setFullscreen, () => {});
+    const unlisten = win.listen<boolean>("fullscreen", (e) => setFullscreen(e.payload));
+    return () => void unlisten.then((f) => f());
+  }, []);
+  return fullscreen;
+}
+
 /**
  * The window's title bar: project / branch breadcrumb on the left (after the traffic
  * lights), sync actions and settings on the right. Empty space drags the window.
- * Its 40px height and 86px left inset match trafficLightPosition in tauri.conf.json:
- * buttons are 14pt and sit 13pt from the top/left, so they're centred with a 13pt gap after.
+ * Its 40px height matches the native title bar (a compact toolbar, see titlebar.rs), whose
+ * traffic lights end at 66pt; the 86px left inset clears them. Full screen moves them out
+ * of the window, so the inset goes too.
  */
 export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
   const { status, branches, worktrees } = repo;
   const [busy, setBusy] = useState<string | null>(null);
   const terminalOpen = useTerminals().open;
+  const fullscreen = useFullscreen();
 
   // Operations that can stop on conflicts resolve to true; that's a state to handle, not an error.
   const run = async (label: string, fn: () => Promise<void | boolean>, done?: string) => {
@@ -138,7 +160,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   };
 
   return (
-    <header data-tauri-drag-region className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 pl-[86px]">
+    <header data-tauri-drag-region className={`flex h-10 shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 ${fullscreen ? "pl-2" : "pl-[86px]"}`}>
       <ProjectSwitcher repo={repo} root={root} main={main} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} />
       <span className="text-[13px] text-border-strong select-none">/</span>
       <BranchPicker
