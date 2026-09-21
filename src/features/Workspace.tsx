@@ -4,7 +4,7 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import type { FileChange, RepoStatus } from "@/lib/api";
-import { type Selection, selectionKey } from "@/lib/selection";
+import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
 import { DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { arrayMove } from "@dnd-kit/sortable";
 import { useRepo } from "@/lib/useRepo";
@@ -102,6 +102,24 @@ export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRep
   const moveTab = useCallback((from: number, to: number) => setTabState((st) => ({ ...st, tabs: arrayMove(st.tabs, from, to) })), []);
 
   const pin = useCallback((key: string) => setTabState((st) => ({ ...st, tabs: st.tabs.map((t) => (t.key === key ? { ...t, preview: false } : t)) })), []);
+
+  // Explorer rename/trash: file tabs at or under `from` move to `to` in place, or close when it's null.
+  const onPathMoved = useCallback((from: string, to: string | null) => {
+    setTabState(({ tabs: prev, active }) => {
+      const hit = (t: Tab) => t.sel.kind === "file" && (t.sel.path === from || t.sel.path.startsWith(`${from}/`));
+      const i = prev.findIndex((t) => t.key === active);
+      if (to === null) {
+        const tabs = prev.filter((t) => !hit(t));
+        return { tabs, active: i >= 0 && hit(prev[i]) ? (tabs[Math.min(i, tabs.length - 1)]?.key ?? null) : active };
+      }
+      const tabs = prev.map((t) => {
+        if (!hit(t)) return t;
+        const sel: Selection = { kind: "file", path: to + selectionPath(t.sel).slice(from.length) };
+        return { ...t, key: selectionKey(sel), sel };
+      });
+      return { tabs, active: i >= 0 ? tabs[i].key : active };
+    });
+  }, []);
 
   // Keep change tabs in sync with git: a staged or resolved file moves lists, a
   // committed/discarded one disappears. Two tabs that land on the same file merge.
@@ -323,14 +341,14 @@ export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRep
               <div className="flex h-9 shrink-0 items-center border-b border-border pr-1 pl-3">
                 <span className="text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Explorer</span>
                 <Tip label="Collapse folders">
-                  <button onClick={() => fileTree.current?.collapseAll()} className="ml-auto flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground">
+                  <button aria-label="Collapse folders" onClick={() => fileTree.current?.collapseAll()} className="ml-auto flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground">
                     <ChevronsDownUp className="size-3.5" />
                   </button>
                 </Tip>
                 <CollapseButton side="right" onClick={() => toggle(filesPanel)} />
               </div>
               <div className="min-h-0 flex-1">
-                <FileTree ref={fileTree} status={status} revision={repo.revision} activeKey={activeKey} onOpen={open} onHover={prefetch} />
+                <FileTree ref={fileTree} status={status} revision={repo.revision} activeKey={activeKey} onOpen={open} onHover={prefetch} onPathMoved={onPathMoved} />
               </div>
             </div>
           </ResizablePanel>

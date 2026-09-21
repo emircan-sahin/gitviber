@@ -19,6 +19,8 @@ interface Props {
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
+  /** An entry was renamed (`to`) or trashed (`to` = null), so open tabs can follow it. */
+  onPathMoved: (from: string, to: string | null) => void;
   ref?: React.Ref<FileTreeHandle>;
 }
 
@@ -31,7 +33,7 @@ const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 const isInside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 
 /** Lazy tree of the working directory, like VS Code's explorer, annotated with git status. */
-export function FileTree({ status, revision, activeKey, onOpen, onHover, ref }: Props) {
+export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathMoved, ref }: Props) {
   const [children, setChildren] = useState<Record<string, Entry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
   // Keyboard cursor, separate from the open tab (activeKey) like VS Code's focused item.
@@ -142,6 +144,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, ref }: 
         // Keep the renamed folder (and anything open inside it) expanded under its new name.
         const from = ed.entry.path;
         setExpanded((x) => new Set([...x].map((p) => (isInside(p, from) ? path + p.slice(from.length) : p))));
+        onPathMoved(from, path);
       } else {
         await (ed.isDir ? api.createDir(path) : api.createFile(path));
         if (!ed.isDir) onOpen({ kind: "file", path }, true);
@@ -162,6 +165,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, ref }: 
     if (!ok) return;
     try {
       await api.trashPath(e.path);
+      onPathMoved(e.path, null);
       // Land on the next row outside the deleted entry, like VS Code.
       const i = rows.findIndex((r) => r.entry.path === e.path);
       const next = rows.slice(i + 1).find((r) => !isInside(r.entry.path, e.path)) ?? rows[i - 1];
