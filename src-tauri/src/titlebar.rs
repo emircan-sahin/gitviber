@@ -78,12 +78,12 @@ pub fn setup<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
         }
     }
 
-    // Tell the page on the will/did notifications rather than on resize, which only lands
-    // once the animation is over: until then the buttons and the page's inset overlap.
+    // Tell the page as each transition starts rather than on resize, which only lands once
+    // the animation is over: the buttons leave and come back right at the start.
     // Hiding the toolbar by hand doesn't work: AppKit saves its visibility on the way in
     // and restores it on the way out, so it came back hidden and the buttons moved up.
     let steps = [
-        (c"NSWindowDidEnterFullScreenNotification", true),
+        (c"NSWindowWillEnterFullScreenNotification", true),
         (c"NSWindowWillExitFullScreenNotification", false),
     ];
     for (name, fullscreen) in steps {

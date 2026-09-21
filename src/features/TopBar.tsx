@@ -67,7 +67,7 @@ export function changeTotals(repo: RepoData) {
   };
 }
 
-/** titlebar.rs emits "fullscreen" as the transition starts (leaving) or ends (entering). */
+/** titlebar.rs emits "fullscreen" as each full-screen transition starts. */
 function useFullscreen() {
   const [fullscreen, setFullscreen] = useState(false);
   useEffect(() => {
