@@ -1,5 +1,6 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { cleanOverrides } from "./commands";
 import { useSyncExternalStore } from "react";
 
 export const CODE_FONTS = {
@@ -94,9 +95,7 @@ function load(): Settings {
     if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
-    const kb = s.keybindings;
-    const validKb = kb && typeof kb === "object" && !Array.isArray(kb) && Object.values(kb).every((v) => Array.isArray(v) && v.every((k) => typeof k === "string"));
-    if (!validKb) s.keybindings = DEFAULTS.keybindings;
+    s.keybindings = cleanOverrides(s.keybindings);
     return s;
   } catch {
     return DEFAULTS;
