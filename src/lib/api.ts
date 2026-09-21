@@ -138,6 +138,8 @@ export const api = {
   worktrees: () => invoke<Worktree[]>("worktrees"),
   /** Changed files in one of this repo's worktrees (a `git status` there). */
   worktreeChanges: (path: string) => invoke<number>("worktree_changes", { path }),
+  /** Checks a branch out in a new worktree beside the main one; returns its path. */
+  addWorktree: (branch: string) => invoke<string>("add_worktree", { branch }),
   /** Nested repositories are refused unless `allowNested`: git would stage only a gitlink. */
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
   unstage: (paths: string[]) => invoke<void>("unstage", { paths }),

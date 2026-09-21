@@ -540,6 +540,27 @@ pub fn main_worktree(repo: &Path) -> Option<String> {
         .map(|w| w.path)
 }
 
+/// Checks `branch` out in a new worktree beside the main one, at
+/// `<parent>/<project>.worktrees/<branch>`, and returns its path. A branch only on a
+/// remote gets a local tracking branch (git's own DWIM for `worktree add`).
+pub fn add_worktree(repo: &Path, branch: &str) -> Result<String, String> {
+    validate_branch(repo, branch)?;
+    let main = main_worktree(repo).ok_or("this repository has no main worktree")?;
+    let main = Path::new(&main);
+    let (Some(parent), Some(name)) = (main.parent(), main.file_name()) else {
+        return Err(format!("no folder beside {}", main.display()));
+    };
+    let path = parent
+        .join(format!("{}.worktrees", name.to_string_lossy()))
+        .join(branch.replace('/', "-"));
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+    let target = path.to_string_lossy().into_owned();
+    run(repo, &["worktree", "add", &target, branch])?;
+    Ok(target)
+}
+
 /// Changed files in one of this repo's worktrees. Only paths `git worktree list` reports are
 /// accepted, so the frontend can't point git at an arbitrary folder.
 pub fn worktree_changes(repo: &Path, path: &str) -> Result<u32, String> {
@@ -1380,7 +1401,24 @@ mod tests {
             .unwrap()
             .iter()
             .any(|b| b.name == "feat/x" && b.current));
+
+        switch_branch(&repo, "main", false).unwrap();
+        assert!(add_worktree(&repo, "--evil").is_err());
+        let wt = add_worktree(&repo, "feat/x").unwrap();
+        // git reports real paths: /var/folders is /private/var/folders on macOS.
+        let real = repo.canonicalize().unwrap();
+        let expected = real.with_file_name(format!(
+            "{}.worktrees",
+            real.file_name().unwrap().to_string_lossy()
+        ));
+        assert_eq!(Path::new(&wt), expected.join("feat-x"));
+        assert!(worktrees(&repo)
+            .unwrap()
+            .iter()
+            .any(|w| w.branch.as_deref() == Some("feat/x")));
+        assert!(add_worktree(&repo, "feat/x").is_err());
         let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&expected);
     }
 
     fn commit_file(repo: &Path, path: &str, content: &str, msg: &str) {
