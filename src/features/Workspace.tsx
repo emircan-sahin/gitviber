@@ -4,6 +4,7 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import type { FileChange, RepoStatus } from "@/lib/api";
+import { resetGitHubCache } from "@/lib/githubCache";
 import { useShownLanguage } from "@/lib/highlight";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { languageLabel } from "@/lib/language";
@@ -56,6 +57,7 @@ function relocate(status: RepoStatus, sel: Selection & { kind: ChangeKind }): Se
 export function Workspace({ root, recent, onOpenRepo, onForgetRepo, onReorderRepos }: Props) {
   // Diffs are cached by revision, which restarts per repo.
   useState(resetPairCache);
+  useState(resetGitHubCache);
   const repo = useRepo(root);
   const { status } = repo;
   const s = useSettings();
