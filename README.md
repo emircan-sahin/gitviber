@@ -1,76 +1,108 @@
-# GitViber
+<p align="center">
+  <img alt="GitViber" src="assets/icon.svg" width="112">
+</p>
 
-A fast, readable desktop git client for reviewing what your AI agents just wrote, one worktree or many.
+<h1 align="center">GitViber</h1>
 
-![GitViber reviewing a diff, dark theme](assets/screenshot-dark.png)
+<p align="center">
+  A desktop git client for reviewing what your coding agents wrote.
+</p>
 
-- **Plain git.** Every action runs the real `git` CLI with your config, hooks, credentials and signing. No workspace, no extra refs, nothing GitViber-specific is written to your repo.
-- **Whole files, not just hunks.** Unified or split diffs of the full file, word-level change highlights, collapsible unchanged regions, next/previous change.
-- **Review loop.** J/K walks the changed files, V marks a file viewed; the mark clears itself when the agent edits that file again.
-- **Worktrees for parallel agents.** Switch between a project's worktrees from the top bar, each with its change count. A branch that's checked out elsewhere opens that worktree instead of failing, and one that isn't can get its own worktree beside the project in one step. Worktrees and repos nested inside the project show up in Changes with their branch and are kept out of staging, so `git add` never turns them into gitlinks.
-- **Terminal built in.** Your login shell in a panel under the diff (⌘J), with tabs and splits. Terminals belong to a worktree: open one in any worktree or on any branch, and switching worktrees brings its terminals back.
-- **File explorer.** Read any file in the repo with VS Code-style change bars, git status marks and ignored files dimmed.
-- **Merge, rebase, conflicts.** Merge or rebase from the branch picker, pull with fast-forward/merge/rebase, and resolve conflicts block by block (current / incoming / both / edit) with continue, skip and abort.
-- **Pull requests (GitHub).** List, read (checks, description, conversation), review the files in the same full-file viewer, create, merge (merge/squash/rebase), check out, and resolve a conflicting PR locally.
-- **Live.** A file watcher refreshes status, diffs and the tree as the agent writes, and keeps your scroll position.
-- **Fast and readable.** Native scrolling over a virtualized view that renders only what's on screen, 120Hz on ProMotion displays, VS Code-grade highlighting (Shiki, off the main thread), SF Mono / Geist Mono / JetBrains Mono, eight syntax themes.
-- **Light and dark.** System, Light or Dark appearance with a separate syntax theme for each; the native window chrome follows along.
+<p align="center">
+  <a href="https://github.com/emircan-sahin/gitviber/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/emircan-sahin/gitviber/ci.yml?branch=main&style=flat-square&label=CI"></a>
+  <img alt="macOS" src="https://img.shields.io/badge/platform-macOS-lightgrey?style=flat-square">
+  <a href="LICENSE"><img alt="MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square"></a>
+</p>
 
-![GitViber reviewing a diff, light theme](assets/screenshot-light.png)
+![GitViber](assets/screenshot-dark.png)
 
-![A GitHub pull request in GitViber: merge status, checks and changed files](assets/screenshot-pr.png)
+I run a few agents at once, each in its own worktree, and spend most of the day reading their
+diffs. Editors show hunks, GitHub shows them after the push, and most git clients weren't built
+for a repo that changes while you look at it. GitViber is the tool I wanted for that: full files,
+live updates, every worktree one click away, and a terminal right under the diff.
 
-## Stack
+It's plain git underneath. Every action runs the `git` CLI with your own config, hooks,
+credentials and signing, and GitViber writes nothing of its own into the repo.
 
-Tauri 2 (Rust) + React 19 + shadcn/ui-style components (Radix + Tailwind v4). Diffs are computed in Rust with `similar`; highlighting uses Shiki in a web worker. It uses the OS webview, so no Chromium is bundled.
+## Features
 
-## Develop
+| | |
+| --- | --- |
+| **Diffs** | Whole files, unified or split, with word-level highlights and collapsible unchanged regions |
+| **Review** | `J` / `K` through changed files, `V` to mark one viewed. The mark clears when the agent touches the file again |
+| **Live** | Status, diffs and the file tree refresh as files change, without losing your scroll position |
+| **Worktrees** | Switch worktrees from the top bar, see each one's change count, check a branch out into a new worktree in one step |
+| **Terminal** | Your login shell under the diff (`⌘J`), with tabs and splits. Each worktree keeps its own terminals |
+| **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase |
+| **Conflicts** | Resolve block by block (current, incoming, both, or edit by hand), then continue, skip or abort |
+| **Pull requests** | List, read, review in the same viewer, create, merge, check out. GitHub only for now |
+| **Explorer** | Browse any file with change bars in the gutter and ignored files dimmed |
+| **Look** | Light and dark themes, eight syntax themes, SF Mono, Geist Mono or JetBrains Mono |
 
-Requires Rust (stable), Node 22+, pnpm and git.
+Worktrees and repos nested inside the project show up in Changes but are kept out of staging, so a
+stray `git add` can't turn them into gitlinks.
+
+<table>
+  <tr>
+    <td><img alt="Light theme" src="assets/screenshot-light.png"></td>
+    <td><img alt="Pull request view" src="assets/screenshot-pr.png"></td>
+  </tr>
+</table>
+
+## Build
+
+There are no release builds yet. You need Rust (stable), Node 22+, pnpm and git.
 
 ```sh
 pnpm install
 pnpm tauri dev      # run the app
-pnpm typecheck      # frontend types
-pnpm check          # everything CI runs: build, rustfmt, clippy, tests
 pnpm tauri build    # release bundle
+pnpm check          # what CI runs: build, tests, rustfmt, clippy
 ```
+
+GitViber is built and tested on macOS. The code compiles elsewhere, but nobody has used it there yet.
 
 ## Shortcuts
 
-| Keys | Action |
+| Keys | |
 | --- | --- |
-| ⌘1 / ⌘2 / ⌘3 | Changes / History / PRs (left panel) |
-| J / K | Next / previous changed file |
-| V | Mark file viewed |
-| ⌥↓ / ⌥↑ | Next / previous change |
-| ⌥S / ⌥C / ⌥Z | Split view / collapse unchanged / word wrap |
-| ⌘B / ⌥⌘B | Hide or show the git panel / the file explorer |
-| ⇧⌘E | Show the file explorer |
-| ⌘+ / ⌘− / ⌘0 | Code font size |
-| ⌘W | Close tab (in a terminal: close that pane) |
-| ⌘J / ⌃` | Show or hide the terminal panel |
-| ⌘T / ⌘D / ⌘K | New terminal / split / clear (terminal focused) |
-| ⌘↵ | Commit |
-| ⌘R | Refresh |
-| ⌘O | Open repository |
+| `⌘1` `⌘2` `⌘3` | Changes, History, PRs |
+| `J` `K` | Next / previous changed file |
+| `V` | Mark file viewed |
+| `⌥↓` `⌥↑` | Next / previous change |
+| `⌥S` `⌥C` `⌥Z` | Split view, collapse unchanged, word wrap |
+| `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
+| `⇧⌘E` | Show the file explorer |
+| `⌘J` or `⌃` `` ` `` | Toggle the terminal |
+| `⌘T` `⌘D` `⌘K` | New terminal, split, clear (in the terminal) |
+| `⌘+` `⌘−` `⌘0` | Code font size |
+| `⌘W` | Close tab, or the terminal pane in focus |
+| `⌘↵` | Commit |
+| `⌘R` | Refresh |
+| `⌘O` | Open repository |
 
 ## GitHub sign-in
 
-GitViber never asks for or stores a token. For pull requests it borrows the login you already have, in this order:
-
-1. the GitHub CLI (`gh auth token`), if installed and signed in;
-2. git's stored github.com credential (macOS Keychain, GitHub Desktop, Git Credential Manager).
-
-If neither exists, the PRs tab shows how to sign in. The token is kept in memory only.
+GitViber never asks for a token. For pull requests it borrows a login you already have: the GitHub
+CLI (`gh auth token`) first, then git's stored github.com credential (Keychain, GitHub Desktop, Git
+Credential Manager). The token stays in memory.
 
 ## Privacy
 
-GitViber needs no API keys or environment variables. Network access is limited to your git remotes (`fetch/pull/push`) and, for pull requests, `api.github.com`. File access is limited to the repository you open, and text from GitHub is shown as plain text, never rendered as HTML.
+No API keys, no telemetry. The app talks to your git remotes and, for pull requests,
+`api.github.com`. It only reads files inside the repository you open, and text from GitHub is
+never rendered as HTML.
+
+## Stack
+
+Tauri 2 and Rust on the backend, React 19 with Radix and Tailwind v4 on the front. Diffs are
+computed in Rust with `similar`, highlighting is Shiki in a web worker, and the UI runs in the
+system webview, so there's no bundled Chromium.
 
 ## Contributing
 
-Bug reports and small, focused PRs are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) first; it covers setup, where things live, and the few rules the app depends on. Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Bug reports and small, focused PRs are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup and
+the few rules the app depends on. Report security issues privately, see [SECURITY.md](SECURITY.md).
 
 ## License
 
