@@ -1,0 +1,1226 @@
+//! Thin wrapper over the `git` CLI. We shell out instead of linking libgit2 so the
+//! user's config, hooks, credential helpers and signing all behave exactly like the
+//! terminal — GitViber never keeps state of its own inside the repo.
+
+use serde::Serialize;
+use std::collections::HashMap;
+use std::io::{Read, Write};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Apps launched from Finder get a bare PATH, which hides Homebrew git and the
+/// credential helpers / ssh that live next to it.
+pub(crate) fn search_path() -> &'static str {
+    static PATH: OnceLock<String> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let current = std::env::var("PATH").unwrap_or_default();
+        let mut parts: Vec<&str> = vec!["/opt/homebrew/bin", "/usr/local/bin"];
+        parts.extend(current.split(':').filter(|p| !p.is_empty()));
+        parts.dedup();
+        parts.join(":")
+    })
+}
+
+fn command(repo: &Path, args: &[&str]) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(repo)
+        .args(args)
+        .env("PATH", search_path())
+        // Never block on an interactive credential prompt; there is no terminal.
+        .env("GIT_TERMINAL_PROMPT", "0")
+        // Our background refreshes must not take index.lock, or they would race the
+        // agent/terminal running git in the same repo.
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        // merge/rebase --continue would otherwise open $EDITOR and hang with no terminal.
+        .env("GIT_EDITOR", "true")
+        // Paths are file names, never globs: `app/[id].tsx` must not also match `app/i.tsx`.
+        .env("GIT_LITERAL_PATHSPECS", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    cmd
+}
+
+/// Runs a prepared command, killing it after `timeout`. Output is drained on threads so a
+/// chatty process can't block on a full pipe while we wait.
+pub(crate) fn exec(
+    mut cmd: Command,
+    label: &str,
+    ok_codes: &[i32],
+    input: Option<&[u8]>,
+    timeout: Option<Duration>,
+) -> Result<Vec<u8>, String> {
+    if input.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("could not run {label}: {e}"))?;
+    if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
+        stdin.write_all(data).map_err(|e| e.to_string())?;
+    }
+    let drain = |r: Option<Box<dyn Read + Send>>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut r) = r {
+                let _ = r.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let out = drain(
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    );
+    let err = drain(
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn Read + Send>),
+    );
+    let deadline = timeout.map(|t| Instant::now() + t);
+    let status = loop {
+        if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
+            break st;
+        }
+        if deadline.is_some_and(|d| Instant::now() > d) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{label} timed out"));
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let (stdout, stderr) = (
+        out.join().unwrap_or_default(),
+        err.join().unwrap_or_default(),
+    );
+    let code = status.code().unwrap_or(-1);
+    if status.success() || ok_codes.contains(&code) {
+        Ok(stdout)
+    } else {
+        let e = String::from_utf8_lossy(&stderr).trim().to_string();
+        Err(if e.is_empty() {
+            format!("{label} failed ({code})")
+        } else {
+            e
+        })
+    }
+}
+
+/// Runs git and returns stdout. `ok_codes` lists exit codes that are not errors.
+pub(crate) fn run_with(
+    repo: &Path,
+    args: &[&str],
+    ok_codes: &[i32],
+    input: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    exec(
+        command(repo, args),
+        &format!("git {}", args.first().unwrap_or(&"")),
+        ok_codes,
+        input,
+        None,
+    )
+}
+
+/// Network commands can stall on a dead connection; don't let them spin forever.
+const NETWORK_TIMEOUT: Duration = Duration::from_secs(300);
+
+fn run_network(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    exec(
+        command(repo, args),
+        &format!("git {}", args[0]),
+        &[],
+        None,
+        Some(NETWORK_TIMEOUT),
+    )
+}
+
+pub fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    run_with(repo, args, &[], None)
+}
+
+fn run_text(repo: &Path, args: &[&str]) -> Result<String, String> {
+    run(repo, args).map(|b| String::from_utf8_lossy(&b).into_owned())
+}
+
+fn has_head(repo: &Path) -> bool {
+    run(repo, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok()
+}
+
+pub fn toplevel(path: &Path) -> Result<String, String> {
+    run_text(path, &["rev-parse", "--show-toplevel"])
+        .map(|s| s.trim().to_string())
+        .map_err(|_| "This folder is not inside a git repository.".to_string())
+}
+
+fn validate_rev(rev: &str) -> Result<(), String> {
+    if rev.len() >= 4 && rev.len() <= 64 && rev.chars().all(|c| c.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(format!("invalid commit id: {rev}"))
+    }
+}
+
+fn validate_branch(repo: &Path, name: &str) -> Result<(), String> {
+    // check-ref-format also rejects a leading '-', so the name can't be read as a flag.
+    run(repo, &["check-ref-format", "--branch", name])
+        .map(|_| ())
+        .map_err(|_| format!("invalid branch name: {name}"))
+}
+
+// ---------------------------------------------------------------- status
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChange {
+    pub path: String,
+    pub old_path: Option<String>,
+    /// One of M A D R C T U ? (U = conflicted, ? = untracked)
+    pub status: String,
+    pub additions: Option<u32>,
+    pub deletions: Option<u32>,
+    /// Content identity for "viewed" marks: the index blob for staged entries, size+mtime
+    /// for the working tree (cheap, and changes on every write).
+    pub oid: Option<String>,
+    /// For conflicts, git's two-letter code: UU both modified, AA both added,
+    /// UD deleted by them, DU deleted by us, AU/UA added by one side, DD both deleted.
+    pub conflict: Option<String>,
+}
+
+/// A merge, rebase, cherry-pick or revert that stopped and waits for the user.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Operation {
+    /// "merge" | "rebase" | "cherry-pick" | "revert"
+    pub kind: String,
+    /// Branch being rebased, or what is being merged in (from MERGE_MSG).
+    pub subject: Option<String>,
+    /// Rebase progress (1-based step of total).
+    pub step: Option<u32>,
+    pub total: Option<u32>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoStatus {
+    pub root: String,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    pub staged: Vec<FileChange>,
+    pub unstaged: Vec<FileChange>,
+    pub conflicted: Vec<FileChange>,
+    pub operation: Option<Operation>,
+}
+
+fn change(path: &str, old_path: Option<&str>, status: char) -> FileChange {
+    FileChange {
+        path: path.to_string(),
+        old_path: old_path.map(str::to_string),
+        status: status.to_string(),
+        additions: None,
+        deletions: None,
+        oid: None,
+        conflict: None,
+    }
+}
+
+/// Parses `--numstat -z` into path -> (additions, deletions). Binary files report `-`.
+fn parse_numstat(raw: &[u8]) -> HashMap<String, (Option<u32>, Option<u32>)> {
+    let mut map = HashMap::new();
+    let mut tokens = raw
+        .split(|b| *b == 0)
+        .map(|t| String::from_utf8_lossy(t).into_owned());
+    while let Some(tok) = tokens.next() {
+        let mut fields = tok.splitn(3, '\t');
+        let (Some(a), Some(d), Some(path)) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        // Renames leave the path field empty and put old\0new in the next two tokens.
+        let path = if path.is_empty() {
+            tokens.next();
+            match tokens.next() {
+                Some(p) => p,
+                None => break,
+            }
+        } else {
+            path.to_string()
+        };
+        map.insert(path, (a.parse().ok(), d.parse().ok()));
+    }
+    map
+}
+
+fn apply_numstat(list: &mut [FileChange], stats: &HashMap<String, (Option<u32>, Option<u32>)>) {
+    for f in list {
+        if let Some((a, d)) = stats.get(&f.path) {
+            f.additions = *a;
+            f.deletions = *d;
+        }
+    }
+}
+
+fn count_lines(repo: &Path, rel: &str) -> Option<u32> {
+    let bytes = read_regular(&repo.join(rel)).ok()??;
+    if is_binary(&bytes) {
+        return None;
+    }
+    let n = bytes.iter().filter(|b| **b == b'\n').count();
+    let trailing = !bytes.is_empty() && *bytes.last().unwrap() != b'\n';
+    Some((n + trailing as usize) as u32)
+}
+
+pub fn status(repo: &Path) -> Result<RepoStatus, String> {
+    let raw = run(
+        repo,
+        &[
+            "status",
+            "--porcelain=v2",
+            "-z",
+            "--branch",
+            "--untracked-files=all",
+        ],
+    )?;
+    let mut st = RepoStatus {
+        root: repo.to_string_lossy().into_owned(),
+        branch: None,
+        head: None,
+        upstream: None,
+        ahead: 0,
+        behind: 0,
+        staged: vec![],
+        unstaged: vec![],
+        conflicted: vec![],
+        operation: operation(repo),
+    };
+
+    let mut records = raw
+        .split(|b| *b == 0)
+        .map(|t| String::from_utf8_lossy(t).into_owned());
+    while let Some(rec) = records.next() {
+        if let Some(h) = rec.strip_prefix("# ") {
+            let (key, val) = h.split_once(' ').unwrap_or((h, ""));
+            match key {
+                "branch.oid" if val != "(initial)" => st.head = Some(val.chars().take(7).collect()),
+                "branch.head" if val != "(detached)" => st.branch = Some(val.to_string()),
+                "branch.upstream" => st.upstream = Some(val.to_string()),
+                "branch.ab" => {
+                    for part in val.split(' ') {
+                        if let Some(n) = part.strip_prefix('+') {
+                            st.ahead = n.parse().unwrap_or(0);
+                        } else if let Some(n) = part.strip_prefix('-') {
+                            st.behind = n.parse().unwrap_or(0);
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        let kind = rec.chars().next().unwrap_or(' ');
+        match kind {
+            '1' | '2' => {
+                // 1 XY sub mH mI mW hH hI path  |  2 XY sub mH mI mW hH hI Xscore path \0 orig
+                let fields: Vec<&str> = rec.splitn(if kind == '1' { 9 } else { 10 }, ' ').collect();
+                let Some(path) = fields.last() else { continue };
+                let orig = if kind == '2' { records.next() } else { None };
+                let xy: Vec<char> = fields.get(1).copied().unwrap_or("..").chars().collect();
+                let (x, y) = (xy[0], xy[1]);
+                if x != '.' {
+                    let mut f = change(path, orig.as_deref(), x);
+                    f.oid = fields.get(7).map(|h| h.to_string());
+                    st.staged.push(f);
+                }
+                if y != '.' {
+                    // In the worktree the rename is already recorded in the index, so show it as M.
+                    st.unstaged.push(change(path, None, y));
+                }
+            }
+            'u' => {
+                // u XY sub m1 m2 m3 mW h1 h2 h3 path
+                let fields: Vec<&str> = rec.splitn(11, ' ').collect();
+                if let Some(path) = fields.last() {
+                    let mut f = change(path, None, 'U');
+                    f.conflict = fields.get(1).map(|xy| xy.to_string());
+                    st.conflicted.push(f);
+                }
+            }
+            '?' => {
+                let path = &rec[2..];
+                let mut f = change(path, None, '?');
+                f.additions = count_lines(repo, path);
+                f.deletions = Some(0);
+                st.unstaged.push(f);
+            }
+            _ => {}
+        }
+    }
+
+    for f in &mut st.unstaged {
+        if let Ok(meta) = std::fs::metadata(repo.join(&f.path)) {
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            f.oid = Some(format!("{}:{mtime}", meta.len()));
+        }
+    }
+    if !st.unstaged.is_empty() {
+        let stats = parse_numstat(&run(repo, &["diff", "--numstat", "-z"])?);
+        apply_numstat(&mut st.unstaged, &stats);
+    }
+    if !st.staged.is_empty() {
+        let stats = parse_numstat(&run(repo, &["diff", "--cached", "--numstat", "-z", "-M"])?);
+        apply_numstat(&mut st.staged, &stats);
+    }
+    Ok(st)
+}
+
+// ---------------------------------------------------------------- history
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Commit {
+    pub sha: String,
+    pub short_sha: String,
+    pub author_name: String,
+    pub author_email: String,
+    pub timestamp: i64,
+    pub parents: Vec<String>,
+    pub refs: Vec<String>,
+    pub subject: String,
+    pub body: String,
+    pub unpushed: bool,
+}
+
+pub fn log(repo: &Path, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
+    if !has_head(repo) {
+        return Ok(vec![]);
+    }
+    let unpushed: std::collections::HashSet<String> =
+        run_text(repo, &["rev-list", "@{upstream}..HEAD"])
+            .map(|s| s.lines().map(str::to_string).collect())
+            .unwrap_or_default();
+
+    let skip = format!("--skip={skip}");
+    let limit = format!("-n{limit}");
+    let raw = run_text(
+        repo,
+        &[
+            "log",
+            &skip,
+            &limit,
+            "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%P%x1f%D%x1f%s%x1f%b%x1e",
+        ],
+    )?;
+    Ok(raw
+        .split('\x1e')
+        .filter_map(|rec| {
+            let f: Vec<&str> = rec.trim_start_matches('\n').split('\x1f').collect();
+            if f.len() < 9 {
+                return None;
+            }
+            Some(Commit {
+                sha: f[0].to_string(),
+                short_sha: f[1].to_string(),
+                author_name: f[2].to_string(),
+                author_email: f[3].to_string(),
+                timestamp: f[4].parse().unwrap_or(0),
+                parents: f[5].split_whitespace().map(str::to_string).collect(),
+                refs: f[6]
+                    .split(", ")
+                    .filter(|r| !r.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                subject: f[7].to_string(),
+                body: f[8].trim().to_string(),
+                unpushed: unpushed.contains(f[0]),
+            })
+        })
+        .collect())
+}
+
+/// Files changed by a commit, compared with its first parent (so merges show what they brought in).
+pub fn commit_files(repo: &Path, sha: &str) -> Result<Vec<FileChange>, String> {
+    validate_rev(sha)?;
+    let parent = format!("{sha}^");
+    let has_parent = run(repo, &["rev-parse", "--verify", "-q", &parent]).is_ok();
+    if has_parent {
+        range_files(repo, &parent, sha)
+    } else {
+        tree_files(repo, &["--root", sha])
+    }
+}
+
+/// Files changed between two commits (e.g. a PR's merge base and its head).
+pub fn range_files(repo: &Path, from: &str, to: &str) -> Result<Vec<FileChange>, String> {
+    tree_files(repo, &[from, to])
+}
+
+fn tree_files(repo: &Path, range: &[&str]) -> Result<Vec<FileChange>, String> {
+    let mut args = vec![
+        "diff-tree",
+        "-r",
+        "-z",
+        "-M",
+        "--no-commit-id",
+        "--name-status",
+    ];
+    args.extend(range);
+    let raw = run(repo, &args)?;
+    let mut files = vec![];
+    let mut tokens = raw
+        .split(|b| *b == 0)
+        .map(|t| String::from_utf8_lossy(t).into_owned());
+    while let Some(code) = tokens.next() {
+        let Some(letter) = code.chars().next() else {
+            continue;
+        };
+        if letter == 'R' || letter == 'C' {
+            let (Some(old), Some(new)) = (tokens.next(), tokens.next()) else {
+                break;
+            };
+            files.push(change(&new, Some(&old), letter));
+        } else if let Some(path) = tokens.next() {
+            files.push(change(&path, None, letter));
+        }
+    }
+
+    let mut args = vec!["diff-tree", "-r", "-z", "-M", "--no-commit-id", "--numstat"];
+    args.extend(range);
+    apply_numstat(&mut files, &parse_numstat(&run(repo, &args)?));
+    Ok(files)
+}
+
+pub fn merge_base(repo: &Path, a: &str, b: &str) -> Result<String, String> {
+    validate_rev(a)?;
+    validate_rev(b)?;
+    run_text(repo, &["merge-base", a, b]).map(|s| s.trim().to_string())
+}
+
+/// Brings in objects for these refs from a remote. Writes no FETCH_HEAD and creates no
+/// local branch (a configured remote-tracking ref like origin/<base> may still update).
+pub fn fetch_objects(repo: &Path, remote: &str, refspecs: &[String]) -> Result<(), String> {
+    let mut args = vec![
+        "fetch",
+        "--quiet",
+        "--no-write-fetch-head",
+        "--no-tags",
+        remote,
+    ];
+    args.extend(refspecs.iter().map(String::as_str));
+    run_network(repo, &args).map(|_| ())
+}
+
+pub fn remote_url(repo: &Path, remote: &str) -> Option<String> {
+    run_text(repo, &["remote", "get-url", remote])
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+/// The token git already stores for github.com (osxkeychain, GitHub Desktop, GCM…).
+pub fn credential_token(repo: &Path) -> Option<String> {
+    let mut cmd = command(repo, &["-c", "core.askPass=", "credential", "fill"]);
+    // Never pop a login window from the background; no stored credential means "none".
+    cmd.env("GCM_INTERACTIVE", "never")
+        .env_remove("GIT_ASKPASS")
+        .env_remove("SSH_ASKPASS");
+    let out = exec(
+        cmd,
+        "git credential",
+        &[],
+        Some(b"protocol=https\nhost=github.com\n\n"),
+        Some(Duration::from_secs(10)),
+    )
+    .ok()?;
+    String::from_utf8_lossy(&out)
+        .lines()
+        .find_map(|l| l.strip_prefix("password=").map(str::to_string))
+        .filter(|t| !t.is_empty())
+}
+
+// ---------------------------------------------------------------- file contents
+
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FileText {
+    pub text: String,
+    pub binary: bool,
+    pub too_large: bool,
+    /// False when the file does not exist on that side (added / deleted).
+    pub exists: bool,
+    /// Not valid UTF-8 (e.g. Latin-1); text was decoded lossily, so never write it back.
+    pub lossy: bool,
+}
+
+pub fn is_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(8000).any(|b| *b == 0)
+}
+
+/// Reads a regular file up to MAX_TEXT_BYTES. Ok(None) = too large. FIFOs, devices and
+/// sockets are refused: reading /dev/zero or a pipe would hang or eat memory.
+pub fn read_regular(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    if !meta.is_file() {
+        return Err("not a regular file".into());
+    }
+    if meta.len() > MAX_TEXT_BYTES as u64 {
+        return Ok(None);
+    }
+    let mut buf = Vec::new();
+    std::fs::File::open(path)
+        .and_then(|f| f.take(MAX_TEXT_BYTES as u64 + 1).read_to_end(&mut buf))
+        .map_err(|e| e.to_string())?;
+    Ok((buf.len() <= MAX_TEXT_BYTES).then_some(buf))
+}
+
+pub fn to_file_text(bytes: Vec<u8>) -> FileText {
+    if bytes.len() > MAX_TEXT_BYTES {
+        return FileText {
+            too_large: true,
+            exists: true,
+            ..Default::default()
+        };
+    }
+    if is_binary(&bytes) {
+        return FileText {
+            binary: true,
+            exists: true,
+            ..Default::default()
+        };
+    }
+    match String::from_utf8(bytes) {
+        Ok(text) => FileText {
+            text,
+            exists: true,
+            ..Default::default()
+        },
+        Err(e) => FileText {
+            text: String::from_utf8_lossy(e.as_bytes()).into_owned(),
+            exists: true,
+            lossy: true,
+            ..Default::default()
+        },
+    }
+}
+
+/// Reads `<rev>:<path>` (rev "" means the index). A missing blob is not an error.
+fn blob(repo: &Path, rev: &str, path: &str) -> FileText {
+    let spec = format!("{rev}:{path}");
+    match run(repo, &["cat-file", "blob", &spec]) {
+        Ok(bytes) => to_file_text(bytes),
+        Err(_) => FileText::default(),
+    }
+}
+
+#[derive(Serialize)]
+pub struct DiffPair {
+    pub original: FileText,
+    pub modified: FileText,
+    pub rows: Vec<crate::diff::Row>,
+}
+
+/// Where each side of a diff lives: a git revision ("" = the index), or None for the worktree.
+fn sides(
+    kind: &str,
+    sha: Option<&str>,
+    base: Option<&str>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let rev = |r: &str| Some(r.to_string());
+    Ok(match kind {
+        "unstaged" => (rev(""), None),
+        "staged" => (rev("HEAD"), rev("")),
+        "worktree" => (rev("HEAD"), None),
+        "commit" => {
+            let sha = sha.ok_or("missing commit")?;
+            validate_rev(sha)?;
+            (Some(format!("{sha}^")), rev(sha))
+        }
+        "range" => {
+            let (Some(base), Some(sha)) = (base, sha) else {
+                return Err("missing range".into());
+            };
+            validate_rev(base)?;
+            validate_rev(sha)?;
+            (rev(base), rev(sha))
+        }
+        other => return Err(format!("unknown diff kind: {other}")),
+    })
+}
+
+/// Media previews load whole files into the webview; past this they are refused.
+pub const MAX_MEDIA_BYTES: u64 = 512 * 1024 * 1024;
+
+/// Raw bytes of one side of a diff, for image / audio / video previews.
+#[allow(clippy::too_many_arguments)]
+pub fn media(
+    repo: &Path,
+    kind: &str,
+    path: &str,
+    old_path: Option<&str>,
+    sha: Option<&str>,
+    base: Option<&str>,
+    original: bool,
+    worktree: impl Fn(&str) -> Result<Vec<u8>, String>,
+) -> Result<Vec<u8>, String> {
+    let (a, b) = sides(kind, sha, base)?;
+    let (rev, path) = if original {
+        (a, old_path.unwrap_or(path))
+    } else {
+        (b, path)
+    };
+    let Some(rev) = rev else {
+        return worktree(path);
+    };
+    let spec = format!("{rev}:{path}");
+    let size: u64 = run_text(repo, &["cat-file", "-s", &spec])?
+        .trim()
+        .parse()
+        .map_err(|_| "bad blob size")?;
+    if size > MAX_MEDIA_BYTES {
+        return Err("File is too large to preview".into());
+    }
+    run(repo, &["cat-file", "blob", &spec])
+}
+
+/// `kind`: "unstaged" (index → worktree), "staged" (HEAD → index), "worktree" (HEAD → worktree),
+/// "commit" (parent → commit) or "range" (base → sha, e.g. a pull request).
+pub fn diff_pair(
+    repo: &Path,
+    kind: &str,
+    path: &str,
+    old_path: Option<&str>,
+    sha: Option<&str>,
+    base: Option<&str>,
+    worktree: impl Fn(&str) -> FileText,
+) -> Result<DiffPair, String> {
+    let (a, b) = sides(kind, sha, base)?;
+    let read = |rev: Option<String>, p: &str| match rev {
+        Some(rev) => blob(repo, &rev, p),
+        None => worktree(p),
+    };
+    let original = read(a, old_path.unwrap_or(path));
+    let modified = read(b, path);
+    let textual = |f: &FileText| !f.binary && !f.too_large;
+    let rows = if textual(&original) && textual(&modified) {
+        crate::diff::rows(&original.text, &modified.text)
+    } else {
+        vec![]
+    };
+    Ok(DiffPair {
+        original,
+        modified,
+        rows,
+    })
+}
+
+// ---------------------------------------------------------------- merge / rebase
+
+fn git_dir(repo: &Path) -> Option<std::path::PathBuf> {
+    run_text(repo, &["rev-parse", "--absolute-git-dir"])
+        .ok()
+        .map(|s| s.trim().into())
+}
+
+fn read_trim(path: std::path::PathBuf) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+pub fn operation(repo: &Path) -> Option<Operation> {
+    let dir = git_dir(repo)?;
+    // `git am` also uses rebase-apply/, marked by an `applying` file.
+    if dir.join("rebase-apply/applying").exists() {
+        return Some(Operation {
+            kind: "am".into(),
+            subject: None,
+            step: None,
+            total: None,
+        });
+    }
+    for rebase in ["rebase-merge", "rebase-apply"] {
+        let d = dir.join(rebase);
+        if d.is_dir() {
+            let (step, total) = if rebase == "rebase-merge" {
+                ("msgnum", "end")
+            } else {
+                ("next", "last")
+            };
+            return Some(Operation {
+                kind: "rebase".into(),
+                subject: read_trim(d.join("head-name"))
+                    .map(|h| h.trim_start_matches("refs/heads/").to_string()),
+                step: read_trim(d.join(step)).and_then(|v| v.parse().ok()),
+                total: read_trim(d.join(total)).and_then(|v| v.parse().ok()),
+            });
+        }
+    }
+    let simple = |kind: &str, file: &str| {
+        dir.join(file).exists().then(|| Operation {
+            kind: kind.into(),
+            subject: read_trim(dir.join("MERGE_MSG"))
+                .and_then(|m| m.lines().next().map(str::to_string)),
+            step: None,
+            total: None,
+        })
+    };
+    simple("merge", "MERGE_HEAD")
+        .or_else(|| simple("cherry-pick", "CHERRY_PICK_HEAD"))
+        .or_else(|| simple("revert", "REVERT_HEAD"))
+        .or_else(|| {
+            // A multi-commit cherry-pick/revert paused between picks leaves only sequencer/.
+            let todo = read_trim(dir.join("sequencer/todo"))?;
+            let kind = if todo.starts_with("revert") {
+                "revert"
+            } else {
+                "cherry-pick"
+            };
+            Some(Operation {
+                kind: kind.into(),
+                subject: None,
+                step: None,
+                total: None,
+            })
+        })
+}
+
+/// Accepts a local or remote-tracking branch (or any commit-ish) that isn't an option.
+fn validate_ref(repo: &Path, name: &str) -> Result<(), String> {
+    let spec = format!("{name}^{{commit}}");
+    if name.starts_with('-') || run(repo, &["rev-parse", "--verify", "-q", &spec]).is_err() {
+        return Err(format!("unknown branch or commit: {name}"));
+    }
+    Ok(())
+}
+
+/// Runs an operation that may stop on conflicts. Stopping is not an error: it returns
+/// Ok(true) so the UI can switch to resolving. Anything else that fails is an error.
+fn has_conflicts(repo: &Path) -> bool {
+    run(repo, &["diff", "--name-only", "--diff-filter=U"]).is_ok_and(|o| !o.is_empty())
+}
+
+fn run_stoppable(repo: &Path, args: &[&str]) -> Result<bool, String> {
+    stoppable(repo, run(repo, args))
+}
+
+/// Ok(true) only when the operation stopped on conflicts. Any other failure (a hook, GPG,
+/// dirty worktree) is returned as the real git error instead of looking like conflicts.
+fn stoppable(repo: &Path, result: Result<Vec<u8>, String>) -> Result<bool, String> {
+    let conflicts = has_conflicts(repo);
+    match result {
+        Ok(_) => Ok(conflicts),
+        Err(_) if conflicts => Ok(true),
+        Err(e) => Err(e),
+    }
+}
+
+/// Starting a new merge/rebase/pull on top of an unfinished one would be misreported as conflicts.
+fn ensure_idle(repo: &Path) -> Result<(), String> {
+    match operation(repo) {
+        Some(op) => Err(format!(
+            "A {} is in progress. Continue or abort it first.",
+            op.kind
+        )),
+        None => Ok(()),
+    }
+}
+
+pub fn merge(repo: &Path, name: &str) -> Result<bool, String> {
+    ensure_idle(repo)?;
+    validate_ref(repo, name)?;
+    run_stoppable(repo, &["merge", "--no-edit", name])
+}
+
+pub fn rebase(repo: &Path, onto: &str) -> Result<bool, String> {
+    ensure_idle(repo)?;
+    validate_ref(repo, onto)?;
+    run_stoppable(repo, &["rebase", onto])
+}
+
+pub fn op_continue(repo: &Path) -> Result<bool, String> {
+    let op = operation(repo).ok_or("Nothing to continue.")?;
+    match op.kind.as_str() {
+        // `merge --continue` refuses without an editor on some git versions; commit is equivalent.
+        "merge" => run_stoppable(repo, &["commit", "--no-edit"]),
+        "rebase" => run_stoppable(repo, &["rebase", "--continue"]),
+        "cherry-pick" => run_stoppable(repo, &["cherry-pick", "--continue"]),
+        "am" => run_stoppable(repo, &["am", "--continue"]),
+        _ => run_stoppable(repo, &["revert", "--continue"]),
+    }
+}
+
+pub fn op_abort(repo: &Path) -> Result<(), String> {
+    let op = operation(repo).ok_or("Nothing to abort.")?;
+    let kind = op.kind.as_str();
+    run(repo, &[kind, "--abort"]).map(|_| ())
+}
+
+pub fn rebase_skip(repo: &Path) -> Result<bool, String> {
+    run_stoppable(repo, &["rebase", "--skip"])
+}
+
+/// Resolves a conflicted file by taking one side whole. `side` is "ours" or "theirs";
+/// if that side deleted the file, the resolution is to delete it.
+pub fn resolve_side(repo: &Path, path: &str, side: &str) -> Result<(), String> {
+    let (flag, stage_no) = match side {
+        "ours" => ("--ours", "2"),
+        "theirs" => ("--theirs", "3"),
+        other => return Err(format!("unknown side: {other}")),
+    };
+    let paths = [path.to_string()];
+    // Unmerged index stages: 1 base, 2 ours, 3 theirs. Decide from them, never from a
+    // failed checkout, so an unrelated error can't turn into deleting the file.
+    let raw = run_text(repo, &with_paths(vec!["ls-files", "-u", "-z"], &paths))?;
+    let stages: Vec<&str> = raw
+        .split('\0')
+        .filter_map(|l| l.split('\t').next()?.split(' ').nth(2))
+        .collect();
+    if stages.is_empty() {
+        return Err(format!("{path} is not in conflict"));
+    }
+    if stages.contains(&stage_no) {
+        run(repo, &with_paths(vec!["checkout", flag], &paths))?;
+        stage(repo, &paths)
+    } else {
+        run(repo, &with_paths(vec!["rm", "-q"], &paths)).map(|_| ())
+    }
+}
+
+// ---------------------------------------------------------------- branches
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Branch {
+    pub name: String,
+    /// Remote-tracking branch like origin/main (can be merged/rebased onto, or checked out).
+    pub remote: bool,
+    pub current: bool,
+    pub upstream: Option<String>,
+    pub timestamp: i64,
+}
+
+pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
+    let raw = run_text(
+        repo,
+        &[
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)",
+            "refs/heads",
+            "refs/remotes",
+        ],
+    )?;
+    Ok(raw
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\x1f').collect();
+            // Skip the symbolic origin/HEAD pointer.
+            (f.len() == 5 && !f[0].ends_with("/HEAD")).then(|| Branch {
+                name: f[1].to_string(),
+                remote: f[0].starts_with("refs/remotes/"),
+                current: f[2] == "*",
+                upstream: (!f[3].is_empty()).then(|| f[3].to_string()),
+                timestamp: f[4].parse().unwrap_or(0),
+            })
+        })
+        .collect())
+}
+
+pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String> {
+    validate_branch(repo, name)?;
+    let args: Vec<&str> = if create {
+        vec!["switch", "-c", name]
+    } else {
+        vec!["switch", name]
+    };
+    run(repo, &args).map(|_| ())
+}
+
+// ---------------------------------------------------------------- mutations
+
+fn with_paths<'a>(mut args: Vec<&'a str>, paths: &'a [String]) -> Vec<&'a str> {
+    args.push("--");
+    args.extend(paths.iter().map(String::as_str));
+    args
+}
+
+pub fn stage(repo: &Path, paths: &[String]) -> Result<(), String> {
+    run(repo, &with_paths(vec!["add", "-A"], paths)).map(|_| ())
+}
+
+pub fn unstage(repo: &Path, paths: &[String]) -> Result<(), String> {
+    let base = if has_head(repo) {
+        vec!["restore", "--staged"]
+    } else {
+        vec!["rm", "--cached", "-q", "-r"]
+    };
+    run(repo, &with_paths(base, paths)).map(|_| ())
+}
+
+/// Reverts tracked files in the worktree to their index version. Untracked files are left alone.
+pub fn discard(repo: &Path, paths: &[String]) -> Result<(), String> {
+    run(repo, &with_paths(vec!["restore", "--worktree"], paths)).map(|_| ())
+}
+
+pub fn commit(repo: &Path, message: &str, amend: bool) -> Result<(), String> {
+    if amend && message.trim().is_empty() {
+        // Amending with no new message keeps the old one.
+        return run(repo, &["commit", "--amend", "--no-edit"]).map(|_| ());
+    }
+    // Message goes through stdin so it is never parsed as arguments.
+    let mut args = vec!["commit", "-F", "-"];
+    if amend {
+        args.push("--amend");
+    }
+    run_with(repo, &args, &[], Some(message.as_bytes())).map(|_| ())
+}
+
+pub fn push(repo: &Path) -> Result<(), String> {
+    let has_upstream = run(repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
+    let args: Vec<&str> = if has_upstream {
+        vec!["push"]
+    } else {
+        vec!["push", "-u", "origin", "HEAD"]
+    };
+    run_network(repo, &args).map(|_| ())
+}
+
+/// `mode`: "ff" (fast-forward only), "merge" or "rebase". Returns true if it stopped on conflicts.
+pub fn pull(repo: &Path, mode: &str) -> Result<bool, String> {
+    ensure_idle(repo)?;
+    let flag = match mode {
+        "merge" => "--no-rebase",
+        "rebase" => "--rebase",
+        _ => "--ff-only",
+    };
+    stoppable(repo, run_network(repo, &["pull", "--no-edit", flag]))
+}
+
+pub fn fetch(repo: &Path) -> Result<(), String> {
+    run_network(repo, &["fetch", "--prune"]).map(|_| ())
+}
+
+/// Returns the subset of `paths` that .gitignore excludes.
+pub fn ignored(repo: &Path, paths: &[String]) -> Vec<String> {
+    if paths.is_empty() {
+        return vec![];
+    }
+    let input = paths.join("\0");
+    // Exit code 1 just means "nothing ignored". These paths come from our own directory
+    // listing, and literal pathspecs would break the trailing "/" that marks directories.
+    let mut cmd = command(repo, &["check-ignore", "-z", "--stdin"]);
+    cmd.env("GIT_LITERAL_PATHSPECS", "0");
+    exec(cmd, "git check-ignore", &[1], Some(input.as_bytes()), None)
+        .map(|raw| {
+            raw.split(|b| *b == 0)
+                .filter(|t| !t.is_empty())
+                .map(|t| String::from_utf8_lossy(t).trim_end_matches('/').to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn temp_repo(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("gitviber-test-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.name", "Test"],
+            vec!["config", "user.email", "test@example.com"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            run(&dir, &args).unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn status_history_and_diffs() {
+        let repo = temp_repo("status");
+        fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
+        fs::write(repo.join("old name.txt"), "rename me\n").unwrap();
+        stage(&repo, &["a.txt".into(), "old name.txt".into()]).unwrap();
+        commit(&repo, "first\n\nbody line", false).unwrap();
+
+        fs::write(repo.join("a.txt"), "one\nTWO\nthree\n").unwrap();
+        fs::rename(repo.join("old name.txt"), repo.join("new name.txt")).unwrap();
+        stage(&repo, &["old name.txt".into(), "new name.txt".into()]).unwrap();
+        fs::create_dir_all(repo.join("dir")).unwrap();
+        fs::write(repo.join("dir/new.rs"), "fn main() {}\n").unwrap();
+
+        let st = status(&repo).unwrap();
+        assert_eq!(st.branch.as_deref(), Some("main"));
+        let renamed = st
+            .staged
+            .iter()
+            .find(|f| f.status == "R")
+            .expect("rename staged");
+        assert_eq!(renamed.path, "new name.txt");
+        assert_eq!(renamed.old_path.as_deref(), Some("old name.txt"));
+        let a = st.unstaged.iter().find(|f| f.path == "a.txt").unwrap();
+        assert_eq!(
+            (a.status.as_str(), a.additions, a.deletions),
+            ("M", Some(2), Some(1))
+        );
+        let untracked = st.unstaged.iter().find(|f| f.path == "dir/new.rs").unwrap();
+        assert_eq!(
+            (untracked.status.as_str(), untracked.additions),
+            ("?", Some(1))
+        );
+
+        let pair = diff_pair(&repo, "unstaged", "a.txt", None, None, None, |p| {
+            to_file_text(fs::read(repo.join(p)).unwrap())
+        })
+        .unwrap();
+        assert_eq!(pair.original.text, "one\ntwo\n");
+        assert_eq!(pair.modified.text, "one\nTWO\nthree\n");
+        let pair = diff_pair(
+            &repo,
+            "staged",
+            "new name.txt",
+            Some("old name.txt"),
+            None,
+            None,
+            |_| FileText::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            (pair.original.text.as_str(), pair.modified.text.as_str()),
+            ("rename me\n", "rename me\n")
+        );
+
+        commit(&repo, "second", false).unwrap();
+        let commits = log(&repo, 0, 10).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[1].body, "body line");
+        assert!(commits[0].refs.iter().any(|r| r == "HEAD -> main"));
+
+        let files = commit_files(&repo, &commits[0].sha).unwrap();
+        assert!(files
+            .iter()
+            .any(|f| f.status == "R" && f.old_path.as_deref() == Some("old name.txt")));
+        let root_files = commit_files(&repo, &commits[1].sha).unwrap();
+        assert_eq!(root_files.len(), 2);
+
+        assert_eq!(ignored(&repo, &["a.txt".into()]), Vec::<String>::new());
+        fs::write(repo.join(".gitignore"), "target/\n").unwrap();
+        assert_eq!(
+            ignored(&repo, &["target/".into(), "a.txt".into()]),
+            vec!["target".to_string()]
+        );
+
+        assert!(switch_branch(&repo, "--evil", true).is_err());
+        switch_branch(&repo, "feat/x", true).unwrap();
+        assert!(branches(&repo)
+            .unwrap()
+            .iter()
+            .any(|b| b.name == "feat/x" && b.current));
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    fn commit_file(repo: &Path, path: &str, content: &str, msg: &str) {
+        fs::write(repo.join(path), content).unwrap();
+        stage(repo, &[path.into()]).unwrap();
+        commit(repo, msg, false).unwrap();
+    }
+
+    #[test]
+    fn merge_conflict_resolve_and_continue() {
+        let repo = temp_repo("merge");
+        commit_file(&repo, "a.txt", "base\n", "base");
+        commit_file(&repo, "gone.txt", "keep?\n", "add gone");
+        switch_branch(&repo, "feature", true).unwrap();
+        commit_file(&repo, "a.txt", "feature\n", "feature edit");
+        run(&repo, &["rm", "-q", "gone.txt"]).unwrap();
+        commit(&repo, "feature deletes gone", false).unwrap();
+        switch_branch(&repo, "main", false).unwrap();
+        commit_file(&repo, "a.txt", "main\n", "main edit");
+        commit_file(&repo, "gone.txt", "edited on main\n", "main edits gone");
+
+        assert!(
+            merge(&repo, "feature").unwrap(),
+            "merge should stop on conflicts"
+        );
+        let st = status(&repo).unwrap();
+        assert_eq!(
+            st.operation.as_ref().map(|o| o.kind.as_str()),
+            Some("merge")
+        );
+        let code = |p: &str| {
+            st.conflicted
+                .iter()
+                .find(|f| f.path == p)
+                .and_then(|f| f.conflict.clone())
+        };
+        assert_eq!(code("a.txt").as_deref(), Some("UU"));
+        assert_eq!(code("gone.txt").as_deref(), Some("UD"));
+        assert!(fs::read_to_string(repo.join("a.txt"))
+            .unwrap()
+            .contains("<<<<<<<"));
+
+        // Starting another operation now must be refused, not reported as conflicts.
+        assert!(rebase(&repo, "feature").is_err());
+
+        resolve_side(&repo, "a.txt", "theirs").unwrap();
+        resolve_side(&repo, "gone.txt", "theirs").unwrap(); // theirs deleted it
+        assert_eq!(fs::read_to_string(repo.join("a.txt")).unwrap(), "feature\n");
+        assert!(!repo.join("gone.txt").exists());
+        assert!(!op_continue(&repo).unwrap());
+        assert!(operation(&repo).is_none());
+        assert_eq!(log(&repo, 0, 1).unwrap()[0].parents.len(), 2);
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn rebase_conflict_abort() {
+        let repo = temp_repo("rebase");
+        commit_file(&repo, "a.txt", "base\n", "base");
+        switch_branch(&repo, "feature", true).unwrap();
+        commit_file(&repo, "a.txt", "feature\n", "feature edit");
+        switch_branch(&repo, "main", false).unwrap();
+        commit_file(&repo, "a.txt", "main\n", "main edit");
+        switch_branch(&repo, "feature", false).unwrap();
+
+        assert!(rebase(&repo, "main").unwrap());
+        let op = operation(&repo).unwrap();
+        assert_eq!(
+            (op.kind.as_str(), op.subject.as_deref(), op.step, op.total),
+            ("rebase", Some("feature"), Some(1), Some(1))
+        );
+        op_abort(&repo).unwrap();
+        assert!(operation(&repo).is_none());
+        assert_eq!(fs::read_to_string(repo.join("a.txt")).unwrap(), "feature\n");
+        assert!(validate_ref(&repo, "--help").is_err());
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn unborn_branch() {
+        let repo = temp_repo("unborn");
+        fs::write(repo.join("x"), "x\n").unwrap();
+        stage(&repo, &["x".into()]).unwrap();
+        assert_eq!(status(&repo).unwrap().staged.len(), 1);
+        assert!(log(&repo, 0, 10).unwrap().is_empty());
+        unstage(&repo, &["x".into()]).unwrap();
+        assert_eq!(status(&repo).unwrap().staged.len(), 0);
+        let _ = fs::remove_dir_all(&repo);
+    }
+}

@@ -1,0 +1,33 @@
+[package]
+name = "gitviber"
+version = "0.1.0"
+description = "A fast, readable git client for vibe coding"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/emircan-sahin/gitviber"
+
+[lib]
+name = "gitviber_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.6.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.11.6", features = [] }
+tauri-plugin-dialog = "=2.7.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "8.2"
+similar = { version = "=3.2.0", features = ["inline"] }
+ureq = { version = "=3.4.2", features = ["json"] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# Same version wry already links; used to lift WebKit's 60fps cap (see display.rs).
+objc2 = "=0.6.4"
