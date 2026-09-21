@@ -10,7 +10,7 @@
     "test": "node --test \"src/**/*.test.ts\"",
     "check": "pnpm build && pnpm test && pnpm check:rust",
     "check:rust": "cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test",
-    "tauri": "tauri"
+    "tauri": "node scripts/tauri.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "6.3.1",

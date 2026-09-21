@@ -9,7 +9,8 @@ export default defineConfig({
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
   clearScreen: false,
   server: {
-    port: 1420,
+    // scripts/tauri.mjs picks a free one when another worktree already has 1420.
+    port: Number(process.env.GITVIBER_DEV_PORT) || 1420,
     strictPort: true,
     host: "127.0.0.1",
     watch: { ignored: ["**/src-tauri/**"] },
