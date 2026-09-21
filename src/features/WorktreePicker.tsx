@@ -32,13 +32,20 @@ export function WorktreePicker({ worktrees, onOpen }: Props) {
       .then((fresh) => {
         if (!live) return;
         setList(fresh);
-        for (const w of fresh) {
-          if (w.prunable || w.bare) continue;
-          api.worktreeChanges(w.path).then(
-            (n) => live && setCounts((c) => ({ ...c, [w.path]: n })),
-            () => {},
-          );
-        }
+        // A few at a time: a dozen agent worktrees shouldn't mean a dozen `git status` at once.
+        const todo = fresh.filter((w) => !w.prunable && !w.bare);
+        const next = (): Promise<void> | undefined => {
+          const w = todo.shift();
+          if (!w || !live) return;
+          return api
+            .worktreeChanges(w.path)
+            .then(
+              (n) => void (live && setCounts((c) => ({ ...c, [w.path]: n }))),
+              () => {},
+            )
+            .then(next);
+        };
+        for (let i = 0; i < 3; i++) next();
       })
       .catch(() => {});
     return () => {
@@ -58,23 +65,25 @@ export function WorktreePicker({ worktrees, onOpen }: Props) {
   return (
     <>
       <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <button
-            aria-label="Worktrees"
-            className={cn(
-              "flex h-7 max-w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2 hover:bg-hover data-[state=open]:bg-active",
-              linked && "bg-primary/10",
-            )}
-          >
-            <FolderGit2 className={cn("size-3.5 shrink-0", linked ? "text-primary" : "text-subtle")} />
-            {linked ? (
-              <span className="truncate font-mono text-[12px]">{folderName(current.path)}</span>
-            ) : (
-              <span className="font-mono text-[11px] text-muted-foreground">{list.length}</span>
-            )}
-            <ChevronsUpDown className="size-3 shrink-0 text-subtle" />
-          </button>
-        </PopoverTrigger>
+        <Tip label={linked ? `In worktree ${folderName(current.path)} · switch worktree` : `${list.length} worktrees · switch worktree`}>
+          <PopoverTrigger asChild>
+            <button
+              aria-label={linked ? `Worktree ${folderName(current.path)}, switch worktree` : `Switch worktree (${list.length})`}
+              className={cn(
+                "flex h-7 max-w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2 hover:bg-hover data-[state=open]:bg-active",
+                linked && "bg-primary/10",
+              )}
+            >
+              <FolderGit2 className={cn("size-3.5 shrink-0", linked ? "text-primary" : "text-subtle")} />
+              {linked ? (
+                <span className="truncate font-mono text-[12px]">{folderName(current.path)}</span>
+              ) : (
+                <span className="font-mono text-[11px] text-muted-foreground">{list.length}</span>
+              )}
+              <ChevronsUpDown className="size-3 shrink-0 text-subtle" />
+            </button>
+          </PopoverTrigger>
+        </Tip>
         <PopoverContent align="start" className="flex w-96 flex-col overflow-hidden">
           <div className="px-3 pt-2.5 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Worktrees</div>
           <div className="max-h-[360px] min-h-0 overflow-x-hidden overflow-y-auto p-1">
@@ -91,7 +100,7 @@ export function WorktreePicker({ worktrees, onOpen }: Props) {
       </Popover>
       {linked && main && (
         <Tip label={`Back to the main worktree (${folderName(main.path)})`}>
-          <Button variant="ghost" size="icon-sm" onClick={() => onOpen(main.path)}>
+          <Button variant="ghost" size="icon-sm" aria-label={`Back to the main worktree (${folderName(main.path)})`} onClick={() => onOpen(main.path)}>
             <CornerUpLeft />
           </Button>
         </Tip>
@@ -107,7 +116,14 @@ function WorktreeRow({ w, main, count, onPick }: { w: Worktree; main: string; co
     <div
       role="button"
       aria-disabled={!usable}
+      tabIndex={usable ? 0 : -1}
       onClick={() => usable && onPick(w)}
+      onKeyDown={(e) => {
+        if (usable && (e.key === "Enter" || e.key === " ")) {
+          e.preventDefault();
+          onPick(w);
+        }
+      }}
       className={cn(
         "flex h-9 items-center gap-2.5 rounded-sm px-2 select-none",
         w.current ? "cursor-default bg-active" : usable ? "cursor-pointer hover:bg-hover" : "cursor-default opacity-50",

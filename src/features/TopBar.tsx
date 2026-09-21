@@ -74,7 +74,8 @@ interface LayoutProps {
 }
 
 export function changeTotals(repo: RepoData) {
-  const files = repo.status ? [...repo.status.staged, ...repo.status.unstaged, ...repo.status.conflicted] : [];
+  // Nested repos (agent worktrees) have no diff here, so they aren't changes to review.
+  const files = repo.status ? [...repo.status.staged, ...repo.status.unstaged.filter((f) => !f.nested), ...repo.status.conflicted] : [];
   return {
     files: files.length,
     add: files.reduce((n, f) => n + (f.additions ?? 0), 0),
@@ -110,8 +111,10 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const branchName = status?.branch ?? (status?.head ? `detached @ ${status.head}` : "…");
 
   // git refuses to check out a branch another worktree has; going to that worktree is the way.
-  const openWorktree = (path: string) => {
-    if (worktrees.find((w) => w.path === path)?.prunable) {
+  const openWorktree = async (path: string) => {
+    // Ask git now: the list loaded with the branches may predate an agent removing its folder.
+    const fresh = await api.worktrees().catch(() => worktrees);
+    if (fresh.find((w) => w.path === path)?.prunable) {
       toast("error", "That worktree's folder is gone", `${path} no longer exists but still holds the branch. git worktree prune releases it.`);
     } else onOpenRepo(path);
   };

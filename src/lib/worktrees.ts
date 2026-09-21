@@ -27,4 +27,4 @@ export function stageable(files: FileChange[]) {
 }
 
 export const NESTED_EXPLAINED =
-  "It's a separate git repository. git add would record only a pointer to its current commit (an embedded repo), not its files. Commit inside it instead.";
+  "It's a separate git repository. git add would record only a pointer to its current commit (an embedded repo), not its files. Commit inside it instead. If it's a worktree that broke when the repo moved, git worktree repair reconnects it.";

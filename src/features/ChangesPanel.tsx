@@ -336,8 +336,12 @@ function NestedRow({ file, nested, onOpenRepo }: { file: FileChange; nested: Nes
   return (
     <div
       role={open ? "button" : undefined}
+      tabIndex={open ? 0 : undefined}
       onClick={open}
-      className={cn("group/row relative flex h-[26px] items-center gap-2 pr-2 pl-2 text-[12px]", open ? "cursor-pointer hover:bg-hover" : "cursor-default")}
+      onKeyDown={(e) => {
+        if (open && e.target === e.currentTarget && e.key === "Enter") open();
+      }}
+      className={cn("group/row relative flex h-[26px] items-center gap-2 pr-2 pl-2 text-[12px] outline-none focus-visible:bg-hover", open ? "cursor-pointer hover:bg-hover" : "cursor-default")}
     >
       <span className="size-3.5 shrink-0" />
       <FolderGit2 className="size-4 shrink-0 text-subtle" />
@@ -409,6 +413,8 @@ function CommitBox({ status, refresh }: Pick<Props, "status" | "refresh">) {
       setBody("");
       setAmend(false);
       toast("success", amend ? "Commit amended" : "Committed", message.split("\n")[0]);
+      // They stay in the list after the commit; say why rather than leave it looking missed.
+      if (skipped) toast("info", `${leftOut(all.skipped)} of the commit`, NESTED_EXPLAINED);
     }
     await refresh();
   };
