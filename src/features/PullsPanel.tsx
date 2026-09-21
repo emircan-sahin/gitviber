@@ -41,8 +41,9 @@ interface Props {
 export function PullsPanel({ status, branches, lastSubject, activeKey, onOpen, refreshRepo }: Props) {
   const [filter, setFilter] = useState<Filter>("open");
   const [creating, setCreating] = useState(false);
-  // The account only changes with a new sign-in: fetched once, again on retry.
-  const acct = useGitHubData("account", github.account, Infinity);
+  // The account only changes with a new sign-in: rechecked every 10 minutes and on every
+  // manual refresh or retry (a 304 when nothing changed, so free).
+  const acct = useGitHubData("account", github.account, 600_000);
   const list = useGitHubData(`pulls:${filter}`, useCallback(() => github.list(filter), [filter]));
   const account = acct.data ?? null;
   const pulls = list.data ?? null;
@@ -53,9 +54,9 @@ export function PullsPanel({ status, branches, lastSubject, activeKey, onOpen, r
   const { refresh: refreshAccount } = acct;
   const { refresh: refreshList } = list;
   const load = useCallback(() => {
-    if (acct.error) refreshAccount(true);
+    refreshAccount(true);
     refreshList(true);
-  }, [acct.error, refreshAccount, refreshList]);
+  }, [refreshAccount, refreshList]);
   useEffect(() => {
     listeners.add(load);
     return () => {

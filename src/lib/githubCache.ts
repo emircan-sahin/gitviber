@@ -14,6 +14,8 @@ interface Entry {
 }
 
 const MIN_AGE = 30_000;
+/** Enough for every PR a session opens; beyond it the oldest entries go. */
+const MAX_ENTRIES = 200;
 const EMPTY: Entry = { at: 0 };
 
 let entries = new Map<string, Entry>();
@@ -22,7 +24,10 @@ const listeners = new Set<() => void>();
 function put(map: Map<string, Entry>, key: string, e: Entry) {
   // A reply that lands after a reset belongs to the previous repo.
   if (map !== entries) return;
+  map.delete(key);
   map.set(key, e);
+  // Maps iterate in insertion order and a write re-inserts, so the first key is the stalest.
+  if (map.size > MAX_ENTRIES) map.delete(map.keys().next().value!);
   listeners.forEach((l) => l());
 }
 
@@ -40,8 +45,12 @@ export function revalidate<T>(key: string, fetch: () => Promise<T>, maxAge = MIN
   const map = entries;
   const e = map.get(key) ?? EMPTY;
   if (e.pending) {
-    // A forced read (after a merge, say) must not settle for a reply that predates it.
-    return (maxAge > 0 ? e.pending : e.pending.catch(() => {}).then(() => revalidate(key, fetch, 0))) as Promise<T>;
+    if (maxAge > 0) return e.pending as Promise<T>;
+    // A forced read (after a merge, say) must not settle for a reply that predates it. If the
+    // repo changed meanwhile, the read belongs to the old one and must not start in the new.
+    return e.pending
+      .catch(() => {})
+      .then(() => (map === entries ? revalidate(key, fetch, 0) : Promise.reject(new Error("The repository changed.")))) as Promise<T>;
   }
   if (e.data !== undefined && !e.error && Date.now() - e.at < maxAge) return Promise.resolve(e.data as T);
   const pending = fetch().then(
