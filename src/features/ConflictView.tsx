@@ -5,7 +5,7 @@ import { api, errorMessage, type FileChange, type Operation } from "@/lib/api";
 import { showLanguage, type TokenLine, tokenLookup, useHighlight } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
 import { CODE_FONTS, useSettings } from "@/lib/settings";
-import { type Block, parseConflicts, type Segment } from "@/lib/conflicts";
+import { type Block, oursText, parseConflicts, type Segment } from "@/lib/conflicts";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { FileIcon } from "./FileIcon";
@@ -41,8 +41,9 @@ export function ConflictView({ file, operation, revision }: Props) {
   // Non-UTF-8 text can't be edited safely here (it was decoded lossily): whole-file only.
   const parsed = useMemo(() => (text == null || lossy ? null : parseConflicts(text)), [text, lossy]);
   const unterminated = text != null && !lossy && parsed === null;
-  // Detected once from the whole file: the fragments shown per conflict are too short to sniff.
-  const lang = useMemo(() => languageFor(file.path, text ?? undefined), [file.path, text]);
+  // Detected once from the whole file (the fragments are too short to sniff), minus the markers,
+  // which would make JSON look like YAML. Without a parse only the name decides.
+  const lang = useMemo(() => languageFor(file.path, parsed ? oursText(parsed.segments) : undefined), [file.path, parsed]);
   useEffect(() => {
     showLanguage(lang);
     return () => showLanguage(null);
