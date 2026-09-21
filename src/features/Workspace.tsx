@@ -7,12 +7,14 @@ import type { FileChange, RepoStatus } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { arrayMove } from "@dnd-kit/sortable";
+import { useTerminals } from "@/lib/terminals";
 import { useRepo } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
 import { ChangesPanel, changeList } from "./ChangesPanel";
 import { FileTree } from "./FileTree";
 import { HistoryPanel } from "./HistoryPanel";
 import { PullsPanel } from "./PullsPanel";
+import { TerminalPanel, useTerminalSetup } from "./TerminalPanel";
 import { changeTotals, TopBar } from "./TopBar";
 import { prefetchSelection, resetPairCache, type Tab, Viewer } from "./Viewer";
 
@@ -78,6 +80,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const [rightOpen, setRightOpen] = useState(true);
   const toggle = useCallback((panel: typeof listPanel) => panel.current?.[panel.current.isCollapsed() ? "expand" : "collapse"](), []);
   const layout = useDefaultLayout({ id: "gitviber-main-v4", storage: localStorage });
+  useTerminalSetup(root);
+  const terminalOpen = useTerminals().open;
+  const viewerLayout = useDefaultLayout({ id: "gitviber-viewer-v1", storage: localStorage, panelIds: terminalOpen ? ["editor", "terminal"] : ["editor"] });
 
   const open = useCallback((sel: Selection, pin = false) => {
     const key = selectionKey(sel);
@@ -296,19 +301,32 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
           </ResizablePanel>
           <ResizableHandle className="bg-border" />
           <ResizablePanel id="viewer" minSize={360}>
-            <Viewer
-              tabs={tabs}
-              active={active}
-              status={status}
-              revision={repo.revision}
-              viewed={viewed}
-              toggleViewed={toggleViewed}
-              onActivate={setActiveKey}
-              onClose={close}
-              onPin={pin}
-              onMoveTab={moveTab}
-              onOpen={(sel) => open(sel, true)}
-            />
+            <ResizablePanelGroup orientation="vertical" defaultLayout={viewerLayout.defaultLayout} onLayoutChanged={viewerLayout.onLayoutChanged}>
+              <ResizablePanel id="editor" minSize={120}>
+                <Viewer
+                  tabs={tabs}
+                  active={active}
+                  status={status}
+                  revision={repo.revision}
+                  viewed={viewed}
+                  toggleViewed={toggleViewed}
+                  onActivate={setActiveKey}
+                  onClose={close}
+                  onPin={pin}
+                  onMoveTab={moveTab}
+                  onOpen={(sel) => open(sel, true)}
+                />
+              </ResizablePanel>
+              {/* Rendered only while open, so the viewer keeps its state when the panel toggles. */}
+              {terminalOpen && (
+                <>
+                  <ResizableHandle className="h-px w-full bg-border after:inset-x-0 after:inset-y-auto after:top-1/2 after:left-0 after:h-2 after:w-full after:translate-x-0 after:-translate-y-1/2" />
+                  <ResizablePanel id="terminal" defaultSize="35" minSize={100}>
+                    <TerminalPanel root={root} worktrees={repo.worktrees} />
+                  </ResizablePanel>
+                </>
+              )}
+            </ResizablePanelGroup>
           </ResizablePanel>
           <ResizableHandle className="bg-border" />
           <ResizablePanel

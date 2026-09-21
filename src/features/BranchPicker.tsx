@@ -1,4 +1,4 @@
-import { Check, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitMerge, GitPullRequestArrow, Plus, Search } from "lucide-react";
+import { Check, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitMerge, GitPullRequestArrow, Plus, Search, SquareTerminal } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
@@ -16,6 +16,8 @@ interface Props {
   onCreate: (name: string) => void;
   onMerge: (name: string) => void;
   onRebase: (name: string) => void;
+  /** Opens a terminal on the branch; `worktree` is where it's checked out, if anywhere else. */
+  onTerminal: (name: string, worktree: string | null) => void;
   /** Where the list opens relative to the trigger. */
   side?: "top" | "bottom";
 }
@@ -29,7 +31,7 @@ const localName = (b: Branch) => (b.remote ? b.name.slice(b.name.indexOf("/") + 
  * Searchable branch switcher: type to filter, ↑/↓ + Enter to switch, or create what you
  * typed. The highlighted row also offers merging it into, or rebasing onto it.
  */
-export function BranchPicker({ label, current, branches, onSwitch, onOpenWorktree, onCreate, onMerge, onRebase, side = "bottom" }: Props) {
+export function BranchPicker({ label, current, branches, onSwitch, onOpenWorktree, onCreate, onMerge, onRebase, onTerminal, side = "bottom" }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -59,6 +61,12 @@ export function BranchPicker({ label, current, branches, onSwitch, onOpenWorktre
 
   // Switching to origin/x means switching to x, so a remote row follows its local branch.
   const elsewhere = (b: Branch) => b.worktree ?? branches.find((l) => !l.remote && l.name === localName(b))?.worktree ?? null;
+
+  const terminalTip = (b: Branch) => {
+    const worktree = elsewhere(b);
+    if (b.current) return "Open a terminal here";
+    return worktree ? `Open a terminal in ${folderName(worktree)}` : "Open a terminal in a new worktree";
+  };
 
   const choose = (o: Option | undefined) => {
     if (!o) return;
@@ -146,18 +154,34 @@ export function BranchPicker({ label, current, branches, onSwitch, onOpenWorktre
                         <GitBranch className="size-3.5 shrink-0 opacity-60" />
                       )}
                       <span className="truncate font-mono text-[11.5px]">{o.branch.name}</span>
-                      {hot && !o.branch.current && current ? (
+                      {hot ? (
                         <span className="ml-auto flex shrink-0 gap-0.5">
-                          <Tip label={`Merge into ${current}`}>
-                            <button onClick={act(onMerge, o.branch.name)} className="flex h-5 items-center gap-1 rounded-sm bg-white/15 px-1.5 text-[11px] hover:bg-white/25">
-                              <GitMerge className="size-3" /> Merge
+                          <Tip label={terminalTip(o.branch)}>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onTerminal(localName(o.branch), o.branch.current ? null : elsewhere(o.branch));
+                                close();
+                              }}
+                              className="flex h-5 items-center gap-1 rounded-sm bg-white/15 px-1.5 text-[11px] hover:bg-white/25"
+                            >
+                              <SquareTerminal className="size-3" /> Terminal
                             </button>
                           </Tip>
-                          <Tip label={`Rebase ${current} onto it`}>
-                            <button onClick={act(onRebase, o.branch.name)} className="flex h-5 items-center gap-1 rounded-sm bg-white/15 px-1.5 text-[11px] hover:bg-white/25">
-                              <GitPullRequestArrow className="size-3" /> Rebase
-                            </button>
-                          </Tip>
+                          {!o.branch.current && current && (
+                            <>
+                              <Tip label={`Merge into ${current}`}>
+                                <button onClick={act(onMerge, o.branch.name)} className="flex h-5 items-center gap-1 rounded-sm bg-white/15 px-1.5 text-[11px] hover:bg-white/25">
+                                  <GitMerge className="size-3" /> Merge
+                                </button>
+                              </Tip>
+                              <Tip label={`Rebase ${current} onto it`}>
+                                <button onClick={act(onRebase, o.branch.name)} className="flex h-5 items-center gap-1 rounded-sm bg-white/15 px-1.5 text-[11px] hover:bg-white/25">
+                                  <GitPullRequestArrow className="size-3" /> Rebase
+                                </button>
+                              </Tip>
+                            </>
+                          )}
                         </span>
                       ) : (
                         <span className={cn("ml-auto max-w-40 shrink-0 truncate text-[10.5px]", hot ? "opacity-80" : "text-subtle")}>
@@ -171,7 +195,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onOpenWorktre
             );
           })}
         </div>
-        <div className="shrink-0 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">↑↓ navigate · ↵ switch · hover a branch to merge or rebase</div>
+        <div className="shrink-0 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">↑↓ navigate · ↵ switch · hover a branch to merge, rebase or open a terminal</div>
       </PopoverContent>
     </Popover>
   );

@@ -1,4 +1,5 @@
 import { arrayMove } from "@dnd-kit/sortable";
+import { ask } from "@tauri-apps/plugin-dialog";
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -17,6 +18,7 @@ import {
   RefreshCw,
   RotateCcw,
   Settings2,
+  SquareTerminal,
   UploadCloud,
   X,
 } from "lucide-react";
@@ -49,9 +51,11 @@ import {
   updateSettings,
   useSettings,
 } from "@/lib/settings";
+import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
 import type { RepoData } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
+import { folderName } from "@/lib/worktrees";
 import { BranchPicker } from "./BranchPicker";
 import { WorktreePicker } from "./WorktreePicker";
 
@@ -92,6 +96,7 @@ export function changeTotals(repo: RepoData) {
 export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
   const { status, branches, worktrees } = repo;
   const [busy, setBusy] = useState<string | null>(null);
+  const terminalOpen = useTerminals().open;
 
   // Operations that can stop on conflicts resolve to true; that's a state to handle, not an error.
   const run = async (label: string, fn: () => Promise<void | boolean>, done?: string) => {
@@ -119,6 +124,19 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     } else onOpenRepo(path);
   };
 
+  // A terminal on a branch runs where it's checked out; one that isn't gets its own worktree
+  // rather than a checkout here, which would pull the files out from under this window.
+  const branchTerminal = async (name: string, worktree: string | null) => {
+    if (name === status?.branch) return openTerminal(root);
+    if (worktree) return openTerminal(worktree);
+    const where = `${folderName(main)}.worktrees/${name.replaceAll("/", "-")}`;
+    const ok = await ask(`${name} isn't checked out anywhere. Create a worktree for it at ${where}, next to this project, and open a terminal there?`, {
+      title: "Open terminal on branch",
+      okLabel: "Create worktree",
+    });
+    if (ok) await run("Create worktree", async () => openTerminal(await api.addWorktree(name)), `${name} checked out in ${where}`);
+  };
+
   return (
     <header data-tauri-drag-region className="flex h-10 shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 pl-[86px]">
       <ProjectSwitcher repo={repo} root={root} main={main} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} />
@@ -132,8 +150,9 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onCreate={(name) => run("Create branch", () => api.switchBranch(name, true), `Switched to new branch ${name}`)}
         onMerge={(name) => run("Merge", () => api.merge(name), `Merged ${name}`)}
         onRebase={(name) => run("Rebase", () => api.rebase(name), `Rebased onto ${name}`)}
+        onTerminal={branchTerminal}
       />
-      <WorktreePicker worktrees={worktrees} onOpen={onOpenRepo} />
+      <WorktreePicker worktrees={worktrees} onOpen={onOpenRepo} onTerminal={openTerminal} />
       {status && !status.upstream && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
           <CloudOff className="size-3" /> Not published
@@ -192,6 +211,11 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         </Tip>
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
+      <Tip label={terminalOpen ? "Hide terminal" : "Show terminal"} shortcut="⌃`">
+        <Button variant="ghost" size="icon" onClick={() => togglePanel(root)} className={cn(terminalOpen && "text-foreground")}>
+          <SquareTerminal />
+        </Button>
+      </Tip>
       <Tip label={leftOpen ? "Hide git panel" : "Show git panel"} shortcut="⌘B">
         <Button variant="ghost" size="icon" onClick={onToggleLeft} className={cn(leftOpen && "text-foreground")}>
           {leftOpen ? <PanelLeft /> : <PanelLeftDashed />}

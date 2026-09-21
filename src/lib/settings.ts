@@ -145,14 +145,17 @@ export function resetSettings() {
   updateSettings(DEFAULTS);
 }
 
+export function subscribeSettings(l: () => void) {
+  listeners.add(l);
+  return () => {
+    listeners.delete(l);
+  };
+}
+
+export const getSettings = () => resolved;
+
 export function useSettings() {
-  return useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => resolved,
-  );
+  return useSyncExternalStore(subscribeSettings, getSettings);
 }
 
 const RECENT_KEY = "gitviber.recent";
