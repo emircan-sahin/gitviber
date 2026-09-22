@@ -23,6 +23,8 @@ const EMPTY: Entry = { at: 0 };
 
 let entries = new Map<string, Entry>();
 const listeners = new Set<() => void>();
+/** Bumped on every write, for views that read across entries (useGitHubCacheVersion). */
+let version = 0;
 
 function put(map: Map<string, Entry>, key: string, e: Entry) {
   // A reply that lands after a reset belongs to the previous repo.
@@ -31,6 +33,7 @@ function put(map: Map<string, Entry>, key: string, e: Entry) {
   map.set(key, e);
   // Maps iterate in insertion order and a write re-inserts, so the first key is the stalest.
   if (map.size > MAX_ENTRIES) map.delete(map.keys().next().value!);
+  version++;
   listeners.forEach((l) => l());
 }
 
@@ -73,14 +76,63 @@ export function revalidate<T>(key: string, fetch: () => Promise<T>, maxAge = MIN
   return pending;
 }
 
+type Item = { url: string; updatedAt: string };
+
+/**
+ * Whether a cached list under `prefix` shows `item` other than a detail read just did (it was
+ * closed or edited since): the detail and the list are fetched apart and can disagree.
+ */
+export function listIsBehind(prefix: string, item: Item) {
+  for (const [key, e] of entries) {
+    if (!key.startsWith(prefix) || !Array.isArray(e.data)) continue;
+    const row = (e.data as { url?: string; updatedAt?: string }[]).find((r) => r.url === item.url);
+    if (row && row.updatedAt !== item.updatedAt) return true;
+  }
+  return false;
+}
+
+/**
+ * The newest copy of `item` any list or detail read has cached, if newer than `item`, cut to
+ * `item`'s fields (a detail's body and thread don't belong in a saved tab).
+ */
+export function newerCopy<T extends Item>(item: T): T | null {
+  let best: Item | null = null;
+  for (const e of entries.values()) {
+    const rows = Array.isArray(e.data) ? e.data : [e.data];
+    for (const r of rows as Partial<Item>[]) {
+      if (r?.url === item.url && typeof r.updatedAt === "string" && r.updatedAt > (best ?? item).updatedAt) best = r as Item;
+    }
+  }
+  if (!best) return null;
+  const fresh = best as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(item).map((k) => [k, k in fresh ? fresh[k] : item[k as keyof T]])) as T;
+}
+
+// GitHub doesn't tell the app when something changes there (an issue closed by a push, a
+// teammate's review), so mounted views recheck on focus and every 5 minutes while visible.
+// Each still honors its maxAge, and an unchanged list is a 304 that costs no rate limit.
+const POLL = 300_000;
+const wakers = new Set<() => void>();
+const wake = () => {
+  if (document.visibilityState === "visible") wakers.forEach((w) => w());
+};
+if (typeof window !== "undefined") {
+  window.addEventListener("focus", wake);
+  document.addEventListener("visibilitychange", wake);
+  setInterval(wake, POLL);
+}
+
 const subscribe = (l: () => void) => {
   listeners.add(l);
   return () => void listeners.delete(l);
 };
 
+export const useGitHubCacheVersion = () => useSyncExternalStore(subscribe, () => version);
+
 /**
- * The cached value for `key` (null = nothing to load), revalidated on mount and when the
- * key changes. `fetch` should be stable per key. `refresh(true)` ignores the minimum age.
+ * The cached value for `key` (null = nothing to load), revalidated on mount, when the key
+ * changes, and on wake (above). `fetch` should be stable per key. `refresh(true)` ignores
+ * the minimum age.
  */
 export function useGitHubData<T>(key: string | null, fetch: () => Promise<T>, maxAge = MIN_AGE) {
   const e = useSyncExternalStore(subscribe, () => (key && entries.get(key)) || EMPTY);
@@ -90,6 +142,9 @@ export function useGitHubData<T>(key: string | null, fetch: () => Promise<T>, ma
   );
   useEffect(() => {
     refresh();
+    const w = () => void refresh();
+    wakers.add(w);
+    return () => void wakers.delete(w);
   }, [refresh]);
   return { data: e.data as T | undefined, error: e.error, loading: !!e.pending, refresh };
 }

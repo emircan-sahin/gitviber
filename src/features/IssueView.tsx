@@ -1,12 +1,12 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, CircleCheck, CircleDot, CircleSlash, ExternalLink, Loader2, Pencil, RefreshCw, Tag, Trash2 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { accessFor, type CloseReason, errorMessage, github, type Issue, type IssueLabel, issues, repoOf } from "@/lib/api";
-import { useGitHubData } from "@/lib/githubCache";
+import { listIsBehind, useGitHubData } from "@/lib/githubCache";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
 import { IssueStateIcon, LabelChip, LabelPicker, notifyIssuesChanged } from "./IssuesPanel";
@@ -32,6 +32,15 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
   );
   const d = detail.data ?? null;
   const error = detail.error === undefined ? null : errorMessage(detail.error);
+  // Closed by a push or edited on GitHub: the list still shows it as it was.
+  useEffect(() => {
+    if (d && listIsBehind("issues:", d)) notifyIssuesChanged();
+  }, [d]);
+  // And the other way: the tab took a newer copy from a list refresh than this page shows.
+  const { refresh } = detail;
+  useEffect(() => {
+    if (d && issue.updatedAt > d.updatedAt) refresh(true);
+  }, [issue.updatedAt]);
   // Same cache entry as the Issues panel's, so this is normally already loaded.
   const account = useGitHubData("account", github.account, 600_000).data ?? null;
   const load = () => detail.refresh(true);

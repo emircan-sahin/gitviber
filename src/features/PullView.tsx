@@ -1,13 +1,13 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Check, ChevronDown, CircleDashed, ExternalLink, GitBranch, GitMerge, GitPullRequest, GitPullRequestClosed, Image as ImageIcon, Loader2, MessageSquare, MinusCircle, RefreshCw, X } from "lucide-react";
-import { type ComponentProps, useCallback, useMemo, useState } from "react";
+import { type ComponentProps, useCallback, useEffect, useMemo, useState } from "react";
 import type { Components } from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { accessFor, api, errorMessage, fullName, github, type MergeMethod, type Pull, type PullCheck, type PullDetail, repoOf, type ReviewEvent } from "@/lib/api";
-import { revalidate, useGitHubData } from "@/lib/githubCache";
+import { listIsBehind, revalidate, useGitHubData } from "@/lib/githubCache";
 import { isGitHubHosted, markdownLink } from "@/lib/markdown";
 import type { Selection } from "@/lib/selection";
 import { toast } from "@/lib/toast";
@@ -30,6 +30,15 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   );
   const d = detail.data ?? null;
   const error = detail.error === undefined ? null : errorMessage(detail.error);
+  // Merged or closed on GitHub: the list still shows it as it was.
+  useEffect(() => {
+    if (d && listIsBehind("pulls:", d)) notifyPullsChanged();
+  }, [d]);
+  // And the other way: the tab took a newer copy from a list refresh than this page shows.
+  const { refresh } = detail;
+  useEffect(() => {
+    if (d && pull.updatedAt > d.updatedAt) refresh(true);
+  }, [pull.updatedAt]);
   // Fetching the PR's commits can take a moment; the page shows without waiting for it.
   // The result depends only on the two commits, so it's rarely worth recomputing.
   const files = useGitHubData(

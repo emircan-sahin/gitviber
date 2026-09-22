@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Check, CircleDot, Columns2, Contrast, Copy, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, GitPullRequest, Rows2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, Rows2, X } from "lucide-react";
 import { Component, type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
@@ -12,7 +12,9 @@ import { cn, relativeTime } from "@/lib/utils";
 import { CodeView, type CodeViewHandle } from "./CodeView";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ConflictView } from "./ConflictView";
+import { IssueStateIcon } from "./IssuesPanel";
 import { IssueView } from "./IssueView";
+import { PullStateIcon } from "./PullsPanel";
 import { PullView } from "./PullView";
 import { prefetchHighlight } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
@@ -126,9 +128,9 @@ function TabItem({
       {isActive && <span className="absolute inset-x-0 top-0 h-px bg-primary" />}
       {isActive && !dragging && <span className="absolute inset-x-0 -bottom-px h-px bg-background" />}
       {t.sel.kind === "pull" ? (
-        <GitPullRequest className="size-3.5 shrink-0 text-added" />
+        <PullStateIcon pull={t.sel.pull} />
       ) : t.sel.kind === "issue" ? (
-        <CircleDot className="size-3.5 shrink-0 text-added" />
+        <IssueStateIcon issue={t.sel.issue} />
       ) : (
         <FileIcon path={selectionPath(t.sel)} />
       )}
