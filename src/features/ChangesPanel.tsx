@@ -80,6 +80,8 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
     if (ok) await act("Could not move to Trash", () => api.trashPath(file.path));
   };
 
+  const discardOne = (file: FileChange) => (file.status === "?" ? trash(file) : discard([file]));
+
   const ignore = (file: FileChange) =>
     act("Could not update .gitignore", async () => {
       const cur = await api.readFile(".gitignore");
@@ -120,7 +122,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
             <ContextMenuItem onSelect={() => act("Stage failed", () => api.stage([file.path]))}>
               <Plus /> Stage Changes
             </ContextMenuItem>
-            <ContextMenuItem onSelect={() => (file.status === "?" ? trash(file) : discard([file]))}>
+            <ContextMenuItem onSelect={() => discardOne(file)}>
               <Undo2 /> Discard Changes
             </ContextMenuItem>
             {file.status === "?" && (
@@ -182,20 +184,48 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
   const add = all.reduce((n, s) => n + (s.file.additions ?? 0), 0);
   const del = all.reduce((n, s) => n + (s.file.deletions ?? 0), 0);
 
-  // ↑/↓ once the list has focus (clicking a row gives it focus); Enter keeps the preview tab.
+  const active = all.find((c) => selectionKey(c) === activeKey);
+  useCommands({
+    // The tab follows the file into the other list, so pressing it again undoes it. Conflicts are left to their own actions.
+    "git.toggleStage":
+      active?.kind === "unstaged"
+        ? () => act("Stage failed", () => api.stage([active.file.path]))
+        : active?.kind === "staged"
+          ? () => act("Unstage failed", () => api.unstage([active.file.path]))
+          : undefined,
+    "git.discard": active?.kind === "unstaged" ? () => discardOne(active.file) : undefined,
+  });
+
+  // One tab stop for the whole list (the active row), so Tab reaches its actions, not every row.
+  const tabStop = active ? activeKey : all[0] && selectionKey(all[0]);
+
+  // ↑/↓ from a focused row (clicking one focuses it); ↵ keeps the preview tab, Space opens it like a click.
   const onListKey = (e: React.KeyboardEvent) => {
-    if (e.target !== e.currentTarget || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey || !all.length) return;
-    const i = all.findIndex((c) => selectionKey(c) === activeKey);
+    const key = e.target instanceof HTMLElement ? e.target.dataset.row : undefined;
+    if (key === undefined || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    const i = all.findIndex((c) => selectionKey(c) === key);
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      const next = e.key === "ArrowDown" ? Math.min(all.length - 1, i + 1) : Math.max(0, i - 1);
-      onOpen(all[i < 0 ? 0 : next]);
-    } else if (e.key === "Enter" && i >= 0) onOpen(all[i], true);
+      // A focused row that isn't open yet (Tab into a list with nothing open) opens first.
+      const to = key !== activeKey ? i : e.key === "ArrowDown" ? i + 1 : i - 1;
+      onOpen(all[Math.max(0, Math.min(all.length - 1, to))]);
+    } else if (e.key === "Enter") onOpen(all[i], true);
+    else if (e.key === " ") onOpen(all[i]);
     else return;
     e.preventDefault();
   };
 
   const row = (sel: Selection & { kind: "staged" | "unstaged" | "conflict" }, actions: React.ReactNode) => (
-    <Row key={selectionKey(sel)} sel={sel} active={activeKey === selectionKey(sel)} viewed={viewed(sel)} onOpen={onOpen} onHover={onHover} onToggleViewed={() => toggleViewed(sel)} menu={menu(sel)}>
+    <Row
+      key={selectionKey(sel)}
+      sel={sel}
+      active={activeKey === selectionKey(sel)}
+      tabStop={tabStop === selectionKey(sel)}
+      viewed={viewed(sel)}
+      onOpen={onOpen}
+      onHover={onHover}
+      onToggleViewed={() => toggleViewed(sel)}
+      menu={menu(sel)}
+    >
       {actions}
     </Row>
   );
@@ -221,7 +251,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
           </div>
         </div>
       )}
-      <div tabIndex={0} onKeyDown={onListKey} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
+      <div onKeyDown={onListKey} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
         {!all.length && !status.unstaged.length && <AllCaughtUp />}
         {status.conflicted.length > 0 && (
           <Section title="Conflicts" count={status.conflicted.length} tone="text-conflict">
@@ -372,7 +402,7 @@ function Section({ title, count, tone, action, children }: { title: string; coun
           <span className={tone}>{title}</span>
           <span className="ml-1 font-mono tracking-normal text-muted-foreground">{count}</span>
         </button>
-        <div className="ml-auto flex gap-0.5 opacity-0 group-hover:opacity-100">{action}</div>
+        <div className="ml-auto flex gap-0.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">{action}</div>
       </div>
       {open && <div className="py-0.5">{children}</div>}
     </div>
@@ -381,7 +411,7 @@ function Section({ title, count, tone, action, children }: { title: string; coun
 
 function SectionBtn({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
   return (
-    <button onClick={onClick} className="h-5 rounded-sm px-1.5 text-[11px] text-muted-foreground hover:bg-active hover:text-foreground">
+    <button onClick={onClick} className="h-5 rounded-sm px-1.5 text-[11px] text-muted-foreground outline-none hover:bg-active hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring">
       {children}
     </button>
   );
@@ -390,6 +420,7 @@ function SectionBtn({ onClick, children }: { onClick: () => void; children: Reac
 function Row({
   sel,
   active,
+  tabStop,
   viewed,
   onOpen,
   onHover,
@@ -399,6 +430,7 @@ function Row({
 }: {
   sel: Selection & { kind: "staged" | "unstaged" | "conflict" };
   active: boolean;
+  tabStop: boolean;
   viewed: boolean;
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
@@ -408,9 +440,11 @@ function Row({
 }) {
   const file = sel.file;
   const ref = useRef<HTMLDivElement>(null);
-  // J/K can move the selection off-screen; follow it.
+  // J/K can move the selection off-screen; follow it. ↑/↓ from a row also moves focus to it.
   useEffect(() => {
-    if (active) ref.current?.scrollIntoView({ block: "nearest" });
+    if (!active) return;
+    ref.current?.scrollIntoView({ block: "nearest" });
+    if (document.activeElement instanceof HTMLElement && document.activeElement.dataset.row !== undefined) ref.current?.focus();
   }, [active]);
   return (
     <ContextMenu>
@@ -418,11 +452,14 @@ function Row({
         <div
           ref={ref}
           role="button"
+          tabIndex={tabStop ? 0 : -1}
+          data-row={selectionKey(sel)}
+          aria-current={active || undefined}
           onClick={() => onOpen(sel)}
           onDoubleClick={() => onOpen(sel, true)}
           onMouseEnter={() => onHover(sel)}
           className={cn(
-            "group/row relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px]",
+            "group/row relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
             active ? "bg-primary/15" : "hover:bg-hover data-[state=open]:bg-hover",
           )}
         >
@@ -432,12 +469,16 @@ function Row({
           ) : (
           <Tip label={sel.kind === "staged" ? "Unstage" : viewed ? "Mark as not viewed" : "Mark as viewed"}>
             <button
+              role="checkbox"
+              tabIndex={tabStop ? undefined : -1}
+              aria-checked={viewed}
+              aria-label={sel.kind === "staged" ? "Staged" : "Viewed"}
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleViewed();
               }}
               className={cn(
-                "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border",
+                "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 viewed ? "border-added-fill bg-added-fill text-on-status" : "border-border-strong hover:border-muted-foreground",
               )}
             >
@@ -447,8 +488,9 @@ function Row({
           )}
           <FileIcon path={file.path} />
           <PathLabel path={file.path} className={cn("flex-1", viewed && "opacity-45")} />
-          <LineCounts file={file} className="group-hover/row:hidden" />
-          <div className="hidden items-center group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
+          {/* Shown on the active row too, so Tab can reach them without a mouse. */}
+          <LineCounts file={file} className={active ? "hidden" : "group-focus-within/row:hidden group-hover/row:hidden"} />
+          <div className={cn("items-center", active ? "flex" : "hidden group-focus-within/row:flex group-hover/row:flex")} onClick={(e) => e.stopPropagation()}>
             {children}
           </div>
           <StatusLetter status={file.status} />
@@ -485,7 +527,11 @@ function NestedRow({ file }: { file: FileChange }) {
 function RowAction({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
   return (
     <Tip label={label}>
-      <button onClick={onClick} className="flex size-5 items-center justify-center rounded-sm text-muted-foreground hover:bg-active hover:text-foreground [&_svg]:size-3.5">
+      <button
+        onClick={onClick}
+        aria-label={label}
+        className="flex size-5 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-active hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3.5"
+      >
         {children}
       </button>
     </Tip>

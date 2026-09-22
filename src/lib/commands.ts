@@ -39,6 +39,9 @@ export const COMMANDS = [
   // Not while typing: text fields keep ⌘Z for their own undo.
   { id: "git.undo", title: "Undo Git Action", category: "Git", keys: ["cmd+z"], outsideText: true },
   { id: "git.redo", title: "Redo Git Action", category: "Git", keys: ["shift+cmd+z"], outsideText: true },
+  // These act on the file open in the viewer. Discard asks first; ⌘⌫ stays line delete in text.
+  { id: "git.toggleStage", title: "Stage / Unstage Changes", category: "Git", keys: ["s"] },
+  { id: "git.discard", title: "Discard Changes", category: "Git", keys: ["cmd+backspace"], outsideText: true },
   // Local: only the commit message fields listen for it.
   { id: "git.commit", title: "Commit", category: "Git", keys: ["cmd+enter", "ctrl+enter"], local: true },
 ] as const satisfies readonly { id: string; title: string; category: string; keys: readonly string[]; local?: boolean; outsideText?: boolean }[];

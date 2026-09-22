@@ -159,6 +159,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         "Git",
         &[
             &b.command("git.commit", "Commit")?,
+            &b.command("git.toggleStage", "Stage / Unstage Changes")?,
+            &b.command("git.discard", "Discard Changes")?,
             &sep()?,
             &b.command("git.fetch", "Fetch")?,
             &b.command("git.pull", "Pull")?,

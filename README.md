@@ -78,6 +78,7 @@ Shortcuts without `⌘` are ignored while you type.
 | `J` `K` | Next / previous changed file |
 | `↓` `↑` `↵` | Move through the focused Changes list, `↵` keeps the tab open |
 | `V` | Mark file viewed |
+| `S` `⌘⌫` | Stage or unstage, discard the open file |
 | `F7` `⇧F7`, `⌥↓` `⌥↑` | Next / previous change |
 | `⌥S` `⌥C` `⌥Z` | Split view, collapse unchanged, word wrap |
 | `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
