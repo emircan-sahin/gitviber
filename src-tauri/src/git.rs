@@ -482,6 +482,11 @@ pub struct Worktree {
     pub detached: bool,
     pub bare: bool,
     pub locked: bool,
+    /// Why it's locked, if the locker said; Claude Code writes "claude session … (pid N …)".
+    pub lock_reason: Option<String>,
+    /// The lock names a process that's still running: someone is working in it right now.
+    /// Only the `worktrees` command fills this in (see `with_live_locks`).
+    pub in_use: bool,
     /// Its directory is gone; `git worktree prune` would drop the entry.
     pub prunable: bool,
     /// The worktree this window has open.
@@ -507,6 +512,8 @@ pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, String> {
             detached: false,
             bare: false,
             locked: false,
+            lock_reason: None,
+            in_use: false,
             prunable: false,
             current: here.is_some() && Path::new(path).canonicalize().ok() == here,
             main: list.is_empty(),
@@ -521,7 +528,10 @@ pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, String> {
                 "branch" => w.branch = Some(val.trim_start_matches("refs/heads/").to_string()),
                 "detached" => w.detached = true,
                 "bare" => w.bare = true,
-                "locked" => w.locked = true,
+                "locked" => {
+                    w.locked = true;
+                    w.lock_reason = (!val.is_empty()).then(|| val.to_string());
+                }
                 "prunable" => w.prunable = true,
                 _ => {}
             }
@@ -529,6 +539,36 @@ pub fn worktrees(repo: &Path) -> Result<Vec<Worktree>, String> {
         list.push(w);
     }
     Ok(list)
+}
+
+/// Marks worktrees whose lock names a live pid. Kept out of `worktrees()`, which status
+/// refreshes call constantly: this spawns a process per such lock.
+pub fn with_live_locks(mut list: Vec<Worktree>) -> Vec<Worktree> {
+    for w in &mut list {
+        let pid = w.lock_reason.as_deref().and_then(|r| {
+            let rest = &r[r.find("pid ")? + 4..];
+            rest.split(|c: char| !c.is_ascii_digit())
+                .next()?
+                .parse::<u32>()
+                .ok()
+        });
+        w.in_use = pid.is_some_and(process_alive);
+    }
+    list
+}
+
+#[cfg(unix)]
+fn process_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[cfg(not(unix))]
+fn process_alive(_pid: u32) -> bool {
+    false
 }
 
 /// What the projects list keys this repo by: its main worktree, unless that is bare or gone.

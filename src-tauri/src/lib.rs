@@ -172,7 +172,7 @@ async fn delete_remote_branch(state: State<'_, AppState>, name: String) -> Res<(
 #[tauri::command]
 async fn worktrees(state: State<'_, AppState>) -> Res<Vec<git::Worktree>> {
     let r = repo(&state)?;
-    blocking(move || git::worktrees(&r)).await
+    blocking(move || git::worktrees(&r).map(git::with_live_locks)).await
 }
 
 #[tauri::command]

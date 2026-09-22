@@ -989,3 +989,40 @@ fn deleting_a_remote_branch() {
     assert!(delete_remote_branch(a, "origin/main").is_err());
     assert!(delete_remote_branch(a, "nope/x").is_err());
 }
+
+#[test]
+fn worktree_locks_by_a_live_process_mean_in_use() {
+    let sb = Sandbox::new("wtlock");
+    let r = repo_with_worktrees(&sb);
+    let agent = r.join(".claude/worktrees/agent");
+    let det = sb.path("det");
+    let live = format!(
+        "claude session agent (pid {} start now)",
+        std::process::id()
+    );
+    run(
+        &r,
+        &[
+            "worktree",
+            "lock",
+            "--reason",
+            &live,
+            agent.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    // A pid far past any real one: the session that took the lock is gone.
+    let dead = "claude session det (pid 999999999 start then)";
+    run(
+        &r,
+        &["worktree", "lock", "--reason", dead, det.to_str().unwrap()],
+    )
+    .unwrap();
+
+    let list = with_live_locks(worktrees(&r).unwrap());
+    let find = |dir: &Path| list.iter().find(|w| same_dir(&w.path, dir)).unwrap();
+    let (a, d) = (find(&agent), find(&det));
+    assert!(a.locked && a.in_use && a.lock_reason.as_deref() == Some(live.as_str()));
+    assert!(d.locked && !d.in_use);
+    assert!(!find(&r).locked && !find(&r).in_use);
+}
