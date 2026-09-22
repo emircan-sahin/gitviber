@@ -1,6 +1,7 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useState } from "react";
+import { Component, type ErrorInfo, type ReactNode, useCallback, useEffect, useState } from "react";
 import { Toaster } from "@/components/Toaster";
+import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { openSettings, SettingsDialog } from "@/features/SettingsDialog";
 import { Welcome } from "@/features/Welcome";
@@ -67,9 +68,43 @@ export function App() {
 
   return (
     <TooltipProvider>
-      {opened ? <Workspace key={opened.root} root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} /> : !booting && <Welcome recent={recent} onOpenRepo={onOpen} />}
+      {opened ? (
+        <WorkspaceBoundary key={opened.root} onOpenRepo={onOpen}>
+          <Workspace root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} />
+        </WorkspaceBoundary>
+      ) : (
+        !booting && <Welcome recent={recent} onOpenRepo={onOpen} />
+      )}
       <SettingsDialog />
       <Toaster />
     </TooltipProvider>
   );
+}
+
+/** Without this, a render error anywhere in the workspace unmounts the app and leaves a black window. */
+class WorkspaceBoundary extends Component<{ children: ReactNode; onOpenRepo: () => void }, { error: string | null }> {
+  state = { error: null as string | null };
+  static getDerivedStateFromError(e: unknown) {
+    return { error: e instanceof Error && e.stack ? e.stack : errorMessage(e) };
+  }
+  componentDidCatch(e: unknown, info: ErrorInfo) {
+    console.error(e, info.componentStack);
+    // The component stack names what threw; the JS stack alone is minified in release builds.
+    this.setState((s) => ({ error: `${s.error}\n${info.componentStack ?? ""}` }));
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div data-tauri-drag-region className="flex h-full flex-col items-center justify-center gap-3 bg-background p-6">
+        <div className="text-[13px] font-medium">Something went wrong in this window</div>
+        <pre className="max-h-[50vh] max-w-3xl overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] whitespace-pre-wrap text-subtle select-text">{this.state.error}</pre>
+        <div className="flex gap-2">
+          <Button onClick={() => location.reload()}>Reload</Button>
+          <Button variant="secondary" onClick={() => this.props.onOpenRepo()}>
+            Open another repository…
+          </Button>
+        </div>
+      </div>
+    );
+  }
 }
