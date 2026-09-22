@@ -10,6 +10,7 @@ import { Welcome } from "@/features/Welcome";
 import { Workspace } from "@/features/Workspace";
 import { api, errorMessage, type OpenedRepo } from "@/lib/api";
 import { useCommands } from "@/lib/keybindings";
+import { useRecentMenu } from "@/lib/menu";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder, stepUiScale } from "@/lib/settings";
 import { toast } from "@/lib/toast";
 
@@ -58,14 +59,22 @@ export function App() {
     forgetRepo(p);
     setRecent(recentRepos());
   }, []);
+  // The open project stays: the top bar still shows it.
+  const onClearRecent = useCallback(() => {
+    setRepoOrder(opened ? [opened.main] : []);
+    setRecent(recentRepos());
+  }, [opened]);
+  useRecentMenu(recent, onOpen, onClearRecent);
 
   // App-wide commands, so they also work on the welcome screen.
   useCommands({
     "file.openRepo": () => onOpen(),
     "workbench.openSettings": () => openSettings(),
+    "help.shortcuts": () => openSettings("shortcuts"),
     "view.zoomIn": () => stepUiScale(1),
     "view.zoomOut": () => stepUiScale(-1),
     "view.zoomReset": () => stepUiScale(0),
+    "window.reload": () => location.reload(),
   });
 
   return (

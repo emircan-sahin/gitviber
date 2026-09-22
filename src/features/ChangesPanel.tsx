@@ -8,7 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { ignorePattern } from "@/lib/gitignore";
-import { matchesCommand, useShortcut } from "@/lib/keybindings";
+import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
@@ -540,6 +540,7 @@ function CommitBox({ status, refresh }: Pick<Props, "status" | "refresh">) {
     await refresh();
   };
 
+  useCommands({ "git.commit": canCommit ? commit : undefined });
   const commitKey = useShortcut("git.commit");
   const onKey = (e: React.KeyboardEvent) => {
     if (matchesCommand("git.commit", e.nativeEvent)) {

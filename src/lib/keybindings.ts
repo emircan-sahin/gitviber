@@ -23,10 +23,43 @@ export function isTyping(e: KeyboardEvent) {
   return !!el && (el.isContentEditable || !!el.closest("input,textarea,select,[role=menu],[role=listbox],[role=dialog]"));
 }
 
-const MODAL_SAFE: CommandId[] = ["workbench.openSettings", "view.zoomIn", "view.zoomOut", "view.zoomReset"];
+/** Menu bar items that aren't key commands (lib.rs `menu`); they run through the same handlers. */
+export const MENU_ACTIONS = [
+  "app.about",
+  "terminal.new",
+  "terminal.toggle",
+  "help.readme",
+  "help.shortcuts",
+  "help.reportBug",
+  "help.releaseNotes",
+  "help.license",
+] as const;
+export type Action = CommandId | (typeof MENU_ACTIONS)[number];
+
+const MODAL_SAFE: Action[] = ["workbench.openSettings", "window.reload", "view.zoomIn", "view.zoomOut", "view.zoomReset", "app.about", "help.readme", "help.shortcuts", "help.reportBug", "help.releaseNotes", "help.license"];
 
 // Last registered wins, so a nested view can take a command over while it's mounted.
-const handlers = new Map<CommandId, (() => void)[]>();
+const handlers = new Map<Action, (() => void)[]>();
+const changeListeners = new Set<() => void>();
+
+/** Called when a command gains or loses its handler, which is what greys it out in the menu. */
+export function onHandlersChange(l: () => void) {
+  changeListeners.add(l);
+}
+
+export const hasHandler = (id: Action) => !!handlers.get(id)?.length;
+
+/** The handler a command runs now, if any; none while a modal dialog hides the workspace it acts on. */
+function handlerFor(id: Action) {
+  // Nothing may act on the workspace hidden behind a modal dialog; zoom only rescales it.
+  if (document.querySelector("[data-modal]") && !MODAL_SAFE.includes(id)) return null;
+  return handlers.get(id)?.at(-1) ?? null;
+}
+
+/** For the menu bar: runs a command as its key would, minus the checks on where the key was typed. */
+export function runCommand(id: Action) {
+  handlerFor(id)?.();
+}
 
 window.addEventListener("keydown", (e) => {
   if (e.isComposing) return;
@@ -43,30 +76,34 @@ window.addEventListener("keydown", (e) => {
   // typing, since ⌥+letter types characters (ç, ß), plain letters are text, and
   // menus/dialogs own their own keys.
   if ((!chord.includes("cmd") || "outsideText" in command) && isTyping(e)) return;
-  // Nothing may act on the workspace hidden behind a modal dialog; zoom only rescales it.
-  if (document.querySelector("[data-modal]") && !MODAL_SAFE.includes(command.id)) return;
-  const stack = handlers.get(command.id);
-  if (!stack?.length) return;
+  const run = handlerFor(command.id);
+  if (!run) return;
   e.preventDefault();
-  stack[stack.length - 1]();
+  run();
 });
 
-/** Registers handlers for commands while the component is mounted; always calls the latest closures. */
-export function useCommands(map: Partial<Record<CommandId, () => void>>) {
+/** Registers handlers for commands while the component is mounted; always calls the latest closures. A command left undefined is unavailable (greyed out in the menu). */
+export function useCommands(map: Partial<Record<Action, () => void>>) {
   const ref = useRef(map);
   useEffect(() => {
     ref.current = map;
   });
-  const ids = Object.keys(map).sort().join(" ");
+  const ids = Object.keys(map)
+    .filter((id) => map[id as Action])
+    .sort()
+    .join(" ");
   useEffect(() => {
+    if (!ids) return;
     const entries = ids.split(" ").map((id) => {
-      const fn = () => ref.current[id as CommandId]?.();
-      const stack = handlers.get(id as CommandId) ?? [];
-      handlers.set(id as CommandId, [...stack, fn]);
-      return [id as CommandId, fn] as const;
+      const fn = () => ref.current[id as Action]?.();
+      const stack = handlers.get(id as Action) ?? [];
+      handlers.set(id as Action, [...stack, fn]);
+      return [id as Action, fn] as const;
     });
+    changeListeners.forEach((l) => l());
     return () => {
       for (const [id, fn] of entries) handlers.set(id, (handlers.get(id) ?? []).filter((f) => f !== fn));
+      changeListeners.forEach((l) => l());
     };
   }, [ids]);
 }

@@ -4,6 +4,7 @@ mod fs;
 mod git;
 mod github;
 mod journal;
+mod menu;
 mod navigation;
 mod pty;
 #[cfg(test)]
@@ -992,20 +993,14 @@ fn open_url(url: String) -> Res<()> {
     github::open_url(&url)
 }
 
-/// Tauri's default menu, with About opening the app's own About window (a native panel
-/// can't hold links or buttons, and the runtime config has no copyright to show anyway).
-fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{Menu, MenuItem, MenuItemKind};
-    let menu = Menu::default(app)?;
-    // On macOS the first submenu is the app menu, with About first.
-    if cfg!(target_os = "macos") {
-        if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
-            let about = MenuItem::with_id(app, "about", "About GitViber", true, None::<&str>)?;
-            app_menu.remove_at(0)?;
-            app_menu.insert(&about, 0)?;
-        }
-    }
-    Ok(menu)
+#[tauri::command]
+fn set_menu(
+    app: AppHandle,
+    handles: State<'_, menu::Handles>,
+    items: std::collections::HashMap<String, menu::ItemState>,
+    recent: Option<Vec<menu::Recent>>,
+) -> Res<()> {
+    menu::update(&app, &handles, items, recent).map_err(|e| e.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1020,14 +1015,19 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(navigation::guard(dev_url))
         .plugin(tauri_plugin_dialog::init())
-        .menu(menu)
+        .menu(menu::build)
         .on_menu_event(|app, event| {
-            if event.id() == "about" {
-                let _ = app.emit("show-about", ());
+            let _ = app.emit("menu", event.id().as_ref());
+        })
+        .on_page_load(|webview, payload| {
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                webview.state::<AppState>().ptys.kill_all();
             }
         })
         .manage(AppState::default())
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            menu::keep_typed_key_equivalents();
             if let Some(webview) = app.get_webview_window("main") {
                 display::unlock_high_refresh_rate(&webview);
                 titlebar::setup(&webview);
@@ -1121,6 +1121,7 @@ pub fn run() {
             issue_comment,
             open_url,
             about,
+            set_menu,
             pty_spawn,
             pty_write,
             pty_resize,

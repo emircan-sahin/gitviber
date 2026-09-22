@@ -5,6 +5,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import type { Worktree } from "@/lib/api";
+import { useCommands } from "@/lib/keybindings";
 import {
   activateGroup,
   attachPane,
@@ -38,6 +39,8 @@ export function useTerminalSetup(root: string) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [root]);
+
+  useCommands({ "terminal.toggle": () => togglePanel(root), "terminal.new": () => openTerminal(root) });
 }
 
 interface Props {

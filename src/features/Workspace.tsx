@@ -276,9 +276,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.toggleGitPanel": () => toggle(listPanel),
     "view.toggleExplorer": () => toggle(filesPanel),
     "view.showExplorer": () => filesPanel.current?.expand(),
-    // Registered even with no tab open: an unhandled ⌘W would close the window.
-    "tab.close": () => activeKey && close(activeKey),
-    // ⌘R would reload the webview; make it a git refresh instead.
+    "tab.close": activeKey ? () => close(activeKey) : undefined,
+    "file.reveal": () => revealInFinder(tabs.find((t) => t.key === activeKey)?.sel),
     "repo.refresh": () => repo.refresh(),
   });
 
@@ -518,4 +517,10 @@ function VersionInfo() {
       </button>
     </Tip>
   );
+}
+
+/** The open file's working copy, else the repository's folder (a PR or an issue has no file). */
+function revealInFinder(sel: Selection | undefined) {
+  const path = sel && ["file", "unstaged", "staged", "conflict"].includes(sel.kind) ? selectionPath(sel) : "";
+  api.revealPath(path).catch((e) => toast("error", "Could not reveal in Finder", errorMessage(e)));
 }

@@ -234,6 +234,12 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     if (ok) await run("Remove worktree", () => api.removeWorktree(w.path, changed > 0 || w.locked), `Worktree ${name} removed`);
   };
 
+  useCommands({
+    "git.fetch": busy ? undefined : () => run("Fetch", api.fetch),
+    "git.pull": busy || !status?.upstream ? undefined : () => run("Pull", () => api.pull("ff"), "Pulled"),
+    "git.push": busy || !status?.upstream ? undefined : push,
+  });
+
   return (
     <header
       data-tauri-drag-region

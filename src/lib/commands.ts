@@ -7,8 +7,11 @@
 export const COMMANDS = [
   { id: "workbench.openSettings", title: "Open Settings", category: "General", keys: ["cmd+,"] },
   { id: "file.openRepo", title: "Open Repository", category: "General", keys: ["cmd+o"] },
-  { id: "repo.refresh", title: "Refresh", category: "General", keys: ["cmd+r"] },
+  { id: "window.reload", title: "Reload Window", category: "General", keys: ["cmd+r"] },
+  // The file watcher refreshes on its own; this is for changes it can't see.
+  { id: "repo.refresh", title: "Refresh", category: "General", keys: [] },
   { id: "tab.close", title: "Close Tab", category: "General", keys: ["cmd+w"] },
+  { id: "file.reveal", title: "Reveal in Finder", category: "General", keys: [] },
   { id: "view.changes", title: "Show Changes", category: "View", keys: ["cmd+1"] },
   { id: "view.history", title: "Show History", category: "View", keys: ["cmd+2"] },
   { id: "view.pulls", title: "Show Pull Requests", category: "View", keys: ["cmd+3"] },
@@ -30,6 +33,9 @@ export const COMMANDS = [
   { id: "editor.fontZoomIn", title: "Increase Code Font Size", category: "Editor", keys: ["alt+cmd+="] },
   { id: "editor.fontZoomOut", title: "Decrease Code Font Size", category: "Editor", keys: ["alt+cmd+-"] },
   { id: "editor.fontZoomReset", title: "Reset Code Font Size", category: "Editor", keys: ["alt+cmd+0"] },
+  { id: "git.fetch", title: "Fetch", category: "Git", keys: [] },
+  { id: "git.pull", title: "Pull", category: "Git", keys: [] },
+  { id: "git.push", title: "Push", category: "Git", keys: [] },
   // Not while typing: text fields keep ⌘Z for their own undo.
   { id: "git.undo", title: "Undo Git Action", category: "Git", keys: ["cmd+z"], outsideText: true },
   { id: "git.redo", title: "Redo Git Action", category: "Git", keys: ["shift+cmd+z"], outsideText: true },

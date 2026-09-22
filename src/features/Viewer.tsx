@@ -268,9 +268,10 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
   const [contrast, setContrast] = useState(false);
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile));
 
+  const diff = !isFile && !media && !rendered;
   useCommands({
-    "diff.nextChange": () => view.current?.next(),
-    "diff.prevChange": () => view.current?.prev(),
+    "diff.nextChange": diff ? () => view.current?.next() : undefined,
+    "diff.prevChange": diff ? () => view.current?.prev() : undefined,
   });
 
   return (
@@ -288,7 +289,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
         {file && <LineCounts file={file} />}
         {file && <StatusPill status={file.status} />}
         <div className="ml-auto flex shrink-0 items-center gap-1">
-          {!isFile && !media && !rendered && (
+          {diff && (
             <>
               <IconBtn label="Previous change" command="diff.prevChange" onClick={() => view.current?.prev()}>
                 <ArrowUp />

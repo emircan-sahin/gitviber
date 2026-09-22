@@ -1,4 +1,3 @@
-import { listen } from "@tauri-apps/api/event";
 import { Bug, ChevronRight, Copy, ExternalLink, Scale } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Logo } from "@/components/Logo";
@@ -6,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { type About, api, errorMessage, github } from "@/lib/api";
+import { useCommands } from "@/lib/keybindings";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -40,7 +40,7 @@ export const openAbout = () => setOpen(true);
 
 const openLink = (url: string) => github.openUrl(url).catch((e) => toast("error", "Could not open the link", errorMessage(e)));
 
-/** GitViber → About GitViber (lib.rs `menu` emits "show-about"), and the version in the status bar. */
+/** GitViber → About GitViber in the menu bar, and the version in the status bar. */
 export function AboutDialog() {
   const shown = useSyncExternalStore(
     (l) => {
@@ -52,20 +52,6 @@ export function AboutDialog() {
   const about = useAbout(shown);
   const [licenses, setLicenses] = useState(false);
 
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let gone = false;
-    try {
-      listen("show-about", openAbout).then((f) => (gone ? f() : (unlisten = f)), () => {});
-    } catch {
-      // Not in Tauri (the browser-only dev fixture).
-    }
-    return () => {
-      gone = true;
-      unlisten?.();
-    };
-  }, []);
-
   const reportBug = () => {
     const q = new URLSearchParams({ template: "bug_report.yml" });
     if (about) {
@@ -75,6 +61,14 @@ export function AboutDialog() {
     }
     openLink(`${REPO}/issues/new?${q}`);
   };
+
+  useCommands({
+    "app.about": openAbout,
+    "help.readme": () => openLink(`${REPO}#readme`),
+    "help.reportBug": reportBug,
+    "help.releaseNotes": () => openLink(`${REPO}/releases`),
+    "help.license": () => openLink(`${REPO}/blob/main/LICENSE`),
+  });
 
   const copy = () => {
     if (!about) return;
