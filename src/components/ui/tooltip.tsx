@@ -3,8 +3,10 @@ import type * as React from "react";
 import { cn } from "@/lib/utils";
 import { WINDOW_SAFE_AREA } from "./dropdown-menu";
 
-function TooltipProvider({ delayDuration = 300, ...props }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
-  return <TooltipPrimitive.Provider delayDuration={delayDuration} {...props} />;
+// Tooltips here are labels, never hovered into. Hoverable content keeps one open while the pointer
+// crosses toward it, and a neighbouring button under that path couldn't open its own.
+function TooltipProvider({ delayDuration = 300, disableHoverableContent = true, ...props }: React.ComponentProps<typeof TooltipPrimitive.Provider>) {
+  return <TooltipPrimitive.Provider delayDuration={delayDuration} disableHoverableContent={disableHoverableContent} {...props} />;
 }
 
 const Tooltip = TooltipPrimitive.Root;
