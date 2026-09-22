@@ -172,7 +172,11 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     const changed = w.prunable ? 0 : await api.worktreeChanges(w.path).catch(() => 0);
     const branch = w.branch ? ` The branch ${w.branch} stays.` : "";
     const lost = changed ? ` Its ${changed} uncommitted ${changed === 1 ? "change" : "changes"} will be lost.` : "";
-    const lock = w.locked ? " It's locked; this overrides the lock." : "";
+    const lock = w.inUse
+      ? ` Something is working in it right now (${w.lockReason ?? "it holds the lock"}); deleting pulls the folder out from under it.`
+      : w.locked
+        ? " It's locked; this overrides the lock."
+        : "";
     const ok = await ask(
       w.prunable ? `${name}'s folder is already gone. Remove it from the worktree list?${branch}` : `Delete worktree ${name} and its folder?${lost}${lock}${branch}`,
       { title: "Remove worktree", kind: "warning", okLabel: w.prunable ? "Remove" : "Delete worktree" },
@@ -201,7 +205,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onDelete={deleteBranch}
         onCleanUp={cleanUp}
       />
-      <WorktreePicker worktrees={worktrees} onOpen={onOpenRepo} onTerminal={openTerminal} onRemove={removeWorktree} />
+      <WorktreePicker worktrees={worktrees} branches={branches} onOpen={onOpenRepo} onTerminal={openTerminal} onRemove={removeWorktree} />
       {status && !status.upstream && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
           <CloudOff className="size-3" /> Not published

@@ -29,6 +29,10 @@ export interface Worktree {
   detached: boolean;
   bare: boolean;
   locked: boolean;
+  /** Why it's locked, if the locker said (Claude Code: "claude session … (pid N …)"). */
+  lockReason: string | null;
+  /** The lock names a process that's still running: someone is working in it now. */
+  inUse: boolean;
   /** Its folder is gone; `git worktree prune` would drop it. */
   prunable: boolean;
   current: boolean;

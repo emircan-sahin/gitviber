@@ -227,7 +227,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onCreate, onM
 }
 
 /** Icon button with a tooltip that closes as soon as the pointer leaves it. */
-function RowAction({ label, hot, onClick, children }: { label: string; hot: boolean; onClick: (e: React.MouseEvent) => void; children: React.ReactNode }) {
+export function RowAction({ label, hot, onClick, children }: { label: string; hot: boolean; onClick: (e: React.MouseEvent) => void; children: React.ReactNode }) {
   return (
     <Tooltip disableHoverableContent>
       <TooltipTrigger asChild>
