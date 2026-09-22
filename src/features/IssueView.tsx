@@ -1,16 +1,16 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, CircleCheck, CircleDot, CircleSlash, ExternalLink, Loader2, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronDown, CircleCheck, CircleDot, CircleSlash, ExternalLink, Loader2, Pencil, RefreshCw, Tag, Trash2 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { accessFor, type CloseReason, errorMessage, github, type Issue, issues, repoOf } from "@/lib/api";
+import { accessFor, type CloseReason, errorMessage, github, type Issue, type IssueLabel, issues, repoOf } from "@/lib/api";
 import { useGitHubData } from "@/lib/githubCache";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
-import { IssueStateIcon, LabelChip, notifyIssuesChanged } from "./IssuesPanel";
-import { isoToUnix } from "./PullsPanel";
+import { IssueStateIcon, LabelChip, LabelPicker, notifyIssuesChanged } from "./IssuesPanel";
+import { CopyLinkButton, isoToUnix, openOnGitHub } from "./PullsPanel";
 import { PullMarkdown, Section } from "./PullView";
 
 const CLOSE: Record<CloseReason, { label: string; note: string }> = {
@@ -22,6 +22,8 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
   const [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [comment, setComment] = useState("");
+  // The labels being picked, shown in place of the issue's until they're saved.
+  const [labels, setLabels] = useState<IssueLabel[] | null>(null);
   // The repository the issue is in: origin, or a fork's parent.
   const target = repoOf(issue.url);
   const detail = useGitHubData(
@@ -61,6 +63,8 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
   const canClose = canEdit || !!access?.triage;
   // But an author can't reopen what a maintainer closed.
   const canReopen = !!access?.push || !!access?.triage || (own && d?.closedBy === account?.login);
+  // Unlike closing, labeling isn't the author's to do.
+  const canLabel = !!access?.push || !!access?.triage;
 
   const post = async () => {
     if (await act("Comment", () => issues.comment(target, i.number, text), "Comment added")) setComment("");
@@ -78,6 +82,14 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
       `${open ? "Reopened" : "Closed"} #${i.number}`,
     );
     if (ok) setComment("");
+  };
+
+  // Like GitHub, the picked labels are saved together when the picker closes.
+  const saveLabels = async () => {
+    if (!labels) return;
+    const same = labels.length === i.labels.length && labels.every((l) => i.labels.some((m) => m.name === l.name));
+    if (!same) await act("Labels", () => issues.setLabels(target, i.number, labels.map((l) => l.name)), "Labels updated");
+    setLabels(null);
   };
 
   const remove = async () => {
@@ -132,9 +144,25 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
                     <span>assigned to {i.assignees.join(", ")}</span>
                   </>
                 )}
-                {i.labels.map((l) => (
+                {(labels ?? i.labels).map((l) => (
                   <LabelChip key={l.name} label={l} />
                 ))}
+                {canLabel && (
+                  <LabelPicker
+                    repos={[target]}
+                    selected={labels ?? i.labels}
+                    onChange={setLabels}
+                    onOpenChange={(o) => (o ? setLabels(i.labels) : saveLabels())}
+                    hint="Saved when closed"
+                  >
+                    <button
+                      disabled={!!busy || !d}
+                      className="inline-flex items-center gap-1 rounded-full border border-dashed border-border-strong px-1.5 text-[10.5px] leading-4 text-subtle hover:text-foreground disabled:opacity-50 data-[state=open]:text-foreground"
+                    >
+                      <Tag className="size-2.5" /> {(labels ?? i.labels).length ? "Edit labels" : "Add labels"}
+                    </button>
+                  </LabelPicker>
+                )}
               </div>
             </div>
           </div>
@@ -154,9 +182,10 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
                 <CircleDot /> {text ? "Reopen with comment" : "Reopen"}
               </Button>
             ))}
-          <Button variant="secondary" size="sm" onClick={() => github.openUrl(i.url).catch((e) => toast("error", "Could not open", errorMessage(e)))}>
+          <Button variant="secondary" size="sm" onClick={() => openOnGitHub(i.url)}>
             <ExternalLink /> Open on GitHub
           </Button>
+          <CopyLinkButton url={i.url} />
           <Button variant="ghost" size="icon-sm" onClick={load} disabled={!!busy || detail.loading}>
             <RefreshCw className={cn(detail.loading && "animate-spin")} />
           </Button>
