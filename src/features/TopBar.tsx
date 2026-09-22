@@ -166,6 +166,43 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   };
 
   const merge = (name: string) => run("Merge", () => api.merge(name), `Merged ${name}`);
+  // Rejected as non-fast-forward: the remote has commits this branch dropped, usually its own
+  // old ones after a rebase or amend. Replacing them is a force push, so it asks first.
+  // "fetch first" (commits not fetched yet) isn't offered: those want a pull.
+  const push = () =>
+    run(
+      "Push",
+      async () => {
+        try {
+          await api.push();
+        } catch (e) {
+          if (!errorMessage(e).includes("non-fast-forward")) throw e;
+          const ok = await ask(
+            "The remote branch has commits yours no longer has, as after a rebase or an amend. Replace them with yours?\n\nThis force-pushes (with lease): it is refused if someone pushed there since your last fetch. Anyone who pulled the old commits will have to reconcile.",
+            { title: "Force push", kind: "warning", okLabel: "Force push" },
+          );
+          if (!ok) throw e;
+          await api.push(true);
+        }
+      },
+      "Pushed",
+    );
+  // Unknown until the push target has the branch; then a push is due.
+  const pushAhead = status?.push ? (status.push.branch ? status.push.ahead : null) : (status?.ahead ?? 0);
+
+  // upstream/dev → dev. A local dev that tracks something else (origin/dev, say) is a
+  // different line of work; say so rather than switch to it silently.
+  const switchRemote = async (b: Branch) => {
+    const name = b.name.slice(b.name.indexOf("/") + 1);
+    const local = branches.find((x) => !x.remote && x.name === name);
+    if (local?.current) return;
+    if (local && local.upstream !== b.name) {
+      const tracks = local.upstream ? `tracks ${local.upstream}` : "tracks nothing";
+      const ok = await ask(`A local ${name} already exists and ${tracks}, not ${b.name}. Switch to it as it is?`, { title: "Switch branch", okLabel: "Switch" });
+      if (!ok) return;
+    }
+    await run("Switch branch", () => api.switchTracking(b.name), `Switched to ${name}`);
+  };
 
   // A fresh count decides force: git refuses a dirty or locked worktree otherwise, and the
   // warning must say what gets lost. If counting fails, git's own refusal is the fallback.
@@ -200,6 +237,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         branches={branches}
         current={status?.branch ?? null}
         onSwitch={(name) => run("Switch branch", () => api.switchBranch(name, false), `Switched to ${name}`)}
+        onSwitchRemote={switchRemote}
         onCreate={(name) => run("Create branch", () => api.switchBranch(name, true), `Switched to new branch ${name}`)}
         onMerge={merge}
         onRebase={(name) => run("Rebase", () => api.rebase(name), `Rebased onto ${name}`)}
@@ -252,10 +290,12 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         </DropdownMenu>
       </div>
       {status?.upstream ? (
-        <Tip label={`Push to ${status.upstream}`}>
-          <Button variant={status.ahead ? "default" : "secondary"} disabled={!!busy} onClick={() => run("Push", api.push, "Pushed")}>
+        // Where the push lands, which a fork can set apart from where it pulls (upstream/dev
+        // pulled, origin/dev pushed). Not there yet: the push creates it.
+        <Tip label={status.push?.branch ? `Push to ${status.push.branch}` : `Push to ${status.push?.remote ?? "the remote"} (creates the branch there)`}>
+          <Button variant={pushAhead !== 0 ? "default" : "secondary"} disabled={!!busy} onClick={push}>
             <ArrowUpFromLine /> Push
-            {!!status.ahead && <span className="font-mono text-[10.5px]">{status.ahead}</span>}
+            {!!pushAhead && <span className="font-mono text-[10.5px]">{pushAhead}</span>}
           </Button>
         </Tip>
       ) : (
