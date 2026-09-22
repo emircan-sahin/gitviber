@@ -22,7 +22,8 @@ interface Props {
 }
 
 /**
- * `git worktree list` as a switcher, shown once the repo has more than one worktree.
+ * `git worktree list` as a switcher. Always shown, even with only the main worktree, so
+ * the feature is found at all; then it says how to make one.
  * Rows lead with the branch, the name people know a worktree by; the folder comes second.
  * In a linked worktree it names it and offers the way back to the main one.
  */
@@ -71,7 +72,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
     listRef.current?.querySelector(`[data-option="${index}"]`)?.scrollIntoView({ block: "nearest" });
   }, [index]);
 
-  if (list.length < 2) return null;
+  if (!list.length) return null;
+  const extra = list.filter((w) => !w.main).length;
   const current = list.find((w) => w.current);
   const main = list.find((w) => w.main && !w.bare);
   const linked = !!current && !current.main;
@@ -96,10 +98,10 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   return (
     <>
       <Popover open={open} onOpenChange={setOpen}>
-        <Tip label={linked ? `In worktree ${folderName(current.path)} · switch worktree` : `${list.length} worktrees · switch worktree`}>
+        <Tip label={linked ? `In worktree ${folderName(current.path)} · switch worktree` : extra === 0 ? "Worktrees" : `${extra} worktree${extra === 1 ? "" : "s"} besides the main one · switch worktree`}>
           <PopoverTrigger asChild>
             <button
-              aria-label={linked ? `Worktree ${folderName(current.path)}, switch worktree` : `Switch worktree (${list.length})`}
+              aria-label={linked ? `Worktree ${folderName(current.path)}, switch worktree` : extra === 0 ? "Worktrees" : `Switch worktree (${extra} besides the main one)`}
               className={cn(
                 "flex h-7 max-w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2 hover:bg-hover data-[state=open]:bg-active",
                 linked && "bg-primary/10",
@@ -109,7 +111,11 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
               {linked ? (
                 <span className="truncate font-mono text-[12px]">{folderName(current.path)}</span>
               ) : (
-                <span className="font-mono text-[11px] text-muted-foreground">{list.length}</span>
+                // Named, so it's found even before there are any. Counted as people count them:
+                // the extra checkouts, not the main folder git also lists.
+                <span className="text-[12px]">
+                  Worktrees{extra > 0 && <span className="text-muted-foreground"> ({extra})</span>}
+                </span>
               )}
               <ChevronsUpDown className="size-3 shrink-0 text-subtle" />
             </button>
@@ -146,6 +152,12 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 onRemove={remove}
               />
             ))}
+            {list.length === 1 && (
+              <div className="px-2 py-3 text-center text-[11.5px] leading-relaxed text-subtle">
+                No other worktrees yet. A worktree checks out another branch in its own folder, side by side with this one. To make one, hover a branch in the
+                branch menu and open a terminal on it.
+              </div>
+            )}
           </div>
           <div className="shrink-0 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
             ↑↓ navigate · ↵ open here · hover for actions
