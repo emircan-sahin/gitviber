@@ -29,7 +29,7 @@ These are the product, not style preferences. A PR that breaks one will be sent 
 - **Stay inside the repo.** Paths from the frontend are resolved and checked in `fs.rs`. New file access goes through that, never around it.
 - **No stored secrets.** The GitHub token is borrowed from `gh` or git's credential store and kept in memory only. Text from GitHub is rendered as markdown whose inline HTML is cut down to GitHub's own allowlist (`rehype-sanitize`'s default schema); raw HTML never reaches the page and nothing from it runs.
 - **Fast.** Heavy work (diffs, highlighting) stays off the UI thread. If a change makes scrolling or a large diff slower, say so in the PR.
-- **Few dependencies.** Explain a new package in the PR, and pin its exact version like the existing ones.
+- **Few dependencies.** Explain a new package in the PR, and pin its exact version like the existing ones. Then run `pnpm licenses:generate` so its license shows under About → Third-Party Licenses.
 
 ## Before you push
 
@@ -37,7 +37,7 @@ These are the product, not style preferences. A PR that breaks one will be sent 
 pnpm check
 ```
 
-That runs what CI runs: `tsc`, a production build, `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test`. If you change how a git operation behaves, add or update a scenario in `scenario_tests.rs`.
+That runs what CI runs: `tsc`, a production build, the third-party license list being up to date, `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test`. If you change how a git operation behaves, add or update a scenario in `scenario_tests.rs`.
 
 ## Pull requests
 

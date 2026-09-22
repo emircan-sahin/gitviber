@@ -8,8 +8,10 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "test": "node --test \"src/**/*.test.ts\"",
-    "check": "pnpm build && pnpm test && pnpm check:rust",
+    "check": "pnpm build && pnpm test && pnpm check:licenses && pnpm check:rust",
     "check:rust": "cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test",
+    "check:licenses": "node scripts/licenses.mjs --check",
+    "licenses:generate": "node scripts/licenses.mjs",
     "tauri": "node scripts/tauri.mjs"
   },
   "dependencies": {

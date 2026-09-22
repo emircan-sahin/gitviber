@@ -1,11 +1,13 @@
 import { listen } from "@tauri-apps/api/event";
-import { Bug, Copy, ExternalLink, Scale } from "lucide-react";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { Bug, ChevronRight, Copy, ExternalLink, Scale } from "lucide-react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { Logo } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { type About, api, errorMessage, github } from "@/lib/api";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 
 const REPO = "https://github.com/emircan-sahin/gitviber";
 
@@ -47,6 +49,7 @@ export function AboutDialog() {
     () => open,
   );
   const about = useAbout();
+  const [licenses, setLicenses] = useState(false);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
@@ -82,7 +85,13 @@ export function AboutDialog() {
   };
 
   return (
-    <Dialog open={shown} onOpenChange={setOpen}>
+    <Dialog
+      open={shown}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setLicenses(false);
+      }}
+    >
       <DialogContent className="top-[16%] max-w-sm px-6 pt-8 pb-6 text-center">
         <Logo className="mx-auto size-20 drop-shadow-lg" />
         <DialogTitle className="mt-4 text-[20px] font-semibold tracking-tight">GitViber</DialogTitle>
@@ -117,7 +126,91 @@ export function AboutDialog() {
             <Scale /> License
           </Button>
         </div>
-        <div className="mt-5 text-[11px] text-subtle">© 2026 Emircan Sahin · MIT License</div>
+        <div className="mt-5 text-[11px] text-subtle">
+          © 2026 Emircan Sahin · MIT License ·{" "}
+          <button onClick={() => setLicenses(true)} className="hover:text-foreground hover:underline">
+            Third-Party Licenses
+          </button>
+        </div>
+        <LicensesDialog open={licenses} onOpenChange={setLicenses} />
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Written by scripts/licenses.mjs (`pnpm licenses:generate`). */
+type Licenses = {
+  packages: { name: string; version: string; license: string; url: string; source: "npm" | "cargo"; standard?: string; texts: number[] }[];
+  texts: string[];
+};
+
+let licensesOnce: Promise<Licenses> | null = null;
+
+/** Every npm and cargo package the app ships, with its license text; ~900 KB, so loaded on open. */
+function LicensesDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const [data, setData] = useState<Licenses | null>(null);
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    licensesOnce ??= import("@/lib/third-party-licenses.json").then((m) => m.default as Licenses);
+    licensesOnce.then(setData, (e) => {
+      licensesOnce = null;
+      toast("error", "Could not load the licenses", errorMessage(e));
+    });
+  }, [open]);
+
+  const shown = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return (data?.packages ?? []).filter((p) => !q || p.name.toLowerCase().includes(q) || p.license.toLowerCase().includes(q));
+  }, [data, query]);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="top-[10%] flex h-[80vh] max-w-2xl flex-col text-left">
+        <DialogTitle>Third-Party Licenses</DialogTitle>
+        <DialogDescription>GitViber is built on these open-source packages. Click one to read its license.</DialogDescription>
+        <Input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter by name or license" className="mt-3 shrink-0" />
+        <div className="mt-2 min-h-0 flex-1 overflow-y-auto">
+          {!data ? (
+            <div className="py-6 text-center text-[12px] text-subtle">Loading…</div>
+          ) : shown.length === 0 ? (
+            <div className="py-6 text-center text-[12px] text-subtle">No packages match</div>
+          ) : (
+            shown.map((p) => {
+              const key = `${p.source}:${p.name}@${p.version}`;
+              const isOpen = expanded === key;
+              return (
+                <div key={key}>
+                  <button
+                    onClick={() => setExpanded(isOpen ? null : key)}
+                    className={cn("flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-[12px] hover:bg-hover", isOpen && "bg-hover")}
+                  >
+                    <ChevronRight className={cn("size-3 shrink-0 text-subtle transition-transform", isOpen && "rotate-90")} />
+                    <span className="min-w-0 truncate">{p.name}</span>
+                    <span className="shrink-0 font-mono text-[11px] text-subtle">{p.version}</span>
+                    <span className="ml-auto shrink-0 truncate pl-3 text-[11px] text-muted-foreground">{p.license}</span>
+                    <span className="w-9 shrink-0 text-right text-[10.5px] text-subtle">{p.source === "npm" ? "npm" : "crate"}</span>
+                  </button>
+                  {isOpen && (
+                    <div className="mb-2 ml-7 mr-2 mt-1 space-y-2">
+                      <button onClick={() => openLink(p.url)} className="inline-flex items-center gap-1 text-[11px] text-primary hover:underline">
+                        <ExternalLink className="size-3" /> {p.url}
+                      </button>
+                      {p.standard && <p className="text-[11px] text-subtle">This package ships no license file, so this is the standard {p.standard} text.</p>}
+                      {p.texts.map((t) => (
+                        <pre key={t} className="select-text whitespace-pre-wrap break-words rounded-sm border border-border bg-background p-2.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
+                          {data.texts[t]}
+                        </pre>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );
