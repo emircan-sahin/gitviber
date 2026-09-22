@@ -963,3 +963,29 @@ fn merged_branches_and_deleting_them() {
     let left: Vec<String> = branches(&r).unwrap().into_iter().map(|b| b.name).collect();
     assert_eq!(left.len(), 2, "{left:?}");
 }
+
+#[test]
+fn deleting_a_remote_branch() {
+    let sb = Sandbox::new("rbdel");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    run(a, &["push", "-q", "origin", "HEAD:refs/heads/feat/x"]).unwrap();
+    fetch(a).unwrap();
+    let defaults: Vec<String> = branches(a)
+        .unwrap()
+        .into_iter()
+        .filter(|b| b.remote_default)
+        .map(|b| b.name)
+        .collect();
+    assert_eq!(defaults, ["origin/main"]);
+    delete_remote_branch(a, "origin/feat/x").unwrap();
+    let left = String::from_utf8(run(a, &["ls-remote", "--heads", "origin"]).unwrap()).unwrap();
+    assert!(!left.contains("feat/x"), "{left}");
+    // The tracking ref goes with it, so the picker drops the row without a fetch.
+    assert!(!branches(a)
+        .unwrap()
+        .iter()
+        .any(|b| b.name == "origin/feat/x"));
+    assert!(delete_remote_branch(a, "origin/main").is_err());
+    assert!(delete_remote_branch(a, "nope/x").is_err());
+}

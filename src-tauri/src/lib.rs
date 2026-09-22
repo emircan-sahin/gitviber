@@ -164,6 +164,12 @@ async fn delete_branches(state: State<'_, AppState>, names: Vec<String>, force: 
 }
 
 #[tauri::command]
+async fn delete_remote_branch(state: State<'_, AppState>, name: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::delete_remote_branch(&r, &name)).await
+}
+
+#[tauri::command]
 async fn worktrees(state: State<'_, AppState>) -> Res<Vec<git::Worktree>> {
     let r = repo(&state)?;
     blocking(move || git::worktrees(&r)).await
@@ -368,6 +374,15 @@ async fn gh_account(app: AppHandle) -> Res<github::Account> {
     blocking(move || {
         let state = app.state::<AppState>();
         github::account(&state.github, &repo(&state)?)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn gh_protected_branches(app: AppHandle) -> Res<Vec<String>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::protected_branches(&state.github, &repo(&state)?)
     })
     .await
 }
@@ -608,6 +623,7 @@ pub fn run() {
             branches,
             switch_branch,
             delete_branches,
+            delete_remote_branch,
             worktrees,
             worktree_changes,
             add_worktree,
@@ -640,6 +656,7 @@ pub fn run() {
             create_tag,
             github_web_url,
             gh_account,
+            gh_protected_branches,
             pr_list,
             pr_detail,
             pr_attachments,

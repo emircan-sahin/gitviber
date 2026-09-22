@@ -1252,6 +1252,8 @@ pub struct Branch {
     /// Local, not HEAD, and fully contained in HEAD: deleting it loses no commits. The
     /// default branch never counts, so "clean up merged" can't take main from under a feature.
     pub merged: bool,
+    /// What its remote's HEAD points at (origin/main): never offered for deletion.
+    pub remote_default: bool,
 }
 
 pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
@@ -1260,7 +1262,7 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         &[
             "for-each-ref",
             "--sort=-committerdate",
-            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)",
+            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)%1f%(symref)",
             "refs/heads",
             "refs/remotes",
         ],
@@ -1285,14 +1287,18 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
     .unwrap_or_default();
     let merged: Vec<&str> = merged.lines().collect();
     let default = default_branch(repo);
+    // origin/HEAD's own row names the remote default; the row itself is skipped below.
+    let remote_heads: Vec<&str> = raw
+        .lines()
+        .filter_map(|l| l.split('\x1f').nth(6).filter(|s| !s.is_empty()))
+        .collect();
     Ok(raw
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\x1f').collect();
             let elsewhere =
-                f.len() == 6 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
-            // Skip the symbolic origin/HEAD pointer.
-            (f.len() == 6 && !f[0].ends_with("/HEAD")).then(|| Branch {
+                f.len() == 7 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
+            (f.len() == 7 && !f[0].ends_with("/HEAD")).then(|| Branch {
                 name: f[1].to_string(),
                 remote: f[0].starts_with("refs/remotes/"),
                 current: f[2] == "*",
@@ -1300,6 +1306,7 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
                 timestamp: f[4].parse().unwrap_or(0),
                 worktree: elsewhere.then(|| f[5].to_string()),
                 merged: f[2] != "*" && f[1] != default && merged.contains(&f[0]),
+                remote_default: remote_heads.contains(&f[0]),
             })
         })
         .collect())
@@ -1329,6 +1336,27 @@ pub fn delete_branches(repo: &Path, names: &[String], force: bool) -> Result<(),
     let mut args = vec!["branch", if force { "-D" } else { "-d" }];
     args.extend(names.iter().map(String::as_str));
     run(repo, &args).map(|_| ())
+}
+
+/// Deletes "origin/feat" on origin. Refuses the remote's default branch: hosts either reject
+/// it or let it go and leave every clone without one.
+pub fn delete_remote_branch(repo: &Path, name: &str) -> Result<(), String> {
+    let remotes = run_text(repo, &["remote"])?;
+    let remote = remotes
+        .lines()
+        .filter(|r| name.starts_with(&format!("{r}/")))
+        .max_by_key(|r| r.len())
+        .ok_or_else(|| format!("{name} isn't a remote branch"))?;
+    let branch = &name[remote.len() + 1..];
+    validate_branch(repo, branch)?;
+    let head = format!("refs/remotes/{remote}/HEAD");
+    if run_text(repo, &["symbolic-ref", "--quiet", "--short", &head])
+        .is_ok_and(|h| h.trim() == name)
+    {
+        return Err(format!("{name} is {remote}'s default branch"));
+    }
+    let target = format!("refs/heads/{branch}");
+    run_network(repo, &["push", remote, "--delete", &target]).map(|_| ())
 }
 
 pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String> {

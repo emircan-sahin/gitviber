@@ -2,7 +2,7 @@ import { Check, ChevronsUpDown, Cloud, GitBranch, GitMerge, GitPullRequestArrow,
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import type { Branch } from "@/lib/api";
+import { type Branch, github } from "@/lib/api";
 import { cn, relativeTime } from "@/lib/utils";
 
 interface Props {
@@ -15,7 +15,7 @@ interface Props {
   onRebase: (name: string) => void;
   /** Opens a terminal on the branch. */
   onTerminal: (name: string) => void;
-  /** Deletes a local branch; asks first unless it's merged. */
+  /** Deletes a branch; asks first unless it's a merged local one. */
   onDelete: (branch: Branch) => void;
   /** Deletes these merged branches together (asks first). */
   onCleanUp: (names: string[]) => void;
@@ -38,6 +38,9 @@ export function BranchPicker({ label, current, branches, onSwitch, onCreate, onM
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  // GitHub branch protection, asked when the menu opens. No GitHub, no answer: then only
+  // the remote default is held back, and the confirm is what guards the rest.
+  const [guarded, setGuarded] = useState<Set<string>>(new Set());
 
   // Switching to origin/x means switching to x, so a remote row goes with its local branch.
   const elsewhere = useMemo(() => {
@@ -58,6 +61,17 @@ export function BranchPicker({ label, current, branches, onSwitch, onCreate, onM
   }, [branches, elsewhere, query]);
 
   useEffect(() => setIndex(0), [query, open]);
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    github
+      .protectedBranches()
+      .then((names) => live && setGuarded(new Set(names.map((n) => `origin/${n}`))))
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [open]);
 
   useEffect(() => {
     listRef.current?.querySelector(`[data-option="${index}"]`)?.scrollIntoView({ block: "nearest" });
@@ -173,8 +187,8 @@ export function BranchPicker({ label, current, branches, onSwitch, onCreate, onM
                             </RowAction>
                           </>
                         )}
-                        {!o.branch.current && !o.branch.remote && (
-                          <RowAction hot={hot} label={o.branch.merged ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch), o.branch.name)}>
+                        {!o.branch.current && !o.branch.remoteDefault && !guarded.has(o.branch.name) && (
+                          <RowAction hot={hot} label={o.branch.remote ? "Delete from the remote…" : o.branch.merged ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch), o.branch.name)}>
                             <Trash2 />
                           </RowAction>
                         )}

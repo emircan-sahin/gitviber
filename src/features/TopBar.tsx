@@ -132,7 +132,18 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   };
 
   // Merged is deleted outright: nothing is lost. Anything else needs a yes, then -D.
+  // A remote branch always asks: the push takes it away for everyone.
   const deleteBranch = async (b: Branch) => {
+    if (b.remote) {
+      const [remote, ...rest] = b.name.split("/");
+      const ok = await ask(`Delete ${rest.join("/")} from ${remote}? It goes for everyone who uses ${remote}; local branches stay.`, {
+        title: "Delete remote branch",
+        kind: "warning",
+        okLabel: "Delete",
+      });
+      if (ok) await run("Delete remote branch", () => api.deleteRemoteBranch(b.name), `Deleted ${b.name}`);
+      return;
+    }
     const here = status?.branch ?? "HEAD";
     if (!b.merged) {
       const ok = await ask(`${b.name} isn't known to be merged into ${here}. Deleting it loses any commits that exist only on it.`, {
