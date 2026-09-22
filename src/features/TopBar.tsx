@@ -28,7 +28,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
-import { api, errorMessage } from "@/lib/api";
+import { api, errorMessage, type Worktree } from "@/lib/api";
 import { useShortcut } from "@/lib/keybindings";
 import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
@@ -140,6 +140,21 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     if (ok) await run("Create worktree", async () => openTerminal(await api.addWorktree(name)), `${name} checked out in ${where}`);
   };
 
+  // A fresh count decides force: git refuses a dirty or locked worktree otherwise, and the
+  // warning must say what gets lost. If counting fails, git's own refusal is the fallback.
+  const removeWorktree = async (w: Worktree) => {
+    const name = folderName(w.path);
+    const changed = w.prunable ? 0 : await api.worktreeChanges(w.path).catch(() => 0);
+    const branch = w.branch ? ` The branch ${w.branch} stays.` : "";
+    const lost = changed ? ` Its ${changed} uncommitted ${changed === 1 ? "change" : "changes"} will be lost.` : "";
+    const lock = w.locked ? " It's locked; this overrides the lock." : "";
+    const ok = await ask(
+      w.prunable ? `${name}'s folder is already gone. Remove it from the worktree list?${branch}` : `Delete worktree ${name} and its folder?${lost}${lock}${branch}`,
+      { title: "Remove worktree", kind: "warning", okLabel: w.prunable ? "Remove" : "Delete worktree" },
+    );
+    if (ok) await run("Remove worktree", () => api.removeWorktree(w.path, changed > 0 || w.locked), `Worktree ${name} removed`);
+  };
+
   return (
     <header
       data-tauri-drag-region
@@ -158,7 +173,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onRebase={(name) => run("Rebase", () => api.rebase(name), `Rebased onto ${name}`)}
         onTerminal={branchTerminal}
       />
-      <WorktreePicker worktrees={worktrees} onOpen={onOpenRepo} onTerminal={openTerminal} />
+      <WorktreePicker worktrees={worktrees} onOpen={onOpenRepo} onTerminal={openTerminal} onRemove={removeWorktree} />
       {status && !status.upstream && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
           <CloudOff className="size-3" /> Not published

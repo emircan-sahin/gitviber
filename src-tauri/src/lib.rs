@@ -176,6 +176,12 @@ async fn worktree_changes(state: State<'_, AppState>, path: String) -> Res<u32> 
 }
 
 #[tauri::command]
+async fn remove_worktree(state: State<'_, AppState>, path: String, force: bool) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::remove_worktree(&r, &path, force)).await
+}
+
+#[tauri::command]
 async fn stage(state: State<'_, AppState>, paths: Vec<String>, allow_nested: bool) -> Res<()> {
     let r = repo(&state)?;
     blocking(move || git::stage_with(&r, &paths, allow_nested)).await
@@ -525,6 +531,7 @@ pub fn run() {
             worktrees,
             worktree_changes,
             add_worktree,
+            remove_worktree,
             stage,
             unstage,
             discard,

@@ -1,4 +1,4 @@
-import { Check, ChevronsUpDown, CornerUpLeft, FolderGit2, Lock, SquareTerminal } from "lucide-react";
+import { Check, ChevronsUpDown, CornerUpLeft, FolderGit2, Lock, SquareTerminal, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -12,13 +12,15 @@ interface Props {
   /** Opens a worktree in this window (the regular open-repo flow). */
   onOpen: (path: string) => void;
   onTerminal: (path: string) => void;
+  /** Deletes a linked worktree (asks first). */
+  onRemove: (w: Worktree) => void;
 }
 
 /**
  * `git worktree list` as a switcher, shown once the repo has more than one worktree.
  * In a linked worktree it names it and offers the way back to the main one.
  */
-export function WorktreePicker({ worktrees, onOpen, onTerminal }: Props) {
+export function WorktreePicker({ worktrees, onOpen, onTerminal, onRemove }: Props) {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState(worktrees);
   // Change counts need a `git status` per worktree: fetched when the menu opens, never before.
@@ -66,6 +68,10 @@ export function WorktreePicker({ worktrees, onOpen, onTerminal }: Props) {
     setOpen(false);
     onTerminal(w.path);
   };
+  const remove = (w: Worktree) => {
+    setOpen(false);
+    onRemove(w);
+  };
 
   return (
     <>
@@ -93,7 +99,7 @@ export function WorktreePicker({ worktrees, onOpen, onTerminal }: Props) {
           <div className="px-3 pt-2.5 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Worktrees</div>
           <div className="max-h-[360px] min-h-0 overflow-x-hidden overflow-y-auto p-1">
             {list.map((w) => (
-              <WorktreeRow key={w.path} w={w} main={main?.path ?? w.path} count={counts[w.path]} onPick={pick} onTerminal={terminal} />
+              <WorktreeRow key={w.path} w={w} main={main?.path ?? w.path} count={counts[w.path]} onPick={pick} onTerminal={terminal} onRemove={remove} />
             ))}
           </div>
           {list.some((w) => w.prunable) && (
@@ -114,7 +120,21 @@ export function WorktreePicker({ worktrees, onOpen, onTerminal }: Props) {
   );
 }
 
-function WorktreeRow({ w, main, count, onPick, onTerminal }: { w: Worktree; main: string; count: number | undefined; onPick: (w: Worktree) => void; onTerminal: (w: Worktree) => void }) {
+function WorktreeRow({
+  w,
+  main,
+  count,
+  onPick,
+  onTerminal,
+  onRemove,
+}: {
+  w: Worktree;
+  main: string;
+  count: number | undefined;
+  onPick: (w: Worktree) => void;
+  onTerminal: (w: Worktree) => void;
+  onRemove: (w: Worktree) => void;
+}) {
   const usable = !w.current && !w.prunable && !w.bare;
   const branch = w.branch ?? (w.bare ? "bare" : `detached @ ${w.head ?? "?"}`);
   return (
@@ -160,6 +180,20 @@ function WorktreeRow({ w, main, count, onPick, onTerminal }: { w: Worktree; main
             className="flex size-6 shrink-0 items-center justify-center rounded-sm text-subtle opacity-0 group-hover:opacity-100 hover:bg-active hover:text-foreground focus-visible:opacity-100"
           >
             <SquareTerminal className="size-3.5" />
+          </button>
+        </Tip>
+      )}
+      {!w.main && !w.current && !w.bare && (
+        <Tip label="Remove worktree">
+          <button
+            aria-label={`Remove worktree ${folderName(w.path)}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemove(w);
+            }}
+            className="flex size-6 shrink-0 items-center justify-center rounded-sm text-subtle opacity-0 group-hover:opacity-100 hover:bg-active hover:text-destructive focus-visible:opacity-100"
+          >
+            <Trash2 className="size-3.5" />
           </button>
         </Tip>
       )}
