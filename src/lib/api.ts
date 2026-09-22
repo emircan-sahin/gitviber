@@ -59,6 +59,8 @@ export interface RepoStatus {
   upstream: string | null;
   ahead: number;
   behind: number;
+  /** Where `git push` sends this branch; a fork can pull from upstream and push to origin. */
+  push: { remote: string; branch: string | null; ahead: number } | null;
   staged: FileChange[];
   unstaged: FileChange[];
   conflicted: FileChange[];
@@ -153,6 +155,12 @@ export const api = {
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
   branches: () => invoke<Branch[]>("branches"),
+  /** Switches to the local branch for a remote one ("upstream/dev" → dev), creating it to track exactly that. */
+  /** What a PR from HEAD into `base` (refs/remotes/…) carries: its commit count, and the one commit's message. */
+  pullDraft: (base: string) => invoke<{ commits: number; subject: string | null; body: string | null }>("pull_draft", { base }),
+  /** `remote.pushDefault`: every branch pushes to `remote`, whatever it pulls from. */
+  setPushDefault: (remote: string) => invoke<void>("set_push_default", { remote }),
+  switchTracking: (remoteRef: string) => invoke<void>("switch_tracking", { remoteRef }),
   switchBranch: (name: string, create: boolean) => invoke<void>("switch_branch", { name, create }),
   /** `force` deletes unmerged commits too (git branch -D). */
   deleteBranches: (names: string[], force: boolean) => invoke<void>("delete_branches", { names, force }),
@@ -170,7 +178,8 @@ export const api = {
   unstage: (paths: string[]) => invoke<void>("unstage", { paths }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
   commit: (message: string, amend: boolean) => invoke<void>("commit", { message, amend }),
-  push: () => invoke<void>("push"),
+  /** `force`: --force-with-lease, after a rebase or amend. */
+  push: (force = false) => invoke<void>("push", { force }),
   // The boolean results mean "stopped on conflicts".
   pull: (mode: PullMode) => invoke<boolean>("pull", { mode }),
   merge: (name: string) => invoke<boolean>("merge", { name }),
@@ -309,9 +318,9 @@ export const github = {
   attachments: (target: Target, number: number) => invoke<Record<string, string>>("pr_attachments", { target, number }),
   files: (target: Target, p: Pick<Pull, "number" | "baseRef" | "baseSha" | "headSha">) =>
     invoke<PullFiles>("pr_files", { target, number: p.number, baseRef: p.baseRef, baseSha: p.baseSha, headSha: p.headSha }),
-  /** Into the parent, `head` is a branch of origin's. */
-  create: (target: Target, title: string, body: string, head: string, base: string, draft: boolean) =>
-    invoke<Pull>("pr_create", { target, title, body, head, base, draft }),
+  /** Into the parent, `head` is a branch of origin's, and `maintainerEdits` lets its maintainers push to it. */
+  create: (target: Target, title: string, body: string, head: string, base: string, draft: boolean, maintainerEdits = true) =>
+    invoke<Pull>("pr_create", { target, title, body, head, base, draft, maintainerEdits }),
   merge: (target: Target, number: number, method: MergeMethod) => invoke<void>("pr_merge", { target, number, method }),
   setOpen: (target: Target, number: number, open: boolean) => invoke<Pull>("pr_set_open", { target, number, open }),
   review: (target: Target, number: number, event: ReviewEvent, body: string) => invoke<void>("pr_review", { target, number, event, body }),
@@ -320,6 +329,10 @@ export const github = {
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   /** The remote for a fork's original, owner/name (fetched first if `fetch`); null when there is none. Works offline. */
   originalRemote: (original: string, fetch: boolean) => invoke<string | null>("gh_original_remote", { original, fetch }),
+  /** This repo's remotes and the GitHub repositories (owner/name) behind them. Local only. */
+  remotes: () => invoke<{ name: string; repo: string | null }[]>("gh_remotes"),
+  /** GitHub's "Sync fork" for origin's `branch`, then a fetch of origin: "fast-forward", "merge" or "none". */
+  syncFork: (branch: string) => invoke<"fast-forward" | "merge" | "none">("gh_sync_fork", { branch }),
   /** Adds the fork's original as a remote ("upstream") and fetches it; returns its name. */
   addOriginalRemote: () => invoke<string>("gh_add_original_remote"),
 };

@@ -109,6 +109,108 @@ fn pull_modes_on_diverged_branches() {
     );
 }
 
+/// After an amend the plain push is rejected as non-fast-forward (the UI keys on those words);
+/// the lease push replaces the old commit, but not over someone else's unfetched push.
+#[test]
+fn force_push_with_lease_after_amend() {
+    let sb = Sandbox::new("lease");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    write_commit(a, "a.txt", "mine\n", "mine");
+    push(a, false).unwrap();
+    commit(a, "mine, reworded", true).unwrap();
+    let err = push(a, false).unwrap_err();
+    assert!(err.contains("non-fast-forward"), "{err}");
+    push(a, true).unwrap();
+    // b pushes meanwhile; a, not having fetched it, amends again: the lease refuses.
+    fetch(b).unwrap();
+    run(b, &["merge", "-q", "--ff-only", "origin/main"]).unwrap();
+    write_commit(b, "b.txt", "b\n", "theirs");
+    push(b, false).unwrap();
+    commit(a, "mine, again", true).unwrap();
+    assert!(push(a, true).is_err());
+}
+
+/// A PR is titled like GitHub does: one commit gives its message, more the branch name.
+#[test]
+fn pull_draft_counts_commits_against_the_base() {
+    let sb = Sandbox::new("draft");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    run(a, &["switch", "-q", "-c", "feat"]).unwrap();
+    fs::write(a.join("f.txt"), "f\n").unwrap();
+    stage(a, &["f.txt".into()]).unwrap();
+    commit(a, "Add f\n\nWhy it matters.", false).unwrap();
+    let d = pull_draft(a, "refs/remotes/origin/main").unwrap();
+    assert_eq!(
+        (d.commits, d.subject.as_deref(), d.body.as_deref()),
+        (1, Some("Add f"), Some("Why it matters."))
+    );
+    write_commit(a, "g.txt", "g\n", "Add g");
+    let d = pull_draft(a, "refs/remotes/origin/main").unwrap();
+    assert_eq!((d.commits, d.subject), (2, None));
+    assert!(pull_draft(a, "main").is_err());
+    assert!(pull_draft(a, "refs/remotes/--all").is_err());
+}
+
+/// The fork workflow git documents: pull from upstream, push to origin (remote.pushDefault).
+#[test]
+fn push_target_follows_push_default_not_the_upstream() {
+    let sb = Sandbox::new("pushdef");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    // b plays the fork: "upstream" is the original (the shared bare repo), origin its own.
+    let url = git_url(b);
+    run(b, &["remote", "rename", "origin", "upstream"]).unwrap();
+    let fork = sb.path("fork.git");
+    run(&sb.0, &["init", "-q", "--bare", fork.to_str().unwrap()]).unwrap();
+    run(b, &["remote", "add", "origin", fork.to_str().unwrap()]).unwrap();
+    assert_eq!(url, git_url_of(b, "upstream"));
+    let st = status(b).unwrap();
+    assert_eq!(st.upstream.as_deref(), Some("upstream/main"));
+    // Without a push default, pushes follow the upstream: into the original.
+    assert_eq!(st.push.unwrap().remote, "upstream");
+
+    set_push_default(b, "origin").unwrap();
+    write_commit(b, "b.txt", "b\n", "fork work");
+    let p = status(b).unwrap().push.unwrap();
+    assert_eq!((p.remote.as_str(), p.branch.as_deref()), ("origin", None));
+    push(b, false).unwrap();
+    let st = status(b).unwrap();
+    let p = st.push.unwrap();
+    assert_eq!((p.branch.as_deref(), p.ahead), (Some("origin/main"), 0));
+    // Still pulls from the original, and the original didn't get the commit.
+    assert_eq!(st.upstream.as_deref(), Some("upstream/main"));
+    assert_eq!(st.ahead, 1);
+    run(a, &["pull", "-q"]).unwrap();
+    assert!(log(a, None, 0, 5)
+        .unwrap()
+        .iter()
+        .all(|c| c.subject != "fork work"));
+    assert!(set_push_default(b, "nope").is_err());
+}
+
+/// A fork has origin/x and upstream/x alike: `git switch x` refuses, so the picker names one.
+#[test]
+fn switching_to_a_remote_branch_tracks_that_remote() {
+    let sb = Sandbox::new("track");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    run(a, &["switch", "-q", "-c", "feat"]).unwrap();
+    write_commit(a, "f.txt", "f\n", "feat");
+    run(a, &["push", "-q", "-u", "origin", "feat"]).unwrap();
+    let url = git_url(b);
+    run(b, &["remote", "add", "upstream", &url]).unwrap();
+    run(b, &["fetch", "-q", "--all"]).unwrap();
+    assert!(run(b, &["switch", "feat"]).is_err());
+    switch_tracking(b, "upstream/feat").unwrap();
+    let tracked = run(b, &["rev-parse", "--abbrev-ref", "@{upstream}"]).unwrap();
+    assert_eq!(String::from_utf8_lossy(&tracked).trim(), "upstream/feat");
+    // Options and local refs are refused.
+    assert!(switch_tracking(b, "--orphan=x").is_err());
+    assert!(switch_tracking(b, "main").is_err());
+}
+
 /// A fork's view of its original: another branch's history, marking what HEAD lacks.
 #[test]
 fn log_of_a_remote_branch_marks_what_head_lacks() {
@@ -156,7 +258,7 @@ fn publish_sets_upstream() {
     switch_branch(a, "feat/new-thing", true).unwrap();
     write_commit(a, "n.txt", "n\n", "new");
     assert!(status(a).unwrap().upstream.is_none());
-    push(a).unwrap();
+    push(a, false).unwrap();
     let st = status(a).unwrap();
     assert_eq!(st.upstream.as_deref(), Some("origin/feat/new-thing"));
     assert_eq!(st.ahead, 0);
@@ -507,6 +609,15 @@ fn repo_with_worktrees(sb: &Sandbox) -> PathBuf {
     r
 }
 
+fn git_url(repo: &Path) -> String {
+    git_url_of(repo, "origin")
+}
+
+fn git_url_of(repo: &Path, remote: &str) -> String {
+    let out = run(repo, &["remote", "get-url", remote]).unwrap();
+    String::from_utf8_lossy(&out).trim().to_string()
+}
+
 fn same_dir(a: &str, b: &Path) -> bool {
     Path::new(a)
         .canonicalize()
@@ -545,6 +656,11 @@ fn worktree_list_detached_prunable_and_counts() {
     write_commit(&agent, "b.txt", "b\n", "agent work");
     let s = worktree_state(&r, &a.path).unwrap();
     assert!(s.commits == 1 && !s.merged);
+    // Merged upstream only (a fork's PR landed in the original) is merged too.
+    run(&r, &["update-ref", "refs/remotes/upstream/main", "agent"]).unwrap();
+    let s = worktree_state(&r, &a.path).unwrap();
+    assert!(s.commits == 0 && s.merged);
+    run(&r, &["update-ref", "-d", "refs/remotes/upstream/main"]).unwrap();
     run(&r, &["merge", "-q", "agent"]).unwrap();
     let s = worktree_state(&r, &a.path).unwrap();
     assert!(s.commits == 0 && s.merged);
@@ -949,7 +1065,7 @@ fn gone_upstream_is_unknown_not_pushed() {
     let a = &c[0];
     switch_branch(a, "feat", true).unwrap();
     write_commit(a, "f.txt", "f\n", "feature");
-    push(a).unwrap();
+    push(a, false).unwrap();
     run(a, &["push", "-q", "origin", "--delete", "feat"]).unwrap();
     fetch(a).unwrap();
     write_commit(a, "g.txt", "g\n", "after the branch was deleted");

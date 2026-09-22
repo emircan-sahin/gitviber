@@ -265,7 +265,9 @@ function MergeBox({
   const [tone, title, note] =
     detail.mergeable === null
       ? ["border-border", "Checking mergeability…", "GitHub is computing whether this can merge. Refresh in a moment."]
-      : conflicts
+      : detail.draft && !conflicts
+        ? ["border-border", "This is a draft", "GitHub won't merge it until it's marked ready for review."]
+        : conflicts
         ? ["border-conflict/60", `This branch has conflicts with ${detail.baseRef}`, "Resolve them locally: GitViber merges the base into this branch and opens the conflicts."]
         : st === "blocked"
           ? ["border-modified/60", "Merging is blocked", "Required reviews or checks haven't passed yet."]
@@ -293,12 +295,12 @@ function MergeBox({
         <span className="max-w-56 text-right text-[11.5px] text-muted-foreground">Only people with write access can merge.</span>
       ) : (
         <div className="flex">
-          <Button size="sm" className="rounded-r-none" disabled={busy || detail.mergeable === null} onClick={() => onMerge("merge")}>
+          <Button size="sm" className="rounded-r-none" disabled={busy || detail.mergeable === null || detail.draft} onClick={() => onMerge("merge")}>
             <GitMerge /> Merge
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size="sm" className="w-6 rounded-l-none border-l border-black/20 px-0" disabled={busy || detail.mergeable === null}>
+              <Button size="sm" className="w-6 rounded-l-none border-l border-black/20 px-0" disabled={busy || detail.mergeable === null || detail.draft}>
                 <ChevronDown className="size-3" />
               </Button>
             </DropdownMenuTrigger>

@@ -223,9 +223,9 @@ async fn commit(state: State<'_, AppState>, message: String, amend: bool) -> Res
 }
 
 #[tauri::command]
-async fn push(state: State<'_, AppState>) -> Res<()> {
+async fn push(state: State<'_, AppState>, force: Option<bool>) -> Res<()> {
     let r = repo(&state)?;
-    blocking(move || git::push(&r)).await
+    blocking(move || git::push(&r, force.unwrap_or(false))).await
 }
 
 /// The bool results below mean "stopped on conflicts".
@@ -394,6 +394,39 @@ async fn gh_original_remote(
 }
 
 #[tauri::command]
+async fn switch_tracking(state: State<'_, AppState>, remote_ref: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::switch_tracking(&r, &remote_ref)).await
+}
+
+#[tauri::command]
+async fn set_push_default(state: State<'_, AppState>, remote: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::set_push_default(&r, &remote)).await
+}
+
+#[tauri::command]
+async fn gh_sync_fork(app: AppHandle, branch: String) -> Res<String> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::sync_fork(&state.github, &repo(&state)?, &branch)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn pull_draft(state: State<'_, AppState>, base: String) -> Res<git::PullDraft> {
+    let r = repo(&state)?;
+    blocking(move || git::pull_draft(&r, &base)).await
+}
+
+#[tauri::command]
+async fn gh_remotes(state: State<'_, AppState>) -> Res<Vec<github::Remote>> {
+    let r = repo(&state)?;
+    blocking(move || Ok(github::remotes(&r))).await
+}
+
+#[tauri::command]
 async fn gh_add_original_remote(app: AppHandle) -> Res<String> {
     blocking(move || {
         let state = app.state::<AppState>();
@@ -467,6 +500,7 @@ async fn pr_files(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn pr_create(
     app: AppHandle,
     target: Option<String>,
@@ -475,6 +509,7 @@ async fn pr_create(
     head: String,
     base: String,
     draft: bool,
+    maintainer_edits: bool,
 ) -> Res<github::Pull> {
     blocking(move || {
         let state = app.state::<AppState>();
@@ -487,6 +522,7 @@ async fn pr_create(
             &head,
             &base,
             draft,
+            maintainer_edits,
         )
     })
     .await
@@ -802,6 +838,11 @@ pub fn run() {
             gh_account,
             gh_protected_branches,
             gh_original_remote,
+            gh_remotes,
+            pull_draft,
+            gh_sync_fork,
+            set_push_default,
+            switch_tracking,
             gh_add_original_remote,
             pr_list,
             pr_detail,

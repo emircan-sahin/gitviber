@@ -1,4 +1,4 @@
-import { RefreshCw } from "lucide-react";
+import { ArrowDownToLine, RefreshCw } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
@@ -22,11 +22,30 @@ type Props = ComponentProps<typeof HistoryPanel>;
  */
 export function ForkHistory(props: Props) {
   // Same cache entry as the PRs panel's.
-  const parent = useGitHubData("account", github.account, 600_000).data?.parent ?? null;
+  const account = useGitHubData("account", github.account, 600_000).data ?? null;
+  const parent = account?.parent ?? null;
+  const origin = account?.origin ?? null;
   // Bumped by the pane's refresh button: fetch the original again.
   const [fetches, setFetches] = useState(0);
   const [loading, setLoading] = useState(false);
   if (!parent) return <HistoryPanel {...props} />;
+  const forkBranch = origin?.defaultBranch ?? null;
+
+  // GitHub's "Sync fork": origin's default branch catches up with the original, on GitHub.
+  const sync = async () => {
+    if (!forkBranch) return;
+    setLoading(true);
+    try {
+      const how = await github.syncFork(forkBranch);
+      toast("success", how === "none" ? `origin/${forkBranch} was already up to date` : `origin/${forkBranch} synced with ${fullName(parent.repo)}`);
+      await props.refresh();
+    } catch (e) {
+      // 409: the fork's branch has its own commits in the way; that takes a local merge.
+      toast("error", "Could not sync the fork", errorMessage(e));
+    } finally {
+      setLoading(false);
+    }
+  };
   return (
     <RepoPanes
       id="history"
@@ -37,11 +56,20 @@ export function ForkHistory(props: Props) {
           title: "Original",
           detail: `${fullName(parent.repo)}${parent.defaultBranch ? ` · ${parent.defaultBranch}` : ""}`,
           actions: (
-            <Tip label="Fetch the original">
-              <Button variant="ghost" size="icon-sm" aria-label="Fetch the original" disabled={loading} onClick={() => setFetches((n) => n + 1)}>
-                <RefreshCw className={cn(loading && "animate-spin")} />
-              </Button>
-            </Tip>
+            <>
+              {origin?.push && forkBranch && (
+                <Tip label={`Sync fork: bring origin/${forkBranch} up to date with the original, on GitHub`}>
+                  <Button variant="ghost" size="icon-sm" aria-label="Sync fork" disabled={loading} onClick={sync}>
+                    <ArrowDownToLine />
+                  </Button>
+                </Tip>
+              )}
+              <Tip label="Fetch the original">
+                <Button variant="ghost" size="icon-sm" aria-label="Fetch the original" disabled={loading} onClick={() => setFetches((n) => n + 1)}>
+                  <RefreshCw className={cn(loading && "animate-spin")} />
+                </Button>
+              </Tip>
+            </>
           ),
           scrolls: true,
           children: <OriginalHistory {...props} parent={parent} fetches={fetches} onLoading={setLoading} />,
@@ -65,6 +93,7 @@ function OriginalHistory({
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [merging, setMerging] = useState(false);
   const branch = parent.defaultBranch ?? "main";
   const rev = remote ? `refs/remotes/${remote}/${branch}` : null;
   const headSha = ours[0]?.sha ?? "";
@@ -144,7 +173,25 @@ function OriginalHistory({
     );
   }
   if (error && !commits.length) return <div className="h-full overflow-y-auto px-4 py-3 text-center text-[12px] text-muted-foreground">{error}</div>;
-  return (
+  // What the original has that this branch doesn't, as far as the loaded page shows.
+  const missing = commits.filter((c) => c.notInHead).length;
+  const into = props.status?.branch;
+  const mergeIn = async () => {
+    if (!rev || !into) return;
+    setMerging(true);
+    try {
+      const stopped = await api.merge(`${remote}/${branch}`);
+      if (stopped) toast("info", "Merge stopped on conflicts", "Resolve them in Changes, then continue.");
+      else toast("success", `Merged ${remote}/${branch} into ${into}`);
+    } catch (e) {
+      toast("error", "Merge failed", errorMessage(e));
+    } finally {
+      setMerging(false);
+      await refresh();
+      await load(false);
+    }
+  };
+  const list = (
     <HistoryPanel
       {...props}
       commits={commits}
@@ -157,5 +204,19 @@ function OriginalHistory({
       headSha={headSha}
       web={`https://github.com/${original}`}
     />
+  );
+  if (!missing || !into) return list;
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[11.5px] text-muted-foreground">
+        <span className="min-w-0 flex-1 truncate">
+          {missing === commits.length && hasMore ? `${missing}+` : missing} commit{missing === 1 ? "" : "s"} not in <span className="font-mono">{into}</span>
+        </span>
+        <Button size="sm" variant="secondary" disabled={merging || !!props.status?.operation} onClick={mergeIn}>
+          {merging ? "Merging…" : `Merge into ${into}`}
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1">{list}</div>
+    </div>
   );
 }

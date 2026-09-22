@@ -768,17 +768,34 @@ pub struct PullFiles {
 
 /// Fetches the PR's commits (no refs are created) and diffs them locally, so PR files
 /// open in the same full-file viewer as everything else.
-/// A remote that points at `r`, e.g. a fork's "upstream".
-fn remote_for(repo: &Path, r: &RepoRef) -> Option<String> {
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Remote {
+    pub name: String,
+    /// The GitHub repository it points at, owner/name; None off github.com
+    pub repo: Option<String>,
+}
+
+/// This repo's remotes and the GitHub repositories behind them. Local config only.
+pub fn remotes(repo: &Path) -> Vec<Remote> {
     let names = git::run(repo, &["remote"]).unwrap_or_default();
     String::from_utf8_lossy(&names)
         .lines()
-        .find(|n| {
-            git::remote_url(repo, n)
+        .map(|n| Remote {
+            name: n.to_string(),
+            repo: git::remote_url(repo, n)
                 .and_then(|u| parse_remote(&u))
-                .is_some_and(|p| p.is(&r.full()))
+                .map(|r| r.full()),
         })
-        .map(str::to_string)
+        .collect()
+}
+
+/// A remote that points at `r`, e.g. a fork's "upstream".
+fn remote_for(repo: &Path, r: &RepoRef) -> Option<String> {
+    remotes(repo)
+        .into_iter()
+        .find(|m| m.repo.as_deref().is_some_and(|full| r.is(full)))
+        .map(|m| m.name)
 }
 
 /// Where a PR's commits are fetched from: origin, or for the parent a remote pointing at it,
@@ -805,6 +822,23 @@ pub fn original_remote(repo: &Path, original: &str, fetch: bool) -> Result<Optio
     Ok(Some(name))
 }
 
+/// GitHub's "Sync fork": brings origin's `branch` up to date with the original's default
+/// branch, on GitHub, then fetches origin. Returns how: "fast-forward", "merge" or "none".
+/// A conflict comes back as GitHub's 409 message; that takes a local merge.
+pub fn sync_fork(session: &Session, repo: &Path, branch: &str) -> Result<String, String> {
+    git::run(repo, &["check-ref-format", "--branch", branch])
+        .map_err(|_| format!("invalid branch: {branch}"))?;
+    let r = repo_ref(repo)?;
+    let v = call(
+        session,
+        repo,
+        Method::Post(json!({ "branch": branch })),
+        &format!("/repos/{}/{}/merge-upstream", r.owner, r.name),
+    )?;
+    git::fetch_remote(repo, "origin")?;
+    Ok(v["merge_type"].as_str().unwrap_or("none").to_string())
+}
+
 /// Adds the fork's original as "upstream" (the usual name; "original" if that's taken),
 /// over the same protocol as origin, and fetches it.
 pub fn add_original_remote(session: &Session, repo: &Path) -> Result<String, String> {
@@ -822,6 +856,10 @@ pub fn add_original_remote(session: &Session, repo: &Path) -> Result<String, Str
         format!("git@github.com:{}.git", r.full())
     };
     git::run(repo, &["remote", "add", name, &url])?;
+    // Branches made from upstream's then still push to the fork, not into the original.
+    if git::run(repo, &["config", "--get", "remote.pushDefault"]).is_err() {
+        git::set_push_default(repo, "origin")?;
+    }
     git::fetch_remote(repo, name)?;
     Ok(name.to_string())
 }
@@ -867,21 +905,22 @@ pub fn create(
     head: &str,
     base: &str,
     draft: bool,
+    maintainer_edits: bool,
 ) -> Result<Pull, String> {
     let r = target(session, repo, to)?;
     let origin = repo_ref(repo)?;
-    // Into the parent, the branch is named by the fork it lives in.
-    let head = if r.is(&origin.full()) {
-        head.to_string()
-    } else {
-        format!("{}:{head}", origin.owner)
-    };
+    let mut pr =
+        json!({ "title": title, "body": body, "head": head, "base": base, "draft": draft });
+    // Into the parent, the branch is named by the fork it lives in, and its maintainers may be
+    // let push to it (GitHub's "Allow edits by maintainers"; only a fork's PR has it).
+    if !r.is(&origin.full()) {
+        pr["head"] = json!(format!("{}:{head}", origin.owner));
+        pr["maintainer_can_modify"] = json!(maintainer_edits);
+    }
     let v = call(
         session,
         repo,
-        Method::Post(
-            json!({ "title": title, "body": body, "head": head, "base": base, "draft": draft }),
-        ),
+        Method::Post(pr),
         &format!("/repos/{}/{}/pulls", r.owner, r.name),
     )?;
     Ok(pull_from(&v))
@@ -1268,10 +1307,21 @@ pub fn checkout(
                 )
             })
     } else if same_repo {
-        // DWIM: creates a local branch tracking origin/<head_ref>.
-        git::switch_branch(repo, &local, false)
+        // Not `git switch <head_ref>`: in a fork, upstream often has a same-named branch and
+        // git's guess then refuses ("matched multiple remote tracking branches").
+        let tracked = format!("origin/{local}");
+        git::run(repo, &["switch", "-c", &local, "--track", &tracked]).map(|_| ())
     } else {
-        git::run(repo, &["switch", "-c", &local, "FETCH_HEAD"]).map(|_| ())
+        git::run(repo, &["switch", "-c", &local, "FETCH_HEAD"])?;
+        // Like `gh pr checkout`: the branch follows the PR, so Pull brings its new commits,
+        // and it never looks unpublished (a Publish would copy it into origin).
+        let key = |k: &str| format!("branch.{local}.{k}");
+        git::run(repo, &["config", &key("remote"), remote])?;
+        git::run(
+            repo,
+            &["config", &key("merge"), &format!("refs/pull/{number}/head")],
+        )
+        .map(|_| ())
     }
 }
 
@@ -1405,6 +1455,7 @@ mod tests {
                     "Opened by GitViber's live test.",
                     "feature/review",
                     "main",
+                    false,
                     false,
                 )
                 .unwrap()

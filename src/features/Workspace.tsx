@@ -312,7 +312,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                   <PullsPanel
                     status={status}
                     branches={repo.branches}
-                    lastSubject={repo.commits[0]?.subject ?? null}
+                    lastCommit={repo.commits[0] ?? null}
                     activeKey={activeKey}
                     onOpen={open}
                     refreshRepo={() => repo.refresh()}

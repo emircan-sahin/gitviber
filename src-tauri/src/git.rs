@@ -234,10 +234,106 @@ pub struct RepoStatus {
     pub upstream: Option<String>,
     pub ahead: u32,
     pub behind: u32,
+    /// Where `git push` sends this branch, which a fork can set apart from where it pulls
+    /// (`remote.pushDefault`): pull from upstream/dev, push to origin/dev.
+    pub push: Option<PushTarget>,
     pub staged: Vec<FileChange>,
     pub unstaged: Vec<FileChange>,
     pub conflicted: Vec<FileChange>,
     pub operation: Option<Operation>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PushTarget {
+    pub remote: String,
+    /// The remote branch it lands on, e.g. origin/dev; None until it exists there.
+    pub branch: Option<String>,
+    /// Commits it doesn't have yet.
+    pub ahead: u32,
+}
+
+/// `@{push}` for a branch. Under the default `push.default=simple`, git won't name it for a
+/// triangular setup although the push itself works; `current` is what it does then.
+fn push_target(repo: &Path, branch: &str) -> Option<PushTarget> {
+    let mode = run_text(repo, &["config", "--get", "push.default"]).unwrap_or_default();
+    let mut args = vec![];
+    if matches!(mode.trim(), "" | "simple") {
+        args.extend(["-c", "push.default=current"]);
+    }
+    let reference = format!("refs/heads/{branch}");
+    args.extend([
+        "for-each-ref",
+        "--format=%(push:remotename)%1f%(push:short)%1f%(push:track,nobracket)",
+        &reference,
+    ]);
+    let out = run_text(repo, &args).ok()?;
+    let f: Vec<&str> = out.trim_end_matches('\n').split('\x1f').collect();
+    let remote = f.first().filter(|r| !r.is_empty())?.to_string();
+    let track = f.get(2).copied().unwrap_or_default();
+    let exists = f.get(1).is_some_and(|b| !b.is_empty()) && track != "gone";
+    let ahead = track
+        .split(", ")
+        .find_map(|p| p.strip_prefix("ahead "))
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    Some(PushTarget {
+        branch: exists.then(|| f[1].to_string()),
+        remote,
+        ahead,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullDraft {
+    /// Commits HEAD has that `base` doesn't: what the PR would bring.
+    pub commits: u32,
+    /// The one commit's message, when there's exactly one: GitHub titles the PR with it.
+    pub subject: Option<String>,
+    pub body: Option<String>,
+}
+
+/// What a PR from HEAD into `base` (a remote-tracking branch) would carry, to fill its title
+/// and description the way GitHub does.
+pub fn pull_draft(repo: &Path, base: &str) -> Result<PullDraft, String> {
+    let r = base
+        .strip_prefix("refs/remotes/")
+        .filter(|r| !r.starts_with('-') && r.contains('/'))
+        .ok_or_else(|| format!("not a remote-tracking branch: {base}"))?;
+    run(repo, &["rev-parse", "--verify", "-q", base])
+        .map_err(|_| format!("unknown branch: {r}"))?;
+    let range = format!("{base}..HEAD");
+    let commits = run_text(repo, &["rev-list", "--count", &range, "--"])?
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    let one =
+        |fmt: &str| run_text(repo, &["log", "-1", fmt, "HEAD", "--"]).map(|s| s.trim().to_string());
+    Ok(PullDraft {
+        subject: (commits == 1).then(|| one("--format=%s")).transpose()?,
+        body: (commits == 1).then(|| one("--format=%b")).transpose()?,
+        commits,
+    })
+}
+
+/// What counts as pushed for HEAD: the branch `git push` lands on (a fork pushes to origin
+/// while pulling from upstream), else the upstream.
+fn pushed_base(repo: &Path) -> String {
+    run_text(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .ok()
+        .and_then(|b| push_target(repo, b.trim()))
+        .and_then(|p| p.branch)
+        .unwrap_or_else(|| "@{upstream}".into())
+}
+
+/// Makes `git push` go to `remote` for every branch, whatever each pulls from: a fork's
+/// branches can then follow upstream and still be pushed to origin.
+pub fn set_push_default(repo: &Path, remote: &str) -> Result<(), String> {
+    if remote_url(repo, remote).is_none() {
+        return Err(format!("no remote named {remote}"));
+    }
+    run(repo, &["config", "remote.pushDefault", remote]).map(|_| ())
 }
 
 fn change(path: &str, old_path: Option<&str>, status: char) -> FileChange {
@@ -314,6 +410,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         branch: None,
         head: None,
         upstream: None,
+        push: None,
         ahead: 0,
         behind: 0,
         staged: vec![],
@@ -407,6 +504,9 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
                 .map_or(0, |d| d.as_nanos());
             f.oid = Some(format!("{}:{mtime}", meta.len()));
         }
+    }
+    if let Some(b) = &st.branch {
+        st.push = push_target(repo, b);
     }
     if st.unstaged.iter().any(|f| f.nested.is_some()) {
         drop_worktrees(repo, &mut st.unstaged);
@@ -669,23 +769,28 @@ pub fn worktree_state(repo: &Path, path: &str) -> Result<WorktreeState, String> 
             .and_then(|s| s.trim().parse().ok())
             .unwrap_or(0)
     };
-    // Local default first: a merge into main that isn't pushed yet still counts as merged.
+    // The default branch anywhere counts: locally (merged, not pushed yet), on origin, or on
+    // another remote, like a fork's upstream, where its PRs land while origin's copy lags.
     let default = default_branch(repo);
-    let base = [
-        format!("refs/heads/{default}"),
-        format!("refs/remotes/origin/{default}"),
-    ]
-    .into_iter()
-    .find(|r| run(dir, &["rev-parse", "--verify", "-q", r]).is_ok());
+    let mut bases = vec![];
+    let local = format!("refs/heads/{default}");
+    if run(dir, &["rev-parse", "--verify", "-q", &local]).is_ok() {
+        bases.push(local);
+    }
+    let remote = format!("refs/remotes/*/{default}");
+    if run_text(dir, &["for-each-ref", "--count=1", &remote]).is_ok_and(|s| !s.trim().is_empty()) {
+        bases.push(format!("--glob={remote}"));
+    }
     // The default branch itself can only be measured against the remotes.
-    let base = base.filter(|_| w.branch.as_deref() != Some(default.as_str()));
-    let commits = count(&[
-        "rev-list",
-        "--count",
-        "HEAD",
-        "--not",
-        base.as_deref().unwrap_or("--remotes"),
-    ]);
+    if w.branch.as_deref() == Some(default.as_str()) {
+        bases.clear();
+    }
+    let mut args = vec!["rev-list", "--count", "HEAD", "--not"];
+    if bases.is_empty() {
+        args.push("--remotes");
+    }
+    args.extend(bases.iter().map(String::as_str));
+    let commits = count(&args);
     // One reflog entry is the branch's creation: it never moved.
     let moved = |b: &str| {
         run_text(
@@ -697,7 +802,7 @@ pub fn worktree_state(repo: &Path, path: &str) -> Result<WorktreeState, String> 
     Ok(WorktreeState {
         uncommitted,
         commits,
-        merged: base.is_some() && commits == 0 && w.branch.as_deref().is_some_and(moved),
+        merged: !bases.is_empty() && commits == 0 && w.branch.as_deref().is_some_and(moved),
     })
 }
 
@@ -762,7 +867,7 @@ pub fn log(repo: &Path, rev: Option<&str>, skip: u32, limit: u32) -> Result<Vec<
         s.lines().map(str::to_string).collect()
     };
     let unpushed = if rev.is_none() {
-        run_text(repo, &["rev-list", "@{upstream}..HEAD"])
+        run_text(repo, &["rev-list", &format!("{}..HEAD", pushed_base(repo))])
             .map(lines)
             .unwrap_or_default()
     } else {
@@ -1294,13 +1399,13 @@ pub fn undo_commit(repo: &Path, sha: &str) -> Result<(), String> {
     run(repo, &["reset", "--soft", "HEAD~1"]).map(|_| ())
 }
 
-/// Whether moving HEAD to `sha` takes commits off the branch that its upstream already has,
-/// i.e. would need a force-push. Decided by ancestry, not log order, so merges count right.
-/// No upstream, or one that is gone, counts as not pushed.
+/// Whether moving HEAD to `sha` takes commits off the branch that its push target (or
+/// upstream) already has, i.e. would need a force-push. Decided by ancestry, not log order,
+/// so merges count right. No upstream, or one that is gone, counts as not pushed.
 pub fn drops_pushed(repo: &Path, sha: &str) -> Result<bool, String> {
     validate_rev(sha)?;
     // Commits both sides have: everything reachable from their merge bases.
-    let Ok(bases) = run_text(repo, &["merge-base", "--all", "HEAD", "@{upstream}"]) else {
+    let Ok(bases) = run_text(repo, &["merge-base", "--all", "HEAD", &pushed_base(repo)]) else {
         return Ok(false);
     };
     let mut args = vec!["rev-list", "-n1"];
@@ -1502,6 +1607,43 @@ pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String
     run(repo, &args).map(|_| ())
 }
 
+/// Switches to the local branch for a remote-tracking one ("upstream/dev" → dev), creating it
+/// to track exactly that ref. Not `git switch dev`: with origin/dev and upstream/dev both
+/// there, git's guess refuses. An existing local branch is switched to as it is; the UI asks
+/// first when it tracks something else.
+pub fn switch_tracking(repo: &Path, remote_ref: &str) -> Result<(), String> {
+    let bad = || format!("not a remote branch: {remote_ref}");
+    if remote_ref.starts_with('-') {
+        return Err(bad());
+    }
+    let (_, local) = remote_ref.split_once('/').ok_or_else(bad)?;
+    run(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("refs/remotes/{remote_ref}"),
+        ],
+    )
+    .map_err(|_| bad())?;
+    validate_branch(repo, local)?;
+    if run(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("refs/heads/{local}"),
+        ],
+    )
+    .is_ok()
+    {
+        return run(repo, &["switch", local]).map(|_| ());
+    }
+    run(repo, &["switch", "-c", local, "--track", remote_ref]).map(|_| ())
+}
+
 // ---------------------------------------------------------------- mutations
 
 fn with_paths<'a>(mut args: Vec<&'a str>, paths: &'a [String]) -> Vec<&'a str> {
@@ -1592,13 +1734,18 @@ pub fn commit(repo: &Path, message: &str, amend: bool) -> Result<(), String> {
     run_with(repo, &args, &[], Some(message.as_bytes())).map(|_| ())
 }
 
-pub fn push(repo: &Path) -> Result<(), String> {
+/// `force`: after a rebase or amend the remote has the branch's old commits; replace them,
+/// but only if it still has what was last fetched (`--force-with-lease`), so a push made
+/// meanwhile by someone else is refused rather than lost.
+pub fn push(repo: &Path, force: bool) -> Result<(), String> {
     let has_upstream = run(repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
-    let args: Vec<&str> = if has_upstream {
-        vec!["push"]
-    } else {
-        vec!["push", "-u", "origin", "HEAD"]
-    };
+    let mut args = vec!["push"];
+    if force {
+        args.push("--force-with-lease");
+    }
+    if !has_upstream {
+        args.extend(["-u", "origin", "HEAD"]);
+    }
     run_network(repo, &args).map(|_| ())
 }
 
@@ -1613,11 +1760,13 @@ pub fn pull(repo: &Path, mode: &str) -> Result<bool, String> {
     stoppable(repo, run_network(repo, &["pull", "--no-edit", flag]))
 }
 
+/// Every remote: a plain fetch takes only the current branch's (on a fork's dev tracking
+/// upstream/dev, upstream alone), leaving origin's branches stale.
 pub fn fetch(repo: &Path) -> Result<(), String> {
-    run_network(repo, &["fetch", "--prune"]).map(|_| ())
+    run_network(repo, &["fetch", "--all", "--prune"]).map(|_| ())
 }
 
-/// Fetches one configured remote, e.g. a fork's upstream, which a plain fetch leaves out.
+/// Fetches one configured remote, e.g. a fork's upstream.
 pub fn fetch_remote(repo: &Path, name: &str) -> Result<(), String> {
     if remote_url(repo, name).is_none() {
         return Err(format!("no remote named {name}"));
