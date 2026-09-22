@@ -1,4 +1,4 @@
-import { Check, ChevronsUpDown, CornerUpLeft, FolderGit2, Lock, SquareTerminal, Trash2 } from "lucide-react";
+import { Check, ChevronsUpDown, CornerUpLeft, FolderGit2, GitBranch, Lock, SquareTerminal, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -18,6 +18,7 @@ interface Props {
 
 /**
  * `git worktree list` as a switcher, shown once the repo has more than one worktree.
+ * Rows lead with the branch, the name people know a worktree by; the folder comes second.
  * In a linked worktree it names it and offers the way back to the main one.
  */
 export function WorktreePicker({ worktrees, onOpen, onTerminal, onRemove }: Props) {
@@ -102,11 +103,15 @@ export function WorktreePicker({ worktrees, onOpen, onTerminal, onRemove }: Prop
               <WorktreeRow key={w.path} w={w} main={main?.path ?? w.path} count={counts[w.path]} onPick={pick} onTerminal={terminal} onRemove={remove} />
             ))}
           </div>
-          {list.some((w) => w.prunable) && (
-            <div className="shrink-0 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
-              Missing folders stay listed until <span className="font-mono">git worktree prune</span>.
-            </div>
-          )}
+          <div className="shrink-0 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
+            Each worktree is its own folder with its own branch · click to open it here
+            {list.some((w) => w.prunable) && (
+              <>
+                <br />
+                Missing folders stay listed until <span className="font-mono">git worktree prune</span>.
+              </>
+            )}
+          </div>
         </PopoverContent>
       </Popover>
       {linked && main && (
@@ -154,14 +159,15 @@ function WorktreeRow({
         w.current ? "cursor-default bg-active" : usable ? "cursor-pointer hover:bg-hover" : "cursor-default opacity-50",
       )}
     >
-      {w.current ? <Check className="size-3.5 shrink-0 text-primary" /> : <FolderGit2 className="size-3.5 shrink-0 text-subtle" />}
+      {w.current ? <Check className="size-3.5 shrink-0 text-primary" /> : <GitBranch className="size-3.5 shrink-0 text-subtle" />}
       <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-baseline gap-2">
-          <span className="truncate text-[12.5px] font-medium">{folderName(w.path)}</span>
-          <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{branch}</span>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={cn("truncate font-mono text-[11.5px]", !w.branch && "text-muted-foreground")}>{branch}</span>
+          {w.main && <span className="shrink-0 rounded-sm bg-active px-1 text-[10px] text-muted-foreground">main</span>}
         </div>
-        <div className="truncate text-[10.5px] text-subtle">
-          {w.main ? "main worktree" : shortPath(w.path, main)}
+        <div className="flex min-w-0 items-center gap-1 text-[10.5px] text-subtle">
+          <FolderGit2 className="size-3 shrink-0" />
+          <span className="truncate">{w.main ? folderName(w.path) : shortPath(w.path, main)}</span>
         </div>
       </div>
       {w.locked && (
