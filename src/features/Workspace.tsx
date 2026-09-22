@@ -37,6 +37,7 @@ interface Props {
   onOpenRepo: (path?: string) => void;
   onForgetRepo: (path: string) => void;
   onReorderRepos: (list: string[]) => void;
+  onLocateRepo: (path: string) => void;
 }
 
 const fileSig = (f: FileChange) => `${f.status}:${f.oid ?? `${f.additions}:${f.deletions}`}`;
@@ -63,7 +64,7 @@ function relocate(status: RepoStatus, sel: Selection & { kind: ChangeKind }): Se
   return null;
 }
 
-export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos }: Props) {
+export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: Props) {
   // Diffs are cached by revision, which restarts per repo.
   useState(resetPairCache);
   useState(resetGitHubCache);
@@ -294,6 +295,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         onOpenRepo={onOpenRepo}
         onForgetRepo={onForgetRepo}
         onReorderRepos={onReorderRepos}
+        onLocateRepo={onLocateRepo}
         leftOpen={leftOpen}
         rightOpen={rightOpen}
         onToggleLeft={() => toggle(listPanel)}

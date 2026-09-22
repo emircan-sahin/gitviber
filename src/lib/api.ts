@@ -45,6 +45,13 @@ export interface OpenedRepo {
   main: string;
 }
 
+export interface ProjectInfo {
+  /** False once the folder was moved or deleted. */
+  exists: boolean;
+  /** owner/name of its GitHub origin */
+  github: string | null;
+}
+
 export interface Operation {
   kind: "merge" | "rebase" | "cherry-pick" | "revert";
   subject: string | null;
@@ -227,6 +234,9 @@ export const api = {
   /** Moves to the macOS Trash, so it can be put back. */
   trashPath: (path: string) => invoke<void>("trash_path", { path }),
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
+  /** Any saved project's folder, not just the open repo's. */
+  revealProject: (path: string) => invoke<void>("reveal_project", { path }),
+  projectInfo: (paths: string[]) => invoke<ProjectInfo[]>("project_info", { paths }),
   fetch: () => invoke<void>("fetch"),
   // History actions. `sha` on undo and `head` on reset are the HEAD the user saw (refused if it moved).
   undoCommit: (sha: string) => invoke<void>("undo_commit", { sha }),

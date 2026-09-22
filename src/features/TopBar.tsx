@@ -1,4 +1,3 @@
-import { arrayMove } from "@dnd-kit/sortable";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -23,11 +22,9 @@ import {
   TriangleAlert,
   Undo2,
   UploadCloud,
-  X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Wordmark } from "@/components/Logo";
-import { SortableList, useSortableItem } from "@/components/Sortable";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -48,6 +45,7 @@ import type { RepoData } from "@/lib/useRepo";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName } from "@/lib/worktrees";
 import { BranchPicker } from "./BranchPicker";
+import { ProjectList, ProjectTile } from "./ProjectList";
 import { openSettings } from "./SettingsDialog";
 import { WorktreePicker } from "./WorktreePicker";
 
@@ -60,6 +58,7 @@ interface Props {
   onOpenRepo: (path?: string) => void;
   onForgetRepo: (path: string) => void;
   onReorderRepos: (list: string[]) => void;
+  onLocateRepo: (path: string) => void;
 }
 
 interface LayoutProps {
@@ -107,7 +106,7 @@ function useFullscreen() {
  * divided by --ui-scale to stay in points (the height only grows: at 150% a 40pt bar can't
  * fit its buttons).
  */
-export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
+export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
   const { status, branches, worktrees } = repo;
   const [busy, setBusy] = useState<string | null>(null);
   const terminalOpen = useTerminals().open;
@@ -247,7 +246,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     >
       <Wordmark />
       <div className="mx-2 h-4 w-px bg-border-strong" />
-      <ProjectSwitcher repo={repo} root={root} main={main} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} />
+      <ProjectSwitcher repo={repo} root={root} main={main} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} onLocateRepo={onLocateRepo} />
       <span className="text-[13px] text-border-strong select-none">/</span>
       <BranchPicker
         label={branchName}
@@ -464,7 +463,7 @@ function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boolean })
   );
 }
 
-function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReorderRepos }: Props) {
+function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: Props) {
   const [open, setOpen] = useState(false);
   const totals = changeTotals(repo);
   const name = main.split("/").pop() ?? main;
@@ -472,6 +471,10 @@ function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReord
   const pick = (p?: string) => {
     setOpen(false);
     onOpenRepo(p);
+  };
+  const locate = (p: string) => {
+    setOpen(false);
+    onLocateRepo(p);
   };
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -490,11 +493,7 @@ function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReord
       <PopoverContent align="start" className="flex w-80 flex-col overflow-hidden">
         <div className="px-3 pt-2.5 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Projects</div>
         <div className="max-h-[360px] min-h-0 overflow-x-hidden overflow-y-auto p-1">
-          <SortableList ids={recent} axis="y" onMove={(from, to) => onReorderRepos(arrayMove(recent, from, to))}>
-            {recent.map((p) => (
-              <ProjectRow key={p} path={p} current={p === main} onOpen={pick} onForget={onForgetRepo} />
-            ))}
-          </SortableList>
+          <ProjectList recent={recent} current={main} onOpen={pick} onForget={onForgetRepo} onReorder={onReorderRepos} onLocate={locate} />
         </div>
         <div className="border-t border-border p-1">
           <button onClick={() => pick()} className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover">
@@ -504,65 +503,6 @@ function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReord
         </div>
       </PopoverContent>
     </Popover>
-  );
-}
-
-function ProjectRow({ path, current, onOpen, onForget }: { path: string; current: boolean; onOpen: (p: string) => void; onForget: (p: string) => void }) {
-  const { props, dragging, guard } = useSortableItem(path);
-  const name = path.split("/").pop() ?? path;
-  return (
-    <div
-      {...props}
-      role="button"
-      onClick={guard(() => !current && onOpen(path))}
-      className={cn(
-        "group flex h-9 items-center gap-2.5 rounded-sm px-2 select-none",
-        current ? "cursor-default bg-active" : "cursor-pointer hover:bg-hover",
-        dragging && "cursor-grabbing bg-elevated shadow-lg ring-1 shadow-black/40 ring-border-strong",
-      )}
-    >
-      <ProjectTile name={name} large />
-      <div className="min-w-0 flex-1">
-        <div className="truncate text-[12.5px] font-medium">{name}</div>
-        <div className="truncate text-[10.5px] text-subtle">{path}</div>
-      </div>
-      {current ? (
-        <Check className="size-3.5 shrink-0 text-primary" />
-      ) : (
-        !dragging && (
-          <Tip label="Remove from list">
-            <button
-              // Pressing the button must not start a drag.
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => {
-                e.stopPropagation();
-                onForget(path);
-              }}
-              className="hidden size-5 shrink-0 items-center justify-center rounded-sm text-subtle group-hover:flex hover:bg-active hover:text-foreground"
-            >
-              <X className="size-3" />
-            </button>
-          </Tip>
-        )
-      )}
-    </div>
-  );
-}
-
-/** Square letter tile with a stable hue per project, so repos are recognizable at a glance. */
-function ProjectTile({ name, large }: { name: string; large?: boolean }) {
-  let h = 0;
-  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
-  return (
-    <span
-      className={cn(
-        "flex shrink-0 items-center justify-center rounded-[4px] font-bold text-black/80 uppercase",
-        large ? "size-6 text-[11px]" : "size-4 text-[9.5px]",
-      )}
-      style={{ background: `hsl(${h} 55% 62%)` }}
-    >
-      {name[0]}
-    </span>
   );
 }
 

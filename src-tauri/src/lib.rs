@@ -386,6 +386,47 @@ async fn reveal_path(state: State<'_, AppState>, path: String) -> Res<()> {
     blocking(move || fs::reveal(&r, &path)).await
 }
 
+#[derive(serde::Serialize)]
+struct ProjectInfo {
+    /// False once the folder was moved or deleted.
+    exists: bool,
+    /// owner/name of its GitHub origin
+    github: Option<String>,
+}
+
+/// For the projects list: which saved folders are still there, and where each lives on GitHub.
+#[tauri::command]
+async fn project_info(paths: Vec<String>) -> Res<Vec<ProjectInfo>> {
+    blocking(move || {
+        Ok(paths
+            .iter()
+            .map(|p| {
+                let path = Path::new(p);
+                let exists = path.is_dir();
+                ProjectInfo {
+                    exists,
+                    github: exists.then(|| github::origin_repo(path)).flatten(),
+                }
+            })
+            .collect())
+    })
+    .await
+}
+
+/// Reveals a saved project, open or not. reveal_path is confined to the open repo; this only
+/// takes the top folder of a git worktree, so the page can't point Finder anywhere else.
+#[tauri::command]
+async fn reveal_project(path: String) -> Res<()> {
+    blocking(move || {
+        let top = git::toplevel(Path::new(&path))?;
+        if Path::new(&top) != Path::new(&path) {
+            return Err(format!("not a project folder: {path}"));
+        }
+        fs::reveal(Path::new(&top), "")
+    })
+    .await
+}
+
 #[tauri::command]
 async fn fetch(state: State<'_, AppState>) -> Res<()> {
     let r = repo(&state)?;
@@ -1079,6 +1120,8 @@ pub fn run() {
             rename_path,
             trash_path,
             reveal_path,
+            project_info,
+            reveal_project,
             undo_commit,
             reset,
             drops_pushed,

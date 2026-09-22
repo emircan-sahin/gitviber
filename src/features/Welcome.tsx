@@ -1,8 +1,21 @@
 import { FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useShortcut } from "@/lib/keybindings";
+import { ProjectList } from "./ProjectList";
 
-export function Welcome({ recent, onOpenRepo }: { recent: string[]; onOpenRepo: (path?: string) => void }) {
+export function Welcome({
+  recent,
+  onOpenRepo,
+  onForgetRepo,
+  onReorderRepos,
+  onLocateRepo,
+}: {
+  recent: string[];
+  onOpenRepo: (path?: string) => void;
+  onForgetRepo: (path: string) => void;
+  onReorderRepos: (list: string[]) => void;
+  onLocateRepo: (path: string) => void;
+}) {
   const openKey = useShortcut("file.openRepo");
   return (
     <div data-tauri-drag-region className="flex h-full items-center justify-center bg-background">
@@ -21,12 +34,7 @@ export function Welcome({ recent, onOpenRepo }: { recent: string[]; onOpenRepo: 
         {recent.length > 0 && (
           <div className="mt-6 border-t border-border pt-3">
             <div className="mb-1.5 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Recent</div>
-            {recent.map((p) => (
-              <button key={p} onClick={() => onOpenRepo(p)} className="flex w-full items-baseline gap-2 rounded-md px-2 py-1.5 text-left hover:bg-hover">
-                <span className="shrink-0 text-[12.5px] font-medium">{p.split("/").pop()}</span>
-                <span className="truncate text-[11px] text-subtle">{p}</span>
-              </button>
-            ))}
+            <ProjectList recent={recent} onOpen={onOpenRepo} onForget={onForgetRepo} onReorder={onReorderRepos} onLocate={onLocateRepo} />
           </div>
         )}
       </div>

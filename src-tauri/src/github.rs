@@ -362,6 +362,11 @@ fn repo_ref(repo: &Path) -> Result<RepoRef, String> {
         .ok_or_else(|| "The 'origin' remote is not a github.com repository.".to_string())
 }
 
+/// owner/name of any folder's GitHub origin, e.g. a saved project that isn't open.
+pub fn origin_repo(repo: &Path) -> Option<String> {
+    repo_ref(repo).ok().map(|r| r.full())
+}
+
 fn split_full(full: &str) -> Option<RepoRef> {
     let (owner, name) = full.split_once('/')?;
     Some(RepoRef {

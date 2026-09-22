@@ -13,20 +13,22 @@ import { useCommands } from "@/lib/keybindings";
 import { useRecentMenu } from "@/lib/menu";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder, stepUiScale } from "@/lib/settings";
 import { toast } from "@/lib/toast";
+import { folderName } from "@/lib/worktrees";
 
 export function App() {
   const [opened, setOpened] = useState<OpenedRepo | null>(null);
   const [recent, setRecent] = useState(recentRepos);
   const [booting, setBooting] = useState(true);
 
-  const openRepo = useCallback(async (path?: string, quiet = false) => {
+  /** `replacing`: a saved project whose folder moved; this repo takes its place in the list. */
+  const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string) => {
     const target = path ?? (await open({ directory: true, title: "Open a git repository" }));
     if (typeof target !== "string") return;
     try {
       const repo = await api.openRepo(target);
       // Projects are keyed by the main worktree; its other worktrees are reached from the top bar.
-      // An older entry saved under this worktree's path turns into its project.
-      if (repo.root !== repo.main) setRepoOrder([...new Set(recentRepos().map((p) => (p === repo.root ? repo.main : p)))]);
+      // An older entry saved under this worktree's path, or the moved folder, turns into its project.
+      setRepoOrder([...new Set(recentRepos().map((p) => (p === repo.root || p === replacing ? repo.main : p)))]);
       rememberRepo(repo.main);
       setLastRepo(repo.root);
       setRecent(recentRepos());
@@ -55,6 +57,13 @@ export function App() {
     setRepoOrder(list);
     setRecent(list);
   }, []);
+  const onLocate = useCallback(
+    async (p: string) => {
+      const target = await open({ directory: true, title: `Locate ${folderName(p)}` });
+      if (typeof target === "string") await openRepo(target, false, p);
+    },
+    [openRepo],
+  );
   const onForget = useCallback((p: string) => {
     forgetRepo(p);
     setRecent(recentRepos());
@@ -81,10 +90,10 @@ export function App() {
     <TooltipProvider>
       {opened ? (
         <WorkspaceBoundary key={opened.root} onOpenRepo={onOpen}>
-          <Workspace root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} />
+          <Workspace root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} />
         </WorkspaceBoundary>
       ) : (
-        !booting && <Welcome recent={recent} onOpenRepo={onOpen} />
+        !booting && <Welcome recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} />
       )}
       <SettingsDialog />
       <AboutDialog />
