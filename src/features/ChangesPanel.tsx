@@ -61,6 +61,9 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
     if (paths.length) act("Stage failed", () => api.stage(paths));
   };
 
+  // Nested repos can't be marked viewed, so every path here is stageable.
+  const viewedPaths = status.unstaged.filter((file) => !file.nested && viewed({ kind: "unstaged", file })).map((f) => f.path);
+
   const discard = async (files: FileChange[]) => {
     const tracked = files.filter((f) => f.status !== "?");
     if (!tracked.length) return;
@@ -144,7 +147,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
             </ContextMenuItem>
           </>
         )}
-        {sel.kind !== "conflict" && (
+        {sel.kind === "unstaged" && (
           <ContextMenuItem onSelect={() => toggleViewed(sel)}>
             <SquareCheck /> {viewed(sel) ? "Mark as Not Viewed" : "Mark as Viewed"}
           </ContextMenuItem>
@@ -262,6 +265,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
             action={
               <>
                 <SectionBtn onClick={() => discard(status.unstaged)}>Discard</SectionBtn>
+                {viewedPaths.length > 0 && <SectionBtn onClick={() => act("Stage failed", () => api.stage(viewedPaths))}>Stage {viewedPaths.length} viewed</SectionBtn>}
                 <SectionBtn onClick={stageAll}>Stage all</SectionBtn>
               </>
             }
@@ -423,7 +427,7 @@ function Row({
           {sel.kind === "conflict" ? (
             <GitMerge className="size-3.5 shrink-0 text-conflict" />
           ) : (
-          <Tip label={viewed ? "Mark as not viewed" : "Mark as viewed"}>
+          <Tip label={sel.kind === "staged" ? "Unstage" : viewed ? "Mark as not viewed" : "Mark as viewed"}>
             <button
               onClick={(e) => {
                 e.stopPropagation();
@@ -505,8 +509,10 @@ function CommitBox({ status, refresh }: Pick<Props, "status" | "refresh">) {
   const all = stageable(status.unstaged);
   const hasAny = hasStaged || all.paths.length > 0;
   const canCommit = !busy && !status.conflicted.length && (amend || (summary.trim() !== "" && hasAny));
-  const label = amend ? "Amend" : hasStaged ? `Commit ${status.staged.length} staged` : "Commit all";
-  const target = status.branch ? `${label} to ${status.branch}` : label;
+  const label = amend ? "Amend" : hasStaged ? "Commit" : "Commit all";
+  // The button stays short; the tooltip still says how much goes in.
+  const scope = hasStaged && !amend ? `Commit ${status.staged.length} staged` : label;
+  const target = status.branch ? `${scope} to ${status.branch}` : scope;
   const skipped = !hasStaged && !amend && all.skipped > 0;
 
   const commit = async () => {
