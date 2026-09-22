@@ -155,6 +155,36 @@ fn call(session: &Session, repo: &Path, method: Method, path: &str) -> Result<Va
     request(session, repo, method, path, JSON)
 }
 
+/// Every page of a list endpoint. GitHub lists comments and reviews oldest first, so one
+/// page of a long thread would drop the newest ones. Capped so a runaway thread can't stall.
+fn all_pages(
+    session: &Session,
+    repo: &Path,
+    path: &str,
+    accept: &str,
+) -> Result<Vec<Value>, String> {
+    const PER_PAGE: usize = 100;
+    const MAX_PAGES: usize = 30;
+    let sep = if path.contains('?') { '&' } else { '?' };
+    let mut out = vec![];
+    for page in 1..=MAX_PAGES {
+        let v = request(
+            session,
+            repo,
+            Method::Get,
+            &format!("{path}{sep}per_page={PER_PAGE}&page={page}"),
+            accept,
+        )?;
+        let items = v.as_array().cloned().unwrap_or_default();
+        let n = items.len();
+        out.extend(items);
+        if n < PER_PAGE {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 /// Only default-JSON GETs go through the ETag cache: it's keyed by path alone.
 fn request(
     session: &Session,
@@ -524,7 +554,7 @@ pub fn list(
         repo,
         Method::Get,
         &format!(
-            "/repos/{}/{}/pulls?state={state}&sort=updated&direction=desc&per_page=50",
+            "/repos/{}/{}/pulls?state={state}&sort=updated&direction=desc&per_page=100",
             r.owner, r.name
         ),
     )?;
@@ -640,40 +670,37 @@ pub fn detail(
         }
     }
 
+    // A failure here is an error, not "no comments": an empty thread would be a lie.
     let mut comments = vec![];
-    if let Ok(list) = call(
+    for c in all_pages(
         session,
         repo,
-        Method::Get,
-        &format!("{base}/issues/{number}/comments?per_page=100"),
-    ) {
-        for c in list.as_array().into_iter().flatten() {
-            comments.push(Comment {
-                author: s(&c["user"]["login"]),
-                body: s(&c["body"]),
-                created_at: s(&c["created_at"]),
-                review: None,
-            });
-        }
+        &format!("{base}/issues/{number}/comments"),
+        JSON,
+    )? {
+        comments.push(Comment {
+            author: s(&c["user"]["login"]),
+            body: s(&c["body"]),
+            created_at: s(&c["created_at"]),
+            review: None,
+        });
     }
-    if let Ok(list) = call(
+    for c in all_pages(
         session,
         repo,
-        Method::Get,
-        &format!("{base}/pulls/{number}/reviews?per_page=100"),
-    ) {
-        for c in list.as_array().into_iter().flatten() {
-            // Bare "commented" reviews with no text are line comments' containers; skip the noise.
-            if c["state"] == "COMMENTED" && s(&c["body"]).is_empty() {
-                continue;
-            }
-            comments.push(Comment {
-                author: s(&c["user"]["login"]),
-                body: s(&c["body"]),
-                created_at: s(&c["submitted_at"]),
-                review: c["state"].as_str().map(str::to_string),
-            });
+        &format!("{base}/pulls/{number}/reviews"),
+        JSON,
+    )? {
+        // Bare "commented" reviews with no text are line comments' containers; skip the noise.
+        if c["state"] == "COMMENTED" && s(&c["body"]).is_empty() {
+            continue;
         }
+        comments.push(Comment {
+            author: s(&c["user"]["login"]),
+            body: s(&c["body"]),
+            created_at: s(&c["submitted_at"]),
+            review: c["state"].as_str().map(str::to_string),
+        });
     }
     comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
@@ -715,13 +742,13 @@ pub fn attachments(
         HTML,
     )?;
     signed_images(thread["body_html"].as_str().unwrap_or_default(), &mut out);
-    let mut paths = vec![format!("{base}/issues/{number}/comments?per_page=100")];
+    let mut paths = vec![format!("{base}/issues/{number}/comments")];
     if thread.get("pull_request").is_some() {
-        paths.push(format!("{base}/pulls/{number}/reviews?per_page=100"));
+        paths.push(format!("{base}/pulls/{number}/reviews"));
     }
     for path in paths {
-        if let Ok(list) = request(session, repo, Method::Get, &path, HTML) {
-            for c in list.as_array().into_iter().flatten() {
+        if let Ok(list) = all_pages(session, repo, &path, HTML) {
+            for c in list {
                 signed_images(c["body_html"].as_str().unwrap_or_default(), &mut out);
             }
         }
@@ -1114,16 +1141,8 @@ pub fn issue_detail(
     let path = format!("/repos/{}/{}/issues/{number}", r.owner, r.name);
     let v = call(session, repo, Method::Get, &path)?;
     let s = |x: &Value| x.as_str().unwrap_or_default().to_string();
-    let list = call(
-        session,
-        repo,
-        Method::Get,
-        &format!("{path}/comments?per_page=100"),
-    )?;
-    let thread = list
-        .as_array()
-        .into_iter()
-        .flatten()
+    let thread = all_pages(session, repo, &format!("{path}/comments"), JSON)?
+        .iter()
         .map(|c| Comment {
             author: s(&c["user"]["login"]),
             body: s(&c["body"]),

@@ -254,9 +254,15 @@ function PullRows({
           </div>
         );
       })}
+      {/* github.rs `list` asks for one page of 100; say so rather than look complete. */}
+      {pulls?.length === PR_LIST_LIMIT && (
+        <div className="px-4 py-2 text-center text-[11px] text-subtle">Showing the {PR_LIST_LIMIT} most recently updated</div>
+      )}
     </>
   );
 }
+
+const PR_LIST_LIMIT = 100;
 
 /** No token from the GitHub CLI or git's credential store: explain the two ways to connect. */
 export function ConnectGitHub({ onRetry, subject = "pull requests" }: { onRetry: () => void; subject?: string }) {
