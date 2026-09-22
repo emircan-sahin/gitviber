@@ -115,6 +115,8 @@ export interface Branch {
   timestamp: number;
   /** Checked out in another worktree (its path); git won't switch to it here. */
   worktree: string | null;
+  /** Local, not current, and fully in HEAD: deleting it loses nothing. Never the default branch. */
+  merged: boolean;
 }
 
 export type PullMode = "ff" | "merge" | "rebase";
@@ -135,6 +137,8 @@ export const api = {
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
   branches: () => invoke<Branch[]>("branches"),
   switchBranch: (name: string, create: boolean) => invoke<void>("switch_branch", { name, create }),
+  /** `force` deletes unmerged commits too (git branch -D). */
+  deleteBranches: (names: string[], force: boolean) => invoke<void>("delete_branches", { names, force }),
   worktrees: () => invoke<Worktree[]>("worktrees"),
   /** Changed files in one of this repo's worktrees (a `git status` there). */
   worktreeChanges: (path: string) => invoke<number>("worktree_changes", { path }),

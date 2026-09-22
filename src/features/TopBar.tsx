@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
-import { api, errorMessage, type Worktree } from "@/lib/api";
+import { api, errorMessage, type Branch, type Worktree } from "@/lib/api";
 import { useShortcut } from "@/lib/keybindings";
 import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
@@ -119,26 +119,39 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
 
   const branchName = status?.branch ?? (status?.head ? `detached @ ${status.head}` : "…");
 
-  // git refuses to check out a branch another worktree has; going to that worktree is the way.
-  const openWorktree = async (path: string) => {
-    // Ask git now: the list loaded with the branches may predate an agent removing its folder.
-    const fresh = await api.worktrees().catch(() => worktrees);
-    if (fresh.find((w) => w.path === path)?.prunable) {
-      toast("error", "That worktree's folder is gone", `${path} no longer exists but still holds the branch. git worktree prune releases it.`);
-    } else onOpenRepo(path);
-  };
-
-  // A terminal on a branch runs where it's checked out; one that isn't gets its own worktree
-  // rather than a checkout here, which would pull the files out from under this window.
-  const branchTerminal = async (name: string, worktree: string | null) => {
+  // A terminal on another branch gets its own worktree rather than a checkout here, which
+  // would pull the files out from under this window.
+  const branchTerminal = async (name: string) => {
     if (name === status?.branch) return openTerminal(root);
-    if (worktree) return openTerminal(worktree);
     const where = `${folderName(main)}.worktrees/${name.replaceAll("/", "-")}`;
     const ok = await ask(`${name} isn't checked out anywhere. Create a worktree for it at ${where}, next to this project, and open a terminal there?`, {
       title: "Open terminal on branch",
       okLabel: "Create worktree",
     });
     if (ok) await run("Create worktree", async () => openTerminal(await api.addWorktree(name)), `${name} checked out in ${where}`);
+  };
+
+  // Merged is deleted outright: nothing is lost. Anything else needs a yes, then -D.
+  const deleteBranch = async (b: Branch) => {
+    const here = status?.branch ?? "HEAD";
+    if (!b.merged) {
+      const ok = await ask(`${b.name} isn't known to be merged into ${here}. Deleting it loses any commits that exist only on it.`, {
+        title: "Delete branch",
+        kind: "warning",
+        okLabel: "Delete",
+      });
+      if (!ok) return;
+    }
+    await run("Delete branch", () => api.deleteBranches([b.name], !b.merged), `Deleted ${b.name}`);
+  };
+
+  const cleanUp = async (names: string[]) => {
+    const shown = names.slice(0, 12).join("\n") + (names.length > 12 ? `\n…and ${names.length - 12} more` : "");
+    const ok = await ask(`Delete ${names.length} branches already merged into ${status?.branch ?? "HEAD"}?\n\n${shown}`, {
+      title: "Clean up merged branches",
+      okLabel: "Delete",
+    });
+    if (ok) await run("Clean up", () => api.deleteBranches(names, false), `Deleted ${names.length} merged branches`);
   };
 
   // A fresh count decides force: git refuses a dirty or locked worktree otherwise, and the
@@ -169,12 +182,13 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         label={branchName}
         branches={branches}
         current={status?.branch ?? null}
-        onOpenWorktree={openWorktree}
         onSwitch={(name) => run("Switch branch", () => api.switchBranch(name, false), `Switched to ${name}`)}
         onCreate={(name) => run("Create branch", () => api.switchBranch(name, true), `Switched to new branch ${name}`)}
         onMerge={(name) => run("Merge", () => api.merge(name), `Merged ${name}`)}
         onRebase={(name) => run("Rebase", () => api.rebase(name), `Rebased onto ${name}`)}
         onTerminal={branchTerminal}
+        onDelete={deleteBranch}
+        onCleanUp={cleanUp}
       />
       <WorktreePicker worktrees={worktrees} onOpen={onOpenRepo} onTerminal={openTerminal} onRemove={removeWorktree} />
       {status && !status.upstream && status.branch && (

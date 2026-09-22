@@ -930,3 +930,36 @@ fn gone_upstream_is_unknown_not_pushed() {
     write_commit(&local, "x.txt", "x\n", "x");
     assert!(!log(&local, 0, 5).unwrap()[0].on_origin);
 }
+
+#[test]
+fn merged_branches_and_deleting_them() {
+    let sb = Sandbox::new("brdel");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["branch", "done"]).unwrap();
+    run(&r, &["switch", "-q", "-c", "wip"]).unwrap();
+    write_commit(&r, "b.txt", "b\n", "unmerged work");
+    run(&r, &["switch", "-q", "-c", "feature"]).unwrap();
+    let merged = |r: &Path| -> Vec<String> {
+        let mut m: Vec<String> = branches(r)
+            .unwrap()
+            .into_iter()
+            .filter(|b| b.merged)
+            .map(|b| b.name)
+            .collect();
+        m.sort();
+        m
+    };
+    // main is the default branch: merged into the feature, but never offered for cleanup.
+    assert_eq!(merged(&r), ["done", "wip"]);
+
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    assert_eq!(merged(&r), ["done"]);
+    // -d refuses commits found nowhere else; -D takes them.
+    assert!(delete_branches(&r, &["wip".into()], false).is_err());
+    delete_branches(&r, &["done".into(), "wip".into()], true).unwrap();
+    assert!(delete_branches(&r, &["-D".into()], true).is_err());
+    let left: Vec<String> = branches(&r).unwrap().into_iter().map(|b| b.name).collect();
+    assert_eq!(left.len(), 2, "{left:?}");
+}

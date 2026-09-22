@@ -158,6 +158,12 @@ async fn switch_branch(state: State<'_, AppState>, name: String, create: bool) -
 }
 
 #[tauri::command]
+async fn delete_branches(state: State<'_, AppState>, names: Vec<String>, force: bool) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::delete_branches(&r, &names, force)).await
+}
+
+#[tauri::command]
 async fn worktrees(state: State<'_, AppState>) -> Res<Vec<git::Worktree>> {
     let r = repo(&state)?;
     blocking(move || git::worktrees(&r)).await
@@ -601,6 +607,7 @@ pub fn run() {
             read_file,
             branches,
             switch_branch,
+            delete_branches,
             worktrees,
             worktree_changes,
             add_worktree,

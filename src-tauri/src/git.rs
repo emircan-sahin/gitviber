@@ -1249,6 +1249,9 @@ pub struct Branch {
     pub timestamp: i64,
     /// Checked out in another worktree (its path), where git refuses to switch to it.
     pub worktree: Option<String>,
+    /// Local, not HEAD, and fully contained in HEAD: deleting it loses no commits. The
+    /// default branch never counts, so "clean up merged" can't take main from under a feature.
+    pub merged: bool,
 }
 
 pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
@@ -1269,6 +1272,19 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         .filter(|w| w.bare)
         .map(|w| w.path)
         .collect();
+    // Empty on an unborn HEAD, where nothing is merged yet.
+    let merged = run_text(
+        repo,
+        &[
+            "for-each-ref",
+            "--merged=HEAD",
+            "--format=%(refname)",
+            "refs/heads",
+        ],
+    )
+    .unwrap_or_default();
+    let merged: Vec<&str> = merged.lines().collect();
+    let default = default_branch(repo);
     Ok(raw
         .lines()
         .filter_map(|l| {
@@ -1283,9 +1299,36 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
                 upstream: (!f[3].is_empty()).then(|| f[3].to_string()),
                 timestamp: f[4].parse().unwrap_or(0),
                 worktree: elsewhere.then(|| f[5].to_string()),
+                merged: f[2] != "*" && f[1] != default && merged.contains(&f[0]),
             })
         })
         .collect())
+}
+
+/// What origin/HEAD points at, else "main".
+fn default_branch(repo: &Path) -> String {
+    run_text(
+        repo,
+        &[
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "refs/remotes/origin/HEAD",
+        ],
+    )
+    .ok()
+    .and_then(|r| r.trim().strip_prefix("origin/").map(str::to_string))
+    .unwrap_or_else(|| "main".into())
+}
+
+/// `git branch -d`, or `-D` when `force`: -d refuses a branch with commits found nowhere else.
+pub fn delete_branches(repo: &Path, names: &[String], force: bool) -> Result<(), String> {
+    for n in names {
+        validate_branch(repo, n)?;
+    }
+    let mut args = vec!["branch", if force { "-D" } else { "-d" }];
+    args.extend(names.iter().map(String::as_str));
+    run(repo, &args).map(|_| ())
 }
 
 pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String> {
