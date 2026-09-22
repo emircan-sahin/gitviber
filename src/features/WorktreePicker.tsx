@@ -28,6 +28,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onRemo
   const [open, setOpen] = useState(false);
   const [list, setList] = useState(worktrees);
   const [index, setIndex] = useState(0);
+  // Change counts need a `git status` per worktree: fetched when the menu opens, never before.
+  const [counts, setCounts] = useState<Record<string, number>>({});
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => setList(worktrees), [worktrees]);
@@ -37,7 +39,24 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onRemo
     let live = true;
     api
       .worktrees()
-      .then((fresh) => live && setList(fresh))
+      .then((fresh) => {
+        if (!live) return;
+        setList(fresh);
+        // A few at a time: a dozen agent worktrees shouldn't mean a dozen `git status` at once.
+        const todo = fresh.filter((w) => !w.prunable && !w.bare);
+        const next = (): Promise<void> | undefined => {
+          const w = todo.shift();
+          if (!w || !live) return;
+          return api
+            .worktreeChanges(w.path)
+            .then(
+              (n) => void (live && setCounts((c) => ({ ...c, [w.path]: n }))),
+              () => {},
+            )
+            .then(next);
+        };
+        for (let i = 0; i < 3; i++) next();
+      })
       .catch(() => {});
     return () => {
       live = false;
@@ -103,7 +122,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onRemo
             listRef.current?.focus();
           }}
         >
-          <div ref={listRef} tabIndex={-1} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 outline-none">
+          {/* Like a native menu: the highlight leaves with the mouse; ↑↓ bring it back. */}
+          <div ref={listRef} tabIndex={-1} onMouseLeave={() => setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 outline-none">
             <div className="px-2 pt-2 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Worktrees</div>
             {list.map((w, i) => (
               <WorktreeRow
@@ -114,6 +134,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onRemo
                 usable={usable(w)}
                 main={main?.path ?? w.path}
                 time={branches.find((b) => !b.remote && b.name === w.branch)?.timestamp}
+                count={counts[w.path]}
                 onHover={setIndex}
                 onPick={pick}
                 onTerminal={terminal}
@@ -150,6 +171,7 @@ function WorktreeRow({
   usable,
   main,
   time,
+  count,
   onHover,
   onPick,
   onTerminal,
@@ -161,6 +183,7 @@ function WorktreeRow({
   usable: boolean;
   main: string;
   time: number | undefined;
+  count: number | undefined;
   onHover: (i: number) => void;
   onPick: (w: Worktree) => void;
   onTerminal: (w: Worktree) => void;
@@ -222,8 +245,14 @@ function WorktreeRow({
         )}
       </span>
       {(!hot || w.prunable || w.bare) && (
-        <span className={cn("max-w-24 shrink-0 truncate text-[10.5px]", hot ? "opacity-80" : "text-subtle")}>
-          {w.prunable ? "missing" : w.bare ? "" : time ? relativeTime(time) : w.current ? "current" : ""}
+        <span className={cn("flex max-w-24 shrink-0 flex-col items-end text-[10.5px] leading-4", hot ? "opacity-80" : "text-subtle")}>
+          <span className="max-w-full truncate">{w.prunable ? "missing" : w.bare ? "" : time ? relativeTime(time) : w.current ? "current" : ""}</span>
+          {/* "No changes" flags the worktrees an agent was parked in and never touched. */}
+          {count !== undefined && (
+            <span className={cn("max-w-full truncate", count === 0 ? "opacity-60" : !hot && "text-foreground")}>
+              {count === 0 ? "no changes" : `${count} change${count === 1 ? "" : "s"}`}
+            </span>
+          )}
         </span>
       )}
     </div>

@@ -128,7 +128,8 @@ export function BranchPicker({ label, current, branches, onSwitch, onCreate, onM
             className="h-full min-w-0 flex-1 bg-transparent font-mono text-[12px] outline-none placeholder:font-sans placeholder:text-subtle"
           />
         </div>
-        <div ref={listRef} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
+        {/* Like a native menu: the highlight leaves with the mouse; ↑↓ bring it back. */}
+        <div ref={listRef} onMouseLeave={() => setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
           {options.length === 0 && (
             <div className="px-2 py-3 text-center text-[12px] text-subtle">
               {branches.some(elsewhere) ? "No branches here · ones checked out in other worktrees are in the worktree menu" : "No branches"}
