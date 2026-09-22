@@ -9,6 +9,7 @@ import { useShownLanguage } from "@/lib/highlight";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { languageLabel } from "@/lib/language";
 import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
+import { loadWorkspace, saveWorkspace } from "@/lib/session";
 import { DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { arrayMove } from "@dnd-kit/sortable";
 import { useTerminals } from "@/lib/terminals";
@@ -20,11 +21,12 @@ import { FileTree, type FileTreeHandle } from "./FileTree";
 import { HistoryPanel } from "./HistoryPanel";
 import { IssuesPanel } from "./IssuesPanel";
 import { PullsPanel } from "./PullsPanel";
-import { TerminalPanel, useTerminalSetup } from "./TerminalPanel";
+import { TerminalPanel, TerminalRestoreOffer, useTerminalSetup } from "./TerminalPanel";
 import { changeTotals, TopBar } from "./TopBar";
 import { prefetchSelection, resetPairCache, type Tab, Viewer } from "./Viewer";
 
-type ListTab = "changes" | "history" | "pulls" | "issues";
+const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
+type ListTab = (typeof LIST_TABS)[number];
 
 interface Props {
   root: string;
@@ -67,13 +69,15 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const repo = useRepo(root);
   const { status } = repo;
   const s = useSettings();
-  const [listTab, setListTab] = useState<ListTab>("changes");
+  const [saved] = useState(() => loadWorkspace(root));
+  const [listTab, setListTab] = useState<ListTab>(() => LIST_TABS.find((t) => t === saved?.listTab) ?? "changes");
   // Tabs and the active key change together, so they live in one state (no nested updates).
-  const [tabState, setTabState] = useState<{ tabs: Tab[]; active: string | null }>({ tabs: [], active: null });
+  const [tabState, setTabState] = useState<{ tabs: Tab[]; active: string | null }>(() => ({ tabs: saved?.tabs ?? [], active: saved?.active ?? null }));
   const { tabs, active: activeKey } = tabState;
   const setActiveKey = useCallback((key: string | null) => setTabState((t) => ({ ...t, active: key })), []);
   // Viewed marks remember the file's content id; a new edit by the agent clears them.
-  const [viewedMap, setViewedMap] = useState<Map<string, string>>(() => new Map());
+  const [viewedMap, setViewedMap] = useState<Map<string, string>>(() => new Map(saved?.viewed));
+  useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap] }), [root, tabs, activeKey, listTab, viewedMap]);
   // Git work on the left, files on the right; both collapse to give code the room.
   const listPanel = usePanelRef();
   const filesPanel = usePanelRef();
@@ -389,6 +393,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         </ResizablePanelGroup>
       </div>
       <StatusBar repo={repo} reviewed={changes.filter(viewed).length} />
+      <TerminalRestoreOffer />
     </div>
   );
 }
