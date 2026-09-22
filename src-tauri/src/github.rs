@@ -146,6 +146,7 @@ enum Method {
     Get,
     Post(Value),
     Put(Value),
+    Patch(Value),
 }
 
 const JSON: &str = "application/vnd.github+json";
@@ -191,6 +192,7 @@ fn request(
             }
             Method::Post(body) => headers!(agent.post(&url)).send_json(body),
             Method::Put(body) => headers!(agent.put(&url)).send_json(body),
+            Method::Patch(body) => headers!(agent.patch(&url)).send_json(body),
         };
         let mut resp = result.map_err(|e| format!("GitHub request failed: {e}"))?;
         let status = resp.status().as_u16();
@@ -693,6 +695,41 @@ pub fn merge(session: &Session, repo: &Path, number: u64, method: &str) -> Resul
         repo,
         Method::Put(json!({ "merge_method": method })),
         &format!("/repos/{}/{}/pulls/{number}/merge", r.owner, r.name),
+    )
+    .map(|_| ())
+}
+
+/// Closes or reopens a PR. Close-then-reopen also makes GitHub recompute a stale diff or
+/// conflict state, e.g. after the PR below it in a stack was merged.
+pub fn set_open(session: &Session, repo: &Path, number: u64, open: bool) -> Result<Pull, String> {
+    let r = repo_ref(repo)?;
+    let v = call(
+        session,
+        repo,
+        Method::Patch(json!({ "state": if open { "open" } else { "closed" } })),
+        &format!("/repos/{}/{}/pulls/{number}", r.owner, r.name),
+    )?;
+    Ok(pull_from(&v))
+}
+
+/// `event`: "APPROVE" | "REQUEST_CHANGES" | "COMMENT". GitHub requires a body for the
+/// last two, and refuses the first two on your own PR; its message says so.
+pub fn review(
+    session: &Session,
+    repo: &Path,
+    number: u64,
+    event: &str,
+    body: &str,
+) -> Result<(), String> {
+    let r = repo_ref(repo)?;
+    if !matches!(event, "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
+        return Err(format!("unknown review event: {event}"));
+    }
+    call(
+        session,
+        repo,
+        Method::Post(json!({ "event": event, "body": body })),
+        &format!("/repos/{}/{}/pulls/{number}/reviews", r.owner, r.name),
     )
     .map(|_| ())
 }

@@ -238,6 +238,7 @@ export interface PullFiles {
 }
 
 export type MergeMethod = "merge" | "squash" | "rebase";
+export type ReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
 
 /** Backend's marker for "no GitHub credentials found" (show setup, not an error). */
 export const GITHUB_NOT_CONNECTED = "github:not-connected";
@@ -252,6 +253,8 @@ export const github = {
     invoke<PullFiles>("pr_files", { number: p.number, baseRef: p.baseRef, baseSha: p.baseSha, headSha: p.headSha }),
   create: (title: string, body: string, head: string, base: string, draft: boolean) => invoke<Pull>("pr_create", { title, body, head, base, draft }),
   merge: (number: number, method: MergeMethod) => invoke<void>("pr_merge", { number, method }),
+  setOpen: (number: number, open: boolean) => invoke<Pull>("pr_set_open", { number, open }),
+  review: (number: number, event: ReviewEvent, body: string) => invoke<void>("pr_review", { number, event, body }),
   checkout: (number: number, headRef: string, sameRepo: boolean) => invoke<void>("pr_checkout", { number, headRef, sameRepo }),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
 };
