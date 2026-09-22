@@ -10,6 +10,8 @@ export interface Pane {
   /** The repository, owner/name. */
   detail: string;
   actions?: ReactNode;
+  /** Always shown, unlike `actions`: a count, say. */
+  badge?: ReactNode;
   children: ReactNode;
   /** The content scrolls itself (the history list does); the pane only sizes it. */
   scrolls?: boolean;
@@ -91,6 +93,7 @@ function PaneHeader({ pane, open, onToggle }: { pane: Pane; open: boolean; onTog
         <span className="shrink-0 text-[10.5px] font-semibold tracking-[0.08em] uppercase">{pane.title}</span>
         <span className="min-w-0 truncate font-mono text-[10.5px] text-subtle">{pane.detail}</span>
       </button>
+      {pane.badge !== undefined && <span className="shrink-0 px-1 text-[10.5px] text-subtle tabular-nums">{pane.badge}</span>}
       {/* Like VS Code's pane actions: out of the way until the header is hovered. */}
       {pane.actions && <div className="flex shrink-0 items-center opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">{pane.actions}</div>}
     </div>

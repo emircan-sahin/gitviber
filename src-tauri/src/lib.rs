@@ -744,6 +744,19 @@ async fn issue_list(
 }
 
 #[tauri::command]
+async fn issue_counts(
+    app: AppHandle,
+    target: Option<String>,
+    labels: Vec<String>,
+) -> Res<github::IssueCounts> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::issue_counts(&state.github, &repo(&state)?, target.as_deref(), &labels)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn issue_labels(app: AppHandle, target: Option<String>) -> Res<Vec<github::Label>> {
     blocking(move || {
         let state = app.state::<AppState>();
@@ -824,6 +837,26 @@ async fn issue_set_open(
             number,
             open,
             &reason,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn issue_set_labels(
+    app: AppHandle,
+    target: Option<String>,
+    number: u64,
+    labels: Vec<String>,
+) -> Res<Vec<github::Label>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::issue_set_labels(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            number,
+            &labels,
         )
     })
     .await
@@ -1077,11 +1110,13 @@ pub fn run() {
             pr_review,
             pr_checkout,
             issue_list,
+            issue_counts,
             issue_labels,
             issue_detail,
             issue_create,
             issue_edit,
             issue_set_open,
+            issue_set_labels,
             issue_delete,
             issue_comment,
             open_url,

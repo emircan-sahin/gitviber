@@ -6,15 +6,23 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { errorMessage, fullName, github, type Issue, type IssueLabel, isNotConnected, issues, type Target } from "@/lib/api";
+import { errorMessage, fullName, github, type Issue, type IssueCounts, type IssueLabel, isNotConnected, issues, type Target } from "@/lib/api";
 import { invalidate, useGitHubData } from "@/lib/githubCache";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
-import { ConnectGitHub, isoToUnix, NewButton } from "./PullsPanel";
+import { ConnectGitHub, FilterTabs, isoToUnix, LinkMenu, NewButton } from "./PullsPanel";
 import { RepoPanes } from "./RepoPanes";
 
 type Filter = "open" | "closed" | "all";
+
+const compact = new Intl.NumberFormat("en", { notation: "compact" });
+/** Each filter's count: "all" is the other two together. */
+const counts = (c: IssueCounts): Record<Filter, string> => ({
+  open: compact.format(c.open),
+  closed: compact.format(c.closed),
+  all: compact.format(c.open + c.closed),
+});
 
 // Issue views elsewhere (close, edit, comment) tell the list to reload.
 const listeners = new Set<() => void>();
@@ -79,6 +87,13 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
     upstream && parent?.issues ? `issues:${upstream}:${query}` : null,
     useCallback(() => issues.list(upstream, filter, labels.map((l) => l.name)), [upstream, filter, labels]),
   );
+  // Counted apart from the list, which holds only the 50 most recent.
+  const labelKey = JSON.stringify(labels.map((l) => l.name));
+  const ownCounts = useGitHubData(`issues:counts:origin:${labelKey}`, useCallback(() => issues.counts(null, labels.map((l) => l.name)), [labels]));
+  const upCounts = useGitHubData(
+    upstream && parent?.issues ? `issues:counts:${upstream}:${labelKey}` : null,
+    useCallback(() => issues.counts(upstream, labels.map((l) => l.name)), [upstream, labels]),
+  );
   const failure = acct.error ?? own.error;
   const error = failure === undefined ? null : errorMessage(failure);
   const loading = acct.loading || own.loading || up.loading;
@@ -86,11 +101,15 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
   const { refresh: refreshAccount } = acct;
   const { refresh: refreshOwn } = own;
   const { refresh: refreshUp } = up;
+  const { refresh: refreshOwnCounts } = ownCounts;
+  const { refresh: refreshUpCounts } = upCounts;
   const load = useCallback(() => {
     refreshAccount(true);
     refreshOwn(true);
     refreshUp(true);
-  }, [refreshAccount, refreshOwn, refreshUp]);
+    refreshOwnCounts(true);
+    refreshUpCounts(true);
+  }, [refreshAccount, refreshOwn, refreshUp, refreshOwnCounts, refreshUpCounts]);
   useEffect(() => {
     listeners.add(load);
     return () => {
@@ -105,19 +124,12 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
 
   return (
     <div className="flex h-full flex-col">
-      {/* A container: at the panel's narrowest the Label and New buttons drop their words. */}
+      {/* A container: narrower, the Label and New buttons drop their words, then the counts go (measured: all of it needs ~385px). */}
       <div className="@container flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
-        {(["open", "closed", "all"] as const).map((f) => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={cn("h-5 rounded-sm px-1.5 text-[11.5px] capitalize", filter === f ? "bg-active text-foreground" : "text-subtle hover:text-foreground")}
-          >
-            {f}
-          </button>
-        ))}
-        <LabelFilter upstream={parent?.issues ? upstream : null} selected={labels} onChange={setLabels} />
+        {/* Closed is All less Open, so it goes uncounted. A fork's two lists count in their own pane headers. */}
+        <FilterTabs value={filter} onChange={setFilter} counts={parent || !ownCounts.data ? undefined : { ...counts(ownCounts.data), closed: undefined }} />
         <div className="ml-auto flex items-center gap-0.5">
+          <LabelFilter upstream={parent?.issues ? upstream : null} selected={labels} onChange={setLabels} counted={!parent} />
           <Tip label="Refresh">
             <Button variant="ghost" size="icon-sm" onClick={load} disabled={loading}>
               <RefreshCw className={cn(loading && "animate-spin")} />
@@ -126,7 +138,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
           {!parent && (
             <Tip label="New issue">
               <Button variant="secondary" size="sm" disabled={!origin} onClick={() => setCreating({ target: null })}>
-                <Plus /> <span className="@max-[300px]:hidden">New</span>
+                <Plus /> <span className="@max-[380px]:hidden">New</span>
               </Button>
             </Tip>
           )}
@@ -163,6 +175,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
                 id: "origin",
                 title: "Your fork",
                 detail: origin ? fullName(origin.repo) : "",
+                badge: origin?.issues && ownCounts.data ? counts(ownCounts.data)[filter] : undefined,
                 actions: origin?.issues && <NewButton label="New issue" onClick={() => setCreating({ target: null })} />,
                 children: origin?.issues ? ownRows(false) : <IssuesOff repo={origin ? fullName(origin.repo) : "your fork"} />,
               },
@@ -170,6 +183,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
                 id: "parent",
                 title: "Original",
                 detail: upstream,
+                badge: parent.issues && upCounts.data ? counts(upCounts.data)[filter] : undefined,
                 actions: parent.issues && <NewButton label="New issue" onClick={() => setCreating({ target: upstream })} />,
                 children: parent.issues ? (
                   <IssueRows items={up.data ?? null} error={up.error === undefined ? null : errorMessage(up.error)} roomy={false} {...rowProps} />
@@ -248,8 +262,8 @@ function IssueRows({
         const sel: Selection = { kind: "issue", issue: i };
         const active = activeKey === selectionKey(sel);
         return (
+          <LinkMenu key={i.number} url={i.url}>
           <div
-            key={i.number}
             role="button"
             onClick={() => onOpen(sel)}
             onDoubleClick={() => onOpen(sel, true)}
@@ -280,6 +294,7 @@ function IssueRows({
               </div>
             </div>
           </div>
+          </LinkMenu>
         );
       })}
     </>
@@ -288,17 +303,81 @@ function IssueRows({
 
 /**
  * GitHub's label filter: any number of labels, and the list keeps issues carrying all of them.
- * Lists every label the repository defines (both, for a fork), loaded when first opened.
+ * Lists every label the repository defines (both, for a fork).
  */
-function LabelFilter({ upstream, selected, onChange }: { upstream: string | null; selected: IssueLabel[]; onChange: (labels: IssueLabel[]) => void }) {
+function LabelFilter({
+  upstream,
+  selected,
+  onChange,
+  counted,
+}: {
+  upstream: string | null;
+  selected: IssueLabel[];
+  onChange: (labels: IssueLabel[]) => void;
+  /** The filters beside it show counts: its word goes first, as New's does. */
+  counted: boolean;
+}) {
+  // Spelled out: Tailwind only finds whole class names.
+  const hide = counted ? "@max-[380px]:hidden" : "@max-[300px]:hidden";
+  return (
+    <LabelPicker
+      repos={upstream ? [null, upstream] : [null]}
+      selected={selected}
+      onChange={onChange}
+      hint={selected.length > 1 ? "Issues with all of them" : undefined}
+      align="end"
+    >
+      {/* Compact: the chosen labels show in a row of their own under the header. */}
+      <button
+        aria-label="Filter by label"
+        className={cn(
+          "flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11.5px]",
+          counted ? "@max-[380px]:px-1" : "@max-[300px]:px-1",
+          selected.length ? "bg-active text-foreground" : "text-muted-foreground hover:bg-hover hover:text-foreground data-[state=open]:bg-hover data-[state=open]:text-foreground",
+        )}
+      >
+        <Tag className="size-3" />
+        <span className={hide}>Label</span>
+        {selected.length > 0 ? (
+          <span className="rounded-full bg-primary/20 px-1 text-[10px] leading-3.5 font-medium text-primary">{selected.length}</span>
+        ) : (
+          <ChevronDown className={cn("size-3 opacity-70", hide)} />
+        )}
+      </button>
+    </LabelPicker>
+  );
+}
+
+/**
+ * Picks any number of the labels `repos` define (one or two), with a search box and ↑↓ ↵.
+ * They're loaded when it first opens; `children` is the trigger.
+ */
+export function LabelPicker({
+  repos,
+  selected,
+  onChange,
+  onOpenChange,
+  hint,
+  align = "start",
+  children,
+}: {
+  repos: Target[];
+  selected: IssueLabel[];
+  onChange: (labels: IssueLabel[]) => void;
+  onOpenChange?: (open: boolean) => void;
+  hint?: string;
+  align?: "start" | "end";
+  children: React.ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   // Selected labels go first, as of opening: reordering under the pointer would move the row just clicked.
   const [first, setFirst] = useState<IssueLabel[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
-  const own = useGitHubData(open ? "issues:labels:origin" : null, useCallback(() => issues.labels(null), []), 600_000);
-  const up = useGitHubData(open && upstream ? `issues:labels:${upstream}` : null, useCallback(() => issues.labels(upstream), [upstream]), 600_000);
+  const [a, b] = [repos[0], repos.length > 1 ? repos[1] : undefined];
+  const own = useGitHubData(open ? `issues:labels:${a ?? "origin"}` : null, useCallback(() => issues.labels(a), [a]), 600_000);
+  const up = useGitHubData(open && b !== undefined ? `issues:labels:${b ?? "origin"}` : null, useCallback(() => issues.labels(b ?? null), [b]), 600_000);
   const failure = own.error ?? up.error;
 
   const defined = [...(own.data ?? []), ...(up.data ?? [])].filter((l, i, all) => all.findIndex((m) => m.name === l.name) === i);
@@ -309,7 +388,7 @@ function LabelFilter({ upstream, selected, onChange }: { upstream: string | null
   const shown = [...gone, ...defined]
     .sort((a, b) => Number(isFirst(b)) - Number(isFirst(a)))
     .filter((l) => !q || l.name.toLowerCase().includes(q) || l.description.toLowerCase().includes(q));
-  const loaded = own.data !== undefined && (!upstream || up.data !== undefined);
+  const loaded = own.data !== undefined && (b === undefined || up.data !== undefined);
 
   const isOn = (l: IssueLabel) => selected.some((m) => m.name === l.name);
   const toggle = (l: IssueLabel) => onChange(isOn(l) ? selected.filter((m) => m.name !== l.name) : [...selected, l]);
@@ -328,26 +407,11 @@ function LabelFilter({ upstream, selected, onChange }: { upstream: string | null
           setQuery("");
           setIndex(0);
         }
+        onOpenChange?.(o);
       }}
     >
-      <PopoverTrigger asChild>
-        {/* Compact: the chosen labels show in a row of their own under the header. */}
-        <button
-          className={cn(
-            "flex h-5 shrink-0 items-center gap-1 rounded-sm px-1.5 text-[11.5px] @max-[300px]:px-1",
-            selected.length ? "bg-active text-foreground" : "text-subtle hover:text-foreground data-[state=open]:text-foreground",
-          )}
-        >
-          <Tag className="size-3" />
-          <span className="@max-[300px]:hidden">Label</span>
-          {selected.length > 0 ? (
-            <span className="rounded-full bg-primary/20 px-1 text-[10px] leading-3.5 font-medium text-primary">{selected.length}</span>
-          ) : (
-            <ChevronDown className="size-3 opacity-70 @max-[300px]:hidden" />
-          )}
-        </button>
-      </PopoverTrigger>
-      <PopoverContent align="start" className="flex w-72 flex-col overflow-hidden">
+      <PopoverTrigger asChild>{children}</PopoverTrigger>
+      <PopoverContent align={align} className="flex w-72 flex-col overflow-hidden">
         <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2.5">
           <Search className="size-3.5 shrink-0 text-subtle" />
           <input
@@ -401,7 +465,7 @@ function LabelFilter({ upstream, selected, onChange }: { upstream: string | null
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
-          <span className="min-w-0 flex-1 truncate">{selected.length > 1 ? "Issues with all of them" : "↑↓ navigate · ↵ select"}</span>
+          <span className="min-w-0 flex-1 truncate">{hint ?? "↑↓ navigate · ↵ select"}</span>
           {selected.length > 0 && (
             <button onClick={() => onChange([])} className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover hover:text-foreground">
               Clear
