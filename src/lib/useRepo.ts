@@ -21,20 +21,24 @@ export function useRepo(root: string) {
   const [revision, setRevision] = useState(0);
   const inFlight = useRef<Promise<void> | null>(null);
   const queued = useRef<{ history: boolean } | null>(null);
+  // Commits shown so far: a refresh reloads all of them, or "Load more" pages would be lost.
+  const loaded = useRef(0);
 
   const load = useCallback(async (history: boolean) => {
+    const limit = Math.max(PAGE, loaded.current);
     const [st, br, log, wt] = await Promise.all([
       api.status(),
       history ? api.branches() : null,
-      history ? api.log(0, PAGE) : null,
+      history ? api.log(0, limit) : null,
       history ? api.worktrees() : null,
     ]);
     setStatus(st);
     if (br) setBranches(br);
     if (wt) setWorktrees(wt);
     if (log) {
+      loaded.current = log.length;
       setCommits(log);
-      setHasMore(log.length === PAGE);
+      setHasMore(log.length === limit);
     }
     setRevision((r) => r + 1);
   }, []);
@@ -73,7 +77,9 @@ export function useRepo(root: string) {
       // A refresh may have shifted the page boundary meanwhile; never show a commit twice.
       setCommits((c) => {
         const seen = new Set(c.map((x) => x.sha));
-        return [...c, ...more.filter((x) => !seen.has(x.sha))];
+        const next = [...c, ...more.filter((x) => !seen.has(x.sha))];
+        loaded.current = next.length;
+        return next;
       });
       setHasMore(more.length === PAGE);
     } finally {
@@ -84,6 +90,7 @@ export function useRepo(root: string) {
   useEffect(() => {
     setStatus(null);
     setCommits([]);
+    loaded.current = 0;
     refresh(true);
     const unlisten = listen<RepoChanged>("repo-changed", (e) => refresh(e.payload.git));
     return () => {
