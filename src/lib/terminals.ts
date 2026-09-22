@@ -89,6 +89,9 @@ function scheduleSave() {
   }, 2000);
 }
 
+// The throttle would lose the last seconds of output to a reload (⌘R).
+window.addEventListener("pagehide", () => saveSession());
+
 function saveSession() {
   // Nothing opened yet: keep the last run's terminals for the restore offer.
   if (!state.groups.length && state.restorable) return;

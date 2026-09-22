@@ -141,4 +141,18 @@ impl Ptys {
             let _ = s.killer.kill();
         }
     }
+
+    /// A reloaded page has lost every terminal it had; without this their shells run on unseen.
+    pub fn kill_all(&self) {
+        let sessions: Vec<Session> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .drain()
+            .map(|(_, s)| s)
+            .collect();
+        for mut s in sessions {
+            let _ = s.killer.kill();
+        }
+    }
 }
