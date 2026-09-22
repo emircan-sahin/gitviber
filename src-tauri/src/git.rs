@@ -200,7 +200,8 @@ pub struct FileChange {
     /// For conflicts, git's two-letter code: UU both modified, AA both added,
     /// UD deleted by them, DU deleted by us, AU/UA added by one side, DD both deleted.
     pub conflict: Option<String>,
-    /// Untracked entries that are another repository's root (e.g. an agent's worktree).
+    /// Untracked entries that are another repository's root. This repo's own linked
+    /// worktrees are left out of status: the worktree picker reaches them.
     pub nested: Option<Nested>,
 }
 
@@ -209,10 +210,6 @@ pub struct FileChange {
 pub struct Nested {
     /// Absolute path of the nested repository.
     pub path: String,
-    /// A linked worktree of this repository (listed by `git worktree list`).
-    pub worktree: bool,
-    /// Its checked-out branch, when it's a worktree on a branch.
-    pub branch: Option<String>,
 }
 
 /// A merge, rebase, cherry-pick or revert that stopped and waits for the user.
@@ -412,7 +409,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         }
     }
     if st.unstaged.iter().any(|f| f.nested.is_some()) {
-        mark_worktrees(repo, &mut st.unstaged);
+        drop_worktrees(repo, &mut st.unstaged);
     }
     if !st.unstaged.is_empty() {
         let stats = parse_numstat(&run(repo, &["diff", "--numstat", "-z"])?);
@@ -456,26 +453,21 @@ fn new_gitlink(fields: &[&str]) -> bool {
 fn nested(repo: &Path, rel: &str) -> Nested {
     Nested {
         path: repo.join(rel).to_string_lossy().into(),
-        worktree: false,
-        branch: None,
     }
 }
 
-/// Tells this repo's own linked worktrees apart from unrelated nested repositories.
-fn mark_worktrees(repo: &Path, files: &mut [FileChange]) {
+/// Removes this repo's own linked worktrees, keeping unrelated nested repositories. A worktree
+/// whose link broke (the repo moved) no longer matches its listed path, so it stays visible.
+fn drop_worktrees(repo: &Path, files: &mut Vec<FileChange>) {
     let Ok(list) = worktrees(repo) else { return };
     let real = |p: &str| Path::new(p).canonicalize().ok();
-    let known: Vec<_> = list
-        .iter()
-        .filter_map(|w| Some((real(&w.path)?, w)))
-        .collect();
-    for n in files.iter_mut().filter_map(|f| f.nested.as_mut()) {
-        let Some(here) = real(&n.path) else { continue };
-        if let Some((_, w)) = known.iter().find(|(p, _)| *p == here) {
-            n.worktree = true;
-            n.branch = w.branch.clone();
-        }
-    }
+    let known: Vec<_> = list.iter().filter_map(|w| real(&w.path)).collect();
+    files.retain(|f| {
+        f.nested
+            .as_ref()
+            .and_then(|n| real(&n.path))
+            .is_none_or(|here| !known.contains(&here))
+    });
 }
 
 // ---------------------------------------------------------------- worktrees
@@ -569,13 +561,18 @@ pub fn add_worktree(repo: &Path, branch: &str) -> Result<String, String> {
     Ok(target)
 }
 
-/// Changed files in one of this repo's worktrees. Only paths `git worktree list` reports are
+/// One of this repo's worktrees by path. Only paths `git worktree list` reports are
 /// accepted, so the frontend can't point git at an arbitrary folder.
-pub fn worktree_changes(repo: &Path, path: &str) -> Result<u32, String> {
-    let w = worktrees(repo)?
+fn listed_worktree(repo: &Path, path: &str) -> Result<Worktree, String> {
+    worktrees(repo)?
         .into_iter()
         .find(|w| w.path == path)
-        .ok_or_else(|| format!("not a worktree of this repository: {path}"))?;
+        .ok_or_else(|| format!("not a worktree of this repository: {path}"))
+}
+
+/// Changed files in one of this repo's worktrees.
+pub fn worktree_changes(repo: &Path, path: &str) -> Result<u32, String> {
+    let w = listed_worktree(repo, path)?;
     if w.bare || w.prunable {
         return Err(format!("this worktree has no files on disk: {path}"));
     }
@@ -597,6 +594,24 @@ pub fn worktree_changes(repo: &Path, path: &str) -> Result<u32, String> {
         }
     }
     Ok(count)
+}
+
+/// Deletes a linked worktree's folder and entry; its branch stays. `force` also drops
+/// uncommitted files and overrides a lock (git wants `-f` twice for that).
+pub fn remove_worktree(repo: &Path, path: &str, force: bool) -> Result<(), String> {
+    let w = listed_worktree(repo, path)?;
+    if w.main {
+        return Err("the main worktree can't be removed".into());
+    }
+    if w.current {
+        return Err("this window has that worktree open; switch to another one first".into());
+    }
+    let mut args = vec!["worktree", "remove"];
+    if force {
+        args.extend(["--force", "--force"]);
+    }
+    args.push(path);
+    run(repo, &args).map(|_| ())
 }
 
 // ---------------------------------------------------------------- history

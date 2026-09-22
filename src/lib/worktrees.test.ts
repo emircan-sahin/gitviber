@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FileChange } from "./api.ts";
-import { folderName, nestedLabel, shortPath, stageable } from "./worktrees.ts";
+import { folderName, shortPath, stageable } from "./worktrees.ts";
 
 test("short worktree paths", () => {
   const main = "/Users/me/code/app";
@@ -18,12 +18,6 @@ test("folder names ignore git's trailing slash", () => {
   assert.equal(folderName("/a/b"), "b");
 });
 
-test("nested entries say what they are", () => {
-  assert.equal(nestedLabel({ path: "/r/w", worktree: true, branch: "agent-1" }), "agent-1");
-  assert.equal(nestedLabel({ path: "/r/w", worktree: true, branch: null }), "detached");
-  assert.equal(nestedLabel({ path: "/r/v", worktree: false, branch: null }), "nested repo");
-});
-
 test("stage all leaves nested repositories out", () => {
   const file = (path: string, nested = false): FileChange => ({
     path,
@@ -33,8 +27,8 @@ test("stage all leaves nested repositories out", () => {
     deletions: null,
     oid: null,
     conflict: null,
-    nested: nested ? { path: `/r/${path}`, worktree: true, branch: "b" } : null,
+    nested: nested ? { path: `/r/${path}` } : null,
   });
-  assert.deepEqual(stageable([file("a.txt"), file(".claude/worktrees/x/", true), file("b.txt")]), { paths: ["a.txt", "b.txt"], skipped: 1 });
+  assert.deepEqual(stageable([file("a.txt"), file("vendor/lib/", true), file("b.txt")]), { paths: ["a.txt", "b.txt"], skipped: 1 });
   assert.deepEqual(stageable([]), { paths: [], skipped: 0 });
 });

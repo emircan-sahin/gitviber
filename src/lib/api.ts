@@ -12,16 +12,13 @@ export interface FileChange {
   oid: string | null;
   /** Conflicts only: UU both modified, AA both added, UD/DU deleted by them/us, AU/UA, DD. */
   conflict: string | null;
-  /** Untracked entry that is another repository's root, e.g. an agent's worktree. */
+  /** Untracked entry that is another repository's root (never one of this repo's worktrees). */
   nested: Nested | null;
 }
 
 export interface Nested {
-  /** Absolute path, openable as a repo. */
+  /** Absolute path. */
   path: string;
-  /** One of this repo's linked worktrees (else an unrelated nested repo). */
-  worktree: boolean;
-  branch: string | null;
 }
 
 export interface Worktree {
@@ -143,6 +140,8 @@ export const api = {
   worktreeChanges: (path: string) => invoke<number>("worktree_changes", { path }),
   /** Checks a branch out in a new worktree beside the main one; returns its path. */
   addWorktree: (branch: string) => invoke<string>("add_worktree", { branch }),
+  /** Deletes a linked worktree's folder (its branch stays); `force` drops uncommitted files and overrides a lock. */
+  removeWorktree: (path: string, force: boolean) => invoke<void>("remove_worktree", { path, force }),
   /** Nested repositories are refused unless `allowNested`: git would stage only a gitlink. */
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
   unstage: (paths: string[]) => invoke<void>("unstage", { paths }),

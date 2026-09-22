@@ -31,7 +31,7 @@ credentials and signing, and GitViber writes nothing of its own into the repo.
 | **Diffs** | Whole files, unified or split, with word-level highlights and collapsible unchanged regions |
 | **Review** | `J` / `K` through changed files, `V` to mark one viewed. The mark clears when the agent touches the file again |
 | **Live** | Status, diffs and the file tree refresh as files change, without losing your scroll position |
-| **Worktrees** | Switch worktrees from the top bar, see each one's change count, check a branch out into a new worktree in one step |
+| **Worktrees** | Switch worktrees from the top bar, see each one's change count, check a branch out into a new worktree in one step, remove the ones you're done with |
 | **Terminal** | Your login shell under the diff (`⌘J`), with tabs and splits. Each worktree keeps its own terminals |
 | **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase |
 | **Conflicts** | Resolve block by block (current, incoming, both, or edit by hand), then continue, skip or abort |
@@ -40,8 +40,9 @@ credentials and signing, and GitViber writes nothing of its own into the repo.
 | **Explorer** | Browse any file with change bars in the gutter. Rename, delete to Trash, create and reveal from the right-click menu |
 | **Settings** | Light and dark themes, eight syntax themes, interface scale, fonts, and every shortcut rebindable (`⌘,`) |
 
-Worktrees and repos nested inside the project show up in Changes but are kept out of staging, so a
-stray `git add` can't turn them into gitlinks.
+The project's own worktrees stay out of Changes, even when they live inside it. Other repos nested
+inside the project show up there but are kept out of staging, so a stray `git add` can't turn them
+into gitlinks.
 
 <table>
   <tr>

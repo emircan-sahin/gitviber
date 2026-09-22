@@ -1,4 +1,4 @@
-import type { FileChange, Nested } from "./api";
+import type { FileChange } from "./api";
 
 export const folderName = (path: string) => path.replace(/\/+$/, "").split("/").pop() ?? path;
 
@@ -9,12 +9,6 @@ export function shortPath(path: string, main: string) {
   const parent = main.slice(0, main.lastIndexOf("/"));
   if (parent && path.startsWith(`${parent}/`)) return `../${path.slice(parent.length + 1)}`;
   return path;
-}
-
-/** What a nested entry in Changes is: a worktree's branch, or just "nested repo". */
-export function nestedLabel(n: Nested) {
-  if (!n.worktree) return "nested repo";
-  return n.branch ?? "detached";
 }
 
 /**

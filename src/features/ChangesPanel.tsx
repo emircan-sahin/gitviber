@@ -1,17 +1,17 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ArrowLeftToLine, ArrowRightToLine, Check, ChevronDown, Copy, Diff, EyeOff, File, FolderGit2, FolderOpen, FolderSearch, GitMerge, ListTree, Minus, Plus, SquareCheck, Undo2 } from "lucide-react";
+import { ArrowLeftToLine, ArrowRightToLine, Check, ChevronDown, Copy, Diff, EyeOff, File, FolderGit2, FolderSearch, GitMerge, ListTree, Minus, Plus, SquareCheck, Undo2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, errorMessage, type FileChange, type Nested, type RepoStatus } from "@/lib/api";
+import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { matchesCommand, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { folderName, NESTED_EXPLAINED, nestedLabel, stageable } from "@/lib/worktrees";
+import { NESTED_EXPLAINED, stageable } from "@/lib/worktrees";
 import { FileIcon } from "./FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
@@ -19,8 +19,6 @@ interface Props {
   status: RepoStatus;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
-  /** Opens another repo path in this window (a nested worktree's row). */
-  onOpenRepo: (path: string) => void;
   /** Hovering a row starts loading it, so the click feels instant. */
   onHover: (s: Selection) => void;
   refresh: () => Promise<void>;
@@ -51,7 +49,7 @@ export function changeList(status: RepoStatus): (Selection & { kind: "conflict" 
 
 const leftOut = (n: number) => `Left out ${n} nested ${n === 1 ? "repository" : "repositories"}`;
 
-export function ChangesPanel({ status, activeKey, onOpen, onOpenRepo, onHover, refresh, viewed, toggleViewed, onRevealInExplorer }: Props) {
+export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, viewed, toggleViewed, onRevealInExplorer }: Props) {
   const act = async (title: string, fn: () => Promise<unknown>) => {
     await attempt(title, fn);
     await refresh();
@@ -270,7 +268,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onOpenRepo, onHover, r
           >
             {status.unstaged.map((file) =>
               file.nested ? (
-                <NestedRow key={file.path} file={file} nested={file.nested} onOpenRepo={onOpenRepo} />
+                <NestedRow key={file.path} file={file} />
               ) : (
               row(
                 { kind: "unstaged", file },
@@ -455,33 +453,19 @@ function Row({
 }
 
 /**
- * An untracked folder that is another repository, usually an agent's worktree. Git lists it,
- * so we do too, but it has no diff here: clicking a worktree opens it instead.
+ * An untracked folder that is another repository (not one of ours: worktrees stay out of
+ * status). Git lists it, so we do too, but it has no diff here and can't be staged.
  */
-function NestedRow({ file, nested, onOpenRepo }: { file: FileChange; nested: Nested; onOpenRepo: (path: string) => void }) {
-  const open = nested.worktree ? () => onOpenRepo(nested.path) : undefined;
+function NestedRow({ file }: { file: FileChange }) {
   return (
-    <div
-      role={open ? "button" : undefined}
-      tabIndex={open ? 0 : undefined}
-      onClick={open}
-      onKeyDown={(e) => {
-        if (open && e.target === e.currentTarget && e.key === "Enter") open();
-      }}
-      className={cn("group/row relative flex h-[26px] items-center gap-2 pr-2 pl-2 text-[12px] outline-none focus-visible:bg-hover", open ? "cursor-pointer hover:bg-hover" : "cursor-default")}
-    >
+    <div className="group/row relative flex h-[26px] cursor-default items-center gap-2 pr-2 pl-2 text-[12px]">
       <span className="size-3.5 shrink-0" />
       <FolderGit2 className="size-4 shrink-0 text-subtle" />
       <PathLabel path={file.path.replace(/\/$/, "")} className="flex-1" />
       <span className="max-w-32 shrink-0 truncate rounded-sm bg-elevated px-1 font-mono text-[10.5px] leading-4 text-muted-foreground group-hover/row:hidden">
-        {nestedLabel(nested)}
+        nested repo
       </span>
-      <div className="hidden items-center group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
-        {open && (
-          <RowAction label={`Open worktree ${folderName(nested.path)}`} onClick={open}>
-            <FolderOpen />
-          </RowAction>
-        )}
+      <div className="hidden items-center group-hover/row:flex">
         <RowAction label="Can't stage a separate git repository" onClick={() => toast("info", "Not stageable", NESTED_EXPLAINED)}>
           <Plus className="opacity-40" />
         </RowAction>

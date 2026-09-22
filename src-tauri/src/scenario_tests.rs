@@ -530,10 +530,24 @@ fn worktree_list_detached_prunable_and_counts() {
     assert!(same_dir(&wt("agent").unwrap(), &agent));
     assert_eq!(wt("main"), None, "the current branch is not 'elsewhere'");
     assert!(switch_branch(&r, "agent", false).is_err());
+
+    // Removing: never the main or the open one; a dirty one only when forced; a missing
+    // folder just drops the entry. The branch stays.
+    assert!(remove_worktree(&r, &main.path, true).is_err());
+    assert!(remove_worktree(&agent, &a.path, true).is_err());
+    assert!(remove_worktree(&r, sb.path("det/..").to_str().unwrap(), true).is_err());
+    let err = remove_worktree(&r, &a.path, false).unwrap_err();
+    assert!(err.contains("modified or untracked"), "{err}");
+    run(&r, &["worktree", "lock", &a.path]).unwrap();
+    remove_worktree(&r, &a.path, true).unwrap();
+    assert!(!agent.exists());
+    remove_worktree(&r, &gone.path, false).unwrap();
+    assert_eq!(worktrees(&r).unwrap().len(), 2);
+    assert!(branches(&r).unwrap().iter().any(|b| b.name == "agent"));
 }
 
 #[test]
-fn nested_worktrees_show_in_status_and_are_never_staged() {
+fn nested_worktrees_stay_out_of_status_and_are_never_staged() {
     let sb = Sandbox::new("wtnested");
     let r = repo_with_worktrees(&sb);
     init(&r.join("vendor/lib"));
@@ -541,14 +555,18 @@ fn nested_worktrees_show_in_status_and_are_never_staged() {
     fs::write(r.join("plain.txt"), "p\n").unwrap();
 
     let st = status(&r).unwrap();
-    let entry = |p: &str| st.unstaged.iter().find(|f| f.path == p).unwrap();
-    let agent = entry(".claude/worktrees/agent/");
-    let n = agent.nested.as_ref().expect("marked as nested");
-    assert!(n.worktree && n.branch.as_deref() == Some("agent"));
-    assert!(same_dir(&n.path, &r.join(".claude/worktrees/agent")));
-    let lib = entry("vendor/lib/").nested.as_ref().expect("nested repo");
-    assert!(!lib.worktree && lib.branch.is_none());
-    assert!(entry("plain.txt").nested.is_none());
+    let entry = |p: &str| st.unstaged.iter().find(|f| f.path == p);
+    assert!(
+        entry(".claude/worktrees/agent/").is_none(),
+        "own worktrees aren't changes"
+    );
+    let lib = entry("vendor/lib/")
+        .unwrap()
+        .nested
+        .as_ref()
+        .expect("nested repo");
+    assert!(same_dir(&lib.path, &r.join("vendor/lib")));
+    assert!(entry("plain.txt").unwrap().nested.is_none());
 
     // Staging one directly, or a folder above it, is refused; plain files still stage.
     for p in [".claude/worktrees/agent/", ".claude", "vendor/lib"] {
