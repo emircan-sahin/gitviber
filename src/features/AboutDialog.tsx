@@ -13,13 +13,14 @@ const REPO = "https://github.com/emircan-sahin/gitviber";
 
 let aboutOnce: Promise<About> | null = null;
 
-/** Version, commit, OS and git; asked once per session. */
-export function useAbout() {
+/** Version, commit, OS and git; asked once per session, and again on `ask` (git may have been upgraded). */
+export function useAbout(ask = false) {
   const [about, setAbout] = useState<About | null>(null);
   useEffect(() => {
+    if (ask) aboutOnce = api.about();
     aboutOnce ??= api.about();
     aboutOnce.then(setAbout, () => {});
-  }, []);
+  }, [ask]);
   return about;
 }
 
@@ -48,7 +49,7 @@ export function AboutDialog() {
     },
     () => open,
   );
-  const about = useAbout();
+  const about = useAbout(shown);
   const [licenses, setLicenses] = useState(false);
 
   useEffect(() => {
