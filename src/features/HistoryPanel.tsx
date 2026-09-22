@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, RotateCcw, Tag, Undo2 } from "lucide-react";
+import { Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, Tag, Undo2 } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,12 +14,13 @@ import {
 } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { api, type Commit, errorMessage, type FileChange, github, type RepoStatus, type ResetMode } from "@/lib/api";
+import { api, type Commit, errorMessage, type FileChange, type RepoStatus, type ResetMode } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
 import { cn, relativeTime } from "@/lib/utils";
 import { FileIcon } from "./FileIcon";
+import { copyLink, openOnGitHub } from "./PullsPanel";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
 interface Props {
@@ -52,6 +53,10 @@ interface Actions {
   /** `webUrl` has every listed commit, not only those reached from origin's branches. */
   everyOnWeb: boolean;
 }
+
+/** GitHub only has commits that reached one of origin's branches (or all, for a fork's original). */
+const commitUrl = (c: Commit, { webUrl, everyOnWeb }: Pick<Actions, "webUrl" | "everyOnWeb">) =>
+  webUrl && (c.onOrigin || everyOnWeb) ? `${webUrl}/commit/${c.sha}` : undefined;
 
 export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web }: Props) {
   const [open, setOpen] = useState<string | null>(null);
@@ -124,6 +129,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
           activeKey={activeKey}
           onOpen={onOpen}
           onHover={onHover}
+          url={commitUrl(c, actions)}
           menu={<CommitMenu commit={c} head={c.sha === head} actions={actions} />}
         />
       ))}
@@ -155,6 +161,7 @@ async function dropsPushed(sha: string) {
 /** Right-click actions on a commit. `head`: the first row, i.e. the checked-out commit. */
 function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolean; actions: Actions }) {
   const { status, headSha, webUrl, locked, run } = actions;
+  const url = commitUrl(c, actions);
   const short = c.shortSha;
   const target = status?.branch ?? "HEAD";
 
@@ -234,13 +241,14 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
         <Copy /> Copy message
       </ContextMenuItem>
       {webUrl && (
-        // GitHub only has commits that reached one of origin's branches.
-        <ContextMenuItem
-          disabled={!c.onOrigin && !actions.everyOnWeb}
-          onSelect={() => github.openUrl(`${webUrl}/commit/${c.sha}`).catch((e) => toast("error", "Could not open GitHub", errorMessage(e)))}
-        >
-          <ExternalLink /> Open on GitHub
-        </ContextMenuItem>
+        <>
+          <ContextMenuItem disabled={!url} onSelect={() => url && copyLink(url)}>
+            <Link /> Copy link
+          </ContextMenuItem>
+          <ContextMenuItem disabled={!url} onSelect={() => url && openOnGitHub(url)}>
+            <ExternalLink /> Open on GitHub
+          </ContextMenuItem>
+        </>
       )}
     </ContextMenuContent>
   );
@@ -289,6 +297,7 @@ function CommitRow({
   activeKey,
   onOpen,
   onHover,
+  url,
   menu,
 }: {
   commit: Commit;
@@ -300,6 +309,7 @@ function CommitRow({
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
+  url: string | undefined;
   menu: React.ReactNode;
 }) {
   const [files, setFiles] = useState<FileChange[] | null>(null);
@@ -313,14 +323,14 @@ function CommitRow({
         if (!alive) return;
         setFiles(f);
         // Jump straight into the first file so one click shows code.
-        if (f[0]) onOpen({ kind: "commit", commit, file: f[0] });
+        if (f[0]) onOpen({ kind: "commit", commit, file: f[0], url });
       })
       .catch((e) => alive && toast("error", "Could not load commit", errorMessage(e)));
     // Collapsing (or opening another commit) cancels the auto-open of a late reply.
     return () => {
       alive = false;
     };
-  }, [open, files, commit, onOpen]);
+  }, [open, files, commit, url, onOpen]);
 
   const merge = commit.parents.length > 1;
   const add = files?.reduce((n, f) => n + (f.additions ?? 0), 0) ?? 0;
@@ -370,7 +380,7 @@ function CommitRow({
             </div>
           )}
           {files?.map((f) => {
-            const sel: Selection = { kind: "commit", commit, file: f };
+            const sel: Selection = { kind: "commit", commit, file: f, url };
             const active = activeKey === selectionKey(sel);
             return (
               <div

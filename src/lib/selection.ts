@@ -9,7 +9,8 @@ export interface PullRange {
 
 export type Selection =
   | { kind: "unstaged" | "staged" | "conflict"; file: FileChange }
-  | { kind: "commit"; commit: Commit; file: FileChange }
+  // `url`: the commit's GitHub page, when it's there (History knows; a fork's original has it too).
+  | { kind: "commit"; commit: Commit; file: FileChange; url?: string }
   | { kind: "file"; path: string }
   | { kind: "pull"; pull: Pull }
   | { kind: "issue"; issue: Issue }

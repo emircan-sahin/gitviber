@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, Rows2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, ExternalLink, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, Rows2, X } from "lucide-react";
 import { Component, type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
@@ -14,7 +14,7 @@ import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ConflictView } from "./ConflictView";
 import { IssueStateIcon } from "./IssuesPanel";
 import { IssueView } from "./IssueView";
-import { PullStateIcon } from "./PullsPanel";
+import { CopyLinkButton, openOnGitHub, PullStateIcon } from "./PullsPanel";
 import { PullView } from "./PullView";
 import { prefetchHighlight } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
@@ -276,7 +276,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
 
   return (
     <>
-      {sel.kind === "commit" && <CommitBar commit={sel.commit} />}
+      {sel.kind === "commit" && <CommitBar commit={sel.commit} url={sel.url} />}
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border pr-2 pl-3">
         <FileIcon path={selectionPath(sel)} />
         <PathLabel path={selectionPath(sel)} className="min-w-0 text-[12px]" />
@@ -416,7 +416,7 @@ function copy(text: string, what: string) {
   navigator.clipboard.writeText(text).then(() => toast("success", what));
 }
 
-function CommitBar({ commit }: { commit: import("@/lib/api").Commit }) {
+function CommitBar({ commit, url }: { commit: import("@/lib/api").Commit; url?: string }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="shrink-0 border-b border-border bg-panel px-3 py-2">
@@ -434,6 +434,16 @@ function CommitBar({ commit }: { commit: import("@/lib/api").Commit }) {
             <button className="font-medium text-primary hover:underline" onClick={() => setOpen(!open)}>
               {open ? "less" : "more"}
             </button>
+          )}
+          {url && (
+            <div className="-my-1 flex items-center">
+              <CopyLinkButton url={url} />
+              <Tip label="Open on GitHub">
+                <Button variant="ghost" size="icon-sm" aria-label="Open on GitHub" onClick={() => openOnGitHub(url)}>
+                  <ExternalLink />
+                </Button>
+              </Tip>
+            </div>
           )}
         </div>
       </div>
