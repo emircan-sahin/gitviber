@@ -165,11 +165,13 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     if (ok) await run("Clean up", () => api.deleteBranches(names, false), `Deleted ${names.length} merged branches`);
   };
 
+  const merge = (name: string) => run("Merge", () => api.merge(name), `Merged ${name}`);
+
   // A fresh count decides force: git refuses a dirty or locked worktree otherwise, and the
   // warning must say what gets lost. If counting fails, git's own refusal is the fallback.
   const removeWorktree = async (w: Worktree) => {
     const name = folderName(w.path);
-    const changed = w.prunable ? 0 : await api.worktreeChanges(w.path).catch(() => 0);
+    const changed = w.prunable ? 0 : await api.worktreeState(w.path).then((s) => s.uncommitted, () => 0);
     const branch = w.branch ? ` The branch ${w.branch} stays.` : "";
     const lost = changed ? ` Its ${changed} uncommitted ${changed === 1 ? "change" : "changes"} will be lost.` : "";
     const lock = w.inUse
@@ -199,13 +201,13 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         current={status?.branch ?? null}
         onSwitch={(name) => run("Switch branch", () => api.switchBranch(name, false), `Switched to ${name}`)}
         onCreate={(name) => run("Create branch", () => api.switchBranch(name, true), `Switched to new branch ${name}`)}
-        onMerge={(name) => run("Merge", () => api.merge(name), `Merged ${name}`)}
+        onMerge={merge}
         onRebase={(name) => run("Rebase", () => api.rebase(name), `Rebased onto ${name}`)}
         onTerminal={branchTerminal}
         onDelete={deleteBranch}
         onCleanUp={cleanUp}
       />
-      <WorktreePicker worktrees={worktrees} branches={branches} onOpen={onOpenRepo} onTerminal={openTerminal} onRemove={removeWorktree} />
+      <WorktreePicker worktrees={worktrees} branches={branches} onOpen={onOpenRepo} onTerminal={openTerminal} onMerge={merge} onRemove={removeWorktree} />
       {status && !status.upstream && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
           <CloudOff className="size-3" /> Not published

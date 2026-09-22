@@ -610,30 +610,95 @@ fn listed_worktree(repo: &Path, path: &str) -> Result<Worktree, String> {
         .ok_or_else(|| format!("not a worktree of this repository: {path}"))
 }
 
-/// Changed files in one of this repo's worktrees.
-pub fn worktree_changes(repo: &Path, path: &str) -> Result<u32, String> {
-    let w = listed_worktree(repo, path)?;
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeState {
+    /// Files `git status` lists: gone for good if the folder is deleted.
+    pub uncommitted: u32,
+    /// Commits the default branch lacks; on the default branch itself, commits no remote has.
+    pub commits: u32,
+    /// Committed on, then fully taken into the default branch. A branch that never moved
+    /// is in it too, but has nothing to call merged.
+    pub merged: bool,
+}
+
+/// Where one of this repo's worktrees stands: uncommitted files, and commits found nowhere else.
+pub fn worktree_state(repo: &Path, path: &str) -> Result<WorktreeState, String> {
+    let all = worktrees(repo)?;
+    let w = all
+        .iter()
+        .find(|w| w.path == path)
+        .ok_or_else(|| format!("not a worktree of this repository: {path}"))?;
     if w.bare || w.prunable {
         return Err(format!("this worktree has no files on disk: {path}"));
     }
+    let dir = Path::new(&w.path);
+    // Worktrees kept inside this one (.claude/worktrees/*) show as untracked folders.
+    let real = |p: &Path| p.canonicalize().ok();
+    let others: Vec<_> = all
+        .iter()
+        .filter_map(|o| real(Path::new(&o.path)))
+        .collect();
     let raw = run(
-        Path::new(&w.path),
+        dir,
         &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
     )?;
-    let mut count = 0;
+    let mut uncommitted = 0;
     let mut records = raw.split(|b| *b == 0);
     while let Some(rec) = records.next() {
         match rec.first() {
-            Some(b'1' | b'u' | b'?') => count += 1,
+            Some(b'?') => {
+                let p = String::from_utf8_lossy(&rec[2..]);
+                let root = real(&dir.join(p.as_ref()));
+                if !(is_nested_repo(dir, &p) && root.is_some_and(|r| others.contains(&r))) {
+                    uncommitted += 1;
+                }
+            }
+            Some(b'1' | b'u') => uncommitted += 1,
             // A rename's original path follows as its own record.
             Some(b'2') => {
-                count += 1;
+                uncommitted += 1;
                 records.next();
             }
             _ => {}
         }
     }
-    Ok(count)
+    let count = |args: &[&str]| -> u32 {
+        run_text(dir, args)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    };
+    // Local default first: a merge into main that isn't pushed yet still counts as merged.
+    let default = default_branch(repo);
+    let base = [
+        format!("refs/heads/{default}"),
+        format!("refs/remotes/origin/{default}"),
+    ]
+    .into_iter()
+    .find(|r| run(dir, &["rev-parse", "--verify", "-q", r]).is_ok());
+    // The default branch itself can only be measured against the remotes.
+    let base = base.filter(|_| w.branch.as_deref() != Some(default.as_str()));
+    let commits = count(&[
+        "rev-list",
+        "--count",
+        "HEAD",
+        "--not",
+        base.as_deref().unwrap_or("--remotes"),
+    ]);
+    // One reflog entry is the branch's creation: it never moved.
+    let moved = |b: &str| {
+        run_text(
+            dir,
+            &["reflog", "show", "--format=%H", &format!("refs/heads/{b}")],
+        )
+        .is_ok_and(|log| log.lines().count() > 1)
+    };
+    Ok(WorktreeState {
+        uncommitted,
+        commits,
+        merged: base.is_some() && commits == 0 && w.branch.as_deref().is_some_and(moved),
+    })
 }
 
 /// Deletes a linked worktree's folder and entry; its branch stays. `force` also drops

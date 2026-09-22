@@ -111,6 +111,14 @@ export interface Entry {
   ignored: boolean;
 }
 
+export interface WorktreeState {
+  uncommitted: number;
+  /** Commits the default branch lacks; on the default branch itself, commits no remote has. */
+  commits: number;
+  /** Committed on, then fully taken into the default branch. */
+  merged: boolean;
+}
+
 export interface Branch {
   name: string;
   remote: boolean;
@@ -148,8 +156,8 @@ export const api = {
   /** "origin/feat" → git push origin --delete feat. */
   deleteRemoteBranch: (name: string) => invoke<void>("delete_remote_branch", { name }),
   worktrees: () => invoke<Worktree[]>("worktrees"),
-  /** Changed files in one of this repo's worktrees (a `git status` there). */
-  worktreeChanges: (path: string) => invoke<number>("worktree_changes", { path }),
+  /** Uncommitted files in one of this repo's worktrees, and commits found nowhere else. */
+  worktreeState: (path: string) => invoke<WorktreeState>("worktree_state", { path }),
   /** Checks a branch out in a new worktree beside the main one; returns its path. */
   addWorktree: (branch: string) => invoke<string>("add_worktree", { branch }),
   /** Deletes a linked worktree's folder (its branch stays); `force` drops uncommitted files and overrides a lock. */

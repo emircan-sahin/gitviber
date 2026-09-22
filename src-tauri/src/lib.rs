@@ -182,9 +182,9 @@ async fn add_worktree(state: State<'_, AppState>, branch: String) -> Res<String>
 }
 
 #[tauri::command]
-async fn worktree_changes(state: State<'_, AppState>, path: String) -> Res<u32> {
+async fn worktree_state(state: State<'_, AppState>, path: String) -> Res<git::WorktreeState> {
     let r = repo(&state)?;
-    blocking(move || git::worktree_changes(&r, &path)).await
+    blocking(move || git::worktree_state(&r, &path)).await
 }
 
 #[tauri::command]
@@ -625,7 +625,7 @@ pub fn run() {
             delete_branches,
             delete_remote_branch,
             worktrees,
-            worktree_changes,
+            worktree_state,
             add_worktree,
             remove_worktree,
             stage,

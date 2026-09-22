@@ -512,11 +512,24 @@ fn worktree_list_detached_prunable_and_counts() {
     let gone = list.iter().find(|w| w.path.ends_with("/gone")).unwrap();
     assert!(gone.prunable);
 
-    assert_eq!(worktree_changes(&r, &a.path).unwrap(), 2);
-    assert_eq!(worktree_changes(&r, &det.path).unwrap(), 0);
-    assert!(worktree_changes(&r, &gone.path).is_err());
+    assert_eq!(worktree_state(&r, &a.path).unwrap().uncommitted, 2);
+    let d = worktree_state(&r, &det.path).unwrap();
+    assert!(d.uncommitted == 0 && d.commits == 0 && !d.merged);
+    assert!(worktree_state(&r, &gone.path).is_err());
     // Only listed worktrees: never an arbitrary folder.
-    assert!(worktree_changes(&r, sb.path("det/..").to_str().unwrap()).is_err());
+    assert!(worktree_state(&r, sb.path("det/..").to_str().unwrap()).is_err());
+
+    // Untouched is not merged; committed then merged into a local, unpushed main is.
+    assert!(!worktree_state(&r, &a.path).unwrap().merged);
+    write_commit(&agent, "b.txt", "b\n", "agent work");
+    let s = worktree_state(&r, &a.path).unwrap();
+    assert!(s.commits == 1 && !s.merged);
+    run(&r, &["merge", "-q", "agent"]).unwrap();
+    let s = worktree_state(&r, &a.path).unwrap();
+    assert!(s.commits == 0 && s.merged);
+    // The agent worktree lives inside the main one: it's not an untracked file there.
+    let m = worktree_state(&r, &main.path).unwrap();
+    assert!(m.uncommitted == 0 && !m.merged);
 
     // From inside a linked worktree the main one is still the project.
     assert!(same_dir(&main_worktree(&agent).unwrap(), &r));

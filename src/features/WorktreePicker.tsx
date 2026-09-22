@@ -1,9 +1,9 @@
-import { Check, ChevronsUpDown, CornerUpLeft, FolderGit2, GitBranch, Lock, SquareTerminal, Trash2 } from "lucide-react";
+import { Check, ChevronsUpDown, CornerUpLeft, FolderGit2, GitBranch, GitMerge, Lock, SquareTerminal, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, type Worktree } from "@/lib/api";
+import { api, type Branch, type Worktree, type WorktreeState } from "@/lib/api";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName, shortPath } from "@/lib/worktrees";
 import { RowAction } from "./BranchPicker";
@@ -15,6 +15,8 @@ interface Props {
   /** Opens a worktree in this window (the regular open-repo flow). */
   onOpen: (path: string) => void;
   onTerminal: (path: string) => void;
+  /** Merges a branch into the current one. Git allows it while another worktree has it out. */
+  onMerge: (branch: string) => void;
   /** Deletes a linked worktree (asks first). */
   onRemove: (w: Worktree) => void;
 }
@@ -24,12 +26,12 @@ interface Props {
  * Rows lead with the branch, the name people know a worktree by; the folder comes second.
  * In a linked worktree it names it and offers the way back to the main one.
  */
-export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onRemove }: Props) {
+export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove }: Props) {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState(worktrees);
   const [index, setIndex] = useState(0);
-  // Change counts need a `git status` per worktree: fetched when the menu opens, never before.
-  const [counts, setCounts] = useState<Record<string, number>>({});
+  // A `git status` and two rev-lists per worktree: fetched when the menu opens, never before.
+  const [states, setStates] = useState<Record<string, WorktreeState>>({});
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => setList(worktrees), [worktrees]);
@@ -48,9 +50,9 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onRemo
           const w = todo.shift();
           if (!w || !live) return;
           return api
-            .worktreeChanges(w.path)
+            .worktreeState(w.path)
             .then(
-              (n) => void (live && setCounts((c) => ({ ...c, [w.path]: n }))),
+              (s) => void (live && setStates((c) => ({ ...c, [w.path]: s }))),
               () => {},
             )
             .then(next);
@@ -80,6 +82,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onRemo
   };
   const pick = then((w) => onOpen(w.path));
   const terminal = then((w) => onTerminal(w.path));
+  const merge = then((w) => w.branch && onMerge(w.branch));
   const remove = then(onRemove);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -134,10 +137,12 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onRemo
                 usable={usable(w)}
                 main={main?.path ?? w.path}
                 time={branches.find((b) => !b.remote && b.name === w.branch)?.timestamp}
-                count={counts[w.path]}
+                state={states[w.path]}
+                into={current?.branch ?? null}
                 onHover={setIndex}
                 onPick={pick}
                 onTerminal={terminal}
+                onMerge={merge}
                 onRemove={remove}
               />
             ))}
@@ -171,10 +176,12 @@ function WorktreeRow({
   usable,
   main,
   time,
-  count,
+  state,
+  into,
   onHover,
   onPick,
   onTerminal,
+  onMerge,
   onRemove,
 }: {
   i: number;
@@ -183,10 +190,13 @@ function WorktreeRow({
   usable: boolean;
   main: string;
   time: number | undefined;
-  count: number | undefined;
+  state: WorktreeState | undefined;
+  /** The current worktree's branch; null when detached. */
+  into: string | null;
   onHover: (i: number) => void;
   onPick: (w: Worktree) => void;
   onTerminal: (w: Worktree) => void;
+  onMerge: (w: Worktree) => void;
   onRemove: (w: Worktree) => void;
 }) {
   const branch = w.branch ?? (w.bare ? "bare" : `detached @ ${w.head ?? "?"}`);
@@ -238,6 +248,11 @@ function WorktreeRow({
         <RowAction hot={hot} label="Open a terminal here" onClick={act(onTerminal)}>
           <SquareTerminal />
         </RowAction>
+        {into && w.branch && !w.current && !!state?.commits && (
+          <RowAction hot={hot} label={`Merge into ${into}${state.uncommitted ? ` · its ${state.uncommitted} uncommitted ${state.uncommitted === 1 ? "change stays" : "changes stay"} behind` : ""}`} onClick={act(onMerge)}>
+            <GitMerge />
+          </RowAction>
+        )}
         {!w.main && !w.current && (
           <RowAction hot={hot} label="Remove worktree…" onClick={act(onRemove)}>
             <Trash2 />
@@ -245,17 +260,31 @@ function WorktreeRow({
         )}
       </span>
       {(!hot || w.prunable || w.bare) && (
-        <span className={cn("flex max-w-24 shrink-0 flex-col items-end text-[10.5px] leading-4", hot ? "opacity-80" : "text-subtle")}>
+        <span className={cn("flex max-w-36 shrink-0 flex-col items-end text-[10.5px] leading-4", hot ? "opacity-80" : "text-subtle")}>
           <span className="max-w-full truncate">{w.prunable ? "missing" : w.bare ? "" : time ? relativeTime(time) : w.current ? "current" : ""}</span>
-          {/* "No changes" flags the worktrees an agent was parked in and never touched. */}
-          {count !== undefined && (
-            <span className={cn("max-w-full truncate", count === 0 ? "opacity-60" : !hot && "text-foreground")}>
-              {count === 0 ? "no changes" : `${count} change${count === 1 ? "" : "s"}`}
-            </span>
-          )}
+          {state && <StateLabel state={state} hot={hot} />}
         </span>
       )}
     </div>
+  );
+}
+
+/** Uncommitted files and unmerged commits side by side; "merged" or "no changes" only when neither. */
+function StateLabel({ state: s, hot }: { state: WorktreeState; hot: boolean }) {
+  const plural = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
+  const parts: [string, string][] = [];
+  if (s.uncommitted) parts.push([plural(s.uncommitted, "change"), "text-removed"]);
+  if (s.commits) parts.push([plural(s.commits, "commit"), "text-added"]);
+  if (!parts.length) parts.push(s.merged ? ["merged", "text-renamed"] : ["no changes", "text-subtle"]);
+  return (
+    <span className="max-w-full truncate">
+      {parts.map(([text, tone], i) => (
+        <span key={text} className={cn(!hot && tone)}>
+          {i > 0 && " · "}
+          {text}
+        </span>
+      ))}
+    </span>
   );
 }
 
