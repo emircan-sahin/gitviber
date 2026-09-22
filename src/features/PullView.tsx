@@ -1,10 +1,12 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Check, ChevronDown, CircleDashed, ExternalLink, GitBranch, GitMerge, Image as ImageIcon, Loader2, MinusCircle, RefreshCw, X } from "lucide-react";
+import { Check, ChevronDown, CircleDashed, ExternalLink, GitBranch, GitMerge, GitPullRequest, GitPullRequestClosed, Image as ImageIcon, Loader2, MessageSquare, MinusCircle, RefreshCw, X } from "lucide-react";
 import { type ComponentProps, useCallback, useMemo, useState } from "react";
 import type { Components } from "react-markdown";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { api, errorMessage, github, type MergeMethod, type Pull, type PullCheck, type PullDetail } from "@/lib/api";
+import { api, errorMessage, github, type MergeMethod, type Pull, type PullCheck, type PullDetail, type ReviewEvent } from "@/lib/api";
 import { revalidate, useGitHubData } from "@/lib/githubCache";
 import { isGitHubHosted, markdownLink } from "@/lib/markdown";
 import type { Selection } from "@/lib/selection";
@@ -35,8 +37,11 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
     useCallback(() => (d ? github.files(d) : Promise.reject(new Error("no pull request"))), [d]),
     600_000,
   );
+  // Same cache entry as the PRs panel's, so this is normally already loaded.
+  const account = useGitHubData("account", github.account, 600_000).data ?? null;
   const load = () => detail.refresh(true);
 
+  /** true when the action went through. */
   const act = async (label: string, fn: () => Promise<unknown>, done: string) => {
     setBusy(label);
     try {
@@ -44,8 +49,10 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
       toast(stopped === true ? "info" : "success", stopped === true ? `${label} stopped on conflicts` : done, stopped === true ? "Resolve them in Changes, then push." : undefined);
       notifyPullsChanged();
       await load();
+      return true;
     } catch (e) {
       toast("error", `${label} failed`, errorMessage(e));
+      return false;
     } finally {
       setBusy(null);
     }
@@ -57,6 +64,11 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   const merge = async (method: MergeMethod) => {
     const ok = await ask(`${METHODS[method]}: #${p.number} into ${p.baseRef}?`, { title: "Merge pull request", okLabel: "Merge" });
     if (ok) await act("Merge", () => github.merge(p.number, method), `Merged #${p.number}`);
+  };
+
+  const setOpen = async (open: boolean) => {
+    if (!open && !(await ask(`Close #${p.number} without merging?`, { title: "Close pull request", okLabel: "Close" }))) return;
+    await act(open ? "Reopen" : "Close", () => github.setOpen(p.number, open), `${open ? "Reopened" : "Closed"} #${p.number}`);
   };
 
   // GitHub can't merge it: bring the conflicts home. Check out the PR branch and merge
@@ -115,6 +127,17 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
           {p.state === "open" && (
             <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => act("Checkout", () => github.checkout(p.number, p.headRef, sameRepo), `Switched to ${sameRepo ? p.headRef : `pr/${p.number}`}`)}>
               <GitBranch /> Checkout
+            </Button>
+          )}
+          {p.state === "open" && <ReviewButton own={account?.login === p.author} busy={!!busy} onSubmit={(event, body) => act("Review", () => github.review(p.number, event, body), REVIEWS[event].done)} />}
+          {p.state === "open" && (
+            <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setOpen(false)}>
+              <GitPullRequestClosed /> Close
+            </Button>
+          )}
+          {p.state === "closed" && (
+            <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setOpen(true)}>
+              <GitPullRequest /> Reopen
             </Button>
           )}
           <Button variant="secondary" size="sm" onClick={() => github.openUrl(p.url).catch((e) => toast("error", "Could not open", errorMessage(e)))}>
@@ -266,6 +289,58 @@ function MergeBox({
         </div>
       )}
     </div>
+  );
+}
+
+const REVIEWS: Record<ReviewEvent, { label: string; note: string; done: string }> = {
+  COMMENT: { label: "Comment", note: "General feedback without explicit approval.", done: "Review submitted" },
+  APPROVE: { label: "Approve", note: "Give your approval to merge these changes.", done: "Approved" },
+  REQUEST_CHANGES: { label: "Request changes", note: "Feedback that must be addressed before merging.", done: "Changes requested" },
+};
+
+/** GitHub's "Review changes": a verdict plus a note, which GitHub requires unless approving. */
+function ReviewButton({ own, busy, onSubmit }: { own: boolean; busy: boolean; onSubmit: (event: ReviewEvent, body: string) => Promise<boolean> }) {
+  const [open, setOpen] = useState(false);
+  const [pick, setPick] = useState<ReviewEvent>("APPROVE");
+  // GitHub refuses approving or requesting changes on your own pull request.
+  const event = own ? "COMMENT" : pick;
+  const [body, setBody] = useState("");
+  const ready = event === "APPROVE" || body.trim() !== "";
+  const submit = async () => {
+    setOpen(false);
+    // A rejected review keeps its text for another try.
+    if (await onSubmit(event, body.trim())) setBody("");
+  };
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button variant="secondary" size="sm" disabled={busy}>
+          <MessageSquare /> Review
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-80 p-3">
+        <Textarea autoFocus value={body} onChange={(e) => setBody(e.target.value)} placeholder="Leave a comment (markdown)" rows={4} className="text-[12px]" />
+        <div className="mt-2 space-y-1.5">
+          {(Object.keys(REVIEWS) as ReviewEvent[]).map((e) => {
+            const disabled = own && e !== "COMMENT";
+            return (
+              <label key={e} className={cn("flex items-start gap-2 text-[12px]", disabled ? "opacity-50" : "cursor-pointer")}>
+                <input type="radio" name="review" checked={event === e} disabled={disabled} onChange={() => setPick(e)} className="mt-0.5 accent-primary" />
+                <span>
+                  <span className="font-medium">{REVIEWS[e].label}</span>
+                  <span className="block text-[11px] text-muted-foreground">{disabled ? "Not available on your own pull request." : REVIEWS[e].note}</span>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+        <div className="mt-3 flex justify-end">
+          <Button size="sm" disabled={busy || !ready} onClick={submit}>
+            Submit review
+          </Button>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 

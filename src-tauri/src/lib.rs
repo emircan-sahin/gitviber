@@ -463,6 +463,24 @@ async fn pr_merge(app: AppHandle, number: u64, method: String) -> Res<()> {
 }
 
 #[tauri::command]
+async fn pr_set_open(app: AppHandle, number: u64, open: bool) -> Res<github::Pull> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::set_open(&state.github, &repo(&state)?, number, open)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn pr_review(app: AppHandle, number: u64, event: String, body: String) -> Res<()> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::review(&state.github, &repo(&state)?, number, &event, &body)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn issue_list(app: AppHandle, filter: String) -> Res<Vec<github::Issue>> {
     blocking(move || {
         let state = app.state::<AppState>();
@@ -663,6 +681,8 @@ pub fn run() {
             pr_files,
             pr_create,
             pr_merge,
+            pr_set_open,
+            pr_review,
             pr_checkout,
             issue_list,
             issue_detail,
