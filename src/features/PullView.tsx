@@ -15,7 +15,7 @@ import { tracked, undoAction } from "@/lib/undo";
 import { cn, relativeTime } from "@/lib/utils";
 import { FileIcon } from "./FileIcon";
 import { followLink, MarkdownBody } from "./MarkdownView";
-import { isoToUnix, notifyPullsChanged, PullStateIcon } from "./PullsPanel";
+import { CopyLinkButton, isoToUnix, notifyPullsChanged, openOnGitHub, PullStateIcon } from "./PullsPanel";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
 const METHODS: Record<MergeMethod, string> = { merge: "Create a merge commit", squash: "Squash and merge", rebase: "Rebase and merge" };
@@ -162,9 +162,10 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
               <GitPullRequest /> Reopen
             </Button>
           )}
-          <Button variant="secondary" size="sm" onClick={() => github.openUrl(p.url).catch((e) => toast("error", "Could not open", errorMessage(e)))}>
+          <Button variant="secondary" size="sm" onClick={() => openOnGitHub(p.url)}>
             <ExternalLink /> Open on GitHub
           </Button>
+          <CopyLinkButton url={p.url} />
           <Button variant="ghost" size="icon-sm" onClick={load} disabled={!!busy || detail.loading}>
             <RefreshCw className={cn(detail.loading && "animate-spin")} />
           </Button>

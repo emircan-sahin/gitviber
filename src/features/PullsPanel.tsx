@@ -1,6 +1,7 @@
-import { GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Plus, RefreshCw, Terminal } from "lucide-react";
+import { ExternalLink, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Link, Plus, RefreshCw, Terminal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -89,15 +90,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
-        {(["open", "closed", "all"] as const).map((f) => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={cn("h-5 rounded-sm px-1.5 text-[11.5px] capitalize", filter === f ? "bg-active text-foreground" : "text-subtle hover:text-foreground")}
-          >
-            {f}
-          </button>
-        ))}
+        <FilterTabs value={filter} onChange={setFilter} />
         <div className="ml-auto flex items-center gap-0.5">
           <Tip label="Refresh">
             <Button variant="ghost" size="icon-sm" onClick={load} disabled={loading}>
@@ -189,6 +182,48 @@ const branchTitle = (branch: string) => {
   return t.charAt(0).toUpperCase() + t.slice(1);
 };
 
+/**
+ * Open / Closed / All: the sidebar's tabs (Changes, History, …) one size down, so they read as
+ * tabs and as a level under them. `counts` badges each, as Changes' count does.
+ */
+export function FilterTabs<F extends "open" | "closed" | "all">({
+  value,
+  onChange,
+  counts,
+}: {
+  value: F;
+  onChange: (f: F) => void;
+  counts?: Partial<Record<F, string>>;
+}) {
+  return (
+    <div role="tablist" className="flex shrink-0 items-center gap-0.5">
+      {(["open", "closed", "all"] as F[]).map((f) => {
+        const on = value === f;
+        return (
+          <button
+            key={f}
+            role="tab"
+            aria-selected={on}
+            onClick={() => onChange(f)}
+            className={cn(
+              "flex h-5 items-center gap-1 rounded-sm px-1.5 text-[11.5px] font-medium capitalize",
+              on ? "bg-active text-foreground" : "text-subtle hover:text-foreground",
+            )}
+          >
+            {f}
+            {counts?.[f] !== undefined && (
+              // Counts go first when the header runs out of room (IssuesPanel's container).
+              <span className={cn("rounded-sm bg-elevated px-1 font-mono text-[10px] leading-3.5 @max-[300px]:hidden", on ? "text-foreground" : "text-muted-foreground")}>
+                {counts[f]}
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 /** A pane header's "new" action. */
 export function NewButton({ label, disabled, onClick }: { label: string; disabled?: boolean; onClick: () => void }) {
   return (
@@ -200,6 +235,42 @@ export function NewButton({ label, disabled, onClick }: { label: string; disable
         </Button>
       </span>
     </Tip>
+  );
+}
+
+export const openOnGitHub = (url: string) => github.openUrl(url).catch((e) => toast("error", "Could not open", errorMessage(e)));
+
+export const copyLink = (url: string) =>
+  navigator.clipboard.writeText(url).then(
+    () => toast("success", "Link copied"),
+    (e) => toast("error", "Could not copy", errorMessage(e)),
+  );
+
+/** A PR or issue view's copy-link action, beside "Open on GitHub". */
+export function CopyLinkButton({ url }: { url: string }) {
+  return (
+    <Tip label="Copy link">
+      <Button variant="ghost" size="icon-sm" aria-label="Copy link" onClick={() => copyLink(url)}>
+        <Link />
+      </Button>
+    </Tip>
+  );
+}
+
+/** A PR or issue row's right-click menu. */
+export function LinkMenu({ url, children }: { url: string; children: React.ReactNode }) {
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={() => copyLink(url)}>
+          <Link /> Copy link
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={() => openOnGitHub(url)}>
+          <ExternalLink /> Open on GitHub
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 
@@ -231,8 +302,8 @@ function PullRows({
         const sel: Selection = { kind: "pull", pull: p };
         const active = activeKey === selectionKey(sel);
         return (
+          <LinkMenu key={p.number} url={p.url}>
           <div
-            key={p.number}
             role="button"
             onClick={() => onOpen(sel)}
             onDoubleClick={() => onOpen(sel, true)}
@@ -252,6 +323,7 @@ function PullRows({
               </div>
             </div>
           </div>
+          </LinkMenu>
         );
       })}
       {/* github.rs `list` asks for one page of 100; say so rather than look complete. */}
