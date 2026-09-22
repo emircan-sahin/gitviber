@@ -5,7 +5,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { newerCopy, resetGitHubCache, useGitHubCacheVersion } from "@/lib/githubCache";
-import { useShownLanguage } from "@/lib/highlight";
+import { useShownLanguage, warmHighlighter } from "@/lib/highlight";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { languageLabel } from "@/lib/language";
 import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
@@ -240,6 +240,12 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   }, [conflictCount]);
 
   const prefetch = useCallback((sel: Selection) => prefetchSelection(sel, repo.revision, s.codeTheme), [repo.revision, s.codeTheme]);
+
+  // Load the highlighter (and compile its WASM) while the app settles, not on the first file.
+  useEffect(() => {
+    const t = setTimeout(warmHighlighter, 300);
+    return () => clearTimeout(t);
+  }, []);
 
   // Reviewing is sequential: have the neighbours of the open file ready before J/K.
   useEffect(() => {

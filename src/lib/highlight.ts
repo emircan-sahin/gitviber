@@ -22,17 +22,34 @@ export function useShownLanguage() {
   return useSyncExternalStore(subscribeLanguage, () => shownLanguage);
 }
 
-// Minified or giant files: tokenizing them costs more than it helps.
+// Giant files: tokenizing them costs more than it helps. (Minified lines are skipped in the worker.)
 const MAX_CHARS = 1_500_000;
-const MAX_LINE = 4000;
+// Queued prefetches beyond this are dropped, oldest first: hovering down a list shouldn't
+// leave a backlog of files you have moved past.
+const MAX_PREFETCH = 4;
+
+interface Job {
+  key: string;
+  code: string;
+  lang: string;
+  theme: string;
+  /** Mounted views waiting for this job; a view's job is dropped when it's no longer shown. */
+  viewers: number;
+  prefetched: boolean;
+  promise: Promise<Highlighted | null>;
+  resolve: (r: Highlighted | null) => void;
+}
 
 let worker: Worker | null = null;
 let nextId = 1;
-const pending = new Map<number, (r: Highlighted | null) => void>();
+// The worker gets one job at a time, so the file on screen goes ahead of anything queued
+// before it instead of waiting behind prefetches.
+const queue: Job[] = [];
+let running: { id: number; job: Job } | null = null;
+const jobs = new Map<string, Job>();
 // Keyed by a hash so a big file's text isn't copied into a key string on every revision;
 // the entry keeps a reference to the (shared) text to rule out collisions.
 const cache = new Map<string, { code: string; data: Highlighted }>();
-const inflight = new Map<string, Promise<Highlighted | null>>();
 function cacheKey(code: string, lang: string, theme: string) {
   let h = 0x811c9dc5;
   for (let i = 0; i < code.length; i++) h = Math.imul(h ^ code.charCodeAt(i), 0x01000193);
@@ -52,49 +69,91 @@ function getWorker() {
     worker = new Worker(new URL("./highlight.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = (e) => {
       const { id, lines, fg, error } = e.data;
-      pending.get(id)?.(error ? null : { lines, fg });
-      pending.delete(id);
+      if (!running || running.id !== id) return;
+      const { job } = running;
+      running = null;
+      finish(job, error ? null : { lines, fg });
+      pump();
     };
-    // If the worker dies, settle everything waiting on it (plain text) and start fresh next time.
+    // If the worker dies, the job it was on shows as plain text; the rest go to a fresh worker.
     worker.onerror = () => {
-      pending.forEach((resolve) => resolve(null));
-      pending.clear();
       worker?.terminate();
       worker = null;
+      if (running) finish(running.job, null);
+      running = null;
+      pump();
     };
   }
   return worker;
 }
 
-function highlight(code: string, lang: string, theme: string): Promise<Highlighted | null> {
-  if (lang === "text" || code.length > MAX_CHARS || code.split("\n", 2000).some((l) => l.length > MAX_LINE)) {
-    return Promise.resolve(null);
+/** Starts the worker (and its WASM engine) ahead of the first file, so that one opens sooner. */
+export function warmHighlighter() {
+  getWorker();
+}
+
+function finish(job: Job, r: Highlighted | null) {
+  jobs.delete(job.key);
+  if (r) {
+    cache.set(job.key, { code: job.code, data: r });
+    // Small LRU: the files being reviewed now plus prefetched neighbours.
+    if (cache.size > 48) cache.delete(cache.keys().next().value!);
   }
+  job.resolve(r);
+}
+
+function drop(job: Job) {
+  queue.splice(queue.indexOf(job), 1);
+  finish(job, null);
+}
+
+function pump() {
+  if (running || !queue.length) return;
+  // Views in the order they asked, then the most recent prefetch.
+  const i = queue.findIndex((j) => j.viewers > 0);
+  const job = queue.splice(i < 0 ? queue.length - 1 : i, 1)[0];
+  running = { id: nextId++, job };
+  getWorker().postMessage({ id: running.id, code: job.code, lang: job.lang, theme: job.theme });
+}
+
+const settled = (r: Highlighted | null) => ({ promise: Promise.resolve(r), release: () => {} });
+
+export function highlight(code: string, lang: string, theme: string, view: boolean) {
+  if (lang === "text" || code.length > MAX_CHARS) return settled(null);
   const key = cacheKey(code, lang, theme);
   const hit = cached(key, code);
-  if (hit) return Promise.resolve(hit);
-  const running = inflight.get(key);
-  if (running) return running;
-  const job = new Promise<Highlighted | null>((resolve) => {
-    const id = nextId++;
-    pending.set(id, (r) => {
-      inflight.delete(key);
-      if (r) {
-        cache.set(key, { code, data: r });
-        // Small LRU: the files being reviewed now plus prefetched neighbours.
-        if (cache.size > 48) cache.delete(cache.keys().next().value!);
-      }
-      resolve(r);
-    });
-    getWorker().postMessage({ id, code, lang, theme });
-  });
-  inflight.set(key, job);
-  return job;
+  if (hit) return settled(hit);
+  let job = jobs.get(key);
+  if (!job) {
+    let resolve!: Job["resolve"];
+    const promise = new Promise<Highlighted | null>((r) => (resolve = r));
+    job = { key, code, lang, theme, viewers: 0, prefetched: false, promise, resolve };
+    jobs.set(key, job);
+    queue.push(job);
+  }
+  const j = job;
+  if (view) j.viewers++;
+  else {
+    j.prefetched = true;
+    // Asked again: it's the most recent prefetch now.
+    const at = queue.indexOf(j);
+    if (at >= 0) queue.push(...queue.splice(at, 1));
+    const waiting = queue.filter((q) => q.viewers === 0);
+    for (const old of waiting.slice(0, Math.max(0, waiting.length - MAX_PREFETCH))) drop(old);
+  }
+  pump();
+  return {
+    promise: j.promise,
+    release: () => {
+      // A revision nobody shows anymore (the file changed again, or you moved on): skip it.
+      if (--j.viewers === 0 && !j.prefetched && queue.includes(j)) drop(j);
+    },
+  };
 }
 
 /** Warms the cache so opening this code later shows colors immediately. */
 export function prefetchHighlight(code: string, lang: string, theme: string) {
-  void highlight(code, lang, theme);
+  highlight(code, lang, theme, false);
 }
 
 /**
@@ -107,9 +166,11 @@ export function useHighlight(code: string | null, lang: string, theme: string) {
   useEffect(() => {
     if (code == null) return;
     let alive = true;
-    highlight(code, lang, theme).then((data) => alive && setResult({ code, lang, theme, data }));
+    const { promise, release } = highlight(code, lang, theme, true);
+    promise.then((data) => alive && setResult({ code, lang, theme, data }));
     return () => {
       alive = false;
+      release();
     };
   }, [code, lang, theme]);
   // A cache hit is used in the same render, so prefetched files open already colored.
