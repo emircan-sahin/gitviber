@@ -23,6 +23,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Wordmark } from "@/components/Logo";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -160,6 +161,8 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       data-tauri-drag-region
       className={`flex h-[max(40px,calc(40px/var(--ui-scale,1)))] shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 ${fullscreen ? "pl-2" : "pl-[calc(86px/var(--ui-scale,1))]"}`}
     >
+      <Wordmark />
+      <div className="mx-2 h-4 w-px bg-border-strong" />
       <ProjectSwitcher repo={repo} root={root} main={main} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} />
       <span className="text-[13px] text-border-strong select-none">/</span>
       <BranchPicker
