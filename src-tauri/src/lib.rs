@@ -728,10 +728,26 @@ async fn issue_list(
     app: AppHandle,
     target: Option<String>,
     filter: String,
+    labels: Vec<String>,
 ) -> Res<Vec<github::Issue>> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::issues(&state.github, &repo(&state)?, target.as_deref(), &filter)
+        github::issues(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            &filter,
+            &labels,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn issue_labels(app: AppHandle, target: Option<String>) -> Res<Vec<github::Label>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::issue_labels(&state.github, &repo(&state)?, target.as_deref())
     })
     .await
 }
@@ -1061,6 +1077,7 @@ pub fn run() {
             pr_review,
             pr_checkout,
             issue_list,
+            issue_labels,
             issue_detail,
             issue_create,
             issue_edit,

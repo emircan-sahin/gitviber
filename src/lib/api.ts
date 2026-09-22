@@ -379,6 +379,7 @@ export interface IssueLabel {
   name: string;
   /** Hex without the '#'. */
   color: string;
+  description: string;
 }
 
 export interface Issue {
@@ -406,7 +407,10 @@ export interface IssueDetail extends Issue {
 export type CloseReason = "completed" | "not_planned";
 
 export const issues = {
-  list: (target: Target, filter: "open" | "closed" | "all") => invoke<Issue[]>("issue_list", { target, filter }),
+  /** `labels`: only issues carrying all of them. */
+  list: (target: Target, filter: "open" | "closed" | "all", labels: string[] = []) => invoke<Issue[]>("issue_list", { target, filter, labels }),
+  /** Every label defined in the repository. */
+  labels: (target: Target) => invoke<IssueLabel[]>("issue_labels", { target }),
   detail: (target: Target, number: number) => invoke<IssueDetail>("issue_detail", { target, number }),
   create: (target: Target, title: string, body: string) => invoke<Issue>("issue_create", { target, title, body }),
   edit: (target: Target, number: number, title: string, body: string) => invoke<Issue>("issue_edit", { target, number, title, body }),

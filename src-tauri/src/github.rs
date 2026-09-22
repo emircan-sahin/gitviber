@@ -1026,6 +1026,16 @@ pub struct Label {
     pub name: String,
     /// Hex without the '#'
     pub color: String,
+    pub description: String,
+}
+
+fn label_from(v: &Value) -> Label {
+    let s = |x: &Value| x.as_str().unwrap_or_default().to_string();
+    Label {
+        name: s(&v["name"]),
+        color: s(&v["color"]),
+        description: s(&v["description"]),
+    }
 }
 
 #[derive(Serialize)]
@@ -1058,10 +1068,7 @@ fn issue_from(v: &Value) -> Issue {
             .as_array()
             .into_iter()
             .flatten()
-            .map(|l| Label {
-                name: s(&l["name"]),
-                color: s(&l["color"]),
-            })
+            .map(label_from)
             .collect(),
         assignees: v["assignees"]
             .as_array()
@@ -1076,12 +1083,14 @@ fn issue_from(v: &Value) -> Issue {
     }
 }
 
-/// `state`: "open" | "closed" | "all". GitHub lists PRs as issues too; they're left out.
+/// `state`: "open" | "closed" | "all"; `labels`: only issues carrying all of them. GitHub
+/// lists PRs as issues too; they're left out.
 pub fn issues(
     session: &Session,
     repo: &Path,
     to: Option<&str>,
     state: &str,
+    labels: &[String],
 ) -> Result<Vec<Issue>, String> {
     let r = target(session, repo, to)?;
     let state = if matches!(state, "open" | "closed" | "all") {
@@ -1093,6 +1102,13 @@ pub fn issues(
     // be nearly all PRs (a repo's "all" showed 3 issues). Read on until there are enough.
     const WANT: usize = 50;
     const PAGE: usize = 100;
+    // GitHub splits the list on commas after decoding, so a name with a comma can't be asked for.
+    let labels = if labels.is_empty() {
+        String::new()
+    } else {
+        let names: Vec<String> = labels.iter().map(|l| query_value(l)).collect();
+        format!("&labels={}", names.join(","))
+    };
     let mut out = vec![];
     for page in 1..=5 {
         let v = call(
@@ -1100,7 +1116,7 @@ pub fn issues(
             repo,
             Method::Get,
             &format!(
-                "/repos/{}/{}/issues?state={state}&sort=updated&direction=desc&per_page={PAGE}&page={page}",
+                "/repos/{}/{}/issues?state={state}{labels}&sort=updated&direction=desc&per_page={PAGE}&page={page}",
                 r.owner, r.name
             ),
         )?;
@@ -1117,6 +1133,34 @@ pub fn issues(
     }
     out.truncate(WANT);
     Ok(out)
+}
+
+/// Every label defined in the repository, for filtering by one it has no recent issue with.
+pub fn issue_labels(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+) -> Result<Vec<Label>, String> {
+    let r = target(session, repo, to)?;
+    let path = format!("/repos/{}/{}/labels", r.owner, r.name);
+    Ok(all_pages(session, repo, &path, JSON)?
+        .iter()
+        .map(label_from)
+        .collect())
+}
+
+/// Percent-encodes a query value: everything but unreserved ASCII (label names have spaces,
+/// colons, emoji).
+fn query_value(s: &str) -> String {
+    s.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
 }
 
 #[derive(Serialize)]
@@ -1377,7 +1421,57 @@ pub fn open_url(url: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn query_values_are_percent_encoded() {
+        assert_eq!(
+            super::query_value("difficulty: easy"),
+            "difficulty%3A%20easy"
+        );
+        assert_eq!(super::query_value("a,b&c=d"), "a%2Cb%26c%3Dd");
+        assert_eq!(
+            super::query_value("good-first_issue.~"),
+            "good-first_issue.~"
+        );
+        assert_eq!(super::query_value("ü"), "%C3%BC");
+    }
+
     use super::*;
+
+    /// Read-only, against this checkout's origin: `cargo test -- --ignored live_label_filter`.
+    #[test]
+    #[ignore = "talks to GitHub"]
+    fn live_label_filter() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let session = Session::default();
+        let labels = issue_labels(&session, repo, None).unwrap();
+        println!("{} labels", labels.len());
+        // Names with spaces and colons are the ones that need encoding.
+        let odd = labels
+            .iter()
+            .find(|l| l.name.contains(' '))
+            .expect("a label with a space");
+        let with = issues(&session, repo, None, "all", std::slice::from_ref(&odd.name)).unwrap();
+        println!("{:?}: {} issues", odd.name, with.len());
+        assert!(!with.is_empty());
+        assert!(with
+            .iter()
+            .all(|i| i.labels.iter().any(|l| l.name == odd.name)));
+        // Two labels mean both: never more than either alone.
+        let other = &with[0].labels.iter().find(|l| l.name != odd.name);
+        if let Some(other) = other {
+            let both = issues(
+                &session,
+                repo,
+                None,
+                "all",
+                &[odd.name.clone(), other.name.clone()],
+            )
+            .unwrap();
+            println!("+ {:?}: {} issues", other.name, both.len());
+            assert!(!both.is_empty() && both.len() <= with.len());
+            assert!(both.iter().all(|i| i.labels.len() >= 2));
+        }
+    }
 
     /// Read-only, against a clone of a fork: `GITVIBER_GH_FORK=/path/to/clone cargo test -- --ignored`.
     #[test]
@@ -1403,8 +1497,8 @@ mod tests {
         let up = parent.repo.full();
         for (to, name) in [(None, "origin"), (Some(up.as_str()), "parent")] {
             let pulls = list(&session, repo, to, "all").unwrap();
-            let open = issues(&session, repo, to, "open").unwrap_or_default();
-            let all = issues(&session, repo, to, "all").unwrap_or_default();
+            let open = issues(&session, repo, to, "open", &[]).unwrap_or_default();
+            let all = issues(&session, repo, to, "all", &[]).unwrap_or_default();
             println!(
                 "{name}: {} PRs, {} open / {} total issues",
                 pulls.len(),

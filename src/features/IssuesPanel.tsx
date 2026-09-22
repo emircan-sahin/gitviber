@@ -1,8 +1,9 @@
-import { CircleCheck, CircleDot, CircleSlash, MessageSquare, Plus, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Check, ChevronDown, CircleCheck, CircleDot, CircleSlash, MessageSquare, Plus, RefreshCw, Search, Tag, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { errorMessage, fullName, github, type Issue, type IssueLabel, isNotConnected, issues, type Target } from "@/lib/api";
@@ -29,18 +30,40 @@ export function IssueStateIcon({ issue, className }: { issue: Pick<Issue, "state
 }
 
 /** A label's color is whatever its author typed; only a plain hex reaches the style. */
-export function LabelChip({ label }: { label: IssueLabel }) {
+function LabelDot({ label, className }: { label: Pick<IssueLabel, "color">; className?: string }) {
   const color = /^[0-9a-f]{6}$/i.test(label.color) ? `#${label.color}` : undefined;
+  return <span className={cn("size-1.5 shrink-0 rounded-full bg-subtle", className)} style={color ? { backgroundColor: color } : undefined} />;
+}
+
+/** With `onClick`, a button: the issue list filters by the label. */
+export function LabelChip({ label, onClick }: { label: IssueLabel; onClick?: () => void }) {
+  const El = onClick ? "button" : "span";
   return (
-    <span className="inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 text-[10.5px] leading-4 text-muted-foreground">
-      <span className="size-1.5 shrink-0 rounded-full bg-subtle" style={color ? { backgroundColor: color } : undefined} />
+    <El
+      {...(onClick && {
+        title: "Filter by this label",
+        onClick: (e: React.MouseEvent) => {
+          e.stopPropagation();
+          onClick();
+        },
+        // The row opens and pins its issue on a double-click.
+        onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
+      })}
+      className={cn(
+        "inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 text-[10.5px] leading-4 text-muted-foreground",
+        onClick && "hover:border-border-strong hover:text-foreground",
+      )}
+    >
+      <LabelDot label={label} />
       <span className="truncate">{label.name}</span>
-    </span>
+    </El>
   );
 }
 
 export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; onOpen: (s: Selection, pin?: boolean) => void }) {
   const [filter, setFilter] = useState<Filter>("open");
+  const [labels, setLabels] = useState<IssueLabel[]>([]);
+  const addLabel = (label: IssueLabel) => setLabels((l) => (l.some((m) => m.name === label.name) ? l : [...l, label]));
   // The repository the new issue goes to: origin (null), or a fork's parent.
   const [creating, setCreating] = useState<{ target: Target } | null>(null);
   // Same cache entry as the PRs panel's.
@@ -50,8 +73,12 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
   const parent = account?.parent ?? null;
   const upstream = parent ? fullName(parent.repo) : null;
   // Forks start with issues off: nothing is listed where they are.
-  const own = useGitHubData(`issues:origin:${filter}`, useCallback(() => issues.list(null, filter), [filter]));
-  const up = useGitHubData(upstream && parent?.issues ? `issues:${upstream}:${filter}` : null, useCallback(() => issues.list(upstream, filter), [upstream, filter]));
+  const query = `${filter}:${JSON.stringify(labels.map((l) => l.name))}`;
+  const own = useGitHubData(`issues:origin:${query}`, useCallback(() => issues.list(null, filter, labels.map((l) => l.name)), [filter, labels]));
+  const up = useGitHubData(
+    upstream && parent?.issues ? `issues:${upstream}:${query}` : null,
+    useCallback(() => issues.list(upstream, filter, labels.map((l) => l.name)), [upstream, filter, labels]),
+  );
   const failure = acct.error ?? own.error;
   const error = failure === undefined ? null : errorMessage(failure);
   const loading = acct.loading || own.loading || up.loading;
@@ -73,11 +100,13 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
 
   if (isNotConnected(failure)) return <ConnectGitHub onRetry={load} subject="issues" />;
 
-  const ownRows = (roomy: boolean) => <IssueRows items={own.data ?? null} error={error} filter={filter} activeKey={activeKey} onOpen={onOpen} roomy={roomy} />;
+  const rowProps = { filter, labels, onLabel: addLabel, onClearLabels: () => setLabels([]), activeKey, onOpen };
+  const ownRows = (roomy: boolean) => <IssueRows items={own.data ?? null} error={error} roomy={roomy} {...rowProps} />;
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
+      {/* A container: at the panel's narrowest the Label and New buttons drop their words. */}
+      <div className="@container flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
         {(["open", "closed", "all"] as const).map((f) => (
           <button
             key={f}
@@ -87,6 +116,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
             {f}
           </button>
         ))}
+        <LabelFilter upstream={parent?.issues ? upstream : null} selected={labels} onChange={setLabels} />
         <div className="ml-auto flex items-center gap-0.5">
           <Tip label="Refresh">
             <Button variant="ghost" size="icon-sm" onClick={load} disabled={loading}>
@@ -96,12 +126,34 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
           {!parent && (
             <Tip label="New issue">
               <Button variant="secondary" size="sm" disabled={!origin} onClick={() => setCreating({ target: null })}>
-                <Plus /> New
+                <Plus /> <span className="@max-[300px]:hidden">New</span>
               </Button>
             </Tip>
           )}
         </div>
       </div>
+      {labels.length > 0 && (
+        <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
+          {labels.map((l) => (
+            <span key={l.name} className="inline-flex max-w-48 items-center gap-1 rounded-full border border-border-strong bg-active pr-0.5 pl-1.5 text-[10.5px] leading-4">
+              <LabelDot label={l} />
+              <span className="truncate">{l.name}</span>
+              <button
+                aria-label={`Remove ${l.name}`}
+                onClick={() => setLabels((ls) => ls.filter((m) => m.name !== l.name))}
+                className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-hover hover:text-foreground"
+              >
+                <X className="size-2.5" />
+              </button>
+            </span>
+          ))}
+          {labels.length > 1 && (
+            <button onClick={() => setLabels([])} className="ml-auto px-1 text-[10.5px] text-subtle hover:text-foreground">
+              Clear
+            </button>
+          )}
+        </div>
+      )}
       {parent && upstream ? (
         <div className="min-h-0 flex-1">
           <RepoPanes
@@ -120,14 +172,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
                 detail: upstream,
                 actions: parent.issues && <NewButton label="New issue" onClick={() => setCreating({ target: upstream })} />,
                 children: parent.issues ? (
-                  <IssueRows
-                    items={up.data ?? null}
-                    error={up.error === undefined ? null : errorMessage(up.error)}
-                    filter={filter}
-                    activeKey={activeKey}
-                    onOpen={onOpen}
-                    roomy={false}
-                  />
+                  <IssueRows items={up.data ?? null} error={up.error === undefined ? null : errorMessage(up.error)} roomy={false} {...rowProps} />
                 ) : (
                   <IssuesOff repo={upstream} />
                 ),
@@ -166,6 +211,9 @@ function IssueRows({
   items,
   error,
   filter,
+  labels,
+  onLabel,
+  onClearLabels,
   activeKey,
   onOpen,
   roomy,
@@ -173,6 +221,9 @@ function IssueRows({
   items: Issue[] | null;
   error: string | null;
   filter: Filter;
+  labels: IssueLabel[];
+  onLabel: (label: IssueLabel) => void;
+  onClearLabels: () => void;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   /** The whole panel, not a pane: the empty note sits lower. */
@@ -183,7 +234,16 @@ function IssueRows({
       {/* With a cached list on screen, a failed refresh is a note above it, not a blank panel. */}
       {error && !items && <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{error}</div>}
       {error && items && <div className="mx-2 mb-1 rounded-sm bg-removed/10 px-2 py-1.5 text-[11.5px] text-removed">{error}</div>}
-      {items?.length === 0 && <div className={cn("px-4 text-center text-[12px] text-subtle", roomy ? "pt-16" : "py-3")}>No {filter === "all" ? "" : filter} issues.</div>}
+      {items?.length === 0 && (
+        <div className={cn("px-4 text-center text-[12px] text-subtle", roomy ? "pt-16" : "py-3")}>
+          No {filter === "all" ? "" : filter} issues{labels.length > 0 && (labels.length === 1 ? " with this label" : " with all these labels")}.
+          {labels.length > 0 && (
+            <button onClick={onClearLabels} className="ml-1 font-medium text-primary hover:underline">
+              Clear labels
+            </button>
+          )}
+        </div>
+      )}
       {items?.map((i) => {
         const sel: Selection = { kind: "issue", issue: i };
         const active = activeKey === selectionKey(sel);
@@ -202,7 +262,7 @@ function IssueRows({
               {i.labels.length > 0 && (
                 <div className="mt-1 flex flex-wrap gap-1">
                   {i.labels.map((l) => (
-                    <LabelChip key={l.name} label={l} />
+                    <LabelChip key={l.name} label={l} onClick={() => onLabel(l)} />
                   ))}
                 </div>
               )}
@@ -223,6 +283,133 @@ function IssueRows({
         );
       })}
     </>
+  );
+}
+
+/**
+ * GitHub's label filter: any number of labels, and the list keeps issues carrying all of them.
+ * Lists every label the repository defines (both, for a fork), loaded when first opened.
+ */
+function LabelFilter({ upstream, selected, onChange }: { upstream: string | null; selected: IssueLabel[]; onChange: (labels: IssueLabel[]) => void }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [index, setIndex] = useState(0);
+  // Selected labels go first, as of opening: reordering under the pointer would move the row just clicked.
+  const [first, setFirst] = useState<IssueLabel[]>([]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const own = useGitHubData(open ? "issues:labels:origin" : null, useCallback(() => issues.labels(null), []), 600_000);
+  const up = useGitHubData(open && upstream ? `issues:labels:${upstream}` : null, useCallback(() => issues.labels(upstream), [upstream]), 600_000);
+  const failure = own.error ?? up.error;
+
+  const defined = [...(own.data ?? []), ...(up.data ?? [])].filter((l, i, all) => all.findIndex((m) => m.name === l.name) === i);
+  const isFirst = (l: IssueLabel) => first.some((m) => m.name === l.name);
+  // One renamed or deleted since it was picked still shows, so it can be taken off.
+  const gone = first.filter((l) => !defined.some((m) => m.name === l.name));
+  const q = query.trim().toLowerCase();
+  const shown = [...gone, ...defined]
+    .sort((a, b) => Number(isFirst(b)) - Number(isFirst(a)))
+    .filter((l) => !q || l.name.toLowerCase().includes(q) || l.description.toLowerCase().includes(q));
+  const loaded = own.data !== undefined && (!upstream || up.data !== undefined);
+
+  const isOn = (l: IssueLabel) => selected.some((m) => m.name === l.name);
+  const toggle = (l: IssueLabel) => onChange(isOn(l) ? selected.filter((m) => m.name !== l.name) : [...selected, l]);
+  const move = (i: number) => {
+    setIndex(i);
+    listRef.current?.children[i]?.scrollIntoView({ block: "nearest" });
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (o) {
+          setFirst(selected);
+          setQuery("");
+          setIndex(0);
+        }
+      }}
+    >
+      <PopoverTrigger asChild>
+        {/* Compact: the chosen labels show in a row of their own under the header. */}
+        <button
+          className={cn(
+            "flex h-5 shrink-0 items-center gap-1 rounded-sm px-1.5 text-[11.5px] @max-[300px]:px-1",
+            selected.length ? "bg-active text-foreground" : "text-subtle hover:text-foreground data-[state=open]:text-foreground",
+          )}
+        >
+          <Tag className="size-3" />
+          <span className="@max-[300px]:hidden">Label</span>
+          {selected.length > 0 ? (
+            <span className="rounded-full bg-primary/20 px-1 text-[10px] leading-3.5 font-medium text-primary">{selected.length}</span>
+          ) : (
+            <ChevronDown className="size-3 opacity-70 @max-[300px]:hidden" />
+          )}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="flex w-72 flex-col overflow-hidden">
+        <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2.5">
+          <Search className="size-3.5 shrink-0 text-subtle" />
+          <input
+            autoFocus
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setIndex(0);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                if (shown.length) move((index + (e.key === "ArrowDown" ? 1 : shown.length - 1)) % shown.length);
+              } else if (e.key === "Enter" && shown[index]) {
+                e.preventDefault();
+                toggle(shown[index]);
+              }
+            }}
+            placeholder="Filter labels…"
+            className="h-full min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-subtle"
+          />
+        </div>
+        <div ref={listRef} className="max-h-80 min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
+          {failure !== undefined && !loaded ? (
+            <div className="px-2 py-3 text-center text-[12px] text-muted-foreground">{errorMessage(failure)}</div>
+          ) : !loaded && shown.length === 0 ? (
+            <div className="px-2 py-3 text-center text-[12px] text-subtle">Loading labels…</div>
+          ) : shown.length === 0 ? (
+            <div className="px-2 py-3 text-center text-[12px] text-subtle">{q ? "No labels match" : "This repository has no labels"}</div>
+          ) : (
+            shown.map((l, i) => {
+              const on = isOn(l);
+              return (
+                <button
+                  key={l.name}
+                  // Keep the focus in the search box.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onMouseEnter={() => setIndex(i)}
+                  onClick={() => toggle(l)}
+                  className={cn("flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left", i === index && "bg-hover")}
+                >
+                  <Check className={cn("mt-0.5 size-3.5 shrink-0 text-primary", !on && "invisible")} />
+                  <LabelDot label={l} className="mt-1 size-2.5" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px] leading-4">{l.name}</span>
+                    {l.description && <span className="block truncate text-[10.5px] leading-4 text-subtle">{l.description}</span>}
+                  </span>
+                </button>
+              );
+            })
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
+          <span className="min-w-0 flex-1 truncate">{selected.length > 1 ? "Issues with all of them" : "↑↓ navigate · ↵ select"}</span>
+          {selected.length > 0 && (
+            <button onClick={() => onChange([])} className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover hover:text-foreground">
+              Clear
+            </button>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
