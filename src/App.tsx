@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { Component, type ErrorInfo, type ReactNode, useCallback, useEffect, useState } from "react";
+import { Splash } from "@/components/Splash";
 import { Toaster } from "@/components/Toaster";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -77,6 +78,7 @@ export function App() {
       )}
       <SettingsDialog />
       <Toaster />
+      <Splash ready={!booting} />
     </TooltipProvider>
   );
 }
