@@ -3,6 +3,7 @@ mod display;
 mod fs;
 mod git;
 mod github;
+mod journal;
 mod navigation;
 mod pty;
 #[cfg(test)]
@@ -10,6 +11,7 @@ mod scenario_tests;
 mod titlebar;
 mod watch;
 
+use journal::{Action, Mode};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -22,6 +24,7 @@ struct AppState {
     ptys: pty::Ptys,
     /// Held by commands that write the index: two `git add`s at once fail on index.lock.
     index: Arc<Mutex<()>>,
+    journal: Arc<journal::Journal>,
 }
 
 type Res<T> = Result<T, String>;
@@ -62,6 +65,22 @@ fn with_index_lock<T>(lock: &Mutex<()>, repo: &Path, f: impl Fn(&Path) -> Res<T>
         }
         done => done,
     }
+}
+
+/// Runs a command that may move HEAD or local branches, recording what it moved for undo.
+async fn journaled<T: Send + 'static>(
+    state: &State<'_, AppState>,
+    action: Action,
+    f: impl FnOnce(&Path) -> Res<T> + Send + 'static,
+) -> Res<T> {
+    let r = repo(state)?;
+    let journal = state.journal.clone();
+    blocking(move || journal.record(&r, action, f)).await
+}
+
+/// "Commit" and the like read better with the commit's short id.
+fn short(sha: &str) -> &str {
+    &sha[..sha.len().min(7)]
 }
 
 #[derive(serde::Serialize)]
@@ -182,14 +201,27 @@ async fn branches(state: State<'_, AppState>) -> Res<Vec<git::Branch>> {
 
 #[tauri::command]
 async fn switch_branch(state: State<'_, AppState>, name: String, create: bool) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::switch_branch(&r, &name, create)).await
+    let label = if create {
+        format!("Create branch {name}")
+    } else {
+        format!("Switch to {name}")
+    };
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::switch_branch(r, &name, create)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn delete_branches(state: State<'_, AppState>, names: Vec<String>, force: bool) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::delete_branches(&r, &names, force)).await
+    let label = match names.as_slice() {
+        [one] => format!("Delete branch {one}"),
+        all => format!("Delete {} branches", all.len()),
+    };
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::delete_branches(r, &names, force)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -239,7 +271,17 @@ async fn discard(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
 
 #[tauri::command]
 async fn commit(state: State<'_, AppState>, message: String, amend: bool) -> Res<()> {
-    indexed(&state, move |r| git::commit(r, &message, amend)).await
+    let subject = message.lines().next().unwrap_or("").trim();
+    let label = match (amend, subject) {
+        (true, "") => "Amend last commit".to_string(),
+        (true, s) => format!("Amend \"{s}\""),
+        (false, s) => format!("Commit \"{s}\""),
+    };
+    let lock = state.index.clone();
+    journaled(&state, Action::new(label, Mode::Soft), move |r| {
+        with_index_lock(&lock, r, |r| git::commit(r, &message, amend))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -251,37 +293,53 @@ async fn push(state: State<'_, AppState>, force: Option<bool>, remote: Option<St
 /// The bool results below mean "stopped on conflicts".
 #[tauri::command]
 async fn pull(state: State<'_, AppState>, mode: String) -> Res<bool> {
-    let r = repo(&state)?;
-    blocking(move || git::pull(&r, &mode)).await
+    let label = match mode.as_str() {
+        "merge" => "Pull (merge)",
+        "rebase" => "Pull (rebase)",
+        _ => "Pull",
+    };
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::pull(r, &mode)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn merge(state: State<'_, AppState>, name: String) -> Res<bool> {
-    let r = repo(&state)?;
-    blocking(move || git::merge(&r, &name)).await
+    let label = format!("Merge {name}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::merge(r, &name)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn rebase(state: State<'_, AppState>, onto: String) -> Res<bool> {
-    let r = repo(&state)?;
-    blocking(move || git::rebase(&r, &onto)).await
+    let label = format!("Rebase onto {onto}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::rebase(r, &onto)
+    })
+    .await
 }
 
+// These finish (or call off) the action that stopped on conflicts; its entry is recorded then.
 #[tauri::command]
 async fn op_continue(state: State<'_, AppState>) -> Res<bool> {
-    indexed(&state, git::op_continue).await
+    let lock = state.index.clone();
+    journaled(&state, Action::new("Continue", Mode::Keep), move |r| {
+        with_index_lock(&lock, r, git::op_continue)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn op_abort(state: State<'_, AppState>) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::op_abort(&r)).await
+    journaled(&state, Action::new("Abort", Mode::Keep), git::op_abort).await
 }
 
 #[tauri::command]
 async fn rebase_skip(state: State<'_, AppState>) -> Res<bool> {
-    let r = repo(&state)?;
-    blocking(move || git::rebase_skip(&r)).await
+    journaled(&state, Action::new("Skip", Mode::Keep), git::rebase_skip).await
 }
 
 #[tauri::command]
@@ -337,14 +395,26 @@ async fn fetch(state: State<'_, AppState>) -> Res<()> {
 
 #[tauri::command]
 async fn undo_commit(state: State<'_, AppState>, sha: String) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::undo_commit(&r, &sha)).await
+    let label = format!("Undo commit {}", short(&sha));
+    journaled(&state, Action::new(label, Mode::Soft), move |r| {
+        git::undo_commit(r, &sha)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn reset(state: State<'_, AppState>, sha: String, mode: String, head: String) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::reset(&r, &sha, &mode, &head)).await
+    let label = format!("Reset to {}", short(&sha));
+    // Undone the same way, except that a hard reset's lost changes can't come back.
+    let back = match mode.as_str() {
+        "soft" => Mode::Soft,
+        "mixed" => Mode::Mixed,
+        _ => Mode::Keep,
+    };
+    journaled(&state, Action::new(label, back), move |r| {
+        git::reset(r, &sha, &mode, &head)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -355,26 +425,70 @@ async fn drops_pushed(state: State<'_, AppState>, sha: String) -> Res<bool> {
 
 #[tauri::command]
 async fn revert(state: State<'_, AppState>, sha: String) -> Res<bool> {
-    let r = repo(&state)?;
-    blocking(move || git::revert(&r, &sha)).await
+    let label = format!("Revert {}", short(&sha));
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::revert(r, &sha)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn checkout_commit(state: State<'_, AppState>, sha: String) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::checkout_commit(&r, &sha)).await
+    let label = format!("Check out {}", short(&sha));
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::checkout_commit(r, &sha)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn create_branch_at(state: State<'_, AppState>, name: String, sha: String) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::create_branch_at(&r, &name, &sha)).await
+    let label = format!("Create branch {name}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::create_branch_at(r, &name, &sha)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn create_tag(state: State<'_, AppState>, name: String, sha: String) -> Res<()> {
     let r = repo(&state)?;
     blocking(move || git::create_tag(&r, &name, &sha)).await
+}
+
+// ---------------------------------------------------------------- undo / redo
+
+#[tauri::command]
+async fn journal(state: State<'_, AppState>) -> Res<journal::View> {
+    let r = repo(&state)?;
+    let journal = state.journal.clone();
+    blocking(move || Ok(journal.view(&r))).await
+}
+
+#[tauri::command]
+fn journal_last(state: State<'_, AppState>) -> Res<Option<u64>> {
+    Ok(state.journal.last(&repo(&state)?))
+}
+
+/// `id`: the entry the user means; refused if it is no longer the next one.
+#[tauri::command]
+async fn undo(state: State<'_, AppState>, id: Option<u64>) -> Res<journal::EntryView> {
+    step(&state, false, id).await
+}
+
+#[tauri::command]
+async fn redo(state: State<'_, AppState>, id: Option<u64>) -> Res<journal::EntryView> {
+    step(&state, true, id).await
+}
+
+async fn step(
+    state: &State<'_, AppState>,
+    forward: bool,
+    id: Option<u64>,
+) -> Res<journal::EntryView> {
+    let r = repo(state)?;
+    let (journal, index) = (state.journal.clone(), state.index.clone());
+    blocking(move || journal.step(&r, forward, id, &index)).await
 }
 
 /// https://github.com/owner/name when origin is on GitHub, for "Open on GitHub" links.
@@ -413,8 +527,14 @@ async fn gh_original_remote(
 
 #[tauri::command]
 async fn switch_tracking(state: State<'_, AppState>, remote_ref: String) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::switch_tracking(&r, &remote_ref)).await
+    let local = remote_ref
+        .split_once('/')
+        .map_or(remote_ref.as_str(), |(_, b)| b);
+    let label = format!("Switch to {local}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::switch_tracking(r, &remote_ref)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -733,13 +853,16 @@ async fn pr_checkout(
     blocking(move || {
         let state = app.state::<AppState>();
         let r = repo(&state)?;
-        let remote = github::fetch_remote(&state.github, &r, target.as_deref())?;
-        // The original's PRs get their own local names; origin's keep pr/<n>.
-        let owner = target
-            .as_deref()
-            .filter(|_| remote != "origin")
-            .and_then(|t| t.split('/').next());
-        github::checkout(&r, &remote, owner, number, &head_ref, same_repo)
+        let action = Action::new(format!("Check out PR #{number}"), Mode::Keep);
+        state.journal.record(&r, action, |r| {
+            let remote = github::fetch_remote(&state.github, r, target.as_deref())?;
+            // The original's PRs get their own local names; origin's keep pr/<n>.
+            let owner = target
+                .as_deref()
+                .filter(|_| remote != "origin")
+                .and_then(|t| t.split('/').next());
+            github::checkout(r, &remote, owner, number, &head_ref, same_repo)
+        })
     })
     .await
 }
@@ -914,6 +1037,10 @@ pub fn run() {
             checkout_commit,
             create_branch_at,
             create_tag,
+            journal,
+            journal_last,
+            undo,
+            redo,
             github_web_url,
             gh_account,
             gh_protected_branches,

@@ -150,7 +150,7 @@ pub fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
     run_with(repo, args, &[], None)
 }
 
-fn run_text(repo: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn run_text(repo: &Path, args: &[&str]) -> Result<String, String> {
     run(repo, args).map(|b| String::from_utf8_lossy(&b).into_owned())
 }
 
@@ -1492,14 +1492,28 @@ pub fn undo_commit(repo: &Path, sha: &str) -> Result<(), String> {
 /// so merges count right. No upstream, or one that is gone, counts as not pushed.
 pub fn drops_pushed(repo: &Path, sha: &str) -> Result<bool, String> {
     validate_rev(sha)?;
+    drops_pushed_from(repo, "HEAD", &[sha])
+}
+
+/// Whether the push target has commits reachable from `from` but from none of `keep`.
+pub(crate) fn drops_pushed_from(repo: &Path, from: &str, keep: &[&str]) -> Result<bool, String> {
     // Commits both sides have: everything reachable from their merge bases.
-    let Ok(bases) = run_text(repo, &["merge-base", "--all", "HEAD", &pushed_base(repo)]) else {
+    let Ok(bases) = run_text(repo, &["merge-base", "--all", from, &pushed_base(repo)]) else {
         return Ok(false);
     };
     let mut args = vec!["rev-list", "-n1"];
     args.extend(bases.split_whitespace());
-    args.extend(["--not", sha]);
+    args.push("--not");
+    args.extend(keep);
     Ok(!run_text(repo, &args)?.trim().is_empty())
+}
+
+/// The commit HEAD's push target (or upstream) is at, if it has one.
+pub(crate) fn pushed_tip(repo: &Path) -> Option<String> {
+    let spec = format!("{}^{{commit}}", pushed_base(repo));
+    run_text(repo, &["rev-parse", "--verify", "-q", &spec])
+        .ok()
+        .map(|s| s.trim().to_string())
 }
 
 /// Moves the current branch (or detached HEAD) from `head` (as the user saw it) to `sha`.
