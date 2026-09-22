@@ -18,7 +18,7 @@ macOS is the only platform tested today. If you get it running on Linux or Windo
 - `src/features/` - the UI: top bar, changes / history / PR panels, file tree, and the viewers (`CodeView` is the diff and file viewer)
 - `src/components/ui/` - shadcn/ui-style primitives on Radix and Tailwind
 - `src/lib/` - `api.ts` wraps every Tauri command, `useRepo.ts` holds repo state, `highlight.worker.ts` runs Shiki off the main thread
-- `src-tauri/src/` - the Rust side: `git.rs` (the git CLI wrapper), `diff.rs`, `github.rs` (pull requests), `fs.rs` (file explorer), `watch.rs` (file watcher)
+- `src-tauri/src/` - the Rust side: `git.rs` (the git CLI wrapper), `diff.rs`, `github.rs` (pull requests and issues), `fs.rs` (file explorer), `watch.rs` (file watcher)
 - `src-tauri/src/scenario_tests.rs` - end-to-end git scenarios against temporary repos and a local bare remote
 
 ## Ground rules

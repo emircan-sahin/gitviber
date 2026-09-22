@@ -12,6 +12,7 @@ export const COMMANDS = [
   { id: "view.changes", title: "Show Changes", category: "View", keys: ["cmd+1"] },
   { id: "view.history", title: "Show History", category: "View", keys: ["cmd+2"] },
   { id: "view.pulls", title: "Show Pull Requests", category: "View", keys: ["cmd+3"] },
+  { id: "view.issues", title: "Show Issues", category: "View", keys: ["cmd+4"] },
   { id: "view.toggleGitPanel", title: "Toggle Git Panel", category: "View", keys: ["cmd+b"] },
   { id: "view.toggleExplorer", title: "Toggle Explorer", category: "View", keys: ["alt+cmd+b"] },
   { id: "view.showExplorer", title: "Show Explorer", category: "View", keys: ["shift+cmd+e"] },

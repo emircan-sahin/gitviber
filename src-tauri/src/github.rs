@@ -1,4 +1,4 @@
-//! GitHub pull requests over the REST API. The token comes from the GitHub CLI if it is
+//! GitHub pull requests and issues over the REST API. The token comes from the GitHub CLI if it is
 //! installed and logged in, otherwise from git's own credential store; it lives only in
 //! memory and is never written anywhere.
 
@@ -146,6 +146,7 @@ enum Method {
     Get,
     Post(Value),
     Put(Value),
+    Patch(Value),
 }
 
 const JSON: &str = "application/vnd.github+json";
@@ -191,6 +192,7 @@ fn request(
             }
             Method::Post(body) => headers!(agent.post(&url)).send_json(body),
             Method::Put(body) => headers!(agent.put(&url)).send_json(body),
+            Method::Patch(body) => headers!(agent.patch(&url)).send_json(body),
         };
         let mut resp = result.map_err(|e| format!("GitHub request failed: {e}"))?;
         let status = resp.status().as_u16();
@@ -327,28 +329,30 @@ pub struct Account {
     pub source: String,
     pub repo: Option<RepoRef>,
     pub default_branch: Option<String>,
+    /// Admin on this repo: the only role GitHub lets delete issues
+    pub admin: bool,
 }
 
 pub fn account(session: &Session, repo: &Path) -> Result<Account, String> {
     let user = call(session, repo, Method::Get, "/user")?;
     let source = session.token(repo)?.source.to_string();
     let r = repo_ref(repo).ok();
-    let default_branch = match &r {
-        Some(r) => call(
+    let info = r.as_ref().and_then(|r| {
+        call(
             session,
             repo,
             Method::Get,
             &format!("/repos/{}/{}", r.owner, r.name),
         )
         .ok()
-        .and_then(|v| v["default_branch"].as_str().map(str::to_string)),
-        None => None,
-    };
+    });
+    let info = info.unwrap_or(Value::Null);
     Ok(Account {
         login: user["login"].as_str().unwrap_or_default().into(),
         source,
         repo: r,
-        default_branch,
+        default_branch: info["default_branch"].as_str().map(str::to_string),
+        admin: info["permissions"]["admin"].as_bool().unwrap_or(false),
     })
 }
 
@@ -557,10 +561,10 @@ pub fn detail(session: &Session, repo: &Path, number: u64) -> Result<PullDetail,
     })
 }
 
-/// Signed image links for a PR's attachments, by attachment id. In a private repo,
-/// `github.com/user-attachments/assets/<id>` needs a github.com login the webview doesn't
-/// have; the API's rendered HTML carries short-lived signed links instead, so the token
-/// itself never leaves api.github.com.
+/// Signed image links for a PR's or issue's attachments, by attachment id. In a private
+/// repo, `github.com/user-attachments/assets/<id>` needs a github.com login the webview
+/// doesn't have; the API's rendered HTML carries short-lived signed links instead, so the
+/// token itself never leaves api.github.com.
 pub fn attachments(
     session: &Session,
     repo: &Path,
@@ -570,18 +574,20 @@ pub fn attachments(
     let r = repo_ref(repo)?;
     let base = format!("/repos/{}/{}", r.owner, r.name);
     let mut out = HashMap::new();
-    let pull = request(
+    // The issues endpoint serves PRs too, and says which one this is.
+    let thread = request(
         session,
         repo,
         Method::Get,
-        &format!("{base}/pulls/{number}"),
+        &format!("{base}/issues/{number}"),
         HTML,
     )?;
-    signed_images(pull["body_html"].as_str().unwrap_or_default(), &mut out);
-    for path in [
-        format!("{base}/issues/{number}/comments?per_page=100"),
-        format!("{base}/pulls/{number}/reviews?per_page=100"),
-    ] {
+    signed_images(thread["body_html"].as_str().unwrap_or_default(), &mut out);
+    let mut paths = vec![format!("{base}/issues/{number}/comments?per_page=100")];
+    if thread.get("pull_request").is_some() {
+        paths.push(format!("{base}/pulls/{number}/reviews?per_page=100"));
+    }
+    for path in paths {
         if let Ok(list) = request(session, repo, Method::Get, &path, HTML) {
             for c in list.as_array().into_iter().flatten() {
                 signed_images(c["body_html"].as_str().unwrap_or_default(), &mut out);
@@ -697,7 +703,240 @@ pub fn merge(session: &Session, repo: &Path, number: u64, method: &str) -> Resul
     .map(|_| ())
 }
 
-/// Switches to the PR's branch: the real branch for same-repo PRs, `pr/<n>` for forks.
+// ---------------------------------------------------------------- issues
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Label {
+    pub name: String,
+    /// Hex without the '#'
+    pub color: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Issue {
+    pub number: u64,
+    pub title: String,
+    /// "open" | "closed"
+    pub state: String,
+    /// "completed" | "not_planned" | "reopened", when GitHub recorded one
+    pub state_reason: Option<String>,
+    pub author: String,
+    pub labels: Vec<Label>,
+    pub assignees: Vec<String>,
+    pub comments: u64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub url: String,
+}
+
+fn issue_from(v: &Value) -> Issue {
+    let s = |x: &Value| x.as_str().unwrap_or_default().to_string();
+    Issue {
+        number: v["number"].as_u64().unwrap_or_default(),
+        title: s(&v["title"]),
+        state: s(&v["state"]),
+        state_reason: v["state_reason"].as_str().map(str::to_string),
+        author: s(&v["user"]["login"]),
+        labels: v["labels"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|l| Label {
+                name: s(&l["name"]),
+                color: s(&l["color"]),
+            })
+            .collect(),
+        assignees: v["assignees"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|a| s(&a["login"]))
+            .collect(),
+        comments: v["comments"].as_u64().unwrap_or_default(),
+        created_at: s(&v["created_at"]),
+        updated_at: s(&v["updated_at"]),
+        url: s(&v["html_url"]),
+    }
+}
+
+/// `state`: "open" | "closed" | "all". GitHub lists PRs as issues too; they're left out.
+pub fn issues(session: &Session, repo: &Path, state: &str) -> Result<Vec<Issue>, String> {
+    let r = repo_ref(repo)?;
+    let state = if matches!(state, "open" | "closed" | "all") {
+        state
+    } else {
+        "open"
+    };
+    let v = call(
+        session,
+        repo,
+        Method::Get,
+        &format!(
+            "/repos/{}/{}/issues?state={state}&sort=updated&direction=desc&per_page=50",
+            r.owner, r.name
+        ),
+    )?;
+    Ok(v.as_array()
+        .into_iter()
+        .flatten()
+        .filter(|i| i.get("pull_request").is_none())
+        .map(issue_from)
+        .collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueDetail {
+    #[serde(flatten)]
+    pub issue: Issue,
+    pub body: String,
+    /// The conversation; `issue.comments` is only the count
+    pub thread: Vec<Comment>,
+}
+
+pub fn issue_detail(session: &Session, repo: &Path, number: u64) -> Result<IssueDetail, String> {
+    let r = repo_ref(repo)?;
+    let path = format!("/repos/{}/{}/issues/{number}", r.owner, r.name);
+    let v = call(session, repo, Method::Get, &path)?;
+    let s = |x: &Value| x.as_str().unwrap_or_default().to_string();
+    let list = call(
+        session,
+        repo,
+        Method::Get,
+        &format!("{path}/comments?per_page=100"),
+    )?;
+    let thread = list
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|c| Comment {
+            author: s(&c["user"]["login"]),
+            body: s(&c["body"]),
+            created_at: s(&c["created_at"]),
+            review: None,
+        })
+        .collect();
+    Ok(IssueDetail {
+        body: s(&v["body"]),
+        issue: issue_from(&v),
+        thread,
+    })
+}
+
+pub fn issue_create(
+    session: &Session,
+    repo: &Path,
+    title: &str,
+    body: &str,
+) -> Result<Issue, String> {
+    let r = repo_ref(repo)?;
+    let v = call(
+        session,
+        repo,
+        Method::Post(json!({ "title": title, "body": body })),
+        &format!("/repos/{}/{}/issues", r.owner, r.name),
+    )?;
+    Ok(issue_from(&v))
+}
+
+/// Edits the title and description.
+pub fn issue_edit(
+    session: &Session,
+    repo: &Path,
+    number: u64,
+    title: &str,
+    body: &str,
+) -> Result<Issue, String> {
+    let r = repo_ref(repo)?;
+    let v = call(
+        session,
+        repo,
+        Method::Patch(json!({ "title": title, "body": body })),
+        &format!("/repos/{}/{}/issues/{number}", r.owner, r.name),
+    )?;
+    Ok(issue_from(&v))
+}
+
+/// `reason` when closing: "completed" | "not_planned". Reopening records "reopened" itself.
+pub fn issue_set_open(
+    session: &Session,
+    repo: &Path,
+    number: u64,
+    open: bool,
+    reason: &str,
+) -> Result<Issue, String> {
+    let r = repo_ref(repo)?;
+    let patch = if open {
+        json!({ "state": "open" })
+    } else {
+        let reason = if reason == "not_planned" {
+            "not_planned"
+        } else {
+            "completed"
+        };
+        json!({ "state": "closed", "state_reason": reason })
+    };
+    let v = call(
+        session,
+        repo,
+        Method::Patch(patch),
+        &format!("/repos/{}/{}/issues/{number}", r.owner, r.name),
+    )?;
+    Ok(issue_from(&v))
+}
+
+/// Deletes an issue for good. REST has no endpoint for it, only GraphQL's `deleteIssue`,
+/// and GitHub allows it to repository admins alone.
+pub fn issue_delete(session: &Session, repo: &Path, number: u64) -> Result<(), String> {
+    let r = repo_ref(repo)?;
+    let v = call(
+        session,
+        repo,
+        Method::Get,
+        &format!("/repos/{}/{}/issues/{number}", r.owner, r.name),
+    )?;
+    if v.get("pull_request").is_some() {
+        return Err(format!("#{number} is a pull request, not an issue."));
+    }
+    let id = v["node_id"]
+        .as_str()
+        .ok_or("GitHub sent no id for this issue.")?;
+    let out = call(
+        session,
+        repo,
+        Method::Post(json!({
+            "query": "mutation($id: ID!) { deleteIssue(input: { issueId: $id }) { clientMutationId } }",
+            "variables": { "id": id },
+        })),
+        "/graphql",
+    )?;
+    // GraphQL reports failures (no permission, say) with a 200 and an `errors` list.
+    match out["errors"][0]["message"].as_str() {
+        Some(msg) => Err(format!("GitHub: {msg}")),
+        None => Ok(()),
+    }
+}
+
+/// A comment in an issue's conversation (a PR's works the same way).
+pub fn issue_comment(
+    session: &Session,
+    repo: &Path,
+    number: u64,
+    body: &str,
+) -> Result<(), String> {
+    let r = repo_ref(repo)?;
+    call(
+        session,
+        repo,
+        Method::Post(json!({ "body": body })),
+        &format!("/repos/{}/{}/issues/{number}/comments", r.owner, r.name),
+    )
+    .map(|_| ())
+}
+
+/// Switches to the PR's branch:the real branch for same-repo PRs, `pr/<n>` for forks.
 /// An existing local branch is only fast-forwarded, never reset: unpushed work on it is
 /// kept, and a branch that diverged from the PR is reported instead of silently used.
 pub fn checkout(repo: &Path, number: u64, head_ref: &str, same_repo: bool) -> Result<(), String> {

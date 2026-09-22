@@ -188,6 +188,8 @@ export interface GitHubAccount {
   source: "gh" | "git";
   repo: { owner: string; name: string } | null;
   defaultBranch: string | null;
+  /** Admin on this repo: the only role GitHub lets delete issues. */
+  admin: boolean;
 }
 
 export interface Pull {
@@ -254,6 +256,45 @@ export const github = {
   merge: (number: number, method: MergeMethod) => invoke<void>("pr_merge", { number, method }),
   checkout: (number: number, headRef: string, sameRepo: boolean) => invoke<void>("pr_checkout", { number, headRef, sameRepo }),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
+};
+
+export interface IssueLabel {
+  name: string;
+  /** Hex without the '#'. */
+  color: string;
+}
+
+export interface Issue {
+  number: number;
+  title: string;
+  state: "open" | "closed";
+  stateReason: "completed" | "not_planned" | "reopened" | null;
+  author: string;
+  labels: IssueLabel[];
+  assignees: string[];
+  /** Comment count. */
+  comments: number;
+  createdAt: string;
+  updatedAt: string;
+  url: string;
+}
+
+export interface IssueDetail extends Issue {
+  body: string;
+  thread: PullComment[];
+}
+
+export type CloseReason = "completed" | "not_planned";
+
+export const issues = {
+  list: (filter: "open" | "closed" | "all") => invoke<Issue[]>("issue_list", { filter }),
+  detail: (number: number) => invoke<IssueDetail>("issue_detail", { number }),
+  create: (title: string, body: string) => invoke<Issue>("issue_create", { title, body }),
+  edit: (number: number, title: string, body: string) => invoke<Issue>("issue_edit", { number, title, body }),
+  setOpen: (number: number, open: boolean, reason: CloseReason = "completed") => invoke<Issue>("issue_set_open", { number, open, reason }),
+  comment: (number: number, body: string) => invoke<void>("issue_comment", { number, body }),
+  /** Permanent; GitHub allows it to repository admins only. */
+  delete: (number: number) => invoke<void>("issue_delete", { number }),
 };
 
 export function errorMessage(e: unknown) {
