@@ -4,7 +4,7 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
-import { resetGitHubCache } from "@/lib/githubCache";
+import { newerCopy, resetGitHubCache, useGitHubCacheVersion } from "@/lib/githubCache";
 import { useShownLanguage } from "@/lib/highlight";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { languageLabel } from "@/lib/language";
@@ -170,6 +170,29 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     });
   }, [status]);
 
+  // Issue and PR tabs hold the item as it was when opened, saved across restarts too. When a
+  // list or detail read brings a newer copy (closed, renamed), the tab's title and icon follow.
+  const gitHubVersion = useGitHubCacheVersion();
+  useEffect(() => {
+    setTabState((st) => {
+      let changed = false;
+      const tabs = st.tabs.map((t): Tab => {
+        let sel: Selection | null = null;
+        if (t.sel.kind === "issue") {
+          const issue = newerCopy(t.sel.issue);
+          if (issue) sel = { kind: "issue", issue };
+        } else if (t.sel.kind === "pull") {
+          const pull = newerCopy(t.sel.pull);
+          if (pull) sel = { kind: "pull", pull };
+        }
+        if (!sel) return t;
+        changed = true;
+        return { ...t, sel };
+      });
+      return changed ? { ...st, tabs } : st;
+    });
+  }, [gitHubVersion]);
+
   const viewed = useCallback(
     (sel: Selection) => {
       // Staging is the act of accepting a file, so staged files always count as reviewed.
@@ -323,6 +346,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 {listTab === "history" && (
                   <ForkHistory
                     commits={repo.commits}
+                    branches={repo.branches}
                     status={status}
                     remotes={remoteNames}
                     hasMore={repo.hasMore}

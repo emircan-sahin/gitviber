@@ -2,7 +2,7 @@ import { ArrowDownToLine, RefreshCw } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Commit, errorMessage, fullName, type GitHubAccess, github } from "@/lib/api";
+import { api, type Branch, type Commit, errorMessage, fullName, type GitHubAccess, github } from "@/lib/api";
 import { useGitHubData } from "@/lib/githubCache";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
@@ -15,7 +15,7 @@ const PAGE = 200;
 const REFETCH_AFTER = 5 * 60_000;
 const lastFetch = new Map<string, number>();
 
-type Props = ComponentProps<typeof HistoryPanel>;
+type Props = ComponentProps<typeof HistoryPanel> & { branches: Branch[] };
 
 /**
  * History, and for a fork a second pane under it: the original's default branch, with what
@@ -86,6 +86,7 @@ function OriginalHistory({
   onLoading,
   commits: ours,
   refresh,
+  branches,
   ...props
 }: Props & { parent: GitHubAccess; fetches: number; onLoading: (loading: boolean) => void }) {
   // undefined while looking, null when the repo has no remote for the original yet.
@@ -136,6 +137,16 @@ function OriginalHistory({
     clicks.current = fetches;
     load(clicked || Date.now() - (lastFetch.get(original) ?? 0) > REFETCH_AFTER);
   }, [load, fetches, headSha, original]);
+
+  // A fetch from the terminal moves the original's branch but not HEAD: reread the log then.
+  // Only a move; the first sighting is the load above.
+  const tip = branches.find((b) => b.remote && b.name === `${remote}/${branch}`)?.timestamp;
+  const seenTip = useRef(tip);
+  useEffect(() => {
+    const seen = seenTip.current;
+    seenTip.current = tip;
+    if (seen !== undefined && tip !== seen) load(false);
+  }, [tip, load]);
 
   const loadMore = async () => {
     if (!rev) return;
