@@ -18,7 +18,7 @@ import { useRepo } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
 import { ChangesPanel, changeList } from "./ChangesPanel";
 import { FileTree, type FileTreeHandle } from "./FileTree";
-import { HistoryPanel } from "./HistoryPanel";
+import { ForkHistory } from "./ForkHistory";
 import { IssuesPanel } from "./IssuesPanel";
 import { PullsPanel } from "./PullsPanel";
 import { TerminalPanel, TerminalRestoreOffer, useTerminalSetup } from "./TerminalPanel";
@@ -320,7 +320,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 )}
                 {listTab === "issues" && <IssuesPanel activeKey={activeKey} onOpen={open} />}
                 {listTab === "history" && (
-                  <HistoryPanel
+                  <ForkHistory
                     commits={repo.commits}
                     status={status}
                     remotes={remoteNames}

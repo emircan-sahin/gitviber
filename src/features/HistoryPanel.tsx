@@ -32,6 +32,10 @@ interface Props {
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
+  /** HEAD, when the list is another branch's history (a fork's original) rather than HEAD's. */
+  headSha?: string;
+  /** Where these commits live on GitHub, when that's not origin: a fork's original has them all. */
+  web?: string;
 }
 
 /** What a commit's context menu needs from the panel. */
@@ -44,9 +48,11 @@ interface Actions {
   locked: boolean;
   run: (label: string, fn: () => Promise<void | boolean>, done: string) => Promise<void>;
   name: (kind: "branch" | "tag", commit: Commit) => void;
+  /** `webUrl` has every listed commit, not only those reached from origin's branches. */
+  everyOnWeb: boolean;
 }
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover }: Props) {
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web }: Props) {
   const [open, setOpen] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ el: HTMLElement; top: number } | null>(null);
@@ -73,14 +79,16 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     }
   };
 
-  // History is logged from HEAD, so the first row is the HEAD the user sees.
+  // HEAD's own history starts at the HEAD the user sees.
+  const head = headSha ?? commits[0]?.sha ?? "";
   const actions: Actions = {
     status,
-    headSha: commits[0]?.sha ?? "",
-    webUrl,
+    headSha: head,
+    webUrl: web ?? webUrl,
     locked: busy || !!status?.operation,
     run,
     name: (kind, commit) => setNaming({ kind, commit }),
+    everyOnWeb: !!web,
   };
 
   // Opening a commit collapses the one above it; WebKit has no scroll anchoring, so without
@@ -114,7 +122,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
           activeKey={activeKey}
           onOpen={onOpen}
           onHover={onHover}
-          menu={<CommitMenu commit={c} head={i === 0} actions={actions} />}
+          menu={<CommitMenu commit={c} head={c.sha === head} actions={actions} />}
         />
       ))}
       {hasMore && (
@@ -187,7 +195,8 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       <ContextMenuItem disabled={locked || !head || !c.parents.length} onSelect={undo}>
         <Undo2 /> Undo commit
       </ContextMenuItem>
-      <ContextMenuItem disabled={locked} onSelect={() => run("Revert", () => api.revert(c.sha), `Reverted ${short}`)}>
+      {/* Reverting a commit HEAD never had would apply the opposite of a change that isn't there. */}
+      <ContextMenuItem disabled={locked || c.notInHead} onSelect={() => run("Revert", () => api.revert(c.sha), `Reverted ${short}`)}>
         <RotateCcw /> Revert commit
       </ContextMenuItem>
       <ContextMenuSub>
@@ -225,7 +234,7 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       {webUrl && (
         // GitHub only has commits that reached one of origin's branches.
         <ContextMenuItem
-          disabled={!c.onOrigin}
+          disabled={!c.onOrigin && !actions.everyOnWeb}
           onSelect={() => github.openUrl(`${webUrl}/commit/${c.sha}`).catch((e) => toast("error", "Could not open GitHub", errorMessage(e)))}
         >
           <ExternalLink /> Open on GitHub
@@ -328,9 +337,9 @@ function CommitRow({
             <span
               className={cn(
                 "relative z-10 mt-[3px] size-[9px] shrink-0 rounded-full border-2",
-                commit.unpushed ? "border-primary bg-primary" : merge ? "border-renamed bg-sidebar" : "border-subtle bg-sidebar",
+                commit.unpushed ? "border-primary bg-primary" : commit.notInHead ? "border-added bg-added" : merge ? "border-renamed bg-sidebar" : "border-subtle bg-sidebar",
               )}
-              title={commit.unpushed ? "Not pushed yet" : undefined}
+              title={commit.unpushed ? "Not pushed yet" : commit.notInHead ? "Not in your branch yet" : undefined}
             />
             <div className="min-w-0 flex-1">
               <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
