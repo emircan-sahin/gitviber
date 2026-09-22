@@ -205,7 +205,10 @@ const RECENT_KEY = "gitviber.recent";
 
 export function recentRepos(): string[] {
   try {
-    return JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
+    const list: unknown = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
+    // Saved lists have held nulls (an undefined path serializes as null), and one null crashed
+    // the project switcher's sortable list.
+    return Array.isArray(list) ? list.filter((p): p is string => typeof p === "string") : [];
   } catch {
     return [];
   }
