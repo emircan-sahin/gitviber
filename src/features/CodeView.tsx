@@ -135,8 +135,9 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
     showLanguage(lang);
     return () => showLanguage(null);
   }, [lang]);
-  const oldHl = useHighlight(mode === "file" ? null : pair.original.text, lang, s.codeTheme);
+  // New side first: it's the one the first paint waits for, and the worker takes views in order.
   const newHl = useHighlight(pair.modified.text, lang, s.codeTheme);
+  const oldHl = useHighlight(mode === "file" ? null : pair.original.text, lang, s.codeTheme);
   const oldTok = useMemo(() => tokenLookup(oldHl), [oldHl]);
   const newTok = useMemo(() => tokenLookup(newHl), [newHl]);
 
@@ -623,13 +624,27 @@ function usefulEmphasis(text: string, emph?: [number, number][]) {
   return total && changed / total <= 0.6 ? ranges : undefined;
 }
 
-function Code({ text, tokens, emph, emphClass, wrap }: { text: string; tokens?: TokenLine; emph?: [number, number][]; emphClass?: string; wrap: boolean }) {
+type CodeProps = { text: string; tokens?: TokenLine; emph?: [number, number][]; emphClass?: string; wrap: boolean };
+
+// New tokens (a fresh result, the old side arriving) or a new revision re-render every mounted
+// row; comparing by value keeps that to the lines whose colors or text actually changed.
+const Code = memo(function Code({ text, tokens, emph, emphClass, wrap }: CodeProps) {
   emph = usefulEmphasis(text, emph);
   return (
     <span className={cn("min-w-0 flex-1 pr-6 pl-2 select-text", wrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre")}>
       {renderTokens(tokens ?? [[text, "", 0]], emph, emphClass)}
     </span>
   );
+}, sameCode);
+
+function sameCode(a: CodeProps, b: CodeProps) {
+  return a.text === b.text && a.wrap === b.wrap && a.emphClass === b.emphClass && sameTuples(a.emph, b.emph) && sameTuples(a.tokens, b.tokens);
+}
+
+function sameTuples<T extends unknown[]>(a: T[] | undefined, b: T[] | undefined) {
+  if (a === b) return true;
+  if (!a || !b || a.length !== b.length) return false;
+  return a.every((t, i) => t.every((v, j) => v === b[i][j]));
 }
 
 const FONT_STYLE = (fs: number): React.CSSProperties | undefined =>

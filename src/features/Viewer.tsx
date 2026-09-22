@@ -207,6 +207,13 @@ export function prefetchSelection(sel: Selection, revision: number, theme: strin
     .catch(() => {});
 }
 
+// Every change anywhere in the repo bumps the revision; a file that didn't change keeps its
+// pair object, so the code view doesn't rebuild and re-render every row for nothing.
+const samePair = (a: DiffPair | null, b: DiffPair) =>
+  !!a && sameText(a.original, b.original) && sameText(a.modified, b.modified);
+const sameText = (a: DiffPair["original"], b: DiffPair["original"]) =>
+  a.text === b.text && a.exists === b.exists && a.binary === b.binary && a.tooLarge === b.tooLarge && a.lossy === b.lossy;
+
 function usePair(sel: FileSelection, revision: number) {
   const { kind, path, oldPath, sha, base, key } = pairArgs(sel, revision);
   const [pair, setPair] = useState<DiffPair | null>(() => pairCache.get(key) ?? null);
@@ -217,7 +224,7 @@ function usePair(sel: FileSelection, revision: number) {
   useEffect(() => {
     const hit = pairCache.get(key);
     if (hit) {
-      setPair(hit);
+      setPair((prev) => (samePair(prev, hit) ? prev : hit));
       setError(null);
       return;
     }
@@ -231,7 +238,7 @@ function usePair(sel: FileSelection, revision: number) {
         remember(key, p, gen);
         if (seq > applied.current) {
           applied.current = seq;
-          setPair(p);
+          setPair((prev) => (samePair(prev, p) ? prev : p));
           setError(null);
         }
       })
