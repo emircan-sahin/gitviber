@@ -16,7 +16,8 @@
   --border-strong: #303033;
   --foreground: #ececee;
   --muted-foreground: #a2a2a8;
-  --subtle: #6c6c73;
+  /* ≥4.5:1 (WCAG AA) on every surface up to --elevated: it's used for 11-12px text. */
+  --subtle: #86868d;
   --primary: #4a9ff5;
   --primary-foreground: #ffffff;
   --ring: #4a9ff5;
@@ -62,7 +63,7 @@
   --border-strong: #d0d0d5;
   --foreground: #1d1d1f;
   --muted-foreground: #5b5b62;
-  --subtle: #8b8b93;
+  --subtle: #6e6e75;
   --primary: #0969da;
   --ring: #0969da;
   --destructive: #cf222e;
