@@ -379,12 +379,15 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
             <div className="flex h-full flex-col bg-panel">
               <div className="flex h-9 shrink-0 items-center border-b border-border pr-1 pl-3">
                 <span className="text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Explorer</span>
-                <Tip label="Collapse folders">
-                  <button aria-label="Collapse folders" onClick={() => fileTree.current?.collapseAll()} className="ml-auto flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground">
-                    <ChevronsDownUp className="size-3.5" />
-                  </button>
-                </Tip>
-                <CollapseButton side="right" onClick={() => toggle(filesPanel)} />
+                {/* One group: two ml-autos split the free space, leaving Collapse folders mid-header. */}
+                <div className="ml-auto flex items-center gap-0.5">
+                  <Tip label="Collapse folders">
+                    <button aria-label="Collapse folders" onClick={() => fileTree.current?.collapseAll()} className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground">
+                      <ChevronsDownUp className="size-3.5" />
+                    </button>
+                  </Tip>
+                  <CollapseButton side="right" onClick={() => toggle(filesPanel)} />
+                </div>
               </div>
               <div className="min-h-0 flex-1">
                 <FileTree ref={fileTree} status={status} revision={repo.revision} activeKey={activeKey} onOpen={open} onHover={prefetch} onPathMoved={onPathMoved} />
