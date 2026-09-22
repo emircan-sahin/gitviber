@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
+import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { type ITerminalOptions, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -17,6 +18,7 @@ interface Pane {
   cwd: string;
   term: Terminal;
   fit: FitAddon;
+  serialize: SerializeAddon;
   host: HTMLDivElement;
   pty: number | null;
   started: boolean;
@@ -39,20 +41,80 @@ export interface TerminalGroup {
   focused: number;
 }
 
+/** The terminals of a previous run: where each shell was, and what it had printed. */
+export interface SavedSession {
+  savedAt: number;
+  active: number;
+  groups: { focused: number; panes: { cwd: string; history: string }[] }[];
+}
+
 interface State {
   open: boolean;
   groups: TerminalGroup[];
   active: number | null;
+  /** Last run's terminals, until the user restores or dismisses them. */
+  restorable: SavedSession | null;
+}
+
+const SESSION_KEY = "gitviber.terminals";
+// Serialized with colors, 1000 lines is ~100 KB a pane; localStorage holds a few MB.
+const HISTORY_LINES = 1000;
+
+function loadSession(): SavedSession | null {
+  try {
+    const s = JSON.parse(localStorage.getItem(SESSION_KEY) ?? "null") as SavedSession | null;
+    return s && Array.isArray(s.groups) && s.groups.length ? s : null;
+  } catch {
+    return null;
+  }
 }
 
 const panes = new Map<number, Pane>();
-let state: State = { open: false, groups: [], active: null };
+let state: State = { open: false, groups: [], active: null, restorable: loadSession() };
 let nextId = 1;
 const listeners = new Set<() => void>();
 
 function set(patch: Partial<State>) {
   state = { ...state, ...patch };
   listeners.forEach((l) => l());
+  scheduleSave();
+}
+
+let saveTimer: number | undefined;
+/** Throttled rather than debounced, so a shell that never stops printing still gets saved. */
+function scheduleSave() {
+  saveTimer ??= window.setTimeout(() => {
+    saveTimer = undefined;
+    saveSession();
+  }, 2000);
+}
+
+function saveSession() {
+  // Nothing opened yet: keep the last run's terminals for the restore offer.
+  if (!state.groups.length && state.restorable) return;
+  try {
+    if (!state.groups.length) return localStorage.removeItem(SESSION_KEY);
+    const snapshot = (history: boolean): SavedSession => ({
+      savedAt: Date.now(),
+      active: Math.max(0, state.groups.findIndex((g) => g.id === state.active)),
+      groups: state.groups.map((g) => ({
+        focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
+        panes: g.panes.map(({ id, cwd }) => {
+          const p = panes.get(id);
+          // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
+          return { cwd, history: history && p ? p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true }) : "" };
+        }),
+      })),
+    });
+    try {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(true)));
+    } catch {
+      // Over quota: the layout alone is still worth keeping.
+      localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(false)));
+    }
+  } catch {
+    // Not critical.
+  }
 }
 
 export function useTerminals() {
@@ -156,15 +218,19 @@ function send(p: Pane, data: string) {
   flush();
 }
 
-function createPane(cwd: string): PaneInfo {
+function createPane(cwd: string, restored?: { history: string; savedAt: number }): PaneInfo {
   const id = nextId++;
   const term = new Terminal({ ...terminalOptions(), cursorBlink: true, scrollback: 10_000 });
   const fit = new FitAddon();
   term.loadAddon(fit);
+  const serialize = new SerializeAddon();
+  term.loadAddon(serialize);
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, term, fit, host, pty: null, started: false, pending: "", writing: false };
+  const p: Pane = { id, cwd, term, fit, serialize, host, pty: null, started: false, pending: "", writing: false };
   panes.set(id, p);
+  if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
+  term.onWriteParsed(scheduleSave);
   term.onData((data) => send(p, data));
   term.onResize(({ cols, rows }) => p.pty !== null && void invoke("pty_resize", { id: p.pty, cols, rows }).catch(() => {}));
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
@@ -312,6 +378,22 @@ export function togglePanel(cwd: string) {
   if (!state.groups.length) return openTerminal(cwd);
   set({ open: true });
   focusActive();
+}
+
+/** Reopens last run's terminals beside any opened since: same folders, their output, new shells. */
+export function restoreSession() {
+  const saved = state.restorable;
+  if (!saved) return;
+  const groups = saved.groups.map((g) => {
+    const infos = g.panes.map((p) => createPane(p.cwd, { history: p.history, savedAt: saved.savedAt }));
+    return { id: nextId++, panes: infos, focused: (infos[g.focused] ?? infos[0]).id };
+  });
+  set({ open: true, groups: [...state.groups, ...groups], active: (groups[saved.active] ?? groups[0]).id, restorable: null });
+  focusActive();
+}
+
+export function dismissRestore() {
+  set({ restorable: null });
 }
 
 /** Switching to a worktree brings up a terminal that's already in it. */
