@@ -151,11 +151,11 @@ export function PullsPanel({ status, branches, lastSubject, activeKey, onOpen, r
 }
 
 /** No token from the GitHub CLI or git's credential store: explain the two ways to connect. */
-function ConnectGitHub({ onRetry }: { onRetry: () => void }) {
+export function ConnectGitHub({ onRetry, subject = "pull requests" }: { onRetry: () => void; subject?: string }) {
   return (
     <div className="px-5 pt-14 text-center">
       <GitPullRequest className="mx-auto size-7 text-subtle" />
-      <div className="mt-3 text-[13px] font-medium">Connect GitHub to see pull requests</div>
+      <div className="mt-3 text-[13px] font-medium">Connect GitHub to see {subject}</div>
       <div className="mt-1 text-[12px] leading-relaxed text-muted-foreground">
         GitViber uses the login you already have. It never stores a token itself.
       </div>

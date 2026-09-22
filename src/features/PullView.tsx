@@ -309,7 +309,7 @@ function BranchChip({ name }: { name: string }) {
   return <span className="rounded-sm bg-primary/12 px-1.5 py-px font-mono text-[11px] text-primary">{name}</span>;
 }
 
-function Section({ title, aside, children }: { title: string; aside?: string; children: React.ReactNode }) {
+export function Section({ title, aside, children }: { title: string; aside?: string; children: React.ReactNode }) {
   return (
     <div className="mt-5 overflow-hidden rounded-md border border-border">
       <div className="flex h-8 items-center border-b border-border bg-panel px-3 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">
@@ -321,11 +321,11 @@ function Section({ title, aside, children }: { title: string; aside?: string; ch
   );
 }
 
-/** A PR description or comment, rendered like GitHub does (see MarkdownBody for what's allowed). */
-function PullMarkdown({ pull, idPrefix, text, empty, className }: { pull: Pick<Pull, "url" | "number">; idPrefix: string; text: string; empty?: string; className?: string }) {
+/** A PR or issue description or comment, rendered like GitHub does (see MarkdownBody for what's allowed). */
+export function PullMarkdown({ pull, idPrefix, text, empty, className }: { pull: Pick<Pull, "url" | "number">; idPrefix: string; text: string; empty?: string; className?: string }) {
   // Keyed on the tab's PR, not its refreshed detail: new components would remount every image.
   const components = useMemo<Components>(() => {
-    // Relative links in PR text are relative to the PR page, as on github.com.
+    // Relative links in PR or issue text are relative to its page, as on github.com.
     const absolute = (href: string) => {
       try {
         return new URL(href, pull.url).href;
@@ -341,7 +341,7 @@ function PullMarkdown({ pull, idPrefix, text, empty, className }: { pull: Pick<P
   if (!text.trim()) return empty ? <div className={cn("px-3 py-2.5 text-[12px] text-subtle italic", className)}>{empty}</div> : null;
   return (
     <div className={cn("markdown px-3 py-2.5 select-text", className)}>
-      <MarkdownBody text={text} components={components} idPrefix={idPrefix} repo={pull.url.split("/pull/")[0]} />
+      <MarkdownBody text={text} components={components} idPrefix={idPrefix} repo={pull.url.split(/\/(?:pull|issues)\//)[0]} />
     </div>
   );
 }

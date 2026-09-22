@@ -17,12 +17,13 @@ import { cn } from "@/lib/utils";
 import { ChangesPanel, changeList } from "./ChangesPanel";
 import { FileTree, type FileTreeHandle } from "./FileTree";
 import { HistoryPanel } from "./HistoryPanel";
+import { IssuesPanel } from "./IssuesPanel";
 import { PullsPanel } from "./PullsPanel";
 import { TerminalPanel, useTerminalSetup } from "./TerminalPanel";
 import { changeTotals, TopBar } from "./TopBar";
 import { prefetchSelection, resetPairCache, type Tab, Viewer } from "./Viewer";
 
-type ListTab = "changes" | "history" | "pulls";
+type ListTab = "changes" | "history" | "pulls" | "issues";
 
 interface Props {
   root: string;
@@ -228,6 +229,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.changes": () => setListTab("changes"),
     "view.history": () => setListTab("history"),
     "view.pulls": () => setListTab("pulls"),
+    "view.issues": () => setListTab("issues"),
     "view.toggleGitPanel": () => toggle(listPanel),
     "view.toggleExplorer": () => toggle(filesPanel),
     "view.showExplorer": () => filesPanel.current?.expand(),
@@ -278,6 +280,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 <ListTabButton active={listTab === "pulls"} onClick={() => setListTab("pulls")}>
                   PRs
                 </ListTabButton>
+                <ListTabButton active={listTab === "issues"} onClick={() => setListTab("issues")}>
+                  Issues
+                </ListTabButton>
                 <CollapseButton side="left" onClick={() => toggle(listPanel)} />
               </div>
               <div className="min-h-0 flex-1">
@@ -294,6 +299,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     refreshRepo={() => repo.refresh()}
                   />
                 )}
+                {listTab === "issues" && <IssuesPanel activeKey={activeKey} onOpen={open} />}
                 {listTab === "history" && (
                   <HistoryPanel
                     commits={repo.commits}

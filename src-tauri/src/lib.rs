@@ -442,6 +442,79 @@ async fn pr_merge(app: AppHandle, number: u64, method: String) -> Res<()> {
 }
 
 #[tauri::command]
+async fn issue_list(app: AppHandle, filter: String) -> Res<Vec<github::Issue>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::issues(&state.github, &repo(&state)?, &filter)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn issue_detail(app: AppHandle, number: u64) -> Res<github::IssueDetail> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::issue_detail(&state.github, &repo(&state)?, number)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn issue_create(app: AppHandle, title: String, body: String) -> Res<github::Issue> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::issue_create(&state.github, &repo(&state)?, &title, &body)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn issue_edit(
+    app: AppHandle,
+    number: u64,
+    title: String,
+    body: String,
+) -> Res<github::Issue> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::issue_edit(&state.github, &repo(&state)?, number, &title, &body)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn issue_set_open(
+    app: AppHandle,
+    number: u64,
+    open: bool,
+    reason: String,
+) -> Res<github::Issue> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::issue_set_open(&state.github, &repo(&state)?, number, open, &reason)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn issue_delete(app: AppHandle, number: u64) -> Res<()> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::issue_delete(&state.github, &repo(&state)?, number)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn issue_comment(app: AppHandle, number: u64, body: String) -> Res<()> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::issue_comment(&state.github, &repo(&state)?, number, &body)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn pr_checkout(
     state: State<'_, AppState>,
     number: u64,
@@ -567,6 +640,13 @@ pub fn run() {
             pr_create,
             pr_merge,
             pr_checkout,
+            issue_list,
+            issue_detail,
+            issue_create,
+            issue_edit,
+            issue_set_open,
+            issue_delete,
+            issue_comment,
             open_url,
             pty_spawn,
             pty_write,

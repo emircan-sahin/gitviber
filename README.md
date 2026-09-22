@@ -36,6 +36,7 @@ credentials and signing, and GitViber writes nothing of its own into the repo.
 | **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase |
 | **Conflicts** | Resolve block by block (current, incoming, both, or edit by hand), then continue, skip or abort |
 | **Pull requests** | List, read (with GitHub markdown), review in the same viewer, create, merge, check out. GitHub only for now |
+| **Issues** | List, read, open, edit, comment on, close (completed or not planned), reopen and delete (admins). GitHub only |
 | **History** | Right-click a commit to undo, revert, reset, check out or tag it. Anything that rewrites pushed commits asks first |
 | **Explorer** | Browse any file with change bars in the gutter. Rename, delete to Trash, create and reveal from the right-click menu |
 | **Settings** | Light and dark themes, eight syntax themes, interface scale, fonts, and every shortcut rebindable (`⌘,`) |
@@ -73,7 +74,7 @@ Shortcuts without `⌘` are ignored while you type.
 | Keys | |
 | --- | --- |
 | `⌘,` | Settings |
-| `⌘1` `⌘2` `⌘3` | Changes, History, PRs |
+| `⌘1` `⌘2` `⌘3` `⌘4` | Changes, History, PRs, Issues |
 | `J` `K` | Next / previous changed file |
 | `↓` `↑` `↵` | Move through the focused Changes list, `↵` keeps the tab open |
 | `V` | Mark file viewed |
@@ -92,13 +93,13 @@ Shortcuts without `⌘` are ignored while you type.
 
 ## GitHub sign-in
 
-GitViber never asks for a token. For pull requests it borrows a login you already have: the GitHub
+GitViber never asks for a token. For pull requests and issues it borrows a login you already have: the GitHub
 CLI (`gh auth token`) first, then git's stored github.com credential (Keychain, GitHub Desktop, Git
 Credential Manager). The token stays in memory.
 
 ## Privacy
 
-No API keys, no telemetry. The app talks to your git remotes and, for pull requests, GitHub.
+No API keys, no telemetry. The app talks to your git remotes and, for pull requests and issues, GitHub.
 It only reads files inside the repository you open. Markdown from GitHub is cut down to
 GitHub's own HTML allowlist (no scripts, styles or forms), and an image hosted outside GitHub
 loads only when you click it.

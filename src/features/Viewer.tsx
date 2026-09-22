@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Check, Columns2, Copy, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, GitPullRequest, Rows2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, CircleDot, Columns2, Copy, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, GitPullRequest, Rows2, X } from "lucide-react";
 import { Component, type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
@@ -11,6 +11,7 @@ import { cn, relativeTime } from "@/lib/utils";
 import { CodeView, type CodeViewHandle } from "./CodeView";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ConflictView } from "./ConflictView";
+import { IssueView } from "./IssueView";
 import { PullView } from "./PullView";
 import { prefetchHighlight } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
@@ -50,6 +51,8 @@ export function Viewer(props: ViewerProps) {
             <ConflictView file={active.sel.file} operation={props.status?.operation ?? null} revision={props.revision} />
           ) : active.sel.kind === "pull" ? (
             <PullView pull={active.sel.pull} onOpen={props.onOpen} />
+          ) : active.sel.kind === "issue" ? (
+            <IssueView issue={active.sel.issue} onDeleted={() => props.onClose(active.key)} />
           ) : (
             <Pane tab={active} sel={active.sel} {...props} />
           )}
@@ -75,7 +78,7 @@ class PaneBoundary extends Component<{ children: ReactNode }, { error: string | 
 // ---------------------------------------------------------------- tabs
 
 function tabLabel(sel: Selection) {
-  if (sel.kind === "pull") return `#${sel.pull.number} ${sel.pull.title}`;
+  if (sel.kind === "pull" || sel.kind === "issue") return selectionPath(sel);
   const path = selectionPath(sel);
   return path.slice(path.lastIndexOf("/") + 1);
 }
@@ -121,7 +124,13 @@ function TabItem({
     >
       {isActive && <span className="absolute inset-x-0 top-0 h-px bg-primary" />}
       {isActive && !dragging && <span className="absolute inset-x-0 -bottom-px h-px bg-background" />}
-      {t.sel.kind === "pull" ? <GitPullRequest className="size-3.5 shrink-0 text-added" /> : <FileIcon path={selectionPath(t.sel)} />}
+      {t.sel.kind === "pull" ? (
+        <GitPullRequest className="size-3.5 shrink-0 text-added" />
+      ) : t.sel.kind === "issue" ? (
+        <CircleDot className="size-3.5 shrink-0 text-added" />
+      ) : (
+        <FileIcon path={selectionPath(t.sel)} />
+      )}
       <span className={cn("truncate", t.preview && "italic")}>{tabLabel(t.sel)}</span>
       <TabKind sel={t.sel} />
       <button
@@ -147,8 +156,8 @@ function TabKind({ sel }: { sel: Selection }) {
 
 // ---------------------------------------------------------------- pane
 
-/** Tabs whose content is a diff of one file (everything except a PR overview). */
-export type FileSelection = Exclude<Selection, { kind: "pull" }>;
+/** Tabs whose content is a diff of one file (everything except PR and issue overviews). */
+export type FileSelection = Exclude<Selection, { kind: "pull" | "issue" }>;
 
 function pairArgs(sel: FileSelection, revision: number) {
   const kind: DiffKind =
@@ -179,7 +188,7 @@ function remember(key: string, pair: DiffPair, gen: number) {
 
 /** Loads a diff and its syntax colors in the background, so opening it next is instant. */
 export function prefetchSelection(sel: Selection, revision: number, theme: string) {
-  if (sel.kind === "pull") return;
+  if (sel.kind === "pull" || sel.kind === "issue") return;
   const { kind, path, oldPath, sha, base, key } = pairArgs(sel, revision);
   if (pairCache.has(key)) return;
   const gen = generation;
@@ -405,7 +414,7 @@ function EmptyViewer({ hasTabs }: { hasTabs: boolean }) {
       <GitCompareArrows className="size-8 text-border-strong" strokeWidth={1.5} />
       <div className="text-[12.5px] text-muted-foreground">{hasTabs ? "No tab selected" : "Select a file to review"}</div>
       <div className="grid grid-cols-[auto_auto] gap-x-4 gap-y-1.5 text-left text-[11.5px] text-subtle">
-        <Kbd ids={["view.changes", "view.history", "view.pulls"]} /> <span>Changes · History · PRs</span>
+        <Kbd ids={["view.changes", "view.history", "view.pulls", "view.issues"]} /> <span>Changes · History · PRs · Issues</span>
         <Kbd ids={["view.toggleGitPanel", "view.toggleExplorer"]} /> <span>Toggle git panel · explorer</span>
         <Kbd ids={["review.nextFile", "review.prevFile"]} /> <span>Next / previous file</span>
         <Kbd ids={["diff.nextChange", "diff.prevChange"]} /> <span>Next / previous change</span>
