@@ -20,7 +20,8 @@
         "minHeight": 560,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "backgroundColor": "#161514"
+        "visible": false,
+        "backgroundColor": "#171718"
       }
     ],
     "security": {
@@ -30,6 +31,12 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "Emircan Sahin",
+    "copyright": "© 2026 Emircan Sahin. MIT License.",
+    "category": "DeveloperTool",
+    "shortDescription": "A desktop git client for reviewing what your coding agents wrote.",
+    "longDescription": "GitViber shows full-file diffs that update live as agents write, every worktree one click away, and a terminal right under the diff. It runs the git CLI with your own config, hooks, credentials and signing.",
+    "homepage": "https://github.com/emircan-sahin/gitviber",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

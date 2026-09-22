@@ -4,6 +4,7 @@ import { Splash } from "@/components/Splash";
 import { Toaster } from "@/components/Toaster";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AboutDialog } from "@/features/AboutDialog";
 import { openSettings, SettingsDialog } from "@/features/SettingsDialog";
 import { Welcome } from "@/features/Welcome";
 import { Workspace } from "@/features/Workspace";
@@ -77,6 +78,7 @@ export function App() {
         !booting && <Welcome recent={recent} onOpenRepo={onOpen} />
       )}
       <SettingsDialog />
+      <AboutDialog />
       <Toaster />
       <Splash ready={!booting} />
     </TooltipProvider>

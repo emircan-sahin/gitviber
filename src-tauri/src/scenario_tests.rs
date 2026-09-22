@@ -117,18 +117,18 @@ fn force_push_with_lease_after_amend() {
     let c = sb.remote_with_clones(2);
     let (a, b) = (&c[0], &c[1]);
     write_commit(a, "a.txt", "mine\n", "mine");
-    push(a, false).unwrap();
+    push(a, false, None).unwrap();
     commit(a, "mine, reworded", true).unwrap();
-    let err = push(a, false).unwrap_err();
+    let err = push(a, false, None).unwrap_err();
     assert!(err.contains("non-fast-forward"), "{err}");
-    push(a, true).unwrap();
+    push(a, true, None).unwrap();
     // b pushes meanwhile; a, not having fetched it, amends again: the lease refuses.
     fetch(b).unwrap();
     run(b, &["merge", "-q", "--ff-only", "origin/main"]).unwrap();
     write_commit(b, "b.txt", "b\n", "theirs");
-    push(b, false).unwrap();
+    push(b, false, None).unwrap();
     commit(a, "mine, again", true).unwrap();
-    assert!(push(a, true).is_err());
+    assert!(push(a, true, None).is_err());
 }
 
 /// A PR is titled like GitHub does: one commit gives its message, more the branch name.
@@ -175,7 +175,7 @@ fn push_target_follows_push_default_not_the_upstream() {
     write_commit(b, "b.txt", "b\n", "fork work");
     let p = status(b).unwrap().push.unwrap();
     assert_eq!((p.remote.as_str(), p.branch.as_deref()), ("origin", None));
-    push(b, false).unwrap();
+    push(b, false, None).unwrap();
     let st = status(b).unwrap();
     let p = st.push.unwrap();
     assert_eq!((p.branch.as_deref(), p.ahead), (Some("origin/main"), 0));
@@ -258,7 +258,7 @@ fn publish_sets_upstream() {
     switch_branch(a, "feat/new-thing", true).unwrap();
     write_commit(a, "n.txt", "n\n", "new");
     assert!(status(a).unwrap().upstream.is_none());
-    push(a, false).unwrap();
+    push(a, false, None).unwrap();
     let st = status(a).unwrap();
     assert_eq!(st.upstream.as_deref(), Some("origin/feat/new-thing"));
     assert_eq!(st.ahead, 0);
@@ -273,6 +273,80 @@ fn publish_sets_upstream() {
         status(&b).unwrap().branch.as_deref(),
         Some("feat/new-thing")
     );
+}
+
+#[test]
+fn publish_picks_the_remote_instead_of_assuming_origin() {
+    let sb = Sandbox::new("pubremote");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    run(a, &["remote", "rename", "origin", "gh"]).unwrap();
+    switch_branch(a, "feat", true).unwrap();
+    // The only remote, whatever its name.
+    assert_eq!(status(a).unwrap().publish.as_deref(), Some("gh"));
+    push(a, false, None).unwrap();
+    assert_eq!(status(a).unwrap().upstream.as_deref(), Some("gh/feat"));
+
+    // Several remotes and none is origin: the user picks.
+    let other = sb.path("other.git");
+    run(&sb.0, &["init", "-q", "--bare", other.to_str().unwrap()]).unwrap();
+    run(a, &["remote", "add", "other", other.to_str().unwrap()]).unwrap();
+    switch_branch(a, "feat2", true).unwrap();
+    let st = status(a).unwrap();
+    assert_eq!((st.publish.as_deref(), st.remotes.len()), (None, 2));
+    assert!(push(a, false, None)
+        .unwrap_err()
+        .contains("several remotes"));
+    assert!(push(a, false, Some("nope")).is_err());
+    push(a, false, Some("other")).unwrap();
+    assert_eq!(status(a).unwrap().upstream.as_deref(), Some("other/feat2"));
+
+    // remote.pushDefault decides when set.
+    set_push_default(a, "other").unwrap();
+    switch_branch(a, "feat3", true).unwrap();
+    assert_eq!(status(a).unwrap().publish.as_deref(), Some("other"));
+
+    // No remote at all: a clear message, not a raw git error.
+    let lone = sb.path("lone");
+    init(&lone);
+    write_commit(&lone, "x.txt", "x\n", "x");
+    assert!(push(&lone, false, None).unwrap_err().contains("no remote"));
+}
+
+/// Clicking Stage on many rows at once used to fail on index.lock for most of them.
+#[test]
+fn index_writes_are_serialized_and_retry_a_brief_lock() {
+    let sb = Sandbox::new("indexlock");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "seed", "s\n", "seed");
+    for i in 0..30 {
+        fs::write(r.join(format!("f{i}.txt")), "x\n").unwrap();
+    }
+    let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+    let stages: Vec<_> = (0..30)
+        .map(|i| {
+            let (r, lock) = (r.clone(), lock.clone());
+            std::thread::spawn(move || {
+                crate::with_index_lock(&lock, &r, |r| stage(r, &[format!("f{i}.txt")]))
+            })
+        })
+        .collect();
+    for s in stages {
+        s.join().unwrap().unwrap();
+    }
+    assert_eq!(status(&r).unwrap().staged.len(), 30);
+
+    // Another git (an agent, the terminal) holding the lock for a moment.
+    let held = r.join(".git/index.lock");
+    fs::write(&held, "").unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        fs::remove_file(held).unwrap();
+    });
+    fs::write(r.join("late.txt"), "x\n").unwrap();
+    crate::with_index_lock(&lock, &r, |r| stage(r, &["late.txt".into()])).unwrap();
+    release.join().unwrap();
 }
 
 #[test]
@@ -780,6 +854,29 @@ fn repo_with_submodule(sb: &Sandbox) -> PathBuf {
 }
 
 #[test]
+fn watcher_skips_ignored_build_output() {
+    use crate::watch::not_ignored;
+    use std::collections::HashSet;
+    let sb = Sandbox::new("watchignore");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, ".gitignore", "target/\n*.log\n", "ignore");
+    fs::create_dir_all(r.join("target/debug")).unwrap();
+    // Tracked despite the pattern: still a change worth showing.
+    fs::write(r.join("keep.log"), "k\n").unwrap();
+    run(&r, &["add", "-f", "keep.log"]).unwrap();
+    let r = r.canonicalize().unwrap();
+    let set = |ps: &[&str]| -> HashSet<PathBuf> { ps.iter().map(|p| r.join(p)).collect() };
+    assert!(!not_ignored(&r, &set(&["target/debug/out.o", "build.log"])));
+    assert!(not_ignored(
+        &r,
+        &set(&["target/debug/out.o", "src/main.rs"])
+    ));
+    assert!(not_ignored(&r, &set(&["keep.log"])));
+    assert!(!not_ignored(&r, &HashSet::new()));
+}
+
+#[test]
 fn watcher_still_follows_submodules() {
     use crate::watch::{classify, Kind};
     let sb = Sandbox::new("wtsubwatch");
@@ -793,6 +890,46 @@ fn watcher_still_follows_submodules() {
     // A plain nested repo (a .git dir) is still ignored.
     init(&r.join("vendor/x"));
     assert_eq!(classify(&r, &r.join("vendor/x/f.txt")), None);
+}
+
+#[test]
+fn submodule_bump_diffs_as_subproject_commits() {
+    let sb = Sandbox::new("subdiff");
+    let r = repo_with_submodule(&sb);
+    let sub = r.join("sub");
+    identity(&sub);
+    let old = run(&sub, &["rev-parse", "HEAD"]).unwrap();
+    let old = String::from_utf8_lossy(&old).trim().to_string();
+    write_commit(&sub, "l.txt", "l2\n", "bump");
+    let new = run(&sub, &["rev-parse", "HEAD"]).unwrap();
+    let new = String::from_utf8_lossy(&new).trim().to_string();
+    let read = |p: &str| vfs::read_file(&r, p);
+
+    let pair = diff_pair(&r, "unstaged", "sub", None, None, None, read).unwrap();
+    assert_eq!(pair.original.text, format!("Subproject commit {old}\n"));
+    assert_eq!(pair.modified.text, format!("Subproject commit {new}\n"));
+    assert!(pair.rows.iter().any(|row| row.k != 0));
+
+    fs::write(sub.join("l.txt"), "dirty\n").unwrap();
+    let pair = diff_pair(&r, "unstaged", "sub", None, None, None, read).unwrap();
+    assert_eq!(
+        pair.modified.text,
+        format!("Subproject commit {new}-dirty\n")
+    );
+
+    stage(&r, &["sub".into()]).unwrap();
+    commit(&r, "bump sub", false).unwrap();
+    let head = log(&r, None, 0, 1).unwrap().remove(0).sha;
+    let pair = diff_pair(&r, "commit", "sub", None, Some(&head), None, read).unwrap();
+    assert_eq!(pair.original.text, format!("Subproject commit {old}\n"));
+    assert_eq!(pair.modified.text, format!("Subproject commit {new}\n"));
+    // A plain directory is still not a submodule.
+    assert!(
+        !diff_pair(&r, "unstaged", "nope", None, None, None, read)
+            .unwrap()
+            .modified
+            .exists
+    );
 }
 
 #[test]
@@ -1065,7 +1202,7 @@ fn gone_upstream_is_unknown_not_pushed() {
     let a = &c[0];
     switch_branch(a, "feat", true).unwrap();
     write_commit(a, "f.txt", "f\n", "feature");
-    push(a, false).unwrap();
+    push(a, false, None).unwrap();
     run(a, &["push", "-q", "origin", "--delete", "feat"]).unwrap();
     fetch(a).unwrap();
     write_commit(a, "g.txt", "g\n", "after the branch was deleted");

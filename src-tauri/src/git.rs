@@ -237,6 +237,10 @@ pub struct RepoStatus {
     /// Where `git push` sends this branch, which a fork can set apart from where it pulls
     /// (`remote.pushDefault`): pull from upstream/dev, push to origin/dev.
     pub push: Option<PushTarget>,
+    /// Configured remotes, to pick where an unpublished branch goes.
+    pub remotes: Vec<String>,
+    /// Where Publish sends a branch with no upstream; None when that's the user's choice.
+    pub publish: Option<String>,
     pub staged: Vec<FileChange>,
     pub unstaged: Vec<FileChange>,
     pub conflicted: Vec<FileChange>,
@@ -384,14 +388,31 @@ fn apply_numstat(list: &mut [FileChange], stats: &HashMap<String, (Option<u32>, 
     }
 }
 
+/// Line count of an untracked file. Status runs on every change on disk, so counts are
+/// cached by size and mtime: a big untracked folder is read once, not on each refresh.
 fn count_lines(repo: &Path, rel: &str) -> Option<u32> {
-    let bytes = read_regular(&repo.join(rel)).ok()??;
-    if is_binary(&bytes) {
-        return None;
+    type Key = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
+    static CACHE: OnceLock<std::sync::Mutex<HashMap<Key, Option<u32>>>> = OnceLock::new();
+    let path = repo.join(rel);
+    let meta = std::fs::metadata(&path).ok()?;
+    let key = (path, meta.len(), meta.modified().ok());
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(n) = cache.lock().unwrap().get(&key) {
+        return *n;
     }
-    let n = bytes.iter().filter(|b| **b == b'\n').count();
-    let trailing = !bytes.is_empty() && *bytes.last().unwrap() != b'\n';
-    Some((n + trailing as usize) as u32)
+    let bytes = read_regular(&key.0).ok()??;
+    let n = (!is_binary(&bytes)).then(|| {
+        let n = bytes.iter().filter(|b| **b == b'\n').count();
+        let trailing = !bytes.is_empty() && *bytes.last().unwrap() != b'\n';
+        (n + trailing as usize) as u32
+    });
+    let mut cache = cache.lock().unwrap();
+    // Stale keys (old mtimes) pile up as files change; start over rather than track them.
+    if cache.len() > 50_000 {
+        cache.clear();
+    }
+    cache.insert(key, n);
+    n
 }
 
 pub fn status(repo: &Path) -> Result<RepoStatus, String> {
@@ -411,6 +432,8 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         head: None,
         upstream: None,
         push: None,
+        remotes: vec![],
+        publish: None,
         ahead: 0,
         behind: 0,
         staged: vec![],
@@ -507,6 +530,10 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     }
     if let Some(b) = &st.branch {
         st.push = push_target(repo, b);
+    }
+    st.remotes = remotes(repo);
+    if st.upstream.is_none() && st.branch.is_some() && !st.remotes.is_empty() {
+        st.publish = publish_remote(repo).ok();
     }
     if st.unstaged.iter().any(|f| f.nested.is_some()) {
         drop_worktrees(repo, &mut st.unstaged);
@@ -1096,13 +1123,67 @@ pub fn to_file_text(bytes: Vec<u8>) -> FileText {
     }
 }
 
-/// Reads `<rev>:<path>` (rev "" means the index). A missing blob is not an error.
+/// Reads `<rev>:<path>` (rev "" means the index). A missing blob is not an error. The size is
+/// checked first so a huge file in some old commit is never read into memory.
 fn blob(repo: &Path, rev: &str, path: &str) -> FileText {
     let spec = format!("{rev}:{path}");
+    let Ok(size) = run_text(repo, &["cat-file", "-s", &spec]) else {
+        return FileText::default();
+    };
+    if size
+        .trim()
+        .parse::<u64>()
+        .is_ok_and(|n| n > MAX_TEXT_BYTES as u64)
+    {
+        return FileText {
+            too_large: true,
+            exists: true,
+            ..Default::default()
+        };
+    }
     match run(repo, &["cat-file", "blob", &spec]) {
         Ok(bytes) => to_file_text(bytes),
         Err(_) => FileText::default(),
     }
+}
+
+/// A submodule on one side of a diff. Git stores only its commit (mode 160000), which
+/// `cat-file blob` can't read, so it's shown the way `git diff` does: "Subproject commit <sha>".
+/// `rev` "" is the index, None the worktree.
+fn gitlink(repo: &Path, rev: Option<&str>, path: &str) -> Option<FileText> {
+    // "<mode> <oid> <stage>\t<path>"; also confirms `path` is a submodule of this repo
+    // before the worktree side runs git inside it.
+    let staged = || -> Option<String> {
+        let out = run_text(repo, &["ls-files", "-s", "--", path]).ok()?;
+        let mut f = out.split_whitespace();
+        (f.next()? == "160000").then(|| f.next().map(str::to_string))?
+    };
+    let sha = match rev {
+        Some("") => staged()?,
+        Some(rev) => {
+            // "<mode> <type> <oid>\t<path>"
+            let out = run_text(repo, &["ls-tree", rev, "--", path]).ok()?;
+            let mut f = out.split_whitespace();
+            (f.next()? == "160000").then(|| f.nth(1).map(str::to_string))??
+        }
+        None => {
+            staged()?;
+            let dir = repo.join(path);
+            // Not checked out (no `.git`): git would walk up and report this repo's HEAD.
+            if !dir.join(".git").exists() {
+                return None;
+            }
+            let head = run_text(&dir, &["rev-parse", "HEAD"]).ok()?;
+            let dirty = run(&dir, &["status", "--porcelain", "--untracked-files=no"])
+                .is_ok_and(|o| !o.is_empty());
+            format!("{}{}", head.trim(), if dirty { "-dirty" } else { "" })
+        }
+    };
+    Some(FileText {
+        text: format!("Subproject commit {sha}\n"),
+        exists: true,
+        ..Default::default()
+    })
 }
 
 #[derive(Serialize)]
@@ -1187,9 +1268,16 @@ pub fn diff_pair(
     worktree: impl Fn(&str) -> FileText,
 ) -> Result<DiffPair, String> {
     let (a, b) = sides(kind, sha, base)?;
-    let read = |rev: Option<String>, p: &str| match rev {
-        Some(rev) => blob(repo, &rev, p),
-        None => worktree(p),
+    let read = |rev: Option<String>, p: &str| {
+        let f = match &rev {
+            Some(rev) => blob(repo, rev, p),
+            None => worktree(p),
+        };
+        if f.exists {
+            f
+        } else {
+            gitlink(repo, rev.as_deref(), p).unwrap_or(f)
+        }
     };
     let original = read(a, old_path.unwrap_or(path));
     let modified = read(b, path);
@@ -1737,16 +1825,60 @@ pub fn commit(repo: &Path, message: &str, amend: bool) -> Result<(), String> {
 /// `force`: after a rebase or amend the remote has the branch's old commits; replace them,
 /// but only if it still has what was last fetched (`--force-with-lease`), so a push made
 /// meanwhile by someone else is refused rather than lost.
-pub fn push(repo: &Path, force: bool) -> Result<(), String> {
+/// A branch without an upstream is published (`-u`) to `remote`, or else to `publish_remote`.
+pub fn push(repo: &Path, force: bool, remote: Option<&str>) -> Result<(), String> {
     let has_upstream = run(repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
     let mut args = vec!["push"];
     if force {
         args.push("--force-with-lease");
     }
+    let target;
     if !has_upstream {
-        args.extend(["-u", "origin", "HEAD"]);
+        target = match remote {
+            Some(r) if remotes(repo).iter().any(|x| x == r) => r.to_string(),
+            Some(r) => return Err(format!("no remote named {r}")),
+            None => publish_remote(repo)?,
+        };
+        args.extend(["-u", &target, "HEAD"]);
     }
     run_network(repo, &args).map(|_| ())
+}
+
+pub fn remotes(repo: &Path) -> Vec<String> {
+    run_text(repo, &["remote"])
+        .map(|s| s.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// Where a branch with no upstream is first pushed: its `pushRemote`, `remote.pushDefault`,
+/// the only remote, or origin among several. Anything else is the user's call.
+pub fn publish_remote(repo: &Path) -> Result<String, String> {
+    let all = remotes(repo);
+    let exists = |r: &String| all.contains(r);
+    let config = |key: &str| {
+        run_text(repo, &["config", "--get", key])
+            .ok()
+            .map(|s| s.trim().to_string())
+    };
+    let branch = run_text(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .ok()
+        .map(|b| b.trim().to_string());
+    let configured = branch
+        .and_then(|b| config(&format!("branch.{b}.pushRemote")))
+        .filter(exists)
+        .or_else(|| config("remote.pushDefault").filter(exists));
+    if let Some(r) = configured {
+        return Ok(r);
+    }
+    match all.as_slice() {
+        [] => Err("This repository has no remote to publish to. Add one first, e.g. `git remote add origin <url>`.".into()),
+        [only] => Ok(only.clone()),
+        _ if all.iter().any(|r| r == "origin") => Ok("origin".into()),
+        _ => Err(format!(
+            "This repository has several remotes ({}). Choose one to publish to.",
+            all.join(", ")
+        )),
+    }
 }
 
 /// `mode`: "ff" (fast-forward only), "merge" or "rebase". Returns true if it stopped on conflicts.

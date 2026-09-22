@@ -61,6 +61,9 @@ export interface RepoStatus {
   behind: number;
   /** Where `git push` sends this branch; a fork can pull from upstream and push to origin. */
   push: { remote: string; branch: string | null; ahead: number } | null;
+  remotes: string[];
+  /** Where Publish sends a branch with no upstream; null when the user has to pick a remote. */
+  publish: string | null;
   staged: FileChange[];
   unstaged: FileChange[];
   conflicted: FileChange[];
@@ -141,9 +144,20 @@ export type PullMode = "ff" | "merge" | "rebase";
 
 export type DiffKind = "unstaged" | "staged" | "worktree" | "commit" | "range";
 
+export interface About {
+  version: string;
+  /** Short commit the build came from; empty when built outside a git checkout. */
+  commit: string;
+  os: string;
+  arch: string;
+  /** `git --version` without the prefix; null when git can't run. */
+  git: string | null;
+}
+
 export const api = {
   openRepo: (path: string) => invoke<OpenedRepo>("open_repo", { path }),
   status: () => invoke<RepoStatus>("status"),
+  about: () => invoke<About>("about"),
   /** HEAD's history, or `rev`'s: a remote-tracking branch (refs/remotes/…), e.g. a fork's original. */
   log: (skip: number, limit: number, rev: string | null = null) => invoke<Commit[]>("log", { rev, skip, limit }),
   commitFiles: (sha: string) => invoke<FileChange[]>("commit_files", { sha }),
@@ -178,8 +192,8 @@ export const api = {
   unstage: (paths: string[]) => invoke<void>("unstage", { paths }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
   commit: (message: string, amend: boolean) => invoke<void>("commit", { message, amend }),
-  /** `force`: --force-with-lease, after a rebase or amend. */
-  push: (force = false) => invoke<void>("push", { force }),
+  /** `force`: --force-with-lease, after a rebase or amend. `remote`: where to publish a branch with no upstream. */
+  push: (force = false, remote?: string) => invoke<void>("push", { force, remote }),
   // The boolean results mean "stopped on conflicts".
   pull: (mode: PullMode) => invoke<boolean>("pull", { mode }),
   merge: (name: string) => invoke<boolean>("merge", { name }),

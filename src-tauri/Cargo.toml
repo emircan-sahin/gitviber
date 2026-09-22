@@ -1,8 +1,9 @@
 [package]
 name = "gitviber"
 version = "0.1.0"
-description = "A fast, readable git client for vibe coding"
+description = "A desktop git client for reviewing what your coding agents wrote."
 edition = "2021"
+authors = ["Emircan Sahin"]
 license = "MIT"
 repository = "https://github.com/emircan-sahin/gitviber"
 

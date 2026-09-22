@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ChevronsDownUp, GitBranch, PanelLeftClose, PanelRightClose, WrapText } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsDownUp, PanelLeftClose, PanelRightClose, WrapText } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -16,6 +16,7 @@ import { useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
 import { useRepo } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
+import { openAbout, useAbout } from "./AboutDialog";
 import { ChangesPanel, changeList } from "./ChangesPanel";
 import { FileTree, type FileTreeHandle } from "./FileTree";
 import { ForkHistory } from "./ForkHistory";
@@ -432,11 +433,8 @@ function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; revie
   const { status } = repo;
   const totals = changeTotals(repo);
   return (
+    // The branch is in the top bar's breadcrumb already, so it isn't repeated here.
     <div className="flex h-6 shrink-0 items-center gap-3 border-t border-border bg-sidebar px-3 text-[11px] text-subtle">
-      <span className="flex items-center gap-1 text-muted-foreground">
-        <GitBranch className="size-3" />
-        <span className="font-mono">{status?.branch ?? status?.head ?? "…"}</span>
-      </span>
       {status?.upstream && (
         <span className="flex items-center gap-1.5 font-mono">
           <span className={cn("flex items-center", status.ahead && "text-primary")}>
@@ -477,6 +475,20 @@ function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; revie
         </button>
       </Tip>
       {language && <span>{languageLabel(language)}</span>}
+      <VersionInfo />
     </div>
+  );
+}
+
+/** `v0.1.0 · macOS 15.5`; opens About, which can copy it for a bug report. */
+function VersionInfo() {
+  const about = useAbout();
+  if (!about) return null;
+  return (
+    <Tip label="About GitViber">
+      <button onClick={openAbout} className="hover:text-foreground">
+        v{about.version} · {about.os}
+      </button>
+    </Tip>
   );
 }

@@ -11,8 +11,8 @@ mod titlebar;
 mod watch;
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use std::sync::{Arc, Mutex};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Default)]
 struct AppState {
@@ -20,6 +20,8 @@ struct AppState {
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
     github: github::Session,
     ptys: pty::Ptys,
+    /// Held by commands that write the index: two `git add`s at once fail on index.lock.
+    index: Arc<Mutex<()>>,
 }
 
 type Res<T> = Result<T, String>;
@@ -38,6 +40,28 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Res<T> + Send + 'static
     tauri::async_runtime::spawn_blocking(f)
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// Runs an index-writing git command one at a time. An agent or the terminal can hold
+/// index.lock for a moment too, so that failure is retried once.
+async fn indexed<T: Send + 'static>(
+    state: &State<'_, AppState>,
+    f: impl Fn(&Path) -> Res<T> + Send + 'static,
+) -> Res<T> {
+    let r = repo(state)?;
+    let lock = state.index.clone();
+    blocking(move || with_index_lock(&lock, &r, f)).await
+}
+
+fn with_index_lock<T>(lock: &Mutex<()>, repo: &Path, f: impl Fn(&Path) -> Res<T>) -> Res<T> {
+    let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+    match f(repo) {
+        Err(e) if e.contains("index.lock") => {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            f(repo)
+        }
+        done => done,
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -200,32 +224,28 @@ async fn remove_worktree(state: State<'_, AppState>, path: String, force: bool) 
 
 #[tauri::command]
 async fn stage(state: State<'_, AppState>, paths: Vec<String>, allow_nested: bool) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::stage_with(&r, &paths, allow_nested)).await
+    indexed(&state, move |r| git::stage_with(r, &paths, allow_nested)).await
 }
 
 #[tauri::command]
 async fn unstage(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::unstage(&r, &paths)).await
+    indexed(&state, move |r| git::unstage(r, &paths)).await
 }
 
 #[tauri::command]
 async fn discard(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::discard(&r, &paths)).await
+    indexed(&state, move |r| git::discard(r, &paths)).await
 }
 
 #[tauri::command]
 async fn commit(state: State<'_, AppState>, message: String, amend: bool) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::commit(&r, &message, amend)).await
+    indexed(&state, move |r| git::commit(r, &message, amend)).await
 }
 
 #[tauri::command]
-async fn push(state: State<'_, AppState>, force: Option<bool>) -> Res<()> {
+async fn push(state: State<'_, AppState>, force: Option<bool>, remote: Option<String>) -> Res<()> {
     let r = repo(&state)?;
-    blocking(move || git::push(&r, force.unwrap_or(false))).await
+    blocking(move || git::push(&r, force.unwrap_or(false), remote.as_deref())).await
 }
 
 /// The bool results below mean "stopped on conflicts".
@@ -249,8 +269,7 @@ async fn rebase(state: State<'_, AppState>, onto: String) -> Res<bool> {
 
 #[tauri::command]
 async fn op_continue(state: State<'_, AppState>) -> Res<bool> {
-    let r = repo(&state)?;
-    blocking(move || git::op_continue(&r)).await
+    indexed(&state, git::op_continue).await
 }
 
 #[tauri::command]
@@ -267,8 +286,7 @@ async fn rebase_skip(state: State<'_, AppState>) -> Res<bool> {
 
 #[tauri::command]
 async fn resolve_side(state: State<'_, AppState>, path: String, side: String) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || git::resolve_side(&r, &path, &side)).await
+    indexed(&state, move |r| git::resolve_side(r, &path, &side)).await
 }
 
 #[tauri::command]
@@ -754,9 +772,68 @@ fn pty_kill(state: State<'_, AppState>, id: u32) {
     state.ptys.kill(id)
 }
 
+/// What a bug report asks for: app version and commit, OS, and git.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct About {
+    version: String,
+    commit: String,
+    os: String,
+    arch: String,
+    git: Option<String>,
+}
+
+#[tauri::command]
+async fn about(app: AppHandle) -> Res<About> {
+    let version = app.package_info().version.to_string();
+    blocking(move || {
+        let text = |cmd: &str, args: &[&str]| {
+            std::process::Command::new(cmd)
+                .args(args)
+                .env("PATH", git::search_path())
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        };
+        let os = match std::env::consts::OS {
+            "macos" => format!(
+                "macOS {}",
+                text("sw_vers", &["-productVersion"]).unwrap_or_default()
+            ),
+            other => other.to_string(),
+        };
+        Ok(About {
+            version,
+            commit: env!("GITVIBER_COMMIT").to_string(),
+            os: os.trim().to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+            git: text("git", &["--version"])
+                .map(|v| v.trim_start_matches("git version ").to_string()),
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 fn open_url(url: String) -> Res<()> {
     github::open_url(&url)
+}
+
+/// Tauri's default menu, with About opening the app's own About window (a native panel
+/// can't hold links or buttons, and the runtime config has no copyright to show anyway).
+fn menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, MenuItemKind};
+    let menu = Menu::default(app)?;
+    // On macOS the first submenu is the app menu, with About first.
+    if cfg!(target_os = "macos") {
+        if let Some(MenuItemKind::Submenu(app_menu)) = menu.items()?.into_iter().next() {
+            let about = MenuItem::with_id(app, "about", "About GitViber", true, None::<&str>)?;
+            app_menu.remove_at(0)?;
+            app_menu.insert(&about, 0)?;
+        }
+    }
+    Ok(menu)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -771,23 +848,26 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(navigation::guard(dev_url))
         .plugin(tauri_plugin_dialog::init())
+        .menu(menu)
+        .on_menu_event(|app, event| {
+            if event.id() == "about" {
+                let _ = app.emit("show-about", ());
+            }
+        })
         .manage(AppState::default())
         .setup(|app| {
             if let Some(webview) = app.get_webview_window("main") {
                 display::unlock_high_refresh_rate(&webview);
                 titlebar::setup(&webview);
-                // TEMP dev probe: evaluates JS dropped into GITVIBER_PROBE (debug builds only).
-                #[cfg(debug_assertions)]
-                if let Ok(path) = std::env::var("GITVIBER_PROBE") {
-                    let w = webview.clone();
-                    std::thread::spawn(move || loop {
-                        std::thread::sleep(std::time::Duration::from_millis(500));
-                        if let Ok(js) = std::fs::read_to_string(&path) {
-                            let _ = std::fs::remove_file(&path);
-                            let _ = w.eval(&js);
-                        }
-                    });
-                }
+                // The page shows the window once its theme is applied (main.tsx); if it
+                // never gets that far, a visible window beats an app with none.
+                let w = webview.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    if !w.is_visible().unwrap_or(true) {
+                        let _ = w.show();
+                    }
+                });
             }
             Ok(())
         })
@@ -861,6 +941,7 @@ pub fn run() {
             issue_delete,
             issue_comment,
             open_url,
+            about,
             pty_spawn,
             pty_write,
             pty_resize,

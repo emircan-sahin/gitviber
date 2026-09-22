@@ -299,11 +299,12 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
           </Button>
         </Tip>
       ) : (
-        <Tip label="Push this branch to origin and track it">
-          <Button disabled={!!busy || !status?.branch} onClick={() => run("Publish", api.push, "Branch published")}>
-            <UploadCloud /> Publish
-          </Button>
-        </Tip>
+        <PublishButton
+          remotes={status?.remotes ?? []}
+          preferred={status?.publish ?? null}
+          disabled={!!busy || !status?.branch}
+          onPublish={(remote) => run("Publish", () => api.push(false, remote), `Branch published to ${remote}`)}
+        />
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
       <Tip label={terminalOpen ? "Hide terminal" : "Show terminal"} shortcut="⌃`">
@@ -425,6 +426,65 @@ function ProjectTile({ name, large }: { name: string; large?: boolean }) {
     >
       {name[0]}
     </span>
+  );
+}
+
+/** Publishes to `preferred` (see git.rs `publish_remote`); with several remotes, any can be picked. */
+function PublishButton({ remotes, preferred, disabled, onPublish }: { remotes: string[]; preferred: string | null; disabled: boolean; onPublish: (remote: string) => void }) {
+  if (!remotes.length) {
+    return (
+      <Tip label="This repository has no remote. Add one (git remote add origin <url>) to publish.">
+        <span>
+          <Button disabled>
+            <UploadCloud /> Publish
+          </Button>
+        </span>
+      </Tip>
+    );
+  }
+  const menu = (
+    <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuLabel>Publish to</DropdownMenuLabel>
+      {remotes.map((r) => (
+        <DropdownMenuItem key={r} onSelect={() => onPublish(r)}>
+          <UploadCloud /> {r}
+          {r === preferred && <Check className="ml-auto" />}
+        </DropdownMenuItem>
+      ))}
+    </DropdownMenuContent>
+  );
+  if (!preferred) {
+    return (
+      <DropdownMenu>
+        <Tip label="Choose a remote to push this branch to and track it">
+          <DropdownMenuTrigger asChild>
+            <Button disabled={disabled}>
+              <UploadCloud /> Publish <ChevronDown className="size-3" />
+            </Button>
+          </DropdownMenuTrigger>
+        </Tip>
+        {menu}
+      </DropdownMenu>
+    );
+  }
+  return (
+    <div className="flex">
+      <Tip label={`Push this branch to ${preferred} and track it`}>
+        <Button className={cn(remotes.length > 1 && "rounded-r-none")} disabled={disabled} onClick={() => onPublish(preferred)}>
+          <UploadCloud /> Publish
+        </Button>
+      </Tip>
+      {remotes.length > 1 && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button className="w-5 rounded-l-none border-l border-l-black/20 px-0" disabled={disabled} aria-label="Publish to another remote">
+              <ChevronDown className="size-3" />
+            </Button>
+          </DropdownMenuTrigger>
+          {menu}
+        </DropdownMenu>
+      )}
+    </div>
   );
 }
 

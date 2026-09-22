@@ -3,6 +3,7 @@
 
 use notify::{recommended_watcher, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -94,8 +95,24 @@ fn external_git_dirs(root: &Path) -> Vec<(PathBuf, RecursiveMode)> {
     out
 }
 
+/// Worktree paths that count: not ignored by .gitignore. Build output (`target/`, `dist/`)
+/// is written about every second during a build, and each event would cost a full status
+/// refresh and a re-highlight of the open diff. Tracked files never count as ignored.
+pub(crate) fn not_ignored(root: &Path, paths: &HashSet<PathBuf>) -> bool {
+    let rels: Vec<String> = paths
+        .iter()
+        .filter_map(|p| p.strip_prefix(root).ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    if rels.is_empty() {
+        return false;
+    }
+    let ignored: HashSet<String> = crate::git::ignored(root, &rels).into_iter().collect();
+    rels.iter().any(|r| !ignored.contains(r))
+}
+
 pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String> {
-    let (tx, rx) = mpsc::channel::<Kind>();
+    let (tx, rx) = mpsc::channel::<(Kind, PathBuf)>();
     let watch_root = root.clone();
     let external = external_git_dirs(&root);
     let external_roots: Vec<PathBuf> = external.iter().map(|(d, _)| d.clone()).collect();
@@ -111,7 +128,7 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
                     classify(&watch_root, p)
                 };
                 if let Some(kind) = kind {
-                    let _ = tx.send(kind);
+                    let _ = tx.send((kind, p.clone()));
                 }
             }
         }
@@ -132,10 +149,13 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
         while let Ok(first) = rx.recv() {
             let started = Instant::now();
             let mut change = RepoChanged::default();
+            let mut touched = HashSet::new();
             let mut next = Some(first);
-            while let Some(kind) = next {
+            while let Some((kind, path)) = next {
                 match kind {
-                    Kind::Worktree => change.worktree = true,
+                    Kind::Worktree => {
+                        touched.insert(path);
+                    }
                     Kind::Git => change.git = true,
                 }
                 if started.elapsed() > Duration::from_secs(1) {
@@ -143,7 +163,10 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
                 }
                 next = rx.recv_timeout(Duration::from_millis(150)).ok();
             }
-            let _ = app.emit("repo-changed", change);
+            change.worktree = not_ignored(&root, &touched);
+            if change.worktree || change.git {
+                let _ = app.emit("repo-changed", change);
+            }
         }
     });
     Ok(watcher)
