@@ -356,6 +356,27 @@ pub fn account(session: &Session, repo: &Path) -> Result<Account, String> {
     })
 }
 
+/// Origin's branches under GitHub branch protection, which the picker won't offer to delete.
+pub fn protected_branches(session: &Session, repo: &Path) -> Result<Vec<String>, String> {
+    let r = repo_ref(repo)?;
+    let v = call(
+        session,
+        repo,
+        Method::Get,
+        &format!(
+            "/repos/{}/{}/branches?protected=true&per_page=100",
+            r.owner, r.name
+        ),
+    )?;
+    Ok(v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|b| b["name"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 // ---------------------------------------------------------------- pull requests
 
 #[derive(Serialize)]
