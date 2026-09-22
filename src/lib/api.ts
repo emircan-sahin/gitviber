@@ -142,6 +142,24 @@ export interface Branch {
 
 export type PullMode = "ff" | "merge" | "rebase";
 
+/** One of the app's own git actions, as the undo history lists it. */
+export interface JournalEntry {
+  id: number;
+  label: string;
+  /** Unix seconds. */
+  time: number;
+}
+
+export interface Journal {
+  /** Newest first. */
+  undo: JournalEntry[];
+  /** Next redo first. */
+  redo: JournalEntry[];
+  /** Why the next undo or redo can't run now: pushed since, changed outside the app, … */
+  undoBlocked: string | null;
+  redoBlocked: string | null;
+}
+
 export type DiffKind = "unstaged" | "staged" | "worktree" | "commit" | "range";
 
 export interface About {
@@ -221,6 +239,12 @@ export const api = {
   createTag: (name: string, sha: string) => invoke<void>("create_tag", { name, sha }),
   /** https://github.com/owner/name, or null when origin isn't on GitHub. */
   githubWebUrl: () => invoke<string | null>("github_web_url"),
+  journal: () => invoke<Journal>("journal"),
+  /** The newest entry's id; a change across an action means it was recorded. */
+  journalLast: () => invoke<number | null>("journal_last"),
+  /** `id`: the entry meant; refused if it's no longer the next one. */
+  undo: (id?: number) => invoke<JournalEntry>("undo", { id }),
+  redo: (id?: number) => invoke<JournalEntry>("redo", { id }),
 };
 
 export type ResetMode = "soft" | "mixed" | "hard";

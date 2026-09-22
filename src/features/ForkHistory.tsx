@@ -5,6 +5,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage, fullName, type GitHubAccess, github } from "@/lib/api";
 import { useGitHubData } from "@/lib/githubCache";
 import { toast } from "@/lib/toast";
+import { tracked, undoAction } from "@/lib/undo";
 import { cn } from "@/lib/utils";
 import { HistoryPanel } from "./HistoryPanel";
 import { RepoPanes } from "./RepoPanes";
@@ -180,9 +181,9 @@ function OriginalHistory({
     if (!rev || !into) return;
     setMerging(true);
     try {
-      const stopped = await api.merge(`${remote}/${branch}`);
+      const [stopped, entry] = await tracked(() => api.merge(`${remote}/${branch}`));
       if (stopped) toast("info", "Merge stopped on conflicts", "Resolve them in Changes, then continue.");
-      else toast("success", `Merged ${remote}/${branch} into ${into}`);
+      else toast("success", `Merged ${remote}/${branch} into ${into}`, undefined, undoAction(entry, refresh));
     } catch (e) {
       toast("error", "Merge failed", errorMessage(e));
     } finally {

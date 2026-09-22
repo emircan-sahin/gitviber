@@ -30,9 +30,12 @@ export const COMMANDS = [
   { id: "editor.fontZoomIn", title: "Increase Code Font Size", category: "Editor", keys: ["alt+cmd+="] },
   { id: "editor.fontZoomOut", title: "Decrease Code Font Size", category: "Editor", keys: ["alt+cmd+-"] },
   { id: "editor.fontZoomReset", title: "Reset Code Font Size", category: "Editor", keys: ["alt+cmd+0"] },
+  // Not while typing: text fields keep ⌘Z for their own undo.
+  { id: "git.undo", title: "Undo Git Action", category: "Git", keys: ["cmd+z"], outsideText: true },
+  { id: "git.redo", title: "Redo Git Action", category: "Git", keys: ["shift+cmd+z"], outsideText: true },
   // Local: only the commit message fields listen for it.
   { id: "git.commit", title: "Commit", category: "Git", keys: ["cmd+enter", "ctrl+enter"], local: true },
-] as const satisfies readonly { id: string; title: string; category: string; keys: readonly string[]; local?: boolean }[];
+] as const satisfies readonly { id: string; title: string; category: string; keys: readonly string[]; local?: boolean; outsideText?: boolean }[];
 
 export type CommandId = (typeof COMMANDS)[number]["id"];
 export type Command = (typeof COMMANDS)[number];

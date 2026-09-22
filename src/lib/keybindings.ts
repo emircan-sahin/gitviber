@@ -37,11 +37,12 @@ window.addEventListener("keydown", (e) => {
   // Whatever they're bound to, ⌘W would close the window and ⌘R reload the webview.
   if (chord === "cmd+w" || chord === "cmd+r") e.preventDefault();
   if (handled) return;
-  // ⌘ shortcuts work everywhere; the rest only when not typing, since ⌥+letter types
-  // characters (ç, ß), plain letters are text, and menus/dialogs own their own keys.
-  if (!chord.includes("cmd") && isTyping(e)) return;
   const command = commandFor(chord, getSettings().keybindings);
   if (!command) return;
+  // ⌘ shortcuts work everywhere but where text owns them (⌘Z); the rest only when not
+  // typing, since ⌥+letter types characters (ç, ß), plain letters are text, and
+  // menus/dialogs own their own keys.
+  if ((!chord.includes("cmd") || "outsideText" in command) && isTyping(e)) return;
   // Nothing may act on the workspace hidden behind a modal dialog; zoom only rescales it.
   if (document.querySelector("[data-modal]") && !MODAL_SAFE.includes(command.id)) return;
   const stack = handlers.get(command.id);

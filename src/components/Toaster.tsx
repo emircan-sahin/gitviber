@@ -26,6 +26,17 @@ export function Toaster() {
               <div className="text-[12px] font-medium">{t.title}</div>
               {t.detail && <pre className="mt-1 max-h-40 overflow-auto font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground select-text">{t.detail}</pre>}
             </div>
+            {t.action && (
+              <button
+                onClick={() => {
+                  dismissToast(t.id);
+                  t.action!.run();
+                }}
+                className="h-fit shrink-0 rounded-sm px-1.5 py-0.5 text-[12px] font-medium text-primary hover:bg-hover"
+              >
+                {t.action.label}
+              </button>
+            )}
             <button onClick={() => dismissToast(t.id)} aria-label="Dismiss notification" className="h-fit text-subtle hover:text-foreground">
               <X className="size-3.5" />
             </button>

@@ -11,6 +11,7 @@ import { ignorePattern } from "@/lib/gitignore";
 import { matchesCommand, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
+import { tracked, undoAction } from "@/lib/undo";
 import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED, stageable } from "@/lib/worktrees";
 import { FileIcon } from "./FileIcon";
@@ -314,8 +315,10 @@ function OperationBanner({ status, refresh }: Pick<Props, "status" | "refresh">)
   const run = async (title: string, fn: () => Promise<boolean | void>) => {
     setBusy(true);
     try {
-      const stopped = await fn();
+      const [stopped, entry] = await tracked(fn);
       if (stopped) toast("info", "Stopped on new conflicts", "Resolve them to continue.");
+      // Finished: the entry is the whole merge or rebase, from where it started.
+      else if (entry !== null) toast("success", `${op.kind[0].toUpperCase()}${op.kind.slice(1)} finished`, undefined, undoAction(entry, refresh));
     } catch (e) {
       toast("error", title, errorMessage(e));
     } finally {
@@ -519,17 +522,18 @@ function CommitBox({ status, refresh }: Pick<Props, "status" | "refresh">) {
     if (!canCommit) return;
     setBusy(true);
     const message = body.trim() ? `${summary.trim()}\n\n${body.trim()}` : summary.trim();
+    let entry: number | null = null;
     const ok = await attempt("Commit failed", async () => {
       // Nothing staged means "commit everything", the common case after an agent run.
       if (!hasStaged && !amend) await api.stage(all.paths);
-      await api.commit(message, amend);
+      [, entry] = await tracked(() => api.commit(message, amend));
     });
     setBusy(false);
     if (ok) {
       setSummary("");
       setBody("");
       setAmend(false);
-      toast("success", amend ? "Commit amended" : "Committed", message.split("\n")[0]);
+      toast("success", amend ? "Commit amended" : "Committed", message.split("\n")[0], undoAction(entry, refresh));
       // They stay in the list after the commit; say why rather than leave it looking missed.
       if (skipped) toast("info", `${leftOut(all.skipped)} of the commit`, NESTED_EXPLAINED);
     }

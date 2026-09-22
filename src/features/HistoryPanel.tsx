@@ -17,6 +17,7 @@ import { Input } from "@/components/ui/input";
 import { api, type Commit, errorMessage, type FileChange, github, type RepoStatus, type ResetMode } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
+import { tracked, undoAction } from "@/lib/undo";
 import { cn, relativeTime } from "@/lib/utils";
 import { FileIcon } from "./FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
@@ -68,9 +69,9 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
   const run = async (label: string, fn: () => Promise<void | boolean>, done: string) => {
     setBusy(true);
     try {
-      const stopped = await fn();
+      const [stopped, entry] = await tracked(fn);
       if (stopped) toast("info", `${label} stopped on conflicts`, "Resolve them in Changes, then continue.");
-      else toast("success", done);
+      else toast("success", done, undefined, undoAction(entry, refresh));
     } catch (e) {
       toast("error", `${label} failed`, errorMessage(e));
     } finally {

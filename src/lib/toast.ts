@@ -5,6 +5,13 @@ export interface Toast {
   kind: "error" | "success" | "info";
   title: string;
   detail?: string;
+  /** A button on the toast, e.g. Undo. */
+  action?: ToastAction;
+}
+
+export interface ToastAction {
+  label: string;
+  run: () => void;
 }
 
 let toasts: Toast[] = [];
@@ -22,10 +29,10 @@ export function dismissToast(id: number) {
 }
 
 /** Errors stay until dismissed: they carry hook, GPG or push output that takes a while to read. */
-export function toast(kind: Toast["kind"], title: string, detail?: string) {
+export function toast(kind: Toast["kind"], title: string, detail?: string, action?: ToastAction) {
   const id = nextId++;
   for (const old of toasts.slice(0, -3)) dismissToast(old.id);
-  toasts = [...toasts, { id, kind, title, detail }];
+  toasts = [...toasts, { id, kind, title, detail, action }];
   emit();
   holdToast(id, false);
 }
@@ -38,7 +45,8 @@ export function holdToast(id: number, held: boolean) {
   if (!t || held || t.kind === "error") return;
   timers.set(
     id,
-    setTimeout(() => dismissToast(id), 3000),
+    // An action needs time to reach for.
+    setTimeout(() => dismissToast(id), t.action ? 6000 : 3000),
   );
 }
 

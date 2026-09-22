@@ -16,9 +16,12 @@ import {
   PanelRight,
   PanelRightDashed,
   Plus,
+  Redo2,
   RefreshCw,
   Settings2,
   SquareTerminal,
+  TriangleAlert,
+  Undo2,
   UploadCloud,
   X,
 } from "lucide-react";
@@ -26,15 +29,23 @@ import { useEffect, useState } from "react";
 import { Wordmark } from "@/components/Logo";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { Button } from "@/components/ui/button";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Tip } from "@/components/ui/tooltip";
-import { api, errorMessage, type Branch, type Worktree } from "@/lib/api";
-import { useShortcut } from "@/lib/keybindings";
+import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { api, errorMessage, type Branch, type JournalEntry, type Worktree } from "@/lib/api";
+import { useCommands, useShortcut } from "@/lib/keybindings";
 import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
+import { tracked, travel, undoAction } from "@/lib/undo";
 import type { RepoData } from "@/lib/useRepo";
-import { cn } from "@/lib/utils";
+import { cn, relativeTime } from "@/lib/utils";
 import { folderName } from "@/lib/worktrees";
 import { BranchPicker } from "./BranchPicker";
 import { openSettings } from "./SettingsDialog";
@@ -106,9 +117,9 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const run = async (label: string, fn: () => Promise<void | boolean>, done?: string) => {
     setBusy(label);
     try {
-      const stopped = await fn();
+      const [stopped, entry] = await tracked(fn);
       if (stopped) toast("info", `${label} stopped on conflicts`, "Resolve them in Changes, then continue.");
-      else if (done) toast("success", done);
+      else if (done) toast("success", done, undefined, undoAction(entry, repo.refresh));
     } catch (e) {
       toast("error", `${label} failed`, errorMessage(e));
     } finally {
@@ -255,6 +266,8 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       {/* Filler: grabbing the bar anywhere empty moves the window. */}
       <div data-tauri-drag-region className="min-w-4 flex-1 self-stretch" />
 
+      <UndoControls repo={repo} disabled={!!busy} />
+      <div className="mx-1 h-4 w-px bg-border-strong" />
       {busy && (
         <span className="mr-1 flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground select-none">
           <Loader2 className="size-3.5 animate-spin" /> {busy}…
@@ -324,6 +337,124 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       </Tip>
       <SettingsButton />
     </header>
+  );
+}
+
+/**
+ * Undo and redo for the git actions taken in the app, with ⌘Z / ⇧⌘Z, and their history:
+ * picking an entry undoes it and everything after it (or redoes up to it).
+ */
+function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boolean }) {
+  const [moving, setMoving] = useState(false);
+  const undoKey = useShortcut("git.undo");
+  const redoKey = useShortcut("git.redo");
+  const journal = repo.journal;
+  const undos = journal?.undo ?? [];
+  const redos = journal?.redo ?? [];
+  const off = disabled || moving;
+
+  const go = async (forward: boolean, ids: number[]) => {
+    setMoving(true);
+    try {
+      await travel(forward, ids, repo.refresh);
+    } finally {
+      setMoving(false);
+    }
+  };
+  // The shortcut says why nothing happened; the buttons are disabled instead.
+  const next = (forward: boolean) => {
+    const e = forward ? redos[0] : undos[0];
+    const blocked = forward ? journal?.redoBlocked : journal?.undoBlocked;
+    const verb = forward ? "redo" : "undo";
+    if (off) return;
+    if (!e) toast("info", `Nothing to ${verb}`, "Commits, merges, pulls and branch changes made in GitViber can be undone.");
+    else if (blocked) toast("error", `Can't ${verb} ${e.label}`, blocked);
+    else void go(forward, [e.id]);
+  };
+  useCommands({ "git.undo": () => next(false), "git.redo": () => next(true) });
+
+  const button = (forward: boolean) => {
+    const e = forward ? redos[0] : undos[0];
+    const blocked = forward ? journal?.redoBlocked : journal?.undoBlocked;
+    const verb = forward ? "Redo" : "Undo";
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span>
+            <Button variant="ghost" size="icon" aria-label={verb} disabled={off || !e || !!blocked} onClick={() => e && go(forward, [e.id])}>
+              {forward ? <Redo2 /> : <Undo2 />}
+            </Button>
+          </span>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-80">
+          {!e ? `Nothing to ${verb.toLowerCase()}` : blocked ? `Can't ${verb.toLowerCase()} ${e.label}. ${blocked}` : `${verb} ${e.label}`}
+          <span className="ml-2 font-mono text-[11px] text-subtle">{forward ? redoKey : undoKey}</span>
+        </TooltipContent>
+      </Tooltip>
+    );
+  };
+
+  const row = (e: JournalEntry, forward: boolean, ids: number[], blocked: boolean) => (
+    <DropdownMenuItem
+      key={e.id}
+      disabled={blocked}
+      onSelect={() => go(forward, ids)}
+      title={forward ? `Redo up to ${e.label}` : `Undo back to before ${e.label}`}
+      className={cn(forward && "text-subtle")}
+    >
+      {forward ? <Redo2 /> : <Undo2 />}
+      <span className="min-w-0 flex-1 truncate">{e.label}</span>
+      <span className="shrink-0 text-[11px] opacity-70">{relativeTime(e.time)}</span>
+    </DropdownMenuItem>
+  );
+  const blocked = journal?.undoBlocked ?? journal?.redoBlocked;
+
+  return (
+    <div className="flex shrink-0 items-center">
+      {button(false)}
+      {button(true)}
+      <DropdownMenu>
+        <Tip label="Undo history">
+          <DropdownMenuTrigger asChild>
+            <Button variant="ghost" className="w-5 px-0" disabled={off} aria-label="Undo history">
+              <ChevronDown className="size-3" />
+            </Button>
+          </DropdownMenuTrigger>
+        </Tip>
+        <DropdownMenuContent align="end" className="w-80">
+          <DropdownMenuLabel>Undo history</DropdownMenuLabel>
+          {!undos.length && !redos.length && (
+            <div className="px-2 py-1.5 text-[12px] text-muted-foreground">Commits, merges, pulls and branch changes you make in GitViber show up here, to undo and redo.</div>
+          )}
+          {/* Furthest redo on top, so the list reads newest to oldest. */}
+          {redos
+            .map((e, i) => row(e, true, redos.slice(0, i + 1).map((x) => x.id), !!journal?.redoBlocked))
+            .reverse()}
+          {redos.length > 0 && undos.length > 0 && (
+            <div className="flex items-center gap-2 px-2 py-0.5 text-[10.5px] tracking-wide text-subtle uppercase select-none">
+              <span className="h-px flex-1 bg-border" /> Now <span className="h-px flex-1 bg-border" />
+            </div>
+          )}
+          {undos.map((e, i) =>
+            row(
+              e,
+              false,
+              undos.slice(0, i + 1).map((x) => x.id),
+              !!journal?.undoBlocked,
+            ),
+          )}
+          {blocked && (
+            <>
+              <DropdownMenuSeparator />
+              <div className="flex gap-2 px-2 py-1.5 text-[11.5px] text-muted-foreground">
+                <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-conflict" />
+                {blocked}
+              </div>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
   );
 }
 

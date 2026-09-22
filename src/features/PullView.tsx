@@ -11,6 +11,7 @@ import { revalidate, useGitHubData } from "@/lib/githubCache";
 import { isGitHubHosted, markdownLink } from "@/lib/markdown";
 import type { Selection } from "@/lib/selection";
 import { toast } from "@/lib/toast";
+import { tracked, undoAction } from "@/lib/undo";
 import { cn, relativeTime } from "@/lib/utils";
 import { FileIcon } from "./FileIcon";
 import { followLink, MarkdownBody } from "./MarkdownView";
@@ -44,8 +45,10 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   const act = async (label: string, fn: () => Promise<unknown>, done: string) => {
     setBusy(label);
     try {
-      const stopped = await fn();
-      toast(stopped === true ? "info" : "success", stopped === true ? `${label} stopped on conflicts` : done, stopped === true ? "Resolve them in Changes, then push." : undefined);
+      const [stopped, entry] = await tracked(fn);
+      // A checkout moves HEAD; the repo watcher refreshes the rest of the window.
+      if (stopped === true) toast("info", `${label} stopped on conflicts`, "Resolve them in Changes, then push.");
+      else toast("success", done, undefined, undoAction(entry, () => {}));
       notifyPullsChanged();
       await load();
       return true;
