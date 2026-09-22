@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { ignorePattern } from "@/lib/gitignore";
 import { matchesCommand, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
@@ -83,8 +84,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
       const cur = await api.readFile(".gitignore");
       if (cur.exists && (cur.binary || cur.lossy || cur.tooLarge)) throw new Error(".gitignore is not a plain text file");
       const sep = cur.text && !cur.text.endsWith("\n") ? "\n" : "";
-      // Leading slash: this exact path, not every file of that name.
-      await api.writeFile(".gitignore", `${cur.text}${sep}/${file.path}\n`);
+      await api.writeFile(".gitignore", `${cur.text}${sep}${ignorePattern(file.path)}\n`);
     });
 
   const copy = (text: string, what: string) =>
