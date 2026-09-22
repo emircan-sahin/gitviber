@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
-import type { FileChange, RepoStatus } from "@/lib/api";
+import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { resetGitHubCache } from "@/lib/githubCache";
 import { useShownLanguage } from "@/lib/highlight";
 import { useCommands, useShortcut } from "@/lib/keybindings";
@@ -12,6 +12,7 @@ import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
 import { DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { arrayMove } from "@dnd-kit/sortable";
 import { useTerminals } from "@/lib/terminals";
+import { toast } from "@/lib/toast";
 import { useRepo } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
 import { ChangesPanel, changeList } from "./ChangesPanel";
@@ -166,6 +167,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
 
   const viewed = useCallback(
     (sel: Selection) => {
+      // Staging is the act of accepting a file, so staged files always count as reviewed.
+      if (sel.kind === "staged") return true;
       const f = currentFile(status, sel);
       return !!f && viewedMap.get(`${sel.kind}:${f.path}`) === fileSig(f);
     },
@@ -176,6 +179,17 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     (sel: Selection) => {
       const f = currentFile(status, sel);
       if (!f) return;
+      if (sel.kind === "staged") {
+        // Unchecking a staged file takes it back out of the commit; the tab follows it to Changes.
+        // Drop the mark it had there before staging, or it would come back already checked.
+        setViewedMap((m) => {
+          const next = new Map(m);
+          next.delete(`unstaged:${f.path}`);
+          return next;
+        });
+        api.unstage([f.path]).catch((e) => toast("error", "Unstage failed", errorMessage(e))).finally(() => repo.refresh(false));
+        return;
+      }
       const key = `${sel.kind}:${f.path}`;
       setViewedMap((m) => {
         const next = new Map(m);
@@ -184,7 +198,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         return next;
       });
     },
-    [status],
+    [status, repo.refresh],
   );
 
   const changes = useMemo(() => (status ? changeList(status) : []), [status]);
@@ -218,7 +232,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "review.prevFile": () => step(-1),
     "review.toggleViewed": () => {
       const t = tabs.find((x) => x.key === activeKey);
-      if (t) toggleViewed(t.sel);
+      // On a staged file this would unstage it; too much for a stray single key.
+      if (t && t.sel.kind !== "staged") toggleViewed(t.sel);
     },
     "diff.toggleSplit": () => updateSettings({ sideBySide: !s.sideBySide }),
     "diff.toggleCollapse": () => updateSettings({ hideUnchanged: !s.hideUnchanged }),

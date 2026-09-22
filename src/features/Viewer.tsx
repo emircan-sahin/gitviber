@@ -318,14 +318,16 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
             </Button>
           )}
           {(sel.kind === "unstaged" || sel.kind === "staged") && (
-            <Button
-              variant={viewed(sel) ? "default" : "secondary"}
-              size="sm"
-              onClick={() => toggleViewed(sel)}
-              className={cn(viewed(sel) && "bg-added-fill text-on-status hover:bg-added-fill/85")}
-            >
-              <Check /> Viewed
-            </Button>
+            <Tip label={sel.kind === "staged" ? "Unstage" : viewed(sel) ? "Mark as not viewed" : "Mark as viewed"}>
+              <Button
+                variant={viewed(sel) ? "default" : "secondary"}
+                size="sm"
+                onClick={() => toggleViewed(sel)}
+                className={cn(viewed(sel) && "bg-added-fill text-on-status hover:bg-added-fill/85")}
+              >
+                <Check /> Viewed
+              </Button>
+            </Tip>
           )}
           {/* Last, so it stays put while the buttons before it change with the mode. */}
           {markdown && (
