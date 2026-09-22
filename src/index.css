@@ -195,6 +195,12 @@
 .checkerboard {
   background: repeating-conic-gradient(color-mix(in srgb, var(--foreground) 8%, transparent) 0 25%, transparent 0 50%) 0 0 / 16px 16px;
 }
+.checkerboard-light {
+  background: #fff repeating-conic-gradient(#e8e8e8 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
+.checkerboard-dark {
+  background: #181818 repeating-conic-gradient(#272727 0 25%, transparent 0 50%) 0 0 / 16px 16px;
+}
 
 /* Rendered markdown, close to GitHub's README styling. */
 .markdown {

@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Check, CircleDot, Columns2, Copy, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, GitPullRequest, Rows2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, CircleDot, Columns2, Contrast, Copy, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, GitPullRequest, Rows2, X } from "lucide-react";
 import { Component, type ReactNode, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
@@ -6,6 +6,7 @@ import { api, type DiffKind, type DiffPair, errorMessage, type FileChange, type 
 import { type Selection, selectionPath } from "@/lib/selection";
 import { bindingsFor, type CommandId, formatChord, useCommands, useShortcut } from "@/lib/keybindings";
 import { updateSettings, useSettings } from "@/lib/settings";
+import { FIT, type Zoom } from "@/lib/svg";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
 import { CodeView, type CodeViewHandle } from "./CodeView";
@@ -16,7 +17,7 @@ import { PullView } from "./PullView";
 import { prefetchHighlight } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
 import { FileIcon } from "./FileIcon";
-import { MediaView, mediaKind } from "./MediaView";
+import { isSvg, MediaView, mediaKind, SvgView } from "./MediaView";
 import { isMarkdown, MarkdownView } from "./MarkdownView";
 import { LineCounts, PathLabel, StatusPill } from "./StatusBadge";
 
@@ -247,7 +248,6 @@ function findChange(status: RepoStatus | null, path: string): Selection | null {
 
 function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: ViewerProps & { tab: Tab; sel: FileSelection }) {
   const s = useSettings();
-  const splitKey = useShortcut("diff.toggleSplit");
   const { pair, error } = usePair(sel, revision);
   const view = useRef<CodeViewHandle>(null);
   const isFile = sel.kind === "file";
@@ -255,9 +255,15 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
   const change = isFile ? findChange(status, sel.path) : null;
   const media = mediaKind(selectionPath(sel)) !== null;
   const markdown = isMarkdown(selectionPath(sel));
+  const svg = isSvg(selectionPath(sel));
   // Reading a markdown file starts rendered (unless turned off); reviewing its changes starts on the diff.
-  const [preview, setPreview] = useState(isFile && s.markdownPreview);
-  const rendered = markdown && preview;
+  const [markdownPreview, setMarkdownPreview] = useState(isFile && s.markdownPreview);
+  // SVGs open however the last one was left, diffs included.
+  const preview = svg ? s.svgPreview : markdownPreview;
+  const setPreview = (on: boolean) => (svg ? updateSettings({ svgPreview: on }) : setMarkdownPreview(on));
+  const rendered = (markdown || svg) && preview;
+  const [zoom, setZoom] = useState<Zoom>(FIT);
+  const [contrast, setContrast] = useState(false);
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile));
 
   useCommands({
@@ -289,21 +295,33 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
                 <ArrowDown />
               </IconBtn>
               <Sep />
-              <Tip label="Unified / split" shortcut={splitKey}>
-                <div>
-                  <Segmented
-                    value={s.sideBySide ? "split" : "unified"}
-                onChange={(v) => updateSettings({ sideBySide: v === "split" })}
-                options={[
-                  { value: "unified", label: "Unified", icon: Rows2 },
-                  { value: "split", label: "Split", icon: Columns2 },
-                ]}
-                  />
-                </div>
-              </Tip>
+              <LayoutToggle />
               <IconBtn label="Collapse unchanged lines" command="diff.toggleCollapse" active={s.hideUnchanged} onClick={() => updateSettings({ hideUnchanged: !s.hideUnchanged })}>
                 <FoldVertical />
               </IconBtn>
+              <Sep />
+            </>
+          )}
+          {rendered && svg && (
+            <>
+              {!isFile && <LayoutToggle />}
+              <Tip label="Scroll to zoom, drag to pan, double-click to fit">
+                <div>
+                  <Segmented
+                    value={zoom.scale === null ? "fit" : zoom.scale === 1 ? "actual" : "custom"}
+                    onChange={(v) => setZoom(v === "fit" ? FIT : { scale: 1, u: 0.5, v: 0.5 })}
+                    options={[
+                      { value: "fit", label: "Fit" },
+                      { value: "actual", label: "1:1" },
+                    ]}
+                  />
+                </div>
+              </Tip>
+              <Tip label={contrast ? "Theme background" : s.dark ? "Light background" : "Dark background"}>
+                <Button variant="ghost" size="icon-sm" onClick={() => setContrast(!contrast)} className={cn(contrast && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary")}>
+                  <Contrast />
+                </Button>
+              </Tip>
               <Sep />
             </>
           )}
@@ -330,7 +348,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
             </Tip>
           )}
           {/* Last, so it stays put while the buttons before it change with the mode. */}
-          {markdown && (
+          {(markdown || svg) && (
             <div className="ml-1">
               <Segmented
                 value={preview ? "preview" : "code"}
@@ -349,6 +367,17 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
           <Placeholder title="Could not load" detail={error} />
         ) : special ? (
           <Placeholder title={special} />
+        ) : rendered && svg ? (
+          pair && (
+            <SvgView
+              before={!isFile && pair.original.exists ? pair.original.text : null}
+              after={pair.modified.exists ? pair.modified.text : null}
+              stacked={!isFile && !s.sideBySide}
+              zoom={zoom}
+              onZoom={setZoom}
+              backdrop={contrast ? (s.dark ? "light" : "dark") : "theme"}
+            />
+          )
         ) : rendered ? (
           pair && <MarkdownView text={pair.modified.exists ? pair.modified.text : pair.original.text} src={pairArgs(sel, revision)} onOpen={onOpen} />
         ) : media ? (
@@ -449,6 +478,25 @@ function Placeholder({ title, detail }: { title: string; detail?: string }) {
   );
 }
 
+/** Unified / split for diffs; a before/after preview stacks or sits side by side to match. */
+function LayoutToggle() {
+  const s = useSettings();
+  return (
+    <Tip label="Unified / split" shortcut={useShortcut("diff.toggleSplit")}>
+      <div>
+        <Segmented
+          value={s.sideBySide ? "split" : "unified"}
+          onChange={(v) => updateSettings({ sideBySide: v === "split" })}
+          options={[
+            { value: "unified", label: "Unified", icon: Rows2 },
+            { value: "split", label: "Split", icon: Columns2 },
+          ]}
+        />
+      </div>
+    </Tip>
+  );
+}
+
 function IconBtn({ label, command, active, onClick, children }: { label: string; command: CommandId; active?: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <Tip label={label} shortcut={useShortcut(command)}>
@@ -466,7 +514,7 @@ function Segmented<T extends string>({
 }: {
   value: T;
   onChange: (v: T) => void;
-  options: { value: T; label: string; icon: React.ComponentType<{ className?: string }> }[];
+  options: { value: T; label: string; icon?: React.ComponentType<{ className?: string }> }[];
 }) {
   return (
     <div className="flex h-6 overflow-hidden rounded-md border border-border-strong">
@@ -480,7 +528,7 @@ function Segmented<T extends string>({
             value === o.value ? "bg-active text-foreground" : "text-subtle hover:text-foreground",
           )}
         >
-          <o.icon className="size-3.5" />
+          {o.icon && <o.icon className="size-3.5" />}
           {o.label}
         </button>
       ))}

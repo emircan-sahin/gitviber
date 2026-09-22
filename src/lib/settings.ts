@@ -59,6 +59,8 @@ export interface Settings {
   uiScale: number;
   /** Markdown files open rendered rather than as source (diffs always start on the diff). */
   markdownPreview: boolean;
+  /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
+  svgPreview: boolean;
   /** Per-command overrides of the default key bindings; an empty list unbinds. */
   keybindings: Record<string, string[]>;
 }
@@ -79,6 +81,7 @@ const DEFAULTS: Settings = {
   ligatures: false,
   uiScale: 1,
   markdownPreview: true,
+  svgPreview: false,
   keybindings: {},
 };
 
@@ -95,6 +98,7 @@ function load(): Settings {
     if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
+    if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     s.keybindings = cleanOverrides(s.keybindings);
     return s;
   } catch {
