@@ -830,6 +830,56 @@ fn watcher_ignores_nested_worktrees() {
     assert_eq!(classify(&agent, &agent.join("a.txt")), Some(Kind::Worktree));
 }
 
+#[test]
+fn watcher_sees_config_and_other_worktrees() {
+    use crate::watch::{classify, ExternalGitDirs, Kind};
+    let sb = Sandbox::new("wtgitwatch");
+    let r = repo_with_worktrees(&sb);
+    let git = |p: &str| classify(&r, &r.join(p));
+    // `git remote set-url`, `git worktree add`, a checkout in another worktree.
+    for p in [
+        ".git/config",
+        ".git/packed-refs",
+        ".git/worktrees/agent",
+        ".git/worktrees/agent/HEAD",
+    ] {
+        assert_eq!(git(p), Some(Kind::Git), "{p}");
+    }
+    // Another worktree's staging and reflog are its own.
+    for p in [
+        ".git/worktrees/agent/index",
+        ".git/worktrees/agent/logs/HEAD",
+        ".git/config.lock",
+        ".git/objects/ab/cdef",
+    ] {
+        assert_eq!(git(p), None, "{p}");
+    }
+
+    // The agent worktree's own window: its git dir is under the main repo's .git.
+    let ext = ExternalGitDirs::find(&r.join(".claude/worktrees/agent"));
+    let common = ext.common.clone().expect("common dir outside the worktree");
+    let own = ext.own.clone().expect("own git dir outside the worktree");
+    assert!(own.starts_with(&common));
+    for p in [
+        own.join("index"),
+        own.join("HEAD"),
+        common.join("packed-refs"),
+    ] {
+        assert_eq!(ext.classify(&p), Some(Kind::Git), "{}", p.display());
+    }
+    assert_eq!(ext.classify(&common.join("config")), Some(Kind::Git));
+    assert_eq!(ext.classify(&common.join("refs/heads/x")), Some(Kind::Git));
+    // The main worktree's index and another worktree's aren't this window's.
+    for p in [
+        common.join("index"),
+        common.join("MERGE_HEAD"),
+        common.join("worktrees/det/index"),
+        common.join("refs/heads/x.lock"),
+    ] {
+        assert_eq!(ext.classify(&p), None, "{}", p.display());
+    }
+}
+
 /// `r` with a submodule at `sub` (its `.git` is a file pointing into .git/modules/).
 fn repo_with_submodule(sb: &Sandbox) -> PathBuf {
     let lib = sb.path("lib");

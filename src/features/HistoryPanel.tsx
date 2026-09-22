@@ -61,9 +61,10 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
   const [webUrl, setWebUrl] = useState<string | null>(null);
   const [naming, setNaming] = useState<{ kind: "branch" | "tag"; commit: Commit } | null>(null);
 
+  // `remotes` is rebuilt on every git refresh, including the one `git remote set-url` causes.
   useEffect(() => {
     api.githubWebUrl().then(setWebUrl, () => setWebUrl(null));
-  }, []);
+  }, [remotes]);
 
   // Operations that can stop on conflicts resolve to true; Workspace then brings Changes into view.
   const run = async (label: string, fn: () => Promise<void | boolean>, done: string) => {

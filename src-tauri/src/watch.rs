@@ -26,22 +26,35 @@ pub(crate) enum Kind {
 
 pub(crate) fn classify(root: &Path, path: &Path) -> Option<Kind> {
     let rel = path.strip_prefix(root).ok()?;
-    let mut parts = rel.components().map(|c| c.as_os_str().to_string_lossy());
-    let first = parts.next()?;
-    if first == ".git" {
-        // Only the files that change what we display; objects/ and *.lock churn constantly.
-        return match parts.next().as_deref() {
-            Some(
-                "HEAD" | "index" | "refs" | "packed-refs" | "MERGE_HEAD" | "CHERRY_PICK_HEAD"
-                | "REVERT_HEAD" | "rebase-merge" | "rebase-apply",
-            ) => Some(Kind::Git),
-            _ => None,
-        };
+    if let Ok(inside) = rel.strip_prefix(".git") {
+        return git_file(inside, true).then_some(Kind::Git);
     }
     if rel.components().any(|c| c.as_os_str() == "node_modules") || in_nested_repo(root, path) {
         return None;
     }
     Some(Kind::Worktree)
+}
+
+/// Whether a path inside a git dir changes what the window shows; objects/ and *.lock churn
+/// constantly. `own`: the dir is this worktree's, so its index and a stopped merge or rebase
+/// count too; in a linked worktree's window, the main worktree's don't.
+pub(crate) fn git_file(rel: &Path, own: bool) -> bool {
+    let parts: Vec<_> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect();
+    let parts: Vec<&str> = parts.iter().map(|p| p.as_ref()).collect();
+    match parts.as_slice() {
+        ["HEAD" | "refs" | "packed-refs", ..] => true,
+        // Upstreams and remotes: `git branch -u`, `git remote set-url`.
+        ["config"] => true,
+        ["index" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "rebase-merge"
+        | "rebase-apply", ..] => own,
+        // Another worktree added or removed, or switched to a branch it now holds. Its index
+        // and logs are that worktree's business.
+        ["worktrees", _] | ["worktrees", _, "HEAD"] => true,
+        _ => false,
+    }
 }
 
 /// Agents work in worktrees under the repo (.claude/worktrees/*); their writes and git
@@ -75,24 +88,39 @@ fn is_untracked_repo_root(dir: &Path) -> bool {
 }
 
 /// Git dirs that live outside the worktree (linked worktrees: `.git` is a file and HEAD/index
-/// sit under the main repo's .git/worktrees/<name>, refs under its common dir).
-fn external_git_dirs(root: &Path) -> Vec<(PathBuf, RecursiveMode)> {
-    let dir = |flag: &str| {
-        crate::git::run(root, &["rev-parse", flag])
-            .ok()
-            .map(|o| PathBuf::from(String::from_utf8_lossy(&o).trim()))
-    };
-    let mut out = vec![];
-    if let Some(git_dir) = dir("--absolute-git-dir").filter(|d| !d.starts_with(root)) {
-        out.push((git_dir, RecursiveMode::NonRecursive));
+/// sit under the main repo's .git/worktrees/<name>, refs and config in its common dir).
+pub(crate) struct ExternalGitDirs {
+    pub(crate) own: Option<PathBuf>,
+    pub(crate) common: Option<PathBuf>,
+}
+
+impl ExternalGitDirs {
+    pub(crate) fn find(root: &Path) -> Self {
+        let dir = |flag: &str| {
+            crate::git::run(root, &["rev-parse", flag])
+                .ok()
+                .map(|o| PathBuf::from(String::from_utf8_lossy(&o).trim()))
+        };
+        ExternalGitDirs {
+            own: dir("--absolute-git-dir").filter(|d| !d.starts_with(root)),
+            common: dir("--git-common-dir")
+                .map(|d| if d.is_absolute() { d } else { root.join(d) })
+                .filter(|d| !d.starts_with(root)),
+        }
     }
-    if let Some(common) = dir("--git-common-dir")
-        .map(|d| if d.is_absolute() { d } else { root.join(d) })
-        .filter(|d| !d.starts_with(root))
-    {
-        out.push((common.join("refs"), RecursiveMode::Recursive));
+
+    pub(crate) fn classify(&self, path: &Path) -> Option<Kind> {
+        // Lock files churn during every git command; the real file follows.
+        if path.extension().is_some_and(|e| e == "lock") {
+            return None;
+        }
+        // The own dir sits inside the common one's worktrees/, so it goes first.
+        if self.own.as_ref().is_some_and(|d| path.starts_with(d)) {
+            return Some(Kind::Git);
+        }
+        let rel = path.strip_prefix(self.common.as_ref()?).ok()?;
+        git_file(rel, false).then_some(Kind::Git)
     }
-    out
 }
 
 /// Worktree paths that count: not ignored by .gitignore. Build output (`target/`, `dist/`)
@@ -114,18 +142,27 @@ pub(crate) fn not_ignored(root: &Path, paths: &HashSet<PathBuf>) -> bool {
 pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String> {
     let (tx, rx) = mpsc::channel::<(Kind, PathBuf)>();
     let watch_root = root.clone();
-    let external = external_git_dirs(&root);
-    let external_roots: Vec<PathBuf> = external.iter().map(|(d, _)| d.clone()).collect();
+    let external = ExternalGitDirs::find(&root);
+    let dirs: Vec<(PathBuf, RecursiveMode)> = [
+        external
+            .own
+            .clone()
+            .map(|d| (d, RecursiveMode::NonRecursive)),
+        external
+            .common
+            .clone()
+            .map(|d| (d, RecursiveMode::Recursive)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
             for p in &event.paths {
-                let kind = if external_roots.iter().any(|d| p.starts_with(d)) {
-                    // Lock files churn during every git command; the real file follows.
-                    p.extension()
-                        .is_none_or(|e| e != "lock")
-                        .then_some(Kind::Git)
-                } else {
+                let kind = if p.starts_with(&watch_root) {
                     classify(&watch_root, p)
+                } else {
+                    external.classify(p)
                 };
                 if let Some(kind) = kind {
                     let _ = tx.send((kind, p.clone()));
@@ -137,8 +174,8 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
     watcher
         .watch(&root, RecursiveMode::Recursive)
         .map_err(|e| e.to_string())?;
-    for (dir, mode) in external {
-        // Best effort: a missing refs dir (packed refs only) shouldn't fail opening the repo.
+    for (dir, mode) in dirs {
+        // Best effort: a git dir that can't be watched shouldn't fail opening the repo.
         let _ = watcher.watch(&dir, mode);
     }
 
