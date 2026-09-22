@@ -234,10 +234,37 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   term.onData((data) => send(p, data));
   term.onResize(({ cols, rows }) => p.pty !== null && void invoke("pty_resize", { id: p.pty, cols, rows }).catch(() => {}));
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
-  // ⌘ keys are the app's shortcuts (copy and paste arrive as clipboard events, not keys);
-  // ⌃` toggles the panel instead of sending NUL.
-  term.attachCustomKeyEventHandler((e) => !e.metaKey && !(e.ctrlKey && e.code === "Backquote"));
+  // ⌘ keys are the app's shortcuts (copy and paste arrive as clipboard events, not keys),
+  // except the line-editing ones; ⌃` toggles the panel instead of sending NUL.
+  term.attachCustomKeyEventHandler((e) => {
+    const seq = lineEditKey(e);
+    if (seq !== undefined) {
+      if (e.type === "keydown") term.input(seq);
+      e.preventDefault();
+      return false;
+    }
+    return !e.metaKey && !(e.ctrlKey && e.code === "Backquote");
+  });
   return { id, cwd, title: "" };
+}
+
+/**
+ * macOS line editing, as in VS Code's terminal. xterm.js sends ⌥← / ⌥→ / ⌥⌦ as
+ * `ESC[1;3D`-style sequences that neither zsh nor bash binds by default; the readline
+ * sequences below work in both. ⌥⌫ is already ESC DEL (delete word).
+ */
+const LINE_EDIT: Record<string, string> = {
+  "cmd+ArrowLeft": "\x01", // start of line (⌃A)
+  "cmd+ArrowRight": "\x05", // end of line (⌃E)
+  "cmd+Backspace": "\x15", // delete to start of line (⌃U)
+  "alt+ArrowLeft": "\x1bb", // previous word
+  "alt+ArrowRight": "\x1bf", // next word
+  "alt+Delete": "\x1bd", // delete next word
+};
+
+function lineEditKey(e: KeyboardEvent): string | undefined {
+  if (e.shiftKey || e.ctrlKey || e.metaKey === e.altKey) return undefined;
+  return LINE_EDIT[`${e.metaKey ? "cmd" : "alt"}+${e.key}`];
 }
 
 function update(id: number, fn: (p: PaneInfo) => PaneInfo) {
