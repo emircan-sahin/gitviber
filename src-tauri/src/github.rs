@@ -315,10 +315,93 @@ pub fn parse_remote(url: &str) -> Option<RepoRef> {
     })
 }
 
+impl RepoRef {
+    fn full(&self) -> String {
+        format!("{}/{}", self.owner, self.name)
+    }
+
+    /// GitHub names are case-insensitive; a remote URL may spell them differently.
+    fn is(&self, full: &str) -> bool {
+        self.full().eq_ignore_ascii_case(full)
+    }
+}
+
 fn repo_ref(repo: &Path) -> Result<RepoRef, String> {
     let url = git::remote_url(repo, "origin").ok_or("This repository has no 'origin' remote.")?;
     parse_remote(&url)
         .ok_or_else(|| "The 'origin' remote is not a github.com repository.".to_string())
+}
+
+fn split_full(full: &str) -> Option<RepoRef> {
+    let (owner, name) = full.split_once('/')?;
+    Some(RepoRef {
+        owner: owner.into(),
+        name: name.into(),
+    })
+}
+
+fn repo_info(session: &Session, repo: &Path, r: &RepoRef) -> Result<Value, String> {
+    call(
+        session,
+        repo,
+        Method::Get,
+        &format!("/repos/{}/{}", r.owner, r.name),
+    )
+}
+
+/// Origin's current name and the repository it was forked from. A renamed or transferred
+/// repo still answers at the name its remote has; the reply carries the current one.
+fn origin_names(session: &Session, repo: &Path) -> Result<(RepoRef, Option<RepoRef>), String> {
+    let origin = repo_ref(repo)?;
+    let info = repo_info(session, repo, &origin)?;
+    let current = info["full_name"].as_str().and_then(split_full);
+    let parent = info["parent"]["full_name"].as_str().and_then(split_full);
+    Ok((current.unwrap_or(origin), parent))
+}
+
+/// Where a request goes: origin (`to` = None or its name), or the repository it was forked
+/// from. Nothing else, so the UI can't aim this token's writes at an arbitrary repository.
+fn target(session: &Session, repo: &Path, to: Option<&str>) -> Result<RepoRef, String> {
+    let origin = repo_ref(repo)?;
+    let Some(to) = to.filter(|t| !origin.is(t)) else {
+        return Ok(origin);
+    };
+    let (current, parent) = origin_names(session, repo)?;
+    if current.is(to) {
+        return Ok(origin);
+    }
+    parent
+        .filter(|p| p.is(to))
+        .ok_or_else(|| format!("{to} is neither origin nor the repository it was forked from."))
+}
+
+/// What the signed-in account may do in one repository.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Access {
+    /// Its current name, which a renamed repo's remote URL may not have.
+    pub repo: RepoRef,
+    pub default_branch: Option<String>,
+    /// Write access: merge, and close or edit anyone's PRs and issues
+    pub push: bool,
+    /// Triage: close and reopen anyone's PRs and issues, without write access
+    pub triage: bool,
+    /// The only role GitHub lets delete issues
+    pub admin: bool,
+    /// Issues are switched on (forks start with them off)
+    pub issues: bool,
+}
+
+fn access(r: RepoRef, info: &Value) -> Access {
+    let can = |p: &str| info["permissions"][p].as_bool().unwrap_or(false);
+    Access {
+        repo: info["full_name"].as_str().and_then(split_full).unwrap_or(r),
+        default_branch: info["default_branch"].as_str().map(str::to_string),
+        push: can("push"),
+        triage: can("triage"),
+        admin: can("admin"),
+        issues: info["has_issues"].as_bool().unwrap_or(true),
+    }
 }
 
 #[derive(Serialize)]
@@ -327,32 +410,33 @@ pub struct Account {
     pub login: String,
     /// "gh" (GitHub CLI) or "git" (git credential store)
     pub source: String,
-    pub repo: Option<RepoRef>,
-    pub default_branch: Option<String>,
-    /// Admin on this repo: the only role GitHub lets delete issues
-    pub admin: bool,
+    pub origin: Option<Access>,
+    /// The repository origin was forked from
+    pub parent: Option<Access>,
 }
 
+/// Fails as a whole if any lookup fails: a half-read account (no permissions, no parent)
+/// would hide buttons and the fork panes until the next refresh. The UI keeps the last one.
 pub fn account(session: &Session, repo: &Path) -> Result<Account, String> {
     let user = call(session, repo, Method::Get, "/user")?;
     let source = session.token(repo)?.source.to_string();
-    let r = repo_ref(repo).ok();
-    let info = r.as_ref().and_then(|r| {
-        call(
-            session,
-            repo,
-            Method::Get,
-            &format!("/repos/{}/{}", r.owner, r.name),
-        )
-        .ok()
-    });
-    let info = info.unwrap_or(Value::Null);
+    let (origin, parent) = match repo_ref(repo) {
+        Ok(r) => {
+            let info = repo_info(session, repo, &r)?;
+            let parent = match info["parent"]["full_name"].as_str().and_then(split_full) {
+                Some(p) => Some(access(p.clone(), &repo_info(session, repo, &p)?)),
+                None => None,
+            };
+            (Some(access(r, &info)), parent)
+        }
+        // No GitHub origin: there's an account but nothing to list.
+        Err(_) => (None, None),
+    };
     Ok(Account {
         login: user["login"].as_str().unwrap_or_default().into(),
         source,
-        repo: r,
-        default_branch: info["default_branch"].as_str().map(str::to_string),
-        admin: info["permissions"]["admin"].as_bool().unwrap_or(false),
+        origin,
+        parent,
     })
 }
 
@@ -423,8 +507,13 @@ fn pull_from(v: &Value) -> Pull {
 }
 
 /// `state`: "open" | "closed" | "all"
-pub fn list(session: &Session, repo: &Path, state: &str) -> Result<Vec<Pull>, String> {
-    let r = repo_ref(repo)?;
+pub fn list(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    state: &str,
+) -> Result<Vec<Pull>, String> {
+    let r = target(session, repo, to)?;
     let state = if matches!(state, "open" | "closed" | "all") {
         state
     } else {
@@ -478,10 +567,17 @@ pub struct PullDetail {
     pub mergeable_state: String,
     pub checks: Vec<Check>,
     pub comments: Vec<Comment>,
+    /// Who closed it, if closed: an author may reopen only what they closed themselves
+    pub closed_by: Option<String>,
 }
 
-pub fn detail(session: &Session, repo: &Path, number: u64) -> Result<PullDetail, String> {
-    let r = repo_ref(repo)?;
+pub fn detail(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+) -> Result<PullDetail, String> {
+    let r = target(session, repo, to)?;
     let base = format!("/repos/{}/{}", r.owner, r.name);
     let v = call(
         session,
@@ -491,6 +587,19 @@ pub fn detail(session: &Session, repo: &Path, number: u64) -> Result<PullDetail,
     )?;
     let pull = pull_from(&v);
     let s = |x: &Value| x.as_str().unwrap_or_default().to_string();
+    // The pulls endpoint doesn't say who closed it; the issue behind every PR does.
+    let closed_by = if pull.state == "closed" {
+        call(
+            session,
+            repo,
+            Method::Get,
+            &format!("{base}/issues/{number}"),
+        )
+        .ok()
+        .and_then(|i| i["closed_by"]["login"].as_str().map(str::to_string))
+    } else {
+        None
+    };
 
     let mut checks = vec![];
     if let Ok(runs) = call(
@@ -569,6 +678,7 @@ pub fn detail(session: &Session, repo: &Path, number: u64) -> Result<PullDetail,
     comments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
     Ok(PullDetail {
+        closed_by,
         body: s(&v["body"]),
         additions: v["additions"].as_u64().unwrap_or_default(),
         deletions: v["deletions"].as_u64().unwrap_or_default(),
@@ -589,10 +699,11 @@ pub fn detail(session: &Session, repo: &Path, number: u64) -> Result<PullDetail,
 pub fn attachments(
     session: &Session,
     repo: &Path,
+    to: Option<&str>,
     number: u64,
 ) -> Result<HashMap<String, String>, String> {
     const HTML: &str = "application/vnd.github.html+json";
-    let r = repo_ref(repo)?;
+    let r = target(session, repo, to)?;
     let base = format!("/repos/{}/{}", r.owner, r.name);
     let mut out = HashMap::new();
     // The issues endpoint serves PRs too, and says which one this is.
@@ -657,8 +768,68 @@ pub struct PullFiles {
 
 /// Fetches the PR's commits (no refs are created) and diffs them locally, so PR files
 /// open in the same full-file viewer as everything else.
+/// A remote that points at `r`, e.g. a fork's "upstream".
+fn remote_for(repo: &Path, r: &RepoRef) -> Option<String> {
+    let names = git::run(repo, &["remote"]).unwrap_or_default();
+    String::from_utf8_lossy(&names)
+        .lines()
+        .find(|n| {
+            git::remote_url(repo, n)
+                .and_then(|u| parse_remote(&u))
+                .is_some_and(|p| p.is(&r.full()))
+        })
+        .map(str::to_string)
+}
+
+/// Where a PR's commits are fetched from: origin, or for the parent a remote pointing at it,
+/// else its https URL.
+pub fn fetch_remote(session: &Session, repo: &Path, to: Option<&str>) -> Result<String, String> {
+    let r = target(session, repo, to)?;
+    if r.is(&repo_ref(repo)?.full()) {
+        return Ok("origin".into());
+    }
+    Ok(remote_for(repo, &r).unwrap_or_else(|| format!("https://github.com/{}.git", r.full())))
+}
+
+/// The remote for `original`, the fork's parent as the UI knows it from the account, fetched
+/// first if `fetch`; None when there is none yet. No GitHub call, so it works offline: it
+/// only finds and fetches a remote this repo already has.
+pub fn original_remote(repo: &Path, original: &str, fetch: bool) -> Result<Option<String>, String> {
+    let r = split_full(original).ok_or_else(|| format!("not a repository name: {original}"))?;
+    let Some(name) = remote_for(repo, &r) else {
+        return Ok(None);
+    };
+    if fetch {
+        git::fetch_remote(repo, &name)?;
+    }
+    Ok(Some(name))
+}
+
+/// Adds the fork's original as "upstream" (the usual name; "original" if that's taken),
+/// over the same protocol as origin, and fetches it.
+pub fn add_original_remote(session: &Session, repo: &Path) -> Result<String, String> {
+    let (_, parent) = origin_names(session, repo)?;
+    let r = parent.ok_or("origin is not a fork.")?;
+    if let Some(name) = remote_for(repo, &r) {
+        return Ok(name);
+    }
+    let taken = git::remote_url(repo, "upstream").is_some();
+    let name = if taken { "original" } else { "upstream" };
+    let origin = git::remote_url(repo, "origin").unwrap_or_default();
+    let url = if origin.starts_with("https://") || origin.starts_with("http://") {
+        format!("https://github.com/{}.git", r.full())
+    } else {
+        format!("git@github.com:{}.git", r.full())
+    };
+    git::run(repo, &["remote", "add", name, &url])?;
+    git::fetch_remote(repo, name)?;
+    Ok(name.to_string())
+}
+
 pub fn files(
+    session: &Session,
     repo: &Path,
+    to: Option<&str>,
     number: u64,
     base_ref: &str,
     base_sha: &str,
@@ -671,7 +842,7 @@ pub fn files(
             .map_err(|_| format!("invalid branch: {base_ref}"))?;
         git::fetch_objects(
             repo,
-            "origin",
+            &fetch_remote(session, repo, to)?,
             &[
                 format!("pull/{number}/head"),
                 format!("refs/heads/{base_ref}"),
@@ -686,16 +857,25 @@ pub fn files(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn create(
     session: &Session,
     repo: &Path,
+    to: Option<&str>,
     title: &str,
     body: &str,
     head: &str,
     base: &str,
     draft: bool,
 ) -> Result<Pull, String> {
-    let r = repo_ref(repo)?;
+    let r = target(session, repo, to)?;
+    let origin = repo_ref(repo)?;
+    // Into the parent, the branch is named by the fork it lives in.
+    let head = if r.is(&origin.full()) {
+        head.to_string()
+    } else {
+        format!("{}:{head}", origin.owner)
+    };
     let v = call(
         session,
         repo,
@@ -708,8 +888,14 @@ pub fn create(
 }
 
 /// `method`: "merge" | "squash" | "rebase"
-pub fn merge(session: &Session, repo: &Path, number: u64, method: &str) -> Result<(), String> {
-    let r = repo_ref(repo)?;
+pub fn merge(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+    method: &str,
+) -> Result<(), String> {
+    let r = target(session, repo, to)?;
     let method = if matches!(method, "merge" | "squash" | "rebase") {
         method
     } else {
@@ -726,8 +912,14 @@ pub fn merge(session: &Session, repo: &Path, number: u64, method: &str) -> Resul
 
 /// Closes or reopens a PR. Close-then-reopen also makes GitHub recompute a stale diff or
 /// conflict state, e.g. after the PR below it in a stack was merged.
-pub fn set_open(session: &Session, repo: &Path, number: u64, open: bool) -> Result<Pull, String> {
-    let r = repo_ref(repo)?;
+pub fn set_open(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+    open: bool,
+) -> Result<Pull, String> {
+    let r = target(session, repo, to)?;
     let v = call(
         session,
         repo,
@@ -742,11 +934,12 @@ pub fn set_open(session: &Session, repo: &Path, number: u64, open: bool) -> Resu
 pub fn review(
     session: &Session,
     repo: &Path,
+    to: Option<&str>,
     number: u64,
     event: &str,
     body: &str,
 ) -> Result<(), String> {
-    let r = repo_ref(repo)?;
+    let r = target(session, repo, to)?;
     if !matches!(event, "APPROVE" | "REQUEST_CHANGES" | "COMMENT") {
         return Err(format!("unknown review event: {event}"));
     }
@@ -818,28 +1011,46 @@ fn issue_from(v: &Value) -> Issue {
 }
 
 /// `state`: "open" | "closed" | "all". GitHub lists PRs as issues too; they're left out.
-pub fn issues(session: &Session, repo: &Path, state: &str) -> Result<Vec<Issue>, String> {
-    let r = repo_ref(repo)?;
+pub fn issues(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    state: &str,
+) -> Result<Vec<Issue>, String> {
+    let r = target(session, repo, to)?;
     let state = if matches!(state, "open" | "closed" | "all") {
         state
     } else {
         "open"
     };
-    let v = call(
-        session,
-        repo,
-        Method::Get,
-        &format!(
-            "/repos/{}/{}/issues?state={state}&sort=updated&direction=desc&per_page=50",
-            r.owner, r.name
-        ),
-    )?;
-    Ok(v.as_array()
-        .into_iter()
-        .flatten()
-        .filter(|i| i.get("pull_request").is_none())
-        .map(issue_from)
-        .collect())
+    // The endpoint lists PRs too, and they're dropped here: one page of recent activity can
+    // be nearly all PRs (a repo's "all" showed 3 issues). Read on until there are enough.
+    const WANT: usize = 50;
+    const PAGE: usize = 100;
+    let mut out = vec![];
+    for page in 1..=5 {
+        let v = call(
+            session,
+            repo,
+            Method::Get,
+            &format!(
+                "/repos/{}/{}/issues?state={state}&sort=updated&direction=desc&per_page={PAGE}&page={page}",
+                r.owner, r.name
+            ),
+        )?;
+        let items = v.as_array().cloned().unwrap_or_default();
+        out.extend(
+            items
+                .iter()
+                .filter(|i| i.get("pull_request").is_none())
+                .map(issue_from),
+        );
+        if items.len() < PAGE || out.len() >= WANT {
+            break;
+        }
+    }
+    out.truncate(WANT);
+    Ok(out)
 }
 
 #[derive(Serialize)]
@@ -850,10 +1061,17 @@ pub struct IssueDetail {
     pub body: String,
     /// The conversation; `issue.comments` is only the count
     pub thread: Vec<Comment>,
+    /// Who closed it, if closed: an author may reopen only what they closed themselves
+    pub closed_by: Option<String>,
 }
 
-pub fn issue_detail(session: &Session, repo: &Path, number: u64) -> Result<IssueDetail, String> {
-    let r = repo_ref(repo)?;
+pub fn issue_detail(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+) -> Result<IssueDetail, String> {
+    let r = target(session, repo, to)?;
     let path = format!("/repos/{}/{}/issues/{number}", r.owner, r.name);
     let v = call(session, repo, Method::Get, &path)?;
     let s = |x: &Value| x.as_str().unwrap_or_default().to_string();
@@ -875,6 +1093,7 @@ pub fn issue_detail(session: &Session, repo: &Path, number: u64) -> Result<Issue
         })
         .collect();
     Ok(IssueDetail {
+        closed_by: v["closed_by"]["login"].as_str().map(str::to_string),
         body: s(&v["body"]),
         issue: issue_from(&v),
         thread,
@@ -884,10 +1103,11 @@ pub fn issue_detail(session: &Session, repo: &Path, number: u64) -> Result<Issue
 pub fn issue_create(
     session: &Session,
     repo: &Path,
+    to: Option<&str>,
     title: &str,
     body: &str,
 ) -> Result<Issue, String> {
-    let r = repo_ref(repo)?;
+    let r = target(session, repo, to)?;
     let v = call(
         session,
         repo,
@@ -901,11 +1121,12 @@ pub fn issue_create(
 pub fn issue_edit(
     session: &Session,
     repo: &Path,
+    to: Option<&str>,
     number: u64,
     title: &str,
     body: &str,
 ) -> Result<Issue, String> {
-    let r = repo_ref(repo)?;
+    let r = target(session, repo, to)?;
     let v = call(
         session,
         repo,
@@ -919,11 +1140,12 @@ pub fn issue_edit(
 pub fn issue_set_open(
     session: &Session,
     repo: &Path,
+    to: Option<&str>,
     number: u64,
     open: bool,
     reason: &str,
 ) -> Result<Issue, String> {
-    let r = repo_ref(repo)?;
+    let r = target(session, repo, to)?;
     let patch = if open {
         json!({ "state": "open" })
     } else {
@@ -945,8 +1167,13 @@ pub fn issue_set_open(
 
 /// Deletes an issue for good. REST has no endpoint for it, only GraphQL's `deleteIssue`,
 /// and GitHub allows it to repository admins alone.
-pub fn issue_delete(session: &Session, repo: &Path, number: u64) -> Result<(), String> {
-    let r = repo_ref(repo)?;
+pub fn issue_delete(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+) -> Result<(), String> {
+    let r = target(session, repo, to)?;
     let v = call(
         session,
         repo,
@@ -979,10 +1206,11 @@ pub fn issue_delete(session: &Session, repo: &Path, number: u64) -> Result<(), S
 pub fn issue_comment(
     session: &Session,
     repo: &Path,
+    to: Option<&str>,
     number: u64,
     body: &str,
 ) -> Result<(), String> {
-    let r = repo_ref(repo)?;
+    let r = target(session, repo, to)?;
     call(
         session,
         repo,
@@ -992,14 +1220,23 @@ pub fn issue_comment(
     .map(|_| ())
 }
 
-/// Switches to the PR's branch: the real branch for same-repo PRs, `pr/<n>` for forks.
+/// Switches to the PR's branch: the real branch when it lives on origin (`same_repo`),
+/// otherwise `pr/<n>`, fetched from `remote` (the repository the PR is in). A fork's original
+/// numbers its PRs separately, so its are `pr/<owner>/<n>` (`owner` set).
 /// An existing local branch is only fast-forwarded, never reset: unpushed work on it is
 /// kept, and a branch that diverged from the PR is reported instead of silently used.
-pub fn checkout(repo: &Path, number: u64, head_ref: &str, same_repo: bool) -> Result<(), String> {
-    let local = if same_repo {
-        head_ref.to_string()
-    } else {
-        format!("pr/{number}")
+pub fn checkout(
+    repo: &Path,
+    remote: &str,
+    owner: Option<&str>,
+    number: u64,
+    head_ref: &str,
+    same_repo: bool,
+) -> Result<(), String> {
+    let local = match (same_repo, owner) {
+        (true, _) => head_ref.to_string(),
+        (false, Some(o)) => format!("pr/{o}/{number}"),
+        (false, None) => format!("pr/{number}"),
     };
     git::run(repo, &["check-ref-format", "--branch", &local])
         .map_err(|_| format!("invalid branch: {local}"))?;
@@ -1009,7 +1246,8 @@ pub fn checkout(repo: &Path, number: u64, head_ref: &str, same_repo: bool) -> Re
         format!("pull/{number}/head")
     };
     // FETCH_HEAD is the PR head either way; never force-update a local branch.
-    git::run(repo, &["fetch", "--quiet", "origin", &source])?;
+    let remote = if same_repo { "origin" } else { remote };
+    git::run(repo, &["fetch", "--quiet", remote, &source])?;
     let exists = git::run(
         repo,
         &[
@@ -1072,6 +1310,73 @@ pub fn open_url(url: &str) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// Read-only, against a clone of a fork: `GITVIBER_GH_FORK=/path/to/clone cargo test -- --ignored`.
+    #[test]
+    #[ignore = "talks to GitHub"]
+    fn live_fork_reads_both_repositories() {
+        let path = std::env::var("GITVIBER_GH_FORK").expect("GITVIBER_GH_FORK");
+        let repo = Path::new(&path);
+        let session = Session::default();
+        let acct = account(&session, repo).unwrap();
+        let origin = acct.origin.expect("origin");
+        let parent = acct.parent.expect("origin should be a fork");
+        println!(
+            "origin {} push={} issues={} · parent {} push={} admin={} issues={} default={:?}",
+            origin.repo.full(),
+            origin.push,
+            origin.issues,
+            parent.repo.full(),
+            parent.push,
+            parent.admin,
+            parent.issues,
+            parent.default_branch
+        );
+        let up = parent.repo.full();
+        for (to, name) in [(None, "origin"), (Some(up.as_str()), "parent")] {
+            let pulls = list(&session, repo, to, "all").unwrap();
+            let open = issues(&session, repo, to, "open").unwrap_or_default();
+            let all = issues(&session, repo, to, "all").unwrap_or_default();
+            println!(
+                "{name}: {} PRs, {} open / {} total issues",
+                pulls.len(),
+                open.len(),
+                all.len()
+            );
+            // "all" must never list fewer than "open": PRs used to crowd issues out of the page.
+            assert!(all.len() >= open.len().min(50));
+            if let Some(p) = pulls.first() {
+                assert!(p.url.to_lowercase().contains(&format!(
+                    "/{}/pull/",
+                    if to.is_some() {
+                        up.to_lowercase()
+                    } else {
+                        origin.repo.full().to_lowercase()
+                    }
+                )));
+                detail(&session, repo, to, p.number).unwrap();
+            }
+        }
+        let closed = list(&session, repo, Some(&up), "closed").unwrap();
+        if let Some(p) = closed.iter().find(|p| p.state == "closed") {
+            let d = detail(&session, repo, Some(&up), p.number).unwrap();
+            println!("#{} closed by {:?}", p.number, d.closed_by);
+            assert!(d.closed_by.is_some());
+        }
+        // Anything but origin and its parent is refused, whatever the token could reach.
+        assert!(list(&session, repo, Some("torvalds/linux"), "open").is_err());
+        let remote = original_remote(repo, &up, false).unwrap();
+        println!("original remote: {remote:?}");
+        if let Some(r) = remote {
+            let branch = parent.default_branch.unwrap_or_else(|| "main".into());
+            let log = git::log(repo, Some(&format!("refs/remotes/{r}/{branch}")), 0, 20).unwrap();
+            println!(
+                "{} commits on {r}/{branch}, {} not in HEAD",
+                log.len(),
+                log.iter().filter(|c| c.not_in_head).count()
+            );
+        }
+    }
+
     /// End to end against a real repo: `GITVIBER_GH_REPO=/path/to/clone cargo test -- --ignored`.
     /// The clone's origin needs a `feature/review` branch that differs from `main`.
     #[test]
@@ -1083,16 +1388,19 @@ mod tests {
         let acct = account(&session, repo).unwrap();
         println!(
             "account: {} via {}, default branch {:?}",
-            acct.login, acct.source, acct.default_branch
+            acct.login,
+            acct.source,
+            acct.origin.and_then(|o| o.default_branch)
         );
 
-        let open = list(&session, repo, "open").unwrap();
+        let open = list(&session, repo, None, "open").unwrap();
         let number = match open.iter().find(|p| p.head_ref == "feature/review") {
             Some(p) => p.number,
             None => {
                 create(
                     &session,
                     repo,
+                    None,
                     "Review: newest commit opens by default",
                     "Opened by GitViber's live test.",
                     "feature/review",
@@ -1103,7 +1411,7 @@ mod tests {
                 .number
             }
         };
-        let d = detail(&session, repo, number).unwrap();
+        let d = detail(&session, repo, None, number).unwrap();
         println!(
             "PR #{number}: {} ({}), mergeable {:?}, {} checks, {} comments",
             d.pull.title,
@@ -1115,7 +1423,9 @@ mod tests {
         assert_eq!(d.pull.head_ref, "feature/review");
 
         let f = files(
+            &session,
             repo,
+            None,
             number,
             &d.pull.base_ref,
             &d.pull.base_sha,
@@ -1151,7 +1461,7 @@ mod tests {
         let path = std::env::var("GITVIBER_GH_REPO").expect("GITVIBER_GH_REPO");
         let repo = Path::new(&path);
         let session = Session::default();
-        let d = detail(&session, repo, 2).unwrap();
+        let d = detail(&session, repo, None, 2).unwrap();
         println!(
             "PR #2 mergeable={:?} state={}",
             d.mergeable, d.mergeable_state
@@ -1166,7 +1476,7 @@ mod tests {
                     .unwrap()
                     .to_string(),
             );
-        checkout(repo, 2, &d.pull.head_ref, same_repo).unwrap();
+        checkout(repo, "origin", None, 2, &d.pull.head_ref, same_repo).unwrap();
         assert_eq!(
             git::status(repo).unwrap().branch.as_deref(),
             Some(d.pull.head_ref.as_str())

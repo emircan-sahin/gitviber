@@ -1,4 +1,4 @@
-import type { Selection } from "./selection";
+import { type Selection, selectionKey } from "./selection";
 
 /** What a worktree's window looked like, so reopening the app picks up where it was. */
 export interface WorkspaceSnapshot {
@@ -25,7 +25,21 @@ function all(): Record<string, WorkspaceSnapshot> {
 export function loadWorkspace(root: string): WorkspaceSnapshot | null {
   const s = all()[root];
   if (!s || !Array.isArray(s.tabs) || !Array.isArray(s.viewed)) return null;
-  return { ...s, tabs: s.tabs.filter((t) => typeof t?.key === "string" && typeof t.sel?.kind === "string") };
+  // Keys are re-derived: their format changes (PRs went from number to url), and a stale key
+  // would stop the list row matching its tab. A tab too malformed to key is dropped.
+  const rekey = (sel: Selection) => {
+    try {
+      return selectionKey(sel);
+    } catch {
+      return null;
+    }
+  };
+  const tabs = s.tabs.flatMap((t) => {
+    const key = typeof t?.key === "string" && typeof t.sel?.kind === "string" ? rekey(t.sel) : null;
+    return key ? [{ ...t, old: t.key, key }] : [];
+  });
+  const active = tabs.find((t) => t.old === s.active)?.key ?? null;
+  return { ...s, tabs: tabs.map(({ old: _, ...t }) => t), active };
 }
 
 export function saveWorkspace(root: string, snapshot: WorkspaceSnapshot) {

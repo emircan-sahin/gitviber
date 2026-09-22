@@ -25,8 +25,10 @@ export function selectionPath(s: Selection) {
 
 /** Identity of what a tab shows; also used to match list rows to the open tab. */
 export function selectionKey(s: Selection) {
-  if (s.kind === "pull") return `pull:${s.pull.number}`;
-  if (s.kind === "issue") return `issue:${s.issue.number}`;
-  const scope = s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? s.range.number : "";
+  // By url: a fork's #3 and its original's #3 are different threads.
+  if (s.kind === "pull") return `pull:${s.pull.url}`;
+  if (s.kind === "issue") return `issue:${s.issue.url}`;
+  // A PR file by its head commit too: a fork's #3 and its original's #3 differ.
+  const scope = s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number}@${s.range.head}` : "";
   return `${s.kind}:${scope}:${selectionPath(s)}`;
 }

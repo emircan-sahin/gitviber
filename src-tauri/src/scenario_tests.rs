@@ -102,11 +102,32 @@ fn pull_modes_on_diverged_branches() {
     assert!(operation(b).is_none());
     // A clean merge finishes without stopping.
     assert!(!pull(b, "merge").unwrap());
-    assert_eq!(log(b, 0, 1).unwrap()[0].parents.len(), 2);
+    assert_eq!(log(b, None, 0, 1).unwrap()[0].parents.len(), 2);
     assert_eq!(
         fs::read_to_string(b.join("a.txt")).unwrap(),
         "one\ntwo\nthree\nfour\n"
     );
+}
+
+/// A fork's view of its original: another branch's history, marking what HEAD lacks.
+#[test]
+fn log_of_a_remote_branch_marks_what_head_lacks() {
+    let sb = Sandbox::new("logrev");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    write_commit(a, "a.txt", "new\n", "upstream moved on");
+    run(a, &["push", "-q"]).unwrap();
+    fetch(b).unwrap();
+    let theirs = log(b, Some("refs/remotes/origin/main"), 0, 10).unwrap();
+    assert_eq!(theirs[0].subject, "upstream moved on");
+    assert!(theirs[0].not_in_head && !theirs[1].not_in_head);
+    assert!(theirs.iter().all(|c| !c.unpushed));
+    // HEAD's own log never marks anything.
+    assert!(log(b, None, 0, 10).unwrap().iter().all(|c| !c.not_in_head));
+    // Only remote-tracking branches, never an option or a local ref.
+    assert!(log(b, Some("--all"), 0, 10).is_err());
+    assert!(log(b, Some("refs/heads/main"), 0, 10).is_err());
+    assert!(log(b, Some("refs/remotes/--output=x/y"), 0, 10).is_err());
 }
 
 #[test]
@@ -117,14 +138,14 @@ fn pull_rebase_conflict_then_abort_restores() {
     write_commit(a, "a.txt", "one\nTWO-a\nthree\n", "a edits");
     run(a, &["push", "-q"]).unwrap();
     write_commit(b, "a.txt", "one\nTWO-b\nthree\n", "b edits");
-    let before = log(b, 0, 1).unwrap()[0].sha.clone();
+    let before = log(b, None, 0, 1).unwrap()[0].sha.clone();
 
     assert!(pull(b, "rebase").unwrap(), "should stop on the conflict");
     assert_eq!(operation(b).unwrap().kind, "rebase");
     assert_eq!(status(b).unwrap().conflicted.len(), 1);
     op_abort(b).unwrap();
     assert!(operation(b).is_none());
-    assert_eq!(log(b, 0, 1).unwrap()[0].sha, before);
+    assert_eq!(log(b, None, 0, 1).unwrap()[0].sha, before);
 }
 
 #[test]
@@ -201,11 +222,11 @@ fn detached_head_and_empty_repo() {
     init(&r);
     let st = status(&r).unwrap();
     assert!(st.head.is_none() && st.branch.as_deref() == Some("main"));
-    assert!(log(&r, 0, 10).unwrap().is_empty());
+    assert!(log(&r, None, 0, 10).unwrap().is_empty());
     assert!(branches(&r).unwrap().is_empty());
     write_commit(&r, "a.txt", "a\n", "one");
     write_commit(&r, "a.txt", "b\n", "two");
-    let first = log(&r, 0, 10).unwrap()[1].sha.clone();
+    let first = log(&r, None, 0, 10).unwrap()[1].sha.clone();
     run(&r, &["checkout", "-q", &first]).unwrap();
     let st = status(&r).unwrap();
     assert!(st.branch.is_none());
@@ -383,9 +404,9 @@ fn amend_without_message_keeps_the_old_one() {
     fs::write(r.join("b.txt"), "b\n").unwrap();
     stage(&r, &["b.txt".into()]).unwrap();
     commit(&r, "  ", true).unwrap();
-    let head = &log(&r, 0, 5).unwrap()[0];
+    let head = &log(&r, None, 0, 5).unwrap()[0];
     assert_eq!(head.subject, "original message");
-    assert_eq!(log(&r, 0, 5).unwrap().len(), 1);
+    assert_eq!(log(&r, None, 0, 5).unwrap().len(), 1);
 }
 
 #[test]
@@ -444,7 +465,7 @@ fn pr_checkout_fast_forwards_and_never_resets() {
     switch_branch(b, "main", false).unwrap();
     write_commit(a, "f.txt", "1\n2\n", "f2");
     run(a, &["push", "-q"]).unwrap();
-    checkout(b, 1, "feat", true).unwrap();
+    checkout(b, "origin", None, 1, "feat", true).unwrap();
     assert_eq!(
         fs::read_to_string(b.join("f.txt")).unwrap(),
         "1\n2\n",
@@ -456,16 +477,16 @@ fn pr_checkout_fast_forwards_and_never_resets() {
     write_commit(a, "f.txt", "1\n2\n3\n", "f3");
     run(a, &["push", "-q"]).unwrap();
     switch_branch(b, "main", false).unwrap();
-    assert!(checkout(b, 1, "feat", true).is_err());
+    assert!(checkout(b, "origin", None, 1, "feat", true).is_err());
     assert!(run(b, &["log", "--oneline", "feat"])
         .map(|o| String::from_utf8_lossy(&o).contains("local only"))
         .unwrap());
 
     // Fork PRs land on pr/<n>; checking out again while on it just fast-forwards.
     run(a, &["push", "-q", "origin", "HEAD:refs/pull/7/head"]).unwrap();
-    checkout(b, 7, "someones-branch", false).unwrap();
+    checkout(b, "origin", None, 7, "someones-branch", false).unwrap();
     assert_eq!(status(b).unwrap().branch.as_deref(), Some("pr/7"));
-    checkout(b, 7, "someones-branch", false).unwrap();
+    checkout(b, "origin", None, 7, "someones-branch", false).unwrap();
 }
 
 /// A repo with an agent-style worktree inside it (.claude/worktrees/agent), a detached one
@@ -755,11 +776,11 @@ fn undo_last_commit_keeps_its_changes_staged() {
     init(&r);
     write_commit(&r, "a.txt", "one\n", "base");
     write_commit(&r, "a.txt", "one\ntwo\n", "second");
-    let commits = log(&r, 0, 5).unwrap();
+    let commits = log(&r, None, 0, 5).unwrap();
     // Only the commit the user saw as HEAD may be undone.
     assert!(undo_commit(&r, &commits[1].sha).is_err());
     undo_commit(&r, &commits[0].sha).unwrap();
-    assert_eq!(log(&r, 0, 5).unwrap().len(), 1);
+    assert_eq!(log(&r, None, 0, 5).unwrap().len(), 1);
     assert_eq!(status(&r).unwrap().staged.len(), 1);
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "one\ntwo\n");
 }
@@ -771,16 +792,18 @@ fn revert_clean_conflicting_empty_and_merge() {
     init(&r);
     write_commit(&r, "a.txt", "1\n2\n3\n", "base");
     write_commit(&r, "b.txt", "b\n", "add b");
-    let add_b = log(&r, 0, 1).unwrap()[0].sha.clone();
+    let add_b = log(&r, None, 0, 1).unwrap()[0].sha.clone();
     assert!(!revert(&r, &add_b).unwrap());
     assert!(!r.join("b.txt").exists());
-    assert!(log(&r, 0, 1).unwrap()[0].subject.starts_with("Revert"));
+    assert!(log(&r, None, 0, 1).unwrap()[0]
+        .subject
+        .starts_with("Revert"));
 
     // Reverting x after y changed the same line conflicts and uses the normal op flow.
     write_commit(&r, "a.txt", "1\nx\n3\n", "x");
-    let x = log(&r, 0, 1).unwrap()[0].sha.clone();
+    let x = log(&r, None, 0, 1).unwrap()[0].sha.clone();
     write_commit(&r, "a.txt", "1\ny\n3\n", "y");
-    let y = log(&r, 0, 1).unwrap()[0].sha.clone();
+    let y = log(&r, None, 0, 1).unwrap()[0].sha.clone();
     assert!(revert(&r, &x).unwrap(), "should stop on the conflict");
     assert_eq!(operation(&r).unwrap().kind, "revert");
     assert_eq!(status(&r).unwrap().conflicted.len(), 1);
@@ -801,7 +824,7 @@ fn revert_clean_conflicting_empty_and_merge() {
     assert!(!op_continue(&r).unwrap());
     assert!(operation(&r).is_none());
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n2\n3\n");
-    assert!(log(&r, 0, 1).unwrap()[0]
+    assert!(log(&r, None, 0, 1).unwrap()[0]
         .subject
         .starts_with("Revert \"x\""));
 
@@ -811,7 +834,7 @@ fn revert_clean_conflicting_empty_and_merge() {
     switch_branch(&r, "main", false).unwrap();
     write_commit(&r, "m.txt", "m\n", "main");
     run(&r, &["merge", "-q", "--no-edit", "feature"]).unwrap();
-    let merge = log(&r, 0, 1).unwrap()[0].sha.clone();
+    let merge = log(&r, None, 0, 1).unwrap()[0].sha.clone();
     assert!(!revert(&r, &merge).unwrap());
     assert!(!r.join("f.txt").exists() && r.join("m.txt").exists());
 }
@@ -822,13 +845,13 @@ fn reset_modes() {
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "1\n", "base");
-    let base = log(&r, 0, 1).unwrap()[0].sha.clone();
+    let base = log(&r, None, 0, 1).unwrap()[0].sha.clone();
     write_commit(&r, "a.txt", "1\n2\n", "two");
-    let two = log(&r, 0, 1).unwrap()[0].sha.clone();
+    let two = log(&r, None, 0, 1).unwrap()[0].sha.clone();
     assert!(reset(&r, &base, "--hard", &two).is_err());
     // The HEAD the user saw must still be HEAD, or an agent's newer commit would be dropped.
     assert!(reset(&r, &base, "hard", &base).is_err());
-    assert_eq!(log(&r, 0, 5).unwrap().len(), 2);
+    assert_eq!(log(&r, None, 0, 5).unwrap().len(), 2);
 
     reset(&r, &base, "soft", &two).unwrap();
     let st = status(&r).unwrap();
@@ -843,7 +866,7 @@ fn reset_modes() {
     let st = status(&r).unwrap();
     assert!(st.staged.is_empty() && st.unstaged.is_empty());
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
-    assert_eq!(log(&r, 0, 5).unwrap().len(), 1);
+    assert_eq!(log(&r, None, 0, 5).unwrap().len(), 1);
 }
 
 #[test]
@@ -852,7 +875,7 @@ fn checkout_branch_and_tag_at_a_commit() {
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "1\n", "base");
-    let base = log(&r, 0, 1).unwrap()[0].sha.clone();
+    let base = log(&r, None, 0, 1).unwrap()[0].sha.clone();
     write_commit(&r, "a.txt", "2\n", "two");
 
     assert!(create_tag(&r, "-f", &base).is_err());
@@ -862,7 +885,7 @@ fn checkout_branch_and_tag_at_a_commit() {
         create_tag(&r, "v1.0", &base).is_err(),
         "existing tag is not moved"
     );
-    assert!(log(&r, 0, 2).unwrap()[1]
+    assert!(log(&r, None, 0, 2).unwrap()[1]
         .refs
         .iter()
         .any(|x| x == "tag: v1.0"));
@@ -906,7 +929,7 @@ fn drops_pushed_follows_ancestry_not_log_order() {
     run(b, &["fetch", "-q"]).unwrap();
     run(b, &["merge", "-q", "--no-edit", "origin/main"]).unwrap();
 
-    let commits = log(b, 0, 10).unwrap();
+    let commits = log(b, None, 0, 10).unwrap();
     let subjects: Vec<&str> = commits.iter().map(|x| x.subject.as_str()).collect();
     assert_eq!(subjects[1..], ["target", "base", "old pushed"]);
     let (merge, target) = (&commits[0].sha, &commits[1].sha);
@@ -931,7 +954,7 @@ fn gone_upstream_is_unknown_not_pushed() {
     fetch(a).unwrap();
     write_commit(a, "g.txt", "g\n", "after the branch was deleted");
 
-    let commits = log(a, 0, 10).unwrap();
+    let commits = log(a, None, 0, 10).unwrap();
     assert!(commits.iter().all(|x| !x.unpushed));
     assert!(!drops_pushed(a, &commits[2].sha).unwrap());
     // "feature" was only ever on the deleted branch; base is still on origin/main.
@@ -941,7 +964,7 @@ fn gone_upstream_is_unknown_not_pushed() {
     let local = sb.path("local");
     init(&local);
     write_commit(&local, "x.txt", "x\n", "x");
-    assert!(!log(&local, 0, 5).unwrap()[0].on_origin);
+    assert!(!log(&local, None, 0, 5).unwrap()[0].on_origin);
 }
 
 #[test]

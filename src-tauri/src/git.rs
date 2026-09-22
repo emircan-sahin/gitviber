@@ -737,27 +737,52 @@ pub struct Commit {
     pub unpushed: bool,
     /// Reachable from a remote-tracking branch of origin, so it exists on the origin host.
     pub on_origin: bool,
+    /// Logging another branch: this commit isn't in HEAD yet, so merging would bring it in.
+    pub not_in_head: bool,
 }
 
-pub fn log(repo: &Path, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
+/// HEAD's history, or `rev`'s: a remote-tracking branch such as a fork's upstream/main.
+pub fn log(repo: &Path, rev: Option<&str>, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
     if !has_head(repo) {
         return Ok(vec![]);
     }
+    let tip = match rev {
+        Some(r) => {
+            let r = r
+                .strip_prefix("refs/remotes/")
+                .filter(|r| !r.starts_with('-') && r.contains('/'))
+                .ok_or_else(|| format!("not a remote-tracking branch: {r}"))?;
+            run(repo, &["check-ref-format", "--branch", r])
+                .map_err(|_| format!("not a remote-tracking branch: {r}"))?;
+            format!("refs/remotes/{r}")
+        }
+        None => "HEAD".to_string(),
+    };
     let lines = |s: String| -> std::collections::HashSet<String> {
         s.lines().map(str::to_string).collect()
     };
-    let unpushed = run_text(repo, &["rev-list", "@{upstream}..HEAD"])
-        .map(lines)
-        .unwrap_or_default();
+    let unpushed = if rev.is_none() {
+        run_text(repo, &["rev-list", "@{upstream}..HEAD"])
+            .map(lines)
+            .unwrap_or_default()
+    } else {
+        Default::default()
+    };
     // rev-list keeps log order, so the first skip+limit entries cover this page. No origin
     // refs at all means nothing is on origin; skip the walk, it would list the whole history.
     let has_origin = run_text(repo, &["for-each-ref", "--count=1", "refs/remotes/origin"])
         .is_ok_and(|s| !s.trim().is_empty());
     let off_origin = if has_origin {
         let n = format!("-n{}", skip + limit);
-        Some(run_text(repo, &["rev-list", &n, "HEAD", "--not", "--remotes=origin"]).map(lines)?)
+        Some(run_text(repo, &["rev-list", &n, &tip, "--not", "--remotes=origin"]).map(lines)?)
     } else {
         None
+    };
+    let not_in_head = if rev.is_some() {
+        let n = format!("-n{}", skip + limit);
+        run_text(repo, &["rev-list", &n, &tip, "--not", "HEAD"]).map(lines)?
+    } else {
+        Default::default()
     };
 
     let skip = format!("--skip={skip}");
@@ -769,6 +794,8 @@ pub fn log(repo: &Path, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
             &skip,
             &limit,
             "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%P%x1f%D%x1f%s%x1f%b%x1e",
+            &tip,
+            "--",
         ],
     )?;
     Ok(raw
@@ -794,6 +821,7 @@ pub fn log(repo: &Path, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
                 body: f[8].trim().to_string(),
                 unpushed: unpushed.contains(f[0]),
                 on_origin: off_origin.as_ref().is_some_and(|off| !off.contains(f[0])),
+                not_in_head: not_in_head.contains(f[0]),
             })
         })
         .collect())
@@ -1589,6 +1617,14 @@ pub fn fetch(repo: &Path) -> Result<(), String> {
     run_network(repo, &["fetch", "--prune"]).map(|_| ())
 }
 
+/// Fetches one configured remote, e.g. a fork's upstream, which a plain fetch leaves out.
+pub fn fetch_remote(repo: &Path, name: &str) -> Result<(), String> {
+    if remote_url(repo, name).is_none() {
+        return Err(format!("no remote named {name}"));
+    }
+    run_network(repo, &["fetch", "--prune", name]).map(|_| ())
+}
+
 /// Returns the subset of `paths` that .gitignore excludes.
 pub fn ignored(repo: &Path, paths: &[String]) -> Vec<String> {
     if paths.is_empty() {
@@ -1686,7 +1722,7 @@ mod tests {
         );
 
         commit(&repo, "second", false).unwrap();
-        let commits = log(&repo, 0, 10).unwrap();
+        let commits = log(&repo, None, 0, 10).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[1].body, "body line");
         assert!(commits[0].refs.iter().any(|r| r == "HEAD -> main"));
@@ -1780,7 +1816,7 @@ mod tests {
         assert!(!repo.join("gone.txt").exists());
         assert!(!op_continue(&repo).unwrap());
         assert!(operation(&repo).is_none());
-        assert_eq!(log(&repo, 0, 1).unwrap()[0].parents.len(), 2);
+        assert_eq!(log(&repo, None, 0, 1).unwrap()[0].parents.len(), 2);
         let _ = fs::remove_dir_all(&repo);
     }
 
@@ -1813,7 +1849,7 @@ mod tests {
         fs::write(repo.join("x"), "x\n").unwrap();
         stage(&repo, &["x".into()]).unwrap();
         assert_eq!(status(&repo).unwrap().staged.len(), 1);
-        assert!(log(&repo, 0, 10).unwrap().is_empty());
+        assert!(log(&repo, None, 0, 10).unwrap().is_empty());
         unstage(&repo, &["x".into()]).unwrap();
         assert_eq!(status(&repo).unwrap().staged.len(), 0);
         let _ = fs::remove_dir_all(&repo);

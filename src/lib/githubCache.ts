@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { isNotConnected } from "./api";
 
 /**
  * Stale-while-revalidate for GitHub reads. PR views remount on every tab switch; they show
@@ -10,6 +11,8 @@ interface Entry {
   error?: unknown;
   /** When `data` arrived. */
   at: number;
+  /** When `error` arrived. */
+  failedAt?: number;
   pending?: Promise<unknown>;
 }
 
@@ -53,13 +56,16 @@ export function revalidate<T>(key: string, fetch: () => Promise<T>, maxAge = MIN
       .then(() => (map === entries ? revalidate(key, fetch, 0) : Promise.reject(new Error("The repository changed.")))) as Promise<T>;
   }
   if (e.data !== undefined && !e.error && Date.now() - e.at < maxAge) return Promise.resolve(e.data as T);
+  // No sign-in is no answer to retry on every mount: looking for a token runs `gh` and git's
+  // credential helper each time. It holds like data does; the Connect screen's retry forces.
+  if (isNotConnected(e.error) && Date.now() - (e.failedAt ?? 0) < maxAge) return Promise.reject(e.error);
   const pending = fetch().then(
     (data) => {
       put(map, key, { data, at: Date.now() });
       return data;
     },
     (error) => {
-      put(map, key, { ...(map.get(key) ?? EMPTY), error, pending: undefined });
+      put(map, key, { ...(map.get(key) ?? EMPTY), error, failedAt: Date.now(), pending: undefined });
       throw error;
     },
   );

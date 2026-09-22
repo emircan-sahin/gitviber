@@ -5,8 +5,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Tip } from "@/components/ui/tooltip";
-import { type CloseReason, errorMessage, github, type Issue, issues } from "@/lib/api";
+import { accessFor, type CloseReason, errorMessage, github, type Issue, issues, repoOf } from "@/lib/api";
 import { useGitHubData } from "@/lib/githubCache";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
@@ -23,9 +22,11 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
   const [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [comment, setComment] = useState("");
+  // The repository the issue is in: origin, or a fork's parent.
+  const target = repoOf(issue.url);
   const detail = useGitHubData(
     `issue:${issue.url}`,
-    useCallback(() => issues.detail(issue.number), [issue.number]),
+    useCallback(() => issues.detail(target, issue.number), [target, issue.number]),
   );
   const d = detail.data ?? null;
   const error = detail.error === undefined ? null : errorMessage(detail.error);
@@ -52,9 +53,17 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
 
   const i = d ?? issue;
   const text = comment.trim();
+  const access = accessFor(account, i.url);
+  // GitHub lets an issue's author edit, close and reopen it without write access, and
+  // triagers close and reopen anyone's.
+  const own = account?.login === i.author;
+  const canEdit = !!access?.push || own;
+  const canClose = canEdit || !!access?.triage;
+  // But an author can't reopen what a maintainer closed.
+  const canReopen = !!access?.push || !!access?.triage || (own && d?.closedBy === account?.login);
 
   const post = async () => {
-    if (await act("Comment", () => issues.comment(i.number, text), "Comment added")) setComment("");
+    if (await act("Comment", () => issues.comment(target, i.number, text), "Comment added")) setComment("");
   };
 
   // Like GitHub's "Close with comment": the comment goes first so it reads before the close.
@@ -63,8 +72,8 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
     const ok = await act(
       verb,
       async () => {
-        if (text) await issues.comment(i.number, text);
-        await issues.setOpen(i.number, open, reason);
+        if (text) await issues.comment(target, i.number, text);
+        await issues.setOpen(target, i.number, open, reason);
       },
       `${open ? "Reopened" : "Closed"} #${i.number}`,
     );
@@ -80,7 +89,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
     if (!ok) return;
     setBusy("Delete");
     try {
-      await issues.delete(i.number);
+      await issues.delete(target, i.number);
       toast("success", `Deleted #${i.number}`);
       notifyIssuesChanged();
       onDeleted();
@@ -103,7 +112,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
             busy={!!busy}
             onCancel={() => setEditing(false)}
             onSave={async (title, body) => {
-              if (await act("Edit", () => issues.edit(i.number, title, body), `Updated #${i.number}`)) setEditing(false);
+              if (await act("Edit", () => issues.edit(target, i.number, title, body), `Updated #${i.number}`)) setEditing(false);
             }}
           />
         ) : (
@@ -132,18 +141,19 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
         )}
 
         <div className="mt-4 flex flex-wrap items-center gap-1.5">
-          {!editing && (
+          {!editing && canEdit && (
             <Button variant="secondary" size="sm" disabled={!!busy || !d} onClick={() => setEditing(true)}>
               <Pencil /> Edit
             </Button>
           )}
-          {i.state === "open" ? (
-            <CloseButton busy={!!busy} withComment={!!text} onClose={(r) => setOpen(false, r)} />
-          ) : (
-            <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setOpen(true)}>
-              <CircleDot /> {text ? "Reopen with comment" : "Reopen"}
-            </Button>
-          )}
+          {(i.state === "open" ? canClose : canReopen) &&
+            (i.state === "open" ? (
+              <CloseButton busy={!!busy} withComment={!!text} onClose={(r) => setOpen(false, r)} />
+            ) : (
+              <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setOpen(true)}>
+                <CircleDot /> {text ? "Reopen with comment" : "Reopen"}
+              </Button>
+            ))}
           <Button variant="secondary" size="sm" onClick={() => github.openUrl(i.url).catch((e) => toast("error", "Could not open", errorMessage(e)))}>
             <ExternalLink /> Open on GitHub
           </Button>
@@ -161,14 +171,12 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
               Couldn't refresh: {error}
             </span>
           )}
-          {/* A disabled button gets no hover, so the wrapper carries the tooltip that explains it. */}
-          <Tip label={account?.admin ? "Delete issue" : "Only repository admins can delete issues"}>
-            <span className="ml-auto">
-              <Button variant="ghost" size="sm" className="text-removed hover:text-removed" disabled={!!busy || !account?.admin} onClick={remove}>
-                <Trash2 /> Delete
-              </Button>
-            </span>
-          </Tip>
+          {/* GitHub lets repository admins alone delete issues. */}
+          {access?.admin && (
+            <Button variant="ghost" size="sm" className="ml-auto text-removed hover:text-removed" disabled={!!busy} onClick={remove}>
+              <Trash2 /> Delete
+            </Button>
+          )}
         </div>
 
         {!editing && (

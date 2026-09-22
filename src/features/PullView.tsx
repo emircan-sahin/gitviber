@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { api, errorMessage, github, type MergeMethod, type Pull, type PullCheck, type PullDetail, type ReviewEvent } from "@/lib/api";
+import { accessFor, api, errorMessage, fullName, github, type MergeMethod, type Pull, type PullCheck, type PullDetail, repoOf, type ReviewEvent } from "@/lib/api";
 import { revalidate, useGitHubData } from "@/lib/githubCache";
 import { isGitHubHosted, markdownLink } from "@/lib/markdown";
 import type { Selection } from "@/lib/selection";
@@ -19,14 +19,13 @@ import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
 const METHODS: Record<MergeMethod, string> = { merge: "Create a merge commit", squash: "Squash and merge", rebase: "Rebase and merge" };
 
-/** owner/name from a PR's html url, to tell same-repo PRs from forks. */
-const repoOf = (url: string) => url.replace("https://github.com/", "").split("/pull/")[0];
-
 export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
+  // The repository the PR is in: origin, or a fork's parent.
+  const target = repoOf(pull.url);
   const detail = useGitHubData(
     `pr:${pull.url}`,
-    useCallback(() => github.detail(pull.number), [pull.number]),
+    useCallback(() => github.detail(target, pull.number), [target, pull.number]),
   );
   const d = detail.data ?? null;
   const error = detail.error === undefined ? null : errorMessage(detail.error);
@@ -34,7 +33,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   // The result depends only on the two commits, so it's rarely worth recomputing.
   const files = useGitHubData(
     d && `files:${pull.url}:${d.baseSha}:${d.headSha}`,
-    useCallback(() => (d ? github.files(d) : Promise.reject(new Error("no pull request"))), [d]),
+    useCallback(() => (d ? github.files(target, d) : Promise.reject(new Error("no pull request"))), [target, d]),
     600_000,
   );
   // Same cache entry as the PRs panel's, so this is normally already loaded.
@@ -59,22 +58,38 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   };
 
   const p = d ?? pull;
-  const sameRepo = p.headRepo === repoOf(p.url);
+  // The branch lives on origin: checked out under its name, and a pushed fix updates the PR.
+  // Unknown until the account loads, and a guess could fetch another repo's same-named branch.
+  const origin = account?.origin ? fullName(account.origin.repo) : null;
+  const sameRepo = !!origin && p.headRepo?.toLowerCase() === origin.toLowerCase();
+  const access = accessFor(account, p.url);
+  const own = account?.login === p.author;
+  // GitHub lets a PR's author and triagers close and reopen it; merging needs write access.
+  const canClose = !!access?.push || !!access?.triage || own;
+  // But an author can't reopen what a maintainer closed.
+  const canReopen = !!access?.push || !!access?.triage || (own && d?.closedBy === account?.login);
+  const inOrigin = !!access && access === account?.origin;
+  // Where Checkout lands: the original's PRs get their own names (pr/<owner>/<n>).
+  const checkoutBranch = sameRepo ? p.headRef : inOrigin ? `pr/${p.number}` : `pr/${repoOf(p.url).split("/")[0]}/${p.number}`;
+  // A fix pushed to origin updates the PR only when its branch lives there.
+  const canResolve = sameRepo && !!access;
 
   const merge = async (method: MergeMethod) => {
     const ok = await ask(`${METHODS[method]}: #${p.number} into ${p.baseRef}?`, { title: "Merge pull request", okLabel: "Merge" });
-    if (ok) await act("Merge", () => github.merge(p.number, method), `Merged #${p.number}`);
+    if (ok) await act("Merge", () => github.merge(target, p.number, method), `Merged #${p.number}`);
   };
 
   const setOpen = async (open: boolean) => {
     if (!open && !(await ask(`Close #${p.number} without merging?`, { title: "Close pull request", okLabel: "Close" }))) return;
-    await act(open ? "Reopen" : "Close", () => github.setOpen(p.number, open), `${open ? "Reopened" : "Closed"} #${p.number}`);
+    await act(open ? "Reopen" : "Close", () => github.setOpen(target, p.number, open), `${open ? "Reopened" : "Closed"} #${p.number}`);
   };
 
   // GitHub can't merge it: bring the conflicts home. Check out the PR branch and merge
   // the base into it; the conflicts then open in Changes like any local merge.
+  // In a fork's original, the base comes from the remote pointing at it (added if missing).
   const resolveLocally = async () => {
-    const ok = await ask(`Check out ${p.headRef} and merge origin/${p.baseRef} into it? Conflicts will open in Changes; push when done.`, {
+    const from = inOrigin ? `origin/${p.baseRef}` : `${target}'s ${p.baseRef}`;
+    const ok = await ask(`Check out ${p.headRef} and merge ${from} into it? Conflicts will open in Changes; push when done.`, {
       title: "Resolve conflicts locally",
       okLabel: "Start",
     });
@@ -82,9 +97,13 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
     await act(
       "Merge",
       async () => {
-        await github.checkout(p.number, p.headRef, sameRepo);
-        await api.fetch();
-        return api.merge(`origin/${p.baseRef}`);
+        await github.checkout(target, p.number, p.headRef, sameRepo);
+        if (inOrigin) {
+          await api.fetch();
+          return api.merge(`origin/${p.baseRef}`);
+        }
+        const remote = (await github.originalRemote(target, true)) ?? (await github.addOriginalRemote());
+        return api.merge(`${remote}/${p.baseRef}`);
       },
       `Merged ${p.baseRef} into ${p.headRef}; review and push`,
     );
@@ -125,17 +144,17 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
 
         <div className="mt-4 flex flex-wrap items-center gap-1.5">
           {p.state === "open" && (
-            <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => act("Checkout", () => github.checkout(p.number, p.headRef, sameRepo), `Switched to ${sameRepo ? p.headRef : `pr/${p.number}`}`)}>
+            <Button variant="secondary" size="sm" disabled={!!busy || !account} onClick={() => act("Checkout", () => github.checkout(target, p.number, p.headRef, sameRepo), `Switched to ${checkoutBranch}`)}>
               <GitBranch /> Checkout
             </Button>
           )}
-          {p.state === "open" && <ReviewButton own={account?.login === p.author} busy={!!busy} onSubmit={(event, body) => act("Review", () => github.review(p.number, event, body), REVIEWS[event].done)} />}
-          {p.state === "open" && (
+          {p.state === "open" && <ReviewButton own={own} counts={!!access?.push} busy={!!busy} onSubmit={(event, body) => act("Review", () => github.review(target, p.number, event, body), REVIEWS[event].done)} />}
+          {p.state === "open" && canClose && (
             <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setOpen(false)}>
               <GitPullRequestClosed /> Close
             </Button>
           )}
-          {p.state === "closed" && (
+          {p.state === "closed" && canReopen && (
             <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setOpen(true)}>
               <GitPullRequest /> Reopen
             </Button>
@@ -159,7 +178,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
           )}
         </div>
 
-        {d && p.state === "open" && <MergeBox detail={d} busy={!!busy} sameRepo={sameRepo} onMerge={merge} onResolve={resolveLocally} />}
+        {d && p.state === "open" && <MergeBox detail={d} busy={!!busy} canMerge={!!access?.push} canResolve={canResolve} onMerge={merge} onResolve={resolveLocally} />}
 
         {d && d.checks.length > 0 && (
           <Section title="Checks" aside={checkSummary(d.checks)}>
@@ -227,13 +246,17 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
 function MergeBox({
   detail,
   busy,
-  sameRepo,
+  canMerge,
+  canResolve,
   onMerge,
   onResolve,
 }: {
   detail: PullDetail;
   busy: boolean;
-  sameRepo: boolean;
+  /** Write access to the PR's repository. */
+  canMerge: boolean;
+  /** The PR's branch is on origin, where a pushed fix updates it. */
+  canResolve: boolean;
   onMerge: (m: MergeMethod) => void;
   onResolve: () => void;
 }) {
@@ -259,13 +282,15 @@ function MergeBox({
       </div>
       {conflicts ? (
         // A fork's branch lives in another repo; pushing the fix here would go to the wrong place.
-        sameRepo ? (
+        canResolve ? (
           <Button size="sm" disabled={busy} onClick={onResolve}>
             <GitMerge /> Resolve locally
           </Button>
         ) : (
           <span className="max-w-56 text-right text-[11.5px] text-muted-foreground">From a fork: resolve it in the fork's repository.</span>
         )
+      ) : !canMerge ? (
+        <span className="max-w-56 text-right text-[11.5px] text-muted-foreground">Only people with write access can merge.</span>
       ) : (
         <div className="flex">
           <Button size="sm" className="rounded-r-none" disabled={busy || detail.mergeable === null} onClick={() => onMerge("merge")}>
@@ -299,7 +324,18 @@ const REVIEWS: Record<ReviewEvent, { label: string; note: string; done: string }
 };
 
 /** GitHub's "Review changes": a verdict plus a note, which GitHub requires unless approving. */
-function ReviewButton({ own, busy, onSubmit }: { own: boolean; busy: boolean; onSubmit: (event: ReviewEvent, body: string) => Promise<boolean> }) {
+/** `counts`: write access. Anyone may review, but GitHub only counts a writer's verdict toward merging. */
+function ReviewButton({
+  own,
+  counts,
+  busy,
+  onSubmit,
+}: {
+  own: boolean;
+  counts: boolean;
+  busy: boolean;
+  onSubmit: (event: ReviewEvent, body: string) => Promise<boolean>;
+}) {
   const [open, setOpen] = useState(false);
   const [pick, setPick] = useState<ReviewEvent>("APPROVE");
   // GitHub refuses approving or requesting changes on your own pull request.
@@ -328,7 +364,11 @@ function ReviewButton({ own, busy, onSubmit }: { own: boolean; busy: boolean; on
                 <input type="radio" name="review" checked={event === e} disabled={disabled} onChange={() => setPick(e)} className="mt-0.5 accent-primary" />
                 <span>
                   <span className="font-medium">{REVIEWS[e].label}</span>
-                  <span className="block text-[11px] text-muted-foreground">{disabled ? "Not available on your own pull request." : REVIEWS[e].note}</span>
+                  <span className="block text-[11px] text-muted-foreground">{disabled
+                      ? "Not available on your own pull request."
+                      : !counts && e !== "COMMENT"
+                        ? `${REVIEWS[e].note} Without write access it won't count toward merging.`
+                        : REVIEWS[e].note}</span>
                 </span>
               </label>
             );
@@ -436,7 +476,7 @@ function GitHubImage({ src, pull, ...props }: { src: string; pull: Pick<Pull, "u
   const onError = () => {
     if (!id || signed) return;
     // Signed links expire after 5 minutes; reuse a lookup for 4.
-    revalidate(`attachments:${pull.url}`, () => github.attachments(pull.number), 240_000)
+    revalidate(`attachments:${pull.url}`, () => github.attachments(repoOf(pull.url), pull.number), 240_000)
       .then((urls) => urls[id] && setSigned(urls[id]))
       .catch(() => {});
   };

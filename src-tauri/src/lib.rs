@@ -70,9 +70,14 @@ async fn status(state: State<'_, AppState>) -> Res<git::RepoStatus> {
 }
 
 #[tauri::command]
-async fn log(state: State<'_, AppState>, skip: u32, limit: u32) -> Res<Vec<git::Commit>> {
+async fn log(
+    state: State<'_, AppState>,
+    rev: Option<String>,
+    skip: u32,
+    limit: u32,
+) -> Res<Vec<git::Commit>> {
     let r = repo(&state)?;
-    blocking(move || git::log(&r, skip, limit)).await
+    blocking(move || git::log(&r, rev.as_deref(), skip, limit)).await
 }
 
 #[tauri::command]
@@ -379,6 +384,25 @@ async fn gh_account(app: AppHandle) -> Res<github::Account> {
 }
 
 #[tauri::command]
+async fn gh_original_remote(
+    state: State<'_, AppState>,
+    original: String,
+    fetch: bool,
+) -> Res<Option<String>> {
+    let r = repo(&state)?;
+    blocking(move || github::original_remote(&r, &original, fetch)).await
+}
+
+#[tauri::command]
+async fn gh_add_original_remote(app: AppHandle) -> Res<String> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::add_original_remote(&state.github, &repo(&state)?)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn gh_protected_branches(app: AppHandle) -> Res<Vec<String>> {
     blocking(move || {
         let state = app.state::<AppState>();
@@ -388,19 +412,19 @@ async fn gh_protected_branches(app: AppHandle) -> Res<Vec<String>> {
 }
 
 #[tauri::command]
-async fn pr_list(app: AppHandle, filter: String) -> Res<Vec<github::Pull>> {
+async fn pr_list(app: AppHandle, target: Option<String>, filter: String) -> Res<Vec<github::Pull>> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::list(&state.github, &repo(&state)?, &filter)
+        github::list(&state.github, &repo(&state)?, target.as_deref(), &filter)
     })
     .await
 }
 
 #[tauri::command]
-async fn pr_detail(app: AppHandle, number: u64) -> Res<github::PullDetail> {
+async fn pr_detail(app: AppHandle, target: Option<String>, number: u64) -> Res<github::PullDetail> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::detail(&state.github, &repo(&state)?, number)
+        github::detail(&state.github, &repo(&state)?, target.as_deref(), number)
     })
     .await
 }
@@ -408,30 +432,44 @@ async fn pr_detail(app: AppHandle, number: u64) -> Res<github::PullDetail> {
 #[tauri::command]
 async fn pr_attachments(
     app: AppHandle,
+    target: Option<String>,
     number: u64,
 ) -> Res<std::collections::HashMap<String, String>> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::attachments(&state.github, &repo(&state)?, number)
+        github::attachments(&state.github, &repo(&state)?, target.as_deref(), number)
     })
     .await
 }
 
 #[tauri::command]
 async fn pr_files(
-    state: State<'_, AppState>,
+    app: AppHandle,
+    target: Option<String>,
     number: u64,
     base_ref: String,
     base_sha: String,
     head_sha: String,
 ) -> Res<github::PullFiles> {
-    let r = repo(&state)?;
-    blocking(move || github::files(&r, number, &base_ref, &base_sha, &head_sha)).await
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::files(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            number,
+            &base_ref,
+            &base_sha,
+            &head_sha,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
 async fn pr_create(
     app: AppHandle,
+    target: Option<String>,
     title: String,
     body: String,
     head: String,
@@ -443,6 +481,7 @@ async fn pr_create(
         github::create(
             &state.github,
             &repo(&state)?,
+            target.as_deref(),
             &title,
             &body,
             &head,
@@ -454,55 +493,104 @@ async fn pr_create(
 }
 
 #[tauri::command]
-async fn pr_merge(app: AppHandle, number: u64, method: String) -> Res<()> {
+async fn pr_merge(app: AppHandle, target: Option<String>, number: u64, method: String) -> Res<()> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::merge(&state.github, &repo(&state)?, number, &method)
+        github::merge(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            number,
+            &method,
+        )
     })
     .await
 }
 
 #[tauri::command]
-async fn pr_set_open(app: AppHandle, number: u64, open: bool) -> Res<github::Pull> {
+async fn pr_set_open(
+    app: AppHandle,
+    target: Option<String>,
+    number: u64,
+    open: bool,
+) -> Res<github::Pull> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::set_open(&state.github, &repo(&state)?, number, open)
+        github::set_open(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            number,
+            open,
+        )
     })
     .await
 }
 
 #[tauri::command]
-async fn pr_review(app: AppHandle, number: u64, event: String, body: String) -> Res<()> {
+async fn pr_review(
+    app: AppHandle,
+    target: Option<String>,
+    number: u64,
+    event: String,
+    body: String,
+) -> Res<()> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::review(&state.github, &repo(&state)?, number, &event, &body)
+        github::review(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            number,
+            &event,
+            &body,
+        )
     })
     .await
 }
 
 #[tauri::command]
-async fn issue_list(app: AppHandle, filter: String) -> Res<Vec<github::Issue>> {
+async fn issue_list(
+    app: AppHandle,
+    target: Option<String>,
+    filter: String,
+) -> Res<Vec<github::Issue>> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::issues(&state.github, &repo(&state)?, &filter)
+        github::issues(&state.github, &repo(&state)?, target.as_deref(), &filter)
     })
     .await
 }
 
 #[tauri::command]
-async fn issue_detail(app: AppHandle, number: u64) -> Res<github::IssueDetail> {
+async fn issue_detail(
+    app: AppHandle,
+    target: Option<String>,
+    number: u64,
+) -> Res<github::IssueDetail> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::issue_detail(&state.github, &repo(&state)?, number)
+        github::issue_detail(&state.github, &repo(&state)?, target.as_deref(), number)
     })
     .await
 }
 
 #[tauri::command]
-async fn issue_create(app: AppHandle, title: String, body: String) -> Res<github::Issue> {
+async fn issue_create(
+    app: AppHandle,
+    target: Option<String>,
+    title: String,
+    body: String,
+) -> Res<github::Issue> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::issue_create(&state.github, &repo(&state)?, &title, &body)
+        github::issue_create(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            &title,
+            &body,
+        )
     })
     .await
 }
@@ -510,13 +598,21 @@ async fn issue_create(app: AppHandle, title: String, body: String) -> Res<github
 #[tauri::command]
 async fn issue_edit(
     app: AppHandle,
+    target: Option<String>,
     number: u64,
     title: String,
     body: String,
 ) -> Res<github::Issue> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::issue_edit(&state.github, &repo(&state)?, number, &title, &body)
+        github::issue_edit(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            number,
+            &title,
+            &body,
+        )
     })
     .await
 }
@@ -524,44 +620,74 @@ async fn issue_edit(
 #[tauri::command]
 async fn issue_set_open(
     app: AppHandle,
+    target: Option<String>,
     number: u64,
     open: bool,
     reason: String,
 ) -> Res<github::Issue> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::issue_set_open(&state.github, &repo(&state)?, number, open, &reason)
+        github::issue_set_open(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            number,
+            open,
+            &reason,
+        )
     })
     .await
 }
 
 #[tauri::command]
-async fn issue_delete(app: AppHandle, number: u64) -> Res<()> {
+async fn issue_delete(app: AppHandle, target: Option<String>, number: u64) -> Res<()> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::issue_delete(&state.github, &repo(&state)?, number)
+        github::issue_delete(&state.github, &repo(&state)?, target.as_deref(), number)
     })
     .await
 }
 
 #[tauri::command]
-async fn issue_comment(app: AppHandle, number: u64, body: String) -> Res<()> {
+async fn issue_comment(
+    app: AppHandle,
+    target: Option<String>,
+    number: u64,
+    body: String,
+) -> Res<()> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::issue_comment(&state.github, &repo(&state)?, number, &body)
+        github::issue_comment(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            number,
+            &body,
+        )
     })
     .await
 }
 
 #[tauri::command]
 async fn pr_checkout(
-    state: State<'_, AppState>,
+    app: AppHandle,
+    target: Option<String>,
     number: u64,
     head_ref: String,
     same_repo: bool,
 ) -> Res<()> {
-    let r = repo(&state)?;
-    blocking(move || github::checkout(&r, number, &head_ref, same_repo)).await
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let r = repo(&state)?;
+        let remote = github::fetch_remote(&state.github, &r, target.as_deref())?;
+        // The original's PRs get their own local names; origin's keep pr/<n>.
+        let owner = target
+            .as_deref()
+            .filter(|_| remote != "origin")
+            .and_then(|t| t.split('/').next());
+        github::checkout(&r, &remote, owner, number, &head_ref, same_repo)
+    })
+    .await
 }
 
 /// Any folder, unlike the repo commands: the shell can `cd` anywhere the user can anyway.
@@ -675,6 +801,8 @@ pub fn run() {
             github_web_url,
             gh_account,
             gh_protected_branches,
+            gh_original_remote,
+            gh_add_original_remote,
             pr_list,
             pr_detail,
             pr_attachments,
