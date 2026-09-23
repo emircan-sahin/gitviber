@@ -80,7 +80,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const [listTab, setListTab] = useState<ListTab>(() => LIST_TABS.find((t) => t === saved?.listTab) ?? "changes");
   // Here, not in History: the search outlives a switch to another list.
   const [historySearch, setHistorySearch] = useState<HistorySearch>(NO_SEARCH);
-  const [searchFocus, setSearchFocus] = useState(0);
+  // Until History shows and takes it: a request, not a count, so no later mount repeats it.
+  const [searchFocus, setSearchFocus] = useState(false);
+  const searchFocused = useCallback(() => setSearchFocus(false), []);
   // Blame clicks so far: each is a new request, even for the commit already on show.
   const reveals = useRef(0);
   // Tabs and the active key change together, so they live in one state (no nested updates).
@@ -337,7 +339,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "history.search": () => {
       setListTab("history");
       listPanel.current?.expand();
-      setSearchFocus((n) => n + 1);
+      setSearchFocus(true);
     },
     "view.toggleGitPanel": () => toggle(listPanel, "git"),
     "view.toggleExplorer": () => toggle(filesPanel, "explorer"),
@@ -434,7 +436,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                   <SearchableHistory
                     search={historySearch}
                     onSearch={setHistorySearch}
-                    focusRequest={searchFocus}
+                    focusRequested={searchFocus}
+                    onFocused={searchFocused}
                     commits={repo.commits}
                     branches={repo.branches}
                     status={status}

@@ -8,8 +8,6 @@ import { HistoryPanel, type Reveal } from "./HistoryPanel";
 
 const PAGE = 200;
 const DEBOUNCE = 250;
-/** Focus requests handled so far; the search box takes focus only for a new one. */
-let focused = 0;
 
 export interface HistorySearch {
   query: string;
@@ -24,12 +22,13 @@ export const NO_SEARCH: HistorySearch = { query: "", scope: null, reveal: null }
 type Props = ComponentProps<typeof ForkHistory> & {
   search: HistorySearch;
   onSearch: (search: HistorySearch) => void;
-  /** Bumped by the search command: focus the box. */
-  focusRequest: number;
+  /** The search command asked for the box; `onFocused` says it has it. */
+  focusRequested: boolean;
+  onFocused: () => void;
 };
 
 /** History with a search box on top; while it's searching, the matches replace the full history. */
-export function SearchableHistory({ search, onSearch, focusRequest, ...props }: Props) {
+export function SearchableHistory({ search, onSearch, focusRequested, onFocused, ...props }: Props) {
   const { query, scope, reveal } = search;
   const input = useRef<HTMLInputElement>(null);
   const shortcut = useShortcut("history.search");
@@ -38,11 +37,11 @@ export function SearchableHistory({ search, onSearch, focusRequest, ...props }: 
   const setQuery = (q: string) => onSearch({ ...search, query: q, reveal: null });
 
   useEffect(() => {
-    if (focusRequest === focused) return;
-    focused = focusRequest;
+    if (!focusRequested) return;
     input.current?.focus();
     input.current?.select();
-  }, [focusRequest]);
+    onFocused();
+  }, [focusRequested, onFocused]);
 
   const ScopeIcon = scope?.file ? FileClock : FolderClock;
   return (
