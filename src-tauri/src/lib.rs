@@ -68,6 +68,22 @@ async fn indexed<T: Send + 'static>(
     blocking(move || with_index_lock(&lock, &r, f)).await
 }
 
+/// `indexed` without the retry, for commands that do several steps: a stash push or pop that
+/// hit index.lock partway has already done part of its work, and running it again would
+/// stash or apply twice. The user retries once they see why it failed.
+async fn indexed_once<T: Send + 'static>(
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&Path) -> Res<T> + Send + 'static,
+) -> Res<T> {
+    let r = repo(state)?;
+    let lock = state.index.clone();
+    blocking(move || {
+        let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
+        f(&r)
+    })
+    .await
+}
+
 fn with_index_lock<T>(lock: &Mutex<()>, repo: &Path, f: impl Fn(&Path) -> Res<T>) -> Res<T> {
     let _held = lock.lock().unwrap_or_else(|e| e.into_inner());
     match f(repo) {
@@ -812,13 +828,13 @@ async fn stash_files(state: State<'_, AppState>, sha: String) -> Res<git::StashF
 
 #[tauri::command]
 async fn stash_push(state: State<'_, AppState>, message: String, untracked: bool) -> Res<()> {
-    indexed(&state, move |r| git::stash_push(r, &message, untracked)).await
+    indexed_once(&state, move |r| git::stash_push(r, &message, untracked)).await
 }
 
 /// True when it stopped on conflicts.
 #[tauri::command]
 async fn stash_apply(state: State<'_, AppState>, sha: String, pop: bool) -> Res<bool> {
-    indexed(&state, move |r| git::stash_apply(r, &sha, pop)).await
+    indexed_once(&state, move |r| git::stash_apply(r, &sha, pop)).await
 }
 
 #[tauri::command]
@@ -853,18 +869,22 @@ async fn create_tag(
     message: Option<String>,
 ) -> Res<()> {
     let label = format!("Create tag {name}");
-    journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::create_tag(r, &name, &sha, message.as_deref())
-    })
+    journaled(
+        &state,
+        Action::new(label, Mode::Keep).with_tags(),
+        move |r| git::create_tag(r, &name, &sha, message.as_deref()),
+    )
     .await
 }
 
 #[tauri::command]
 async fn delete_tag(state: State<'_, AppState>, name: String) -> Res<()> {
     let label = format!("Delete tag {name}");
-    journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::delete_tag(r, &name)
-    })
+    journaled(
+        &state,
+        Action::new(label, Mode::Keep).with_tags(),
+        move |r| git::delete_tag(r, &name),
+    )
     .await
 }
 
@@ -894,9 +914,14 @@ async fn delete_remote_tag(
 }
 
 #[tauri::command]
-async fn remote_tags(state: State<'_, AppState>) -> Res<git::RemoteTags> {
+async fn remote_tags(
+    state: State<'_, AppState>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<git::RemoteTags> {
     let r = repo(&state)?;
-    blocking(move || git::remote_tags(&r)).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::remote_tags(&r, &net)).await
 }
 
 // ---------------------------------------------------------------- undo / redo

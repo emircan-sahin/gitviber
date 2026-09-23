@@ -28,6 +28,9 @@ pub enum Mode {
 pub struct Action {
     label: String,
     mode: Mode,
+    /// Records the tags it moves. Only tag actions: a fetch landing meanwhile (the background
+    /// one, or a pull's) brings tags that undoing some other action must not delete.
+    tags: bool,
 }
 
 impl Action {
@@ -35,7 +38,14 @@ impl Action {
         Action {
             label: label.into(),
             mode,
+            tags: false,
         }
+    }
+
+    /// An action that creates, moves or deletes tags.
+    pub fn with_tags(mut self) -> Self {
+        self.tags = true;
+        self
     }
 }
 
@@ -154,6 +164,7 @@ impl Journal {
         f: impl FnOnce(&Path) -> Result<T, String>,
     ) -> Result<T, String> {
         let _one = lock(&self.acting);
+        let tags = action.tags;
         let busy = git::operation(repo).is_some();
         let before = snapshot(repo, true);
         let result = f(repo);
@@ -164,7 +175,10 @@ impl Journal {
         let pushed = git::pushed_tip(repo);
         let mut stacks = lock(&self.stacks);
         let s = stacks.entry(repo.to_path_buf()).or_default();
-        if before.head != after.head || before.tips != after.tips || before.tags != after.tags {
+        if before.head != after.head
+            || before.tips != after.tips
+            || (tags && before.tags != after.tags)
+        {
             s.undone.clear();
         }
         // An operation started outside the app has no start to go back to. With none in
@@ -415,6 +429,7 @@ fn diff(
     let names: BTreeSet<&String> = before.tags.keys().chain(after.tags.keys()).collect();
     let tags: Vec<_> = names
         .into_iter()
+        .filter(|_| action.tags)
         .filter(|n| before.tags.get(*n) != after.tags.get(*n))
         .map(|n| {
             (

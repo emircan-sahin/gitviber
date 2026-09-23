@@ -211,6 +211,12 @@ export interface Branch {
 
 export type PullMode = "ff" | "merge" | "rebase";
 
+/** The remote tags are pushed to, and the tags it has. */
+export interface RemoteTags {
+  remote: string;
+  names: string[];
+}
+
 export interface Stash {
   /** Actions name a stash by this: stash@{n} shifts as others are pushed and dropped. */
   sha: string;
@@ -455,8 +461,8 @@ export const api = {
   // Tags go where `git push` sends the current branch; these return that remote.
   pushTags: (names: string[], op?: NetOp) => network<string>("push_tags", { names }, op),
   deleteRemoteTag: (name: string, op?: NetOp) => network<string>("delete_remote_tag", { name }, op),
-  /** The tags that remote has. A network call: only when a menu opens. */
-  remoteTags: () => invoke<{ remote: string; names: string[] }>("remote_tags"),
+  /** The tags that remote has. A network call: use `remoteTags` in lib/remoteTags.ts, which caches it. */
+  remoteTags: (op?: NetOp) => network<RemoteTags>("remote_tags", {}, op),
   /** https://github.com/owner/name, or null when origin isn't on GitHub. */
   githubWebUrl: () => invoke<string | null>("github_web_url"),
   journal: () => invoke<Journal>("journal"),

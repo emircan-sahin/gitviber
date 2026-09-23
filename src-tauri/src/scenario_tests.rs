@@ -2139,6 +2139,33 @@ fn create_branch_from_a_base_and_set_its_upstream() {
 
 /// An annotated tag carries its message and goes along with `--follow-tags`; a lightweight
 /// one needs its own push. Creating and deleting tags are undo entries.
+/// Tags a fetch brings in while some other action runs (the background fetch during a slow
+/// hook, a pull's) are not that action's: undoing it keeps them, and they record nothing.
+#[test]
+fn tags_fetched_during_an_action_are_not_part_of_it() {
+    let sb = Sandbox::new("j-fetched-tag");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let j = Journal::default();
+    fs::write(r.join("a.txt"), "b\n").unwrap();
+    stage(&r, &["a.txt".into()]).unwrap();
+    j.record(&r, Action::new("Commit", Mode::Soft), |r| {
+        run(r, &["tag", "fetched", "HEAD"]).unwrap();
+        commit(r, "second", &CommitOptions::default())
+    })
+    .unwrap();
+    step(&j, &r, false).unwrap();
+    assert!(tags(&r).unwrap().contains(&"fetched".to_string()));
+    // A tag alone moving (a pull that only brought tags) is no entry and keeps Redo.
+    j.record(&r, Action::new("Pull", Mode::Keep), |r| {
+        run(r, &["tag", "v9", "HEAD"]).map(|_| ())
+    })
+    .unwrap();
+    let v = j.view(&r);
+    assert!(v.undo.is_empty() && v.redo.len() == 1);
+}
+
 #[test]
 fn annotated_tags_push_and_undo() {
     let sb = Sandbox::new("tags");
@@ -2147,9 +2174,11 @@ fn annotated_tags_push_and_undo() {
     write_commit(a, "b.txt", "b\n", "release");
     let head = rev(a, "HEAD");
     let j = Journal::default();
-    j.record(a, Action::new("Create tag v1", Mode::Keep), |r| {
-        create_tag(r, "v1", &head, Some("First release\n\nNotes"))
-    })
+    j.record(
+        a,
+        Action::new("Create tag v1", Mode::Keep).with_tags(),
+        |r| create_tag(r, "v1", &head, Some("First release\n\nNotes")),
+    )
     .unwrap();
     create_tag(a, "light", &head, Some("  ")).unwrap();
     assert!(create_tag(a, "--evil", &head, None).is_err());
@@ -2164,7 +2193,7 @@ fn annotated_tags_push_and_undo() {
     assert!(msg.starts_with("First release\n\nNotes"), "{msg}");
 
     push_with_tags(a, false, None, &Net::default()).unwrap();
-    let there = remote_tags(a).unwrap();
+    let there = remote_tags(a, &Net::default()).unwrap();
     assert_eq!(
         (there.remote.as_str(), there.names.clone()),
         ("origin", vec!["v1".to_string()])
@@ -2173,9 +2202,12 @@ fn annotated_tags_push_and_undo() {
         push_tags(a, &["light".into()], &Net::default()).unwrap(),
         "origin"
     );
-    assert_eq!(remote_tags(a).unwrap().names, vec!["light", "v1"]);
+    assert_eq!(
+        remote_tags(a, &Net::default()).unwrap().names,
+        vec!["light", "v1"]
+    );
     delete_remote_tag(a, "light", &Net::default()).unwrap();
-    assert_eq!(remote_tags(a).unwrap().names, vec!["v1"]);
+    assert_eq!(remote_tags(a, &Net::default()).unwrap().names, vec!["v1"]);
 
     // Undo takes the tag away and redo brings back the same tag object, message and all.
     let object = rev(a, "refs/tags/v1");
@@ -2184,9 +2216,11 @@ fn annotated_tags_push_and_undo() {
     step(&j, a, true).unwrap();
     assert_eq!(rev(a, "refs/tags/v1"), object);
 
-    j.record(a, Action::new("Delete tag v1", Mode::Keep), |r| {
-        delete_tag(r, "v1")
-    })
+    j.record(
+        a,
+        Action::new("Delete tag v1", Mode::Keep).with_tags(),
+        |r| delete_tag(r, "v1"),
+    )
     .unwrap();
     assert!(!tags(a).unwrap().contains(&"v1".to_string()));
     step(&j, a, false).unwrap();

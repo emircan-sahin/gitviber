@@ -2215,11 +2215,11 @@ pub struct RemoteTags {
 
 /// The tags on the remote tags are pushed to. A network call: asked for when a menu opens,
 /// never on refresh.
-pub fn remote_tags(repo: &Path) -> Result<RemoteTags, String> {
+pub fn remote_tags(repo: &Path, net: &Net) -> Result<RemoteTags, String> {
     let remote = tag_remote(repo)?;
-    // ls-remote has no --progress; it only gets the silence timeout.
+    // ls-remote has no --progress; `net` is for Cancel, which the menu uses to give up quickly.
     let args = ["ls-remote", "--tags", "--refs", &remote];
-    let out = network::run(command(repo, &args), "git ls-remote", &Net::default())?;
+    let out = network::run(command(repo, &args), "git ls-remote", net)?;
     let names = String::from_utf8_lossy(&out)
         .lines()
         .filter_map(|l| l.split_once("\trefs/tags/").map(|(_, n)| n.to_string()))
