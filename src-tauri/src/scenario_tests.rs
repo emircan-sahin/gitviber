@@ -791,6 +791,47 @@ fn paths_with_spaces_unicode_and_renames() {
     assert_eq!(listing[0].name, "renamed ü.txt");
 }
 
+/// git runs in English (the app reads its messages) and UTF-8, so a translated git can't
+/// break the checks, and non-ASCII names and messages still come back as written.
+#[test]
+fn english_git_keeps_utf8_names_and_messages() {
+    use std::ffi::OsStr;
+    let cmd = command(Path::new("."), &["status"]);
+    let env: Vec<_> = cmd.get_envs().collect();
+    let lc_all = OsStr::new("LC_ALL");
+    let language = OsStr::new("LANGUAGE");
+    assert!(env.contains(&(lc_all, Some(OsStr::new("en_US.UTF-8")))));
+    assert!(env.contains(&(language, None)), "LANGUAGE is cleared");
+
+    let sb = Sandbox::new("utf8");
+    let r = sb.path("r");
+    init(&r);
+    let (path, message) = ("şehir/ağaç 🌳.txt", "Grüße, çay ve 日本語 🎉");
+    write_commit(&r, path, "x\n", message);
+    let head = &log(&r, None, 0, 1).unwrap()[0];
+    assert_eq!(head.subject, message);
+    let files = commit_files(&r, &head.sha).unwrap();
+    assert_eq!(files[0].path, path);
+    fs::write(r.join(path), "y\n").unwrap();
+    assert_eq!(status(&r).unwrap().unstaged[0].path, path);
+    let outside = sb.path("plain");
+    fs::create_dir_all(&outside).unwrap();
+    assert_eq!(toplevel(&outside).unwrap_err(), NOT_A_REPO);
+
+    // A German setup (Homebrew's git ships its translations) still gets English.
+    let mut german = std::process::Command::new("git");
+    german
+        .env("LANGUAGE", "de")
+        .env("LANG", "de_DE.UTF-8")
+        .env("LC_ALL", "de_DE.UTF-8")
+        .env("PATH", search_path())
+        .current_dir(&outside)
+        .args(["rev-parse", "--show-toplevel"]);
+    let out = in_english(&mut german).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("not a git repository"), "{err}");
+}
+
 #[cfg(unix)]
 #[test]
 fn symlinks_cannot_escape_the_repo() {
@@ -929,7 +970,7 @@ fn hooks_find_tools_on_the_login_shell_path() {
     let err = commit_with(&merge_paths(None, app_path)).unwrap_err();
     assert!(err.contains("gitviber-lint"), "{err}");
 
-    let login = crate::shell::probe_path(&shell).unwrap();
+    let login = crate::shell::probe_path(&shell, std::time::Duration::from_secs(3)).unwrap();
     let merged = merge_paths(Some(&login), app_path);
     assert!(merged
         .to_str()
