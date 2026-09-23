@@ -804,6 +804,7 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
   }, [amend, head, edited]);
 
   const toggleAmend = (on: boolean) => {
+    dropSuggestion();
     if (on && head) {
       setAmend({ aside: draft, sha: head.sha, original: messageOf(head) });
       setDraft(messageOf(head));
@@ -829,6 +830,7 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
 
   const commit = async () => {
     if (!canCommit) return;
+    dropSuggestion();
     setBusy(true);
     const body = draft.body.trim();
     // An untouched amend message goes as none, so git keeps the original exactly.
@@ -868,12 +870,21 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
   const program = programOf(suggestCommand);
   const canSuggest = suggestEnabled && !suggesting && !busy && (!!amend || hasAny);
   const cancelSuggest = () => api.suggestCancel().catch(() => {});
+  // Bumped by a commit or an Amend toggle: a suggestion still on its way describes the diff
+  // before them, and would land in a fresh draft or the one set aside.
+  const generation = useRef(0);
+  const dropSuggestion = () => {
+    generation.current++;
+    if (running.current) cancelSuggest();
+  };
   const suggest = async () => {
     if (!canSuggest) return;
+    const gen = generation.current;
     running.current = true;
     setSuggesting(true);
     try {
       const output = await api.suggestMessage(suggestCommand, SUGGEST_PROMPT, amend ? "amend" : hasStaged ? "staged" : "all");
+      if (gen !== generation.current) return;
       const message = parseSuggestion(output);
       if (!message) {
         toast("error", "No message suggested", `${program} printed nothing.`);
@@ -885,7 +896,7 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
       const blank = !before.summary.trim() && (!before.body.trim() || before.body === template);
       if (!blank) toast("info", "Message replaced with the suggestion", undefined, { label: "Restore", run: () => setDraft(before) });
     } catch (e) {
-      if (e !== SUGGEST_CANCELLED) toast("error", "Couldn't suggest a message", errorMessage(e));
+      if (e !== SUGGEST_CANCELLED && gen === generation.current) toast("error", "Couldn't suggest a message", errorMessage(e));
     } finally {
       running.current = false;
       setSuggesting(false);
