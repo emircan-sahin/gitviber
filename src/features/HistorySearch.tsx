@@ -4,7 +4,7 @@ import { api, type Commit, errorMessage } from "@/lib/api";
 import { isTyping, useShortcut } from "@/lib/keybindings";
 import { isEmptyFilter, parseLogQuery } from "@/lib/logQuery";
 import { ForkHistory } from "./ForkHistory";
-import { HistoryPanel } from "./HistoryPanel";
+import { HistoryPanel, type Reveal } from "./HistoryPanel";
 
 const PAGE = 200;
 const DEBOUNCE = 250;
@@ -16,7 +16,7 @@ export interface HistorySearch {
   /** "Show History" of a file (followed through renames) or a folder, shown as a chip. */
   scope: { path: string; file: boolean } | null;
   /** Blame's link to a commit: open it, and this file in it, once the search finds it. */
-  reveal: { sha: string; path: string } | null;
+  reveal: Reveal | null;
 }
 
 export const NO_SEARCH: HistorySearch = { query: "", scope: null, reveal: null };
@@ -110,7 +110,7 @@ export function SearchableHistory({ search, onSearch, focusRequest, ...props }: 
             // Undo and reset act on HEAD, which a list of matches needn't start with.
             headSha={props.commits[0]?.sha ?? ""}
             empty={found.commits ? "No commits match." : "Searching…"}
-            openSha={reveal?.sha}
+            reveal={reveal}
           />
         )}
       </div>
@@ -159,10 +159,7 @@ function useCommitSearch(search: HistorySearch | null, head: string | undefined)
       try {
         const [log, ...found] = await Promise.all([api.log(0, limit, null, filter), ...shas.map((sha) => api.findCommit(sha))]);
         if (id !== seq.current) return;
-        const reveal = s.reveal;
-        // The blamed file under its name in that commit, for the commit to open it.
-        const named = found.filter((c): c is Commit => !!c).map((c) => (reveal && c.sha === reveal.sha ? { ...c, file: reveal.path } : c));
-        setResult({ key, log, found: named, hasMore: log.length === limit });
+        setResult({ key, log, found: found.filter((c): c is Commit => !!c), hasMore: log.length === limit });
         setError(null);
       } catch (e) {
         if (id === seq.current) setError(errorMessage(e));

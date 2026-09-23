@@ -81,6 +81,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // Here, not in History: the search outlives a switch to another list.
   const [historySearch, setHistorySearch] = useState<HistorySearch>(NO_SEARCH);
   const [searchFocus, setSearchFocus] = useState(0);
+  // Blame clicks so far: each is a new request, even for the commit already on show.
+  const reveals = useRef(0);
   // Tabs and the active key change together, so they live in one state (no nested updates).
   const [tabState, setTabState] = useState<{ tabs: Tab[]; active: string | null }>(() => ({ tabs: saved?.tabs ?? [], active: saved?.active ?? null }));
   const { tabs, active: activeKey } = tabState;
@@ -478,7 +480,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     onMoveTab={moveTab}
                     onOpen={(sel) => open(sel, true)}
                     onShowHistory={(path) => showHistory(path, true)}
-                    onShowCommit={(sha, path) => showInHistory({ query: sha, scope: null, reveal: { sha, path } })}
+                    onShowCommit={(sha, path) => showInHistory({ query: sha, scope: null, reveal: { sha, path, id: ++reveals.current } })}
                   />
                 </div>
               </ResizablePanel>
