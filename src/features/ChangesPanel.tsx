@@ -1,9 +1,34 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ArrowLeftToLine, ArrowRightToLine, Check, ChevronDown, Copy, Diff, EyeOff, File, FolderGit2, FolderSearch, GitMerge, ListTree, Minus, Plus, SquareCheck, TriangleAlert, Undo2 } from "lucide-react";
+import {
+  ArrowLeftToLine,
+  ArrowRightToLine,
+  Check,
+  ChevronDown,
+  Copy,
+  Diff,
+  Ellipsis,
+  EyeOff,
+  File,
+  FolderGit2,
+  FolderSearch,
+  GitMerge,
+  ListTree,
+  Minus,
+  Plus,
+  ShieldOff,
+  Signature,
+  SquareCheck,
+  TriangleAlert,
+  Undo2,
+  UserPlus,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
@@ -11,6 +36,7 @@ import { ignorePattern } from "@/lib/gitignore";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { type CommitDraft, loadDraft, saveDraft } from "@/lib/session";
+import { updateSettings, useSettings } from "@/lib/settings";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
 import { cn } from "@/lib/utils";
@@ -22,6 +48,8 @@ interface Props {
   status: RepoStatus;
   /** HEAD's commit, for Amend; null before the first commit or while history loads. */
   head: Commit | null;
+  /** The main worktree: sign-off is kept per repository, across its worktrees. */
+  main: string;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   /** Hovering a row starts loading it, so the click feels instant. */
@@ -58,7 +86,7 @@ const leftOut = (n: number) => `Left out ${n} nested ${n === 1 ? "repository" : 
 const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 const paths = (rows: Change[]) => rows.map((r) => r.file.path);
 
-export function ChangesPanel({ status, head, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer }: Props) {
+export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer }: Props) {
   const act = async (title: string, fn: () => Promise<unknown>) => {
     await attempt(title, fn);
     await refresh();
@@ -440,7 +468,7 @@ export function ChangesPanel({ status, head, activeKey, onOpen, onHover, refresh
           A {status.operation.kind} is in progress. Resolve the conflicts, then use <span className="font-medium text-foreground">Continue</span> above.
         </div>
       ) : (
-        <CommitBox status={status} head={head} refresh={refresh} />
+        <CommitBox status={status} head={head} main={main} refresh={refresh} />
       )}
     </div>
   );
@@ -671,16 +699,39 @@ function AllCaughtUp() {
 
 /** Past this, `git log --oneline` and GitHub cut the summary off. */
 const SUMMARY_LIMIT = 72;
-const EMPTY_DRAFT: CommitDraft = { summary: "", body: "" };
-const messageOf = (c: Commit): CommitDraft => ({ summary: c.subject, body: c.body });
+const EMPTY_DRAFT: CommitDraft = { summary: "", body: "", coAuthors: [] };
+const messageOf = (c: Commit): CommitDraft => ({ summary: c.subject, body: c.body, coAuthors: [] });
 
-function CommitBox({ status, head, refresh }: Pick<Props, "status" | "head" | "refresh">) {
+function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head" | "main" | "refresh">) {
   const root = status.root;
   const [draft, setDraft] = useState<CommitDraft>(() => loadDraft(root) ?? EMPTY_DRAFT);
   // While amending, the fields hold the message being amended (`original`, HEAD's at `sha`)
   // and the user's own draft waits aside.
   const [amend, setAmend] = useState<{ aside: CommitDraft; sha: string; original: CommitDraft } | null>(null);
   const [busy, setBusy] = useState(false);
+  const { signOffRepos } = useSettings();
+  const signOff = signOffRepos.includes(main);
+  const setSignOff = (on: boolean) => updateSettings({ signOffRepos: on ? [...signOffRepos, main] : signOffRepos.filter((r) => r !== main) });
+  // One commit only: a hook that's broken today shouldn't be skipped forever.
+  const [noVerify, setNoVerify] = useState(false);
+  const [addingCoAuthor, setAddingCoAuthor] = useState(false);
+
+  // An empty message starts from commit.template, as git's editor would.
+  const [template, setTemplate] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.commitTemplate().then(
+      (t) => {
+        if (!alive || !t) return;
+        setTemplate(t);
+        setDraft((d) => (d.summary || d.body ? d : { ...d, body: t }));
+      },
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   // The draft outlives the panel (⌘2 and back, another worktree, a restart); an amend message isn't one.
   const keep = amend?.aside ?? draft;
@@ -735,13 +786,14 @@ function CommitBox({ status, head, refresh }: Pick<Props, "status" | "head" | "r
     const ok = await attempt("Commit failed", async () => {
       // Nothing staged means "commit everything", the common case after an agent run.
       if (!hasStaged && !amend) await api.stage(all.paths);
-      [, entry] = await tracked(() => api.commit(message, !!amend));
+      [, entry] = await tracked(() => api.commit(message, { amend: !!amend, signOff, noVerify, coAuthors: draft.coAuthors }));
     });
     setBusy(false);
     if (ok) {
       // After an amend, the draft set aside for it comes back.
-      setDraft(amend?.aside ?? EMPTY_DRAFT);
+      setDraft(amend?.aside ?? { ...EMPTY_DRAFT, body: template ?? "" });
       setAmend(null);
+      setNoVerify(false);
       toast("success", amend ? "Commit amended" : "Committed", summary, undoAction(entry, refresh));
       // They stay in the list after the commit; say why rather than leave it looking missed.
       if (skipped) toast("info", `${leftOut(all.skipped)} of the commit`, NESTED_EXPLAINED);
@@ -769,11 +821,54 @@ function CommitBox({ status, head, refresh }: Pick<Props, "status" | "head" | "r
         )}
       </div>
       <Textarea placeholder="Description" value={draft.body} onChange={(e) => setDraft({ ...draft, body: e.target.value })} onKeyDown={onKey} rows={2} className="mt-1.5 py-1.5 text-[12px]" />
+      {(noVerify || signOff || draft.coAuthors.length > 0) && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {noVerify && (
+            <OptionChip warn label="Skip hooks" tip="The pre-commit and commit-msg hooks won't run for this commit" onRemove={() => setNoVerify(false)}>
+              <ShieldOff />
+            </OptionChip>
+          )}
+          {signOff && (
+            <OptionChip label="Sign off" tip="Adds Signed-off-by with your name, on every commit in this repository" onRemove={() => setSignOff(false)}>
+              <Signature />
+            </OptionChip>
+          )}
+          {draft.coAuthors.map((a) => (
+            <OptionChip key={a} label={nameOf(a)} tip={`Co-authored-by: ${a}`} onRemove={() => setDraft({ ...draft, coAuthors: draft.coAuthors.filter((x) => x !== a) })}>
+              <UserPlus />
+            </OptionChip>
+          ))}
+        </div>
+      )}
       <div className="mt-1.5 flex items-center gap-2">
         <label className={cn("flex items-center gap-1.5 text-[11.5px] text-muted-foreground", !head && "opacity-50")}>
           <input type="checkbox" checked={!!amend} disabled={!head} onChange={(e) => toggleAmend(e.target.checked)} className="accent-primary" />
           Amend
         </label>
+        <CoAuthorPicker open={addingCoAuthor} onOpenChange={setAddingCoAuthor} taken={draft.coAuthors} onAdd={(a) => setDraft((d) => ({ ...d, coAuthors: [...d.coAuthors, a] }))}>
+          <DropdownMenu>
+            <Tip label="Commit options">
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon" aria-label="Commit options">
+                  <Ellipsis />
+                </Button>
+              </DropdownMenuTrigger>
+            </Tip>
+            {/* Focus goes to the co-author field, not back to this button. */}
+            <DropdownMenuContent side="top" align="end" className="w-56" onCloseAutoFocus={(e) => e.preventDefault()}>
+              <DropdownMenuItem onSelect={() => setAddingCoAuthor(true)}>
+                <UserPlus /> Add co-author…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuCheckboxItem checked={signOff} onCheckedChange={setSignOff}>
+                Sign off <span className="ml-auto text-[11px] opacity-60">this repo</span>
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem checked={noVerify} onCheckedChange={setNoVerify}>
+                Skip hooks <span className="ml-auto text-[11px] opacity-60">this commit</span>
+              </DropdownMenuCheckboxItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </CoAuthorPicker>
         <Tip label={skipped ? `${target} (${leftOut(all.skipped).toLowerCase()})` : target} shortcut={commitKey}>
           <Button className="ml-auto flex-1" disabled={!canCommit} onClick={commit}>
             {busy ? "Committing…" : label}
@@ -790,3 +885,104 @@ function CommitBox({ status, head, refresh }: Pick<Props, "status" | "head" | "r
   );
 }
 
+/** A commit option that's on, shown so it isn't forgotten; × turns it off. */
+function OptionChip({ label, tip, warn, onRemove, children }: { label: string; tip: string; warn?: boolean; onRemove: () => void; children: React.ReactNode }) {
+  return (
+    <Tip label={tip}>
+      <span
+        className={cn(
+          "flex h-5 max-w-full items-center gap-1 rounded-[3px] pr-0.5 pl-1.5 text-[11px] [&_svg]:size-3 [&_svg]:shrink-0",
+          warn ? "bg-modified/15 text-modified" : "bg-elevated text-muted-foreground",
+        )}
+      >
+        {children}
+        <span className="truncate">{label}</span>
+        <button aria-label={`Remove ${label}`} onClick={onRemove} className="flex size-4 items-center justify-center rounded-sm opacity-70 outline-none hover:bg-active hover:opacity-100 focus-visible:ring-1 focus-visible:ring-ring">
+          <X />
+        </button>
+      </span>
+    </Tip>
+  );
+}
+
+// GitHub reads a co-author only in this form.
+const CO_AUTHOR = /^[^<>\n]+ <[^<>\s]+@[^<>\s]+>$/;
+const nameOf = (author: string) => author.replace(/\s*<[^>]*>$/, "") || author;
+
+/** Picks a co-author from recent authors and co-authors, or takes one typed as "Name <email>". */
+function CoAuthorPicker({
+  open,
+  onOpenChange,
+  taken,
+  onAdd,
+  children,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  taken: string[];
+  onAdd: (author: string) => void;
+  children: React.ReactNode;
+}) {
+  const [authors, setAuthors] = useState<string[] | null>(null);
+  const [query, setQuery] = useState("");
+  const [index, setIndex] = useState(0);
+  useEffect(() => {
+    if (!open) return;
+    setQuery("");
+    setIndex(0);
+    api.recentAuthors().then(setAuthors, () => setAuthors([]));
+  }, [open]);
+
+  const q = query.trim();
+  const found = (authors ?? []).filter((a) => !taken.includes(a) && a.toLowerCase().includes(q.toLowerCase())).slice(0, 8);
+  const typed = CO_AUTHOR.test(q) && !taken.includes(q) && !found.includes(q) ? [q] : [];
+  const options = [...typed, ...found];
+  const add = (a: string) => {
+    onAdd(a);
+    onOpenChange(false);
+  };
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") setIndex((i) => Math.min(options.length - 1, i + 1));
+    else if (e.key === "ArrowUp") setIndex((i) => Math.max(0, i - 1));
+    else if (e.key === "Enter" && options[index]) add(options[index]);
+    else return;
+    e.preventDefault();
+  };
+
+  return (
+    <Popover open={open} onOpenChange={onOpenChange}>
+      <PopoverAnchor className="flex">{children}</PopoverAnchor>
+      <PopoverContent side="top" align="end" className="flex w-80 flex-col p-1" onKeyDown={onKeyDown}>
+        <Input
+          autoFocus
+          placeholder="Search recent authors, or Name <email>"
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setIndex(0);
+          }}
+          spellCheck={false}
+        />
+        <div className="mt-1 max-h-56 overflow-y-auto" onMouseLeave={() => setIndex(-1)}>
+          {options.map((a, i) => (
+            <div
+              key={a}
+              role="option"
+              aria-selected={i === index}
+              onMouseMove={() => setIndex(i)}
+              onClick={() => add(a)}
+              className={cn("flex h-7 cursor-pointer items-center gap-2 rounded-sm px-2 text-[12px] select-none", i === index && "bg-primary text-primary-foreground")}
+            >
+              {typed[0] === a && <Plus className="size-3.5 shrink-0" />}
+              <span className="truncate">{nameOf(a)}</span>
+              <span className="ml-auto truncate text-[11px] opacity-70">{a.slice(nameOf(a).length).trim()}</span>
+            </div>
+          ))}
+          {!options.length && (
+            <div className="px-2 py-2 text-[11.5px] text-subtle">{authors === null ? "Loading…" : q ? "No match. Type it as Name <email@example.com>." : "No recent authors yet. Type Name <email@example.com>."}</div>
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}

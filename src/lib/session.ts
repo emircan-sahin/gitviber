@@ -13,6 +13,8 @@ export interface WorkspaceSnapshot {
 export interface CommitDraft {
   summary: string;
   body: string;
+  /** "Name <email>", added as Co-authored-by trailers. */
+  coAuthors: string[];
 }
 
 const KEY = "gitviber.workspaces";
@@ -67,10 +69,12 @@ export function saveWorkspace(root: string, snapshot: WorkspaceSnapshot) {
 
 export function loadDraft(root: string): CommitDraft | null {
   const d = all(DRAFTS_KEY)[root] as Partial<CommitDraft> | undefined;
-  return d && typeof d.summary === "string" && typeof d.body === "string" ? { summary: d.summary, body: d.body } : null;
+  if (!d || typeof d.summary !== "string" || typeof d.body !== "string") return null;
+  const coAuthors = Array.isArray(d.coAuthors) ? d.coAuthors.filter((a) => typeof a === "string") : [];
+  return { summary: d.summary, body: d.body, coAuthors };
 }
 
 /** An empty draft is dropped rather than stored. */
 export function saveDraft(root: string, draft: CommitDraft) {
-  put(DRAFTS_KEY, root, draft.summary || draft.body ? draft : null);
+  put(DRAFTS_KEY, root, draft.summary || draft.body || draft.coAuthors.length ? draft : null);
 }

@@ -5,6 +5,7 @@ import { WINDOW_SAFE_AREA } from "./dropdown-menu";
 
 const Popover = PopoverPrimitive.Root;
 const PopoverTrigger = PopoverPrimitive.Trigger;
+const PopoverAnchor = PopoverPrimitive.Anchor;
 
 function PopoverContent({ className, sideOffset = 6, collisionPadding = WINDOW_SAFE_AREA, ...props }: React.ComponentProps<typeof PopoverPrimitive.Content>) {
   return (
@@ -22,4 +23,4 @@ function PopoverContent({ className, sideOffset = 6, collisionPadding = WINDOW_S
   );
 }
 
-export { Popover, PopoverContent, PopoverTrigger };
+export { Popover, PopoverAnchor, PopoverContent, PopoverTrigger };
