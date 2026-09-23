@@ -277,6 +277,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     },
     "diff.toggleSplit": () => updateSettings({ sideBySide: !s.sideBySide }),
     "diff.toggleCollapse": () => updateSettings({ hideUnchanged: !s.hideUnchanged }),
+    "diff.toggleWhitespace": () => updateSettings({ ignoreWhitespace: !s.ignoreWhitespace }),
     "editor.toggleWrap": () => updateSettings({ wordWrap: !s.wordWrap }),
     "editor.fontZoomIn": () => updateSettings({ codeFontSize: s.codeFontSize + 0.5 }),
     "editor.fontZoomOut": () => updateSettings({ codeFontSize: s.codeFontSize - 0.5 }),

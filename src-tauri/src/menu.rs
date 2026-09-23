@@ -127,6 +127,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &sep()?,
             &b.check("diff.toggleSplit", "Split Diff")?,
             &b.check("diff.toggleCollapse", "Collapse Unchanged Lines")?,
+            &b.check("diff.toggleWhitespace", "Ignore Whitespace")?,
             &b.check("editor.toggleWrap", "Word Wrap")?,
             &sep()?,
             &b.command("view.zoomIn", "Zoom In")?,
