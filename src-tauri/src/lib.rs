@@ -26,6 +26,8 @@ struct AppState {
     /// Held by commands that write the index: two `git add`s at once fail on index.lock.
     index: Arc<Mutex<()>>,
     journal: Arc<journal::Journal>,
+    /// `git --version`, checked once; the page asks again after the user installs git.
+    git: Mutex<Option<git::GitInfo>>,
 }
 
 type Res<T> = Result<T, String>;
@@ -105,6 +107,58 @@ async fn open_repo(app: AppHandle, state: State<'_, AppState>, path: String) -> 
     *state.watcher.lock().unwrap() = Some(watcher);
     *state.repo.lock().unwrap() = Some(root_path);
     Ok(OpenedRepo { root, main })
+}
+
+#[tauri::command]
+async fn git_info(app: AppHandle, recheck: bool) -> Res<git::GitInfo> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        if let Some(info) = state.git.lock().unwrap().clone().filter(|_| !recheck) {
+            return Ok(info);
+        }
+        let info = git::check_install();
+        *state.git.lock().unwrap() = Some(info.clone());
+        Ok(info)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn install_git() -> Res<()> {
+    blocking(git::install_tools).await
+}
+
+#[derive(serde::Serialize)]
+struct IdentityCheck {
+    current: git::Identity,
+    /// From the GitHub account, when one is signed in already.
+    suggested: Option<git::Identity>,
+}
+
+#[tauri::command]
+async fn git_identity(app: AppHandle) -> Res<IdentityCheck> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let r = repo(&state)?;
+        let current = git::identity(&r);
+        let complete = current.name.is_some() && current.email.is_some();
+        let suggested = (!complete)
+            .then(|| github::profile(&state.github, &r))
+            .flatten();
+        Ok(IdentityCheck { current, suggested })
+    })
+    .await
+}
+
+/// Only the parts given are written, to the global config: the repo's own stays untouched.
+#[tauri::command]
+async fn set_git_identity(
+    state: State<'_, AppState>,
+    name: Option<String>,
+    email: Option<String>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::set_global_identity(&r, name.as_deref(), email.as_deref())).await
 }
 
 #[tauri::command]
@@ -1086,6 +1140,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_repo,
+            git_info,
+            install_git,
+            git_identity,
+            set_git_identity,
             status,
             log,
             commit_files,

@@ -158,10 +158,146 @@ fn has_head(repo: &Path) -> bool {
     run(repo, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok()
 }
 
+/// Only git's "not a git repository" means that; anything else (git missing, a
+/// `safe.directory` refusal, a broken config) is shown in git's own words.
 pub fn toplevel(path: &Path) -> Result<String, String> {
+    if !path.is_dir() {
+        return Err(format!("Folder not found: {}", path.display()));
+    }
     run_text(path, &["rev-parse", "--show-toplevel"])
         .map(|s| s.trim().to_string())
-        .map_err(|_| "This folder is not inside a git repository.".to_string())
+        .map_err(|e| {
+            // Not "fatal: not a git repository: <path>", which is a .git file gone bad.
+            if e.contains("not a git repository (or any") {
+                "This folder is not inside a git repository.".to_string()
+            } else {
+                e
+            }
+        })
+}
+
+/// The oldest git that works: `worktree list --porcelain -z`, which every repo open runs
+/// (main_worktree), arrived in 2.36. switch/restore need 2.23.
+pub const MIN_VERSION: (u32, u32) = (2, 36);
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitInfo {
+    /// "ok", "old", "missing" (git can't run), or "tools": macOS's /usr/bin/git stub
+    /// without the Command Line Tools behind it.
+    pub state: &'static str,
+    /// `git --version` without its prefix, e.g. "2.39.5 (Apple Git-154)".
+    pub version: Option<String>,
+    /// Why it can't run, in the OS's or xcrun's words.
+    pub detail: Option<String>,
+    pub minimum: String,
+}
+
+pub fn check_install() -> GitInfo {
+    let out = Command::new("git")
+        .arg("--version")
+        .env("PATH", search_path())
+        .stdin(Stdio::null())
+        .output();
+    classify_install(out.map_err(|e| format!("could not run git: {e}")).map(|o| {
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            String::from_utf8_lossy(&o.stderr).trim().to_string(),
+        )
+    }))
+}
+
+/// `ran`: whether `git --version` succeeded, with its stdout and stderr.
+fn classify_install(ran: Result<(bool, String, String), String>) -> GitInfo {
+    let info = |state, version, detail| GitInfo {
+        state,
+        version,
+        detail,
+        minimum: format!("{}.{}", MIN_VERSION.0, MIN_VERSION.1),
+    };
+    match ran {
+        Err(e) => info("missing", None, Some(e)),
+        // The stub asks xcode-select to install the tools and fails until they're there.
+        Ok((false, _, err)) if err.contains("xcrun: error") || err.contains("xcode-select") => {
+            info("tools", None, Some(err))
+        }
+        Ok((false, out, err)) => info(
+            "missing",
+            None,
+            Some(if err.is_empty() { out } else { err }),
+        ),
+        Ok((true, out, _)) => {
+            let version = out.trim_start_matches("git version ").to_string();
+            let old = parse_version(&version).is_some_and(|v| v < MIN_VERSION);
+            info(if old { "old" } else { "ok" }, Some(version), None)
+        }
+    }
+}
+
+/// Major and minor of "2.39.5 (Apple Git-154)" or "2.45.1.windows.1".
+fn parse_version(v: &str) -> Option<(u32, u32)> {
+    let mut parts = v.split(|c: char| !c.is_ascii_digit());
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// Opens macOS's installer for the Command Line Tools, which bring git.
+pub fn install_tools() -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Install git with your system's package manager.".into());
+    }
+    let mut cmd = Command::new("xcode-select");
+    cmd.arg("--install")
+        .env("PATH", search_path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    exec(
+        cmd,
+        "xcode-select",
+        &[],
+        None,
+        Some(Duration::from_secs(30)),
+    )
+    .map(|_| ())
+}
+
+#[derive(Serialize, Clone, Default)]
+pub struct Identity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// Who commits here, as git resolves it in this repo (so `includeIf` sections apply).
+pub fn identity(repo: &Path) -> Identity {
+    let get = |key| {
+        run_text(repo, &["config", "--get", key])
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    Identity {
+        name: get("user.name"),
+        email: get("user.email"),
+    }
+}
+
+/// Sets the given parts of the user's global identity (~/.gitconfig), never the repo's.
+pub fn set_global_identity(
+    repo: &Path,
+    name: Option<&str>,
+    email: Option<&str>,
+) -> Result<(), String> {
+    for (key, value) in [("user.name", name), ("user.email", email)] {
+        let Some(value) = value.map(str::trim) else {
+            continue;
+        };
+        if value.is_empty() || value.contains(['\n', '\r']) {
+            return Err(format!("{key} must be one line of text"));
+        }
+        run(repo, &["config", "--global", key, value])?;
+    }
+    Ok(())
 }
 
 fn validate_rev(rev: &str) -> Result<(), String> {
@@ -2148,5 +2284,47 @@ mod tests {
         unstage(&repo, &["x".into()]).unwrap();
         assert_eq!(status(&repo).unwrap().staged.len(), 0);
         let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn install_states() {
+        let ran = |ok, out: &str, err: &str| classify_install(Ok((ok, out.into(), err.into())));
+        let ok = ran(true, "git version 2.39.5 (Apple Git-154)", "");
+        assert_eq!(
+            (ok.state, ok.version.as_deref()),
+            ("ok", Some("2.39.5 (Apple Git-154)"))
+        );
+        assert_eq!(ran(true, "git version 2.45.1.windows.1", "").state, "ok");
+        assert_eq!(ran(true, "git version 2.35.8", "").state, "old");
+        assert_eq!(ran(true, "git version 1.9.5", "").state, "old");
+        let stub = ran(
+            false,
+            "",
+            "xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), missing xcrun at: /Library/Developer/CommandLineTools/usr/bin/xcrun",
+        );
+        assert_eq!(stub.state, "tools");
+        assert_eq!(ran(false, "", "boom").state, "missing");
+        assert_eq!(
+            classify_install(Err("could not run git".into())).state,
+            "missing"
+        );
+    }
+
+    #[test]
+    fn toplevel_tells_no_repo_from_git_failing() {
+        let dir = std::env::temp_dir().join(format!("gitviber-test-norepo-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let err = toplevel(&dir.join("missing")).unwrap_err();
+        assert!(err.starts_with("Folder not found"), "{err}");
+        assert_eq!(
+            toplevel(&dir).unwrap_err(),
+            "This folder is not inside a git repository."
+        );
+        // A .git file pointing nowhere is a broken repo, and git's message says where.
+        fs::write(dir.join(".git"), "gitdir: /nowhere/at/all\n").unwrap();
+        let err = toplevel(&dir).unwrap_err();
+        assert!(err.contains("/nowhere/at/all"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
