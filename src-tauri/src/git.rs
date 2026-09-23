@@ -389,19 +389,52 @@ fn apply_numstat(list: &mut [FileChange], stats: &HashMap<String, (Option<u32>, 
     }
 }
 
-/// Line count of an untracked file. Status runs on every change on disk, so counts are
-/// cached by size and mtime: a big untracked folder is read once, not on each refresh.
-fn count_lines(repo: &Path, rel: &str) -> Option<u32> {
+/// What one status may read to count lines of untracked files not counted before. A big
+/// generated folder shows `?` for the rest instead of stalling the refresh; each refresh
+/// counts more of it, as counts are cached.
+struct CountBudget {
+    files: usize,
+    bytes: u64,
+}
+
+impl Default for CountBudget {
+    fn default() -> Self {
+        CountBudget {
+            files: 2_000,
+            bytes: 64 << 20,
+        }
+    }
+}
+
+/// Line count of an untracked file (None: binary or unreadable), or None when it's past
+/// the budget. Status runs on every change on disk, so counts are cached by size and mtime:
+/// a big untracked folder is read once, not on each refresh.
+fn count_lines(repo: &Path, rel: &str, budget: &mut CountBudget) -> Option<Option<u32>> {
     type Key = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
     static CACHE: OnceLock<std::sync::Mutex<HashMap<Key, Option<u32>>>> = OnceLock::new();
     let path = repo.join(rel);
-    let meta = std::fs::metadata(&path).ok()?;
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return Some(None);
+    };
     let key = (path, meta.len(), meta.modified().ok());
     let cache = CACHE.get_or_init(Default::default);
     if let Some(n) = cache.lock().unwrap().get(&key) {
-        return *n;
+        return Some(*n);
     }
-    let bytes = read_regular(&key.0).ok()??;
+    // Past MAX_TEXT_BYTES nothing is read.
+    let cost = if meta.len() > MAX_TEXT_BYTES as u64 {
+        0
+    } else {
+        meta.len()
+    };
+    if budget.files == 0 || cost > budget.bytes {
+        return None;
+    }
+    budget.files -= 1;
+    budget.bytes -= cost;
+    let Ok(Some(bytes)) = read_regular(&key.0) else {
+        return Some(None);
+    };
     let n = (!is_binary(&bytes)).then(|| {
         let n = bytes.iter().filter(|b| **b == b'\n').count();
         let trailing = !bytes.is_empty() && *bytes.last().unwrap() != b'\n';
@@ -413,7 +446,7 @@ fn count_lines(repo: &Path, rel: &str) -> Option<u32> {
         cache.clear();
     }
     cache.insert(key, n);
-    n
+    Some(n)
 }
 
 pub fn status(repo: &Path) -> Result<RepoStatus, String> {
@@ -444,6 +477,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     };
 
     let mut nested_roots = std::collections::HashSet::new();
+    let mut budget = CountBudget::default();
     let mut records = raw
         .split(|b| *b == 0)
         .map(|t| String::from_utf8_lossy(t).into_owned());
@@ -509,8 +543,8 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
                     }
                     f.path = format!("{root}/");
                     f.nested = Some(nested(repo, &root));
-                } else {
-                    f.additions = count_lines(repo, path);
+                } else if let Some(n) = count_lines(repo, path, &mut budget) {
+                    f.additions = n;
                     f.deletions = Some(0);
                 }
                 st.unstaged.push(f);
@@ -2193,6 +2227,26 @@ mod tests {
         assert!(operation(&repo).is_none());
         assert_eq!(fs::read_to_string(repo.join("a.txt")).unwrap(), "feature\n");
         assert!(validate_ref(&repo, "--help").is_err());
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn line_counts_stop_at_the_budget() {
+        let repo = temp_repo("budget");
+        for i in 0..3 {
+            fs::write(repo.join(format!("f{i}.txt")), "a\nb\n").unwrap();
+        }
+        let mut budget = CountBudget {
+            files: 2,
+            bytes: u64::MAX,
+        };
+        let got: Vec<_> = (0..3)
+            .map(|i| count_lines(&repo, &format!("f{i}.txt"), &mut budget))
+            .collect();
+        assert_eq!(got, [Some(Some(2)), Some(Some(2)), None]);
+        // Counted once, they cost nothing on the next refresh.
+        let mut none = CountBudget { files: 0, bytes: 0 };
+        assert_eq!(count_lines(&repo, "f1.txt", &mut none), Some(Some(2)));
         let _ = fs::remove_dir_all(&repo);
     }
 

@@ -6,6 +6,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
+import { Windowed } from "@/components/Windowed";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { ignorePattern } from "@/lib/gitignore";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
@@ -312,11 +313,18 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
         onOpen={onOpen}
         onHover={onHover}
         onToggleViewed={() => setViewed(rows, !isViewed)}
-        menu={menu(sel, rows)}
+        menu={() => menu(sel, rows)}
       >
         {actions(rows)}
       </Row>
     );
+  };
+
+  const listRef = useRef<HTMLDivElement>(null);
+  /** A section's rows; with thousands, only those near the screen (and the open and tab-stop rows). */
+  const rowsOf = (kind: Change["kind"], list: FileChange[], render: (file: FileChange) => React.ReactNode) => {
+    const keep = [activeKey, tabStop].map((k) => list.findIndex((file) => selectionKey({ kind, file }) === k));
+    return <Windowed count={list.length} height={ROW_HEIGHT} scroller={listRef} keep={keep} render={(i) => render(list[i])} />;
   };
 
   return (
@@ -347,6 +355,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
         onBlur={(e) => setListFocused(e.currentTarget.contains(e.relatedTarget))}
         // The empty space below the rows lets go of the selection, like Finder.
         onClick={(e) => e.target === e.currentTarget && setPicked(null)}
+        ref={listRef}
         className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
         {!all.length && !status.unstaged.length && <AllCaughtUp />}
         {status.conflicted.length > 0 && (
@@ -357,7 +366,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
             pinned={!!pickedConflicts}
             action={pickedConflicts && <SectionBtn onClick={() => stage(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
           >
-            {status.conflicted.map((file) =>
+            {rowsOf("conflict", status.conflicted, (file) =>
               row({ kind: "conflict", file }, (rows) => (
                 <>
                   <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => stage(rows)}>
@@ -387,7 +396,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
               )
             }
           >
-            {status.staged.map((file) =>
+            {rowsOf("staged", status.staged, (file) =>
               row({ kind: "staged", file }, (rows) => (
                 <RowAction label={rows.length > 1 ? `Unstage ${files(rows.length)}` : "Unstage"} onClick={() => unstage(rows)}>
                   <Minus />
@@ -417,7 +426,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
               )
             }
           >
-            {status.unstaged.map((file) =>
+            {rowsOf("unstaged", status.unstaged, (file) =>
               file.nested ? (
                 <NestedRow key={file.path} file={file} />
               ) : (
@@ -533,6 +542,9 @@ function SectionBtn({ onClick, children }: { onClick: () => void; children: Reac
   );
 }
 
+// Row and NestedRow are h-[26px].
+const ROW_HEIGHT = 26;
+
 function Row({
   sel,
   active,
@@ -560,11 +572,13 @@ function Row({
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
   onToggleViewed: () => void;
-  menu: React.ReactNode;
+  /** Built only once the menu is first opened: thousands of rows each building theirs made the list slow. */
+  menu: () => React.ReactNode;
   children?: React.ReactNode;
 }) {
   const file = sel.file;
   const ref = useRef<HTMLDivElement>(null);
+  const [menuOpened, setMenuOpened] = useState(false);
   // J/K can move the selection off-screen; follow it. ↑/↓ from a row also moves focus to it.
   useEffect(() => {
     if (!active) return;
@@ -572,7 +586,7 @@ function Row({
     if (document.activeElement instanceof HTMLElement && document.activeElement.dataset.row !== undefined) ref.current?.focus();
   }, [active]);
   return (
-    <ContextMenu>
+    <ContextMenu onOpenChange={(open) => open && setMenuOpened(true)}>
       <ContextMenuTrigger asChild>
         <div
           ref={ref}
@@ -621,7 +635,7 @@ function Row({
           <StatusLetter status={file.status} />
         </div>
       </ContextMenuTrigger>
-      {menu}
+      {menuOpened && menu()}
     </ContextMenu>
   );
 }

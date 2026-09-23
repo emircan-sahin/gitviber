@@ -31,7 +31,14 @@ export function StatusPill({ status }: { status: ChangeStatus }) {
   return <span className={cn("rounded-sm px-1.5 py-px text-[10.5px] font-semibold text-on-status", s.bg)}>{s.label}</span>;
 }
 
-export function LineCounts({ file, className }: { file: Pick<FileChange, "additions" | "deletions">; className?: string }) {
+export function LineCounts({ file, className }: { file: Pick<FileChange, "additions" | "deletions"> & { status?: ChangeStatus }; className?: string }) {
+  // An untracked file with no counts at all wasn't read yet: status counts a few thousand per refresh.
+  if (file.status === "?" && file.additions == null && file.deletions == null)
+    return (
+      <span title="Not counted yet" className={cn("shrink-0 font-mono text-[11px] text-subtle", className)}>
+        ?
+      </span>
+    );
   if (file.additions == null && file.deletions == null) return null;
   return (
     <span className={cn("shrink-0 font-mono text-[11px] tabular-nums", className)}>
