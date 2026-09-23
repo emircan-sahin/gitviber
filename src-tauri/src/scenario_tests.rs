@@ -1,5 +1,6 @@
 //! End-to-end git scenarios against real repositories and a local bare "remote".
 
+use crate::network::Net;
 use crate::{fs as vfs, git::*};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -93,15 +94,15 @@ fn pull_modes_on_diverged_branches() {
     write_commit(a, "a.txt", "one\ntwo\nthree\nfour\n", "a appends");
     run(a, &["push", "-q"]).unwrap();
     write_commit(b, "b.txt", "b\n", "b adds a file");
-    fetch(b).unwrap();
+    fetch(b, &Net::default()).unwrap();
     let st = status(b).unwrap();
     assert_eq!((st.ahead, st.behind), (1, 1));
 
     // Fast-forward only must refuse, and must not leave an operation behind.
-    assert!(pull(b, "ff").is_err());
+    assert!(pull(b, "ff", &Net::default()).is_err());
     assert!(operation(b).is_none());
     // A clean merge finishes without stopping.
-    assert!(!pull(b, "merge").unwrap());
+    assert!(!pull(b, "merge", &Net::default()).unwrap());
     assert_eq!(log(b, None, 0, 1).unwrap()[0].parents.len(), 2);
     assert_eq!(
         fs::read_to_string(b.join("a.txt")).unwrap(),
@@ -117,18 +118,18 @@ fn force_push_with_lease_after_amend() {
     let c = sb.remote_with_clones(2);
     let (a, b) = (&c[0], &c[1]);
     write_commit(a, "a.txt", "mine\n", "mine");
-    push(a, false, None).unwrap();
+    push(a, false, None, &Net::default()).unwrap();
     commit(a, "mine, reworded", true).unwrap();
-    let err = push(a, false, None).unwrap_err();
+    let err = push(a, false, None, &Net::default()).unwrap_err();
     assert!(err.contains("non-fast-forward"), "{err}");
-    push(a, true, None).unwrap();
+    push(a, true, None, &Net::default()).unwrap();
     // b pushes meanwhile; a, not having fetched it, amends again: the lease refuses.
-    fetch(b).unwrap();
+    fetch(b, &Net::default()).unwrap();
     run(b, &["merge", "-q", "--ff-only", "origin/main"]).unwrap();
     write_commit(b, "b.txt", "b\n", "theirs");
-    push(b, false, None).unwrap();
+    push(b, false, None, &Net::default()).unwrap();
     commit(a, "mine, again", true).unwrap();
-    assert!(push(a, true, None).is_err());
+    assert!(push(a, true, None, &Net::default()).is_err());
 }
 
 /// A PR is titled like GitHub does: one commit gives its message, more the branch name.
@@ -175,7 +176,7 @@ fn push_target_follows_push_default_not_the_upstream() {
     write_commit(b, "b.txt", "b\n", "fork work");
     let p = status(b).unwrap().push.unwrap();
     assert_eq!((p.remote.as_str(), p.branch.as_deref()), ("origin", None));
-    push(b, false, None).unwrap();
+    push(b, false, None, &Net::default()).unwrap();
     let st = status(b).unwrap();
     let p = st.push.unwrap();
     assert_eq!((p.branch.as_deref(), p.ahead), (Some("origin/main"), 0));
@@ -219,7 +220,7 @@ fn log_of_a_remote_branch_marks_what_head_lacks() {
     let (a, b) = (&c[0], &c[1]);
     write_commit(a, "a.txt", "new\n", "upstream moved on");
     run(a, &["push", "-q"]).unwrap();
-    fetch(b).unwrap();
+    fetch(b, &Net::default()).unwrap();
     let theirs = log(b, Some("refs/remotes/origin/main"), 0, 10).unwrap();
     assert_eq!(theirs[0].subject, "upstream moved on");
     assert!(theirs[0].not_in_head && !theirs[1].not_in_head);
@@ -242,7 +243,10 @@ fn pull_rebase_conflict_then_abort_restores() {
     write_commit(b, "a.txt", "one\nTWO-b\nthree\n", "b edits");
     let before = log(b, None, 0, 1).unwrap()[0].sha.clone();
 
-    assert!(pull(b, "rebase").unwrap(), "should stop on the conflict");
+    assert!(
+        pull(b, "rebase", &Net::default()).unwrap(),
+        "should stop on the conflict"
+    );
     assert_eq!(operation(b).unwrap().kind, "rebase");
     assert_eq!(status(b).unwrap().conflicted.len(), 1);
     op_abort(b).unwrap();
@@ -258,7 +262,7 @@ fn publish_sets_upstream() {
     switch_branch(a, "feat/new-thing", true).unwrap();
     write_commit(a, "n.txt", "n\n", "new");
     assert!(status(a).unwrap().upstream.is_none());
-    push(a, false, None).unwrap();
+    push(a, false, None, &Net::default()).unwrap();
     let st = status(a).unwrap();
     assert_eq!(st.upstream.as_deref(), Some("origin/feat/new-thing"));
     assert_eq!(st.ahead, 0);
@@ -284,7 +288,7 @@ fn publish_picks_the_remote_instead_of_assuming_origin() {
     switch_branch(a, "feat", true).unwrap();
     // The only remote, whatever its name.
     assert_eq!(status(a).unwrap().publish.as_deref(), Some("gh"));
-    push(a, false, None).unwrap();
+    push(a, false, None, &Net::default()).unwrap();
     assert_eq!(status(a).unwrap().upstream.as_deref(), Some("gh/feat"));
 
     // Several remotes and none is origin: the user picks.
@@ -294,11 +298,11 @@ fn publish_picks_the_remote_instead_of_assuming_origin() {
     switch_branch(a, "feat2", true).unwrap();
     let st = status(a).unwrap();
     assert_eq!((st.publish.as_deref(), st.remotes.len()), (None, 2));
-    assert!(push(a, false, None)
+    assert!(push(a, false, None, &Net::default())
         .unwrap_err()
         .contains("several remotes"));
-    assert!(push(a, false, Some("nope")).is_err());
-    push(a, false, Some("other")).unwrap();
+    assert!(push(a, false, Some("nope"), &Net::default()).is_err());
+    push(a, false, Some("other"), &Net::default()).unwrap();
     assert_eq!(status(a).unwrap().upstream.as_deref(), Some("other/feat2"));
 
     // remote.pushDefault decides when set.
@@ -310,7 +314,9 @@ fn publish_picks_the_remote_instead_of_assuming_origin() {
     let lone = sb.path("lone");
     init(&lone);
     write_commit(&lone, "x.txt", "x\n", "x");
-    assert!(push(&lone, false, None).unwrap_err().contains("no remote"));
+    assert!(push(&lone, false, None, &Net::default())
+        .unwrap_err()
+        .contains("no remote"));
 }
 
 /// Clicking Stage on many rows at once used to fail on index.lock for most of them.
@@ -1252,9 +1258,9 @@ fn gone_upstream_is_unknown_not_pushed() {
     let a = &c[0];
     switch_branch(a, "feat", true).unwrap();
     write_commit(a, "f.txt", "f\n", "feature");
-    push(a, false, None).unwrap();
+    push(a, false, None, &Net::default()).unwrap();
     run(a, &["push", "-q", "origin", "--delete", "feat"]).unwrap();
-    fetch(a).unwrap();
+    fetch(a, &Net::default()).unwrap();
     write_commit(a, "g.txt", "g\n", "after the branch was deleted");
 
     let commits = log(a, None, 0, 10).unwrap();
@@ -1309,7 +1315,7 @@ fn deleting_a_remote_branch() {
     let c = sb.remote_with_clones(1);
     let a = &c[0];
     run(a, &["push", "-q", "origin", "HEAD:refs/heads/feat/x"]).unwrap();
-    fetch(a).unwrap();
+    fetch(a, &Net::default()).unwrap();
     let defaults: Vec<String> = branches(a)
         .unwrap()
         .into_iter()
@@ -1317,7 +1323,7 @@ fn deleting_a_remote_branch() {
         .map(|b| b.name)
         .collect();
     assert_eq!(defaults, ["origin/main"]);
-    delete_remote_branch(a, "origin/feat/x").unwrap();
+    delete_remote_branch(a, "origin/feat/x", &Net::default()).unwrap();
     let left = String::from_utf8(run(a, &["ls-remote", "--heads", "origin"]).unwrap()).unwrap();
     assert!(!left.contains("feat/x"), "{left}");
     // The tracking ref goes with it, so the picker drops the row without a fetch.
@@ -1325,8 +1331,8 @@ fn deleting_a_remote_branch() {
         .unwrap()
         .iter()
         .any(|b| b.name == "origin/feat/x"));
-    assert!(delete_remote_branch(a, "origin/main").is_err());
-    assert!(delete_remote_branch(a, "nope/x").is_err());
+    assert!(delete_remote_branch(a, "origin/main", &Net::default()).is_err());
+    assert!(delete_remote_branch(a, "nope/x", &Net::default()).is_err());
 }
 
 #[test]
@@ -1487,7 +1493,7 @@ fn undo_branch_delete_restores_its_upstream() {
     let a = &c[0];
     run(a, &["switch", "-q", "-c", "feat"]).unwrap();
     write_commit(a, "f.txt", "f\n", "feat");
-    push(a, false, None).unwrap();
+    push(a, false, None, &Net::default()).unwrap();
     run(a, &["switch", "-q", "main"]).unwrap();
     let tip = rev(a, "feat");
     let j = Journal::default();
@@ -1532,11 +1538,13 @@ fn undo_takes_back_a_pull_but_not_a_pushed_commit() {
     let c = sb.remote_with_clones(2);
     let (a, b) = (&c[0], &c[1]);
     write_commit(a, "x.txt", "x\n", "from a");
-    push(a, false, None).unwrap();
+    push(a, false, None, &Net::default()).unwrap();
     let before = rev(b, "HEAD");
     let j = Journal::default();
-    j.record(b, Action::new("Pull", Mode::Keep), |r| pull(r, "ff"))
-        .unwrap();
+    j.record(b, Action::new("Pull", Mode::Keep), |r| {
+        pull(r, "ff", &Net::default())
+    })
+    .unwrap();
     step(&j, b, false).unwrap();
     assert_eq!(rev(b, "HEAD"), before);
     step(&j, b, true).unwrap();
@@ -1548,7 +1556,7 @@ fn undo_takes_back_a_pull_but_not_a_pushed_commit() {
     })
     .unwrap();
     assert!(j.view(b).undo_blocked.is_none());
-    push(b, false, None).unwrap();
+    push(b, false, None, &Net::default()).unwrap();
     let why = j.view(b).undo_blocked.unwrap();
     assert!(why.contains("force push"), "{why}");
     assert!(step(&j, b, false).is_err());
@@ -1581,4 +1589,82 @@ fn undo_a_rebase_continued_after_conflicts() {
     assert_eq!(rev(&r, "HEAD"), before);
     assert_eq!(on_branch(&r), "feat");
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "feat\n");
+}
+
+/// A new repository has no commits yet: every view reads it as empty, and staging, unstaging
+/// and the first commit work before HEAD exists.
+#[test]
+fn init_then_first_commit() {
+    let sb = Sandbox::new("init");
+    let r = sb.path("new");
+    fs::create_dir_all(&r).unwrap();
+    crate::git::init(&r).unwrap();
+    identity(&r);
+    assert!(crate::git::init(&r).is_err(), "already a repository");
+    let first = run_text(&r, &["config", "--get", "init.defaultBranch"])
+        .map(|b| b.trim().to_string())
+        .unwrap_or_else(|_| "main".into());
+    let st = status(&r).unwrap();
+    assert_eq!(st.branch.as_deref(), Some(first.as_str()));
+    assert!(st.head.is_none() && st.upstream.is_none() && st.remotes.is_empty());
+    assert!(log(&r, None, 0, 10).unwrap().is_empty());
+    branches(&r).unwrap();
+    worktrees(&r).unwrap();
+
+    fs::write(r.join("a.txt"), "a\n").unwrap();
+    stage(&r, &["a.txt".into()]).unwrap();
+    unstage(&r, &["a.txt".into()]).unwrap();
+    assert_eq!(status(&r).unwrap().unstaged.len(), 1);
+    stage(&r, &["a.txt".into()]).unwrap();
+    let j = Journal::default();
+    j.record(&r, Action::new("Commit", Mode::Soft), |r| {
+        commit(r, "first", false)
+    })
+    .unwrap();
+    assert_eq!(log(&r, None, 0, 10).unwrap().len(), 1);
+    assert!(publish_remote(&r).unwrap_err().contains("no remote"));
+    // Undoing the first commit makes the branch unborn again, its file still staged.
+    step(&j, &r, false).unwrap();
+    let st = status(&r).unwrap();
+    assert!(st.head.is_none() && st.staged.len() == 1);
+}
+
+/// Clone streams progress, tracks origin, and never writes into a folder that holds something.
+#[test]
+fn clone_from_a_local_bare_remote() {
+    let sb = Sandbox::new("clone");
+    sb.remote_with_clones(0);
+    // file:// takes git's transfer path (a plain path would hardlink), so progress shows.
+    let url = format!("file://{}", sb.path("origin.git").display());
+    let seen = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let sink = seen.clone();
+    let running = crate::network::Running::default();
+    let net = running.start("clone".into(), move |p| sink.lock().unwrap().push(p.phase));
+    let dest = clone(&sb.0, &url, "mine", &net).unwrap();
+    assert_eq!(PathBuf::from(&dest), sb.path("mine"));
+    let st = status(Path::new(&dest)).unwrap();
+    assert_eq!(st.branch.as_deref(), Some("main"));
+    assert_eq!(st.upstream.as_deref(), Some("origin/main"));
+    assert!(seen
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|p| p == "Receiving objects"));
+
+    fs::create_dir_all(sb.path("taken")).unwrap();
+    fs::write(sb.path("taken/keep.txt"), "mine\n").unwrap();
+    let err = clone(&sb.0, &url, "taken", &Net::default()).unwrap_err();
+    assert!(err.contains("isn't empty"), "{err}");
+    assert_eq!(fs::read_dir(sb.path("taken")).unwrap().count(), 1);
+    fs::create_dir_all(sb.path("empty")).unwrap();
+    clone(&sb.0, &url, "empty", &Net::default()).unwrap();
+    for bad in ["", "..", "a/b"] {
+        assert!(clone(&sb.0, &url, bad, &Net::default()).is_err(), "{bad}");
+    }
+    let missing = format!("file://{}", sb.path("nope.git").display());
+    assert!(clone(&sb.0, &missing, "nope", &Net::default()).is_err());
+    assert!(
+        !sb.path("nope").exists(),
+        "a failed clone leaves its folder behind"
+    );
 }

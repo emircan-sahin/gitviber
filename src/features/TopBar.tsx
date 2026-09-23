@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronsUpDown,
   CloudOff,
+  FolderDown,
   GitMerge,
   GitPullRequestArrow,
   Loader2,
@@ -22,6 +23,7 @@ import {
   TriangleAlert,
   Undo2,
   UploadCloud,
+  X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Wordmark } from "@/components/Logo";
@@ -36,7 +38,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, errorMessage, type Branch, type JournalEntry, type Worktree } from "@/lib/api";
+import { api, type Branch, CANCELLED, cancelNetwork, errorMessage, type JournalEntry, type NetOp, netOp, type Progress, type Worktree } from "@/lib/api";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
@@ -45,6 +47,7 @@ import type { RepoData } from "@/lib/useRepo";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName } from "@/lib/worktrees";
 import { BranchPicker } from "./BranchPicker";
+import { openClone } from "./CloneDialog";
 import { ProjectList, ProjectTile } from "./ProjectList";
 import { openSettings } from "./SettingsDialog";
 import { WorktreePicker } from "./WorktreePicker";
@@ -109,6 +112,7 @@ function useFullscreen() {
 export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
   const { status, branches, worktrees } = repo;
   const [busy, setBusy] = useState<string | null>(null);
+  const [net, setNet] = useState<{ op: NetOp; progress: Progress | null } | null>(null);
   const terminalOpen = useTerminals().open;
   const fullscreen = useFullscreen();
 
@@ -120,10 +124,22 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       if (stopped) toast("info", `${label} stopped on conflicts`, "Resolve them in Changes, then continue.");
       else if (done) toast("success", done, undefined, undoAction(entry, repo.refresh));
     } catch (e) {
-      toast("error", `${label} failed`, errorMessage(e));
+      if (e === CANCELLED) toast("info", `${label} cancelled`);
+      else toast("error", `${label} failed`, errorMessage(e));
     } finally {
       setBusy(null);
       await repo.refresh();
+    }
+  };
+
+  /** Fetch, pull and push: git's progress shows next to the spinner, and Cancel stops it. */
+  const runNet = async (label: string, fn: (op: NetOp) => Promise<void | boolean>, done?: string) => {
+    const op = netOp((progress) => setNet((n) => n && { ...n, progress }));
+    setNet({ op, progress: null });
+    try {
+      await run(label, () => fn(op), done);
+    } finally {
+      setNet(null);
     }
   };
 
@@ -151,7 +167,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         kind: "warning",
         okLabel: "Delete",
       });
-      if (ok) await run("Delete remote branch", () => api.deleteRemoteBranch(b.name), `Deleted ${b.name}`);
+      if (ok) await runNet("Delete remote branch", (op) => api.deleteRemoteBranch(b.name, op), `Deleted ${b.name}`);
       return;
     }
     const here = status?.branch ?? "HEAD";
@@ -180,11 +196,11 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   // old ones after a rebase or amend. Replacing them is a force push, so it asks first.
   // "fetch first" (commits not fetched yet) isn't offered: those want a pull.
   const push = () =>
-    run(
+    runNet(
       "Push",
-      async () => {
+      async (op) => {
         try {
-          await api.push();
+          await api.push(false, undefined, op);
         } catch (e) {
           if (!errorMessage(e).includes("non-fast-forward")) throw e;
           const ok = await ask(
@@ -192,7 +208,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
             { title: "Force push", kind: "warning", okLabel: "Force push" },
           );
           if (!ok) throw e;
-          await api.push(true);
+          await api.push(true, undefined, op);
         }
       },
       "Pushed",
@@ -234,8 +250,8 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   };
 
   useCommands({
-    "git.fetch": busy ? undefined : () => run("Fetch", api.fetch),
-    "git.pull": busy || !status?.upstream ? undefined : () => run("Pull", () => api.pull("ff"), "Pulled"),
+    "git.fetch": busy ? undefined : () => runNet("Fetch", api.fetch),
+    "git.pull": busy || !status?.upstream ? undefined : () => runNet("Pull", (op) => api.pull("ff", op), "Pulled"),
     "git.push": busy || !status?.upstream ? undefined : push,
   });
 
@@ -276,16 +292,29 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       {busy && (
         <span className="mr-1 flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground select-none">
           <Loader2 className="size-3.5 animate-spin" /> {busy}…
+          {net?.progress && (
+            <span className="text-subtle tabular-nums">
+              {net.progress.phase}
+              {net.progress.percent !== null && ` ${net.progress.percent}%`}
+            </span>
+          )}
+          {net && (
+            <Tip label={`Cancel ${busy.toLowerCase()}`}>
+              <Button variant="ghost" size="icon-sm" aria-label="Cancel" onClick={() => void cancelNetwork(net.op)}>
+                <X />
+              </Button>
+            </Tip>
+          )}
         </span>
       )}
       <Tip label="Fetch">
-        <Button variant="ghost" size="icon" disabled={!!busy} onClick={() => run("Fetch", api.fetch)}>
+        <Button variant="ghost" size="icon" disabled={!!busy} onClick={() => runNet("Fetch", api.fetch)}>
           <RefreshCw />
         </Button>
       </Tip>
       <div className="flex">
         <Tip label="Pull (fast-forward only)">
-          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !status?.upstream} onClick={() => run("Pull", () => api.pull("ff"), "Pulled")}>
+          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !status?.upstream} onClick={() => runNet("Pull", (op) => api.pull("ff", op), "Pulled")}>
             <ArrowDownToLine /> Pull
             {!!status?.behind && <span className="font-mono text-[10.5px] text-primary">{status.behind}</span>}
           </Button>
@@ -298,10 +327,10 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
             <DropdownMenuLabel>When branches have diverged</DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => run("Pull", () => api.pull("merge"), "Pulled (merge)")}>
+            <DropdownMenuItem onSelect={() => runNet("Pull", (op) => api.pull("merge", op), "Pulled (merge)")}>
               <GitMerge /> Pull with merge
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => run("Pull", () => api.pull("rebase"), "Pulled (rebase)")}>
+            <DropdownMenuItem onSelect={() => runNet("Pull", (op) => api.pull("rebase", op), "Pulled (rebase)")}>
               <GitPullRequestArrow /> Pull with rebase
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -320,8 +349,9 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         <PublishButton
           remotes={status?.remotes ?? []}
           preferred={status?.publish ?? null}
-          disabled={!!busy || !status?.branch}
-          onPublish={(remote) => run("Publish", () => api.push(false, remote), `Branch published to ${remote}`)}
+          // Before the first commit there's nothing to push.
+          disabled={!!busy || !status?.branch || !status.head}
+          onPublish={(remote) => runNet("Publish", (op) => api.push(false, remote, op), `Branch published to ${remote}`)}
         />
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
@@ -499,6 +529,15 @@ function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReord
           <button onClick={() => pick()} className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover">
             <Plus className="size-3.5 text-muted-foreground" /> Open repository…
             <span className="ml-auto font-mono text-[11px] text-subtle">{openKey}</span>
+          </button>
+          <button
+            onClick={() => {
+              setOpen(false);
+              openClone();
+            }}
+            className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover"
+          >
+            <FolderDown className="size-3.5 text-muted-foreground" /> Clone repository…
           </button>
         </div>
       </PopoverContent>

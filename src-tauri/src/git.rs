@@ -2,6 +2,7 @@
 //! user's config, hooks, credential helpers and signing all behave exactly like the
 //! terminal — GitViber never keeps state of its own inside the repo.
 
+use crate::network::{self, Net};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -133,17 +134,12 @@ pub(crate) fn run_with(
     )
 }
 
-/// Network commands can stall on a dead connection; don't let them spin forever.
-const NETWORK_TIMEOUT: Duration = Duration::from_secs(300);
-
-fn run_network(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    exec(
-        command(repo, args),
-        &format!("git {}", args[0]),
-        &[],
-        None,
-        Some(NETWORK_TIMEOUT),
-    )
+/// Fetch, pull, push and clone: with progress, stoppable, and timed out only when silent.
+fn run_network(repo: &Path, args: &[&str], net: &Net) -> Result<Vec<u8>, String> {
+    let mut args = args.to_vec();
+    // Without a terminal git reports no progress unless asked.
+    args.insert(1, "--progress");
+    network::run(command(repo, &args), &format!("git {}", args[0]), net)
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -1028,7 +1024,7 @@ pub fn fetch_objects(repo: &Path, remote: &str, refspecs: &[String]) -> Result<(
         remote,
     ];
     args.extend(refspecs.iter().map(String::as_str));
-    run_network(repo, &args).map(|_| ())
+    run_network(repo, &args, &Net::default()).map(|_| ())
 }
 
 pub fn remote_url(repo: &Path, remote: &str) -> Option<String> {
@@ -1680,7 +1676,7 @@ pub fn delete_branches(repo: &Path, names: &[String], force: bool) -> Result<(),
 
 /// Deletes "origin/feat" on origin. Refuses the remote's default branch: hosts either reject
 /// it or let it go and leave every clone without one.
-pub fn delete_remote_branch(repo: &Path, name: &str) -> Result<(), String> {
+pub fn delete_remote_branch(repo: &Path, name: &str, net: &Net) -> Result<(), String> {
     let remotes = run_text(repo, &["remote"])?;
     let remote = remotes
         .lines()
@@ -1696,7 +1692,7 @@ pub fn delete_remote_branch(repo: &Path, name: &str) -> Result<(), String> {
         return Err(format!("{name} is {remote}'s default branch"));
     }
     let target = format!("refs/heads/{branch}");
-    run_network(repo, &["push", remote, "--delete", &target]).map(|_| ())
+    run_network(repo, &["push", remote, "--delete", &target], net).map(|_| ())
 }
 
 pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String> {
@@ -1840,7 +1836,7 @@ pub fn commit(repo: &Path, message: &str, amend: bool) -> Result<(), String> {
 /// but only if it still has what was last fetched (`--force-with-lease`), so a push made
 /// meanwhile by someone else is refused rather than lost.
 /// A branch without an upstream is published (`-u`) to `remote`, or else to `publish_remote`.
-pub fn push(repo: &Path, force: bool, remote: Option<&str>) -> Result<(), String> {
+pub fn push(repo: &Path, force: bool, remote: Option<&str>, net: &Net) -> Result<(), String> {
     let has_upstream = run(repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
     let mut args = vec!["push"];
     if force {
@@ -1855,7 +1851,7 @@ pub fn push(repo: &Path, force: bool, remote: Option<&str>) -> Result<(), String
         };
         args.extend(["-u", &target, "HEAD"]);
     }
-    run_network(repo, &args).map(|_| ())
+    run_network(repo, &args, net).map(|_| ())
 }
 
 pub fn remotes(repo: &Path) -> Vec<String> {
@@ -1896,20 +1892,35 @@ pub fn publish_remote(repo: &Path) -> Result<String, String> {
 }
 
 /// `mode`: "ff" (fast-forward only), "merge" or "rebase". Returns true if it stopped on conflicts.
-pub fn pull(repo: &Path, mode: &str) -> Result<bool, String> {
+pub fn pull(repo: &Path, mode: &str, net: &Net) -> Result<bool, String> {
     ensure_idle(repo)?;
     let flag = match mode {
         "merge" => "--no-rebase",
         "rebase" => "--rebase",
         _ => "--ff-only",
     };
-    stoppable(repo, run_network(repo, &["pull", "--no-edit", flag]))
+    stoppable(repo, run_network(repo, &["pull", "--no-edit", flag], net))
 }
 
 /// Every remote: a plain fetch takes only the current branch's (on a fork's dev tracking
 /// upstream/dev, upstream alone), leaving origin's branches stale.
-pub fn fetch(repo: &Path) -> Result<(), String> {
-    run_network(repo, &["fetch", "--all", "--prune"]).map(|_| ())
+pub fn fetch(repo: &Path, net: &Net) -> Result<(), String> {
+    run_network(repo, &["fetch", "--all", "--prune"], net).map(|_| ())
+}
+
+/// When this repo last fetched (FETCH_HEAD's mtime, Unix seconds); None if it never has.
+pub fn last_fetch(repo: &Path) -> Option<u64> {
+    let path = run_text(repo, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
+    let modified = std::fs::metadata(repo.join(path.trim()))
+        .ok()?
+        .modified()
+        .ok()?;
+    Some(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
 }
 
 /// Fetches one configured remote, e.g. a fork's upstream.
@@ -1917,7 +1928,50 @@ pub fn fetch_remote(repo: &Path, name: &str) -> Result<(), String> {
     if remote_url(repo, name).is_none() {
         return Err(format!("no remote named {name}"));
     }
-    run_network(repo, &["fetch", "--prune", name]).map(|_| ())
+    run_network(repo, &["fetch", "--prune", name], &Net::default()).map(|_| ())
+}
+
+/// Clones `url` into `parent/name` and returns that path. Never into a folder that already
+/// holds something: git would refuse too, but only after the user waited for the network.
+pub fn clone(parent: &Path, url: &str, name: &str, net: &Net) -> Result<String, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("Enter a repository URL.".into());
+    }
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return Err(format!("invalid folder name: {name}"));
+    }
+    if !parent.is_dir() {
+        return Err(format!("folder not found: {}", parent.display()));
+    }
+    let target = parent.join(name);
+    let empty = std::fs::read_dir(&target).is_ok_and(|mut d| d.next().is_none());
+    if target.exists() && !empty {
+        return Err(format!(
+            "{} already exists and isn't empty. Choose another folder name.",
+            target.display()
+        ));
+    }
+    let dest = target.to_string_lossy();
+    run_network(parent, &["clone", "--", url, &dest], net)?;
+    Ok(dest.into_owned())
+}
+
+/// Makes `dir` a new repository. Its first branch is the user's init.defaultBranch, else main.
+pub fn init(dir: &Path) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err(format!("folder not found: {}", dir.display()));
+    }
+    if toplevel(dir).is_ok() {
+        return Err(format!("{} is already in a git repository", dir.display()));
+    }
+    let configured = run(dir, &["config", "--get", "init.defaultBranch"]).is_ok();
+    let args: &[&str] = if configured {
+        &["init", "-q"]
+    } else {
+        &["init", "-q", "-b", "main"]
+    };
+    run(dir, args).map(|_| ())
 }
 
 /// Returns the subset of `paths` that .gitignore excludes.
