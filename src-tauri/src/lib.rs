@@ -6,6 +6,7 @@ mod github;
 mod journal;
 mod menu;
 mod navigation;
+mod network;
 mod pty;
 #[cfg(test)]
 mod scenario_tests;
@@ -17,6 +18,7 @@ mod watch;
 use journal::{Action, Mode};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Default)]
@@ -25,6 +27,7 @@ struct AppState {
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
     github: github::Session,
     ptys: pty::Ptys,
+    network: network::Running,
     /// Held by commands that write the index: two `git add`s at once fail on index.lock.
     index: Arc<Mutex<()>>,
     journal: Arc<journal::Journal>,
@@ -83,6 +86,17 @@ async fn journaled<T: Send + 'static>(
     blocking(move || journal.record(&r, action, f)).await
 }
 
+/// Registers a network command under the page's id, streaming its progress to `progress`.
+fn watch_network(
+    state: &State<AppState>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> network::Net {
+    state.network.start(op, move |p| {
+        let _ = progress.send(p);
+    })
+}
+
 /// "Commit" and the like read better with the commit's short id.
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(7)]
@@ -99,7 +113,8 @@ struct OpenedRepo {
 #[tauri::command]
 async fn open_repo(app: AppHandle, state: State<'_, AppState>, path: String) -> Res<OpenedRepo> {
     let (root, main) = blocking(move || {
-        let root = git::toplevel(PathBuf::from(path).as_path())?;
+        let path = PathBuf::from(path);
+        let root = git::toplevel(&path)?;
         let main = git::main_worktree(Path::new(&root)).unwrap_or_else(|| root.clone());
         Ok((root, main))
     })
@@ -289,9 +304,15 @@ async fn delete_branches(state: State<'_, AppState>, names: Vec<String>, force: 
 }
 
 #[tauri::command]
-async fn delete_remote_branch(state: State<'_, AppState>, name: String) -> Res<()> {
+async fn delete_remote_branch(
+    state: State<'_, AppState>,
+    name: String,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<()> {
     let r = repo(&state)?;
-    blocking(move || git::delete_remote_branch(&r, &name)).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::delete_remote_branch(&r, &name, &net)).await
 }
 
 #[tauri::command]
@@ -371,21 +392,34 @@ async fn commit_details(state: State<'_, AppState>, sha: String) -> Res<git::Com
 }
 
 #[tauri::command]
-async fn push(state: State<'_, AppState>, force: Option<bool>, remote: Option<String>) -> Res<()> {
+async fn push(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+    remote: Option<String>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<()> {
     let r = repo(&state)?;
-    blocking(move || git::push(&r, force.unwrap_or(false), remote.as_deref())).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::push(&r, force.unwrap_or(false), remote.as_deref(), &net)).await
 }
 
 /// The bool results below mean "stopped on conflicts".
 #[tauri::command]
-async fn pull(state: State<'_, AppState>, mode: String) -> Res<bool> {
+async fn pull(
+    state: State<'_, AppState>,
+    mode: String,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<bool> {
     let label = match mode.as_str() {
         "merge" => "Pull (merge)",
         "rebase" => "Pull (rebase)",
         _ => "Pull",
     };
+    let net = watch_network(&state, op, progress);
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::pull(r, &mode)
+        git::pull(r, &mode, &net)
     })
     .await
 }
@@ -513,9 +547,45 @@ async fn reveal_project(path: String) -> Res<()> {
 }
 
 #[tauri::command]
-async fn fetch(state: State<'_, AppState>) -> Res<()> {
+async fn fetch(
+    state: State<'_, AppState>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<()> {
     let r = repo(&state)?;
-    blocking(move || git::fetch(&r)).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::fetch(&r, &net)).await
+}
+
+#[tauri::command]
+async fn last_fetch(state: State<'_, AppState>) -> Res<Option<u64>> {
+    let r = repo(&state)?;
+    blocking(move || Ok(git::last_fetch(&r))).await
+}
+
+/// Stops the network command the page started under `op`; it then fails with "git:cancelled".
+#[tauri::command]
+fn cancel_network(state: State<'_, AppState>, op: String) {
+    state.network.cancel(&op)
+}
+
+/// Like open_repo, any folder the user picked: the clone lands in `parent/name`.
+#[tauri::command]
+async fn clone_repo(
+    state: State<'_, AppState>,
+    url: String,
+    parent: String,
+    name: String,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<String> {
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::clone(Path::new(&parent), &url, &name, &net)).await
+}
+
+#[tauri::command]
+async fn init_repo(path: String) -> Res<()> {
+    blocking(move || git::init(Path::new(&path))).await
 }
 
 // ---------------------------------------------------------------- history actions
@@ -1201,6 +1271,10 @@ pub fn run() {
             push,
             pull,
             fetch,
+            last_fetch,
+            cancel_network,
+            clone_repo,
+            init_repo,
             merge,
             rebase,
             op_continue,

@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Code2, GitCompareArrows, Keyboard, Palette, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
+import { Code2, GitBranch, GitCompareArrows, Keyboard, Palette, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
 import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -13,6 +13,7 @@ import {
   cleanFontName,
   codeFontFamily,
   DEFAULT_FONT_SIZE,
+  FETCH_INTERVALS,
   LIGHT_SYNTAX_THEMES,
   type LightSyntaxTheme,
   resetSettings,
@@ -32,6 +33,7 @@ const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "editor", label: "Editor", icon: Code2 },
   { id: "diff", label: "Diff", icon: GitCompareArrows },
+  { id: "git", label: "Git", icon: GitBranch },
   { id: "shortcuts", label: "Keyboard Shortcuts", icon: Keyboard },
 ] as const;
 type Section = (typeof SECTIONS)[number]["id"];
@@ -84,7 +86,7 @@ export function SettingsDialog() {
       >
         <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar p-2">
           <DialogTitle className="px-2 pt-1.5 pb-2.5">Settings</DialogTitle>
-          <DialogDescription className="sr-only">Appearance, editor, diff and keyboard shortcut preferences.</DialogDescription>
+          <DialogDescription className="sr-only">Appearance, editor, diff, git and keyboard shortcut preferences.</DialogDescription>
           {SECTIONS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -114,6 +116,7 @@ export function SettingsDialog() {
             {section === "appearance" && <AppearanceSection />}
             {section === "editor" && <EditorSection />}
             {section === "diff" && <DiffSection />}
+            {section === "git" && <GitSection />}
             {section === "shortcuts" && <ShortcutsSection recording={recording} setRecording={setRecording} />}
           </div>
         </div>
@@ -265,6 +268,19 @@ function DiffSection() {
         <Switch checked={s.hideUnchanged} onChange={(v) => updateSettings({ hideUnchanged: v })} />
       </Field>
     </>
+  );
+}
+
+function GitSection() {
+  const s = useSettings();
+  return (
+    <Field label="Fetch in the background" hint="Keeps ahead / behind and the remote branches current for the open repository. A fetch that fails, say while offline, stays quiet.">
+      <Segmented<string>
+        value={String(s.backgroundFetch)}
+        onChange={(v) => updateSettings({ backgroundFetch: Number(v) })}
+        options={FETCH_INTERVALS.map((m) => [String(m), m ? `${m} min` : "Off"])}
+      />
+    </Field>
   );
 }
 

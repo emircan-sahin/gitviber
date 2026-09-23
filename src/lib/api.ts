@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type ChangeStatus = "M" | "A" | "D" | "R" | "C" | "T" | "U" | "?";
 
@@ -214,6 +214,46 @@ export interface GitIdentity {
   email: string | null;
 }
 
+/** Where a network command is, in git's words: "Receiving objects" at 45 (percent). */
+export interface Progress {
+  phase: string;
+  /** Null for phases git only counts ("Enumerating objects"). */
+  percent: number | null;
+}
+
+/** One watched network command (fetch, pull, push, clone): its progress, and its id for Cancel. */
+export interface NetOp {
+  id: string;
+  onProgress?: (p: Progress) => void;
+  /** The background fetch, which gives way to anything the user starts. */
+  background?: boolean;
+}
+
+// Unique across page reloads too: a command from before a reload may still be running.
+const netSession = Date.now().toString(36);
+let netCount = 0;
+export const netOp = (onProgress?: (p: Progress) => void, background = false): NetOp => ({ id: `${netSession}-${++netCount}`, onProgress, background });
+
+const running = new Set<NetOp>();
+/** Some network command is running. */
+export const networkBusy = () => running.size > 0;
+
+function network<T>(cmd: string, args: Record<string, unknown>, op = netOp()): Promise<T> {
+  // Two fetches at once can fail on ref locks; the user's command wins.
+  if (!op.background) for (const o of running) if (o.background) void cancelNetwork(o);
+  running.add(op);
+  // A channel ends with its command, so every call gets a new one; a retry may reuse the op.
+  return invoke<T>(cmd, { ...args, op: op.id, progress: new Channel<Progress>(op.onProgress) }).finally(() => running.delete(op));
+}
+
+/** Stops a network command; its call then rejects with CANCELLED. */
+export const cancelNetwork = (op: NetOp) => invoke<void>("cancel_network", { op: op.id });
+
+/** A network command the user stopped: not a failure. */
+export const CANCELLED = "git:cancelled";
+/** open_repo on a folder that isn't in a repository; the page offers to initialize one. */
+export const NOT_A_REPO = "git:not-a-repo";
+
 export const api = {
   openRepo: (path: string) => invoke<OpenedRepo>("open_repo", { path }),
   /** Checked once per launch; `recheck` runs `git --version` again. */
@@ -249,7 +289,7 @@ export const api = {
   /** `force` deletes unmerged commits too (git branch -D). */
   deleteBranches: (names: string[], force: boolean) => invoke<void>("delete_branches", { names, force }),
   /** "origin/feat" → git push origin --delete feat. */
-  deleteRemoteBranch: (name: string) => invoke<void>("delete_remote_branch", { name }),
+  deleteRemoteBranch: (name: string, op?: NetOp) => network<void>("delete_remote_branch", { name }, op),
   worktrees: () => invoke<Worktree[]>("worktrees"),
   /** Uncommitted files in one of this repo's worktrees, and commits found nowhere else. */
   worktreeState: (path: string) => invoke<WorktreeState>("worktree_state", { path }),
@@ -270,9 +310,9 @@ export const api = {
   /** Signature status and trailers of one commit (verifying runs gpg/ssh, so one at a time). */
   commitDetails: (sha: string) => invoke<CommitDetails>("commit_details", { sha }),
   /** `force`: --force-with-lease, after a rebase or amend. `remote`: where to publish a branch with no upstream. */
-  push: (force = false, remote?: string) => invoke<void>("push", { force, remote }),
+  push: (force = false, remote?: string, op?: NetOp) => network<void>("push", { force, remote }, op),
   // The boolean results mean "stopped on conflicts".
-  pull: (mode: PullMode) => invoke<boolean>("pull", { mode }),
+  pull: (mode: PullMode, op?: NetOp) => network<boolean>("pull", { mode }, op),
   merge: (name: string) => invoke<boolean>("merge", { name }),
   rebase: (onto: string) => invoke<boolean>("rebase", { onto }),
   opContinue: () => invoke<boolean>("op_continue"),
@@ -289,7 +329,13 @@ export const api = {
   /** Any saved project's folder, not just the open repo's. */
   revealProject: (path: string) => invoke<void>("reveal_project", { path }),
   projectInfo: (paths: string[]) => invoke<ProjectInfo[]>("project_info", { paths }),
-  fetch: () => invoke<void>("fetch"),
+  fetch: (op?: NetOp) => network<void>("fetch", {}, op),
+  /** When the repo last fetched (FETCH_HEAD's mtime, Unix seconds); null if never. */
+  lastFetch: () => invoke<number | null>("last_fetch"),
+  /** Clones into `parent/name` (refused if that holds anything); returns the new repo's path. */
+  cloneRepo: (url: string, parent: string, name: string, op?: NetOp) => network<string>("clone_repo", { url, parent, name }, op),
+  /** `git init` in a folder that isn't in a repository yet. */
+  initRepo: (path: string) => invoke<void>("init_repo", { path }),
   // History actions. `sha` on undo and `head` on reset are the HEAD the user saw (refused if it moved).
   undoCommit: (sha: string) => invoke<void>("undo_commit", { sha }),
   reset: (sha: string, mode: ResetMode, head: string) => invoke<void>("reset", { sha, mode, head }),
@@ -492,9 +538,15 @@ export const issues = {
   delete: (target: Target, number: number) => invoke<void>("issue_delete", { target, number }),
 };
 
+const MARKERS = new Map([
+  [GITHUB_NOT_CONNECTED, "GitHub sign-in missing or expired. Sign in again (see the PRs tab)."],
+  [CANCELLED, "Cancelled"],
+  [NOT_A_REPO, "This folder is not inside a git repository."],
+]);
+
 export function errorMessage(e: unknown) {
   const raw = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
-  return raw === GITHUB_NOT_CONNECTED ? "GitHub sign-in missing or expired. Sign in again (see the PRs tab)." : raw;
+  return MARKERS.get(raw) ?? raw;
 }
 
 export const isNotConnected = (e: unknown) => e === GITHUB_NOT_CONNECTED;

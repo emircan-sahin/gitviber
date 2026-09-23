@@ -97,6 +97,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         "File",
         &[
             &b.command("file.openRepo", "Open Repository…")?,
+            &b.command("file.cloneRepo", "Clone Repository…")?,
             &recent,
             &sep()?,
             &b.command("terminal.new", "New Terminal")?,

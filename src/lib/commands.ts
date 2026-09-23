@@ -17,6 +17,7 @@ export const REVEAL_LABEL = IS_MAC ? "Reveal in Finder" : IS_WINDOWS ? "Show in 
 export const COMMANDS = [
   { id: "workbench.openSettings", title: "Open Settings", category: "General", keys: ["cmd+,"] },
   { id: "file.openRepo", title: "Open Repository", category: "General", keys: ["cmd+o"] },
+  { id: "file.cloneRepo", title: "Clone Repository", category: "General", keys: [] },
   { id: "window.reload", title: "Reload Window", category: "General", keys: ["cmd+r"] },
   // The file watcher refreshes on its own; this is for changes it can't see.
   { id: "repo.refresh", title: "Refresh", category: "General", keys: [] },

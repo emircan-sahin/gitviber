@@ -1166,6 +1166,7 @@ name = "gitviber"
 version = "0.1.0"
 dependencies = [
  "block2",
+ "libc",
  "notify",
  "objc2",
  "portable-pty",

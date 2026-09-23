@@ -1761,7 +1761,7 @@ mod tests {
             git::status(repo).unwrap().branch.as_deref(),
             Some(d.pull.head_ref.as_str())
         );
-        git::fetch(repo).unwrap();
+        git::fetch(repo, &Default::default()).unwrap();
         let stopped = git::merge(repo, &format!("origin/{}", d.pull.base_ref)).unwrap();
         let st = git::status(repo).unwrap();
         println!(

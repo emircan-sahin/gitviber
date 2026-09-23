@@ -69,6 +69,9 @@ export type Appearance = "system" | "light" | "dark" | "dim";
 /** The palettes behind [data-theme] in index.css; dark and dim both count as dark. */
 export type Theme = "light" | "dark" | "dim";
 
+/** Minutes between background fetches; 0 is off. */
+export const FETCH_INTERVALS = [0, 5, 15, 30];
+
 export interface Settings {
   codeFont: CodeFont;
   customCodeFont: string;
@@ -97,6 +100,10 @@ export interface Settings {
   keybindings: Record<string, string[]>;
   /** Repos (main worktree paths) whose commits are signed off: people who sign off always do. Set from the commit box. */
   signOffRepos: string[];
+  /** Minutes between quiet fetches of the open repo (one of FETCH_INTERVALS); 0 is off. */
+  backgroundFetch: number;
+  /** Where the last clone went; the next one offers the same folder. */
+  cloneParent: string | null;
 }
 
 export const DEFAULT_FONT_SIZE = 12.5;
@@ -123,6 +130,8 @@ const DEFAULTS: Settings = {
   svgPreview: false,
   keybindings: {},
   signOffRepos: [],
+  backgroundFetch: 5,
+  cloneParent: null,
 };
 
 // v2: the Monaco-era settings had different fonts and sizes.
@@ -146,6 +155,8 @@ function load(): Settings {
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     s.keybindings = cleanOverrides(s.keybindings);
     s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;
+    if (!FETCH_INTERVALS.includes(s.backgroundFetch)) s.backgroundFetch = DEFAULTS.backgroundFetch;
+    if (typeof s.cloneParent !== "string") s.cloneParent = null;
     return s;
   } catch {
     return DEFAULTS;
