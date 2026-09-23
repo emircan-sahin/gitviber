@@ -719,7 +719,8 @@ function CommitBox({ status, refresh }: Pick<Props, "status" | "refresh">) {
       <Textarea placeholder="Description" value={body} onChange={(e) => setBody(e.target.value)} onKeyDown={onKey} rows={2} className="mt-1.5 py-1.5 text-[12px]" />
       <div className="mt-1.5 flex items-center gap-2">
         <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
-          <input type="checkbox" checked={amend} onChange={(e) => setAmend(e.target.checked)} className="accent-primary" />
+          {/* Before the first commit there's nothing to amend. */}
+          <input type="checkbox" checked={amend} disabled={!status.head} onChange={(e) => setAmend(e.target.checked)} className="accent-primary" />
           Amend
         </label>
         <Tip label={skipped ? `${target} (${leftOut(all.skipped).toLowerCase()})` : target} shortcut={commitKey}>
