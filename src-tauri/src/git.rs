@@ -3337,10 +3337,12 @@ mod tests {
         let err = toplevel(&dir.join("missing")).unwrap_err();
         assert!(err.starts_with("Folder not found"), "{err}");
         assert_eq!(toplevel(&dir).unwrap_err(), NOT_A_REPO);
-        // A .git file pointing nowhere is a broken repo, and git's message says where.
+        // A .git file pointing nowhere is a broken repo, so git's own message comes through.
+        // Not checked for the path: git 2.55 prints "not a git repository: (null)".
         fs::write(dir.join(".git"), "gitdir: /nowhere/at/all\n").unwrap();
         let err = toplevel(&dir).unwrap_err();
-        assert!(err.contains("/nowhere/at/all"), "{err}");
+        assert_ne!(err, NOT_A_REPO);
+        assert!(err.contains("not a git repository"), "{err}");
         let _ = fs::remove_dir_all(&dir);
     }
 }
