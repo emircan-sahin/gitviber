@@ -44,6 +44,9 @@ export type LightSyntaxTheme = keyof typeof LIGHT_SYNTAX_THEMES;
 
 export type Appearance = "system" | "light" | "dark";
 
+/** Minutes between background fetches; 0 is off. */
+export const FETCH_INTERVALS = [0, 5, 15, 30];
+
 export interface Settings {
   codeFont: CodeFont;
   codeFontSize: number;
@@ -63,6 +66,10 @@ export interface Settings {
   svgPreview: boolean;
   /** Per-command overrides of the default key bindings; an empty list unbinds. */
   keybindings: Record<string, string[]>;
+  /** Minutes between quiet fetches of the open repo (one of FETCH_INTERVALS); 0 is off. */
+  backgroundFetch: number;
+  /** Where the last clone went; the next one offers the same folder. */
+  cloneParent: string | null;
 }
 
 export const DEFAULT_FONT_SIZE = 12.5;
@@ -83,6 +90,8 @@ const DEFAULTS: Settings = {
   markdownPreview: true,
   svgPreview: false,
   keybindings: {},
+  backgroundFetch: 5,
+  cloneParent: null,
 };
 
 // v2: the Monaco-era settings had different fonts and sizes.
@@ -100,6 +109,8 @@ function load(): Settings {
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     s.keybindings = cleanOverrides(s.keybindings);
+    if (!FETCH_INTERVALS.includes(s.backgroundFetch)) s.backgroundFetch = DEFAULTS.backgroundFetch;
+    if (typeof s.cloneParent !== "string") s.cloneParent = null;
     return s;
   } catch {
     return DEFAULTS;
