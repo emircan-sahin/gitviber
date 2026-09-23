@@ -187,9 +187,10 @@ function terminalOptions(): ITerminalOptions {
       cursor: v("--primary"),
       cursorAccent: v("--background"),
       selectionBackground: `${v("--primary")}55`,
-      scrollbarSliderBackground: `${v("--foreground")}1f`,
-      scrollbarSliderHoverBackground: `${v("--foreground")}33`,
-      scrollbarSliderActiveBackground: `${v("--foreground")}4d`,
+      // --scrollbar-thumb, -hover and -active from index.css: 18%, 36% and 50% of the foreground.
+      scrollbarSliderBackground: `${v("--foreground")}2e`,
+      scrollbarSliderHoverBackground: `${v("--foreground")}5c`,
+      scrollbarSliderActiveBackground: `${v("--foreground")}80`,
     },
   };
 }

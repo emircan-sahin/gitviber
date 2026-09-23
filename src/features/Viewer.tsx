@@ -88,7 +88,7 @@ function tabLabel(sel: Selection) {
 
 function TabStrip({ tabs, active, onActivate, onClose, onPin, onMoveTab }: ViewerProps) {
   return (
-    <div data-tauri-drag-region className="flex h-9 shrink-0 items-stretch overflow-x-auto overflow-y-hidden border-b border-border bg-panel [&::-webkit-scrollbar]:hidden">
+    <div data-tauri-drag-region data-scrollbar="none" className="flex h-9 shrink-0 items-stretch overflow-x-auto overflow-y-hidden border-b border-border bg-panel">
       <SortableList ids={tabs.map((t) => t.key)} axis="x" onMove={onMoveTab}>
         {tabs.map((t) => (
           <TabItem key={t.key} tab={t} active={t.key === active?.key} onActivate={onActivate} onClose={onClose} onPin={onPin} />

@@ -6,8 +6,11 @@ import { StrictMode } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { installScrollbars } from "./lib/scrollbars";
 
 import { Fixture } from "./dev-fixture";
+
+installScrollbars();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>{import.meta.env.DEV && location.search.includes("fixture") ? <Fixture /> : <App />}</StrictMode>,

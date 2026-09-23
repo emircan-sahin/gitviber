@@ -70,7 +70,7 @@ export function TerminalPanel({ root, worktrees }: Props) {
   return (
     <div className="flex h-full flex-col bg-background" onKeyDown={onKeyDown}>
       <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-panel">
-        <div role="tablist" className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden [&::-webkit-scrollbar]:hidden">
+        <div role="tablist" data-scrollbar="none" className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
           {groups.map((g) => (
             <GroupTab key={g.id} group={g} active={g.id === active} here={g.panes[0].cwd === root} branch={branchOf(g.panes[0].cwd)} />
           ))}
