@@ -484,6 +484,12 @@
   }
 }
 
+/* The code view is read-only: a blinking caret reads as "type here". The cursor still marks
+   the clicked line (Open in, find), it just isn't drawn. */
+.monaco-editor .cursors-layer {
+  display: none;
+}
+
 /* Monaco's file view: VS Code-style change bars in the gutter, a wedge where lines were deleted. */
 .monaco-editor .gv-bar {
   width: 3px !important;
