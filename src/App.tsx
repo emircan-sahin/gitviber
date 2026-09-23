@@ -5,20 +5,43 @@ import { Toaster } from "@/components/Toaster";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AboutDialog } from "@/features/AboutDialog";
+import { IdentityDialog } from "@/features/IdentityDialog";
+import { NeedsGit } from "@/features/NeedsGit";
 import { openSettings, SettingsDialog } from "@/features/SettingsDialog";
 import { Welcome } from "@/features/Welcome";
 import { Workspace } from "@/features/Workspace";
-import { api, errorMessage, type OpenedRepo } from "@/lib/api";
+import { api, errorMessage, type GitInfo, type OpenedRepo } from "@/lib/api";
 import { useCommands } from "@/lib/keybindings";
 import { useRecentMenu } from "@/lib/menu";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder, stepUiScale } from "@/lib/settings";
 import { toast } from "@/lib/toast";
-import { folderName } from "@/lib/worktrees";
+import { folderName, isInside } from "@/lib/worktrees";
 
 export function App() {
   const [opened, setOpened] = useState<OpenedRepo | null>(null);
   const [recent, setRecent] = useState(recentRepos);
   const [booting, setBooting] = useState(true);
+  const [git, setGit] = useState<GitInfo | null>(null);
+
+  // Checked alongside the reopen below, not before it: the usual answer is "fine".
+  useEffect(() => {
+    let live = true;
+    api.gitInfo().then((info) => {
+      if (!live) return;
+      setGit(info);
+      // Errors stay until dismissed, and an old git does fail: every repo open lists worktrees.
+      if (info.state === "old") toast("error", `git ${info.version} is older than GitViber needs (${info.minimum})`, "Worktrees and some actions will fail. Update git, e.g. brew install git.");
+    }, () => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  const recheckGit = useCallback(async () => {
+    const info = await api.gitInfo(true).catch(() => null);
+    if (info) setGit(info);
+    if (info?.state === "ok" || info?.state === "old") toast("success", `Found git ${info.version}`);
+  }, []);
+  const noGit = git?.state === "missing" || git?.state === "tools";
 
   /** `replacing`: a saved project whose folder moved; this repo takes its place in the list. */
   const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string) => {
@@ -45,7 +68,7 @@ export function App() {
   useEffect(() => {
     const last = lastRepo();
     const projects = recentRepos();
-    const fallback = projects.find((p) => last?.startsWith(`${p}/`)) ?? projects[0];
+    const fallback = projects.find((p) => last && isInside(last, p)) ?? projects[0];
     (async () => {
       if (last && (await openRepo(last, true))) return;
       if (fallback && fallback !== last) await openRepo(fallback, true);
@@ -93,8 +116,10 @@ export function App() {
           <Workspace root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} />
         </WorkspaceBoundary>
       ) : (
-        !booting && <Welcome recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} />
+        !booting &&
+        (git && noGit ? <NeedsGit info={git} onRecheck={recheckGit} /> : <Welcome recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} />)
       )}
+      <IdentityDialog root={opened?.root ?? null} />
       <SettingsDialog />
       <AboutDialog />
       <Toaster />

@@ -1,6 +1,15 @@
 import type { FileChange } from "./api";
 
-export const folderName = (path: string) => path.replace(/\/+$/, "").split("/").pop() ?? path;
+// A Windows path (C:\… or \\server\…) may mix both separators; elsewhere "\" can be part of a name.
+const separator = (path: string) => (/^([a-z]:[\\/]|\\\\)/i.test(path) ? /[\\/]/ : /\//);
+
+export const folderName = (path: string) => {
+  const sep = separator(path);
+  return path.replace(new RegExp(`${sep.source}+$`), "").split(sep).pop() ?? path;
+};
+
+/** `path` is somewhere inside the folder `dir`. */
+export const isInside = (path: string, dir: string) => path.startsWith(dir) && separator(dir).test(path.charAt(dir.length));
 
 /** Where a worktree sits, as short as it can be said: inside the main one, or beside it. */
 export function shortPath(path: string, main: string) {

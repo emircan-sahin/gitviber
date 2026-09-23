@@ -37,6 +37,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, errorMessage, type Branch, type JournalEntry, type Worktree } from "@/lib/api";
+import { IS_MAC } from "@/lib/commands";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
@@ -102,7 +103,7 @@ function useFullscreen() {
  * lights), sync actions and settings on the right. Empty space drags the window.
  * Its 40px height matches the native title bar (a compact toolbar, see titlebar.rs), whose
  * traffic lights end at 66pt; the 86px left inset clears them. Full screen moves them out
- * of the window, so the inset goes too. The traffic lights ignore page zoom, so both are
+ * of the window, so the inset goes too, as it does off macOS. The traffic lights ignore page zoom, so both are
  * divided by --ui-scale to stay in points (the height only grows: at 150% a 40pt bar can't
  * fit its buttons).
  */
@@ -242,7 +243,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   return (
     <header
       data-tauri-drag-region
-      className={`flex h-[max(40px,calc(40px/var(--ui-scale,1)))] shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 ${fullscreen ? "pl-2" : "pl-[calc(86px/var(--ui-scale,1))]"}`}
+      className={`flex h-[max(40px,calc(40px/var(--ui-scale,1)))] shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 ${fullscreen || !IS_MAC ? "pl-2" : "pl-[calc(86px/var(--ui-scale,1))]"}`}
     >
       <Wordmark />
       <div className="mx-2 h-4 w-px bg-border-strong" />
@@ -466,7 +467,7 @@ function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boolean })
 function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: Props) {
   const [open, setOpen] = useState(false);
   const totals = changeTotals(repo);
-  const name = main.split("/").pop() ?? main;
+  const name = folderName(main);
   const openKey = useShortcut("file.openRepo");
   const pick = (p?: string) => {
     setOpen(false);

@@ -3,7 +3,17 @@
  * runs under node:test). A binding is a canonical chord string such as "shift+cmd+e" or
  * "alt+down": modifiers in ⌃⌥⇧⌘ order, then the key. Defaults follow VS Code where it has
  * an equivalent. When two commands share a chord, the one listed first here wins.
+ * Off macOS "cmd" is Ctrl, as VS Code's CtrlCmd, and "ctrl" is the Windows / Super key.
  */
+
+// Lives here, not in its own module: node:test loads this file without a bundler.
+const PLATFORM = typeof navigator === "undefined" ? "" : navigator.platform;
+export const IS_MAC = /Mac|iPhone|iPad/.test(PLATFORM);
+const IS_WINDOWS = PLATFORM.startsWith("Win");
+
+/** What the OS calls showing a file in its file manager. */
+export const REVEAL_LABEL = IS_MAC ? "Reveal in Finder" : IS_WINDOWS ? "Show in Explorer" : "Show in Folder";
+
 export const COMMANDS = [
   { id: "workbench.openSettings", title: "Open Settings", category: "General", keys: ["cmd+,"] },
   { id: "file.openRepo", title: "Open Repository", category: "General", keys: ["cmd+o"] },
@@ -11,7 +21,7 @@ export const COMMANDS = [
   // The file watcher refreshes on its own; this is for changes it can't see.
   { id: "repo.refresh", title: "Refresh", category: "General", keys: [] },
   { id: "tab.close", title: "Close Tab", category: "General", keys: ["cmd+w"] },
-  { id: "file.reveal", title: "Reveal in Finder", category: "General", keys: [] },
+  { id: "file.reveal", title: REVEAL_LABEL, category: "General", keys: [] },
   { id: "view.changes", title: "Show Changes", category: "View", keys: ["cmd+1"] },
   { id: "view.history", title: "Show History", category: "View", keys: ["cmd+2"] },
   { id: "view.pulls", title: "Show Pull Requests", category: "View", keys: ["cmd+3"] },
@@ -120,12 +130,21 @@ function keyToken(e: KeyLike): string | null {
 }
 
 /** The canonical chord for a key event, or null for a lone modifier or an unknown key. */
-export function eventChord(e: KeyLike): string | null {
+export function eventChord(e: KeyLike, mac = IS_MAC): string | null {
   if (["Meta", "Control", "Alt", "Shift", "CapsLock", "Fn"].includes(e.key)) return null;
   const key = keyToken(e);
   if (!key) return null;
-  const mods = MODS.filter((m) => (m === "cmd" ? e.metaKey : m === "ctrl" ? e.ctrlKey : m === "alt" ? e.altKey : e.shiftKey));
-  return [...mods, key].join("+");
+  const held = { cmd: mac ? e.metaKey : e.ctrlKey, ctrl: mac ? e.ctrlKey : e.metaKey, alt: e.altKey, shift: e.shiftKey };
+  return [...MODS.filter((m) => held[m]), key].join("+");
+}
+
+/** A chord as the native menu (muda) reads it: there "cmd" is always the ⌘ / Windows key. */
+export function menuAccelerator(chord: string, mac = IS_MAC): string {
+  if (mac) return chord;
+  return chord
+    .split("+")
+    .map((p) => (p === "cmd" ? "ctrl" : p === "ctrl" ? "super" : p))
+    .join("+");
 }
 
 /** Canonical form of a stored chord, or null when it has unknown or repeated modifiers. */
@@ -179,9 +198,17 @@ const GLYPHS: Record<string, string> = {
   "-": "−",
 };
 
-export function formatChord(chord: string): string {
-  return chord
-    .split("+")
-    .map((p) => GLYPHS[p] ?? p.toUpperCase())
-    .join("");
+const NAMES: Record<string, string> = { cmd: "Ctrl", ctrl: IS_WINDOWS ? "Win" : "Super", alt: "Alt", shift: "Shift" };
+
+/** One argument, so it can go straight into `.map`. */
+export const formatChord = (chord: string) => formatChordFor(chord, IS_MAC);
+
+/** ⇧⌘E on macOS, Ctrl+Shift+E elsewhere. */
+export function formatChordFor(chord: string, mac: boolean): string {
+  const parts = chord.split("+");
+  if (mac) return parts.map((p) => GLYPHS[p] ?? p.toUpperCase()).join("");
+  // Windows and Linux lead with Ctrl, not with ⌃⌥⇧⌘'s order.
+  const key = parts.pop()!;
+  const mods = ["cmd", "ctrl", "alt", "shift"].filter((m) => parts.includes(m)).map((m) => NAMES[m]);
+  return [...mods, GLYPHS[key] ?? key.toUpperCase()].join("+");
 }

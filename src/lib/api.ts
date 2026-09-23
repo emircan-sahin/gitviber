@@ -198,8 +198,32 @@ export interface About {
   git: string | null;
 }
 
+export interface GitInfo {
+  /** "tools": macOS's git stub, with no Command Line Tools behind it. */
+  state: "ok" | "old" | "missing" | "tools";
+  /** `git --version` without the prefix. */
+  version: string | null;
+  /** Why git can't run. */
+  detail: string | null;
+  /** The oldest git that works, e.g. "2.36". */
+  minimum: string;
+}
+
+export interface GitIdentity {
+  name: string | null;
+  email: string | null;
+}
+
 export const api = {
   openRepo: (path: string) => invoke<OpenedRepo>("open_repo", { path }),
+  /** Checked once per launch; `recheck` runs `git --version` again. */
+  gitInfo: (recheck = false) => invoke<GitInfo>("git_info", { recheck }),
+  /** Opens macOS's Command Line Tools installer. */
+  installGit: () => invoke<void>("install_git"),
+  /** The open repo's user.name/email; `suggested` comes from a GitHub account already signed in. */
+  gitIdentity: () => invoke<{ current: GitIdentity; suggested: GitIdentity | null }>("git_identity"),
+  /** Sets the given parts in the global git config. */
+  setGitIdentity: (name: string | null, email: string | null) => invoke<void>("set_git_identity", { name, email }),
   status: () => invoke<RepoStatus>("status"),
   about: () => invoke<About>("about"),
   /** macOS vibrancy behind the window (the Translucent background setting). */

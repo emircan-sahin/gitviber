@@ -578,6 +578,61 @@ fn continue_reports_hook_failures_instead_of_conflicts() {
     assert!(!op_continue(&r).unwrap());
 }
 
+fn executable(path: &Path, script: &str) {
+    fs::write(path, script).unwrap();
+    std::process::Command::new("chmod")
+        .args(["+x", path.to_str().unwrap()])
+        .status()
+        .unwrap();
+}
+
+/// Launched from Finder the app has a bare PATH; a hook calling a tool only the login shell
+/// adds (node from nvm, say) failed with 127. The "login shell" here prepends one folder.
+#[cfg(unix)]
+#[test]
+fn hooks_find_tools_on_the_login_shell_path() {
+    use std::ffi::OsStr;
+    let sb = Sandbox::new("login-path");
+    let tools = sb.path("tools");
+    fs::create_dir_all(&tools).unwrap();
+    executable(&tools.join("gitviber-lint"), "#!/bin/sh\nexit 0\n");
+    let shell = sb.path("login-sh");
+    // Called as `login-sh -ilc <command>`.
+    executable(
+        &shell,
+        &format!(
+            "#!/bin/sh\necho 'Welcome back!'\nPATH=\"{}:$PATH\"; export PATH\nexec /bin/sh -c \"$2\"\n",
+            tools.display()
+        ),
+    );
+    let r = sb.path("r");
+    init(&r);
+    executable(
+        &r.join(".git/hooks/pre-commit"),
+        "#!/bin/sh\nexec gitviber-lint\n",
+    );
+    fs::write(r.join("a.txt"), "a\n").unwrap();
+    stage(&r, &["a.txt".into()]).unwrap();
+    let commit_with = |path: &OsStr| {
+        let mut cmd = command(&r, &["commit", "-q", "-m", "hooked"]);
+        cmd.env("PATH", path);
+        exec(cmd, "git commit", &[], None, None)
+    };
+
+    let app_path = OsStr::new("/usr/bin:/bin:/usr/sbin:/sbin");
+    let err = commit_with(&merge_paths(None, app_path)).unwrap_err();
+    assert!(err.contains("gitviber-lint"), "{err}");
+
+    let login = crate::shell::probe_path(&shell).unwrap();
+    let merged = merge_paths(Some(&login), app_path);
+    assert!(merged
+        .to_str()
+        .unwrap()
+        .starts_with(tools.to_str().unwrap()));
+    commit_with(&merged).unwrap();
+    assert_eq!(log(&r, None, 0, 1).unwrap()[0].subject, "hooked");
+}
+
 #[test]
 fn amend_without_message_keeps_the_old_one() {
     let sb = Sandbox::new("amend");
