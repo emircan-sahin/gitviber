@@ -2,8 +2,18 @@
 // first line of content. Pure (no DOM, no React) so it runs under `node --test`.
 import { bundledLanguagesInfo } from "shiki/langs";
 
-/** VS Code's "Ignore" language isn't bundled with Shiki; the highlight worker defines it. */
+/** VS Code's "Ignore" language isn't bundled with Shiki; `ignoreGrammar` defines it. */
 export const IGNORE = "ignore";
+// VS Code's grammar for .gitignore and friends: comments and negations are all it colors.
+export const ignoreGrammar = {
+  name: IGNORE,
+  scopeName: "source.ignore",
+  patterns: [
+    { match: "^\\s*#.*", name: "comment.line.number-sign.ignore" },
+    { match: "^\\s*!", name: "keyword.operator.negation.ignore" },
+  ],
+  repository: {},
+};
 // Config files that are JSON or YAML depending on what the author chose.
 const JSON_OR_YAML = "json|yaml";
 

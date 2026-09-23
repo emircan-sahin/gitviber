@@ -1,6 +1,6 @@
-// TEMP: renders CodeView with a fixed diff so it can be inspected in Safari (same engine).
+// TEMP: renders the code view with a fixed diff so it can be inspected in Safari (same engine).
 import { useState } from "react";
-import { CodeView } from "./features/CodeView";
+import { MonacoView } from "./features/MonacoView";
 import type { DiffPair } from "./lib/api";
 
 const text = Array.from({ length: 300 }, (_, i) => `line ${i + 1}: "value": ${i}`).join("\n") + "\n";
@@ -18,7 +18,7 @@ export function Fixture() {
         wrap: {String(wrap)}
       </button>
       <div className="relative min-h-0 flex-1">
-        <CodeView pair={pair} path="a.json" mode="unified" collapse={false} wrap={wrap} scrollKey="fixture" />
+        <MonacoView pair={pair} path="a.json" mode="unified" collapse={false} wrap={wrap} scrollKey="fixture" />
       </div>
     </div>
   );

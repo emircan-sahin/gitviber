@@ -9,14 +9,14 @@ import { updateSettings, useSettings } from "@/lib/settings";
 import { FIT, type Zoom } from "@/lib/svg";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
-import { CodeView, type CodeViewHandle } from "./CodeView";
+import { type CodeViewHandle, MonacoView } from "./MonacoView";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ConflictView } from "./ConflictView";
 import { IssueStateIcon } from "./IssuesPanel";
 import { IssueView } from "./IssueView";
 import { CopyLinkButton, openOnGitHub, PullStateIcon } from "./PullsPanel";
 import { PullView } from "./PullView";
-import { prefetchHighlight } from "@/lib/highlight";
+import { prepare } from "@/lib/monaco";
 import { languageFor } from "@/lib/language";
 import { FileIcon } from "./FileIcon";
 import { isSvg, MediaView, mediaKind, SvgView } from "./MediaView";
@@ -189,7 +189,7 @@ function remember(key: string, pair: DiffPair, gen: number) {
   if (pairCache.size > 32) pairCache.delete(pairCache.keys().next().value!);
 }
 
-/** Loads a diff and its syntax colors in the background, so opening it next is instant. */
+/** Loads a diff and its language's grammar in the background, so opening it next is instant. */
 export function prefetchSelection(sel: Selection, revision: number, theme: string) {
   if (sel.kind === "pull" || sel.kind === "issue") return;
   const { kind, path, oldPath, sha, base, key } = pairArgs(sel, revision);
@@ -199,10 +199,8 @@ export function prefetchSelection(sel: Selection, revision: number, theme: strin
     .diffPair(kind, path, oldPath, sha, base)
     .then((p) => {
       remember(key, p, gen);
-      // Same text CodeView detects from, so the prefetched tokens are the ones it asks for.
-      const lang = languageFor(path, p.modified.exists ? p.modified.text : p.original.text);
-      if (kind !== "worktree") prefetchHighlight(p.original.text, lang, theme);
-      prefetchHighlight(p.modified.text, lang, theme);
+      // Same text the view detects from, so it's the grammar the view will ask for.
+      void prepare(languageFor(path, p.modified.exists ? p.modified.text : p.original.text), theme);
     })
     .catch(() => {});
 }
@@ -394,7 +392,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
           pair && <MediaView src={pairArgs(sel, revision)} before={!isFile && pair.original.exists} after={pair.modified.exists} />
         ) : (
           pair && (
-            <CodeView
+            <MonacoView
               ref={view}
               pair={pair}
               path={selectionPath(sel)}

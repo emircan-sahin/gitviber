@@ -6,6 +6,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { newerCopy, resetGitHubCache, useGitHubCacheVersion } from "@/lib/githubCache";
 import { useShownLanguage, warmHighlighter } from "@/lib/highlight";
+import { prepare } from "@/lib/monaco";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { languageLabel } from "@/lib/language";
 import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
@@ -241,10 +242,14 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
 
   const prefetch = useCallback((sel: Selection) => prefetchSelection(sel, repo.revision, s.codeTheme), [repo.revision, s.codeTheme]);
 
-  // Load the highlighter (and compile its WASM) while the app settles, not on the first file.
+  // Load the highlighters (and compile their WASM) while the app settles, not on the first file.
   useEffect(() => {
-    const t = setTimeout(warmHighlighter, 300);
+    const t = setTimeout(() => {
+      warmHighlighter();
+      void prepare("text", s.codeTheme);
+    }, 300);
     return () => clearTimeout(t);
+    // Once: a theme picked later is loaded when it's applied.
   }, []);
 
   // Reviewing is sequential: have the neighbours of the open file ready before J/K.

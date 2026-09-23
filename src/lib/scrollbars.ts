@@ -2,8 +2,8 @@
  * Overlay scrollbars for every scrolling element in the app. WebKit's own are hidden (index.css):
  * styling them turns macOS's overlay bar into a classic one that takes layout width. Instead one
  * fixed layer draws a thin thumb over whatever the pointer is on, or what just scrolled, and fades
- * it out after, like macOS but in the app's colors. The code view (overview ruler plus its own
- * horizontal bar), the terminal (xterm draws its own) and `data-scrollbar="none"` are left alone.
+ * it out after, like macOS but in the app's colors. The code view (Monaco), the terminal (both
+ * draw their own) and `data-scrollbar="none"` are left alone.
  */
 
 type Axis = "x" | "y";
@@ -21,7 +21,7 @@ interface Bar {
   observers: { disconnect(): void }[];
 }
 
-const SKIP = ".code-scroll, .xterm, [data-scrollbar='none']";
+const SKIP = ".xterm, [data-scrollbar='none']";
 /** The strip along the edge that belongs to the bar; index.css draws the thumb thinner inside it. */
 const STRIP = 10;
 const MIN_THUMB = 24;

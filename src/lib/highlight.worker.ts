@@ -4,18 +4,7 @@ import { createHighlighterCore } from "shiki/core";
 import { createOnigurumaEngine } from "shiki/engine/oniguruma";
 import { bundledLanguages } from "shiki/langs";
 import { bundledThemes } from "shiki/themes";
-import { IGNORE } from "./language";
-
-// VS Code's grammar for .gitignore and friends: comments and negations are all it colors.
-const ignoreGrammar = {
-  name: IGNORE,
-  scopeName: "source.ignore",
-  patterns: [
-    { match: "^\\s*#.*", name: "comment.line.number-sign.ignore" },
-    { match: "^\\s*!", name: "keyword.operator.negation.ignore" },
-  ],
-  repository: {},
-};
+import { IGNORE, ignoreGrammar } from "./language";
 
 type Req = { id: number; code: string; lang: string; theme: string };
 
