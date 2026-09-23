@@ -156,7 +156,7 @@ pub(crate) fn run_with(
 }
 
 /// Fetch, pull, push and clone: with progress, stoppable, and timed out only when silent.
-fn run_network(repo: &Path, args: &[&str], net: &Net) -> Result<Vec<u8>, String> {
+pub(crate) fn run_network(repo: &Path, args: &[&str], net: &Net) -> Result<Vec<u8>, String> {
     let mut args = args.to_vec();
     // Without a terminal git reports no progress unless asked.
     args.insert(1, "--progress");
@@ -1445,9 +1445,15 @@ pub fn merge_base(repo: &Path, a: &str, b: &str) -> Result<String, String> {
     run_text(repo, &["merge-base", a, b]).map(|s| s.trim().to_string())
 }
 
-/// Brings in objects for these refs from a remote. Writes no FETCH_HEAD and creates no
-/// local branch (a configured remote-tracking ref like origin/<base> may still update).
-pub fn fetch_objects(repo: &Path, remote: &str, refspecs: &[String]) -> Result<(), String> {
+/// Fetches `refspecs` from a remote without FETCH_HEAD, which any other fetch (the background
+/// one, a terminal) may rewrite before it's read. A refspec without a destination only brings
+/// in objects (a configured remote-tracking ref like origin/<base> may still update).
+pub fn fetch_objects(
+    repo: &Path,
+    remote: &str,
+    refspecs: &[String],
+    net: &Net,
+) -> Result<(), String> {
     let mut args = vec![
         "fetch",
         "--quiet",
@@ -1456,7 +1462,7 @@ pub fn fetch_objects(repo: &Path, remote: &str, refspecs: &[String]) -> Result<(
         remote,
     ];
     args.extend(refspecs.iter().map(String::as_str));
-    run_network(repo, &args, &Net::default()).map(|_| ())
+    run_network(repo, &args, net).map(|_| ())
 }
 
 pub fn remote_url(repo: &Path, remote: &str) -> Option<String> {

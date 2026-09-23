@@ -1352,7 +1352,10 @@ async fn pr_checkout(
     number: u64,
     head_ref: String,
     same_repo: bool,
+    op: String,
+    progress: Channel<network::Progress>,
 ) -> Res<()> {
+    let net = watch_network(&app.state::<AppState>(), op, progress);
     blocking(move || {
         let state = app.state::<AppState>();
         let r = repo(&state)?;
@@ -1364,7 +1367,7 @@ async fn pr_checkout(
                 .as_deref()
                 .filter(|_| remote != "origin")
                 .and_then(|t| t.split('/').next());
-            github::checkout(r, &remote, owner, number, &head_ref, same_repo)
+            github::checkout(r, &remote, owner, number, &head_ref, same_repo, &net)
         })
     })
     .await

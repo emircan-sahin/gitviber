@@ -587,7 +587,7 @@ export const github = {
   setOpen: (target: Target, number: number, open: boolean) => invoke<Pull>("pr_set_open", { target, number, open }),
   review: (target: Target, number: number, event: ReviewEvent, body: string) => invoke<void>("pr_review", { target, number, event, body }),
   /** `sameRepo`: the PR's branch lives on origin, so it's checked out under its own name. */
-  checkout: (target: Target, number: number, headRef: string, sameRepo: boolean) => invoke<void>("pr_checkout", { target, number, headRef, sameRepo }),
+  checkout: (target: Target, number: number, headRef: string, sameRepo: boolean, op?: NetOp) => network<void>("pr_checkout", { target, number, headRef, sameRepo }, op),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   /** The remote for a fork's original, owner/name (fetched first if `fetch`); null when there is none. Works offline. */
   originalRemote: (original: string, fetch: boolean) => invoke<string | null>("gh_original_remote", { original, fetch }),

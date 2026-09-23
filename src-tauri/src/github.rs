@@ -3,6 +3,7 @@
 //! memory and is never written anywhere.
 
 use crate::git;
+use crate::network::Net;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -978,6 +979,7 @@ pub fn files(
                 format!("pull/{number}/head"),
                 format!("refs/heads/{base_ref}"),
             ],
+            &Net::default(),
         )?;
     }
     let base = git::merge_base(repo, base_sha, head_sha)?;
@@ -1481,6 +1483,7 @@ pub fn checkout(
     number: u64,
     head_ref: &str,
     same_repo: bool,
+    net: &Net,
 ) -> Result<(), String> {
     let local = match (same_repo, owner) {
         (true, _) => head_ref.to_string(),
@@ -1489,40 +1492,57 @@ pub fn checkout(
     };
     git::run(repo, &["check-ref-format", "--branch", &local])
         .map_err(|_| format!("invalid branch: {local}"))?;
-    let source = if same_repo {
-        head_ref.to_string()
-    } else {
-        format!("pull/{number}/head")
-    };
-    // FETCH_HEAD is the PR head either way; never force-update a local branch.
-    let remote = if same_repo { "origin" } else { remote };
-    git::run(repo, &["fetch", "--quiet", remote, &source])?;
-    let exists = git::run(
-        repo,
-        &[
-            "rev-parse",
-            "--verify",
-            "-q",
-            &format!("refs/heads/{local}"),
-        ],
-    )
-    .is_ok();
-    if exists {
-        git::switch_branch(repo, &local, false)?;
-        git::run(repo, &["merge", "--ff-only", "--quiet", "FETCH_HEAD"])
-            .map(|_| ())
-            .map_err(|_| {
-                format!(
-                    "Local branch {local} has diverged from the pull request; reconcile it first."
-                )
-            })
-    } else if same_repo {
+    let diverged =
+        || format!("Local branch {local} has diverged from the pull request; reconcile it first.");
+    let branch = format!("refs/heads/{local}");
+    let exists = git::run(repo, &["rev-parse", "--verify", "-q", &branch]).is_ok();
+    // Fetched into refs, never read from FETCH_HEAD: another fetch (the background one, a
+    // terminal) may rewrite that in between. A local branch is only ever fast-forwarded.
+    if same_repo {
+        let tracked = format!("origin/{local}");
+        let refspec = format!("+refs/heads/{local}:refs/remotes/{tracked}");
+        git::fetch_objects(repo, "origin", &[refspec], net)?;
+        if exists {
+            git::switch_branch(repo, &local, false)?;
+            return git::run(repo, &["merge", "--ff-only", "--quiet", &tracked])
+                .map(|_| ())
+                .map_err(|_| diverged());
+        }
         // Not `git switch <head_ref>`: in a fork, upstream often has a same-named branch and
         // git's guess then refuses ("matched multiple remote tracking branches").
-        let tracked = format!("origin/{local}");
-        git::run(repo, &["switch", "-c", &local, "--track", &tracked]).map(|_| ())
-    } else {
-        git::run(repo, &["switch", "-c", &local, "FETCH_HEAD"])?;
+        return git::run(repo, &["switch", "-c", &local, "--track", &tracked]).map(|_| ());
+    }
+    let source = format!("refs/pull/{number}/head");
+    let current =
+        git::run_text(repo, &["symbolic-ref", "-q", "HEAD"]).is_ok_and(|h| h.trim() == branch);
+    if current {
+        // git won't fetch into the checked-out branch; a pull fast-forwards it the same way.
+        let pull = [
+            "pull",
+            "--ff-only",
+            "--no-rebase",
+            "--no-edit",
+            remote,
+            &source,
+        ];
+        return git::run_network(repo, &pull, net).map(|_| ()).map_err(|e| {
+            if e.contains("fast-forward") {
+                diverged()
+            } else {
+                e
+            }
+        });
+    }
+    // Not forced: creates the branch or fast-forwards it, and refuses one that diverged.
+    git::fetch_objects(repo, remote, &[format!("{source}:{branch}")], net).map_err(|e| {
+        if e.contains("non-fast-forward") {
+            diverged()
+        } else {
+            e
+        }
+    })?;
+    git::switch_branch(repo, &local, false)?;
+    if !exists {
         // Like `gh pr checkout`: the branch follows the PR, so Pull brings its new commits,
         // and it never looks unpublished (a Publish would copy it into origin).
         let key = |k: &str| format!("branch.{local}.{k}");
@@ -1530,9 +1550,9 @@ pub fn checkout(
         git::run(
             repo,
             &["config", &key("merge"), &format!("refs/pull/{number}/head")],
-        )
-        .map(|_| ())
+        )?;
     }
+    Ok(())
 }
 
 /// Links in GitHub text are written by anyone, so only http(s) passes, in the canonical
@@ -1795,7 +1815,16 @@ mod tests {
                     .unwrap()
                     .to_string(),
             );
-        checkout(repo, "origin", None, 2, &d.pull.head_ref, same_repo).unwrap();
+        checkout(
+            repo,
+            "origin",
+            None,
+            2,
+            &d.pull.head_ref,
+            same_repo,
+            &Net::default(),
+        )
+        .unwrap();
         assert_eq!(
             git::status(repo).unwrap().branch.as_deref(),
             Some(d.pull.head_ref.as_str())
