@@ -22,6 +22,8 @@ interface Props {
   collapse: boolean;
   wrap: boolean;
   scrollKey: string;
+  /** The new side is the file on disk (not the index or a commit), so its lines are the file's. */
+  onDisk?: boolean;
   /** The file view's blame column: who last changed each line. */
   blame?: Blame | null;
   onBlameClick?: (commit: BlameCommit) => void;
@@ -49,7 +51,7 @@ export function lineInView(path: string): number | undefined {
 }
 
 /** The code view on Monaco (VS Code's editor): a diff editor for changes, a plain one for files. */
-export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, blame = null, onBlameClick }, ref) {
+export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, onBlameClick }, ref) {
   const s = useSettings();
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<Editor | null>(null);
@@ -155,7 +157,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
         markBlame(e, blameRef.current);
       }
       onScreen = true;
-      onShow = shows;
+      // A staged diff or a commit shows another version: its line numbers aren't the file's.
+      if (onDisk) onShow = shows;
       unit.current = created.unit;
       old.forEach((m) => m.dispose());
       shown.current = scrollKey;
@@ -182,7 +185,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       if (editor.current === e) viewStates.set(scrollKey, e.saveViewState()!);
     };
     // The file, and the colors it's drawn in (the app's palette too: dark and dimmed share a syntax theme).
-  }, [pair, lang, diff, scrollKey, s.codeTheme, s.theme]);
+  }, [pair, lang, diff, scrollKey, onDisk, s.codeTheme, s.theme]);
 
   // Copies carry the file's own indentation, not the tabs it's shown with. Monaco has filled the
   // clipboard by the time this bubbles up from its text area.

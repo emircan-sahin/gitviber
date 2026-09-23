@@ -240,6 +240,9 @@ function usePair(sel: FileSelection, revision: number, ws: Whitespace | null) {
   useEffect(() => {
     const hit = pairCache.get(key);
     if (hit) {
+      // Counts as the newest reply: one still in flight for another key (the other whitespace
+      // setting, say) must not replace it when it lands.
+      applied.current = ++latest.current;
       setPair((prev) => (samePair(prev, hit) ? prev : hit));
       setError(null);
       return;
@@ -439,6 +442,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               collapse={s.hideUnchanged}
               wrap={s.wordWrap}
               scrollKey={tab.key}
+              onDisk={sel.kind === "file" || sel.kind === "unstaged"}
               blame={blame}
               onBlameClick={(c) => onShowCommit(c.sha, c.path)}
             />
