@@ -152,6 +152,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &sep()?,
             &b.command("diff.nextChange", "Next Change")?,
             &b.command("diff.prevChange", "Previous Change")?,
+            &sep()?,
+            &b.command("tab.next", "Next Tab")?,
+            &b.command("tab.prev", "Previous Tab")?,
+            &b.command("tab.last", "Last Tab")?,
         ],
     )?;
 

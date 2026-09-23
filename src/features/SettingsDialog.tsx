@@ -332,8 +332,8 @@ function ShortcutsSection({ recording, setRecording }: { recording: Recording; s
         {!rows.length && <div className="px-3 py-6 text-center text-[12px] text-subtle">No matching commands</div>}
       </div>
       <p className="mt-3 text-[11.5px] leading-relaxed text-subtle">
-        Click a key to change it, or + to add one; Esc cancels. When two commands share a key, the one higher in this list runs. Shortcuts without ⌘ are ignored while
-        typing in a text field, and Commit only applies in the commit message.
+        Click a key to change it, or + to add one; Esc cancels. When two commands share a key, the one higher in this list runs. While you type in a text field, only
+        shortcuts with ⌘, ⌃ or an F-key apply (not ⌘-arrows or ⌃ with a letter, which edit text), and Commit only applies in the commit message.
       </p>
     </>
   );

@@ -69,12 +69,14 @@ GitViber is built and tested on macOS. The code compiles elsewhere, but nobody h
 ## Shortcuts
 
 Every shortcut in the list below except the terminal ones can be rebound in Settings (`⌘,`).
-Shortcuts without `⌘` are ignored while you type.
+While you type, only shortcuts with `⌘`, `⌃` or an F-key apply, except `⌘←` `⌘→` and `⌃` with a letter, which edit the text.
 
 | Keys | |
 | --- | --- |
 | `⌘,` | Settings |
-| `⌘1` `⌘2` `⌘3` `⌘4` | Changes, History, PRs, Issues |
+| `⌃1` `⌃2` `⌃3` `⌃4` | Changes, History, PRs, Issues |
+| `⌘1` … `⌘8`, `⌘9` | Go to tab 1 to 8, the last tab |
+| `⇧⌘]` `⇧⌘[`, `⌘→` `⌘←`, `⌃⇥` `⌃⇧⇥` | Next / previous tab |
 | `J` `K` | Next / previous changed file |
 | `↓` `↑` `↵` | Move through the focused list (Changes, History, PRs, Issues), `↵` keeps the tab open; `Home` `End` `PgUp` `PgDn` too |
 | `⇧F10` | The focused row's right-click menu |

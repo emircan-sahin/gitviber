@@ -12,16 +12,29 @@ export const COMMANDS = [
   { id: "repo.refresh", title: "Refresh", category: "General", keys: [] },
   { id: "tab.close", title: "Close Tab", category: "General", keys: ["cmd+w"] },
   { id: "file.reveal", title: "Reveal in Finder", category: "General", keys: [] },
-  { id: "view.changes", title: "Show Changes", category: "View", keys: ["cmd+1"] },
-  { id: "view.history", title: "Show History", category: "View", keys: ["cmd+2"] },
-  { id: "view.pulls", title: "Show Pull Requests", category: "View", keys: ["cmd+3"] },
-  { id: "view.issues", title: "Show Issues", category: "View", keys: ["cmd+4"] },
+  // ⌘1–⌘9 pick tabs, as in browsers. Listed before the tabs, so a user who bound ⌘1 here keeps it.
+  { id: "view.changes", title: "Show Changes", category: "View", keys: ["ctrl+1"] },
+  { id: "view.history", title: "Show History", category: "View", keys: ["ctrl+2"] },
+  { id: "view.pulls", title: "Show Pull Requests", category: "View", keys: ["ctrl+3"] },
+  { id: "view.issues", title: "Show Issues", category: "View", keys: ["ctrl+4"] },
   { id: "view.toggleGitPanel", title: "Toggle Git Panel", category: "View", keys: ["cmd+b"] },
   { id: "view.toggleExplorer", title: "Toggle Explorer", category: "View", keys: ["alt+cmd+b"] },
   { id: "view.showExplorer", title: "Show Explorer", category: "View", keys: ["shift+cmd+e"] },
   { id: "view.zoomIn", title: "Zoom In", category: "View", keys: ["cmd+=", "shift+cmd+="] },
   { id: "view.zoomOut", title: "Zoom Out", category: "View", keys: ["cmd+-"] },
   { id: "view.zoomReset", title: "Reset Zoom", category: "View", keys: ["cmd+0"] },
+  { id: "tab.goto1", title: "Go to Tab 1", category: "Tabs", keys: ["cmd+1"] },
+  { id: "tab.goto2", title: "Go to Tab 2", category: "Tabs", keys: ["cmd+2"] },
+  { id: "tab.goto3", title: "Go to Tab 3", category: "Tabs", keys: ["cmd+3"] },
+  { id: "tab.goto4", title: "Go to Tab 4", category: "Tabs", keys: ["cmd+4"] },
+  { id: "tab.goto5", title: "Go to Tab 5", category: "Tabs", keys: ["cmd+5"] },
+  { id: "tab.goto6", title: "Go to Tab 6", category: "Tabs", keys: ["cmd+6"] },
+  { id: "tab.goto7", title: "Go to Tab 7", category: "Tabs", keys: ["cmd+7"] },
+  { id: "tab.goto8", title: "Go to Tab 8", category: "Tabs", keys: ["cmd+8"] },
+  { id: "tab.last", title: "Go to Last Tab", category: "Tabs", keys: ["cmd+9"] },
+  // ⌘←/⌘→ skip text fields and the terminal (see runsWhileTyping); ⇧⌘] shows in the menu as it works everywhere.
+  { id: "tab.next", title: "Next Tab", category: "Tabs", keys: ["shift+cmd+]", "cmd+right", "ctrl+tab"] },
+  { id: "tab.prev", title: "Previous Tab", category: "Tabs", keys: ["shift+cmd+[", "cmd+left", "ctrl+shift+tab"] },
   { id: "review.nextFile", title: "Next Changed File", category: "Review", keys: ["j"] },
   { id: "review.prevFile", title: "Previous Changed File", category: "Review", keys: ["k"] },
   { id: "review.toggleViewed", title: "Toggle File Viewed", category: "Review", keys: ["v"] },
@@ -52,8 +65,8 @@ export type Overrides = Record<string, string[]>;
 
 export const isCommandId = (id: string): id is CommandId => COMMANDS.some((c) => c.id === id);
 
-/** macOS handles these before the page sees them (quit, hide, minimize, cycle windows). */
-export const RESERVED = ["cmd+q", "cmd+h", "alt+cmd+h", "cmd+m", "cmd+`"];
+/** macOS handles these before the page sees them (quit, hide, minimize, cycle windows, screenshots). */
+export const RESERVED = ["cmd+q", "cmd+h", "alt+cmd+h", "cmd+m", "cmd+`", "shift+cmd+3", "shift+cmd+4", "shift+cmd+5"];
 
 const MODS = ["ctrl", "alt", "shift", "cmd"] as const;
 
@@ -74,6 +87,9 @@ const NAMED_KEYS: Record<string, string> = {
   PageDown: "pagedown",
   // "+" can't be a token (it's the separator); every layout's plus key means zoom in anyway.
   "+": "=",
+  // ⇧⌘] types "}"; named by its key, as menus show it.
+  "{": "[",
+  "}": "]",
 };
 
 /** US names for physical keys, the last resort when ⌥ hid the character. */
@@ -155,6 +171,21 @@ export function bindingsFor(id: CommandId, overrides: Overrides): readonly strin
 /** The global command a chord runs: the first listed one bound to it. */
 export function commandFor(chord: string, overrides: Overrides): Command | undefined {
   return COMMANDS.find((c) => !("local" in c) && bindingsFor(c.id, overrides).includes(chord));
+}
+
+/**
+ * Whether a chord still runs its command while focus is in a text field or the terminal. Letters
+ * and ⌥ chords type characters there, ⌃+letter edits the line (⌃A, ⌃K) or is a control code, and
+ * ⌘-arrows move the cursor (the terminal turns ⌘←/⌘→ into start/end of line). ⌘ chords, ⌃ with
+ * anything else (⌃Tab, ⌃1) and F-keys are free.
+ */
+export function runsWhileTyping(chord: string, command: Command): boolean {
+  if ("outsideText" in command) return false;
+  const mods = chord.split("+");
+  const key = mods.pop()!;
+  if (mods.includes("cmd")) return !["left", "right", "up", "down"].includes(key);
+  if (mods.includes("ctrl")) return !/^[a-z]$/.test(key);
+  return /^f\d+$/.test(key) && !mods.includes("alt");
 }
 
 const GLYPHS: Record<string, string> = {

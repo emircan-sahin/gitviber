@@ -120,6 +120,11 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
 
   const moveTab = useCallback((from: number, to: number) => setTabState((st) => ({ ...st, tabs: arrayMove(st.tabs, from, to) })), []);
 
+  // ⌘1–⌘9 and next/previous (wrapping), as in browsers.
+  const goTab = (i: number) => (tabs[i] ? () => setActiveKey(tabs[i].key) : undefined);
+  const stepTab = (dir: 1 | -1) =>
+    tabs.length > 1 ? () => setActiveKey(tabs[(tabs.findIndex((t) => t.key === activeKey) + dir + tabs.length) % tabs.length].key) : undefined;
+
   const pin = useCallback((key: string) => setTabState((st) => ({ ...st, tabs: st.tabs.map((t) => (t.key === key ? { ...t, preview: false } : t)) })), []);
 
   // Explorer rename/trash: file tabs at or under `from` move to `to` in place, or close when it's null.
@@ -289,6 +294,17 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.toggleExplorer": () => toggle(filesPanel),
     "view.showExplorer": () => filesPanel.current?.expand(),
     "tab.close": activeKey ? () => close(activeKey) : undefined,
+    "tab.goto1": goTab(0),
+    "tab.goto2": goTab(1),
+    "tab.goto3": goTab(2),
+    "tab.goto4": goTab(3),
+    "tab.goto5": goTab(4),
+    "tab.goto6": goTab(5),
+    "tab.goto7": goTab(6),
+    "tab.goto8": goTab(7),
+    "tab.last": goTab(tabs.length - 1),
+    "tab.next": stepTab(1),
+    "tab.prev": stepTab(-1),
     "file.reveal": () => revealInFinder(tabs.find((t) => t.key === activeKey)?.sel),
     "repo.refresh": () => repo.refresh(),
   });

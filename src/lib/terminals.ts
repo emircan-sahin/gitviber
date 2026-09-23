@@ -6,6 +6,7 @@ import { type ITerminalOptions, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useSyncExternalStore } from "react";
 import { errorMessage } from "./api";
+import { appTakesFromTerminal } from "./keybindings";
 import { CODE_FONTS, getSettings, subscribeSettings } from "./settings";
 
 /**
@@ -239,7 +240,8 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   term.onResize(({ cols, rows }) => p.pty !== null && void invoke("pty_resize", { id: p.pty, cols, rows }).catch(() => {}));
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   // ⌘ keys are the app's shortcuts (copy and paste arrive as clipboard events, not keys),
-  // except the line-editing ones; ⌃` toggles the panel instead of sending NUL.
+  // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, and ⌃Tab or ⌃1
+  // run their commands.
   term.attachCustomKeyEventHandler((e) => {
     const seq = lineEditKey(e);
     if (seq !== undefined) {
@@ -247,7 +249,7 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
       e.preventDefault();
       return false;
     }
-    return !e.metaKey && !(e.ctrlKey && e.code === "Backquote");
+    return !e.metaKey && !(e.ctrlKey && e.code === "Backquote") && !appTakesFromTerminal(e);
   });
   return { id, cwd, title: "" };
 }
