@@ -1582,3 +1582,94 @@ fn undo_a_rebase_continued_after_conflicts() {
     assert_eq!(on_branch(&r), "feat");
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "feat\n");
 }
+
+// ---------------------------------------------------------------- branches, tags, stash, cherry-pick
+
+fn upstream_of(repo: &Path, branch: &str) -> Option<String> {
+    let spec = format!("{branch}@{{upstream}}");
+    run_text(repo, &["rev-parse", "--abbrev-ref", &spec])
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+fn on_remote(repo: &Path, branch: &str) -> bool {
+    let full = format!("refs/heads/{branch}");
+    !run_text(repo, &["ls-remote", "origin", &full])
+        .unwrap()
+        .trim()
+        .is_empty()
+}
+
+/// Renaming the checked-out branch with its remote: the new name is pushed and tracked, the
+/// old one leaves the remote. Undo brings the old name back with its old upstream settings.
+#[test]
+fn rename_a_branch_here_and_on_the_remote() {
+    let sb = Sandbox::new("rename");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    switch_branch(a, "feat", true).unwrap();
+    write_commit(a, "f.txt", "f\n", "feat");
+    push(a, false, None).unwrap();
+    assert!(rename_branch(a, "feat", "--evil", false).is_err());
+    // The remote default branch is refused before anything moves.
+    assert!(rename_branch(a, "main", "trunk", true).is_err());
+    assert!(exists(a, "main"));
+
+    let j = Journal::default();
+    j.record(a, Action::new("Rename feat to feature", Mode::Keep), |r| {
+        rename_branch(r, "feat", "feature", true)
+    })
+    .unwrap();
+    assert_eq!(on_branch(a), "feature");
+    assert!(!exists(a, "feat"));
+    assert_eq!(upstream_of(a, "feature").as_deref(), Some("origin/feature"));
+    assert!(on_remote(a, "feature") && !on_remote(a, "feat"));
+
+    step(&j, a, false).unwrap();
+    assert_eq!(on_branch(a), "feat");
+    assert!(!exists(a, "feature"));
+    let merge = run_text(a, &["config", "branch.feat.merge"]).unwrap();
+    assert_eq!(merge.trim(), "refs/heads/feat");
+    step(&j, a, true).unwrap();
+    assert_eq!(on_branch(a), "feature");
+    assert_eq!(upstream_of(a, "feature").as_deref(), Some("origin/feature"));
+
+    // A local-only rename of a branch that isn't checked out.
+    switch_branch(a, "side", true).unwrap();
+    switch_branch(a, "feature", false).unwrap();
+    rename_branch(a, "side", "aside", false).unwrap();
+    assert!(exists(a, "aside") && !exists(a, "side"));
+    assert!(
+        rename_branch(a, "aside", "x", true).is_err(),
+        "tracks nothing"
+    );
+}
+
+/// A branch from a remote branch or a tag starts there without tracking it; the upstream is
+/// set and unset on its own.
+#[test]
+fn create_branch_from_a_base_and_set_its_upstream() {
+    let sb = Sandbox::new("newfrom");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    let base = rev(a, "HEAD");
+    write_commit(a, "b.txt", "b\n", "local only");
+    run(a, &["tag", "v1", &base]).unwrap();
+    assert_eq!(tags(a).unwrap(), vec!["v1".to_string()]);
+
+    create_branch(a, "from-remote", "refs/remotes/origin/main", false).unwrap();
+    assert_eq!(on_branch(a), "main");
+    assert_eq!(rev(a, "from-remote"), base);
+    assert_eq!(upstream_of(a, "from-remote"), None);
+    create_branch(a, "from-tag", "refs/tags/v1", true).unwrap();
+    assert_eq!(on_branch(a), "from-tag");
+    assert_eq!(rev(a, "HEAD"), base);
+    assert!(create_branch(a, "bad", "main", false).is_err());
+    assert!(create_branch(a, "bad", "refs/tags/nope", false).is_err());
+
+    set_upstream(a, "from-tag", Some("origin/main")).unwrap();
+    assert_eq!(upstream_of(a, "from-tag").as_deref(), Some("origin/main"));
+    assert!(set_upstream(a, "from-tag", Some("origin/nope")).is_err());
+    set_upstream(a, "from-tag", None).unwrap();
+    assert_eq!(upstream_of(a, "from-tag"), None);
+}

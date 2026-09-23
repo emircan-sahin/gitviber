@@ -1709,6 +1709,103 @@ pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String
     run(repo, &args).map(|_| ())
 }
 
+/// A new branch at `base`: HEAD, or a full ref to a local or remote branch or a tag. It doesn't
+/// track `base`: it's a new line of work, and under `push.default=simple` an upstream with
+/// another name would refuse its pushes. `switch` checks it out as well.
+pub fn create_branch(repo: &Path, name: &str, base: &str, switch: bool) -> Result<(), String> {
+    validate_branch(repo, name)?;
+    if base != "HEAD"
+        && !["refs/heads/", "refs/remotes/", "refs/tags/"]
+            .iter()
+            .any(|p| base.starts_with(p))
+    {
+        return Err(format!("not a branch or tag: {base}"));
+    }
+    validate_ref(repo, base)?;
+    let args = if switch {
+        vec!["switch", "--no-track", "-c", name, base]
+    } else {
+        vec!["branch", "--no-track", name, base]
+    };
+    run(repo, &args).map(|_| ())
+}
+
+/// `git branch -m`. With `remote` the branch's upstream is renamed too: the new name is
+/// pushed and tracked, then the old one deleted there.
+pub fn rename_branch(repo: &Path, old: &str, new: &str, remote: bool) -> Result<(), String> {
+    validate_branch(repo, old)?;
+    validate_branch(repo, new)?;
+    // Checked before anything moves, so a refusal leaves everything as it was.
+    let upstream = remote.then(|| remote_upstream(repo, old)).transpose()?;
+    run(repo, &["branch", "-m", old, new])?;
+    let Some((remote, branch)) = upstream else {
+        return Ok(());
+    };
+    let publish = format!("refs/heads/{new}:refs/heads/{new}");
+    let gone = format!("refs/heads/{branch}");
+    run_network(repo, &["push", "-u", &remote, &publish])
+        .and_then(|_| run_network(repo, &["push", &remote, "--delete", &gone]))
+        .map(|_| ())
+        .map_err(|e| format!("Renamed to {new} here, but not on {remote}: {e}"))
+}
+
+/// The remote and branch name `branch` tracks. Refuses a remote's default branch: hosts
+/// reject deleting it, and it would leave every clone without one.
+fn remote_upstream(repo: &Path, branch: &str) -> Result<(String, String), String> {
+    let reference = format!("refs/heads/{branch}");
+    let out = run_text(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(upstream:remotename)%1f%(upstream:remoteref)",
+            &reference,
+        ],
+    )?;
+    let (remote, name) = out
+        .trim_end()
+        .split_once('\x1f')
+        .filter(|(r, _)| !r.is_empty() && *r != ".")
+        .and_then(|(r, m)| Some((r.to_string(), m.strip_prefix("refs/heads/")?.to_string())))
+        .ok_or_else(|| format!("{branch} doesn't track a remote branch"))?;
+    let head = format!("refs/remotes/{remote}/HEAD");
+    if run_text(repo, &["symbolic-ref", "--quiet", "--short", &head])
+        .is_ok_and(|h| h.trim() == format!("{remote}/{name}"))
+    {
+        return Err(format!(
+            "{remote}/{name} is {remote}'s default branch; rename it on the host instead"
+        ));
+    }
+    Ok((remote, name))
+}
+
+/// Makes `branch` track `upstream`, a remote-tracking branch such as origin/feat, or nothing.
+pub fn set_upstream(repo: &Path, branch: &str, upstream: Option<&str>) -> Result<(), String> {
+    validate_branch(repo, branch)?;
+    let Some(u) = upstream else {
+        return run(repo, &["branch", "--unset-upstream", branch]).map(|_| ());
+    };
+    let full = format!("refs/remotes/{u}");
+    if u.starts_with('-') || run(repo, &["rev-parse", "--verify", "-q", &full]).is_err() {
+        return Err(format!("not a remote branch: {u}"));
+    }
+    let flag = format!("--set-upstream-to={full}");
+    run(repo, &["branch", &flag, branch]).map(|_| ())
+}
+
+/// Tag names, newest first.
+pub fn tags(repo: &Path) -> Result<Vec<String>, String> {
+    let out = run_text(
+        repo,
+        &[
+            "for-each-ref",
+            "--sort=-creatordate",
+            "--format=%(refname:lstrip=2)",
+            "refs/tags",
+        ],
+    )?;
+    Ok(out.lines().map(str::to_string).collect())
+}
+
 /// Switches to the local branch for a remote-tracking one ("upstream/dev" → dev), creating it
 /// to track exactly that ref. Not `git switch dev`: with origin/dev and upstream/dev both
 /// there, git's guess refuses. An existing local branch is switched to as it is; the UI asks

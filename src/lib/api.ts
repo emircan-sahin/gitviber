@@ -205,6 +205,14 @@ export const api = {
   deleteBranches: (names: string[], force: boolean) => invoke<void>("delete_branches", { names, force }),
   /** "origin/feat" → git push origin --delete feat. */
   deleteRemoteBranch: (name: string) => invoke<void>("delete_remote_branch", { name }),
+  /** A new branch at `base` (refs/heads/…, refs/remotes/… or refs/tags/…), not tracking it; `switchTo` checks it out. */
+  createBranch: (name: string, base: string, switchTo: boolean) => invoke<void>("create_branch", { name, base, switch: switchTo }),
+  /** `remote`: also push the new name, track it, and delete the upstream's old name there. */
+  renameBranch: (old: string, name: string, remote: boolean) => invoke<void>("rename_branch", { old, new: name, remote }),
+  /** `upstream`: a remote-tracking branch (origin/feat), or null to track nothing. */
+  setUpstream: (branch: string, upstream: string | null) => invoke<void>("set_upstream", { branch, upstream }),
+  /** Tag names, newest first. */
+  tags: () => invoke<string[]>("tags"),
   worktrees: () => invoke<Worktree[]>("worktrees"),
   /** Uncommitted files in one of this repo's worktrees, and commits found nowhere else. */
   worktreeState: (path: string) => invoke<WorktreeState>("worktree_state", { path }),

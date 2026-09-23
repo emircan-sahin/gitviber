@@ -42,9 +42,10 @@ export const COMMANDS = [
   // These act on the file open in the viewer. Discard asks first; ⌘⌫ stays line delete in text.
   { id: "git.toggleStage", title: "Stage / Unstage Changes", category: "Git", keys: ["s"] },
   { id: "git.discard", title: "Discard Changes", category: "Git", keys: ["cmd+backspace"], outsideText: true },
-  // Local: only the commit message fields listen for it.
-  { id: "git.commit", title: "Commit", category: "Git", keys: ["cmd+enter", "ctrl+enter"], local: true },
-] as const satisfies readonly { id: string; title: string; category: string; keys: readonly string[]; local?: boolean; outsideText?: boolean }[];
+  // Local: only `local` listens for it.
+  { id: "git.commit", title: "Commit", category: "Git", keys: ["cmd+enter", "ctrl+enter"], local: "the commit message" },
+  { id: "git.renameBranch", title: "Rename Branch", category: "Git", keys: ["f2"], local: "the branch picker" },
+] as const satisfies readonly { id: string; title: string; category: string; keys: readonly string[]; local?: string; outsideText?: boolean }[];
 
 export type CommandId = (typeof COMMANDS)[number]["id"];
 export type Command = (typeof COMMANDS)[number];

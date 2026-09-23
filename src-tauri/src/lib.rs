@@ -226,6 +226,51 @@ async fn delete_branches(state: State<'_, AppState>, names: Vec<String>, force: 
 }
 
 #[tauri::command]
+async fn create_branch(
+    state: State<'_, AppState>,
+    name: String,
+    base: String,
+    switch: bool,
+) -> Res<()> {
+    let label = format!("Create branch {name}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::create_branch(r, &name, &base, switch)
+    })
+    .await
+}
+
+/// Only the local rename is undoable; what `remote` did on the remote stays.
+#[tauri::command]
+async fn rename_branch(
+    state: State<'_, AppState>,
+    old: String,
+    new: String,
+    remote: bool,
+) -> Res<()> {
+    let label = format!("Rename {old} to {new}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::rename_branch(r, &old, &new, remote)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_upstream(
+    state: State<'_, AppState>,
+    branch: String,
+    upstream: Option<String>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::set_upstream(&r, &branch, upstream.as_deref())).await
+}
+
+#[tauri::command]
+async fn tags(state: State<'_, AppState>) -> Res<Vec<String>> {
+    let r = repo(&state)?;
+    blocking(move || git::tags(&r)).await
+}
+
+#[tauri::command]
 async fn delete_remote_branch(state: State<'_, AppState>, name: String) -> Res<()> {
     let r = repo(&state)?;
     blocking(move || git::delete_remote_branch(&r, &name)).await
@@ -1097,6 +1142,10 @@ pub fn run() {
             switch_branch,
             delete_branches,
             delete_remote_branch,
+            create_branch,
+            rename_branch,
+            set_upstream,
+            tags,
             worktrees,
             worktree_state,
             add_worktree,

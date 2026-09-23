@@ -44,6 +44,7 @@ import { tracked, travel, undoAction } from "@/lib/undo";
 import type { RepoData } from "@/lib/useRepo";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName } from "@/lib/worktrees";
+import { type BranchDialog, BranchDialogs } from "./BranchDialogs";
 import { BranchPicker } from "./BranchPicker";
 import { ProjectList, ProjectTile } from "./ProjectList";
 import { openSettings } from "./SettingsDialog";
@@ -109,6 +110,7 @@ function useFullscreen() {
 export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
   const { status, branches, worktrees } = repo;
   const [busy, setBusy] = useState<string | null>(null);
+  const [branchDialog, setBranchDialog] = useState<BranchDialog | null>(null);
   const terminalOpen = useTerminals().open;
   const fullscreen = useFullscreen();
 
@@ -260,7 +262,12 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onTerminal={branchTerminal}
         onDelete={deleteBranch}
         onCleanUp={cleanUp}
+        onRename={(branch) => setBranchDialog({ kind: "rename", branch })}
+        onNewBranch={(base) => setBranchDialog({ kind: "new", base })}
+        onSetUpstream={(branch) => setBranchDialog({ kind: "upstream", branch })}
+        onUnsetUpstream={(b) => run("Unset upstream", () => api.setUpstream(b.name, null), `${b.name} no longer tracks ${b.upstream}`)}
       />
+      {branchDialog && <BranchDialogs dialog={branchDialog} branches={branches} onClose={() => setBranchDialog(null)} run={run} />}
       <WorktreePicker worktrees={worktrees} branches={branches} onOpen={onOpenRepo} onTerminal={openTerminal} onMerge={merge} onRemove={removeWorktree} />
       {status && !status.upstream && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
