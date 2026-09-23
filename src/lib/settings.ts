@@ -151,7 +151,8 @@ const DEFAULTS: Settings = {
   blame: false,
   keybindings: {},
   signOffRepos: [],
-  backgroundFetch: 5,
+  // Off until asked for: a fetch can prompt for an SSH key (1Password, a hardware key) every few minutes.
+  backgroundFetch: 0,
   cloneParent: null,
   suggestEnabled: false,
   suggestCommand: "claude -p",
