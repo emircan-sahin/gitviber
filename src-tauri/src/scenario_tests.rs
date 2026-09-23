@@ -82,8 +82,15 @@ fn write_commit(repo: &Path, path: &str, content: &str, msg: &str) {
     }
     fs::write(repo.join(path), content).unwrap();
     stage(repo, &[path.into()]).unwrap();
-    commit(repo, msg, false).unwrap();
+    commit(repo, msg, &CommitOptions::default()).unwrap();
 }
+
+const AMEND: CommitOptions = CommitOptions {
+    amend: true,
+    sign_off: false,
+    no_verify: false,
+    co_authors: Vec::new(),
+};
 
 #[test]
 fn pull_modes_on_diverged_branches() {
@@ -118,7 +125,7 @@ fn force_push_with_lease_after_amend() {
     let (a, b) = (&c[0], &c[1]);
     write_commit(a, "a.txt", "mine\n", "mine");
     push(a, false, None).unwrap();
-    commit(a, "mine, reworded", true).unwrap();
+    commit(a, "mine, reworded", &AMEND).unwrap();
     let err = push(a, false, None).unwrap_err();
     assert!(err.contains("non-fast-forward"), "{err}");
     push(a, true, None).unwrap();
@@ -127,7 +134,7 @@ fn force_push_with_lease_after_amend() {
     run(b, &["merge", "-q", "--ff-only", "origin/main"]).unwrap();
     write_commit(b, "b.txt", "b\n", "theirs");
     push(b, false, None).unwrap();
-    commit(a, "mine, again", true).unwrap();
+    commit(a, "mine, again", &AMEND).unwrap();
     assert!(push(a, true, None).is_err());
 }
 
@@ -140,7 +147,7 @@ fn pull_draft_counts_commits_against_the_base() {
     run(a, &["switch", "-q", "-c", "feat"]).unwrap();
     fs::write(a.join("f.txt"), "f\n").unwrap();
     stage(a, &["f.txt".into()]).unwrap();
-    commit(a, "Add f\n\nWhy it matters.", false).unwrap();
+    commit(a, "Add f\n\nWhy it matters.", &CommitOptions::default()).unwrap();
     let d = pull_draft(a, "refs/remotes/origin/main").unwrap();
     assert_eq!(
         (d.commits, d.subject.as_deref(), d.body.as_deref()),
@@ -418,7 +425,7 @@ fn binary_crlf_and_missing_trailing_newline() {
     write_commit(&r, "crlf.txt", "a\r\nb\r\nc\r\n", "crlf");
     write_commit(&r, "nonl.txt", "x\ny", "no newline");
     stage(&r, &["bin.dat".into()]).unwrap();
-    commit(&r, "bin", false).unwrap();
+    commit(&r, "bin", &CommitOptions::default()).unwrap();
 
     fs::write(r.join("bin.dat"), [0u8, 9, 9]).unwrap();
     fs::write(r.join("crlf.txt"), "a\r\nB\r\nc\r\n").unwrap();
@@ -579,10 +586,103 @@ fn amend_without_message_keeps_the_old_one() {
     write_commit(&r, "a.txt", "a\n", "original message");
     fs::write(r.join("b.txt"), "b\n").unwrap();
     stage(&r, &["b.txt".into()]).unwrap();
-    commit(&r, "  ", true).unwrap();
+    commit(&r, "  ", &AMEND).unwrap();
     let head = &log(&r, None, 0, 5).unwrap()[0];
     assert_eq!(head.subject, "original message");
     assert_eq!(log(&r, None, 0, 5).unwrap().len(), 1);
+}
+
+/// Co-authors become trailers git itself formats, sign-off adds the committer's line and
+/// --no-verify gets past a failing hook; the commit header reads the trailers back.
+#[test]
+fn commit_options_trailers_sign_off_and_skipped_hooks() {
+    let sb = Sandbox::new("commit-options");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let hook = r.join(".git/hooks/pre-commit");
+    fs::write(&hook, "#!/bin/sh\necho 'lint failed' >&2\nexit 1\n").unwrap();
+    std::process::Command::new("chmod")
+        .args(["+x", hook.to_str().unwrap()])
+        .status()
+        .unwrap();
+    fs::write(r.join("b.txt"), "b\n").unwrap();
+    stage(&r, &["b.txt".into()]).unwrap();
+
+    let err = commit(&r, "Add b", &CommitOptions::default()).unwrap_err();
+    assert!(err.contains("lint failed"), "{err}");
+    let claude = "Claude <noreply@anthropic.com>";
+    let opts = CommitOptions {
+        sign_off: true,
+        no_verify: true,
+        co_authors: vec![claude.into()],
+        ..Default::default()
+    };
+    commit(&r, "Add b\n\nWhy it matters.", &opts).unwrap();
+    let head = &log(&r, None, 0, 1).unwrap()[0];
+    assert_eq!(head.subject, "Add b");
+    assert_eq!(
+        head.body,
+        format!("Why it matters.\n\nSigned-off-by: T <t@example.com>\nCo-authored-by: {claude}")
+    );
+    let details = commit_details(&r, &head.sha).unwrap();
+    assert_eq!(
+        (details.signature.as_str(), details.sign_expected),
+        ("N", false)
+    );
+    assert_eq!(
+        details.trailers,
+        [
+            ("Signed-off-by".to_string(), "T <t@example.com>".to_string()),
+            ("Co-authored-by".to_string(), claude.to_string()),
+        ]
+    );
+
+    // Amending without a new message keeps it and still takes a new co-author; the hook
+    // runs again once --no-verify is off.
+    let ada = "Ada <ada@example.com>";
+    let amend = |no_verify| CommitOptions {
+        amend: true,
+        no_verify,
+        co_authors: vec![ada.into()],
+        ..Default::default()
+    };
+    assert!(commit(&r, "", &amend(false)).is_err());
+    commit(&r, "", &amend(true)).unwrap();
+    let head = &log(&r, None, 0, 1).unwrap()[0];
+    assert!(
+        head.body.ends_with(&format!("Co-authored-by: {ada}")),
+        "{}",
+        head.body
+    );
+    assert_eq!(log(&r, None, 0, 5).unwrap().len(), 2);
+
+    // A co-author can't smuggle in a line of its own.
+    let bad = CommitOptions {
+        co_authors: vec!["Eve <e@x>\nSigned-off-by: Mallory <m@x>".into()],
+        no_verify: true,
+        ..Default::default()
+    };
+    assert!(commit(&r, "x", &bad).is_err());
+
+    // Suggestions: co-authors and authors, newest first, never the user.
+    assert_eq!(recent_authors(&r).unwrap(), [claude, ada]);
+}
+
+/// The template's text comes back the way git starts the editor with it, comments gone.
+#[test]
+fn commit_template_is_read_without_comments() {
+    let sb = Sandbox::new("template");
+    let r = sb.path("r");
+    init(&r);
+    assert_eq!(commit_template(&r), None);
+    fs::write(
+        r.join(".git/msg"),
+        "\nWhy:\n# say why, not what\n\n\nRefs:\n",
+    )
+    .unwrap();
+    run(&r, &["config", "commit.template", ".git/msg"]).unwrap();
+    assert_eq!(commit_template(&r).as_deref(), Some("Why:\n\nRefs:"));
 }
 
 #[test]
@@ -899,7 +999,7 @@ fn repo_with_submodule(sb: &Sandbox) -> PathBuf {
         "sub",
     ];
     run(&r, &add).unwrap();
-    commit(&r, "add sub", false).unwrap();
+    commit(&r, "add sub", &CommitOptions::default()).unwrap();
     r
 }
 
@@ -968,7 +1068,7 @@ fn submodule_bump_diffs_as_subproject_commits() {
     );
 
     stage(&r, &["sub".into()]).unwrap();
-    commit(&r, "bump sub", false).unwrap();
+    commit(&r, "bump sub", &CommitOptions::default()).unwrap();
     let head = log(&r, None, 0, 1).unwrap().remove(0).sha;
     let pair = diff_pair(&r, "commit", "sub", None, Some(&head), None, read).unwrap();
     assert_eq!(pair.original.text, format!("Subproject commit {old}\n"));
@@ -1405,7 +1505,7 @@ fn undo_and_redo_a_commit() {
     fs::write(r.join("a.txt"), "one\n").unwrap();
     stage(&r, &["a.txt".into()]).unwrap();
     j.record(&r, Action::new("Commit", Mode::Soft), |r| {
-        commit(r, "base", false)
+        commit(r, "base", &CommitOptions::default())
     })
     .unwrap();
     step(&j, &r, false).unwrap();
@@ -1417,7 +1517,7 @@ fn undo_and_redo_a_commit() {
     fs::write(r.join("a.txt"), "one\ntwo\n").unwrap();
     stage(&r, &["a.txt".into()]).unwrap();
     j.record(&r, Action::new("Commit", Mode::Soft), |r| {
-        commit(r, "second", false)
+        commit(r, "second", &CommitOptions::default())
     })
     .unwrap();
     let second = rev(&r, "HEAD");
@@ -1435,7 +1535,7 @@ fn undo_and_redo_a_commit() {
     // A new action after an undo drops what could be redone.
     step(&j, &r, false).unwrap();
     j.record(&r, Action::new("Commit", Mode::Soft), |r| {
-        commit(r, "second, reworded", false)
+        commit(r, "second, reworded", &CommitOptions::default())
     })
     .unwrap();
     let v = j.view(&r);
@@ -1544,7 +1644,7 @@ fn undo_takes_back_a_pull_but_not_a_pushed_commit() {
     fs::write(b.join("y.txt"), "y\n").unwrap();
     stage(b, &["y.txt".into()]).unwrap();
     j.record(b, Action::new("Commit", Mode::Soft), |r| {
-        commit(r, "from b", false)
+        commit(r, "from b", &CommitOptions::default())
     })
     .unwrap();
     assert!(j.view(b).undo_blocked.is_none());

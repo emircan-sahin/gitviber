@@ -63,6 +63,8 @@ export interface Settings {
   svgPreview: boolean;
   /** Per-command overrides of the default key bindings; an empty list unbinds. */
   keybindings: Record<string, string[]>;
+  /** Repos (main worktree paths) whose commits are signed off: people who sign off always do. Set from the commit box. */
+  signOffRepos: string[];
 }
 
 export const DEFAULT_FONT_SIZE = 12.5;
@@ -83,6 +85,7 @@ const DEFAULTS: Settings = {
   markdownPreview: true,
   svgPreview: false,
   keybindings: {},
+  signOffRepos: [],
 };
 
 // v2: the Monaco-era settings had different fonts and sizes.
@@ -100,6 +103,7 @@ function load(): Settings {
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     s.keybindings = cleanOverrides(s.keybindings);
+    s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;
     return s;
   } catch {
     return DEFAULTS;

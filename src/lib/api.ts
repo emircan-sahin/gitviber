@@ -95,6 +95,25 @@ export interface Commit {
   notInHead: boolean;
 }
 
+export interface CommitOptions {
+  amend?: boolean;
+  /** --signoff: a Signed-off-by trailer for the committer. */
+  signOff?: boolean;
+  /** --no-verify: skips the pre-commit and commit-msg hooks. */
+  noVerify?: boolean;
+  /** "Name <email>" each, added as Co-authored-by trailers. */
+  coAuthors?: string[];
+}
+
+export interface CommitDetails {
+  /** git's %G?: G good, U good but unknown validity, X/Y expired signature/key, R revoked key, B bad, E can't check, N none. */
+  signature: string;
+  signer: string;
+  /** commit.gpgSign is on, so an unsigned commit is worth pointing out. */
+  signExpected: boolean;
+  trailers: [string, string][];
+}
+
 export interface FileText {
   text: string;
   binary: boolean;
@@ -216,7 +235,14 @@ export const api = {
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
   unstage: (paths: string[]) => invoke<void>("unstage", { paths }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
-  commit: (message: string, amend: boolean) => invoke<void>("commit", { message, amend }),
+  /** An empty `message` with `amend` keeps the old one (--no-edit). */
+  commit: (message: string, options: CommitOptions) => invoke<void>("commit", { message, options }),
+  /** `commit.template` without its comment lines; null when unset. */
+  commitTemplate: () => invoke<string | null>("commit_template"),
+  /** "Name <email>" of recent authors and co-authors, newest first, not the user. */
+  recentAuthors: () => invoke<string[]>("recent_authors"),
+  /** Signature status and trailers of one commit (verifying runs gpg/ssh, so one at a time). */
+  commitDetails: (sha: string) => invoke<CommitDetails>("commit_details", { sha }),
   /** `force`: --force-with-lease, after a rebase or amend. `remote`: where to publish a branch with no upstream. */
   push: (force = false, remote?: string) => invoke<void>("push", { force, remote }),
   // The boolean results mean "stopped on conflicts".

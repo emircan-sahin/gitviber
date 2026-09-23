@@ -271,18 +271,40 @@ async fn discard(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
 }
 
 #[tauri::command]
-async fn commit(state: State<'_, AppState>, message: String, amend: bool) -> Res<()> {
+async fn commit(
+    state: State<'_, AppState>,
+    message: String,
+    options: git::CommitOptions,
+) -> Res<()> {
     let subject = message.lines().next().unwrap_or("").trim();
-    let label = match (amend, subject) {
+    let label = match (options.amend, subject) {
         (true, "") => "Amend last commit".to_string(),
         (true, s) => format!("Amend \"{s}\""),
         (false, s) => format!("Commit \"{s}\""),
     };
     let lock = state.index.clone();
     journaled(&state, Action::new(label, Mode::Soft), move |r| {
-        with_index_lock(&lock, r, |r| git::commit(r, &message, amend))
+        with_index_lock(&lock, r, |r| git::commit(r, &message, &options))
     })
     .await
+}
+
+#[tauri::command]
+async fn commit_template(state: State<'_, AppState>) -> Res<Option<String>> {
+    let r = repo(&state)?;
+    blocking(move || Ok(git::commit_template(&r))).await
+}
+
+#[tauri::command]
+async fn recent_authors(state: State<'_, AppState>) -> Res<Vec<String>> {
+    let r = repo(&state)?;
+    blocking(move || git::recent_authors(&r)).await
+}
+
+#[tauri::command]
+async fn commit_details(state: State<'_, AppState>, sha: String) -> Res<git::CommitDetails> {
+    let r = repo(&state)?;
+    blocking(move || git::commit_details(&r, &sha)).await
 }
 
 #[tauri::command]
@@ -1105,6 +1127,9 @@ pub fn run() {
             unstage,
             discard,
             commit,
+            commit_template,
+            recent_authors,
+            commit_details,
             push,
             pull,
             fetch,
