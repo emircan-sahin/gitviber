@@ -2,6 +2,7 @@
 //! user's config, hooks, credential helpers and signing all behave exactly like the
 //! terminal — GitViber never keeps state of its own inside the repo.
 
+use crate::lfs;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -1070,6 +1071,8 @@ pub struct FileText {
     pub exists: bool,
     /// Not valid UTF-8 (e.g. Latin-1); text was decoded lossily, so never write it back.
     pub lossy: bool,
+    /// A Git LFS file whose object isn't downloaded: says so, with its size.
+    pub lfs_missing: Option<String>,
 }
 
 pub fn is_binary(bytes: &[u8]) -> bool {
@@ -1141,10 +1144,51 @@ fn blob(repo: &Path, rev: &str, path: &str) -> FileText {
             ..Default::default()
         };
     }
-    match run(repo, &["cat-file", "blob", &spec]) {
+    match smudged(repo, &spec) {
         Ok(bytes) => to_file_text(bytes),
         Err(_) => FileText::default(),
     }
+}
+
+/// `<rev>:<path>` the way a checkout writes it (line endings, smudge filters), so it compares
+/// with the file on disk. git-lfs is told not to download: its files come out as pointers.
+fn smudged(repo: &Path, spec: &str) -> Result<Vec<u8>, String> {
+    let mut cmd = command(repo, &["cat-file", "--filters", spec]);
+    cmd.env("GIT_LFS_SKIP_SMUDGE", "1");
+    // A filter that fails (git-lfs configured but not installed) still leaves the stored form.
+    exec(cmd, "git cat-file", &[], None, None).or_else(|_| run(repo, &["cat-file", "blob", spec]))
+}
+
+/// An LFS pointer read as text stands for its object: the object's text when it's downloaded.
+fn lfs_text(repo: &Path, f: FileText) -> FileText {
+    let Some(p) = f.exists.then(|| lfs::pointer(f.text.as_bytes())).flatten() else {
+        return f;
+    };
+    match lfs::object(repo, &p).map(|o| read_regular(&o)) {
+        Some(Ok(Some(bytes))) => to_file_text(bytes),
+        Some(Ok(None)) => FileText {
+            too_large: true,
+            exists: true,
+            ..Default::default()
+        },
+        _ => FileText {
+            lfs_missing: Some(lfs::not_downloaded(&p)),
+            exists: true,
+            ..Default::default()
+        },
+    }
+}
+
+/// Media bytes, with an LFS pointer swapped for its object.
+fn lfs_media(repo: &Path, bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let Some(p) = lfs::pointer(&bytes) else {
+        return Ok(bytes);
+    };
+    let object = lfs::object(repo, &p).ok_or_else(|| lfs::not_downloaded(&p))?;
+    if p.size > MAX_MEDIA_BYTES {
+        return Err("File is too large to preview".into());
+    }
+    std::fs::read(object).map_err(|e| e.to_string())
 }
 
 /// A submodule on one side of a diff. Git stores only its commit (mode 160000), which
@@ -1187,10 +1231,15 @@ fn gitlink(repo: &Path, rev: Option<&str>, path: &str) -> Option<FileText> {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiffPair {
     pub original: FileText,
     pub modified: FileText,
     pub rows: Vec<crate::diff::Row>,
+    /// The ignored whitespace hid changed lines.
+    pub whitespace_hidden: bool,
+    /// Every changed line differs only in its line ending.
+    pub eol_only: bool,
 }
 
 /// Where each side of a diff lives: a git revision ("" = the index), or None for the worktree.
@@ -1243,7 +1292,7 @@ pub fn media(
         (b, path)
     };
     let Some(rev) = rev else {
-        return worktree(path);
+        return lfs_media(repo, worktree(path)?);
     };
     let spec = format!("{rev}:{path}");
     let size: u64 = run_text(repo, &["cat-file", "-s", &spec])?
@@ -1253,11 +1302,13 @@ pub fn media(
     if size > MAX_MEDIA_BYTES {
         return Err("File is too large to preview".into());
     }
-    run(repo, &["cat-file", "blob", &spec])
+    lfs_media(repo, smudged(repo, &spec)?)
 }
 
 /// `kind`: "unstaged" (index → worktree), "staged" (HEAD → index), "worktree" (HEAD → worktree),
 /// "commit" (parent → commit) or "range" (base → sha, e.g. a pull request).
+/// `whitespace`: "all" or "amount" to ignore those changes (see `diff::whitespace_mode`).
+#[allow(clippy::too_many_arguments)]
 pub fn diff_pair(
     repo: &Path,
     kind: &str,
@@ -1265,6 +1316,7 @@ pub fn diff_pair(
     old_path: Option<&str>,
     sha: Option<&str>,
     base: Option<&str>,
+    whitespace: Option<&str>,
     worktree: impl Fn(&str) -> FileText,
 ) -> Result<DiffPair, String> {
     let (a, b) = sides(kind, sha, base)?;
@@ -1274,23 +1326,28 @@ pub fn diff_pair(
             None => worktree(p),
         };
         if f.exists {
-            f
+            lfs_text(repo, f)
         } else {
             gitlink(repo, rev.as_deref(), p).unwrap_or(f)
         }
     };
     let original = read(a, old_path.unwrap_or(path));
     let modified = read(b, path);
-    let textual = |f: &FileText| !f.binary && !f.too_large;
-    let rows = if textual(&original) && textual(&modified) {
-        crate::diff::rows(&original.text, &modified.text)
+    let textual = |f: &FileText| !f.binary && !f.too_large && f.lfs_missing.is_none();
+    let (rows, whitespace_hidden) = if textual(&original) && textual(&modified) {
+        let ws = crate::diff::whitespace_mode(whitespace);
+        crate::diff::rows(&original.text, &modified.text, ws)
     } else {
-        vec![]
+        (vec![], false)
     };
+    let eol_only =
+        rows.iter().any(|r| r.k != 0) && crate::diff::eol_only(&original.text, &modified.text);
     Ok(DiffPair {
         original,
         modified,
         rows,
+        whitespace_hidden,
+        eol_only,
     })
 }
 
@@ -1995,7 +2052,7 @@ mod tests {
             ("?", Some(1))
         );
 
-        let pair = diff_pair(&repo, "unstaged", "a.txt", None, None, None, |p| {
+        let pair = diff_pair(&repo, "unstaged", "a.txt", None, None, None, None, |p| {
             to_file_text(fs::read(repo.join(p)).unwrap())
         })
         .unwrap();
@@ -2006,6 +2063,7 @@ mod tests {
             "staged",
             "new name.txt",
             Some("old name.txt"),
+            None,
             None,
             None,
             |_| FileText::default(),

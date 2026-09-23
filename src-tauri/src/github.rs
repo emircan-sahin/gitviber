@@ -1704,6 +1704,7 @@ mod tests {
             None,
             Some(&f.head),
             Some(&f.base),
+            None,
             |_| git::FileText::default(),
         )
         .unwrap();

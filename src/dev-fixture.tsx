@@ -5,9 +5,11 @@ import type { DiffPair } from "./lib/api";
 
 const text = Array.from({ length: 300 }, (_, i) => `line ${i + 1}: "value": ${i}`).join("\n") + "\n";
 const pair: DiffPair = {
-  original: { text: "", binary: false, tooLarge: false, exists: false, lossy: false },
-  modified: { text, binary: false, tooLarge: false, exists: true, lossy: false },
+  original: { text: "", binary: false, tooLarge: false, exists: false, lossy: false, lfsMissing: null },
+  modified: { text, binary: false, tooLarge: false, exists: true, lossy: false, lfsMissing: null },
   rows: Array.from({ length: 300 }, (_, i) => ({ k: 1 as const, o: 0, n: i + 1 })),
+  whitespaceHidden: false,
+  eolOnly: false,
 };
 
 export function Fixture() {

@@ -4,6 +4,7 @@ mod fs;
 mod git;
 mod github;
 mod journal;
+mod lfs;
 mod menu;
 mod navigation;
 mod pty;
@@ -138,6 +139,7 @@ async fn diff_pair(
     old_path: Option<String>,
     sha: Option<String>,
     base: Option<String>,
+    whitespace: Option<String>,
 ) -> Res<git::DiffPair> {
     let r = repo(&state)?;
     blocking(move || {
@@ -148,6 +150,7 @@ async fn diff_pair(
             old_path.as_deref(),
             sha.as_deref(),
             base.as_deref(),
+            whitespace.as_deref(),
             |p| fs::read_file(&r, p),
         )
     })
