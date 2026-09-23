@@ -55,6 +55,8 @@ export const COMMANDS = [
   { id: "git.discard", title: "Discard Changes", category: "Git", keys: ["cmd+backspace"], outsideText: true },
   // Local: only the commit message fields listen for it.
   { id: "git.commit", title: "Commit", category: "Git", keys: ["cmd+enter", "ctrl+enter"], local: true },
+  // Only while suggestions are set up in Settings.
+  { id: "git.suggestMessage", title: "Suggest Commit Message", category: "Git", keys: [] },
 ] as const satisfies readonly { id: string; title: string; category: string; keys: readonly string[]; local?: boolean; outsideText?: boolean }[];
 
 export type CommandId = (typeof COMMANDS)[number]["id"];

@@ -104,6 +104,10 @@ export interface Settings {
   backgroundFetch: number;
   /** Where the last clone went; the next one offers the same folder. */
   cloneParent: string | null;
+  /** A ✦ button in the commit box runs `suggestCommand` for a message. Off: nothing is ever run. */
+  suggestEnabled: boolean;
+  /** The user's own agent CLI, split like a shell command line (suggest.rs). */
+  suggestCommand: string;
 }
 
 export const DEFAULT_FONT_SIZE = 12.5;
@@ -132,6 +136,8 @@ const DEFAULTS: Settings = {
   signOffRepos: [],
   backgroundFetch: 5,
   cloneParent: null,
+  suggestEnabled: false,
+  suggestCommand: "claude -p",
 };
 
 // v2: the Monaco-era settings had different fonts and sizes.
@@ -154,6 +160,8 @@ function load(): Settings {
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     s.keybindings = cleanOverrides(s.keybindings);
+    if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
+    if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;
     s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;
     if (!FETCH_INTERVALS.includes(s.backgroundFetch)) s.backgroundFetch = DEFAULTS.backgroundFetch;
     if (typeof s.cloneParent !== "string") s.cloneParent = null;

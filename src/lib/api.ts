@@ -307,6 +307,12 @@ export const api = {
   commitTemplate: () => invoke<string | null>("commit_template"),
   /** "Name <email>" of recent authors and co-authors, newest first, not the user. */
   recentAuthors: () => invoke<string[]>("recent_authors"),
+  /**
+   * Runs the user's agent CLI (`command`, e.g. "claude -p") in the repo with `prompt` and the
+   * diff `scope` would commit; returns what it printed. Rejects with SUGGEST_CANCELLED on cancel.
+   */
+  suggestMessage: (command: string, prompt: string, scope: "staged" | "all" | "amend") => invoke<string>("suggest_message", { command, prompt, scope }),
+  suggestCancel: () => invoke<void>("suggest_cancel"),
   /** Signature status and trailers of one commit (verifying runs gpg/ssh, so one at a time). */
   commitDetails: (sha: string) => invoke<CommitDetails>("commit_details", { sha }),
   /** `force`: --force-with-lease, after a rebase or amend. `remote`: where to publish a branch with no upstream. */
@@ -543,6 +549,8 @@ const MARKERS = new Map([
   [CANCELLED, "Cancelled"],
   [NOT_A_REPO, "This folder is not inside a git repository."],
 ]);
+/** suggest.rs CANCELLED. */
+export const SUGGEST_CANCELLED = "cancelled";
 
 export function errorMessage(e: unknown) {
   const raw = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);

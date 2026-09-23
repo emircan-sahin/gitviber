@@ -13,10 +13,12 @@ import {
   FolderSearch,
   GitMerge,
   ListTree,
+  LoaderCircle,
   Minus,
   Plus,
   ShieldOff,
   Signature,
+  Sparkles,
   SquareCheck,
   TriangleAlert,
   Undo2,
@@ -31,13 +33,14 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Commit, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { api, type Commit, errorMessage, type FileChange, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { REVEAL_LABEL } from "@/lib/commands";
 import { ignorePattern } from "@/lib/gitignore";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { type CommitDraft, loadDraft, saveDraft } from "@/lib/session";
 import { updateSettings, useSettings } from "@/lib/settings";
+import { parseSuggestion, programOf, SUGGEST_PROMPT } from "@/lib/suggest";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
 import { cn } from "@/lib/utils";
@@ -710,7 +713,7 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
   // and the user's own draft waits aside.
   const [amend, setAmend] = useState<{ aside: CommitDraft; sha: string; original: CommitDraft } | null>(null);
   const [busy, setBusy] = useState(false);
-  const { signOffRepos } = useSettings();
+  const { signOffRepos, suggestEnabled, suggestCommand } = useSettings();
   const signOff = signOffRepos.includes(main);
   const setSignOff = (on: boolean) => updateSettings({ signOffRepos: on ? [...signOffRepos, main] : signOffRepos.filter((r) => r !== main) });
   // One commit only: a hook that's broken today shouldn't be skipped forever.
@@ -802,8 +805,49 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
     await refresh();
   };
 
-  useCommands({ "git.commit": canCommit ? commit : undefined });
+  const [suggesting, setSuggesting] = useState(false);
+  const running = useRef(false);
+  const latest = useRef(draft);
+  useEffect(() => {
+    latest.current = draft;
+  });
+  // Leaving the box (the History tab, another worktree) stops the command rather than orphan it.
+  useEffect(
+    () => () => {
+      if (running.current) api.suggestCancel().catch(() => {});
+    },
+    [],
+  );
+  const program = programOf(suggestCommand);
+  const canSuggest = suggestEnabled && !suggesting && !busy && (!!amend || hasAny);
+  const cancelSuggest = () => api.suggestCancel().catch(() => {});
+  const suggest = async () => {
+    if (!canSuggest) return;
+    running.current = true;
+    setSuggesting(true);
+    try {
+      const output = await api.suggestMessage(suggestCommand, SUGGEST_PROMPT, amend ? "amend" : hasStaged ? "staged" : "all");
+      const message = parseSuggestion(output);
+      if (!message) {
+        toast("error", "No message suggested", `${program} printed nothing.`);
+        return;
+      }
+      const before = latest.current;
+      setDraft({ ...before, ...message });
+      // Never lost: what the user had comes back with one click.
+      const blank = !before.summary.trim() && (!before.body.trim() || before.body === template);
+      if (!blank) toast("info", "Message replaced with the suggestion", undefined, { label: "Restore", run: () => setDraft(before) });
+    } catch (e) {
+      if (e !== SUGGEST_CANCELLED) toast("error", "Couldn't suggest a message", errorMessage(e));
+    } finally {
+      running.current = false;
+      setSuggesting(false);
+    }
+  };
+
+  useCommands({ "git.commit": canCommit ? commit : undefined, "git.suggestMessage": canSuggest ? suggest : undefined });
   const commitKey = useShortcut("git.commit");
+  const suggestKey = useShortcut("git.suggestMessage");
   const onKey = (e: React.KeyboardEvent) => {
     if (matchesCommand("git.commit", e.nativeEvent)) {
       e.preventDefault();
@@ -846,6 +890,13 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
           <input type="checkbox" checked={!!amend} disabled={!head} onChange={(e) => toggleAmend(e.target.checked)} className="accent-primary" />
           Amend
         </label>
+        {suggestEnabled && (
+          <Tip label={suggesting ? `Stop ${program}` : `Suggest a message with ${program}`} shortcut={suggesting ? undefined : suggestKey}>
+            <Button variant="ghost" size="icon" aria-label={suggesting ? "Stop suggesting" : "Suggest a message"} disabled={!suggesting && !canSuggest} onClick={suggesting ? cancelSuggest : suggest}>
+              {suggesting ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+            </Button>
+          </Tip>
+        )}
         <CoAuthorPicker open={addingCoAuthor} onOpenChange={setAddingCoAuthor} taken={draft.coAuthors} onAdd={(a) => setDraft((d) => ({ ...d, coAuthors: [...d.coAuthors, a] }))}>
           <DropdownMenu>
             <Tip label="Commit options">
@@ -876,6 +927,15 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
           </Button>
         </Tip>
       </div>
+      {suggesting && (
+        <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <LoaderCircle className="size-3 shrink-0 animate-spin" />
+          <span className="min-w-0 truncate">Asking {program} for a message…</span>
+          <span className="ml-auto shrink-0">
+            <SectionBtn onClick={cancelSuggest}>Cancel</SectionBtn>
+          </span>
+        </div>
+      )}
       {pushed && (
         <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-modified">
           <TriangleAlert className="size-3 shrink-0" />
