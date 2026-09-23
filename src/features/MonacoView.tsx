@@ -4,7 +4,7 @@ import { showLanguage } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
 import { narrow } from "@/lib/indent";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
-import { CODE_FONTS, type Settings, useSettings } from "@/lib/settings";
+import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
 
 export type CodeMode = "unified" | "split" | "file";
 
@@ -233,7 +233,7 @@ function common(s: Settings, wrap: boolean): monaco.editor.IEditorOptions & mona
   return {
     readOnly: true,
     automaticLayout: true,
-    fontFamily: CODE_FONTS[s.codeFont],
+    fontFamily: codeFontFamily(s),
     fontSize: s.codeFontSize,
     lineHeight: Math.round(s.codeFontSize * s.lineHeight),
     fontLigatures: s.ligatures,

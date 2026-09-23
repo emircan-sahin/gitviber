@@ -21,12 +21,22 @@ import type { DiffRow } from "./api";
 import { hunks, type Pos } from "./diffHunks";
 import { indentUnit, TAB, widen, widenColumn } from "./indent";
 import { IGNORE, ignoreGrammar } from "./language";
+import { codeFontFamily, getSettings, subscribeSettings } from "./settings";
 
 export { monaco };
 
 // Code fonts load lazily (Geist Mono, JetBrains Mono): measure again once they're in, or wrapping and
 // selections keep the fallback font's widths.
 document.fonts.addEventListener("loadingdone", () => monaco.editor.remeasureFonts());
+// Monaco keeps a font's widths for good once measured, including a custom font's fallback widths
+// from before it was installed: a new pick measures afresh.
+let codeFont = codeFontFamily(getSettings());
+subscribeSettings(() => {
+  const next = codeFontFamily(getSettings());
+  if (next === codeFont) return;
+  codeFont = next;
+  monaco.editor.remeasureFonts();
+});
 
 // Only a fallback computes diffs (see `createModels`); there are no language services to run.
 globalThis.MonacoEnvironment = { getWorker: () => new EditorWorker() };

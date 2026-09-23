@@ -1,6 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Code2, GitCompareArrows, Keyboard, Palette, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -10,6 +10,8 @@ import {
   type Appearance,
   CODE_FONTS,
   type CodeFont,
+  cleanFontName,
+  codeFontFamily,
   DEFAULT_FONT_SIZE,
   LIGHT_SYNTAX_THEMES,
   type LightSyntaxTheme,
@@ -17,7 +19,9 @@ import {
   type Settings,
   SYNTAX_THEMES,
   type SyntaxTheme,
+  UI_FONTS,
   UI_SCALES,
+  type UiFont,
   updateSettings,
   useSettings,
 } from "@/lib/settings";
@@ -152,6 +156,14 @@ function AppearanceSection() {
       <Field label="Light syntax theme" hint="Code colors while the app is light.">
         <Select value={s.lightSyntaxTheme} options={LIGHT_SYNTAX_THEMES} onChange={(v) => updateSettings({ lightSyntaxTheme: v as LightSyntaxTheme })} />
       </Field>
+      <Field label="Interface font" hint="The code font is under Editor.">
+        <FontPicker
+          fonts={Object.keys(UI_FONTS)}
+          value={s.uiFont}
+          custom={s.customUiFont}
+          onChange={(uiFont, customUiFont) => updateSettings({ uiFont: uiFont as UiFont, customUiFont })}
+        />
+      </Field>
       <Field label="Interface scale" hint="Zooms the whole window. The code font size stays its own setting." commands={["view.zoomIn", "view.zoomOut", "view.zoomReset"]}>
         <Segmented<string>
           value={String(s.uiScale)}
@@ -173,7 +185,7 @@ function EditorSection() {
       <pre
         className="mt-4 overflow-hidden rounded-md border border-border bg-background px-3 py-2 whitespace-pre text-muted-foreground"
         style={{
-          fontFamily: CODE_FONTS[s.codeFont],
+          fontFamily: codeFontFamily(s),
           fontSize: s.codeFontSize,
           lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`,
           fontVariantLigatures: s.ligatures ? "normal" : "none",
@@ -182,7 +194,12 @@ function EditorSection() {
         {SAMPLE}
       </pre>
       <Field label="Font">
-        <Select value={s.codeFont} options={Object.fromEntries(Object.keys(CODE_FONTS).map((f) => [f, f]))} onChange={(v) => updateSettings({ codeFont: v as CodeFont })} />
+        <FontPicker
+          fonts={Object.keys(CODE_FONTS)}
+          value={s.codeFont}
+          custom={s.customCodeFont}
+          onChange={(codeFont, customCodeFont) => updateSettings({ codeFont: codeFont as CodeFont, customCodeFont })}
+        />
       </Field>
       <Field label="Font size" commands={["editor.fontZoomIn", "editor.fontZoomOut", "editor.fontZoomReset"]}>
         <div className="flex items-center gap-1">
@@ -478,6 +495,36 @@ function Select({ value, options, onChange }: { value: string; options: Record<s
       ))}
     </select>
   );
+}
+
+/** A preset font, or Custom with a field for any installed font's name. */
+function FontPicker({ fonts, value, custom, onChange }: { fonts: string[]; value: string; custom: string; onChange: (font: string, custom: string) => void }) {
+  const [draft, setDraft] = useState(custom);
+  const name = cleanFontName(draft);
+  const missing = useMemo(() => !!name && !fontInstalled(name), [name]);
+  // Applied on Enter or leaving the field: every partial name on the way would re-lay out the code view.
+  const commit = () => name !== custom && onChange("Custom", name);
+  return (
+    <div className="flex w-52 flex-col gap-1.5">
+      <Select value={value} options={Object.fromEntries([...fonts, "Custom"].map((f) => [f, f]))} onChange={(v) => onChange(v, custom)} />
+      {value === "Custom" && (
+        <>
+          <Input value={draft} placeholder="Installed font name" onChange={(e) => setDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === "Enter" && commit()} />
+          {missing && <div className="text-[11px] leading-snug text-modified">Not installed: the default font shows instead.</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Whether a font is installed: text set in it measures differently from every generic fallback. */
+function fontInstalled(name: string) {
+  const ctx = document.createElement("canvas").getContext("2d")!;
+  const width = (font: string) => {
+    ctx.font = `40px ${font}`;
+    return ctx.measureText("mmmwwwiiilll0O@").width;
+  };
+  return ["monospace", "serif", "sans-serif"].some((generic) => width(`"${name}", ${generic}`) !== width(generic));
 }
 
 function Switch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {

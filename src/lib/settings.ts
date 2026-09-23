@@ -7,8 +7,30 @@ export const CODE_FONTS = {
   "SF Mono": 'ui-monospace, "SF Mono", Menlo, monospace',
   "Geist Mono": '"Geist Mono Variable", ui-monospace, monospace',
   "JetBrains Mono": '"JetBrains Mono Variable", ui-monospace, monospace',
+  // Installed with macOS, so nothing to bundle.
+  Menlo: "Menlo, ui-monospace, monospace",
+  Monaco: "Monaco, ui-monospace, monospace",
+  "Courier New": '"Courier New", ui-monospace, monospace',
 } as const;
-export type CodeFont = keyof typeof CODE_FONTS;
+/** "Custom" is any installed font, by the name in `customCodeFont`. */
+export type CodeFont = keyof typeof CODE_FONTS | "Custom";
+
+// System mirrors index.css's --font-ui.
+export const UI_FONTS = {
+  System: '-apple-system, BlinkMacSystemFont, "Geist Variable", "Segoe UI", sans-serif',
+  Geist: '"Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+} as const;
+export type UiFont = keyof typeof UI_FONTS | "Custom";
+
+/** A typed font name without the characters that could break out of a quoted CSS family name. */
+export const cleanFontName = (name: string) => name.replace(/["'\\;{}]/g, "").trim();
+
+/** A custom font ahead of the preset: CSS falls through to the preset when it isn't installed. */
+const withCustom = (name: string, preset: string) => (name ? `"${name}", ${preset}` : preset);
+
+export const codeFontFamily = (s: Settings) => (s.codeFont === "Custom" ? withCustom(s.customCodeFont, CODE_FONTS["SF Mono"]) : CODE_FONTS[s.codeFont]);
+export const codeFontName = (s: Settings) => (s.codeFont === "Custom" && s.customCodeFont) || s.codeFont;
+const uiFontFamily = (s: Settings) => (s.uiFont === "Custom" ? withCustom(s.customUiFont, UI_FONTS.System) : UI_FONTS[s.uiFont]);
 
 export const SYNTAX_THEMES = {
   "github-dark-default": "GitHub Dark",
@@ -48,11 +70,14 @@ export type Theme = "light" | "dark" | "dim";
 
 export interface Settings {
   codeFont: CodeFont;
+  customCodeFont: string;
   codeFontSize: number;
   lineHeight: number;
   appearance: Appearance;
   /** The dark palette System uses while macOS is dark. */
   darkVariant: "dark" | "dim";
+  uiFont: UiFont;
+  customUiFont: string;
   syntaxTheme: SyntaxTheme;
   lightSyntaxTheme: LightSyntaxTheme;
   sideBySide: boolean;
@@ -74,10 +99,13 @@ export const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
 
 const DEFAULTS: Settings = {
   codeFont: "SF Mono",
+  customCodeFont: "",
   codeFontSize: DEFAULT_FONT_SIZE,
   lineHeight: 1.6,
   appearance: "system",
   darkVariant: "dark",
+  uiFont: "System",
+  customUiFont: "",
   syntaxTheme: "nord",
   lightSyntaxTheme: "github-light-default",
   sideBySide: false,
@@ -97,7 +125,10 @@ function load(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
     const s = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS;
-    if (!(s.codeFont in CODE_FONTS)) s.codeFont = DEFAULTS.codeFont;
+    if (!(s.codeFont in CODE_FONTS) && s.codeFont !== "Custom") s.codeFont = DEFAULTS.codeFont;
+    if (!(s.uiFont in UI_FONTS) && s.uiFont !== "Custom") s.uiFont = DEFAULTS.uiFont;
+    s.customCodeFont = typeof s.customCodeFont === "string" ? cleanFontName(s.customCodeFont) : "";
+    s.customUiFont = typeof s.customUiFont === "string" ? cleanFontName(s.customUiFont) : "";
     if (!(s.syntaxTheme in SYNTAX_THEMES)) s.syntaxTheme = DEFAULTS.syntaxTheme;
     if (!(s.lightSyntaxTheme in LIGHT_SYNTAX_THEMES)) s.lightSyntaxTheme = DEFAULTS.lightSyntaxTheme;
     if (!["system", "light", "dark", "dim"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
@@ -164,20 +195,28 @@ function applyScale() {
   }
 }
 
+function applyUiFont() {
+  document.documentElement.style.setProperty("--font-ui", uiFontFamily(current));
+}
+
 function emit() {
   resolved = resolve();
   applyTheme();
   applyScale();
+  applyUiFont();
   listeners.forEach((l) => l());
 }
 
 applyTheme();
 applyScale();
+applyUiFont();
 systemDark.addEventListener("change", () => current.appearance === "system" && emit());
 
 export function updateSettings(patch: Partial<Settings>) {
   current = { ...current, ...patch };
   current.codeFontSize = Math.min(24, Math.max(10, Math.round(current.codeFontSize * 2) / 2));
+  current.customCodeFont = cleanFontName(current.customCodeFont);
+  current.customUiFont = cleanFontName(current.customUiFont);
   try {
     localStorage.setItem(KEY, JSON.stringify(current));
   } catch {
