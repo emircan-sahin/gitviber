@@ -367,6 +367,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     activeKey={activeKey}
                     onOpen={open}
                     onHover={prefetch}
+                    worktrees={repo.worktrees}
+                    onOpenRepo={onOpenRepo}
                   />
                 )}
               </div>

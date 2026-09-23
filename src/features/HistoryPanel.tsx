@@ -17,12 +17,13 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type RepoStatus, type ResetMode } from "@/lib/api";
+import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
 import { withNetActivity } from "@/lib/netActivity";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
 import { cn, relativeTime } from "@/lib/utils";
+import { folderName } from "@/lib/worktrees";
 import { FileIcon } from "./FileIcon";
 import { copyLink, openOnGitHub } from "./PullsPanel";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
@@ -42,6 +43,10 @@ interface Props {
   headSha?: string;
   /** Where these commits live on GitHub, when that's not origin: a fork's original has them all. */
   web?: string;
+  /** This repo's worktrees: a commit can be picked onto the branch checked out in another. */
+  worktrees?: Worktree[];
+  /** Opens a worktree in this window. */
+  onOpenRepo?: (path: string) => void;
 }
 
 /** What a commit's context menu needs from the panel. */
@@ -56,13 +61,16 @@ interface Actions {
   name: (kind: "branch" | "tag", commit: Commit) => void;
   /** `webUrl` has every listed commit, not only those reached from origin's branches. */
   everyOnWeb: boolean;
+  /** Other worktrees with a branch checked out, to cherry-pick onto. */
+  pickTargets: Worktree[];
+  pickInto: (w: Worktree, commit: Commit) => Promise<void>;
 }
 
 /** GitHub only has commits that reached one of origin's branches (or all, for a fork's original). */
 const commitUrl = (c: Commit, { webUrl, everyOnWeb }: Pick<Actions, "webUrl" | "everyOnWeb">) =>
   webUrl && (c.onOrigin || everyOnWeb) ? `${webUrl}/commit/${c.sha}` : undefined;
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web }: Props) {
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, worktrees = [], onOpenRepo }: Props) {
   const [open, setOpen] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ el: HTMLElement; top: number } | null>(null);
@@ -91,6 +99,24 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     }
   };
 
+  // git runs in that worktree, and the entry lands in its undo history, not this one's. A pick
+  // stopped on conflicts waits there, for its own Changes panel to finish.
+  const pickInto = async (w: Worktree, c: Commit) => {
+    const branch = w.branch ?? folderName(w.path);
+    const where = folderName(w.path);
+    const go = onOpenRepo && { label: "Switch to worktree", run: () => onOpenRepo(w.path) };
+    setBusy(true);
+    try {
+      if (await api.cherryPickInto(w.path, c.sha)) toast("info", `Cherry-pick onto ${branch} stopped on conflicts`, `It waits in ${where}: switch there to resolve them and continue.`, go);
+      else toast("success", `Cherry-picked ${c.shortSha} onto ${branch}`, `In ${where}; undo it from there.`, go);
+    } catch (e) {
+      toast("error", `Cherry-pick onto ${branch} failed`, errorMessage(e));
+    } finally {
+      setBusy(false);
+      await refresh();
+    }
+  };
+
   // HEAD's own history starts at the HEAD the user sees.
   const head = headSha ?? commits[0]?.sha ?? "";
   const actions: Actions = {
@@ -101,6 +127,8 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     run,
     name: (kind, commit) => setNaming({ kind, commit }),
     everyOnWeb: !!web,
+    pickTargets: worktrees.filter((w) => !w.current && !w.bare && !w.prunable && w.branch),
+    pickInto,
   };
 
   // Opening a commit collapses the one above it; WebKit has no scroll anchoring, so without
@@ -267,9 +295,27 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
         <RotateCcw /> Revert commit
       </ContextMenuItem>
       {/* Only a commit HEAD lacks (a fork's original lists those): picking one it has changes nothing. */}
-      <ContextMenuItem disabled={locked || !c.notInHead} onSelect={() => run("Cherry-pick", () => api.cherryPick(c.sha), `Cherry-picked ${short} onto ${target}`)}>
-        <Cherry /> Cherry-pick onto {target}
-      </ContextMenuItem>
+      {c.notInHead && (
+        <ContextMenuItem disabled={locked} onSelect={() => run("Cherry-pick", () => api.cherryPick(c.sha), `Cherry-picked ${short} onto ${target}`)}>
+          <Cherry /> Cherry-pick onto {target}
+        </ContextMenuItem>
+      )}
+      {actions.pickTargets.length > 0 && (
+        <ContextMenuSub>
+          {/* Another worktree's lock is its own: only this one's action in progress holds it back. */}
+          <ContextMenuSubTrigger disabled={actions.locked && !actions.status?.operation}>
+            <Cherry /> Cherry-pick onto
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            {actions.pickTargets.map((w) => (
+              <ContextMenuItem key={w.path} onSelect={() => actions.pickInto(w, c)}>
+                <span className="font-mono">{w.branch}</span>
+                <span className="ml-auto pl-4 text-[11px] opacity-70">{folderName(w.path)}</span>
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+      )}
       <ContextMenuSub>
         <ContextMenuSubTrigger disabled={locked}>
           <History /> Reset {target} to here

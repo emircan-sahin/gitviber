@@ -2013,6 +2013,69 @@ fn cherry_pick_with_conflict_then_continue_and_undo() {
     assert_eq!(rev(&r, "HEAD"), before);
 }
 
+/// An agent's commit in worktree A lands on the branch of worktree B, git running in B: clean,
+/// refused while B's changes are in the way, and stopped on conflicts there for B to finish.
+#[test]
+fn cherry_pick_into_another_worktree() {
+    let sb = Sandbox::new("pick-wt");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "base\n", "base");
+    let b = sb.path("b");
+    run(
+        &r,
+        &["worktree", "add", "-q", "-b", "agent", b.to_str().unwrap()],
+    )
+    .unwrap();
+    write_commit(&b, "a.txt", "agent\n", "agent edits a");
+    let edit = rev(&b, "HEAD");
+    write_commit(&b, "n.txt", "n\n", "agent adds n");
+    let add = rev(&b, "HEAD");
+    // The window is on worktree B (the agent's); main is checked out in r.
+    let target = pick_target(&b, &r.canonicalize().unwrap().to_string_lossy()).unwrap();
+    assert!(same_dir(&target.to_string_lossy(), &r));
+    assert!(pick_target(&b, &b.canonicalize().unwrap().to_string_lossy()).is_err());
+    assert!(pick_target(&b, "/tmp").is_err());
+
+    let j = Journal::default();
+    let action = || Action::new("Cherry-pick", Mode::Keep);
+    let before = rev(&r, "HEAD");
+    // An edit to a file the commit touches is in the way; one elsewhere is not.
+    fs::write(r.join("n.txt"), "mine\n").unwrap();
+    let err = cherry_pick_into(&target, &add).unwrap_err();
+    assert!(err.contains("n.txt") && err.contains("main"), "{err}");
+    assert!(operation(&r).is_none());
+    fs::remove_file(r.join("n.txt")).unwrap();
+    fs::write(r.join("a.txt"), "local\n").unwrap();
+    let pick = |sha: &str| j.record(&target, action(), |t| cherry_pick_into(t, sha));
+    assert!(!pick(&add).unwrap());
+    assert_eq!(log(&r, None, 0, 1).unwrap()[0].subject, "agent adds n");
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "local\n");
+    assert_eq!(rev(&b, "HEAD"), add, "the source branch doesn't move");
+    step(&j, &target, false).unwrap();
+    assert_eq!(rev(&r, "HEAD"), before);
+
+    // Conflicting: the pick stays in progress in r, where its status shows it.
+    run(&r, &["checkout", "-q", "--", "a.txt"]).unwrap();
+    write_commit(&r, "a.txt", "main\n", "main edits a");
+    let before = rev(&r, "HEAD");
+    assert!(pick(&edit).unwrap());
+    let st = status(&r).unwrap();
+    assert_eq!(
+        st.operation.as_ref().map(|o| o.kind.as_str()),
+        Some("cherry-pick")
+    );
+    assert_eq!(st.conflicted.len(), 1);
+    assert!(status(&b).unwrap().operation.is_none());
+    // Continued from r's own window: one undo entry in r's history.
+    resolve_side(&target, "a.txt", "theirs").unwrap();
+    assert!(!j.record(&target, action(), op_continue).unwrap());
+    assert_eq!(j.view(&target).undo.len(), 1);
+    assert!(j.view(&b).undo.is_empty());
+    step(&j, &target, false).unwrap();
+    assert_eq!(rev(&r, "HEAD"), before);
+}
+
 /// A new repository has no commits yet: every view reads it as empty, and staging, unstaging
 /// and the first commit work before HEAD exists.
 #[test]

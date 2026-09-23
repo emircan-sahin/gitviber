@@ -692,6 +692,20 @@ async fn cherry_pick(state: State<'_, AppState>, sha: String) -> Res<bool> {
     .await
 }
 
+/// Picks onto the branch of another worktree (`path`), running git there. The entry goes in
+/// that worktree's undo history, where a pick stopped on conflicts is also continued.
+#[tauri::command]
+async fn cherry_pick_into(state: State<'_, AppState>, path: String, sha: String) -> Res<bool> {
+    let r = repo(&state)?;
+    let journal = state.journal.clone();
+    blocking(move || {
+        let target = git::pick_target(&r, &path)?;
+        let action = Action::new(format!("Cherry-pick {}", short(&sha)), Mode::Keep);
+        journal.record(&target, action, |t| git::cherry_pick_into(t, &sha))
+    })
+    .await
+}
+
 // ---------------------------------------------------------------- stash
 // Not undo entries: they move no branch. A dropped stash's commit stays findable by its sha.
 
@@ -1441,6 +1455,7 @@ pub fn run() {
             drops_pushed,
             revert,
             cherry_pick,
+            cherry_pick_into,
             stashes,
             stash_files,
             stash_push,

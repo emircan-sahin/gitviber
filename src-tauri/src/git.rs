@@ -1732,6 +1732,58 @@ pub fn cherry_pick(repo: &Path, sha: &str) -> Result<bool, String> {
     result
 }
 
+/// Another worktree of this repo with a branch checked out, where a commit can be picked onto
+/// that branch. Returns its top folder as git names it, which is how the journal keys it.
+pub fn pick_target(repo: &Path, path: &str) -> Result<std::path::PathBuf, String> {
+    let w = listed_worktree(repo, path)?;
+    if w.current || w.bare || w.prunable || w.branch.is_none() {
+        return Err(format!("{path} has no branch to cherry-pick onto here"));
+    }
+    toplevel(Path::new(&w.path)).map(Into::into)
+}
+
+/// `cherry_pick` in another worktree (`target`, from `pick_target`). Refused up front when
+/// local changes there are in the way: git wants a clean index, and won't touch a changed file.
+pub fn cherry_pick_into(target: &Path, sha: &str) -> Result<bool, String> {
+    validate_rev(sha)?;
+    ensure_idle(target)?;
+    let touched: std::collections::HashSet<String> = commit_files(target, sha)?
+        .into_iter()
+        .flat_map(|f| [Some(f.path), f.old_path])
+        .flatten()
+        .collect();
+    let st = status(target)?;
+    let mut blocking: Vec<&str> = st.staged.iter().map(|f| f.path.as_str()).collect();
+    blocking.extend(
+        st.unstaged
+            .iter()
+            .chain(&st.conflicted)
+            .map(|f| f.path.as_str())
+            .filter(|p| touched.contains(*p)),
+    );
+    if !blocking.is_empty() {
+        blocking.sort_unstable();
+        blocking.dedup();
+        let branch = st.branch.as_deref().unwrap_or("that worktree");
+        let shown = blocking
+            .iter()
+            .take(5)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = blocking.len().saturating_sub(5);
+        let more = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "{branch} has uncommitted changes in the way ({shown}{more}). Commit or stash them in that worktree first."
+        ));
+    }
+    cherry_pick(target, sha)
+}
+
 /// Detached checkout of a commit. Git refuses if local changes would be overwritten.
 pub fn checkout_commit(repo: &Path, sha: &str) -> Result<(), String> {
     validate_rev(sha)?;
