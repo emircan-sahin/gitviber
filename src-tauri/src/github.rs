@@ -651,6 +651,8 @@ pub struct PullDetail {
     pub comments: Vec<Comment>,
     /// Who closed it, if closed: an author may reopen only what they closed themselves
     pub closed_by: Option<String>,
+    /// Who merged it, if merged: often not its author.
+    pub merged_by: Option<String>,
 }
 
 pub fn detail(
@@ -772,6 +774,7 @@ pub fn detail(
 
     Ok(PullDetail {
         closed_by,
+        merged_by: v["merged_by"]["login"].as_str().map(str::to_string),
         body: s(&v["body"]),
         additions: v["additions"].as_u64().unwrap_or_default(),
         deletions: v["deletions"].as_u64().unwrap_or_default(),

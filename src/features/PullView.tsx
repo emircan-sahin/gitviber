@@ -136,8 +136,9 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
             </h1>
             <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted-foreground">
               <StatePill pull={p} />
-              <span className="text-foreground/85">{p.author}</span>
-              <span>wants to merge</span>
+              {/* GitHub's wording: a merge is its merger's, known once the detail is in. */}
+              <span className="text-foreground/85">{p.state === "merged" ? (d?.mergedBy ?? p.author) : p.author}</span>
+              <span>{p.state === "merged" ? "merged" : p.state === "closed" ? "wanted to merge" : "wants to merge"}</span>
               <BranchChip name={p.headRef} />
               <span>into</span>
               <BranchChip name={p.baseRef} />
