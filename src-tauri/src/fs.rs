@@ -269,13 +269,81 @@ fn rename_exclusive(src: &Path, dst: &Path) -> std::io::Result<()> {
 pub fn trash(root: &Path, rel: &str) -> Result<(), String> {
     let path = resolve_entry(root, rel)?;
     path.symlink_metadata().map_err(|e| e.to_string())?;
-    move_to_trash(&path)
+    move_to_trash(&path).map(|_| ())
+}
+
+/// A file's size and modification time, or None when it's gone: enough to tell later
+/// whether anything wrote it since.
+pub type Stamp = Option<(u64, std::time::SystemTime)>;
+
+pub fn stamp(root: &Path, rel: &str) -> Stamp {
+    let meta = resolve_entry(root, rel).ok()?.symlink_metadata().ok()?;
+    Some((meta.len(), meta.modified().ok()?))
+}
+
+/// Puts a copy of a file (or symlink) in the Trash as `name`, and says where it went there.
+pub fn trash_copy(root: &Path, rel: &str, name: &str) -> Result<PathBuf, String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let src = resolve_entry(root, rel)?;
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("gitviber-{}-{n}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let copy = dir.join(name);
+    let trashed = copy_entry(&src, &copy).and_then(|()| stash(&copy));
+    if !cfg!(test) {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    trashed
+}
+
+#[cfg(not(test))]
+fn stash(copy: &Path) -> Result<PathBuf, String> {
+    move_to_trash(copy)
+}
+
+/// `cargo test` must not fill the user's Trash: the copy stays in its temporary folder.
+#[cfg(test)]
+fn stash(copy: &Path) -> Result<PathBuf, String> {
+    Ok(copy.to_path_buf())
+}
+
+/// Writes `copy` (from `trash_copy`) back over `rel`, or removes `rel` when there's none.
+pub fn put_back(root: &Path, rel: &str, copy: Option<&Path>) -> Result<(), String> {
+    let dst = resolve_entry(root, rel)?;
+    if let Some(c) = copy {
+        c.symlink_metadata()
+            .map_err(|_| format!("The discarded version of {rel} is no longer in the Trash."))?;
+    }
+    // Copying onto a link would write where it points.
+    if copy.is_none_or(is_link) || is_link(&dst) {
+        match std::fs::remove_file(&dst) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.to_string()),
+            _ => {}
+        }
+    }
+    copy.map_or(Ok(()), |c| copy_entry(c, &dst))
+}
+
+fn is_link(p: &Path) -> bool {
+    p.symlink_metadata().is_ok_and(|m| m.is_symlink())
+}
+
+fn copy_entry(src: &Path, dst: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    if is_link(src) {
+        let target = std::fs::read_link(src).map_err(|e| e.to_string())?;
+        return std::os::unix::fs::symlink(target, dst).map_err(|e| e.to_string());
+    }
+    std::fs::copy(src, dst)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// NSFileManager rather than `osascript` + Finder: no Automation permission prompt, no
 /// Finder sound, and "Put Back" still works. Foundation is already loaded by the webview.
+/// Returns where the item ended up in the Trash.
 #[cfg(target_os = "macos")]
-fn move_to_trash(path: &Path) -> Result<(), String> {
+fn move_to_trash(path: &Path) -> Result<PathBuf, String> {
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject, Bool};
     use std::ffi::{c_char, CStr, CString};
@@ -298,11 +366,22 @@ fn move_to_trash(path: &Path) -> Result<(), String> {
         let url: *mut AnyObject = msg_send![ns_url, fileURLWithPath: string];
         let manager: *mut AnyObject = msg_send![file_manager, defaultManager];
         let mut error: *mut AnyObject = null_mut();
-        let ok: Bool = msg_send![manager, trashItemAtURL: url, resultingItemURL: null_mut::<*mut AnyObject>(), error: &mut error as *mut *mut AnyObject];
-        if ok.as_bool() {
-            return Ok(());
-        }
+        let mut trashed: *mut AnyObject = null_mut();
+        let ok: Bool = msg_send![manager, trashItemAtURL: url, resultingItemURL: &mut trashed as *mut *mut AnyObject, error: &mut error as *mut *mut AnyObject];
         let fallback = || Err("Could not move to Trash".to_string());
+        if ok.as_bool() {
+            if trashed.is_null() {
+                return fallback();
+            }
+            let path: *mut AnyObject = msg_send![trashed, path];
+            let utf8: *const c_char = msg_send![path, UTF8String];
+            if utf8.is_null() {
+                return fallback();
+            }
+            return Ok(PathBuf::from(std::ffi::OsStr::from_bytes(
+                CStr::from_ptr(utf8).to_bytes(),
+            )));
+        }
         if error.is_null() {
             return fallback();
         }
@@ -316,7 +395,7 @@ fn move_to_trash(path: &Path) -> Result<(), String> {
 }
 
 #[cfg(not(target_os = "macos"))]
-fn move_to_trash(_: &Path) -> Result<(), String> {
+fn move_to_trash(_: &Path) -> Result<PathBuf, String> {
     Err("Moving to Trash is only supported on macOS".into())
 }
 

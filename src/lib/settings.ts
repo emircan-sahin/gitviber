@@ -1,6 +1,6 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { api } from "./api";
+import { api, type Whitespace } from "./api";
 import { cleanOverrides } from "./commands";
 import { useSyncExternalStore } from "react";
 
@@ -88,6 +88,9 @@ export interface Settings {
   lightSyntaxTheme: LightSyntaxTheme;
   sideBySide: boolean;
   hideUnchanged: boolean;
+  /** Diffs hide lines whose only change is whitespace, of the kind `whitespaceMode` says. */
+  ignoreWhitespace: boolean;
+  whitespaceMode: Whitespace;
   wordWrap: boolean;
   ligatures: boolean;
   /** Whole-app zoom, one of UI_SCALES. Separate from the code font size. */
@@ -129,6 +132,8 @@ const DEFAULTS: Settings = {
   lightSyntaxTheme: "github-light-default",
   sideBySide: false,
   hideUnchanged: false,
+  ignoreWhitespace: false,
+  whitespaceMode: "amount",
   wordWrap: false,
   ligatures: false,
   uiScale: 1,
@@ -163,6 +168,8 @@ function load(): Settings {
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     if (typeof s.blame !== "boolean") s.blame = DEFAULTS.blame;
+    if (typeof s.ignoreWhitespace !== "boolean") s.ignoreWhitespace = DEFAULTS.ignoreWhitespace;
+    if (!["amount", "all"].includes(s.whitespaceMode)) s.whitespaceMode = DEFAULTS.whitespaceMode;
     s.keybindings = cleanOverrides(s.keybindings);
     if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;
@@ -289,6 +296,9 @@ export function stepUiScale(dir: -1 | 0 | 1) {
   const next = dir === 0 ? 1 : UI_SCALES[Math.min(UI_SCALES.length - 1, Math.max(0, i + dir))];
   updateSettings({ uiScale: next });
 }
+
+/** The whitespace diffs ignore now, or null. */
+export const diffWhitespace = (s: Settings): Whitespace | null => (s.ignoreWhitespace ? s.whitespaceMode : null);
 
 /** Snapshot for non-React code such as the global key handler. */
 export function getSettings() {

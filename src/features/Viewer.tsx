@@ -1,12 +1,12 @@
-import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, ExternalLink, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, History, Rows2, UserSearch, X } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, ExternalLink, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, History, Rows2, Space, UserSearch, X } from "lucide-react";
 import { Component, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Blame, type DiffKind, type DiffPair, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type FileChange, type RepoStatus, type Whitespace } from "@/lib/api";
 import { type Selection, selectionPath } from "@/lib/selection";
 import { bindingsFor, type CommandId, formatChord, useCommands, useShortcut } from "@/lib/keybindings";
-import { updateSettings, useSettings } from "@/lib/settings";
+import { diffWhitespace, getSettings, updateSettings, useSettings } from "@/lib/settings";
 import { FIT, type Zoom } from "@/lib/svg";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
@@ -180,7 +180,7 @@ function TabKind({ sel }: { sel: Selection }) {
 /** Tabs whose content is a diff of one file (everything except PR and issue overviews). */
 export type FileSelection = Exclude<Selection, { kind: "pull" | "issue" }>;
 
-function pairArgs(sel: FileSelection, revision: number) {
+function pairArgs(sel: FileSelection, revision: number, whitespace: Whitespace | null = null) {
   const kind: DiffKind =
     sel.kind === "file" ? "worktree" : sel.kind === "conflict" ? "unstaged" : sel.kind === "pr-file" ? "range" : sel.kind;
   const path = selectionPath(sel);
@@ -189,7 +189,7 @@ function pairArgs(sel: FileSelection, revision: number) {
   const base = sel.kind === "pr-file" ? sel.range.base : null;
   // Commits and PR ranges never change, so only working-tree views follow the revision counter.
   const rev = sel.kind === "commit" || sel.kind === "pr-file" ? 0 : revision;
-  return { kind, path, oldPath, sha, base, key: `${kind}\0${path}\0${oldPath}\0${sha}\0${base}\0${rev}` };
+  return { kind, path, oldPath, sha, base, whitespace, key: `${kind}\0${path}\0${oldPath}\0${sha}\0${base}\0${rev}\0${whitespace}` };
 }
 
 // Recently loaded/prefetched diffs; the key includes the revision, so stale entries never match.
@@ -211,24 +211,27 @@ function remember(key: string, pair: DiffPair, gen: number) {
 /** Loads a diff in the background, so opening it next is instant. */
 export function prefetchSelection(sel: Selection, revision: number) {
   if (sel.kind === "pull" || sel.kind === "issue") return;
-  const { kind, path, oldPath, sha, base, key } = pairArgs(sel, revision);
+  const { kind, path, oldPath, sha, base, whitespace, key } = pairArgs(sel, revision, diffWhitespace(getSettings()));
   if (pairCache.has(key)) return;
   const gen = generation;
   api
-    .diffPair(kind, path, oldPath, sha, base)
+    .diffPair(kind, path, oldPath, sha, base, whitespace)
     .then((p) => remember(key, p, gen))
     .catch(() => {});
 }
 
 // Every change anywhere in the repo bumps the revision; a file that didn't change keeps its
-// pair object, so the code view doesn't rebuild and re-render every row for nothing.
+// pair object, so the code view doesn't rebuild and re-render every row for nothing. The rows
+// differ on the same texts when whitespace is ignored or no longer is.
 const samePair = (a: DiffPair | null, b: DiffPair) =>
-  !!a && sameText(a.original, b.original) && sameText(a.modified, b.modified);
+  !!a && sameText(a.original, b.original) && sameText(a.modified, b.modified) && sameRows(a.rows, b.rows);
 const sameText = (a: DiffPair["original"], b: DiffPair["original"]) =>
-  a.text === b.text && a.exists === b.exists && a.binary === b.binary && a.tooLarge === b.tooLarge && a.lossy === b.lossy;
+  a.text === b.text && a.exists === b.exists && a.binary === b.binary && a.tooLarge === b.tooLarge && a.lossy === b.lossy && a.lfsMissing === b.lfsMissing;
+const sameRows = (a: DiffRow[], b: DiffRow[]) =>
+  a.length === b.length && a.every((r, i) => r.k === b[i].k && r.o === b[i].o && r.n === b[i].n && String(r.e) === String(b[i].e));
 
-function usePair(sel: FileSelection, revision: number) {
-  const { kind, path, oldPath, sha, base, key } = pairArgs(sel, revision);
+function usePair(sel: FileSelection, revision: number, ws: Whitespace | null) {
+  const { kind, path, oldPath, sha, base, whitespace, key } = pairArgs(sel, revision, ws);
   const [pair, setPair] = useState<DiffPair | null>(() => pairCache.get(key) ?? null);
   const [error, setError] = useState<string | null>(null);
   const latest = useRef(0);
@@ -246,7 +249,7 @@ function usePair(sel: FileSelection, revision: number) {
     const seq = ++latest.current;
     const gen = generation;
     api
-      .diffPair(kind, path, oldPath, sha, base)
+      .diffPair(kind, path, oldPath, sha, base, whitespace)
       .then((p) => {
         remember(key, p, gen);
         if (seq > applied.current) {
@@ -256,7 +259,7 @@ function usePair(sel: FileSelection, revision: number) {
         }
       })
       .catch((e) => seq >= latest.current && setError(errorMessage(e)));
-  }, [key, kind, path, oldPath, sha, base]);
+  }, [key, kind, path, oldPath, sha, base, whitespace]);
   return { pair, error };
 }
 
@@ -270,7 +273,7 @@ function findChange(status: RepoStatus | null, path: string): Selection | null {
 
 function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShowCommit }: ViewerProps & { tab: Tab; sel: FileSelection }) {
   const s = useSettings();
-  const { pair, error } = usePair(sel, revision);
+  const { pair, error } = usePair(sel, revision, diffWhitespace(s));
   const view = useRef<CodeViewHandle>(null);
   const isFile = sel.kind === "file";
   const file: FileChange | null = isFile ? null : sel.file;
@@ -311,6 +314,9 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
         {file && <LineCounts file={file} />}
         {file && <StatusPill status={file.status} />}
         <div className="ml-auto flex shrink-0 items-center gap-1">
+          {diff && pair && !special && (pair.eolOnly || pair.whitespaceHidden) && (
+            <span className="mr-1 text-[11.5px] text-subtle">{pair.eolOnly ? "Only line endings changed" : "Whitespace changes hidden"}</span>
+          )}
           {diff && (
             <>
               <IconBtn label="Previous change" command="diff.prevChange" onClick={() => view.current?.prev()}>
@@ -323,6 +329,14 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               <LayoutToggle />
               <IconBtn label="Collapse unchanged lines" command="diff.toggleCollapse" active={s.hideUnchanged} onClick={() => updateSettings({ hideUnchanged: !s.hideUnchanged })}>
                 <FoldVertical />
+              </IconBtn>
+              <IconBtn
+                label={s.whitespaceMode === "all" ? "Ignore all whitespace" : "Ignore whitespace changes"}
+                command="diff.toggleWhitespace"
+                active={s.ignoreWhitespace}
+                onClick={() => updateSettings({ ignoreWhitespace: !s.ignoreWhitespace })}
+              >
+                <Space />
               </IconBtn>
               <Sep />
             </>
@@ -475,9 +489,10 @@ function hash(text: string) {
 function placeholderFor(pair: DiffPair, isFile: boolean) {
   const { original: a, modified: b } = pair;
   if (isFile && !b.exists) return "This file no longer exists";
+  if (b.lfsMissing || a.lfsMissing) return b.lfsMissing ?? a.lfsMissing;
   if (a.binary || b.binary) return "Binary file";
   if (a.tooLarge || b.tooLarge) return "File is too large to display";
-  if (!isFile && !pair.rows.some((r) => r.k !== 0)) return "No textual changes";
+  if (!isFile && !pair.rows.some((r) => r.k !== 0)) return pair.whitespaceHidden ? "Only whitespace changed (hidden)" : "No textual changes";
   return null;
 }
 

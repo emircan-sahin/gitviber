@@ -153,6 +153,8 @@ export interface FileText {
   exists: boolean;
   /** Not valid UTF-8; shown lossily and must never be written back. */
   lossy: boolean;
+  /** A Git LFS file whose object isn't downloaded: the message to show, with its size. */
+  lfsMissing: string | null;
 }
 
 /** k: 0 unchanged, 1 added, 2 removed. o/n: 1-based line numbers (0 = absent). e: emphasized UTF-16 ranges. */
@@ -167,7 +169,14 @@ export interface DiffPair {
   original: FileText;
   modified: FileText;
   rows: DiffRow[];
+  /** Ignoring whitespace hid changed lines. */
+  whitespaceHidden: boolean;
+  /** Every changed line differs only in its line ending (CRLF against LF). */
+  eolOnly: boolean;
 }
+
+/** Whitespace a diff ignores: changes in its amount (git's -b), or all of it (-w). */
+export type Whitespace = "amount" | "all";
 
 export interface Entry {
   name: string;
@@ -305,8 +314,8 @@ export const api = {
   /** The commit a SHA or SHA prefix names, if exactly one. */
   findCommit: (sha: string) => invoke<Commit | null>("find_commit", { sha }),
   commitFiles: (sha: string) => invoke<FileChange[]>("commit_files", { sha }),
-  diffPair: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null = null) =>
-    invoke<DiffPair>("diff_pair", { kind, path, oldPath, sha, base }),
+  diffPair: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null = null, whitespace: Whitespace | null = null) =>
+    invoke<DiffPair>("diff_pair", { kind, path, oldPath, sha, base, whitespace }),
   /** Raw bytes of one side of a diff (`original` = the before side), for media previews. */
   media: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null, original: boolean) =>
     invoke<ArrayBuffer>("media", { kind, path, oldPath, sha, base, original }),

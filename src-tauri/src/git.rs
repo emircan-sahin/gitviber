@@ -2,6 +2,7 @@
 //! user's config, hooks, credential helpers and signing all behave exactly like the
 //! terminal — GitViber never keeps state of its own inside the repo.
 
+use crate::lfs;
 use crate::network::{self, Net};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -543,19 +544,52 @@ fn apply_numstat(list: &mut [FileChange], stats: &HashMap<String, (Option<u32>, 
     }
 }
 
-/// Line count of an untracked file. Status runs on every change on disk, so counts are
-/// cached by size and mtime: a big untracked folder is read once, not on each refresh.
-fn count_lines(repo: &Path, rel: &str) -> Option<u32> {
+/// What one status may read to count lines of untracked files not counted before. A big
+/// generated folder shows `?` for the rest instead of stalling the refresh; each refresh
+/// counts more of it, as counts are cached.
+struct CountBudget {
+    files: usize,
+    bytes: u64,
+}
+
+impl Default for CountBudget {
+    fn default() -> Self {
+        CountBudget {
+            files: 2_000,
+            bytes: 64 << 20,
+        }
+    }
+}
+
+/// Line count of an untracked file (None: binary or unreadable), or None when it's past
+/// the budget. Status runs on every change on disk, so counts are cached by size and mtime:
+/// a big untracked folder is read once, not on each refresh.
+fn count_lines(repo: &Path, rel: &str, budget: &mut CountBudget) -> Option<Option<u32>> {
     type Key = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
     static CACHE: OnceLock<std::sync::Mutex<HashMap<Key, Option<u32>>>> = OnceLock::new();
     let path = repo.join(rel);
-    let meta = std::fs::metadata(&path).ok()?;
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return Some(None);
+    };
     let key = (path, meta.len(), meta.modified().ok());
     let cache = CACHE.get_or_init(Default::default);
     if let Some(n) = cache.lock().unwrap().get(&key) {
-        return *n;
+        return Some(*n);
     }
-    let bytes = read_regular(&key.0).ok()??;
+    // Past MAX_TEXT_BYTES nothing is read.
+    let cost = if meta.len() > MAX_TEXT_BYTES as u64 {
+        0
+    } else {
+        meta.len()
+    };
+    if budget.files == 0 || cost > budget.bytes {
+        return None;
+    }
+    budget.files -= 1;
+    budget.bytes -= cost;
+    let Ok(Some(bytes)) = read_regular(&key.0) else {
+        return Some(None);
+    };
     let n = (!is_binary(&bytes)).then(|| {
         let n = bytes.iter().filter(|b| **b == b'\n').count();
         let trailing = !bytes.is_empty() && *bytes.last().unwrap() != b'\n';
@@ -567,7 +601,7 @@ fn count_lines(repo: &Path, rel: &str) -> Option<u32> {
         cache.clear();
     }
     cache.insert(key, n);
-    n
+    Some(n)
 }
 
 pub fn status(repo: &Path) -> Result<RepoStatus, String> {
@@ -598,6 +632,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     };
 
     let mut nested_roots = std::collections::HashSet::new();
+    let mut budget = CountBudget::default();
     let mut records = raw
         .split(|b| *b == 0)
         .map(|t| String::from_utf8_lossy(t).into_owned());
@@ -663,8 +698,8 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
                     }
                     f.path = format!("{root}/");
                     f.nested = Some(nested(repo, &root));
-                } else {
-                    f.additions = count_lines(repo, path);
+                } else if let Some(n) = count_lines(repo, path, &mut budget) {
+                    f.additions = n;
                     f.deletions = Some(0);
                 }
                 st.unstaged.push(f);
@@ -1463,6 +1498,8 @@ pub struct FileText {
     pub exists: bool,
     /// Not valid UTF-8 (e.g. Latin-1); text was decoded lossily, so never write it back.
     pub lossy: bool,
+    /// A Git LFS file whose object isn't downloaded: says so, with its size.
+    pub lfs_missing: Option<String>,
 }
 
 pub fn is_binary(bytes: &[u8]) -> bool {
@@ -1534,10 +1571,51 @@ fn blob(repo: &Path, rev: &str, path: &str) -> FileText {
             ..Default::default()
         };
     }
-    match run(repo, &["cat-file", "blob", &spec]) {
+    match smudged(repo, &spec) {
         Ok(bytes) => to_file_text(bytes),
         Err(_) => FileText::default(),
     }
+}
+
+/// `<rev>:<path>` the way a checkout writes it (line endings, smudge filters), so it compares
+/// with the file on disk. git-lfs is told not to download: its files come out as pointers.
+fn smudged(repo: &Path, spec: &str) -> Result<Vec<u8>, String> {
+    let mut cmd = command(repo, &["cat-file", "--filters", spec]);
+    cmd.env("GIT_LFS_SKIP_SMUDGE", "1");
+    // A filter that fails (git-lfs configured but not installed) still leaves the stored form.
+    exec(cmd, "git cat-file", &[], None, None).or_else(|_| run(repo, &["cat-file", "blob", spec]))
+}
+
+/// An LFS pointer read as text stands for its object: the object's text when it's downloaded.
+fn lfs_text(repo: &Path, f: FileText) -> FileText {
+    let Some(p) = f.exists.then(|| lfs::pointer(f.text.as_bytes())).flatten() else {
+        return f;
+    };
+    match lfs::object(repo, &p).map(|o| read_regular(&o)) {
+        Some(Ok(Some(bytes))) => to_file_text(bytes),
+        Some(Ok(None)) => FileText {
+            too_large: true,
+            exists: true,
+            ..Default::default()
+        },
+        _ => FileText {
+            lfs_missing: Some(lfs::not_downloaded(&p)),
+            exists: true,
+            ..Default::default()
+        },
+    }
+}
+
+/// Media bytes, with an LFS pointer swapped for its object.
+fn lfs_media(repo: &Path, bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let Some(p) = lfs::pointer(&bytes) else {
+        return Ok(bytes);
+    };
+    let object = lfs::object(repo, &p).ok_or_else(|| lfs::not_downloaded(&p))?;
+    if p.size > MAX_MEDIA_BYTES {
+        return Err("File is too large to preview".into());
+    }
+    std::fs::read(object).map_err(|e| e.to_string())
 }
 
 /// A submodule on one side of a diff. Git stores only its commit (mode 160000), which
@@ -1580,10 +1658,15 @@ fn gitlink(repo: &Path, rev: Option<&str>, path: &str) -> Option<FileText> {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiffPair {
     pub original: FileText,
     pub modified: FileText,
     pub rows: Vec<crate::diff::Row>,
+    /// The ignored whitespace hid changed lines.
+    pub whitespace_hidden: bool,
+    /// Every changed line differs only in its line ending.
+    pub eol_only: bool,
 }
 
 /// Where each side of a diff lives: a git revision ("" = the index), or None for the worktree.
@@ -1636,7 +1719,7 @@ pub fn media(
         (b, path)
     };
     let Some(rev) = rev else {
-        return worktree(path);
+        return lfs_media(repo, worktree(path)?);
     };
     let spec = format!("{rev}:{path}");
     let size: u64 = run_text(repo, &["cat-file", "-s", &spec])?
@@ -1646,11 +1729,13 @@ pub fn media(
     if size > MAX_MEDIA_BYTES {
         return Err("File is too large to preview".into());
     }
-    run(repo, &["cat-file", "blob", &spec])
+    lfs_media(repo, smudged(repo, &spec)?)
 }
 
 /// `kind`: "unstaged" (index → worktree), "staged" (HEAD → index), "worktree" (HEAD → worktree),
 /// "commit" (parent → commit) or "range" (base → sha, e.g. a pull request).
+/// `whitespace`: "all" or "amount" to ignore those changes (see `diff::whitespace_mode`).
+#[allow(clippy::too_many_arguments)]
 pub fn diff_pair(
     repo: &Path,
     kind: &str,
@@ -1658,6 +1743,7 @@ pub fn diff_pair(
     old_path: Option<&str>,
     sha: Option<&str>,
     base: Option<&str>,
+    whitespace: Option<&str>,
     worktree: impl Fn(&str) -> FileText,
 ) -> Result<DiffPair, String> {
     let (a, b) = sides(kind, sha, base)?;
@@ -1667,23 +1753,28 @@ pub fn diff_pair(
             None => worktree(p),
         };
         if f.exists {
-            f
+            lfs_text(repo, f)
         } else {
             gitlink(repo, rev.as_deref(), p).unwrap_or(f)
         }
     };
     let original = read(a, old_path.unwrap_or(path));
     let modified = read(b, path);
-    let textual = |f: &FileText| !f.binary && !f.too_large;
-    let rows = if textual(&original) && textual(&modified) {
-        crate::diff::rows(&original.text, &modified.text)
+    let textual = |f: &FileText| !f.binary && !f.too_large && f.lfs_missing.is_none();
+    let (rows, whitespace_hidden) = if textual(&original) && textual(&modified) {
+        let ws = crate::diff::whitespace_mode(whitespace);
+        crate::diff::rows(&original.text, &modified.text, ws)
     } else {
-        vec![]
+        (vec![], false)
     };
+    let eol_only =
+        rows.iter().any(|r| r.k != 0) && crate::diff::eol_only(&original.text, &modified.text);
     Ok(DiffPair {
         original,
         modified,
         rows,
+        whitespace_hidden,
+        eol_only,
     })
 }
 
@@ -2577,7 +2668,7 @@ mod tests {
             ("?", Some(1))
         );
 
-        let pair = diff_pair(&repo, "unstaged", "a.txt", None, None, None, |p| {
+        let pair = diff_pair(&repo, "unstaged", "a.txt", None, None, None, None, |p| {
             to_file_text(fs::read(repo.join(p)).unwrap())
         })
         .unwrap();
@@ -2588,6 +2679,7 @@ mod tests {
             "staged",
             "new name.txt",
             Some("old name.txt"),
+            None,
             None,
             None,
             |_| FileText::default(),
@@ -2717,6 +2809,26 @@ mod tests {
         assert!(operation(&repo).is_none());
         assert_eq!(fs::read_to_string(repo.join("a.txt")).unwrap(), "feature\n");
         assert!(validate_ref(&repo, "--help").is_err());
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn line_counts_stop_at_the_budget() {
+        let repo = temp_repo("budget");
+        for i in 0..3 {
+            fs::write(repo.join(format!("f{i}.txt")), "a\nb\n").unwrap();
+        }
+        let mut budget = CountBudget {
+            files: 2,
+            bytes: u64::MAX,
+        };
+        let got: Vec<_> = (0..3)
+            .map(|i| count_lines(&repo, &format!("f{i}.txt"), &mut budget))
+            .collect();
+        assert_eq!(got, [Some(Some(2)), Some(Some(2)), None]);
+        // Counted once, they cost nothing on the next refresh.
+        let mut none = CountBudget { files: 0, bytes: 0 };
+        assert_eq!(count_lines(&repo, "f1.txt", &mut none), Some(Some(2)));
         let _ = fs::remove_dir_all(&repo);
     }
 

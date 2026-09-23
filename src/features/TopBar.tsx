@@ -403,7 +403,7 @@ function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boolean })
     const blocked = forward ? journal?.redoBlocked : journal?.undoBlocked;
     const verb = forward ? "redo" : "undo";
     if (off) return;
-    if (!e) toast("info", `Nothing to ${verb}`, "Commits, merges, pulls and branch changes made in GitViber can be undone.");
+    if (!e) toast("info", `Nothing to ${verb}`, "Commits, merges, pulls, branch changes and discards made in GitViber can be undone.");
     else if (blocked) toast("error", `Can't ${verb} ${e.label}`, blocked);
     else void go(forward, [e.id]);
   };

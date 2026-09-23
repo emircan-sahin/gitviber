@@ -1,7 +1,7 @@
 //! Line diff with word-level emphasis, computed here so the UI thread only renders.
 
 use serde::Serialize;
-use similar::{Algorithm, ChangeTag, DiffOp, InlineChangeOptions, TextDiff};
+use similar::{Algorithm, ChangeTag, DiffOp, InlineChangeOptions, TextDiff, WhitespaceMode};
 use std::time::Duration;
 
 #[derive(Serialize, Debug, PartialEq)]
@@ -37,13 +37,32 @@ fn row(tag: ChangeTag, old: Option<usize>, new: Option<usize>, e: Vec<[u32; 2]>)
 // Word refinement is quadratic-ish; past this a replaced block is shown without emphasis.
 const MAX_INLINE_CELLS: usize = 20_000;
 
-pub fn rows(old: &str, new: &str) -> Vec<Row> {
+/// Length in UTF-16 units, the offsets JS strings use.
+fn utf16(s: &str) -> u32 {
+    s.encode_utf16().count() as u32
+}
+
+/// What a diff may ignore, as git's `-w` (all whitespace) and `-b` (changes in its amount,
+/// which covers re-indentation and trailing whitespace).
+pub fn whitespace_mode(name: Option<&str>) -> WhitespaceMode {
+    match name {
+        Some("all") => WhitespaceMode::IgnoreAll,
+        Some("amount") => WhitespaceMode::IgnoreChanges,
+        _ => WhitespaceMode::Exact,
+    }
+}
+
+/// The rows, and whether `ws` hid a change: lines paired as unchanged whose text differs.
+pub fn rows(old: &str, new: &str, ws: WhitespaceMode) -> (Vec<Row>, bool) {
     let diff = TextDiff::configure()
         .algorithm(Algorithm::Patience)
         .timeout(Duration::from_secs(2))
+        .whitespace_mode(ws)
         .diff_lines(old, new);
     let mut opts = InlineChangeOptions::new();
     opts.semantic_cleanup(true);
+    let ignoring = ws != WhitespaceMode::Exact;
+    let mut hidden = false;
 
     let mut out = Vec::new();
     for op in diff.ops() {
@@ -55,21 +74,25 @@ pub fn rows(old: &str, new: &str) -> Vec<Row> {
                 for change in diff.iter_inline_changes_with_options(op, opts) {
                     let mut ranges: Vec<[u32; 2]> = Vec::new();
                     let mut offset = 0u32;
-                    let mut all = true;
                     for (emphasized, text) in change.iter_strings_lossy() {
-                        let len = text.trim_end_matches(['\n', '\r']).encode_utf16().count() as u32;
-                        if emphasized && len > 0 {
+                        let text = text.trim_end_matches(['\n', '\r']);
+                        let len = utf16(text);
+                        let (mut start, mut end) = (offset, offset + len);
+                        // Whitespace at a span's edges is what the user asked not to see.
+                        if ignoring {
+                            start += len - utf16(text.trim_start());
+                            end -= len - utf16(text.trim_end());
+                        }
+                        if emphasized && end > start {
                             match ranges.last_mut() {
-                                Some(last) if last[1] == offset => last[1] += len,
-                                _ => ranges.push([offset, offset + len]),
+                                Some(last) if last[1] == start => last[1] = end,
+                                _ => ranges.push([start, end]),
                             }
-                        } else if len > 0 {
-                            all = false;
                         }
                         offset += len;
                     }
                     // A fully emphasized line says nothing beyond the row color.
-                    if all {
+                    if ranges == [[0, offset]] {
                         ranges.clear();
                     }
                     out.push(row(
@@ -83,6 +106,10 @@ pub fn rows(old: &str, new: &str) -> Vec<Row> {
             }
         }
         for change in diff.iter_changes(op) {
+            if ignoring && !hidden && change.tag() == ChangeTag::Equal {
+                let old = change.old_index().and_then(|i| diff.old_slice(i));
+                hidden = old != change.new_index().and_then(|i| diff.new_slice(i));
+            }
             out.push(row(
                 change.tag(),
                 change.old_index(),
@@ -91,7 +118,15 @@ pub fn rows(old: &str, new: &str) -> Vec<Row> {
             ));
         }
     }
-    out
+    (out, hidden)
+}
+
+/// The texts differ only in line endings (CRLF against LF), which marks every line changed.
+pub fn eol_only(old: &str, new: &str) -> bool {
+    fn lines(s: &str) -> impl Iterator<Item = &str> {
+        s.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l))
+    }
+    old != new && lines(old).eq(lines(new))
 }
 
 #[cfg(test)]
@@ -100,7 +135,11 @@ mod tests {
 
     #[test]
     fn marks_changed_words() {
-        let r = rows("let a = 1;\nkeep\n", "let a = 2;\nkeep\nnew\n");
+        let (r, _) = rows(
+            "let a = 1;\nkeep\n",
+            "let a = 2;\nkeep\nnew\n",
+            WhitespaceMode::Exact,
+        );
         assert_eq!(r.len(), 4);
         assert_eq!((r[0].k, r[0].o, r[0].n), (2, 1, 0));
         assert_eq!((r[1].k, r[1].o, r[1].n), (1, 0, 1));
@@ -111,7 +150,42 @@ mod tests {
 
     #[test]
     fn utf16_offsets() {
-        let r = rows("é 😀 x\n", "é 😀 y\n");
+        let (r, _) = rows("é 😀 x\n", "é 😀 y\n", WhitespaceMode::Exact);
         assert_eq!(r[1].e, vec![[5, 6]]);
+    }
+
+    #[test]
+    fn ignores_whitespace_but_keeps_the_real_change() {
+        let old = "if (a) {\n  let b = 1;\n}\n";
+        let new = "if (a) {\n    let b = 2;  \n}\n";
+        let (r, _) = rows(old, new, WhitespaceMode::Exact);
+        assert_eq!(r[2].e, vec![[0, 4], [12, 16]]);
+        // Not the new indentation or the trailing spaces.
+        let (r, hidden) = rows(old, new, whitespace_mode(Some("amount")));
+        assert_eq!((r[2].e.as_slice(), hidden), (&[[12, 14]][..], false));
+        let (r, hidden) = rows(
+            old,
+            "if (a) {\n    let b = 1;  \n}\n",
+            whitespace_mode(Some("amount")),
+        );
+        assert!(hidden && r.iter().all(|r| r.k == 0));
+        // -b still sees whitespace added where there was none; -w doesn't.
+        let spaced = "if (a) {\n  let b=1;\n}\n";
+        assert!(rows(old, spaced, whitespace_mode(Some("amount")))
+            .0
+            .iter()
+            .any(|r| r.k != 0));
+        assert!(rows(old, spaced, whitespace_mode(Some("all")))
+            .0
+            .iter()
+            .all(|r| r.k == 0));
+        assert!(!rows(old, old, whitespace_mode(Some("all"))).1);
+    }
+
+    #[test]
+    fn line_endings_only() {
+        assert!(eol_only("a\nb\n", "a\r\nb\r\n"));
+        assert!(!eol_only("a\nb\n", "a\nb\n"));
+        assert!(!eol_only("a\nb\n", "a\r\nc\r\n"));
     }
 }

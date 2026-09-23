@@ -4,6 +4,7 @@ mod fs;
 mod git;
 mod github;
 mod journal;
+mod lfs;
 mod menu;
 mod navigation;
 mod network;
@@ -233,6 +234,7 @@ async fn diff_pair(
     old_path: Option<String>,
     sha: Option<String>,
     base: Option<String>,
+    whitespace: Option<String>,
 ) -> Res<git::DiffPair> {
     let r = repo(&state)?;
     blocking(move || {
@@ -243,6 +245,7 @@ async fn diff_pair(
             old_path.as_deref(),
             sha.as_deref(),
             base.as_deref(),
+            whitespace.as_deref(),
             |p| fs::read_file(&r, p),
         )
     })
@@ -378,7 +381,14 @@ async fn unstage(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
 
 #[tauri::command]
 async fn discard(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
-    indexed(&state, move |r| git::discard(r, &paths)).await
+    let r = repo(&state)?;
+    let (journal, index) = (state.journal.clone(), state.index.clone());
+    blocking(move || {
+        journal.discard(&r, &paths, || {
+            with_index_lock(&index, &r, |r| git::discard(r, &paths))
+        })
+    })
+    .await
 }
 
 #[tauri::command]

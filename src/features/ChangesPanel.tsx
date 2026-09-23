@@ -34,6 +34,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
+import { Windowed } from "@/components/Windowed";
 import { api, type Commit, errorMessage, type FileChange, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { REVEAL_LABEL } from "@/lib/commands";
 import { ignorePattern } from "@/lib/gitignore";
@@ -118,23 +119,30 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
   const viewedPaths = status.unstaged.filter((file) => !file.nested && viewed({ kind: "unstaged", file })).map((f) => f.path);
 
   // Untracked files have nothing to restore; like VS Code, discarding one deletes it (to the Trash here).
+  // Tracked ones keep a copy of what they were in the Trash, which Undo (and ⌘Z) writes back.
   const discard = async (list: FileChange[]) => {
-    const tracked = list.filter((f) => f.status !== "?");
+    const restorable = list.filter((f) => f.status !== "?");
     const untracked = list.filter((f) => f.status === "?");
     if (!list.length) return;
     const one = list.length === 1 ? list[0].path : null;
-    const trashOnly = !tracked.length;
+    const trashOnly = !restorable.length;
     const message = trashOnly
       ? one
         ? `Move ${one} to the Trash? It is untracked, so git has no copy of it.`
         : `Move ${untracked.length} untracked files to the Trash? Git has no copy of them.`
-      : `Discard changes to ${one ?? files(tracked.length)}? This cannot be undone.${untracked.length ? ` ${files(untracked.length)} git doesn't track will be moved to the Trash.` : ""}`;
+      : `Discard changes to ${one ?? files(restorable.length)}? ${restorable.length === 1 ? "Its current version is" : "Their current versions are"} moved to the Trash.${untracked.length ? ` ${files(untracked.length)} git doesn't track will be moved to the Trash too.` : ""}`;
     const ok = await ask(message, trashOnly ? { title: one ? "Delete file" : "Delete files", kind: "warning", okLabel: "Move to Trash" } : { title: "Discard changes", kind: "warning", okLabel: "Discard" });
     if (!ok) return;
-    await act(trashOnly ? "Could not move to Trash" : "Discard failed", async () => {
-      if (tracked.length) await api.discard(tracked.map((f) => f.path));
+    let entry: number | null = null;
+    const done = await attempt(trashOnly ? "Could not move to Trash" : "Discard failed", async () => {
+      if (restorable.length) [, entry] = await tracked(() => api.discard(restorable.map((f) => f.path)));
       for (const f of untracked) await api.trashPath(f.path);
     });
+    if (done && restorable.length) {
+      const single = restorable.length === 1;
+      toast("success", `Discarded ${single ? restorable[0].path : files(restorable.length)}`, `The old ${single ? "version is" : "versions are"} in the Trash.`, undoAction(entry, refresh));
+    }
+    await refresh();
   };
 
   const ignore = (list: FileChange[]) =>
@@ -354,11 +362,18 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
         onOpen={onOpen}
         onHover={onHover}
         onToggleViewed={() => setViewed(rows, !isViewed)}
-        menu={menu(sel, rows)}
+        menu={() => menu(sel, rows)}
       >
         {actions(rows)}
       </Row>
     );
+  };
+
+  const listRef = useRef<HTMLDivElement>(null);
+  /** A section's rows; with thousands, only those near the screen (and the open and tab-stop rows). */
+  const rowsOf = (kind: Change["kind"], list: FileChange[], render: (file: FileChange) => React.ReactNode) => {
+    const keep = [activeKey, tabStop].map((k) => list.findIndex((file) => selectionKey({ kind, file }) === k));
+    return <Windowed count={list.length} height={ROW_HEIGHT} scroller={listRef} keep={keep} render={(i) => render(list[i])} />;
   };
 
   return (
@@ -389,6 +404,7 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
         onBlur={(e) => setListFocused(e.currentTarget.contains(e.relatedTarget))}
         // The empty space below the rows lets go of the selection, like Finder.
         onClick={(e) => e.target === e.currentTarget && setPicked(null)}
+        ref={listRef}
         className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
         {!all.length && !status.unstaged.length && <AllCaughtUp />}
         {status.conflicted.length > 0 && (
@@ -399,7 +415,7 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
             pinned={!!pickedConflicts}
             action={pickedConflicts && <SectionBtn onClick={() => stage(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
           >
-            {status.conflicted.map((file) =>
+            {rowsOf("conflict", status.conflicted, (file) =>
               row({ kind: "conflict", file }, (rows) => (
                 <>
                   <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => stage(rows)}>
@@ -429,7 +445,7 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
               )
             }
           >
-            {status.staged.map((file) =>
+            {rowsOf("staged", status.staged, (file) =>
               row({ kind: "staged", file }, (rows) => (
                 <RowAction label={rows.length > 1 ? `Unstage ${files(rows.length)}` : "Unstage"} onClick={() => unstage(rows)}>
                   <Minus />
@@ -459,7 +475,7 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
               )
             }
           >
-            {status.unstaged.map((file) =>
+            {rowsOf("unstaged", status.unstaged, (file) =>
               file.nested ? (
                 <NestedRow key={file.path} file={file} />
               ) : (
@@ -575,6 +591,9 @@ function SectionBtn({ onClick, children }: { onClick: () => void; children: Reac
   );
 }
 
+// Row and NestedRow are h-[26px].
+const ROW_HEIGHT = 26;
+
 function Row({
   sel,
   active,
@@ -602,11 +621,13 @@ function Row({
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
   onToggleViewed: () => void;
-  menu: React.ReactNode;
+  /** Built only once the menu is first opened: thousands of rows each building theirs made the list slow. */
+  menu: () => React.ReactNode;
   children?: React.ReactNode;
 }) {
   const file = sel.file;
   const ref = useRef<HTMLDivElement>(null);
+  const [menuOpened, setMenuOpened] = useState(false);
   // J/K can move the selection off-screen; follow it. ↑/↓ from a row also moves focus to it.
   useEffect(() => {
     if (!active) return;
@@ -614,7 +635,7 @@ function Row({
     if (document.activeElement instanceof HTMLElement && document.activeElement.dataset.row !== undefined) ref.current?.focus();
   }, [active]);
   return (
-    <ContextMenu>
+    <ContextMenu onOpenChange={(open) => open && setMenuOpened(true)}>
       <ContextMenuTrigger asChild>
         <div
           ref={ref}
@@ -663,7 +684,7 @@ function Row({
           <StatusLetter status={file.status} />
         </div>
       </ContextMenuTrigger>
-      {menu}
+      {menuOpened && menu()}
     </ContextMenu>
   );
 }

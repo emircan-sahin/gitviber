@@ -19,6 +19,7 @@ const FIXED_KEYS: Partial<Record<Action, string>> = { "terminal.toggle": "cmd+j"
 const CHECKED: Partial<Record<Action, (s: Settings) => boolean>> = {
   "diff.toggleSplit": (s) => s.sideBySide,
   "diff.toggleCollapse": (s) => s.hideUnchanged,
+  "diff.toggleWhitespace": (s) => s.ignoreWhitespace,
   "editor.toggleWrap": (s) => s.wordWrap,
   "editor.toggleBlame": (s) => s.blame,
 };

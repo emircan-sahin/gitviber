@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
+import type { Whitespace } from "@/lib/api";
 import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventChord, formatChord, IS_MAC, RESERVED } from "@/lib/commands";
 import {
   type Appearance,
@@ -269,6 +270,21 @@ function DiffSection() {
       </Field>
       <Field label="Collapse unchanged lines" hint="Fold long runs of unchanged code between changes." commands={["diff.toggleCollapse"]}>
         <Switch checked={s.hideUnchanged} onChange={(v) => updateSettings({ hideUnchanged: v })} />
+      </Field>
+      <Field
+        label="Ignore whitespace"
+        hint="Changes hides re-indented lines and trailing spaces, like git diff -b. All ignores every space, like git diff -w."
+        commands={["diff.toggleWhitespace"]}
+      >
+        <Segmented<string>
+          value={s.ignoreWhitespace ? s.whitespaceMode : "off"}
+          onChange={(v) => updateSettings(v === "off" ? { ignoreWhitespace: false } : { ignoreWhitespace: true, whitespaceMode: v as Whitespace })}
+          options={[
+            ["off", "Off"],
+            ["amount", "Changes"],
+            ["all", "All"],
+          ]}
+        />
       </Field>
     </>
   );

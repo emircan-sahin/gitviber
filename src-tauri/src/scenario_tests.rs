@@ -584,20 +584,164 @@ fn binary_crlf_and_missing_trailing_newline() {
     fs::write(r.join("nonl.txt"), "x\ny\n").unwrap();
     let wt = |p: &str| vfs::read_file(&r, p);
 
-    let bin = diff_pair(&r, "unstaged", "bin.dat", None, None, None, wt).unwrap();
+    let bin = diff_pair(&r, "unstaged", "bin.dat", None, None, None, None, wt).unwrap();
     assert!(bin.modified.binary && bin.rows.is_empty());
 
-    let crlf = diff_pair(&r, "unstaged", "crlf.txt", None, None, None, wt).unwrap();
+    let crlf = diff_pair(&r, "unstaged", "crlf.txt", None, None, None, None, wt).unwrap();
     let kinds: Vec<u8> = crlf.rows.iter().map(|x| x.k).collect();
     assert_eq!(kinds, vec![0, 2, 1, 0]);
     // Emphasis must not include the \r.
     assert!(crlf.rows[2].e.iter().all(|[_, end]| *end <= 1));
 
-    let nonl = diff_pair(&r, "unstaged", "nonl.txt", None, None, None, wt).unwrap();
+    let nonl = diff_pair(&r, "unstaged", "nonl.txt", None, None, None, None, wt).unwrap();
     assert!(
         nonl.rows.iter().all(|x| x.o <= 2 && x.n <= 2),
         "line counts match the frontend's split"
     );
+}
+
+#[test]
+fn autocrlf_diffs_like_git() {
+    let sb = Sandbox::new("autocrlf");
+    let r = sb.path("r");
+    init(&r);
+    run(&r, &["config", "core.autocrlf", "true"]).unwrap();
+    // Stored with LF, checked out (here: written) with CRLF.
+    write_commit(&r, "a.txt", "a\r\nb\r\nc\r\n", "crlf");
+    assert_eq!(
+        run_text(&r, &["cat-file", "blob", "HEAD:a.txt"]).unwrap(),
+        "a\nb\nc\n"
+    );
+    fs::write(r.join("a.txt"), "a\r\nB\r\nc\r\n").unwrap();
+    let wt = |p: &str| vfs::read_file(&r, p);
+    for kind in ["unstaged", "worktree"] {
+        let pair = diff_pair(&r, kind, "a.txt", None, None, None, None, wt).unwrap();
+        let kinds: Vec<u8> = pair.rows.iter().map(|x| x.k).collect();
+        assert_eq!(kinds, vec![0, 2, 1, 0], "{kind}: only the changed line");
+        assert!(!pair.eol_only);
+    }
+    stage(&r, &["a.txt".into()]).unwrap();
+    commit(&r, "B", &CommitOptions::default()).unwrap();
+    let head = rev(&r, "HEAD");
+    let pair = diff_pair(&r, "commit", "a.txt", None, Some(&head), None, None, wt).unwrap();
+    assert_eq!(pair.modified.text, "a\r\nB\r\nc\r\n");
+    assert_eq!(pair.rows.iter().filter(|x| x.k != 0).count(), 2);
+
+    // Without the setting a CRLF copy of an LF file is a real change, of line endings only.
+    run(&r, &["config", "core.autocrlf", "false"]).unwrap();
+    write_commit(&r, "lf.txt", "x\ny\n", "lf");
+    fs::write(r.join("lf.txt"), "x\r\ny\r\n").unwrap();
+    let pair = diff_pair(&r, "unstaged", "lf.txt", None, None, None, None, wt).unwrap();
+    assert!(pair.eol_only && pair.rows.iter().any(|x| x.k != 0));
+    // Ignoring whitespace hides it, and says so.
+    let pair = diff_pair(
+        &r,
+        "unstaged",
+        "lf.txt",
+        None,
+        None,
+        None,
+        Some("amount"),
+        wt,
+    )
+    .unwrap();
+    assert!(pair.whitespace_hidden && pair.rows.iter().all(|x| x.k == 0));
+}
+
+const LFS_OID: &str = "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393";
+
+fn lfs_pointer(oid: &str, size: usize) -> String {
+    format!("version https://git-lfs.github.com/spec/v1\noid sha256:{oid}\nsize {size}\n")
+}
+
+/// Pointers committed as plain files: no git-lfs needed to read what the store has or lacks.
+#[test]
+fn lfs_pointers_show_the_object_or_its_size() {
+    let sb = Sandbox::new("lfs-pointer");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "big.bin", &lfs_pointer(LFS_OID, 13_002_342), "pointer");
+    write_commit(&r, "pic.png", &lfs_pointer(LFS_OID, 5), "pointer");
+    let head = rev(&r, "HEAD");
+    let none = |_: &str| FileText::default();
+    let pair = diff_pair(&r, "commit", "big.bin", None, Some(&head), None, None, none).unwrap();
+    assert_eq!(
+        pair.modified.lfs_missing.as_deref(),
+        Some("LFS object not downloaded (12.4 MB)")
+    );
+    assert!(pair.rows.is_empty());
+    let got = media(
+        &r,
+        "commit",
+        "pic.png",
+        None,
+        Some(&head),
+        None,
+        false,
+        |_| Err("unused".into()),
+    );
+    assert_eq!(got.unwrap_err(), "LFS object not downloaded (5 B)");
+
+    // Once downloaded, the object stands in for the pointer on every side.
+    let dir = r.join(format!(
+        ".git/lfs/objects/{}/{}",
+        &LFS_OID[..2],
+        &LFS_OID[2..4]
+    ));
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join(LFS_OID), "hello").unwrap();
+    let got = media(
+        &r,
+        "commit",
+        "pic.png",
+        None,
+        Some(&head),
+        None,
+        false,
+        |_| Err("unused".into()),
+    );
+    assert_eq!(got.unwrap(), b"hello");
+    let wt = |p: &str| vfs::read_file(&r, p);
+    let pair = diff_pair(&r, "worktree", "pic.png", None, None, None, None, wt).unwrap();
+    assert_eq!(
+        (pair.original.text.as_str(), pair.modified.text.as_str()),
+        ("hello", "hello")
+    );
+}
+
+/// The real thing, when git-lfs is installed: the stored side is the object, never a download.
+#[test]
+fn lfs_tracked_file_diffs_as_its_content() {
+    let sb = Sandbox::new("lfs");
+    let r = sb.path("r");
+    init(&r);
+    if run(&r, &["lfs", "install", "--local"]).is_err() {
+        eprintln!("git-lfs is not installed; skipping");
+        return;
+    }
+    write_commit(
+        &r,
+        ".gitattributes",
+        "*.png filter=lfs diff=lfs merge=lfs -text\n",
+        "lfs",
+    );
+    write_commit(&r, "pic.png", "\u{89}PNG old", "pic");
+    let stored = run(&r, &["cat-file", "blob", "HEAD:pic.png"]).unwrap();
+    assert!(
+        crate::lfs::pointer(&stored).is_some(),
+        "stored as a pointer"
+    );
+    fs::write(r.join("pic.png"), "\u{89}PNG new").unwrap();
+    let wt = |p: &str| vfs::read_media(&r, p);
+    let before = media(&r, "unstaged", "pic.png", None, None, None, true, wt).unwrap();
+    assert_eq!(before, "\u{89}PNG old".as_bytes());
+
+    // Gone from the store (a partial clone, say): it says so rather than fetching it.
+    let oid = crate::lfs::pointer(&stored).unwrap().oid;
+    let common = r.join(".git/lfs/objects");
+    fs::remove_file(common.join(&oid[..2]).join(&oid[2..4]).join(&oid)).unwrap();
+    let err = media(&r, "unstaged", "pic.png", None, None, None, true, wt).unwrap_err();
+    assert!(err.starts_with("LFS object not downloaded"), "{err}");
 }
 
 #[test]
@@ -1262,13 +1406,13 @@ fn submodule_bump_diffs_as_subproject_commits() {
     let new = String::from_utf8_lossy(&new).trim().to_string();
     let read = |p: &str| vfs::read_file(&r, p);
 
-    let pair = diff_pair(&r, "unstaged", "sub", None, None, None, read).unwrap();
+    let pair = diff_pair(&r, "unstaged", "sub", None, None, None, None, read).unwrap();
     assert_eq!(pair.original.text, format!("Subproject commit {old}\n"));
     assert_eq!(pair.modified.text, format!("Subproject commit {new}\n"));
     assert!(pair.rows.iter().any(|row| row.k != 0));
 
     fs::write(sub.join("l.txt"), "dirty\n").unwrap();
-    let pair = diff_pair(&r, "unstaged", "sub", None, None, None, read).unwrap();
+    let pair = diff_pair(&r, "unstaged", "sub", None, None, None, None, read).unwrap();
     assert_eq!(
         pair.modified.text,
         format!("Subproject commit {new}-dirty\n")
@@ -1277,12 +1421,12 @@ fn submodule_bump_diffs_as_subproject_commits() {
     stage(&r, &["sub".into()]).unwrap();
     commit(&r, "bump sub", &CommitOptions::default()).unwrap();
     let head = log(&r, None, 0, 1).unwrap().remove(0).sha;
-    let pair = diff_pair(&r, "commit", "sub", None, Some(&head), None, read).unwrap();
+    let pair = diff_pair(&r, "commit", "sub", None, Some(&head), None, None, read).unwrap();
     assert_eq!(pair.original.text, format!("Subproject commit {old}\n"));
     assert_eq!(pair.modified.text, format!("Subproject commit {new}\n"));
     // A plain directory is still not a submodule.
     assert!(
-        !diff_pair(&r, "unstaged", "nope", None, None, None, read)
+        !diff_pair(&r, "unstaged", "nope", None, None, None, None, read)
             .unwrap()
             .modified
             .exists
@@ -2045,4 +2189,40 @@ fn cancelling_a_suggestion_stops_the_command_and_its_children() {
         suggest::run(&r, "sh -c 'sleep 30 & sleep 30'", "P", Scope::Amend, &flag).unwrap_err();
     assert_eq!(err, suggest::CANCELLED);
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
+}
+
+/// Discard puts the old versions in the Trash (a temporary folder under test), and undo
+/// writes them back unless the file changed since.
+#[test]
+fn undo_and_redo_a_discard() {
+    let sb = Sandbox::new("j-discard");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    write_commit(&r, "dir/b.txt", "b\n", "b");
+    fs::write(r.join("a.txt"), "agent's work\n").unwrap();
+    fs::remove_file(r.join("dir/b.txt")).unwrap();
+    let j = Journal::default();
+    let paths: Vec<String> = vec!["a.txt".into(), "dir/b.txt".into()];
+    j.discard(&r, &paths, || discard(&r, &paths)).unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "a\n");
+    assert!(r.join("dir/b.txt").exists());
+    let v = j.view(&r);
+    assert_eq!(v.undo[0].label, "Discard 2 files");
+    assert!(v.undo_blocked.is_none());
+
+    step(&j, &r, false).unwrap();
+    assert_eq!(
+        fs::read_to_string(r.join("a.txt")).unwrap(),
+        "agent's work\n"
+    );
+    assert!(!r.join("dir/b.txt").exists(), "deleted again");
+    step(&j, &r, true).unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "a\n");
+
+    // Written after the discard: undoing it now would lose that.
+    fs::write(r.join("a.txt"), "newer\n").unwrap();
+    assert!(j.view(&r).undo_blocked.is_some());
+    assert!(step(&j, &r, false).is_err());
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "newer\n");
 }
