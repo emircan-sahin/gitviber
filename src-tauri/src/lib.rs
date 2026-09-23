@@ -9,6 +9,7 @@ mod navigation;
 mod pty;
 #[cfg(test)]
 mod scenario_tests;
+mod shell;
 mod titlebar;
 mod watch;
 
@@ -116,7 +117,14 @@ async fn git_info(app: AppHandle, recheck: bool) -> Res<git::GitInfo> {
         if let Some(info) = state.git.lock().unwrap().clone().filter(|_| !recheck) {
             return Ok(info);
         }
-        let info = git::check_install();
+        let mut info = git::check_install();
+        // A git only the login shell's PATH has (MacPorts, nix) shows up once that's read.
+        if matches!(info.state, "missing" | "tools")
+            && shell::login_path().is_none()
+            && shell::wait_for_login_path().is_some()
+        {
+            info = git::check_install();
+        }
         *state.git.lock().unwrap() = Some(info.clone());
         Ok(info)
     })
@@ -1100,6 +1108,7 @@ fn set_menu(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    shell::resolve_in_background();
     let context = tauri::generate_context!();
     // Release builds load the bundled app; only debug builds are served from the dev server.
     let dev_url = if cfg!(debug_assertions) {

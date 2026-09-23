@@ -3,29 +3,49 @@
 //! terminal — GitViber never keeps state of its own inside the repo.
 
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
 
-/// Apps launched from Finder get a bare PATH, which hides Homebrew git and the
-/// credential helpers / ssh that live next to it.
-pub(crate) fn search_path() -> &'static str {
-    static PATH: OnceLock<String> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let current = std::env::var("PATH").unwrap_or_default();
-        let mut parts: Vec<&str> = vec!["/opt/homebrew/bin", "/usr/local/bin"];
-        parts.extend(current.split(':').filter(|p| !p.is_empty()));
-        parts.dedup();
-        parts.join(":")
-    })
+/// Apps launched from Finder get a bare PATH, which hides Homebrew git, the credential
+/// helpers / ssh next to it, and whatever hooks call (node from nvm and the like). The login
+/// shell's PATH fills that in once it has answered (shell.rs); until then, Homebrew's.
+pub(crate) fn search_path() -> &'static OsStr {
+    static FALLBACK: OnceLock<OsString> = OnceLock::new();
+    static FULL: OnceLock<OsString> = OnceLock::new();
+    let current = || std::env::var_os("PATH").unwrap_or_default();
+    match crate::shell::login_path() {
+        Some(login) => FULL.get_or_init(|| merge_paths(Some(login), &current())),
+        None => FALLBACK.get_or_init(|| merge_paths(None, &current())),
+    }
 }
 
-fn command(repo: &Path, args: &[&str]) -> Command {
+/// The login shell's entries first (its order decides which node a hook gets), then
+/// Homebrew's, then the app's own; each directory once.
+pub(crate) fn merge_paths(login: Option<&OsStr>, current: &OsStr) -> OsString {
+    let homebrew: &[&str] = if cfg!(target_os = "macos") {
+        &["/opt/homebrew/bin", "/usr/local/bin"]
+    } else {
+        &[]
+    };
+    let mut seen = HashSet::new();
+    let dirs: Vec<PathBuf> = login
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .chain(homebrew.iter().map(PathBuf::from))
+        .chain(std::env::split_paths(current))
+        .filter(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()))
+        .collect();
+    std::env::join_paths(dirs).unwrap_or_else(|_| current.to_os_string())
+}
+
+pub(crate) fn command(repo: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.current_dir(repo)
         .args(args)
@@ -2284,6 +2304,23 @@ mod tests {
         unstage(&repo, &["x".into()]).unwrap();
         assert_eq!(status(&repo).unwrap().staged.len(), 0);
         let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn login_path_goes_first_and_each_dir_once() {
+        let merged = merge_paths(
+            Some(OsStr::new("/nvm/bin:/opt/homebrew/bin:/usr/bin")),
+            OsStr::new("/usr/bin:/bin::/usr/bin"),
+        );
+        assert_eq!(
+            merged,
+            "/nvm/bin:/opt/homebrew/bin:/usr/bin:/usr/local/bin:/bin"
+        );
+        assert_eq!(
+            merge_paths(None, OsStr::new("/usr/bin:/bin")),
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        );
     }
 
     #[test]
