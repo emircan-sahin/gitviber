@@ -562,6 +562,8 @@ export interface PullDetail extends Pull {
   comments: PullComment[];
   /** Who closed it, if closed: an author may reopen only what they closed themselves. */
   closedBy: string | null;
+  /** Who merged it, if merged: often not its author. */
+  mergedBy: string | null;
 }
 
 export interface PullFiles {
