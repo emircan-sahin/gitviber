@@ -1,6 +1,7 @@
-import { FolderOpen } from "lucide-react";
+import { FolderDown, FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useShortcut } from "@/lib/keybindings";
+import { openClone } from "./CloneDialog";
 import { ProjectList } from "./ProjectList";
 
 export function Welcome({
@@ -30,6 +31,9 @@ export function Welcome({
         <Button size="lg" className="mt-6 w-full justify-start" onClick={() => onOpenRepo()}>
           <FolderOpen /> Open repository
           <span className="ml-auto font-mono text-[11px] opacity-70">{openKey}</span>
+        </Button>
+        <Button size="lg" variant="secondary" className="mt-2 w-full justify-start" onClick={openClone}>
+          <FolderDown /> Clone repository
         </Button>
         {recent.length > 0 && (
           <div className="mt-6 border-t border-border pt-3">

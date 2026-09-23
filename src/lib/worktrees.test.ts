@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FileChange } from "./api.ts";
-import { folderName, shortPath, stageable } from "./worktrees.ts";
+import { folderName, isInside, shortPath, stageable } from "./worktrees.ts";
 
 test("short worktree paths", () => {
   const main = "/Users/me/code/app";
@@ -16,6 +16,17 @@ test("short worktree paths", () => {
 test("folder names ignore git's trailing slash", () => {
   assert.equal(folderName(".claude/worktrees/agent-1/"), "agent-1");
   assert.equal(folderName("/a/b"), "b");
+});
+
+test("Windows paths split on either separator, others only on /", () => {
+  assert.equal(folderName("C:\\Users\\me\\app\\"), "app");
+  assert.equal(folderName("C:/Users/me/app"), "app");
+  assert.equal(folderName("\\\\server\\share\\app"), "app");
+  assert.equal(folderName("/Users/me/a\\b"), "a\\b");
+  assert.ok(isInside("C:\\code\\app\\.claude\\worktrees\\x", "C:\\code\\app"));
+  assert.ok(isInside("/code/app/.claude/worktrees/x", "/code/app"));
+  assert.ok(!isInside("/code/app2", "/code/app"));
+  assert.ok(!isInside("/code/app", "/code/app"));
 });
 
 test("stage all leaves nested repositories out", () => {

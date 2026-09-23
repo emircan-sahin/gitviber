@@ -4,7 +4,7 @@ import { showLanguage } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
 import { narrow } from "@/lib/indent";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
-import { CODE_FONTS, type Settings, useSettings } from "@/lib/settings";
+import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
 
 export type CodeMode = "unified" | "split" | "file";
 
@@ -139,8 +139,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       // Still on the editor (not disposed with it): remember where it was left.
       if (editor.current === e) viewStates.set(scrollKey, e.saveViewState()!);
     };
-    // The file, and the colors it's drawn in.
-  }, [pair, lang, diff, scrollKey, s.codeTheme, s.dark]);
+    // The file, and the colors it's drawn in (the app's palette too: dark and dimmed share a syntax theme).
+  }, [pair, lang, diff, scrollKey, s.codeTheme, s.theme]);
 
   // Copies carry the file's own indentation, not the tabs it's shown with. Monaco has filled the
   // clipboard by the time this bubbles up from its text area.
@@ -233,7 +233,7 @@ function common(s: Settings, wrap: boolean): monaco.editor.IEditorOptions & mona
   return {
     readOnly: true,
     automaticLayout: true,
-    fontFamily: CODE_FONTS[s.codeFont],
+    fontFamily: codeFontFamily(s),
     fontSize: s.codeFontSize,
     lineHeight: Math.round(s.codeFontSize * s.lineHeight),
     fontLigatures: s.ligatures,

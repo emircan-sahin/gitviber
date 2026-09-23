@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Branch, type Commit, errorMessage, type Journal, type RepoStatus, type Worktree } from "./api";
+import { useBackgroundFetch } from "./backgroundFetch";
 import { toast } from "./toast";
 
 const PAGE = 200;
@@ -102,6 +103,8 @@ export function useRepo(root: string) {
       unlisten.then((f) => f()).catch(() => {});
     };
   }, [root, refresh]);
+
+  useBackgroundFetch(root, !!status?.remotes.length, refresh);
 
   return { status, commits, hasMore, branches, worktrees, journal, revision, refresh, loadMore };
 }

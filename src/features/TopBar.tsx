@@ -7,6 +7,7 @@ import {
   ChevronDown,
   ChevronsUpDown,
   CloudOff,
+  FolderDown,
   GitMerge,
   GitPullRequestArrow,
   Loader2,
@@ -22,6 +23,7 @@ import {
   TriangleAlert,
   Undo2,
   UploadCloud,
+  X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Wordmark } from "@/components/Logo";
@@ -36,16 +38,19 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, errorMessage, type Branch, type JournalEntry, type Worktree } from "@/lib/api";
+import { api, type Branch, CANCELLED, cancelNetwork, errorMessage, type JournalEntry, type NetOp, type Worktree } from "@/lib/api";
+import { IS_MAC } from "@/lib/commands";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
+import { useNetActivity, withNetActivity } from "@/lib/netActivity";
 import { tracked, travel, undoAction } from "@/lib/undo";
 import type { RepoData } from "@/lib/useRepo";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName } from "@/lib/worktrees";
 import { type BranchDialog, BranchDialogs } from "./BranchDialogs";
 import { BranchPicker } from "./BranchPicker";
+import { openClone } from "./CloneDialog";
 import { ProjectList, ProjectTile } from "./ProjectList";
 import { PushMenu } from "./PushMenu";
 import { openSettings } from "./SettingsDialog";
@@ -104,7 +109,7 @@ function useFullscreen() {
  * lights), sync actions and settings on the right. Empty space drags the window.
  * Its 40px height matches the native title bar (a compact toolbar, see titlebar.rs), whose
  * traffic lights end at 66pt; the 86px left inset clears them. Full screen moves them out
- * of the window, so the inset goes too. The traffic lights ignore page zoom, so both are
+ * of the window, so the inset goes too, as it does off macOS. The traffic lights ignore page zoom, so both are
  * divided by --ui-scale to stay in points (the height only grows: at 150% a 40pt bar can't
  * fit its buttons).
  */
@@ -112,6 +117,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const { status, branches, worktrees } = repo;
   const [busy, setBusy] = useState<string | null>(null);
   const [branchDialog, setBranchDialog] = useState<BranchDialog | null>(null);
+  const net = useNetActivity();
   const terminalOpen = useTerminals().open;
   const fullscreen = useFullscreen();
 
@@ -123,12 +129,16 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       if (stopped) toast("info", `${label} stopped on conflicts`, "Resolve them in Changes, then continue.");
       else if (done) toast("success", done, undefined, undoAction(entry, repo.refresh));
     } catch (e) {
-      toast("error", `${label} failed`, errorMessage(e));
+      if (e === CANCELLED) toast("info", `${label} cancelled`);
+      else toast("error", `${label} failed`, errorMessage(e));
     } finally {
       setBusy(null);
       await repo.refresh();
     }
   };
+
+  /** Fetch, pull and push: git's progress shows next to the spinner, and Cancel stops it. */
+  const runNet = (label: string, fn: (op: NetOp) => Promise<void | boolean>, done?: string) => run(label, () => withNetActivity(label, fn), done);
 
   const branchName = status?.branch ?? (status?.head ? `detached @ ${status.head}` : "…");
 
@@ -154,7 +164,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         kind: "warning",
         okLabel: "Delete",
       });
-      if (ok) await run("Delete remote branch", () => api.deleteRemoteBranch(b.name), `Deleted ${b.name}`);
+      if (ok) await runNet("Delete remote branch", (op) => api.deleteRemoteBranch(b.name, op), `Deleted ${b.name}`);
       return;
     }
     const here = status?.branch ?? "HEAD";
@@ -184,11 +194,11 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   // "fetch first" (commits not fetched yet) isn't offered: those want a pull.
   // `tags`: --follow-tags, annotated tags on the pushed commits go along.
   const push = (tags = false) =>
-    run(
+    runNet(
       "Push",
-      async () => {
+      async (op) => {
         try {
-          await api.push(false, undefined, tags);
+          await api.push(false, undefined, op, tags);
         } catch (e) {
           if (!errorMessage(e).includes("non-fast-forward")) throw e;
           const ok = await ask(
@@ -196,7 +206,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
             { title: "Force push", kind: "warning", okLabel: "Force push" },
           );
           if (!ok) throw e;
-          await api.push(true, undefined, tags);
+          await api.push(true, undefined, op, tags);
         }
       },
       tags ? "Pushed with tags" : "Pushed",
@@ -238,15 +248,15 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   };
 
   useCommands({
-    "git.fetch": busy ? undefined : () => run("Fetch", api.fetch),
-    "git.pull": busy || !status?.upstream ? undefined : () => run("Pull", () => api.pull("ff"), "Pulled"),
+    "git.fetch": busy ? undefined : () => runNet("Fetch", api.fetch),
+    "git.pull": busy || !status?.upstream ? undefined : () => runNet("Pull", (op) => api.pull("ff", op), "Pulled"),
     "git.push": busy || !status?.upstream ? undefined : () => push(),
   });
 
   return (
     <header
       data-tauri-drag-region
-      className={`flex h-[max(40px,calc(40px/var(--ui-scale,1)))] shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 ${fullscreen ? "pl-2" : "pl-[calc(86px/var(--ui-scale,1))]"}`}
+      className={`flex h-[max(40px,calc(40px/var(--ui-scale,1)))] shrink-0 items-center gap-1 border-b border-border bg-sidebar pr-2 ${fullscreen || !IS_MAC ? "pl-2" : "pl-[calc(86px/var(--ui-scale,1))]"}`}
     >
       <Wordmark />
       <div className="mx-2 h-4 w-px bg-border-strong" />
@@ -269,7 +279,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onSetUpstream={(branch) => setBranchDialog({ kind: "upstream", branch })}
         onUnsetUpstream={(b) => run("Unset upstream", () => api.setUpstream(b.name, null), `${b.name} no longer tracks ${b.upstream}`)}
       />
-      {branchDialog && <BranchDialogs dialog={branchDialog} branches={branches} onClose={() => setBranchDialog(null)} run={run} />}
+      {branchDialog && <BranchDialogs dialog={branchDialog} branches={branches} onClose={() => setBranchDialog(null)} run={run} runNet={runNet} />}
       <WorktreePicker worktrees={worktrees} branches={branches} onOpen={onOpenRepo} onTerminal={openTerminal} onMerge={merge} onRemove={removeWorktree} />
       {status && !status.upstream && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
@@ -282,19 +292,33 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
 
       <UndoControls repo={repo} disabled={!!busy} />
       <div className="mx-1 h-4 w-px bg-border-strong" />
-      {busy && (
+      {/* History's tag pushes show here too: `net` is whichever network command runs. */}
+      {(busy || net) && (
         <span className="mr-1 flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground select-none">
-          <Loader2 className="size-3.5 animate-spin" /> {busy}…
+          <Loader2 className="size-3.5 animate-spin" /> {busy ?? net?.label}…
+          {net?.progress && (
+            <span className="text-subtle tabular-nums">
+              {net.progress.phase}
+              {net.progress.percent !== null && ` ${net.progress.percent}%`}
+            </span>
+          )}
+          {net && (
+            <Tip label={`Cancel ${net.label.toLowerCase()}`}>
+              <Button variant="ghost" size="icon-sm" aria-label="Cancel" onClick={() => void cancelNetwork(net.op)}>
+                <X />
+              </Button>
+            </Tip>
+          )}
         </span>
       )}
       <Tip label="Fetch">
-        <Button variant="ghost" size="icon" disabled={!!busy} onClick={() => run("Fetch", api.fetch)}>
+        <Button variant="ghost" size="icon" disabled={!!busy} onClick={() => runNet("Fetch", api.fetch)}>
           <RefreshCw />
         </Button>
       </Tip>
       <div className="flex">
         <Tip label="Pull (fast-forward only)">
-          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !status?.upstream} onClick={() => run("Pull", () => api.pull("ff"), "Pulled")}>
+          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !status?.upstream} onClick={() => runNet("Pull", (op) => api.pull("ff", op), "Pulled")}>
             <ArrowDownToLine /> Pull
             {!!status?.behind && <span className="font-mono text-[10.5px] text-primary">{status.behind}</span>}
           </Button>
@@ -307,10 +331,10 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
             <DropdownMenuLabel>When branches have diverged</DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => run("Pull", () => api.pull("merge"), "Pulled (merge)")}>
+            <DropdownMenuItem onSelect={() => runNet("Pull", (op) => api.pull("merge", op), "Pulled (merge)")}>
               <GitMerge /> Pull with merge
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => run("Pull", () => api.pull("rebase"), "Pulled (rebase)")}>
+            <DropdownMenuItem onSelect={() => runNet("Pull", (op) => api.pull("rebase", op), "Pulled (rebase)")}>
               <GitPullRequestArrow /> Pull with rebase
             </DropdownMenuItem>
           </DropdownMenuContent>
@@ -330,15 +354,16 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
             primary={pushAhead !== 0}
             disabled={!!busy}
             onPush={push}
-            onPushTags={(names, remote) => run("Push tags", async () => void (await api.pushTags(names)), `Pushed ${names.length === 1 ? names[0] : `${names.length} tags`} to ${remote}`)}
+            onPushTags={(names, remote) => runNet("Push tags", async (op) => void (await api.pushTags(names, op)), `Pushed ${names.length === 1 ? names[0] : `${names.length} tags`} to ${remote}`)}
           />
         </div>
       ) : (
         <PublishButton
           remotes={status?.remotes ?? []}
           preferred={status?.publish ?? null}
-          disabled={!!busy || !status?.branch}
-          onPublish={(remote) => run("Publish", () => api.push(false, remote), `Branch published to ${remote}`)}
+          // Before the first commit there's nothing to push.
+          disabled={!!busy || !status?.branch || !status.head}
+          onPublish={(remote) => runNet("Publish", (op) => api.push(false, remote, op), `Branch published to ${remote}`)}
         />
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
@@ -483,7 +508,7 @@ function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boolean })
 function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: Props) {
   const [open, setOpen] = useState(false);
   const totals = changeTotals(repo);
-  const name = main.split("/").pop() ?? main;
+  const name = folderName(main);
   const openKey = useShortcut("file.openRepo");
   const pick = (p?: string) => {
     setOpen(false);
@@ -516,6 +541,15 @@ function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReord
           <button onClick={() => pick()} className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover">
             <Plus className="size-3.5 text-muted-foreground" /> Open repository…
             <span className="ml-auto font-mono text-[11px] text-subtle">{openKey}</span>
+          </button>
+          <button
+            onClick={() => {
+              setOpen(false);
+              openClone();
+            }}
+            className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover"
+          >
+            <FolderDown className="size-3.5 text-muted-foreground" /> Clone repository…
           </button>
         </div>
       </PopoverContent>

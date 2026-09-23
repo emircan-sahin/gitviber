@@ -9,21 +9,42 @@ export interface WorkspaceSnapshot {
   viewed: [string, string][];
 }
 
+/** A commit message being written in a worktree, kept until it's committed. */
+export interface CommitDraft {
+  summary: string;
+  body: string;
+  /** "Name <email>", added as Co-authored-by trailers. */
+  coAuthors: string[];
+}
+
 const KEY = "gitviber.workspaces";
+const DRAFTS_KEY = "gitviber.drafts";
 // Agent worktrees come and go; keep only the most recently used.
 const MAX = 30;
 
-function all(): Record<string, WorkspaceSnapshot> {
+function all(key: string): Record<string, unknown> {
   try {
-    const v: unknown = JSON.parse(localStorage.getItem(KEY) ?? "{}");
-    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, WorkspaceSnapshot>) : {};
+    const v: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
   } catch {
     return {};
   }
 }
 
+/** Stores `value` under `root` (null removes it), keeping the MAX most recently saved roots. */
+function put(key: string, root: string, value: unknown) {
+  const { [root]: _, ...rest } = all(key);
+  // Insertion order is recency: the one saved now goes last, the oldest drop off the front.
+  const entries = [...Object.entries(rest), ...(value === null ? [] : [[root, value] as const])].slice(-MAX);
+  try {
+    localStorage.setItem(key, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // Not critical.
+  }
+}
+
 export function loadWorkspace(root: string): WorkspaceSnapshot | null {
-  const s = all()[root];
+  const s = all(KEY)[root] as WorkspaceSnapshot | undefined;
   if (!s || !Array.isArray(s.tabs) || !Array.isArray(s.viewed)) return null;
   // Keys are re-derived: their format changes (PRs went from number to url), and a stale key
   // would stop the list row matching its tab. A tab too malformed to key is dropped.
@@ -43,12 +64,17 @@ export function loadWorkspace(root: string): WorkspaceSnapshot | null {
 }
 
 export function saveWorkspace(root: string, snapshot: WorkspaceSnapshot) {
-  const { [root]: _, ...rest } = all();
-  // Insertion order is recency: the one saved now goes last, the oldest drop off the front.
-  const entries = [...Object.entries(rest), [root, snapshot] as const].slice(-MAX);
-  try {
-    localStorage.setItem(KEY, JSON.stringify(Object.fromEntries(entries)));
-  } catch {
-    // Not critical.
-  }
+  put(KEY, root, snapshot);
+}
+
+export function loadDraft(root: string): CommitDraft | null {
+  const d = all(DRAFTS_KEY)[root] as Partial<CommitDraft> | undefined;
+  if (!d || typeof d.summary !== "string" || typeof d.body !== "string") return null;
+  const coAuthors = Array.isArray(d.coAuthors) ? d.coAuthors.filter((a) => typeof a === "string") : [];
+  return { summary: d.summary, body: d.body, coAuthors };
+}
+
+/** An empty draft is dropped rather than stored. */
+export function saveDraft(root: string, draft: CommitDraft) {
+  put(DRAFTS_KEY, root, draft.summary || draft.body || draft.coAuthors.length ? draft : null);
 }

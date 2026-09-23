@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { api, type Branch } from "@/lib/api";
+import { api, type Branch, type NetOp } from "@/lib/api";
 
 /** The branch picker's actions that need more than a click. `base`: a full ref, or HEAD. */
 export type BranchDialog = { kind: "rename"; branch: Branch } | { kind: "new"; base: string } | { kind: "upstream"; branch: Branch };
@@ -14,15 +14,17 @@ interface Props {
   branches: Branch[];
   onClose: () => void;
   run: Run;
+  /** For what reaches the remote: its progress shows in the top bar, with Cancel. */
+  runNet: (label: string, fn: (op: NetOp) => Promise<void>, done: string) => Promise<void>;
 }
 
 const SELECT = "h-7 w-full rounded-md border border-border-strong bg-background px-2 font-mono text-[12px] text-foreground outline-none focus:border-primary";
 
-export function BranchDialogs({ dialog, branches, onClose, run }: Props) {
+export function BranchDialogs({ dialog, branches, onClose, run, runNet }: Props) {
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
-        {dialog.kind === "rename" && <Rename branch={dialog.branch} branches={branches} onClose={onClose} run={run} />}
+        {dialog.kind === "rename" && <Rename branch={dialog.branch} branches={branches} onClose={onClose} run={run} runNet={runNet} />}
         {dialog.kind === "new" && <NewBranch base={dialog.base} branches={branches} onClose={onClose} run={run} />}
         {dialog.kind === "upstream" && <Upstream branch={dialog.branch} branches={branches} onClose={onClose} run={run} />}
       </DialogContent>
@@ -30,7 +32,7 @@ export function BranchDialogs({ dialog, branches, onClose, run }: Props) {
   );
 }
 
-function Rename({ branch, branches, onClose, run }: { branch: Branch } & Omit<Props, "dialog">) {
+function Rename({ branch, branches, onClose, run, runNet }: { branch: Branch } & Omit<Props, "dialog">) {
   const [name, setName] = useState(branch.name);
   const [remote, setRemote] = useState(false);
   const n = name.trim();
@@ -39,7 +41,8 @@ function Rename({ branch, branches, onClose, run }: { branch: Branch } & Omit<Pr
   const remoteName = upstream?.slice(0, upstream.indexOf("/"));
   const submit = () => {
     onClose();
-    void run("Rename branch", () => api.renameBranch(branch.name, n, remote), `Renamed ${branch.name} to ${n}${remote ? ` here and on ${remoteName}` : ""}`);
+    const done = `Renamed ${branch.name} to ${n}${remote ? ` here and on ${remoteName}` : ""}`;
+    void (remote ? runNet("Rename branch", (op) => api.renameBranch(branch.name, n, true, op), done) : run("Rename branch", () => api.renameBranch(branch.name, n, false), done));
   };
   return (
     <form
@@ -81,7 +84,7 @@ function Rename({ branch, branches, onClose, run }: { branch: Branch } & Omit<Pr
   );
 }
 
-function NewBranch({ base, branches, onClose, run }: { base: string } & Omit<Props, "dialog">) {
+function NewBranch({ base, branches, onClose, run }: { base: string } & Pick<Props, "branches" | "onClose" | "run">) {
   const [name, setName] = useState("");
   const [from, setFrom] = useState(base);
   const [switchTo, setSwitchTo] = useState(true);
@@ -145,7 +148,7 @@ function NewBranch({ base, branches, onClose, run }: { base: string } & Omit<Pro
   );
 }
 
-function Upstream({ branch, branches, onClose, run }: { branch: Branch } & Omit<Props, "dialog">) {
+function Upstream({ branch, branches, onClose, run }: { branch: Branch } & Pick<Props, "branches" | "onClose" | "run">) {
   const remotes = branches.filter((b) => b.remote).map((b) => b.name);
   const guess = [branch.upstream, `origin/${branch.name}`].find((u) => u && remotes.includes(u)) ?? remotes.find((r) => r.endsWith(`/${branch.name}`)) ?? remotes[0] ?? "";
   const [upstream, setUpstream] = useState(guess);

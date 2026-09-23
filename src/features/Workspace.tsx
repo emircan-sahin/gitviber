@@ -11,7 +11,7 @@ import { useCommands, useShortcut } from "@/lib/keybindings";
 import { languageLabel } from "@/lib/language";
 import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
 import { loadWorkspace, saveWorkspace } from "@/lib/session";
-import { DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
+import { codeFontName, DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { arrayMove } from "@dnd-kit/sortable";
 import { useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
@@ -342,7 +342,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
               </div>
               <div className="min-h-0 flex-1">
                 {listTab === "changes" && status && (
-                  <ChangesPanel status={status} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} setViewed={setViewed} onRevealInExplorer={revealInExplorer} />
+                  <ChangesPanel status={status} head={repo.commits[0] ?? null} main={main} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} setViewed={setViewed} onRevealInExplorer={revealInExplorer} />
                 )}
                 {listTab === "pulls" && (
                   <PullsPanel
@@ -501,7 +501,7 @@ function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; revie
       )}
       <span className="ml-auto">{s.dark ? SYNTAX_THEMES[s.syntaxTheme] : LIGHT_SYNTAX_THEMES[s.lightSyntaxTheme]}</span>
       <span>
-        {s.codeFont} {s.codeFontSize}
+        {codeFontName(s)} {s.codeFontSize}
       </span>
       <span>{s.sideBySide ? "Split" : "Unified"}</span>
       <Tip label="Word wrap" shortcut={wrapKey}>

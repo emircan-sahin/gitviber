@@ -5,7 +5,7 @@ import { api, errorMessage, type FileChange, type Operation } from "@/lib/api";
 import { showLanguage, type TokenLine, tokenLookup, useHighlight } from "@/lib/highlight";
 import { copyNarrowed, indentUnit, TAB, widenLine } from "@/lib/indent";
 import { languageFor } from "@/lib/language";
-import { CODE_FONTS, useSettings } from "@/lib/settings";
+import { codeFontFamily, useSettings } from "@/lib/settings";
 import { type Block, oursText, parseConflicts, type Segment } from "@/lib/conflicts";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -253,7 +253,7 @@ function WholeFile({
 
 function useCodeStyle() {
   const s = useSettings();
-  return { fontFamily: CODE_FONTS[s.codeFont], fontSize: s.codeFontSize, lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`, tabSize: TAB } as const;
+  return { fontFamily: codeFontFamily(s), fontSize: s.codeFontSize, lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`, tabSize: TAB } as const;
 }
 
 function CodeLines({ lines: raw, lang, className }: { lines: string[]; lang: string; className?: string }) {

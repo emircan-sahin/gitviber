@@ -6,15 +6,19 @@ mod github;
 mod journal;
 mod menu;
 mod navigation;
+mod network;
 mod pty;
 #[cfg(test)]
 mod scenario_tests;
+mod shell;
 mod titlebar;
+mod vibrancy;
 mod watch;
 
 use journal::{Action, Mode};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 #[derive(Default)]
@@ -23,9 +27,12 @@ struct AppState {
     watcher: Mutex<Option<notify::RecommendedWatcher>>,
     github: github::Session,
     ptys: pty::Ptys,
+    network: network::Running,
     /// Held by commands that write the index: two `git add`s at once fail on index.lock.
     index: Arc<Mutex<()>>,
     journal: Arc<journal::Journal>,
+    /// `git --version`, checked once; the page asks again after the user installs git.
+    git: Mutex<Option<git::GitInfo>>,
 }
 
 type Res<T> = Result<T, String>;
@@ -79,6 +86,17 @@ async fn journaled<T: Send + 'static>(
     blocking(move || journal.record(&r, action, f)).await
 }
 
+/// Registers a network command under the page's id, streaming its progress to `progress`.
+fn watch_network(
+    state: &State<AppState>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> network::Net {
+    state.network.start(op, move |p| {
+        let _ = progress.send(p);
+    })
+}
+
 /// "Commit" and the like read better with the commit's short id.
 fn short(sha: &str) -> &str {
     &sha[..sha.len().min(7)]
@@ -95,7 +113,8 @@ struct OpenedRepo {
 #[tauri::command]
 async fn open_repo(app: AppHandle, state: State<'_, AppState>, path: String) -> Res<OpenedRepo> {
     let (root, main) = blocking(move || {
-        let root = git::toplevel(PathBuf::from(path).as_path())?;
+        let path = PathBuf::from(path);
+        let root = git::toplevel(&path)?;
         let main = git::main_worktree(Path::new(&root)).unwrap_or_else(|| root.clone());
         Ok((root, main))
     })
@@ -105,6 +124,65 @@ async fn open_repo(app: AppHandle, state: State<'_, AppState>, path: String) -> 
     *state.watcher.lock().unwrap() = Some(watcher);
     *state.repo.lock().unwrap() = Some(root_path);
     Ok(OpenedRepo { root, main })
+}
+
+#[tauri::command]
+async fn git_info(app: AppHandle, recheck: bool) -> Res<git::GitInfo> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        if let Some(info) = state.git.lock().unwrap().clone().filter(|_| !recheck) {
+            return Ok(info);
+        }
+        let mut info = git::check_install();
+        // A git only the login shell's PATH has (MacPorts, nix) shows up once that's read.
+        if matches!(info.state, "missing" | "tools")
+            && shell::login_path().is_none()
+            && shell::wait_for_login_path().is_some()
+        {
+            info = git::check_install();
+        }
+        *state.git.lock().unwrap() = Some(info.clone());
+        Ok(info)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn install_git() -> Res<()> {
+    blocking(git::install_tools).await
+}
+
+#[derive(serde::Serialize)]
+struct IdentityCheck {
+    current: git::Identity,
+    /// From the GitHub account, when one is signed in already.
+    suggested: Option<git::Identity>,
+}
+
+#[tauri::command]
+async fn git_identity(app: AppHandle) -> Res<IdentityCheck> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let r = repo(&state)?;
+        let current = git::identity(&r);
+        let complete = current.name.is_some() && current.email.is_some();
+        let suggested = (!complete)
+            .then(|| github::profile(&state.github, &r))
+            .flatten();
+        Ok(IdentityCheck { current, suggested })
+    })
+    .await
+}
+
+/// Only the parts given are written, to the global config: the repo's own stays untouched.
+#[tauri::command]
+async fn set_git_identity(
+    state: State<'_, AppState>,
+    name: Option<String>,
+    email: Option<String>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::set_global_identity(&r, name.as_deref(), email.as_deref())).await
 }
 
 #[tauri::command]
@@ -246,10 +324,13 @@ async fn rename_branch(
     old: String,
     new: String,
     remote: bool,
+    op: String,
+    progress: Channel<network::Progress>,
 ) -> Res<()> {
     let label = format!("Rename {old} to {new}");
+    let net = watch_network(&state, op, progress);
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::rename_branch(r, &old, &new, remote)
+        git::rename_branch(r, &old, &new, remote, &net)
     })
     .await
 }
@@ -271,9 +352,15 @@ async fn tags(state: State<'_, AppState>) -> Res<Vec<String>> {
 }
 
 #[tauri::command]
-async fn delete_remote_branch(state: State<'_, AppState>, name: String) -> Res<()> {
+async fn delete_remote_branch(
+    state: State<'_, AppState>,
+    name: String,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<()> {
     let r = repo(&state)?;
-    blocking(move || git::delete_remote_branch(&r, &name)).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::delete_remote_branch(&r, &name, &net)).await
 }
 
 #[tauri::command]
@@ -316,18 +403,40 @@ async fn discard(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
 }
 
 #[tauri::command]
-async fn commit(state: State<'_, AppState>, message: String, amend: bool) -> Res<()> {
+async fn commit(
+    state: State<'_, AppState>,
+    message: String,
+    options: git::CommitOptions,
+) -> Res<()> {
     let subject = message.lines().next().unwrap_or("").trim();
-    let label = match (amend, subject) {
+    let label = match (options.amend, subject) {
         (true, "") => "Amend last commit".to_string(),
         (true, s) => format!("Amend \"{s}\""),
         (false, s) => format!("Commit \"{s}\""),
     };
     let lock = state.index.clone();
     journaled(&state, Action::new(label, Mode::Soft), move |r| {
-        with_index_lock(&lock, r, |r| git::commit(r, &message, amend))
+        with_index_lock(&lock, r, |r| git::commit(r, &message, &options))
     })
     .await
+}
+
+#[tauri::command]
+async fn commit_template(state: State<'_, AppState>) -> Res<Option<String>> {
+    let r = repo(&state)?;
+    blocking(move || Ok(git::commit_template(&r))).await
+}
+
+#[tauri::command]
+async fn recent_authors(state: State<'_, AppState>) -> Res<Vec<String>> {
+    let r = repo(&state)?;
+    blocking(move || git::recent_authors(&r)).await
+}
+
+#[tauri::command]
+async fn commit_details(state: State<'_, AppState>, sha: String) -> Res<git::CommitDetails> {
+    let r = repo(&state)?;
+    blocking(move || git::commit_details(&r, &sha)).await
 }
 
 #[tauri::command]
@@ -336,26 +445,35 @@ async fn push(
     force: Option<bool>,
     remote: Option<String>,
     tags: Option<bool>,
+    op: String,
+    progress: Channel<network::Progress>,
 ) -> Res<()> {
     let r = repo(&state)?;
+    let net = watch_network(&state, op, progress);
     let push = if tags.unwrap_or(false) {
         git::push_with_tags
     } else {
         git::push
     };
-    blocking(move || push(&r, force.unwrap_or(false), remote.as_deref())).await
+    blocking(move || push(&r, force.unwrap_or(false), remote.as_deref(), &net)).await
 }
 
 /// The bool results below mean "stopped on conflicts".
 #[tauri::command]
-async fn pull(state: State<'_, AppState>, mode: String) -> Res<bool> {
+async fn pull(
+    state: State<'_, AppState>,
+    mode: String,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<bool> {
     let label = match mode.as_str() {
         "merge" => "Pull (merge)",
         "rebase" => "Pull (rebase)",
         _ => "Pull",
     };
+    let net = watch_network(&state, op, progress);
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::pull(r, &mode)
+        git::pull(r, &mode, &net)
     })
     .await
 }
@@ -483,9 +601,45 @@ async fn reveal_project(path: String) -> Res<()> {
 }
 
 #[tauri::command]
-async fn fetch(state: State<'_, AppState>) -> Res<()> {
+async fn fetch(
+    state: State<'_, AppState>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<()> {
     let r = repo(&state)?;
-    blocking(move || git::fetch(&r)).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::fetch(&r, &net)).await
+}
+
+#[tauri::command]
+async fn last_fetch(state: State<'_, AppState>) -> Res<Option<u64>> {
+    let r = repo(&state)?;
+    blocking(move || Ok(git::last_fetch(&r))).await
+}
+
+/// Stops the network command the page started under `op`; it then fails with "git:cancelled".
+#[tauri::command]
+fn cancel_network(state: State<'_, AppState>, op: String) {
+    state.network.cancel(&op)
+}
+
+/// Like open_repo, any folder the user picked: the clone lands in `parent/name`.
+#[tauri::command]
+async fn clone_repo(
+    state: State<'_, AppState>,
+    url: String,
+    parent: String,
+    name: String,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<String> {
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::clone(Path::new(&parent), &url, &name, &net)).await
+}
+
+#[tauri::command]
+async fn init_repo(path: String) -> Res<()> {
+    blocking(move || git::init(Path::new(&path))).await
 }
 
 // ---------------------------------------------------------------- history actions
@@ -613,15 +767,27 @@ async fn delete_tag(state: State<'_, AppState>, name: String) -> Res<()> {
 
 /// Remote tag changes are not undoable: others may have fetched them already.
 #[tauri::command]
-async fn push_tags(state: State<'_, AppState>, names: Vec<String>) -> Res<String> {
+async fn push_tags(
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<String> {
     let r = repo(&state)?;
-    blocking(move || git::push_tags(&r, &names)).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::push_tags(&r, &names, &net)).await
 }
 
 #[tauri::command]
-async fn delete_remote_tag(state: State<'_, AppState>, name: String) -> Res<String> {
+async fn delete_remote_tag(
+    state: State<'_, AppState>,
+    name: String,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<String> {
     let r = repo(&state)?;
-    blocking(move || git::delete_remote_tag(&r, &name)).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::delete_remote_tag(&r, &name, &net)).await
 }
 
 #[tauri::command]
@@ -1178,6 +1344,7 @@ fn set_menu(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    shell::resolve_in_background();
     let context = tauri::generate_context!();
     // Release builds load the bundled app; only debug builds are served from the dev server.
     let dev_url = if cfg!(debug_assertions) {
@@ -1218,6 +1385,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             open_repo,
+            git_info,
+            install_git,
+            git_identity,
+            set_git_identity,
             status,
             log,
             commit_files,
@@ -1241,9 +1412,16 @@ pub fn run() {
             unstage,
             discard,
             commit,
+            commit_template,
+            recent_authors,
+            commit_details,
             push,
             pull,
             fetch,
+            last_fetch,
+            cancel_network,
+            clone_repo,
+            init_repo,
             merge,
             rebase,
             op_continue,
@@ -1314,7 +1492,8 @@ pub fn run() {
             pty_spawn,
             pty_write,
             pty_resize,
-            pty_kill
+            pty_kill,
+            vibrancy::set_translucent
         ])
         .run(context)
         .expect("error while running GitViber");

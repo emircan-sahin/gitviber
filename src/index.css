@@ -1,13 +1,16 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* Dark by default, light via [data-theme="light"] (set from settings.ts). Neutral graphite,
+/* Dark by default, dimmed and light via [data-theme] (set from settings.ts). Neutral graphite,
    hard 1px lines, one blue accent. Diff colors are saturated on purpose: changes should be
    found at a glance. */
 :root {
   --radius: 4px;
-  --sidebar: #0e0e0f;
-  --panel: #131314;
+  --sidebar-solid: #0e0e0f;
+  --panel-solid: #131314;
+  /* The same, but see-through in translucent mode (below). */
+  --sidebar: var(--sidebar-solid);
+  --panel: var(--panel-solid);
   --background: #171718;
   --elevated: #1e1e20;
   --hover: #ffffff12;
@@ -50,11 +53,44 @@
   color-scheme: dark;
 }
 
+/* Dimmed: dark's roles a few steps lighter, with softer text and accents for long sessions. Same
+   AA floor for --subtle and the status colors, up to --elevated. */
+:root[data-theme="dim"] {
+  --sidebar-solid: #1c1c1f;
+  --panel-solid: #212124;
+  --background: #262629;
+  --elevated: #2e2e32;
+  --hover: #ffffff10;
+  --active: #ffffff17;
+  --border: #333337;
+  --border-strong: #3f3f44;
+  --foreground: #d4d4d8;
+  --muted-foreground: #a8a8af;
+  --subtle: #96969e;
+  --primary: #539bf5;
+  --ring: #539bf5;
+  --destructive: #ef766e;
+  --added: #5cc07a;
+  --removed: #ef766e;
+  --modified: #d6b155;
+  --renamed: #ad94e8;
+  --conflict: #f27593;
+  --hatch: #ffffff08;
+
+  /* 11% and 16% of the status color on --background, like dark's. */
+  --add-bg: #2c3732;
+  --add-gutter: #2f3f36;
+  --add-emph: rgb(92 192 122 / 0.2);
+  --del-bg: #3c2f31;
+  --del-gutter: #463334;
+  --del-emph: rgb(239 118 110 / 0.22);
+}
+
 /* Same roles as dark. Status text colors are dark enough to read on white (WCAG AA); chips keep
    bright fills instead, since a dark fill under white text reads muddy at badge size. */
 :root[data-theme="light"] {
-  --sidebar: #f3f3f4;
-  --panel: #f8f8f9;
+  --sidebar-solid: #f3f3f4;
+  --panel-solid: #f8f8f9;
   --background: #ffffff;
   --elevated: #ffffff;
   --hover: #0000000b;
@@ -160,6 +196,31 @@
   button:disabled,
   [data-disabled] {
     cursor: default;
+  }
+}
+
+/* Translucent background (settings.ts, macOS): the window blurs the desktop behind the page
+   (vibrancy.rs) and the side surfaces let it through. Code, diffs and the terminal sit on the
+   opaque --background. The page itself goes clear, or bars on it would stack their tints. */
+:root[data-translucent] {
+  --sidebar: color-mix(in srgb, var(--sidebar-solid) 60%, transparent);
+  --panel: color-mix(in srgb, var(--panel-solid) 75%, transparent);
+  background: transparent;
+}
+:root[data-translucent] body {
+  background: transparent;
+}
+/* Rows scrolling under a sticky header would show through it: blur them, as native headers do. */
+:root[data-translucent] .sticky {
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+/* macOS's Reduce transparency, where WebKit reports it (the window's blur turns solid by itself). */
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-translucent] {
+    --sidebar: var(--sidebar-solid);
+    --panel: var(--panel-solid);
+    background: var(--sidebar-solid);
   }
 }
 /* Scrollbars: a thin rounded thumb on a clear track, faint until hovered or dragged. WebKit's own

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type ChangeStatus = "M" | "A" | "D" | "R" | "C" | "T" | "U" | "?";
 
@@ -93,6 +93,25 @@ export interface Commit {
   onOrigin: boolean;
   /** Logging another branch: not in HEAD yet, so merging would bring it in. */
   notInHead: boolean;
+}
+
+export interface CommitOptions {
+  amend?: boolean;
+  /** --signoff: a Signed-off-by trailer for the committer. */
+  signOff?: boolean;
+  /** --no-verify: skips the pre-commit and commit-msg hooks. */
+  noVerify?: boolean;
+  /** "Name <email>" each, added as Co-authored-by trailers. */
+  coAuthors?: string[];
+}
+
+export interface CommitDetails {
+  /** git's %G?: G good, U good but unknown validity, X/Y expired signature/key, R revoked key, B bad, E can't check, N none. */
+  signature: string;
+  signer: string;
+  /** commit.gpgSign is on, so an unsigned commit is worth pointing out. */
+  signExpected: boolean;
+  trailers: [string, string][];
 }
 
 export interface FileText {
@@ -198,10 +217,76 @@ export interface About {
   git: string | null;
 }
 
+export interface GitInfo {
+  /** "tools": macOS's git stub, with no Command Line Tools behind it. */
+  state: "ok" | "old" | "missing" | "tools";
+  /** `git --version` without the prefix. */
+  version: string | null;
+  /** Why git can't run. */
+  detail: string | null;
+  /** The oldest git that works, e.g. "2.36". */
+  minimum: string;
+}
+
+export interface GitIdentity {
+  name: string | null;
+  email: string | null;
+}
+
+/** Where a network command is, in git's words: "Receiving objects" at 45 (percent). */
+export interface Progress {
+  phase: string;
+  /** Null for phases git only counts ("Enumerating objects"). */
+  percent: number | null;
+}
+
+/** One watched network command (fetch, pull, push, clone): its progress, and its id for Cancel. */
+export interface NetOp {
+  id: string;
+  onProgress?: (p: Progress) => void;
+  /** The background fetch, which gives way to anything the user starts. */
+  background?: boolean;
+}
+
+// Unique across page reloads too: a command from before a reload may still be running.
+const netSession = Date.now().toString(36);
+let netCount = 0;
+export const netOp = (onProgress?: (p: Progress) => void, background = false): NetOp => ({ id: `${netSession}-${++netCount}`, onProgress, background });
+
+const running = new Set<NetOp>();
+/** Some network command is running. */
+export const networkBusy = () => running.size > 0;
+
+function network<T>(cmd: string, args: Record<string, unknown>, op = netOp()): Promise<T> {
+  // Two fetches at once can fail on ref locks; the user's command wins.
+  if (!op.background) for (const o of running) if (o.background) void cancelNetwork(o);
+  running.add(op);
+  // A channel ends with its command, so every call gets a new one; a retry may reuse the op.
+  return invoke<T>(cmd, { ...args, op: op.id, progress: new Channel<Progress>(op.onProgress) }).finally(() => running.delete(op));
+}
+
+/** Stops a network command; its call then rejects with CANCELLED. */
+export const cancelNetwork = (op: NetOp) => invoke<void>("cancel_network", { op: op.id });
+
+/** A network command the user stopped: not a failure. */
+export const CANCELLED = "git:cancelled";
+/** open_repo on a folder that isn't in a repository; the page offers to initialize one. */
+export const NOT_A_REPO = "git:not-a-repo";
+
 export const api = {
   openRepo: (path: string) => invoke<OpenedRepo>("open_repo", { path }),
+  /** Checked once per launch; `recheck` runs `git --version` again. */
+  gitInfo: (recheck = false) => invoke<GitInfo>("git_info", { recheck }),
+  /** Opens macOS's Command Line Tools installer. */
+  installGit: () => invoke<void>("install_git"),
+  /** The open repo's user.name/email; `suggested` comes from a GitHub account already signed in. */
+  gitIdentity: () => invoke<{ current: GitIdentity; suggested: GitIdentity | null }>("git_identity"),
+  /** Sets the given parts in the global git config. */
+  setGitIdentity: (name: string | null, email: string | null) => invoke<void>("set_git_identity", { name, email }),
   status: () => invoke<RepoStatus>("status"),
   about: () => invoke<About>("about"),
+  /** macOS vibrancy behind the window (the Translucent background setting). */
+  setTranslucent: (on: boolean) => invoke<void>("set_translucent", { on }),
   /** HEAD's history, or `rev`'s: a remote-tracking branch (refs/remotes/…), e.g. a fork's original. */
   log: (skip: number, limit: number, rev: string | null = null) => invoke<Commit[]>("log", { rev, skip, limit }),
   commitFiles: (sha: string) => invoke<FileChange[]>("commit_files", { sha }),
@@ -223,11 +308,11 @@ export const api = {
   /** `force` deletes unmerged commits too (git branch -D). */
   deleteBranches: (names: string[], force: boolean) => invoke<void>("delete_branches", { names, force }),
   /** "origin/feat" → git push origin --delete feat. */
-  deleteRemoteBranch: (name: string) => invoke<void>("delete_remote_branch", { name }),
+  deleteRemoteBranch: (name: string, op?: NetOp) => network<void>("delete_remote_branch", { name }, op),
   /** A new branch at `base` (refs/heads/…, refs/remotes/… or refs/tags/…), not tracking it; `switchTo` checks it out. */
   createBranch: (name: string, base: string, switchTo: boolean) => invoke<void>("create_branch", { name, base, switch: switchTo }),
   /** `remote`: also push the new name, track it, and delete the upstream's old name there. */
-  renameBranch: (old: string, name: string, remote: boolean) => invoke<void>("rename_branch", { old, new: name, remote }),
+  renameBranch: (old: string, name: string, remote: boolean, op?: NetOp) => network<void>("rename_branch", { old, new: name, remote }, op),
   /** `upstream`: a remote-tracking branch (origin/feat), or null to track nothing. */
   setUpstream: (branch: string, upstream: string | null) => invoke<void>("set_upstream", { branch, upstream }),
   /** Tag names, newest first. */
@@ -243,14 +328,21 @@ export const api = {
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
   unstage: (paths: string[]) => invoke<void>("unstage", { paths }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
-  commit: (message: string, amend: boolean) => invoke<void>("commit", { message, amend }),
+  /** An empty `message` with `amend` keeps the old one (--no-edit). */
+  commit: (message: string, options: CommitOptions) => invoke<void>("commit", { message, options }),
+  /** `commit.template` without its comment lines; null when unset. */
+  commitTemplate: () => invoke<string | null>("commit_template"),
+  /** "Name <email>" of recent authors and co-authors, newest first, not the user. */
+  recentAuthors: () => invoke<string[]>("recent_authors"),
+  /** Signature status and trailers of one commit (verifying runs gpg/ssh, so one at a time). */
+  commitDetails: (sha: string) => invoke<CommitDetails>("commit_details", { sha }),
   /**
    * `force`: --force-with-lease, after a rebase or amend. `remote`: where to publish a branch with no upstream.
    * `tags`: --follow-tags, annotated tags on the pushed commits go too.
    */
-  push: (force = false, remote?: string, tags = false) => invoke<void>("push", { force, remote, tags }),
+  push: (force = false, remote?: string, op?: NetOp, tags = false) => network<void>("push", { force, remote, tags }, op),
   // The boolean results mean "stopped on conflicts".
-  pull: (mode: PullMode) => invoke<boolean>("pull", { mode }),
+  pull: (mode: PullMode, op?: NetOp) => network<boolean>("pull", { mode }, op),
   merge: (name: string) => invoke<boolean>("merge", { name }),
   rebase: (onto: string) => invoke<boolean>("rebase", { onto }),
   opContinue: () => invoke<boolean>("op_continue"),
@@ -267,7 +359,13 @@ export const api = {
   /** Any saved project's folder, not just the open repo's. */
   revealProject: (path: string) => invoke<void>("reveal_project", { path }),
   projectInfo: (paths: string[]) => invoke<ProjectInfo[]>("project_info", { paths }),
-  fetch: () => invoke<void>("fetch"),
+  fetch: (op?: NetOp) => network<void>("fetch", {}, op),
+  /** When the repo last fetched (FETCH_HEAD's mtime, Unix seconds); null if never. */
+  lastFetch: () => invoke<number | null>("last_fetch"),
+  /** Clones into `parent/name` (refused if that holds anything); returns the new repo's path. */
+  cloneRepo: (url: string, parent: string, name: string, op?: NetOp) => network<string>("clone_repo", { url, parent, name }, op),
+  /** `git init` in a folder that isn't in a repository yet. */
+  initRepo: (path: string) => invoke<void>("init_repo", { path }),
   // History actions. `sha` on undo and `head` on reset are the HEAD the user saw (refused if it moved).
   undoCommit: (sha: string) => invoke<void>("undo_commit", { sha }),
   reset: (sha: string, mode: ResetMode, head: string) => invoke<void>("reset", { sha, mode, head }),
@@ -288,8 +386,8 @@ export const api = {
   createTag: (name: string, sha: string, message?: string) => invoke<void>("create_tag", { name, sha, message }),
   deleteTag: (name: string) => invoke<void>("delete_tag", { name }),
   // Tags go where `git push` sends the current branch; these return that remote.
-  pushTags: (names: string[]) => invoke<string>("push_tags", { names }),
-  deleteRemoteTag: (name: string) => invoke<string>("delete_remote_tag", { name }),
+  pushTags: (names: string[], op?: NetOp) => network<string>("push_tags", { names }, op),
+  deleteRemoteTag: (name: string, op?: NetOp) => network<string>("delete_remote_tag", { name }, op),
   /** The tags that remote has. A network call: only when a menu opens. */
   remoteTags: () => invoke<{ remote: string; names: string[] }>("remote_tags"),
   /** https://github.com/owner/name, or null when origin isn't on GitHub. */
@@ -485,9 +583,15 @@ export const issues = {
   delete: (target: Target, number: number) => invoke<void>("issue_delete", { target, number }),
 };
 
+const MARKERS = new Map([
+  [GITHUB_NOT_CONNECTED, "GitHub sign-in missing or expired. Sign in again (see the PRs tab)."],
+  [CANCELLED, "Cancelled"],
+  [NOT_A_REPO, "This folder is not inside a git repository."],
+]);
+
 export function errorMessage(e: unknown) {
   const raw = typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
-  return raw === GITHUB_NOT_CONNECTED ? "GitHub sign-in missing or expired. Sign in again (see the PRs tab)." : raw;
+  return MARKERS.get(raw) ?? raw;
 }
 
 export const isNotConnected = (e: unknown) => e === GITHUB_NOT_CONNECTED;

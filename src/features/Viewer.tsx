@@ -17,6 +17,7 @@ import { IssueView } from "./IssueView";
 import { CopyLinkButton, openOnGitHub, PullStateIcon } from "./PullsPanel";
 import { PullView } from "./PullView";
 import { FileIcon } from "./FileIcon";
+import { SignatureBadge, TrailerChips, useCommitDetails } from "./HistoryPanel";
 import { isSvg, MediaView, mediaKind, SvgView } from "./MediaView";
 import { isMarkdown, MarkdownView } from "./MarkdownView";
 import { LineCounts, PathLabel, StatusPill } from "./StatusBadge";
@@ -417,6 +418,7 @@ function copy(text: string, what: string) {
 
 function CommitBar({ commit, url }: { commit: import("@/lib/api").Commit; url?: string }) {
   const [open, setOpen] = useState(false);
+  const details = useCommitDetails(commit.sha);
   return (
     <div className="shrink-0 border-b border-border bg-panel px-3 py-2">
       <div className="flex items-center gap-2">
@@ -426,6 +428,7 @@ function CommitBar({ commit, url }: { commit: import("@/lib/api").Commit; url?: 
           <span>{commit.authorName}</span>
           <span className="text-subtle">·</span>
           <span title={new Date(commit.timestamp * 1000).toLocaleString()}>{relativeTime(commit.timestamp)}</span>
+          {details && <SignatureBadge details={details} />}
           <button className="rounded-sm bg-elevated px-1.5 py-px font-mono text-[11px] hover:text-foreground" onClick={() => copy(commit.sha, "Commit SHA copied")}>
             {commit.shortSha}
           </button>
@@ -446,6 +449,7 @@ function CommitBar({ commit, url }: { commit: import("@/lib/api").Commit; url?: 
           )}
         </div>
       </div>
+      {details && <TrailerChips details={details} className="mt-1.5 pl-5.5" />}
       {open && <pre className="mt-2 max-h-48 overflow-auto pl-5.5 font-sans text-[12px] leading-relaxed whitespace-pre-wrap text-muted-foreground select-text">{commit.body}</pre>}
     </div>
   );

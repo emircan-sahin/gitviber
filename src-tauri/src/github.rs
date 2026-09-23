@@ -66,6 +66,11 @@ impl Session {
         Ok(token)
     }
 
+    /// Whether a token is already in hand, so a call needn't ask gh or the keychain first.
+    fn has_token(&self) -> bool {
+        self.token.lock().unwrap().is_some()
+    }
+
     fn forget(&self) {
         *self.token.lock().unwrap() = None;
         // Responses seen with the old token are not the next token's to reuse.
@@ -472,6 +477,24 @@ pub fn account(session: &Session, repo: &Path) -> Result<Account, String> {
         source,
         origin,
         parent,
+    })
+}
+
+/// The signed-in account's name and email, to suggest as git's identity. Only when the app
+/// already holds a token: prefilling a form isn't worth a gh or keychain prompt. A private
+/// email becomes GitHub's noreply address, which still links commits to the account.
+pub fn profile(session: &Session, repo: &Path) -> Option<git::Identity> {
+    if !session.has_token() {
+        return None;
+    }
+    let user = call(session, repo, Method::Get, "/user").ok()?;
+    let email = user["email"].as_str().map(str::to_string).or_else(|| {
+        let (id, login) = (user["id"].as_u64()?, user["login"].as_str()?);
+        Some(format!("{id}+{login}@users.noreply.github.com"))
+    });
+    Some(git::Identity {
+        name: user["name"].as_str().map(str::to_string),
+        email,
     })
 }
 
@@ -1738,7 +1761,7 @@ mod tests {
             git::status(repo).unwrap().branch.as_deref(),
             Some(d.pull.head_ref.as_str())
         );
-        git::fetch(repo).unwrap();
+        git::fetch(repo, &Default::default()).unwrap();
         let stopped = git::merge(repo, &format!("origin/{}", d.pull.base_ref)).unwrap();
         let st = git::status(repo).unwrap();
         println!(

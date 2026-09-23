@@ -1,24 +1,48 @@
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { Component, type ErrorInfo, type ReactNode, useCallback, useEffect, useState } from "react";
 import { Splash } from "@/components/Splash";
 import { Toaster } from "@/components/Toaster";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AboutDialog } from "@/features/AboutDialog";
+import { CloneDialog, openClone } from "@/features/CloneDialog";
+import { IdentityDialog } from "@/features/IdentityDialog";
+import { NeedsGit } from "@/features/NeedsGit";
 import { openSettings, SettingsDialog } from "@/features/SettingsDialog";
 import { Welcome } from "@/features/Welcome";
 import { Workspace } from "@/features/Workspace";
-import { api, errorMessage, type OpenedRepo } from "@/lib/api";
+import { api, errorMessage, type GitInfo, NOT_A_REPO, type OpenedRepo } from "@/lib/api";
 import { useCommands } from "@/lib/keybindings";
 import { useRecentMenu } from "@/lib/menu";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder, stepUiScale } from "@/lib/settings";
 import { toast } from "@/lib/toast";
-import { folderName } from "@/lib/worktrees";
+import { folderName, isInside } from "@/lib/worktrees";
 
 export function App() {
   const [opened, setOpened] = useState<OpenedRepo | null>(null);
   const [recent, setRecent] = useState(recentRepos);
   const [booting, setBooting] = useState(true);
+  const [git, setGit] = useState<GitInfo | null>(null);
+
+  // Checked alongside the reopen below, not before it: the usual answer is "fine".
+  useEffect(() => {
+    let live = true;
+    api.gitInfo().then((info) => {
+      if (!live) return;
+      setGit(info);
+      // Errors stay until dismissed, and an old git does fail: every repo open lists worktrees.
+      if (info.state === "old") toast("error", `git ${info.version} is older than GitViber needs (${info.minimum})`, "Worktrees and some actions will fail. Update git, e.g. brew install git.");
+    }, () => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  const recheckGit = useCallback(async () => {
+    const info = await api.gitInfo(true).catch(() => null);
+    if (info) setGit(info);
+    if (info?.state === "ok" || info?.state === "old") toast("success", `Found git ${info.version}`);
+  }, []);
+  const noGit = git?.state === "missing" || git?.state === "tools";
 
   /** `replacing`: a saved project whose folder moved; this repo takes its place in the list. */
   const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string) => {
@@ -35,7 +59,9 @@ export function App() {
       setOpened(repo);
       return true;
     } catch (e) {
-      if (!quiet) toast("error", "Could not open repository", errorMessage(e));
+      if (quiet) return false;
+      if (e === NOT_A_REPO && (await initAsked(target))) return openRepo(target, quiet, replacing);
+      toast("error", "Could not open repository", errorMessage(e));
       return false;
     }
   }, []);
@@ -45,7 +71,7 @@ export function App() {
   useEffect(() => {
     const last = lastRepo();
     const projects = recentRepos();
-    const fallback = projects.find((p) => last?.startsWith(`${p}/`)) ?? projects[0];
+    const fallback = projects.find((p) => last && isInside(last, p)) ?? projects[0];
     (async () => {
       if (last && (await openRepo(last, true))) return;
       if (fallback && fallback !== last) await openRepo(fallback, true);
@@ -78,6 +104,7 @@ export function App() {
   // App-wide commands, so they also work on the welcome screen.
   useCommands({
     "file.openRepo": () => onOpen(),
+    "file.cloneRepo": openClone,
     "workbench.openSettings": () => openSettings(),
     "help.shortcuts": () => openSettings("shortcuts"),
     "view.zoomIn": () => stepUiScale(1),
@@ -93,14 +120,33 @@ export function App() {
           <Workspace root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} />
         </WorkspaceBoundary>
       ) : (
-        !booting && <Welcome recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} />
+        !booting &&
+        (git && noGit ? <NeedsGit info={git} onRecheck={recheckGit} /> : <Welcome recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} />)
       )}
+      <IdentityDialog root={opened?.root ?? null} />
+      <CloneDialog onCloned={onOpen} />
       <SettingsDialog />
       <AboutDialog />
       <Toaster />
       <Splash ready={!booting} />
     </TooltipProvider>
   );
+}
+
+/** A folder outside any repository: offer to make it one. True once it is. */
+async function initAsked(path: string) {
+  const ok = await ask(`${folderName(path)} isn't a git repository yet. Initialize one here?`, {
+    title: "Open repository",
+    okLabel: "Initialize repository",
+  });
+  if (!ok) return false;
+  try {
+    await api.initRepo(path);
+    return true;
+  } catch (e) {
+    toast("error", "Could not initialize repository", errorMessage(e));
+    return false;
+  }
 }
 
 /** Without this, a render error anywhere in the workspace unmounts the app and leaves a black window. */
