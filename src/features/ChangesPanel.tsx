@@ -78,23 +78,30 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
   const viewedPaths = status.unstaged.filter((file) => !file.nested && viewed({ kind: "unstaged", file })).map((f) => f.path);
 
   // Untracked files have nothing to restore; like VS Code, discarding one deletes it (to the Trash here).
+  // Tracked ones keep a copy of what they were in the Trash, which Undo (and ⌘Z) writes back.
   const discard = async (list: FileChange[]) => {
-    const tracked = list.filter((f) => f.status !== "?");
+    const restorable = list.filter((f) => f.status !== "?");
     const untracked = list.filter((f) => f.status === "?");
     if (!list.length) return;
     const one = list.length === 1 ? list[0].path : null;
-    const trashOnly = !tracked.length;
+    const trashOnly = !restorable.length;
     const message = trashOnly
       ? one
         ? `Move ${one} to the Trash? It is untracked, so git has no copy of it.`
         : `Move ${untracked.length} untracked files to the Trash? Git has no copy of them.`
-      : `Discard changes to ${one ?? files(tracked.length)}? This cannot be undone.${untracked.length ? ` ${files(untracked.length)} git doesn't track will be moved to the Trash.` : ""}`;
+      : `Discard changes to ${one ?? files(restorable.length)}? ${restorable.length === 1 ? "Its current version is" : "Their current versions are"} moved to the Trash.${untracked.length ? ` ${files(untracked.length)} git doesn't track will be moved to the Trash too.` : ""}`;
     const ok = await ask(message, trashOnly ? { title: one ? "Delete file" : "Delete files", kind: "warning", okLabel: "Move to Trash" } : { title: "Discard changes", kind: "warning", okLabel: "Discard" });
     if (!ok) return;
-    await act(trashOnly ? "Could not move to Trash" : "Discard failed", async () => {
-      if (tracked.length) await api.discard(tracked.map((f) => f.path));
+    let entry: number | null = null;
+    const done = await attempt(trashOnly ? "Could not move to Trash" : "Discard failed", async () => {
+      if (restorable.length) [, entry] = await tracked(() => api.discard(restorable.map((f) => f.path)));
       for (const f of untracked) await api.trashPath(f.path);
     });
+    if (done && restorable.length) {
+      const single = restorable.length === 1;
+      toast("success", `Discarded ${single ? restorable[0].path : files(restorable.length)}`, `The old ${single ? "version is" : "versions are"} in the Trash.`, undoAction(entry, refresh));
+    }
+    await refresh();
   };
 
   const ignore = (list: FileChange[]) =>

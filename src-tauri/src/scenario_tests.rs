@@ -1726,3 +1726,39 @@ fn undo_a_rebase_continued_after_conflicts() {
     assert_eq!(on_branch(&r), "feat");
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "feat\n");
 }
+
+/// Discard puts the old versions in the Trash (a temporary folder under test), and undo
+/// writes them back unless the file changed since.
+#[test]
+fn undo_and_redo_a_discard() {
+    let sb = Sandbox::new("j-discard");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    write_commit(&r, "dir/b.txt", "b\n", "b");
+    fs::write(r.join("a.txt"), "agent's work\n").unwrap();
+    fs::remove_file(r.join("dir/b.txt")).unwrap();
+    let j = Journal::default();
+    let paths: Vec<String> = vec!["a.txt".into(), "dir/b.txt".into()];
+    j.discard(&r, &paths, || discard(&r, &paths)).unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "a\n");
+    assert!(r.join("dir/b.txt").exists());
+    let v = j.view(&r);
+    assert_eq!(v.undo[0].label, "Discard 2 files");
+    assert!(v.undo_blocked.is_none());
+
+    step(&j, &r, false).unwrap();
+    assert_eq!(
+        fs::read_to_string(r.join("a.txt")).unwrap(),
+        "agent's work\n"
+    );
+    assert!(!r.join("dir/b.txt").exists(), "deleted again");
+    step(&j, &r, true).unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "a\n");
+
+    // Written after the discard: undoing it now would lose that.
+    fs::write(r.join("a.txt"), "newer\n").unwrap();
+    assert!(j.view(&r).undo_blocked.is_some());
+    assert!(step(&j, &r, false).is_err());
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "newer\n");
+}

@@ -1,8 +1,10 @@
 //! Undo and redo for the app's own git actions. Each one records how it moved HEAD and the
 //! local branches; undo moves them back, redo forward again. The record lives in memory
 //! only: nothing is written to the repo, and commits an undo takes off a branch stay in the
-//! object store, where redo (or the reflog) finds them.
+//! object store, where redo (or the reflog) finds them. A discard records the files it
+//! replaced instead, whose old versions it put in the Trash.
 
+use crate::fs::{self, Stamp};
 use crate::git::{self, run, run_text};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -71,6 +73,19 @@ struct Entry {
     /// The push target's tip when the entry was last done or undone. Commits it had then
     /// (pulled ones, say) may come off the branch; ones pushed since may not.
     pushed: Option<String>,
+    /// A discard's files; the fields above don't apply to one.
+    files: Vec<Discarded>,
+}
+
+/// A file a discard replaced with its index version.
+#[derive(Clone)]
+struct Discarded {
+    path: String,
+    /// Its old version, in the Trash. None: it didn't exist (a deleted file came back).
+    copy: Option<PathBuf>,
+    /// The file before and after the discard. Undo and redo only touch one that is still
+    /// the way they expect: anything written to it since would be lost.
+    stamps: [Stamp; 2],
 }
 
 #[derive(Default)]
@@ -170,6 +185,46 @@ impl Journal {
             None => {}
         }
         result
+    }
+
+    /// Discards the working-tree changes to `paths` with `restore`, after copying what they
+    /// are now to the Trash, and records it: undo writes those copies back.
+    pub fn discard(
+        &self,
+        repo: &Path,
+        paths: &[String],
+        restore: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
+        let _one = lock(&self.acting);
+        let files = discard_files(repo, paths, restore)?;
+        let Ok(snap) = snapshot(repo, false) else {
+            return Ok(());
+        };
+        if files.is_empty() {
+            return Ok(());
+        }
+        let label = match paths {
+            [one] => format!("Discard {}", one.rsplit('/').next().unwrap_or(one)),
+            _ => format!("Discard {} files", paths.len()),
+        };
+        let mut stacks = lock(&self.stacks);
+        let s = stacks.entry(repo.to_path_buf()).or_default();
+        s.undone.clear();
+        s.done.push(Entry {
+            id: s.next,
+            label,
+            time: now(),
+            mode: Mode::Keep,
+            head: [snap.head.clone(), snap.head],
+            changes: vec![],
+            pushed: None,
+            files,
+        });
+        s.next += 1;
+        if s.done.len() > KEEP {
+            s.done.remove(0);
+        }
+        Ok(())
     }
 
     /// Undoes the newest entry, or redoes (`forward`) the last undone one. `id`, when given,
@@ -358,11 +413,93 @@ fn diff(
         head: [before.head.clone(), after.head.clone()],
         changes,
         pushed,
+        files: vec![],
     })
+}
+
+/// Copies each file as it is now to the Trash, then runs `restore` to discard them.
+fn discard_files(
+    repo: &Path,
+    paths: &[String],
+    restore: impl FnOnce() -> Result<(), String>,
+) -> Result<Vec<Discarded>, String> {
+    let when = local_minute();
+    let mut files = vec![];
+    for path in paths {
+        // A submodule: restoring it doesn't touch its files.
+        if repo.join(path).symlink_metadata().is_ok_and(|m| m.is_dir()) {
+            continue;
+        }
+        let before = fs::stamp(repo, path);
+        let name = format!(
+            "{} (discarded {when})",
+            path.rsplit('/').next().unwrap_or(path)
+        );
+        let copy = before
+            .map(|_| fs::trash_copy(repo, path, &name))
+            .transpose()?;
+        files.push(Discarded {
+            path: path.clone(),
+            copy,
+            stamps: [before, None],
+        });
+    }
+    restore()?;
+    for f in &mut files {
+        f.stamps[1] = fs::stamp(repo, &f.path);
+    }
+    Ok(files)
+}
+
+/// "2026-09-22 14.03" in local time: when a discarded version went to the Trash.
+#[cfg(unix)]
+fn local_minute() -> String {
+    use std::ffi::{c_char, c_int, c_long};
+    // `struct tm`: sec, min, hour, mday, mon, year, wday, yday, isdst, then gmtoff and zone.
+    #[repr(C)]
+    struct Tm {
+        f: [c_int; 9],
+        _gmtoff: c_long,
+        _zone: *const c_char,
+    }
+    extern "C" {
+        fn localtime_r(t: *const i64, out: *mut Tm) -> *mut Tm;
+    }
+    let t = now() as i64;
+    let mut tm = std::mem::MaybeUninit::<Tm>::uninit();
+    if unsafe { localtime_r(&t, tm.as_mut_ptr()) }.is_null() {
+        return t.to_string();
+    }
+    let f = unsafe { tm.assume_init() }.f;
+    format!(
+        "{}-{:02}-{:02} {:02}.{:02}",
+        f[5] + 1900,
+        f[4] + 1,
+        f[3],
+        f[2],
+        f[1]
+    )
+}
+
+#[cfg(not(unix))]
+fn local_minute() -> String {
+    now().to_string()
 }
 
 /// Why moving `e` from state `from` to state `to` (0 before, 1 after) isn't safe now.
 fn blocked(repo: &Path, e: &Entry, from: usize, to: usize) -> Option<String> {
+    if !e.files.is_empty() {
+        return e
+            .files
+            .iter()
+            .find(|f| fs::stamp(repo, &f.path) != f.stamps[from])
+            .map(|f| {
+                format!(
+                    "{} has changed since, so this can't be done without losing that.",
+                    f.path
+                )
+            });
+    }
     if let Some(op) = git::operation(repo) {
         return Some(format!(
             "A {} is in progress. Continue or abort it first.",
@@ -405,6 +542,9 @@ fn apply(repo: &Path, e: &mut Entry, from: usize, to: usize) -> Result<(), Strin
     if let Some(why) = blocked(repo, e, from, to) {
         return Err(why);
     }
+    if !e.files.is_empty() {
+        return files(repo, e, to);
+    }
     let current = match &e.head[from] {
         Head::Branch(b) => Some(b.clone()),
         Head::Detached(_) => None,
@@ -431,6 +571,20 @@ fn apply(repo: &Path, e: &mut Entry, from: usize, to: usize) -> Result<(), Strin
         }
     }
     result
+}
+
+/// Undoing a discard writes the old versions back from the Trash; redoing it discards again.
+fn files(repo: &Path, e: &mut Entry, to: usize) -> Result<(), String> {
+    if to == 1 {
+        let paths: Vec<String> = e.files.iter().map(|f| f.path.clone()).collect();
+        e.files = discard_files(repo, &paths, || git::discard(repo, &paths))?;
+        return Ok(());
+    }
+    for f in &mut e.files {
+        fs::put_back(repo, &f.path, f.copy.as_deref())?;
+        f.stamps[0] = fs::stamp(repo, &f.path);
+    }
+    Ok(())
 }
 
 fn move_head(repo: &Path, e: &mut Entry, from: usize, to: usize) -> Result<(), String> {
@@ -490,5 +644,20 @@ fn set_branch(repo: &Path, c: &mut Change, from: usize, to: usize) -> Result<(),
             Ok(())
         }
         (Some(_), Some(sha)) => run(repo, &["branch", "-f", name, sha]).map(|_| ()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn local_minute_reads_as_a_date() {
+        let s = super::local_minute();
+        let b = s.as_bytes();
+        assert_eq!(
+            (b.len(), b[4], b[7], b[10], b[13]),
+            (16, b'-', b'-', b' ', b'.'),
+            "{s}"
+        );
+        assert!(s[..4].parse::<u32>().is_ok_and(|y| y >= 2024), "{s}");
     }
 }

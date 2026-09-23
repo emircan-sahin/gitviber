@@ -5,6 +5,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
+import { tracked, undoAction } from "@/lib/undo";
 import { cn } from "@/lib/utils";
 import { FileIcon, FolderIcon } from "./FileIcon";
 import { statusInfo } from "./StatusBadge";
@@ -211,10 +212,12 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   };
 
   const discard = async (e: Entry) => {
-    const ok = await ask(`Discard changes to ${e.path}? This cannot be undone.`, { title: "Discard changes", kind: "warning", okLabel: "Discard" });
+    const ok = await ask(`Discard changes to ${e.path}? Its current version is moved to the Trash.`, { title: "Discard changes", kind: "warning", okLabel: "Discard" });
     if (!ok) return;
     try {
-      await api.discard([e.path]);
+      const [, entry] = await tracked(() => api.discard([e.path]));
+      // The file watcher refreshes after an undo writes the file back.
+      toast("success", `Discarded ${e.path}`, "The old version is in the Trash.", undoAction(entry, () => {}));
     } catch (err) {
       toast("error", "Discard failed", errorMessage(err));
     }

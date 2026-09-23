@@ -270,7 +270,14 @@ async fn unstage(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
 
 #[tauri::command]
 async fn discard(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
-    indexed(&state, move |r| git::discard(r, &paths)).await
+    let r = repo(&state)?;
+    let (journal, index) = (state.journal.clone(), state.index.clone());
+    blocking(move || {
+        journal.discard(&r, &paths, || {
+            with_index_lock(&index, &r, |r| git::discard(r, &paths))
+        })
+    })
+    .await
 }
 
 #[tauri::command]
