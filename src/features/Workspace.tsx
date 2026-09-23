@@ -605,7 +605,7 @@ function StatusBar({ repo, reviewed, openTarget }: { repo: ReturnType<typeof use
         <span className="font-semibold text-conflict uppercase">
           {status.operation.kind}
           {status.operation.step != null && ` ${status.operation.step}/${status.operation.total}`}
-          {status.conflicted.length > 0 && ` · ${status.conflicted.length} conflicts`}
+          {status.conflicted.length > 0 && ` · ${status.conflicted.length} ${status.conflicted.length === 1 ? "conflict" : "conflicts"}`}
         </span>
       )}
       {totals.files > 0 && (
