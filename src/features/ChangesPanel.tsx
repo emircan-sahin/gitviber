@@ -375,11 +375,10 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
     );
   };
 
-  const listRef = useRef<HTMLDivElement>(null);
   /** A section's rows; with thousands, only those near the screen (and the open and tab-stop rows). */
   const rowsOf = (kind: Change["kind"], list: FileChange[], render: (file: FileChange) => React.ReactNode) => {
     const keep = [activeKey, tabStop].map((k) => list.findIndex((file) => selectionKey({ kind, file }) === k));
-    return <Windowed count={list.length} height={ROW_HEIGHT} scroller={listRef} keep={keep} render={(i) => render(list[i])} />;
+    return <Windowed count={list.length} height={ROW_HEIGHT} keep={keep} render={(i) => render(list[i])} />;
   };
 
   return (
@@ -410,7 +409,6 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
         onBlur={(e) => setListFocused(e.currentTarget.contains(e.relatedTarget))}
         // The empty space below the rows lets go of the selection, like Finder.
         onClick={(e) => e.target === e.currentTarget && setPicked(null)}
-        ref={listRef}
         className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
         {!all.length && !status.unstaged.length && <AllCaughtUp />}
         {status.conflicted.length > 0 && (
@@ -641,6 +639,7 @@ function Row({
   const ref = useRef<HTMLDivElement>(null);
   const [menuOpened, setMenuOpened] = useState(false);
   // J/K can move the selection off-screen; follow it. ↑/↓ from a row also moves focus to it.
+  // (scroll-mt-7 keeps a row scrolled to the top clear of its section's sticky h-7 header.)
   useEffect(() => {
     if (!active) return;
     ref.current?.scrollIntoView({ block: "nearest" });
@@ -659,7 +658,7 @@ function Row({
           onDoubleClick={() => onOpen(sel, true)}
           onMouseEnter={() => onHover(sel)}
           className={cn(
-            "group/row relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+            "group/row relative flex h-[26px] scroll-mt-7 cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
             selected ? (dim ? "bg-active" : "bg-primary/15") : "hover:bg-hover data-[state=open]:bg-hover",
           )}
         >
