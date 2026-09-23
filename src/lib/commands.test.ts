@@ -12,6 +12,7 @@ import {
   type KeyLike,
   menuAccelerator,
   runsWhileTyping,
+  runsInTerminal,
   takenFromTerminal,
 } from "./commands.ts";
 
@@ -174,4 +175,28 @@ test("off macOS, cmd is Ctrl and ctrl is the Windows / Super key", () => {
   assert.equal(formatChordFor("shift+cmd+e", false), "Ctrl+Shift+E");
   assert.equal(formatChordFor("alt+down", false), "Alt+↓");
   assert.equal(formatChordFor("shift+cmd+e", true), "⇧⌘E");
+});
+
+test("with the terminal focused, a key goes to the app or the shell, never both", () => {
+  const app = (chord: string, id: string, mac: boolean) => runsInTerminal(chord, byId(id), mac);
+  for (const mac of [true, false]) {
+    // F-keys are the shell's (htop, mc), though a text field lets them through.
+    assert.equal(app("f6", "view.focusNextPanel", mac), false);
+    assert.equal(app("shift+f6", "view.focusPrevPanel", mac), false);
+    assert.equal(app("f7", "diff.nextChange", mac), false);
+    assert.equal(runsWhileTyping("f6", byId("view.focusNextPanel"), mac), true);
+    assert.equal(app("j", "review.nextFile", mac), false);
+    assert.equal(app("alt+down", "diff.nextChange", mac), false);
+  }
+  // What xterm skips: ⌘ chords and the ⌃ chords it hands over.
+  assert.equal(app("cmd+1", "tab.goto1", true), true);
+  assert.equal(app("shift+cmd+]", "tab.next", true), true);
+  assert.equal(app("ctrl+tab", "tab.next", true), true);
+  assert.equal(app("ctrl+a", "view.changes", true), false);
+  assert.equal(app("cmd+left", "tab.prev", true), false, "start of line");
+  // Elsewhere the physical Ctrl is "cmd": Ctrl+letter is the shell's, Super is the app's.
+  assert.equal(app("cmd+tab", "tab.next", false), true);
+  assert.equal(app("cmd+1", "tab.goto1", false), true);
+  assert.equal(app("cmd+b", "view.toggleGitPanel", false), false);
+  assert.equal(app("ctrl+b", "view.toggleGitPanel", false), true);
 });

@@ -87,7 +87,7 @@ On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, and Ctrl+Tab / C
 | `⌥S` `⌥C` `⌥Z` | Split view, collapse unchanged, word wrap |
 | `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
 | `⇧⌘G` `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer |
-| `F6` `⇧F6` | Focus the next / previous panel |
+| `F6` `⇧F6` | Focus the next / previous panel (not from the terminal, which keeps F-keys for its programs) |
 | `→` `⎋` | From a file in a list to its code, and back |
 | `↑` `↓` `PgUp` `PgDn` `Space` `Home` `End` | Scroll the focused code view, `←` `→` sideways |
 | `⌘J` or `⌃` `` ` `` | Toggle the terminal |

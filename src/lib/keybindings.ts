@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { bindingsFor, type CommandId, commandFor, eventChord, formatChord, runsWhileTyping, takenFromTerminal } from "./commands";
+import { bindingsFor, type CommandId, commandFor, eventChord, formatChord, runsInTerminal, runsWhileTyping, takenFromTerminal } from "./commands";
 import { getSettings, useSettings } from "./settings";
 
 export { bindingsFor, COMMANDS, type Command, type CommandId, eventChord, formatChord, RESERVED } from "./commands";
@@ -75,8 +75,10 @@ function dispatch(e: KeyboardEvent) {
   if (handled) return;
   const command = commandFor(chord, getSettings().keybindings);
   if (!command) return;
-  // Text owns most keys (see runsWhileTyping), and menus and dialogs theirs, the same way.
-  if (isTyping(e) && !runsWhileTyping(chord, command)) return;
+  // Text owns most keys (see runsWhileTyping), and menus and dialogs theirs, the same way. The
+  // terminal passes on what it doesn't read without saying so (xterm leaves the event alone).
+  const inTerminal = e.target instanceof HTMLElement && !!e.target.closest(".xterm");
+  if (inTerminal ? !runsInTerminal(chord, command) : isTyping(e) && !runsWhileTyping(chord, command)) return;
   const run = handlerFor(command.id);
   if (!run) return;
   e.preventDefault();
