@@ -2,12 +2,13 @@ import { Download, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, errorMessage, type GitInfo } from "@/lib/api";
+import { IS_MAC } from "@/lib/commands";
 import { toast } from "@/lib/toast";
 
 /** Takes the welcome screen's place while git can't run: nothing else works without it. */
 export function NeedsGit({ info, onRecheck }: { info: GitInfo; onRecheck: () => Promise<void> }) {
   const [checking, setChecking] = useState(false);
-  const mac = info.state === "tools" || navigator.userAgent.includes("Mac");
+  const mac = info.state === "tools" || IS_MAC;
   const recheck = async () => {
     setChecking(true);
     try {

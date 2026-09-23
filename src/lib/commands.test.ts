@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { canonical, cleanOverrides, commandFor, eventChord, type KeyLike } from "./commands.ts";
+import { canonical, cleanOverrides, commandFor, eventChord, formatChordFor, type KeyLike, menuAccelerator } from "./commands.ts";
 
-const press = (key: string, code: string, mods: Partial<Omit<KeyLike, "key" | "code">> = {}): string | null =>
-  eventChord({ key, code, altKey: false, shiftKey: false, metaKey: false, ctrlKey: false, ...mods });
+const press = (key: string, code: string, mods: Partial<Omit<KeyLike, "key" | "code">> = {}, mac = true): string | null =>
+  eventChord({ key, code, altKey: false, shiftKey: false, metaKey: false, ctrlKey: false, ...mods }, mac);
 
 test("US layout", () => {
   assert.equal(press("b", "KeyB", { metaKey: true }), "cmd+b");
@@ -66,4 +66,16 @@ test("cleanOverrides drops unknown commands and bad chords", () => {
 test("the first listed command wins a shared chord", () => {
   assert.equal(commandFor("cmd+1", { "view.toggleGitPanel": ["cmd+1"] })?.id, "view.changes");
   assert.equal(commandFor("cmd+enter", {}), undefined, "local commands never run globally");
+});
+
+test("off macOS, cmd is Ctrl and ctrl is the Windows / Super key", () => {
+  assert.equal(press("b", "KeyB", { ctrlKey: true }, false), "cmd+b");
+  assert.equal(press("E", "KeyE", { ctrlKey: true, shiftKey: true }, false), "shift+cmd+e");
+  assert.equal(press("b", "KeyB", { metaKey: true }, false), "ctrl+b");
+  assert.equal(menuAccelerator("shift+cmd+e", false), "shift+ctrl+e");
+  assert.equal(menuAccelerator("ctrl+enter", false), "super+enter");
+  assert.equal(menuAccelerator("shift+cmd+e", true), "shift+cmd+e");
+  assert.equal(formatChordFor("shift+cmd+e", false), "Ctrl+Shift+E");
+  assert.equal(formatChordFor("alt+down", false), "Alt+↓");
+  assert.equal(formatChordFor("shift+cmd+e", true), "⇧⌘E");
 });

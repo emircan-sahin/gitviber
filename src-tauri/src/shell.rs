@@ -13,21 +13,51 @@ use std::time::{Duration, Instant};
 /// Where the terminal and the shell probe start: the environment launchd gives any app, not
 /// ours. Run from `pnpm tauri dev` we carry npm_config_prefix, which makes nvm refuse to load.
 pub fn clean_env() -> Vec<(OsString, OsString)> {
-    let mut env: Vec<(OsString, OsString)> = [
-        "HOME",
-        "USER",
-        "LOGNAME",
-        "TMPDIR",
-        "SSH_AUTH_SOCK",
-        "LANG",
-        "LC_ALL",
-    ]
-    .into_iter()
-    .filter_map(|k| std::env::var_os(k).map(|v| (k.into(), v)))
-    .collect();
-    env.push(("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()));
+    let mut env: Vec<(OsString, OsString)> = KEEP
+        .iter()
+        .filter_map(|k| std::env::var_os(k).map(|v| (k.into(), v)))
+        .collect();
+    if cfg!(unix) {
+        env.push(("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()));
+    }
     env
 }
+
+#[cfg(not(windows))]
+const KEEP: &[&str] = &[
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "SSH_AUTH_SOCK",
+    "LANG",
+    "LC_ALL",
+];
+
+/// Nothing starts without SystemRoot, and COMSPEC is the shell. There's no login shell to
+/// rebuild PATH on Windows, so the user's own is kept.
+#[cfg(windows)]
+const KEEP: &[&str] = &[
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "COMSPEC",
+    "PATHEXT",
+    "PATH",
+    "USERNAME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    "TEMP",
+    "TMP",
+    "SSH_AUTH_SOCK",
+    "LANG",
+];
 
 /// Shells that print a banner or run a slow plugin manager still answer well within this.
 const TIMEOUT: Duration = Duration::from_secs(3);
@@ -42,6 +72,10 @@ pub fn login_path() -> Option<&'static OsStr> {
 /// Asks the login shell for its PATH on a thread of its own, so the window never waits.
 /// Commands that run before it answers use the fallback PATH.
 pub fn resolve_in_background() {
+    if cfg!(windows) {
+        let _ = LOGIN_PATH.set(None);
+        return;
+    }
     std::thread::spawn(|| {
         let shell = std::env::var_os("SHELL")
             .filter(|s| !s.is_empty())

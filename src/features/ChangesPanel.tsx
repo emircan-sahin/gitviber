@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { REVEAL_LABEL } from "@/lib/commands";
 import { ignorePattern } from "@/lib/gitignore";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
@@ -229,7 +230,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
           <ListTree /> Reveal in Explorer View
         </ContextMenuItem>
         <ContextMenuItem disabled={!onDisk} onSelect={() => api.revealPath(file.path).catch((e) => toast("error", "Could not reveal in Finder", errorMessage(e)))}>
-          <FolderSearch /> Reveal in Finder
+          <FolderSearch /> {REVEAL_LABEL}
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => copy(paths(rows).map((p) => `${status.root}/${p}`).join("\n"), n > 1 ? `${n} paths copied` : "Path copied")}>

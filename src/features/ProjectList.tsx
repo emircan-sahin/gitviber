@@ -5,6 +5,7 @@ import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type ProjectInfo } from "@/lib/api";
+import { REVEAL_LABEL } from "@/lib/commands";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { folderName } from "@/lib/worktrees";
@@ -157,7 +158,7 @@ function ProjectRow({
                 </RowAction>
               ) : (
                 <>
-                  <RowAction label="Reveal in Finder" onClick={() => reveal(path)}>
+                  <RowAction label={REVEAL_LABEL} onClick={() => reveal(path)}>
                     <FolderSearch />
                   </RowAction>
                   <RowAction label="Copy path" onClick={() => copy(path, "Path copied")}>
@@ -186,7 +187,7 @@ function ProjectRow({
               <ContextMenuShortcut>↵</ContextMenuShortcut>
             </ContextMenuItem>
             <ContextMenuItem onSelect={() => reveal(path)}>
-              <FolderSearch /> Reveal in Finder
+              <FolderSearch /> {REVEAL_LABEL}
             </ContextMenuItem>
             {github && (
               <ContextMenuItem onSelect={() => openOnGitHub(`https://github.com/${github}`)}>

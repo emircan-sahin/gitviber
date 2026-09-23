@@ -52,6 +52,15 @@ impl Builder<'_> {
     }
 }
 
+/// As REVEAL_LABEL in commands.ts: Finder is macOS's file manager.
+const REVEAL: &str = if cfg!(target_os = "macos") {
+    "Reveal in Finder"
+} else if cfg!(windows) {
+    "Show in Explorer"
+} else {
+    "Show in Folder"
+};
+
 pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let mut b = Builder {
         app,
@@ -94,7 +103,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &sep()?,
             &b.command("tab.close", "Close Tab")?,
             &sep()?,
-            &b.command("file.reveal", "Reveal in Finder")?,
+            &b.command("file.reveal", REVEAL)?,
         ],
     )?;
 

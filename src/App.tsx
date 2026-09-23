@@ -15,7 +15,7 @@ import { useCommands } from "@/lib/keybindings";
 import { useRecentMenu } from "@/lib/menu";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder, stepUiScale } from "@/lib/settings";
 import { toast } from "@/lib/toast";
-import { folderName } from "@/lib/worktrees";
+import { folderName, isInside } from "@/lib/worktrees";
 
 export function App() {
   const [opened, setOpened] = useState<OpenedRepo | null>(null);
@@ -68,7 +68,7 @@ export function App() {
   useEffect(() => {
     const last = lastRepo();
     const projects = recentRepos();
-    const fallback = projects.find((p) => last?.startsWith(`${p}/`)) ?? projects[0];
+    const fallback = projects.find((p) => last && isInside(last, p)) ?? projects[0];
     (async () => {
       if (last && (await openRepo(last, true))) return;
       if (fallback && fallback !== last) await openRepo(fallback, true);

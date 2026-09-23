@@ -3,6 +3,7 @@ import { ChevronRight, Copy, File, FilePlus, FolderPlus, FolderSearch, Pencil, T
 import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
+import { REVEAL_LABEL } from "@/lib/commands";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -357,7 +358,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
           </>
         )}
         <ContextMenuItem onSelect={() => reveal(t?.path ?? "")}>
-          <FolderSearch /> Reveal in Finder
+          <FolderSearch /> {REVEAL_LABEL}
         </ContextMenuItem>
         <ContextMenuItem disabled={!status} onSelect={() => status && copy(t ? `${status.root}/${t.path}` : status.root, "Path copied")}>
           <Copy /> Copy Path
