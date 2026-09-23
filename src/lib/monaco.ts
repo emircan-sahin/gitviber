@@ -200,7 +200,7 @@ const APP_COLORS: Record<string, string> = {
   "diffEditorOverview.removedForeground": "--removed",
   "diffEditor.border": "--border-strong",
   "diffEditor.diagonalFill": "--hatch",
-  "diffEditor.unchangedRegionBackground": "--panel-solid",
+  "diffEditor.unchangedRegionBackground": "--panel",
 };
 
 function appColors() {

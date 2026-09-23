@@ -15,7 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
-tauri = { version = "=2.11.6", features = ["macos-private-api"] }
+tauri = { version = "=2.11.6", features = [] }
 tauri-plugin-dialog = "=2.7.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -39,5 +39,3 @@ strip = true
 objc2 = "=0.6.4"
 # Also already linked; wraps the full-screen notification handlers (see titlebar.rs).
 block2 = "=0.6.2"
-# Also already linked (by tauri); puts the translucent background on and off (see vibrancy.rs).
-window-vibrancy = "=0.6.0"

@@ -6,11 +6,8 @@
    found at a glance. */
 :root {
   --radius: 4px;
-  --sidebar-solid: #0e0e0f;
-  --panel-solid: #131314;
-  /* The same, but see-through in translucent mode (below). */
-  --sidebar: var(--sidebar-solid);
-  --panel: var(--panel-solid);
+  --sidebar: #0e0e0f;
+  --panel: #131314;
   --background: #171718;
   --elevated: #1e1e20;
   --hover: #ffffff12;
@@ -56,8 +53,8 @@
 /* Dimmed: dark's roles a few steps lighter, with softer text and accents for long sessions. Same
    AA floor for --subtle and the status colors, up to --elevated. */
 :root[data-theme="dim"] {
-  --sidebar-solid: #1c1c1f;
-  --panel-solid: #212124;
+  --sidebar: #1c1c1f;
+  --panel: #212124;
   --background: #262629;
   --elevated: #2e2e32;
   --hover: #ffffff10;
@@ -89,8 +86,8 @@
 /* Same roles as dark. Status text colors are dark enough to read on white (WCAG AA); chips keep
    bright fills instead, since a dark fill under white text reads muddy at badge size. */
 :root[data-theme="light"] {
-  --sidebar-solid: #f3f3f4;
-  --panel-solid: #f8f8f9;
+  --sidebar: #f3f3f4;
+  --panel: #f8f8f9;
   --background: #ffffff;
   --elevated: #ffffff;
   --hover: #0000000b;
@@ -196,31 +193,6 @@
   button:disabled,
   [data-disabled] {
     cursor: default;
-  }
-}
-
-/* Translucent background (settings.ts, macOS): the window blurs the desktop behind the page
-   (vibrancy.rs) and the side surfaces let it through. Code, diffs and the terminal sit on the
-   opaque --background. The page itself goes clear, or bars on it would stack their tints. */
-:root[data-translucent] {
-  --sidebar: color-mix(in srgb, var(--sidebar-solid) 60%, transparent);
-  --panel: color-mix(in srgb, var(--panel-solid) 75%, transparent);
-  background: transparent;
-}
-:root[data-translucent] body {
-  background: transparent;
-}
-/* Rows scrolling under a sticky header would show through it: blur them, as native headers do. */
-:root[data-translucent] .sticky {
-  -webkit-backdrop-filter: blur(16px);
-  backdrop-filter: blur(16px);
-}
-/* macOS's Reduce transparency, where WebKit reports it (the window's blur turns solid by itself). */
-@media (prefers-reduced-transparency: reduce) {
-  :root[data-translucent] {
-    --sidebar: var(--sidebar-solid);
-    --panel: var(--panel-solid);
-    background: var(--sidebar-solid);
   }
 }
 /* Scrollbars: a thin rounded thumb on a clear track, faint until hovered or dragged. WebKit's own

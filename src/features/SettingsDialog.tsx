@@ -23,7 +23,6 @@ import {
   type Settings,
   SYNTAX_THEMES,
   type SyntaxTheme,
-  TRANSLUCENCY,
   UI_FONTS,
   UI_SCALES,
   type UiFont,
@@ -159,11 +158,6 @@ function AppearanceSection() {
               ["dim", "Dimmed"],
             ]}
           />
-        </Field>
-      )}
-      {TRANSLUCENCY && (
-        <Field label="Translucent background" hint="The desktop shows through the sidebar and panels, blurred. Code, diffs and the terminal stay opaque.">
-          <Switch checked={s.translucent} onChange={(v) => updateSettings({ translucent: v })} />
         </Field>
       )}
       {/* Each appearance keeps its own syntax theme, so switching back restores it. */}

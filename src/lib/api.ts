@@ -342,8 +342,6 @@ export const api = {
   setGitIdentity: (name: string | null, email: string | null) => invoke<void>("set_git_identity", { name, email }),
   status: () => invoke<RepoStatus>("status"),
   about: () => invoke<About>("about"),
-  /** macOS vibrancy behind the window (the Translucent background setting). */
-  setTranslucent: (on: boolean) => invoke<void>("set_translucent", { on }),
   /** HEAD's history, or `rev`'s: a remote-tracking branch (refs/remotes/…), e.g. a fork's original. */
   log: (skip: number, limit: number, rev: string | null = null, filter: LogFilter | null = null) => invoke<Commit[]>("log", { rev, skip, limit, filter }),
   /** The commit a SHA or SHA prefix names, if exactly one. */
