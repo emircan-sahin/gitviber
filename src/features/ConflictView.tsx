@@ -1,8 +1,9 @@
 import { Check, ChevronsUpDown, GitMerge, Pencil, Undo2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, errorMessage, type FileChange, type Operation } from "@/lib/api";
 import { showLanguage, type TokenLine, tokenLookup, useHighlight } from "@/lib/highlight";
+import { copyNarrowed, indentUnit, TAB, widenLine } from "@/lib/indent";
 import { languageFor } from "@/lib/language";
 import { CODE_FONTS, useSettings } from "@/lib/settings";
 import { type Block, oursText, parseConflicts, type Segment } from "@/lib/conflicts";
@@ -12,6 +13,9 @@ import { FileIcon } from "./FileIcon";
 import { PathLabel } from "./StatusBadge";
 
 type Choice = { kind: "ours" | "theirs" | "both" | "custom"; lines: string[] };
+
+/** Spaces per indentation level the file's code is shown widened from (see lib/indent). */
+const IndentUnit = createContext(0);
 
 interface Props {
   file: FileChange;
@@ -50,6 +54,8 @@ export function ConflictView({ file, operation, revision }: Props) {
   }, [lang]);
   // CRLF files: the textarea normalises to \n, so custom edits get \r added back on save.
   const crlf = useMemo(() => !!text && text.split("\n").filter((l) => l.endsWith("\r")).length * 2 > text.split("\n").length, [text]);
+  // From the whole file: the fragments shown are too short to tell.
+  const unit = useMemo(() => indentUnit(text), [text]);
   const blocks = parsed?.segments.filter((s): s is Extract<Segment, { t: "conflict" }> => s.t === "conflict") ?? [];
   const resolved = blocks.filter((b) => choices.has(b.id)).length;
   // In a rebase HEAD is the branch you're rebasing onto; "incoming" is your own commit being replayed.
@@ -143,31 +149,33 @@ export function ConflictView({ file, operation, revision }: Props) {
           </div>
         )}
       </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        {text == null ? null : blocks.length === 0 ? (
-          <WholeFile code={code} busy={busy} onTake={takeSide} onAsIs={markAsIs} rebase={rebase} lossy={lossy} unterminated={unterminated} />
-        ) : (
-          <div className="py-2">
-            {parsed!.segments.map((seg, i) =>
-              seg.t === "text" ? (
-                <TextRun key={`t${i}`} lines={seg.lines} lang={lang} />
-              ) : (
-                <ConflictCard
-                  key={`c${seg.id}`}
-                  block={seg}
-                  index={seg.id + 1}
-                  total={blocks.length}
-                  choice={choices.get(seg.id)}
-                  lang={lang}
-                  oursName={oursName}
-                  theirsName={theirsName}
-                  onChoose={(k, lines) => choose(seg, k, lines)}
-                  onUndo={() => undo(seg)}
-                />
-              ),
-            )}
-          </div>
-        )}
+      <div className="min-h-0 flex-1 overflow-auto" onCopy={copyNarrowed(unit)}>
+        <IndentUnit.Provider value={unit}>
+          {text == null ? null : blocks.length === 0 ? (
+            <WholeFile code={code} busy={busy} onTake={takeSide} onAsIs={markAsIs} rebase={rebase} lossy={lossy} unterminated={unterminated} />
+          ) : (
+            <div className="py-2">
+              {parsed!.segments.map((seg, i) =>
+                seg.t === "text" ? (
+                  <TextRun key={`t${i}`} lines={seg.lines} lang={lang} />
+                ) : (
+                  <ConflictCard
+                    key={`c${seg.id}`}
+                    block={seg}
+                    index={seg.id + 1}
+                    total={blocks.length}
+                    choice={choices.get(seg.id)}
+                    lang={lang}
+                    oursName={oursName}
+                    theirsName={theirsName}
+                    onChoose={(k, lines) => choose(seg, k, lines)}
+                    onUndo={() => undo(seg)}
+                  />
+                ),
+              )}
+            </div>
+          )}
+        </IndentUnit.Provider>
       </div>
     </>
   );
@@ -245,12 +253,14 @@ function WholeFile({
 
 function useCodeStyle() {
   const s = useSettings();
-  return { fontFamily: CODE_FONTS[s.codeFont], fontSize: s.codeFontSize, lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`, tabSize: 4 } as const;
+  return { fontFamily: CODE_FONTS[s.codeFont], fontSize: s.codeFontSize, lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`, tabSize: TAB } as const;
 }
 
-function CodeLines({ lines, lang, className }: { lines: string[]; lang: string; className?: string }) {
+function CodeLines({ lines: raw, lang, className }: { lines: string[]; lang: string; className?: string }) {
   const s = useSettings();
   const style = useCodeStyle();
+  const unit = useContext(IndentUnit);
+  const lines = useMemo(() => (unit ? raw.map((l) => widenLine(l, unit)) : raw), [raw, unit]);
   const hl = useHighlight(lines.join("\n"), lang, s.codeTheme);
   const tok = useMemo(() => tokenLookup(hl), [hl]);
   return (

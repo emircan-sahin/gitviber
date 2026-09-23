@@ -2,6 +2,7 @@ import { Children, type ComponentProps, isValidElement, type ReactNode, useMemo 
 import Markdown, { type Components } from "react-markdown";
 import { github } from "@/lib/api";
 import { useHighlight } from "@/lib/highlight";
+import { copyNarrowed, indentUnit, TAB, widen } from "@/lib/indent";
 import { languageFor } from "@/lib/language";
 import { markdownLink, markdownOptions, safeDecode } from "@/lib/markdown";
 import type { Selection } from "@/lib/selection";
@@ -138,12 +139,14 @@ function CodeBlock({ className, children }: ComponentProps<"code">) {
   return <Fence code={code.replace(/\n$/, "")} lang={lang ? languageFor(`x.${lang}`) : "text"} />;
 }
 
-function Fence({ code, lang }: { code: string; lang: string }) {
+function Fence({ code: raw, lang }: { code: string; lang: string }) {
   const s = useSettings();
+  const unit = useMemo(() => indentUnit(raw), [raw]);
+  const code = useMemo(() => widen(raw, unit), [raw, unit]);
   const hl = useHighlight(code, lang, s.codeTheme);
   const lines = hl?.fresh ? hl.data.lines : null;
   return (
-    <pre>
+    <pre style={{ tabSize: TAB }} onCopy={copyNarrowed(unit)}>
       <code>
         {lines
           ? lines.map((line, i) => (
