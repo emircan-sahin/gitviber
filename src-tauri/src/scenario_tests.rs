@@ -2643,3 +2643,29 @@ fn undo_and_redo_a_discard() {
     assert!(step(&j, &r, false).is_err());
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "newer\n");
 }
+
+/// A fetch from the main worktree counts for its linked worktrees, which keep FETCH_HEADs of
+/// their own; otherwise the background fetch would fetch again from each of them.
+#[test]
+fn last_fetch_counts_the_main_worktree() {
+    let sb = Sandbox::new("lastfetch");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    let linked = sb.path("linked");
+    run(
+        a,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "side",
+            linked.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    assert_eq!(last_fetch(&linked), None);
+    fetch(a, &Net::default()).unwrap();
+    assert!(last_fetch(&linked).is_some());
+    assert_eq!(last_fetch(&linked), last_fetch(a));
+}

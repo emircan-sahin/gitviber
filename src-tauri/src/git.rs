@@ -2937,18 +2937,20 @@ pub fn fetch(repo: &Path, net: &Net) -> Result<(), String> {
 }
 
 /// When this repo last fetched (FETCH_HEAD's mtime, Unix seconds); None if it never has.
+/// Each worktree keeps its own FETCH_HEAD, and a fetch from any of them updates the remote
+/// branches for all, so a linked worktree also counts the main one's.
 pub fn last_fetch(repo: &Path) -> Option<u64> {
-    let path = run_text(repo, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
-    let modified = std::fs::metadata(repo.join(path.trim()))
-        .ok()?
-        .modified()
-        .ok()?;
-    Some(
-        modified
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs(),
-    )
+    let own = run_text(repo, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
+    let common = run_text(repo, &["rev-parse", "--git-common-dir"]).ok()?;
+    [
+        repo.join(own.trim()),
+        repo.join(common.trim()).join("FETCH_HEAD"),
+    ]
+    .iter()
+    .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+    .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+    .map(|d| d.as_secs())
+    .max()
 }
 
 /// Fetches one configured remote, e.g. a fork's upstream.
