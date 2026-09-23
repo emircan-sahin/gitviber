@@ -141,6 +141,8 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   /** Fetch, pull and push: git's progress shows next to the spinner, and Cancel stops it. */
   const runNet = (label: string, fn: (op: NetOp) => Promise<void | boolean>, done?: string) => run(label, () => withNetActivity(label, fn), done);
 
+  const activity = busy ?? net?.label;
+  const progress = net?.progress ? `${net.progress.phase}${net.progress.percent !== null ? ` ${net.progress.percent}%` : ""}` : "";
   const branchName = status?.branch ?? (status?.head ? `detached @ ${status.head}` : "…");
 
   // A terminal on another branch gets its own worktree rather than a checkout here, which
@@ -289,32 +291,32 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         </span>
       )}
 
-      {/* Filler: grabbing the bar anywhere empty moves the window. */}
-      <div data-tauri-drag-region className="min-w-4 flex-1 self-stretch" />
+      {/* Filler: grabbing the bar anywhere empty moves the window. A running command shows at
+          its right end, so starting or ending one never shifts the buttons around it (a click
+          meant for × once landed on the undo history), and its text truncates, not the bar.
+          History's tag pushes show here too: `net` is whichever network command runs. */}
+      <div data-tauri-drag-region className="flex min-w-4 flex-1 items-center justify-end self-stretch overflow-hidden">
+        {activity && (
+          <span className="mr-1.5 flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground select-none">
+            <Loader2 className="size-3.5 shrink-0 animate-spin" />
+            <span className="min-w-0 truncate tabular-nums" title={`${activity}… ${progress}`}>
+              {activity}… <span className="text-subtle">{progress}</span>
+            </span>
+            {net && (
+              <Tip label={net.progress?.cancellable === false ? "Too late to cancel: git is updating your files" : `Cancel ${net.label.toLowerCase()}`}>
+                <span className="shrink-0">
+                  <Button variant="ghost" size="icon-sm" aria-label="Cancel" disabled={net.progress?.cancellable === false} onClick={() => void cancelNetwork(net.op)}>
+                    <X />
+                  </Button>
+                </span>
+              </Tip>
+            )}
+          </span>
+        )}
+      </div>
 
       <UndoControls repo={repo} disabled={!!busy} />
       <div className="mx-1 h-4 w-px bg-border-strong" />
-      {/* History's tag pushes show here too: `net` is whichever network command runs. */}
-      {(busy || net) && (
-        <span className="mr-1 flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground select-none">
-          <Loader2 className="size-3.5 animate-spin" /> {busy ?? net?.label}…
-          {net?.progress && (
-            <span className="text-subtle tabular-nums">
-              {net.progress.phase}
-              {net.progress.percent !== null && ` ${net.progress.percent}%`}
-            </span>
-          )}
-          {net && (
-            <Tip label={net.progress?.cancellable === false ? "Too late to cancel: git is updating your files" : `Cancel ${net.label.toLowerCase()}`}>
-              <span>
-                <Button variant="ghost" size="icon-sm" aria-label="Cancel" disabled={net.progress?.cancellable === false} onClick={() => void cancelNetwork(net.op)}>
-                  <X />
-                </Button>
-              </span>
-            </Tip>
-          )}
-        </span>
-      )}
       <Tip label="Fetch">
         <Button variant="ghost" size="icon" disabled={!!busy} onClick={() => runNet("Fetch", api.fetch)}>
           <RefreshCw />
