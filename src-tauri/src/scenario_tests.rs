@@ -139,6 +139,31 @@ fn force_push_with_lease_after_amend() {
     assert!(push(a, true, None, &Net::default()).is_err());
 }
 
+/// While "Force push?" is asked, someone pushes and the background fetch brings their commit
+/// in, which moves the lease onto it. The force push must still refuse to drop it.
+#[test]
+fn force_push_after_a_background_fetch_keeps_their_commit() {
+    let sb = Sandbox::new("lease-fetch");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    write_commit(a, "a.txt", "mine\n", "mine");
+    push(a, false, None, &Net::default()).unwrap();
+    commit(a, "mine, reworded", &AMEND).unwrap();
+    let err = push(a, false, None, &Net::default()).unwrap_err();
+    assert!(err.contains("non-fast-forward"), "{err}");
+
+    fetch(b, &Net::default()).unwrap();
+    run(b, &["merge", "-q", "--ff-only", "origin/main"]).unwrap();
+    write_commit(b, "b.txt", "b\n", "theirs");
+    push(b, false, None, &Net::default()).unwrap();
+    let theirs = run_text(b, &["rev-parse", "HEAD"]).unwrap();
+    fetch(a, &Net::default()).unwrap();
+
+    assert!(push(a, true, None, &Net::default()).is_err());
+    let remote = run_text(&sb.path("origin.git"), &["rev-parse", "main"]).unwrap();
+    assert_eq!(remote, theirs);
+}
+
 /// A PR is titled like GitHub does: one commit gives its message, more the branch name.
 #[test]
 fn pull_draft_counts_commits_against_the_base() {

@@ -2821,7 +2821,9 @@ pub fn commit_details(repo: &Path, sha: &str) -> Result<CommitDetails, String> {
 
 /// `force`: after a rebase or amend the remote has the branch's old commits; replace them,
 /// but only if it still has what was last fetched (`--force-with-lease`), so a push made
-/// meanwhile by someone else is refused rather than lost.
+/// meanwhile by someone else is refused rather than lost. A fetch alone (the background
+/// one) would move that lease onto their commit, so it must also have been in this branch
+/// at some point (`--force-if-includes`).
 /// A branch without an upstream is published (`-u`) to `remote`, or else to `publish_remote`.
 pub fn push(repo: &Path, force: bool, remote: Option<&str>, net: &Net) -> Result<(), String> {
     push_as(repo, force, remote, false, net)
@@ -2847,7 +2849,7 @@ fn push_as(
     let has_upstream = run(repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
     let mut args = vec!["push"];
     if force {
-        args.push("--force-with-lease");
+        args.extend(["--force-with-lease", "--force-if-includes"]);
     }
     if tags {
         args.push("--follow-tags");
