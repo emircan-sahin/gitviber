@@ -853,18 +853,22 @@ async fn create_tag(
     message: Option<String>,
 ) -> Res<()> {
     let label = format!("Create tag {name}");
-    journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::create_tag(r, &name, &sha, message.as_deref())
-    })
+    journaled(
+        &state,
+        Action::new(label, Mode::Keep).with_tags(),
+        move |r| git::create_tag(r, &name, &sha, message.as_deref()),
+    )
     .await
 }
 
 #[tauri::command]
 async fn delete_tag(state: State<'_, AppState>, name: String) -> Res<()> {
     let label = format!("Delete tag {name}");
-    journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::delete_tag(r, &name)
-    })
+    journaled(
+        &state,
+        Action::new(label, Mode::Keep).with_tags(),
+        move |r| git::delete_tag(r, &name),
+    )
     .await
 }
 
