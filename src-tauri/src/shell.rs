@@ -2,13 +2,13 @@
 //! bare PATH, so hooks that call node, npx or pnpm (from nvm, fnm, Volta, mise, …) failed
 //! with exit 127 while the same commit worked in a terminal.
 
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Condvar, Mutex, MutexGuard};
+use std::time::Duration;
 
 /// Where the terminal and the shell probe start: the environment launchd gives any app, not
 /// ours. Run from `pnpm tauri dev` we carry npm_config_prefix, which makes nvm refuse to load.
@@ -61,44 +61,106 @@ const KEEP: &[&str] = &[
 
 /// Shells that print a banner or run a slow plugin manager still answer well within this.
 const TIMEOUT: Duration = Duration::from_secs(3);
+/// The background retry has nobody waiting on it, so it may take longer (a busy login).
+const RETRY_AFTER: Duration = Duration::from_secs(20);
+const RETRY_TIMEOUT: Duration = Duration::from_secs(10);
 
-static LOGIN_PATH: OnceLock<Option<OsString>> = OnceLock::new();
+struct Probe {
+    /// The last PATH a probe read; a failed probe later keeps it.
+    path: Option<OsString>,
+    running: bool,
+    /// The first probe has finished, well or not.
+    answered: bool,
+}
 
-/// PATH from the login shell once it has answered; None before that, or if it never did.
-pub fn login_path() -> Option<&'static OsStr> {
-    LOGIN_PATH.get().and_then(|p| p.as_deref())
+static PROBE: Mutex<Probe> = Mutex::new(Probe {
+    path: None,
+    running: false,
+    answered: false,
+});
+static FINISHED: Condvar = Condvar::new();
+/// Bumped whenever `path` changes, so git.rs can cache its merged PATH until then.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
+
+fn probe() -> MutexGuard<'static, Probe> {
+    PROBE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// PATH from the login shell, once one has answered.
+pub fn login_path() -> Option<OsString> {
+    probe().path.clone()
+}
+
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Acquire)
 }
 
 /// Asks the login shell for its PATH on a thread of its own, so the window never waits.
-/// Commands that run before it answers use the fallback PATH.
+/// Commands that run before it answers use the fallback PATH. A failed probe (a slow
+/// login, say) is tried once more a little later.
 pub fn resolve_in_background() {
     if cfg!(windows) {
-        let _ = LOGIN_PATH.set(None);
+        probe().answered = true;
         return;
     }
     std::thread::spawn(|| {
-        let shell = std::env::var_os("SHELL")
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "/bin/zsh".into());
-        let path = probe_path(Path::new(&shell))
-            .inspect_err(|e| eprintln!("login shell PATH: {e}; using the default PATH"))
-            .ok();
-        let _ = LOGIN_PATH.set(path);
+        if run(TIMEOUT).is_err() {
+            std::thread::sleep(RETRY_AFTER);
+            let _ = run(RETRY_TIMEOUT);
+        }
     });
 }
 
-/// Waits for the login shell's answer, for a caller that found nothing on the fallback PATH.
-pub fn wait_for_login_path() -> Option<&'static OsStr> {
-    let deadline = Instant::now() + TIMEOUT + Duration::from_secs(1);
-    while LOGIN_PATH.get().is_none() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(50));
+/// Probes again now (or joins a probe already running), for "Check again" after the user
+/// installed something into a folder only the shell's PATH has.
+pub fn reprobe() {
+    if !cfg!(windows) {
+        let _ = run(TIMEOUT);
     }
-    login_path()
+}
+
+/// Waits for the first probe to finish, for a caller that found nothing on the fallback PATH.
+pub fn wait_for_first_answer() {
+    let wait = TIMEOUT + Duration::from_secs(1);
+    drop(FINISHED.wait_timeout_while(probe(), wait, |p| !p.answered));
+}
+
+fn run(timeout: Duration) -> Result<(), String> {
+    {
+        let p = probe();
+        if p.running {
+            drop(FINISHED.wait_while(p, |p| p.running));
+            return Ok(());
+        }
+        let mut p = p;
+        p.running = true;
+    }
+    let shell = std::env::var_os("SHELL")
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "/bin/zsh".into());
+    let found = probe_path(Path::new(&shell), timeout);
+    record(&found);
+    found.map(|_| ())
+}
+
+fn record(found: &Result<OsString, String>) {
+    let mut p = probe();
+    p.running = false;
+    p.answered = true;
+    match found {
+        Ok(path) if p.path.as_ref() != Some(path) => {
+            p.path = Some(path.clone());
+            GENERATION.fetch_add(1, Ordering::Release);
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("login shell PATH: {e}; keeping the PATH we had"),
+    }
+    FINISHED.notify_all();
 }
 
 /// Runs `shell -ilc` (interactive and login, so both .zprofile and .zshrc run, as in a
 /// terminal) and reads PATH printed between markers, past anything the rc files print.
-pub fn probe_path(shell: &Path) -> Result<OsString, String> {
+pub fn probe_path(shell: &Path, timeout: Duration) -> Result<OsString, String> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.subsec_nanos());
@@ -127,14 +189,14 @@ pub fn probe_path(shell: &Path) -> Result<OsString, String> {
             }
         }
     });
-    let found = rx.recv_timeout(TIMEOUT);
+    let found = rx.recv_timeout(timeout);
     let _ = child.kill();
     let _ = child.wait();
     match found {
         Ok(path) if !path.is_empty() => Ok(path.into()),
         Ok(_) => Err(format!("{} printed an empty PATH", shell.display())),
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            Err(format!("{} took over {TIMEOUT:?}", shell.display()))
+            Err(format!("{} took over {timeout:?}", shell.display()))
         }
         Err(_) => Err(format!("{} exited without printing PATH", shell.display())),
     }
@@ -175,5 +237,24 @@ mod tests {
         let out = "Last login: today\nwelcome!\nM\n/a/bin:/usr/bin\nM\nbye\n";
         assert_eq!(between_marks(out, "M").as_deref(), Some("/a/bin:/usr/bin"));
         assert_eq!(between_marks("M\n/a/bin", "M"), None, "still printing");
+    }
+
+    /// A later probe's PATH reaches git without a restart; a failed one keeps the last.
+    #[test]
+    fn a_new_login_path_replaces_the_cached_one() {
+        let starts = |dir: &str| crate::git::search_path().to_string_lossy().starts_with(dir);
+        let path = |dir: &str| {
+            let mut p = OsString::from(dir);
+            p.push(":/usr/bin:/bin");
+            p
+        };
+        record(&Ok(path("/gitviber-test/first")));
+        assert!(starts("/gitviber-test/first"));
+        let before = generation();
+        record(&Ok(path("/gitviber-test/second")));
+        assert!(generation() > before);
+        assert!(starts("/gitviber-test/second"));
+        record(&Err("took too long".into()));
+        assert!(starts("/gitviber-test/second"));
     }
 }

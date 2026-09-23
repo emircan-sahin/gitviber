@@ -137,13 +137,19 @@ async fn git_info(app: AppHandle, recheck: bool) -> Res<git::GitInfo> {
         if let Some(info) = state.git.lock().unwrap().clone().filter(|_| !recheck) {
             return Ok(info);
         }
+        // A git only the login shell's PATH has (MacPorts, nix, one just installed there)
+        // shows up once that's read: at launch by waiting for it, on "Check again" by
+        // asking the shell afresh.
+        if recheck {
+            shell::reprobe();
+        }
+        let before = shell::generation();
         let mut info = git::check_install();
-        // A git only the login shell's PATH has (MacPorts, nix) shows up once that's read.
-        if matches!(info.state, "missing" | "tools")
-            && shell::login_path().is_none()
-            && shell::wait_for_login_path().is_some()
-        {
-            info = git::check_install();
+        if !recheck && matches!(info.state, "missing" | "tools") {
+            shell::wait_for_first_answer();
+            if shell::generation() != before {
+                info = git::check_install();
+            }
         }
         *state.git.lock().unwrap() = Some(info.clone());
         Ok(info)

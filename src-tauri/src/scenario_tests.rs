@@ -960,7 +960,7 @@ fn hooks_find_tools_on_the_login_shell_path() {
     let err = commit_with(&merge_paths(None, app_path)).unwrap_err();
     assert!(err.contains("gitviber-lint"), "{err}");
 
-    let login = crate::shell::probe_path(&shell).unwrap();
+    let login = crate::shell::probe_path(&shell, std::time::Duration::from_secs(3)).unwrap();
     let merged = merge_paths(Some(&login), app_path);
     assert!(merged
         .to_str()

@@ -10,7 +10,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
@@ -18,14 +18,19 @@ const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
 /// Apps launched from Finder get a bare PATH, which hides Homebrew git, the credential
 /// helpers / ssh next to it, and whatever hooks call (node from nvm and the like). The login
 /// shell's PATH fills that in once it has answered (shell.rs); until then, Homebrew's.
-pub(crate) fn search_path() -> &'static OsStr {
-    static FALLBACK: OnceLock<OsString> = OnceLock::new();
-    static FULL: OnceLock<OsString> = OnceLock::new();
-    let current = || std::env::var_os("PATH").unwrap_or_default();
-    match crate::shell::login_path() {
-        Some(login) => FULL.get_or_init(|| merge_paths(Some(login), &current())),
-        None => FALLBACK.get_or_init(|| merge_paths(None, &current())),
+/// Merged once per login-PATH change: every git call asks.
+pub(crate) fn search_path() -> OsString {
+    static CACHE: RwLock<Option<(u64, OsString)>> = RwLock::new(None);
+    let generation = crate::shell::generation();
+    if let Some((g, path)) = CACHE.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if *g == generation {
+            return path.clone();
+        }
     }
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let path = merge_paths(crate::shell::login_path().as_deref(), &current);
+    *CACHE.write().unwrap_or_else(|e| e.into_inner()) = Some((generation, path.clone()));
+    path
 }
 
 /// The login shell's entries first (its order decides which node a hook gets), then
