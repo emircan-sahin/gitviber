@@ -246,6 +246,16 @@ export function takenFromTerminal(chord: string, command: Command, mac = IS_MAC)
   return mods.includes(mac ? "ctrl" : "cmd") && !/^[a-z]$/.test(key) && runsWhileTyping(chord, command, mac);
 }
 
+/**
+ * Whether a chord runs its command while the terminal has focus: only what the terminal doesn't
+ * read itself, so a key never goes to both. That's ⌘ (the Super key elsewhere) and what it hands
+ * over (takenFromTerminal). F-keys stay the shell's: programs there use them (htop, mc).
+ */
+export function runsInTerminal(chord: string, command: Command, mac = IS_MAC): boolean {
+  if (chord.split("+").includes(mac ? "cmd" : "ctrl")) return runsWhileTyping(chord, command, mac);
+  return takenFromTerminal(chord, command, mac);
+}
+
 const GLYPHS: Record<string, string> = {
   ctrl: "⌃",
   alt: "⌥",
