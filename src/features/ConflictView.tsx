@@ -254,7 +254,10 @@ function CodeLines({ lines, lang, className }: { lines: string[]; lang: string; 
   const hl = useHighlight(lines.join("\n"), lang, s.codeTheme);
   const tok = useMemo(() => tokenLookup(hl), [hl]);
   return (
-    <div className={cn("overflow-x-auto px-4 whitespace-pre select-text", className)} style={{ ...style, color: hl?.data.fg }}>
+    <div
+      className={cn("px-4 select-text", s.wordWrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "overflow-x-auto whitespace-pre", className)}
+      style={{ ...style, color: hl?.data.fg }}
+    >
       {lines.map((l, i) => (
         <div key={i} className="min-h-[1lh]">
           <Tokens tokens={tok(i, l)} text={l} />
