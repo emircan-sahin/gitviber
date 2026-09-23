@@ -25,10 +25,12 @@ interface Props {
   onHover: (s: Selection) => void;
   refresh: () => Promise<void>;
   viewed: (s: Selection) => boolean;
-  toggleViewed: (s: Selection) => void;
+  setViewed: (s: Selection[], on: boolean) => void;
   /** Shows the file in the explorer, opening the panel if it's hidden. */
   onRevealInExplorer: (path: string) => void;
 }
+
+type Change = Selection & { kind: "conflict" | "staged" | "unstaged" };
 
 async function attempt(title: string, fn: () => Promise<unknown>) {
   try {
@@ -41,7 +43,7 @@ async function attempt(title: string, fn: () => Promise<unknown>) {
 }
 
 /** Every reviewable change in display order; J/K walk this list. Nested repos have no diff to review. */
-export function changeList(status: RepoStatus): (Selection & { kind: "conflict" | "staged" | "unstaged" })[] {
+export function changeList(status: RepoStatus): Change[] {
   return [
     ...status.conflicted.map((file) => ({ kind: "conflict" as const, file })),
     ...status.staged.map((file) => ({ kind: "staged" as const, file })),
@@ -50,8 +52,10 @@ export function changeList(status: RepoStatus): (Selection & { kind: "conflict" 
 }
 
 const leftOut = (n: number) => `Left out ${n} nested ${n === 1 ? "repository" : "repositories"}`;
+const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
+const paths = (rows: Change[]) => rows.map((r) => r.file.path);
 
-export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, viewed, toggleViewed, onRevealInExplorer }: Props) {
+export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer }: Props) {
   const act = async (title: string, fn: () => Promise<unknown>) => {
     await attempt(title, fn);
     await refresh();
@@ -63,31 +67,43 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
     if (paths.length) act("Stage failed", () => api.stage(paths));
   };
 
+  const stage = (rows: Change[]) => act("Stage failed", () => api.stage(paths(rows)));
+  const unstage = (rows: Change[]) => act("Unstage failed", () => api.unstage(paths(rows)));
+  const resolve = (rows: Change[], side: "ours" | "theirs") =>
+    act("Resolve failed", async () => {
+      for (const r of rows) await api.resolveSide(r.file.path, side);
+    });
+
   // Nested repos can't be marked viewed, so every path here is stageable.
   const viewedPaths = status.unstaged.filter((file) => !file.nested && viewed({ kind: "unstaged", file })).map((f) => f.path);
 
-  const discard = async (files: FileChange[]) => {
-    const tracked = files.filter((f) => f.status !== "?");
-    if (!tracked.length) return;
-    const what = tracked.length === 1 ? tracked[0].path : `${tracked.length} files`;
-    const ok = await ask(`Discard changes to ${what}? This cannot be undone.`, { title: "Discard changes", kind: "warning", okLabel: "Discard" });
-    if (ok) await act("Discard failed", () => api.discard(tracked.map((f) => f.path)));
-  };
-
   // Untracked files have nothing to restore; like VS Code, discarding one deletes it (to the Trash here).
-  const trash = async (file: FileChange) => {
-    const ok = await ask(`Move ${file.path} to the Trash? It is untracked, so git has no copy of it.`, { title: "Delete file", kind: "warning", okLabel: "Move to Trash" });
-    if (ok) await act("Could not move to Trash", () => api.trashPath(file.path));
+  const discard = async (list: FileChange[]) => {
+    const tracked = list.filter((f) => f.status !== "?");
+    const untracked = list.filter((f) => f.status === "?");
+    if (!list.length) return;
+    const one = list.length === 1 ? list[0].path : null;
+    const trashOnly = !tracked.length;
+    const message = trashOnly
+      ? one
+        ? `Move ${one} to the Trash? It is untracked, so git has no copy of it.`
+        : `Move ${untracked.length} untracked files to the Trash? Git has no copy of them.`
+      : `Discard changes to ${one ?? files(tracked.length)}? This cannot be undone.${untracked.length ? ` ${files(untracked.length)} git doesn't track will be moved to the Trash.` : ""}`;
+    const ok = await ask(message, trashOnly ? { title: one ? "Delete file" : "Delete files", kind: "warning", okLabel: "Move to Trash" } : { title: "Discard changes", kind: "warning", okLabel: "Discard" });
+    if (!ok) return;
+    await act(trashOnly ? "Could not move to Trash" : "Discard failed", async () => {
+      if (tracked.length) await api.discard(tracked.map((f) => f.path));
+      for (const f of untracked) await api.trashPath(f.path);
+    });
   };
 
-  const discardOne = (file: FileChange) => (file.status === "?" ? trash(file) : discard([file]));
-
-  const ignore = (file: FileChange) =>
+  const ignore = (list: FileChange[]) =>
     act("Could not update .gitignore", async () => {
       const cur = await api.readFile(".gitignore");
       if (cur.exists && (cur.binary || cur.lossy || cur.tooLarge)) throw new Error(".gitignore is not a plain text file");
       const sep = cur.text && !cur.text.endsWith("\n") ? "\n" : "";
-      await api.writeFile(".gitignore", `${cur.text}${sep}${ignorePattern(file.path)}\n`);
+      const lines = [...new Set(list.map((f) => ignorePattern(f.path)))].join("\n");
+      await api.writeFile(".gitignore", `${cur.text}${sep}${lines}\n`);
     });
 
   const copy = (text: string, what: string) =>
@@ -96,13 +112,60 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
       (e) => toast("error", "Could not copy", errorMessage(e)),
     );
 
+  const all = changeList(status);
+  const index = new Map(all.map((c, i) => [selectionKey(c), i]));
+  const firstOfPath = new Map<string, Change>();
+  for (const c of all) if (!firstOfPath.has(c.file.path)) firstOfPath.set(c.file.path, c);
+  // A picked file that got staged or unstaged is found in its new list, like its tab.
+  const here = (c: Change): Change | undefined => all[index.get(selectionKey(c)) ?? -1] ?? firstOfPath.get(c.file.path);
+  const active = activeKey === null ? undefined : all[index.get(activeKey) ?? -1];
+
+  // Rows picked with ⌘/⇧ around `focus`, the file the open tab was on. Once the tab moves to
+  // another file (a plain click, J/K), the selection is just the open row again.
+  const [picked, setPicked] = useState<{ rows: Change[]; anchor: Change; focus: string } | null>(null);
+  const stale = !!picked && !!active && active.file.path !== picked.focus;
+  const [listFocused, setListFocused] = useState(false);
+  useEffect(() => {
+    if (stale) setPicked(null);
+  }, [stale]);
+  const selected = new Map<string, Change>();
+  for (const c of picked && !stale ? picked.rows : active ? [active] : []) {
+    const row = here(c);
+    if (row) selected.set(selectionKey(row), row);
+  }
+  const anchor = (picked && !stale && here(picked.anchor)) || active;
+  const selectedOf: Record<Change["kind"], Change[]> = { conflict: [], staged: [], unstaged: [] };
+  for (const c of selected.values()) selectedOf[c.kind].push(c);
+  // With several rows of a section selected, its header acts on them instead of the whole section.
+  const many = (kind: Change["kind"]) => (selectedOf[kind].length > 1 ? selectedOf[kind] : null);
+  const [pickedConflicts, pickedStaged, pickedChanges] = [many("conflict"), many("staged"), many("unstaged")];
+  /** What an action on a row covers: the selected rows of its kind if it's selected, else just the row. */
+  const targets = (c: Change) => (selected.has(selectionKey(c)) ? selectedOf[c.kind] : [c]);
+
+  const range = (from: Change, to: Change) => {
+    const [i, j] = [index.get(selectionKey(from)) ?? -1, index.get(selectionKey(to)) ?? -1];
+    return i < 0 || j < 0 ? [to] : all.slice(Math.min(i, j), Math.max(i, j) + 1);
+  };
+
+  // ⌘-click toggles a row, ⇧-click picks the range from the anchor. The open tab follows the clicked row either way.
+  const pick = (c: Change, e: { metaKey: boolean; shiftKey: boolean }) => {
+    const key = selectionKey(c);
+    if (e.metaKey) setPicked({ rows: selected.has(key) ? [...selected.values()].filter((s) => selectionKey(s) !== key) : [...selected.values(), c], anchor: c, focus: c.file.path });
+    else if (e.shiftKey && anchor) setPicked({ rows: range(anchor, c), anchor, focus: c.file.path });
+    else setPicked(null);
+    onOpen(c);
+  };
+
   // Set by "Reveal in Explorer", so the closing menu doesn't pull focus back from the tree.
   const keepFocus = useRef(false);
 
-  /** The row's right-click menu, modeled on VS Code's Source Control view. */
-  const menu = (sel: Selection & { kind: "staged" | "unstaged" | "conflict" }) => {
+  /** The row's right-click menu, modeled on VS Code's Source Control view. `rows`: what its git actions cover. */
+  const menu = (sel: Change, rows: Change[]) => {
     const { file } = sel;
     const onDisk = file.status !== "D";
+    const n = rows.length;
+    const untracked = rows.filter((r) => r.file.status === "?").map((r) => r.file);
+    const isViewed = viewed(sel);
     return (
       <ContextMenuContent
         onCloseAutoFocus={(e) => {
@@ -119,40 +182,40 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
         <ContextMenuSeparator />
         {sel.kind === "unstaged" && (
           <>
-            <ContextMenuItem onSelect={() => act("Stage failed", () => api.stage([file.path]))}>
-              <Plus /> Stage Changes
+            <ContextMenuItem onSelect={() => stage(rows)}>
+              <Plus /> {n > 1 ? `Stage ${n} Files` : "Stage Changes"}
             </ContextMenuItem>
-            <ContextMenuItem onSelect={() => discardOne(file)}>
-              <Undo2 /> Discard Changes
+            <ContextMenuItem onSelect={() => discard(rows.map((r) => r.file))}>
+              <Undo2 /> {n > 1 ? `Discard ${n} Files…` : "Discard Changes"}
             </ContextMenuItem>
-            {file.status === "?" && (
-              <ContextMenuItem onSelect={() => ignore(file)}>
-                <EyeOff /> Add to .gitignore
+            {untracked.length > 0 && (
+              <ContextMenuItem onSelect={() => ignore(untracked)}>
+                <EyeOff /> {n > 1 ? `Add ${untracked.length} to .gitignore` : "Add to .gitignore"}
               </ContextMenuItem>
             )}
           </>
         )}
         {sel.kind === "staged" && (
-          <ContextMenuItem onSelect={() => act("Unstage failed", () => api.unstage([file.path]))}>
-            <Minus /> Unstage Changes
+          <ContextMenuItem onSelect={() => unstage(rows)}>
+            <Minus /> {n > 1 ? `Unstage ${n} Files` : "Unstage Changes"}
           </ContextMenuItem>
         )}
         {sel.kind === "conflict" && (
           <>
-            <ContextMenuItem onSelect={() => act("Stage failed", () => api.stage([file.path]))}>
-              <Check /> Mark as Resolved
+            <ContextMenuItem onSelect={() => stage(rows)}>
+              <Check /> {n > 1 ? `Mark ${n} as Resolved` : "Mark as Resolved"}
             </ContextMenuItem>
-            <ContextMenuItem onSelect={() => act("Resolve failed", () => api.resolveSide(file.path, "ours"))}>
-              <ArrowLeftToLine /> Take Current Version
+            <ContextMenuItem onSelect={() => resolve(rows, "ours")}>
+              <ArrowLeftToLine /> {n > 1 ? `Take Current Version of ${n} Files` : "Take Current Version"}
             </ContextMenuItem>
-            <ContextMenuItem onSelect={() => act("Resolve failed", () => api.resolveSide(file.path, "theirs"))}>
-              <ArrowRightToLine /> Take Incoming Version
+            <ContextMenuItem onSelect={() => resolve(rows, "theirs")}>
+              <ArrowRightToLine /> {n > 1 ? `Take Incoming Version of ${n} Files` : "Take Incoming Version"}
             </ContextMenuItem>
           </>
         )}
         {sel.kind === "unstaged" && (
-          <ContextMenuItem onSelect={() => toggleViewed(sel)}>
-            <SquareCheck /> {viewed(sel) ? "Mark as Not Viewed" : "Mark as Viewed"}
+          <ContextMenuItem onSelect={() => setViewed(rows, !isViewed)}>
+            <SquareCheck /> {`Mark ${n > 1 ? `${n} ` : ""}as ${isViewed ? "Not Viewed" : "Viewed"}`}
           </ContextMenuItem>
         )}
         <ContextMenuSeparator />
@@ -169,66 +232,85 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
           <FolderSearch /> Reveal in Finder
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => copy(`${status.root}/${file.path}`, "Path copied")}>
-          <Copy /> Copy Path
+        <ContextMenuItem onSelect={() => copy(paths(rows).map((p) => `${status.root}/${p}`).join("\n"), n > 1 ? `${n} paths copied` : "Path copied")}>
+          <Copy /> {n > 1 ? "Copy Paths" : "Copy Path"}
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => copy(file.path, "Relative path copied")}>
-          <Copy /> Copy Relative Path
+        <ContextMenuItem onSelect={() => copy(paths(rows).join("\n"), n > 1 ? `${n} relative paths copied` : "Relative path copied")}>
+          <Copy /> {n > 1 ? "Copy Relative Paths" : "Copy Relative Path"}
         </ContextMenuItem>
       </ContextMenuContent>
     );
   };
 
-  const all = changeList(status);
   const reviewed = all.filter(viewed).length;
   const add = all.reduce((n, s) => n + (s.file.additions ?? 0), 0);
   const del = all.reduce((n, s) => n + (s.file.deletions ?? 0), 0);
 
-  const active = all.find((c) => selectionKey(c) === activeKey);
   useCommands({
-    // The tab follows the file into the other list, so pressing it again undoes it. Conflicts are left to their own actions.
-    "git.toggleStage":
-      active?.kind === "unstaged"
-        ? () => act("Stage failed", () => api.stage([active.file.path]))
-        : active?.kind === "staged"
-          ? () => act("Unstage failed", () => api.unstage([active.file.path]))
-          : undefined,
-    "git.discard": active?.kind === "unstaged" ? () => discardOne(active.file) : undefined,
+    // The tab and the selection follow the files into the other list, so pressing it again undoes it. Conflicts are left to their own actions.
+    "git.toggleStage": active?.kind === "unstaged" ? () => stage(targets(active)) : active?.kind === "staged" ? () => unstage(targets(active)) : undefined,
+    "git.discard": active?.kind === "unstaged" ? () => discard(targets(active).map((r) => r.file)) : undefined,
+    // Only while several rows are selected: registering then puts it over Workspace's V, which marks
+    // just the open file. Staged rows stay out, as there: unmarking one unstages it.
+    "review.toggleViewed": active && active.kind !== "staged" && targets(active).length > 1 ? () => setViewed(targets(active), !viewed(active)) : undefined,
   });
 
   // One tab stop for the whole list (the active row), so Tab reaches its actions, not every row.
   const tabStop = active ? activeKey : all[0] && selectionKey(all[0]);
 
-  // ↑/↓ from a focused row (clicking one focuses it); ↵ keeps the preview tab, Space opens it like a click.
+  // ↑/↓ from a focused row (clicking one focuses it), ⇧ to extend the selection, ⌘A for all of it, Esc
+  // to let it go; ↵ keeps the preview tab, Space opens it like a click.
   const onListKey = (e: React.KeyboardEvent) => {
     const key = e.target instanceof HTMLElement ? e.target.dataset.row : undefined;
-    if (key === undefined || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
-    const i = all.findIndex((c) => selectionKey(c) === key);
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const i = key === undefined ? -1 : (index.get(key) ?? -1);
+    if (i < 0 || e.altKey || e.ctrlKey) return;
+    const cur = all[i];
+    if (e.key === "Escape") {
+      // Only when there's a selection to drop; otherwise Esc isn't ours to take.
+      if (!picked || stale) return;
+      setPicked(null);
+    } else if (e.metaKey) {
+      if (e.shiftKey || e.key.toLowerCase() !== "a") return;
+      setPicked({ rows: all, anchor: anchor ?? cur, focus: (active ?? cur).file.path });
+      if (!active) onOpen(cur);
+    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       // A focused row that isn't open yet (Tab into a list with nothing open) opens first.
-      const to = key !== activeKey ? i : e.key === "ArrowDown" ? i + 1 : i - 1;
-      onOpen(all[Math.max(0, Math.min(all.length - 1, to))]);
-    } else if (e.key === "Enter") onOpen(all[i], true);
-    else if (e.key === " ") onOpen(all[i]);
+      const to = all[Math.max(0, Math.min(all.length - 1, key !== activeKey ? i : e.key === "ArrowDown" ? i + 1 : i - 1))];
+      if (e.shiftKey) setPicked({ rows: range(anchor ?? cur, to), anchor: anchor ?? cur, focus: to.file.path });
+      else setPicked(null);
+      onOpen(to);
+    } else if (e.shiftKey) return;
+    else if (e.key === "Enter") onOpen(cur, true);
+    else if (e.key === " ") pick(cur, e);
     else return;
     e.preventDefault();
   };
 
-  const row = (sel: Selection & { kind: "staged" | "unstaged" | "conflict" }, actions: React.ReactNode) => (
-    <Row
-      key={selectionKey(sel)}
-      sel={sel}
-      active={activeKey === selectionKey(sel)}
-      tabStop={tabStop === selectionKey(sel)}
-      viewed={viewed(sel)}
-      onOpen={onOpen}
-      onHover={onHover}
-      onToggleViewed={() => toggleViewed(sel)}
-      menu={menu(sel)}
-    >
-      {actions}
-    </Row>
-  );
+  const row = (sel: Change, actions: (rows: Change[]) => React.ReactNode) => {
+    const key = selectionKey(sel);
+    const rows = targets(sel);
+    const n = rows.length > 1 ? `${rows.length} ` : "";
+    const isViewed = viewed(sel);
+    return (
+      <Row
+        key={key}
+        sel={sel}
+        active={activeKey === key}
+        selected={selected.has(key)}
+        dim={!listFocused && activeKey !== key}
+        tabStop={tabStop === key}
+        viewed={isViewed}
+        checkLabel={sel.kind === "staged" ? (n ? `Unstage ${files(rows.length)}` : "Unstage") : `Mark ${n}as ${isViewed ? "not viewed" : "viewed"}`}
+        onClick={(e) => pick(sel, e)}
+        onOpen={onOpen}
+        onHover={onHover}
+        onToggleViewed={() => setViewed(rows, !isViewed)}
+        menu={menu(sel, rows)}
+      >
+        {actions(rows)}
+      </Row>
+    );
+  };
 
   return (
     <div className="flex h-full flex-col">
@@ -251,25 +333,37 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
           </div>
         </div>
       )}
-      <div onKeyDown={onListKey} className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
+      <div
+        onKeyDown={onListKey}
+        // React focus events bubble out of portals too, so a row's open context menu still counts as the list.
+        onFocus={() => setListFocused(true)}
+        onBlur={(e) => setListFocused(e.currentTarget.contains(e.relatedTarget))}
+        // The empty space below the rows lets go of the selection, like Finder.
+        onClick={(e) => e.target === e.currentTarget && setPicked(null)}
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
         {!all.length && !status.unstaged.length && <AllCaughtUp />}
         {status.conflicted.length > 0 && (
-          <Section title="Conflicts" count={status.conflicted.length} tone="text-conflict">
+          <Section
+            title="Conflicts"
+            count={status.conflicted.length}
+            tone="text-conflict"
+            pinned={!!pickedConflicts}
+            action={pickedConflicts && <SectionBtn onClick={() => stage(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
+          >
             {status.conflicted.map((file) =>
-              row(
-                { kind: "conflict", file },
+              row({ kind: "conflict", file }, (rows) => (
                 <>
-                  <RowAction label="Mark resolved as it is" onClick={() => act("Stage failed", () => api.stage([file.path]))}>
+                  <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => stage(rows)}>
                     <Check />
                   </RowAction>
-                  <RowAction label="Take current version" onClick={() => act("Resolve failed", () => api.resolveSide(file.path, "ours"))}>
+                  <RowAction label={rows.length > 1 ? `Take current version of ${files(rows.length)}` : "Take current version"} onClick={() => resolve(rows, "ours")}>
                     <ArrowLeftToLine />
                   </RowAction>
-                  <RowAction label="Take incoming version" onClick={() => act("Resolve failed", () => api.resolveSide(file.path, "theirs"))}>
+                  <RowAction label={rows.length > 1 ? `Take incoming version of ${files(rows.length)}` : "Take incoming version"} onClick={() => resolve(rows, "theirs")}>
                     <ArrowRightToLine />
                   </RowAction>
-                </>,
-              ),
+                </>
+              )),
             )}
           </Section>
         )}
@@ -277,15 +371,21 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
           <Section
             title="Staged"
             count={status.staged.length}
-            action={<SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged.map((f) => f.path)))}>Unstage all</SectionBtn>}
+            pinned={!!pickedStaged}
+            action={
+              pickedStaged ? (
+                <SectionBtn onClick={() => unstage(pickedStaged)}>Unstage {files(pickedStaged.length)}</SectionBtn>
+              ) : (
+                <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged.map((f) => f.path)))}>Unstage all</SectionBtn>
+              )
+            }
           >
             {status.staged.map((file) =>
-              row(
-                { kind: "staged", file },
-                <RowAction label="Unstage" onClick={() => act("Unstage failed", () => api.unstage([file.path]))}>
+              row({ kind: "staged", file }, (rows) => (
+                <RowAction label={rows.length > 1 ? `Unstage ${files(rows.length)}` : "Unstage"} onClick={() => unstage(rows)}>
                   <Minus />
-                </RowAction>,
-              ),
+                </RowAction>
+              )),
             )}
           </Section>
         )}
@@ -293,31 +393,39 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
           <Section
             title="Changes"
             count={status.unstaged.length}
+            pinned={!!pickedChanges}
             action={
-              <>
-                <SectionBtn onClick={() => discard(status.unstaged)}>Discard</SectionBtn>
-                {viewedPaths.length > 0 && <SectionBtn onClick={() => act("Stage failed", () => api.stage(viewedPaths))}>Stage {viewedPaths.length} viewed</SectionBtn>}
-                <SectionBtn onClick={stageAll}>Stage all</SectionBtn>
-              </>
+              pickedChanges ? (
+                <>
+                  <SectionBtn onClick={() => discard(pickedChanges.map((r) => r.file))}>Discard {files(pickedChanges.length)}…</SectionBtn>
+                  <SectionBtn onClick={() => stage(pickedChanges)}>Stage {files(pickedChanges.length)}</SectionBtn>
+                </>
+              ) : (
+                <>
+                  {/* Leaves untracked files alone; deleting one is a per-file choice. */}
+                  <SectionBtn onClick={() => discard(status.unstaged.filter((f) => f.status !== "?"))}>Discard</SectionBtn>
+                  {viewedPaths.length > 0 && <SectionBtn onClick={() => act("Stage failed", () => api.stage(viewedPaths))}>Stage {viewedPaths.length} viewed</SectionBtn>}
+                  <SectionBtn onClick={stageAll}>Stage all</SectionBtn>
+                </>
+              )
             }
           >
             {status.unstaged.map((file) =>
               file.nested ? (
                 <NestedRow key={file.path} file={file} />
               ) : (
-              row(
-                { kind: "unstaged", file },
-                <>
-                  {file.status !== "?" && (
-                    <RowAction label="Discard changes" onClick={() => discard([file])}>
-                      <Undo2 />
+                row({ kind: "unstaged", file }, (rows) => (
+                  <>
+                    {file.status !== "?" && (
+                      <RowAction label={rows.length > 1 ? `Discard ${files(rows.length)}` : "Discard changes"} onClick={() => discard(rows.map((r) => r.file))}>
+                        <Undo2 />
+                      </RowAction>
+                    )}
+                    <RowAction label={rows.length > 1 ? `Stage ${files(rows.length)}` : "Stage"} onClick={() => stage(rows)}>
+                      <Plus />
                     </RowAction>
-                  )}
-                  <RowAction label="Stage" onClick={() => act("Stage failed", () => api.stage([file.path]))}>
-                    <Plus />
-                  </RowAction>
-                </>,
-              )
+                  </>
+                ))
               ),
             )}
           </Section>
@@ -392,7 +500,8 @@ function OperationBanner({ status, refresh }: Pick<Props, "status" | "refresh">)
   );
 }
 
-function Section({ title, count, tone, action, children }: { title: string; count: number; tone?: string; action?: React.ReactNode; children: React.ReactNode }) {
+/** `pinned`: the actions stay visible instead of showing on hover (they act on a selection the user just made). */
+function Section({ title, count, tone, action, pinned, children }: { title: string; count: number; tone?: string; action?: React.ReactNode; pinned?: boolean; children: React.ReactNode }) {
   const [open, setOpen] = useState(true);
   return (
     <div>
@@ -402,7 +511,7 @@ function Section({ title, count, tone, action, children }: { title: string; coun
           <span className={tone}>{title}</span>
           <span className="ml-1 font-mono tracking-normal text-muted-foreground">{count}</span>
         </button>
-        <div className="ml-auto flex gap-0.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">{action}</div>
+        <div className={cn("ml-auto flex gap-0.5", !pinned && "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100")}>{action}</div>
       </div>
       {open && <div className="py-0.5">{children}</div>}
     </div>
@@ -420,18 +529,27 @@ function SectionBtn({ onClick, children }: { onClick: () => void; children: Reac
 function Row({
   sel,
   active,
+  selected,
+  dim,
   tabStop,
   viewed,
+  checkLabel,
+  onClick,
   onOpen,
   onHover,
   onToggleViewed,
   menu,
   children,
 }: {
-  sel: Selection & { kind: "staged" | "unstaged" | "conflict" };
+  sel: Change;
   active: boolean;
+  selected: boolean;
+  /** Selected while focus is elsewhere: shown fainter, like VS Code's inactive selection. The open row keeps its color. */
+  dim: boolean;
   tabStop: boolean;
   viewed: boolean;
+  checkLabel: string;
+  onClick: (e: React.MouseEvent) => void;
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
   onToggleViewed: () => void;
@@ -455,19 +573,19 @@ function Row({
           tabIndex={tabStop ? 0 : -1}
           data-row={selectionKey(sel)}
           aria-current={active || undefined}
-          onClick={() => onOpen(sel)}
+          onClick={onClick}
           onDoubleClick={() => onOpen(sel, true)}
           onMouseEnter={() => onHover(sel)}
           className={cn(
             "group/row relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-            active ? "bg-primary/15" : "hover:bg-hover data-[state=open]:bg-hover",
+            selected ? (dim ? "bg-active" : "bg-primary/15") : "hover:bg-hover data-[state=open]:bg-hover",
           )}
         >
           {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
           {sel.kind === "conflict" ? (
             <GitMerge className="size-3.5 shrink-0 text-conflict" />
           ) : (
-          <Tip label={sel.kind === "staged" ? "Unstage" : viewed ? "Mark as not viewed" : "Mark as viewed"}>
+          <Tip label={checkLabel}>
             <button
               role="checkbox"
               tabIndex={tabStop ? undefined : -1}

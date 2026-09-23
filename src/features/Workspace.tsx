@@ -204,31 +204,31 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     [status, viewedMap],
   );
 
-  const toggleViewed = useCallback(
-    (sel: Selection) => {
-      const f = currentFile(status, sel);
-      if (!f) return;
-      if (sel.kind === "staged") {
-        // Unchecking a staged file takes it back out of the commit; the tab follows it to Changes.
-        // Drop the mark it had there before staging, or it would come back already checked.
-        setViewedMap((m) => {
-          const next = new Map(m);
-          next.delete(`unstaged:${f.path}`);
-          return next;
-        });
-        api.unstage([f.path]).catch((e) => toast("error", "Unstage failed", errorMessage(e))).finally(() => repo.refresh(false));
-        return;
-      }
-      const key = `${sel.kind}:${f.path}`;
+  const setViewed = useCallback(
+    (sels: Selection[], on: boolean) => {
+      const files = sels.flatMap((sel) => {
+        const f = currentFile(status, sel);
+        return f ? [{ kind: sel.kind, f }] : [];
+      });
+      // Unchecking a staged file takes it back out of the commit; the tab follows it to Changes.
+      const unstage = on ? [] : files.filter((x) => x.kind === "staged").map((x) => x.f.path);
       setViewedMap((m) => {
         const next = new Map(m);
-        if (next.get(key) === fileSig(f)) next.delete(key);
-        else next.set(key, fileSig(f));
+        for (const { kind, f } of files) {
+          // Drop the mark it had in Changes before staging, or it would come back already checked.
+          if (kind === "staged") next.delete(`unstaged:${f.path}`);
+          else if (on) next.set(`${kind}:${f.path}`, fileSig(f));
+          else next.delete(`${kind}:${f.path}`);
+        }
         return next;
       });
+      // One call for all of them: parallel git calls would fight over index.lock.
+      if (unstage.length) api.unstage(unstage).catch((e) => toast("error", "Unstage failed", errorMessage(e))).finally(() => repo.refresh(false));
     },
     [status, repo.refresh],
   );
+
+  const toggleViewed = useCallback((sel: Selection) => setViewed([sel], !viewed(sel)), [setViewed, viewed]);
 
   const changes = useMemo(() => (status ? changeList(status) : []), [status]);
   const remoteNames = useMemo(() => new Set(repo.branches.filter((b) => b.remote).map((b) => b.name)), [repo.branches]);
@@ -337,7 +337,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
               </div>
               <div className="min-h-0 flex-1">
                 {listTab === "changes" && status && (
-                  <ChangesPanel status={status} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} toggleViewed={toggleViewed} onRevealInExplorer={revealInExplorer} />
+                  <ChangesPanel status={status} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} setViewed={setViewed} onRevealInExplorer={revealInExplorer} />
                 )}
                 {listTab === "pulls" && (
                   <PullsPanel
