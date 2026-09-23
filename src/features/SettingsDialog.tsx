@@ -71,7 +71,7 @@ export function SettingsDialog() {
   const current = SECTIONS.find((s) => s.id === section);
 
   const resetAll = async () => {
-    const ok = await ask("Reset every setting, including keyboard shortcuts, to its default?", { title: "Reset settings", kind: "warning", okLabel: "Reset" });
+    const ok = await ask("Reset every setting, including keyboard shortcuts, to its default? Your own Open in apps and the repositories you sign off in stay.", { title: "Reset settings", kind: "warning", okLabel: "Reset" });
     if (ok) resetSettings();
   };
 
