@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { bindingsFor, type CommandId, commandFor, eventChord, formatChord, runsWhileTyping } from "./commands";
+import { bindingsFor, type CommandId, commandFor, eventChord, formatChord, runsWhileTyping, takenFromTerminal } from "./commands";
 import { getSettings, useSettings } from "./settings";
 
 export { bindingsFor, COMMANDS, type Command, type CommandId, eventChord, formatChord, RESERVED } from "./commands";
@@ -90,11 +90,11 @@ function dispatch(e: KeyboardEvent) {
 window.addEventListener("keydown", (e) => inCodeView(e) && dispatch(e), { capture: true });
 window.addEventListener("keydown", (e) => !inCodeView(e) && dispatch(e));
 
-/** A ⌃ chord of the app's (⌃Tab, ⌃1) that the terminal must not turn into a control code for the shell. */
+/** A Ctrl chord of the app's (⌃Tab, ⌃1) that the terminal must not turn into a control code for the shell. */
 export function appTakesFromTerminal(e: KeyboardEvent) {
   const chord = e.ctrlKey ? eventChord(e) : null;
   const command = chord && commandFor(chord, getSettings().keybindings);
-  return !!command && runsWhileTyping(chord, command) && hasHandler(command.id);
+  return !!command && takenFromTerminal(chord, command) && hasHandler(command.id);
 }
 
 /** Registers handlers for commands while the component is mounted; always calls the latest closures. A command left undefined is unavailable (greyed out in the menu). */

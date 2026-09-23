@@ -1,9 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Command, COMMANDS, canonical, cleanOverrides, commandFor, eventChord, type KeyLike, runsWhileTyping } from "./commands.ts";
+import {
+  bindingsFor,
+  type Command,
+  COMMANDS,
+  canonical,
+  cleanOverrides,
+  commandFor,
+  eventChord,
+  formatChordFor,
+  type KeyLike,
+  menuAccelerator,
+  runsWhileTyping,
+  takenFromTerminal,
+} from "./commands.ts";
 
-const press = (key: string, code: string, mods: Partial<Omit<KeyLike, "key" | "code">> = {}): string | null =>
-  eventChord({ key, code, altKey: false, shiftKey: false, metaKey: false, ctrlKey: false, ...mods });
+const press = (key: string, code: string, mods: Partial<Omit<KeyLike, "key" | "code">> = {}, mac = true): string | null =>
+  eventChord({ key, code, altKey: false, shiftKey: false, metaKey: false, ctrlKey: false, ...mods }, mac);
 
 test("US layout", () => {
   assert.equal(press("b", "KeyB", { metaKey: true }), "cmd+b");
@@ -76,7 +89,7 @@ test("the first listed command wins a shared chord", () => {
 });
 
 test("⌘1–⌘9 pick tabs; the git panel's views moved to ⌃1–⌃4", () => {
-  const run = (chord: string, overrides = {}) => commandFor(chord, overrides)?.id;
+  const run = (chord: string, overrides = {}) => commandFor(chord, overrides, true)?.id;
   assert.equal(run("cmd+1"), "tab.goto1");
   assert.equal(run("cmd+8"), "tab.goto8");
   assert.equal(run("cmd+9"), "tab.last");
@@ -89,8 +102,27 @@ test("⌘1–⌘9 pick tabs; the git panel's views moved to ⌃1–⌃4", () => 
   assert.equal(run("ctrl+1", { "view.changes": ["alt+cmd+1"] }), undefined);
 });
 
-test("what still runs while typing in a text field or the terminal", () => {
-  const typing = (chord: string, id: string) => runsWhileTyping(chord, COMMANDS.find((c) => c.id === id) as Command);
+test("off macOS: views on Alt+1–4, tabs on Ctrl+Tab (the Super key is the OS's)", () => {
+  const run = (chord: string, overrides = {}) => commandFor(chord, overrides, false)?.id;
+  assert.equal(run("cmd+1"), "tab.goto1", "Ctrl+1");
+  assert.equal(run("alt+1"), "view.changes");
+  assert.equal(run("alt+4"), "view.issues");
+  assert.equal(run("ctrl+1"), undefined, "Super+1");
+  assert.equal(run("cmd+tab"), "tab.next");
+  assert.equal(run("shift+cmd+tab"), "tab.prev");
+  assert.equal(run("shift+cmd+]"), "tab.next");
+  assert.equal(run("ctrl+tab"), undefined, "Super+Tab");
+  // Ctrl+← / Ctrl+→ move by word, as everywhere there.
+  assert.equal(run("cmd+right"), undefined);
+  assert.equal(press("Tab", "Tab", { ctrlKey: true }, false), "cmd+tab");
+  assert.deepEqual(bindingsFor("view.changes", {}, false), ["alt+1"]);
+  assert.deepEqual(bindingsFor("view.changes", { "view.changes": ["cmd+1"] }, false), ["cmd+1"]);
+});
+
+const byId = (id: string) => COMMANDS.find((c) => c.id === id) as Command;
+
+test("what still runs while typing in a text field or the terminal (macOS)", () => {
+  const typing = (chord: string, id: string) => runsWhileTyping(chord, byId(id), true);
   // ⌘←/⌘→ move the cursor (start/end of line in the terminal); the other tab keys work everywhere.
   assert.equal(typing("cmd+right", "tab.next"), false);
   assert.equal(typing("cmd+left", "tab.prev"), false);
@@ -106,4 +138,40 @@ test("what still runs while typing in a text field or the terminal", () => {
   assert.equal(typing("f7", "diff.nextChange"), true);
   // Text fields keep ⌘Z whatever it's bound to.
   assert.equal(typing("cmd+z", "git.undo"), false);
+});
+
+test("what still runs while typing (elsewhere: cmd is the physical Ctrl)", () => {
+  const typing = (chord: string, id: string) => runsWhileTyping(chord, byId(id), false);
+  assert.equal(typing("cmd+tab", "tab.next"), true);
+  assert.equal(typing("cmd+1", "tab.goto1"), true);
+  assert.equal(typing("cmd+b", "view.toggleGitPanel"), true);
+  assert.equal(typing("cmd+right", "tab.next"), false, "Ctrl+→ moves by word");
+  assert.equal(typing("alt+1", "view.changes"), false, "Alt types characters on some layouts");
+  assert.equal(typing("cmd+z", "git.undo"), false);
+});
+
+test("the terminal hands the app its Ctrl chords, except Ctrl+letter", () => {
+  const taken = (chord: string, id: string, mac: boolean) => takenFromTerminal(chord, byId(id), mac);
+  assert.equal(taken("ctrl+tab", "tab.next", true), true);
+  assert.equal(taken("ctrl+1", "view.changes", true), true);
+  assert.equal(taken("ctrl+a", "view.changes", true), false, "⌃A is the shell's");
+  // ⌘ chords reach the app anyway on macOS; this is only about ⌃.
+  assert.equal(taken("cmd+1", "tab.goto1", true), false);
+  assert.equal(taken("cmd+tab", "tab.next", false), true, "Ctrl+Tab");
+  assert.equal(taken("cmd+1", "tab.goto1", false), true, "Ctrl+1");
+  assert.equal(taken("cmd+b", "view.toggleGitPanel", false), false, "Ctrl+B is the shell's (tmux)");
+  assert.equal(taken("cmd+left", "tab.prev", false), false, "Ctrl+← moves by word");
+  assert.equal(taken("alt+1", "view.changes", false), false);
+});
+
+test("off macOS, cmd is Ctrl and ctrl is the Windows / Super key", () => {
+  assert.equal(press("b", "KeyB", { ctrlKey: true }, false), "cmd+b");
+  assert.equal(press("E", "KeyE", { ctrlKey: true, shiftKey: true }, false), "shift+cmd+e");
+  assert.equal(press("b", "KeyB", { metaKey: true }, false), "ctrl+b");
+  assert.equal(menuAccelerator("shift+cmd+e", false), "shift+ctrl+e");
+  assert.equal(menuAccelerator("ctrl+enter", false), "super+enter");
+  assert.equal(menuAccelerator("shift+cmd+e", true), "shift+cmd+e");
+  assert.equal(formatChordFor("shift+cmd+e", false), "Ctrl+Shift+E");
+  assert.equal(formatChordFor("alt+down", false), "Alt+↓");
+  assert.equal(formatChordFor("shift+cmd+e", true), "⇧⌘E");
 });

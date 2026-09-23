@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
-import { bindingsFor, COMMANDS, eventChord, isCommandId } from "./commands";
+import { bindingsFor, COMMANDS, eventChord, isCommandId, menuAccelerator } from "./commands";
 import { type Action, hasHandler, MENU_ACTIONS, onHandlersChange, runCommand } from "./keybindings";
 import { getSettings, type Settings, subscribeSettings } from "./settings";
 import { folderName } from "./worktrees";
@@ -34,9 +34,10 @@ function send() {
   const s = getSettings();
   const items: Record<string, unknown> = {};
   for (const id of ITEMS) {
+    const chord = isCommandId(id) ? bindingsFor(id, s.keybindings)[0] : FIXED_KEYS[id];
     const state = JSON.stringify({
       enabled: hasHandler(id),
-      accelerator: (isCommandId(id) ? bindingsFor(id, s.keybindings)[0] : FIXED_KEYS[id]) ?? null,
+      accelerator: chord ? menuAccelerator(chord) : null,
       checked: CHECKED[id]?.(s),
     });
     if (sent.get(id) === state) continue;

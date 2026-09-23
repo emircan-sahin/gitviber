@@ -7,7 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useSyncExternalStore } from "react";
 import { errorMessage } from "./api";
 import { appTakesFromTerminal } from "./keybindings";
-import { CODE_FONTS, getSettings, subscribeSettings } from "./settings";
+import { codeFontFamily, getSettings, subscribeSettings } from "./settings";
 
 /**
  * Terminals live here, not in React: switching worktrees remounts the whole workspace, and
@@ -177,7 +177,7 @@ function terminalOptions(): ITerminalOptions {
   const css = getComputedStyle(document.documentElement);
   const v = (name: string) => css.getPropertyValue(name).trim();
   return {
-    fontFamily: CODE_FONTS[s.codeFont],
+    fontFamily: codeFontFamily(s),
     fontSize: s.codeFontSize,
     // The code view's 1.6 is for reading; TUIs draw box lines that need to touch.
     lineHeight: 1.2,

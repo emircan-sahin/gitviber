@@ -2,30 +2,51 @@
 //! user's config, hooks, credential helpers and signing all behave exactly like the
 //! terminal — GitViber never keeps state of its own inside the repo.
 
-use serde::Serialize;
-use std::collections::HashMap;
+use crate::network::{self, Net};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 const MAX_TEXT_BYTES: usize = 8 * 1024 * 1024;
 
-/// Apps launched from Finder get a bare PATH, which hides Homebrew git and the
-/// credential helpers / ssh that live next to it.
-pub(crate) fn search_path() -> &'static str {
-    static PATH: OnceLock<String> = OnceLock::new();
-    PATH.get_or_init(|| {
-        let current = std::env::var("PATH").unwrap_or_default();
-        let mut parts: Vec<&str> = vec!["/opt/homebrew/bin", "/usr/local/bin"];
-        parts.extend(current.split(':').filter(|p| !p.is_empty()));
-        parts.dedup();
-        parts.join(":")
-    })
+/// Apps launched from Finder get a bare PATH, which hides Homebrew git, the credential
+/// helpers / ssh next to it, and whatever hooks call (node from nvm and the like). The login
+/// shell's PATH fills that in once it has answered (shell.rs); until then, Homebrew's.
+pub(crate) fn search_path() -> &'static OsStr {
+    static FALLBACK: OnceLock<OsString> = OnceLock::new();
+    static FULL: OnceLock<OsString> = OnceLock::new();
+    let current = || std::env::var_os("PATH").unwrap_or_default();
+    match crate::shell::login_path() {
+        Some(login) => FULL.get_or_init(|| merge_paths(Some(login), &current())),
+        None => FALLBACK.get_or_init(|| merge_paths(None, &current())),
+    }
 }
 
-fn command(repo: &Path, args: &[&str]) -> Command {
+/// The login shell's entries first (its order decides which node a hook gets), then
+/// Homebrew's, then the app's own; each directory once.
+pub(crate) fn merge_paths(login: Option<&OsStr>, current: &OsStr) -> OsString {
+    let homebrew: &[&str] = if cfg!(target_os = "macos") {
+        &["/opt/homebrew/bin", "/usr/local/bin"]
+    } else {
+        &[]
+    };
+    let mut seen = HashSet::new();
+    let dirs: Vec<PathBuf> = login
+        .into_iter()
+        .flat_map(std::env::split_paths)
+        .chain(homebrew.iter().map(PathBuf::from))
+        .chain(std::env::split_paths(current))
+        .filter(|d| !d.as_os_str().is_empty() && seen.insert(d.clone()))
+        .collect();
+    std::env::join_paths(dirs).unwrap_or_else(|_| current.to_os_string())
+}
+
+pub(crate) fn command(repo: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     cmd.current_dir(repo)
         .args(args)
@@ -133,17 +154,12 @@ pub(crate) fn run_with(
     )
 }
 
-/// Network commands can stall on a dead connection; don't let them spin forever.
-const NETWORK_TIMEOUT: Duration = Duration::from_secs(300);
-
-fn run_network(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
-    exec(
-        command(repo, args),
-        &format!("git {}", args[0]),
-        &[],
-        None,
-        Some(NETWORK_TIMEOUT),
-    )
+/// Fetch, pull, push and clone: with progress, stoppable, and timed out only when silent.
+fn run_network(repo: &Path, args: &[&str], net: &Net) -> Result<Vec<u8>, String> {
+    let mut args = args.to_vec();
+    // Without a terminal git reports no progress unless asked.
+    args.insert(1, "--progress");
+    network::run(command(repo, &args), &format!("git {}", args[0]), net)
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -158,10 +174,149 @@ fn has_head(repo: &Path) -> bool {
     run(repo, &["rev-parse", "--verify", "-q", "HEAD"]).is_ok()
 }
 
+/// toplevel's error for an existing folder outside any repository; the page offers `git init`.
+pub const NOT_A_REPO: &str = "git:not-a-repo";
+
+/// Only git's "not a git repository" means that; anything else (git missing, a
+/// `safe.directory` refusal, a broken config) is shown in git's own words.
 pub fn toplevel(path: &Path) -> Result<String, String> {
+    if !path.is_dir() {
+        return Err(format!("Folder not found: {}", path.display()));
+    }
     run_text(path, &["rev-parse", "--show-toplevel"])
         .map(|s| s.trim().to_string())
-        .map_err(|_| "This folder is not inside a git repository.".to_string())
+        .map_err(|e| {
+            // Not "fatal: not a git repository: <path>", which is a .git file gone bad.
+            if e.contains("not a git repository (or any") {
+                NOT_A_REPO.to_string()
+            } else {
+                e
+            }
+        })
+}
+
+/// The oldest git that works: `worktree list --porcelain -z`, which every repo open runs
+/// (main_worktree), arrived in 2.36. switch/restore need 2.23.
+pub const MIN_VERSION: (u32, u32) = (2, 36);
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GitInfo {
+    /// "ok", "old", "missing" (git can't run), or "tools": macOS's /usr/bin/git stub
+    /// without the Command Line Tools behind it.
+    pub state: &'static str,
+    /// `git --version` without its prefix, e.g. "2.39.5 (Apple Git-154)".
+    pub version: Option<String>,
+    /// Why it can't run, in the OS's or xcrun's words.
+    pub detail: Option<String>,
+    pub minimum: String,
+}
+
+pub fn check_install() -> GitInfo {
+    let out = Command::new("git")
+        .arg("--version")
+        .env("PATH", search_path())
+        .stdin(Stdio::null())
+        .output();
+    classify_install(out.map_err(|e| format!("could not run git: {e}")).map(|o| {
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            String::from_utf8_lossy(&o.stderr).trim().to_string(),
+        )
+    }))
+}
+
+/// `ran`: whether `git --version` succeeded, with its stdout and stderr.
+fn classify_install(ran: Result<(bool, String, String), String>) -> GitInfo {
+    let info = |state, version, detail| GitInfo {
+        state,
+        version,
+        detail,
+        minimum: format!("{}.{}", MIN_VERSION.0, MIN_VERSION.1),
+    };
+    match ran {
+        Err(e) => info("missing", None, Some(e)),
+        // The stub asks xcode-select to install the tools and fails until they're there.
+        Ok((false, _, err)) if err.contains("xcrun: error") || err.contains("xcode-select") => {
+            info("tools", None, Some(err))
+        }
+        Ok((false, out, err)) => info(
+            "missing",
+            None,
+            Some(if err.is_empty() { out } else { err }),
+        ),
+        Ok((true, out, _)) => {
+            let version = out.trim_start_matches("git version ").to_string();
+            let old = parse_version(&version).is_some_and(|v| v < MIN_VERSION);
+            info(if old { "old" } else { "ok" }, Some(version), None)
+        }
+    }
+}
+
+/// Major and minor of "2.39.5 (Apple Git-154)" or "2.45.1.windows.1".
+fn parse_version(v: &str) -> Option<(u32, u32)> {
+    let mut parts = v.split(|c: char| !c.is_ascii_digit());
+    Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+}
+
+/// Opens macOS's installer for the Command Line Tools, which bring git.
+pub fn install_tools() -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Err("Install git with your system's package manager.".into());
+    }
+    let mut cmd = Command::new("xcode-select");
+    cmd.arg("--install")
+        .env("PATH", search_path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    exec(
+        cmd,
+        "xcode-select",
+        &[],
+        None,
+        Some(Duration::from_secs(30)),
+    )
+    .map(|_| ())
+}
+
+#[derive(Serialize, Clone, Default)]
+pub struct Identity {
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// Who commits here, as git resolves it in this repo (so `includeIf` sections apply).
+pub fn identity(repo: &Path) -> Identity {
+    let get = |key| {
+        run_text(repo, &["config", "--get", key])
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    Identity {
+        name: get("user.name"),
+        email: get("user.email"),
+    }
+}
+
+/// Sets the given parts of the user's global identity (~/.gitconfig), never the repo's.
+pub fn set_global_identity(
+    repo: &Path,
+    name: Option<&str>,
+    email: Option<&str>,
+) -> Result<(), String> {
+    for (key, value) in [("user.name", name), ("user.email", email)] {
+        let Some(value) = value.map(str::trim) else {
+            continue;
+        };
+        if value.is_empty() || value.contains(['\n', '\r']) {
+            return Err(format!("{key} must be one line of text"));
+        }
+        run(repo, &["config", "--global", key, value])?;
+    }
+    Ok(())
 }
 
 fn validate_rev(rev: &str) -> Result<(), String> {
@@ -1028,7 +1183,7 @@ pub fn fetch_objects(repo: &Path, remote: &str, refspecs: &[String]) -> Result<(
         remote,
     ];
     args.extend(refspecs.iter().map(String::as_str));
-    run_network(repo, &args).map(|_| ())
+    run_network(repo, &args, &Net::default()).map(|_| ())
 }
 
 pub fn remote_url(repo: &Path, remote: &str) -> Option<String> {
@@ -1680,7 +1835,7 @@ pub fn delete_branches(repo: &Path, names: &[String], force: bool) -> Result<(),
 
 /// Deletes "origin/feat" on origin. Refuses the remote's default branch: hosts either reject
 /// it or let it go and leave every clone without one.
-pub fn delete_remote_branch(repo: &Path, name: &str) -> Result<(), String> {
+pub fn delete_remote_branch(repo: &Path, name: &str, net: &Net) -> Result<(), String> {
     let remotes = run_text(repo, &["remote"])?;
     let remote = remotes
         .lines()
@@ -1696,7 +1851,7 @@ pub fn delete_remote_branch(repo: &Path, name: &str) -> Result<(), String> {
         return Err(format!("{name} is {remote}'s default branch"));
     }
     let target = format!("refs/heads/{branch}");
-    run_network(repo, &["push", remote, "--delete", &target]).map(|_| ())
+    run_network(repo, &["push", remote, "--delete", &target], net).map(|_| ())
 }
 
 pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String> {
@@ -1823,24 +1978,155 @@ pub fn discard(repo: &Path, paths: &[String]) -> Result<(), String> {
     run(repo, &with_paths(vec!["restore", "--worktree"], paths)).map(|_| ())
 }
 
-pub fn commit(repo: &Path, message: &str, amend: bool) -> Result<(), String> {
-    if amend && message.trim().is_empty() {
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct CommitOptions {
+    pub amend: bool,
+    /// `--signoff`: a Signed-off-by trailer for the committer.
+    pub sign_off: bool,
+    /// `--no-verify`: skips the pre-commit and commit-msg hooks.
+    pub no_verify: bool,
+    /// "Name <email>" each, added as Co-authored-by trailers.
+    pub co_authors: Vec<String>,
+}
+
+pub fn commit(repo: &Path, message: &str, opts: &CommitOptions) -> Result<(), String> {
+    // git formats and places the trailers, next to any the message already has.
+    let trailers = opts
+        .co_authors
+        .iter()
+        .map(|a| match a.trim() {
+            a if a.is_empty() || a.chars().any(char::is_control) => {
+                Err(format!("invalid co-author: {a:?}"))
+            }
+            a => Ok(format!("--trailer=Co-authored-by: {a}")),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut args = vec!["commit"];
+    for (on, flag) in [
+        (opts.amend, "--amend"),
+        (opts.sign_off, "--signoff"),
+        (opts.no_verify, "--no-verify"),
+    ] {
+        if on {
+            args.push(flag);
+        }
+    }
+    args.extend(trailers.iter().map(String::as_str));
+    if opts.amend && message.trim().is_empty() {
         // Amending with no new message keeps the old one.
-        return run(repo, &["commit", "--amend", "--no-edit"]).map(|_| ());
+        args.push("--no-edit");
+        return run(repo, &args).map(|_| ());
     }
     // Message goes through stdin so it is never parsed as arguments.
-    let mut args = vec!["commit", "-F", "-"];
-    if amend {
-        args.push("--amend");
-    }
+    args.extend(["-F", "-"]);
     run_with(repo, &args, &[], Some(message.as_bytes())).map(|_| ())
+}
+
+/// `commit.template`'s text as git would start the message: comment lines stripped.
+/// None when it isn't set, or can't be read (git reports that itself when it commits).
+pub fn commit_template(repo: &Path) -> Option<String> {
+    let path = run_text(repo, &["config", "--path", "--get", "commit.template"]).ok()?;
+    // A relative path is relative to where git runs, the worktree root.
+    let bytes = std::fs::read(repo.join(path.trim())).ok()?;
+    let text = run_with(repo, &["stripspace", "--strip-comments"], &[], Some(&bytes)).ok()?;
+    let text = String::from_utf8_lossy(&text).trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+/// Who to suggest as a co-author: recent authors and co-authors, newest first, minus the user.
+pub fn recent_authors(repo: &Path) -> Result<Vec<String>, String> {
+    if !has_head(repo) {
+        return Ok(vec![]);
+    }
+    let me = run_text(repo, &["config", "user.email"]).unwrap_or_default();
+    let me = format!("<{}>", me.trim().to_lowercase());
+    let out = run_text(
+        repo,
+        &[
+            "log",
+            "-n500",
+            "--format=%aN <%aE>%n%(trailers:key=Co-authored-by,valueonly,unfold)",
+            "HEAD",
+            "--",
+        ],
+    )?;
+    let mut seen = std::collections::HashSet::new();
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|a| a.ends_with('>') && !a.to_lowercase().ends_with(&me))
+        .filter(|a| seen.insert(a.to_lowercase()))
+        .take(200)
+        .map(str::to_string)
+        .collect())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetails {
+    /// `%G?`: G good, U good but of unknown validity, X/Y good but expired signature/key,
+    /// R good but revoked key, B bad, E can't be checked (e.g. missing key), N none.
+    pub signature: String,
+    pub signer: String,
+    /// `commit.gpgSign` is on, so an unsigned commit is worth pointing out.
+    pub sign_expected: bool,
+    /// Key and value of each trailer (Co-authored-by, Signed-off-by…), in order.
+    pub trailers: Vec<(String, String)>,
+}
+
+/// What the commit header shows beyond the log: verifying a signature runs gpg or ssh, so
+/// it's asked for one commit at a time.
+pub fn commit_details(repo: &Path, sha: &str) -> Result<CommitDetails, String> {
+    validate_rev(sha)?;
+    let out = exec(
+        command(
+            repo,
+            &[
+                "log",
+                "-1",
+                "--format=%G?%x1f%GS%x1f%(trailers:only,unfold)",
+                sha,
+                "--",
+            ],
+        ),
+        "git log",
+        &[],
+        None,
+        // A verifier waiting on a key server shouldn't leave the header loading for good.
+        Some(Duration::from_secs(10)),
+    )?;
+    let out = String::from_utf8_lossy(&out);
+    let mut f = out.splitn(3, '\x1f');
+    let mut next = || f.next().unwrap_or_default().trim().to_string();
+    let (mut signature, signer, trailers) = (next(), next(), next());
+    // An ssh signature with no gpg.ssh.allowedSignersFile reads as N, as if there were none.
+    if signature == "N" {
+        let raw = run_text(repo, &["cat-file", "commit", sha])?;
+        let header = raw.split("\n\n").next().unwrap_or_default();
+        if header.lines().any(|l| l.starts_with("gpgsig")) {
+            signature = "E".into();
+        }
+    }
+    let sign_expected = run_text(repo, &["config", "--type=bool", "commit.gpgSign"])
+        .is_ok_and(|v| v.trim() == "true");
+    Ok(CommitDetails {
+        signature,
+        signer,
+        sign_expected,
+        trailers: trailers
+            .lines()
+            .filter_map(|l| l.split_once(':'))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            .collect(),
+    })
 }
 
 /// `force`: after a rebase or amend the remote has the branch's old commits; replace them,
 /// but only if it still has what was last fetched (`--force-with-lease`), so a push made
 /// meanwhile by someone else is refused rather than lost.
 /// A branch without an upstream is published (`-u`) to `remote`, or else to `publish_remote`.
-pub fn push(repo: &Path, force: bool, remote: Option<&str>) -> Result<(), String> {
+pub fn push(repo: &Path, force: bool, remote: Option<&str>, net: &Net) -> Result<(), String> {
     let has_upstream = run(repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
     let mut args = vec!["push"];
     if force {
@@ -1855,7 +2141,7 @@ pub fn push(repo: &Path, force: bool, remote: Option<&str>) -> Result<(), String
         };
         args.extend(["-u", &target, "HEAD"]);
     }
-    run_network(repo, &args).map(|_| ())
+    run_network(repo, &args, net).map(|_| ())
 }
 
 pub fn remotes(repo: &Path) -> Vec<String> {
@@ -1896,20 +2182,35 @@ pub fn publish_remote(repo: &Path) -> Result<String, String> {
 }
 
 /// `mode`: "ff" (fast-forward only), "merge" or "rebase". Returns true if it stopped on conflicts.
-pub fn pull(repo: &Path, mode: &str) -> Result<bool, String> {
+pub fn pull(repo: &Path, mode: &str, net: &Net) -> Result<bool, String> {
     ensure_idle(repo)?;
     let flag = match mode {
         "merge" => "--no-rebase",
         "rebase" => "--rebase",
         _ => "--ff-only",
     };
-    stoppable(repo, run_network(repo, &["pull", "--no-edit", flag]))
+    stoppable(repo, run_network(repo, &["pull", "--no-edit", flag], net))
 }
 
 /// Every remote: a plain fetch takes only the current branch's (on a fork's dev tracking
 /// upstream/dev, upstream alone), leaving origin's branches stale.
-pub fn fetch(repo: &Path) -> Result<(), String> {
-    run_network(repo, &["fetch", "--all", "--prune"]).map(|_| ())
+pub fn fetch(repo: &Path, net: &Net) -> Result<(), String> {
+    run_network(repo, &["fetch", "--all", "--prune"], net).map(|_| ())
+}
+
+/// When this repo last fetched (FETCH_HEAD's mtime, Unix seconds); None if it never has.
+pub fn last_fetch(repo: &Path) -> Option<u64> {
+    let path = run_text(repo, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
+    let modified = std::fs::metadata(repo.join(path.trim()))
+        .ok()?
+        .modified()
+        .ok()?;
+    Some(
+        modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_secs(),
+    )
 }
 
 /// Fetches one configured remote, e.g. a fork's upstream.
@@ -1917,7 +2218,50 @@ pub fn fetch_remote(repo: &Path, name: &str) -> Result<(), String> {
     if remote_url(repo, name).is_none() {
         return Err(format!("no remote named {name}"));
     }
-    run_network(repo, &["fetch", "--prune", name]).map(|_| ())
+    run_network(repo, &["fetch", "--prune", name], &Net::default()).map(|_| ())
+}
+
+/// Clones `url` into `parent/name` and returns that path. Never into a folder that already
+/// holds something: git would refuse too, but only after the user waited for the network.
+pub fn clone(parent: &Path, url: &str, name: &str, net: &Net) -> Result<String, String> {
+    let url = url.trim();
+    if url.is_empty() {
+        return Err("Enter a repository URL.".into());
+    }
+    if name.is_empty() || name == "." || name == ".." || name.contains('/') {
+        return Err(format!("invalid folder name: {name}"));
+    }
+    if !parent.is_dir() {
+        return Err(format!("folder not found: {}", parent.display()));
+    }
+    let target = parent.join(name);
+    let empty = std::fs::read_dir(&target).is_ok_and(|mut d| d.next().is_none());
+    if target.exists() && !empty {
+        return Err(format!(
+            "{} already exists and isn't empty. Choose another folder name.",
+            target.display()
+        ));
+    }
+    let dest = target.to_string_lossy();
+    run_network(parent, &["clone", "--", url, &dest], net)?;
+    Ok(dest.into_owned())
+}
+
+/// Makes `dir` a new repository. Its first branch is the user's init.defaultBranch, else main.
+pub fn init(dir: &Path) -> Result<(), String> {
+    if !dir.is_dir() {
+        return Err(format!("folder not found: {}", dir.display()));
+    }
+    if toplevel(dir).is_ok() {
+        return Err(format!("{} is already in a git repository", dir.display()));
+    }
+    let configured = run(dir, &["config", "--get", "init.defaultBranch"]).is_ok();
+    let args: &[&str] = if configured {
+        &["init", "-q"]
+    } else {
+        &["init", "-q", "-b", "main"]
+    };
+    run(dir, args).map(|_| ())
 }
 
 /// Returns the subset of `paths` that .gitignore excludes.
@@ -1967,7 +2311,7 @@ mod tests {
         fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
         fs::write(repo.join("old name.txt"), "rename me\n").unwrap();
         stage(&repo, &["a.txt".into(), "old name.txt".into()]).unwrap();
-        commit(&repo, "first\n\nbody line", false).unwrap();
+        commit(&repo, "first\n\nbody line", &CommitOptions::default()).unwrap();
 
         fs::write(repo.join("a.txt"), "one\nTWO\nthree\n").unwrap();
         fs::rename(repo.join("old name.txt"), repo.join("new name.txt")).unwrap();
@@ -2016,7 +2360,7 @@ mod tests {
             ("rename me\n", "rename me\n")
         );
 
-        commit(&repo, "second", false).unwrap();
+        commit(&repo, "second", &CommitOptions::default()).unwrap();
         let commits = log(&repo, None, 0, 10).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[1].body, "body line");
@@ -2065,7 +2409,7 @@ mod tests {
     fn commit_file(repo: &Path, path: &str, content: &str, msg: &str) {
         fs::write(repo.join(path), content).unwrap();
         stage(repo, &[path.into()]).unwrap();
-        commit(repo, msg, false).unwrap();
+        commit(repo, msg, &CommitOptions::default()).unwrap();
     }
 
     #[test]
@@ -2076,7 +2420,7 @@ mod tests {
         switch_branch(&repo, "feature", true).unwrap();
         commit_file(&repo, "a.txt", "feature\n", "feature edit");
         run(&repo, &["rm", "-q", "gone.txt"]).unwrap();
-        commit(&repo, "feature deletes gone", false).unwrap();
+        commit(&repo, "feature deletes gone", &CommitOptions::default()).unwrap();
         switch_branch(&repo, "main", false).unwrap();
         commit_file(&repo, "a.txt", "main\n", "main edit");
         commit_file(&repo, "gone.txt", "edited on main\n", "main edits gone");
@@ -2148,5 +2492,61 @@ mod tests {
         unstage(&repo, &["x".into()]).unwrap();
         assert_eq!(status(&repo).unwrap().staged.len(), 0);
         let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn login_path_goes_first_and_each_dir_once() {
+        let merged = merge_paths(
+            Some(OsStr::new("/nvm/bin:/opt/homebrew/bin:/usr/bin")),
+            OsStr::new("/usr/bin:/bin::/usr/bin"),
+        );
+        assert_eq!(
+            merged,
+            "/nvm/bin:/opt/homebrew/bin:/usr/bin:/usr/local/bin:/bin"
+        );
+        assert_eq!(
+            merge_paths(None, OsStr::new("/usr/bin:/bin")),
+            "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+        );
+    }
+
+    #[test]
+    fn install_states() {
+        let ran = |ok, out: &str, err: &str| classify_install(Ok((ok, out.into(), err.into())));
+        let ok = ran(true, "git version 2.39.5 (Apple Git-154)", "");
+        assert_eq!(
+            (ok.state, ok.version.as_deref()),
+            ("ok", Some("2.39.5 (Apple Git-154)"))
+        );
+        assert_eq!(ran(true, "git version 2.45.1.windows.1", "").state, "ok");
+        assert_eq!(ran(true, "git version 2.35.8", "").state, "old");
+        assert_eq!(ran(true, "git version 1.9.5", "").state, "old");
+        let stub = ran(
+            false,
+            "",
+            "xcrun: error: invalid active developer path (/Library/Developer/CommandLineTools), missing xcrun at: /Library/Developer/CommandLineTools/usr/bin/xcrun",
+        );
+        assert_eq!(stub.state, "tools");
+        assert_eq!(ran(false, "", "boom").state, "missing");
+        assert_eq!(
+            classify_install(Err("could not run git".into())).state,
+            "missing"
+        );
+    }
+
+    #[test]
+    fn toplevel_tells_no_repo_from_git_failing() {
+        let dir = std::env::temp_dir().join(format!("gitviber-test-norepo-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let err = toplevel(&dir.join("missing")).unwrap_err();
+        assert!(err.starts_with("Folder not found"), "{err}");
+        assert_eq!(toplevel(&dir).unwrap_err(), NOT_A_REPO);
+        // A .git file pointing nowhere is a broken repo, and git's message says where.
+        fs::write(dir.join(".git"), "gitdir: /nowhere/at/all\n").unwrap();
+        let err = toplevel(&dir).unwrap_err();
+        assert!(err.contains("/nowhere/at/all"), "{err}");
+        let _ = fs::remove_dir_all(&dir);
     }
 }

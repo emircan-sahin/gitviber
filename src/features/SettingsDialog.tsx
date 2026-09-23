@@ -1,22 +1,29 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Code2, GitCompareArrows, Keyboard, Palette, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
-import { useRef, useState, useSyncExternalStore } from "react";
+import { Code2, GitBranch, GitCompareArrows, Keyboard, Palette, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
+import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
-import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventChord, formatChord, RESERVED } from "@/lib/commands";
+import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventChord, formatChord, IS_MAC, RESERVED } from "@/lib/commands";
 import {
   type Appearance,
   CODE_FONTS,
   type CodeFont,
+  cleanFontName,
+  codeFontFamily,
   DEFAULT_FONT_SIZE,
+  FETCH_INTERVALS,
   LIGHT_SYNTAX_THEMES,
   type LightSyntaxTheme,
   resetSettings,
+  type Settings,
   SYNTAX_THEMES,
   type SyntaxTheme,
+  TRANSLUCENCY,
+  UI_FONTS,
   UI_SCALES,
+  type UiFont,
   updateSettings,
   useSettings,
 } from "@/lib/settings";
@@ -26,6 +33,7 @@ const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "editor", label: "Editor", icon: Code2 },
   { id: "diff", label: "Diff", icon: GitCompareArrows },
+  { id: "git", label: "Git", icon: GitBranch },
   { id: "shortcuts", label: "Keyboard Shortcuts", icon: Keyboard },
 ] as const;
 type Section = (typeof SECTIONS)[number]["id"];
@@ -78,7 +86,7 @@ export function SettingsDialog() {
       >
         <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar p-2">
           <DialogTitle className="px-2 pt-1.5 pb-2.5">Settings</DialogTitle>
-          <DialogDescription className="sr-only">Appearance, editor, diff and keyboard shortcut preferences.</DialogDescription>
+          <DialogDescription className="sr-only">Appearance, editor, diff, git and keyboard shortcut preferences.</DialogDescription>
           {SECTIONS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -108,6 +116,7 @@ export function SettingsDialog() {
             {section === "appearance" && <AppearanceSection />}
             {section === "editor" && <EditorSection />}
             {section === "diff" && <DiffSection />}
+            {section === "git" && <GitSection />}
             {section === "shortcuts" && <ShortcutsSection recording={recording} setRecording={setRecording} />}
           </div>
         </div>
@@ -120,7 +129,7 @@ function AppearanceSection() {
   const s = useSettings();
   return (
     <>
-      <Field label="Theme" hint="System follows macOS.">
+      <Field label="Theme" hint="System follows macOS. Dimmed is a softer, lighter dark.">
         <Segmented<Appearance>
           value={s.appearance}
           onChange={(v) => updateSettings({ appearance: v })}
@@ -128,15 +137,41 @@ function AppearanceSection() {
             ["system", "System"],
             ["light", "Light"],
             ["dark", "Dark"],
+            ["dim", "Dimmed"],
           ]}
         />
       </Field>
+      {s.appearance === "system" && (
+        <Field label="Dark variant" hint="The dark theme System uses while macOS is dark.">
+          <Segmented<Settings["darkVariant"]>
+            value={s.darkVariant}
+            onChange={(v) => updateSettings({ darkVariant: v })}
+            options={[
+              ["dark", "Dark"],
+              ["dim", "Dimmed"],
+            ]}
+          />
+        </Field>
+      )}
+      {TRANSLUCENCY && (
+        <Field label="Translucent background" hint="The desktop shows through the sidebar and panels, blurred. Code, diffs and the terminal stay opaque.">
+          <Switch checked={s.translucent} onChange={(v) => updateSettings({ translucent: v })} />
+        </Field>
+      )}
       {/* Each appearance keeps its own syntax theme, so switching back restores it. */}
       <Field label="Dark syntax theme" hint="Code colors while the app is dark.">
         <Select value={s.syntaxTheme} options={SYNTAX_THEMES} onChange={(v) => updateSettings({ syntaxTheme: v as SyntaxTheme })} />
       </Field>
       <Field label="Light syntax theme" hint="Code colors while the app is light.">
         <Select value={s.lightSyntaxTheme} options={LIGHT_SYNTAX_THEMES} onChange={(v) => updateSettings({ lightSyntaxTheme: v as LightSyntaxTheme })} />
+      </Field>
+      <Field label="Interface font" hint="The code font is under Editor.">
+        <FontPicker
+          fonts={Object.keys(UI_FONTS)}
+          value={s.uiFont}
+          custom={s.customUiFont}
+          onChange={(uiFont, customUiFont) => updateSettings({ uiFont: uiFont as UiFont, customUiFont })}
+        />
       </Field>
       <Field label="Interface scale" hint="Zooms the whole window. The code font size stays its own setting." commands={["view.zoomIn", "view.zoomOut", "view.zoomReset"]}>
         <Segmented<string>
@@ -159,7 +194,7 @@ function EditorSection() {
       <pre
         className="mt-4 overflow-hidden rounded-md border border-border bg-background px-3 py-2 whitespace-pre text-muted-foreground"
         style={{
-          fontFamily: CODE_FONTS[s.codeFont],
+          fontFamily: codeFontFamily(s),
           fontSize: s.codeFontSize,
           lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`,
           fontVariantLigatures: s.ligatures ? "normal" : "none",
@@ -168,7 +203,12 @@ function EditorSection() {
         {SAMPLE}
       </pre>
       <Field label="Font">
-        <Select value={s.codeFont} options={Object.fromEntries(Object.keys(CODE_FONTS).map((f) => [f, f]))} onChange={(v) => updateSettings({ codeFont: v as CodeFont })} />
+        <FontPicker
+          fonts={Object.keys(CODE_FONTS)}
+          value={s.codeFont}
+          custom={s.customCodeFont}
+          onChange={(codeFont, customCodeFont) => updateSettings({ codeFont: codeFont as CodeFont, customCodeFont })}
+        />
       </Field>
       <Field label="Font size" commands={["editor.fontZoomIn", "editor.fontZoomOut", "editor.fontZoomReset"]}>
         <div className="flex items-center gap-1">
@@ -231,11 +271,24 @@ function DiffSection() {
   );
 }
 
+function GitSection() {
+  const s = useSettings();
+  return (
+    <Field label="Fetch in the background" hint="Keeps ahead / behind and the remote branches current for the open repository. A fetch that fails, say while offline, stays quiet.">
+      <Segmented<string>
+        value={String(s.backgroundFetch)}
+        onChange={(v) => updateSettings({ backgroundFetch: Number(v) })}
+        options={FETCH_INTERVALS.map((m) => [String(m), m ? `${m} min` : "Off"])}
+      />
+    </Field>
+  );
+}
+
 type Recording = { id: CommandId; index: number } | null;
 
 function setBinding(id: CommandId, keys: string[] | null, overrides: Record<string, string[]>) {
   const next = { ...overrides };
-  const defaults = COMMANDS.find((c) => c.id === id)!.keys as readonly string[];
+  const defaults = bindingsFor(id, {});
   // Storing what equals the default would pin it and hide future default changes.
   if (keys === null || (keys.length === defaults.length && keys.every((k, i) => k === defaults[i]))) delete next[id];
   else next[id] = keys;
@@ -333,7 +386,8 @@ function ShortcutsSection({ recording, setRecording }: { recording: Recording; s
       </div>
       <p className="mt-3 text-[11.5px] leading-relaxed text-subtle">
         Click a key to change it, or + to add one; Esc cancels. When two commands share a key, the one higher in this list runs. While you type in a text field, only
-        shortcuts with ⌘, ⌃ or an F-key apply (not ⌘-arrows or ⌃ with a letter, which edit text), and Commit only applies in the commit message.
+        shortcuts with {IS_MAC ? "⌘, ⌃ or an F-key apply (not ⌘-arrows or ⌃ with a letter, which edit text)" : "Ctrl or an F-key apply (not Ctrl+arrows, which move by word)"}, and Commit only applies in
+        the commit message.
       </p>
     </>
   );
@@ -464,6 +518,36 @@ function Select({ value, options, onChange }: { value: string; options: Record<s
       ))}
     </select>
   );
+}
+
+/** A preset font, or Custom with a field for any installed font's name. */
+function FontPicker({ fonts, value, custom, onChange }: { fonts: string[]; value: string; custom: string; onChange: (font: string, custom: string) => void }) {
+  const [draft, setDraft] = useState(custom);
+  const name = cleanFontName(draft);
+  const missing = useMemo(() => !!name && !fontInstalled(name), [name]);
+  // Applied on Enter or leaving the field: every partial name on the way would re-lay out the code view.
+  const commit = () => name !== custom && onChange("Custom", name);
+  return (
+    <div className="flex w-52 flex-col gap-1.5">
+      <Select value={value} options={Object.fromEntries([...fonts, "Custom"].map((f) => [f, f]))} onChange={(v) => onChange(v, custom)} />
+      {value === "Custom" && (
+        <>
+          <Input value={draft} placeholder="Installed font name" onChange={(e) => setDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === "Enter" && commit()} />
+          {missing && <div className="text-[11px] leading-snug text-modified">Not installed: the default font shows instead.</div>}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Whether a font is installed: text set in it measures differently from every generic fallback. */
+function fontInstalled(name: string) {
+  const ctx = document.createElement("canvas").getContext("2d")!;
+  const width = (font: string) => {
+    ctx.font = `40px ${font}`;
+    return ctx.measureText("mmmwwwiiilll0O@").width;
+  };
+  return ["monospace", "serif", "sans-serif"].some((generic) => width(`"${name}", ${generic}`) !== width(generic));
 }
 
 function Switch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {

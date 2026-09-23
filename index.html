@@ -8,13 +8,16 @@
          white. Mirrors settings.ts (appearance) and index.css (body's --sidebar). -->
     <style>
       html { background: #0e0e0f; }
+      html[data-theme="dim"] { background: #1c1c1f; }
       html[data-theme="light"] { background: #f3f3f4; }
     </style>
     <script>
       try {
-        var appearance = JSON.parse(localStorage.getItem("gitviber.settings.v2") || "{}").appearance;
-        var light = appearance === "light" || (appearance !== "dark" && matchMedia("(prefers-color-scheme: light)").matches);
-        document.documentElement.dataset.theme = light ? "light" : "dark";
+        var saved = JSON.parse(localStorage.getItem("gitviber.settings.v2") || "{}");
+        var theme = saved.appearance;
+        if (theme !== "light" && theme !== "dark" && theme !== "dim")
+          theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : saved.darkVariant === "dim" ? "dim" : "dark";
+        document.documentElement.dataset.theme = theme;
       } catch {}
     </script>
   </head>
