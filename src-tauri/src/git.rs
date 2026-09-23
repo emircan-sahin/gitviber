@@ -171,11 +171,21 @@ pub(crate) fn run_with(
 }
 
 /// Fetch, pull, push and clone: with progress, stoppable, and timed out only when silent.
-fn run_network(repo: &Path, args: &[&str], net: &Net) -> Result<Vec<u8>, String> {
+pub(crate) fn run_network(repo: &Path, args: &[&str], net: &Net) -> Result<Vec<u8>, String> {
     let mut args = args.to_vec();
     // Without a terminal git reports no progress unless asked.
     args.insert(1, "--progress");
-    network::run(command(repo, &args), &format!("git {}", args[0]), net)
+    // A pull's merge or rebase starts once its fetch has written FETCH_HEAD.
+    let fetch_head = (args[0] == "pull")
+        .then(|| run_text(repo, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok())
+        .flatten()
+        .map(|p| repo.join(p.trim()));
+    network::run(
+        command(repo, &args),
+        &format!("git {}", args[0]),
+        net,
+        fetch_head.as_deref(),
+    )
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -1478,9 +1488,15 @@ pub fn merge_base(repo: &Path, a: &str, b: &str) -> Result<String, String> {
     run_text(repo, &["merge-base", a, b]).map(|s| s.trim().to_string())
 }
 
-/// Brings in objects for these refs from a remote. Writes no FETCH_HEAD and creates no
-/// local branch (a configured remote-tracking ref like origin/<base> may still update).
-pub fn fetch_objects(repo: &Path, remote: &str, refspecs: &[String]) -> Result<(), String> {
+/// Fetches `refspecs` from a remote without FETCH_HEAD, which any other fetch (the background
+/// one, a terminal) may rewrite before it's read. A refspec without a destination only brings
+/// in objects (a configured remote-tracking ref like origin/<base> may still update).
+pub fn fetch_objects(
+    repo: &Path,
+    remote: &str,
+    refspecs: &[String],
+    net: &Net,
+) -> Result<(), String> {
     let mut args = vec![
         "fetch",
         "--quiet",
@@ -1489,7 +1505,7 @@ pub fn fetch_objects(repo: &Path, remote: &str, refspecs: &[String]) -> Result<(
         remote,
     ];
     args.extend(refspecs.iter().map(String::as_str));
-    run_network(repo, &args, &Net::default()).map(|_| ())
+    run_network(repo, &args, net).map(|_| ())
 }
 
 pub fn remote_url(repo: &Path, remote: &str) -> Option<String> {
@@ -2234,7 +2250,7 @@ pub fn remote_tags(repo: &Path, net: &Net) -> Result<RemoteTags, String> {
     let remote = tag_remote(repo)?;
     // ls-remote has no --progress; `net` is for Cancel, which the menu uses to give up quickly.
     let args = ["ls-remote", "--tags", "--refs", &remote];
-    let out = network::run(command(repo, &args), "git ls-remote", net)?;
+    let out = network::run(command(repo, &args), "git ls-remote", net, None)?;
     let names = String::from_utf8_lossy(&out)
         .lines()
         .filter_map(|l| l.split_once("\trefs/tags/").map(|(_, n)| n.to_string()))
@@ -2854,7 +2870,9 @@ pub fn commit_details(repo: &Path, sha: &str) -> Result<CommitDetails, String> {
 
 /// `force`: after a rebase or amend the remote has the branch's old commits; replace them,
 /// but only if it still has what was last fetched (`--force-with-lease`), so a push made
-/// meanwhile by someone else is refused rather than lost.
+/// meanwhile by someone else is refused rather than lost. A fetch alone (the background
+/// one) would move that lease onto their commit, so it must also have been in this branch
+/// at some point (`--force-if-includes`).
 /// A branch without an upstream is published (`-u`) to `remote`, or else to `publish_remote`.
 pub fn push(repo: &Path, force: bool, remote: Option<&str>, net: &Net) -> Result<(), String> {
     push_as(repo, force, remote, false, net)
@@ -2880,7 +2898,7 @@ fn push_as(
     let has_upstream = run(repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
     let mut args = vec!["push"];
     if force {
-        args.push("--force-with-lease");
+        args.extend(["--force-with-lease", "--force-if-includes"]);
     }
     if tags {
         args.push("--follow-tags");
@@ -2952,26 +2970,28 @@ pub fn fetch(repo: &Path, net: &Net) -> Result<(), String> {
 }
 
 /// When this repo last fetched (FETCH_HEAD's mtime, Unix seconds); None if it never has.
+/// Each worktree keeps its own FETCH_HEAD, and a fetch from any of them updates the remote
+/// branches for all, so a linked worktree also counts the main one's.
 pub fn last_fetch(repo: &Path) -> Option<u64> {
-    let path = run_text(repo, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
-    let modified = std::fs::metadata(repo.join(path.trim()))
-        .ok()?
-        .modified()
-        .ok()?;
-    Some(
-        modified
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()?
-            .as_secs(),
-    )
+    let own = run_text(repo, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok()?;
+    let common = run_text(repo, &["rev-parse", "--git-common-dir"]).ok()?;
+    [
+        repo.join(own.trim()),
+        repo.join(common.trim()).join("FETCH_HEAD"),
+    ]
+    .iter()
+    .filter_map(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok())
+    .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+    .map(|d| d.as_secs())
+    .max()
 }
 
 /// Fetches one configured remote, e.g. a fork's upstream.
-pub fn fetch_remote(repo: &Path, name: &str) -> Result<(), String> {
+pub fn fetch_remote(repo: &Path, name: &str, net: &Net) -> Result<(), String> {
     if remote_url(repo, name).is_none() {
         return Err(format!("no remote named {name}"));
     }
-    run_network(repo, &["fetch", "--prune", name], &Net::default()).map(|_| ())
+    run_network(repo, &["fetch", "--prune", name], net).map(|_| ())
 }
 
 /// Clones `url` into `parent/name` and returns that path. Never into a folder that already

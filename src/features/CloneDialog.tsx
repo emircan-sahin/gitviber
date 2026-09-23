@@ -119,7 +119,8 @@ export function CloneDialog({ onCloned }: { onCloned: (path: string) => void }) 
           )}
           {error && <pre className="max-h-40 overflow-auto font-sans text-[11.5px] whitespace-pre-wrap text-destructive select-text">{error}</pre>}
           <div className="mt-1 flex justify-end gap-2">
-            <Button type="button" variant="secondary" onClick={() => (op ? void cancelNetwork(op) : close())}>
+            {/* Past the transfer (checking out the files) it runs to the end. */}
+            <Button type="button" variant="secondary" disabled={progress?.cancellable === false} onClick={() => (op ? void cancelNetwork(op) : close())}>
               Cancel
             </Button>
             <Button type="submit" disabled={!ready}>

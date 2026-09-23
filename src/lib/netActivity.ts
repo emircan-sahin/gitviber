@@ -8,21 +8,25 @@ export interface NetActivity {
   progress: Progress | null;
 }
 
+// Every command running, oldest first. The top bar shows the newest; when it ends, the one
+// still running before it comes back with its own progress and Cancel.
+let active: NetActivity[] = [];
 let current: NetActivity | null = null;
 const listeners = new Set<() => void>();
-const set = (next: NetActivity | null) => {
-  current = next;
+const update = (next: NetActivity[]) => {
+  active = next;
+  current = active.at(-1) ?? null;
   listeners.forEach((l) => l());
 };
 
-/** Runs a network command as the one the top bar shows. */
+/** Runs a network command as one the top bar shows. */
 export async function withNetActivity<T>(label: string, fn: (op: NetOp) => Promise<T>): Promise<T> {
-  const op = netOp((progress) => current?.op === op && set({ ...current, progress }));
-  set({ label, op, progress: null });
+  const op = netOp((progress) => update(active.map((a) => (a.op === op ? { ...a, progress } : a))));
+  update([...active, { label, op, progress: null }]);
   try {
     return await fn(op);
   } finally {
-    if (current?.op === op) set(null);
+    update(active.filter((a) => a.op !== op));
   }
 }
 

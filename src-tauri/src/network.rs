@@ -1,12 +1,13 @@
 //! Network commands (fetch, pull, push, clone). git's progress streams to the page as it
-//! comes, and the user can stop one. A transfer that keeps reporting runs as long as it
-//! needs; only silence times out.
+//! comes, and the user can stop one while it transfers. A transfer that keeps reporting runs
+//! as long as it needs; only silence times out.
 
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Read;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -22,9 +23,11 @@ pub struct Progress {
     pub phase: String,
     /// None for phases git only counts ("Enumerating objects: 1234").
     pub percent: Option<u8>,
+    /// False once git changes local files: stopped then, it would leave them half updated.
+    pub cancellable: bool,
 }
 
-const PHASES: &[&str] = &[
+const TRANSFER_PHASES: &[&str] = &[
     "Enumerating objects",
     "Counting objects",
     "Compressing objects",
@@ -32,8 +35,9 @@ const PHASES: &[&str] = &[
     "Resolving deltas",
     "Writing objects",
     "Unpacking objects",
-    "Updating files",
 ];
+/// The checkout after a clone or a pull's merge.
+const LOCAL_PHASE: &str = "Updating files";
 
 /// One `\r`- or `\n`-ended piece of git's stderr under `--progress`, such as
 /// "Receiving objects:  45% (450/1000), 1.20 MiB | 800.00 KiB/s" or the server's
@@ -42,7 +46,8 @@ pub fn parse_progress(line: &str) -> Option<Progress> {
     let line = line.trim();
     let line = line.strip_prefix("remote:").map_or(line, str::trim_start);
     let (phase, rest) = line.split_once(':')?;
-    if !PHASES.contains(&phase) {
+    let cancellable = TRANSFER_PHASES.contains(&phase);
+    if !cancellable && phase != LOCAL_PHASE {
         return None;
     }
     let percent = rest
@@ -52,23 +57,37 @@ pub fn parse_progress(line: &str) -> Option<Progress> {
     Some(Progress {
         phase: phase.to_string(),
         percent,
+        cancellable,
     })
 }
 
-type Registry = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
+// A command's state: running and stoppable, stopped by the user, or past the point where
+// stopping it is safe. Only a running one moves to either of the others.
+const RUNNING: u8 = 0;
+const CANCELLED_STATE: u8 = 1;
+const SETTLED: u8 = 2;
+
+type Registry = Arc<Mutex<HashMap<String, Arc<AtomicU8>>>>;
 
 /// How a network command is watched: where its progress goes and the flag that stops it.
 /// `Net::default()` just runs the command. A registered one leaves the registry when dropped.
 #[derive(Default)]
 pub struct Net {
-    cancel: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
     progress: Option<Box<dyn Fn(Progress) + Send + Sync>>,
     registered: Option<(Registry, String)>,
 }
 
 impl Net {
     pub fn cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Relaxed)
+        self.state.load(Ordering::Relaxed) == CANCELLED_STATE
+    }
+
+    /// From here on Cancel is ignored. True only for the call that settled it.
+    fn settle(&self) -> bool {
+        self.state
+            .compare_exchange(RUNNING, SETTLED, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
     }
 
     fn report(&self, p: Progress) {
@@ -83,7 +102,7 @@ impl Drop for Net {
         if let Some((map, id)) = &self.registered {
             let mut map = map.lock().unwrap();
             // A later command may have taken the same id (a force push after a rejected push).
-            if map.get(id).is_some_and(|c| Arc::ptr_eq(c, &self.cancel)) {
+            if map.get(id).is_some_and(|c| Arc::ptr_eq(c, &self.state)) {
                 map.remove(id);
             }
         }
@@ -96,25 +115,38 @@ pub struct Running(Registry);
 
 impl Running {
     pub fn start(&self, id: String, progress: impl Fn(Progress) + Send + Sync + 'static) -> Net {
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.0.lock().unwrap().insert(id.clone(), cancel.clone());
+        let state = Arc::new(AtomicU8::new(RUNNING));
+        self.0.lock().unwrap().insert(id.clone(), state.clone());
         Net {
-            cancel,
+            state,
             progress: Some(Box::new(progress)),
             registered: Some((self.0.clone(), id)),
         }
     }
 
+    /// Ignored once the command is changing local files.
     pub fn cancel(&self, id: &str) {
-        if let Some(c) = self.0.lock().unwrap().get(id) {
-            c.store(true, Ordering::Relaxed);
+        if let Some(s) = self.0.lock().unwrap().get(id) {
+            let _ = s.compare_exchange(
+                RUNNING,
+                CANCELLED_STATE,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
         }
     }
 }
 
 /// Runs a prepared git command until it exits, is cancelled or goes silent. Progress goes to
-/// `net`; the rest of stderr is kept for the error message.
-pub fn run(mut cmd: Command, label: &str, net: &Net) -> Result<Vec<u8>, String> {
+/// `net`; the rest of stderr is kept for the error message. `settle_on`: a file whose change
+/// means the transfer is over and local work began (a pull's FETCH_HEAD, written before its
+/// merge or rebase), which git may not announce at all.
+pub fn run(
+    mut cmd: Command,
+    label: &str,
+    net: &Net,
+    settle_on: Option<&Path>,
+) -> Result<Vec<u8>, String> {
     if net.cancelled() {
         return Err(CANCELLED.into());
     }
@@ -128,6 +160,8 @@ pub fn run(mut cmd: Command, label: &str, net: &Net) -> Result<Vec<u8>, String> 
         .spawn()
         .map_err(|e| format!("could not run {label}: {e}"))?;
     let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    let marker = settle_on.map(|p| (p, modified(p)));
     let start = Instant::now();
     // When output last arrived, in milliseconds since start.
     let heard = AtomicU64::new(0);
@@ -159,6 +193,15 @@ pub fn run(mut cmd: Command, label: &str, net: &Net) -> Result<Vec<u8>, String> 
             if net.cancelled() {
                 stop(&mut child);
                 break Err(CANCELLED.to_string());
+            }
+            if let Some((path, before)) = marker {
+                if modified(path) != before && net.settle() {
+                    net.report(Progress {
+                        phase: "Updating the branch".into(),
+                        percent: None,
+                        cancellable: false,
+                    });
+                }
             }
             let quiet = start
                 .elapsed()
@@ -200,6 +243,9 @@ fn read_stderr(pipe: Option<impl Read>, net: &Net, touch: &dyn Fn()) -> String {
         let text = String::from_utf8_lossy(bytes);
         match parse_progress(&text) {
             Some(p) if last.as_ref() != Some(&p) => {
+                if !p.cancellable {
+                    net.settle();
+                }
                 last = Some(p.clone());
                 net.report(p);
             }
@@ -254,6 +300,7 @@ mod tests {
         Some(Progress {
             phase: phase.into(),
             percent,
+            cancellable: phase != LOCAL_PHASE,
         })
     }
 
@@ -283,6 +330,52 @@ mod tests {
             parse_progress("Counting objects:   3% (3/100)"),
             p("Counting objects", Some(3))
         );
+    }
+
+    #[test]
+    fn local_work_cant_be_cancelled() {
+        let update = parse_progress("Updating files:  40% (4/10)").unwrap();
+        assert!(!update.cancellable);
+        assert!(
+            parse_progress("Receiving objects: 40% (4/10)")
+                .unwrap()
+                .cancellable
+        );
+
+        let running = Running::default();
+        let net = running.start("op".into(), |_| {});
+        read_stderr(Some(&b"Updating files:  40% (4/10)\r"[..]), &net, &|| {});
+        running.cancel("op");
+        assert!(
+            !net.cancelled(),
+            "a cancel after local work began must be ignored"
+        );
+
+        let net = running.start("op2".into(), |_| {});
+        running.cancel("op2");
+        assert!(net.cancelled() && !net.settle());
+    }
+
+    /// The pull's marker file changing is the point of no return, even with no progress line.
+    #[test]
+    fn a_changed_marker_settles_the_command() {
+        let dir = std::env::temp_dir().join(format!("gitviber-settle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("FETCH_HEAD");
+        let seen = Arc::new(Mutex::new(vec![]));
+        let sink = seen.clone();
+        let running = Running::default();
+        let net = running.start("pull".into(), move |p| sink.lock().unwrap().push(p));
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            &format!("sleep 0.2; echo x > {}; sleep 0.3", marker.display()),
+        ]);
+        run(cmd, "sh", &net, Some(&marker)).unwrap();
+        running.cancel("pull");
+        assert!(!net.cancelled());
+        assert!(seen.lock().unwrap().iter().any(|p| !p.cancellable));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -339,7 +432,7 @@ mod tests {
                 }
                 running.cancel("op");
             });
-            run(cmd, "sh", &net)
+            run(cmd, "sh", &net, None)
         });
         assert_eq!(result.unwrap_err(), CANCELLED);
         assert!(started.elapsed() < Duration::from_secs(10));

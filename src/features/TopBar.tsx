@@ -203,7 +203,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         } catch (e) {
           if (!errorMessage(e).includes("non-fast-forward")) throw e;
           const ok = await ask(
-            "The remote branch has commits yours no longer has, as after a rebase or an amend. Replace them with yours?\n\nThis force-pushes (with lease): it is refused if someone pushed there since your last fetch. Anyone who pulled the old commits will have to reconcile.",
+            "The remote branch has commits yours no longer has, as after a rebase or an amend. Replace them with yours?\n\nThis force-pushes (with lease): it is refused if someone pushed commits there that your branch never had. Anyone who pulled the old commits will have to reconcile.",
             { title: "Force push", kind: "warning", okLabel: "Force push" },
           );
           if (!ok) throw e;
@@ -305,10 +305,12 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
             </span>
           )}
           {net && (
-            <Tip label={`Cancel ${net.label.toLowerCase()}`}>
-              <Button variant="ghost" size="icon-sm" aria-label="Cancel" onClick={() => void cancelNetwork(net.op)}>
-                <X />
-              </Button>
+            <Tip label={net.progress?.cancellable === false ? "Too late to cancel: git is updating your files" : `Cancel ${net.label.toLowerCase()}`}>
+              <span>
+                <Button variant="ghost" size="icon-sm" aria-label="Cancel" disabled={net.progress?.cancellable === false} onClick={() => void cancelNetwork(net.op)}>
+                  <X />
+                </Button>
+              </span>
             </Tip>
           )}
         </span>

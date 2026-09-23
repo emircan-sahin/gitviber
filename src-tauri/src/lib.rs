@@ -994,9 +994,12 @@ async fn gh_original_remote(
     state: State<'_, AppState>,
     original: String,
     fetch: bool,
+    op: String,
+    progress: Channel<network::Progress>,
 ) -> Res<Option<String>> {
     let r = repo(&state)?;
-    blocking(move || github::original_remote(&r, &original, fetch)).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || github::original_remote(&r, &original, fetch, &net)).await
 }
 
 #[tauri::command]
@@ -1018,10 +1021,16 @@ async fn set_push_default(state: State<'_, AppState>, remote: String) -> Res<()>
 }
 
 #[tauri::command]
-async fn gh_sync_fork(app: AppHandle, branch: String) -> Res<String> {
+async fn gh_sync_fork(
+    app: AppHandle,
+    branch: String,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<String> {
+    let net = watch_network(&app.state::<AppState>(), op, progress);
     blocking(move || {
         let state = app.state::<AppState>();
-        github::sync_fork(&state.github, &repo(&state)?, &branch)
+        github::sync_fork(&state.github, &repo(&state)?, &branch, &net)
     })
     .await
 }
@@ -1039,10 +1048,15 @@ async fn gh_remotes(state: State<'_, AppState>) -> Res<Vec<github::Remote>> {
 }
 
 #[tauri::command]
-async fn gh_add_original_remote(app: AppHandle) -> Res<String> {
+async fn gh_add_original_remote(
+    app: AppHandle,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<String> {
+    let net = watch_network(&app.state::<AppState>(), op, progress);
     blocking(move || {
         let state = app.state::<AppState>();
-        github::add_original_remote(&state.github, &repo(&state)?)
+        github::add_original_remote(&state.github, &repo(&state)?, &net)
     })
     .await
 }
@@ -1099,6 +1113,7 @@ async fn pr_attachments(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 async fn pr_files(
     app: AppHandle,
     target: Option<String>,
@@ -1106,7 +1121,10 @@ async fn pr_files(
     base_ref: String,
     base_sha: String,
     head_sha: String,
+    op: String,
+    progress: Channel<network::Progress>,
 ) -> Res<github::PullFiles> {
+    let net = watch_network(&app.state::<AppState>(), op, progress);
     blocking(move || {
         let state = app.state::<AppState>();
         github::files(
@@ -1117,6 +1135,7 @@ async fn pr_files(
             &base_ref,
             &base_sha,
             &head_sha,
+            &net,
         )
     })
     .await
@@ -1383,7 +1402,10 @@ async fn pr_checkout(
     number: u64,
     head_ref: String,
     same_repo: bool,
+    op: String,
+    progress: Channel<network::Progress>,
 ) -> Res<()> {
+    let net = watch_network(&app.state::<AppState>(), op, progress);
     blocking(move || {
         let state = app.state::<AppState>();
         let r = repo(&state)?;
@@ -1395,7 +1417,7 @@ async fn pr_checkout(
                 .as_deref()
                 .filter(|_| remote != "origin")
                 .and_then(|t| t.split('/').next());
-            github::checkout(r, &remote, owner, number, &head_ref, same_repo)
+            github::checkout(r, &remote, owner, number, &head_ref, same_repo, &net)
         })
     })
     .await
