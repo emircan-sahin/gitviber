@@ -388,7 +388,7 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
         <div className="shrink-0 border-b border-border px-3 py-2">
           <div className="flex items-center gap-2 text-[11.5px]">
             <span className="text-muted-foreground">
-              <span className="font-semibold text-foreground">{all.length}</span> files
+              <span className="font-semibold text-foreground">{all.length}</span> {all.length === 1 ? "file" : "files"}
             </span>
             <span className="font-mono text-[11px]">
               <span className="text-added">+{add}</span> <span className="text-removed">-{del}</span>
