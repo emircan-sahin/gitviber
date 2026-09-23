@@ -160,7 +160,17 @@ pub(crate) fn run_network(repo: &Path, args: &[&str], net: &Net) -> Result<Vec<u
     let mut args = args.to_vec();
     // Without a terminal git reports no progress unless asked.
     args.insert(1, "--progress");
-    network::run(command(repo, &args), &format!("git {}", args[0]), net)
+    // A pull's merge or rebase starts once its fetch has written FETCH_HEAD.
+    let fetch_head = (args[0] == "pull")
+        .then(|| run_text(repo, &["rev-parse", "--git-path", "FETCH_HEAD"]).ok())
+        .flatten()
+        .map(|p| repo.join(p.trim()));
+    network::run(
+        command(repo, &args),
+        &format!("git {}", args[0]),
+        net,
+        fetch_head.as_deref(),
+    )
 }
 
 pub fn run(repo: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -2207,7 +2217,7 @@ pub fn remote_tags(repo: &Path) -> Result<RemoteTags, String> {
     let remote = tag_remote(repo)?;
     // ls-remote has no --progress; it only gets the silence timeout.
     let args = ["ls-remote", "--tags", "--refs", &remote];
-    let out = network::run(command(repo, &args), "git ls-remote", &Net::default())?;
+    let out = network::run(command(repo, &args), "git ls-remote", &Net::default(), None)?;
     let names = String::from_utf8_lossy(&out)
         .lines()
         .filter_map(|l| l.split_once("\trefs/tags/").map(|(_, n)| n.to_string()))

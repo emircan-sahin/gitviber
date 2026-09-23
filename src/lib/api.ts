@@ -285,6 +285,8 @@ export interface Progress {
   phase: string;
   /** Null for phases git only counts ("Enumerating objects"). */
   percent: number | null;
+  /** False once git changes local files (a pull's merge, a clone's checkout): Cancel is ignored then. */
+  cancellable: boolean;
 }
 
 /** One watched network command (fetch, pull, push, clone): its progress, and its id for Cancel. */
