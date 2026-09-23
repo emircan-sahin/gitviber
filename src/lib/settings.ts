@@ -299,8 +299,13 @@ export function updateSettings(patch: Partial<Settings>) {
   emit();
 }
 
+/**
+ * Back to the defaults, except what the user built up rather than chose: the repos they sign
+ * off in, their own Open in apps, the folder clones go to.
+ */
 export function resetSettings() {
-  updateSettings(DEFAULTS);
+  const { signOffRepos, openInCustom, cloneParent } = current;
+  updateSettings({ ...DEFAULTS, signOffRepos, openInCustom, cloneParent });
 }
 
 export function subscribeSettings(l: () => void) {
