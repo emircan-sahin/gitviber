@@ -47,9 +47,19 @@ pub(crate) fn merge_paths(login: Option<&OsStr>, current: &OsStr) -> OsString {
     std::env::join_paths(dirs).unwrap_or_else(|_| current.to_os_string())
 }
 
+/// The app reads git's messages ("not a git repository", "non-fast-forward", index.lock,
+/// progress phases), so git must speak English whatever LANG says, as in VS Code. UTF-8
+/// keeps non-ASCII paths and messages intact. LANGUAGE would outrank both for gettext.
+pub(crate) fn in_english(cmd: &mut Command) -> &mut Command {
+    cmd.env("LC_ALL", "en_US.UTF-8")
+        .env("LANG", "en_US.UTF-8")
+        .env_remove("LANGUAGE")
+}
+
 pub(crate) fn command(repo: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
-    cmd.current_dir(repo)
+    in_english(&mut cmd)
+        .current_dir(repo)
         .args(args)
         .env("PATH", search_path())
         // Never block on an interactive credential prompt; there is no terminal.
@@ -214,7 +224,7 @@ pub struct GitInfo {
 }
 
 pub fn check_install() -> GitInfo {
-    let out = Command::new("git")
+    let out = in_english(&mut Command::new("git"))
         .arg("--version")
         .env("PATH", search_path())
         .stdin(Stdio::null())
