@@ -369,6 +369,11 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               <IconBtn label="Blame" command="editor.toggleBlame" active={s.blame} onClick={() => updateSettings({ blame: !s.blame })}>
                 <UserSearch />
               </IconBtn>
+              {blame?.unavailable && (
+                <span className="truncate text-[11.5px] text-subtle" title={blame.unavailable}>
+                  No blame for LFS files
+                </span>
+              )}
               <Sep />
             </>
           )}
@@ -439,7 +444,8 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               collapse={s.hideUnchanged}
               wrap={s.wordWrap}
               scrollKey={tab.key}
-              blame={blame}
+              blame={blame?.unavailable ? null : blame}
+              blameColumn={!!s.blame && isFile && !blame?.unavailable}
               onBlameClick={(c) => onShowCommit(c.sha, c.path)}
             />
           )

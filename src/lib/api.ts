@@ -113,6 +113,8 @@ export interface Blame {
   commits: BlameCommit[];
   /** For each line of the working-tree file, its commit's index in `commits`. Lines past the end, or not in HEAD at all, are new. */
   lines: number[];
+  /** Why this file has no blame (a Git LFS file). */
+  unavailable: string | null;
 }
 
 /** History search (git.rs `LogFilter`): every part narrows the list. */

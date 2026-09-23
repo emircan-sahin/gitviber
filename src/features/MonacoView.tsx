@@ -24,6 +24,8 @@ interface Props {
   scrollKey: string;
   /** The file view's blame column: who last changed each line. */
   blame?: Blame | null;
+  /** Room for that column, set aside before `blame` lands so the code doesn't jump. */
+  blameColumn?: boolean;
   onBlameClick?: (commit: BlameCommit) => void;
 }
 
@@ -49,7 +51,7 @@ export function lineInView(path: string): number | undefined {
 }
 
 /** The code view on Monaco (VS Code's editor): a diff editor for changes, a plain one for files. */
-export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, blame = null, onBlameClick }, ref) {
+export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, blame = null, blameColumn = false, onBlameClick }, ref) {
   const s = useSettings();
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<Editor | null>(null);
@@ -75,7 +77,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   const viewModel = useRef<monaco.editor.IDiffEditorViewModel | null>(null);
   useEffect(() => {
     const el = host.current!;
-    const e = diff ? monaco.editor.createDiffEditor(el, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(el, fileOptions(s, wrap));
+    const e = diff ? monaco.editor.createDiffEditor(el, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(el, fileOptions(s, wrap, blameColumn));
     editor.current = e;
     // A click on a blame entry shows its commit.
     const click = isDiff(e)
@@ -106,8 +108,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   useEffect(() => {
     const e = editor.current!;
     if (isDiff(e)) e.updateOptions(diffOptions(s, mode, collapse, wrap));
-    else e.updateOptions(fileOptions(s, wrap));
-  }, [s, mode, collapse, wrap, diff]);
+    else e.updateOptions(fileOptions(s, wrap, blameColumn));
+  }, [s, mode, collapse, wrap, diff, blameColumn]);
 
   // A blame that lands after the file shows; the swap below marks the one it finds.
   useEffect(() => {
@@ -431,10 +433,9 @@ function diffOptions(s: Settings, mode: CodeMode, collapse: boolean, wrap: boole
   };
 }
 
-function fileOptions(s: Settings, wrap: boolean): monaco.editor.IStandaloneEditorConstructionOptions {
-  // Blame's column, set aside at once so the code doesn't jump when blame lands: its label goes
-  // after the change bars (index.css), in the code font's widths.
-  return { ...common(s, wrap), lineDecorationsWidth: s.blame ? `${BLAME_CHARS + 3}ch` : 12 };
+function fileOptions(s: Settings, wrap: boolean, blame: boolean): monaco.editor.IStandaloneEditorConstructionOptions {
+  // Blame's label goes after the change bars (index.css), in the code font's widths.
+  return { ...common(s, wrap), lineDecorationsWidth: blame ? `${BLAME_CHARS + 3}ch` : 12 };
 }
 
 /** Lines to mark in the file view: added, modified, and where lines were deleted. */
