@@ -53,14 +53,12 @@ function Rename({ branch, branches, onClose, run, runNet }: { branch: Branch } &
     >
       <DialogTitle>Rename branch</DialogTitle>
       <DialogDescription>
-        <span className="font-mono">{branch.name}</span>
-        {upstream ? (
+        Renames the local branch <span className="font-mono">{branch.name}</span>.
+        {upstream && (
           <>
             {" "}
-            tracks <span className="font-mono">{upstream}</span>.
+            It tracks <span className="font-mono">{upstream}</span>, which keeps its name unless you rename it on {remoteName} too.
           </>
-        ) : (
-          "."
         )}
       </DialogDescription>
       <Input autoFocus className="mt-4 font-mono" value={name} onChange={(e) => setName(e.target.value)} onFocus={(e) => e.currentTarget.select()} placeholder="New name" spellCheck={false} />
