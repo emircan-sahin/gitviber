@@ -232,6 +232,55 @@ fn log_of_a_remote_branch_marks_what_head_lacks() {
     assert!(log(b, Some("refs/remotes/--output=x/y"), 0, 10).is_err());
 }
 
+/// Blame: each line's commit with its whole message, lines not committed yet, files git
+/// doesn't have yet, and the user's blame.ignoreRevsFile.
+#[test]
+fn blame_attributes_lines() {
+    let sb = Sandbox::new("blame");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "f.txt", "a\nb\n", "First");
+    write_commit(
+        &r,
+        "f.txt",
+        "a\nB\n",
+        "Second\n\nWhy it changed.\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+    );
+    fs::write(r.join("f.txt"), "a\nB\nc\n").unwrap();
+
+    let b = blame(&r, "f.txt").unwrap();
+    let at = |b: &Blame, i: usize| b.commits[b.lines[i] as usize].message.clone();
+    assert_eq!(b.lines.len(), 3);
+    assert_eq!(at(&b, 0), "First");
+    assert!(at(&b, 1).starts_with("Second\n\nWhy it changed."));
+    assert!(at(&b, 1).ends_with("Co-Authored-By: Claude <noreply@anthropic.com>"));
+    let new = &b.commits[b.lines[2] as usize];
+    assert_eq!(new.sha, "0".repeat(40));
+    let second = &b.commits[b.lines[1] as usize];
+    assert_eq!(
+        (second.author_name.as_str(), second.path.as_str()),
+        ("T", "f.txt")
+    );
+
+    // Untracked, or only staged: every line is new, not an error.
+    fs::write(r.join("u.txt"), "x\n").unwrap();
+    assert!(blame(&r, "u.txt").unwrap().lines.is_empty());
+    fs::write(r.join("s.txt"), "x\n").unwrap();
+    stage(&r, &["s.txt".into()]).unwrap();
+    let staged = blame(&r, "s.txt").unwrap();
+    assert!(staged.lines.is_empty() || staged.commits.iter().all(|c| c.sha == "0".repeat(40)));
+
+    // git skips the revisions the user listed to ignore.
+    let sha = second.sha.clone();
+    fs::write(r.join(".git-blame-ignore-revs"), format!("{sha}\n")).unwrap();
+    run(
+        &r,
+        &["config", "blame.ignoreRevsFile", ".git-blame-ignore-revs"],
+    )
+    .unwrap();
+    assert_eq!(at(&blame(&r, "f.txt").unwrap(), 1), "First");
+}
+
 /// History search: words, author, pickaxe, a path, a file followed through a rename, a SHA.
 #[test]
 fn log_search_narrows_and_pages() {

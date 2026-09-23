@@ -97,6 +97,24 @@ export interface Commit {
   file?: string;
 }
 
+export interface BlameCommit {
+  /** All zeros for lines not committed yet. */
+  sha: string;
+  authorName: string;
+  authorEmail: string;
+  timestamp: number;
+  /** The whole message, trailers (Co-Authored-By…) included. */
+  message: string;
+  /** The file's path in this commit (it may have been renamed since). */
+  path: string;
+}
+
+export interface Blame {
+  commits: BlameCommit[];
+  /** For each line of the working-tree file, its commit's index in `commits`. Lines past the end, or not in HEAD at all, are new. */
+  lines: number[];
+}
+
 /** History search (git.rs `LogFilter`): every part narrows the list. */
 export interface LogFilter {
   /** Words the message must all contain, any case, as typed. */
@@ -209,6 +227,8 @@ export const api = {
     invoke<ArrayBuffer>("media", { kind, path, oldPath, sha, base, original }),
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
+  /** `git blame` of the working-tree file. */
+  blame: (path: string) => invoke<Blame>("blame", { path }),
   branches: () => invoke<Branch[]>("branches"),
   /** Switches to the local branch for a remote one ("upstream/dev" → dev), creating it to track exactly that. */
   /** What a PR from HEAD into `base` (refs/remotes/…) carries: its commit count, and the one commit's message. */

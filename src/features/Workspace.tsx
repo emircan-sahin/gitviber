@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 import { openAbout, useAbout } from "./AboutDialog";
 import { ChangesPanel, changeList } from "./ChangesPanel";
 import { FileTree, type FileTreeHandle } from "./FileTree";
-import { SearchableHistory } from "./HistorySearch";
+import { type HistorySearch, NO_SEARCH, SearchableHistory } from "./HistorySearch";
 import { IssuesPanel } from "./IssuesPanel";
 import { PullsPanel } from "./PullsPanel";
 import { TerminalPanel, TerminalRestoreOffer, useTerminalSetup } from "./TerminalPanel";
@@ -75,7 +75,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const [saved] = useState(() => loadWorkspace(root));
   const [listTab, setListTab] = useState<ListTab>(() => LIST_TABS.find((t) => t === saved?.listTab) ?? "changes");
   // Here, not in History: the search outlives a switch to another list.
-  const [historyQuery, setHistoryQuery] = useState("");
+  const [historySearch, setHistorySearch] = useState<HistorySearch>(NO_SEARCH);
   const [searchFocus, setSearchFocus] = useState(0);
   // Tabs and the active key change together, so they live in one state (no nested updates).
   const [tabState, setTabState] = useState<{ tabs: Tab[]; active: string | null }>(() => ({ tabs: saved?.tabs ?? [], active: saved?.active ?? null }));
@@ -95,6 +95,12 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     filesPanel.current?.expand();
     fileTree.current?.reveal(path);
   }, []);
+  const showInHistory = useCallback((search: HistorySearch) => {
+    setHistorySearch(search);
+    setListTab("history");
+    listPanel.current?.expand();
+  }, []);
+  const showHistory = useCallback((path: string, file: boolean) => showInHistory({ ...NO_SEARCH, scope: { path, file } }), [showInHistory]);
   const layout = useDefaultLayout({ id: "gitviber-main-v4", storage: localStorage });
   useTerminalSetup(root);
   const terminalOpen = useTerminals().open;
@@ -281,6 +287,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "diff.toggleSplit": () => updateSettings({ sideBySide: !s.sideBySide }),
     "diff.toggleCollapse": () => updateSettings({ hideUnchanged: !s.hideUnchanged }),
     "editor.toggleWrap": () => updateSettings({ wordWrap: !s.wordWrap }),
+    "editor.toggleBlame": () => updateSettings({ blame: !s.blame }),
     "editor.fontZoomIn": () => updateSettings({ codeFontSize: s.codeFontSize + 0.5 }),
     "editor.fontZoomOut": () => updateSettings({ codeFontSize: s.codeFontSize - 0.5 }),
     "editor.fontZoomReset": () => updateSettings({ codeFontSize: DEFAULT_FONT_SIZE }),
@@ -350,7 +357,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
               </div>
               <div className="min-h-0 flex-1">
                 {listTab === "changes" && status && (
-                  <ChangesPanel status={status} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} setViewed={setViewed} onRevealInExplorer={revealInExplorer} />
+                  <ChangesPanel status={status} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} setViewed={setViewed} onRevealInExplorer={revealInExplorer} onShowHistory={(path) => showHistory(path, true)} />
                 )}
                 {listTab === "pulls" && (
                   <PullsPanel
@@ -365,8 +372,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 {listTab === "issues" && <IssuesPanel activeKey={activeKey} onOpen={open} />}
                 {listTab === "history" && (
                   <SearchableHistory
-                    query={historyQuery}
-                    onQuery={setHistoryQuery}
+                    search={historySearch}
+                    onSearch={setHistorySearch}
                     focusRequest={searchFocus}
                     commits={repo.commits}
                     branches={repo.branches}
@@ -399,6 +406,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                   onPin={pin}
                   onMoveTab={moveTab}
                   onOpen={(sel) => open(sel, true)}
+                  onShowHistory={(path) => showHistory(path, true)}
+                  onShowCommit={(sha, path) => showInHistory({ query: sha, scope: null, reveal: { sha, path } })}
                 />
               </ResizablePanel>
               {/* Rendered only while open, so the viewer keeps its state when the panel toggles. */}
@@ -437,7 +446,16 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 </div>
               </div>
               <div className="min-h-0 flex-1">
-                <FileTree ref={fileTree} status={status} revision={repo.revision} activeKey={activeKey} onOpen={open} onHover={prefetch} onPathMoved={onPathMoved} />
+                <FileTree
+                  ref={fileTree}
+                  status={status}
+                  revision={repo.revision}
+                  activeKey={activeKey}
+                  onOpen={open}
+                  onHover={prefetch}
+                  onPathMoved={onPathMoved}
+                  onShowHistory={showHistory}
+                />
               </div>
             </div>
           </ResizablePanel>

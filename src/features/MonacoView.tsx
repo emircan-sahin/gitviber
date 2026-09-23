@@ -1,10 +1,11 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
-import type { DiffPair, DiffRow } from "@/lib/api";
+import type { Blame, BlameCommit, DiffPair, DiffRow } from "@/lib/api";
 import { showLanguage } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
 import { narrow } from "@/lib/indent";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
 import { CODE_FONTS, type Settings, useSettings } from "@/lib/settings";
+import { relativeTime } from "@/lib/utils";
 
 export type CodeMode = "unified" | "split" | "file";
 
@@ -20,6 +21,9 @@ interface Props {
   collapse: boolean;
   wrap: boolean;
   scrollKey: string;
+  /** The file view's blame column: who last changed each line. */
+  blame?: Blame | null;
+  onBlameClick?: (commit: BlameCommit) => void;
 }
 
 type Editor = monaco.editor.IStandaloneDiffEditor | monaco.editor.IStandaloneCodeEditor;
@@ -36,7 +40,7 @@ const CONTEXT = 3;
 const SCREEN = 150;
 
 /** The code view on Monaco (VS Code's editor): a diff editor for changes, a plain one for files. */
-export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey }, ref) {
+export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, blame = null, onBlameClick }, ref) {
   const s = useSettings();
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<Editor | null>(null);
@@ -47,6 +51,11 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   const diff = mode !== "file";
   const lang = useMemo(() => languageFor(path, pair.modified.exists ? pair.modified.text : pair.original.text), [path, pair]);
   const bars = useMemo(() => (diff || !pair.original.exists || !pair.modified.exists ? [] : changeBars(pair.rows)), [diff, pair]);
+  // Read by the file swap (which lands later) and by clicks.
+  const blameRef = useRef(blame);
+  blameRef.current = diff ? null : blame;
+  const onBlameClickRef = useRef(onBlameClick);
+  onBlameClickRef.current = onBlameClick;
 
   useEffect(() => {
     showLanguage(lang);
@@ -59,7 +68,16 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     const el = host.current!;
     const e = diff ? monaco.editor.createDiffEditor(el, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(el, fileOptions(s, wrap));
     editor.current = e;
+    // A click on a blame entry shows its commit.
+    const click = isDiff(e)
+      ? null
+      : e.onMouseDown((ev) => {
+          const line = ev.target.position?.lineNumber;
+          const commit = line && ev.target.element?.classList.contains("gv-blame") ? blameAt(blameRef.current, line) : null;
+          if (commit && !isNew(commit)) onBlameClickRef.current?.(commit);
+        });
     return () => {
+      click?.dispose();
       if (shown.current) viewStates.set(shown.current, e.saveViewState()!);
       shown.current = null;
       const models = modelsOf(e);
@@ -78,6 +96,12 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     if (isDiff(e)) e.updateOptions(diffOptions(s, mode, collapse, wrap));
     else e.updateOptions(fileOptions(s, wrap));
   }, [s, mode, collapse, wrap, diff]);
+
+  // A blame that lands after the file shows; the swap below marks the one it finds.
+  useEffect(() => {
+    const e = editor.current;
+    if (e && !isDiff(e) && shown.current === scrollKey) markBlame(e, blame);
+  }, [blame, scrollKey]);
 
   // Swap in the file: colored and diffed before it's shown, then back where it was left. A new
   // theme swaps it in again: recoloring flushes the tokens the unified view drew deleted lines with.
@@ -115,6 +139,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       } else {
         e.setModel(modified);
         markBars(e, bars);
+        markBlame(e, blameRef.current);
       }
       onScreen = true;
       unit.current = created.unit;
@@ -199,6 +224,76 @@ function markBars(e: monaco.editor.ICodeEditor, bars: ReturnType<typeof changeBa
   );
 }
 
+const blameDecorations = new WeakMap<monaco.editor.ICodeEditor, monaco.editor.IEditorDecorationsCollection>();
+
+/** A line's blame entry; lines git has none for (past its end, not in HEAD) are new. */
+function blameAt(blame: Blame | null, line: number): BlameCommit | null {
+  if (!blame) return null;
+  return blame.commits[blame.lines[line - 1]] ?? NEW_LINE;
+}
+const NEW_LINE: BlameCommit = { sha: "0".repeat(40), authorName: "", authorEmail: "", timestamp: 0, message: "", path: "" };
+const isNew = (c: BlameCommit) => /^0+$/.test(c.sha);
+
+/**
+ * The blame column: one entry per run of lines from the same commit, labeled on its first
+ * line (a class per label, whose ::after holds the text), with the whole message on hover.
+ */
+function markBlame(e: monaco.editor.ICodeEditor, blame: Blame | null) {
+  let collection = blameDecorations.get(e);
+  if (!collection) blameDecorations.set(e, (collection = e.createDecorationsCollection()));
+  const model = e.getModel();
+  if (!blame || !model) return collection.clear();
+  const n = model.getLineCount();
+  const out: monaco.editor.IModelDeltaDecoration[] = [];
+  for (let line = 1; line <= n; ) {
+    const c = blameAt(blame, line)!;
+    let end = line;
+    while (end < n && blameAt(blame, end + 1)!.sha === c.sha) end++;
+    const kind = isNew(c) ? "gv-blame gv-blame-new" : "gv-blame";
+    out.push({
+      range: new monaco.Range(line, 1, end, 1),
+      options: {
+        linesDecorationsClassName: kind,
+        firstLineDecorationClassName: `${kind} gv-blame-first ${blameLabel(c)}`,
+        linesDecorationsTooltip: blameTooltip(c),
+      },
+    });
+    line = end + 1;
+  }
+  collection.set(out);
+}
+
+/** Characters in a blame label: short SHA, author, age. */
+const BLAME_CHARS = 33;
+const AUTHOR_CHARS = 16;
+
+const labelClasses = new Map<string, string>();
+let labelSheet: CSSStyleSheet | null = null;
+
+/** The class that shows `c`'s label, made the first time it's needed. */
+function blameLabel(c: BlameCommit) {
+  const author = c.authorName.length > AUTHOR_CHARS ? `${c.authorName.slice(0, AUTHOR_CHARS - 1)}…` : c.authorName.padEnd(AUTHOR_CHARS);
+  const text = isNew(c) ? "Uncommitted" : `${c.sha.slice(0, 7)} ${author} ${relativeTime(c.timestamp)}`;
+  let cls = labelClasses.get(text);
+  if (cls) return cls;
+  cls = `gvb-${labelClasses.size}`;
+  labelClasses.set(text, cls);
+  if (!labelSheet) {
+    const style = document.createElement("style");
+    document.head.appendChild(style);
+    labelSheet = style.sheet!;
+  }
+  const content = text.replace(/[\\"]/g, "\\$&").replace(/\n/g, " ");
+  labelSheet.insertRule(`.monaco-editor .${cls}::after { content: "${content}"; }`, labelSheet.cssRules.length);
+  return cls;
+}
+
+function blameTooltip(c: BlameCommit) {
+  if (isNew(c)) return "Not committed yet";
+  const when = new Date(c.timestamp * 1000).toLocaleString();
+  return `${c.sha.slice(0, 10)} · ${c.authorName} <${c.authorEmail}> · ${when}\n\n${c.message}\n\nClick to show it in History`;
+}
+
 /** The editor that scrolls: the diff's new side, which carries the old one along. */
 const codeEditor = (e: Editor) => (isDiff(e) ? e.getModifiedEditor() : e);
 
@@ -276,7 +371,9 @@ function diffOptions(s: Settings, mode: CodeMode, collapse: boolean, wrap: boole
 }
 
 function fileOptions(s: Settings, wrap: boolean): monaco.editor.IStandaloneEditorConstructionOptions {
-  return { ...common(s, wrap), lineDecorationsWidth: 12 };
+  // Blame's column, set aside at once so the code doesn't jump when blame lands: its label goes
+  // after the change bars (index.css), in the code font's widths.
+  return { ...common(s, wrap), lineDecorationsWidth: s.blame ? `${BLAME_CHARS + 3}ch` : 12 };
 }
 
 /** Lines to mark in the file view: added, modified, and where lines were deleted. */

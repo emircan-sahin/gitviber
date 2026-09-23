@@ -32,6 +32,7 @@ export const COMMANDS = [
   { id: "diff.toggleSplit", title: "Toggle Unified / Split", category: "Diff", keys: ["alt+s"] },
   { id: "diff.toggleCollapse", title: "Toggle Collapse Unchanged", category: "Diff", keys: ["alt+c"] },
   { id: "editor.toggleWrap", title: "Toggle Word Wrap", category: "Editor", keys: ["alt+z"] },
+  { id: "editor.toggleBlame", title: "Toggle Blame", category: "Editor", keys: [] },
   { id: "editor.fontZoomIn", title: "Increase Code Font Size", category: "Editor", keys: ["alt+cmd+="] },
   { id: "editor.fontZoomOut", title: "Decrease Code Font Size", category: "Editor", keys: ["alt+cmd+-"] },
   { id: "editor.fontZoomReset", title: "Reset Code Font Size", category: "Editor", keys: ["alt+cmd+0"] },

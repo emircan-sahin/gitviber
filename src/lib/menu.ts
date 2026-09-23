@@ -20,6 +20,7 @@ const CHECKED: Partial<Record<Action, (s: Settings) => boolean>> = {
   "diff.toggleSplit": (s) => s.sideBySide,
   "diff.toggleCollapse": (s) => s.hideUnchanged,
   "editor.toggleWrap": (s) => s.wordWrap,
+  "editor.toggleBlame": (s) => s.blame,
 };
 
 let recent: { list: string[]; open: (path: string) => void; clear: () => void } | null = null;

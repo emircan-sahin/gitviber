@@ -61,6 +61,8 @@ export interface Settings {
   markdownPreview: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
   svgPreview: boolean;
+  /** The file view shows who last changed each line. Set from the viewer, not the dialog. */
+  blame: boolean;
   /** Per-command overrides of the default key bindings; an empty list unbinds. */
   keybindings: Record<string, string[]>;
 }
@@ -82,6 +84,7 @@ const DEFAULTS: Settings = {
   uiScale: 1,
   markdownPreview: true,
   svgPreview: false,
+  blame: false,
   keybindings: {},
 };
 
@@ -99,6 +102,7 @@ function load(): Settings {
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
+    if (typeof s.blame !== "boolean") s.blame = DEFAULTS.blame;
     s.keybindings = cleanOverrides(s.keybindings);
     return s;
   } catch {

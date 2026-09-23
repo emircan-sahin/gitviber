@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ChevronRight, Copy, File, FilePlus, FolderPlus, FolderSearch, Pencil, Trash2, Undo2 } from "lucide-react";
+import { ChevronRight, Copy, File, FilePlus, FolderPlus, FolderSearch, History, Pencil, Trash2, Undo2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
@@ -23,6 +23,8 @@ interface Props {
   onHover: (s: Selection) => void;
   /** An entry was renamed (`to`) or trashed (`to` = null), so open tabs can follow it. */
   onPathMoved: (from: string, to: string | null) => void;
+  /** History, filtered to a file's commits (followed through renames) or a folder's. */
+  onShowHistory: (path: string, file: boolean) => void;
   ref?: React.Ref<FileTreeHandle>;
 }
 
@@ -35,7 +37,7 @@ const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 const isInside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 
 /** Lazy tree of the working directory, like VS Code's explorer, annotated with git status. */
-export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathMoved, ref }: Props) {
+export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathMoved, onShowHistory, ref }: Props) {
   const [children, setChildren] = useState<Record<string, Entry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
   // Keyboard cursor, separate from the open tab (activeKey) like VS Code's focused item.
@@ -352,6 +354,14 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
             </ContextMenuItem>
             <ContextMenuItem onSelect={() => startEditing({ mode: "new", parent: menuDir, isDir: true })}>
               <FolderPlus /> New Folder…
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        )}
+        {t && (
+          <>
+            <ContextMenuItem disabled={t.ignored || fileStatus.get(t.path) === "?"} onSelect={() => onShowHistory(t.path, !t.isDir)}>
+              <History /> Show History
             </ContextMenuItem>
             <ContextMenuSeparator />
           </>
