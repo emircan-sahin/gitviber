@@ -5,7 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GitViber</title>
     <!-- A reload (⌘R) paints before any CSS or module loads: start on the theme's color, not
-         white. Mirrors settings.ts (appearance) and index.css (body's --sidebar). -->
+         white. Mirrors settings.ts (appearance) and index.css (body's --sidebar).
+         tauri.conf.json keeps Tauri from giving this tag a style-src nonce: a nonce turns off
+         'unsafe-inline', and Monaco's syntax colors are inline styles it adds at runtime. -->
     <style>
       html { background: #0e0e0f; }
       html[data-theme="dim"] { background: #1c1c1f; }

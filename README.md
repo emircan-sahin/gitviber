@@ -61,6 +61,7 @@ pnpm install
 pnpm tauri dev      # run the app (takes the next free port if 1420 is in use)
 pnpm tauri dev --port 1421   # or pick one
 pnpm tauri build    # release bundle
+pnpm install:mac    # release build, installed into /Applications (quits and replaces the running one)
 pnpm check          # what CI runs: build, tests, rustfmt, clippy
 ```
 

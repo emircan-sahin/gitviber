@@ -12,7 +12,8 @@
     "check:rust": "cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test",
     "check:licenses": "node scripts/licenses.mjs --check",
     "licenses:generate": "node scripts/licenses.mjs",
-    "tauri": "node scripts/tauri.mjs"
+    "tauri": "node scripts/tauri.mjs",
+    "install:mac": "sh scripts/install-mac.sh"
   },
   "dependencies": {
     "@dnd-kit/core": "6.3.1",
