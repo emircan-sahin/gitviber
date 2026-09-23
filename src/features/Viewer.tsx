@@ -16,8 +16,6 @@ import { IssueStateIcon } from "./IssuesPanel";
 import { IssueView } from "./IssueView";
 import { CopyLinkButton, openOnGitHub, PullStateIcon } from "./PullsPanel";
 import { PullView } from "./PullView";
-import { prepare } from "@/lib/monaco";
-import { languageFor } from "@/lib/language";
 import { FileIcon } from "./FileIcon";
 import { isSvg, MediaView, mediaKind, SvgView } from "./MediaView";
 import { isMarkdown, MarkdownView } from "./MarkdownView";
@@ -189,19 +187,15 @@ function remember(key: string, pair: DiffPair, gen: number) {
   if (pairCache.size > 32) pairCache.delete(pairCache.keys().next().value!);
 }
 
-/** Loads a diff and its language's grammar in the background, so opening it next is instant. */
-export function prefetchSelection(sel: Selection, revision: number, theme: string) {
+/** Loads a diff in the background, so opening it next is instant. */
+export function prefetchSelection(sel: Selection, revision: number) {
   if (sel.kind === "pull" || sel.kind === "issue") return;
   const { kind, path, oldPath, sha, base, key } = pairArgs(sel, revision);
   if (pairCache.has(key)) return;
   const gen = generation;
   api
     .diffPair(kind, path, oldPath, sha, base)
-    .then((p) => {
-      remember(key, p, gen);
-      // Same text the view detects from, so it's the grammar the view will ask for.
-      void prepare(languageFor(path, p.modified.exists ? p.modified.text : p.original.text), theme);
-    })
+    .then((p) => remember(key, p, gen))
     .catch(() => {});
 }
 

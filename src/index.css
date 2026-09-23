@@ -441,3 +441,13 @@
   border-block: 3px solid transparent;
   border-left: 5px solid var(--removed);
 }
+
+/* Unified diffs: Monaco shades the old-line-number column of a whole change, added lines too, which
+   read as deletions. Deleted lines keep their shade from their own margin. */
+.monaco-diff-editor:not(.side-by-side) .gutter-delete {
+  background: none !important;
+}
+/* A deleted line with no word-level changes gets the emphasis over all of it; its line color is enough. */
+.monaco-editor .view-line.char-delete {
+  background: none !important;
+}

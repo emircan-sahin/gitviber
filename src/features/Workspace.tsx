@@ -240,7 +240,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     if (conflictCount > 0) setListTab("changes");
   }, [conflictCount]);
 
-  const prefetch = useCallback((sel: Selection) => prefetchSelection(sel, repo.revision, s.codeTheme), [repo.revision, s.codeTheme]);
+  const prefetch = useCallback((sel: Selection) => prefetchSelection(sel, repo.revision), [repo.revision]);
 
   // Load the highlighters (and compile their WASM) while the app settles, not on the first file.
   useEffect(() => {
@@ -256,8 +256,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useEffect(() => {
     const i = changes.findIndex((c) => selectionKey(c) === activeKey);
     if (i < 0) return;
-    for (const n of [changes[i + 1], changes[i - 1]]) if (n) prefetchSelection(n, repo.revision, s.codeTheme);
-  }, [changes, activeKey, repo.revision, s.codeTheme]);
+    for (const n of [changes[i + 1], changes[i - 1]]) if (n) prefetchSelection(n, repo.revision);
+  }, [changes, activeKey, repo.revision]);
 
   // J/K walk the changed files, the core loop of reviewing an agent's work.
   const step = (dir: 1 | -1) => {
