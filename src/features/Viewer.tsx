@@ -295,6 +295,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile));
 
   const diff = !isFile && !media && !rendered;
+  const note = diff && pair && !special ? (pair.eolOnly ? "Only line endings changed" : pair.whitespaceHidden ? "Whitespace changes hidden" : null) : null;
   const code = !media && !rendered && !!pair && !special;
   const blame = useBlame(isFile && code && s.blame ? sel.path : null, pair, status?.head ?? null);
   useCommands({
@@ -316,10 +317,13 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
         {file?.oldPath && <span className="truncate text-[11.5px] text-subtle">← {file.oldPath}</span>}
         {file && <LineCounts file={file} />}
         {file && <StatusPill status={file.status} />}
-        <div className="ml-auto flex shrink-0 items-center gap-1">
-          {diff && pair && !special && (pair.eolOnly || pair.whitespaceHidden) && (
-            <span className="mr-1 text-[11.5px] text-subtle">{pair.eolOnly ? "Only line endings changed" : "Whitespace changes hidden"}</span>
-          )}
+        {note && (
+          // Gives way first as the pane narrows (shrinks far faster than the file name), never the buttons.
+          <Tip label={note}>
+            <span className="ml-auto min-w-0 shrink-[1000] truncate text-[11.5px] text-subtle">{note}</span>
+          </Tip>
+        )}
+        <div className={cn("flex shrink-0 items-center gap-1", !note && "ml-auto")}>
           {diff && (
             <>
               <IconBtn label="Previous change" command="diff.prevChange" onClick={() => view.current?.prev()}>

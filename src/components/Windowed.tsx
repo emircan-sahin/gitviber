@@ -1,28 +1,18 @@
-import { isValidElement, type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
+import { isValidElement, type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { renderedRows, visibleRows } from "@/lib/windowing";
 
 /** Up to this many rows render as they are; windowing pays off only for long lists. */
 const ALL = 150;
 const OVERSCAN = 12;
 
 /**
- * Fixed-height rows inside the scrolling `scroller`, rendered only around what's on screen once
+ * Fixed-height rows inside their scrolling ancestor, rendered only around what's on screen once
  * there are many (thousands of untracked files). `keep` rows render wherever they are, so the
  * active row can still scroll itself into view and the tab stop can still take focus.
  */
-export function Windowed({
-  count,
-  height,
-  scroller,
-  keep,
-  render,
-}: {
-  count: number;
-  height: number;
-  scroller: RefObject<HTMLElement | null>;
-  keep: number[];
-  render: (i: number) => ReactNode;
-}) {
+export function Windowed({ count, height, keep, render }: { count: number; height: number; keep: number[]; render: (i: number) => ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
+  const scroller = useRef<HTMLElement | null>(null);
   const [range, setRange] = useState<[number, number]>([0, 0]);
   const windowed = count > ALL;
 
@@ -31,17 +21,18 @@ export function Windowed({
     const el = box.current;
     const sc = scroller.current;
     if (!el || !sc) return;
-    const top = sc.getBoundingClientRect().top - el.getBoundingClientRect().top;
-    const first = Math.max(0, Math.floor(top / height) - OVERSCAN);
-    const last = Math.min(count, Math.ceil((top + sc.clientHeight) / height) + OVERSCAN);
-    setRange((r) => (r[0] === first && r[1] === last ? r : [first, last]));
+    const offset = sc.getBoundingClientRect().top - el.getBoundingClientRect().top;
+    const next = visibleRows(offset, sc.clientHeight, height, count, OVERSCAN);
+    setRange((r) => (r[0] === next[0] && r[1] === next[1] ? r : next));
   };
-  // Every render: what sits above (another section growing, say) moves this list without a scroll.
-  useLayoutEffect(() => update.current());
+  // The scroller is found from the box, not passed as a ref: on the first mount a parent's ref
+  // isn't attached yet when these effects run, and the list then never followed its scrolling.
   useLayoutEffect(() => {
-    const sc = scroller.current;
-    if (!windowed || !sc) return;
+    const sc = windowed ? scrollParent(box.current) : null;
+    scroller.current = sc;
+    if (!sc) return;
     const onChange = () => update.current();
+    onChange();
     sc.addEventListener("scroll", onChange, { passive: true });
     const resize = new ResizeObserver(onChange);
     resize.observe(sc);
@@ -49,24 +40,26 @@ export function Windowed({
       sc.removeEventListener("scroll", onChange);
       resize.disconnect();
     };
-  }, [windowed, scroller]);
+  }, [windowed]);
+  // Every render: what sits above (another section growing, say) moves this list without a scroll.
+  useLayoutEffect(() => update.current());
 
   if (!windowed) return <>{Array.from({ length: count }, (_, i) => render(i))}</>;
-  const shown = new Set<number>();
-  for (let i = range[0]; i < Math.min(range[1], count); i++) shown.add(i);
-  for (const i of keep) if (i >= 0 && i < count) shown.add(i);
   return (
     <div ref={box} style={{ position: "relative", height: count * height }}>
-      {[...shown]
-        .sort((a, b) => a - b)
-        .map((i) => {
-          const row = render(i);
-          return (
-            <div key={isValidElement(row) && row.key !== null ? row.key : i} style={{ position: "absolute", top: i * height, left: 0, right: 0 }}>
-              {row}
-            </div>
-          );
-        })}
+      {renderedRows(range, keep, count).map((i) => {
+        const row = render(i);
+        return (
+          <div key={isValidElement(row) && row.key !== null ? row.key : i} style={{ position: "absolute", top: i * height, left: 0, right: 0 }}>
+            {row}
+          </div>
+        );
+      })}
     </div>
   );
+}
+
+function scrollParent(el: HTMLElement | null) {
+  for (let p = el?.parentElement; p; p = p.parentElement) if (/auto|scroll/.test(getComputedStyle(p).overflowY)) return p;
+  return null;
 }
