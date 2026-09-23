@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { bindingsFor, COMMANDS, eventChord, isCommandId } from "./commands";
 import { type Action, hasHandler, MENU_ACTIONS, onHandlersChange, runCommand } from "./keybindings";
+import { lastOpenApp, subscribeOpenApps } from "./openIn";
 import { getSettings, type Settings, subscribeSettings } from "./settings";
 import { folderName } from "./worktrees";
 
@@ -22,6 +23,13 @@ const CHECKED: Partial<Record<Action, (s: Settings) => boolean>> = {
   "editor.toggleWrap": (s) => s.wordWrap,
 };
 
+const TEXT: Partial<Record<Action, (s: Settings) => string>> = {
+  "file.openIn": (s) => {
+    const app = lastOpenApp(s);
+    return app ? `Open in ${app.name}` : "Open in…";
+  },
+};
+
 let recent: { list: string[]; open: (path: string) => void; clear: () => void } | null = null;
 
 // Only what changed is sent: each item update is a call into AppKit.
@@ -38,6 +46,7 @@ function send() {
       enabled: hasHandler(id),
       accelerator: (isCommandId(id) ? bindingsFor(id, s.keybindings)[0] : FIXED_KEYS[id]) ?? null,
       checked: CHECKED[id]?.(s),
+      text: TEXT[id]?.(s),
     });
     if (sent.get(id) === state) continue;
     sent.set(id, state);
@@ -81,6 +90,7 @@ try {
 }
 onHandlersChange(update);
 subscribeSettings(update);
+subscribeOpenApps(update);
 update();
 
 /** File → Open Recent: the projects list. */

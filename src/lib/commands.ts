@@ -12,6 +12,8 @@ export const COMMANDS = [
   { id: "repo.refresh", title: "Refresh", category: "General", keys: [] },
   { id: "tab.close", title: "Close Tab", category: "General", keys: ["cmd+w"] },
   { id: "file.reveal", title: "Reveal in Finder", category: "General", keys: [] },
+  // The app last picked under "Open in"; the list of apps until there is one.
+  { id: "file.openIn", title: "Open in External App", category: "General", keys: ["shift+cmd+o"] },
   { id: "view.changes", title: "Show Changes", category: "View", keys: ["cmd+1"] },
   { id: "view.history", title: "Show History", category: "View", keys: ["cmd+2"] },
   { id: "view.pulls", title: "Show Pull Requests", category: "View", keys: ["cmd+3"] },

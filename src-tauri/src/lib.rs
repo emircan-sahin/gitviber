@@ -6,6 +6,7 @@ mod github;
 mod journal;
 mod menu;
 mod navigation;
+mod open_in;
 mod pty;
 #[cfg(test)]
 mod scenario_tests;
@@ -407,6 +408,36 @@ async fn trash_path(state: State<'_, AppState>, path: String) -> Res<()> {
 async fn reveal_path(state: State<'_, AppState>, path: String) -> Res<()> {
     let r = repo(&state)?;
     blocking(move || fs::reveal(&r, &path)).await
+}
+
+/// The apps "Open in…" can use, as installed right now.
+#[tauri::command]
+async fn open_in_apps() -> Res<Vec<open_in::Installed>> {
+    blocking(|| Ok(open_in::installed())).await
+}
+
+/// `path` in the open worktree ("" for all of it) in a known app; editors go to `line`.
+#[tauri::command]
+async fn open_in(
+    state: State<'_, AppState>,
+    app: String,
+    path: String,
+    line: Option<u32>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || open_in::open(&r, &path, line, &app)).await
+}
+
+/// The same with the user's own command template.
+#[tauri::command]
+async fn open_in_custom(
+    state: State<'_, AppState>,
+    command: String,
+    path: String,
+    line: Option<u32>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || open_in::open_custom(&r, &path, line, &command)).await
 }
 
 #[derive(serde::Serialize)]
@@ -1146,6 +1177,9 @@ pub fn run() {
             rename_path,
             trash_path,
             reveal_path,
+            open_in_apps,
+            open_in,
+            open_in_custom,
             project_info,
             reveal_project,
             undo_commit,

@@ -65,6 +65,13 @@ export const LIGHT_SYNTAX_THEMES = {
 } as const;
 export type LightSyntaxTheme = keyof typeof LIGHT_SYNTAX_THEMES;
 
+/** A user's own "Open in" entry: a command with {path}, {file} and {line}, run without a shell (open_in.rs). */
+export interface CustomApp {
+  id: string;
+  name: string;
+  command: string;
+}
+
 export type Appearance = "system" | "light" | "dark" | "dim";
 /** The palettes behind [data-theme] in index.css; dark and dim both count as dark. */
 export type Theme = "light" | "dark" | "dim";
@@ -97,6 +104,11 @@ export interface Settings {
   keybindings: Record<string, string[]>;
   /** Repos (main worktree paths) whose commits are signed off: people who sign off always do. Set from the commit box. */
   signOffRepos: string[];
+  /** The app "Open in" runs on a click: a built-in id or a CustomApp's; "" until one is picked. */
+  openInApp: string;
+  openInCustom: CustomApp[];
+  /** List only the user's own "Open in" entries. */
+  openInHideBuiltins: boolean;
 }
 
 export const DEFAULT_FONT_SIZE = 12.5;
@@ -123,6 +135,9 @@ const DEFAULTS: Settings = {
   svgPreview: false,
   keybindings: {},
   signOffRepos: [],
+  openInApp: "",
+  openInCustom: [],
+  openInHideBuiltins: false,
 };
 
 // v2: the Monaco-era settings had different fonts and sizes.
@@ -146,6 +161,11 @@ function load(): Settings {
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     s.keybindings = cleanOverrides(s.keybindings);
     s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;
+    if (typeof s.openInApp !== "string") s.openInApp = DEFAULTS.openInApp;
+    s.openInCustom = Array.isArray(s.openInCustom)
+      ? s.openInCustom.filter((c: CustomApp) => c && typeof c.id === "string" && typeof c.name === "string" && typeof c.command === "string")
+      : DEFAULTS.openInCustom;
+    if (typeof s.openInHideBuiltins !== "boolean") s.openInHideBuiltins = DEFAULTS.openInHideBuiltins;
     return s;
   } catch {
     return DEFAULTS;
