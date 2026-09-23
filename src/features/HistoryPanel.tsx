@@ -46,12 +46,19 @@ interface Props {
   web?: string;
   /** What an empty list says. */
   empty?: string;
-  /** A commit to open when it shows up (blame's link to it). */
-  openSha?: string;
+  /** Blame's link: open this commit and this file in it, once per `id` (each click is new). */
+  reveal?: Reveal | null;
   /** This repo's worktrees: a commit can be picked onto the branch checked out in another. */
   worktrees?: Worktree[];
   /** Opens a worktree in this window. */
   onOpenRepo?: (path: string) => void;
+}
+
+/** Blame's link to a commit: open it and `path` (the file's name there). `id` is new per click. */
+export interface Reveal {
+  sha: string;
+  path: string;
+  id: number;
 }
 
 /** What a commit's context menu needs from the panel. */
@@ -75,11 +82,11 @@ interface Actions {
 const commitUrl = (c: Commit, { webUrl, everyOnWeb }: Pick<Actions, "webUrl" | "everyOnWeb">) =>
   webUrl && (c.onOrigin || everyOnWeb) ? `${webUrl}/commit/${c.sha}` : undefined;
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", openSha, worktrees = [], onOpenRepo }: Props) {
-  const [open, setOpen] = useState<string | null>(openSha ?? null);
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", reveal = null, worktrees = [], onOpenRepo }: Props) {
+  const [open, setOpen] = useState<string | null>(reveal?.sha ?? null);
   useEffect(() => {
-    if (openSha) setOpen(openSha);
-  }, [openSha]);
+    if (reveal) setOpen(reveal.sha);
+  }, [reveal]);
   const scroller = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ el: HTMLElement; top: number } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -170,6 +177,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
           first={i === 0}
           last={i === commits.length - 1}
           open={open === c.sha}
+          reveal={reveal?.sha === c.sha ? reveal : null}
           onToggle={(el) => toggle(c.sha, el)}
           activeKey={activeKey}
           onOpen={onOpen}
@@ -444,6 +452,7 @@ function CommitRow({
   first,
   last,
   open,
+  reveal,
   onToggle,
   activeKey,
   onOpen,
@@ -456,6 +465,7 @@ function CommitRow({
   first: boolean;
   last: boolean;
   open: boolean;
+  reveal: Reveal | null;
   onToggle: (row: HTMLElement) => void;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
@@ -464,6 +474,7 @@ function CommitRow({
   menu: React.ReactNode;
 }) {
   const [files, setFiles] = useState<FileChange[] | null>(null);
+  const revealed = useRef<number | null>(null);
 
   useEffect(() => {
     if (!open || files) return;
@@ -473,6 +484,8 @@ function CommitRow({
       .then((f) => {
         if (!alive) return;
         setFiles(f);
+        // A blame click waiting on these files opens its own file (below).
+        if (reveal && revealed.current !== reveal.id) return;
         // Jump straight into the file (a file's history: that one) so one click shows code.
         const file = f.find((x) => x.path === commit.file) ?? f[0];
         if (file) onOpen({ kind: "commit", commit, file, url });
@@ -482,7 +495,15 @@ function CommitRow({
     return () => {
       alive = false;
     };
-  }, [open, files, commit, url, onOpen]);
+  }, [open, files, commit, url, onOpen, reveal]);
+
+  // Each blame click opens its file, also on a row that's open already or was loaded before.
+  useEffect(() => {
+    if (!reveal || !open || !files || revealed.current === reveal.id) return;
+    revealed.current = reveal.id;
+    const file = files.find((x) => x.path === reveal.path) ?? files[0];
+    if (file) onOpen({ kind: "commit", commit, file, url });
+  }, [reveal, open, files, commit, url, onOpen]);
 
   const merge = commit.parents.length > 1;
   const add = files?.reduce((n, f) => n + (f.additions ?? 0), 0) ?? 0;

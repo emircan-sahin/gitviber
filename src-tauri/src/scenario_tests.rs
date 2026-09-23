@@ -287,6 +287,16 @@ fn blame_attributes_lines() {
     )
     .unwrap();
     assert_eq!(at(&blame(&r, "f.txt").unwrap(), 1), "First");
+    assert!(blame(&r, "f.txt").unwrap().unavailable.is_none());
+
+    // A Git LFS file: git has only its pointer, whose lines say nothing about the file's.
+    let pointer = format!(
+        "version https://git-lfs.github.com/spec/v1\noid sha256:{}\nsize 12345\n",
+        "a".repeat(64)
+    );
+    write_commit(&r, "big.bin", &pointer, "Add big file");
+    let lfs = blame(&r, "big.bin").unwrap();
+    assert!(lfs.unavailable.is_some() && lfs.lines.is_empty());
 }
 
 /// History search: words, author, pickaxe, a path, a file followed through a rename, a SHA.

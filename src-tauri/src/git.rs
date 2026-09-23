@@ -1288,6 +1288,18 @@ pub struct Blame {
     pub commits: Vec<BlameCommit>,
     /// For each line of the working-tree file, its commit's index in `commits`.
     pub lines: Vec<u32>,
+    /// Why this file has no blame (a Git LFS file), in place of all-new lines.
+    pub unavailable: Option<String>,
+}
+
+/// `path` in HEAD is a Git LFS pointer: git blames the pointer's three lines, not the file.
+fn lfs_in_head(repo: &Path, path: &str) -> bool {
+    let spec = format!("HEAD:{path}");
+    let small = run_text(repo, &["cat-file", "-s", &spec])
+        .ok()
+        .and_then(|n| n.trim().parse::<u64>().ok())
+        .is_some_and(|n| n < 1024);
+    small && run(repo, &["cat-file", "blob", &spec]).is_ok_and(|b| lfs::pointer(&b).is_some())
 }
 
 /// Which commit last changed each line of the working-tree file. It's git's own blame, so the
@@ -1295,6 +1307,12 @@ pub struct Blame {
 pub fn blame(repo: &Path, path: &str) -> Result<Blame, String> {
     if !has_head(repo) {
         return Ok(Blame::default());
+    }
+    if lfs_in_head(repo, path) {
+        return Ok(Blame {
+            unavailable: Some("No blame for Git LFS files: git only has their pointers.".into()),
+            ..Default::default()
+        });
     }
     // Unquoted: the path a commit had goes back to the frontend to find the file in it.
     let args = [
