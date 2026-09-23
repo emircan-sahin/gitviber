@@ -302,7 +302,9 @@ function markBlame(e: monaco.editor.ICodeEditor, blame: Blame | null) {
   if (!collection) blameDecorations.set(e, (collection = e.createDecorationsCollection()));
   const model = e.getModel();
   if (!blame || !model) return collection.clear();
-  const n = model.getLineCount();
+  // A final newline leaves an empty last line in the editor that isn't a line to git: no entry.
+  const count = model.getLineCount();
+  const n = count > 1 && count > blame.lines.length && model.getLineContent(count) === "" ? count - 1 : count;
   const out: monaco.editor.IModelDeltaDecoration[] = [];
   for (let line = 1; line <= n; ) {
     const c = blameAt(blame, line)!;
