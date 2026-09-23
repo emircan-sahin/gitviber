@@ -88,6 +88,7 @@ While you type, only shortcuts with `⌘`, `⌃` or an F-key apply, except `⌘�
 | `⇧⌘G` `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer |
 | `F6` `⇧F6` | Focus the next / previous panel |
 | `→` `⎋` | From a file in a list to its code, and back |
+| `↑` `↓` `PgUp` `PgDn` `Space` `Home` `End` | Scroll the focused code view, `←` `→` sideways |
 | `⌘J` or `⌃` `` ` `` | Toggle the terminal |
 | `⌘T` `⌘D` `⌘K` | New terminal, split, clear (in the terminal) |
 | `⌘=` `⌘−` `⌘0` | Zoom the interface |
