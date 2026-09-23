@@ -11,6 +11,7 @@ import { useCommands, useShortcut } from "@/lib/keybindings";
 import { languageLabel } from "@/lib/language";
 import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/panels";
+import type { OpenTarget } from "@/lib/openIn";
 import { loadWorkspace, saveWorkspace } from "@/lib/session";
 import { codeFontName, DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { arrayMove } from "@dnd-kit/sortable";
@@ -23,6 +24,8 @@ import { ChangesPanel, changeList } from "./ChangesPanel";
 import { FileTree, type FileTreeHandle } from "./FileTree";
 import { type HistorySearch, NO_SEARCH, SearchableHistory } from "./HistorySearch";
 import { IssuesPanel } from "./IssuesPanel";
+import { lineInView } from "./MonacoView";
+import { OpenInButton } from "./OpenIn";
 import { PullsPanel } from "./PullsPanel";
 import { TerminalPanel, TerminalRestoreOffer, useTerminalSetup } from "./TerminalPanel";
 import { changeTotals, TopBar } from "./TopBar";
@@ -532,7 +535,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
-      <StatusBar repo={repo} reviewed={changes.filter(viewed).length} />
+      <StatusBar repo={repo} reviewed={changes.filter(viewed).length} openTarget={() => openTarget(active?.sel)} />
       <TerminalRestoreOffer />
     </div>
   );
@@ -570,7 +573,7 @@ function ListTabButton({ active, onClick, count, children }: { active: boolean; 
   );
 }
 
-function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; reviewed: number }) {
+function StatusBar({ repo, reviewed, openTarget }: { repo: ReturnType<typeof useRepo>; reviewed: number; openTarget: () => OpenTarget }) {
   const s = useSettings();
   const language = useShownLanguage();
   const wrapKey = useShortcut("editor.toggleWrap");
@@ -620,6 +623,7 @@ function StatusBar({ repo, reviewed }: { repo: ReturnType<typeof useRepo>; revie
       </Tip>
       {language && <span>{languageLabel(language)}</span>}
       <VersionInfo />
+      <OpenInButton target={openTarget} />
     </div>
   );
 }
@@ -641,4 +645,11 @@ function VersionInfo() {
 function revealInFinder(sel: Selection | undefined) {
   const path = sel && ["file", "unstaged", "staged", "conflict"].includes(sel.kind) ? selectionPath(sel) : "";
   api.revealPath(path).catch((e) => toast("error", "Could not reveal in Finder", errorMessage(e)));
+}
+
+/** The open file while it's on disk, at the line in view; else the whole worktree. */
+function openTarget(sel: Selection | undefined): OpenTarget {
+  const change = sel?.kind === "unstaged" || sel?.kind === "staged" || sel?.kind === "conflict";
+  const path = sel?.kind === "file" ? sel.path : change && sel.file.status !== "D" ? sel.file.path : null;
+  return path === null ? { path: "" } : { path, line: lineInView(path) };
 }

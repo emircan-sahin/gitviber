@@ -10,6 +10,7 @@ import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
 import { cn } from "@/lib/utils";
 import { FileIcon, FolderIcon } from "./FileIcon";
+import { OpenInMenuItem } from "./OpenIn";
 import { statusInfo } from "./StatusBadge";
 
 export interface FileTreeHandle {
@@ -377,6 +378,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
         <ContextMenuItem onSelect={() => reveal(t?.path ?? "")}>
           <FolderSearch /> {REVEAL_LABEL}
         </ContextMenuItem>
+        <OpenInMenuItem path={t?.path ?? ""} />
         <ContextMenuItem disabled={!status} onSelect={() => status && copy(t ? `${status.root}/${t.path}` : status.root, "Path copied")}>
           <Copy /> Copy Path
         </ContextMenuItem>

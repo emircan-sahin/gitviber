@@ -50,6 +50,7 @@ import { tracked, undoAction } from "@/lib/undo";
 import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED, stageable } from "@/lib/worktrees";
 import { FileIcon } from "./FileIcon";
+import { OpenInMenuItem } from "./OpenIn";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
 interface Props {
@@ -282,6 +283,7 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
         <ContextMenuItem disabled={!onDisk} onSelect={() => api.revealPath(file.path).catch((e) => toast("error", "Could not reveal in Finder", errorMessage(e)))}>
           <FolderSearch /> {REVEAL_LABEL}
         </ContextMenuItem>
+        <OpenInMenuItem path={file.path} disabled={!onDisk} />
         <ContextMenuSeparator />
         <ContextMenuItem onSelect={() => copy(paths(rows).map((p) => `${status.root}/${p}`).join("\n"), n > 1 ? `${n} paths copied` : "Path copied")}>
           <Copy /> {n > 1 ? "Copy Paths" : "Copy Path"}

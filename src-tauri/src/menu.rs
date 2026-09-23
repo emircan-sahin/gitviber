@@ -22,6 +22,8 @@ pub struct ItemState {
     /// A chord as commands.ts writes it ("shift+cmd+e"); one muda can't parse shows none.
     accelerator: Option<String>,
     checked: Option<bool>,
+    /// For items named after something the page knows ("Open in Zed").
+    text: Option<String>,
 }
 
 #[derive(serde::Deserialize, PartialEq, Clone)]
@@ -105,6 +107,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &b.command("tab.close", "Close Tab")?,
             &sep()?,
             &b.command("file.reveal", REVEAL)?,
+            &b.command("file.openIn", "Open in…")?,
         ],
     )?;
 
@@ -247,6 +250,9 @@ pub fn update(
             Some(MenuItemKind::MenuItem(item)) => {
                 item.set_enabled(state.enabled)?;
                 item.set_accelerator(state.accelerator)?;
+                if let Some(text) = state.text {
+                    item.set_text(text)?;
+                }
             }
             Some(MenuItemKind::Check(item)) => {
                 item.set_enabled(state.enabled)?;

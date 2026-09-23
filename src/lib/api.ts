@@ -227,6 +227,12 @@ export interface Journal {
   redoBlocked: string | null;
 }
 
+export interface OpenInApp {
+  id: string;
+  name: string;
+  group: "editor" | "terminal" | "other";
+}
+
 export type DiffKind = "unstaged" | "staged" | "worktree" | "commit" | "range";
 
 export interface About {
@@ -377,6 +383,12 @@ export const api = {
   /** Moves to the macOS Trash, so it can be put back. */
   trashPath: (path: string) => invoke<void>("trash_path", { path }),
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
+  /** Known editors, terminals and git apps found on this machine (open_in.rs). */
+  openInApps: () => invoke<OpenInApp[]>("open_in_apps"),
+  /** `path` in the worktree ("" for all of it) in an app; editors that can go to `line` do. */
+  openIn: (app: string, path: string, line?: number) => invoke<void>("open_in", { app, path, line }),
+  /** The same with the user's own command. */
+  openInCustom: (command: string, path: string, line?: number) => invoke<void>("open_in_custom", { command, path, line }),
   /** Any saved project's folder, not just the open repo's. */
   revealProject: (path: string) => invoke<void>("reveal_project", { path }),
   projectInfo: (paths: string[]) => invoke<ProjectInfo[]>("project_info", { paths }),

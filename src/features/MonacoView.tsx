@@ -40,6 +40,14 @@ const CONTEXT = 3;
 // Lines past where a file opens that are colored before it shows.
 const SCREEN = 150;
 
+// The file on show and where it's read, for "Open in" an editor at that line.
+let onShow: { path: string; line: () => number } | null = null;
+
+/** The line being read in `path` if the code view shows it: the cursor's if it's on screen, else the top one. */
+export function lineInView(path: string): number | undefined {
+  return onShow?.path === path ? onShow.line() : undefined;
+}
+
 /** The code view on Monaco (VS Code's editor): a diff editor for changes, a plain one for files. */
 export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, blame = null, onBlameClick }, ref) {
   const s = useSettings();
@@ -115,6 +123,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     let onScreen = false;
     let models: monaco.editor.ITextModel[] = [];
     let stopRedraw = () => {};
+    const shows = { path, line: () => readingLine(codeEditor(e)) };
     (async () => {
       await prepare(lang, s.codeTheme);
       if (stale) return;
@@ -146,6 +155,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
         markBlame(e, blameRef.current);
       }
       onScreen = true;
+      onShow = shows;
       unit.current = created.unit;
       old.forEach((m) => m.dispose());
       shown.current = scrollKey;
@@ -166,6 +176,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     return () => {
       stale = true;
       stopRedraw();
+      if (onShow === shows) onShow = null;
       if (!onScreen) return models.forEach((m) => m.dispose());
       // Still on the editor (not disposed with it): remember where it was left.
       if (editor.current === e) viewStates.set(scrollKey, e.saveViewState()!);
@@ -354,6 +365,13 @@ function originalLineAt(rows: DiffRow[], n?: number) {
     if (r.o) o = r.o;
   }
   return o;
+}
+
+function readingLine(e: monaco.editor.ICodeEditor) {
+  const visible = e.getVisibleRanges();
+  const cursor = e.getPosition()?.lineNumber;
+  if (cursor && visible.some((r) => cursor >= r.startLineNumber && cursor <= r.endLineNumber)) return cursor;
+  return visible[0]?.startLineNumber ?? 1;
 }
 
 /** Puts `line` CONTEXT lines below the top (reveal* only scrolls lines that are off screen). */

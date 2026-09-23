@@ -23,6 +23,8 @@ export const COMMANDS = [
   { id: "repo.refresh", title: "Refresh", category: "General", keys: [] },
   { id: "tab.close", title: "Close Tab", category: "General", keys: ["cmd+w"] },
   { id: "file.reveal", title: REVEAL_LABEL, category: "General", keys: [] },
+  // The app last picked under "Open in"; the list of apps until there is one.
+  { id: "file.openIn", title: "Open in External App", category: "General", keys: ["shift+cmd+o"] },
   // ⌘1–⌘9 pick tabs, as in browsers. Listed before the tabs, so a user who bound ⌘1 here keeps it.
   // Elsewhere "ctrl" is the Super key, which the OS takes; Alt+1–4 is the usual there.
   { id: "view.changes", title: "Show Changes", category: "View", keys: ["ctrl+1"], keysOther: ["alt+1"] },
