@@ -3,6 +3,7 @@ import type { DiffPair, DiffRow } from "@/lib/api";
 import { showLanguage } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
 import { narrow } from "@/lib/indent";
+import { codeWantsFocus, setCodeEditor } from "@/lib/panels";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
 import { CODE_FONTS, type Settings, useSettings } from "@/lib/settings";
 
@@ -73,6 +74,9 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     // Options follow below; only the kind of editor needs a new one.
   }, [diff]);
 
+  // Focus Code View, F6 and → from a list land in the editor that scrolls.
+  useEffect(() => setCodeEditor(() => editor.current && codeEditor(editor.current).focus()), []);
+
   useEffect(() => {
     const e = editor.current!;
     if (isDiff(e)) e.updateOptions(diffOptions(s, mode, collapse, wrap));
@@ -120,10 +124,12 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       unit.current = created.unit;
       old.forEach((m) => m.dispose());
       shown.current = scrollKey;
+      const code = codeEditor(e);
+      // Opened from the code view (J/K, a tab switch) or sent here before it was ready: take the keys.
+      if (codeWantsFocus()) code.focus();
       if (saved) return e.restoreViewState(saved as never);
       // Near the first change. A diff still computing takes it there when it lands, unless you
       // have scrolled since.
-      const code = codeEditor(e);
       const toFirst = () => {
         const [line] = changeStarts(e, bars);
         if (line) scrollToLine(code, line);

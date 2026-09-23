@@ -85,7 +85,9 @@ While you type, only shortcuts with `⌘`, `⌃` or an F-key apply, except `⌘�
 | `F7` `⇧F7`, `⌥↓` `⌥↑` | Next / previous change |
 | `⌥S` `⌥C` `⌥Z` | Split view, collapse unchanged, word wrap |
 | `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
-| `⇧⌘E` | Show the file explorer |
+| `⇧⌘G` `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer |
+| `F6` `⇧F6` | Focus the next / previous panel |
+| `→` `⎋` | From a file in a list to its code, and back |
 | `⌘J` or `⌃` `` ` `` | Toggle the terminal |
 | `⌘T` `⌘D` `⌘K` | New terminal, split, clear (in the terminal) |
 | `⌘=` `⌘−` `⌘0` | Zoom the interface |

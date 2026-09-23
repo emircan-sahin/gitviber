@@ -1,10 +1,12 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
+import { focusPanel } from "./panels";
 
 /**
  * The keyboard for the sidebar lists (History, Pull Requests, Issues), one hook so they can't
  * drift apart. Rows are the `[data-row]` elements inside, top to bottom, and keys do what the
  * mouse does on them: landing on a row is a click (the preview), ↵ a double-click (keeps the
- * tab). A row with aria-expanded (a commit) only opens and closes, with ↵, Space or → / ←.
+ * tab), → goes on to its code. A row with aria-expanded (a commit) only opens and closes, with
+ * ↵, Space or → / ←.
  */
 export function useListNav({ activeKey, loadMore }: { activeKey: string | null; loadMore?: (() => Promise<unknown>) | null }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -66,6 +68,9 @@ export function useListNav({ activeKey, loadMore }: { activeKey: string | null; 
     else if (e.key === "ArrowRight" && parent) {
       if (!expanded) row.click();
       else if (rows[i + 1]) land(rows[i + 1]);
+    } else if (e.key === "ArrowRight") {
+      if (row.dataset.row !== activeKey) row.click();
+      focusPanel("code");
     } else if (e.key === "ArrowLeft") {
       if (expanded) row.click();
       else if (Number(row.getAttribute("aria-level")) > 1) {

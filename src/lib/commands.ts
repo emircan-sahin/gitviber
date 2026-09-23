@@ -19,7 +19,12 @@ export const COMMANDS = [
   { id: "view.issues", title: "Show Issues", category: "View", keys: ["ctrl+4"] },
   { id: "view.toggleGitPanel", title: "Toggle Git Panel", category: "View", keys: ["cmd+b"] },
   { id: "view.toggleExplorer", title: "Toggle Explorer", category: "View", keys: ["alt+cmd+b"] },
-  { id: "view.showExplorer", title: "Show Explorer", category: "View", keys: ["shift+cmd+e"] },
+  { id: "view.focusGitPanel", title: "Focus Git Panel", category: "View", keys: ["shift+cmd+g"] },
+  { id: "view.focusCode", title: "Focus Code View", category: "View", keys: ["cmd+e"] },
+  // The id is from when it only showed the panel; kept so a user's binding for it still applies.
+  { id: "view.showExplorer", title: "Focus Explorer", category: "View", keys: ["shift+cmd+e"] },
+  { id: "view.focusNextPanel", title: "Focus Next Panel", category: "View", keys: ["f6"] },
+  { id: "view.focusPrevPanel", title: "Focus Previous Panel", category: "View", keys: ["shift+f6"] },
   { id: "view.zoomIn", title: "Zoom In", category: "View", keys: ["cmd+=", "shift+cmd+="] },
   { id: "view.zoomOut", title: "Zoom Out", category: "View", keys: ["cmd+-"] },
   { id: "view.zoomReset", title: "Reset Zoom", category: "View", keys: ["cmd+0"] },

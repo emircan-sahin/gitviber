@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { ignorePattern } from "@/lib/gitignore";
+import { focusPanel } from "@/lib/panels";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/useListNav";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
@@ -261,7 +262,7 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
 
   // ↑/↓ (Home/End, PageUp/PageDown) from a focused row (clicking one focuses it), ⇧ to extend the
   // selection, ⌘A for all of it, Esc to let it go; ↵ keeps the preview tab, Space opens it like a
-  // click, ⇧F10 opens its menu. The other lists share the moves through useListNav.
+  // click, → goes to its code, ⇧F10 opens its menu. The other lists share the moves through useListNav.
   const onListKey = (e: React.KeyboardEvent) => {
     const key = e.target instanceof HTMLElement ? e.target.dataset.row : undefined;
     const i = key === undefined ? -1 : (index.get(key) ?? -1);
@@ -284,7 +285,10 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
       else setPicked(null);
       onOpen(to);
     } else if (e.shiftKey) return;
-    else if (e.key === "Enter") onOpen(cur, true);
+    else if (e.key === "ArrowRight") {
+      if (key !== activeKey) onOpen(cur);
+      focusPanel("code");
+    } else if (e.key === "Enter") onOpen(cur, true);
     else if (e.key === " ") pick(cur, e);
     else return;
     e.preventDefault();
