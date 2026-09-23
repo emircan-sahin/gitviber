@@ -24,9 +24,6 @@ export function useShownLanguage() {
 
 // Giant files: tokenizing them costs more than it helps. (Minified lines are skipped in the worker.)
 const MAX_CHARS = 1_500_000;
-// Queued prefetches beyond this are dropped, oldest first: hovering down a list shouldn't
-// leave a backlog of files you have moved past.
-const MAX_PREFETCH = 4;
 
 interface Job {
   key: string;
@@ -35,15 +32,13 @@ interface Job {
   theme: string;
   /** Mounted views waiting for this job; a view's job is dropped when it's no longer shown. */
   viewers: number;
-  prefetched: boolean;
   promise: Promise<Highlighted | null>;
   resolve: (r: Highlighted | null) => void;
 }
 
 let worker: Worker | null = null;
 let nextId = 1;
-// The worker gets one job at a time, so the file on screen goes ahead of anything queued
-// before it instead of waiting behind prefetches.
+// The worker gets one job at a time, so a job whose view went away can still be dropped.
 const queue: Job[] = [];
 let running: { id: number; job: Job } | null = null;
 const jobs = new Map<string, Job>();
@@ -96,7 +91,7 @@ function finish(job: Job, r: Highlighted | null) {
   jobs.delete(job.key);
   if (r) {
     cache.set(job.key, { code: job.code, data: r });
-    // Small LRU: the files being reviewed now plus prefetched neighbours.
+    // Small LRU: the code being looked at now and recently.
     if (cache.size > 48) cache.delete(cache.keys().next().value!);
   }
   job.resolve(r);
@@ -109,16 +104,14 @@ function drop(job: Job) {
 
 function pump() {
   if (running || !queue.length) return;
-  // Views in the order they asked, then the most recent prefetch.
-  const i = queue.findIndex((j) => j.viewers > 0);
-  const job = queue.splice(i < 0 ? queue.length - 1 : i, 1)[0];
+  const job = queue.shift()!;
   running = { id: nextId++, job };
   getWorker().postMessage({ id: running.id, code: job.code, lang: job.lang, theme: job.theme });
 }
 
 const settled = (r: Highlighted | null) => ({ promise: Promise.resolve(r), release: () => {} });
 
-export function highlight(code: string, lang: string, theme: string, view: boolean) {
+export function highlight(code: string, lang: string, theme: string) {
   if (lang === "text" || code.length > MAX_CHARS) return settled(null);
   const key = cacheKey(code, lang, theme);
   const hit = cached(key, code);
@@ -127,33 +120,20 @@ export function highlight(code: string, lang: string, theme: string, view: boole
   if (!job) {
     let resolve!: Job["resolve"];
     const promise = new Promise<Highlighted | null>((r) => (resolve = r));
-    job = { key, code, lang, theme, viewers: 0, prefetched: false, promise, resolve };
+    job = { key, code, lang, theme, viewers: 0, promise, resolve };
     jobs.set(key, job);
     queue.push(job);
   }
   const j = job;
-  if (view) j.viewers++;
-  else {
-    j.prefetched = true;
-    // Asked again: it's the most recent prefetch now.
-    const at = queue.indexOf(j);
-    if (at >= 0) queue.push(...queue.splice(at, 1));
-    const waiting = queue.filter((q) => q.viewers === 0);
-    for (const old of waiting.slice(0, Math.max(0, waiting.length - MAX_PREFETCH))) drop(old);
-  }
+  j.viewers++;
   pump();
   return {
     promise: j.promise,
     release: () => {
       // A revision nobody shows anymore (the file changed again, or you moved on): skip it.
-      if (--j.viewers === 0 && !j.prefetched && queue.includes(j)) drop(j);
+      if (--j.viewers === 0 && queue.includes(j)) drop(j);
     },
   };
-}
-
-/** Warms the cache so opening this code later shows colors immediately. */
-export function prefetchHighlight(code: string, lang: string, theme: string) {
-  highlight(code, lang, theme, false);
 }
 
 /**
@@ -166,14 +146,14 @@ export function useHighlight(code: string | null, lang: string, theme: string) {
   useEffect(() => {
     if (code == null) return;
     let alive = true;
-    const { promise, release } = highlight(code, lang, theme, true);
+    const { promise, release } = highlight(code, lang, theme);
     promise.then((data) => alive && setResult({ code, lang, theme, data }));
     return () => {
       alive = false;
       release();
     };
   }, [code, lang, theme]);
-  // A cache hit is used in the same render, so prefetched files open already colored.
+  // A cache hit is used in the same render, so code seen before opens already colored.
   const directKey = useMemo(() => (code != null ? cacheKey(code, lang, theme) : null), [code, lang, theme]);
   const entry = directKey ? cache.get(directKey) : undefined;
   const direct = entry && entry.code === code ? entry.data : undefined;

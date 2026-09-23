@@ -17,7 +17,7 @@ globalThis.Worker = class {
   terminate() {}
 } as unknown as typeof Worker;
 
-const { highlight, prefetchHighlight } = await import("./highlight.ts");
+const { highlight } = await import("./highlight.ts");
 
 const reply = () => {
   const m = sent[sent.length - 1];
@@ -25,23 +25,11 @@ const reply = () => {
 };
 const codes = () => sent.map((m) => m.code);
 
-test("the file on screen goes ahead of queued prefetches", async () => {
-  sent.length = 0;
-  prefetchHighlight("p1", "ts", "t");
-  prefetchHighlight("p2", "ts", "t");
-  const view = highlight("v1", "ts", "t", true);
-  reply();
-  assert.deepEqual(codes(), ["p1", "v1"]);
-  reply();
-  assert.equal((await view.promise)?.lines[0][0][0], "v1");
-  reply(); // p2
-});
-
 test("a view that's gone before its turn is never tokenized", async () => {
   sent.length = 0;
-  prefetchHighlight("busy", "ts", "t");
-  const stale = highlight("old revision", "ts", "t", true);
-  highlight("new revision", "ts", "t", true);
+  highlight("busy", "ts", "t");
+  const stale = highlight("old revision", "ts", "t");
+  highlight("new revision", "ts", "t");
   stale.release();
   assert.equal(await stale.promise, null);
   reply();
@@ -49,20 +37,12 @@ test("a view that's gone before its turn is never tokenized", async () => {
   assert.deepEqual(codes(), ["busy", "new revision"]);
 });
 
-test("only the newest prefetches stay queued", () => {
-  sent.length = 0;
-  for (const c of ["a", "b", "c", "d", "e", "f", "g"]) prefetchHighlight(c, "ts", "t");
-  for (let i = 0; i < 5; i++) reply();
-  // "a" was already running; of the rest, the oldest ones beyond four were dropped, newest first.
-  assert.deepEqual(codes(), ["a", "g", "f", "e", "d"]);
-});
-
 test("a finished result is served from the cache", async () => {
   sent.length = 0;
-  const first = highlight("cached", "ts", "t", true);
+  const first = highlight("cached", "ts", "t");
   reply();
   await first.promise;
-  const again = highlight("cached", "ts", "t", true);
+  const again = highlight("cached", "ts", "t");
   assert.equal((await again.promise)?.lines[0][0][0], "cached");
   assert.deepEqual(codes(), ["cached"]);
 });
