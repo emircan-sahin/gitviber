@@ -42,13 +42,17 @@ export const LIGHT_SYNTAX_THEMES = {
 } as const;
 export type LightSyntaxTheme = keyof typeof LIGHT_SYNTAX_THEMES;
 
-export type Appearance = "system" | "light" | "dark";
+export type Appearance = "system" | "light" | "dark" | "dim";
+/** The palettes behind [data-theme] in index.css; dark and dim both count as dark. */
+export type Theme = "light" | "dark" | "dim";
 
 export interface Settings {
   codeFont: CodeFont;
   codeFontSize: number;
   lineHeight: number;
   appearance: Appearance;
+  /** The dark palette System uses while macOS is dark. */
+  darkVariant: "dark" | "dim";
   syntaxTheme: SyntaxTheme;
   lightSyntaxTheme: LightSyntaxTheme;
   sideBySide: boolean;
@@ -73,6 +77,7 @@ const DEFAULTS: Settings = {
   codeFontSize: DEFAULT_FONT_SIZE,
   lineHeight: 1.6,
   appearance: "system",
+  darkVariant: "dark",
   syntaxTheme: "nord",
   lightSyntaxTheme: "github-light-default",
   sideBySide: false,
@@ -95,7 +100,8 @@ function load(): Settings {
     if (!(s.codeFont in CODE_FONTS)) s.codeFont = DEFAULTS.codeFont;
     if (!(s.syntaxTheme in SYNTAX_THEMES)) s.syntaxTheme = DEFAULTS.syntaxTheme;
     if (!(s.lightSyntaxTheme in LIGHT_SYNTAX_THEMES)) s.lightSyntaxTheme = DEFAULTS.lightSyntaxTheme;
-    if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
+    if (!["system", "light", "dark", "dim"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
+    if (!["dark", "dim"].includes(s.darkVariant)) s.darkVariant = DEFAULTS.darkVariant;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
@@ -108,6 +114,7 @@ function load(): Settings {
 
 /** Settings plus what they resolve to right now: `system` follows the OS appearance. */
 export interface ResolvedSettings extends Settings {
+  theme: Theme;
   dark: boolean;
   /** The Shiki theme for the active appearance. */
   codeTheme: SyntaxTheme | LightSyntaxTheme;
@@ -120,20 +127,21 @@ let resolved = resolve();
 const listeners = new Set<() => void>();
 
 function resolve(): ResolvedSettings {
-  const dark = current.appearance === "system" ? systemDark.matches : current.appearance === "dark";
-  return { ...current, dark, codeTheme: dark ? current.syntaxTheme : current.lightSyntaxTheme };
+  const theme = current.appearance !== "system" ? current.appearance : systemDark.matches ? current.darkVariant : "light";
+  const dark = theme !== "light";
+  return { ...current, theme, dark, codeTheme: dark ? current.syntaxTheme : current.lightSyntaxTheme };
 }
 
 let appliedAppearance: Appearance | null = null;
 function applyTheme() {
-  document.documentElement.dataset.theme = resolved.dark ? "dark" : "light";
+  document.documentElement.dataset.theme = resolved.theme;
   if (current.appearance === appliedAppearance) return;
   appliedAppearance = current.appearance;
   // Native chrome (traffic lights, dialogs, context menus) follows the window theme; null = OS.
   // getCurrentWindow() throws outside Tauri (the browser-only dev fixture).
   try {
     getCurrentWindow()
-      .setTheme(current.appearance === "system" ? null : current.appearance)
+      .setTheme(current.appearance === "system" ? null : resolved.dark ? "dark" : "light")
       .catch(() => {});
   } catch {
     // Not in a Tauri window.

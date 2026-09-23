@@ -139,8 +139,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       // Still on the editor (not disposed with it): remember where it was left.
       if (editor.current === e) viewStates.set(scrollKey, e.saveViewState()!);
     };
-    // The file, and the colors it's drawn in.
-  }, [pair, lang, diff, scrollKey, s.codeTheme, s.dark]);
+    // The file, and the colors it's drawn in (the app's palette too: dark and dimmed share a syntax theme).
+  }, [pair, lang, diff, scrollKey, s.codeTheme, s.theme]);
 
   // Copies carry the file's own indentation, not the tabs it's shown with. Monaco has filled the
   // clipboard by the time this bubbles up from its text area.

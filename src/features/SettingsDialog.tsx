@@ -14,6 +14,7 @@ import {
   LIGHT_SYNTAX_THEMES,
   type LightSyntaxTheme,
   resetSettings,
+  type Settings,
   SYNTAX_THEMES,
   type SyntaxTheme,
   UI_SCALES,
@@ -120,7 +121,7 @@ function AppearanceSection() {
   const s = useSettings();
   return (
     <>
-      <Field label="Theme" hint="System follows macOS.">
+      <Field label="Theme" hint="System follows macOS. Dimmed is a softer, lighter dark.">
         <Segmented<Appearance>
           value={s.appearance}
           onChange={(v) => updateSettings({ appearance: v })}
@@ -128,9 +129,22 @@ function AppearanceSection() {
             ["system", "System"],
             ["light", "Light"],
             ["dark", "Dark"],
+            ["dim", "Dimmed"],
           ]}
         />
       </Field>
+      {s.appearance === "system" && (
+        <Field label="Dark variant" hint="The dark theme System uses while macOS is dark.">
+          <Segmented<Settings["darkVariant"]>
+            value={s.darkVariant}
+            onChange={(v) => updateSettings({ darkVariant: v })}
+            options={[
+              ["dark", "Dark"],
+              ["dim", "Dimmed"],
+            ]}
+          />
+        </Field>
+      )}
       {/* Each appearance keeps its own syntax theme, so switching back restores it. */}
       <Field label="Dark syntax theme" hint="Code colors while the app is dark.">
         <Select value={s.syntaxTheme} options={SYNTAX_THEMES} onChange={(v) => updateSettings({ syntaxTheme: v as SyntaxTheme })} />

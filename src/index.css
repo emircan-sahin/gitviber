@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* Dark by default, light via [data-theme="light"] (set from settings.ts). Neutral graphite,
+/* Dark by default, dimmed and light via [data-theme] (set from settings.ts). Neutral graphite,
    hard 1px lines, one blue accent. Diff colors are saturated on purpose: changes should be
    found at a glance. */
 :root {
@@ -48,6 +48,39 @@
 
   --font-ui: -apple-system, BlinkMacSystemFont, "Geist Variable", "Segoe UI", sans-serif;
   color-scheme: dark;
+}
+
+/* Dimmed: dark's roles a few steps lighter, with softer text and accents for long sessions. Same
+   AA floor for --subtle and the status colors, up to --elevated. */
+:root[data-theme="dim"] {
+  --sidebar: #1c1c1f;
+  --panel: #212124;
+  --background: #262629;
+  --elevated: #2e2e32;
+  --hover: #ffffff10;
+  --active: #ffffff17;
+  --border: #333337;
+  --border-strong: #3f3f44;
+  --foreground: #d4d4d8;
+  --muted-foreground: #a8a8af;
+  --subtle: #96969e;
+  --primary: #539bf5;
+  --ring: #539bf5;
+  --destructive: #ef766e;
+  --added: #5cc07a;
+  --removed: #ef766e;
+  --modified: #d6b155;
+  --renamed: #ad94e8;
+  --conflict: #f27593;
+  --hatch: #ffffff08;
+
+  /* 11% and 16% of the status color on --background, like dark's. */
+  --add-bg: #2c3732;
+  --add-gutter: #2f3f36;
+  --add-emph: rgb(92 192 122 / 0.2);
+  --del-bg: #3c2f31;
+  --del-gutter: #463334;
+  --del-emph: rgb(239 118 110 / 0.22);
 }
 
 /* Same roles as dark. Status text colors are dark enough to read on white (WCAG AA); chips keep
