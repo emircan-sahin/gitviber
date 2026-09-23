@@ -22,7 +22,7 @@ export function OverviewRuler({
   scrollRef,
 }: {
   marks: Mark[];
-  /** Content offset (px) of an item index, measured from the real layout. */
+  /** Content offset (px) of an item index; the end offset for the item count. */
   offsetOf: (i: number) => number;
   split: boolean;
   /** False while the code view holds back content; re-measure once it appears. */

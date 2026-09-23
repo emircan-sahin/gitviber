@@ -6,9 +6,12 @@ import { showLanguage, type TokenLine, tokenLookup, useHighlight } from "@/lib/h
 import { languageFor } from "@/lib/language";
 import { CODE_FONTS, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
+import { lineWidth, TAB, type Wrap, wrapLine } from "@/lib/wrap";
 import { type Lane, type Mark, OverviewRuler } from "./OverviewRuler";
 
 export type CodeMode = "unified" | "split" | "file";
+/** Which code column a line sits in: the full-width one, or a split half. */
+type Side = "row" | "old" | "new";
 
 type Marker = "add" | "mod";
 type Item =
@@ -149,16 +152,84 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
 
   const lh = Math.round(s.codeFontSize * s.lineHeight);
   const gapH = lh + 12;
-  const measured = wrap || mode === "split";
+  // Unwrapped split halves scroll sideways each in its own column, kept in step, like VS Code's
+  // two editors; one vertical scroll carries both, and computed heights keep them level.
+  const columns = mode === "split" && !wrap;
   const digits = String(Math.max(oldLines.length, newLines.length, 1)).length;
   const maxLen = useMemo(() => {
-    // Tabs render 4 columns wide (tab-size), so count them that way.
-    const width = (l: string) => l.length + 3 * (l.split("\t").length - 1);
     let m = 0;
-    for (const l of newLines) m = Math.max(m, width(l));
-    if (mode !== "file") for (const l of oldLines) m = Math.max(m, width(l));
+    for (const l of newLines) m = Math.max(m, lineWidth(l));
+    if (mode !== "file") for (const l of oldLines) m = Math.max(m, lineWidth(l));
     return m;
   }, [oldLines, newLines, mode]);
+
+  // The view's width and the font's character width: with those every row's height is
+  // computed, never measured, so the layout is known before anything is laid out.
+  const probeRef = useRef<HTMLSpanElement>(null);
+  const [box, setBox] = useState<{ width: number; cw: number } | null>(null);
+  useLayoutEffect(() => {
+    const sc = scrollRef.current!;
+    const measure = () => {
+      const width = sc.clientWidth;
+      // A hidden or collapsed pane: keep the last layout rather than wrap every line to nothing.
+      if (!width) return;
+      const cw = probeRef.current!.getBoundingClientRect().width / PROBE.length;
+      setBox((b) => (b?.width === width && b.cw === cw ? b : { width, cw }));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(sc);
+    // A web font (JetBrains Mono, Geist Mono) can arrive after the first measure.
+    document.fonts.addEventListener("loadingdone", measure);
+    return () => {
+      ro.disconnect();
+      document.fonts.removeEventListener("loadingdone", measure);
+    };
+  }, [s.codeFont, s.codeFontSize, s.ligatures]);
+
+  // Columns a row's code gets before it wraps (0: it doesn't), from the gutters laid out below.
+  const fit = (px: number) => (box ? Math.max(1, Math.floor((px - CODE_PAD) / box.cw + 1e-3)) : 0);
+  const rowGutter: Gutter = mode === "file" ? "file" : "unified";
+  const half = box ? box.width / 2 - gutterPx("half", digits, box.cw) : 0;
+  // The wrapped split's right half is 1px narrower: its border.
+  const cols = !box || !wrap ? [0, 0, 0] : mode === "split" ? [0, fit(half), fit(half - 1)] : [fit(box.width - gutterPx(rowGutter, digits, box.cw)), 0, 0];
+  const [colsRow, colsOld, colsNew] = cols;
+  // A split column's full width, and how much of it doesn't fit on screen.
+  const colW = `calc(${gutterCss("half", digits)} + ${CODE_PAD}px + ${maxLen}ch)`;
+  const reach = columns && box ? Math.max(0, Math.ceil(gutterPx("half", digits, box.cw) + CODE_PAD + maxLen * box.cw - box.width / 2)) : 0;
+  const colRefs = { old: useRef<HTMLDivElement>(null), new: useRef<HTMLDivElement>(null) };
+  const barRef = useRef<HTMLDivElement>(null);
+  /** Brings both columns and the bar under them to `x`. */
+  const scrollX = (e: React.UIEvent<HTMLDivElement>) => {
+    const x = e.currentTarget.scrollLeft;
+    for (const el of [colRefs.old.current, colRefs.new.current, barRef.current]) if (el && el !== e.currentTarget && el.scrollLeft !== x) el.scrollLeft = x;
+  };
+  const wrapAt = useMemo(() => {
+    const byCols: Record<Side, number> = { row: colsRow, old: colsOld, new: colsNew };
+    const caches: Record<Side, Map<string, Wrap>> = { row: new Map(), old: new Map(), new: new Map() };
+    return (text: string, side: Side): Wrap | null => {
+      const c = byCols[side];
+      if (!c) return null;
+      let w = caches[side].get(text);
+      if (!w) caches[side].set(text, (w = wrapLine(text, c)));
+      return w;
+    };
+  }, [colsRow, colsOld, colsNew]);
+
+  /** Top offset of every item, and the content height at the end. */
+  const prefix = useMemo(() => {
+    const lines = (r: DiffRow | null, side: Side, old: boolean) => {
+      if (!r) return 0;
+      const text = (old ? oldLines[r.o - 1] : newLines[r.n - 1]) ?? "";
+      return (wrapAt(text, side)?.at.length ?? 0) + 1;
+    };
+    const p = new Float64Array(items.length + 1);
+    items.forEach((it, i) => {
+      const h = it.t === "gap" ? gapH : it.t === "pair" ? lh * Math.max(lines(it.l, "old", true), lines(it.r, "new", false)) : lh * lines(it.r, "row", it.r.k === 2);
+      p[i + 1] = p[i] + h;
+    });
+    return p;
+  }, [items, oldLines, newLines, wrapAt, lh, gapH]);
 
   // Small/medium files stay fully in the DOM so scrolling is purely native (no rows
   // appearing late on fast flicks); only huge files fall back to virtualization.
@@ -166,15 +237,13 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
   const virtualizer = useVirtualizer({
     count: virtual ? items.length : 0,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i) => (items[i]?.t === "gap" ? gapH : lh),
+    estimateSize: (i) => prefix[i + 1] - prefix[i],
     overscan: 120,
   });
-
-  // Row heights depend on font metrics; re-measure when they change.
-  useEffect(() => {
-    // Also on content change: sizes are cached by index, which now holds different items.
+  // Sizes are computed, not measured: hand the virtualizer the new ones whenever they change.
+  useLayoutEffect(() => {
     if (virtual) virtualizer.measure();
-  }, [lh, measured, mode, virtual, virtualizer, items]);
+  }, [virtual, virtualizer, prefix]);
 
   // Show the file once, colored, instead of plain text that recolors a moment later.
   const [grace, setGrace] = useState(true);
@@ -183,6 +252,7 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
     return () => clearTimeout(t);
   }, []);
   const waiting = grace && lang !== "text" && !newHl;
+  const shown = !!box && !waiting;
 
   const changeStarts = useMemo(() => {
     const starts: number[] = [];
@@ -196,48 +266,22 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
     return starts;
   }, [items, mode]);
 
-  const scrollToItem = useCallback(
-    (i: number) => {
-      const target = Math.max(0, i - CONTEXT);
-      const sc = scrollRef.current;
-      if (virtual) virtualizer.scrollToIndex(target, { align: "start" });
-      else if (!measured) sc!.scrollTop = items.slice(0, target).reduce((h, it) => h + (it.t === "gap" ? gapH : lh), 0);
-      else if (sc) {
-        const el = sc.querySelector<HTMLElement>(`[data-i="${target}"]`);
-        if (el) sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top;
-        else {
-          // Not mounted yet: land on its placeholder; the buffer fills it on arrival.
-          const c = Math.floor(target / CHUNK);
-          const ph = sc.querySelector<HTMLElement>(`[data-chunk="${c}"]`);
-          if (ph) sc.scrollTop = ph.offsetTop + items.slice(c * CHUNK, target).reduce((h, it) => h + (it.t === "gap" ? gapH : lh), 0);
-        }
-      }
-    },
-    [virtual, virtualizer, measured, items, gapH, lh],
-  );
-
-  // First open: restore the remembered position, else jump near the first change.
-  const positioned = useRef(false);
-  useLayoutEffect(() => {
-    if (positioned.current || waiting || !items.length) return;
-    positioned.current = true;
-    const saved = scrollMemory.get(scrollKey);
-    if (saved != null) scrollRef.current!.scrollTop = saved;
-    else if (changeStarts[0] > CONTEXT) scrollToItem(changeStarts[0]);
-  }, [waiting, items.length, changeStarts, scrollKey, scrollToItem]);
+  const jumped = useRef<{ i: number; top: number } | null>(null);
+  const scrollToItem = useCallback((i: number) => {
+    const sc = scrollRef.current!;
+    sc.scrollTop = prefix[Math.max(0, i - CONTEXT)];
+    jumped.current = { i, top: sc.scrollTop };
+  }, [prefix]);
 
   useImperativeHandle(
     ref,
     () => {
-      // The row under the top of the viewport, whatever the layout mode.
+      // Still where the last jump left it: that change. Else the row CONTEXT lines below the top,
+      // where a jump puts a change (by pixels: wrapped rows and gaps are taller than a line).
       const current = () => {
-        const r = scrollRef.current!.getBoundingClientRect();
-        // scrollToItem puts a change CONTEXT rows below the top: sample exactly that row.
-        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + lh * CONTEXT + 1);
-        const row = hit?.closest<HTMLElement>("[data-i]");
-        if (row) return Number(row.dataset.i);
-        const chunk = hit?.closest<HTMLElement>("[data-chunk]");
-        return chunk ? Number(chunk.dataset.chunk) * CHUNK : 0;
+        const top = scrollRef.current!.scrollTop;
+        const j = jumped.current;
+        return j && Math.abs(j.top - top) < 1 ? j.i : itemAt(prefix, top + CONTEXT * lh);
       };
       return {
         next: () => {
@@ -250,36 +294,44 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
         },
       };
     },
-    [changeStarts, scrollToItem, lh],
+    [changeStarts, scrollToItem, prefix, lh],
   );
 
   const ctx = useMemo(
-    () => ({ oldLines, newLines, oldTok, newTok, fg: newHl?.data.fg ?? oldHl?.data.fg, digits, mode, wrap }),
-    [oldLines, newLines, oldTok, newTok, newHl?.data.fg, oldHl?.data.fg, digits, mode, wrap],
+    () => ({ oldLines, newLines, oldTok, newTok, fg: newHl?.data.fg ?? oldHl?.data.fg, digits, mode, wrapAt }),
+    [oldLines, newLines, oldTok, newTok, newHl?.data.fg, oldHl?.data.fg, digits, mode, wrapAt],
   );
   const expand = useCallback((id: number) => setExpanded((e) => new Set(e).add(id)), []);
   const chunkCount = Math.ceil(items.length / CHUNK);
-
-  // Chunks mount lazily. Everything within two viewports of the scroll position is
-  // rendered ahead of time (so rows never appear while you look); the rest fills in
-  // one chunk at a time, only while you're not scrolling.
-  const [origin] = useState(() => {
-    const saved = scrollMemory.get(scrollKey);
-    if (saved != null) return Math.floor(saved / lh / CHUNK);
-    return Math.floor(Math.max(0, (changeStarts[0] ?? 0) - CONTEXT) / CHUNK);
-  });
+  const chunkTop = (c: number) => prefix[Math.min(items.length, c * CHUNK)];
   const around = (c: number) => new Set([c - 1, c, c + 1].filter((x) => x >= 0 && x < chunkCount));
-  const filledRef = useRef<Set<number>>(around(origin));
-  // New items (unified ⇄ split, a gap expanded) re-render every mounted row: start again from
-  // the chunks on screen, measured 0.5–3s of frozen UI on a 1500-line file otherwise.
-  const filledFor = useRef(items);
-  if (filledFor.current !== items) {
-    filledFor.current = items;
-    filledRef.current = around(Math.floor((scrollRef.current?.scrollTop ?? 0) / lh / CHUNK));
+
+  // Chunks mount lazily: those within two viewports right away, the rest one at a time while idle.
+  // A new layout starts again from the chunks on screen (re-rendering every mounted row froze a
+  // 1500-line file for 0.5–3s), and keeps the row at the top at the top.
+  const filledRef = useRef<Set<number>>(new Set());
+  const laidOut = useRef<{ items: Item[]; prefix: Float64Array } | null>(null);
+  const pendingTop = useRef<number | null>(null);
+  if (box && laidOut.current?.prefix !== prefix) {
+    const old = laidOut.current;
+    // A position not applied yet (content still hidden) is the one to carry over.
+    const y = pendingTop.current ?? scrollRef.current!.scrollTop;
+    let top: number;
+    if (!old) {
+      // First layout: the remembered position, else near the first change.
+      top = scrollMemory.get(scrollKey) ?? prefix[Math.max(0, (changeStarts[0] ?? 0) - CONTEXT)];
+    } else {
+      const i = itemAt(old.prefix, y);
+      const j = old.items === items ? i : sameItem(old.items[i], items);
+      top = j < 0 ? y : prefix[j] + Math.min(y - old.prefix[i], prefix[j + 1] - prefix[j]);
+    }
+    laidOut.current = { items, prefix };
+    pendingTop.current = top;
+    jumped.current = null;
+    filledRef.current = around(Math.floor(itemAt(prefix, top) / CHUNK));
   }
   const [, setFillTick] = useState(0);
   const lastScroll = useRef(0);
-  const anchor = useRef<{ el: Element; top: number } | null>(null);
 
   /** Chunk indices overlapping [top − 2 viewports, bottom + 2 viewports], nearest first. */
   const nearChunks = useCallback(() => {
@@ -288,64 +340,53 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
     const mid = sc.scrollTop + sc.clientHeight / 2;
     const reach = sc.clientHeight * 2.5;
     const out: [number, number][] = [];
-    sc.querySelectorAll<HTMLElement>("[data-chunk]").forEach((el) => {
-      const top = el.offsetTop;
-      const bottom = top + el.offsetHeight;
+    for (let c = 0; c < chunkCount; c++) {
+      const top = prefix[c * CHUNK];
+      const bottom = prefix[Math.min(items.length, (c + 1) * CHUNK)];
       const dist = mid < top ? top - mid : mid > bottom ? mid - bottom : 0;
-      if (dist <= reach) out.push([Number(el.dataset.chunk), dist]);
-    });
+      if (dist <= reach) out.push([c, dist]);
+    }
     return out.sort((x, y) => x[1] - y[1]).map((x) => x[0]);
-  }, []);
+  }, [prefix, chunkCount, items.length]);
 
   const fill = useCallback(
     (chunks: number[], max = Infinity) => {
       const fresh = chunks.filter((c) => c >= 0 && c < chunkCount && !filledRef.current.has(c)).slice(0, max);
       if (!fresh.length) return;
-      // WebKit has no scroll anchoring: remember the row on screen so a chunk growing
-      // above it (wrapped rows taller than estimated) can't push it away.
-      const sc = scrollRef.current;
-      if (sc && measured) {
-        const r = sc.getBoundingClientRect();
-        const el = document.elementFromPoint(r.left + r.width / 2, r.top + 4)?.closest("[data-i],[data-chunk]");
-        // Content coordinates: the user may scroll before this render commits, and that
-        // scroll must not be "corrected" away.
-        if (el) anchor.current = { el, top: el.getBoundingClientRect().top - r.top + sc.scrollTop };
-      }
       fresh.forEach((c) => filledRef.current.add(c));
       setFillTick((t) => t + 1);
     },
-    [chunkCount, measured],
+    [chunkCount],
   );
 
-  // After every render: restore the anchor, then top up the buffer around the viewport.
+  // After every render: land on the position a new layout asked for, then top up the buffer
+  // around the viewport. Heights are exact, so a chunk filling in never moves anything.
   useLayoutEffect(() => {
-    if (virtual || waiting) return;
-    const a = anchor.current;
-    anchor.current = null;
-    if (a?.el.isConnected) {
-      const sc = scrollRef.current!;
-      const delta = a.el.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop - a.top;
-      if (delta) sc.scrollTop += delta;
+    if (!shown) return;
+    if (pendingTop.current != null) {
+      scrollRef.current!.scrollTop = pendingTop.current;
+      pendingTop.current = null;
     }
-    fill(nearChunks());
+    if (!virtual) fill(nearChunks());
   });
 
-  // Background fill while idle, one chunk per tick so a task never gets long.
+  // Background fill while idle, one chunk per tick so a task never gets long. Restarted with
+  // every layout: the interval stops once all chunks are in, and a new layout empties them.
   useEffect(() => {
-    if (virtual || waiting) return;
+    if (virtual || !shown) return;
     const id = setInterval(() => {
       let unfilled = false;
       for (let c = 0; c < chunkCount && !unfilled; c++) unfilled = !filledRef.current.has(c);
       if (!unfilled) return clearInterval(id);
       if (performance.now() - lastScroll.current < 250) return;
       const sc = scrollRef.current;
-      const mid = sc ? Math.floor((sc.scrollTop / Math.max(1, sc.scrollHeight)) * chunkCount) : 0;
+      const mid = sc ? Math.floor(itemAt(prefix, sc.scrollTop) / CHUNK) : 0;
       let best = -1;
       for (let c = 0; c < chunkCount; c++) if (!filledRef.current.has(c) && (best < 0 || Math.abs(c - mid) < Math.abs(best - mid))) best = c;
       if (best >= 0) fill([best]);
     }, 40);
     return () => clearInterval(id);
-  }, [virtual, waiting, chunkCount, fill]);
+  }, [virtual, shown, chunkCount, fill, prefix]);
 
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     scrollMemory.set(scrollKey, e.currentTarget.scrollTop);
@@ -354,78 +395,87 @@ export const CodeView = forwardRef<CodeViewHandle, Props>(function CodeView({ pa
     if (!virtual) fill(nearChunks(), 1);
   };
 
-  const gutterW = mode === "file" ? fileGutterW(digits) : `calc(${digits * 2}ch + 64px)`;
 
   const overview = useMemo(() => overviewMarks(items, mode === "file"), [items, mode]);
-  const prefix = useMemo(() => {
-    const p = new Float64Array(items.length + 1);
-    items.forEach((it, i) => (p[i + 1] = p[i] + (it.t === "gap" ? gapH : lh)));
-    return p;
-  }, [items, lh, gapH]);
 
-  // Real top offset of item i in the scroll content (i === items.length gives the end),
-  // so ruler marks line up with the code and with the viewport box.
-  const offsetOf = useCallback(
-    (i: number) => {
-      if (!measured) return prefix[i];
-      if (virtual) {
-        const m = virtualizer.measurementsCache;
-        return i < m.length ? m[i].start : (m[m.length - 1]?.end ?? 0);
-      }
-      const sc = scrollRef.current;
-      const el = rowIndex(sc).get(i);
-      if (el) return el.offsetTop;
-      if (i >= items.length) return (sc?.firstElementChild as HTMLElement | null)?.offsetHeight ?? prefix[i];
-      return prefix[i]; // chunk not filled yet; the ruler redraws once it is
-    },
-    [measured, virtual, virtualizer, prefix, items.length],
-  );
+  /** The rows, or with `side` one column's half of each. */
+  const list = (side?: "old" | "new") =>
+    virtual ? (
+      <div className="relative" style={{ height: prefix[items.length] }}>
+        {virtualizer.getVirtualItems().map((v) => (
+          <div key={v.key} data-i={v.index} className="absolute top-0 left-0 w-full" style={{ transform: `translateY(${prefix[v.index]}px)` }}>
+            <ItemView item={items[v.index]} height={prefix[v.index + 1] - prefix[v.index]} side={side} ctx={ctx} onExpand={expand} />
+          </div>
+        ))}
+      </div>
+    ) : (
+      Array.from({ length: chunkCount }, (_, c) =>
+        filledRef.current.has(c) ? (
+          <Chunk key={c} items={items} prefix={prefix} start={c * CHUNK} height={chunkTop(c + 1) - chunkTop(c)} side={side} ctx={ctx} onExpand={expand} />
+        ) : (
+          <div key={c} data-chunk={c} style={{ height: chunkTop(c + 1) - chunkTop(c) }} />
+        ),
+      )
+    );
+  const offsetOf = useCallback((i: number) => prefix[i], [prefix]);
 
   return (
     <div className="flex h-full">
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="code-scroll relative h-full min-w-0 flex-1 overflow-auto bg-background"
-        style={{
-          fontFamily: CODE_FONTS[s.codeFont],
-          fontSize: s.codeFontSize,
-          lineHeight: `${lh}px`,
-          fontVariantLigatures: s.ligatures ? "normal" : "none",
-          tabSize: 4,
-          color: ctx.fg,
-        }}
-      >
-        {!waiting && (
-          <div className="relative" style={{ width: measured ? "100%" : `max(100%, calc(${gutterW} + ${maxLen}ch + 48px))` }}>
-            {virtual ? (
-              <div className="relative" style={{ height: virtualizer.getTotalSize() }}>
-                {virtualizer.getVirtualItems().map((v) => (
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="code-scroll relative min-h-0 flex-1 overflow-auto bg-background"
+          style={{
+            fontFamily: CODE_FONTS[s.codeFont],
+            fontSize: s.codeFontSize,
+            lineHeight: `${lh}px`,
+            fontVariantLigatures: s.ligatures ? "normal" : "none",
+            tabSize: TAB,
+            color: ctx.fg,
+          }}
+        >
+          {shown &&
+            (columns ? (
+              <div className="relative grid grid-cols-2">
+                {/* Not a column border: the columns stay equal, so they scroll equally far. */}
+                <div className="pointer-events-none absolute inset-y-0 left-1/2 z-20 w-px bg-border-strong" />
+                {(["old", "new"] as const).map((side) => (
                   <div
-                    key={v.key}
-                    data-i={v.index}
-                    data-index={v.index}
-                    ref={measured ? virtualizer.measureElement : undefined}
-                    className="absolute top-0 left-0 w-full"
-                    style={{ transform: `translateY(${v.start}px)` }}
+                    key={side}
+                    ref={colRefs[side]}
+                    onScroll={scrollX}
+                    data-scrollbar="none"
+                    className="overflow-x-auto overflow-y-hidden"
                   >
-                    <ItemView item={items[v.index]} ctx={ctx} lh={lh} gapH={gapH} measured={measured} onExpand={expand} />
+                    <div className="relative" style={{ width: `max(100%, ${colW})` }}>
+                      {list(side)}
+                    </div>
                   </div>
                 ))}
               </div>
             ) : (
-              Array.from({ length: chunkCount }, (_, c) =>
-                filledRef.current.has(c) ? (
-                  <Chunk key={c} items={items} start={c * CHUNK} height={chunkHeight(items, c * CHUNK, lh, gapH)} ctx={ctx} lh={lh} gapH={gapH} measured={measured} onExpand={expand} />
-                ) : (
-                  <div key={c} data-chunk={c} style={{ height: chunkHeight(items, c * CHUNK, lh, gapH) }} />
-                ),
-              )
-            )}
+              <div className="relative" style={{ width: wrap ? "100%" : `max(100%, calc(${gutterCss(rowGutter, digits)} + ${maxLen}ch + 48px))` }}>
+                {list()}
+              </div>
+            ))}
+          <div aria-hidden className="pointer-events-none invisible absolute top-0 left-0 h-0 w-0 overflow-hidden">
+            <span ref={probeRef} className="whitespace-pre">
+              {PROBE}
+            </span>
+          </div>
+        </div>
+        {shown && reach > 0 && (
+          <div
+            ref={barRef}
+            onScroll={scrollX}
+            className="code-scroll h-2.5 shrink-0 overflow-x-auto overflow-y-hidden bg-background"
+          >
+            <div className="h-px" style={{ width: `calc(100% + ${reach}px)` }} />
           </div>
         )}
       </div>
-      <OverviewRuler marks={overview} offsetOf={offsetOf} split={mode !== "file"} ready={!waiting} scrollRef={scrollRef} />
+      <OverviewRuler marks={overview} offsetOf={offsetOf} split={mode !== "file"} ready={shown} scrollRef={scrollRef} />
     </div>
   );
 });
@@ -455,55 +505,66 @@ function overviewMarks(items: Item[], fileMode: boolean): Mark[] {
 }
 
 interface ItemProps {
+  /** Only this half of each pair: the rows of one split column. */
+  side?: "old" | "new";
   ctx: Ctx;
-  lh: number;
-  gapH: number;
-  measured: boolean;
   onExpand: (id: number) => void;
 }
 
-function ItemView({ item, ctx, lh, gapH, measured, onExpand }: ItemProps & { item: Item }) {
-  if (item.t === "gap") return <Gap count={item.count} height={gapH} onExpand={() => onExpand(item.id)} />;
+function ItemView({ item, height, side, ctx, onExpand }: ItemProps & { item: Item; height: number }) {
+  if (item.t === "gap") return <Gap count={item.count} height={height} blank={side === "new"} onExpand={() => onExpand(item.id)} />;
   return (
-    <div style={{ height: measured ? undefined : lh }}>
-      <Line item={item} ctx={ctx} />
+    <div style={{ height }}>
+      {side && item.t === "pair" ? <Half row={side === "old" ? item.l : item.r} side={side} ctx={ctx} column /> : <Line item={item} ctx={ctx} />}
     </div>
   );
 }
 
-// data-i → row element, rebuilt at most once per frame (the ruler asks for many rows at once).
-let rowCache: { at: number; root: Element | null; map: Map<number, HTMLElement> } = { at: -1, root: null, map: new Map() };
-function rowIndex(root: HTMLElement | null) {
-  const now = performance.now();
-  if (rowCache.root !== root || now - rowCache.at > 16) {
-    const map = new Map<number, HTMLElement>();
-    root?.querySelectorAll<HTMLElement>("[data-i]").forEach((el) => map.set(Number(el.dataset.i), el));
-    rowCache = { at: now, root, map };
+/** Index of the item at content offset y. */
+function itemAt(prefix: Float64Array, y: number) {
+  let lo = 0;
+  let hi = prefix.length - 2;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (prefix[mid] <= y) lo = mid;
+    else hi = mid - 1;
   }
-  return rowCache.map;
+  return lo;
 }
 
-function chunkHeight(items: Item[], start: number, lh: number, gapH: number) {
-  let height = 0;
-  for (let i = start; i < Math.min(items.length, start + CHUNK); i++) height += items[i].t === "gap" ? gapH : lh;
-  return height;
+/**
+ * Where an item of a previous layout is now: the same diff row, the gap that now hides it, or
+ * for a gap that opened its first row; -1 if it's gone.
+ */
+function sameItem(it: Item | undefined, items: Item[]) {
+  if (!it) return -1;
+  // Gaps hold unchanged lines only, named by their first original line number.
+  const unchanged = (x: Item) => {
+    const r = x.t === "row" ? x.r : x.t === "pair" ? x.l : null;
+    return r?.k === 0 ? r.o : -1;
+  };
+  if (it.t === "gap") return items.findIndex((x) => (x.t === "gap" ? x.id === it.id : unchanged(x) === it.id));
+  const row = it.t === "row" ? it.r : (it.r ?? it.l);
+  const o = unchanged(it);
+  return items.findIndex((x) => (x.t === "gap" ? o >= x.id && o < x.id + x.count : x.t === "row" ? x.r === row : x.l === row || x.r === row));
 }
 
 /** A block of rows, mounted as a unit by the viewport buffer above. */
-const Chunk = memo(function Chunk({ items, start, height, ...rest }: ItemProps & { items: Item[]; start: number; height: number }) {
+const Chunk = memo(function Chunk({ items, prefix, start, height, ...rest }: ItemProps & { items: Item[]; prefix: Float64Array; start: number; height: number }) {
   const rows: React.ReactNode[] = [];
   for (let i = start; i < Math.min(items.length, start + CHUNK); i++) {
     rows.push(
       <div key={i} data-i={i}>
-        <ItemView item={items[i]} {...rest} />
+        <ItemView item={items[i]} height={prefix[i + 1] - prefix[i]} {...rest} />
       </div>,
     );
   }
   // Off-screen chunks skip layout and paint: with every row mounted, scrolling a 1500-line
   // diff took 27ms a frame (sticky gutters, all laid out each frame); this brings it to ~9ms.
-  // The intrinsic size stands in until the chunk has been rendered once, then `auto` keeps its real size.
+  // The height is set, not an intrinsic size: WebKit kept a skipped chunk at the size it last
+  // rendered at after its contain-intrinsic-size changed (a unified ⇄ split switch).
   return (
-    <div data-chunk={start / CHUNK} style={{ contentVisibility: "auto", containIntrinsicSize: `auto ${height}px` }}>
+    <div data-chunk={start / CHUNK} style={{ contentVisibility: "auto", height }}>
       {rows}
     </div>
   );
@@ -517,7 +578,7 @@ type Ctx = {
   fg?: string;
   digits: number;
   mode: CodeMode;
-  wrap: boolean;
+  wrapAt: (text: string, side: Side) => Wrap | null;
 };
 
 const ROW_BG = ["bg-background", "bg-add-bg", "bg-del-bg"] as const;
@@ -527,9 +588,16 @@ const GUTTER_BG = [
   "bg-del-gutter shadow-[inset_2px_0_0_var(--removed)]",
 ] as const;
 const SIGN = [" ", "+", "−"] as const;
-// 16px lead before the number (like VS Code's gutter), 12px after it, the 3px change bar, a 12px gap.
-// Diff gutters get the same lead from `pl-1` plus Num's `pl-3`.
-const fileGutterW = (digits: number) => `calc(${digits}ch + 43px)`;
+// Gutter widths as line-number digits plus fixed pixels, for the markup and the wrap math alike
+// (`ch` is the width of "0", which is what `cw` measures). The file gutter: 16px lead like VS Code,
+// 12px after, the 3px bar, a 12px gap; diff gutters: pl-1, per number 20px padding, the 20px sign.
+const GUTTER = { unified: [2, 64], half: [1, 44], file: [1, 43] } as const;
+type Gutter = keyof typeof GUTTER;
+const gutterCss = (g: Gutter, digits: number) => `calc(${GUTTER[g][0] * digits}ch + ${GUTTER[g][1]}px)`;
+const gutterPx = (g: Gutter, digits: number, cw: number) => GUTTER[g][0] * digits * cw + GUTTER[g][1];
+const CODE_PADDING = { paddingLeft: 8, paddingRight: 24 };
+const CODE_PAD = CODE_PADDING.paddingLeft + CODE_PADDING.paddingRight;
+const PROBE = "0".repeat(64);
 
 const Line = memo(function Line({ item, ctx }: { item: Exclude<Item, { t: "gap" }>; ctx: Ctx }) {
   if (item.t === "pair") {
@@ -548,7 +616,7 @@ const Line = memo(function Line({ item, ctx }: { item: Exclude<Item, { t: "gap" 
   if (ctx.mode === "file") {
     return (
       <div className="flex min-h-full w-full">
-        <span className="sticky left-0 z-10 flex shrink-0 bg-background select-none" style={{ width: fileGutterW(ctx.digits) }}>
+        <span className="sticky left-0 z-10 flex shrink-0 bg-background select-none" style={{ width: gutterCss("file", ctx.digits) }}>
           <span className="flex-1 pr-3 pl-4 text-right text-subtle/80">{r.n}</span>
           <span
             className={cn(
@@ -563,26 +631,27 @@ const Line = memo(function Line({ item, ctx }: { item: Exclude<Item, { t: "gap" 
           />
           <span className="w-3 shrink-0" />
         </span>
-        <Code text={text} tokens={tokens} wrap={ctx.wrap} />
+        <Code text={text} tokens={tokens} wrap={ctx.wrapAt(text, "row")} />
       </div>
     );
   }
 
   return (
     <div className={cn("flex min-h-full w-full", ROW_BG[r.k])}>
-      <span className={cn("sticky left-0 z-10 flex shrink-0 pl-1 select-none", GUTTER_BG[r.k])}>
+      <span className={cn("sticky left-0 z-10 flex shrink-0 pl-1 select-none", GUTTER_BG[r.k])} style={{ width: gutterCss("unified", ctx.digits) }}>
         {/* Old numbers stay faint except on removed lines, where they're the only reference. */}
         <Num n={r.o} digits={ctx.digits} k={r.k} faint={r.k === 0} />
         <Num n={r.n} digits={ctx.digits} k={r.k} />
         <span className={cn("w-5 shrink-0 text-center", r.k === 1 ? "text-added" : r.k === 2 ? "text-removed" : "")}>{SIGN[r.k]}</span>
       </span>
-      <Code text={text} tokens={tokens} emph={r.e} emphClass={r.k === 1 ? "bg-add-emph" : "bg-del-emph"} wrap={ctx.wrap} />
+      <Code text={text} tokens={tokens} emph={r.e} emphClass={r.k === 1 ? "bg-add-emph" : "bg-del-emph"} wrap={ctx.wrapAt(text, "row")} />
     </div>
   );
 });
 
-function Half({ row, side, ctx, border }: { row: DiffRow | null; side: "old" | "new"; ctx: Ctx; border?: boolean }) {
-  const borderCls = border && "border-l border-border-strong";
+/** One side of a pair; `column`: alone in a split column that scrolls sideways under its gutter. */
+function Half({ row, side, ctx, border, column }: { row: DiffRow | null; side: "old" | "new"; ctx: Ctx; border?: boolean; column?: boolean }) {
+  const borderCls = cn(border && "border-l border-border-strong", column && "h-full");
   if (!row) {
     return <div className={cn(borderCls, "bg-[repeating-linear-gradient(135deg,transparent_0_5px,var(--hatch)_5px_6px)]")} />;
   }
@@ -591,11 +660,11 @@ function Half({ row, side, ctx, border }: { row: DiffRow | null; side: "old" | "
   const tokens = side === "old" ? ctx.oldTok(n - 1, text) : ctx.newTok(n - 1, text);
   return (
     <div className={cn("flex min-w-0", ROW_BG[row.k], borderCls)}>
-      <span className={cn("flex shrink-0 pl-1 select-none", GUTTER_BG[row.k])}>
+      <span className={cn("flex shrink-0 pl-1 select-none", column && "sticky left-0 z-10", GUTTER_BG[row.k])} style={{ width: gutterCss("half", ctx.digits) }}>
         <Num n={n} digits={ctx.digits} k={row.k} />
         <span className={cn("w-5 shrink-0 text-center", row.k === 1 ? "text-added" : row.k === 2 ? "text-removed" : "")}>{SIGN[row.k]}</span>
       </span>
-      <Code text={text} tokens={tokens} emph={row.e} emphClass={row.k === 1 ? "bg-add-emph" : "bg-del-emph"} wrap />
+      <Code text={text} tokens={tokens} emph={row.e} emphClass={row.k === 1 ? "bg-add-emph" : "bg-del-emph"} wrap={ctx.wrapAt(text, side)} />
     </div>
   );
 }
@@ -624,21 +693,61 @@ function usefulEmphasis(text: string, emph?: [number, number][]) {
   return total && changed / total <= 0.6 ? ranges : undefined;
 }
 
-type CodeProps = { text: string; tokens?: TokenLine; emph?: [number, number][]; emphClass?: string; wrap: boolean };
+type CodeProps = { text: string; tokens?: TokenLine; emph?: [number, number][]; emphClass?: string; wrap: Wrap | null };
 
 // New tokens (a fresh result, the old side arriving) or a new revision re-render every mounted
 // row; comparing by value keeps that to the lines whose colors or text actually changed.
 const Code = memo(function Code({ text, tokens, emph, emphClass, wrap }: CodeProps) {
   emph = usefulEmphasis(text, emph);
+  const all = tokens ?? [[text, "", 0]];
+  // Wrapped rows clip: hanging whitespace (see wrapLine) must not widen the view.
+  const cls = cn("min-w-0 flex-1 select-text", wrap && "overflow-x-clip");
+  if (!wrap?.at.length) return <span className={cn(cls, "whitespace-pre")} style={CODE_PADDING}>{renderTokens(all, emph, emphClass)}</span>;
+  // One line per piece where wrapLine broke it (CSS could break elsewhere). Inline blocks: blocks
+  // make copying add a newline per piece; and the container can't be `pre`, or they'd sit side by side.
+  const cuts = [0, ...wrap.at, text.length];
   return (
-    <span className={cn("min-w-0 flex-1 pr-6 pl-2 select-text", wrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "whitespace-pre")}>
-      {renderTokens(tokens ?? [[text, "", 0]], emph, emphClass)}
+    <span className={cls} style={CODE_PADDING}>
+      {cuts.slice(1).map((b, p) => (
+        <span key={p} className="inline-block w-full align-top whitespace-pre" style={p ? { paddingLeft: `${wrap.indent}ch` } : undefined}>
+          {renderTokens(sliceTokens(all, cuts[p], b), sliceRanges(emph, cuts[p], b), emphClass)}
+        </span>
+      ))}
     </span>
   );
 }, sameCode);
 
 function sameCode(a: CodeProps, b: CodeProps) {
-  return a.text === b.text && a.wrap === b.wrap && a.emphClass === b.emphClass && sameTuples(a.emph, b.emph) && sameTuples(a.tokens, b.tokens);
+  return (
+    a.text === b.text &&
+    a.emphClass === b.emphClass &&
+    sameWrap(a.wrap, b.wrap) &&
+    sameTuples(a.emph, b.emph) &&
+    sameTuples(a.tokens, b.tokens)
+  );
+}
+
+/** Tokens covering text[a, b). */
+function sliceTokens(tokens: TokenLine, a: number, b: number): TokenLine {
+  const out: TokenLine = [];
+  let pos = 0;
+  for (const [str, color, fs] of tokens) {
+    const end = pos + str.length;
+    if (end > a && pos < b) out.push([str.slice(Math.max(0, a - pos), b - pos), color, fs]);
+    if (end >= b) break;
+    pos = end;
+  }
+  return out;
+}
+
+/** Ranges within [a, b), relative to a. */
+function sliceRanges(ranges: [number, number][] | undefined, a: number, b: number) {
+  return ranges?.map(([x, y]) => [Math.max(x, a) - a, Math.min(y, b) - a] as [number, number]).filter(([x, y]) => y > x);
+}
+
+function sameWrap(a: Wrap | null, b: Wrap | null) {
+  if (a === b) return true;
+  return !!a && !!b && a.indent === b.indent && a.at.length === b.at.length && a.at.every((x, i) => x === b.at[i]);
 }
 
 function sameTuples<T extends unknown[]>(a: T[] | undefined, b: T[] | undefined) {
@@ -684,15 +793,22 @@ function renderTokens(tokens: TokenLine, emph: [number, number][] | undefined, e
   return out;
 }
 
-function Gap({ count, height, onExpand }: { count: number; height: number; onExpand: () => void }) {
+/** `blank`: the right column's stretch of a gap the left column labels. */
+function Gap({ count, height, blank, onExpand }: { count: number; height: number; blank?: boolean; onExpand: () => void }) {
   return (
     <button
       onClick={onExpand}
       style={{ height }}
+      tabIndex={blank ? -1 : undefined}
+      aria-hidden={blank || undefined}
       className="sticky left-0 flex w-full items-center gap-2 border-y border-border bg-panel px-4 font-sans text-[11.5px] text-subtle transition-colors hover:bg-elevated hover:text-foreground"
     >
-      <ChevronsUpDown className="size-3.5" />
-      {count} unchanged lines
+      {!blank && (
+        <>
+          <ChevronsUpDown className="size-3.5" />
+          {count} unchanged lines
+        </>
+      )}
     </button>
   );
 }
