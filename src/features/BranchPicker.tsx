@@ -1,9 +1,11 @@
-import { Check, ChevronRight, ChevronsUpDown, Cloud, GitBranch, GitMerge, GitPullRequestArrow, Plus, Search, SquareTerminal, Trash2 } from "lucide-react";
+import { Check, ChevronRight, ChevronsUpDown, Cloud, GitBranch, GitBranchPlus, GitMerge, GitPullRequestArrow, Link, Pencil, Plus, Search, SquareTerminal, Trash2, Unlink } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { type Branch, fullName, github } from "@/lib/api";
 import { useGitHubData } from "@/lib/githubCache";
+import { matchesCommand, useShortcut } from "@/lib/keybindings";
 import { cn, relativeTime } from "@/lib/utils";
 
 interface Props {
@@ -22,6 +24,11 @@ interface Props {
   onDelete: (branch: Branch) => void;
   /** Deletes these merged branches together (asks first). */
   onCleanUp: (names: string[]) => void;
+  onRename: (branch: Branch) => void;
+  /** A new branch at `base`: a full ref (refs/heads/…, refs/remotes/…), or HEAD. */
+  onNewBranch: (base: string) => void;
+  onSetUpstream: (branch: Branch) => void;
+  onUnsetUpstream: (branch: Branch) => void;
   /** Where the list opens relative to the trigger. */
   side?: "top" | "bottom";
 }
@@ -38,7 +45,7 @@ const LOCAL = "Local";
  * typed. The highlighted row also offers merging it into, or rebasing onto it.
  * Branches checked out in another worktree live in the worktree picker instead.
  */
-export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemote, onCreate, onMerge, onRebase, onTerminal, onDelete, onCleanUp, side = "bottom" }: Props) {
+export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemote, onCreate, onMerge, onRebase, onTerminal, onDelete, onCleanUp, onRename, onNewBranch, onSetUpstream, onUnsetUpstream, side = "bottom" }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
@@ -136,8 +143,16 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     close();
   };
 
+  const renameKey = useShortcut("git.renameBranch");
+  const rename = (o: Option | undefined) => {
+    if (o?.kind !== "branch" || o.branch.remote) return;
+    onRename(o.branch);
+    close();
+  };
+
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "ArrowDown") setIndex((i) => Math.min(options.length - 1, i + 1));
+    if (matchesCommand("git.renameBranch", e.nativeEvent)) rename(options[index]);
+    else if (e.key === "ArrowDown") setIndex((i) => Math.min(options.length - 1, i + 1));
     else if (e.key === "ArrowUp") setIndex((i) => Math.max(0, i - 1));
     else if (e.key === "Enter") choose(options[index]);
     else return;
@@ -159,70 +174,111 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     n += g.list.length;
   }
 
+  const menuAct = (fn: () => void) => () => {
+    fn();
+    close();
+  };
+
+  /** Right-click actions on a branch row. */
+  const branchMenu = (b: Branch) => (
+    // The dialog these open takes the focus; the closed picker has nowhere to give it back.
+    <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
+      {!b.remote && (
+        <ContextMenuItem onSelect={menuAct(() => onRename(b))}>
+          <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}
+        </ContextMenuItem>
+      )}
+      <ContextMenuItem onSelect={menuAct(() => onNewBranch(`refs/${b.remote ? "remotes" : "heads"}/${b.name}`))}>
+        <GitBranchPlus /> New branch from {b.name}…
+      </ContextMenuItem>
+      {!b.remote && (
+        <>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={menuAct(() => onSetUpstream(b))}>
+            <Link /> {b.upstream ? "Change upstream…" : "Set upstream…"}
+          </ContextMenuItem>
+          <ContextMenuItem disabled={!b.upstream} onSelect={menuAct(() => onUnsetUpstream(b))}>
+            <Unlink /> Unset upstream{b.upstream && <span className="ml-auto pl-4 font-mono text-[11px] opacity-70">{b.upstream}</span>}
+          </ContextMenuItem>
+        </>
+      )}
+    </ContextMenuContent>
+  );
+
   const optionRow = (o: Option, i: number) => {
     const hot = i === index;
+    const row = (
+      <div
+        data-option={i}
+        role="option"
+        aria-selected={hot}
+        onMouseMove={() => setIndex(i)}
+        onClick={() => choose(o)}
+        className={cn(
+          "flex h-7 items-center gap-2 rounded-sm px-2 text-[12px]",
+          hot && "bg-primary text-primary-foreground",
+          o.kind === "branch" && o.branch.current ? "cursor-default" : "cursor-pointer",
+        )}
+      >
+        {o.kind === "create" ? (
+          <>
+            <Plus className="size-3.5 shrink-0" />
+            <span className="truncate">
+              Create branch <span className="font-mono font-semibold">{o.name}</span>
+            </span>
+          </>
+        ) : (
+          <>
+            {o.branch.current ? (
+              <Check className="size-3.5 shrink-0" />
+            ) : o.branch.remote ? (
+              <Cloud className="size-3.5 shrink-0 opacity-60" />
+            ) : (
+              <GitBranch className="size-3.5 shrink-0 opacity-60" />
+            )}
+            <span className="truncate font-mono text-[11.5px]">{o.branch.name}</span>
+            {/* Mounted on every row, shown on the hot one: a tooltip whose button unmounts
+                as the highlight moves gets stuck open or shows the previous label. */}
+            <span className={cn("ml-auto shrink-0 gap-0.5", hot ? "flex" : "hidden")}>
+              <RowAction hot={hot} label={o.branch.current ? "Open a terminal here" : "Open a terminal in a new worktree"} onClick={act(onTerminal, localName(o.branch))}>
+                <SquareTerminal />
+              </RowAction>
+              {!o.branch.current && current && (
+                <>
+                  <RowAction hot={hot} label={`Merge into ${current}`} onClick={act(onMerge, o.branch.name)}>
+                    <GitMerge />
+                  </RowAction>
+                  <RowAction hot={hot} label={`Rebase ${current} onto it`} onClick={act(onRebase, o.branch.name)}>
+                    <GitPullRequestArrow />
+                  </RowAction>
+                </>
+              )}
+              {/* Where you can't push, GitHub would refuse the delete anyway. */}
+              {!o.branch.current && !o.branch.remoteDefault && !guarded.has(o.branch.name) && !(o.branch.remote && accessOf(remoteOf(o.branch))?.push === false) && (
+                <RowAction hot={hot} label={o.branch.remote ? "Delete from the remote…" : o.branch.merged ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch), o.branch.name)}>
+                  <Trash2 />
+                </RowAction>
+              )}
+            </span>
+            {!hot && (
+              <span className="ml-auto max-w-40 shrink-0 truncate text-[10.5px] text-subtle">
+                {o.branch.current ? "current" : o.branch.merged ? `merged · ${relativeTime(o.branch.timestamp)}` : relativeTime(o.branch.timestamp)}
+              </span>
+            )}
+          </>
+        )}
+      </div>
+    );
     return (
       <div key={o.kind === "create" ? "\0create" : o.branch.name}>
-        <div
-          data-option={i}
-          role="option"
-          aria-selected={hot}
-          onMouseMove={() => setIndex(i)}
-          onClick={() => choose(o)}
-          className={cn(
-            "flex h-7 items-center gap-2 rounded-sm px-2 text-[12px]",
-            hot && "bg-primary text-primary-foreground",
-            o.kind === "branch" && o.branch.current ? "cursor-default" : "cursor-pointer",
-          )}
-        >
-          {o.kind === "create" ? (
-            <>
-              <Plus className="size-3.5 shrink-0" />
-              <span className="truncate">
-                Create branch <span className="font-mono font-semibold">{o.name}</span>
-              </span>
-            </>
-          ) : (
-            <>
-              {o.branch.current ? (
-                <Check className="size-3.5 shrink-0" />
-              ) : o.branch.remote ? (
-                <Cloud className="size-3.5 shrink-0 opacity-60" />
-              ) : (
-                <GitBranch className="size-3.5 shrink-0 opacity-60" />
-              )}
-              <span className="truncate font-mono text-[11.5px]">{o.branch.name}</span>
-              {/* Mounted on every row, shown on the hot one: a tooltip whose button unmounts
-                  as the highlight moves gets stuck open or shows the previous label. */}
-              <span className={cn("ml-auto shrink-0 gap-0.5", hot ? "flex" : "hidden")}>
-                <RowAction hot={hot} label={o.branch.current ? "Open a terminal here" : "Open a terminal in a new worktree"} onClick={act(onTerminal, localName(o.branch))}>
-                  <SquareTerminal />
-                </RowAction>
-                {!o.branch.current && current && (
-                  <>
-                    <RowAction hot={hot} label={`Merge into ${current}`} onClick={act(onMerge, o.branch.name)}>
-                      <GitMerge />
-                    </RowAction>
-                    <RowAction hot={hot} label={`Rebase ${current} onto it`} onClick={act(onRebase, o.branch.name)}>
-                      <GitPullRequestArrow />
-                    </RowAction>
-                  </>
-                )}
-                {/* Where you can't push, GitHub would refuse the delete anyway. */}
-                {!o.branch.current && !o.branch.remoteDefault && !guarded.has(o.branch.name) && !(o.branch.remote && accessOf(remoteOf(o.branch))?.push === false) && (
-                  <RowAction hot={hot} label={o.branch.remote ? "Delete from the remote…" : o.branch.merged ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch), o.branch.name)}>
-                    <Trash2 />
-                  </RowAction>
-                )}
-              </span>
-              {!hot && (
-                <span className="ml-auto max-w-40 shrink-0 truncate text-[10.5px] text-subtle">
-                  {o.branch.current ? "current" : o.branch.merged ? `merged · ${relativeTime(o.branch.timestamp)}` : relativeTime(o.branch.timestamp)}
-                </span>
-              )}
-            </>
-          )}
-        </div>
+        {o.kind === "create" ? (
+          row
+        ) : (
+          <ContextMenu>
+            <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+            {branchMenu(o.branch)}
+          </ContextMenu>
+        )}
       </div>
     );
   };
@@ -275,7 +331,18 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
           {options.at(-1)?.kind === "create" && optionRow(options.at(-1)!, options.length - 1)}
         </div>
         <div className="flex shrink-0 items-center gap-2 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
-          <span className="min-w-0 flex-1 truncate">↑↓ navigate · ↵ switch · hover for actions</span>
+          <span className="min-w-0 flex-1 truncate">↑↓ navigate · ↵ switch · {renameKey ? `${renameKey} rename · ` : ""}right-click for more</span>
+          <Tip label={`New branch from ${current ?? "HEAD"}, or from any branch or tag`}>
+            <button
+              onClick={() => {
+                onNewBranch(current ? `refs/heads/${current}` : "HEAD");
+                close();
+              }}
+              className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover hover:text-foreground"
+            >
+              New branch…
+            </button>
+          </Tip>
           {stale.length > 0 && (
             <Tip label={`Delete the ${stale.length} local branches already merged into ${current ?? "HEAD"}`}>
               <button

@@ -38,18 +38,21 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { api, type Branch, CANCELLED, cancelNetwork, errorMessage, type JournalEntry, type NetOp, netOp, type Progress, type Worktree } from "@/lib/api";
+import { api, type Branch, CANCELLED, cancelNetwork, errorMessage, type JournalEntry, type NetOp, type Worktree } from "@/lib/api";
 import { IS_MAC } from "@/lib/commands";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
+import { useNetActivity, withNetActivity } from "@/lib/netActivity";
 import { tracked, travel, undoAction } from "@/lib/undo";
 import type { RepoData } from "@/lib/useRepo";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName } from "@/lib/worktrees";
+import { type BranchDialog, BranchDialogs } from "./BranchDialogs";
 import { BranchPicker } from "./BranchPicker";
 import { openClone } from "./CloneDialog";
 import { ProjectList, ProjectTile } from "./ProjectList";
+import { PushMenu } from "./PushMenu";
 import { openSettings } from "./SettingsDialog";
 import { WorktreePicker } from "./WorktreePicker";
 
@@ -113,7 +116,8 @@ function useFullscreen() {
 export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
   const { status, branches, worktrees } = repo;
   const [busy, setBusy] = useState<string | null>(null);
-  const [net, setNet] = useState<{ op: NetOp; progress: Progress | null } | null>(null);
+  const [branchDialog, setBranchDialog] = useState<BranchDialog | null>(null);
+  const net = useNetActivity();
   const terminalOpen = useTerminals().open;
   const fullscreen = useFullscreen();
 
@@ -134,15 +138,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   };
 
   /** Fetch, pull and push: git's progress shows next to the spinner, and Cancel stops it. */
-  const runNet = async (label: string, fn: (op: NetOp) => Promise<void | boolean>, done?: string) => {
-    const op = netOp((progress) => setNet((n) => n && { ...n, progress }));
-    setNet({ op, progress: null });
-    try {
-      await run(label, () => fn(op), done);
-    } finally {
-      setNet(null);
-    }
-  };
+  const runNet = (label: string, fn: (op: NetOp) => Promise<void | boolean>, done?: string) => run(label, () => withNetActivity(label, fn), done);
 
   const branchName = status?.branch ?? (status?.head ? `detached @ ${status.head}` : "…");
 
@@ -196,12 +192,13 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   // Rejected as non-fast-forward: the remote has commits this branch dropped, usually its own
   // old ones after a rebase or amend. Replacing them is a force push, so it asks first.
   // "fetch first" (commits not fetched yet) isn't offered: those want a pull.
-  const push = () =>
+  // `tags`: --follow-tags, annotated tags on the pushed commits go along.
+  const push = (tags = false) =>
     runNet(
       "Push",
       async (op) => {
         try {
-          await api.push(false, undefined, op);
+          await api.push(false, undefined, op, tags);
         } catch (e) {
           if (!errorMessage(e).includes("non-fast-forward")) throw e;
           const ok = await ask(
@@ -209,10 +206,10 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
             { title: "Force push", kind: "warning", okLabel: "Force push" },
           );
           if (!ok) throw e;
-          await api.push(true, undefined, op);
+          await api.push(true, undefined, op, tags);
         }
       },
-      "Pushed",
+      tags ? "Pushed with tags" : "Pushed",
     );
   // Unknown until the push target has the branch; then a push is due.
   const pushAhead = status?.push ? (status.push.branch ? status.push.ahead : null) : (status?.ahead ?? 0);
@@ -253,7 +250,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   useCommands({
     "git.fetch": busy ? undefined : () => runNet("Fetch", api.fetch),
     "git.pull": busy || !status?.upstream ? undefined : () => runNet("Pull", (op) => api.pull("ff", op), "Pulled"),
-    "git.push": busy || !status?.upstream ? undefined : push,
+    "git.push": busy || !status?.upstream ? undefined : () => push(),
   });
 
   return (
@@ -277,7 +274,12 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onTerminal={branchTerminal}
         onDelete={deleteBranch}
         onCleanUp={cleanUp}
+        onRename={(branch) => setBranchDialog({ kind: "rename", branch })}
+        onNewBranch={(base) => setBranchDialog({ kind: "new", base })}
+        onSetUpstream={(branch) => setBranchDialog({ kind: "upstream", branch })}
+        onUnsetUpstream={(b) => run("Unset upstream", () => api.setUpstream(b.name, null), `${b.name} no longer tracks ${b.upstream}`)}
       />
+      {branchDialog && <BranchDialogs dialog={branchDialog} branches={branches} onClose={() => setBranchDialog(null)} run={run} runNet={runNet} />}
       <WorktreePicker worktrees={worktrees} branches={branches} onOpen={onOpenRepo} onTerminal={openTerminal} onMerge={merge} onRemove={removeWorktree} />
       {status && !status.upstream && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
@@ -290,9 +292,10 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
 
       <UndoControls repo={repo} disabled={!!busy} />
       <div className="mx-1 h-4 w-px bg-border-strong" />
-      {busy && (
+      {/* History's tag pushes show here too: `net` is whichever network command runs. */}
+      {(busy || net) && (
         <span className="mr-1 flex shrink-0 items-center gap-1.5 text-[11.5px] text-muted-foreground select-none">
-          <Loader2 className="size-3.5 animate-spin" /> {busy}…
+          <Loader2 className="size-3.5 animate-spin" /> {busy ?? net?.label}…
           {net?.progress && (
             <span className="text-subtle tabular-nums">
               {net.progress.phase}
@@ -300,7 +303,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
             </span>
           )}
           {net && (
-            <Tip label={`Cancel ${busy.toLowerCase()}`}>
+            <Tip label={`Cancel ${net.label.toLowerCase()}`}>
               <Button variant="ghost" size="icon-sm" aria-label="Cancel" onClick={() => void cancelNetwork(net.op)}>
                 <X />
               </Button>
@@ -340,12 +343,20 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       {status?.upstream ? (
         // Where the push lands, which a fork can set apart from where it pulls (upstream/dev
         // pulled, origin/dev pushed). Not there yet: the push creates it.
-        <Tip label={status.push?.branch ? `Push to ${status.push.branch}` : `Push to ${status.push?.remote ?? "the remote"} (creates the branch there)`}>
-          <Button variant={pushAhead !== 0 ? "default" : "secondary"} disabled={!!busy} onClick={push}>
-            <ArrowUpFromLine /> Push
-            {!!pushAhead && <span className="font-mono text-[10.5px]">{pushAhead}</span>}
-          </Button>
-        </Tip>
+        <div className="flex">
+          <Tip label={status.push?.branch ? `Push to ${status.push.branch}` : `Push to ${status.push?.remote ?? "the remote"} (creates the branch there)`}>
+            <Button variant={pushAhead !== 0 ? "default" : "secondary"} className="rounded-r-none" disabled={!!busy} onClick={() => push()}>
+              <ArrowUpFromLine /> Push
+              {!!pushAhead && <span className="font-mono text-[10.5px]">{pushAhead}</span>}
+            </Button>
+          </Tip>
+          <PushMenu
+            primary={pushAhead !== 0}
+            disabled={!!busy}
+            onPush={push}
+            onPushTags={(names, remote) => runNet("Push tags", async (op) => void (await api.pushTags(names, op)), `Pushed ${names.length === 1 ? names[0] : `${names.length} tags`} to ${remote}`)}
+          />
+        </div>
       ) : (
         <PublishButton
           remotes={status?.remotes ?? []}
@@ -403,7 +414,7 @@ function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boolean })
     const blocked = forward ? journal?.redoBlocked : journal?.undoBlocked;
     const verb = forward ? "redo" : "undo";
     if (off) return;
-    if (!e) toast("info", `Nothing to ${verb}`, "Commits, merges, pulls, branch changes and discards made in GitViber can be undone.");
+    if (!e) toast("info", `Nothing to ${verb}`, "Commits, merges, pulls, discards, and branch and tag changes made in GitViber can be undone.");
     else if (blocked) toast("error", `Can't ${verb} ${e.label}`, blocked);
     else void go(forward, [e.id]);
   };
@@ -460,7 +471,7 @@ function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boolean })
         <DropdownMenuContent align="end" className="w-80">
           <DropdownMenuLabel>Undo history</DropdownMenuLabel>
           {!undos.length && !redos.length && (
-            <div className="px-2 py-1.5 text-[12px] text-muted-foreground">Commits, merges, pulls and branch changes you make in GitViber show up here, to undo and redo.</div>
+            <div className="px-2 py-1.5 text-[12px] text-muted-foreground">Commits, merges, pulls, and branch and tag changes you make in GitViber show up here, to undo and redo.</div>
           )}
           {/* Furthest redo on top, so the list reads newest to oldest. */}
           {redos

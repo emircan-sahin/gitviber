@@ -2038,6 +2038,81 @@ pub fn revert(repo: &Path, sha: &str) -> Result<bool, String> {
     result
 }
 
+/// `git cherry-pick` onto HEAD, returning true if it stopped on conflicts.
+pub fn cherry_pick(repo: &Path, sha: &str) -> Result<bool, String> {
+    validate_rev(sha)?;
+    ensure_idle(repo)?;
+    // Like revert: a merge is picked relative to its first parent.
+    let merge = run(repo, &["rev-parse", "--verify", "-q", &format!("{sha}^2")]).is_ok();
+    let mut args = vec!["cherry-pick"];
+    if merge {
+        args.extend(["-m", "1"]);
+    }
+    args.push(sha);
+    let result = stoppable(repo, run(repo, &args));
+    // Changes HEAD already has leave an empty pick in progress, with nothing to resolve.
+    if result.is_err()
+        && operation(repo).is_some_and(|op| op.kind == "cherry-pick")
+        && run(repo, &["diff", "--cached", "--quiet"]).is_ok()
+    {
+        let _ = run(repo, &["cherry-pick", "--abort"]);
+        return Err("This branch already has these changes; nothing to cherry-pick.".into());
+    }
+    result
+}
+
+/// Another worktree of this repo with a branch checked out, where a commit can be picked onto
+/// that branch. Returns its top folder as git names it, which is how the journal keys it.
+pub fn pick_target(repo: &Path, path: &str) -> Result<std::path::PathBuf, String> {
+    let w = listed_worktree(repo, path)?;
+    if w.current || w.bare || w.prunable || w.branch.is_none() {
+        return Err(format!("{path} has no branch to cherry-pick onto here"));
+    }
+    toplevel(Path::new(&w.path)).map(Into::into)
+}
+
+/// `cherry_pick` in another worktree (`target`, from `pick_target`). Refused up front when
+/// local changes there are in the way: git wants a clean index, and won't touch a changed file.
+pub fn cherry_pick_into(target: &Path, sha: &str) -> Result<bool, String> {
+    validate_rev(sha)?;
+    ensure_idle(target)?;
+    let touched: std::collections::HashSet<String> = commit_files(target, sha)?
+        .into_iter()
+        .flat_map(|f| [Some(f.path), f.old_path])
+        .flatten()
+        .collect();
+    let st = status(target)?;
+    let mut blocking: Vec<&str> = st.staged.iter().map(|f| f.path.as_str()).collect();
+    blocking.extend(
+        st.unstaged
+            .iter()
+            .chain(&st.conflicted)
+            .map(|f| f.path.as_str())
+            .filter(|p| touched.contains(*p)),
+    );
+    if !blocking.is_empty() {
+        blocking.sort_unstable();
+        blocking.dedup();
+        let branch = st.branch.as_deref().unwrap_or("that worktree");
+        let shown = blocking
+            .iter()
+            .take(5)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = blocking.len().saturating_sub(5);
+        let more = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        return Err(format!(
+            "{branch} has uncommitted changes in the way ({shown}{more}). Commit or stash them in that worktree first."
+        ));
+    }
+    cherry_pick(target, sha)
+}
+
 /// Detached checkout of a commit. Git refuses if local changes would be overwritten.
 pub fn checkout_commit(repo: &Path, sha: &str) -> Result<(), String> {
     validate_rev(sha)?;
@@ -2050,14 +2125,88 @@ pub fn create_branch_at(repo: &Path, name: &str, sha: &str) -> Result<(), String
     run(repo, &["switch", "-c", name, sha]).map(|_| ())
 }
 
-pub fn create_tag(repo: &Path, name: &str, sha: &str) -> Result<(), String> {
-    validate_rev(sha)?;
+fn validate_tag(repo: &Path, name: &str) -> Result<(), String> {
     let full = format!("refs/tags/{name}");
     // "@" alone is valid in a full ref but means HEAD wherever a revision is read.
     if name == "@" || name.starts_with('-') || run(repo, &["check-ref-format", &full]).is_err() {
         return Err(format!("invalid tag name: {name}"));
     }
-    run(repo, &["tag", name, sha]).map(|_| ())
+    Ok(())
+}
+
+/// A lightweight tag, or with a `message` an annotated one (which `push --follow-tags` sends).
+pub fn create_tag(repo: &Path, name: &str, sha: &str, message: Option<&str>) -> Result<(), String> {
+    validate_rev(sha)?;
+    validate_tag(repo, name)?;
+    match message.map(str::trim).filter(|m| !m.is_empty()) {
+        // Through stdin, like a commit message, so it is never parsed as arguments.
+        Some(m) => run_with(
+            repo,
+            &["tag", "-a", "-F", "-", name, sha],
+            &[],
+            Some(m.as_bytes()),
+        ),
+        None => run(repo, &["tag", name, sha]),
+    }
+    .map(|_| ())
+}
+
+pub fn delete_tag(repo: &Path, name: &str) -> Result<(), String> {
+    validate_tag(repo, name)?;
+    run(repo, &["tag", "-d", name]).map(|_| ())
+}
+
+/// Where tags are pushed: where `git push` sends this branch, else where Publish would.
+fn tag_remote(repo: &Path) -> Result<String, String> {
+    run_text(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .ok()
+        .and_then(|b| push_target(repo, b.trim()))
+        .map(|p| p.remote)
+        .map_or_else(|| publish_remote(repo), Ok)
+}
+
+/// Pushes these tags; returns the remote they went to.
+pub fn push_tags(repo: &Path, names: &[String], net: &Net) -> Result<String, String> {
+    let remote = tag_remote(repo)?;
+    let refs: Vec<String> = names
+        .iter()
+        .map(|n| validate_tag(repo, n).map(|_| format!("refs/tags/{n}")))
+        .collect::<Result<_, _>>()?;
+    if refs.is_empty() {
+        return Ok(remote);
+    }
+    let mut args = vec!["push", remote.as_str()];
+    args.extend(refs.iter().map(String::as_str));
+    run_network(repo, &args, net).map(|_| remote.clone())
+}
+
+/// Deletes a tag from the remote tags are pushed to (the local one stays); returns that remote.
+pub fn delete_remote_tag(repo: &Path, name: &str, net: &Net) -> Result<String, String> {
+    validate_tag(repo, name)?;
+    let remote = tag_remote(repo)?;
+    let full = format!("refs/tags/{name}");
+    run_network(repo, &["push", &remote, "--delete", &full], net).map(|_| remote.clone())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTags {
+    pub remote: String,
+    pub names: Vec<String>,
+}
+
+/// The tags on the remote tags are pushed to. A network call: asked for when a menu opens,
+/// never on refresh.
+pub fn remote_tags(repo: &Path) -> Result<RemoteTags, String> {
+    let remote = tag_remote(repo)?;
+    // ls-remote has no --progress; it only gets the silence timeout.
+    let args = ["ls-remote", "--tags", "--refs", &remote];
+    let out = network::run(command(repo, &args), "git ls-remote", &Net::default())?;
+    let names = String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|l| l.split_once("\trefs/tags/").map(|(_, n)| n.to_string()))
+        .collect();
+    Ok(RemoteTags { remote, names })
 }
 
 // ---------------------------------------------------------------- branches
@@ -2193,6 +2342,112 @@ pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String
     run(repo, &args).map(|_| ())
 }
 
+/// A new branch at `base`: HEAD, or a full ref to a local or remote branch or a tag. It doesn't
+/// track `base`: it's a new line of work, and under `push.default=simple` an upstream with
+/// another name would refuse its pushes. `switch` checks it out as well.
+pub fn create_branch(repo: &Path, name: &str, base: &str, switch: bool) -> Result<(), String> {
+    validate_branch(repo, name)?;
+    if base != "HEAD"
+        && !["refs/heads/", "refs/remotes/", "refs/tags/"]
+            .iter()
+            .any(|p| base.starts_with(p))
+    {
+        return Err(format!("not a branch or tag: {base}"));
+    }
+    validate_ref(repo, base)?;
+    let args = if switch {
+        vec!["switch", "--no-track", "-c", name, base]
+    } else {
+        vec!["branch", "--no-track", name, base]
+    };
+    run(repo, &args).map(|_| ())
+}
+
+/// `git branch -m`. With `remote` the branch's upstream is renamed too: the new name is
+/// pushed and tracked, then the old one deleted there.
+pub fn rename_branch(
+    repo: &Path,
+    old: &str,
+    new: &str,
+    remote: bool,
+    net: &Net,
+) -> Result<(), String> {
+    validate_branch(repo, old)?;
+    validate_branch(repo, new)?;
+    // Checked before anything moves, so a refusal leaves everything as it was.
+    let upstream = remote.then(|| remote_upstream(repo, old)).transpose()?;
+    run(repo, &["branch", "-m", old, new])?;
+    let Some((remote, branch)) = upstream else {
+        return Ok(());
+    };
+    let publish = format!("refs/heads/{new}:refs/heads/{new}");
+    let gone = format!("refs/heads/{branch}");
+    run_network(repo, &["push", "-u", &remote, &publish], net)
+        .and_then(|_| run_network(repo, &["push", &remote, "--delete", &gone], net))
+        .map(|_| ())
+        .map_err(|e| match e.as_str() {
+            network::CANCELLED => format!("Renamed to {new} here; on {remote} it was cancelled."),
+            _ => format!("Renamed to {new} here, but not on {remote}: {e}"),
+        })
+}
+
+/// The remote and branch name `branch` tracks. Refuses a remote's default branch: hosts
+/// reject deleting it, and it would leave every clone without one.
+fn remote_upstream(repo: &Path, branch: &str) -> Result<(String, String), String> {
+    let reference = format!("refs/heads/{branch}");
+    let out = run_text(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(upstream:remotename)%1f%(upstream:remoteref)",
+            &reference,
+        ],
+    )?;
+    let (remote, name) = out
+        .trim_end()
+        .split_once('\x1f')
+        .filter(|(r, _)| !r.is_empty() && *r != ".")
+        .and_then(|(r, m)| Some((r.to_string(), m.strip_prefix("refs/heads/")?.to_string())))
+        .ok_or_else(|| format!("{branch} doesn't track a remote branch"))?;
+    let head = format!("refs/remotes/{remote}/HEAD");
+    if run_text(repo, &["symbolic-ref", "--quiet", "--short", &head])
+        .is_ok_and(|h| h.trim() == format!("{remote}/{name}"))
+    {
+        return Err(format!(
+            "{remote}/{name} is {remote}'s default branch; rename it on the host instead"
+        ));
+    }
+    Ok((remote, name))
+}
+
+/// Makes `branch` track `upstream`, a remote-tracking branch such as origin/feat, or nothing.
+pub fn set_upstream(repo: &Path, branch: &str, upstream: Option<&str>) -> Result<(), String> {
+    validate_branch(repo, branch)?;
+    let Some(u) = upstream else {
+        return run(repo, &["branch", "--unset-upstream", branch]).map(|_| ());
+    };
+    let full = format!("refs/remotes/{u}");
+    if u.starts_with('-') || run(repo, &["rev-parse", "--verify", "-q", &full]).is_err() {
+        return Err(format!("not a remote branch: {u}"));
+    }
+    let flag = format!("--set-upstream-to={full}");
+    run(repo, &["branch", &flag, branch]).map(|_| ())
+}
+
+/// Tag names, newest first.
+pub fn tags(repo: &Path) -> Result<Vec<String>, String> {
+    let out = run_text(
+        repo,
+        &[
+            "for-each-ref",
+            "--sort=-creatordate",
+            "--format=%(refname:lstrip=2)",
+            "refs/tags",
+        ],
+    )?;
+    Ok(out.lines().map(str::to_string).collect())
+}
+
 /// Switches to the local branch for a remote-tracking one ("upstream/dev" → dev), creating it
 /// to track exactly that ref. Not `git switch dev`: with origin/dev and upstream/dev both
 /// there, git's guess refuses. An existing local branch is switched to as it is; the UI asks
@@ -2228,6 +2483,119 @@ pub fn switch_tracking(repo: &Path, remote_ref: &str) -> Result<(), String> {
         return run(repo, &["switch", local]).map(|_| ());
     }
     run(repo, &["switch", "-c", local, "--track", remote_ref]).map(|_| ())
+}
+
+// ---------------------------------------------------------------- stash
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stash {
+    pub sha: String,
+    /// Its n in stash@{n} now. Pushes and drops shift it, so actions name the stash by `sha`.
+    pub index: usize,
+    /// As git words it: "On main: message", or "WIP on main: <commit>" without one.
+    pub message: String,
+    pub author: String,
+    pub timestamp: i64,
+}
+
+pub fn stashes(repo: &Path) -> Result<Vec<Stash>, String> {
+    let out = run_text(repo, &["stash", "list", "--format=%H%x1f%an%x1f%ct%x1f%gs"])?;
+    Ok(out
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.splitn(4, '\x1f').collect();
+            (f.len() == 4).then(|| (f[0], f[1], f[2], f[3]))
+        })
+        .enumerate()
+        .map(|(index, (sha, author, time, message))| Stash {
+            sha: sha.to_string(),
+            index,
+            message: message.to_string(),
+            author: author.to_string(),
+            timestamp: time.parse().unwrap_or(0),
+        })
+        .collect())
+}
+
+/// stash@{n} for the stash that is commit `sha`, wherever it sits in the list now.
+fn stash_ref(repo: &Path, sha: &str) -> Result<String, String> {
+    validate_rev(sha)?;
+    stashes(repo)?
+        .iter()
+        .find(|s| s.sha == sha)
+        .map(|s| format!("stash@{{{}}}", s.index))
+        .ok_or_else(|| "That stash is gone (dropped or popped elsewhere).".into())
+}
+
+/// Stashes local changes, with `untracked` files too. Nested repositories stay (git skips them).
+pub fn stash_push(repo: &Path, message: &str, untracked: bool) -> Result<(), String> {
+    let top = || run_text(repo, &["rev-parse", "-q", "--verify", "refs/stash"]).ok();
+    let before = top();
+    let mut args = vec!["stash", "push"];
+    if untracked {
+        args.push("--include-untracked");
+    }
+    let message = message.trim();
+    if !message.is_empty() {
+        args.extend(["-m", message]);
+    }
+    // No paths are passed, and literal pathspecs break the cleanup of stashed untracked
+    // files: they would be saved and still left in place.
+    let mut cmd = command(repo, &args);
+    cmd.env("GIT_LITERAL_PATHSPECS", "0");
+    exec(cmd, "git stash", &[], None, None)?;
+    // With nothing to save git says so on stdout and still succeeds.
+    if top() == before {
+        return Err("There are no local changes to stash.".into());
+    }
+    Ok(())
+}
+
+/// Applies a stash, and with `pop` drops it once applied cleanly. On conflicts git keeps it
+/// and returns true: they're resolved like a merge's, then the stash can be dropped.
+pub fn stash_apply(repo: &Path, sha: &str, pop: bool) -> Result<bool, String> {
+    ensure_idle(repo)?;
+    let r = stash_ref(repo, sha)?;
+    stoppable(
+        repo,
+        run(repo, &["stash", if pop { "pop" } else { "apply" }, &r]),
+    )
+}
+
+pub fn stash_drop(repo: &Path, sha: &str) -> Result<(), String> {
+    let r = stash_ref(repo, sha)?;
+    run(repo, &["stash", "drop", &r]).map(|_| ())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashFiles {
+    /// Tracked changes, against the commit it was made on (its first parent).
+    pub files: Vec<FileChange>,
+    /// The root commit `-u` keeps untracked files in (its third parent); diffed from nothing.
+    pub untracked_sha: Option<String>,
+    pub untracked: Vec<FileChange>,
+}
+
+pub fn stash_files(repo: &Path, sha: &str) -> Result<StashFiles, String> {
+    let files = commit_files(repo, sha)?;
+    let third = format!("{sha}^3");
+    let untracked_sha = run_text(repo, &["rev-parse", "--verify", "-q", &third])
+        .ok()
+        .map(|s| s.trim().to_string());
+    let mut untracked = match &untracked_sha {
+        Some(u) => commit_files(repo, u)?,
+        None => vec![],
+    };
+    for f in &mut untracked {
+        f.status = "?".into();
+    }
+    Ok(StashFiles {
+        files,
+        untracked_sha,
+        untracked,
+    })
 }
 
 // ---------------------------------------------------------------- mutations
@@ -2456,10 +2824,33 @@ pub fn commit_details(repo: &Path, sha: &str) -> Result<CommitDetails, String> {
 /// meanwhile by someone else is refused rather than lost.
 /// A branch without an upstream is published (`-u`) to `remote`, or else to `publish_remote`.
 pub fn push(repo: &Path, force: bool, remote: Option<&str>, net: &Net) -> Result<(), String> {
+    push_as(repo, force, remote, false, net)
+}
+
+/// `push` with `--follow-tags`: annotated tags on the pushed commits go along.
+pub fn push_with_tags(
+    repo: &Path,
+    force: bool,
+    remote: Option<&str>,
+    net: &Net,
+) -> Result<(), String> {
+    push_as(repo, force, remote, true, net)
+}
+
+fn push_as(
+    repo: &Path,
+    force: bool,
+    remote: Option<&str>,
+    tags: bool,
+    net: &Net,
+) -> Result<(), String> {
     let has_upstream = run(repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
     let mut args = vec!["push"];
     if force {
         args.push("--force-with-lease");
+    }
+    if tags {
+        args.push("--follow-tags");
     }
     let target;
     if !has_upstream {

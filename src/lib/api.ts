@@ -209,6 +209,25 @@ export interface Branch {
 
 export type PullMode = "ff" | "merge" | "rebase";
 
+export interface Stash {
+  /** Actions name a stash by this: stash@{n} shifts as others are pushed and dropped. */
+  sha: string;
+  /** Its n in stash@{n} now. */
+  index: number;
+  /** As git words it: "On main: message", or "WIP on main: <commit>". */
+  message: string;
+  author: string;
+  timestamp: number;
+}
+
+export interface StashFiles {
+  /** Tracked changes, against the commit the stash was made on. */
+  files: FileChange[];
+  /** The commit holding its untracked files (a stash made with them), diffed from nothing. */
+  untrackedSha: string | null;
+  untracked: FileChange[];
+}
+
 /** One of the app's own git actions, as the undo history lists it. */
 export interface JournalEntry {
   id: number;
@@ -341,6 +360,14 @@ export const api = {
   deleteBranches: (names: string[], force: boolean) => invoke<void>("delete_branches", { names, force }),
   /** "origin/feat" → git push origin --delete feat. */
   deleteRemoteBranch: (name: string, op?: NetOp) => network<void>("delete_remote_branch", { name }, op),
+  /** A new branch at `base` (refs/heads/…, refs/remotes/… or refs/tags/…), not tracking it; `switchTo` checks it out. */
+  createBranch: (name: string, base: string, switchTo: boolean) => invoke<void>("create_branch", { name, base, switch: switchTo }),
+  /** `remote`: also push the new name, track it, and delete the upstream's old name there. */
+  renameBranch: (old: string, name: string, remote: boolean, op?: NetOp) => network<void>("rename_branch", { old, new: name, remote }, op),
+  /** `upstream`: a remote-tracking branch (origin/feat), or null to track nothing. */
+  setUpstream: (branch: string, upstream: string | null) => invoke<void>("set_upstream", { branch, upstream }),
+  /** Tag names, newest first. */
+  tags: () => invoke<string[]>("tags"),
   worktrees: () => invoke<Worktree[]>("worktrees"),
   /** Uncommitted files in one of this repo's worktrees, and commits found nowhere else. */
   worktreeState: (path: string) => invoke<WorktreeState>("worktree_state", { path }),
@@ -366,8 +393,11 @@ export const api = {
   suggestCancel: () => invoke<void>("suggest_cancel"),
   /** Signature status and trailers of one commit (verifying runs gpg/ssh, so one at a time). */
   commitDetails: (sha: string) => invoke<CommitDetails>("commit_details", { sha }),
-  /** `force`: --force-with-lease, after a rebase or amend. `remote`: where to publish a branch with no upstream. */
-  push: (force = false, remote?: string, op?: NetOp) => network<void>("push", { force, remote }, op),
+  /**
+   * `force`: --force-with-lease, after a rebase or amend. `remote`: where to publish a branch with no upstream.
+   * `tags`: --follow-tags, annotated tags on the pushed commits go too.
+   */
+  push: (force = false, remote?: string, op?: NetOp, tags = false) => network<void>("push", { force, remote, tags }, op),
   // The boolean results mean "stopped on conflicts".
   pull: (mode: PullMode, op?: NetOp) => network<boolean>("pull", { mode }, op),
   merge: (name: string) => invoke<boolean>("merge", { name }),
@@ -405,9 +435,26 @@ export const api = {
   /** Moving HEAD to `sha` would drop commits the upstream already has (needs a force-push). */
   dropsPushed: (sha: string) => invoke<boolean>("drops_pushed", { sha }),
   revert: (sha: string) => invoke<boolean>("revert", { sha }),
+  cherryPick: (sha: string) => invoke<boolean>("cherry_pick", { sha }),
+  /** Picks onto the branch of another worktree (`path`), running git there; true = stopped on conflicts there. */
+  cherryPickInto: (path: string, sha: string) => invoke<boolean>("cherry_pick_into", { path, sha }),
   checkoutCommit: (sha: string) => invoke<void>("checkout_commit", { sha }),
+  stashes: () => invoke<Stash[]>("stashes"),
+  stashFiles: (sha: string) => invoke<StashFiles>("stash_files", { sha }),
+  /** `untracked`: take untracked files along (nested repositories stay). */
+  stashPush: (message: string, untracked: boolean) => invoke<void>("stash_push", { message, untracked }),
+  /** `pop` also drops it, unless it stopped on conflicts (true). */
+  stashApply: (sha: string, pop: boolean) => invoke<boolean>("stash_apply", { sha, pop }),
+  stashDrop: (sha: string) => invoke<void>("stash_drop", { sha }),
   createBranchAt: (name: string, sha: string) => invoke<void>("create_branch_at", { name, sha }),
-  createTag: (name: string, sha: string) => invoke<void>("create_tag", { name, sha }),
+  /** With a `message`, an annotated tag. */
+  createTag: (name: string, sha: string, message?: string) => invoke<void>("create_tag", { name, sha, message }),
+  deleteTag: (name: string) => invoke<void>("delete_tag", { name }),
+  // Tags go where `git push` sends the current branch; these return that remote.
+  pushTags: (names: string[], op?: NetOp) => network<string>("push_tags", { names }, op),
+  deleteRemoteTag: (name: string, op?: NetOp) => network<string>("delete_remote_tag", { name }, op),
+  /** The tags that remote has. A network call: only when a menu opens. */
+  remoteTags: () => invoke<{ remote: string; names: string[] }>("remote_tags"),
   /** https://github.com/owner/name, or null when origin isn't on GitHub. */
   githubWebUrl: () => invoke<string | null>("github_web_url"),
   journal: () => invoke<Journal>("journal"),

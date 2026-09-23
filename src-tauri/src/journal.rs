@@ -1,5 +1,5 @@
-//! Undo and redo for the app's own git actions. Each one records how it moved HEAD and the
-//! local branches; undo moves them back, redo forward again. The record lives in memory
+//! Undo and redo for the app's own git actions. Each one records how it moved HEAD, the
+//! local branches and the tags; undo moves them back, redo forward again. The record lives in memory
 //! only: nothing is written to the repo, and commits an undo takes off a branch stay in the
 //! object store, where redo (or the reflog) finds them. A discard records the files it
 //! replaced instead, whose old versions it put in the Trash.
@@ -49,6 +49,8 @@ struct Snapshot {
     head: Head,
     /// Local branch → commit.
     tips: BTreeMap<String, String>,
+    /// Tag → what it points at (an annotated tag's own object, which outlives its deletion).
+    tags: BTreeMap<String, String>,
     /// `branch.<name>.*` settings, which `git branch -D` deletes along with the branch.
     config: Vec<(String, String)>,
 }
@@ -70,6 +72,8 @@ struct Entry {
     mode: Mode,
     head: [Head; 2],
     changes: Vec<Change>,
+    /// Tags it created, deleted or moved: before and after, None = no such tag.
+    tags: Vec<(String, [Option<String>; 2])>,
     /// The push target's tip when the entry was last done or undone. Commits it had then
     /// (pulled ones, say) may come off the branch; ones pushed since may not.
     pushed: Option<String>,
@@ -140,7 +144,7 @@ impl Entry {
 }
 
 impl Journal {
-    /// Runs an action that may move HEAD or local branches, and records what it moved.
+    /// Runs an action that may move HEAD, local branches or tags, and records what it moved.
     /// Continuing or aborting an operation that stopped on conflicts completes the entry
     /// of the action that started it.
     pub fn record<T>(
@@ -160,7 +164,7 @@ impl Journal {
         let pushed = git::pushed_tip(repo);
         let mut stacks = lock(&self.stacks);
         let s = stacks.entry(repo.to_path_buf()).or_default();
-        if before.head != after.head || before.tips != after.tips {
+        if before.head != after.head || before.tips != after.tips || before.tags != after.tags {
             s.undone.clear();
         }
         // An operation started outside the app has no start to go back to. With none in
@@ -217,6 +221,7 @@ impl Journal {
             mode: Mode::Keep,
             head: [snap.head.clone(), snap.head],
             changes: vec![],
+            tags: vec![],
             pushed: None,
             files,
         });
@@ -315,29 +320,34 @@ fn snapshot(repo: &Path, with_config: bool) -> Result<Snapshot, String> {
                 .to_string(),
         ),
     };
-    let tips = run_text(
+    let refs = run_text(
         repo,
         &[
             "for-each-ref",
             "--format=%(objectname) %(refname)",
             "refs/heads",
+            "refs/tags",
         ],
-    )?
-    .lines()
-    .filter_map(|l| {
-        let (sha, name) = l.split_once(' ')?;
-        Some((
-            name.strip_prefix("refs/heads/")?.to_string(),
-            sha.to_string(),
-        ))
-    })
-    .collect();
+    )?;
+    let (mut tips, mut tags) = (BTreeMap::new(), BTreeMap::new());
+    for (sha, name) in refs.lines().filter_map(|l| l.split_once(' ')) {
+        if let Some(b) = name.strip_prefix("refs/heads/") {
+            tips.insert(b.to_string(), sha.to_string());
+        } else if let Some(t) = name.strip_prefix("refs/tags/") {
+            tags.insert(t.to_string(), sha.to_string());
+        }
+    }
     let config = if with_config {
         branch_config(repo, None)
     } else {
         vec![]
     };
-    Ok(Snapshot { head, tips, config })
+    Ok(Snapshot {
+        head,
+        tips,
+        tags,
+        config,
+    })
 }
 
 /// The repo's `branch.*` settings, or only `name`'s. Exits 1 when there are none.
@@ -402,7 +412,18 @@ fn diff(
             }
         })
         .collect();
-    if changes.is_empty() && before.head == after.head {
+    let names: BTreeSet<&String> = before.tags.keys().chain(after.tags.keys()).collect();
+    let tags: Vec<_> = names
+        .into_iter()
+        .filter(|n| before.tags.get(*n) != after.tags.get(*n))
+        .map(|n| {
+            (
+                n.clone(),
+                [before.tags.get(n).cloned(), after.tags.get(n).cloned()],
+            )
+        })
+        .collect();
+    if changes.is_empty() && tags.is_empty() && before.head == after.head {
         return None;
     }
     Some(Entry {
@@ -412,6 +433,7 @@ fn diff(
         mode: action.mode,
         head: [before.head.clone(), after.head.clone()],
         changes,
+        tags,
         pushed,
         files: vec![],
     })
@@ -514,6 +536,9 @@ fn blocked(repo: &Path, e: &Entry, from: usize, to: usize) -> Option<String> {
         || e.changes
             .iter()
             .any(|c| now.tips.get(&c.branch) != c.tips[from].as_ref())
+        || e.tags
+            .iter()
+            .any(|(t, at)| now.tags.get(t) != at[from].as_ref())
     {
         return Some(
             "The repository changed outside GitViber since then (in a terminal, say), so this can't be done safely."
@@ -549,18 +574,28 @@ fn apply(repo: &Path, e: &mut Entry, from: usize, to: usize) -> Result<(), Strin
         Head::Branch(b) => Some(b.clone()),
         Head::Detached(_) => None,
     };
-    // Other branches first: a switch needs its target to exist. On failure, put them back.
-    let mut moved = vec![];
+    // Tags, then other branches: a switch needs its target to exist. On failure, put them back.
+    let mut tagged = 0;
     let mut result = Ok(());
+    for (t, at) in &e.tags {
+        result = set_tag(repo, t, at[to].as_deref());
+        if result.is_err() {
+            break;
+        }
+        tagged += 1;
+    }
+    let mut moved = vec![];
     for i in 0..e.changes.len() {
+        if result.is_err() {
+            break;
+        }
         if Some(&e.changes[i].branch) == current.as_ref() {
             continue;
         }
         result = set_branch(repo, &mut e.changes[i], from, to);
-        if result.is_err() {
-            break;
+        if result.is_ok() {
+            moved.push(i);
         }
-        moved.push(i);
     }
     if result.is_ok() {
         result = move_head(repo, e, from, to);
@@ -568,6 +603,9 @@ fn apply(repo: &Path, e: &mut Entry, from: usize, to: usize) -> Result<(), Strin
     if result.is_err() {
         for &i in moved.iter().rev() {
             let _ = set_branch(repo, &mut e.changes[i], to, from);
+        }
+        for (t, at) in e.tags[..tagged].iter().rev() {
+            let _ = set_tag(repo, t, at[from].as_deref());
         }
     }
     result
@@ -645,6 +683,16 @@ fn set_branch(repo: &Path, c: &mut Change, from: usize, to: usize) -> Result<(),
         }
         (Some(_), Some(sha)) => run(repo, &["branch", "-f", name, sha]).map(|_| ()),
     }
+}
+
+/// Points a tag at `target`, or deletes it (None).
+fn set_tag(repo: &Path, name: &str, target: Option<&str>) -> Result<(), String> {
+    let full = format!("refs/tags/{name}");
+    match target {
+        Some(sha) => run(repo, &["update-ref", &full, sha]),
+        None => run(repo, &["update-ref", "-d", &full]),
+    }
+    .map(|_| ())
 }
 
 #[cfg(test)]

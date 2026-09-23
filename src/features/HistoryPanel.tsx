@@ -1,11 +1,12 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Tag, Undo2 } from "lucide-react";
+import { Cherry, Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuLabel,
   ContextMenuSeparator,
   ContextMenuSub,
   ContextMenuSubContent,
@@ -14,13 +15,16 @@ import {
 } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Commit, type CommitDetails, errorMessage, type FileChange, type RepoStatus, type ResetMode } from "@/lib/api";
+import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
+import { withNetActivity } from "@/lib/netActivity";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
 import { useListNav } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
+import { folderName } from "@/lib/worktrees";
 import { FileIcon } from "./FileIcon";
 import { copyLink, openOnGitHub } from "./PullsPanel";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
@@ -44,6 +48,10 @@ interface Props {
   empty?: string;
   /** A commit to open when it shows up (blame's link to it). */
   openSha?: string;
+  /** This repo's worktrees: a commit can be picked onto the branch checked out in another. */
+  worktrees?: Worktree[];
+  /** Opens a worktree in this window. */
+  onOpenRepo?: (path: string) => void;
 }
 
 /** What a commit's context menu needs from the panel. */
@@ -58,13 +66,16 @@ interface Actions {
   name: (kind: "branch" | "tag", commit: Commit) => void;
   /** `webUrl` has every listed commit, not only those reached from origin's branches. */
   everyOnWeb: boolean;
+  /** Other worktrees with a branch checked out, to cherry-pick onto. */
+  pickTargets: Worktree[];
+  pickInto: (w: Worktree, commit: Commit) => Promise<void>;
 }
 
 /** GitHub only has commits that reached one of origin's branches (or all, for a fork's original). */
 const commitUrl = (c: Commit, { webUrl, everyOnWeb }: Pick<Actions, "webUrl" | "everyOnWeb">) =>
   webUrl && (c.onOrigin || everyOnWeb) ? `${webUrl}/commit/${c.sha}` : undefined;
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", openSha }: Props) {
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", openSha, worktrees = [], onOpenRepo }: Props) {
   const [open, setOpen] = useState<string | null>(openSha ?? null);
   useEffect(() => {
     if (openSha) setOpen(openSha);
@@ -88,7 +99,26 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
       if (stopped) toast("info", `${label} stopped on conflicts`, "Resolve them in Changes, then continue.");
       else toast("success", done, undefined, undoAction(entry, refresh));
     } catch (e) {
-      toast("error", `${label} failed`, errorMessage(e));
+      if (e === CANCELLED) toast("info", `${label} cancelled`);
+      else toast("error", `${label} failed`, errorMessage(e));
+    } finally {
+      setBusy(false);
+      await refresh();
+    }
+  };
+
+  // git runs in that worktree, and the entry lands in its undo history, not this one's. A pick
+  // stopped on conflicts waits there, for its own Changes panel to finish.
+  const pickInto = async (w: Worktree, c: Commit) => {
+    const branch = w.branch ?? folderName(w.path);
+    const where = folderName(w.path);
+    const go = onOpenRepo && { label: "Switch to worktree", run: () => onOpenRepo(w.path) };
+    setBusy(true);
+    try {
+      if (await api.cherryPickInto(w.path, c.sha)) toast("info", `Cherry-pick onto ${branch} stopped on conflicts`, `It waits in ${where}: switch there to resolve them and continue.`, go);
+      else toast("success", `Cherry-picked ${c.shortSha} onto ${branch}`, `In ${where}; undo it from there.`, go);
+    } catch (e) {
+      toast("error", `Cherry-pick onto ${branch} failed`, errorMessage(e));
     } finally {
       setBusy(false);
       await refresh();
@@ -105,6 +135,8 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     run,
     name: (kind, commit) => setNaming({ kind, commit }),
     everyOnWeb: !!web,
+    pickTargets: worktrees.filter((w) => !w.current && !w.bare && !w.prunable && w.branch),
+    pickInto,
   };
 
   // Opening a commit collapses the one above it; WebKit has no scroll anchoring, so without
@@ -172,6 +204,56 @@ async function dropsPushed(sha: string) {
   }
 }
 
+const copy = (text: string, what: string) =>
+  navigator.clipboard.writeText(text).then(
+    () => toast("success", what),
+    (e) => toast("error", "Could not copy", errorMessage(e)),
+  );
+
+/** The remote tags are pushed to and the ones it has, while asking it, or why that failed. */
+type RemoteTags = { remote: string; names: string[] } | { error: string } | "loading" | null;
+
+/** A tag on a commit: push it, delete it here or on the remote. */
+function TagMenu({ tag, remote, onOpen, actions }: { tag: string; remote: RemoteTags; onOpen: () => void; actions: Actions }) {
+  const { locked, run } = actions;
+  const known = remote && typeof remote === "object" && "names" in remote ? remote : null;
+  const there = known?.names.includes(tag);
+  const where = known?.remote ?? "the remote";
+  const deleteRemote = async () => {
+    const ok = await ask(`Delete tag ${tag} from ${where}? Clones that fetched it keep their copy, and GitViber can't undo this. The tag here stays.`, {
+      title: "Delete remote tag",
+      kind: "warning",
+      okLabel: "Delete",
+    });
+    if (ok) await run("Delete remote tag", () => withNetActivity("Delete remote tag", async (op) => void (await api.deleteRemoteTag(tag, op))), `Deleted ${tag} from ${where}`);
+  };
+  return (
+    <ContextMenuSub onOpenChange={(o) => o && onOpen()}>
+      <ContextMenuSubTrigger>
+        <Tag /> <span className="max-w-48 truncate font-mono">{tag}</span>
+      </ContextMenuSubTrigger>
+      <ContextMenuSubContent>
+        <ContextMenuLabel className="normal-case">
+          {remote === "loading" || remote === null ? "Checking the remote…" : known ? (there ? `On ${where}` : `Not on ${where} yet`) : "Couldn't reach the remote"}
+        </ContextMenuLabel>
+        <ContextMenuItem disabled={there} onSelect={() => run("Push tag", () => withNetActivity("Push tag", async (op) => void (await api.pushTags([tag], op))), `Pushed tag ${tag}`)}>
+          <UploadCloud /> Push tag{known ? ` to ${where}` : ""}
+        </ContextMenuItem>
+        <ContextMenuItem disabled={locked} onSelect={() => run("Delete tag", () => api.deleteTag(tag), `Deleted tag ${tag}`)}>
+          <Trash2 /> Delete tag
+        </ContextMenuItem>
+        <ContextMenuItem disabled={known ? !there : false} className="text-destructive" onSelect={deleteRemote}>
+          <Trash2 /> Delete from {where}…
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => copy(tag, "Tag name copied")}>
+          <Copy /> Copy name
+        </ContextMenuItem>
+      </ContextMenuSubContent>
+    </ContextMenuSub>
+  );
+}
+
 /** Right-click actions on a commit. `head`: the first row, i.e. the checked-out commit. */
 function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolean; actions: Actions }) {
   const { status, headSha, webUrl, locked, run } = actions;
@@ -206,11 +288,14 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
     if (ok) await run("Checkout", () => api.checkoutCommit(c.sha), `Checked out ${short}`);
   };
 
-  const copy = (text: string, what: string) =>
-    navigator.clipboard.writeText(text).then(
-      () => toast("success", what),
-      (e) => toast("error", "Could not copy", errorMessage(e)),
-    );
+  // Which tags the remote has, asked each time a tag's submenu opens: a push since changes it.
+  const tags = c.refs.filter((r) => r.startsWith("tag: ")).map((r) => r.slice(5));
+  const [remote, setRemote] = useState<RemoteTags>(null);
+  const checkRemote = () => {
+    if (remote === "loading") return;
+    setRemote("loading");
+    api.remoteTags().then(setRemote, (e) => setRemote({ error: errorMessage(e) }));
+  };
 
   // Set by the naming items: focus going back to the row would steal it from the name dialog.
   const naming = useRef(false);
@@ -233,6 +318,28 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       <ContextMenuItem disabled={locked || c.notInHead} onSelect={() => run("Revert", () => api.revert(c.sha), `Reverted ${short}`)}>
         <RotateCcw /> Revert commit
       </ContextMenuItem>
+      {/* Only a commit HEAD lacks (a fork's original lists those): picking one it has changes nothing. */}
+      {c.notInHead && (
+        <ContextMenuItem disabled={locked} onSelect={() => run("Cherry-pick", () => api.cherryPick(c.sha), `Cherry-picked ${short} onto ${target}`)}>
+          <Cherry /> Cherry-pick onto {target}
+        </ContextMenuItem>
+      )}
+      {actions.pickTargets.length > 0 && (
+        <ContextMenuSub>
+          {/* Another worktree's lock is its own: only this one's action in progress holds it back. */}
+          <ContextMenuSubTrigger disabled={actions.locked && !actions.status?.operation}>
+            <Cherry /> Cherry-pick onto
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            {actions.pickTargets.map((w) => (
+              <ContextMenuItem key={w.path} onSelect={() => actions.pickInto(w, c)}>
+                <span className="font-mono">{w.branch}</span>
+                <span className="ml-auto pl-4 text-[11px] opacity-70">{folderName(w.path)}</span>
+              </ContextMenuItem>
+            ))}
+          </ContextMenuSubContent>
+        </ContextMenuSub>
+      )}
       <ContextMenuSub>
         <ContextMenuSubTrigger disabled={locked}>
           <History /> Reset {target} to here
@@ -252,9 +359,12 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       <ContextMenuItem disabled={locked} onSelect={() => name("branch")}>
         <GitBranchPlus /> Create branch from here…
       </ContextMenuItem>
-      <ContextMenuItem onSelect={() => name("tag")}>
+      <ContextMenuItem disabled={locked} onSelect={() => name("tag")}>
         <Tag /> Create tag here…
       </ContextMenuItem>
+      {tags.map((t) => (
+        <TagMenu key={t} tag={t} remote={remote} onOpen={checkRemote} actions={actions} />
+      ))}
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={() => copy(c.sha, "SHA copied")}>
         <Copy /> Copy SHA
@@ -281,11 +391,12 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
 
 function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "tag"; commit: Commit; onClose: () => void; run: Actions["run"] }) {
   const [name, setName] = useState("");
+  const [message, setMessage] = useState("");
   const submit = () => {
     const n = name.trim();
     onClose();
     if (kind === "branch") run("Create branch", () => api.createBranchAt(n, commit.sha), `Switched to new branch ${n}`);
-    else run("Create tag", () => api.createTag(n, commit.sha), `Tagged ${commit.shortSha} as ${n}`);
+    else run("Create tag", () => api.createTag(n, commit.sha, message), `Tagged ${commit.shortSha} as ${n}`);
   };
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -296,16 +407,31 @@ function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "tag"; co
           {kind === "branch" && ". You'll be switched to it; uncommitted changes come along."}
         </DialogDescription>
         <form
-          className="mt-4 flex gap-2"
+          className="mt-4 flex flex-wrap gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             if (name.trim()) submit();
           }}
         >
-          <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === "branch" ? "Branch name" : "Tag name, e.g. v1.2.0"} spellCheck={false} />
+          <Input autoFocus className="min-w-0 flex-1" value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === "branch" ? "Branch name" : "Tag name, e.g. v1.2.0"} spellCheck={false} />
           <Button type="submit" disabled={!name.trim()}>
             Create
           </Button>
+          {kind === "tag" && (
+            <Textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              // ⌘↵ submits from here too; a plain ↵ is a new line.
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && e.metaKey && name.trim()) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+              rows={3}
+              placeholder="Message (optional): makes an annotated tag, which Push with tags sends along"
+            />
+          )}
         </form>
       </DialogContent>
     </Dialog>

@@ -433,9 +433,10 @@ function clashNote(c: Command, chord: string, overrides: Record<string, string[]
   const others = COMMANDS.filter((o) => o.id !== c.id && bindingsFor(o.id, overrides).includes(chord));
   if (!others.length) return null;
   const k = formatChord(chord);
-  if ("local" in c) return `${k} also runs ${others.map((o) => o.title).join(", ")} outside the commit message`;
   const global = others.filter((o) => !("local" in o));
-  if (!global.length) return `${k} also commits while typing a commit message`;
+  // Two local commands never meet: each listens in its own place.
+  if ("local" in c) return global.length ? `${k} also runs ${global.map((o) => o.title).join(", ")} outside ${c.local}` : null;
+  if (!global.length) return `${k} also runs ${others.map((o) => ("local" in o ? `${o.title} in ${o.local}` : o.title)).join(", ")}`;
   const winner = commandFor(chord, overrides);
   return winner?.id === c.id ? `${k} is also bound to ${global.map((o) => o.title).join(", ")}; this command takes precedence` : `${k} is also bound to ${winner?.title}, which takes precedence`;
 }

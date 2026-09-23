@@ -1632,11 +1632,11 @@ fn checkout_branch_and_tag_at_a_commit() {
     let base = log(&r, None, 0, 1).unwrap()[0].sha.clone();
     write_commit(&r, "a.txt", "2\n", "two");
 
-    assert!(create_tag(&r, "-f", &base).is_err());
-    assert!(create_tag(&r, "bad..name", &base).is_err());
-    create_tag(&r, "v1.0", &base).unwrap();
+    assert!(create_tag(&r, "-f", &base, None).is_err());
+    assert!(create_tag(&r, "bad..name", &base, None).is_err());
+    create_tag(&r, "v1.0", &base, None).unwrap();
     assert!(
-        create_tag(&r, "v1.0", &base).is_err(),
+        create_tag(&r, "v1.0", &base, None).is_err(),
         "existing tag is not moved"
     );
     assert!(log(&r, None, 0, 2).unwrap()[1]
@@ -1654,7 +1654,7 @@ fn checkout_branch_and_tag_at_a_commit() {
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
     assert!(create_branch_at(&r, "--evil", &base).is_err());
     assert!(create_branch_at(&r, "@", &base).is_err());
-    assert!(create_tag(&r, "@", &base).is_err());
+    assert!(create_tag(&r, "@", &base, None).is_err());
 }
 
 fn commit_dated(repo: &Path, path: &str, content: &str, msg: &str, date: &str) {
@@ -2034,6 +2034,336 @@ fn undo_a_rebase_continued_after_conflicts() {
     assert_eq!(rev(&r, "HEAD"), before);
     assert_eq!(on_branch(&r), "feat");
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "feat\n");
+}
+
+// ---------------------------------------------------------------- branches, tags, stash, cherry-pick
+
+fn upstream_of(repo: &Path, branch: &str) -> Option<String> {
+    let spec = format!("{branch}@{{upstream}}");
+    run_text(repo, &["rev-parse", "--abbrev-ref", &spec])
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+fn on_remote(repo: &Path, branch: &str) -> bool {
+    let full = format!("refs/heads/{branch}");
+    !run_text(repo, &["ls-remote", "origin", &full])
+        .unwrap()
+        .trim()
+        .is_empty()
+}
+
+/// Renaming the checked-out branch with its remote: the new name is pushed and tracked, the
+/// old one leaves the remote. Undo brings the old name back with its old upstream settings.
+#[test]
+fn rename_a_branch_here_and_on_the_remote() {
+    let sb = Sandbox::new("rename");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    switch_branch(a, "feat", true).unwrap();
+    write_commit(a, "f.txt", "f\n", "feat");
+    push(a, false, None, &Net::default()).unwrap();
+    assert!(rename_branch(a, "feat", "--evil", false, &Net::default()).is_err());
+    // The remote default branch is refused before anything moves.
+    assert!(rename_branch(a, "main", "trunk", true, &Net::default()).is_err());
+    assert!(exists(a, "main"));
+
+    let j = Journal::default();
+    j.record(a, Action::new("Rename feat to feature", Mode::Keep), |r| {
+        rename_branch(r, "feat", "feature", true, &Net::default())
+    })
+    .unwrap();
+    assert_eq!(on_branch(a), "feature");
+    assert!(!exists(a, "feat"));
+    assert_eq!(upstream_of(a, "feature").as_deref(), Some("origin/feature"));
+    assert!(on_remote(a, "feature") && !on_remote(a, "feat"));
+
+    step(&j, a, false).unwrap();
+    assert_eq!(on_branch(a), "feat");
+    assert!(!exists(a, "feature"));
+    let merge = run_text(a, &["config", "branch.feat.merge"]).unwrap();
+    assert_eq!(merge.trim(), "refs/heads/feat");
+    step(&j, a, true).unwrap();
+    assert_eq!(on_branch(a), "feature");
+    assert_eq!(upstream_of(a, "feature").as_deref(), Some("origin/feature"));
+
+    // A local-only rename of a branch that isn't checked out.
+    switch_branch(a, "side", true).unwrap();
+    switch_branch(a, "feature", false).unwrap();
+    rename_branch(a, "side", "aside", false, &Net::default()).unwrap();
+    assert!(exists(a, "aside") && !exists(a, "side"));
+    assert!(
+        rename_branch(a, "aside", "x", true, &Net::default()).is_err(),
+        "tracks nothing"
+    );
+}
+
+/// A branch from a remote branch or a tag starts there without tracking it; the upstream is
+/// set and unset on its own.
+#[test]
+fn create_branch_from_a_base_and_set_its_upstream() {
+    let sb = Sandbox::new("newfrom");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    let base = rev(a, "HEAD");
+    write_commit(a, "b.txt", "b\n", "local only");
+    run(a, &["tag", "v1", &base]).unwrap();
+    assert_eq!(tags(a).unwrap(), vec!["v1".to_string()]);
+
+    create_branch(a, "from-remote", "refs/remotes/origin/main", false).unwrap();
+    assert_eq!(on_branch(a), "main");
+    assert_eq!(rev(a, "from-remote"), base);
+    assert_eq!(upstream_of(a, "from-remote"), None);
+    create_branch(a, "from-tag", "refs/tags/v1", true).unwrap();
+    assert_eq!(on_branch(a), "from-tag");
+    assert_eq!(rev(a, "HEAD"), base);
+    assert!(create_branch(a, "bad", "main", false).is_err());
+    assert!(create_branch(a, "bad", "refs/tags/nope", false).is_err());
+
+    set_upstream(a, "from-tag", Some("origin/main")).unwrap();
+    assert_eq!(upstream_of(a, "from-tag").as_deref(), Some("origin/main"));
+    assert!(set_upstream(a, "from-tag", Some("origin/nope")).is_err());
+    set_upstream(a, "from-tag", None).unwrap();
+    assert_eq!(upstream_of(a, "from-tag"), None);
+}
+
+/// An annotated tag carries its message and goes along with `--follow-tags`; a lightweight
+/// one needs its own push. Creating and deleting tags are undo entries.
+#[test]
+fn annotated_tags_push_and_undo() {
+    let sb = Sandbox::new("tags");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    write_commit(a, "b.txt", "b\n", "release");
+    let head = rev(a, "HEAD");
+    let j = Journal::default();
+    j.record(a, Action::new("Create tag v1", Mode::Keep), |r| {
+        create_tag(r, "v1", &head, Some("First release\n\nNotes"))
+    })
+    .unwrap();
+    create_tag(a, "light", &head, Some("  ")).unwrap();
+    assert!(create_tag(a, "--evil", &head, None).is_err());
+    let kind = |t: &str| {
+        run_text(a, &["cat-file", "-t", t])
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    assert_eq!((kind("v1"), kind("light")), ("tag".into(), "commit".into()));
+    let msg = run_text(a, &["tag", "-l", "--format=%(contents)", "v1"]).unwrap();
+    assert!(msg.starts_with("First release\n\nNotes"), "{msg}");
+
+    push_with_tags(a, false, None, &Net::default()).unwrap();
+    let there = remote_tags(a).unwrap();
+    assert_eq!(
+        (there.remote.as_str(), there.names.clone()),
+        ("origin", vec!["v1".to_string()])
+    );
+    assert_eq!(
+        push_tags(a, &["light".into()], &Net::default()).unwrap(),
+        "origin"
+    );
+    assert_eq!(remote_tags(a).unwrap().names, vec!["light", "v1"]);
+    delete_remote_tag(a, "light", &Net::default()).unwrap();
+    assert_eq!(remote_tags(a).unwrap().names, vec!["v1"]);
+
+    // Undo takes the tag away and redo brings back the same tag object, message and all.
+    let object = rev(a, "refs/tags/v1");
+    step(&j, a, false).unwrap();
+    assert!(run(a, &["rev-parse", "--verify", "-q", "refs/tags/v1"]).is_err());
+    step(&j, a, true).unwrap();
+    assert_eq!(rev(a, "refs/tags/v1"), object);
+
+    j.record(a, Action::new("Delete tag v1", Mode::Keep), |r| {
+        delete_tag(r, "v1")
+    })
+    .unwrap();
+    assert!(!tags(a).unwrap().contains(&"v1".to_string()));
+    step(&j, a, false).unwrap();
+    assert_eq!(rev(a, "refs/tags/v1"), object);
+    // Moved outside the app since: no longer safe to undo or redo.
+    run(a, &["tag", "-f", "v1", "HEAD~1"]).unwrap();
+    assert!(j.view(a).redo_blocked.is_some());
+}
+
+/// Stash with untracked files, list and show it, pop it back. Actions name a stash by its
+/// commit, so one pushed meanwhile (stash@{0} moving) can't redirect them.
+#[test]
+fn stash_push_and_pop_with_untracked_files() {
+    let sb = Sandbox::new("stash");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    assert!(stash_push(&r, "", false).is_err(), "nothing to stash");
+    fs::write(r.join("a.txt"), "a changed\n").unwrap();
+    fs::write(r.join("new.txt"), "new\n").unwrap();
+    stash_push(&r, "wip: both", true).unwrap();
+    // Untracked files leave the worktree too (literal pathspecs once kept them there).
+    let left: Vec<String> = status(&r)
+        .unwrap()
+        .unstaged
+        .iter()
+        .map(|f| f.path.clone())
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    let list = stashes(&r).unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].message, "On main: wip: both");
+    let files = stash_files(&r, &list[0].sha).unwrap();
+    assert_eq!(files.files.len(), 1);
+    assert_eq!(files.files[0].path, "a.txt");
+    assert_eq!(files.untracked.len(), 1);
+    assert_eq!(
+        (
+            files.untracked[0].path.as_str(),
+            files.untracked[0].status.as_str()
+        ),
+        ("new.txt", "?")
+    );
+    // The untracked side opens as a diff from nothing.
+    let u = files.untracked_sha.unwrap();
+    let pair = diff_pair(&r, "commit", "new.txt", None, Some(&u), None, None, |_| {
+        FileText::default()
+    })
+    .unwrap();
+    assert_eq!(
+        (pair.original.exists, pair.modified.text.as_str()),
+        (false, "new\n")
+    );
+
+    // Another stash on top: the first is stash@{1} now, still found by its commit.
+    fs::write(r.join("a.txt"), "other\n").unwrap();
+    stash_push(&r, "other", false).unwrap();
+    let now = stashes(&r).unwrap();
+    assert_eq!(now.len(), 2);
+    stash_drop(&r, &now[0].sha).unwrap();
+    assert!(!stash_apply(&r, &list[0].sha, true).unwrap());
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "a changed\n");
+    assert_eq!(fs::read_to_string(r.join("new.txt")).unwrap(), "new\n");
+    assert!(stashes(&r).unwrap().is_empty());
+    assert!(stash_drop(&r, &list[0].sha).is_err());
+}
+
+/// A pop that conflicts keeps the stash and leaves conflicts to resolve like a merge's.
+#[test]
+fn stash_pop_conflict_keeps_the_stash() {
+    let sb = Sandbox::new("stash-conflict");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "base\n", "base");
+    fs::write(r.join("a.txt"), "stashed\n").unwrap();
+    stash_push(&r, "mine", false).unwrap();
+    write_commit(&r, "a.txt", "committed\n", "moved on");
+    let sha = stashes(&r).unwrap()[0].sha.clone();
+    assert!(stash_apply(&r, &sha, true).unwrap());
+    let st = status(&r).unwrap();
+    assert_eq!(st.conflicted.len(), 1);
+    assert!(st.operation.is_none());
+    assert_eq!(stashes(&r).unwrap().len(), 1);
+    resolve_side(&r, "a.txt", "theirs").unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "stashed\n");
+    stash_drop(&r, &sha).unwrap();
+}
+
+/// A cherry-pick that conflicts goes through the continue flow and is then one undo entry;
+/// one whose changes are already there is refused without leaving a pick in progress.
+#[test]
+fn cherry_pick_with_conflict_then_continue_and_undo() {
+    let sb = Sandbox::new("pick");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "base\n", "base");
+    run(&r, &["switch", "-q", "-c", "feat"]).unwrap();
+    write_commit(&r, "a.txt", "feat\n", "feat edits a");
+    let edit = rev(&r, "HEAD");
+    write_commit(&r, "b.txt", "b\n", "feat adds b");
+    let add = rev(&r, "HEAD");
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    write_commit(&r, "a.txt", "main\n", "main edits a");
+    let before = rev(&r, "HEAD");
+
+    let j = Journal::default();
+    let action = || Action::new("Cherry-pick", Mode::Keep);
+    assert!(!j.record(&r, action(), |r| cherry_pick(r, &add)).unwrap());
+    assert_eq!(fs::read_to_string(r.join("b.txt")).unwrap(), "b\n");
+    let err = cherry_pick(&r, &add).unwrap_err();
+    assert!(err.contains("already has"), "{err}");
+    assert!(operation(&r).is_none());
+    step(&j, &r, false).unwrap();
+    assert_eq!(rev(&r, "HEAD"), before);
+
+    assert!(j.record(&r, action(), |r| cherry_pick(r, &edit)).unwrap());
+    assert_eq!(operation(&r).unwrap().kind, "cherry-pick");
+    resolve_side(&r, "a.txt", "theirs").unwrap();
+    assert!(!j.record(&r, action(), op_continue).unwrap());
+    assert!(operation(&r).is_none());
+    assert_eq!(log(&r, None, 0, 1).unwrap()[0].subject, "feat edits a");
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "feat\n");
+    step(&j, &r, false).unwrap();
+    assert_eq!(rev(&r, "HEAD"), before);
+}
+
+/// An agent's commit in worktree A lands on the branch of worktree B, git running in B: clean,
+/// refused while B's changes are in the way, and stopped on conflicts there for B to finish.
+#[test]
+fn cherry_pick_into_another_worktree() {
+    let sb = Sandbox::new("pick-wt");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "base\n", "base");
+    let b = sb.path("b");
+    run(
+        &r,
+        &["worktree", "add", "-q", "-b", "agent", b.to_str().unwrap()],
+    )
+    .unwrap();
+    write_commit(&b, "a.txt", "agent\n", "agent edits a");
+    let edit = rev(&b, "HEAD");
+    write_commit(&b, "n.txt", "n\n", "agent adds n");
+    let add = rev(&b, "HEAD");
+    // The window is on worktree B (the agent's); main is checked out in r.
+    let target = pick_target(&b, &r.canonicalize().unwrap().to_string_lossy()).unwrap();
+    assert!(same_dir(&target.to_string_lossy(), &r));
+    assert!(pick_target(&b, &b.canonicalize().unwrap().to_string_lossy()).is_err());
+    assert!(pick_target(&b, "/tmp").is_err());
+
+    let j = Journal::default();
+    let action = || Action::new("Cherry-pick", Mode::Keep);
+    let before = rev(&r, "HEAD");
+    // An edit to a file the commit touches is in the way; one elsewhere is not.
+    fs::write(r.join("n.txt"), "mine\n").unwrap();
+    let err = cherry_pick_into(&target, &add).unwrap_err();
+    assert!(err.contains("n.txt") && err.contains("main"), "{err}");
+    assert!(operation(&r).is_none());
+    fs::remove_file(r.join("n.txt")).unwrap();
+    fs::write(r.join("a.txt"), "local\n").unwrap();
+    let pick = |sha: &str| j.record(&target, action(), |t| cherry_pick_into(t, sha));
+    assert!(!pick(&add).unwrap());
+    assert_eq!(log(&r, None, 0, 1).unwrap()[0].subject, "agent adds n");
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "local\n");
+    assert_eq!(rev(&b, "HEAD"), add, "the source branch doesn't move");
+    step(&j, &target, false).unwrap();
+    assert_eq!(rev(&r, "HEAD"), before);
+
+    // Conflicting: the pick stays in progress in r, where its status shows it.
+    run(&r, &["checkout", "-q", "--", "a.txt"]).unwrap();
+    write_commit(&r, "a.txt", "main\n", "main edits a");
+    let before = rev(&r, "HEAD");
+    assert!(pick(&edit).unwrap());
+    let st = status(&r).unwrap();
+    assert_eq!(
+        st.operation.as_ref().map(|o| o.kind.as_str()),
+        Some("cherry-pick")
+    );
+    assert_eq!(st.conflicted.len(), 1);
+    assert!(status(&b).unwrap().operation.is_none());
+    // Continued from r's own window: one undo entry in r's history.
+    resolve_side(&target, "a.txt", "theirs").unwrap();
+    assert!(!j.record(&target, action(), op_continue).unwrap());
+    assert_eq!(j.view(&target).undo.len(), 1);
+    assert!(j.view(&b).undo.is_empty());
+    step(&j, &target, false).unwrap();
+    assert_eq!(rev(&r, "HEAD"), before);
 }
 
 /// A new repository has no commits yet: every view reads it as empty, and staging, unstaging

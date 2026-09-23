@@ -335,6 +335,54 @@ async fn delete_branches(state: State<'_, AppState>, names: Vec<String>, force: 
 }
 
 #[tauri::command]
+async fn create_branch(
+    state: State<'_, AppState>,
+    name: String,
+    base: String,
+    switch: bool,
+) -> Res<()> {
+    let label = format!("Create branch {name}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::create_branch(r, &name, &base, switch)
+    })
+    .await
+}
+
+/// Only the local rename is undoable; what `remote` did on the remote stays.
+#[tauri::command]
+async fn rename_branch(
+    state: State<'_, AppState>,
+    old: String,
+    new: String,
+    remote: bool,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<()> {
+    let label = format!("Rename {old} to {new}");
+    let net = watch_network(&state, op, progress);
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::rename_branch(r, &old, &new, remote, &net)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn set_upstream(
+    state: State<'_, AppState>,
+    branch: String,
+    upstream: Option<String>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::set_upstream(&r, &branch, upstream.as_deref())).await
+}
+
+#[tauri::command]
+async fn tags(state: State<'_, AppState>) -> Res<Vec<String>> {
+    let r = repo(&state)?;
+    blocking(move || git::tags(&r)).await
+}
+
+#[tauri::command]
 async fn delete_remote_branch(
     state: State<'_, AppState>,
     name: String,
@@ -455,12 +503,18 @@ async fn push(
     state: State<'_, AppState>,
     force: Option<bool>,
     remote: Option<String>,
+    tags: Option<bool>,
     op: String,
     progress: Channel<network::Progress>,
 ) -> Res<()> {
     let r = repo(&state)?;
     let net = watch_network(&state, op, progress);
-    blocking(move || git::push(&r, force.unwrap_or(false), remote.as_deref(), &net)).await
+    let push = if tags.unwrap_or(false) {
+        git::push_with_tags
+    } else {
+        git::push
+    };
+    blocking(move || push(&r, force.unwrap_or(false), remote.as_deref(), &net)).await
 }
 
 /// The bool results below mean "stopped on conflicts".
@@ -719,6 +773,61 @@ async fn revert(state: State<'_, AppState>, sha: String) -> Res<bool> {
 }
 
 #[tauri::command]
+async fn cherry_pick(state: State<'_, AppState>, sha: String) -> Res<bool> {
+    let label = format!("Cherry-pick {}", short(&sha));
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::cherry_pick(r, &sha)
+    })
+    .await
+}
+
+/// Picks onto the branch of another worktree (`path`), running git there. The entry goes in
+/// that worktree's undo history, where a pick stopped on conflicts is also continued.
+#[tauri::command]
+async fn cherry_pick_into(state: State<'_, AppState>, path: String, sha: String) -> Res<bool> {
+    let r = repo(&state)?;
+    let journal = state.journal.clone();
+    blocking(move || {
+        let target = git::pick_target(&r, &path)?;
+        let action = Action::new(format!("Cherry-pick {}", short(&sha)), Mode::Keep);
+        journal.record(&target, action, |t| git::cherry_pick_into(t, &sha))
+    })
+    .await
+}
+
+// ---------------------------------------------------------------- stash
+// Not undo entries: they move no branch. A dropped stash's commit stays findable by its sha.
+
+#[tauri::command]
+async fn stashes(state: State<'_, AppState>) -> Res<Vec<git::Stash>> {
+    let r = repo(&state)?;
+    blocking(move || git::stashes(&r)).await
+}
+
+#[tauri::command]
+async fn stash_files(state: State<'_, AppState>, sha: String) -> Res<git::StashFiles> {
+    let r = repo(&state)?;
+    blocking(move || git::stash_files(&r, &sha)).await
+}
+
+#[tauri::command]
+async fn stash_push(state: State<'_, AppState>, message: String, untracked: bool) -> Res<()> {
+    indexed(&state, move |r| git::stash_push(r, &message, untracked)).await
+}
+
+/// True when it stopped on conflicts.
+#[tauri::command]
+async fn stash_apply(state: State<'_, AppState>, sha: String, pop: bool) -> Res<bool> {
+    indexed(&state, move |r| git::stash_apply(r, &sha, pop)).await
+}
+
+#[tauri::command]
+async fn stash_drop(state: State<'_, AppState>, sha: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::stash_drop(&r, &sha)).await
+}
+
+#[tauri::command]
 async fn checkout_commit(state: State<'_, AppState>, sha: String) -> Res<()> {
     let label = format!("Check out {}", short(&sha));
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
@@ -737,9 +846,57 @@ async fn create_branch_at(state: State<'_, AppState>, name: String, sha: String)
 }
 
 #[tauri::command]
-async fn create_tag(state: State<'_, AppState>, name: String, sha: String) -> Res<()> {
+async fn create_tag(
+    state: State<'_, AppState>,
+    name: String,
+    sha: String,
+    message: Option<String>,
+) -> Res<()> {
+    let label = format!("Create tag {name}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::create_tag(r, &name, &sha, message.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_tag(state: State<'_, AppState>, name: String) -> Res<()> {
+    let label = format!("Delete tag {name}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::delete_tag(r, &name)
+    })
+    .await
+}
+
+/// Remote tag changes are not undoable: others may have fetched them already.
+#[tauri::command]
+async fn push_tags(
+    state: State<'_, AppState>,
+    names: Vec<String>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<String> {
     let r = repo(&state)?;
-    blocking(move || git::create_tag(&r, &name, &sha)).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::push_tags(&r, &names, &net)).await
+}
+
+#[tauri::command]
+async fn delete_remote_tag(
+    state: State<'_, AppState>,
+    name: String,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<String> {
+    let r = repo(&state)?;
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::delete_remote_tag(&r, &name, &net)).await
+}
+
+#[tauri::command]
+async fn remote_tags(state: State<'_, AppState>) -> Res<git::RemoteTags> {
+    let r = repo(&state)?;
+    blocking(move || git::remote_tags(&r)).await
 }
 
 // ---------------------------------------------------------------- undo / redo
@@ -1359,6 +1516,10 @@ pub fn run() {
             switch_branch,
             delete_branches,
             delete_remote_branch,
+            create_branch,
+            rename_branch,
+            set_upstream,
+            tags,
             worktrees,
             worktree_state,
             add_worktree,
@@ -1400,9 +1561,20 @@ pub fn run() {
             reset,
             drops_pushed,
             revert,
+            cherry_pick,
+            cherry_pick_into,
+            stashes,
+            stash_files,
+            stash_push,
+            stash_apply,
+            stash_drop,
             checkout_commit,
             create_branch_at,
             create_tag,
+            delete_tag,
+            push_tags,
+            delete_remote_tag,
+            remote_tags,
             journal,
             journal_last,
             undo,
