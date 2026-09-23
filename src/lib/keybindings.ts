@@ -17,10 +17,13 @@ export function matchesCommand(id: CommandId, e: KeyboardEvent): boolean {
   return !!chord && bindingsFor(id, getSettings().keybindings).includes(chord);
 }
 
+/** Focus is in the code view: Monaco's text area, read-only, so not typing (its find box is). */
+const inCodeView = (e: KeyboardEvent) => e.target instanceof HTMLElement && e.target.matches(".monaco-editor textarea.inputarea");
+
 /** Focus is somewhere that owns its keystrokes: text fields, menus, dialogs, pickers. */
 export function isTyping(e: KeyboardEvent) {
   const el = e.target instanceof HTMLElement ? e.target : null;
-  return !!el && (el.isContentEditable || !!el.closest("input,textarea,select,[role=menu],[role=listbox],[role=dialog]"));
+  return !!el && !inCodeView(e) && (el.isContentEditable || !!el.closest("input,textarea,select,[role=menu],[role=listbox],[role=dialog]"));
 }
 
 /** Menu bar items that aren't key commands (lib.rs `menu`); they run through the same handlers. */
@@ -61,7 +64,7 @@ export function runCommand(id: Action) {
   handlerFor(id)?.();
 }
 
-window.addEventListener("keydown", (e) => {
+function dispatch(e: KeyboardEvent) {
   if (e.isComposing) return;
   const chord = eventChord(e);
   if (!chord) return;
@@ -79,8 +82,15 @@ window.addEventListener("keydown", (e) => {
   const run = handlerFor(command.id);
   if (!run) return;
   e.preventDefault();
+  // Keep it from Monaco too, which would take F7 for its own diff navigation and ⌘Z as undo.
+  e.stopPropagation();
   run();
-});
+}
+
+// Clicking into the code view focuses Monaco's text area, which sees keys before the window does:
+// there the app's commands go first (on the way down), and Monaco keeps the rest (copy, find, arrows).
+window.addEventListener("keydown", (e) => inCodeView(e) && dispatch(e), { capture: true });
+window.addEventListener("keydown", (e) => !inCodeView(e) && dispatch(e));
 
 /** Registers handlers for commands while the component is mounted; always calls the latest closures. A command left undefined is unavailable (greyed out in the menu). */
 export function useCommands(map: Partial<Record<Action, () => void>>) {
