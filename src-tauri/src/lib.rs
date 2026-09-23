@@ -199,9 +199,24 @@ async fn log(
     rev: Option<String>,
     skip: u32,
     limit: u32,
+    filter: Option<git::LogFilter>,
 ) -> Res<Vec<git::Commit>> {
     let r = repo(&state)?;
-    blocking(move || git::log(&r, rev.as_deref(), skip, limit)).await
+    let filter = filter.unwrap_or_default();
+    blocking(move || {
+        // Only pathspecs, but the rule holds: no path from the frontend reaches outside the repo.
+        for p in &filter.paths {
+            fs::resolve(&r, p)?;
+        }
+        git::log_filtered(&r, rev.as_deref(), skip, limit, &filter)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn find_commit(state: State<'_, AppState>, sha: String) -> Res<Option<git::Commit>> {
+    let r = repo(&state)?;
+    blocking(move || git::find_commit(&r, &sha)).await
 }
 
 #[tauri::command]
@@ -266,6 +281,16 @@ async fn media(
 async fn list_dir(state: State<'_, AppState>, path: String) -> Res<Vec<fs::Entry>> {
     let r = repo(&state)?;
     blocking(move || fs::list_dir(&r, &path)).await
+}
+
+#[tauri::command]
+async fn blame(state: State<'_, AppState>, path: String) -> Res<git::Blame> {
+    let r = repo(&state)?;
+    blocking(move || {
+        fs::resolve(&r, &path)?;
+        git::blame(&r, &path)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -803,10 +828,21 @@ async fn gh_protected_branches(app: AppHandle) -> Res<Vec<String>> {
 }
 
 #[tauri::command]
-async fn pr_list(app: AppHandle, target: Option<String>, filter: String) -> Res<Vec<github::Pull>> {
+async fn pr_list(
+    app: AppHandle,
+    target: Option<String>,
+    filter: String,
+    pages: usize,
+) -> Res<Vec<github::Pull>> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::list(&state.github, &repo(&state)?, target.as_deref(), &filter)
+        github::list(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            &filter,
+            pages,
+        )
     })
     .await
 }
@@ -1271,11 +1307,13 @@ pub fn run() {
             set_git_identity,
             status,
             log,
+            find_commit,
             commit_files,
             diff_pair,
             media,
             list_dir,
             read_file,
+            blame,
             branches,
             switch_branch,
             delete_branches,

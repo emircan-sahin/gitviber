@@ -12,6 +12,7 @@ import {
   FolderGit2,
   FolderSearch,
   GitMerge,
+  History,
   ListTree,
   LoaderCircle,
   Minus,
@@ -63,6 +64,8 @@ interface Props {
   setViewed: (s: Selection[], on: boolean) => void;
   /** Shows the file in the explorer, opening the panel if it's hidden. */
   onRevealInExplorer: (path: string) => void;
+  /** History, filtered to this file's commits. */
+  onShowHistory: (path: string) => void;
 }
 
 type Change = Selection & { kind: "conflict" | "staged" | "unstaged" };
@@ -90,7 +93,7 @@ const leftOut = (n: number) => `Left out ${n} nested ${n === 1 ? "repository" : 
 const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 const paths = (rows: Change[]) => rows.map((r) => r.file.path);
 
-export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer }: Props) {
+export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer, onShowHistory }: Props) {
   const act = async (title: string, fn: () => Promise<unknown>) => {
     await attempt(title, fn);
     await refresh();
@@ -213,6 +216,9 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
         </ContextMenuItem>
         <ContextMenuItem disabled={!onDisk} onSelect={() => onOpen({ kind: "file", path: file.path }, true)}>
           <File /> Open File
+        </ContextMenuItem>
+        <ContextMenuItem disabled={file.status === "?"} onSelect={() => onShowHistory(file.path)}>
+          <History /> Show History
         </ContextMenuItem>
         <ContextMenuSeparator />
         {sel.kind === "unstaged" && (

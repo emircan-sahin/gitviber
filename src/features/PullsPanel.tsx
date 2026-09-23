@@ -6,8 +6,8 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, type Commit, errorMessage, fullName, type GitHubAccess, github, isNotConnected, type Pull, type RepoStatus } from "@/lib/api";
-import { invalidate, useGitHubData } from "@/lib/githubCache";
+import { api, type Branch, type Commit, errorMessage, fullName, type GitHubAccess, github, isNotConnected, PR_PAGE, type Pull, type RepoStatus } from "@/lib/api";
+import { cached, invalidate, useGitHubData } from "@/lib/githubCache";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
@@ -41,8 +41,20 @@ interface Props {
   refreshRepo: () => Promise<void>;
 }
 
+/** github.rs reads at most this many pages. */
+const MAX_PAGES = 30;
+
+/** `pages` of a repository's PR list. While one more loads, the pages before stay on screen. */
+function usePullList(target: string | null, name: string | null, filter: Filter, pages: number) {
+  const key = (n: number) => `pulls:${name}:${filter}:${n}`;
+  const list = useGitHubData(name && key(pages), useCallback(() => github.list(target, filter, pages), [target, filter, pages]));
+  const shorter = list.data === undefined && pages > 1 ? cached<Pull[]>(key(pages - 1)) : undefined;
+  return { ...list, data: list.data ?? shorter, shown: shorter ? pages - 1 : pages };
+}
+
 export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, refreshRepo }: Props) {
   const [filter, setFilter] = useState<Filter>("open");
+  const [pages, setPages] = useState({ origin: 1, parent: 1 });
   // The repository the new PR goes to: origin, or a fork's parent.
   const [creating, setCreating] = useState<GitHubAccess | null>(null);
   // The account only changes with a new sign-in: rechecked every 10 minutes and on every
@@ -51,8 +63,13 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
   const account = acct.data ?? null;
   const upstream = account?.parent ? fullName(account.parent.repo) : null;
   // Origin's list loads alongside the account; a fork's parent is only known after it.
-  const own = useGitHubData(`pulls:origin:${filter}`, useCallback(() => github.list(null, filter), [filter]));
-  const up = useGitHubData(upstream && `pulls:${upstream}:${filter}`, useCallback(() => github.list(upstream, filter), [upstream, filter]));
+  const own = usePullList(null, "origin", filter, pages.origin);
+  const up = usePullList(upstream, upstream, filter, pages.parent);
+  const more = (pane: keyof typeof pages, list: typeof own) => ({
+    shown: list.shown,
+    loading: list.loading,
+    onMore: () => setPages((p) => ({ ...p, [pane]: p[pane] + 1 })),
+  });
   const failure = acct.error ?? own.error;
   const error = failure === undefined ? null : errorMessage(failure);
   const loading = acct.loading || own.loading || up.loading;
@@ -85,12 +102,18 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
   const newLabel = currentPull ? `#${currentPull.number} already open for this branch` : "New pull request";
   const canCreate = !!status?.branch && !currentPull;
 
-  const ownRows = <PullRows pulls={own.data ?? null} error={error} filter={filter} activeKey={activeKey} onOpen={onOpen} roomy={!upstream} />;
+  const ownRows = <PullRows pulls={own.data ?? null} error={error} filter={filter} activeKey={activeKey} onOpen={onOpen} roomy={!upstream} {...more("origin", own)} />;
 
   return (
     <div className="flex h-full flex-col">
       <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
-        <FilterTabs value={filter} onChange={setFilter} />
+        <FilterTabs
+          value={filter}
+          onChange={(f) => {
+            setFilter(f);
+            setPages({ origin: 1, parent: 1 });
+          }}
+        />
         <div className="ml-auto flex items-center gap-0.5">
           <Tip label="Refresh">
             <Button variant="ghost" size="icon-sm" onClick={load} disabled={loading}>
@@ -134,6 +157,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
                     activeKey={activeKey}
                     onOpen={onOpen}
                     roomy={false}
+                    {...more("parent", up)}
                   />
                 ),
               },
@@ -281,6 +305,9 @@ function PullRows({
   activeKey,
   onOpen,
   roomy,
+  shown,
+  loading,
+  onMore,
 }: {
   pulls: Pull[] | null;
   error: string | null;
@@ -289,7 +316,12 @@ function PullRows({
   onOpen: (s: Selection, pin?: boolean) => void;
   /** The whole panel, not a pane: the empty note sits lower. */
   roomy: boolean;
+  /** Pages in `pulls`; a full last page means there may be more. */
+  shown: number;
+  loading: boolean;
+  onMore: () => void;
 }) {
+  const full = pulls?.length === shown * PR_PAGE;
   return (
     <>
       {/* With a cached list on screen, a failed refresh is a note above it, not a blank panel. */}
@@ -326,15 +358,18 @@ function PullRows({
           </LinkMenu>
         );
       })}
-      {/* github.rs `list` asks for one page of 100; say so rather than look complete. */}
-      {pulls?.length === PR_LIST_LIMIT && (
-        <div className="px-4 py-2 text-center text-[11px] text-subtle">Showing the {PR_LIST_LIMIT} most recently updated</div>
+      {full && shown < MAX_PAGES && (
+        <div className="p-2">
+          <Button variant="secondary" size="sm" className="w-full" disabled={loading} onClick={onMore}>
+            {loading ? "Loading…" : "Load more"}
+          </Button>
+        </div>
       )}
+      {/* Past github.rs's cap: say so rather than look complete. */}
+      {full && shown >= MAX_PAGES && <div className="px-4 py-2 text-center text-[11px] text-subtle">Showing the {pulls.length} most recently updated</div>}
     </>
   );
 }
-
-const PR_LIST_LIMIT = 100;
 
 /** No token from the GitHub CLI or git's credential store: explain the two ways to connect. */
 export function ConnectGitHub({ onRetry, subject = "pull requests" }: { onRetry: () => void; subject?: string }) {

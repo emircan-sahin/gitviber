@@ -160,19 +160,34 @@ fn call(session: &Session, repo: &Path, method: Method, path: &str) -> Result<Va
     request(session, repo, method, path, JSON)
 }
 
+const PER_PAGE: usize = 100;
+/// Caps a read of every page, so a runaway thread can't stall.
+const MAX_PAGES: usize = 30;
+
 /// Every page of a list endpoint. GitHub lists comments and reviews oldest first, so one
-/// page of a long thread would drop the newest ones. Capped so a runaway thread can't stall.
+/// page of a long thread would drop the newest ones.
 fn all_pages(
     session: &Session,
     repo: &Path,
     path: &str,
     accept: &str,
 ) -> Result<Vec<Value>, String> {
-    const PER_PAGE: usize = 100;
-    const MAX_PAGES: usize = 30;
+    pages(session, repo, path, accept, None, MAX_PAGES)
+}
+
+/// Pages 1..=`max` of a list endpoint, up to the first short one. `field`: where an endpoint
+/// that wraps its list in an object (check runs, statuses) keeps it.
+fn pages(
+    session: &Session,
+    repo: &Path,
+    path: &str,
+    accept: &str,
+    field: Option<&str>,
+    max: usize,
+) -> Result<Vec<Value>, String> {
     let sep = if path.contains('?') { '&' } else { '?' };
     let mut out = vec![];
-    for page in 1..=MAX_PAGES {
+    for page in 1..=max {
         let v = request(
             session,
             repo,
@@ -180,7 +195,11 @@ fn all_pages(
             &format!("{path}{sep}per_page={PER_PAGE}&page={page}"),
             accept,
         )?;
-        let items = v.as_array().cloned().unwrap_or_default();
+        let list = match field {
+            Some(f) => &v[f],
+            None => &v,
+        };
+        let items = list.as_array().cloned().unwrap_or_default();
         let n = items.len();
         out.extend(items);
         if n < PER_PAGE {
@@ -564,12 +583,14 @@ fn pull_from(v: &Value) -> Pull {
     }
 }
 
-/// `state`: "open" | "closed" | "all"
+/// `state`: "open" | "closed" | "all"; `pages`: how many pages of PER_PAGE, most recently
+/// updated first ("Load more" asks for one more; the ones before come back as 304s).
 pub fn list(
     session: &Session,
     repo: &Path,
     to: Option<&str>,
     state: &str,
+    pages: usize,
 ) -> Result<Vec<Pull>, String> {
     let r = target(session, repo, to)?;
     let state = if matches!(state, "open" | "closed" | "all") {
@@ -577,18 +598,18 @@ pub fn list(
     } else {
         "open"
     };
-    let v = call(
+    let list = self::pages(
         session,
         repo,
-        Method::Get,
         &format!(
-            "/repos/{}/{}/pulls?state={state}&sort=updated&direction=desc&per_page=100",
+            "/repos/{}/{}/pulls?state={state}&sort=updated&direction=desc",
             r.owner, r.name
         ),
+        JSON,
+        None,
+        pages.clamp(1, MAX_PAGES),
     )?;
-    Ok(v.as_array()
-        .map(|a| a.iter().map(pull_from).collect())
-        .unwrap_or_default())
+    Ok(list.iter().map(pull_from).collect())
 }
 
 #[derive(Serialize)]
@@ -624,6 +645,8 @@ pub struct PullDetail {
     pub mergeable: Option<bool>,
     pub mergeable_state: String,
     pub checks: Vec<Check>,
+    /// Checks that couldn't be read (a token without access to them, say): not "no checks".
+    pub checks_error: Option<String>,
     pub comments: Vec<Comment>,
     /// Who closed it, if closed: an author may reopen only what they closed themselves
     pub closed_by: Option<String>,
@@ -660,41 +683,55 @@ pub fn detail(
     };
 
     let mut checks = vec![];
-    if let Ok(runs) = call(
+    let mut checks_error = None;
+    let sha = &pull.head_sha;
+    match pages(
         session,
         repo,
-        Method::Get,
-        &format!("{base}/commits/{}/check-runs?per_page=100", pull.head_sha),
+        &format!("{base}/commits/{sha}/check-runs"),
+        JSON,
+        Some("check_runs"),
+        MAX_PAGES,
     ) {
-        for c in runs["check_runs"].as_array().into_iter().flatten() {
-            let state = if c["status"] != "completed" {
-                "pending".to_string()
-            } else {
-                s(&c["conclusion"])
-            };
-            checks.push(Check {
-                name: s(&c["name"]),
-                state,
-                url: c["html_url"].as_str().map(str::to_string),
-            });
+        Ok(runs) => {
+            for c in runs {
+                let state = if c["status"] != "completed" {
+                    "pending".to_string()
+                } else {
+                    s(&c["conclusion"])
+                };
+                checks.push(Check {
+                    name: s(&c["name"]),
+                    state,
+                    url: c["html_url"].as_str().map(str::to_string),
+                });
+            }
         }
+        Err(e) => checks_error = Some(e),
     }
-    if let Ok(st) = call(
+    match pages(
         session,
         repo,
-        Method::Get,
-        &format!("{base}/commits/{}/status", pull.head_sha),
+        &format!("{base}/commits/{sha}/status"),
+        JSON,
+        Some("statuses"),
+        MAX_PAGES,
     ) {
-        for c in st["statuses"].as_array().into_iter().flatten() {
-            let state = match c["state"].as_str() {
-                Some("error") => "failure".to_string(),
-                other => other.unwrap_or("pending").to_string(),
-            };
-            checks.push(Check {
-                name: s(&c["context"]),
-                state,
-                url: c["target_url"].as_str().map(str::to_string),
-            });
+        Ok(statuses) => {
+            for c in statuses {
+                let state = match c["state"].as_str() {
+                    Some("error") => "failure".to_string(),
+                    other => other.unwrap_or("pending").to_string(),
+                };
+                checks.push(Check {
+                    name: s(&c["context"]),
+                    state,
+                    url: c["target_url"].as_str().map(str::to_string),
+                });
+            }
+        }
+        Err(e) => {
+            checks_error.get_or_insert(e);
         }
     }
 
@@ -742,6 +779,7 @@ pub fn detail(
         mergeable: v["mergeable"].as_bool(),
         mergeable_state: s(&v["mergeable_state"]),
         checks,
+        checks_error,
         comments,
         pull,
     })
@@ -1612,7 +1650,7 @@ mod tests {
         );
         let up = parent.repo.full();
         for (to, name) in [(None, "origin"), (Some(up.as_str()), "parent")] {
-            let pulls = list(&session, repo, to, "all").unwrap();
+            let pulls = list(&session, repo, to, "all", 1).unwrap();
             let open = issues(&session, repo, to, "open", &[]).unwrap_or_default();
             let all = issues(&session, repo, to, "all", &[]).unwrap_or_default();
             println!(
@@ -1635,14 +1673,14 @@ mod tests {
                 detail(&session, repo, to, p.number).unwrap();
             }
         }
-        let closed = list(&session, repo, Some(&up), "closed").unwrap();
+        let closed = list(&session, repo, Some(&up), "closed", 1).unwrap();
         if let Some(p) = closed.iter().find(|p| p.state == "closed") {
             let d = detail(&session, repo, Some(&up), p.number).unwrap();
             println!("#{} closed by {:?}", p.number, d.closed_by);
             assert!(d.closed_by.is_some());
         }
         // Anything but origin and its parent is refused, whatever the token could reach.
-        assert!(list(&session, repo, Some("torvalds/linux"), "open").is_err());
+        assert!(list(&session, repo, Some("torvalds/linux"), "open", 1).is_err());
         let remote = original_remote(repo, &up, false).unwrap();
         println!("original remote: {remote:?}");
         if let Some(r) = remote {
@@ -1672,7 +1710,7 @@ mod tests {
             acct.origin.and_then(|o| o.default_branch)
         );
 
-        let open = list(&session, repo, None, "open").unwrap();
+        let open = list(&session, repo, None, "open", 1).unwrap();
         let number = match open.iter().find(|p| p.head_ref == "feature/review") {
             Some(p) => p.number,
             None => {

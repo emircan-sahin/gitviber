@@ -96,6 +96,8 @@ export interface Settings {
   markdownPreview: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
   svgPreview: boolean;
+  /** The file view shows who last changed each line. Set from the viewer, not the dialog. */
+  blame: boolean;
   /** Per-command overrides of the default key bindings; an empty list unbinds. */
   keybindings: Record<string, string[]>;
   /** Repos (main worktree paths) whose commits are signed off: people who sign off always do. Set from the commit box. */
@@ -132,6 +134,7 @@ const DEFAULTS: Settings = {
   uiScale: 1,
   markdownPreview: true,
   svgPreview: false,
+  blame: false,
   keybindings: {},
   signOffRepos: [],
   backgroundFetch: 5,
@@ -159,6 +162,7 @@ function load(): Settings {
     if (typeof s.translucent !== "boolean") s.translucent = DEFAULTS.translucent;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
+    if (typeof s.blame !== "boolean") s.blame = DEFAULTS.blame;
     s.keybindings = cleanOverrides(s.keybindings);
     if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;

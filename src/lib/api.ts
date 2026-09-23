@@ -93,6 +93,38 @@ export interface Commit {
   onOrigin: boolean;
   /** Logging another branch: not in HEAD yet, so merging would bring it in. */
   notInHead: boolean;
+  /** A followed file's history: its path in this commit (it may have been renamed since). */
+  file?: string;
+}
+
+export interface BlameCommit {
+  /** All zeros for lines not committed yet. */
+  sha: string;
+  authorName: string;
+  authorEmail: string;
+  timestamp: number;
+  /** The whole message, trailers (Co-Authored-By…) included. */
+  message: string;
+  /** The file's path in this commit (it may have been renamed since). */
+  path: string;
+}
+
+export interface Blame {
+  commits: BlameCommit[];
+  /** For each line of the working-tree file, its commit's index in `commits`. Lines past the end, or not in HEAD at all, are new. */
+  lines: number[];
+}
+
+/** History search (git.rs `LogFilter`): every part narrows the list. */
+export interface LogFilter {
+  /** Words the message must all contain, any case, as typed. */
+  grep: string[];
+  author: string[];
+  /** Added or removed text (`git log -S`). */
+  code: string | null;
+  paths: string[];
+  /** Follow a single path through renames (a file's history). */
+  follow: boolean;
 }
 
 export interface CommitOptions {
@@ -269,7 +301,9 @@ export const api = {
   /** macOS vibrancy behind the window (the Translucent background setting). */
   setTranslucent: (on: boolean) => invoke<void>("set_translucent", { on }),
   /** HEAD's history, or `rev`'s: a remote-tracking branch (refs/remotes/…), e.g. a fork's original. */
-  log: (skip: number, limit: number, rev: string | null = null) => invoke<Commit[]>("log", { rev, skip, limit }),
+  log: (skip: number, limit: number, rev: string | null = null, filter: LogFilter | null = null) => invoke<Commit[]>("log", { rev, skip, limit, filter }),
+  /** The commit a SHA or SHA prefix names, if exactly one. */
+  findCommit: (sha: string) => invoke<Commit | null>("find_commit", { sha }),
   commitFiles: (sha: string) => invoke<FileChange[]>("commit_files", { sha }),
   diffPair: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null = null) =>
     invoke<DiffPair>("diff_pair", { kind, path, oldPath, sha, base }),
@@ -278,6 +312,8 @@ export const api = {
     invoke<ArrayBuffer>("media", { kind, path, oldPath, sha, base, original }),
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
+  /** `git blame` of the working-tree file. */
+  blame: (path: string) => invoke<Blame>("blame", { path }),
   branches: () => invoke<Branch[]>("branches"),
   /** Switches to the local branch for a remote one ("upstream/dev" → dev), creating it to track exactly that. */
   /** What a PR from HEAD into `base` (refs/remotes/…) carries: its commit count, and the one commit's message. */
@@ -443,6 +479,8 @@ export interface PullDetail extends Pull {
   mergeable: boolean | null;
   mergeableState: string;
   checks: PullCheck[];
+  /** Checks couldn't be read (a token without access to them, say); `checks` is then partial. */
+  checksError: string | null;
   comments: PullComment[];
   /** Who closed it, if closed: an author may reopen only what they closed themselves. */
   closedBy: string | null;
@@ -460,11 +498,15 @@ export type ReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
 /** Backend's marker for "no GitHub credentials found" (show setup, not an error). */
 export const GITHUB_NOT_CONNECTED = "github:not-connected";
 
+/** A page of the PR list (github.rs `PER_PAGE`). */
+export const PR_PAGE = 100;
+
 export const github = {
   account: () => invoke<GitHubAccount>("gh_account"),
   /** Origin's branches under branch protection (names without "origin/"). */
   protectedBranches: () => invoke<string[]>("gh_protected_branches"),
-  list: (target: Target, filter: "open" | "closed" | "all") => invoke<Pull[]>("pr_list", { target, filter }),
+  /** The most recently updated `pages` × PR_PAGE. */
+  list: (target: Target, filter: "open" | "closed" | "all", pages = 1) => invoke<Pull[]>("pr_list", { target, filter, pages }),
   detail: (target: Target, number: number) => invoke<PullDetail>("pr_detail", { target, number }),
   /** Signed image links for a private repo's attachments, by attachment id. */
   attachments: (target: Target, number: number) => invoke<Record<string, string>>("pr_attachments", { target, number }),

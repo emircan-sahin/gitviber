@@ -1,8 +1,9 @@
-import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, ExternalLink, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, Rows2, X } from "lucide-react";
-import { Component, type ReactNode, useEffect, useRef, useState } from "react";
+import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, ExternalLink, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, History, Rows2, UserSearch, X } from "lucide-react";
+import { Component, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type DiffKind, type DiffPair, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { api, type Blame, type DiffKind, type DiffPair, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { type Selection, selectionPath } from "@/lib/selection";
 import { bindingsFor, type CommandId, formatChord, useCommands, useShortcut } from "@/lib/keybindings";
 import { updateSettings, useSettings } from "@/lib/settings";
@@ -40,6 +41,10 @@ interface ViewerProps {
   onPin: (key: string) => void;
   onMoveTab: (from: number, to: number) => void;
   onOpen: (s: Selection) => void;
+  /** History, filtered to a file's commits. */
+  onShowHistory: (path: string) => void;
+  /** Blame's link: a commit in History, with `path` (its name in that commit) open. */
+  onShowCommit: (sha: string, path: string) => void;
 }
 
 export function Viewer(props: ViewerProps) {
@@ -85,12 +90,12 @@ function tabLabel(sel: Selection) {
   return path.slice(path.lastIndexOf("/") + 1);
 }
 
-function TabStrip({ tabs, active, onActivate, onClose, onPin, onMoveTab }: ViewerProps) {
+function TabStrip({ tabs, active, onActivate, onClose, onPin, onMoveTab, onShowHistory }: ViewerProps) {
   return (
     <div data-tauri-drag-region data-scrollbar="none" className="flex h-9 shrink-0 items-stretch overflow-x-auto overflow-y-hidden border-b border-border bg-panel">
       <SortableList ids={tabs.map((t) => t.key)} axis="x" onMove={onMoveTab}>
         {tabs.map((t) => (
-          <TabItem key={t.key} tab={t} active={t.key === active?.key} onActivate={onActivate} onClose={onClose} onPin={onPin} />
+          <TabItem key={t.key} tab={t} active={t.key === active?.key} onActivate={onActivate} onClose={onClose} onPin={onPin} onShowHistory={onShowHistory} />
         ))}
       </SortableList>
     </div>
@@ -103,15 +108,17 @@ function TabItem({
   onActivate,
   onClose,
   onPin,
+  onShowHistory,
 }: {
   tab: Tab;
   active: boolean;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
   onPin: (key: string) => void;
+  onShowHistory: (path: string) => void;
 }) {
   const { props, dragging, guard } = useSortableItem(t.key);
-  return (
+  const tab = (
     <div
       {...props}
       role="tab"
@@ -148,6 +155,18 @@ function TabItem({
       </button>
     </div>
   );
+  if (t.sel.kind === "pull" || t.sel.kind === "issue") return tab;
+  const path = selectionPath(t.sel);
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{tab}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={() => onShowHistory(path)}>
+          <History /> Show History
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
 }
 
 function TabKind({ sel }: { sel: Selection }) {
@@ -180,6 +199,7 @@ const pairCache = new Map<string, DiffPair>();
 let generation = 0;
 export function resetPairCache() {
   pairCache.clear();
+  blames.clear();
   generation++;
 }
 function remember(key: string, pair: DiffPair, gen: number) {
@@ -248,7 +268,7 @@ function findChange(status: RepoStatus | null, path: string): Selection | null {
   return staged ? { kind: "staged", file: staged } : null;
 }
 
-function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: ViewerProps & { tab: Tab; sel: FileSelection }) {
+function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShowCommit }: ViewerProps & { tab: Tab; sel: FileSelection }) {
   const s = useSettings();
   const { pair, error } = usePair(sel, revision);
   const view = useRef<CodeViewHandle>(null);
@@ -269,6 +289,8 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile));
 
   const diff = !isFile && !media && !rendered;
+  const code = !media && !rendered && !!pair && !special;
+  const blame = useBlame(isFile && code && s.blame ? sel.path : null, pair, status?.head ?? null);
   useCommands({
     "diff.nextChange": diff ? () => view.current?.next() : undefined,
     "diff.prevChange": diff ? () => view.current?.prev() : undefined,
@@ -325,6 +347,14 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
                   <Contrast />
                 </Button>
               </Tip>
+              <Sep />
+            </>
+          )}
+          {isFile && code && (
+            <>
+              <IconBtn label="Blame" command="editor.toggleBlame" active={s.blame} onClick={() => updateSettings({ blame: !s.blame })}>
+                <UserSearch />
+              </IconBtn>
               <Sep />
             </>
           )}
@@ -395,12 +425,51 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen }: View
               collapse={s.hideUnchanged}
               wrap={s.wordWrap}
               scrollKey={tab.key}
+              blame={blame}
+              onBlameClick={(c) => onShowCommit(c.sha, c.path)}
             />
           )
         )}
       </div>
     </>
   );
+}
+
+// Blame by file content and HEAD: the same text at the same HEAD blames the same, so a file is
+// blamed once per version, not on every refresh.
+const blames = new Map<string, Promise<Blame>>();
+
+function useBlame(path: string | null, pair: DiffPair | null, head: string | null) {
+  const [result, setResult] = useState<{ key: string; blame: Blame } | null>(null);
+  const text = path ? pair?.modified.text : undefined;
+  const version = useMemo(() => text !== undefined && `${text.length}:${hash(text)}`, [text]);
+  const key = path && version ? `${path}\0${head}\0${version}` : null;
+  useEffect(() => {
+    if (!key || !path) return;
+    let p = blames.get(key);
+    if (!p) {
+      p = api.blame(path);
+      blames.set(key, p);
+      p.catch(() => blames.delete(key));
+      if (blames.size > 32) blames.delete(blames.keys().next().value!);
+    }
+    let alive = true;
+    p.then(
+      (blame) => alive && setResult({ key, blame }),
+      (e) => alive && toast("error", "Could not blame this file", errorMessage(e)),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [key, path]);
+  return result && result.key === key ? result.blame : null;
+}
+
+/** FNV-1a: tells file versions apart for the blame cache. */
+function hash(text: string) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
+  return (h >>> 0).toString(36);
 }
 
 function placeholderFor(pair: DiffPair, isFile: boolean) {

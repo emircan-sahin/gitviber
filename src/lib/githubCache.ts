@@ -76,6 +76,9 @@ export function revalidate<T>(key: string, fetch: () => Promise<T>, maxAge = MIN
   return pending;
 }
 
+/** What `key` holds now, without asking for it: a list shows its shorter copy while a longer one loads. */
+export const cached = <T>(key: string) => entries.get(key)?.data as T | undefined;
+
 type Item = { url: string; updatedAt: string };
 
 /**

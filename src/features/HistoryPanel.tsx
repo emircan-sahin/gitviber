@@ -39,6 +39,10 @@ interface Props {
   headSha?: string;
   /** Where these commits live on GitHub, when that's not origin: a fork's original has them all. */
   web?: string;
+  /** What an empty list says. */
+  empty?: string;
+  /** A commit to open when it shows up (blame's link to it). */
+  openSha?: string;
 }
 
 /** What a commit's context menu needs from the panel. */
@@ -59,8 +63,11 @@ interface Actions {
 const commitUrl = (c: Commit, { webUrl, everyOnWeb }: Pick<Actions, "webUrl" | "everyOnWeb">) =>
   webUrl && (c.onOrigin || everyOnWeb) ? `${webUrl}/commit/${c.sha}` : undefined;
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web }: Props) {
-  const [open, setOpen] = useState<string | null>(null);
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", openSha }: Props) {
+  const [open, setOpen] = useState<string | null>(openSha ?? null);
+  useEffect(() => {
+    if (openSha) setOpen(openSha);
+  }, [openSha]);
   const scroller = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ el: HTMLElement; top: number } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -113,7 +120,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
   };
 
   if (!commits.length) {
-    return <div className="px-6 pt-20 text-center text-[12px] text-subtle">No commits yet.</div>;
+    return <div className="px-6 pt-20 text-center text-[12px] text-subtle">{empty}</div>;
   }
 
   return (
@@ -323,8 +330,9 @@ function CommitRow({
       .then((f) => {
         if (!alive) return;
         setFiles(f);
-        // Jump straight into the first file so one click shows code.
-        if (f[0]) onOpen({ kind: "commit", commit, file: f[0], url });
+        // Jump straight into the file (a file's history: that one) so one click shows code.
+        const file = f.find((x) => x.path === commit.file) ?? f[0];
+        if (file) onOpen({ kind: "commit", commit, file, url });
       })
       .catch((e) => alive && toast("error", "Could not load commit", errorMessage(e)));
     // Collapsing (or opening another commit) cancels the auto-open of a late reply.
