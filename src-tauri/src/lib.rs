@@ -530,6 +530,47 @@ async fn revert(state: State<'_, AppState>, sha: String) -> Res<bool> {
 }
 
 #[tauri::command]
+async fn cherry_pick(state: State<'_, AppState>, sha: String) -> Res<bool> {
+    let label = format!("Cherry-pick {}", short(&sha));
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::cherry_pick(r, &sha)
+    })
+    .await
+}
+
+// ---------------------------------------------------------------- stash
+// Not undo entries: they move no branch. A dropped stash's commit stays findable by its sha.
+
+#[tauri::command]
+async fn stashes(state: State<'_, AppState>) -> Res<Vec<git::Stash>> {
+    let r = repo(&state)?;
+    blocking(move || git::stashes(&r)).await
+}
+
+#[tauri::command]
+async fn stash_files(state: State<'_, AppState>, sha: String) -> Res<git::StashFiles> {
+    let r = repo(&state)?;
+    blocking(move || git::stash_files(&r, &sha)).await
+}
+
+#[tauri::command]
+async fn stash_push(state: State<'_, AppState>, message: String, untracked: bool) -> Res<()> {
+    indexed(&state, move |r| git::stash_push(r, &message, untracked)).await
+}
+
+/// True when it stopped on conflicts.
+#[tauri::command]
+async fn stash_apply(state: State<'_, AppState>, sha: String, pop: bool) -> Res<bool> {
+    indexed(&state, move |r| git::stash_apply(r, &sha, pop)).await
+}
+
+#[tauri::command]
+async fn stash_drop(state: State<'_, AppState>, sha: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::stash_drop(&r, &sha)).await
+}
+
+#[tauri::command]
 async fn checkout_commit(state: State<'_, AppState>, sha: String) -> Res<()> {
     let label = format!("Check out {}", short(&sha));
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
@@ -1221,6 +1262,12 @@ pub fn run() {
             reset,
             drops_pushed,
             revert,
+            cherry_pick,
+            stashes,
+            stash_files,
+            stash_push,
+            stash_apply,
+            stash_drop,
             checkout_commit,
             create_branch_at,
             create_tag,

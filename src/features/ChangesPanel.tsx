@@ -15,6 +15,7 @@ import { tracked, undoAction } from "@/lib/undo";
 import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED, stageable } from "@/lib/worktrees";
 import { FileIcon } from "./FileIcon";
+import { StashDialog, StashList, useStashes } from "./StashList";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
 interface Props {
@@ -242,6 +243,9 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
     );
   };
 
+  const stashes = useStashes(status);
+  const [stashing, setStashing] = useState(false);
+
   const reviewed = all.filter(viewed).length;
   const add = all.reduce((n, s) => n + (s.file.additions ?? 0), 0);
   const del = all.reduce((n, s) => n + (s.file.deletions ?? 0), 0);
@@ -430,7 +434,13 @@ export function ChangesPanel({ status, activeKey, onOpen, onHover, refresh, view
             )}
           </Section>
         )}
+        {(stashes.length > 0 || all.length > 0) && (
+          <Section title="Stashes" count={stashes.length} action={all.length > 0 && !status.operation && <SectionBtn onClick={() => setStashing(true)}>Stash…</SectionBtn>}>
+            <StashList stashes={stashes} activeKey={activeKey} onOpen={onOpen} onHover={onHover} refresh={refresh} />
+          </Section>
+        )}
       </div>
+      {stashing && <StashDialog status={status} onClose={() => setStashing(false)} refresh={refresh} />}
       {status.operation ? (
         // Committing by hand mid-rebase would splice an extra commit into the history.
         <div className="shrink-0 border-t border-border bg-panel px-3 py-2.5 text-[11.5px] text-muted-foreground">

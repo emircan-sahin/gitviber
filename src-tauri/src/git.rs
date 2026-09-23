@@ -1554,6 +1554,29 @@ pub fn revert(repo: &Path, sha: &str) -> Result<bool, String> {
     result
 }
 
+/// `git cherry-pick` onto HEAD, returning true if it stopped on conflicts.
+pub fn cherry_pick(repo: &Path, sha: &str) -> Result<bool, String> {
+    validate_rev(sha)?;
+    ensure_idle(repo)?;
+    // Like revert: a merge is picked relative to its first parent.
+    let merge = run(repo, &["rev-parse", "--verify", "-q", &format!("{sha}^2")]).is_ok();
+    let mut args = vec!["cherry-pick"];
+    if merge {
+        args.extend(["-m", "1"]);
+    }
+    args.push(sha);
+    let result = stoppable(repo, run(repo, &args));
+    // Changes HEAD already has leave an empty pick in progress, with nothing to resolve.
+    if result.is_err()
+        && operation(repo).is_some_and(|op| op.kind == "cherry-pick")
+        && run(repo, &["diff", "--cached", "--quiet"]).is_ok()
+    {
+        let _ = run(repo, &["cherry-pick", "--abort"]);
+        return Err("This branch already has these changes; nothing to cherry-pick.".into());
+    }
+    result
+}
+
 /// Detached checkout of a commit. Git refuses if local changes would be overwritten.
 pub fn checkout_commit(repo: &Path, sha: &str) -> Result<(), String> {
     validate_rev(sha)?;
@@ -1913,6 +1936,119 @@ pub fn switch_tracking(repo: &Path, remote_ref: &str) -> Result<(), String> {
         return run(repo, &["switch", local]).map(|_| ());
     }
     run(repo, &["switch", "-c", local, "--track", remote_ref]).map(|_| ())
+}
+
+// ---------------------------------------------------------------- stash
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stash {
+    pub sha: String,
+    /// Its n in stash@{n} now. Pushes and drops shift it, so actions name the stash by `sha`.
+    pub index: usize,
+    /// As git words it: "On main: message", or "WIP on main: <commit>" without one.
+    pub message: String,
+    pub author: String,
+    pub timestamp: i64,
+}
+
+pub fn stashes(repo: &Path) -> Result<Vec<Stash>, String> {
+    let out = run_text(repo, &["stash", "list", "--format=%H%x1f%an%x1f%ct%x1f%gs"])?;
+    Ok(out
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.splitn(4, '\x1f').collect();
+            (f.len() == 4).then(|| (f[0], f[1], f[2], f[3]))
+        })
+        .enumerate()
+        .map(|(index, (sha, author, time, message))| Stash {
+            sha: sha.to_string(),
+            index,
+            message: message.to_string(),
+            author: author.to_string(),
+            timestamp: time.parse().unwrap_or(0),
+        })
+        .collect())
+}
+
+/// stash@{n} for the stash that is commit `sha`, wherever it sits in the list now.
+fn stash_ref(repo: &Path, sha: &str) -> Result<String, String> {
+    validate_rev(sha)?;
+    stashes(repo)?
+        .iter()
+        .find(|s| s.sha == sha)
+        .map(|s| format!("stash@{{{}}}", s.index))
+        .ok_or_else(|| "That stash is gone (dropped or popped elsewhere).".into())
+}
+
+/// Stashes local changes, with `untracked` files too. Nested repositories stay (git skips them).
+pub fn stash_push(repo: &Path, message: &str, untracked: bool) -> Result<(), String> {
+    let top = || run_text(repo, &["rev-parse", "-q", "--verify", "refs/stash"]).ok();
+    let before = top();
+    let mut args = vec!["stash", "push"];
+    if untracked {
+        args.push("--include-untracked");
+    }
+    let message = message.trim();
+    if !message.is_empty() {
+        args.extend(["-m", message]);
+    }
+    // No paths are passed, and literal pathspecs break the cleanup of stashed untracked
+    // files: they would be saved and still left in place.
+    let mut cmd = command(repo, &args);
+    cmd.env("GIT_LITERAL_PATHSPECS", "0");
+    exec(cmd, "git stash", &[], None, None)?;
+    // With nothing to save git says so on stdout and still succeeds.
+    if top() == before {
+        return Err("There are no local changes to stash.".into());
+    }
+    Ok(())
+}
+
+/// Applies a stash, and with `pop` drops it once applied cleanly. On conflicts git keeps it
+/// and returns true: they're resolved like a merge's, then the stash can be dropped.
+pub fn stash_apply(repo: &Path, sha: &str, pop: bool) -> Result<bool, String> {
+    ensure_idle(repo)?;
+    let r = stash_ref(repo, sha)?;
+    stoppable(
+        repo,
+        run(repo, &["stash", if pop { "pop" } else { "apply" }, &r]),
+    )
+}
+
+pub fn stash_drop(repo: &Path, sha: &str) -> Result<(), String> {
+    let r = stash_ref(repo, sha)?;
+    run(repo, &["stash", "drop", &r]).map(|_| ())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashFiles {
+    /// Tracked changes, against the commit it was made on (its first parent).
+    pub files: Vec<FileChange>,
+    /// The root commit `-u` keeps untracked files in (its third parent); diffed from nothing.
+    pub untracked_sha: Option<String>,
+    pub untracked: Vec<FileChange>,
+}
+
+pub fn stash_files(repo: &Path, sha: &str) -> Result<StashFiles, String> {
+    let files = commit_files(repo, sha)?;
+    let third = format!("{sha}^3");
+    let untracked_sha = run_text(repo, &["rev-parse", "--verify", "-q", &third])
+        .ok()
+        .map(|s| s.trim().to_string());
+    let mut untracked = match &untracked_sha {
+        Some(u) => commit_files(repo, u)?,
+        None => vec![],
+    };
+    for f in &mut untracked {
+        f.status = "?".into();
+    }
+    Ok(StashFiles {
+        files,
+        untracked_sha,
+        untracked,
+    })
 }
 
 // ---------------------------------------------------------------- mutations

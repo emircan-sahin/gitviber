@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
+import { Cherry, Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -262,6 +262,10 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       {/* Reverting a commit HEAD never had would apply the opposite of a change that isn't there. */}
       <ContextMenuItem disabled={locked || c.notInHead} onSelect={() => run("Revert", () => api.revert(c.sha), `Reverted ${short}`)}>
         <RotateCcw /> Revert commit
+      </ContextMenuItem>
+      {/* Only a commit HEAD lacks (a fork's original lists those): picking one it has changes nothing. */}
+      <ContextMenuItem disabled={locked || !c.notInHead} onSelect={() => run("Cherry-pick", () => api.cherryPick(c.sha), `Cherry-picked ${short} onto ${target}`)}>
+        <Cherry /> Cherry-pick onto {target}
       </ContextMenuItem>
       <ContextMenuSub>
         <ContextMenuSubTrigger disabled={locked}>

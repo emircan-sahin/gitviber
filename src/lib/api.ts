@@ -149,6 +149,25 @@ export interface Branch {
 
 export type PullMode = "ff" | "merge" | "rebase";
 
+export interface Stash {
+  /** Actions name a stash by this: stash@{n} shifts as others are pushed and dropped. */
+  sha: string;
+  /** Its n in stash@{n} now. */
+  index: number;
+  /** As git words it: "On main: message", or "WIP on main: <commit>". */
+  message: string;
+  author: string;
+  timestamp: number;
+}
+
+export interface StashFiles {
+  /** Tracked changes, against the commit the stash was made on. */
+  files: FileChange[];
+  /** The commit holding its untracked files (a stash made with them), diffed from nothing. */
+  untrackedSha: string | null;
+  untracked: FileChange[];
+}
+
 /** One of the app's own git actions, as the undo history lists it. */
 export interface JournalEntry {
   id: number;
@@ -255,7 +274,15 @@ export const api = {
   /** Moving HEAD to `sha` would drop commits the upstream already has (needs a force-push). */
   dropsPushed: (sha: string) => invoke<boolean>("drops_pushed", { sha }),
   revert: (sha: string) => invoke<boolean>("revert", { sha }),
+  cherryPick: (sha: string) => invoke<boolean>("cherry_pick", { sha }),
   checkoutCommit: (sha: string) => invoke<void>("checkout_commit", { sha }),
+  stashes: () => invoke<Stash[]>("stashes"),
+  stashFiles: (sha: string) => invoke<StashFiles>("stash_files", { sha }),
+  /** `untracked`: take untracked files along (nested repositories stay). */
+  stashPush: (message: string, untracked: boolean) => invoke<void>("stash_push", { message, untracked }),
+  /** `pop` also drops it, unless it stopped on conflicts (true). */
+  stashApply: (sha: string, pop: boolean) => invoke<boolean>("stash_apply", { sha, pop }),
+  stashDrop: (sha: string) => invoke<void>("stash_drop", { sha }),
   createBranchAt: (name: string, sha: string) => invoke<void>("create_branch_at", { name, sha }),
   /** With a `message`, an annotated tag. */
   createTag: (name: string, sha: string, message?: string) => invoke<void>("create_tag", { name, sha, message }),

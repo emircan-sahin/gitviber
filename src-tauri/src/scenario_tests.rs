@@ -1729,3 +1729,120 @@ fn annotated_tags_push_and_undo() {
     run(a, &["tag", "-f", "v1", "HEAD~1"]).unwrap();
     assert!(j.view(a).redo_blocked.is_some());
 }
+
+/// Stash with untracked files, list and show it, pop it back. Actions name a stash by its
+/// commit, so one pushed meanwhile (stash@{0} moving) can't redirect them.
+#[test]
+fn stash_push_and_pop_with_untracked_files() {
+    let sb = Sandbox::new("stash");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    assert!(stash_push(&r, "", false).is_err(), "nothing to stash");
+    fs::write(r.join("a.txt"), "a changed\n").unwrap();
+    fs::write(r.join("new.txt"), "new\n").unwrap();
+    stash_push(&r, "wip: both", true).unwrap();
+    // Untracked files leave the worktree too (literal pathspecs once kept them there).
+    let left: Vec<String> = status(&r)
+        .unwrap()
+        .unstaged
+        .iter()
+        .map(|f| f.path.clone())
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
+    let list = stashes(&r).unwrap();
+    assert_eq!(list.len(), 1);
+    assert_eq!(list[0].message, "On main: wip: both");
+    let files = stash_files(&r, &list[0].sha).unwrap();
+    assert_eq!(files.files.len(), 1);
+    assert_eq!(files.files[0].path, "a.txt");
+    assert_eq!(files.untracked.len(), 1);
+    assert_eq!(
+        (
+            files.untracked[0].path.as_str(),
+            files.untracked[0].status.as_str()
+        ),
+        ("new.txt", "?")
+    );
+    // The untracked side opens as a diff from nothing.
+    let u = files.untracked_sha.unwrap();
+    let pair = diff_pair(&r, "commit", "new.txt", None, Some(&u), None, |_| {
+        FileText::default()
+    })
+    .unwrap();
+    assert_eq!(
+        (pair.original.exists, pair.modified.text.as_str()),
+        (false, "new\n")
+    );
+
+    // Another stash on top: the first is stash@{1} now, still found by its commit.
+    fs::write(r.join("a.txt"), "other\n").unwrap();
+    stash_push(&r, "other", false).unwrap();
+    let now = stashes(&r).unwrap();
+    assert_eq!(now.len(), 2);
+    stash_drop(&r, &now[0].sha).unwrap();
+    assert!(!stash_apply(&r, &list[0].sha, true).unwrap());
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "a changed\n");
+    assert_eq!(fs::read_to_string(r.join("new.txt")).unwrap(), "new\n");
+    assert!(stashes(&r).unwrap().is_empty());
+    assert!(stash_drop(&r, &list[0].sha).is_err());
+}
+
+/// A pop that conflicts keeps the stash and leaves conflicts to resolve like a merge's.
+#[test]
+fn stash_pop_conflict_keeps_the_stash() {
+    let sb = Sandbox::new("stash-conflict");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "base\n", "base");
+    fs::write(r.join("a.txt"), "stashed\n").unwrap();
+    stash_push(&r, "mine", false).unwrap();
+    write_commit(&r, "a.txt", "committed\n", "moved on");
+    let sha = stashes(&r).unwrap()[0].sha.clone();
+    assert!(stash_apply(&r, &sha, true).unwrap());
+    let st = status(&r).unwrap();
+    assert_eq!(st.conflicted.len(), 1);
+    assert!(st.operation.is_none());
+    assert_eq!(stashes(&r).unwrap().len(), 1);
+    resolve_side(&r, "a.txt", "theirs").unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "stashed\n");
+    stash_drop(&r, &sha).unwrap();
+}
+
+/// A cherry-pick that conflicts goes through the continue flow and is then one undo entry;
+/// one whose changes are already there is refused without leaving a pick in progress.
+#[test]
+fn cherry_pick_with_conflict_then_continue_and_undo() {
+    let sb = Sandbox::new("pick");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "base\n", "base");
+    run(&r, &["switch", "-q", "-c", "feat"]).unwrap();
+    write_commit(&r, "a.txt", "feat\n", "feat edits a");
+    let edit = rev(&r, "HEAD");
+    write_commit(&r, "b.txt", "b\n", "feat adds b");
+    let add = rev(&r, "HEAD");
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    write_commit(&r, "a.txt", "main\n", "main edits a");
+    let before = rev(&r, "HEAD");
+
+    let j = Journal::default();
+    let action = || Action::new("Cherry-pick", Mode::Keep);
+    assert!(!j.record(&r, action(), |r| cherry_pick(r, &add)).unwrap());
+    assert_eq!(fs::read_to_string(r.join("b.txt")).unwrap(), "b\n");
+    let err = cherry_pick(&r, &add).unwrap_err();
+    assert!(err.contains("already has"), "{err}");
+    assert!(operation(&r).is_none());
+    step(&j, &r, false).unwrap();
+    assert_eq!(rev(&r, "HEAD"), before);
+
+    assert!(j.record(&r, action(), |r| cherry_pick(r, &edit)).unwrap());
+    assert_eq!(operation(&r).unwrap().kind, "cherry-pick");
+    resolve_side(&r, "a.txt", "theirs").unwrap();
+    assert!(!j.record(&r, action(), op_continue).unwrap());
+    assert!(operation(&r).is_none());
+    assert_eq!(log(&r, None, 0, 1).unwrap()[0].subject, "feat edits a");
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "feat\n");
+    step(&j, &r, false).unwrap();
+    assert_eq!(rev(&r, "HEAD"), before);
+}
