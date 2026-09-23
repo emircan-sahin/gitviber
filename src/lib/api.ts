@@ -202,6 +202,8 @@ export const api = {
   openRepo: (path: string) => invoke<OpenedRepo>("open_repo", { path }),
   status: () => invoke<RepoStatus>("status"),
   about: () => invoke<About>("about"),
+  /** macOS vibrancy behind the window (the Translucent background setting). */
+  setTranslucent: (on: boolean) => invoke<void>("set_translucent", { on }),
   /** HEAD's history, or `rev`'s: a remote-tracking branch (refs/remotes/…), e.g. a fork's original. */
   log: (skip: number, limit: number, rev: string | null = null) => invoke<Commit[]>("log", { rev, skip, limit }),
   commitFiles: (sha: string) => invoke<FileChange[]>("commit_files", { sha }),
