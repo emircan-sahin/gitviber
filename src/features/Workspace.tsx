@@ -10,6 +10,7 @@ import { prepare } from "@/lib/monaco";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { languageLabel } from "@/lib/language";
 import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
+import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/session";
 import { codeFontName, DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { arrayMove } from "@dnd-kit/sortable";
@@ -87,10 +88,39 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // Git work on the left, files on the right; both collapse to give code the room.
   const listPanel = usePanelRef();
   const filesPanel = usePanelRef();
+  useTerminalSetup(root);
+  const terminalOpen = useTerminals().open;
   const fileTree = useRef<FileTreeHandle>(null);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
-  const toggle = useCallback((panel: typeof listPanel) => panel.current?.[panel.current.isCollapsed() ? "expand" : "collapse"](), []);
+  // Focus goes to a panel once it's rendered: after a view switch or with the panel expanded.
+  const [focusTo, setFocusTo] = useState<{ panel: Panel } | null>(null);
+  useEffect(() => {
+    if (focusTo) focusPanel(focusTo.panel);
+  }, [focusTo]);
+  const show = useCallback((panel: typeof listPanel, name: Panel) => {
+    panel.current?.expand();
+    setFocusTo({ panel: name });
+  }, []);
+  // Opening a panel focuses it, as in VS Code; closing the one holding focus leaves it to the code view.
+  const toggle = useCallback(
+    (panel: typeof listPanel, name: Panel) => {
+      if (panel.current?.isCollapsed()) return show(panel, name);
+      const had = focusedPanel() === name;
+      panel.current?.collapse();
+      if (had) focusPanel("code");
+    },
+    [show],
+  );
+  const showList = (tab: ListTab) => {
+    setListTab(tab);
+    show(listPanel, "git");
+  };
+  const cycle = (dir: 1 | -1) => {
+    const open = PANELS.filter((p) => (p === "git" ? leftOpen : p === "explorer" ? rightOpen : p === "terminal" ? terminalOpen : true));
+    const at = open.indexOf(focusedPanel() as Panel);
+    focusPanel(open[at < 0 ? (dir > 0 ? 0 : open.length - 1) : (at + dir + open.length) % open.length]);
+  };
   const revealInExplorer = useCallback((path: string) => {
     filesPanel.current?.expand();
     fileTree.current?.reveal(path);
@@ -102,8 +132,6 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   }, []);
   const showHistory = useCallback((path: string, file: boolean) => showInHistory({ ...NO_SEARCH, scope: { path, file } }), [showInHistory]);
   const layout = useDefaultLayout({ id: "gitviber-main-v4", storage: localStorage });
-  useTerminalSetup(root);
-  const terminalOpen = useTerminals().open;
   const viewerLayout = useDefaultLayout({ id: "gitviber-viewer-v1", storage: localStorage, panelIds: terminalOpen ? ["editor", "terminal"] : ["editor"] });
 
   const open = useCallback((sel: Selection, pin = false) => {
@@ -128,6 +156,11 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   }, []);
 
   const moveTab = useCallback((from: number, to: number) => setTabState((st) => ({ ...st, tabs: arrayMove(st.tabs, from, to) })), []);
+
+  // ⌘1–⌘9 and next/previous (wrapping), as in browsers.
+  const goTab = (i: number) => (tabs[i] ? () => setActiveKey(tabs[i].key) : undefined);
+  const stepTab = (dir: 1 | -1) =>
+    tabs.length > 1 ? () => setActiveKey(tabs[(tabs.findIndex((t) => t.key === activeKey) + dir + tabs.length) % tabs.length].key) : undefined;
 
   const pin = useCallback((key: string) => setTabState((st) => ({ ...st, tabs: st.tabs.map((t) => (t.key === key ? { ...t, preview: false } : t)) })), []);
 
@@ -291,22 +324,42 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "editor.fontZoomIn": () => updateSettings({ codeFontSize: s.codeFontSize + 0.5 }),
     "editor.fontZoomOut": () => updateSettings({ codeFontSize: s.codeFontSize - 0.5 }),
     "editor.fontZoomReset": () => updateSettings({ codeFontSize: DEFAULT_FONT_SIZE }),
-    "view.changes": () => setListTab("changes"),
-    "view.history": () => setListTab("history"),
-    "view.pulls": () => setListTab("pulls"),
-    "view.issues": () => setListTab("issues"),
+    "view.changes": () => showList("changes"),
+    "view.history": () => showList("history"),
+    "view.pulls": () => showList("pulls"),
+    "view.issues": () => showList("issues"),
     "history.search": () => {
       setListTab("history");
       listPanel.current?.expand();
       setSearchFocus((n) => n + 1);
     },
-    "view.toggleGitPanel": () => toggle(listPanel),
-    "view.toggleExplorer": () => toggle(filesPanel),
-    "view.showExplorer": () => filesPanel.current?.expand(),
+    "view.toggleGitPanel": () => toggle(listPanel, "git"),
+    "view.toggleExplorer": () => toggle(filesPanel, "explorer"),
+    "view.focusGitPanel": () => show(listPanel, "git"),
+    "view.showExplorer": () => show(filesPanel, "explorer"),
+    "view.focusCode": () => focusPanel("code"),
+    "view.focusNextPanel": () => cycle(1),
+    "view.focusPrevPanel": () => cycle(-1),
     "tab.close": activeKey ? () => close(activeKey) : undefined,
+    "tab.goto1": goTab(0),
+    "tab.goto2": goTab(1),
+    "tab.goto3": goTab(2),
+    "tab.goto4": goTab(3),
+    "tab.goto5": goTab(4),
+    "tab.goto6": goTab(5),
+    "tab.goto7": goTab(6),
+    "tab.goto8": goTab(7),
+    "tab.last": goTab(tabs.length - 1),
+    "tab.next": stepTab(1),
+    "tab.prev": stepTab(-1),
     "file.reveal": () => revealInFinder(tabs.find((t) => t.key === activeKey)?.sel),
     "repo.refresh": () => repo.refresh(),
   });
+
+  // A tab switched to from the code view keeps the keys there (the view it replaced took focus along).
+  useEffect(() => {
+    if (codeWantsFocus()) focusPanel("code");
+  }, [activeKey]);
 
   const active = tabs.find((t) => t.key === activeKey) ?? null;
   const changeCount = changes.length;
@@ -324,8 +377,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         onLocateRepo={onLocateRepo}
         leftOpen={leftOpen}
         rightOpen={rightOpen}
-        onToggleLeft={() => toggle(listPanel)}
-        onToggleRight={() => toggle(filesPanel)}
+        onToggleLeft={() => toggle(listPanel, "git")}
+        onToggleRight={() => toggle(filesPanel, "explorer")}
       />
       <div className="min-h-0 flex-1">
         <ResizablePanelGroup orientation="horizontal" defaultLayout={layout.defaultLayout} onLayoutChanged={layout.onLayoutChanged}>
@@ -339,7 +392,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
             collapsedSize={0}
             onResize={(size) => setLeftOpen(size.inPixels > 0)}
           >
-            <div className="flex h-full flex-col bg-panel">
+            <div data-panel="git" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel outline-none">
+              <FocusLine />
               <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border pr-1 pl-2">
                 <ListTabButton active={listTab === "changes"} onClick={() => setListTab("changes")} count={changeCount}>
                   Changes
@@ -353,7 +407,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 <ListTabButton active={listTab === "issues"} onClick={() => setListTab("issues")}>
                   Issues
                 </ListTabButton>
-                <CollapseButton side="left" onClick={() => toggle(listPanel)} />
+                <CollapseButton side="left" onClick={() => toggle(listPanel, "git")} />
               </div>
               <div className="min-h-0 flex-1">
                 {listTab === "changes" && status && (
@@ -394,28 +448,43 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
           <ResizablePanel id="viewer" minSize={360}>
             <ResizablePanelGroup orientation="vertical" defaultLayout={viewerLayout.defaultLayout} onLayoutChanged={viewerLayout.onLayoutChanged}>
               <ResizablePanel id="editor" minSize={120}>
-                <Viewer
-                  tabs={tabs}
-                  active={active}
-                  status={status}
-                  revision={repo.revision}
-                  viewed={viewed}
-                  toggleViewed={toggleViewed}
-                  onActivate={setActiveKey}
-                  onClose={close}
-                  onPin={pin}
-                  onMoveTab={moveTab}
-                  onOpen={(sel) => open(sel, true)}
-                  onShowHistory={(path) => showHistory(path, true)}
-                  onShowCommit={(sha, path) => showInHistory({ query: sha, scope: null, reveal: { sha, path } })}
-                />
+                {/* Esc from the view itself (a PR, an image) or the code, when Monaco had no use for it. */}
+                <div
+                  data-panel="code"
+                  tabIndex={-1}
+                  onKeyDown={(e) => {
+                    const target = e.target as HTMLElement;
+                    if (e.key === "Escape" && (target === e.currentTarget || target.matches(".monaco-editor textarea.inputarea"))) focusList();
+                  }}
+                  className="group/panel relative h-full outline-none"
+                >
+                  <FocusLine />
+                  <Viewer
+                    tabs={tabs}
+                    active={active}
+                    status={status}
+                    revision={repo.revision}
+                    viewed={viewed}
+                    toggleViewed={toggleViewed}
+                    onActivate={setActiveKey}
+                    onClose={close}
+                    onPin={pin}
+                    onMoveTab={moveTab}
+                    onOpen={(sel) => open(sel, true)}
+                    onShowHistory={(path) => showHistory(path, true)}
+                    onShowCommit={(sha, path) => showInHistory({ query: sha, scope: null, reveal: { sha, path } })}
+                  />
+                </div>
               </ResizablePanel>
               {/* Rendered only while open, so the viewer keeps its state when the panel toggles. */}
               {terminalOpen && (
                 <>
                   <ResizableHandle className="h-px w-full bg-border after:inset-x-0 after:inset-y-auto after:top-1/2 after:left-0 after:h-2 after:w-full after:translate-x-0 after:-translate-y-1/2" />
                   <ResizablePanel id="terminal" defaultSize="35" minSize={100}>
-                    <TerminalPanel root={root} worktrees={repo.worktrees} />
+                    <div data-panel="terminal" className="group/panel relative h-full">
+                      <FocusLine />
+                      <TerminalPanel root={root} worktrees={repo.worktrees} />
+                    </div>
                   </ResizablePanel>
                 </>
               )}
@@ -432,7 +501,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
             collapsedSize={0}
             onResize={(size) => setRightOpen(size.inPixels > 0)}
           >
-            <div className="flex h-full flex-col bg-panel">
+            <div data-panel="explorer" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel outline-none">
+              <FocusLine />
               <div className="flex h-9 shrink-0 items-center border-b border-border pr-1 pl-3">
                 <span className="text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Explorer</span>
                 {/* One group: two ml-autos split the free space, leaving Collapse folders mid-header. */}
@@ -442,7 +512,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                       <ChevronsDownUp className="size-3.5" />
                     </button>
                   </Tip>
-                  <CollapseButton side="right" onClick={() => toggle(filesPanel)} />
+                  <CollapseButton side="right" onClick={() => toggle(filesPanel, "explorer")} />
                 </div>
               </div>
               <div className="min-h-0 flex-1">
@@ -465,6 +535,11 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       <TerminalRestoreOffer />
     </div>
   );
+}
+
+/** Marks the panel the keys go to: a thin accent along its top while focus is inside. */
+function FocusLine() {
+  return <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 z-20 h-px bg-primary opacity-0 group-focus-within/panel:opacity-100" />;
 }
 
 function CollapseButton({ side, onClick }: { side: "left" | "right"; onClick: () => void }) {

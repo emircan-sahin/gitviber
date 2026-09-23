@@ -19,6 +19,7 @@ import { api, type Commit, type CommitDetails, errorMessage, type FileChange, ty
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
+import { useListNav } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 import { FileIcon } from "./FileIcon";
 import { copyLink, openOnGitHub } from "./PullsPanel";
@@ -119,12 +120,16 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     setOpen(open === sha ? null : sha);
   };
 
+  const more = () => loadMore().catch((e) => toast("error", "Could not load history", errorMessage(e)));
+  const nav = useListNav({ activeKey, loadMore: hasMore ? more : null });
+
   if (!commits.length) {
     return <div className="px-6 pt-20 text-center text-[12px] text-subtle">{empty}</div>;
   }
 
   return (
     <div ref={scroller} className="h-full overflow-x-hidden overflow-y-auto py-1">
+      <div role="tree" aria-label="History" {...nav}>
       {commits.map((c, i) => (
         <CommitRow
           key={c.sha}
@@ -141,9 +146,10 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
           menu={<CommitMenu commit={c} head={c.sha === head} actions={actions} />}
         />
       ))}
+      </div>
       {hasMore && (
         <div className="p-2">
-          <Button variant="secondary" size="sm" className="w-full" onClick={() => loadMore().catch((e) => toast("error", "Could not load history", errorMessage(e)))}>
+          <Button variant="secondary" size="sm" className="w-full" onClick={more}>
             Load more
           </Button>
         </div>
@@ -206,9 +212,20 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       (e) => toast("error", "Could not copy", errorMessage(e)),
     );
 
+  // Set by the naming items: focus going back to the row would steal it from the name dialog.
+  const naming = useRef(false);
+  const name = (kind: "branch" | "tag") => {
+    naming.current = true;
+    actions.name(kind, c);
+  };
+
   return (
-    // Focus has nowhere useful to return to, and restoring it would steal it from the name dialog.
-    <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
+    <ContextMenuContent
+      onCloseAutoFocus={(e) => {
+        if (naming.current) e.preventDefault();
+        naming.current = false;
+      }}
+    >
       <ContextMenuItem disabled={locked || !head || !c.parents.length} onSelect={undo}>
         <Undo2 /> Undo commit
       </ContextMenuItem>
@@ -232,10 +249,10 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       <ContextMenuItem disabled={locked || head} onSelect={checkout}>
         <GitCommitHorizontal /> Checkout commit
       </ContextMenuItem>
-      <ContextMenuItem disabled={locked} onSelect={() => actions.name("branch", c)}>
+      <ContextMenuItem disabled={locked} onSelect={() => name("branch")}>
         <GitBranchPlus /> Create branch from here…
       </ContextMenuItem>
-      <ContextMenuItem onSelect={() => actions.name("tag", c)}>
+      <ContextMenuItem onSelect={() => name("tag")}>
         <Tag /> Create tag here…
       </ContextMenuItem>
       <ContextMenuSeparator />
@@ -351,9 +368,16 @@ function CommitRow({
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
-            role="button"
+            role="treeitem"
+            aria-level={1}
+            aria-expanded={open}
+            tabIndex={-1}
+            data-row={`commit:${commit.sha}`}
             onClick={(e) => onToggle(e.currentTarget)}
-            className={cn("relative flex cursor-pointer items-start gap-2.5 py-1.5 pr-2 pl-3 data-[state=open]:bg-hover", open ? "bg-active" : "hover:bg-hover")}
+            className={cn(
+              "relative flex cursor-pointer items-start gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset data-[state=open]:bg-hover",
+              open ? "bg-active" : "hover:bg-hover",
+            )}
           >
             <span
               className={cn(
@@ -390,15 +414,23 @@ function CommitRow({
           )}
           {files?.map((f) => {
             const sel: Selection = { kind: "commit", commit, file: f, url };
-            const active = activeKey === selectionKey(sel);
+            const key = selectionKey(sel);
+            const active = activeKey === key;
             return (
               <div
                 key={f.path}
-                role="button"
+                role="treeitem"
+                aria-level={2}
+                aria-selected={active}
+                tabIndex={-1}
+                data-row={key}
                 onClick={() => onOpen(sel)}
                 onDoubleClick={() => onOpen(sel, true)}
                 onMouseEnter={() => onHover(sel)}
-                className={cn("relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-8 text-[12px]", active ? "bg-primary/15" : "hover:bg-hover")}
+                className={cn(
+                  "relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-8 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+                  active ? "bg-primary/15" : "hover:bg-hover",
+                )}
               >
                 {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
                 <FileIcon path={f.path} />

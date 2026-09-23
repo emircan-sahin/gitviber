@@ -10,6 +10,7 @@ import { api, type Branch, type Commit, errorMessage, fullName, type GitHubAcces
 import { cached, invalidate, useGitHubData } from "@/lib/githubCache";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
+import { useListNav } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 import { RepoPanes } from "./RepoPanes";
 
@@ -322,6 +323,7 @@ function PullRows({
   onMore: () => void;
 }) {
   const full = pulls?.length === shown * PR_PAGE;
+  const nav = useListNav({ activeKey });
   return (
     <>
       {/* With a cached list on screen, a failed refresh is a note above it, not a blank panel. */}
@@ -330,16 +332,21 @@ function PullRows({
       {pulls?.length === 0 && (
         <div className={cn("px-4 text-center text-[12px] text-subtle", roomy ? "pt-16" : "py-3")}>No {filter === "all" ? "" : filter} pull requests.</div>
       )}
+      <div role="listbox" aria-label="Pull requests" {...nav}>
       {pulls?.map((p) => {
         const sel: Selection = { kind: "pull", pull: p };
-        const active = activeKey === selectionKey(sel);
+        const key = selectionKey(sel);
+        const active = activeKey === key;
         return (
           <LinkMenu key={p.number} url={p.url}>
           <div
-            role="button"
+            role="option"
+            aria-selected={active}
+            tabIndex={-1}
+            data-row={key}
             onClick={() => onOpen(sel)}
             onDoubleClick={() => onOpen(sel, true)}
-            className={cn("relative flex cursor-pointer gap-2.5 py-1.5 pr-2 pl-3", active ? "bg-primary/15" : "hover:bg-hover")}
+            className={cn("relative flex cursor-pointer gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset", active ? "bg-primary/15" : "hover:bg-hover")}
           >
             {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
             <PullStateIcon pull={p} className="mt-0.5" />
@@ -358,6 +365,7 @@ function PullRows({
           </LinkMenu>
         );
       })}
+      </div>
       {full && shown < MAX_PAGES && (
         <div className="p-2">
           <Button variant="secondary" size="sm" className="w-full" disabled={loading} onClick={onMore}>

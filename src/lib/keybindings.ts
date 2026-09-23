@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { bindingsFor, type CommandId, commandFor, eventChord, formatChord } from "./commands";
+import { bindingsFor, type CommandId, commandFor, eventChord, formatChord, runsWhileTyping, takenFromTerminal } from "./commands";
 import { getSettings, useSettings } from "./settings";
 
 export { bindingsFor, COMMANDS, type Command, type CommandId, eventChord, formatChord, RESERVED } from "./commands";
@@ -20,10 +20,10 @@ export function matchesCommand(id: CommandId, e: KeyboardEvent): boolean {
 /** Focus is in the code view: Monaco's text area, read-only, so not typing (its find box is). */
 const inCodeView = (e: KeyboardEvent) => e.target instanceof HTMLElement && e.target.matches(".monaco-editor textarea.inputarea");
 
-/** Focus is somewhere that owns its keystrokes: text fields, menus, dialogs, pickers. */
+/** Focus is somewhere that owns its keystrokes: text fields, menus, dialogs, pickers (not the sidebar lists, see useListNav). */
 export function isTyping(e: KeyboardEvent) {
   const el = e.target instanceof HTMLElement ? e.target : null;
-  return !!el && !inCodeView(e) && (el.isContentEditable || !!el.closest("input,textarea,select,[role=menu],[role=listbox],[role=dialog]"));
+  return !!el && !inCodeView(e) && (el.isContentEditable || !!el.closest("input,textarea,select,[role=menu],[role=listbox]:not([data-list-nav]),[role=dialog]"));
 }
 
 /** Menu bar items that aren't key commands (lib.rs `menu`); they run through the same handlers. */
@@ -75,10 +75,8 @@ function dispatch(e: KeyboardEvent) {
   if (handled) return;
   const command = commandFor(chord, getSettings().keybindings);
   if (!command) return;
-  // ⌘ shortcuts work everywhere but where text owns them (⌘Z); the rest only when not
-  // typing, since ⌥+letter types characters (ç, ß), plain letters are text, and
-  // menus/dialogs own their own keys.
-  if ((!chord.includes("cmd") || "outsideText" in command) && isTyping(e)) return;
+  // Text owns most keys (see runsWhileTyping), and menus and dialogs theirs, the same way.
+  if (isTyping(e) && !runsWhileTyping(chord, command)) return;
   const run = handlerFor(command.id);
   if (!run) return;
   e.preventDefault();
@@ -91,6 +89,13 @@ function dispatch(e: KeyboardEvent) {
 // there the app's commands go first (on the way down), and Monaco keeps the rest (copy, find, arrows).
 window.addEventListener("keydown", (e) => inCodeView(e) && dispatch(e), { capture: true });
 window.addEventListener("keydown", (e) => !inCodeView(e) && dispatch(e));
+
+/** A Ctrl chord of the app's (⌃Tab, ⌃1) that the terminal must not turn into a control code for the shell. */
+export function appTakesFromTerminal(e: KeyboardEvent) {
+  const chord = e.ctrlKey ? eventChord(e) : null;
+  const command = chord && commandFor(chord, getSettings().keybindings);
+  return !!command && takenFromTerminal(chord, command) && hasHandler(command.id);
+}
 
 /** Registers handlers for commands while the component is mounted; always calls the latest closures. A command left undefined is unavailable (greyed out in the menu). */
 export function useCommands(map: Partial<Record<Action, () => void>>) {

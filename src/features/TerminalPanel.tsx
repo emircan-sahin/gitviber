@@ -6,6 +6,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Tip } from "@/components/ui/tooltip";
 import type { Worktree } from "@/lib/api";
 import { useCommands } from "@/lib/keybindings";
+import { focusedPanel, focusPanel } from "@/lib/panels";
 import {
   activateGroup,
   attachPane,
@@ -33,14 +34,21 @@ export function useTerminalSetup(root: string) {
       // ⌃` as in VS Code, ⌘J as its panel toggle.
       if ((e.ctrlKey && e.code === "Backquote") || (e.metaKey && !e.shiftKey && !e.altKey && e.code === "KeyJ")) {
         e.preventDefault();
-        togglePanel(root);
+        toggle(root);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [root]);
 
-  useCommands({ "terminal.toggle": () => togglePanel(root), "terminal.new": () => openTerminal(root) });
+  useCommands({ "terminal.toggle": () => toggle(root), "terminal.new": () => openTerminal(root) });
+}
+
+/** Opening focuses the terminal (togglePanel does); hiding it while it has focus leaves focus to the code view. */
+function toggle(root: string) {
+  const had = document.activeElement !== document.body && focusedPanel() === "terminal";
+  togglePanel(root);
+  if (had) focusPanel("code");
 }
 
 interface Props {
@@ -114,7 +122,7 @@ export function TerminalPanel({ root, worktrees }: Props) {
           </Tip>
           <div className="mx-0.5 h-4 w-px bg-border-strong" />
           <Tip label="Hide terminal" shortcut="⌃`">
-            <Button variant="ghost" size="icon-sm" onClick={() => togglePanel(root)}>
+            <Button variant="ghost" size="icon-sm" onClick={() => toggle(root)}>
               <ChevronDown />
             </Button>
           </Tip>

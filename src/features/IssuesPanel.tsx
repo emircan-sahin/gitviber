@@ -10,6 +10,7 @@ import { errorMessage, fullName, github, type Issue, type IssueCounts, type Issu
 import { invalidate, useGitHubData } from "@/lib/githubCache";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
+import { useListNav } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 import { ConnectGitHub, FilterTabs, isoToUnix, LinkMenu, NewButton } from "./PullsPanel";
 import { RepoPanes } from "./RepoPanes";
@@ -243,6 +244,7 @@ function IssueRows({
   /** The whole panel, not a pane: the empty note sits lower. */
   roomy: boolean;
 }) {
+  const nav = useListNav({ activeKey });
   return (
     <>
       {/* With a cached list on screen, a failed refresh is a note above it, not a blank panel. */}
@@ -258,16 +260,21 @@ function IssueRows({
           )}
         </div>
       )}
+      <div role="listbox" aria-label="Issues" {...nav}>
       {items?.map((i) => {
         const sel: Selection = { kind: "issue", issue: i };
-        const active = activeKey === selectionKey(sel);
+        const key = selectionKey(sel);
+        const active = activeKey === key;
         return (
           <LinkMenu key={i.number} url={i.url}>
           <div
-            role="button"
+            role="option"
+            aria-selected={active}
+            tabIndex={-1}
+            data-row={key}
             onClick={() => onOpen(sel)}
             onDoubleClick={() => onOpen(sel, true)}
-            className={cn("relative flex cursor-pointer gap-2.5 py-1.5 pr-2 pl-3", active ? "bg-primary/15" : "hover:bg-hover")}
+            className={cn("relative flex cursor-pointer gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset", active ? "bg-primary/15" : "hover:bg-hover")}
           >
             {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
             <IssueStateIcon issue={i} className="mt-0.5" />
@@ -297,6 +304,7 @@ function IssueRows({
           </LinkMenu>
         );
       })}
+      </div>
     </>
   );
 }

@@ -3,6 +3,7 @@ import type { Blame, BlameCommit, DiffPair, DiffRow } from "@/lib/api";
 import { showLanguage } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
 import { narrow } from "@/lib/indent";
+import { codeWantsFocus, setCodeEditor } from "@/lib/panels";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
 import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
 import { relativeTime } from "@/lib/utils";
@@ -91,6 +92,9 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     // Options follow below; only the kind of editor needs a new one.
   }, [diff]);
 
+  // Focus Code View, F6 and → from a list land in the editor that scrolls.
+  useEffect(() => setCodeEditor(() => editor.current && codeEditor(editor.current).focus()), []);
+
   useEffect(() => {
     const e = editor.current!;
     if (isDiff(e)) e.updateOptions(diffOptions(s, mode, collapse, wrap));
@@ -145,10 +149,12 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       unit.current = created.unit;
       old.forEach((m) => m.dispose());
       shown.current = scrollKey;
+      const code = codeEditor(e);
+      // Opened from the code view (J/K, a tab switch) or sent here before it was ready: take the keys.
+      if (codeWantsFocus()) code.focus();
       if (saved) return e.restoreViewState(saved as never);
       // Near the first change. A diff still computing takes it there when it lands, unless you
       // have scrolled since.
-      const code = codeEditor(e);
       const toFirst = () => {
         const [line] = changeStarts(e, bars);
         if (line) scrollToLine(code, line);
@@ -181,6 +187,43 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       el.removeEventListener("copy", onCopy);
       el.removeEventListener("cut", onCopy);
     };
+  }, []);
+
+  // A viewer's keys: they scroll, as they did before Monaco. Moving its cursor instead would jump
+  // back to wherever that was (the top, while the view opens at the first change), and Space would
+  // only say the file is read-only. ⇧-arrows still select; Esc goes back to the list (Workspace).
+  useEffect(() => {
+    const el = host.current!;
+    const onKey = (ev: KeyboardEvent) => {
+      const e = editor.current;
+      if (!e || ev.altKey || ev.ctrlKey || ev.isComposing || !(ev.target instanceof HTMLElement) || !ev.target.matches("textarea.inputarea")) return;
+      // Split view: the side you clicked into; the other one follows.
+      const code = isDiff(e) && e.getOriginalEditor().hasTextFocus() ? e.getOriginalEditor() : codeEditor(e);
+      const line = code.getOption(monaco.editor.EditorOption.lineHeight);
+      const page = code.getLayoutInfo().height - line;
+      const [top, left] = [code.getScrollTop(), code.getScrollLeft()];
+      const key = (ev.metaKey ? "cmd+" : "") + (ev.shiftKey ? "shift+" : "") + ev.key;
+      const to: Record<string, number> = {
+        ArrowDown: top + line,
+        ArrowUp: top - line,
+        PageDown: top + page,
+        PageUp: top - page,
+        " ": top + page,
+        "shift+ ": top - page,
+        Home: 0,
+        End: code.getScrollHeight(),
+        "cmd+ArrowUp": 0,
+        "cmd+ArrowDown": code.getScrollHeight(),
+      };
+      if (key in to) code.setScrollTop(to[key]);
+      else if (key === "ArrowLeft" || key === "ArrowRight") code.setScrollLeft(left + (key === "ArrowLeft" ? -40 : 40));
+      else return;
+      ev.preventDefault();
+      ev.stopPropagation();
+    };
+    // Capturing: ahead of Monaco's own handling on its text area.
+    el.addEventListener("keydown", onKey, true);
+    return () => el.removeEventListener("keydown", onKey, true);
   }, []);
 
   useImperativeHandle(

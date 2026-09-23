@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect,
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
 import { REVEAL_LABEL } from "@/lib/commands";
+import { focusPanel } from "@/lib/panels";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -241,8 +242,11 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     else if (ev.key === "ArrowUp") move(i < 0 ? rows.length - 1 : i - 1);
     else if (!cur) handled = false;
     else if (ev.key === "ArrowRight") {
-      if (!cur.isDir) handled = false;
-      else if (!expanded.has(cur.path)) setOpen(cur.path, true);
+      // A file: open it and read it.
+      if (!cur.isDir) {
+        activate(cur);
+        focusPanel("code");
+      } else if (!expanded.has(cur.path)) setOpen(cur.path, true);
       else if (rows[i + 1] && parentOf(rows[i + 1].entry.path) === cur.path) move(i + 1);
     } else if (ev.key === "ArrowLeft") {
       if (cur.isDir && expanded.has(cur.path)) setOpen(cur.path, false);

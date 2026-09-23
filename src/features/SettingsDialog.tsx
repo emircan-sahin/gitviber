@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
-import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventChord, formatChord, RESERVED } from "@/lib/commands";
+import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventChord, formatChord, IS_MAC, RESERVED } from "@/lib/commands";
 import {
   type Appearance,
   CODE_FONTS,
@@ -341,7 +341,7 @@ type Recording = { id: CommandId; index: number } | null;
 
 function setBinding(id: CommandId, keys: string[] | null, overrides: Record<string, string[]>) {
   const next = { ...overrides };
-  const defaults = COMMANDS.find((c) => c.id === id)!.keys as readonly string[];
+  const defaults = bindingsFor(id, {});
   // Storing what equals the default would pin it and hide future default changes.
   if (keys === null || (keys.length === defaults.length && keys.every((k, i) => k === defaults[i]))) delete next[id];
   else next[id] = keys;
@@ -438,8 +438,9 @@ function ShortcutsSection({ recording, setRecording }: { recording: Recording; s
         {!rows.length && <div className="px-3 py-6 text-center text-[12px] text-subtle">No matching commands</div>}
       </div>
       <p className="mt-3 text-[11.5px] leading-relaxed text-subtle">
-        Click a key to change it, or + to add one; Esc cancels. When two commands share a key, the one higher in this list runs. Shortcuts without ⌘ are ignored while
-        typing in a text field, and Commit only applies in the commit message.
+        Click a key to change it, or + to add one; Esc cancels. When two commands share a key, the one higher in this list runs. While you type in a text field, only
+        shortcuts with {IS_MAC ? "⌘, ⌃ or an F-key apply (not ⌘-arrows or ⌃ with a letter, which edit text)" : "Ctrl or an F-key apply (not Ctrl+arrows, which move by word)"}, and Commit only applies in
+        the commit message.
       </p>
     </>
   );

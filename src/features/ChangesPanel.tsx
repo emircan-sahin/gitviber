@@ -37,6 +37,8 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage, type FileChange, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { REVEAL_LABEL } from "@/lib/commands";
 import { ignorePattern } from "@/lib/gitignore";
+import { focusPanel } from "@/lib/panels";
+import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/useListNav";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { type CommitDraft, loadDraft, saveDraft } from "@/lib/session";
@@ -299,14 +301,17 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
   // One tab stop for the whole list (the active row), so Tab reaches its actions, not every row.
   const tabStop = active ? activeKey : all[0] && selectionKey(all[0]);
 
-  // ↑/↓ from a focused row (clicking one focuses it), ⇧ to extend the selection, ⌘A for all of it, Esc
-  // to let it go; ↵ keeps the preview tab, Space opens it like a click.
+  // ↑/↓ (Home/End, PageUp/PageDown) from a focused row (clicking one focuses it), ⇧ to extend the
+  // selection, ⌘A for all of it, Esc to let it go; ↵ keeps the preview tab, Space opens it like a
+  // click, → goes to its code, ⇧F10 opens its menu. The other lists share the moves through useListNav.
   const onListKey = (e: React.KeyboardEvent) => {
     const key = e.target instanceof HTMLElement ? e.target.dataset.row : undefined;
     const i = key === undefined ? -1 : (index.get(key) ?? -1);
     if (i < 0 || e.altKey || e.ctrlKey) return;
     const cur = all[i];
-    if (e.key === "Escape") {
+    const move = e.metaKey ? null : moveTarget(e.key, i, all.length, pageOf(e.target as HTMLElement));
+    if (isMenuKey(e)) openRowMenu(e.target as HTMLElement);
+    else if (e.key === "Escape") {
       // Only when there's a selection to drop; otherwise Esc isn't ours to take.
       if (!picked || stale) return;
       setPicked(null);
@@ -314,14 +319,17 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
       if (e.shiftKey || e.key.toLowerCase() !== "a") return;
       setPicked({ rows: all, anchor: anchor ?? cur, focus: (active ?? cur).file.path });
       if (!active) onOpen(cur);
-    } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    } else if (move !== null) {
       // A focused row that isn't open yet (Tab into a list with nothing open) opens first.
-      const to = all[Math.max(0, Math.min(all.length - 1, key !== activeKey ? i : e.key === "ArrowDown" ? i + 1 : i - 1))];
+      const to = all[key !== activeKey ? i : move];
       if (e.shiftKey) setPicked({ rows: range(anchor ?? cur, to), anchor: anchor ?? cur, focus: to.file.path });
       else setPicked(null);
       onOpen(to);
     } else if (e.shiftKey) return;
-    else if (e.key === "Enter") onOpen(cur, true);
+    else if (e.key === "ArrowRight") {
+      if (key !== activeKey) onOpen(cur);
+      focusPanel("code");
+    } else if (e.key === "Enter") onOpen(cur, true);
     else if (e.key === " ") pick(cur, e);
     else return;
     e.preventDefault();
