@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Code2, GitCompareArrows, Keyboard, Palette, Plus, RotateCcw, Search, TriangleAlert, X } from "lucide-react";
+import { Code2, GitCompareArrows, Keyboard, Palette, Plus, RotateCcw, Search, Sparkles, TriangleAlert, X } from "lucide-react";
 import { useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -20,12 +20,14 @@ import {
   updateSettings,
   useSettings,
 } from "@/lib/settings";
+import { SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT } from "@/lib/suggest";
 import { cn } from "@/lib/utils";
 
 const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "editor", label: "Editor", icon: Code2 },
   { id: "diff", label: "Diff", icon: GitCompareArrows },
+  { id: "commit", label: "Commit Messages", icon: Sparkles },
   { id: "shortcuts", label: "Keyboard Shortcuts", icon: Keyboard },
 ] as const;
 type Section = (typeof SECTIONS)[number]["id"];
@@ -78,7 +80,7 @@ export function SettingsDialog() {
       >
         <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar p-2">
           <DialogTitle className="px-2 pt-1.5 pb-2.5">Settings</DialogTitle>
-          <DialogDescription className="sr-only">Appearance, editor, diff and keyboard shortcut preferences.</DialogDescription>
+          <DialogDescription className="sr-only">Appearance, editor, diff, commit message and keyboard shortcut preferences.</DialogDescription>
           {SECTIONS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -108,6 +110,7 @@ export function SettingsDialog() {
             {section === "appearance" && <AppearanceSection />}
             {section === "editor" && <EditorSection />}
             {section === "diff" && <DiffSection />}
+            {section === "commit" && <CommitSection />}
             {section === "shortcuts" && <ShortcutsSection recording={recording} setRecording={setRecording} />}
           </div>
         </div>
@@ -227,6 +230,56 @@ function DiffSection() {
       <Field label="Collapse unchanged lines" hint="Fold long runs of unchanged code between changes." commands={["diff.toggleCollapse"]}>
         <Switch checked={s.hideUnchanged} onChange={(v) => updateSettings({ hideUnchanged: v })} />
       </Field>
+    </>
+  );
+}
+
+type Preset = keyof typeof SUGGEST_PRESETS;
+
+function CommitSection() {
+  const s = useSettings();
+  const preset = (Object.keys(SUGGEST_PRESETS) as Preset[]).find((k) => SUGGEST_PRESETS[k].command === s.suggestCommand.trim());
+  // Custom stays picked while its text happens to match a preset.
+  const [custom, setCustom] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <>
+      <Field
+        label="Suggest commit messages"
+        hint="Adds a ✦ button to the commit box that asks your own agent CLI to write the message. GitViber sends nothing itself and keeps no keys: the command runs on this Mac, and it decides where the diff goes."
+      >
+        <Switch checked={s.suggestEnabled} onChange={(v) => updateSettings({ suggestEnabled: v })} />
+      </Field>
+      <Field
+        label="Command"
+        hint="Runs in the repository's folder, directly, not through a shell. The prompt and the diff arrive on stdin; put {prompt} in the command to pass the prompt as an argument instead. If it isn't found, give its full path (`which claude` in Terminal prints it)."
+        commands={["git.suggestMessage"]}
+      >
+        <div className="flex w-64 flex-col gap-2">
+          <Segmented<Preset | "custom">
+            value={custom || !preset ? "custom" : preset}
+            onChange={(v) => {
+              setCustom(v === "custom");
+              if (v === "custom") input.current?.focus();
+              else updateSettings({ suggestCommand: SUGGEST_PRESETS[v].command });
+            }}
+            options={[...(Object.keys(SUGGEST_PRESETS) as Preset[]).map((k): [Preset, string] => [k, SUGGEST_PRESETS[k].label]), ["custom", "Custom"]]}
+          />
+          <Input ref={input} value={s.suggestCommand} onChange={(e) => updateSettings({ suggestCommand: e.target.value })} placeholder="claude -p" spellCheck={false} className="font-mono" />
+        </div>
+      </Field>
+      <div className="py-3.5">
+        <div className="text-[12.5px] font-medium">What the command gets</div>
+        <div className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">Only when you click ✦, and nothing else from the app:</div>
+        <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
+          {SUGGEST_PROMPT}
+          {"\n\n"}
+          <span className="text-subtle">
+            [the diff: the staged changes, or every change when nothing is staged (Commit all), or the whole commit when amending; up to {SUGGEST_LIMIT_KB} KB, with a note in the
+            prompt when it's cut]
+          </span>
+        </pre>
+      </div>
     </>
   );
 }

@@ -65,6 +65,10 @@ export interface Settings {
   keybindings: Record<string, string[]>;
   /** Repos (main worktree paths) whose commits are signed off: people who sign off always do. Set from the commit box. */
   signOffRepos: string[];
+  /** A ✦ button in the commit box runs `suggestCommand` for a message. Off: nothing is ever run. */
+  suggestEnabled: boolean;
+  /** The user's own agent CLI, split like a shell command line (suggest.rs). */
+  suggestCommand: string;
 }
 
 export const DEFAULT_FONT_SIZE = 12.5;
@@ -86,6 +90,8 @@ const DEFAULTS: Settings = {
   svgPreview: false,
   keybindings: {},
   signOffRepos: [],
+  suggestEnabled: false,
+  suggestCommand: "claude -p",
 };
 
 // v2: the Monaco-era settings had different fonts and sizes.
@@ -103,6 +109,8 @@ function load(): Settings {
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     s.keybindings = cleanOverrides(s.keybindings);
+    if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
+    if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;
     s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;
     return s;
   } catch {

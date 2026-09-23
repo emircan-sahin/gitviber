@@ -9,6 +9,7 @@ mod navigation;
 mod pty;
 #[cfg(test)]
 mod scenario_tests;
+mod suggest;
 mod titlebar;
 mod watch;
 
@@ -26,6 +27,7 @@ struct AppState {
     /// Held by commands that write the index: two `git add`s at once fail on index.lock.
     index: Arc<Mutex<()>>,
     journal: Arc<journal::Journal>,
+    suggest: suggest::Suggester,
 }
 
 type Res<T> = Result<T, String>;
@@ -299,6 +301,27 @@ async fn commit_template(state: State<'_, AppState>) -> Res<Option<String>> {
 async fn recent_authors(state: State<'_, AppState>) -> Res<Vec<String>> {
     let r = repo(&state)?;
     blocking(move || git::recent_authors(&r)).await
+}
+
+/// Runs the user's own agent CLI for a commit message (off unless they set one up).
+#[tauri::command]
+async fn suggest_message(
+    state: State<'_, AppState>,
+    command: String,
+    prompt: String,
+    scope: suggest::Scope,
+) -> Res<String> {
+    let r = repo(&state)?;
+    let cancel = state.suggest.start();
+    let flag = cancel.clone();
+    let out = blocking(move || suggest::run(&r, &command, &prompt, scope, &flag)).await;
+    state.suggest.finish(&cancel);
+    out
+}
+
+#[tauri::command]
+fn suggest_cancel(state: State<'_, AppState>) {
+    state.suggest.cancel()
 }
 
 #[tauri::command]
@@ -1129,6 +1152,8 @@ pub fn run() {
             commit,
             commit_template,
             recent_authors,
+            suggest_message,
+            suggest_cancel,
             commit_details,
             push,
             pull,
