@@ -225,8 +225,11 @@ export const api = {
   unstage: (paths: string[]) => invoke<void>("unstage", { paths }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
   commit: (message: string, amend: boolean) => invoke<void>("commit", { message, amend }),
-  /** `force`: --force-with-lease, after a rebase or amend. `remote`: where to publish a branch with no upstream. */
-  push: (force = false, remote?: string) => invoke<void>("push", { force, remote }),
+  /**
+   * `force`: --force-with-lease, after a rebase or amend. `remote`: where to publish a branch with no upstream.
+   * `tags`: --follow-tags, annotated tags on the pushed commits go too.
+   */
+  push: (force = false, remote?: string, tags = false) => invoke<void>("push", { force, remote, tags }),
   // The boolean results mean "stopped on conflicts".
   pull: (mode: PullMode) => invoke<boolean>("pull", { mode }),
   merge: (name: string) => invoke<boolean>("merge", { name }),
@@ -254,7 +257,14 @@ export const api = {
   revert: (sha: string) => invoke<boolean>("revert", { sha }),
   checkoutCommit: (sha: string) => invoke<void>("checkout_commit", { sha }),
   createBranchAt: (name: string, sha: string) => invoke<void>("create_branch_at", { name, sha }),
-  createTag: (name: string, sha: string) => invoke<void>("create_tag", { name, sha }),
+  /** With a `message`, an annotated tag. */
+  createTag: (name: string, sha: string, message?: string) => invoke<void>("create_tag", { name, sha, message }),
+  deleteTag: (name: string) => invoke<void>("delete_tag", { name }),
+  // Tags go where `git push` sends the current branch; these return that remote.
+  pushTags: (names: string[]) => invoke<string>("push_tags", { names }),
+  deleteRemoteTag: (name: string) => invoke<string>("delete_remote_tag", { name }),
+  /** The tags that remote has. A network call: only when a menu opens. */
+  remoteTags: () => invoke<{ remote: string; names: string[] }>("remote_tags"),
   /** https://github.com/owner/name, or null when origin isn't on GitHub. */
   githubWebUrl: () => invoke<string | null>("github_web_url"),
   journal: () => invoke<Journal>("journal"),

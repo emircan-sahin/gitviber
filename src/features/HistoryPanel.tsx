@@ -1,11 +1,12 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, Tag, Undo2 } from "lucide-react";
+import { Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
+  ContextMenuLabel,
   ContextMenuSeparator,
   ContextMenuSub,
   ContextMenuSubContent,
@@ -14,6 +15,7 @@ import {
 } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { api, type Commit, errorMessage, type FileChange, type RepoStatus, type ResetMode } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
@@ -158,6 +160,56 @@ async function dropsPushed(sha: string) {
   }
 }
 
+const copy = (text: string, what: string) =>
+  navigator.clipboard.writeText(text).then(
+    () => toast("success", what),
+    (e) => toast("error", "Could not copy", errorMessage(e)),
+  );
+
+/** The remote tags are pushed to and the ones it has, while asking it, or why that failed. */
+type RemoteTags = { remote: string; names: string[] } | { error: string } | "loading" | null;
+
+/** A tag on a commit: push it, delete it here or on the remote. */
+function TagMenu({ tag, remote, onOpen, actions }: { tag: string; remote: RemoteTags; onOpen: () => void; actions: Actions }) {
+  const { locked, run } = actions;
+  const known = remote && typeof remote === "object" && "names" in remote ? remote : null;
+  const there = known?.names.includes(tag);
+  const where = known?.remote ?? "the remote";
+  const deleteRemote = async () => {
+    const ok = await ask(`Delete tag ${tag} from ${where}? Clones that fetched it keep their copy, and GitViber can't undo this. The tag here stays.`, {
+      title: "Delete remote tag",
+      kind: "warning",
+      okLabel: "Delete",
+    });
+    if (ok) await run("Delete remote tag", async () => void (await api.deleteRemoteTag(tag)), `Deleted ${tag} from ${where}`);
+  };
+  return (
+    <ContextMenuSub onOpenChange={(o) => o && onOpen()}>
+      <ContextMenuSubTrigger>
+        <Tag /> <span className="max-w-48 truncate font-mono">{tag}</span>
+      </ContextMenuSubTrigger>
+      <ContextMenuSubContent>
+        <ContextMenuLabel className="normal-case">
+          {remote === "loading" || remote === null ? "Checking the remote…" : known ? (there ? `On ${where}` : `Not on ${where} yet`) : "Couldn't reach the remote"}
+        </ContextMenuLabel>
+        <ContextMenuItem disabled={there} onSelect={() => run("Push tag", async () => void (await api.pushTags([tag])), `Pushed tag ${tag}`)}>
+          <UploadCloud /> Push tag{known ? ` to ${where}` : ""}
+        </ContextMenuItem>
+        <ContextMenuItem disabled={locked} onSelect={() => run("Delete tag", () => api.deleteTag(tag), `Deleted tag ${tag}`)}>
+          <Trash2 /> Delete tag
+        </ContextMenuItem>
+        <ContextMenuItem disabled={known ? !there : false} className="text-destructive" onSelect={deleteRemote}>
+          <Trash2 /> Delete from {where}…
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => copy(tag, "Tag name copied")}>
+          <Copy /> Copy name
+        </ContextMenuItem>
+      </ContextMenuSubContent>
+    </ContextMenuSub>
+  );
+}
+
 /** Right-click actions on a commit. `head`: the first row, i.e. the checked-out commit. */
 function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolean; actions: Actions }) {
   const { status, headSha, webUrl, locked, run } = actions;
@@ -192,11 +244,14 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
     if (ok) await run("Checkout", () => api.checkoutCommit(c.sha), `Checked out ${short}`);
   };
 
-  const copy = (text: string, what: string) =>
-    navigator.clipboard.writeText(text).then(
-      () => toast("success", what),
-      (e) => toast("error", "Could not copy", errorMessage(e)),
-    );
+  // Which tags the remote has, asked each time a tag's submenu opens: a push since changes it.
+  const tags = c.refs.filter((r) => r.startsWith("tag: ")).map((r) => r.slice(5));
+  const [remote, setRemote] = useState<RemoteTags>(null);
+  const checkRemote = () => {
+    if (remote === "loading") return;
+    setRemote("loading");
+    api.remoteTags().then(setRemote, (e) => setRemote({ error: errorMessage(e) }));
+  };
 
   return (
     // Focus has nowhere useful to return to, and restoring it would steal it from the name dialog.
@@ -227,9 +282,12 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       <ContextMenuItem disabled={locked} onSelect={() => actions.name("branch", c)}>
         <GitBranchPlus /> Create branch from here…
       </ContextMenuItem>
-      <ContextMenuItem onSelect={() => actions.name("tag", c)}>
+      <ContextMenuItem disabled={locked} onSelect={() => actions.name("tag", c)}>
         <Tag /> Create tag here…
       </ContextMenuItem>
+      {tags.map((t) => (
+        <TagMenu key={t} tag={t} remote={remote} onOpen={checkRemote} actions={actions} />
+      ))}
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={() => copy(c.sha, "SHA copied")}>
         <Copy /> Copy SHA
@@ -256,11 +314,12 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
 
 function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "tag"; commit: Commit; onClose: () => void; run: Actions["run"] }) {
   const [name, setName] = useState("");
+  const [message, setMessage] = useState("");
   const submit = () => {
     const n = name.trim();
     onClose();
     if (kind === "branch") run("Create branch", () => api.createBranchAt(n, commit.sha), `Switched to new branch ${n}`);
-    else run("Create tag", () => api.createTag(n, commit.sha), `Tagged ${commit.shortSha} as ${n}`);
+    else run("Create tag", () => api.createTag(n, commit.sha, message), `Tagged ${commit.shortSha} as ${n}`);
   };
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
@@ -271,16 +330,31 @@ function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "tag"; co
           {kind === "branch" && ". You'll be switched to it; uncommitted changes come along."}
         </DialogDescription>
         <form
-          className="mt-4 flex gap-2"
+          className="mt-4 flex flex-wrap gap-2"
           onSubmit={(e) => {
             e.preventDefault();
             if (name.trim()) submit();
           }}
         >
-          <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === "branch" ? "Branch name" : "Tag name, e.g. v1.2.0"} spellCheck={false} />
+          <Input autoFocus className="min-w-0 flex-1" value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === "branch" ? "Branch name" : "Tag name, e.g. v1.2.0"} spellCheck={false} />
           <Button type="submit" disabled={!name.trim()}>
             Create
           </Button>
+          {kind === "tag" && (
+            <Textarea
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              // ⌘↵ submits from here too; a plain ↵ is a new line.
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && e.metaKey && name.trim()) {
+                  e.preventDefault();
+                  submit();
+                }
+              }}
+              rows={3}
+              placeholder="Message (optional): makes an annotated tag, which Push with tags sends along"
+            />
+          )}
         </form>
       </DialogContent>
     </Dialog>

@@ -1566,14 +1566,86 @@ pub fn create_branch_at(repo: &Path, name: &str, sha: &str) -> Result<(), String
     run(repo, &["switch", "-c", name, sha]).map(|_| ())
 }
 
-pub fn create_tag(repo: &Path, name: &str, sha: &str) -> Result<(), String> {
-    validate_rev(sha)?;
+fn validate_tag(repo: &Path, name: &str) -> Result<(), String> {
     let full = format!("refs/tags/{name}");
     // "@" alone is valid in a full ref but means HEAD wherever a revision is read.
     if name == "@" || name.starts_with('-') || run(repo, &["check-ref-format", &full]).is_err() {
         return Err(format!("invalid tag name: {name}"));
     }
-    run(repo, &["tag", name, sha]).map(|_| ())
+    Ok(())
+}
+
+/// A lightweight tag, or with a `message` an annotated one (which `push --follow-tags` sends).
+pub fn create_tag(repo: &Path, name: &str, sha: &str, message: Option<&str>) -> Result<(), String> {
+    validate_rev(sha)?;
+    validate_tag(repo, name)?;
+    match message.map(str::trim).filter(|m| !m.is_empty()) {
+        // Through stdin, like a commit message, so it is never parsed as arguments.
+        Some(m) => run_with(
+            repo,
+            &["tag", "-a", "-F", "-", name, sha],
+            &[],
+            Some(m.as_bytes()),
+        ),
+        None => run(repo, &["tag", name, sha]),
+    }
+    .map(|_| ())
+}
+
+pub fn delete_tag(repo: &Path, name: &str) -> Result<(), String> {
+    validate_tag(repo, name)?;
+    run(repo, &["tag", "-d", name]).map(|_| ())
+}
+
+/// Where tags are pushed: where `git push` sends this branch, else where Publish would.
+fn tag_remote(repo: &Path) -> Result<String, String> {
+    run_text(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .ok()
+        .and_then(|b| push_target(repo, b.trim()))
+        .map(|p| p.remote)
+        .map_or_else(|| publish_remote(repo), Ok)
+}
+
+/// Pushes these tags; returns the remote they went to.
+pub fn push_tags(repo: &Path, names: &[String]) -> Result<String, String> {
+    let remote = tag_remote(repo)?;
+    let refs: Vec<String> = names
+        .iter()
+        .map(|n| validate_tag(repo, n).map(|_| format!("refs/tags/{n}")))
+        .collect::<Result<_, _>>()?;
+    if refs.is_empty() {
+        return Ok(remote);
+    }
+    let mut args = vec!["push", remote.as_str()];
+    args.extend(refs.iter().map(String::as_str));
+    run_network(repo, &args).map(|_| remote.clone())
+}
+
+/// Deletes a tag from the remote tags are pushed to (the local one stays); returns that remote.
+pub fn delete_remote_tag(repo: &Path, name: &str) -> Result<String, String> {
+    validate_tag(repo, name)?;
+    let remote = tag_remote(repo)?;
+    let full = format!("refs/tags/{name}");
+    run_network(repo, &["push", &remote, "--delete", &full]).map(|_| remote.clone())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTags {
+    pub remote: String,
+    pub names: Vec<String>,
+}
+
+/// The tags on the remote tags are pushed to. A network call: asked for when a menu opens,
+/// never on refresh.
+pub fn remote_tags(repo: &Path) -> Result<RemoteTags, String> {
+    let remote = tag_remote(repo)?;
+    let out = run_network(repo, &["ls-remote", "--tags", "--refs", &remote])?;
+    let names = String::from_utf8_lossy(&out)
+        .lines()
+        .filter_map(|l| l.split_once("\trefs/tags/").map(|(_, n)| n.to_string()))
+        .collect();
+    Ok(RemoteTags { remote, names })
 }
 
 // ---------------------------------------------------------------- branches
@@ -1938,10 +2010,22 @@ pub fn commit(repo: &Path, message: &str, amend: bool) -> Result<(), String> {
 /// meanwhile by someone else is refused rather than lost.
 /// A branch without an upstream is published (`-u`) to `remote`, or else to `publish_remote`.
 pub fn push(repo: &Path, force: bool, remote: Option<&str>) -> Result<(), String> {
+    push_as(repo, force, remote, false)
+}
+
+/// `push` with `--follow-tags`: annotated tags on the pushed commits go along.
+pub fn push_with_tags(repo: &Path, force: bool, remote: Option<&str>) -> Result<(), String> {
+    push_as(repo, force, remote, true)
+}
+
+fn push_as(repo: &Path, force: bool, remote: Option<&str>, tags: bool) -> Result<(), String> {
     let has_upstream = run(repo, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
     let mut args = vec!["push"];
     if force {
         args.push("--force-with-lease");
+    }
+    if tags {
+        args.push("--follow-tags");
     }
     let target;
     if !has_upstream {

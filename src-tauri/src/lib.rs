@@ -331,9 +331,19 @@ async fn commit(state: State<'_, AppState>, message: String, amend: bool) -> Res
 }
 
 #[tauri::command]
-async fn push(state: State<'_, AppState>, force: Option<bool>, remote: Option<String>) -> Res<()> {
+async fn push(
+    state: State<'_, AppState>,
+    force: Option<bool>,
+    remote: Option<String>,
+    tags: Option<bool>,
+) -> Res<()> {
     let r = repo(&state)?;
-    blocking(move || git::push(&r, force.unwrap_or(false), remote.as_deref())).await
+    let push = if tags.unwrap_or(false) {
+        git::push_with_tags
+    } else {
+        git::push
+    };
+    blocking(move || push(&r, force.unwrap_or(false), remote.as_deref())).await
 }
 
 /// The bool results below mean "stopped on conflicts".
@@ -538,9 +548,45 @@ async fn create_branch_at(state: State<'_, AppState>, name: String, sha: String)
 }
 
 #[tauri::command]
-async fn create_tag(state: State<'_, AppState>, name: String, sha: String) -> Res<()> {
+async fn create_tag(
+    state: State<'_, AppState>,
+    name: String,
+    sha: String,
+    message: Option<String>,
+) -> Res<()> {
+    let label = format!("Create tag {name}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::create_tag(r, &name, &sha, message.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_tag(state: State<'_, AppState>, name: String) -> Res<()> {
+    let label = format!("Delete tag {name}");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::delete_tag(r, &name)
+    })
+    .await
+}
+
+/// Remote tag changes are not undoable: others may have fetched them already.
+#[tauri::command]
+async fn push_tags(state: State<'_, AppState>, names: Vec<String>) -> Res<String> {
     let r = repo(&state)?;
-    blocking(move || git::create_tag(&r, &name, &sha)).await
+    blocking(move || git::push_tags(&r, &names)).await
+}
+
+#[tauri::command]
+async fn delete_remote_tag(state: State<'_, AppState>, name: String) -> Res<String> {
+    let r = repo(&state)?;
+    blocking(move || git::delete_remote_tag(&r, &name)).await
+}
+
+#[tauri::command]
+async fn remote_tags(state: State<'_, AppState>) -> Res<git::RemoteTags> {
+    let r = repo(&state)?;
+    blocking(move || git::remote_tags(&r)).await
 }
 
 // ---------------------------------------------------------------- undo / redo
@@ -1178,6 +1224,10 @@ pub fn run() {
             checkout_commit,
             create_branch_at,
             create_tag,
+            delete_tag,
+            push_tags,
+            delete_remote_tag,
+            remote_tags,
             journal,
             journal_last,
             undo,

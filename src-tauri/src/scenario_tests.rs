@@ -1181,11 +1181,11 @@ fn checkout_branch_and_tag_at_a_commit() {
     let base = log(&r, None, 0, 1).unwrap()[0].sha.clone();
     write_commit(&r, "a.txt", "2\n", "two");
 
-    assert!(create_tag(&r, "-f", &base).is_err());
-    assert!(create_tag(&r, "bad..name", &base).is_err());
-    create_tag(&r, "v1.0", &base).unwrap();
+    assert!(create_tag(&r, "-f", &base, None).is_err());
+    assert!(create_tag(&r, "bad..name", &base, None).is_err());
+    create_tag(&r, "v1.0", &base, None).unwrap();
     assert!(
-        create_tag(&r, "v1.0", &base).is_err(),
+        create_tag(&r, "v1.0", &base, None).is_err(),
         "existing tag is not moved"
     );
     assert!(log(&r, None, 0, 2).unwrap()[1]
@@ -1203,7 +1203,7 @@ fn checkout_branch_and_tag_at_a_commit() {
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "1\n");
     assert!(create_branch_at(&r, "--evil", &base).is_err());
     assert!(create_branch_at(&r, "@", &base).is_err());
-    assert!(create_tag(&r, "@", &base).is_err());
+    assert!(create_tag(&r, "@", &base, None).is_err());
 }
 
 fn commit_dated(repo: &Path, path: &str, content: &str, msg: &str, date: &str) {
@@ -1672,4 +1672,60 @@ fn create_branch_from_a_base_and_set_its_upstream() {
     assert!(set_upstream(a, "from-tag", Some("origin/nope")).is_err());
     set_upstream(a, "from-tag", None).unwrap();
     assert_eq!(upstream_of(a, "from-tag"), None);
+}
+
+/// An annotated tag carries its message and goes along with `--follow-tags`; a lightweight
+/// one needs its own push. Creating and deleting tags are undo entries.
+#[test]
+fn annotated_tags_push_and_undo() {
+    let sb = Sandbox::new("tags");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    write_commit(a, "b.txt", "b\n", "release");
+    let head = rev(a, "HEAD");
+    let j = Journal::default();
+    j.record(a, Action::new("Create tag v1", Mode::Keep), |r| {
+        create_tag(r, "v1", &head, Some("First release\n\nNotes"))
+    })
+    .unwrap();
+    create_tag(a, "light", &head, Some("  ")).unwrap();
+    assert!(create_tag(a, "--evil", &head, None).is_err());
+    let kind = |t: &str| {
+        run_text(a, &["cat-file", "-t", t])
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    assert_eq!((kind("v1"), kind("light")), ("tag".into(), "commit".into()));
+    let msg = run_text(a, &["tag", "-l", "--format=%(contents)", "v1"]).unwrap();
+    assert!(msg.starts_with("First release\n\nNotes"), "{msg}");
+
+    push_with_tags(a, false, None).unwrap();
+    let there = remote_tags(a).unwrap();
+    assert_eq!(
+        (there.remote.as_str(), there.names.clone()),
+        ("origin", vec!["v1".to_string()])
+    );
+    assert_eq!(push_tags(a, &["light".into()]).unwrap(), "origin");
+    assert_eq!(remote_tags(a).unwrap().names, vec!["light", "v1"]);
+    delete_remote_tag(a, "light").unwrap();
+    assert_eq!(remote_tags(a).unwrap().names, vec!["v1"]);
+
+    // Undo takes the tag away and redo brings back the same tag object, message and all.
+    let object = rev(a, "refs/tags/v1");
+    step(&j, a, false).unwrap();
+    assert!(run(a, &["rev-parse", "--verify", "-q", "refs/tags/v1"]).is_err());
+    step(&j, a, true).unwrap();
+    assert_eq!(rev(a, "refs/tags/v1"), object);
+
+    j.record(a, Action::new("Delete tag v1", Mode::Keep), |r| {
+        delete_tag(r, "v1")
+    })
+    .unwrap();
+    assert!(!tags(a).unwrap().contains(&"v1".to_string()));
+    step(&j, a, false).unwrap();
+    assert_eq!(rev(a, "refs/tags/v1"), object);
+    // Moved outside the app since: no longer safe to undo or redo.
+    run(a, &["tag", "-f", "v1", "HEAD~1"]).unwrap();
+    assert!(j.view(a).redo_blocked.is_some());
 }
