@@ -395,6 +395,9 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   );
 }
 
+/** What the undo history covers; the empty history and the "Nothing to undo" toast both say it. */
+const UNDOABLE = "Commits, merges, pulls, discards, and branch and tag changes made in GitViber";
+
 /**
  * Undo and redo for the git actions taken in the app, with ⌘Z / ⇧⌘Z, and their history:
  * picking an entry undoes it and everything after it (or redoes up to it).
@@ -422,7 +425,7 @@ function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boolean })
     const blocked = forward ? journal?.redoBlocked : journal?.undoBlocked;
     const verb = forward ? "redo" : "undo";
     if (off) return;
-    if (!e) toast("info", `Nothing to ${verb}`, "Commits, merges, pulls, discards, and branch and tag changes made in GitViber can be undone.");
+    if (!e) toast("info", `Nothing to ${verb}`, `${UNDOABLE} can be undone.`);
     else if (blocked) toast("error", `Can't ${verb} ${e.label}`, blocked);
     else void go(forward, [e.id]);
   };
@@ -479,7 +482,7 @@ function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boolean })
         <DropdownMenuContent align="end" className="w-80">
           <DropdownMenuLabel>Undo history</DropdownMenuLabel>
           {!undos.length && !redos.length && (
-            <div className="px-2 py-1.5 text-[12px] text-muted-foreground">Commits, merges, pulls, and branch and tag changes you make in GitViber show up here, to undo and redo.</div>
+            <div className="px-2 py-1.5 text-[12px] text-muted-foreground">{UNDOABLE} show up here, to undo and redo.</div>
           )}
           {/* Furthest redo on top, so the list reads newest to oldest. */}
           {redos
