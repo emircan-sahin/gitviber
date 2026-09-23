@@ -21,9 +21,11 @@
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
         "visible": false,
+        "transparent": true,
         "backgroundColor": "#171718"
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; media-src blob:; frame-src blob:; worker-src 'self' blob:; connect-src ipc: http://ipc.localhost"
     }

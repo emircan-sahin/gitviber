@@ -1,5 +1,6 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { api } from "./api";
 import { cleanOverrides } from "./commands";
 import { useSyncExternalStore } from "react";
 
@@ -78,6 +79,8 @@ export interface Settings {
   darkVariant: "dark" | "dim";
   uiFont: UiFont;
   customUiFont: string;
+  /** macOS only: the desktop shows through the side surfaces, blurred. */
+  translucent: boolean;
   syntaxTheme: SyntaxTheme;
   lightSyntaxTheme: LightSyntaxTheme;
   sideBySide: boolean;
@@ -106,6 +109,7 @@ const DEFAULTS: Settings = {
   darkVariant: "dark",
   uiFont: "System",
   customUiFont: "",
+  translucent: false,
   syntaxTheme: "nord",
   lightSyntaxTheme: "github-light-default",
   sideBySide: false,
@@ -134,6 +138,7 @@ function load(): Settings {
     if (!["system", "light", "dark", "dim"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
     if (!["dark", "dim"].includes(s.darkVariant)) s.darkVariant = DEFAULTS.darkVariant;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
+    if (typeof s.translucent !== "boolean") s.translucent = DEFAULTS.translucent;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     s.keybindings = cleanOverrides(s.keybindings);
@@ -195,6 +200,19 @@ function applyScale() {
   }
 }
 
+/** Vibrancy is macOS's own; elsewhere the setting is hidden and never applied. */
+export const TRANSLUCENCY = navigator.userAgent.includes("Mac");
+
+// null: whatever an earlier page load (⌘R) left on the window, so the first run always sets it.
+let appliedTranslucent: boolean | null = null;
+function applyTranslucency() {
+  const on = TRANSLUCENCY && current.translucent;
+  document.documentElement.toggleAttribute("data-translucent", on);
+  if (on === appliedTranslucent) return;
+  appliedTranslucent = on;
+  api.setTranslucent(on).catch(() => {});
+}
+
 function applyUiFont() {
   document.documentElement.style.setProperty("--font-ui", uiFontFamily(current));
 }
@@ -204,12 +222,14 @@ function emit() {
   applyTheme();
   applyScale();
   applyUiFont();
+  applyTranslucency();
   listeners.forEach((l) => l());
 }
 
 applyTheme();
 applyScale();
 applyUiFont();
+applyTranslucency();
 systemDark.addEventListener("change", () => current.appearance === "system" && emit());
 
 export function updateSettings(patch: Partial<Settings>) {

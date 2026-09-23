@@ -10,6 +10,7 @@ mod pty;
 #[cfg(test)]
 mod scenario_tests;
 mod titlebar;
+mod vibrancy;
 mod watch;
 
 use journal::{Action, Mode};
@@ -1168,7 +1169,8 @@ pub fn run() {
             pty_spawn,
             pty_write,
             pty_resize,
-            pty_kill
+            pty_kill,
+            vibrancy::set_translucent
         ])
         .run(context)
         .expect("error while running GitViber");
