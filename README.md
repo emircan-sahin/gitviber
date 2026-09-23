@@ -76,7 +76,8 @@ Shortcuts without `⌘` are ignored while you type.
 | `⌘,` | Settings |
 | `⌘1` `⌘2` `⌘3` `⌘4` | Changes, History, PRs, Issues |
 | `J` `K` | Next / previous changed file |
-| `↓` `↑` `↵` | Move through the focused Changes list, `↵` keeps the tab open |
+| `↓` `↑` `↵` | Move through the focused list (Changes, History, PRs, Issues), `↵` keeps the tab open; `Home` `End` `PgUp` `PgDn` too |
+| `⇧F10` | The focused row's right-click menu |
 | `V` | Mark file viewed |
 | `S` `⌘⌫` | Stage or unstage, discard the open file |
 | `F7` `⇧F7`, `⌥↓` `⌥↑` | Next / previous change |

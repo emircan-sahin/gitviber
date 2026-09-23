@@ -20,10 +20,10 @@ export function matchesCommand(id: CommandId, e: KeyboardEvent): boolean {
 /** Focus is in the code view: Monaco's text area, read-only, so not typing (its find box is). */
 const inCodeView = (e: KeyboardEvent) => e.target instanceof HTMLElement && e.target.matches(".monaco-editor textarea.inputarea");
 
-/** Focus is somewhere that owns its keystrokes: text fields, menus, dialogs, pickers. */
+/** Focus is somewhere that owns its keystrokes: text fields, menus, dialogs, pickers (not the sidebar lists, see useListNav). */
 export function isTyping(e: KeyboardEvent) {
   const el = e.target instanceof HTMLElement ? e.target : null;
-  return !!el && !inCodeView(e) && (el.isContentEditable || !!el.closest("input,textarea,select,[role=menu],[role=listbox],[role=dialog]"));
+  return !!el && !inCodeView(e) && (el.isContentEditable || !!el.closest("input,textarea,select,[role=menu],[role=listbox]:not([data-list-nav]),[role=dialog]"));
 }
 
 /** Menu bar items that aren't key commands (lib.rs `menu`); they run through the same handlers. */
