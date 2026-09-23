@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { api, errorMessage, networkBusy, netOp } from "./api";
+import { api, CANCELLED, errorMessage, networkBusy, netOp } from "./api";
 import { useSettings } from "./settings";
 
 const FIRST_CHECK_MS = 5_000;
@@ -19,6 +19,7 @@ export function useBackgroundFetch(root: string, hasRemotes: boolean, refresh: (
     const check = async () => {
       if (running || networkBusy()) return;
       running = true;
+      const before = lastTry;
       try {
         const last = Math.max((await api.lastFetch()) ?? 0, lastTry);
         const now = Date.now() / 1000;
@@ -27,7 +28,9 @@ export function useBackgroundFetch(root: string, hasRemotes: boolean, refresh: (
         await api.fetch(netOp(undefined, true));
         await refresh();
       } catch (e) {
-        console.warn("Background fetch:", errorMessage(e));
+        // It gave way to something the user started: not a failed try, so the next check retries.
+        if (e === CANCELLED) lastTry = before;
+        else console.warn("Background fetch:", errorMessage(e));
       } finally {
         running = false;
       }

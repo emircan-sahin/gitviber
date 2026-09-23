@@ -2942,11 +2942,11 @@ pub fn last_fetch(repo: &Path) -> Option<u64> {
 }
 
 /// Fetches one configured remote, e.g. a fork's upstream.
-pub fn fetch_remote(repo: &Path, name: &str) -> Result<(), String> {
+pub fn fetch_remote(repo: &Path, name: &str, net: &Net) -> Result<(), String> {
     if remote_url(repo, name).is_none() {
         return Err(format!("no remote named {name}"));
     }
-    run_network(repo, &["fetch", "--prune", name], &Net::default()).map(|_| ())
+    run_network(repo, &["fetch", "--prune", name], net).map(|_| ())
 }
 
 /// Clones `url` into `parent/name` and returns that path. Never into a folder that already

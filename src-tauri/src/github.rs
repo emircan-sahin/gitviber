@@ -905,13 +905,18 @@ pub fn fetch_remote(session: &Session, repo: &Path, to: Option<&str>) -> Result<
 /// The remote for `original`, the fork's parent as the UI knows it from the account, fetched
 /// first if `fetch`; None when there is none yet. No GitHub call, so it works offline: it
 /// only finds and fetches a remote this repo already has.
-pub fn original_remote(repo: &Path, original: &str, fetch: bool) -> Result<Option<String>, String> {
+pub fn original_remote(
+    repo: &Path,
+    original: &str,
+    fetch: bool,
+    net: &Net,
+) -> Result<Option<String>, String> {
     let r = split_full(original).ok_or_else(|| format!("not a repository name: {original}"))?;
     let Some(name) = remote_for(repo, &r) else {
         return Ok(None);
     };
     if fetch {
-        git::fetch_remote(repo, &name)?;
+        git::fetch_remote(repo, &name, net)?;
     }
     Ok(Some(name))
 }
@@ -919,7 +924,12 @@ pub fn original_remote(repo: &Path, original: &str, fetch: bool) -> Result<Optio
 /// GitHub's "Sync fork": brings origin's `branch` up to date with the original's default
 /// branch, on GitHub, then fetches origin. Returns how: "fast-forward", "merge" or "none".
 /// A conflict comes back as GitHub's 409 message; that takes a local merge.
-pub fn sync_fork(session: &Session, repo: &Path, branch: &str) -> Result<String, String> {
+pub fn sync_fork(
+    session: &Session,
+    repo: &Path,
+    branch: &str,
+    net: &Net,
+) -> Result<String, String> {
     git::run(repo, &["check-ref-format", "--branch", branch])
         .map_err(|_| format!("invalid branch: {branch}"))?;
     let r = repo_ref(repo)?;
@@ -929,13 +939,13 @@ pub fn sync_fork(session: &Session, repo: &Path, branch: &str) -> Result<String,
         Method::Post(json!({ "branch": branch })),
         &format!("/repos/{}/{}/merge-upstream", r.owner, r.name),
     )?;
-    git::fetch_remote(repo, "origin")?;
+    git::fetch_remote(repo, "origin", net)?;
     Ok(v["merge_type"].as_str().unwrap_or("none").to_string())
 }
 
 /// Adds the fork's original as "upstream" (the usual name; "original" if that's taken),
 /// over the same protocol as origin, and fetches it.
-pub fn add_original_remote(session: &Session, repo: &Path) -> Result<String, String> {
+pub fn add_original_remote(session: &Session, repo: &Path, net: &Net) -> Result<String, String> {
     let (_, parent) = origin_names(session, repo)?;
     let r = parent.ok_or("origin is not a fork.")?;
     if let Some(name) = remote_for(repo, &r) {
@@ -954,10 +964,11 @@ pub fn add_original_remote(session: &Session, repo: &Path) -> Result<String, Str
     if git::run(repo, &["config", "--get", "remote.pushDefault"]).is_err() {
         git::set_push_default(repo, "origin")?;
     }
-    git::fetch_remote(repo, name)?;
+    git::fetch_remote(repo, name, net)?;
     Ok(name.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn files(
     session: &Session,
     repo: &Path,
@@ -966,6 +977,7 @@ pub fn files(
     base_ref: &str,
     base_sha: &str,
     head_sha: &str,
+    net: &Net,
 ) -> Result<PullFiles, String> {
     let have =
         |sha: &str| git::run(repo, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_ok();
@@ -979,7 +991,7 @@ pub fn files(
                 format!("pull/{number}/head"),
                 format!("refs/heads/{base_ref}"),
             ],
-            &Net::default(),
+            net,
         )?;
     }
     let base = git::merge_base(repo, base_sha, head_sha)?;
@@ -1701,7 +1713,7 @@ mod tests {
         }
         // Anything but origin and its parent is refused, whatever the token could reach.
         assert!(list(&session, repo, Some("torvalds/linux"), "open", 1).is_err());
-        let remote = original_remote(repo, &up, false).unwrap();
+        let remote = original_remote(repo, &up, false, &Net::default()).unwrap();
         println!("original remote: {remote:?}");
         if let Some(r) = remote {
             let branch = parent.default_branch.unwrap_or_else(|| "main".into());
@@ -1768,6 +1780,7 @@ mod tests {
             &d.pull.base_ref,
             &d.pull.base_sha,
             &d.pull.head_sha,
+            &Net::default(),
         )
         .unwrap();
         println!(

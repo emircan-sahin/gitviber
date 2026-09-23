@@ -578,8 +578,9 @@ export const github = {
   detail: (target: Target, number: number) => invoke<PullDetail>("pr_detail", { target, number }),
   /** Signed image links for a private repo's attachments, by attachment id. */
   attachments: (target: Target, number: number) => invoke<Record<string, string>>("pr_attachments", { target, number }),
-  files: (target: Target, p: Pick<Pull, "number" | "baseRef" | "baseSha" | "headSha">) =>
-    invoke<PullFiles>("pr_files", { target, number: p.number, baseRef: p.baseRef, baseSha: p.baseSha, headSha: p.headSha }),
+  /** Fetches the PR's commits first when they're missing. */
+  files: (target: Target, p: Pick<Pull, "number" | "baseRef" | "baseSha" | "headSha">, op?: NetOp) =>
+    network<PullFiles>("pr_files", { target, number: p.number, baseRef: p.baseRef, baseSha: p.baseSha, headSha: p.headSha }, op),
   /** Into the parent, `head` is a branch of origin's, and `maintainerEdits` lets its maintainers push to it. */
   create: (target: Target, title: string, body: string, head: string, base: string, draft: boolean, maintainerEdits = true) =>
     invoke<Pull>("pr_create", { target, title, body, head, base, draft, maintainerEdits }),
@@ -590,13 +591,14 @@ export const github = {
   checkout: (target: Target, number: number, headRef: string, sameRepo: boolean, op?: NetOp) => network<void>("pr_checkout", { target, number, headRef, sameRepo }, op),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   /** The remote for a fork's original, owner/name (fetched first if `fetch`); null when there is none. Works offline. */
-  originalRemote: (original: string, fetch: boolean) => invoke<string | null>("gh_original_remote", { original, fetch }),
+  // Without `fetch` it's a local lookup: marked background, so it doesn't stop a background fetch.
+  originalRemote: (original: string, fetch: boolean, op = netOp(undefined, !fetch)) => network<string | null>("gh_original_remote", { original, fetch }, op),
   /** This repo's remotes and the GitHub repositories (owner/name) behind them. Local only. */
   remotes: () => invoke<{ name: string; repo: string | null }[]>("gh_remotes"),
   /** GitHub's "Sync fork" for origin's `branch`, then a fetch of origin: "fast-forward", "merge" or "none". */
-  syncFork: (branch: string) => invoke<"fast-forward" | "merge" | "none">("gh_sync_fork", { branch }),
+  syncFork: (branch: string, op?: NetOp) => network<"fast-forward" | "merge" | "none">("gh_sync_fork", { branch }, op),
   /** Adds the fork's original as a remote ("upstream") and fetches it; returns its name. */
-  addOriginalRemote: () => invoke<string>("gh_add_original_remote"),
+  addOriginalRemote: (op?: NetOp) => network<string>("gh_add_original_remote", {}, op),
 };
 
 export interface IssueLabel {
