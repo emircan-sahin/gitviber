@@ -44,6 +44,7 @@ import { useCommands, useShortcut } from "@/lib/keybindings";
 import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
 import { useNetActivity, withNetActivity } from "@/lib/netActivity";
+import { forgetRemoteTags } from "@/lib/remoteTags";
 import { tracked, travel, undoAction } from "@/lib/undo";
 import type { RepoData } from "@/lib/useRepo";
 import { cn, relativeTime } from "@/lib/utils";
@@ -208,6 +209,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
           if (!ok) throw e;
           await api.push(true, undefined, op, tags);
         }
+        if (tags) forgetRemoteTags();
       },
       tags ? "Pushed with tags" : "Pushed",
     );
@@ -354,7 +356,9 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
             primary={pushAhead !== 0}
             disabled={!!busy}
             onPush={push}
-            onPushTags={(names, remote) => runNet("Push tags", async (op) => void (await api.pushTags(names, op)), `Pushed ${names.length === 1 ? names[0] : `${names.length} tags`} to ${remote}`)}
+            onPushTags={(names, remote) =>
+              runNet("Push tags", (op) => api.pushTags(names, op).then(forgetRemoteTags), `Pushed ${names.length === 1 ? names[0] : `${names.length} tags`} to ${remote}`)
+            }
           />
         </div>
       ) : (

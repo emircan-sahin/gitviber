@@ -898,9 +898,14 @@ async fn delete_remote_tag(
 }
 
 #[tauri::command]
-async fn remote_tags(state: State<'_, AppState>) -> Res<git::RemoteTags> {
+async fn remote_tags(
+    state: State<'_, AppState>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<git::RemoteTags> {
     let r = repo(&state)?;
-    blocking(move || git::remote_tags(&r)).await
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::remote_tags(&r, &net)).await
 }
 
 // ---------------------------------------------------------------- undo / redo

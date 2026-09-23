@@ -2183,7 +2183,7 @@ fn annotated_tags_push_and_undo() {
     assert!(msg.starts_with("First release\n\nNotes"), "{msg}");
 
     push_with_tags(a, false, None, &Net::default()).unwrap();
-    let there = remote_tags(a).unwrap();
+    let there = remote_tags(a, &Net::default()).unwrap();
     assert_eq!(
         (there.remote.as_str(), there.names.clone()),
         ("origin", vec!["v1".to_string()])
@@ -2192,9 +2192,12 @@ fn annotated_tags_push_and_undo() {
         push_tags(a, &["light".into()], &Net::default()).unwrap(),
         "origin"
     );
-    assert_eq!(remote_tags(a).unwrap().names, vec!["light", "v1"]);
+    assert_eq!(
+        remote_tags(a, &Net::default()).unwrap().names,
+        vec!["light", "v1"]
+    );
     delete_remote_tag(a, "light", &Net::default()).unwrap();
-    assert_eq!(remote_tags(a).unwrap().names, vec!["v1"]);
+    assert_eq!(remote_tags(a, &Net::default()).unwrap().names, vec!["v1"]);
 
     // Undo takes the tag away and redo brings back the same tag object, message and all.
     let object = rev(a, "refs/tags/v1");

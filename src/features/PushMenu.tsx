@@ -1,8 +1,9 @@
 import { ChevronDown, Tag, UploadCloud } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { api, errorMessage } from "@/lib/api";
+import { remoteTags } from "@/lib/remoteTags";
 
 type Unpushed = { remote: string; tags: string[] } | { error: string } | null;
 
@@ -12,15 +13,20 @@ type Unpushed = { remote: string; tags: string[] } | { error: string } | null;
  */
 export function PushMenu({ primary, disabled, onPush, onPushTags }: { primary: boolean; disabled: boolean; onPush: (tags: boolean) => void; onPushTags: (names: string[], remote: string) => void }) {
   const [unpushed, setUnpushed] = useState<Unpushed>(null);
+  // Only the latest opening's answer is shown; a slower earlier one arrives out of order.
+  const asked = useRef(0);
   const check = async () => {
+    const id = ++asked.current;
     setUnpushed(null);
+    let next: Unpushed;
     try {
-      const [local, there] = await Promise.all([api.tags(), api.remoteTags()]);
+      const [local, there] = await Promise.all([api.tags(), remoteTags()]);
       const have = new Set(there.names);
-      setUnpushed({ remote: there.remote, tags: local.filter((t) => !have.has(t)) });
+      next = { remote: there.remote, tags: local.filter((t) => !have.has(t)) };
     } catch (e) {
-      setUnpushed({ error: errorMessage(e) });
+      next = { error: errorMessage(e) };
     }
+    if (id === asked.current) setUnpushed(next);
   };
   const shown = (tags: string[]) => tags.slice(0, 3).join(", ") + (tags.length > 3 ? ` +${tags.length - 3}` : "");
   return (
@@ -43,9 +49,7 @@ export function PushMenu({ primary, disabled, onPush, onPushTags }: { primary: b
         {!unpushed ? (
           <div className="px-2 py-1.5 text-[12px] text-muted-foreground">Checking the remote…</div>
         ) : "error" in unpushed ? (
-          <div className="px-2 py-1.5 text-[12px] text-muted-foreground" title={unpushed.error}>
-            Couldn't reach the remote to compare tags.
-          </div>
+          <div className="px-2 py-1.5 text-[12px] text-muted-foreground">Couldn't compare tags with the remote: {unpushed.error}</div>
         ) : unpushed.tags.length ? (
           <DropdownMenuItem onSelect={() => onPushTags(unpushed.tags, unpushed.remote)}>
             <Tag />

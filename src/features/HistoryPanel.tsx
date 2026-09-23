@@ -17,8 +17,9 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
+import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type RemoteTags, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
 import { withNetActivity } from "@/lib/netActivity";
+import { forgetRemoteTags, remoteTags } from "@/lib/remoteTags";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
@@ -211,10 +212,10 @@ const copy = (text: string, what: string) =>
   );
 
 /** The remote tags are pushed to and the ones it has, while asking it, or why that failed. */
-type RemoteTags = { remote: string; names: string[] } | { error: string } | "loading" | null;
+type TagsThere = RemoteTags | { error: string } | "loading" | null;
 
 /** A tag on a commit: push it, delete it here or on the remote. */
-function TagMenu({ tag, remote, onOpen, actions }: { tag: string; remote: RemoteTags; onOpen: () => void; actions: Actions }) {
+function TagMenu({ tag, remote, onOpen, actions }: { tag: string; remote: TagsThere; onOpen: () => void; actions: Actions }) {
   const { locked, run } = actions;
   const known = remote && typeof remote === "object" && "names" in remote ? remote : null;
   const there = known?.names.includes(tag);
@@ -225,7 +226,7 @@ function TagMenu({ tag, remote, onOpen, actions }: { tag: string; remote: Remote
       kind: "warning",
       okLabel: "Delete",
     });
-    if (ok) await run("Delete remote tag", () => withNetActivity("Delete remote tag", async (op) => void (await api.deleteRemoteTag(tag, op))), `Deleted ${tag} from ${where}`);
+    if (ok) await run("Delete remote tag", () => withNetActivity("Delete remote tag", (op) => api.deleteRemoteTag(tag, op).then(forgetRemoteTags)), `Deleted ${tag} from ${where}`);
   };
   return (
     <ContextMenuSub onOpenChange={(o) => o && onOpen()}>
@@ -234,9 +235,9 @@ function TagMenu({ tag, remote, onOpen, actions }: { tag: string; remote: Remote
       </ContextMenuSubTrigger>
       <ContextMenuSubContent>
         <ContextMenuLabel className="normal-case">
-          {remote === "loading" || remote === null ? "Checking the remote…" : known ? (there ? `On ${where}` : `Not on ${where} yet`) : "Couldn't reach the remote"}
+          {remote === "loading" || remote === null ? "Checking the remote…" : known ? (there ? `On ${where}` : `Not on ${where} yet`) : `Couldn't ask the remote: ${"error" in remote ? remote.error : ""}`}
         </ContextMenuLabel>
-        <ContextMenuItem disabled={there} onSelect={() => run("Push tag", () => withNetActivity("Push tag", async (op) => void (await api.pushTags([tag], op))), `Pushed tag ${tag}`)}>
+        <ContextMenuItem disabled={there} onSelect={() => run("Push tag", () => withNetActivity("Push tag", (op) => api.pushTags([tag], op).then(forgetRemoteTags)), `Pushed tag ${tag}`)}>
           <UploadCloud /> Push tag{known ? ` to ${where}` : ""}
         </ContextMenuItem>
         <ContextMenuItem disabled={locked} onSelect={() => run("Delete tag", () => api.deleteTag(tag), `Deleted tag ${tag}`)}>
@@ -288,13 +289,16 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
     if (ok) await run("Checkout", () => api.checkoutCommit(c.sha), `Checked out ${short}`);
   };
 
-  // Which tags the remote has, asked each time a tag's submenu opens: a push since changes it.
+  // Which tags the remote has, asked when a tag's submenu opens (reused for a few seconds).
+  // Only the latest opening's answer is shown.
   const tags = c.refs.filter((r) => r.startsWith("tag: ")).map((r) => r.slice(5));
-  const [remote, setRemote] = useState<RemoteTags>(null);
+  const [remote, setRemote] = useState<TagsThere>(null);
+  const asked = useRef(0);
   const checkRemote = () => {
-    if (remote === "loading") return;
+    const id = ++asked.current;
     setRemote("loading");
-    api.remoteTags().then(setRemote, (e) => setRemote({ error: errorMessage(e) }));
+    const show = (r: TagsThere) => id === asked.current && setRemote(r);
+    remoteTags().then(show, (e) => show({ error: errorMessage(e) }));
   };
 
   // Set by the naming items: focus going back to the row would steal it from the name dialog.
