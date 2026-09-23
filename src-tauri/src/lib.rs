@@ -119,9 +119,24 @@ async fn log(
     rev: Option<String>,
     skip: u32,
     limit: u32,
+    filter: Option<git::LogFilter>,
 ) -> Res<Vec<git::Commit>> {
     let r = repo(&state)?;
-    blocking(move || git::log(&r, rev.as_deref(), skip, limit)).await
+    let filter = filter.unwrap_or_default();
+    blocking(move || {
+        // Only pathspecs, but the rule holds: no path from the frontend reaches outside the repo.
+        for p in &filter.paths {
+            fs::resolve(&r, p)?;
+        }
+        git::log_filtered(&r, rev.as_deref(), skip, limit, &filter)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn find_commit(state: State<'_, AppState>, sha: String) -> Res<Option<git::Commit>> {
+    let r = repo(&state)?;
+    blocking(move || git::find_commit(&r, &sha)).await
 }
 
 #[tauri::command]
@@ -1099,6 +1114,7 @@ pub fn run() {
             open_repo,
             status,
             log,
+            find_commit,
             commit_files,
             diff_pair,
             media,

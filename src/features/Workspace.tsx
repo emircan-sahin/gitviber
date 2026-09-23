@@ -20,7 +20,7 @@ import { cn } from "@/lib/utils";
 import { openAbout, useAbout } from "./AboutDialog";
 import { ChangesPanel, changeList } from "./ChangesPanel";
 import { FileTree, type FileTreeHandle } from "./FileTree";
-import { ForkHistory } from "./ForkHistory";
+import { SearchableHistory } from "./HistorySearch";
 import { IssuesPanel } from "./IssuesPanel";
 import { PullsPanel } from "./PullsPanel";
 import { TerminalPanel, TerminalRestoreOffer, useTerminalSetup } from "./TerminalPanel";
@@ -74,6 +74,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const s = useSettings();
   const [saved] = useState(() => loadWorkspace(root));
   const [listTab, setListTab] = useState<ListTab>(() => LIST_TABS.find((t) => t === saved?.listTab) ?? "changes");
+  // Here, not in History: the search outlives a switch to another list.
+  const [historyQuery, setHistoryQuery] = useState("");
+  const [searchFocus, setSearchFocus] = useState(0);
   // Tabs and the active key change together, so they live in one state (no nested updates).
   const [tabState, setTabState] = useState<{ tabs: Tab[]; active: string | null }>(() => ({ tabs: saved?.tabs ?? [], active: saved?.active ?? null }));
   const { tabs, active: activeKey } = tabState;
@@ -285,6 +288,11 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.history": () => setListTab("history"),
     "view.pulls": () => setListTab("pulls"),
     "view.issues": () => setListTab("issues"),
+    "history.search": () => {
+      setListTab("history");
+      listPanel.current?.expand();
+      setSearchFocus((n) => n + 1);
+    },
     "view.toggleGitPanel": () => toggle(listPanel),
     "view.toggleExplorer": () => toggle(filesPanel),
     "view.showExplorer": () => filesPanel.current?.expand(),
@@ -356,7 +364,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 )}
                 {listTab === "issues" && <IssuesPanel activeKey={activeKey} onOpen={open} />}
                 {listTab === "history" && (
-                  <ForkHistory
+                  <SearchableHistory
+                    query={historyQuery}
+                    onQuery={setHistoryQuery}
+                    focusRequest={searchFocus}
                     commits={repo.commits}
                     branches={repo.branches}
                     status={status}

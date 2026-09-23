@@ -2,7 +2,7 @@
 //! user's config, hooks, credential helpers and signing all behave exactly like the
 //! terminal — GitViber never keeps state of its own inside the repo.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -871,10 +871,66 @@ pub struct Commit {
     pub on_origin: bool,
     /// Logging another branch: this commit isn't in HEAD yet, so merging would bring it in.
     pub not_in_head: bool,
+    /// A followed file's history: its path in this commit (it may have been renamed since).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
-/// HEAD's history, or `rev`'s: a remote-tracking branch such as a fork's upstream/main.
+/// History search. Every part narrows the list: messages must contain every `grep` (any
+/// case, as typed, not a regex), and a commit must match an `author`, add or remove `code`
+/// (`-S`), and touch one of `paths`.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LogFilter {
+    pub grep: Vec<String>,
+    pub author: Vec<String>,
+    pub code: Option<String>,
+    pub paths: Vec<String>,
+    /// Follow a single file's `paths` entry through renames.
+    pub follow: bool,
+}
+
+impl LogFilter {
+    fn follows(&self) -> bool {
+        self.follow && self.paths.len() == 1
+    }
+
+    /// Options for `git log`, before the revisions. Values are glued to their flags, so none
+    /// can be read as an option of its own.
+    fn args(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.grep.iter().map(|g| format!("--grep={g}")).collect();
+        out.extend(self.author.iter().map(|a| format!("--author={a}")));
+        if !out.is_empty() {
+            out.extend(["--regexp-ignore-case".into(), "--fixed-strings".into()]);
+        }
+        if self.grep.len() > 1 {
+            out.push("--all-match".into());
+        }
+        if let Some(code) = self.code.as_deref().filter(|c| !c.is_empty()) {
+            out.push(format!("-S{code}"));
+        }
+        if self.follows() {
+            out.push("--follow".into());
+        }
+        out
+    }
+}
+
+/// `log_filtered` with no filter, as the tests read history.
+#[cfg(test)]
 pub fn log(repo: &Path, rev: Option<&str>, skip: u32, limit: u32) -> Result<Vec<Commit>, String> {
+    log_filtered(repo, rev, skip, limit, &LogFilter::default())
+}
+
+/// HEAD's history, or `rev`'s (a remote-tracking branch such as a fork's upstream/main),
+/// narrowed to the commits `filter` matches.
+pub fn log_filtered(
+    repo: &Path,
+    rev: Option<&str>,
+    skip: u32,
+    limit: u32,
+    filter: &LogFilter,
+) -> Result<Vec<Commit>, String> {
     if !has_head(repo) {
         return Ok(vec![]);
     }
@@ -890,51 +946,110 @@ pub fn log(repo: &Path, rev: Option<&str>, skip: u32, limit: u32) -> Result<Vec<
         }
         None => "HEAD".to_string(),
     };
+    commits(
+        repo,
+        &tip,
+        rev.is_none(),
+        rev.is_some(),
+        skip,
+        limit,
+        filter,
+    )
+}
+
+/// The commit a SHA (or a prefix of one) names, wherever it is: a pasted SHA goes first in a search.
+pub fn find_commit(repo: &Path, sha: &str) -> Result<Option<Commit>, String> {
+    if validate_rev(sha).is_err() || sha.len() > 40 || !has_head(repo) {
+        return Ok(None);
+    }
+    // Unknown, or a prefix of several: no commit, not an error.
+    let Ok(full) = run_text(
+        repo,
+        &["rev-parse", "--verify", "-q", &format!("{sha}^{{commit}}")],
+    ) else {
+        return Ok(None);
+    };
+    let found = commits(repo, full.trim(), true, true, 0, 1, &LogFilter::default())?;
+    Ok(found.into_iter().next())
+}
+
+/// `limit` commits of `tip`'s history after `skip`. `mark_unpushed` / `mark_not_in_head`: work
+/// out those flags (HEAD's own history is all in HEAD; another branch's is never unpushed).
+fn commits(
+    repo: &Path,
+    tip: &str,
+    mark_unpushed: bool,
+    mark_not_in_head: bool,
+    skip: u32,
+    limit: u32,
+    filter: &LogFilter,
+) -> Result<Vec<Commit>, String> {
     let lines = |s: String| -> std::collections::HashSet<String> {
         s.lines().map(str::to_string).collect()
     };
-    let unpushed = if rev.is_none() {
+    let unpushed = if mark_unpushed {
         run_text(repo, &["rev-list", &format!("{}..HEAD", pushed_base(repo))])
             .map(lines)
             .unwrap_or_default()
     } else {
         Default::default()
     };
-    // rev-list keeps log order, so the first skip+limit entries cover this page. No origin
-    // refs at all means nothing is on origin; skip the walk, it would list the whole history.
+    let filter_args = filter.args();
+    let mut paths: Vec<&str> = vec!["--"];
+    paths.extend(filter.paths.iter().map(String::as_str));
+    // Of `tip`'s matching commits, the ones not reachable from `not`. Log order is the same
+    // with or without `--not`, so the first skip+limit of them cover this page. A search
+    // goes through the same filter: its page can sit anywhere in the full history.
+    let outside = |not: &str| -> Result<std::collections::HashSet<String>, String> {
+        let n = format!("-n{}", skip + limit);
+        let mut args = vec!["log", "--format=%H", &n];
+        args.extend(filter_args.iter().map(String::as_str));
+        args.extend([tip, "--not", not]);
+        args.extend(&paths);
+        run_text(repo, &args).map(lines)
+    };
+    // No origin refs at all means nothing is on origin; skip the walk, it would list the whole history.
     let has_origin = run_text(repo, &["for-each-ref", "--count=1", "refs/remotes/origin"])
         .is_ok_and(|s| !s.trim().is_empty());
     let off_origin = if has_origin {
-        let n = format!("-n{}", skip + limit);
-        Some(run_text(repo, &["rev-list", &n, &tip, "--not", "--remotes=origin"]).map(lines)?)
+        Some(outside("--remotes=origin")?)
     } else {
         None
     };
-    let not_in_head = if rev.is_some() {
-        let n = format!("-n{}", skip + limit);
-        run_text(repo, &["rev-list", &n, &tip, "--not", "HEAD"]).map(lines)?
+    let not_in_head = if mark_not_in_head {
+        outside("HEAD")?
     } else {
         Default::default()
     };
 
-    let skip = format!("--skip={skip}");
-    let limit = format!("-n{limit}");
-    let raw = run_text(
-        repo,
-        &[
-            "log",
-            &skip,
-            &limit,
-            "--format=%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%P%x1f%D%x1f%s%x1f%b%x1e",
-            &tip,
-            "--",
-        ],
-    )?;
+    // git skips before `-S` and `--follow` drop commits, so --skip would pass over commits that
+    // don't match too (-n counts only matches): skip those here instead.
+    let skip_here = if filter.code.is_some() || filter.follows() {
+        skip as usize
+    } else {
+        0
+    };
+    let skip_arg = format!("--skip={}", skip as usize - skip_here);
+    let limit = format!("-n{}", limit as usize + skip_here);
+    // Records start with \x1e so that `--name-only`'s file list (after the format) stays in its own.
+    let mut args = vec![
+        "log",
+        &skip_arg,
+        &limit,
+        "--format=%x1e%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%P%x1f%D%x1f%s%x1f%b%x1f",
+    ];
+    if filter.follows() {
+        args.push("--name-only");
+    }
+    args.extend(filter_args.iter().map(String::as_str));
+    args.push(tip);
+    args.extend(&paths);
+    let raw = run_text(repo, &args)?;
     Ok(raw
         .split('\x1e')
         .filter_map(|rec| {
-            let f: Vec<&str> = rec.trim_start_matches('\n').split('\x1f').collect();
-            if f.len() < 9 {
+            let f: Vec<&str> = rec.split('\x1f').collect();
+            if f.len() < 10 {
                 return None;
             }
             Some(Commit {
@@ -954,8 +1069,13 @@ pub fn log(repo: &Path, rev: Option<&str>, skip: u32, limit: u32) -> Result<Vec<
                 unpushed: unpushed.contains(f[0]),
                 on_origin: off_origin.as_ref().is_some_and(|off| !off.contains(f[0])),
                 not_in_head: not_in_head.contains(f[0]),
+                file: filter
+                    .follows()
+                    .then(|| f[9].lines().find(|l| !l.is_empty()).map(str::to_string))
+                    .flatten(),
             })
         })
+        .skip(skip_here)
         .collect())
 }
 

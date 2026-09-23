@@ -38,6 +38,8 @@ interface Props {
   headSha?: string;
   /** Where these commits live on GitHub, when that's not origin: a fork's original has them all. */
   web?: string;
+  /** What an empty list says. */
+  empty?: string;
 }
 
 /** What a commit's context menu needs from the panel. */
@@ -58,7 +60,7 @@ interface Actions {
 const commitUrl = (c: Commit, { webUrl, everyOnWeb }: Pick<Actions, "webUrl" | "everyOnWeb">) =>
   webUrl && (c.onOrigin || everyOnWeb) ? `${webUrl}/commit/${c.sha}` : undefined;
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web }: Props) {
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet." }: Props) {
   const [open, setOpen] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ el: HTMLElement; top: number } | null>(null);
@@ -112,7 +114,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
   };
 
   if (!commits.length) {
-    return <div className="px-6 pt-20 text-center text-[12px] text-subtle">No commits yet.</div>;
+    return <div className="px-6 pt-20 text-center text-[12px] text-subtle">{empty}</div>;
   }
 
   return (

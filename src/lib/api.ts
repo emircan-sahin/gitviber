@@ -93,6 +93,20 @@ export interface Commit {
   onOrigin: boolean;
   /** Logging another branch: not in HEAD yet, so merging would bring it in. */
   notInHead: boolean;
+  /** A followed file's history: its path in this commit (it may have been renamed since). */
+  file?: string;
+}
+
+/** History search (git.rs `LogFilter`): every part narrows the list. */
+export interface LogFilter {
+  /** Words the message must all contain, any case, as typed. */
+  grep: string[];
+  author: string[];
+  /** Added or removed text (`git log -S`). */
+  code: string | null;
+  paths: string[];
+  /** Follow a single path through renames (a file's history). */
+  follow: boolean;
 }
 
 export interface FileText {
@@ -184,7 +198,9 @@ export const api = {
   status: () => invoke<RepoStatus>("status"),
   about: () => invoke<About>("about"),
   /** HEAD's history, or `rev`'s: a remote-tracking branch (refs/remotes/…), e.g. a fork's original. */
-  log: (skip: number, limit: number, rev: string | null = null) => invoke<Commit[]>("log", { rev, skip, limit }),
+  log: (skip: number, limit: number, rev: string | null = null, filter: LogFilter | null = null) => invoke<Commit[]>("log", { rev, skip, limit, filter }),
+  /** The commit a SHA or SHA prefix names, if exactly one. */
+  findCommit: (sha: string) => invoke<Commit | null>("find_commit", { sha }),
   commitFiles: (sha: string) => invoke<FileChange[]>("commit_files", { sha }),
   diffPair: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null = null) =>
     invoke<DiffPair>("diff_pair", { kind, path, oldPath, sha, base }),

@@ -232,6 +232,103 @@ fn log_of_a_remote_branch_marks_what_head_lacks() {
     assert!(log(b, Some("refs/remotes/--output=x/y"), 0, 10).is_err());
 }
 
+/// History search: words, author, pickaxe, a path, a file followed through a rename, a SHA.
+#[test]
+fn log_search_narrows_and_pages() {
+    let sb = Sandbox::new("logsearch");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    write_commit(
+        a,
+        "src/auth.rs",
+        "fn login() {}\n",
+        "Fix auth (login) [urgent]",
+    );
+    run(a, &["push", "-q"]).unwrap();
+    write_commit(
+        a,
+        "src/auth.rs",
+        "fn login() {}\nfn logout() {}\n",
+        "Add logout",
+    );
+    run(a, &["mv", "src/auth.rs", "src/session.rs"]).unwrap();
+    commit(a, "Rename auth to session", false).unwrap();
+    run(
+        a,
+        &[
+            "-c",
+            "user.name=Other",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "Tidy",
+        ],
+    )
+    .unwrap();
+
+    let subjects = |f: &LogFilter| -> Vec<String> {
+        let log = log_filtered(a, None, 0, 50, f).unwrap();
+        log.into_iter().map(|c| c.subject).collect()
+    };
+    // Regex characters are taken as typed, case is ignored, and every word must match.
+    let words = |w: &[&str]| LogFilter {
+        grep: w.iter().map(|s| s.to_string()).collect(),
+        ..Default::default()
+    };
+    assert_eq!(
+        subjects(&words(&["(LOGIN) [urgent"])),
+        ["Fix auth (login) [urgent]"]
+    );
+    assert_eq!(
+        subjects(&words(&["auth", "rename"])),
+        ["Rename auth to session"]
+    );
+    let author = LogFilter {
+        author: vec!["other".into()],
+        ..Default::default()
+    };
+    assert_eq!(subjects(&author), ["Tidy"]);
+    let code = LogFilter {
+        code: Some("logout".into()),
+        ..Default::default()
+    };
+    assert_eq!(subjects(&code), ["Add logout"]);
+
+    // A path alone stops at the rename; followed, it goes on under the old name.
+    let mut path = LogFilter {
+        paths: vec!["src/session.rs".into()],
+        ..Default::default()
+    };
+    assert_eq!(subjects(&path), ["Rename auth to session"]);
+    path.follow = true;
+    let followed = log_filtered(a, None, 0, 50, &path).unwrap();
+    let files: Vec<_> = followed.iter().map(|c| c.file.as_deref()).collect();
+    assert_eq!(
+        files,
+        [
+            Some("src/session.rs"),
+            Some("src/auth.rs"),
+            Some("src/auth.rs")
+        ]
+    );
+    // The flags hold deep in a filtered history: only the first auth commit was pushed.
+    assert!(followed[1].unpushed && !followed[1].on_origin);
+    assert!(!followed[2].unpushed && followed[2].on_origin);
+    // Pages are pages of the matches (git's own --skip counts every commit with -S or --follow).
+    assert!(log_filtered(a, None, 1, 1, &code).unwrap().is_empty());
+    assert_eq!(
+        log_filtered(a, None, 1, 1, &path).unwrap()[0].subject,
+        "Add logout"
+    );
+
+    // A SHA prefix finds its commit; unknown or malformed ones find nothing.
+    let head = log(a, None, 0, 1).unwrap()[0].sha.clone();
+    assert_eq!(find_commit(a, &head[..8]).unwrap().unwrap().sha, head);
+    assert!(find_commit(a, "0000000").unwrap().is_none());
+    assert!(find_commit(a, "--all").unwrap().is_none());
+}
+
 #[test]
 fn pull_rebase_conflict_then_abort_restores() {
     let sb = Sandbox::new("pullrb");
