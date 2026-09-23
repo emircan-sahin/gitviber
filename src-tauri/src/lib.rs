@@ -625,10 +625,21 @@ async fn gh_protected_branches(app: AppHandle) -> Res<Vec<String>> {
 }
 
 #[tauri::command]
-async fn pr_list(app: AppHandle, target: Option<String>, filter: String) -> Res<Vec<github::Pull>> {
+async fn pr_list(
+    app: AppHandle,
+    target: Option<String>,
+    filter: String,
+    pages: usize,
+) -> Res<Vec<github::Pull>> {
     blocking(move || {
         let state = app.state::<AppState>();
-        github::list(&state.github, &repo(&state)?, target.as_deref(), &filter)
+        github::list(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            &filter,
+            pages,
+        )
     })
     .await
 }

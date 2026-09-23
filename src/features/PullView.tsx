@@ -193,8 +193,9 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
 
         {d && p.state === "open" && <MergeBox detail={d} busy={!!busy} canMerge={!!access?.push} canResolve={canResolve} onMerge={merge} onResolve={resolveLocally} />}
 
-        {d && d.checks.length > 0 && (
-          <Section title="Checks" aside={checkSummary(d.checks)}>
+        {d && (d.checks.length > 0 || d.checksError) && (
+          <Section title="Checks" aside={d.checks.length > 0 ? checkSummary(d.checks) : undefined}>
+            {d.checksError && <div className="px-3 py-2 text-[12px] text-removed">Could not load all checks: {d.checksError}</div>}
             {d.checks.map((c, i) => (
               <div key={`${c.name}${i}`} className="flex h-7 items-center gap-2 px-3 text-[12px]">
                 <CheckIcon state={c.state} />

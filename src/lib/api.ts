@@ -339,6 +339,8 @@ export interface PullDetail extends Pull {
   mergeable: boolean | null;
   mergeableState: string;
   checks: PullCheck[];
+  /** Checks couldn't be read (a token without access to them, say); `checks` is then partial. */
+  checksError: string | null;
   comments: PullComment[];
   /** Who closed it, if closed: an author may reopen only what they closed themselves. */
   closedBy: string | null;
@@ -356,11 +358,15 @@ export type ReviewEvent = "APPROVE" | "REQUEST_CHANGES" | "COMMENT";
 /** Backend's marker for "no GitHub credentials found" (show setup, not an error). */
 export const GITHUB_NOT_CONNECTED = "github:not-connected";
 
+/** A page of the PR list (github.rs `PER_PAGE`). */
+export const PR_PAGE = 100;
+
 export const github = {
   account: () => invoke<GitHubAccount>("gh_account"),
   /** Origin's branches under branch protection (names without "origin/"). */
   protectedBranches: () => invoke<string[]>("gh_protected_branches"),
-  list: (target: Target, filter: "open" | "closed" | "all") => invoke<Pull[]>("pr_list", { target, filter }),
+  /** The most recently updated `pages` × PR_PAGE. */
+  list: (target: Target, filter: "open" | "closed" | "all", pages = 1) => invoke<Pull[]>("pr_list", { target, filter, pages }),
   detail: (target: Target, number: number) => invoke<PullDetail>("pr_detail", { target, number }),
   /** Signed image links for a private repo's attachments, by attachment id. */
   attachments: (target: Target, number: number) => invoke<Record<string, string>>("pr_attachments", { target, number }),
