@@ -44,6 +44,8 @@ const asCommit = (s: Stash, sha: string): Commit => ({
   authorName: s.author,
   authorEmail: "",
   timestamp: s.timestamp,
+  committerName: s.author,
+  committedAt: s.timestamp,
   parents: [],
   refs: [],
   subject: describe(s).text,

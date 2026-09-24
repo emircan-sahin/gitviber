@@ -82,7 +82,11 @@ export interface Commit {
   shortSha: string;
   authorName: string;
   authorEmail: string;
+  /** When it was written (author date). */
   timestamp: number;
+  /** Who put it on the branch, and when: a rebase, cherry-pick or amend moves this, not `timestamp`. */
+  committerName: string;
+  committedAt: number;
   parents: string[];
   refs: string[];
   subject: string;

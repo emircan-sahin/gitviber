@@ -611,6 +611,16 @@ function CommitBar({ commit, url }: { commit: import("@/lib/api").Commit; url?: 
           <span>{commit.authorName}</span>
           <span className="text-subtle">·</span>
           <span title={new Date(commit.timestamp * 1000).toLocaleString()}>{relativeTime(commit.timestamp)}</span>
+          {/* Rebased or cherry-picked: it landed later than it was written, maybe by someone else. */}
+          {relativeTime(commit.committedAt) !== relativeTime(commit.timestamp) && (
+            <>
+              <span className="text-subtle">·</span>
+              <span title={new Date(commit.committedAt * 1000).toLocaleString()}>
+                committed {relativeTime(commit.committedAt)}
+                {commit.committerName !== commit.authorName && ` by ${commit.committerName}`}
+              </span>
+            </>
+          )}
           {details && <SignatureBadge details={details} />}
           <button className="rounded-sm bg-elevated px-1.5 py-px font-mono text-[11px] hover:text-foreground focus-visible:text-foreground" onClick={() => copy(commit.sha, "Commit SHA copied")}>
             {commit.shortSha}

@@ -1091,7 +1091,11 @@ pub struct Commit {
     pub short_sha: String,
     pub author_name: String,
     pub author_email: String,
+    /// When it was written (author date).
     pub timestamp: i64,
+    /// Who put it on the branch, and when: a rebase, cherry-pick or amend moves this, not `timestamp`.
+    pub committer_name: String,
+    pub committed_at: i64,
     pub parents: Vec<String>,
     pub refs: Vec<String>,
     pub subject: String,
@@ -1267,7 +1271,7 @@ fn commits(
         "log",
         &skip_arg,
         &limit,
-        "--format=%x1e%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%P%x1f%D%x1f%s%x1f%b%x1f",
+        "--format=%x1e%H%x1f%h%x1f%an%x1f%ae%x1f%at%x1f%cn%x1f%ct%x1f%P%x1f%D%x1f%s%x1f%b%x1f",
     ];
     if filter.follows() {
         args.push("--name-only");
@@ -1280,7 +1284,7 @@ fn commits(
         .split('\x1e')
         .filter_map(|rec| {
             let f: Vec<&str> = rec.split('\x1f').collect();
-            if f.len() < 10 {
+            if f.len() < 12 {
                 return None;
             }
             Some(Commit {
@@ -1289,20 +1293,22 @@ fn commits(
                 author_name: f[2].to_string(),
                 author_email: f[3].to_string(),
                 timestamp: f[4].parse().unwrap_or(0),
-                parents: f[5].split_whitespace().map(str::to_string).collect(),
-                refs: f[6]
+                committer_name: f[5].to_string(),
+                committed_at: f[6].parse().unwrap_or(0),
+                parents: f[7].split_whitespace().map(str::to_string).collect(),
+                refs: f[8]
                     .split(", ")
                     .filter(|r| !r.is_empty())
                     .map(str::to_string)
                     .collect(),
-                subject: f[7].to_string(),
-                body: f[8].trim().to_string(),
+                subject: f[9].to_string(),
+                body: f[10].trim().to_string(),
                 unpushed: unpushed.contains(f[0]),
                 on_origin: off_origin.as_ref().is_some_and(|off| !off.contains(f[0])),
                 not_in_head: not_in_head.contains(f[0]),
                 file: filter
                     .follows()
-                    .then(|| f[9].lines().find(|l| !l.is_empty()).map(str::to_string))
+                    .then(|| f[11].lines().find(|l| !l.is_empty()).map(str::to_string))
                     .flatten(),
             })
         })
