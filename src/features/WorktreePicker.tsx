@@ -1,11 +1,15 @@
-import { Check, ChevronsUpDown, CornerUpLeft, FolderGit2, GitBranch, GitMerge, Lock, SquareTerminal, Trash2 } from "lucide-react";
+import { Check, ChevronsUpDown, Copy, CornerUpLeft, Eraser, FolderGit2, FolderOpen, GitBranch, GitMerge, Lock, LockOpen, Pencil, SquareTerminal, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, type Worktree, type WorktreeState } from "@/lib/api";
-import { matchesCommand, useCommands } from "@/lib/keybindings";
+import { api, type Branch, errorMessage, type Worktree, type WorktreeState } from "@/lib/api";
+import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/commands";
+import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { pointerMoved } from "@/lib/pointer";
+import { toast } from "@/lib/toast";
+import { isMenuKey, openRowMenu } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName, shortPath } from "@/lib/worktrees";
 import { RowAction } from "./BranchPicker";
@@ -19,9 +23,23 @@ interface Props {
   onTerminal: (path: string) => void;
   /** Merges a branch into the current one. Git allows it while another worktree has it out. */
   onMerge: (branch: string) => void;
-  /** Deletes a linked worktree (asks first). */
+  /** Deletes a linked worktree (asks first), or prunes one whose folder is gone. */
   onRemove: (w: Worktree) => void;
+  /** Renames a worktree's branch, and its folder with it. */
+  onRename: (w: Worktree) => void;
+  /** Asks for a reason, then locks it. */
+  onLock: (w: Worktree) => void;
+  onUnlock: (w: Worktree) => void;
+  onNew: () => void;
 }
+
+// reveal_project, not reveal_path: that one only reaches inside the open worktree.
+const reveal = (path: string) => api.revealProject(path).catch((e) => toast("error", REVEAL_FAILED, errorMessage(e)));
+const copyPath = (path: string) =>
+  navigator.clipboard.writeText(path).then(
+    () => toast("success", "Path copied"),
+    (e) => toast("error", "Could not copy", errorMessage(e)),
+  );
 
 /**
  * `git worktree list` as a switcher. Always shown, even with only the main worktree, so
@@ -29,13 +47,14 @@ interface Props {
  * Rows lead with the branch, the name people know a worktree by; the folder comes second.
  * In a linked worktree it names it and offers the way back to the main one.
  */
-export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove }: Props) {
+export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew }: Props) {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState(worktrees);
   const [index, setIndex] = useState(0);
   // A `git status` and two rev-lists per worktree: fetched when the menu opens, never before.
   const [states, setStates] = useState<Record<string, WorktreeState>>({});
   const listRef = useRef<HTMLDivElement>(null);
+  const renameKey = useShortcut("worktree.rename");
   useCommands({ "git.switchWorktree": () => setOpen(true) });
 
   useEffect(() => setList(worktrees), [worktrees]);
@@ -89,20 +108,28 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const terminal = then((w) => onTerminal(w.path));
   const merge = then((w) => w.branch && onMerge(w.branch));
   const remove = then(onRemove);
+  const rename = then(onRename);
+  const lock = then((w) => (w.locked ? onUnlock(w) : onLock(w)));
+  const actions = { pick, terminal, merge, rename, lock, remove, reveal: then((w) => void reveal(w.path)), copy: then((w) => void copyPath(w.path)) };
 
   // The hot row's actions, which the mouse finds on the row.
   const hot = list[index];
   const can = {
     terminal: !!hot && !hot.prunable && !hot.bare,
     merge: !!hot && !!current?.branch && !!hot.branch && !hot.current && !!states[hot.path]?.commits,
+    rename: !!hot && !!hot.branch && !hot.prunable,
     remove: !!hot && !hot.main && !hot.current,
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
     const n = e.nativeEvent;
     if (matchesCommand("worktree.openTerminal", n) && can.terminal) terminal(hot);
     else if (matchesCommand("worktree.merge", n) && can.merge) merge(hot);
+    else if (matchesCommand("worktree.rename", n) && can.rename) rename(hot);
     else if (matchesCommand("worktree.remove", n) && can.remove) remove(hot);
-    else if (e.metaKey || e.ctrlKey || e.altKey) return;
+    else if (isMenuKey(e)) {
+      const row = listRef.current?.querySelector<HTMLElement>(`[data-option="${index}"]`);
+      if (row) openRowMenu(row);
+    } else if (e.metaKey || e.ctrlKey || e.altKey) return;
     else if (e.key === "ArrowDown") setIndex((i) => Math.min(list.length - 1, i + 1));
     else if (e.key === "ArrowUp") setIndex((i) => Math.max(0, i - 1));
     else if (e.key === "Enter" && hot && usable(hot)) pick(hot);
@@ -160,38 +187,46 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 time={branches.find((b) => !b.remote && b.name === w.branch)?.timestamp}
                 state={states[w.path]}
                 into={current?.branch ?? null}
+                renameKey={renameKey}
                 onHover={setIndex}
-                onPick={pick}
-                onTerminal={terminal}
-                onMerge={merge}
-                onRemove={remove}
+                actions={actions}
+                // Back to the list, not the row, so ↑↓ and the row keys keep working.
+                onMenuClosed={() => listRef.current?.focus()}
               />
             ))}
             {list.length === 1 && (
               <div className="px-2 py-3 text-center text-[11.5px] leading-relaxed text-subtle">
-                No other worktrees yet. A worktree checks out another branch in its own folder, side by side with this one. To make one, hover a branch in the
-                branch menu and open a terminal on it.
+                No other worktrees yet. A worktree checks out another branch in its own folder, side by side with this one. Make one with New worktree below.
               </div>
             )}
           </div>
-          <div className="shrink-0 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
-            ↑↓ navigate · ↵ open here{can.terminal && " · T terminal"}
-            {can.merge && " · M merge"}
-            {can.remove && " · ⌫ remove"}
-            {/* The lock's reason is otherwise only in a tooltip, out of the keyboard's reach. */}
-            {hot?.locked && (
-              <>
-                <br />
-                {hot.inUse ? "In use" : "Locked"}
-                {hot.lockReason ? `: ${hot.lockReason}` : ""}
-              </>
-            )}
-            {list.some((w) => w.prunable) && (
-              <>
-                <br />
-                Missing folders stay listed until <span className="font-mono">git worktree prune</span>.
-              </>
-            )}
+          <div className="flex shrink-0 items-start gap-2 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
+            <span className="min-w-0 flex-1">
+              ↑↓ navigate · ↵ open here{can.terminal && " · T terminal"}
+              {can.merge && " · M merge"}
+              {can.rename && renameKey && ` · ${renameKey} rename`}
+              {can.remove && (hot.prunable ? " · ⌫ prune" : " · ⌫ remove")}
+              {hot && " · ⇧F10 or right-click for more"}
+              {/* The lock's reason is otherwise only in a tooltip, out of the keyboard's reach. */}
+              {hot?.locked && (
+                <>
+                  <br />
+                  {hot.inUse ? "In use" : "Locked"}
+                  {hot.lockReason ? `: ${hot.lockReason}` : ""}
+                </>
+              )}
+            </span>
+            <Tip label="A new branch in its own folder">
+              <button
+                onClick={() => {
+                  setOpen(false);
+                  onNew();
+                }}
+                className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
+              >
+                New worktree…
+              </button>
+            </Tip>
           </div>
         </PopoverContent>
       </Popover>
@@ -206,6 +241,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   );
 }
 
+type RowActions = Record<"pick" | "terminal" | "merge" | "rename" | "lock" | "remove" | "reveal" | "copy", (w: Worktree) => void>;
+
 function WorktreeRow({
   i,
   w,
@@ -215,11 +252,10 @@ function WorktreeRow({
   time,
   state,
   into,
+  renameKey,
   onHover,
-  onPick,
-  onTerminal,
-  onMerge,
-  onRemove,
+  actions: a,
+  onMenuClosed,
 }: {
   i: number;
   w: Worktree;
@@ -230,25 +266,33 @@ function WorktreeRow({
   state: WorktreeState | undefined;
   /** The current worktree's branch; null when detached. */
   into: string | null;
+  renameKey: string | undefined;
   onHover: (i: number) => void;
-  onPick: (w: Worktree) => void;
-  onTerminal: (w: Worktree) => void;
-  onMerge: (w: Worktree) => void;
-  onRemove: (w: Worktree) => void;
+  actions: RowActions;
+  onMenuClosed: () => void;
 }) {
   const branch = w.branch ?? (w.bare ? "bare" : `detached @ ${w.head ?? "?"}`);
   const act = (fn: (w: Worktree) => void) => (e: React.MouseEvent) => {
     e.stopPropagation();
     fn(w);
   };
-  return (
+  const onDisk = !w.prunable && !w.bare;
+  const can = {
+    merge: !!into && !!w.branch && !w.current && !!state?.commits,
+    rename: !!w.branch && !w.prunable,
+    // git won't lock the main worktree.
+    lock: !w.main && !w.bare,
+    remove: !w.main && !w.current,
+  };
+  const mergeLabel = `Merge into ${into}${state?.uncommitted ? ` · its ${state.uncommitted} uncommitted ${state.uncommitted === 1 ? "change stays" : "changes stay"} behind` : ""}`;
+  const row = (
     <div
       data-option={i}
       role="option"
       aria-selected={hot}
       aria-disabled={!usable}
       onMouseMove={(e) => pointerMoved(e) && onHover(i)}
-      onClick={() => usable && onPick(w)}
+      onClick={() => usable && a.pick(w)}
       className={cn(
         "flex h-9 items-center gap-2 rounded-sm px-2 select-none",
         hot && "bg-primary text-primary-foreground",
@@ -281,28 +325,102 @@ function WorktreeRow({
         </div>
       </div>
       {/* Mounted on every row, shown on the hot one, like the branch picker's actions. */}
-      <span className={cn("shrink-0 gap-0.5", hot && !w.prunable && !w.bare ? "flex" : "hidden")}>
-        <RowAction hot={hot} label="Open a terminal here" onClick={act(onTerminal)}>
-          <SquareTerminal />
-        </RowAction>
-        {into && w.branch && !w.current && !!state?.commits && (
-          <RowAction hot={hot} label={`Merge into ${into}${state.uncommitted ? ` · its ${state.uncommitted} uncommitted ${state.uncommitted === 1 ? "change stays" : "changes stay"} behind` : ""}`} onClick={act(onMerge)}>
+      <span className={cn("shrink-0 gap-0.5", hot && !w.bare ? "flex" : "hidden")}>
+        {onDisk && (
+          <RowAction hot={hot} label="Open a terminal here" onClick={act(a.terminal)}>
+            <SquareTerminal />
+          </RowAction>
+        )}
+        {can.merge && (
+          <RowAction hot={hot} label={mergeLabel} onClick={act(a.merge)}>
             <GitMerge />
           </RowAction>
         )}
-        {!w.main && !w.current && (
-          <RowAction hot={hot} label="Remove worktree…" onClick={act(onRemove)}>
-            <Trash2 />
+        {can.rename && (
+          <RowAction hot={hot} label="Rename…" onClick={act(a.rename)}>
+            <Pencil />
+          </RowAction>
+        )}
+        {can.lock && (
+          <RowAction hot={hot} label={w.locked ? `Unlock${w.lockReason ? ` (${w.lockReason})` : ""}` : "Lock: keep it from being pruned, moved or removed…"} onClick={act(a.lock)}>
+            {w.locked ? <LockOpen /> : <Lock />}
+          </RowAction>
+        )}
+        {can.remove && (
+          <RowAction hot={hot} label={w.prunable ? "Prune: its folder is gone, drop it from the list" : "Remove worktree…"} onClick={act(a.remove)}>
+            {w.prunable ? <Eraser /> : <Trash2 />}
           </RowAction>
         )}
       </span>
-      {(!hot || w.prunable || w.bare) && (
+      {(!hot || w.bare) && (
         <span className={cn("flex max-w-36 shrink-0 flex-col items-end text-[10.5px] leading-4", hot ? "opacity-80" : "text-subtle")}>
           <span className="max-w-full truncate">{w.prunable ? "missing" : w.bare ? "" : time ? relativeTime(time) : w.current ? "current" : ""}</span>
           {state && <StateLabel state={state} hot={hot} />}
         </span>
       )}
     </div>
+  );
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
+      <ContextMenuContent
+        onCloseAutoFocus={(e) => {
+          e.preventDefault();
+          onMenuClosed();
+        }}
+      >
+        {usable && (
+          <ContextMenuItem onSelect={() => a.pick(w)}>
+            <FolderGit2 /> Open here
+          </ContextMenuItem>
+        )}
+        {onDisk && (
+          <ContextMenuItem onSelect={() => a.terminal(w)}>
+            <SquareTerminal /> Open a terminal here
+          </ContextMenuItem>
+        )}
+        {can.merge && (
+          <ContextMenuItem onSelect={() => a.merge(w)}>
+            <GitMerge /> Merge into {into}
+          </ContextMenuItem>
+        )}
+        {can.rename && (
+          <ContextMenuItem onSelect={() => a.rename(w)}>
+            <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}
+          </ContextMenuItem>
+        )}
+        {can.lock && (
+          <ContextMenuItem onSelect={() => a.lock(w)}>
+            {w.locked ? <LockOpen /> : <Lock />} {w.locked ? "Unlock" : "Lock…"}
+          </ContextMenuItem>
+        )}
+        {(usable || onDisk || can.merge || can.rename || can.lock) && <ContextMenuSeparator />}
+        {onDisk && (
+          <ContextMenuItem onSelect={() => a.reveal(w)}>
+            <FolderOpen /> {REVEAL_LABEL}
+          </ContextMenuItem>
+        )}
+        <ContextMenuItem onSelect={() => a.copy(w)}>
+          <Copy /> Copy path
+        </ContextMenuItem>
+        {can.remove && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem className={w.prunable ? undefined : "text-destructive"} onSelect={() => a.remove(w)}>
+              {w.prunable ? (
+                <>
+                  <Eraser /> Prune
+                </>
+              ) : (
+                <>
+                  <Trash2 /> Remove worktree…
+                </>
+              )}
+            </ContextMenuItem>
+          </>
+        )}
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 

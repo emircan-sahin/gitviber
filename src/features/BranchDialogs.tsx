@@ -86,16 +86,42 @@ function NewBranch({ base, branches, onClose, run }: { base: string } & Pick<Pro
   const [name, setName] = useState("");
   const [from, setFrom] = useState(base);
   const [switchTo, setSwitchTo] = useState(true);
-  const [tags, setTags] = useState<string[]>([]);
-  useEffect(() => {
-    api.tags().then(setTags, () => setTags([]));
-  }, []);
   const n = name.trim();
   const label = from === "HEAD" ? "HEAD" : from.replace(/^refs\/(heads|remotes|tags)\//, "");
   const submit = () => {
     onClose();
     void run("Create branch", () => api.createBranch(n, from, switchTo), switchTo ? `Switched to new branch ${n}` : `Created ${n} from ${label}`);
   };
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (n) submit();
+      }}
+    >
+      <DialogTitle>New branch</DialogTitle>
+      <DialogDescription>It starts where the base is and tracks nothing until you publish it.</DialogDescription>
+      <Input autoFocus className="mt-4 font-mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="Branch name" spellCheck={false} />
+      <BaseSelect value={from} onChange={setFrom} branches={branches} head={base === "HEAD"} />
+      <div className="mt-4 flex items-center gap-2">
+        <label className="flex items-center gap-1.5 text-[12px]">
+          <input type="checkbox" checked={switchTo} onChange={(e) => setSwitchTo(e.target.checked)} className="accent-primary" />
+          Switch to it
+        </label>
+        <Button type="submit" className="ml-auto" disabled={!n}>
+          Create
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+/** What a new branch starts at: a local or remote branch, a tag, or with `head` HEAD. Values are full refs. */
+export function BaseSelect({ value, onChange, branches, head }: { value: string; onChange: (ref: string) => void; branches: Branch[]; head: boolean }) {
+  const [tags, setTags] = useState<string[]>([]);
+  useEffect(() => {
+    api.tags().then(setTags, () => setTags([]));
+  }, []);
   const group = (title: string, prefix: string, names: string[]) =>
     names.length > 0 && (
       <optgroup label={title}>
@@ -107,42 +133,23 @@ function NewBranch({ base, branches, onClose, run }: { base: string } & Pick<Pro
       </optgroup>
     );
   return (
-    <form
-      onSubmit={(e) => {
-        e.preventDefault();
-        if (n) submit();
-      }}
-    >
-      <DialogTitle>New branch</DialogTitle>
-      <DialogDescription>It starts where the base is and tracks nothing until you publish it.</DialogDescription>
-      <Input autoFocus className="mt-4 font-mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="Branch name" spellCheck={false} />
-      <label className="mt-3 block text-[11.5px] text-muted-foreground">
-        From
-        <select value={from} onChange={(e) => setFrom(e.target.value)} className={`${SELECT} mt-1`}>
-          {base === "HEAD" && <option value="HEAD">HEAD</option>}
-          {group(
-            "Local",
-            "refs/heads/",
-            branches.filter((b) => !b.remote).map((b) => b.name),
-          )}
-          {group(
-            "Remote",
-            "refs/remotes/",
-            branches.filter((b) => b.remote).map((b) => b.name),
-          )}
-          {group("Tags", "refs/tags/", tags)}
-        </select>
-      </label>
-      <div className="mt-4 flex items-center gap-2">
-        <label className="flex items-center gap-1.5 text-[12px]">
-          <input type="checkbox" checked={switchTo} onChange={(e) => setSwitchTo(e.target.checked)} className="accent-primary" />
-          Switch to it
-        </label>
-        <Button type="submit" className="ml-auto" disabled={!n}>
-          Create
-        </Button>
-      </div>
-    </form>
+    <label className="mt-3 block text-[11.5px] text-muted-foreground">
+      From
+      <select value={value} onChange={(e) => onChange(e.target.value)} className={`${SELECT} mt-1`}>
+        {head && <option value="HEAD">HEAD</option>}
+        {group(
+          "Local",
+          "refs/heads/",
+          branches.filter((b) => !b.remote).map((b) => b.name),
+        )}
+        {group(
+          "Remote",
+          "refs/remotes/",
+          branches.filter((b) => b.remote).map((b) => b.name),
+        )}
+        {group("Tags", "refs/tags/", tags)}
+      </select>
+    </label>
   );
 }
 

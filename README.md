@@ -31,7 +31,7 @@ credentials and signing, and GitViber writes nothing of its own into the repo.
 | **Diffs** | Whole files, unified or split, with word-level highlights and collapsible unchanged regions |
 | **Review** | `J` / `K` through changed files, `V` to mark one viewed. The mark clears when the agent touches the file again |
 | **Live** | Status, diffs and the file tree refresh as files change, without losing your scroll position |
-| **Worktrees** | Switch worktrees from the top bar, see each one's change count, check a branch out into a new worktree in one step, remove the ones you're done with |
+| **Worktrees** | Switch worktrees from the top bar, see each one's change count, start a new branch in its own worktree (in a folder you choose, from any branch or commit), check a pull request out into one, rename one with its folder, lock, remove or prune the ones you're done with |
 | **Terminal** | Your login shell under the diff (`⌘J`), with tabs and splits. Each worktree keeps its own terminals |
 | **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase |
 | **Conflicts** | Resolve block by block (current, incoming, both, or edit by hand), then continue, skip or abort |

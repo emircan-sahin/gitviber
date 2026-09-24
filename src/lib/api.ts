@@ -385,8 +385,16 @@ export const api = {
   worktrees: () => invoke<Worktree[]>("worktrees"),
   /** Uncommitted files in one of this repo's worktrees, and commits found nowhere else. */
   worktreeState: (path: string) => invoke<WorktreeState>("worktree_state", { path }),
-  /** Checks a branch out in a new worktree beside the main one; returns its path. */
-  addWorktree: (branch: string) => invoke<string>("add_worktree", { branch }),
+  /**
+   * Checks a branch out in a new worktree in `dir` (default: beside the main one); returns its path.
+   * With `base` (a full ref, or HEAD) the branch is new, made there.
+   */
+  addWorktree: (branch: string, base: string | null = null, dir: string | null = null) => invoke<string>("add_worktree", { branch, base, dir }),
+  /** Renames a worktree's branch and, with `moveFolder`, its folder to match; returns its path afterwards. */
+  renameWorktree: (path: string, branch: string, moveFolder: boolean) => invoke<string>("rename_worktree", { path, branch, moveFolder }),
+  /** Keeps a worktree from being pruned, moved or removed; `reason` shows on its row. */
+  lockWorktree: (path: string, reason: string | null) => invoke<void>("lock_worktree", { path, reason }),
+  unlockWorktree: (path: string) => invoke<void>("unlock_worktree", { path }),
   /** Deletes a linked worktree's folder (its branch stays); `force` drops uncommitted files and overrides a lock. */
   removeWorktree: (path: string, force: boolean) => invoke<void>("remove_worktree", { path, force }),
   /** Nested repositories are refused unless `allowNested`: git would stage only a gitlink. */
@@ -605,6 +613,9 @@ export const github = {
   review: (target: Target, number: number, event: ReviewEvent, body: string) => invoke<void>("pr_review", { target, number, event, body }),
   /** `sameRepo`: the PR's branch lives on origin, so it's checked out under its own name. */
   checkout: (target: Target, number: number, headRef: string, sameRepo: boolean, op?: NetOp) => network<void>("pr_checkout", { target, number, headRef, sameRepo }, op),
+  /** The same branch, checked out in a new worktree in `dir` (default: beside the main one); returns its path. */
+  checkoutWorktree: (target: Target, number: number, headRef: string, sameRepo: boolean, dir: string | null, op?: NetOp) =>
+    network<string>("pr_checkout_worktree", { target, number, headRef, sameRepo, dir }, op),
   openUrl: (url: string) => invoke<void>("open_url", { url }),
   /** The remote for a fork's original, owner/name (fetched first if `fetch`); null when there is none. Works offline. */
   // Without `fetch` it's a local lookup: marked background, so it doesn't stop a background fetch.

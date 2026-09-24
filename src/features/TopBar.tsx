@@ -45,6 +45,7 @@ import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
 import { useNetActivity, withNetActivity } from "@/lib/netActivity";
 import { forgetRemoteTags } from "@/lib/remoteTags";
+import { loadWorktreeDir } from "@/lib/session";
 import { tracked, travel, undoAction } from "@/lib/undo";
 import type { RepoData } from "@/lib/useRepo";
 import { cn, relativeTime } from "@/lib/utils";
@@ -55,6 +56,7 @@ import { openClone } from "./CloneDialog";
 import { ProjectList, ProjectTile } from "./ProjectList";
 import { PushMenu } from "./PushMenu";
 import { openSettings } from "./SettingsDialog";
+import { openWorktreeDialog, WorktreeDialogs } from "./WorktreeDialogs";
 import { WorktreePicker } from "./WorktreePicker";
 
 interface Props {
@@ -149,12 +151,13 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   // would pull the files out from under this window.
   const branchTerminal = async (name: string) => {
     if (name === status?.branch) return openTerminal(root);
-    const where = `${folderName(main)}.worktrees/${name.replaceAll("/", "-")}`;
-    const ok = await ask(`${name} isn't checked out anywhere. Create a worktree for it at ${where}, next to this project, and open a terminal there?`, {
+    const dir = loadWorktreeDir(main);
+    const where = `${dir ?? `${folderName(main)}.worktrees`}/${name.replaceAll("/", "-")}`;
+    const ok = await ask(`${name} isn't checked out anywhere. Create a worktree for it at ${where}${dir ? "" : ", next to this project,"} and open a terminal there?`, {
       title: "Open terminal on branch",
       okLabel: "Create worktree",
     });
-    if (ok) await run("Create worktree", async () => openTerminal(await api.addWorktree(name)), `${name} checked out in ${where}`);
+    if (ok) await run("Create worktree", async () => openTerminal(await api.addWorktree(name, null, dir)), `${name} checked out in ${where}`);
   };
 
   // Merged is deleted outright: nothing is lost. Anything else needs a yes, then -D.
@@ -236,19 +239,30 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   // warning must say what gets lost. If counting fails, git's own refusal is the fallback.
   const removeWorktree = async (w: Worktree) => {
     const name = folderName(w.path);
+    // Nothing is lost: the folder is gone and the branch stays. A lock is kept for a folder
+    // on a drive that's only unplugged, so that one still asks.
+    if (w.prunable && !w.locked) return run("Prune worktree", () => api.removeWorktree(w.path, false), `Pruned ${name}`);
     const changed = w.prunable ? 0 : await api.worktreeState(w.path).then((s) => s.uncommitted, () => 0);
     const branch = w.branch ? ` The branch ${w.branch} stays.` : "";
     const lost = changed ? ` Its ${changed} uncommitted ${changed === 1 ? "change" : "changes"} will be lost.` : "";
     const lock = w.inUse
       ? ` Something is working in it right now (${w.lockReason ?? "it holds the lock"}); deleting pulls the folder out from under it.`
       : w.locked
-        ? " It's locked; this overrides the lock."
+        ? ` It's locked${w.lockReason ? ` (${w.lockReason})` : ""}; this overrides the lock. The lock on its row unlocks it instead.`
         : "";
     const ok = await ask(
-      w.prunable ? `${name}'s folder is already gone. Remove it from the worktree list?${branch}` : `Delete worktree ${name} and its folder?${lost}${lock}${branch}`,
-      { title: "Remove worktree", kind: "warning", okLabel: w.prunable ? "Remove" : "Delete worktree" },
+      w.prunable ? `${name}'s folder is gone, but it's locked${w.lockReason ? ` (${w.lockReason})` : ""}: its drive may only be unplugged. Prune it anyway?${branch}` : `Delete worktree ${name} and its folder?${lost}${lock}${branch}`,
+      { title: w.prunable ? "Prune worktree" : "Remove worktree", kind: "warning", okLabel: w.prunable ? "Prune" : "Delete worktree" },
     );
     if (ok) await run("Remove worktree", () => api.removeWorktree(w.path, changed > 0 || w.locked), `Worktree ${name} removed`);
+  };
+
+  const unlockWorktree = async (w: Worktree) => {
+    const name = folderName(w.path);
+    const why = w.lockReason ?? "it holds the lock";
+    const msg = `Something is working in ${name} right now (${why}). Unlocked, it can be pruned, moved or removed while that runs.`;
+    if (w.inUse && !(await ask(msg, { title: "Unlock worktree", kind: "warning", okLabel: "Unlock" }))) return;
+    await run("Unlock worktree", () => api.unlockWorktree(w.path), `Unlocked ${name}`);
   };
 
   useCommands({
@@ -256,6 +270,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     "git.pull": busy || !status?.upstream ? undefined : () => runNet("Pull", (op) => api.pull("ff", op), "Pulled"),
     "git.push": busy || !status?.upstream ? undefined : () => push(),
     "git.newBranch": () => setBranchDialog({ kind: "new", base: status?.branch ? `refs/heads/${status.branch}` : "HEAD" }),
+    "git.newWorktree": () => openWorktreeDialog({ kind: "new" }),
   });
 
   return (
@@ -285,7 +300,19 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onUnsetUpstream={(b) => run("Unset upstream", () => api.setUpstream(b.name, null), `${b.name} no longer tracks ${b.upstream}`)}
       />
       {branchDialog && <BranchDialogs dialog={branchDialog} branches={branches} onClose={() => setBranchDialog(null)} run={run} runNet={runNet} />}
-      <WorktreePicker worktrees={worktrees} branches={branches} onOpen={onOpenRepo} onTerminal={openTerminal} onMerge={merge} onRemove={removeWorktree} />
+      <WorktreePicker
+        worktrees={worktrees}
+        branches={branches}
+        onOpen={onOpenRepo}
+        onTerminal={openTerminal}
+        onMerge={merge}
+        onRemove={removeWorktree}
+        onRename={(worktree) => openWorktreeDialog({ kind: "rename", worktree })}
+        onLock={(worktree) => openWorktreeDialog({ kind: "lock", worktree })}
+        onUnlock={unlockWorktree}
+        onNew={() => openWorktreeDialog({ kind: "new" })}
+      />
+      <WorktreeDialogs branches={branches} main={main} run={run} runNet={runNet} onOpen={onOpenRepo} />
       {status && !status.upstream && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
           <CloudOff className="size-3" /> Not published
