@@ -7,7 +7,9 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { accessFor, api, type Branch, type Commit, errorMessage, fullName, type GitHubAccess, type GitHubAccount, github, isNotConnected, PR_PAGE, type Pull, type RepoStatus, repoOf } from "@/lib/api";
+import { accessFor, api, type Branch, type Commit, errorMessage, fullName, type GitHubAccess, type GitHubAccount, github, isNotConnected, PR_PAGE, type Pull, type RepoStatus, repoOf, type Target } from "@/lib/api";
+import { CiBadge } from "@/components/CiBadge";
+import { useCi } from "@/lib/ci";
 import { cached, invalidate, useGitHubData } from "@/lib/githubCache";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
@@ -107,7 +109,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
   const newLabel = currentPull ? `#${currentPull.number} already open for this branch` : "New pull request";
   const canCreate = !!status?.branch && !currentPull;
 
-  const ownRows = <PullRows pulls={own.data ?? null} match={find.needle ? match : null} error={error} filter={filter} activeKey={activeKey} onOpen={onOpen} account={account} roomy={!upstream} {...more("origin", own)} />;
+  const ownRows = <PullRows pulls={own.data ?? null} match={find.needle ? match : null} error={error} filter={filter} activeKey={activeKey} onOpen={onOpen} account={account} roomy={!upstream} target={null} {...more("origin", own)} />;
 
   return (
     <div className="flex h-full flex-col">
@@ -165,6 +167,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
                     onOpen={onOpen}
                     account={account}
                     roomy={false}
+                    target={upstream}
                     {...more("parent", up)}
                   />
                 ),
@@ -346,6 +349,7 @@ function PullRows({
   shown,
   loading,
   onMore,
+  target,
 }: {
   pulls: Pull[] | null;
   /** The list filter's test, while it has text. */
@@ -362,9 +366,12 @@ function PullRows({
   shown: number;
   loading: boolean;
   onMore: () => void;
+  /** The repository the PRs are on, for their checks. */
+  target: Target;
 }) {
   const full = loaded?.length === shown * PR_PAGE;
   const pulls = match ? (loaded?.filter(match) ?? null) : loaded;
+  const ci = useCi(target, (loaded ?? []).filter((p) => p.state === "open").map((p) => p.headSha));
   const nav = useListNav({ activeKey });
   return (
     <>
@@ -411,7 +418,8 @@ function PullRows({
                 <span className="truncate">{p.author}</span>
                 <span>·</span>
                 <span className="min-w-0 truncate font-mono">{p.headRef}</span>
-                <span className="ml-auto shrink-0">{relativeTime(isoToUnix(p.updatedAt))}</span>
+                <CiBadge state={p.state === "open" ? ci[p.headSha] : undefined} className="ml-auto" />
+                <span className={cn("shrink-0", !(p.state === "open" && ci[p.headSha]) && "ml-auto")}>{relativeTime(isoToUnix(p.updatedAt))}</span>
               </div>
             </div>
           </div>
