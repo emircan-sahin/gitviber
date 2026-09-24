@@ -1,7 +1,7 @@
 import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, ExternalLink, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, History, Rows2, Space, UserSearch, X } from "lucide-react";
 import { Component, type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type FileChange, type RepoStatus, type Whitespace } from "@/lib/api";
 import { resetDefinitions } from "@/lib/definitions";
@@ -33,6 +33,13 @@ export interface Tab {
   preview: boolean;
 }
 
+/** Which tabs Close Others / to the Left / to the Right / All close, around one. */
+export type TabGroup = "others" | "left" | "right" | "all";
+
+/** The keys of the tabs `which` names around the one at `i`. */
+export const tabGroup = (tabs: Tab[], i: number, which: TabGroup) =>
+  tabs.filter((_, j) => (which === "others" ? j !== i : which === "left" ? j < i : which === "right" ? j > i : true)).map((t) => t.key);
+
 interface ViewerProps {
   tabs: Tab[];
   active: Tab | null;
@@ -42,6 +49,7 @@ interface ViewerProps {
   toggleViewed: (sel: Selection) => void;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
+  onCloseTabs: (keys: string[]) => void;
   onPin: (key: string) => void;
   onMoveTab: (from: number, to: number) => void;
   onOpen: (s: Selection) => void;
@@ -49,6 +57,8 @@ interface ViewerProps {
   onShowHistory: (path: string) => void;
   /** Blame's link: a commit in History, with `path` (its name in that commit) open. */
   onShowCommit: (sha: string, path: string) => void;
+  /** Reads the repo's status again, after staging lines here. */
+  refresh: () => unknown;
 }
 
 export function Viewer(props: ViewerProps) {
@@ -98,7 +108,7 @@ function tabLabel(sel: Selection) {
  * A tablist: the open tab is its one tab stop; ←/→ (Home/End) switch tabs, ↵ or Space keeps a
  * preview tab, ⌫ closes, ⌥←/⌥→ reorder (tab.moveLeft / tab.moveRight), ⇧F10 opens the tab's menu.
  */
-function TabStrip({ tabs, active, onActivate, onClose, onPin, onMoveTab, onShowHistory }: ViewerProps) {
+function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin, onMoveTab, onShowHistory }: ViewerProps) {
   const strip = useRef<HTMLDivElement>(null);
   // Set when a tab holding focus closes: focus goes on to the tab that opens in its place.
   const lostFocus = useRef(false);
@@ -157,6 +167,8 @@ function TabStrip({ tabs, active, onActivate, onClose, onPin, onMoveTab, onShowH
             lostFocus={lostFocus}
             onActivate={onActivate}
             onClose={onClose}
+            closes={(which) => tabGroup(tabs, i, which).length > 0}
+            onCloseGroup={(which) => onCloseTabs(tabGroup(tabs, i, which))}
             onPin={onPin}
             onShowHistory={onShowHistory}
           />
@@ -173,6 +185,8 @@ function TabItem({
   lostFocus,
   onActivate,
   onClose,
+  closes,
+  onCloseGroup,
   onPin,
   onShowHistory,
 }: {
@@ -182,10 +196,15 @@ function TabItem({
   lostFocus: RefObject<boolean>;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
+  /** Whether Close Others (…) around this tab would close any. */
+  closes: (which: TabGroup) => boolean;
+  onCloseGroup: (which: TabGroup) => void;
   onPin: (key: string) => void;
   onShowHistory: (path: string) => void;
 }) {
   const { props, dragging, guard } = useSortableItem(t.key);
+  const closeKey = useShortcut("tab.close");
+  const closeOthersKey = useShortcut("tab.closeOthers");
   const el = useRef<HTMLDivElement | null>(null);
   // Runs before the node leaves the page, while it can still say whether it had focus.
   useLayoutEffect(
@@ -243,15 +262,40 @@ function TabItem({
       </button>
     </div>
   );
-  if (t.sel.kind === "pull" || t.sel.kind === "issue") return tab;
-  const path = selectionPath(t.sel);
+  const file = t.sel.kind !== "pull" && t.sel.kind !== "issue";
+  // As VS Code's tab menu, plus to the left.
+  const group = (which: TabGroup, label: string, shortcut?: string) => (
+    <ContextMenuItem disabled={!closes(which)} onSelect={() => onCloseGroup(which)}>
+      {label}
+      {shortcut && <ContextMenuShortcut>{shortcut}</ContextMenuShortcut>}
+    </ContextMenuItem>
+  );
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{tab}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={() => onShowHistory(path)}>
-          <History /> Show History
+        <ContextMenuItem onSelect={() => onClose(t.key)}>
+          Close
+          {isActive && closeKey && <ContextMenuShortcut>{closeKey}</ContextMenuShortcut>}
         </ContextMenuItem>
+        {group("others", "Close Others", isActive ? closeOthersKey : undefined)}
+        {group("left", "Close to the Left")}
+        {group("right", "Close to the Right")}
+        {group("all", "Close All")}
+        {t.preview && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => onPin(t.key)}>Keep Open</ContextMenuItem>
+          </>
+        )}
+        {file && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => onShowHistory(selectionPath(t.sel))}>
+              <History /> Show History
+            </ContextMenuItem>
+          </>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -376,7 +420,7 @@ function findChange(status: RepoStatus | null, path: string): Selection | null {
   return staged ? { kind: "staged", file: staged } : null;
 }
 
-function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShowCommit }: ViewerProps & { tab: Tab; sel: FileSelection }) {
+function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShowCommit, refresh }: ViewerProps & { tab: Tab; sel: FileSelection }) {
   const s = useSettings();
   const { pair, error } = usePair(sel, revision, diffWhitespace(s));
   const view = useRef<CodeViewHandle>(null);
@@ -566,6 +610,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               blameColumn={!!s.blame && isFile && !blame?.unavailable}
               onBlameClick={(c) => onShowCommit(c.sha, c.path)}
               links={linkSides(sel, revision)}
+              staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, refresh } : null}
             />
           )
         )}

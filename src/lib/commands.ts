@@ -58,6 +58,10 @@ export const COMMANDS = [
   { id: "tab.goto5", title: "Go to Tab 5", category: "Tabs", keys: ["cmd+5"] },
   { id: "tab.goto6", title: "Go to Tab 6", category: "Tabs", keys: ["cmd+6"] },
   // Elsewhere ⇧Ctrl+T opens a terminal (terminal.new): unbound there.
+  { id: "tab.closeOthers", title: "Close Other Tabs", category: "Tabs", keys: ["alt+cmd+t"], keysOther: [] },
+  { id: "tab.closeLeft", title: "Close Tabs to the Left", category: "Tabs", keys: [] },
+  { id: "tab.closeRight", title: "Close Tabs to the Right", category: "Tabs", keys: [] },
+  { id: "tab.closeAll", title: "Close All Tabs", category: "Tabs", keys: [] },
   { id: "tab.reopenClosed", title: "Reopen Closed Tab", category: "Tabs", keys: ["shift+cmd+t"], keysOther: [] },
   { id: "tab.goto7", title: "Go to Tab 7", category: "Tabs", keys: ["cmd+7"] },
   { id: "tab.goto8", title: "Go to Tab 8", category: "Tabs", keys: ["cmd+8"] },

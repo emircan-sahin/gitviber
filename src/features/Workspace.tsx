@@ -35,7 +35,7 @@ import { PullsPanel } from "./PullsPanel";
 import { SearchView } from "./SearchView";
 import { TerminalPanel, TerminalRestoreOffer, useTerminalSetup } from "./TerminalPanel";
 import { changeTotals, TopBar } from "./TopBar";
-import { prefetchSelection, resetPairCache, type Tab, Viewer } from "./Viewer";
+import { prefetchSelection, resetPairCache, type Tab, type TabGroup, tabGroup, Viewer } from "./Viewer";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
 type ListTab = (typeof LIST_TABS)[number];
@@ -183,15 +183,28 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const [closed, setClosed] = useState<{ sel: Selection; index: number }[]>([]);
   const tabsNow = useRef(tabs);
   tabsNow.current = tabs;
-  const close = useCallback((key: string) => {
-    const index = tabsNow.current.findIndex((t) => t.key === key);
-    if (index >= 0) setClosed((c) => [...c.filter((t) => selectionKey(t.sel) !== key), { sel: tabsNow.current[index].sel, index }].slice(-20));
+  const closeTabs = useCallback((keys: string[]) => {
+    const gone = new Set(keys);
+    const shut = tabsNow.current.flatMap((t, index) => (gone.has(t.key) ? [{ sel: t.sel, index }] : []));
+    if (!shut.length) return;
+    // The leftmost comes back first, so each returns to its own place.
+    setClosed((c) => [...c.filter((t) => !gone.has(selectionKey(t.sel))), ...shut.reverse()].slice(-20));
     setTabState(({ tabs: prev, active }) => {
-      const i = prev.findIndex((t) => t.key === key);
-      const next = prev.filter((t) => t.key !== key);
-      return { tabs: next, active: active === key ? (next[Math.min(i, next.length - 1)]?.key ?? null) : active };
+      const next = prev.filter((t) => !gone.has(t.key));
+      if (!active || !gone.has(active)) return { tabs: next, active };
+      // The next open tab to the right, else to the left.
+      const i = prev.findIndex((t) => t.key === active);
+      const near = prev.slice(i + 1).find((t) => !gone.has(t.key)) ?? prev.slice(0, i).reverse().find((t) => !gone.has(t.key));
+      return { tabs: next, active: near?.key ?? null };
     });
   }, []);
+  const close = useCallback((key: string) => closeTabs([key]), [closeTabs]);
+  // Close Others and the like, around the active tab.
+  const closeAround = (which: TabGroup) => {
+    const i = tabs.findIndex((t) => t.key === activeKey);
+    const keys = i < 0 ? [] : tabGroup(tabs, i, which);
+    return keys.length ? () => closeTabs(keys) : undefined;
+  };
 
   const reopen = () => {
     const last = closed.at(-1);
@@ -401,6 +414,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.focusPrevPanel": () => cycle(-1),
     "tab.close": activeKey ? () => close(activeKey) : undefined,
     "tab.reopenClosed": closed.length ? reopen : undefined,
+    "tab.closeOthers": closeAround("others"),
+    "tab.closeLeft": closeAround("left"),
+    "tab.closeRight": closeAround("right"),
+    "tab.closeAll": closeAround("all"),
     "tab.goto1": goTab(0),
     "tab.goto2": goTab(1),
     "tab.goto3": goTab(2),
@@ -557,6 +574,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     toggleViewed={toggleViewed}
                     onActivate={setActiveKey}
                     onClose={close}
+                    onCloseTabs={closeTabs}
+                    refresh={repo.refresh}
                     onPin={pin}
                     onMoveTab={moveTab}
                     onOpen={(sel) => open(sel, true)}
