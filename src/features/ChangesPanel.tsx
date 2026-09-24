@@ -49,7 +49,7 @@ import { matchesCommand, runCommand, useCommands, useShortcut } from "@/lib/keyb
 import { type Selection, selectionKey } from "@/lib/selection";
 import { type CommitDraft, loadDraft, saveDraft } from "@/lib/session";
 import { updateSettings, useSettings } from "@/lib/settings";
-import { parseSuggestion, programOf, SUGGEST_PROMPT } from "@/lib/suggest";
+import { commandLine, parseSuggestion, programOf, SUGGEST_PROMPT } from "@/lib/suggest";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
 import { cn } from "@/lib/utils";
@@ -806,7 +806,7 @@ function CommitBox({ status, shown, head, main, refresh }: Pick<Props, "status" 
   // and the user's own draft waits aside.
   const [amend, setAmend] = useState<{ aside: CommitDraft; sha: string; original: CommitDraft } | null>(null);
   const [busy, setBusy] = useState(false);
-  const { signOffRepos, suggestEnabled, suggestCommand } = useSettings();
+  const { signOffRepos, suggestEnabled, suggestCommand, suggestModels } = useSettings();
   const signOff = signOffRepos.includes(main);
   const setSignOff = (on: boolean) => updateSettings({ signOffRepos: on ? [...signOffRepos, main] : signOffRepos.filter((r) => r !== main) });
   // One commit only: a hook that's broken today shouldn't be skipped forever.
@@ -936,7 +936,7 @@ function CommitBox({ status, shown, head, main, refresh }: Pick<Props, "status" 
     running.current = true;
     setSuggesting(true);
     try {
-      const output = await api.suggestMessage(suggestCommand, SUGGEST_PROMPT, amend ? "amend" : hasStaged ? "staged" : "all");
+      const output = await api.suggestMessage(commandLine(suggestCommand, suggestModels), SUGGEST_PROMPT, amend ? "amend" : hasStaged ? "staged" : "all");
       if (gen !== generation.current) return;
       const message = parseSuggestion(output);
       if (!message) {

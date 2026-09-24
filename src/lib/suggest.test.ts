@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseSuggestion, programOf } from "./suggest.ts";
+import { commandLine, parseSuggestion, programOf } from "./suggest.ts";
 
 test("summary and body", () => {
   assert.deepEqual(parseSuggestion("Fix the thing\n\nIt was broken.\nNow it isn't.\n"), { summary: "Fix the thing", body: "It was broken.\nNow it isn't." });
@@ -32,4 +32,14 @@ test("nothing to use", () => {
 test("program of a template", () => {
   assert.equal(programOf("  claude -p"), "claude");
   assert.equal(programOf("codex exec"), "codex");
+});
+
+test("a preset runs with its model", () => {
+  assert.equal(commandLine(" claude -p ", {}), "claude -p --model claude-sonnet-5");
+  assert.equal(commandLine("codex exec", { codex: "gpt-x" }), "codex exec -m gpt-x");
+  // Empty leaves the model to the CLI; a custom command carries its own.
+  assert.equal(commandLine("claude -p", { claude: " " }), "claude -p");
+  assert.equal(commandLine("pi -p --model a/b", { claude: "x" }), "pi -p --model a/b");
+  assert.equal(commandLine("pi -p --no-tools --no-session", {}), "pi -p --no-tools --no-session --model anthropic/claude-sonnet-5");
+  assert.equal(commandLine("opencode run --agent plan", { opencode: "zai/glm-5.3" }), "opencode run --agent plan -m zai/glm-5.3");
 });

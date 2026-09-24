@@ -1,11 +1,12 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Code2, GitBranch, GitCompareArrows, Keyboard, Palette, Pencil, Plus, RotateCcw, Search, Sparkles, SquareArrowOutUpRight, Trash2, TriangleAlert, X } from "lucide-react";
+import { ChevronDown, Code2, GitBranch, GitCompareArrows, Keyboard, Palette, Pencil, Plus, RotateCcw, Search, Sparkles, SquareArrowOutUpRight, Trash2, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
-import { api, errorMessage, type GitIdentity, type Whitespace } from "@/lib/api";
+import { api, errorMessage, type GitIdentity, github, type Whitespace } from "@/lib/api";
 import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventChord, formatChord, IS_MAC, isReserved } from "@/lib/commands";
 import { runCommand } from "@/lib/keybindings";
 import { refreshOpenApps, useOpenApps } from "@/lib/openIn";
@@ -30,7 +31,7 @@ import {
   updateSettings,
   useSettings,
 } from "@/lib/settings";
-import { SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT } from "@/lib/suggest";
+import { ALL_MODELS, modelOf, presetOf, SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT, type SuggestPreset as Preset } from "@/lib/suggest";
 import { enableNotifications } from "@/lib/notify";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -471,11 +472,62 @@ function RepoIdentityField() {
   );
 }
 
-type Preset = keyof typeof SUGGEST_PRESETS;
+function ModelsLink({ label, url }: { label: string; url: string }) {
+  return (
+    <button type="button" onClick={() => github.openUrl(url).catch((e) => toast("error", "Could not open the link", errorMessage(e)))} className="text-foreground underline underline-offset-2 hover:text-primary">
+      {label}
+    </button>
+  );
+}
+
+const segment = (on: boolean) =>
+  cn(
+    "border-r border-border-strong px-2.5 text-[12px] last:border-r-0",
+    on ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
+  );
+
+/** Segmented like the rest, with the less common CLIs under Others to keep it narrow. */
+function AgentPicker({ value, onChange }: { value: Preset | "custom"; onChange: (v: Preset | "custom") => void }) {
+  const presets = Object.keys(SUGGEST_PRESETS) as Preset[];
+  const other = value !== "custom" && SUGGEST_PRESETS[value].other;
+  return (
+    <div className="flex h-7 overflow-hidden rounded-md border border-border-strong">
+      {presets
+        .filter((k) => !SUGGEST_PRESETS[k].other)
+        .map((k) => (
+          <button key={k} onClick={() => onChange(k)} className={segment(k === value)}>
+            {SUGGEST_PRESETS[k].label}
+          </button>
+        ))}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button className={cn(segment(other), "flex items-center gap-1")}>
+            {other ? SUGGEST_PRESETS[value].label : "Others"}
+            <ChevronDown className="size-3" />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-36">
+          <DropdownMenuRadioGroup value={value} onValueChange={(v) => onChange(v as Preset)}>
+            {presets
+              .filter((k) => SUGGEST_PRESETS[k].other)
+              .map((k) => (
+                <DropdownMenuRadioItem key={k} value={k}>
+                  {SUGGEST_PRESETS[k].label}
+                </DropdownMenuRadioItem>
+              ))}
+          </DropdownMenuRadioGroup>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <button onClick={() => onChange("custom")} className={segment(value === "custom")}>
+        Custom
+      </button>
+    </div>
+  );
+}
 
 function CommitSection() {
   const s = useSettings();
-  const preset = (Object.keys(SUGGEST_PRESETS) as Preset[]).find((k) => SUGGEST_PRESETS[k].command === s.suggestCommand.trim());
+  const preset = presetOf(s.suggestCommand);
   // Custom stays picked while its text happens to match a preset.
   const [custom, setCustom] = useState(false);
   const input = useRef<HTMLInputElement>(null);
@@ -492,19 +544,47 @@ function CommitSection() {
         hint="Runs in the repository's folder, directly, not through a shell. The prompt and the diff arrive on stdin; put {prompt} in the command to pass the prompt as an argument instead. If it isn't found, give its full path (`which claude` in Terminal prints it)."
         commands={["git.suggestMessage"]}
       >
-        <div className="flex w-64 flex-col gap-2">
-          <Segmented<Preset | "custom">
+        <div className="flex w-80 flex-col gap-2">
+          <AgentPicker
             value={custom || !preset ? "custom" : preset}
             onChange={(v) => {
               setCustom(v === "custom");
               if (v === "custom") input.current?.focus();
               else updateSettings({ suggestCommand: SUGGEST_PRESETS[v].command });
             }}
-            options={[...(Object.keys(SUGGEST_PRESETS) as Preset[]).map((k): [Preset, string] => [k, SUGGEST_PRESETS[k].label]), ["custom", "Custom"]]}
           />
           <Input ref={input} value={s.suggestCommand} onChange={(e) => updateSettings({ suggestCommand: e.target.value })} placeholder="claude -p" spellCheck={false} className="font-mono" />
         </div>
       </Field>
+      {preset ? (
+        <Field
+          label="Model"
+          hint={
+            <>
+              Passed as <code className="font-mono text-foreground">{`${SUGGEST_PRESETS[preset].modelFlag} ${SUGGEST_PRESETS[preset].model}`}</code>; empty uses the CLI's own default. New models come out often, and <ModelsLink {...SUGGEST_PRESETS[preset].models} /> has the current IDs.
+            </>
+          }
+        >
+          <Input
+            value={modelOf(preset, s.suggestModels)}
+            onChange={(e) => updateSettings({ suggestModels: { ...s.suggestModels, [preset]: e.target.value.replace(/\s/g, "") } })}
+            placeholder="CLI default"
+            spellCheck={false}
+            className="w-80 font-mono"
+          />
+        </Field>
+      ) : (
+        <Field
+          label="Model"
+          hint={
+            <>
+              Goes in the command itself. <ModelsLink {...ALL_MODELS} /> lists every provider's current model IDs.
+            </>
+          }
+        >
+          {null}
+        </Field>
+      )}
       <div className="py-3.5">
         <div className="text-[12.5px] font-medium">What the command gets</div>
         <div className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">Only when you click ✦, and nothing else from the app:</div>
@@ -774,7 +854,7 @@ function Kbd({ children }: { children: React.ReactNode }) {
   return <kbd className="rounded-sm border border-border-strong bg-background px-1.5 py-px font-mono text-[11px] text-foreground">{children}</kbd>;
 }
 
-function Field({ label, hint, commands, children }: { label: string; hint?: string; commands?: CommandId[]; children: React.ReactNode }) {
+function Field({ label, hint, commands, children }: { label: string; hint?: React.ReactNode; commands?: CommandId[]; children: React.ReactNode }) {
   const { keybindings } = useSettings();
   const keys = commands?.map((id) => bindingsFor(id, keybindings)[0]).filter(Boolean) ?? [];
   return (
@@ -799,14 +879,7 @@ function Segmented<T extends string>({ value, onChange, options }: { value: T; o
   return (
     <div className="flex h-7 overflow-hidden rounded-md border border-border-strong">
       {options.map(([v, label]) => (
-        <button
-          key={v}
-          onClick={() => onChange(v)}
-          className={cn(
-            "border-r border-border-strong px-2.5 text-[12px] last:border-r-0",
-            v === value ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
-          )}
-        >
+        <button key={v} onClick={() => onChange(v)} className={segment(v === value)}>
           {label}
         </button>
       ))}

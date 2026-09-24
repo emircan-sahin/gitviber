@@ -2,6 +2,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow, type Theme as WindowTheme } from "@tauri-apps/api/window";
 import type { Whitespace } from "./api";
 import { cleanOverrides, IS_MAC, IS_WINDOWS } from "./commands";
+import { SUGGEST_PRESETS, type SuggestPreset } from "./suggest";
 import { useSyncExternalStore } from "react";
 
 export const CODE_FONTS = {
@@ -129,6 +130,8 @@ export interface Settings {
   suggestEnabled: boolean;
   /** The user's own agent CLI, split like a shell command line (suggest.rs). */
   suggestCommand: string;
+  /** Model ids typed per preset; a preset missing here runs its default, so a newer default reaches it. */
+  suggestModels: Partial<Record<SuggestPreset, string>>;
   /** The app "Open in" runs on a click: a built-in id or a CustomApp's; "" until one is picked. */
   openInApp: string;
   openInCustom: CustomApp[];
@@ -170,6 +173,7 @@ const DEFAULTS: Settings = {
   cloneParent: null,
   suggestEnabled: false,
   suggestCommand: "claude -p",
+  suggestModels: {},
   openInApp: "",
   openInCustom: [],
   openInHideBuiltins: false,
@@ -202,6 +206,8 @@ function load(): Settings {
     if (typeof s.notify !== "boolean") s.notify = DEFAULTS.notify;
     if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;
+    const models = s.suggestModels && typeof s.suggestModels === "object" ? s.suggestModels : {};
+    s.suggestModels = Object.fromEntries(Object.keys(SUGGEST_PRESETS).filter((k) => typeof models[k] === "string").map((k) => [k, models[k]]));
     s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;
     if (!FETCH_INTERVALS.includes(s.backgroundFetch)) s.backgroundFetch = DEFAULTS.backgroundFetch;
     if (typeof s.cloneParent !== "string") s.cloneParent = null;
