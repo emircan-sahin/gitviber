@@ -42,6 +42,9 @@ static LATEST: AtomicU64 = AtomicU64::new(0);
 /// Other files read at most, the likeliest first: a name like `new` is in most of a Rust repo.
 const MAX_FILES: usize = 150;
 const MAX_RESULTS: usize = 50;
+/// For references, which read every file that mentions the name.
+const MAX_REFERENCE_FILES: usize = 1000;
+const MAX_REFERENCES: usize = 2000;
 /// Past this a file is generated or minified, and not read for definitions.
 const MAX_BYTES: usize = 1024 * 1024;
 /// `git cat-file --batch` gets its whole list before its output is read: under a pipe's buffer.
@@ -448,18 +451,74 @@ fn byte_at(src: &str, line: u32, column: u32) -> Option<usize> {
 }
 
 pub fn find(repo: &Path, req: &Request) -> Result<Vec<Location>, String> {
-    let id = LATEST.fetch_add(1, Ordering::SeqCst) + 1;
+    let id = begin(req)?;
+    definitions(repo, req, id)
+}
+
+/// Where the name at the request's place is used, its definition and imports included: the
+/// uses that resolve to the same definition, as far as each file tells (see `fits`).
+pub fn references(repo: &Path, req: &Request) -> Result<Vec<Location>, String> {
+    let id = begin(req)?;
+    let Some(lang) = Lang::of(&req.path) else {
+        return Ok(vec![]);
+    };
+    let src = req.text.as_str();
+    let Some((name, _)) = resolve(lang, &req.path, src, req.line, req.column) else {
+        return Ok(vec![]);
+    };
+    let targets = definitions(repo, req, id)?;
+    if targets.is_empty() {
+        return Ok(vec![]);
+    }
+    let mut files = vec![(req.path.clone(), req.text.clone())];
+    // A local name is used in its own file only.
+    if !targets
+        .iter()
+        .all(|t| t.path == req.path && is_local(lang, src, t))
+    {
+        let mut paths = mentions(repo, req.rev.as_deref(), lang, name)?;
+        paths.retain(|p| *p != req.path);
+        paths.sort();
+        paths.truncate(MAX_REFERENCE_FILES);
+        files.extend(read_all(repo, req.rev.as_deref(), &paths)?);
+    }
+    // Files with a definition of the name: a use whose import names one of them means that one.
+    let defining: HashSet<&str> = files
+        .iter()
+        .filter(|(path, text)| defines(path, text, name))
+        .map(|(path, _)| path.as_str())
+        .collect();
+    let mut found = vec![];
+    for (path, text) in &files {
+        if LATEST.load(Ordering::SeqCst) != id {
+            return Err(CANCELLED.into());
+        }
+        found.extend(uses(path, text, name, &targets, &defining));
+        if found.len() >= MAX_REFERENCES {
+            found.truncate(MAX_REFERENCES);
+            break;
+        }
+    }
+    Ok(found)
+}
+
+/// A lookup starts, which outdates the one running.
+fn begin(req: &Request) -> Result<u64, String> {
     if let Some(rev) = &req.rev {
         git::validate_tree_rev(rev)?;
     }
+    Ok(LATEST.fetch_add(1, Ordering::SeqCst) + 1)
+}
+
+fn definitions(repo: &Path, req: &Request, id: u64) -> Result<Vec<Location>, String> {
     let Some(lang) = Lang::of(&req.path) else {
         return Ok(vec![]);
     };
     let src = req.text.as_str();
     match resolve(lang, &req.path, src, req.line, req.column) {
         None => Ok(vec![]),
-        Some(Answer::Here(found)) => Ok(found),
-        Some(Answer::Elsewhere { name, hint, import }) => {
+        Some((_, Answer::Here(found))) => Ok(found),
+        Some((name, Answer::Elsewhere { hint, import })) => {
             let found = search(repo, req, lang, name, &hint, id)?;
             Ok(if found.is_empty() {
                 import.into_iter().collect()
@@ -470,71 +529,77 @@ pub fn find(repo: &Path, req: &Request) -> Result<Vec<Location>, String> {
     }
 }
 
-enum Answer<'s> {
+enum Answer {
     Here(Vec<Location>),
     /// In another file, likely one `hint` names; else the import that brought it in, if any.
     Elsewhere {
-        name: &'s str,
         hint: String,
         import: Option<Location>,
     },
 }
 
-/// What the name at a line and column is, as far as its own file tells.
-fn resolve<'s>(lang: Lang, path: &str, src: &'s str, line: u32, column: u32) -> Option<Answer<'s>> {
+/// The name at a line and column, and what it is as far as its own file tells.
+fn resolve<'s>(
+    lang: Lang,
+    path: &str,
+    src: &'s str,
+    line: u32,
+    column: u32,
+) -> Option<(&'s str, Answer)> {
     let spec = spec(lang);
     let tree = parse(spec, src)?;
     let node = reference_at(&tree, byte_at(src, line, column)?)?;
-    let name = text(node, src);
     let (defs, globs) = defs(spec, &tree, src);
+    Some((text(node, src), answer(node, &defs, &globs, path, src)))
+}
+
+/// What the name `node` is, as far as its own file tells.
+fn answer(node: Node, defs: &[Def], globs: &[Node], path: &str, src: &str) -> Answer {
+    let name = text(node, src);
     let here = |d: &Def| location(path, src, d.node);
     let import = |d: &Def| Answer::Elsewhere {
-        name,
         hint: statement(d.node, src).to_string(),
         import: Some(here(d)),
     };
 
     // On a definition: that one, or what an import brings in.
     if let Some(d) = defs.iter().find(|d| d.node.id() == node.id()) {
-        return Some(match d.kind {
+        return match d.kind {
             Kind::Import => import(d),
             _ => Answer::Here(vec![here(d)]),
-        });
+        };
     }
     let through = qualifier(node);
     if through.is_some() || MEMBERS.contains(&node.kind()) {
         // `api.readFile` with `api` imported: in the file it comes from.
         let imported = through
-            .and_then(|q| in_scope(&defs, text(q, src), q.start_byte(), src))
+            .and_then(|q| in_scope(defs, text(q, src), q.start_byte(), src))
             .filter(|d| d.kind == Kind::Import);
         if let Some(d) = imported {
-            return Some(Answer::Elsewhere {
-                name,
+            return Answer::Elsewhere {
                 hint: statement(d.node, src).to_string(),
                 import: None,
-            });
+            };
         }
         let found: Vec<_> = defs
             .iter()
             .filter(|d| d.exported() && text(d.node, src) == name)
             .map(here)
             .collect();
-        return Some(if found.is_empty() {
+        return if found.is_empty() {
             Answer::Elsewhere {
-                name,
                 hint: node.parent().map_or("", |p| text(p, src)).to_string(),
                 import: None,
             }
         } else {
             Answer::Here(found)
-        });
+        };
     }
-    Some(match in_scope(&defs, name, node.start_byte(), src) {
+    match in_scope(defs, name, node.start_byte(), src) {
         Some(d) if d.kind == Kind::Import => import(d),
         Some(d) => Answer::Here(vec![here(d)]),
         // Maybe from a module imported whole.
         None => Answer::Elsewhere {
-            name,
             hint: globs
                 .iter()
                 .map(|g| statement(*g, src))
@@ -542,7 +607,95 @@ fn resolve<'s>(lang: Lang, path: &str, src: &'s str, line: u32, column: u32) -> 
                 .join("\n"),
             import: None,
         },
-    })
+    }
+}
+
+/// Whether the definition at `t` in `src` is visible only in its file.
+fn is_local(lang: Lang, src: &str, t: &Location) -> bool {
+    let spec = spec(lang);
+    let Some(tree) = parse(spec, src) else {
+        return false;
+    };
+    let (defs, _) = defs(spec, &tree, src);
+    defs.iter()
+        .find(|d| location(&t.path, src, d.node) == *t)
+        .is_some_and(|d| d.kind == Kind::Def && d.scope.is_some())
+}
+
+fn defines(path: &str, src: &str, name: &str) -> bool {
+    let Some(spec) = Lang::of(path).map(spec) else {
+        return false;
+    };
+    let Some(tree) = parse(spec, src) else {
+        return false;
+    };
+    defs(spec, &tree, src)
+        .0
+        .iter()
+        .any(|d| d.exported() && text(d.node, src) == name)
+}
+
+/// The places in `src` where `name` means one of `targets`.
+fn uses(
+    path: &str,
+    src: &str,
+    name: &str,
+    targets: &[Location],
+    defining: &HashSet<&str>,
+) -> Vec<Location> {
+    let Some(lang) = Lang::of(path) else {
+        return vec![];
+    };
+    let spec = spec(lang);
+    let Some(tree) = parse(spec, src) else {
+        return vec![];
+    };
+    let (defs, globs) = defs(spec, &tree, src);
+    let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '$');
+    src.match_indices(name)
+        .filter(|(i, _)| {
+            !word(src[..*i].chars().next_back()) && !word(src[i + name.len()..].chars().next())
+        })
+        .filter_map(|(i, _)| {
+            tree.root_node()
+                .descendant_for_byte_range(i, i + name.len())
+        })
+        // Not in a string or a comment.
+        .filter(|n| REFERENCES.contains(&n.kind()) && text(*n, src) == name)
+        .filter(|n| match answer(*n, &defs, &globs, path, src) {
+            Answer::Here(found) => found.iter().any(|f| targets.contains(f)),
+            Answer::Elsewhere { hint, import } => {
+                import.is_some_and(|i| targets.contains(&i))
+                    || fits(&hint, path, lang, targets, defining)
+            }
+        })
+        .map(|n| location(path, src, n))
+        .collect()
+}
+
+/// Whether a use `hint` points to (see `answer`) can mean `targets`: its import names a target's
+/// file, or none of the files defining the name, which leaves them all.
+fn fits(
+    hint: &str,
+    path: &str,
+    lang: Lang,
+    targets: &[Location],
+    defining: &HashSet<&str>,
+) -> bool {
+    // Not defined in its own file where a target is: another name.
+    if targets.iter().any(|t| t.path == path) {
+        return false;
+    }
+    let words = words(hint);
+    let names = |p: &str| file_names(p, lang).iter().any(|n| words.contains(n));
+    targets.iter().any(|t| names(&t.path)) || !defining.iter().any(|p| names(p))
+}
+
+fn words(hint: &str) -> HashSet<String> {
+    hint.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 /// `name`'s top-level definitions and members in the other files that mention it. Files `hint`
@@ -556,11 +709,7 @@ fn search(
     id: u64,
 ) -> Result<Vec<Location>, String> {
     let rev = req.rev.as_deref();
-    let words: HashSet<String> = hint
-        .split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
-        .filter(|w| !w.is_empty())
-        .map(str::to_lowercase)
-        .collect();
+    let words = words(hint);
     let hinted = |path: &str| file_names(path, lang).iter().any(|n| words.contains(n));
     let mut paths = mentions(repo, rev, lang, name)?;
     paths.retain(|p| *p != req.path);
@@ -680,17 +829,25 @@ fn read_all(
             })
             .collect());
     };
-    let mut input = String::new();
-    let mut asked = vec![];
-    for p in paths {
-        let line = format!("{rev}:{p}\n");
-        // A name with a newline would split the request.
-        if p.contains('\n') || input.len() + line.len() > MAX_BATCH_INPUT {
-            continue;
+    let mut texts = vec![];
+    // A name with a newline would split the request.
+    let mut paths = paths.iter().filter(|p| !p.contains('\n')).peekable();
+    while paths.peek().is_some() {
+        let mut input = String::new();
+        let mut asked = vec![];
+        while let Some(p) = paths.next_if(|p| {
+            input.len() + rev.len() + p.len() + 2 <= MAX_BATCH_INPUT || asked.is_empty()
+        }) {
+            input.push_str(&format!("{rev}:{p}\n"));
+            asked.push(p);
         }
-        input.push_str(&line);
-        asked.push(p);
+        texts.extend(batch(repo, &input, &asked)?);
     }
+    Ok(texts)
+}
+
+/// `git cat-file --batch` for `input`, a `<rev>:<path>` line for each of `asked`.
+fn batch(repo: &Path, input: &str, asked: &[&String]) -> Result<Vec<(String, String)>, String> {
     let cmd = git::command(repo, &["cat-file", "--batch"]);
     let out = git::exec(
         cmd,
@@ -702,7 +859,7 @@ fn read_all(
     // Each answer: `<oid> blob <size>\n<content>\n`, or `<spec> missing\n`.
     let mut texts = vec![];
     let mut rest = out.as_slice();
-    for p in asked {
+    for &p in asked {
         let Some(nl) = rest.iter().position(|&b| b == b'\n') else {
             break;
         };
@@ -739,9 +896,11 @@ mod tests {
         let line = before.matches('\n').count() as u32 + 1;
         let column = utf16(&before[before.rfind('\n').map_or(0, |n| n + 1)..]);
         let pos = |l: &Location| format!("{}:{}", l.line, l.column);
-        match resolve(Lang::of(path).unwrap(), path, &src, line, column).expect("a name there") {
+        let (name, answer) =
+            resolve(Lang::of(path).unwrap(), path, &src, line, column).expect("a name there");
+        match answer {
             Answer::Here(found) => found.iter().map(pos).collect(),
-            Answer::Elsewhere { name, hint, import } => {
+            Answer::Elsewhere { hint, import } => {
                 let import = import.as_ref().map_or("-".into(), pos);
                 vec![format!("elsewhere {name} [{hint}] {import}")]
             }

@@ -365,6 +365,16 @@ async fn definitions(
     blocking(move || definitions::find(&r, &request)).await
 }
 
+/// Go to References in the code view; a newer lookup stops this one (definitions::CANCELLED).
+#[tauri::command]
+async fn references(
+    state: State<'_, AppState>,
+    request: definitions::Request,
+) -> Res<Vec<definitions::Location>> {
+    let r = repo(&state)?;
+    blocking(move || definitions::references(&r, &request)).await
+}
+
 #[tauri::command]
 async fn blame(state: State<'_, AppState>, path: String) -> Res<git::Blame> {
     let r = repo(&state)?;
@@ -1714,6 +1724,7 @@ pub fn run() {
             list_files,
             search_files,
             definitions,
+            references,
             cancel_search,
             read_file,
             tree_paths,

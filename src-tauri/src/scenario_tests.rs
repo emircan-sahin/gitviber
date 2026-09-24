@@ -3296,3 +3296,71 @@ fn definitions_are_found_in_other_files_of_the_worktree_and_a_commit() {
     let src = "use outside::Thing;\nfn f(t: Thing) {}\n";
     assert_eq!(at(src, 2, 8, None), [loc("src/lib.rs", 1, 13, 18)]);
 }
+
+#[test]
+fn references_are_the_uses_that_mean_the_same_definition() {
+    use crate::definitions::{references, Request};
+    let sb = Sandbox::new("references");
+    let r = sb.path("r");
+    init(&r);
+    let files = [
+        ("src/util.ts", "export function helper() {}\n"),
+        ("src/other.ts", "export function helper() {}\n"),
+        (
+            "src/a.ts",
+            "import { helper } from \"./util\";\nhelper(); // helper\n",
+        ),
+        (
+            "src/b.ts",
+            "import { helper } from \"./other\";\nhelper();\n",
+        ),
+        (
+            "src/c.ts",
+            "function f() { const helper = 1; return helper; }\n",
+        ),
+        ("src/git.rs", "pub fn run() {}\n"),
+        ("src/other.rs", "pub fn run() {}\n"),
+        ("src/lib.rs", "mod git;\nfn f() { git::run(); }\n"),
+        ("src/uses.rs", "use crate::other::run;\nfn g() { run(); }\n"),
+    ];
+    for (path, text) in files {
+        write_commit(&r, path, text, path);
+    }
+    let head = log(&r, None, 0, 1).unwrap()[0].sha.clone();
+    let at = |path: &str, line, column, rev: Option<&str>| {
+        let text = fs::read_to_string(r.join(path)).unwrap();
+        let req = Request {
+            path: path.into(),
+            text,
+            line,
+            column,
+            rev: rev.map(String::from),
+        };
+        let mut found: Vec<String> = references(&r, &req)
+            .unwrap()
+            .iter()
+            .map(|l| format!("{}:{}:{}", l.path, l.line, l.column))
+            .collect();
+        found.sort();
+        found
+    };
+
+    // From the definition or a use, the same: its imports and uses, not the other helper's, a
+    // local of the same name or the comment.
+    let util = ["src/a.ts:1:9", "src/a.ts:2:0", "src/util.ts:1:16"];
+    assert_eq!(at("src/util.ts", 1, 16, None), util);
+    assert_eq!(at("src/a.ts", 2, 1, None), util);
+    assert_eq!(at("src/a.ts", 2, 1, Some(&head)), util);
+    assert_eq!(
+        at("src/c.ts", 1, 43, None),
+        ["src/c.ts:1:21", "src/c.ts:1:40"]
+    );
+    assert_eq!(
+        at("src/git.rs", 1, 7, None),
+        ["src/git.rs:1:7", "src/lib.rs:2:14"]
+    );
+    assert_eq!(
+        at("src/other.rs", 1, 7, None),
+        ["src/other.rs:1:7", "src/uses.rs:1:18", "src/uses.rs:2:9"]
+    );
+}
