@@ -1,10 +1,11 @@
 import { Dialog as DialogPrimitive } from "radix-ui";
-import { type ReactNode, useDeferredValue, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { api, errorMessage } from "@/lib/api";
 import { bindingsFor, COMMANDS, formatChord, isCommandId } from "@/lib/commands";
 import { fuzzyMatch, type Match, matchPath, prepareQuery } from "@/lib/fuzzy";
 import { type Action, hasHandler, MENU_ACTION_INFO, MENU_ACTIONS, matchesCommand, runCommand } from "@/lib/keybindings";
+import { pointerMoved } from "@/lib/pointer";
 import { useSettings } from "@/lib/settings";
 import { useTerminals } from "@/lib/terminals";
 import { cn, splitPath } from "@/lib/utils";
@@ -116,14 +117,6 @@ export function CommandPalette() {
   // What was picked runs once the palette has closed and its dialog no longer blocks commands.
   const picked = useRef<(() => void) | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
-  // WebKit sends a mousemove after every scroll, the pointer standing still: ↓ scrolling the
-  // list then moved the highlight to whatever row slid under it. Only a real move counts.
-  const pointer = useRef<{ x: number; y: number } | null>(null);
-  const hover = (i: number) => (e: React.MouseEvent) => {
-    const p = pointer.current;
-    pointer.current = { x: e.screenX, y: e.screenY };
-    if (p && (p.x !== e.screenX || p.y !== e.screenY)) setIndex(i);
-  };
   const listId = useId();
   const { keybindings } = useSettings();
   const terminalOpen = useTerminals().open;
@@ -155,21 +148,21 @@ export function CommandPalette() {
     };
   }, [wantsFiles, root, state?.id]);
 
-  const deferred = useDeferredValue(query);
+  // Straight from the box, not useDeferredValue: ↵ must run what it says now, not what an older render listed.
   const items = useMemo((): Item[] => {
     if (!state) return [];
     const pick = (fn: () => void) => () => {
       picked.current = fn;
       set(null);
     };
-    if (deferred.startsWith(">")) {
+    if (query.startsWith(">")) {
       const recent = recentCommands();
       const entries = [
         ...COMMANDS.map((c) => ({ id: c.id as Action, title: c.title, category: c.category })),
         ...MENU_ACTIONS.map((id) => ({ id: id as Action, ...MENU_ACTION_INFO[id] })),
       ].filter((c) => c.id !== "workbench.showCommands" && hasHandler(c.id));
       return rank(
-        deferred.slice(1),
+        query.slice(1),
         entries,
         (c) => {
           const title = c.id === "terminal.toggle" ? (terminalOpen ? "Hide Terminal" : "Show Terminal") : c.title;
@@ -188,7 +181,7 @@ export function CommandPalette() {
           row: () => (
             <>
               <Highlight text={label} hits={match.hits} className="min-w-0 flex-1 truncate" />
-              {recent.includes(c.id) && !deferred.slice(1).trim() && <span className="shrink-0 text-[10.5px] opacity-60">recently used</span>}
+              {recent.includes(c.id) && !query.slice(1).trim() && <span className="shrink-0 text-[10.5px] opacity-60">recently used</span>}
               {chord && <kbd className="shrink-0 font-mono text-[11px] opacity-70">{formatChord(chord)}</kbd>}
             </>
           ),
@@ -198,7 +191,7 @@ export function CommandPalette() {
     const src = source;
     if (!src) return [];
     if (mode === "changes") {
-      return rank(deferred, src.changes, (c) => c.file.path, matchPath).map(({ item: c, label, match }) => ({
+      return rank(query, src.changes, (c) => c.file.path, matchPath).map(({ item: c, label, match }) => ({
         key: `${c.kind}:${c.file.path}`,
         run: pick(() => src.openChange(c)),
         row: (hot: boolean) => (
@@ -211,7 +204,7 @@ export function CommandPalette() {
       }));
     }
     const recent = recentFiles(src.root);
-    return rank(deferred, list ?? [], (p) => p, matchPath, (p) => recent.indexOf(p)).map(({ item: path, match }) => ({
+    return rank(query, list ?? [], (p) => p, matchPath, (p) => recent.indexOf(p)).map(({ item: path, match }) => ({
       key: path,
       run: pick(() => {
         rememberFile(src.root, path);
@@ -220,13 +213,13 @@ export function CommandPalette() {
       row: () => (
         <>
           <PathRow path={path} hits={match.hits} />
-          {recent.includes(path) && !deferred.trim() && <span className="shrink-0 text-[10.5px] opacity-60">recently opened</span>}
+          {recent.includes(path) && !query.trim() && <span className="shrink-0 text-[10.5px] opacity-60">recently opened</span>}
         </>
       ),
     }));
-  }, [state, deferred, mode, list, keybindings, terminalOpen]);
+  }, [state, query, mode, list, keybindings, terminalOpen]);
 
-  useEffect(() => setIndex(0), [deferred, mode, state, list]);
+  useEffect(() => setIndex(0), [query, mode, state, list]);
   useEffect(() => {
     listRef.current?.querySelector(`[data-option="${index}"]`)?.scrollIntoView({ block: "nearest" });
   }, [index]);
@@ -299,7 +292,7 @@ export function CommandPalette() {
               data-option={i}
               role="option"
               aria-selected={i === index}
-              onMouseMove={hover(i)}
+              onMouseMove={(e) => pointerMoved(e) && i !== index && setIndex(i)}
               // Keep the focus in the box.
               onMouseDown={(e) => e.preventDefault()}
               onClick={it.run}
