@@ -534,6 +534,35 @@
   color: var(--foreground);
 }
 
+/* Stage / Discard over the change under the pointer (lib/lineActions). */
+.gv-hunk-bar {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  background: var(--elevated);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 0.35);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  line-height: 1;
+}
+.gv-hunk-bar button {
+  padding: 3px 7px;
+  border-radius: 3px;
+  color: var(--foreground);
+  cursor: pointer;
+}
+.gv-hunk-bar button:hover {
+  background: var(--active);
+}
+.gv-hunk-bar button.gv-hunk-discard {
+  color: var(--muted-foreground);
+}
+.gv-hunk-bar button.gv-hunk-discard:hover {
+  color: var(--destructive);
+}
+
 /* Unified diffs: Monaco shades the old-line-number column of a whole change, added lines too, which
    read as deletions. Deleted lines keep their shade from their own margin. */
 .monaco-diff-editor:not(.side-by-side) .gutter-delete {

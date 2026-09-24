@@ -8,6 +8,7 @@ mod github;
 mod grep;
 mod journal;
 mod lfs;
+mod lines;
 mod menu;
 mod navigation;
 mod network;
@@ -567,6 +568,22 @@ async fn discard(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
     blocking(move || {
         journal.discard(&r, &paths, || {
             with_index_lock(&index, &r, |r| git::discard(r, &paths))
+        })
+    })
+    .await
+}
+
+/// Stages, unstages or discards some of a file's changed lines; a discard can be undone.
+#[tauri::command]
+async fn change_lines(state: State<'_, AppState>, request: lines::Request) -> Res<()> {
+    if request.action != "discard" {
+        return indexed(&state, move |r| lines::run(r, &request)).await;
+    }
+    let r = repo(&state)?;
+    let journal = state.journal.clone();
+    blocking(move || {
+        journal.discard(&r, std::slice::from_ref(&request.path), || {
+            lines::run(&r, &request)
         })
     })
     .await
@@ -1723,6 +1740,7 @@ pub fn run() {
             list_dir,
             list_files,
             search_files,
+            change_lines,
             definitions,
             references,
             cancel_search,

@@ -8,6 +8,7 @@ import { findMatches } from "@/lib/findQuery";
 import { onReveal, takeReveal } from "@/lib/reveal";
 import { codeWantsFocus, setCodeEditor } from "@/lib/panels";
 import { followDefinitions } from "@/lib/definitions";
+import { followLineActions } from "@/lib/lineActions";
 import { type LinkSide, onReveal as onLinkReveal, takeReveal as takeLinkReveal } from "@/lib/linkHost";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
 import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
@@ -36,6 +37,8 @@ interface Props {
   onBlameClick?: (commit: BlameCommit) => void;
   /** Each side's file and tree, for Go to Definition (the old side only in a diff); none: nowhere to go. */
   links?: { original: LinkSide | null; modified: LinkSide } | null;
+  /** A working-tree diff whose changes can be staged, unstaged or discarded from here. */
+  staging?: { kind: "unstaged" | "staged"; refresh: () => unknown } | null;
 }
 
 type Editor = monaco.editor.IStandaloneDiffEditor | monaco.editor.IStandaloneCodeEditor;
@@ -71,7 +74,7 @@ export function lineInView(path: string): number | undefined {
 }
 
 /** The code view on Monaco (VS Code's editor): a diff editor for changes, a plain one for files. */
-export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, blameColumn = false, onBlameClick, links = null }, ref) {
+export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, blameColumn = false, onBlameClick, links = null, staging = null }, ref) {
   const s = useSettings();
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<Editor | null>(null);
@@ -88,6 +91,10 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   const onBlameClickRef = useRef(onBlameClick);
   onBlameClickRef.current = onBlameClick;
   const linksRef = useRef(links);
+  const stagingRef = useRef(staging);
+  stagingRef.current = staging;
+  // The diff on show, which a newer `pair` replaces only once it's ready.
+  const shownPair = useRef<{ pair: DiffPair; path: string } | null>(null);
   linksRef.current = links;
   const split = useRef(false);
   split.current = mode === "split";
@@ -115,10 +122,17 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     const follow = (code: monaco.editor.ICodeEditor, side: "original" | "modified") => followDefinitions(code, () => linksRef.current?.[side] ?? null);
     const linked = isDiff(e) ? [follow(e.getOriginalEditor(), "original"), follow(e.getModifiedEditor(), "modified")] : [follow(e, "modified")];
     const marks = isDiff(e) ? markFindMatches(e, el, () => split.current) : null;
+    const lines = isDiff(e)
+      ? followLineActions(e, () => {
+          const [s, on] = [stagingRef.current, shownPair.current];
+          return s && on ? { ...s, ...on } : null;
+        })
+      : null;
     return () => {
       click?.dispose();
       linked.forEach((l) => l.dispose());
       marks?.dispose();
+      lines?.dispose();
       if (shown.current) viewStates.set(shown.current, e.saveViewState()!);
       shown.current = null;
       const models = modelsOf(e);
@@ -230,6 +244,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       unit.current = created.unit;
       old.forEach((m) => m.dispose());
       shown.current = scrollKey;
+      shownPair.current = { pair, path };
       const code = codeEditor(e);
       // Opened from the code view (J/K, a tab switch) or sent here before it was ready: take the keys.
       if (codeWantsFocus()) code.focus();

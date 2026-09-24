@@ -237,6 +237,18 @@ export interface DefinitionRequest {
   rev: string | null;
 }
 
+export interface LinesRequest {
+  path: string;
+  kind: "unstaged" | "staged";
+  action: "stage" | "unstage" | "discard";
+  /** The texts the diff showed (null: no such file), so a file changed since isn't touched. */
+  original: string | null;
+  modified: string | null;
+  /** Removed lines by their old line, added ones by their new line. */
+  removed: number[];
+  added: number[];
+}
+
 /** What a lookup a newer one stopped rejects with. */
 export const DEFINITIONS_CANCELLED = "definitions:cancelled";
 
@@ -475,6 +487,8 @@ export const api = {
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
   unstage: (paths: string[]) => invoke<void>("unstage", { paths }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
+  /** Stages, unstages or discards some lines of a diff (lines.rs); a discard is undoable. */
+  changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
   /** An empty `message` with `amend` keeps the old one (--no-edit). */
   commit: (message: string, options: CommitOptions) => invoke<void>("commit", { message, options }),
   /** `commit.template` without its comment lines; null when unset. */
