@@ -1,7 +1,7 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, type Theme as WindowTheme } from "@tauri-apps/api/window";
 import type { Whitespace } from "./api";
-import { cleanOverrides, IS_MAC } from "./commands";
+import { cleanOverrides, IS_MAC, IS_WINDOWS } from "./commands";
 import { useSyncExternalStore } from "react";
 
 export const CODE_FONTS = {
@@ -231,6 +231,28 @@ function resolve(): ResolvedSettings {
   return { ...current, theme, dark, codeTheme: dark ? current.syntaxTheme : current.lightSyntaxTheme };
 }
 
+/**
+ * Linux: the desktop's light or dark, which System sets the window to. There null can't stand for
+ * the OS: tao applies it as gtk-application-prefer-dark-theme = false, and WebKitGTK takes
+ * prefers-color-scheme from that flag, so a dark Wayland desktop got the light UI. Until the
+ * first setTheme, theme() is what tao read from the XDG portal; after that tao passes on the
+ * portal's changes (and echoes ours) as theme-changed events. Null elsewhere.
+ */
+let desktopTheme: Promise<WindowTheme | null> = Promise.resolve(null);
+if (!IS_MAC && !IS_WINDOWS) {
+  try {
+    const win = getCurrentWindow();
+    desktopTheme = win.theme().catch(() => null);
+    void win
+      .onThemeChanged(({ payload }) => {
+        if (current.appearance === "system") desktopTheme = Promise.resolve(payload);
+      })
+      .catch(() => {});
+  } catch {
+    // Not in a Tauri window.
+  }
+}
+
 let appliedAppearance: Appearance | null = null;
 function applyTheme() {
   document.documentElement.dataset.theme = resolved.theme;
@@ -239,9 +261,9 @@ function applyTheme() {
   // Native chrome (traffic lights, dialogs, context menus) follows the window theme; null = OS.
   // getCurrentWindow() throws outside Tauri (the browser-only dev fixture).
   try {
-    getCurrentWindow()
-      .setTheme(current.appearance === "system" ? null : resolved.dark ? "dark" : "light")
-      .catch(() => {});
+    const win = getCurrentWindow();
+    const chosen = current.appearance === "system" ? null : resolved.dark ? "dark" : "light";
+    desktopTheme.then((desktop) => win.setTheme(chosen ?? desktop)).catch(() => {});
   } catch {
     // Not in a Tauri window.
   }
