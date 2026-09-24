@@ -2007,6 +2007,62 @@ fn compare_lists_both_sides_and_counts_them() {
 }
 
 #[test]
+fn log_all_on_an_orphan_branch_lists_the_other_branches() {
+    let sb = Sandbox::new("orphan");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    run(a, &["switch", "-q", "--orphan", "lonely"]).unwrap();
+
+    let every = GraphRefs::default();
+    let all = log_all(a, &every, 0, 20, &LogFilter::default()).unwrap();
+    assert_eq!(
+        all.iter().map(|x| x.subject.as_str()).collect::<Vec<_>>(),
+        ["base"]
+    );
+    // No HEAD to be missing from, nothing of HEAD's to push.
+    assert!(all.iter().all(|x| !x.not_in_head && !x.unpushed));
+    // With every kind of ref turned off there's nothing to walk: an empty list, not HEAD's error.
+    let nothing = GraphRefs {
+        local: false,
+        remote: false,
+        tags: false,
+        ..every
+    };
+    assert!(log_all(a, &nothing, 0, 20, &LogFilter::default())
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn log_all_follows_a_file_on_head_only() {
+    let sb = Sandbox::new("allfollow");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    write_commit(a, "old.txt", "one\ntwo\nthree\nfour\n", "add old");
+    switch_branch(a, "side", true).unwrap();
+    write_commit(a, "old.txt", "one\ntwo\nthree\nfour\nfive\n", "on side");
+    switch_branch(a, "main", false).unwrap();
+    run(a, &["mv", "old.txt", "new.txt"]).unwrap();
+    run(a, &["commit", "-q", "-m", "rename"]).unwrap();
+
+    let follow = LogFilter {
+        paths: vec!["new.txt".into()],
+        follow: true,
+        ..Default::default()
+    };
+    let subjects = |log: Vec<Commit>| log.into_iter().map(|x| x.subject).collect::<Vec<_>>();
+    let all = subjects(log_all(a, &GraphRefs::default(), 0, 20, &follow).unwrap());
+    // Through the rename to the old name, as HEAD's own history has it; the side branch's
+    // edit of the old name isn't in it.
+    assert!(all.starts_with(&["rename".to_string(), "add old".to_string()]));
+    assert!(!all.contains(&"on side".to_string()));
+    assert_eq!(
+        all,
+        subjects(log_filtered(a, None, 0, 20, &follow).unwrap())
+    );
+}
+
+#[test]
 fn gone_upstream_is_unknown_not_pushed() {
     let sb = Sandbox::new("gone");
     let c = sb.remote_with_clones(1);

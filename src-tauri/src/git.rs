@@ -1243,9 +1243,14 @@ pub fn log_all(
     limit: u32,
     filter: &LogFilter,
 ) -> Result<Vec<Commit>, String> {
-    if !has_head(repo) {
-        return Ok(vec![]);
+    // git tracks a rename across the whole walk: another branch's commits from before it would
+    // drop out of the file's history. Following a file stays on HEAD's.
+    if filter.follows() {
+        return log_filtered(repo, None, skip, limit, filter);
     }
+    // A new orphan branch has no history of its own yet; the other branches still do, with
+    // nothing to mark as missing from it.
+    let head = has_head(repo);
     let mut tips: Vec<String> = vec![];
     if let Some(only) = &refs.only {
         validate_full_ref(repo, only)?;
@@ -1268,10 +1273,25 @@ pub fn log_all(
             tips.extend(hidden.map(|h| format!("--exclude={h}")));
             tips.push(flag.to_string());
         }
-        tips.push("HEAD".into());
+        if head {
+            tips.push("HEAD".into());
+        } else {
+            // With no ref to walk, git would fall back to the unborn HEAD and fail.
+            let kinds = REF_KINDS.iter().zip(on).filter(|(_, on)| *on);
+            let mut args = vec!["for-each-ref", "--format=%(refname)"];
+            args.extend(kinds.map(|((prefix, _), _)| *prefix));
+            let listed = if args.len() > 2 {
+                run_text(repo, &args)?
+            } else {
+                String::new()
+            };
+            if listed.lines().all(|r| refs.hidden.iter().any(|h| h == r)) {
+                return Ok(vec![]);
+            }
+        }
     }
     let tips: Vec<&str> = tips.iter().map(String::as_str).collect();
-    commits(repo, &tips, true, true, skip, limit, filter)
+    commits(repo, &tips, head, head, skip, limit, filter)
 }
 
 /// Comparing HEAD with `with` (a full ref): the commits `with` has that HEAD doesn't
