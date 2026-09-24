@@ -18,7 +18,7 @@ interface Props {
   /** Switches to a remote branch's local branch, creating it to track exactly that remote. */
   onSwitchRemote: (branch: Branch) => void;
   onCreate: (name: string) => void;
-  onMerge: (name: string) => void;
+  onMerge: (name: string, how?: "ff" | "no-ff" | "squash") => void;
   onRebase: (name: string) => void;
   /** Opens a terminal on the branch. */
   onTerminal: (name: string) => void;
@@ -196,6 +196,20 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
         if (input.current?.isConnected) input.current.focus();
       }}
     >
+      {!b.current && current && (
+        <>
+          <ContextMenuItem onSelect={menuAct(() => onMerge(b.name))}>
+            <GitMerge /> Merge into {current}
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={menuAct(() => onMerge(b.name, "no-ff"))}>
+            <GitMerge /> Merge into {current} (No Fast-forward)
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={menuAct(() => onMerge(b.name, "squash"))}>
+            <GitMerge /> Squash and Merge into {current}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+        </>
+      )}
       {!b.remote && (
         <ContextMenuItem onSelect={menuAct(() => onRename(b))}>
           <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}

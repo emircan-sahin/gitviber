@@ -194,7 +194,11 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     if (ok) await run("Clean up", () => api.deleteBranches(names, false), `Deleted ${names.length} merged branches`);
   };
 
-  const merge = (name: string) => run("Merge", () => api.merge(name), `Merged ${name}`);
+  const publish = (remote: string) => runNet("Publish", (op) => api.push(false, remote, op), `Branch published to ${remote}`);
+  // Where Publish goes without asking: the preferred remote, or the only one.
+  const publishTo = status?.branch && status.head ? (status.publish ?? (status.remotes.length === 1 ? status.remotes[0] : null)) : null;
+  const merge = (name: string, how: "ff" | "no-ff" | "squash" = "ff") =>
+    run(how === "squash" ? "Squash merge" : "Merge", () => api.merge(name, how), how === "squash" ? `Squashed ${name} into one commit` : `Merged ${name}`);
   // Rejected as non-fast-forward: the remote has commits this branch dropped, usually its own
   // old ones after a rebase or amend. Replacing them is a force push, so it asks first.
   // "fetch first" (commits not fetched yet) isn't offered: those want a pull.
@@ -221,6 +225,24 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   // Unknown until the push target has the branch; then a push is due.
   const pushAhead = status?.push ? (status.push.branch ? status.push.ahead : null) : (status?.ahead ?? 0);
 
+  // Changes that the other branch's files would overwrite: git refuses, and GitHub Desktop's way
+  // out is to leave them here in a stash (Stashes in Changes brings them back).
+  const switching = (to: string, fn: () => Promise<void>) => async () => {
+    try {
+      await fn();
+    } catch (e) {
+      if (!errorMessage(e).includes("would be overwritten by checkout")) throw e;
+      const here = status?.branch ?? "this commit";
+      const ok = await ask(`Your changes to some files conflict with ${to}. Stash them and switch? They stay in Stashes, to bring back on ${here} or anywhere.`, {
+        title: "Switch branch",
+        okLabel: "Stash and Switch",
+      });
+      if (!ok) return;
+      await api.stashPush(`Left on ${here} when switching to ${to}`, true);
+      await fn();
+    }
+  };
+
   // upstream/dev → dev. A local dev that tracks something else (origin/dev, say) is a
   // different line of work; say so rather than switch to it silently.
   const switchRemote = async (b: Branch) => {
@@ -232,7 +254,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       const ok = await ask(`A local ${name} already exists and ${tracks}, not ${b.name}. Switch to it as it is?`, { title: "Switch branch", okLabel: "Switch" });
       if (!ok) return;
     }
-    await run("Switch branch", () => api.switchTracking(b.name), `Switched to ${name}`);
+    await run("Switch branch", switching(name, () => api.switchTracking(b.name)), `Switched to ${name}`);
   };
 
   // A fresh count decides force: git refuses a dirty or locked worktree otherwise, and the
@@ -276,7 +298,9 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   useCommands({
     "git.fetch": busy ? undefined : () => runNet("Fetch", api.fetch),
     "git.pull": busy || !status?.upstream ? undefined : () => runNet("Pull", (op) => api.pull("ff", op), "Pulled"),
-    "git.push": busy || !status?.upstream ? undefined : () => push(),
+    // With no upstream yet, pushing is publishing, where Publish would without asking.
+    "git.push": busy ? undefined : status?.upstream ? () => push() : publishTo ? () => publish(publishTo) : undefined,
+    "git.sync": busy || !status?.upstream ? undefined : () => runNet("Sync", async (op) => (await api.pull("ff", op)) || api.push(false, undefined, op), "Synced"),
     "git.newBranch": () => setBranchDialog({ kind: "new", base: status?.branch ? `refs/heads/${status.branch}` : "HEAD" }),
     "git.newWorktree": () => openWorktreeDialog({ kind: "new" }),
   });
@@ -294,7 +318,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         label={branchName}
         branches={branches}
         current={status?.branch ?? null}
-        onSwitch={(name) => run("Switch branch", () => api.switchBranch(name, false), `Switched to ${name}`)}
+        onSwitch={(name) => run("Switch branch", switching(name, () => api.switchBranch(name, false)), `Switched to ${name}`)}
         onSwitchRemote={switchRemote}
         onCreate={(name) => run("Create branch", () => api.switchBranch(name, true), `Switched to new branch ${name}`)}
         onMerge={merge}
@@ -407,7 +431,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
           preferred={status?.publish ?? null}
           // Before the first commit there's nothing to push.
           disabled={!!busy || !status?.branch || !status.head}
-          onPublish={(remote) => runNet("Publish", (op) => api.push(false, remote, op), `Branch published to ${remote}`)}
+          onPublish={publish}
         />
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
