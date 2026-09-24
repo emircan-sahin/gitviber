@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: core IPC, showing the window once the page has its theme, window theme (follows the Light/Dark setting), webview zoom (the Interface scale setting) + native open-folder / confirm dialogs only. All file and git access goes through our own commands, which are confined to the opened repo.",
+  "description": "Main window: core IPC, showing the window once the page has its theme, window theme (follows the Light/Dark setting), webview zoom (the Interface scale setting) + native open-folder / confirm dialogs, and desktop notifications when the user turns them on. All file and git access goes through our own commands, which are confined to the opened repo.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-set-theme", "core:window:allow-show", "core:webview:allow-set-webview-zoom", "dialog:allow-open", "dialog:allow-ask"]
+  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-set-theme", "core:window:allow-show", "core:webview:allow-set-webview-zoom", "dialog:allow-open", "dialog:allow-ask", "notification:default"]
 }
