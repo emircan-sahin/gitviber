@@ -28,6 +28,11 @@ portable-pty = "=0.9.0"
 # Already linked through tauri and portable-pty; stops a cancelled git with the ssh it started.
 libc = "=0.2.189"
 
+# Dependencies without debug info: a fresh target/debug went from 3.0 to 2.0 GB, per worktree.
+# Our own crate keeps it, so its backtraces and breakpoints still work.
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 codegen-units = 1
 lto = true
