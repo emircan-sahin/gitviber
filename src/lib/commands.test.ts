@@ -9,6 +9,7 @@ import {
   commandFor,
   eventChord,
   formatChordFor,
+  isReserved,
   type KeyLike,
   menuAccelerator,
   runsWhileTyping,
@@ -199,4 +200,13 @@ test("with the terminal focused, a key goes to the app or the shell, never both"
   assert.equal(app("cmd+1", "tab.goto1", false), true);
   assert.equal(app("cmd+b", "view.toggleGitPanel", false), false);
   assert.equal(app("ctrl+b", "view.toggleGitPanel", false), true);
+});
+
+test("only macOS reserves chords", () => {
+  assert.equal(isReserved("cmd+q", true), true);
+  assert.equal(isReserved("cmd+h", true), true);
+  assert.equal(isReserved("cmd+b", true), false);
+  // Off macOS "cmd" is Ctrl, which nothing takes from the page.
+  assert.equal(isReserved("cmd+h", false), false);
+  assert.equal(isReserved("cmd+m", false), false);
 });

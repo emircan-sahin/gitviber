@@ -6,7 +6,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } fr
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
 import type { Whitespace } from "@/lib/api";
-import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventChord, formatChord, IS_MAC, RESERVED } from "@/lib/commands";
+import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventChord, formatChord, IS_MAC, isReserved } from "@/lib/commands";
 import { refreshOpenApps, useOpenApps } from "@/lib/openIn";
 import {
   type Appearance,
@@ -564,7 +564,7 @@ function Recorder({
     e.stopPropagation();
     if (e.key === "Escape") return onStop();
     if (!chord) return;
-    if (RESERVED.includes(chord)) return setRefused(`${formatChord(chord)} is reserved by macOS`);
+    if (isReserved(chord)) return setRefused(`${formatChord(chord)} is reserved by macOS`);
     onRecord(chord);
     onStop();
   };

@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { bindingsFor, type CommandId, commandFor, eventChord, formatChord, runsInTerminal, runsWhileTyping, takenFromTerminal } from "./commands";
 import { getSettings, useSettings } from "./settings";
 
-export { bindingsFor, COMMANDS, type Command, type CommandId, eventChord, formatChord, RESERVED } from "./commands";
+export { bindingsFor, COMMANDS, type Command, type CommandId, eventChord, formatChord, isReserved } from "./commands";
 
 /** The first binding of a command, formatted for a tooltip; follows the user's overrides. */
 export function useShortcut(id: CommandId): string | undefined {
