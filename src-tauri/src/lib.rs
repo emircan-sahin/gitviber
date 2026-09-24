@@ -14,6 +14,7 @@ mod navigation;
 mod network;
 mod open_in;
 mod pty;
+mod rewrite;
 #[cfg(test)]
 mod scenario_tests;
 mod shell;
@@ -217,6 +218,77 @@ async fn set_git_identity(
 }
 
 #[tauri::command]
+async fn remote_list(state: State<'_, AppState>) -> Res<Vec<git::Remote>> {
+    let r = repo(&state)?;
+    blocking(move || git::remote_list(&r)).await
+}
+
+/// `action`: "add" (name, url), "remove" (name), "rename" (name, to) or "set-url" (name, url).
+#[tauri::command]
+async fn remote_edit(
+    state: State<'_, AppState>,
+    action: String,
+    name: String,
+    value: Option<String>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || {
+        let value = || value.as_deref().ok_or("missing value");
+        match action.as_str() {
+            "add" => git::remote_add(&r, &name, value()?),
+            "remove" => git::remote_remove(&r, &name),
+            "rename" => git::remote_rename(&r, &name, value()?),
+            "set-url" => git::remote_set_url(&r, &name, value()?),
+            other => Err(format!("unknown remote action: {other}")),
+        }
+    })
+    .await
+}
+
+/// This repository's own identity, and the global one it would use without it.
+#[derive(serde::Serialize)]
+struct RepoIdentity {
+    own: git::Identity,
+    global: git::Identity,
+}
+
+#[tauri::command]
+async fn repo_identity(state: State<'_, AppState>) -> Res<RepoIdentity> {
+    let r = repo(&state)?;
+    blocking(move || {
+        let global = |key| {
+            git::run_text(&r, &["config", "--global", "--get", key])
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        Ok(RepoIdentity {
+            own: git::repo_identity(&r),
+            global: git::Identity {
+                name: global("user.name"),
+                email: global("user.email"),
+            },
+        })
+    })
+    .await
+}
+
+/// Both parts, or neither: the repository's own identity then goes and the global one applies.
+#[tauri::command]
+async fn set_repo_identity(
+    state: State<'_, AppState>,
+    name: Option<String>,
+    email: Option<String>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || match (&name, &email) {
+        (Some(n), Some(e)) => git::set_repo_identity(&r, Some((n, e))),
+        _ => git::set_repo_identity(&r, None),
+    })
+    .await
+}
+
+#[tauri::command]
 async fn status(state: State<'_, AppState>) -> Res<git::RepoStatus> {
     let r = repo(&state)?;
     blocking(move || git::status(&r)).await
@@ -263,6 +335,30 @@ async fn log_compare(
 async fn compare_counts(state: State<'_, AppState>, with: String) -> Res<(u32, u32)> {
     let r = repo(&state)?;
     blocking(move || git::compare_counts(&r, &with)).await
+}
+
+#[tauri::command]
+async fn bisect_start(state: State<'_, AppState>, good: String) -> Res<git::BisectStep> {
+    let r = repo(&state)?;
+    blocking(move || git::bisect_start(&r, &good)).await
+}
+
+#[tauri::command]
+async fn bisect_mark(state: State<'_, AppState>, verdict: String) -> Res<git::BisectStep> {
+    let r = repo(&state)?;
+    blocking(move || git::bisect_mark(&r, &verdict)).await
+}
+
+#[tauri::command]
+async fn reflog(state: State<'_, AppState>, limit: u32) -> Res<Vec<git::ReflogEntry>> {
+    let r = repo(&state)?;
+    blocking(move || git::reflog(&r, limit)).await
+}
+
+#[tauri::command]
+async fn compare_files(state: State<'_, AppState>, with: String) -> Res<git::CompareFiles> {
+    let r = repo(&state)?;
+    blocking(move || git::compare_files(&r, &with)).await
 }
 
 #[tauri::command]
@@ -687,10 +783,14 @@ async fn pull(
 }
 
 #[tauri::command]
-async fn merge(state: State<'_, AppState>, name: String) -> Res<bool> {
-    let label = format!("Merge {name}");
+async fn merge(state: State<'_, AppState>, name: String, how: Option<String>) -> Res<bool> {
+    let how = how.unwrap_or_else(|| "ff".into());
+    let label = match how.as_str() {
+        "squash" => format!("Squash merge {name}"),
+        _ => format!("Merge {name}"),
+    };
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::merge(r, &name)
+        git::merge(r, &name, &how)
     })
     .await
 }
@@ -700,6 +800,25 @@ async fn rebase(state: State<'_, AppState>, onto: String) -> Res<bool> {
     let label = format!("Rebase onto {onto}");
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
         git::rebase(r, &onto)
+    })
+    .await
+}
+
+/// Rewords, squashes, drops or moves a commit of the branch; true when it stopped on conflicts.
+#[tauri::command]
+async fn rewrite(state: State<'_, AppState>, head: String, edit: rewrite::Edit) -> Res<bool> {
+    let label = match &edit {
+        rewrite::Edit::Reword { sha, .. } => format!("Reword {}", short(sha)),
+        rewrite::Edit::Squash {
+            sha,
+            message: Some(_),
+        } => format!("Squash {}", short(sha)),
+        rewrite::Edit::Squash { sha, message: None } => format!("Fixup {}", short(sha)),
+        rewrite::Edit::Drop { sha } => format!("Drop {}", short(sha)),
+        rewrite::Edit::Move { sha, .. } => format!("Move {}", short(sha)),
+    };
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        rewrite::run(r, &head, &edit)
     })
     .await
 }
@@ -850,6 +969,35 @@ async fn fetch(
 }
 
 #[tauri::command]
+async fn submodules(state: State<'_, AppState>) -> Res<Vec<git::Submodule>> {
+    let r = repo(&state)?;
+    blocking(move || git::submodules(&r)).await
+}
+
+#[tauri::command]
+async fn submodule_update(
+    state: State<'_, AppState>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::submodule_update(&r, &net)).await
+}
+
+#[tauri::command]
+async fn lfs_pull(
+    state: State<'_, AppState>,
+    path: String,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    let net = watch_network(&state, op, progress);
+    blocking(move || git::lfs_pull(&r, &path, &net)).await
+}
+
+#[tauri::command]
 async fn last_fetch(state: State<'_, AppState>) -> Res<Option<u64>> {
     let r = repo(&state)?;
     blocking(move || Ok(git::last_fetch(&r))).await
@@ -960,8 +1108,33 @@ async fn stash_files(state: State<'_, AppState>, sha: String) -> Res<git::StashF
 }
 
 #[tauri::command]
-async fn stash_push(state: State<'_, AppState>, message: String, untracked: bool) -> Res<()> {
-    indexed_once(&state, move |r| git::stash_push(r, &message, untracked)).await
+async fn stash_push(
+    state: State<'_, AppState>,
+    message: String,
+    untracked: bool,
+    staged: Option<bool>,
+    paths: Option<Vec<String>>,
+) -> Res<()> {
+    let paths = paths.unwrap_or_default();
+    indexed_once(&state, move |r| {
+        let what = git::StashWhat {
+            untracked,
+            staged: staged.unwrap_or(false),
+            paths: &paths,
+        };
+        git::stash_push(r, &message, what)
+    })
+    .await
+}
+
+/// True when applying stopped on conflicts (the stash is kept then).
+#[tauri::command]
+async fn stash_branch(state: State<'_, AppState>, name: String, sha: String) -> Res<bool> {
+    let label = format!("Branch {name} from a stash");
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::stash_branch(r, &name, &sha)
+    })
+    .await
 }
 
 /// True when it stopped on conflicts.
@@ -1213,6 +1386,79 @@ async fn pr_list(
             &filter,
             pages,
         )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn pr_review_comments(
+    app: AppHandle,
+    target: Option<String>,
+    number: u64,
+) -> Res<Vec<github::ReviewComment>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::review_comments(&state.github, &repo(&state)?, target.as_deref(), number)
+    })
+    .await
+}
+
+/// A comment on a line of the PR's diff, or a reply in a thread (`reply_to`).
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+async fn pr_comment_line(
+    app: AppHandle,
+    target: Option<String>,
+    number: u64,
+    commit: String,
+    path: String,
+    line: u64,
+    side: String,
+    reply_to: Option<u64>,
+    body: String,
+) -> Res<github::ReviewComment> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::comment_line(
+            &state.github,
+            &repo(&state)?,
+            target.as_deref(),
+            number,
+            &commit,
+            &path,
+            line,
+            &side,
+            reply_to,
+            &body,
+        )
+    })
+    .await
+}
+
+/// The GitHub account's repositories, for cloning one; works with no repository open.
+#[tauri::command]
+async fn gh_own_repos(app: AppHandle) -> Res<Vec<github::OwnRepo>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let cwd = repo(&state)
+            .ok()
+            .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+            .unwrap_or_else(std::env::temp_dir);
+        github::own_repos(&state.github, &cwd)
+    })
+    .await
+}
+
+/// CI's rollup for each commit GitHub has checks on (see github::ci_states).
+#[tauri::command]
+async fn ci_states(
+    app: AppHandle,
+    target: Option<String>,
+    shas: Vec<String>,
+) -> Res<std::collections::HashMap<String, String>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        github::ci_states(&state.github, &repo(&state)?, target.as_deref(), &shas)
     })
     .await
 }
@@ -1691,6 +1937,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(navigation::guard(dev_url))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .menu(menu::build)
         .on_menu_event(|app, event| {
             let _ = app.emit("menu", event.id().as_ref());
@@ -1729,6 +1976,10 @@ pub fn run() {
             install_git,
             git_identity,
             set_git_identity,
+            repo_identity,
+            remote_list,
+            remote_edit,
+            set_repo_identity,
             status,
             log,
             log_compare,
@@ -1741,6 +1992,19 @@ pub fn run() {
             list_files,
             search_files,
             change_lines,
+            stash_branch,
+            rewrite,
+            ci_states,
+            compare_files,
+            reflog,
+            bisect_start,
+            bisect_mark,
+            submodules,
+            submodule_update,
+            lfs_pull,
+            pr_review_comments,
+            gh_own_repos,
+            pr_comment_line,
             definitions,
             references,
             cancel_search,

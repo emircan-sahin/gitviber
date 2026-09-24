@@ -613,6 +613,88 @@ pub fn list(
     Ok(list.iter().map(pull_from).collect())
 }
 
+/// A repository the signed-in account can clone, for the Clone dialog's list.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnRepo {
+    pub full_name: String,
+    pub description: String,
+    pub private: bool,
+    pub clone_url: String,
+    pub updated_at: String,
+}
+
+/// The account's repositories and the ones it works on (collaborator, organization member),
+/// most recently updated first. `cwd`: any folder git can run in, for finding the token.
+pub fn own_repos(session: &Session, cwd: &Path) -> Result<Vec<OwnRepo>, String> {
+    let s = |x: &Value| x.as_str().unwrap_or_default().to_string();
+    let list = pages(
+        session,
+        cwd,
+        "/user/repos?sort=updated&affiliation=owner,collaborator,organization_member",
+        JSON,
+        None,
+        3,
+    )?;
+    Ok(list
+        .iter()
+        .map(|r| OwnRepo {
+            full_name: s(&r["full_name"]),
+            description: s(&r["description"]),
+            private: r["private"].as_bool().unwrap_or(false),
+            clone_url: s(&r["clone_url"]),
+            updated_at: s(&r["updated_at"]),
+        })
+        .collect())
+}
+
+/// CI's verdict on each commit that has one, as GitHub rolls its checks and statuses up:
+/// "success", "failure" or "pending". One request for up to 100 commits.
+pub fn ci_states(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    shas: &[String],
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let r = target(session, repo, to)?;
+    let shas: Vec<&String> = shas
+        .iter()
+        .filter(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .take(100)
+        .collect();
+    let mut out = std::collections::HashMap::new();
+    if shas.is_empty() {
+        return Ok(out);
+    }
+    let fields: String = shas
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            format!("c{i}: object(oid: \"{s}\") {{ ... on Commit {{ statusCheckRollup {{ state }} }} }} ")
+        })
+        .collect();
+    let query = format!(
+        "query($owner: String!, $name: String!) {{ repository(owner: $owner, name: $name) {{ {fields}}} }}"
+    );
+    let v = graphql(
+        session,
+        repo,
+        &query,
+        json!({ "owner": r.owner, "name": r.name }),
+    )?;
+    for (i, sha) in shas.iter().enumerate() {
+        let state = match v["repository"][format!("c{i}")]["statusCheckRollup"]["state"].as_str() {
+            Some("SUCCESS") => "success",
+            Some("FAILURE" | "ERROR") => "failure",
+            Some("PENDING" | "EXPECTED") => "pending",
+            // Not on GitHub, or no checks.
+            _ => continue,
+        };
+        out.insert(sha.to_string(), state.to_string());
+    }
+    Ok(out)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Check {
@@ -1099,6 +1181,96 @@ pub fn review(
         &format!("/repos/{}/{}/pulls/{number}/reviews", r.owner, r.name),
     )
     .map(|_| ())
+}
+
+/// A comment on a line of a PR's diff. `line` is where it sits now, on its `side` (LEFT, the
+/// old file; RIGHT, the new one); none when the diff moved on past it (outdated).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewComment {
+    pub id: u64,
+    /// The thread's first comment, for a reply.
+    pub reply_to: Option<u64>,
+    pub path: String,
+    pub line: Option<u64>,
+    pub side: String,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
+fn review_comment(c: &Value) -> ReviewComment {
+    let s = |x: &Value| x.as_str().unwrap_or_default().to_string();
+    ReviewComment {
+        id: c["id"].as_u64().unwrap_or_default(),
+        reply_to: c["in_reply_to_id"].as_u64(),
+        path: s(&c["path"]),
+        line: c["line"].as_u64(),
+        side: c["side"].as_str().unwrap_or("RIGHT").to_string(),
+        author: s(&c["user"]["login"]),
+        body: s(&c["body"]),
+        created_at: s(&c["created_at"]),
+        url: s(&c["html_url"]),
+    }
+}
+
+pub fn review_comments(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+) -> Result<Vec<ReviewComment>, String> {
+    let r = target(session, repo, to)?;
+    let path = format!("/repos/{}/{}/pulls/{number}/comments", r.owner, r.name);
+    Ok(all_pages(session, repo, &path, JSON)?
+        .iter()
+        .map(review_comment)
+        .collect())
+}
+
+/// A new comment on `line` of `path` as it is at `commit` (the PR's head), on `side`; or with
+/// `reply_to`, an answer in that comment's thread.
+#[allow(clippy::too_many_arguments)]
+pub fn comment_line(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    number: u64,
+    commit: &str,
+    path: &str,
+    line: u64,
+    side: &str,
+    reply_to: Option<u64>,
+    body: &str,
+) -> Result<ReviewComment, String> {
+    let r = target(session, repo, to)?;
+    if body.trim().is_empty() {
+        return Err("The comment is empty.".into());
+    }
+    let base = format!("/repos/{}/{}/pulls/{number}/comments", r.owner, r.name);
+    let v = match reply_to {
+        Some(id) => call(
+            session,
+            repo,
+            Method::Post(json!({ "body": body })),
+            &format!("{base}/{id}/replies"),
+        )?,
+        None => {
+            if !matches!(side, "LEFT" | "RIGHT") {
+                return Err(format!("unknown side: {side}"));
+            }
+            call(
+                session,
+                repo,
+                Method::Post(json!({
+                    "body": body, "commit_id": commit, "path": path, "line": line, "side": side,
+                })),
+                &base,
+            )?
+        }
+    };
+    Ok(review_comment(&v))
 }
 
 // ---------------------------------------------------------------- issues
@@ -1923,7 +2095,7 @@ mod tests {
             Some(d.pull.head_ref.as_str())
         );
         git::fetch(repo, &Default::default()).unwrap();
-        let stopped = git::merge(repo, &format!("origin/{}", d.pull.base_ref)).unwrap();
+        let stopped = git::merge(repo, &format!("origin/{}", d.pull.base_ref), "ff").unwrap();
         let st = git::status(repo).unwrap();
         println!(
             "stopped={stopped} conflicts={:?}",

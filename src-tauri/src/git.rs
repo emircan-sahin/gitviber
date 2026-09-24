@@ -350,6 +350,114 @@ pub fn set_global_identity(
     Ok(())
 }
 
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Remote {
+    pub name: String,
+    pub url: String,
+    /// Where pushes go when it isn't `url` (`remote.<name>.pushurl`).
+    pub push_url: Option<String>,
+}
+
+pub fn remote_list(repo: &Path) -> Result<Vec<Remote>, String> {
+    let names = run_text(repo, &["remote"])?;
+    Ok(names
+        .lines()
+        .filter(|n| !n.is_empty())
+        .map(|name| {
+            let get = |key: &str| {
+                run_text(repo, &["config", "--get", &format!("remote.{name}.{key}")])
+                    .ok()
+                    .map(|v| v.trim().to_string())
+                    .filter(|v| !v.is_empty())
+            };
+            Remote {
+                name: name.to_string(),
+                url: get("url").unwrap_or_default(),
+                push_url: get("pushurl"),
+            }
+        })
+        .collect())
+}
+
+/// A remote name git accepts, that can't be read as an option.
+fn validate_remote_name(repo: &Path, name: &str) -> Result<(), String> {
+    let ok = !name.is_empty()
+        && !name.starts_with('-')
+        && !name.contains('/')
+        && run(
+            repo,
+            &["check-ref-format", &format!("refs/remotes/{name}/x")],
+        )
+        .is_ok();
+    ok.then_some(())
+        .ok_or_else(|| format!("invalid remote name: {name}"))
+}
+
+fn validate_url(url: &str) -> Result<(), String> {
+    if url.trim().is_empty() || url.starts_with('-') || url.contains(['\n', '\r']) {
+        return Err(format!("invalid remote URL: {url}"));
+    }
+    Ok(())
+}
+
+pub fn remote_add(repo: &Path, name: &str, url: &str) -> Result<(), String> {
+    validate_remote_name(repo, name)?;
+    validate_url(url)?;
+    run(repo, &["remote", "add", "--", name, url.trim()]).map(|_| ())
+}
+
+/// Removes a remote, and with it its remote-tracking branches and the upstreams set to them.
+pub fn remote_remove(repo: &Path, name: &str) -> Result<(), String> {
+    validate_remote_name(repo, name)?;
+    run(repo, &["remote", "remove", name]).map(|_| ())
+}
+
+/// Renames a remote; its remote-tracking branches and upstreams follow.
+pub fn remote_rename(repo: &Path, name: &str, to: &str) -> Result<(), String> {
+    validate_remote_name(repo, name)?;
+    validate_remote_name(repo, to)?;
+    run(repo, &["remote", "rename", name, to]).map(|_| ())
+}
+
+pub fn remote_set_url(repo: &Path, name: &str, url: &str) -> Result<(), String> {
+    validate_remote_name(repo, name)?;
+    validate_url(url)?;
+    run(repo, &["remote", "set-url", "--", name, url.trim()]).map(|_| ())
+}
+
+/// The identity this repository sets itself (its .git/config), whatever the global one is.
+pub fn repo_identity(repo: &Path) -> Identity {
+    let get = |key| {
+        run_text(repo, &["config", "--local", "--get", key])
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+    };
+    Identity {
+        name: get("user.name"),
+        email: get("user.email"),
+    }
+}
+
+/// Gives this repository its own identity, or with None takes it away (the global one applies).
+pub fn set_repo_identity(repo: &Path, identity: Option<(&str, &str)>) -> Result<(), String> {
+    let Some((name, email)) = identity else {
+        for key in ["user.name", "user.email"] {
+            // 5: it wasn't set.
+            run_with(repo, &["config", "--local", "--unset", key], &[5], None)?;
+        }
+        return Ok(());
+    };
+    for (key, value) in [("user.name", name.trim()), ("user.email", email.trim())] {
+        if value.is_empty() || value.contains(['\n', '\r']) {
+            return Err(format!("{key} must be one line of text"));
+        }
+        run(repo, &["config", "--local", key, value])?;
+    }
+    Ok(())
+}
+
 fn validate_rev(rev: &str) -> Result<(), String> {
     if rev.len() >= 4 && rev.len() <= 64 && rev.chars().all(|c| c.is_ascii_hexdigit()) {
         Ok(())
@@ -1477,6 +1585,70 @@ pub fn log_compare(
 }
 
 /// How many commits HEAD has that `with` doesn't, and `with` has that HEAD doesn't.
+/// What `with` changed since it and HEAD parted, as a pull request of it would show: the
+/// merge base, `with`'s commit, and the files between them.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompareFiles {
+    pub base: String,
+    pub head: String,
+    pub files: Vec<FileChange>,
+}
+
+pub fn compare_files(repo: &Path, with: &str) -> Result<CompareFiles, String> {
+    validate_full_ref(repo, with)?;
+    let base = run_text(repo, &["merge-base", "HEAD", with])
+        .map_err(|_| "They have no commit in common.".to_string())?
+        .trim()
+        .to_string();
+    let head = run_text(repo, &["rev-parse", &format!("{with}^{{commit}}")])?
+        .trim()
+        .to_string();
+    let files = range_files(repo, &base, &head)?;
+    Ok(CompareFiles { base, head, files })
+}
+
+/// A place HEAD has been: what took it there (git's "reflog subject") and when.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct ReflogEntry {
+    pub sha: String,
+    /// HEAD@{n}
+    pub selector: String,
+    pub message: String,
+    pub timestamp: i64,
+}
+
+/// Where HEAD has been, newest first: commits a reset or rebase left behind are still here.
+pub fn reflog(repo: &Path, limit: u32) -> Result<Vec<ReflogEntry>, String> {
+    if !has_head(repo) {
+        return Ok(vec![]);
+    }
+    let n = limit.clamp(1, 1000).to_string();
+    let out = run_text(
+        repo,
+        &[
+            "reflog",
+            "-n",
+            &n,
+            "--format=%H%x1f%gd%x1f%ct%x1f%gs",
+            "HEAD",
+        ],
+    )?;
+    Ok(out
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.splitn(4, '\x1f').collect();
+            (f.len() == 4).then(|| ReflogEntry {
+                sha: f[0].to_string(),
+                selector: f[1].to_string(),
+                timestamp: f[2].parse().unwrap_or(0),
+                message: f[3].to_string(),
+            })
+        })
+        .collect())
+}
+
 pub fn compare_counts(repo: &Path, with: &str) -> Result<(u32, u32), String> {
     validate_full_ref(repo, with)?;
     let out = run_text(
@@ -2193,7 +2365,7 @@ pub fn diff_pair(
 
 // ---------------------------------------------------------------- merge / rebase
 
-fn git_dir(repo: &Path) -> Option<std::path::PathBuf> {
+pub(crate) fn git_dir(repo: &Path) -> Option<std::path::PathBuf> {
     run_text(repo, &["rev-parse", "--absolute-git-dir"])
         .ok()
         .map(|s| s.trim().into())
@@ -2246,6 +2418,14 @@ pub fn operation(repo: &Path) -> Option<Operation> {
         .or_else(|| simple("cherry-pick", "CHERRY_PICK_HEAD"))
         .or_else(|| simple("revert", "REVERT_HEAD"))
         .or_else(|| {
+            dir.join("BISECT_LOG").exists().then(|| Operation {
+                kind: "bisect".into(),
+                subject: None,
+                step: None,
+                total: None,
+            })
+        })
+        .or_else(|| {
             // A multi-commit cherry-pick/revert paused between picks leaves only sequencer/.
             let todo = read_trim(dir.join("sequencer/todo"))?;
             let kind = if todo.starts_with("revert") {
@@ -2283,7 +2463,7 @@ fn run_stoppable(repo: &Path, args: &[&str]) -> Result<bool, String> {
 
 /// Ok(true) only when the operation stopped on conflicts. Any other failure (a hook, GPG,
 /// dirty worktree) is returned as the real git error instead of looking like conflicts.
-fn stoppable(repo: &Path, result: Result<Vec<u8>, String>) -> Result<bool, String> {
+pub(crate) fn stoppable(repo: &Path, result: Result<Vec<u8>, String>) -> Result<bool, String> {
     let conflicts = has_conflicts(repo);
     match result {
         Ok(_) => Ok(conflicts),
@@ -2293,8 +2473,11 @@ fn stoppable(repo: &Path, result: Result<Vec<u8>, String>) -> Result<bool, Strin
 }
 
 /// Starting a new merge/rebase/pull on top of an unfinished one would be misreported as conflicts.
-fn ensure_idle(repo: &Path) -> Result<(), String> {
+pub(crate) fn ensure_idle(repo: &Path) -> Result<(), String> {
     match operation(repo) {
+        Some(op) if op.kind == "bisect" => {
+            Err("A bisect is in progress. Finish or stop it first.".into())
+        }
         Some(op) => Err(format!(
             "A {} is in progress. Continue or abort it first.",
             op.kind
@@ -2303,10 +2486,31 @@ fn ensure_idle(repo: &Path) -> Result<(), String> {
     }
 }
 
-pub fn merge(repo: &Path, name: &str) -> Result<bool, String> {
+/// `how`: "ff" (git's default, fast-forward when it can), "no-ff" (always a merge commit), or
+/// "squash": the branch's changes as one new commit, its subjects listed in the message.
+pub fn merge(repo: &Path, name: &str, how: &str) -> Result<bool, String> {
     ensure_idle(repo)?;
     validate_ref(repo, name)?;
-    run_stoppable(repo, &["merge", "--no-edit", name])
+    match how {
+        "ff" => run_stoppable(repo, &["merge", "--no-edit", name]),
+        "no-ff" => run_stoppable(repo, &["merge", "--no-ff", "--no-edit", name]),
+        "squash" => {
+            let range = format!("HEAD..{name}");
+            let subjects = run_text(repo, &["log", "--reverse", "--format=- %s", &range])?;
+            // Conflicts stop it with the changes staged so far; the commit is then the user's.
+            if run_stoppable(repo, &["merge", "--squash", name])? {
+                return Ok(true);
+            }
+            // Nothing new on it: nothing to commit.
+            if run(repo, &["diff", "--cached", "--quiet"]).is_ok() {
+                return Ok(false);
+            }
+            let message = format!("Squash merge {name}\n\n{}", subjects.trim_end());
+            run_with(repo, &["commit", "-F", "-"], &[], Some(message.as_bytes()))?;
+            Ok(false)
+        }
+        other => Err(format!("unknown merge kind: {other}")),
+    }
 }
 
 pub fn rebase(repo: &Path, onto: &str) -> Result<bool, String> {
@@ -2318,6 +2522,7 @@ pub fn rebase(repo: &Path, onto: &str) -> Result<bool, String> {
 pub fn op_continue(repo: &Path) -> Result<bool, String> {
     let op = operation(repo).ok_or("Nothing to continue.")?;
     match op.kind.as_str() {
+        "bisect" => Err("Mark the commit good or bad instead.".into()),
         // `merge --continue` refuses without an editor on some git versions; commit is equivalent.
         "merge" => run_stoppable(repo, &["commit", "--no-edit"]),
         "rebase" => run_stoppable(repo, &["rebase", "--continue"]),
@@ -2330,7 +2535,50 @@ pub fn op_continue(repo: &Path) -> Result<bool, String> {
 pub fn op_abort(repo: &Path) -> Result<(), String> {
     let op = operation(repo).ok_or("Nothing to abort.")?;
     let kind = op.kind.as_str();
+    if kind == "bisect" {
+        // Back to where it started.
+        return run(repo, &["bisect", "reset"]).map(|_| ());
+    }
     run(repo, &[kind, "--abort"]).map(|_| ())
+}
+
+/// Where a bisect stands: the commit it checked out to test next, or the first bad commit.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct BisectStep {
+    /// git's own words: "Bisecting: 3 revisions left to test after this (roughly 2 steps)".
+    pub message: String,
+    /// Set once it's found.
+    pub first_bad: Option<String>,
+}
+
+fn bisect_step(out: Vec<u8>) -> BisectStep {
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let first_bad = text
+        .lines()
+        .find(|l| l.ends_with(" is the first bad commit"))
+        .and_then(|l| l.split_whitespace().next())
+        .map(str::to_string);
+    let message = text.lines().next().unwrap_or_default().to_string();
+    BisectStep { message, first_bad }
+}
+
+/// Starts looking for the commit that broke something: `good` didn't have it, HEAD does.
+pub fn bisect_start(repo: &Path, good: &str) -> Result<BisectStep, String> {
+    ensure_idle(repo)?;
+    validate_rev(good)?;
+    run(repo, &["bisect", "start", "HEAD", good]).map(bisect_step)
+}
+
+/// The commit checked out is "good", "bad", or to "skip" (can't be tested).
+pub fn bisect_mark(repo: &Path, verdict: &str) -> Result<BisectStep, String> {
+    if !matches!(verdict, "good" | "bad" | "skip") {
+        return Err(format!("unknown verdict: {verdict}"));
+    }
+    if operation(repo).is_none_or(|o| o.kind != "bisect") {
+        return Err("No bisect is in progress.".into());
+    }
+    run(repo, &["bisect", verdict]).map(bisect_step)
 }
 
 pub fn rebase_skip(repo: &Path) -> Result<bool, String> {
@@ -2368,7 +2616,7 @@ pub fn resolve_side(repo: &Path, path: &str, side: &str) -> Result<(), String> {
 
 /// `seen` is the HEAD the user saw: an agent may have committed since, and moving HEAD
 /// based on the old history would silently drop that commit.
-fn ensure_head(repo: &Path, seen: &str) -> Result<(), String> {
+pub(crate) fn ensure_head(repo: &Path, seen: &str) -> Result<(), String> {
     validate_rev(seen)?;
     let head = run_text(repo, &["rev-parse", "HEAD"])?;
     if head.trim() != seen {
@@ -2949,20 +3197,35 @@ fn stash_ref(repo: &Path, sha: &str) -> Result<String, String> {
         .ok_or_else(|| "That stash is gone (dropped or popped elsewhere).".into())
 }
 
-/// Stashes local changes, with `untracked` files too. Nested repositories stay (git skips them).
-pub fn stash_push(repo: &Path, message: &str, untracked: bool) -> Result<(), String> {
+/// What a stash takes: `untracked` files too, or only what's `staged`; with `paths`, only those
+/// files. Nested repositories stay (git skips them).
+pub struct StashWhat<'a> {
+    pub untracked: bool,
+    pub staged: bool,
+    pub paths: &'a [String],
+}
+
+/// Stashes local changes (see `StashWhat`).
+pub fn stash_push(repo: &Path, message: &str, what: StashWhat) -> Result<(), String> {
     let top = || run_text(repo, &["rev-parse", "-q", "--verify", "refs/stash"]).ok();
     let before = top();
-    let mut args = vec!["stash", "push"];
-    if untracked {
-        args.push("--include-untracked");
+    let mut args = vec!["stash".to_string(), "push".into()];
+    if what.staged {
+        args.push("--staged".into());
+    } else if what.untracked {
+        args.push("--include-untracked".into());
     }
     let message = message.trim();
     if !message.is_empty() {
-        args.extend(["-m", message]);
+        args.extend(["-m".into(), message.into()]);
     }
-    // No paths are passed, and literal pathspecs break the cleanup of stashed untracked
-    // files: they would be saved and still left in place.
+    // Literal pathspecs break the cleanup of stashed untracked files (they would be saved and
+    // still left in place), so they're off, and each path says it's literal itself.
+    if !what.paths.is_empty() {
+        args.push("--".into());
+        args.extend(what.paths.iter().map(|p| format!(":(literal){p}")));
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let mut cmd = command(repo, &args);
     cmd.env("GIT_LITERAL_PATHSPECS", "0");
     exec(cmd, "git stash", &[], None, None)?;
@@ -2982,6 +3245,15 @@ pub fn stash_apply(repo: &Path, sha: &str, pop: bool) -> Result<bool, String> {
         repo,
         run(repo, &["stash", if pop { "pop" } else { "apply" }, &r]),
     )
+}
+
+/// A new branch where the stash was made, with it applied, and the stash dropped: its changes
+/// back without clashing with what came since. True when applying stopped on conflicts.
+pub fn stash_branch(repo: &Path, name: &str, sha: &str) -> Result<bool, String> {
+    ensure_idle(repo)?;
+    validate_branch(repo, name)?;
+    let r = stash_ref(repo, sha)?;
+    stoppable(repo, run(repo, &["stash", "branch", name, &r]))
 }
 
 pub fn stash_drop(repo: &Path, sha: &str) -> Result<(), String> {
@@ -3341,6 +3613,67 @@ pub fn fetch(repo: &Path, net: &Net) -> Result<(), String> {
     run_network(repo, &["fetch", "--all", "--prune"], net).map(|_| ())
 }
 
+/// A submodule: its folder, the commit the repository records for it, and how the checkout
+/// there stands against that ("missing": not set up yet; "moved": on another commit;
+/// "conflict"; "ok").
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Submodule {
+    pub path: String,
+    pub sha: String,
+    pub state: String,
+}
+
+pub fn submodules(repo: &Path) -> Result<Vec<Submodule>, String> {
+    if !repo.join(".gitmodules").exists() {
+        return Ok(vec![]);
+    }
+    let out = run_text(repo, &["submodule", "status"])?;
+    Ok(out
+        .lines()
+        .filter_map(|l| {
+            let state = match l.chars().next()? {
+                '-' => "missing",
+                '+' => "moved",
+                'U' => "conflict",
+                _ => "ok",
+            };
+            let mut parts = l[1..].split_whitespace();
+            let sha = parts.next()?.to_string();
+            let path = parts.next()?.to_string();
+            Some(Submodule {
+                path,
+                sha,
+                state: state.into(),
+            })
+        })
+        .collect())
+}
+
+/// Sets up and checks out every submodule at the commit the repository records, nested ones
+/// too, fetching what's missing.
+pub fn submodule_update(repo: &Path, net: &Net) -> Result<(), String> {
+    let args = ["submodule", "update", "--init", "--recursive", "--progress"];
+    network::run(command(repo, &args), "git submodule update", net, None).map(|_| ())
+}
+
+/// Downloads a Git LFS file's object (git lfs pull for that path) so it can be shown.
+pub fn lfs_pull(repo: &Path, path: &str, net: &Net) -> Result<(), String> {
+    if path.starts_with('-') || path.contains(['\n', '\r']) {
+        return Err(format!("not a file path: {path}"));
+    }
+    let args = ["lfs", "pull", "--include", path, "--exclude", ""];
+    network::run(command(repo, &args), "git lfs pull", net, None)
+        .map(|_| ())
+        .map_err(|e| {
+            if e.contains("'lfs' is not a git command") {
+                "Git LFS isn't installed (brew install git-lfs, then git lfs install).".into()
+            } else {
+                e
+            }
+        })
+}
+
 /// When this repo last fetched (FETCH_HEAD's mtime, Unix seconds); None if it never has.
 /// Each worktree keeps its own FETCH_HEAD, and a fetch from any of them updates the remote
 /// branches for all, so a linked worktree also counts the main one's.
@@ -3674,7 +4007,7 @@ mod tests {
         commit_file(&repo, "gone.txt", "edited on main\n", "main edits gone");
 
         assert!(
-            merge(&repo, "feature").unwrap(),
+            merge(&repo, "feature", "ff").unwrap(),
             "merge should stop on conflicts"
         );
         let st = status(&repo).unwrap();

@@ -53,7 +53,7 @@ export interface ProjectInfo {
 }
 
 export interface Operation {
-  kind: "merge" | "rebase" | "cherry-pick" | "revert";
+  kind: "merge" | "rebase" | "cherry-pick" | "revert" | "bisect";
   subject: string | null;
   step: number | null;
   total: number | null;
@@ -237,6 +237,13 @@ export interface DefinitionRequest {
   rev: string | null;
 }
 
+/** A change to the branch's history: reword a commit, squash it into its parent (fixup without a message), drop it, or move it. */
+export type HistoryEdit =
+  | { kind: "reword"; sha: string; message: string }
+  | { kind: "squash"; sha: string; message: string | null }
+  | { kind: "drop"; sha: string }
+  | { kind: "move"; sha: string; up: boolean };
+
 export interface LinesRequest {
   path: string;
   kind: "unstaged" | "staged";
@@ -412,6 +419,13 @@ export const api = {
   gitIdentity: () => invoke<{ current: GitIdentity; suggested: GitIdentity | null }>("git_identity"),
   /** Sets the given parts in the global git config. */
   setGitIdentity: (name: string | null, email: string | null) => invoke<void>("set_git_identity", { name, email }),
+  remoteList: () => invoke<{ name: string; url: string; pushUrl: string | null }[]>("remote_list"),
+  /** Adds (name, url), removes (name), renames (name, to) or repoints (name, url) a remote. */
+  remoteEdit: (action: "add" | "remove" | "rename" | "set-url", name: string, value: string | null = null) => invoke<void>("remote_edit", { action, name, value }),
+  /** The open repository's own identity (its .git/config), and the global one. */
+  repoIdentity: () => invoke<{ own: GitIdentity; global: GitIdentity }>("repo_identity"),
+  /** Both, or null for none: the global identity applies again. */
+  setRepoIdentity: (identity: { name: string; email: string } | null) => invoke<void>("set_repo_identity", identity ?? { name: null, email: null }),
   status: () => invoke<RepoStatus>("status"),
   about: () => invoke<About>("about"),
   /**
@@ -423,6 +437,19 @@ export const api = {
   /** Comparing HEAD with a full ref: what it has that HEAD doesn't (`incoming`), or the other way. */
   logCompare: (ref: string, incoming: boolean, skip: number, limit: number) => invoke<Commit[]>("log_compare", { with: ref, incoming, skip, limit }),
   /** [HEAD has and `ref` doesn't, `ref` has and HEAD doesn't]. */
+  /** Each submodule, the commit recorded for it, and how its checkout stands ("missing", "moved", "conflict", "ok"). */
+  submodules: () => invoke<{ path: string; sha: string; state: "missing" | "moved" | "conflict" | "ok" }[]>("submodules"),
+  /** Sets up and checks out every submodule at its recorded commit, nested ones too. */
+  submoduleUpdate: (op?: NetOp) => network<void>("submodule_update", {}, op),
+  /** Downloads a Git LFS file's object, so it shows. */
+  lfsPull: (path: string, op?: NetOp) => network<void>("lfs_pull", { path }, op),
+  /** Starts a bisect: `good` lacked the bug, HEAD has it. */
+  bisectStart: (good: string) => invoke<{ message: string; firstBad: string | null }>("bisect_start", { good }),
+  bisectMark: (verdict: "good" | "bad" | "skip") => invoke<{ message: string; firstBad: string | null }>("bisect_mark", { verdict }),
+  /** Where HEAD has been, newest first (HEAD@{0} is where it is). */
+  reflog: (limit = 200) => invoke<{ sha: string; selector: string; message: string; timestamp: number }[]>("reflog", { limit }),
+  /** What a full ref changed since it and HEAD parted (a PR of it), as a range and its files. */
+  compareFiles: (ref: string) => invoke<{ base: string; head: string; files: FileChange[] }>("compare_files", { with: ref }),
   compareCounts: (ref: string) => invoke<[number, number]>("compare_counts", { with: ref }),
   /** The commit a SHA or SHA prefix names, if exactly one, or a full ref's tip (refs/heads/…). */
   findCommit: (sha: string) => invoke<Commit | null>("find_commit", { sha }),
@@ -510,7 +537,8 @@ export const api = {
   push: (force = false, remote?: string, op?: NetOp, tags = false) => network<void>("push", { force, remote, tags }, op),
   // The boolean results mean "stopped on conflicts".
   pull: (mode: PullMode, op?: NetOp) => network<boolean>("pull", { mode }, op),
-  merge: (name: string) => invoke<boolean>("merge", { name }),
+  /** `how`: fast-forward when possible, always a merge commit, or the branch's changes as one commit. */
+  merge: (name: string, how: "ff" | "no-ff" | "squash" = "ff") => invoke<boolean>("merge", { name, how }),
   rebase: (onto: string) => invoke<boolean>("rebase", { onto }),
   opContinue: () => invoke<boolean>("op_continue"),
   opAbort: () => invoke<void>("op_abort"),
@@ -549,10 +577,14 @@ export const api = {
   /** Picks onto the branch of another worktree (`path`), running git there; true = stopped on conflicts there. */
   cherryPickInto: (path: string, sha: string) => invoke<boolean>("cherry_pick_into", { path, sha }),
   checkoutCommit: (sha: string) => invoke<void>("checkout_commit", { sha }),
+  /** Edits the branch's history (rewrite.rs); `head` as the history showed it. True = stopped on conflicts. */
+  rewrite: (head: string, edit: HistoryEdit) => invoke<boolean>("rewrite", { head, edit }),
   stashes: () => invoke<Stash[]>("stashes"),
   stashFiles: (sha: string) => invoke<StashFiles>("stash_files", { sha }),
-  /** `untracked`: take untracked files along (nested repositories stay). */
-  stashPush: (message: string, untracked: boolean) => invoke<void>("stash_push", { message, untracked }),
+  /** `untracked`: take untracked files along (nested repositories stay); `staged`: only what's staged; `paths`: only those files. */
+  stashPush: (message: string, untracked: boolean, staged = false, paths: string[] = []) => invoke<void>("stash_push", { message, untracked, staged, paths }),
+  /** A branch where the stash was made, with it applied, then dropped; true = stopped on conflicts. */
+  stashBranch: (name: string, sha: string) => invoke<boolean>("stash_branch", { name, sha }),
   /** `pop` also drops it, unless it stopped on conflicts (true). */
   stashApply: (sha: string, pop: boolean) => invoke<boolean>("stash_apply", { sha, pop }),
   stashDrop: (sha: string) => invoke<void>("stash_drop", { sha }),
@@ -681,6 +713,21 @@ export const GITHUB_NOT_CONNECTED = "github:not-connected";
 /** A page of the PR list (github.rs `PER_PAGE`). */
 export const PR_PAGE = 100;
 
+export type CiState = "success" | "failure" | "pending";
+
+/** A comment on a line of a PR's diff; `line` null once the diff moved past it (outdated). */
+export interface ReviewComment {
+  id: number;
+  replyTo: number | null;
+  path: string;
+  line: number | null;
+  side: "LEFT" | "RIGHT";
+  author: string;
+  body: string;
+  createdAt: string;
+  url: string;
+}
+
 export const github = {
   account: () => invoke<GitHubAccount>("gh_account"),
   /** Origin's branches under branch protection (names without "origin/"). */
@@ -688,6 +735,14 @@ export const github = {
   /** The most recently updated `pages` × PR_PAGE. */
   list: (target: Target, filter: "open" | "closed" | "all", pages = 1) => invoke<Pull[]>("pr_list", { target, filter, pages }),
   detail: (target: Target, number: number) => invoke<PullDetail>("pr_detail", { target, number }),
+  reviewComments: (target: Target, number: number) => invoke<ReviewComment[]>("pr_review_comments", { target, number }),
+  /** On `line` of `path` at the PR's head `commit`, on `side`; with `replyTo`, an answer in that thread. */
+  commentLine: (target: Target, number: number, commit: string, path: string, line: number, side: "LEFT" | "RIGHT", body: string, replyTo: number | null = null) =>
+    invoke<ReviewComment>("pr_comment_line", { target, number, commit, path, line, side, replyTo, body }),
+  /** The account's repositories (and those it works on), most recently updated first. */
+  ownRepos: () => invoke<{ fullName: string; description: string; private: boolean; cloneUrl: string; updatedAt: string }[]>("gh_own_repos"),
+  /** CI's rollup per commit, for those GitHub has checks on (up to 100 at once). */
+  ciStates: (target: Target, shas: string[]) => invoke<Record<string, CiState>>("ci_states", { target, shas }),
   /** Signed image links for a private repo's attachments, by attachment id. */
   attachments: (target: Target, number: number) => invoke<Record<string, string>>("pr_attachments", { target, number }),
   /** Fetches the PR's commits first when they're missing. */

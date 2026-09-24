@@ -582,7 +582,7 @@ fn resolve_side_never_deletes_a_file_that_exists_on_that_side() {
     write_commit(&r, "a.txt", "feature\n", "f");
     switch_branch(&r, "main", false).unwrap();
     write_commit(&r, "a.txt", "main\n", "m");
-    assert!(merge(&r, "feature").unwrap());
+    assert!(merge(&r, "feature", "ff").unwrap());
     resolve_side(&r, "a.txt", "ours").unwrap();
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "main\n");
     // Not a conflicted path: must error, not `git rm` it.
@@ -941,7 +941,7 @@ fn continue_reports_hook_failures_instead_of_conflicts() {
     write_commit(&r, "a.txt", "feature\n", "f");
     switch_branch(&r, "main", false).unwrap();
     write_commit(&r, "a.txt", "main\n", "m");
-    assert!(merge(&r, "feature").unwrap());
+    assert!(merge(&r, "feature", "ff").unwrap());
     resolve_side(&r, "a.txt", "ours").unwrap();
 
     let hook = r.join(".git/hooks/commit-msg");
@@ -2340,7 +2340,7 @@ fn undo_merge_keeps_local_edits_and_stops_after_outside_changes() {
     let j = Journal::default();
     assert!(!j
         .record(&r, Action::new("Merge feat", Mode::Keep), |r| merge(
-            r, "feat"
+            r, "feat", "ff"
         ))
         .unwrap());
     let merged = rev(&r, "HEAD");
@@ -2660,10 +2660,31 @@ fn stash_push_and_pop_with_untracked_files() {
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "a\n", "base");
-    assert!(stash_push(&r, "", false).is_err(), "nothing to stash");
+    assert!(
+        stash_push(
+            &r,
+            "",
+            StashWhat {
+                untracked: false,
+                staged: false,
+                paths: &[]
+            }
+        )
+        .is_err(),
+        "nothing to stash"
+    );
     fs::write(r.join("a.txt"), "a changed\n").unwrap();
     fs::write(r.join("new.txt"), "new\n").unwrap();
-    stash_push(&r, "wip: both", true).unwrap();
+    stash_push(
+        &r,
+        "wip: both",
+        StashWhat {
+            untracked: true,
+            staged: false,
+            paths: &[],
+        },
+    )
+    .unwrap();
     // Untracked files leave the worktree too (literal pathspecs once kept them there).
     let left: Vec<String> = status(&r)
         .unwrap()
@@ -2699,7 +2720,16 @@ fn stash_push_and_pop_with_untracked_files() {
 
     // Another stash on top: the first is stash@{1} now, still found by its commit.
     fs::write(r.join("a.txt"), "other\n").unwrap();
-    stash_push(&r, "other", false).unwrap();
+    stash_push(
+        &r,
+        "other",
+        StashWhat {
+            untracked: false,
+            staged: false,
+            paths: &[],
+        },
+    )
+    .unwrap();
     let now = stashes(&r).unwrap();
     assert_eq!(now.len(), 2);
     stash_drop(&r, &now[0].sha).unwrap();
@@ -2718,7 +2748,16 @@ fn stash_pop_conflict_keeps_the_stash() {
     init(&r);
     write_commit(&r, "a.txt", "base\n", "base");
     fs::write(r.join("a.txt"), "stashed\n").unwrap();
-    stash_push(&r, "mine", false).unwrap();
+    stash_push(
+        &r,
+        "mine",
+        StashWhat {
+            untracked: false,
+            staged: false,
+            paths: &[],
+        },
+    )
+    .unwrap();
     write_commit(&r, "a.txt", "committed\n", "moved on");
     let sha = stashes(&r).unwrap()[0].sha.clone();
     assert!(stash_apply(&r, &sha, true).unwrap());
@@ -3552,4 +3591,549 @@ mod lines {
         let wrong = request(&r, "staged", "stage", "a.txt", &[], &[]);
         assert!(change(&r, &wrong).is_err());
     }
+}
+
+#[test]
+fn merge_kinds_fast_forward_no_ff_and_squash() {
+    let sb = Sandbox::new("merge-kinds");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["switch", "-q", "-c", "feature"]).unwrap();
+    write_commit(&r, "b.txt", "b\n", "add b");
+    write_commit(&r, "c.txt", "c\n", "add c");
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    let parents = |rev: &str| {
+        run_text(&r, &["rev-list", "--parents", "-n1", rev])
+            .unwrap()
+            .split_whitespace()
+            .count()
+            - 1
+    };
+
+    // No fast-forward: a merge commit although main could just move.
+    assert!(!merge(&r, "feature", "no-ff").unwrap());
+    assert_eq!(parents("HEAD"), 2);
+    run(&r, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+
+    // Squash: one ordinary commit with everything, listing what it took.
+    assert!(!merge(&r, "feature", "squash").unwrap());
+    assert_eq!(parents("HEAD"), 1);
+    assert_eq!(
+        run_text(&r, &["log", "-1", "--format=%B"]).unwrap().trim(),
+        "Squash merge feature\n\n- add b\n- add c"
+    );
+    assert!(r.join("b.txt").exists() && r.join("c.txt").exists());
+    // Again: nothing new, no empty commit.
+    let head = run_text(&r, &["rev-parse", "HEAD"]).unwrap();
+    assert!(!merge(&r, "feature", "squash").unwrap());
+    assert_eq!(run_text(&r, &["rev-parse", "HEAD"]).unwrap(), head);
+
+    // Plain: fast-forwards.
+    run(&r, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+    assert!(!merge(&r, "feature", "ff").unwrap());
+    assert_eq!(
+        run_text(&r, &["rev-parse", "HEAD"]).unwrap(),
+        run_text(&r, &["rev-parse", "feature"]).unwrap()
+    );
+    assert!(merge(&r, "feature", "rebase").is_err());
+}
+
+#[test]
+fn switching_with_conflicting_changes_works_after_a_stash() {
+    let sb = Sandbox::new("switch-stash");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["switch", "-q", "-c", "other"]).unwrap();
+    write_commit(&r, "a.txt", "other\n", "other");
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    fs::write(r.join("a.txt"), "mine\n").unwrap();
+    // The UI looks for this to offer Stash and Switch.
+    let e = switch_branch(&r, "other", false).unwrap_err();
+    assert!(e.contains("would be overwritten by checkout"), "{e}");
+    stash_push(
+        &r,
+        "Left on main when switching to other",
+        StashWhat {
+            untracked: true,
+            staged: false,
+            paths: &[],
+        },
+    )
+    .unwrap();
+    switch_branch(&r, "other", false).unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "other\n");
+    assert_eq!(stashes(&r).unwrap().len(), 1);
+}
+
+#[test]
+fn stash_some_files_only_staged_and_a_branch_from_a_stash() {
+    let sb = Sandbox::new("stash-more");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    write_commit(&r, "b [1].txt", "b\n", "b");
+    fs::write(r.join("a.txt"), "a2\n").unwrap();
+    fs::write(r.join("b [1].txt"), "b2\n").unwrap();
+    // One file, by a name that would be a glob.
+    let only = ["b [1].txt".to_string()];
+    stash_push(
+        &r,
+        "just b",
+        StashWhat {
+            untracked: false,
+            staged: false,
+            paths: &only,
+        },
+    )
+    .unwrap();
+    assert_eq!(fs::read_to_string(r.join("b [1].txt")).unwrap(), "b\n");
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "a2\n");
+
+    // Only what's staged: the unstaged part stays.
+    stage(&r, &["a.txt".into()]).unwrap();
+    fs::write(r.join("c.txt"), "untracked\n").unwrap();
+    stash_push(
+        &r,
+        "staged a",
+        StashWhat {
+            untracked: false,
+            staged: true,
+            paths: &[],
+        },
+    )
+    .unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "a\n");
+    assert!(r.join("c.txt").exists());
+    assert_eq!(stashes(&r).unwrap().len(), 2);
+
+    // The older stash (b) as a branch: made where it was, applied there, and dropped.
+    write_commit(&r, "b [1].txt", "b3\n", "b moved on");
+    let b = stashes(&r)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.message.ends_with("just b"))
+        .unwrap();
+    assert!(!stash_branch(&r, "from-stash", &b.sha).unwrap());
+    assert_eq!(
+        run_text(&r, &["branch", "--show-current"]).unwrap().trim(),
+        "from-stash"
+    );
+    assert_eq!(fs::read_to_string(r.join("b [1].txt")).unwrap(), "b2\n");
+    assert_eq!(stashes(&r).unwrap().len(), 1);
+    assert!(stash_branch(&r, "from-stash", &b.sha).is_err(), "gone now");
+}
+
+#[test]
+fn a_repository_of_its_own_identity_and_back_to_global() {
+    let sb = Sandbox::new("repo-identity");
+    let r = sb.path("r");
+    fs::create_dir_all(&r).unwrap();
+    run(&r, &["init", "-q", "-b", "main"]).unwrap();
+    assert!(repo_identity(&r).name.is_none());
+    set_repo_identity(&r, Some(("Work Me", "me@work.example"))).unwrap();
+    let own = repo_identity(&r);
+    assert_eq!(
+        (own.name.as_deref(), own.email.as_deref()),
+        (Some("Work Me"), Some("me@work.example"))
+    );
+    assert_eq!(
+        crate::git::identity(&r).email.as_deref(),
+        Some("me@work.example")
+    );
+    assert!(set_repo_identity(&r, Some(("two\nlines", "a@b"))).is_err());
+    set_repo_identity(&r, None).unwrap();
+    assert!(repo_identity(&r).name.is_none() && repo_identity(&r).email.is_none());
+    // Unsetting what isn't set is fine.
+    set_repo_identity(&r, None).unwrap();
+}
+
+#[test]
+fn remotes_added_renamed_repointed_and_removed() {
+    let sb = Sandbox::new("remotes");
+    let c = sb.remote_with_clones(1);
+    let r = &c[0];
+    let origin = sb.path("origin.git");
+    remote_add(r, "backup", origin.to_str().unwrap()).unwrap();
+    assert!(remote_add(r, "-x", "u").is_err());
+    assert!(remote_add(r, "a/b", "u").is_err());
+    assert!(remote_add(r, "ok", "--upload-pack=evil").is_err());
+    let names = |r: &Path| {
+        remote_list(r)
+            .unwrap()
+            .into_iter()
+            .map(|x| x.name)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(r), ["backup", "origin"]);
+    run(r, &["fetch", "-q", "backup"]).unwrap();
+    remote_rename(r, "backup", "spare").unwrap();
+    assert_eq!(names(r), ["origin", "spare"]);
+    assert!(run(
+        r,
+        &["rev-parse", "--verify", "-q", "refs/remotes/spare/main"]
+    )
+    .is_ok());
+    remote_set_url(r, "spare", "https://example.com/x.git").unwrap();
+    let spare = remote_list(r)
+        .unwrap()
+        .into_iter()
+        .find(|x| x.name == "spare")
+        .unwrap();
+    assert_eq!(spare.url, "https://example.com/x.git");
+    remote_remove(r, "spare").unwrap();
+    assert_eq!(names(r), ["origin"]);
+    assert!(run(
+        r,
+        &["rev-parse", "--verify", "-q", "refs/remotes/spare/main"]
+    )
+    .is_err());
+}
+
+mod rewrite {
+    use super::*;
+    use crate::rewrite::{run as rewrite, Edit};
+
+    fn head(r: &Path) -> String {
+        run_text(r, &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_string()
+    }
+    /// Subjects, newest first.
+    fn log(r: &Path) -> Vec<String> {
+        run_text(r, &["log", "--format=%s"])
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+    fn sha_of(r: &Path, subject: &str) -> String {
+        run_text(
+            r,
+            &["log", "--format=%H", "--grep", &format!("^{subject}$")],
+        )
+        .unwrap()
+        .trim()
+        .to_string()
+    }
+    fn repo(name: &str) -> (Sandbox, PathBuf) {
+        let sb = Sandbox::new(name);
+        let r = sb.path("r");
+        init(&r);
+        for (f, s) in [("a", "one"), ("b", "two"), ("c", "three"), ("d", "four")] {
+            write_commit(&r, &format!("{f}.txt"), &format!("{f}\n"), s);
+        }
+        (sb, r)
+    }
+
+    #[test]
+    fn reword_the_newest_and_an_older_commit() {
+        let (_sb, r) = repo("rw-reword");
+        // HEAD: an amend that leaves staged changes alone.
+        fs::write(r.join("a.txt"), "staged\n").unwrap();
+        stage(&r, &["a.txt".into()]).unwrap();
+        rewrite(
+            &r,
+            &head(&r),
+            &Edit::Reword {
+                sha: head(&r),
+                message: "four, reworded".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(log(&r), ["four, reworded", "three", "two", "one"]);
+        assert_eq!(
+            run_text(&r, &["diff", "--cached", "--name-only"]).unwrap(),
+            "a.txt\n"
+        );
+        // An older one, with a body; the staged change rides along (autostash).
+        let two = sha_of(&r, "two");
+        rewrite(
+            &r,
+            &head(&r),
+            &Edit::Reword {
+                sha: two,
+                message: "two, better\n\nWith a body.".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(log(&r), ["four, reworded", "three", "two, better", "one"]);
+        assert_eq!(
+            run_text(&r, &["log", "-1", "--skip=2", "--format=%b"])
+                .unwrap()
+                .trim(),
+            "With a body."
+        );
+        assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "staged\n");
+        // The root commit too.
+        let one = sha_of(&r, "one");
+        rewrite(
+            &r,
+            &head(&r),
+            &Edit::Reword {
+                sha: one,
+                message: "first".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(log(&r).last().unwrap(), "first");
+        assert!(rewrite(
+            &r,
+            &head(&r),
+            &Edit::Reword {
+                sha: head(&r),
+                message: "  ".into()
+            }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn squash_fixup_drop_and_move() {
+        let (_sb, r) = repo("rw-edit");
+        let three = sha_of(&r, "three");
+        rewrite(
+            &r,
+            &head(&r),
+            &Edit::Squash {
+                sha: three,
+                message: Some("two and three".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(log(&r), ["four", "two and three", "one"]);
+        assert!(r.join("b.txt").exists() && r.join("c.txt").exists());
+        let four = sha_of(&r, "four");
+        rewrite(
+            &r,
+            &head(&r),
+            &Edit::Squash {
+                sha: four,
+                message: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(log(&r), ["two and three", "one"]);
+        assert!(r.join("d.txt").exists());
+
+        let (_sb, r) = repo("rw-drop");
+        let two = sha_of(&r, "two");
+        rewrite(&r, &head(&r), &Edit::Drop { sha: two }).unwrap();
+        assert_eq!(log(&r), ["four", "three", "one"]);
+        assert!(!r.join("b.txt").exists());
+        let one = sha_of(&r, "one");
+        rewrite(
+            &r,
+            &head(&r),
+            &Edit::Move {
+                sha: one.clone(),
+                up: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(log(&r), ["four", "one", "three"]);
+        let four = sha_of(&r, "four");
+        rewrite(
+            &r,
+            &head(&r),
+            &Edit::Move {
+                sha: four,
+                up: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(log(&r), ["one", "four", "three"]);
+        assert!(rewrite(
+            &r,
+            &head(&r),
+            &Edit::Move {
+                sha: head(&r),
+                up: true
+            }
+        )
+        .is_err());
+        let first = sha_of(&r, "three");
+        assert!(rewrite(
+            &r,
+            &head(&r),
+            &Edit::Squash {
+                sha: first,
+                message: None
+            }
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_stale_view_merges_and_conflicts() {
+        let (_sb, r) = repo("rw-guard");
+        let two = sha_of(&r, "two");
+        // HEAD moved since the history was shown.
+        assert!(rewrite(&r, &two, &Edit::Drop { sha: two.clone() })
+            .unwrap_err()
+            .contains("HEAD has moved"));
+        // Two commits editing one line can't swap cleanly: the rebase stops.
+        write_commit(&r, "a.txt", "a2\n", "five");
+        write_commit(&r, "a.txt", "a3\n", "six");
+        let six = sha_of(&r, "six");
+        assert!(rewrite(
+            &r,
+            &head(&r),
+            &Edit::Move {
+                sha: six,
+                up: false
+            }
+        )
+        .unwrap());
+        assert!(operation(&r).is_some_and(|o| o.kind == "rebase"));
+        op_abort(&r).unwrap();
+        assert_eq!(log(&r)[..2], ["six", "five"]);
+        // A merge in the way.
+        run(&r, &["switch", "-q", "-c", "side", "HEAD~2"]).unwrap();
+        write_commit(&r, "e.txt", "e\n", "side");
+        run(&r, &["switch", "-q", "main"]).unwrap();
+        run(&r, &["merge", "-q", "--no-edit", "side"]).unwrap();
+        let two = sha_of(&r, "two");
+        assert!(rewrite(&r, &head(&r), &Edit::Drop { sha: two })
+            .unwrap_err()
+            .contains("merges"));
+    }
+}
+
+#[test]
+fn compare_files_are_what_the_other_branch_changed_since_they_parted() {
+    let sb = Sandbox::new("compare-files");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["switch", "-q", "-c", "feature"]).unwrap();
+    write_commit(&r, "b.txt", "b\n", "on feature");
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    // main moved on too: that isn't feature's change.
+    write_commit(&r, "c.txt", "c\n", "on main");
+    let c = compare_files(&r, "refs/heads/feature").unwrap();
+    assert_eq!(
+        c.files.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+        ["b.txt"]
+    );
+    assert_eq!(
+        c.head,
+        run_text(&r, &["rev-parse", "feature"]).unwrap().trim()
+    );
+    assert!(compare_files(&r, "feature").is_err(), "a full ref only");
+}
+
+#[test]
+fn the_reflog_keeps_what_a_reset_left_behind() {
+    let sb = Sandbox::new("reflog");
+    let r = sb.path("r");
+    assert!(reflog(&sb.0, 10).is_err() || reflog(&sb.0, 10).unwrap().is_empty());
+    init(&r);
+    assert!(reflog(&r, 10).unwrap().is_empty(), "no HEAD yet");
+    write_commit(&r, "a.txt", "a\n", "one");
+    write_commit(&r, "a.txt", "b\n", "two");
+    let two = run_text(&r, &["rev-parse", "HEAD"])
+        .unwrap()
+        .trim()
+        .to_string();
+    run(&r, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+    let log = reflog(&r, 10).unwrap();
+    assert_eq!(log[0].selector, "HEAD@{0}");
+    assert!(
+        log[0].message.starts_with("reset: moving to"),
+        "{}",
+        log[0].message
+    );
+    assert_eq!(log[1].sha, two, "the dropped commit is still listed");
+    assert_eq!(reflog(&r, 1).unwrap().len(), 1);
+}
+
+#[test]
+fn bisect_finds_the_first_bad_commit_and_stops() {
+    let sb = Sandbox::new("bisect");
+    let r = sb.path("r");
+    init(&r);
+    for i in 1..=8 {
+        let content = format!("{} {i}\n", if i >= 5 { "broken" } else { "fine" });
+        write_commit(&r, "state.txt", &content, &format!("c{i}"));
+        write_commit(&r, &format!("f{i}.txt"), "x\n", &format!("f{i}"));
+    }
+    let branch = run_text(&r, &["branch", "--show-current"]).unwrap();
+    let good = run_text(&r, &["log", "--format=%H", "--grep", "^c1$"])
+        .unwrap()
+        .trim()
+        .to_string();
+    let bad = run_text(&r, &["log", "--format=%H", "--grep", "^c5$"])
+        .unwrap()
+        .trim()
+        .to_string();
+    let mut step = bisect_start(&r, &good).unwrap();
+    assert!(operation(&r).is_some_and(|o| o.kind == "bisect"));
+    assert!(
+        merge(&r, "main", "ff").unwrap_err().contains("bisect"),
+        "nothing else starts meanwhile"
+    );
+    let mut rounds = 0;
+    while step.first_bad.is_none() {
+        rounds += 1;
+        assert!(rounds < 10, "{step:?}");
+        let broken = fs::read_to_string(r.join("state.txt"))
+            .unwrap()
+            .starts_with("broken");
+        step = bisect_mark(&r, if broken { "bad" } else { "good" }).unwrap();
+    }
+    assert_eq!(step.first_bad.as_deref(), Some(bad.as_str()));
+    assert!(bisect_mark(&r, "maybe").is_err());
+    op_abort(&r).unwrap();
+    assert!(operation(&r).is_none());
+    assert_eq!(run_text(&r, &["branch", "--show-current"]).unwrap(), branch);
+    assert!(bisect_mark(&r, "good").is_err());
+}
+
+#[test]
+fn submodules_listed_and_set_up() {
+    let sb = Sandbox::new("submodules");
+    let lib = sb.path("lib");
+    init(&lib);
+    write_commit(&lib, "lib.txt", "lib\n", "lib");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    assert!(submodules(&r).unwrap().is_empty());
+    // Local paths as submodule URLs are off by default since git 2.38.
+    run(
+        &r,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            lib.to_str().unwrap(),
+            "vendor/lib",
+        ],
+    )
+    .unwrap();
+    commit(&r, "add lib", &CommitOptions::default()).unwrap();
+    let subs = submodules(&r).unwrap();
+    assert_eq!(
+        (subs[0].path.as_str(), subs[0].state.as_str()),
+        ("vendor/lib", "ok")
+    );
+
+    // Registered but not set up (as in a fresh clone); its repository stays in .git/modules, so
+    // setting it up again needs no clone, which local paths wouldn't be allowed for.
+    run(&r, &["submodule", "deinit", "-q", "-f", "vendor/lib"]).unwrap();
+    assert_eq!(submodules(&r).unwrap()[0].state, "missing");
+    assert!(!r.join("vendor/lib/lib.txt").exists());
+    submodule_update(&r, &Net::default()).unwrap();
+    assert_eq!(submodules(&r).unwrap()[0].state, "ok");
+    assert!(r.join("vendor/lib/lib.txt").exists());
+    // Moved to another commit inside: "moved" until updated back.
+    write_commit(&r.join("vendor/lib"), "lib.txt", "newer\n", "newer");
+    assert_eq!(submodules(&r).unwrap()[0].state, "moved");
+    submodule_update(&r, &Net::default()).unwrap();
+    assert_eq!(submodules(&r).unwrap()[0].state, "ok");
 }
