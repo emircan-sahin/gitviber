@@ -38,7 +38,7 @@ export const COMMANDS = [
   { id: "view.history", title: "Focus History", category: "View", keys: ["ctrl+2"], keysOther: ["alt+2"] },
   { id: "view.pulls", title: "Focus Pull Requests", category: "View", keys: ["ctrl+3"], keysOther: ["alt+3"] },
   { id: "view.issues", title: "Focus Issues", category: "View", keys: ["ctrl+4"], keysOther: ["alt+4"] },
-  // ⌘F stays the code view's find.
+  // ⌘F is Find, which searches the history list too while focus is there.
   { id: "history.search", title: "Search History", category: "View", keys: ["alt+cmd+f"] },
   { id: "view.toggleGitPanel", title: "Toggle Git Panel", category: "View", keys: ["cmd+b"] },
   { id: "view.toggleExplorer", title: "Toggle Explorer", category: "View", keys: ["alt+cmd+b"] },
@@ -79,8 +79,9 @@ export const COMMANDS = [
   { id: "editor.fontZoomIn", title: "Increase Code Font Size", category: "Editor", keys: ["alt+cmd+="] },
   { id: "editor.fontZoomOut", title: "Decrease Code Font Size", category: "Editor", keys: ["alt+cmd+-"] },
   { id: "editor.fontZoomReset", title: "Reset Code Font Size", category: "Editor", keys: ["alt+cmd+0"] },
-  // Monaco's own ⌘F is taken off (monaco.ts), so this is the only key that opens it.
-  { id: "editor.find", title: "Find", category: "Editor", keys: ["cmd+f"], local: "the code view" },
+  // Searches where focus is (lib/find). Monaco's own ⌘F is taken off (monaco.ts), so this is the only key for its find.
+  { id: "editor.find", title: "Find", category: "General", keys: ["cmd+f"] },
+  { id: "search.findInFiles", title: "Find in Files", category: "General", keys: ["shift+cmd+f"] },
   // The file an import or path under the cursor points to; ⌘-click does the same (lib/codeLinks).
   { id: "editor.openLink", title: "Open Linked File", category: "Editor", keys: ["f12", "cmd+enter"], local: "the code view" },
   { id: "media.zoomIn", title: "Zoom In Image", category: "Editor", keys: ["=", "shift+="], local: "the image view" },

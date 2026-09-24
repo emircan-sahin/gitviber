@@ -2,6 +2,7 @@ import { CircleHelp, FileClock, FolderClock, Loader2, Search, X } from "lucide-r
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage, type GraphRefs } from "@/lib/api";
+import { useFind } from "@/lib/find";
 import { isTyping, matchesCommand, useShortcut } from "@/lib/keybindings";
 import { isEmptyFilter, parseLogQuery } from "@/lib/logQuery";
 import { toast } from "@/lib/toast";
@@ -57,6 +58,10 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
     else toast("info", `${name} isn't in the graph`, "It's hidden, or further back than the graph goes.");
   };
   const refMenu: RefMenu = { hide: (r) => setRefs(hideRefs(refs, r)), only: (r) => setRefs({ ...refs, only: r }) };
+  useFind("git", () => {
+    input.current?.focus();
+    input.current?.select();
+  });
 
   useEffect(() => {
     if (!focusRequested) return;

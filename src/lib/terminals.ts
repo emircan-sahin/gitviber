@@ -1,11 +1,13 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { FitAddon } from "@xterm/addon-fit";
+import { type ISearchDecorationOptions, SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { type ITerminalOptions, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useSyncExternalStore } from "react";
 import { errorMessage } from "./api";
+import { compileFind, type FindOptions } from "./findQuery";
 import { appTakesFromTerminal, type CommandId, commandIn } from "./keybindings";
 import { terminalLinks } from "./linkHost";
 import { codeFontFamily, getSettings, subscribeSettings } from "./settings";
@@ -22,6 +24,7 @@ interface Pane {
   term: Terminal;
   fit: FitAddon;
   serialize: SerializeAddon;
+  search: SearchAddon;
   host: HTMLDivElement;
   pty: number | null;
   started: boolean;
@@ -230,15 +233,19 @@ function send(p: Pane, data: string) {
 
 function createPane(cwd: string, restored?: { history: string; savedAt: number }): PaneInfo {
   const id = nextId++;
-  const term = new Terminal({ ...terminalOptions(), cursorBlink: true, scrollback: 10_000 });
+  // The proposed API is the decorations, which find marks its matches with.
+  const term = new Terminal({ ...terminalOptions(), cursorBlink: true, scrollback: 10_000, allowProposedApi: true });
   const fit = new FitAddon();
   term.loadAddon(fit);
   const serialize = new SerializeAddon();
   term.loadAddon(serialize);
   terminalLinks(term, cwd);
+  const search = new SearchAddon();
+  term.loadAddon(search);
+  search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, term, fit, serialize, host, pty: null, started: false, pending: "", writing: false };
+  const p: Pane = { id, cwd, term, fit, serialize, search, host, pty: null, started: false, pending: "", writing: false };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   term.onWriteParsed(scheduleSave);
@@ -367,6 +374,7 @@ export function closePane(id: number) {
   const p = panes.get(id);
   if (!p) return;
   panes.delete(id);
+  if (searching?.pane === p) searching = null;
   if (p.pty !== null) void invoke("pty_kill", { id: p.pty }).catch(() => {});
   p.term.dispose();
   p.host.remove();
@@ -393,6 +401,62 @@ export function closeFocused() {
 
 export function closeGroup(id: number) {
   state.groups.find((g) => g.id === id)?.panes.forEach((p) => closePane(p.id));
+}
+
+/** The pane find searches, and where its count goes (index 0: past the addon's 1000 marked matches). */
+let searching: { pane: Pane; onResults: (at: { index: number; total: number }) => void } | null = null;
+
+/**
+ * Find in the active tab's focused pane: `step` 0 as the query is typed (staying on the match
+ * on show while it still matches), 1 or -1 for the next or previous. An empty query clears it;
+ * a regex that doesn't parse is returned as the error, nothing searched.
+ */
+export function findInTerminal(query: string, find: FindOptions, step: 0 | 1 | -1, onResults: (at: { index: number; total: number }) => void): string | null {
+  const g = activeGroup();
+  const p = g && panes.get(g.focused);
+  if (searching && searching.pane !== p) searching.pane.search.clearDecorations();
+  searching = p ? { pane: p, onResults } : null;
+  if (!p) return null;
+  const re = compileFind(query, find);
+  if (!query || re instanceof Error) {
+    p.search.clearDecorations();
+    onResults({ index: 0, total: 0 });
+    return re instanceof Error ? re.message : null;
+  }
+  const options = { caseSensitive: find.matchCase, wholeWord: find.wholeWord, regex: find.regex, decorations: findColors(), incremental: step === 0 };
+  if (step === -1) p.search.findPrevious(query, options);
+  else p.search.findNext(query, options);
+  return null;
+}
+
+/** Find's marks go, and its count stops being reported (the box went, or searches elsewhere now). */
+export function clearFind() {
+  searching?.pane.search.clearDecorations();
+  searching = null;
+}
+
+/** Closes find: its marks go, and the pane gets the keys back. */
+export function endFind() {
+  clearFind();
+  focusActive();
+}
+
+// The app's find colors (index.css). Matches take solid colors only: the washes are laid on the background here.
+function findColors(): ISearchDecorationOptions {
+  const css = getComputedStyle(document.documentElement);
+  const v = (name: string) => css.getPropertyValue(name).trim();
+  const mark = solid(v("--find-mark"), v("--background"));
+  return { matchBackground: solid(v("--find-match"), v("--background")), activeMatchBackground: solid(v("--find-current"), v("--background")), matchOverviewRuler: mark, activeMatchColorOverviewRuler: mark };
+}
+
+const probe = document.createElement("canvas").getContext("2d", { willReadFrequently: true })!;
+/** `color` over `under`, as #RRGGBB. */
+function solid(color: string, under: string) {
+  probe.fillStyle = under;
+  probe.fillRect(0, 0, 1, 1);
+  probe.fillStyle = color;
+  probe.fillRect(0, 0, 1, 1);
+  return "#" + [...probe.getImageData(0, 0, 1, 1).data.slice(0, 3)].map((n) => n.toString(16).padStart(2, "0")).join("");
 }
 
 export function clearFocused() {

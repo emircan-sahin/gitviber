@@ -1,6 +1,7 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { ChevronRight, Copy, File, FilePlus, FolderPlus, FolderSearch, History, Pencil, Trash2, Undo2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useListFilter } from "@/components/ListFilter";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
 import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/commands";
@@ -19,6 +20,8 @@ export interface FileTreeHandle {
   collapseAll: () => void;
   /** Opens the folders down to `path`, selects it and focuses the tree. */
   reveal: (path: string) => void;
+  /** Opens the filter, as Find does with focus in the tree. */
+  filter: () => void;
 }
 
 interface Props {
@@ -41,6 +44,30 @@ const INDENT = 12;
 const parentOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
 const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 const isInside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
+const nameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
+
+/** The filter lists this many files at most: the tree renders every row it has. */
+const MAX_MATCHES = 1000;
+
+/** The files that match and the folders down to them, all open, in the order list_dir sorts a folder. */
+function matchingTree(files: string[], matches: (path: string) => boolean) {
+  const children: Record<string, Entry[]> = {};
+  const add = (path: string, isDir: boolean) => (children[parentOf(path)] ??= []).push({ name: nameOf(path), path, isDir, ignored: false });
+  const expanded = new Set([""]);
+  let found = 0;
+  for (const path of files) {
+    if (!matches(path)) continue;
+    if (++found > MAX_MATCHES) break;
+    add(path, false);
+    for (let dir = parentOf(path); dir && !expanded.has(dir); dir = parentOf(dir)) {
+      expanded.add(dir);
+      add(dir, true);
+    }
+  }
+  const key = (e: Entry) => e.name.toLowerCase();
+  for (const list of Object.values(children)) list.sort((a, b) => Number(b.isDir) - Number(a.isDir) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+  return { children, expanded, found: Math.min(found, MAX_MATCHES), capped: found > MAX_MATCHES };
+}
 
 /** Lazy tree of the working directory, like VS Code's explorer, annotated with git status. */
 export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathMoved, onShowHistory, ref }: Props) {
@@ -58,6 +85,25 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   const keepFocus = useRef(false);
   // A revealed path's folders may still be loading; scroll to it once its row exists.
   const revealing = useRef<string | null>(null);
+
+  // Filtering lists every file git does (not the ignored ones), open folders or not.
+  const filter = useListFilter("explorer", "Filter files");
+  const filtering = !!filter.needle;
+  const [files, setFiles] = useState<string[] | null>(null);
+  useEffect(() => {
+    if (!filtering) return;
+    let live = true;
+    api.listFiles().then(
+      (list) => live && setFiles(list),
+      (e) => live && toast("error", "Could not list files", errorMessage(e)),
+    );
+    return () => {
+      live = false;
+    };
+  }, [filtering, revision]);
+  const matching = useMemo(() => (filtering && files ? matchingTree(files, (path) => filter.matches(path)) : null), [filtering, files, filter.needle]);
+  // What the rows show: the matches while filtering (the last tree until they're listed), else the folders opened.
+  const shown = matching ?? { children, expanded };
 
   // Per-path request counter: a slow, older listing must not overwrite a newer one.
   const requests = useRef(new Map<string, number>());
@@ -86,21 +132,37 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     expanded.forEach((p) => loadDir(p));
   }, [revision, loadDir]);
 
+  /** Opens the folders down to `path` and scrolls to it once its row is there. */
+  const openTo = (path: string) => {
+    const parts = path.split("/");
+    const dirs = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/"));
+    setExpanded((x) => new Set([...x, ...dirs]));
+    dirs.forEach((d) => loadDir(d));
+    revealing.current = path;
+  };
+
   useImperativeHandle(ref, () => ({
     collapseAll: () => {
+      filter.close();
       setExpanded(new Set([""]));
       setSelected((s) => s && s.split("/")[0]);
     },
     reveal: (path) => {
-      const parts = path.split("/");
-      const dirs = parts.slice(0, -1).map((_, i) => parts.slice(0, i + 1).join("/"));
-      setExpanded((x) => new Set([...x, ...dirs]));
-      dirs.forEach((d) => loadDir(d));
-      revealing.current = path;
+      filter.close();
+      openTo(path);
       setSelected(path);
       treeRef.current?.focus();
     },
+    filter: filter.open,
   }));
+
+  // Leaving the filter, the file picked in it stays picked, shown in its folders.
+  const wasFiltering = useRef(false);
+  useEffect(() => {
+    if (wasFiltering.current && !filtering && selected) openTo(selected);
+    wasFiltering.current = filtering;
+    // Only on the way out.
+  }, [filtering]);
 
   const { fileStatus, dirtyDirs, discardable } = useMemo(() => {
     const fileStatus = new Map<string, ChangeStatus>();
@@ -121,13 +183,13 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   const rows = useMemo(() => {
     const out: { entry: Entry; depth: number }[] = [];
     const walk = (dir: string, depth: number) =>
-      children[dir]?.forEach((entry) => {
+      shown.children[dir]?.forEach((entry) => {
         out.push({ entry, depth });
-        if (entry.isDir && expanded.has(entry.path)) walk(entry.path, depth + 1);
+        if (entry.isDir && shown.expanded.has(entry.path)) walk(entry.path, depth + 1);
       });
     walk("", 0);
     return out;
-  }, [children, expanded]);
+  }, [shown.children, shown.expanded]);
 
   // The edited entry (or the folder a new one goes into) vanished on a refresh: drop the input,
   // or keyboard navigation stays disabled with nothing to type into.
@@ -162,7 +224,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     if (open) loadDir(path);
   };
 
-  const activate = (e: Entry, pin = false) => (e.isDir ? setOpen(e.path, !expanded.has(e.path)) : onOpen({ kind: "file", path: e.path }, pin));
+  // While filtering, folders stay open around their matches.
+  const activate = (e: Entry, pin = false) => (!e.isDir ? onOpen({ kind: "file", path: e.path }, pin) : !matching && setOpen(e.path, !expanded.has(e.path)));
 
   const startEditing = (next: Editing) => {
     keepFocus.current = true;
@@ -267,10 +330,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       if (!cur.isDir) {
         activate(cur);
         focusPanel("code");
-      } else if (!expanded.has(cur.path)) setOpen(cur.path, true);
+      } else if (!shown.expanded.has(cur.path)) setOpen(cur.path, true);
       else if (rows[i + 1] && parentOf(rows[i + 1].entry.path) === cur.path) move(i + 1);
     } else if (ev.key === "ArrowLeft") {
-      if (cur.isDir && expanded.has(cur.path)) setOpen(cur.path, false);
+      if (cur.isDir && shown.expanded.has(cur.path) && !matching) setOpen(cur.path, false);
       else if (parentOf(cur.path)) setSelected(parentOf(cur.path));
     } else if (ev.key === "Enter") activate(cur, true);
     else handled = false;
@@ -290,6 +353,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   const menuDir = t ? (t.isDir ? t.path : null) : "";
 
   return (
+    <div className="flex h-full flex-col">
+    {filter.bar}
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div
@@ -302,11 +367,12 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
             setMenuTarget(entry);
             if (entry) setSelected(entry.path);
           }}
-          className="group/tree h-full overflow-x-hidden overflow-y-auto py-1 outline-none"
+          className="group/tree min-h-0 flex-1 overflow-x-hidden overflow-y-auto py-1 outline-none"
         >
+          {matching && !matching.found && <div className="px-4 py-6 text-center text-[12px] text-subtle">No files match.</div>}
           {editing?.mode === "new" && editing.parent === "" && inputRow(0)}
           {rows.map(({ entry: e, depth }) => {
-            const isOpen = expanded.has(e.path);
+            const isOpen = shown.expanded.has(e.path);
             const st = fileStatus.get(e.path);
             const tone = st ? statusInfo(st).text : undefined;
             const sel: Selection = { kind: "file", path: e.path };
@@ -356,6 +422,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
               </Fragment>
             );
           })}
+          {matching?.capped && <div className="px-4 py-2 text-center text-[11px] text-subtle">Showing the first {MAX_MATCHES} matches</div>}
         </div>
       </ContextMenuTrigger>
       <ContextMenuContent
@@ -419,6 +486,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
         )}
       </ContextMenuContent>
     </ContextMenu>
+    </div>
   );
 }
 

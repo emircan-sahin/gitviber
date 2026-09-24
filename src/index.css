@@ -46,6 +46,12 @@
   --del-gutter: #362323;
   --del-emph: rgb(244 112 103 / 0.22);
 
+  /* Find's matches, the same in every theme and view (Monaco's too): the scrollbar's mark, then
+     the text's wash, stronger on the current match. */
+  --find-mark: #d18616;
+  --find-match: rgb(234 92 0 / 0.33);
+  --find-current: rgb(234 92 0 / 0.66);
+
   --font-ui: -apple-system, BlinkMacSystemFont, "Geist Variable", "Segoe UI", sans-serif;
   color-scheme: dark;
 }
@@ -460,6 +466,27 @@
    the clicked line (Open in, find), it just isn't drawn. */
 .monaco-editor .cursors-layer {
   display: none;
+}
+
+/* Find's matches on a diff's overview (MonacoView markFindMatches), which is its right 14px:
+   over it (Monaco's z-index 9), clicks going through. */
+.gv-find-marks {
+  position: absolute;
+  z-index: 10;
+  top: 0;
+  right: 0;
+  width: 14px;
+  height: 100%;
+  pointer-events: none;
+  color: var(--find-mark);
+}
+
+/* Find in a page (lib/pageFind), where the text is the app's own. */
+::highlight(gv-find) {
+  background-color: var(--find-match);
+}
+::highlight(gv-find-current) {
+  background-color: var(--find-current);
 }
 
 /* Monaco's file view: VS Code-style change bars in the gutter, a wedge where lines were deleted. */

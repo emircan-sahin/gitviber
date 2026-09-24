@@ -1,6 +1,8 @@
 import { ChevronDown, Columns2, FolderGit2, Plus, SquareTerminal, Trash2, X } from "lucide-react";
+import { FindBox, useFindBox } from "@/components/FindBox";
+import { type FindOptions, NO_OPTIONS } from "@/lib/findQuery";
 import { Button } from "@/components/ui/button";
-import { Fragment, useEffect, useLayoutEffect, useRef } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
@@ -13,7 +15,10 @@ import {
   clearFocused,
   closeFocused,
   closeGroup,
+  clearFind,
   dismissRestore,
+  endFind,
+  findInTerminal,
   openTerminal,
   restoreSession,
   showWorktree,
@@ -136,7 +141,8 @@ export function TerminalPanel({ root, worktrees }: Props) {
           </Tip>
         </div>
       </div>
-      <div className="min-h-0 flex-1">
+      <div className="relative min-h-0 flex-1">
+        <TerminalFind />
         {group && (
           // Re-keyed on the pane list so a split or close lays the panes out evenly again.
           <ResizablePanelGroup key={group.panes.map((p) => p.id).join()} orientation="horizontal">
@@ -194,6 +200,56 @@ function GroupTab({ group: g, active, here, branch }: { group: TerminalGroup; ac
         </button>
       </div>
     </Tip>
+  );
+}
+
+/** Find (⌘F with focus in the terminal): the focused pane's text, its scrollback included. */
+function TerminalFind() {
+  const box = useFindBox("terminal");
+  const [query, setQuery] = useState("");
+  const [options, setOptions] = useState(NO_OPTIONS);
+  const [at, setAt] = useState<{ index: number; total: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const search = (q: string, o: FindOptions, step: 0 | 1 | -1) => setError(findInTerminal(q, o, step, setAt));
+  // Opened again: the last query's matches come back.
+  useEffect(() => {
+    if (box.asked && query) search(query, options, 0);
+    // Only when Find asks.
+  }, [box.asked]);
+  // Another tab or pane: the box searches that one (the last one's marks go with it).
+  const { groups, active } = useTerminals();
+  const pane = groups.find((g) => g.id === active)?.focused;
+  useEffect(() => {
+    if (box.open && query) search(query, options, 0);
+    else clearFind();
+    // Only when the pane changes.
+  }, [pane]);
+  // The panel hidden: no marks left behind, nothing reporting to this box.
+  useEffect(() => clearFind, []);
+  if (!box.open) return null;
+  return (
+    <div className="absolute top-2 right-5 z-10">
+      <FindBox
+        query={query}
+        onQuery={(q) => {
+          setQuery(q);
+          search(q, options, 0);
+        }}
+        options={options}
+        onOptions={(o) => {
+          setOptions(o);
+          search(query, o, 0);
+        }}
+        at={at}
+        error={error}
+        onStep={(dir) => search(query, options, dir)}
+        onClose={() => {
+          box.close();
+          endFind();
+        }}
+        focus={box.asked}
+      />
+    </div>
   );
 }
 

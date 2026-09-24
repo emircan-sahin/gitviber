@@ -2,6 +2,7 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { Check, ChevronDown, CircleDashed, ExternalLink, FolderGit2, GitBranch, GitMerge, GitPullRequest, GitPullRequestClosed, Image as ImageIcon, Loader2, MessageSquare, MinusCircle, RefreshCw, X } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Components } from "react-markdown";
+import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
@@ -142,6 +143,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   return (
     // Focusable so the keyboard can scroll it (focusPanel("code") lands here).
     <div data-code-scroll tabIndex={0} className="min-h-0 flex-1 overflow-y-auto outline-none">
+      <PageFind />
       <div className="mx-auto max-w-4xl px-6 py-5">
         <div className="flex items-start gap-3">
           <PullStateIcon pull={p} className="mt-1.5 size-4" />

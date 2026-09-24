@@ -34,6 +34,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
+import { useListFilter } from "@/components/ListFilter";
 import { Windowed } from "@/components/Windowed";
 import { api, type Commit, errorMessage, type FileChange, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/commands";
@@ -99,7 +100,21 @@ const leftOut = (n: number) => `Left out ${n} nested ${n === 1 ? "repository" : 
 const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
 const paths = (rows: Change[]) => rows.map((r) => r.file.path);
 
-export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer, onShowHistory }: Props) {
+/** `status` with only the files `keep` accepts. */
+const filtered = (status: RepoStatus, keep: (f: FileChange) => boolean): RepoStatus => ({
+  ...status,
+  conflicted: status.conflicted.filter(keep),
+  staged: status.staged.filter(keep),
+  unstaged: status.unstaged.filter(keep),
+});
+
+export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer, onShowHistory }: Props) {
+  // The list and its section actions (Stage all, Discard) cover the files the filter leaves, and
+  // say so ("Stage 3 shown"); the commit takes hidden ones too and says how many.
+  const filter = useListFilter("git", "Filter changed files");
+  const filtering = !!filter.needle;
+  const status = filtering ? filtered(full, (f) => filter.matches(f.path, f.oldPath)) : full;
+  const allOrShown = (verb: string, n: number) => (filtering ? `${verb} ${n} shown` : `${verb} all`);
   const act = async (title: string, fn: () => Promise<unknown>) => {
     await attempt(title, fn);
     await refresh();
@@ -297,12 +312,14 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
     );
   };
 
-  const stashes = useStashes(status);
+  const stashes = useStashes(full);
   const [stashing, setStashing] = useState(false);
 
-  const reviewed = all.filter(viewed).length;
-  const add = all.reduce((n, s) => n + (s.file.additions ?? 0), 0);
-  const del = all.reduce((n, s) => n + (s.file.deletions ?? 0), 0);
+  // The review's progress, whatever the filter shows.
+  const total = changeList(full);
+  const reviewed = total.filter(viewed).length;
+  const add = total.reduce((n, s) => n + (s.file.additions ?? 0), 0);
+  const del = total.reduce((n, s) => n + (s.file.deletions ?? 0), 0);
 
   useCommands({
     // The tab and the selection follow the files into the other list, so pressing it again undoes it. Conflicts are left to their own actions.
@@ -388,22 +405,23 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
 
   return (
     <div className="flex h-full flex-col">
-      {status.operation && <OperationBanner status={status} refresh={refresh} />}
-      {all.length > 0 && (
+      {filter.bar}
+      {status.operation && <OperationBanner status={full} refresh={refresh} />}
+      {total.length > 0 && (
         <div className="shrink-0 border-b border-border px-3 py-2">
           <div className="flex items-center gap-2 text-[11.5px]">
             <span className="text-muted-foreground">
-              <span className="font-semibold text-foreground">{all.length}</span> {all.length === 1 ? "file" : "files"}
+              <span className="font-semibold text-foreground">{total.length}</span> {total.length === 1 ? "file" : "files"}
             </span>
             <span className="font-mono text-[11px]">
               <span className="text-added">+{add}</span> <span className="text-removed">-{del}</span>
             </span>
             <span className="ml-auto text-muted-foreground">
-              <span className={cn("font-semibold", reviewed === all.length ? "text-added" : "text-foreground")}>{reviewed}</span>/{all.length} reviewed
+              <span className={cn("font-semibold", reviewed === total.length ? "text-added" : "text-foreground")}>{reviewed}</span>/{total.length} reviewed
             </span>
           </div>
           <div className="mt-1.5 h-[3px] overflow-hidden bg-border">
-            <div className="h-full bg-added transition-[width] duration-300" style={{ width: `${(reviewed / all.length) * 100}%` }} />
+            <div className="h-full bg-added transition-[width] duration-300" style={{ width: `${(reviewed / total.length) * 100}%` }} />
           </div>
         </div>
       )}
@@ -415,7 +433,7 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
         // The empty space below the rows lets go of the selection, like Finder.
         onClick={(e) => e.target === e.currentTarget && setPicked(null)}
         className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
-        {!all.length && !status.unstaged.length && <AllCaughtUp />}
+        {!all.length && !status.unstaged.length && (filter.needle ? <div className="px-4 py-6 text-center text-[12px] text-subtle">No changed files match.</div> : <AllCaughtUp />)}
         {status.conflicted.length > 0 && (
           <Section
             title="Conflicts"
@@ -450,7 +468,7 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
               pickedStaged ? (
                 <SectionBtn onClick={() => unstage(pickedStaged)}>Unstage {files(pickedStaged.length)}</SectionBtn>
               ) : (
-                <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged.map((f) => f.path)))}>Unstage all</SectionBtn>
+                <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged.map((f) => f.path)))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
               )
             }
           >
@@ -477,9 +495,15 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
               ) : (
                 <>
                   {/* Leaves untracked files alone; deleting one is a per-file choice. */}
-                  <SectionBtn onClick={() => discard(status.unstaged.filter((f) => f.status !== "?"))}>Discard</SectionBtn>
-                  {viewedPaths.length > 0 && <SectionBtn onClick={() => act("Stage failed", () => api.stage(viewedPaths))}>Stage {viewedPaths.length} viewed</SectionBtn>}
-                  <SectionBtn onClick={stageAll}>Stage all</SectionBtn>
+                  <SectionBtn onClick={() => discard(status.unstaged.filter((f) => f.status !== "?"))}>
+                    {filtering ? `Discard ${status.unstaged.filter((f) => f.status !== "?").length} shown…` : "Discard"}
+                  </SectionBtn>
+                  {viewedPaths.length > 0 && (
+                    <SectionBtn onClick={() => act("Stage failed", () => api.stage(viewedPaths))}>
+                      Stage {viewedPaths.length} viewed{filtering && " shown"}
+                    </SectionBtn>
+                  )}
+                  <SectionBtn onClick={stageAll}>{allOrShown("Stage", stageable(status.unstaged).paths.length)}</SectionBtn>
                 </>
               )
             }
@@ -504,20 +528,20 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
             )}
           </Section>
         )}
-        {(stashes.length > 0 || all.length > 0) && (
-          <Section title="Stashes" count={stashes.length} action={all.length > 0 && !status.operation && <SectionBtn onClick={() => setStashing(true)}>Stash…</SectionBtn>}>
+        {(stashes.length > 0 || total.length > 0) && (
+          <Section title="Stashes" count={stashes.length} action={total.length > 0 && !status.operation && <SectionBtn onClick={() => setStashing(true)}>Stash…</SectionBtn>}>
             <StashList stashes={stashes} activeKey={activeKey} onOpen={onOpen} onHover={onHover} refresh={refresh} />
           </Section>
         )}
       </div>
-      {stashing && <StashDialog status={status} onClose={() => setStashing(false)} refresh={refresh} />}
+      {stashing && <StashDialog status={full} onClose={() => setStashing(false)} refresh={refresh} />}
       {status.operation ? (
         // Committing by hand mid-rebase would splice an extra commit into the history.
         <div className="shrink-0 border-t border-border bg-panel px-3 py-2.5 text-[11.5px] text-muted-foreground">
           A {status.operation.kind} is in progress. Resolve the conflicts, then use <span className="font-medium text-foreground">Continue</span> above.
         </div>
       ) : (
-        <CommitBox status={status} head={head} main={main} refresh={refresh} />
+        <CommitBox status={full} shown={filtering ? status : null} head={head} main={main} refresh={refresh} />
       )}
     </div>
   );
@@ -757,7 +781,8 @@ const SUMMARY_LIMIT = 72;
 const EMPTY_DRAFT: CommitDraft = { summary: "", body: "", coAuthors: [] };
 const messageOf = (c: Commit): CommitDraft => ({ summary: c.subject, body: c.body, coAuthors: [] });
 
-function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head" | "main" | "refresh">) {
+/** `shown`: what the list's filter leaves, while it has text; the button says how many files it takes that the list hides. */
+function CommitBox({ status, shown, head, main, refresh }: Pick<Props, "status" | "head" | "main" | "refresh"> & { shown: RepoStatus | null }) {
   const root = status.root;
   const [draft, setDraft] = useState<CommitDraft>(() => loadDraft(root) ?? EMPTY_DRAFT);
   // While amending, the fields hold the message being amended (`original`, HEAD's at `sha`)
@@ -830,6 +855,9 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
   const scope = hasStaged && !amend ? `Commit ${status.staged.length} staged` : label;
   const target = status.branch ? `${scope} to ${status.branch}` : scope;
   const skipped = !hasStaged && !amend && all.skipped > 0;
+  const committed = hasStaged || amend ? status.staged.map((f) => f.path) : all.paths;
+  const visible = new Set(shown ? [...shown.staged, ...shown.unstaged].map((f) => f.path) : committed);
+  const hidden = committed.filter((p) => !visible.has(p)).length;
   // `unpushed` is also false when there's nothing to compare with, so only a pushed branch can tell.
   const pushed = !!amend && !!head && !head.unpushed && !!(status.upstream || status.push?.branch);
   const length = [...draft.summary].length;
@@ -997,9 +1025,12 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
             </DropdownMenuContent>
           </DropdownMenu>
         </CoAuthorPicker>
-        <Tip label={skipped ? `${target} (${leftOut(all.skipped).toLowerCase()})` : target} shortcut={commitKey}>
+        <Tip
+          label={[target, skipped && leftOut(all.skipped).toLowerCase(), hidden && `including ${files(hidden)} the filter hides`].filter(Boolean).join(", ")}
+          shortcut={commitKey}
+        >
           <Button className="ml-auto flex-1" disabled={!canCommit} onClick={commit}>
-            {busy ? "Committing…" : label}
+            {busy ? "Committing…" : hidden ? `${label} · ${hidden} hidden` : label}
           </Button>
         </Tip>
       </div>

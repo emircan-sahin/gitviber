@@ -3,10 +3,12 @@ import type { Blame, BlameCommit, DiffPair, DiffRow } from "@/lib/api";
 import { showLanguage } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
 import { narrow, widenColumn } from "@/lib/indent";
-import { matchesCommand } from "@/lib/keybindings";
+import { useFind } from "@/lib/find";
+import { findMatches } from "@/lib/findQuery";
+import { onReveal, takeReveal } from "@/lib/reveal";
 import { codeWantsFocus, setCodeEditor } from "@/lib/panels";
 import { followLinks } from "@/lib/codeLinks";
-import { type LinkSide, onReveal, takeReveal } from "@/lib/linkHost";
+import { type LinkSide, onReveal as onLinkReveal, takeReveal as takeLinkReveal } from "@/lib/linkHost";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
 import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
 import { relativeTime } from "@/lib/utils";
@@ -53,6 +55,17 @@ const SCREEN = 150;
 let onShow: { path: string; line: () => number } | null = null;
 
 /** The line being read in `path` if the code view shows it: the cursor's if it's on screen, else the top one. */
+// The code view's editor, while one is shown.
+let live: Editor | null = null;
+
+/** The text selected in the code view, if it's on one line: what Search in Files starts from. */
+export function selectedText(): string {
+  const code = live && (isDiff(live) && live.getOriginalEditor().hasWidgetFocus() ? live.getOriginalEditor() : codeEditor(live));
+  const sel = code?.getSelection();
+  if (!code || !sel || sel.isEmpty() || sel.startLineNumber !== sel.endLineNumber) return "";
+  return code.getModel()?.getValueInRange(sel) ?? "";
+}
+
 export function lineInView(path: string): number | undefined {
   return onShow?.path === path ? onShow.line() : undefined;
 }
@@ -76,6 +89,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   onBlameClickRef.current = onBlameClick;
   const linksRef = useRef({ lang, links });
   linksRef.current = { lang, links };
+  const split = useRef(false);
+  split.current = mode === "split";
 
   useEffect(() => {
     showLanguage(lang);
@@ -88,6 +103,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     const el = host.current!;
     const e = diff ? monaco.editor.createDiffEditor(el, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(el, fileOptions(s, wrap, blameColumn));
     editor.current = e;
+    live = e;
     // A click on a blame entry shows its commit.
     const click = isDiff(e)
       ? null
@@ -103,9 +119,11 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
         () => linksRef.current.links?.[side] ?? null,
       );
     const linked = isDiff(e) ? [follow(e.getOriginalEditor(), "original"), follow(e.getModifiedEditor(), "modified")] : [follow(e, "modified")];
+    const marks = isDiff(e) ? markFindMatches(e, el, () => split.current) : null;
     return () => {
       click?.dispose();
       linked.forEach((l) => l.dispose());
+      marks?.dispose();
       if (shown.current) viewStates.set(shown.current, e.saveViewState()!);
       shown.current = null;
       const models = modelsOf(e);
@@ -115,6 +133,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       viewModel.current = null;
       models.forEach((m) => m.dispose());
       editor.current = null;
+      if (live === e) live = null;
     };
     // Options follow below; only the kind of editor needs a new one.
   }, [diff]);
@@ -123,9 +142,9 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   const revealing = useRef<string | null>(null);
   useEffect(
     () =>
-      onReveal(() => {
+      onLinkReveal(() => {
         const e = editor.current;
-        const line = e && revealing.current ? takeReveal(revealing.current, false) : null;
+        const line = e && revealing.current ? takeLinkReveal(revealing.current, false) : null;
         if (e && line) revealAt(codeEditor(e), line, unit.current);
       }),
     [],
@@ -133,6 +152,30 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
 
   // Focus Code View, F6 and → from a list land in the editor that scrolls.
   useEffect(() => setCodeEditor(() => editor.current && codeEditor(editor.current).focus()), []);
+
+  // A search result's match (lib/reveal), once this file view shows its file: its line, the match selected.
+  const reveal = useRef<() => boolean>(() => false);
+  reveal.current = () => {
+    const e = editor.current;
+    if (!e || isDiff(e) || shown.current !== scrollKey) return false;
+    const r = takeReveal(path);
+    if (!r) return false;
+    const model = e.getModel()!;
+    const line = Math.min(r.line, model.getLineCount());
+    const found = findMatches(model.getLineContent(line), r.query, r.options, 1);
+    const [start, end] = (!(found instanceof Error) && found[0]) || [0, 0];
+    const range = new monaco.Range(line, start + 1, line, end + 1);
+    e.setSelection(range);
+    e.revealRangeInCenter(range);
+    return true;
+  };
+  useEffect(() => onReveal(() => void reveal.current()), []);
+
+  // Find is Monaco's own box: in split view on the side that has focus, else the new side.
+  useFind("code", () => {
+    const e = editor.current;
+    if (e) (isDiff(e) && e.getOriginalEditor().hasWidgetFocus() ? e.getOriginalEditor() : codeEditor(e)).getAction("actions.find")?.run();
+  });
 
   useEffect(() => {
     const e = editor.current!;
@@ -196,8 +239,9 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       if (codeWantsFocus()) code.focus();
       // Opened by a link that names a line (path:12, #L12): there, wherever it was left.
       revealing.current = diff ? null : path;
-      const line = diff ? null : takeReveal(path, true);
+      const line = diff ? null : takeLinkReveal(path, true);
       if (line) return revealAt(code, line, created.unit);
+      if (reveal.current()) return;
       if (saved) return e.restoreViewState(saved as never);
       // Near the first change. A diff still computing takes it there when it lands, unless you
       // have scrolled since.
@@ -245,13 +289,6 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     const onKey = (ev: KeyboardEvent) => {
       const e = editor.current;
       if (!e || ev.isComposing || !(ev.target instanceof HTMLElement)) return;
-      // From the text, or from the find box by a chord that can't be typed there; in split view on the side that has focus.
-      if (matchesCommand("editor.find", ev) && (ev.target.matches("textarea.inputarea") || ev.metaKey || ev.ctrlKey)) {
-        (isDiff(e) && e.getOriginalEditor().hasWidgetFocus() ? e.getOriginalEditor() : codeEditor(e)).getAction("actions.find")?.run();
-        ev.preventDefault();
-        ev.stopPropagation();
-        return;
-      }
       if (ev.altKey || ev.ctrlKey || !ev.target.matches("textarea.inputarea")) return;
       // Split view: the side you clicked into; the other one follows.
       const code = isDiff(e) && e.getOriginalEditor().hasTextFocus() ? e.getOriginalEditor() : codeEditor(e);
@@ -300,8 +337,55 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     [bars],
   );
 
-  return <div ref={host} data-scrollbar="none" className="h-full" />;
+  return <div ref={host} data-scrollbar="none" className="relative h-full" />;
 });
+
+// The color find's decorations ask an editor's own overview ruler for (past 1000 matches, merged ones).
+const FIND_MARK = "editorOverviewRuler.findMatchForeground";
+
+/**
+ * Find's matches on a diff's overview, which stands in for the editors' own scrollbars (hidden,
+ * see diffOptions) where Monaco would mark them: each side's on its half, as the diff's own colors are.
+ */
+function markFindMatches(e: monaco.editor.IStandaloneDiffEditor, host: HTMLElement, split: () => boolean) {
+  const canvas = document.createElement("canvas");
+  canvas.className = "gv-find-marks";
+  host.appendChild(canvas);
+  const sides = [e.getOriginalEditor(), e.getModifiedEditor()];
+  let frame = 0;
+  const draw = () => {
+    frame = 0;
+    const ratio = window.devicePixelRatio;
+    canvas.width = Math.round(canvas.clientWidth * ratio);
+    canvas.height = Math.round(canvas.clientHeight * ratio);
+    const ctx = canvas.getContext("2d")!;
+    ctx.fillStyle = getComputedStyle(canvas).color;
+    // Both sides scroll as one; the new side's height counts the unified view's deleted lines too.
+    const scale = canvas.height / Math.max(1, sides[1].getScrollHeight());
+    const half = canvas.width / 2;
+    // The unified view hides the old side, which keeps any matches from while it showed.
+    sides.slice(split() ? 0 : 1).forEach((side) => {
+      const model = side.getModel();
+      const x = side === sides[0] ? 0 : half;
+      for (const d of (model && side.getDecorationsInRange(model.getFullModelRange())) ?? []) {
+        const mark = d.options.overviewRuler?.color;
+        if (typeof mark !== "object" || mark.id !== FIND_MARK) continue;
+        const top = side.getTopForLineNumber(d.range.startLineNumber);
+        const bottom = side.getBottomForLineNumber(d.range.endLineNumber);
+        ctx.fillRect(x, Math.floor(top * scale), half, Math.max(3 * ratio, Math.ceil((bottom - top) * scale)));
+      }
+    });
+  };
+  const redraw = () => (frame ||= requestAnimationFrame(draw));
+  const subs = sides.flatMap((side) => [side.onDidChangeModelDecorations(redraw), side.onDidContentSizeChange(redraw), side.onDidLayoutChange(redraw)]);
+  return {
+    dispose() {
+      cancelAnimationFrame(frame);
+      subs.forEach((s) => s.dispose());
+      canvas.remove();
+    },
+  };
+}
 
 const barDecorations = new WeakMap<monaco.editor.ICodeEditor, monaco.editor.IEditorDecorationsCollection>();
 
