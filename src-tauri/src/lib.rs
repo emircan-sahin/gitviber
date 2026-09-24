@@ -309,6 +309,12 @@ async fn list_dir(state: State<'_, AppState>, path: String) -> Res<Vec<fs::Entry
 }
 
 #[tauri::command]
+async fn list_files(state: State<'_, AppState>) -> Res<Vec<String>> {
+    let r = repo(&state)?;
+    blocking(move || fs::list_files(&r)).await
+}
+
+#[tauri::command]
 async fn blame(state: State<'_, AppState>, path: String) -> Res<git::Blame> {
     let r = repo(&state)?;
     blocking(move || {
@@ -1562,6 +1568,7 @@ pub fn run() {
             diff_pair,
             media,
             list_dir,
+            list_files,
             read_file,
             blame,
             branches,

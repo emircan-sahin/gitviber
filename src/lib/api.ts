@@ -353,6 +353,8 @@ export const api = {
   media: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null, original: boolean) =>
     invoke<ArrayBuffer>("media", { kind, path, oldPath, sha, base, original }),
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
+  /** Tracked and untracked files, not ignored ones: what quick open searches. */
+  listFiles: () => invoke<string[]>("list_files"),
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
   /** `git blame` of the working-tree file. */
   blame: (path: string) => invoke<Blame>("blame", { path }),

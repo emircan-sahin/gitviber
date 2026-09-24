@@ -142,6 +142,26 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<Entry>, String> {
     Ok(entries)
 }
 
+/// Every file quick open offers: tracked and untracked, not ignored. `is_file` drops tracked
+/// files deleted from the worktree and submodules, which `--cached` still lists.
+pub fn list_files(root: &Path) -> Result<Vec<String>, String> {
+    let args = [
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "--deduplicate",
+    ];
+    let out = git::run(root, &args)?;
+    Ok(out
+        .split(|&b| b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .filter(|p| root.join(p).is_file())
+        .collect())
+}
+
 /// Writes a file inside the repo (used to save a resolved conflict).
 pub fn write_file(root: &Path, rel: &str, content: &str) -> Result<(), String> {
     std::fs::write(resolve(root, rel)?, content).map_err(|e| e.to_string())
@@ -446,6 +466,25 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn list_files_skips_ignored_and_deleted() {
+        let sb = Sandbox::new("list");
+        let root = &sb.0;
+        git::run(root, &["init", "-q"]).unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join(".gitignore"), "build/\n").unwrap();
+        fs::create_dir_all(root.join("build")).unwrap();
+        fs::write(root.join("build/out.js"), "x").unwrap();
+        for f in ["tracked.txt", "gone.txt", "src/new file.rs"] {
+            fs::write(root.join(f), "x").unwrap();
+        }
+        git::run(root, &["add", "tracked.txt", "gone.txt"]).unwrap();
+        fs::remove_file(root.join("gone.txt")).unwrap();
+        let mut files = list_files(root).unwrap();
+        files.sort();
+        assert_eq!(files, [".gitignore", "src/new file.rs", "tracked.txt"]);
     }
 
     #[test]
