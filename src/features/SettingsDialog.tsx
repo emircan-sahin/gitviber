@@ -10,10 +10,10 @@ import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventC
 import { refreshOpenApps, useOpenApps } from "@/lib/openIn";
 import {
   type Appearance,
-  CODE_FONTS,
   type CodeFont,
   type CustomApp,
   cleanFontName,
+  codeFontChoices,
   codeFontFamily,
   DEFAULT_FONT_SIZE,
   FETCH_INTERVALS,
@@ -206,7 +206,7 @@ function EditorSection() {
       </pre>
       <Field label="Font">
         <FontPicker
-          fonts={Object.keys(CODE_FONTS)}
+          fonts={codeFontChoices}
           value={s.codeFont}
           custom={s.customCodeFont}
           onChange={(codeFont, customCodeFont) => updateSettings({ codeFont: codeFont as CodeFont, customCodeFont })}

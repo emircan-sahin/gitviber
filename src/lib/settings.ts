@@ -1,7 +1,7 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Whitespace } from "./api";
-import { cleanOverrides } from "./commands";
+import { cleanOverrides, IS_MAC } from "./commands";
 import { useSyncExternalStore } from "react";
 
 export const CODE_FONTS = {
@@ -16,6 +16,13 @@ export const CODE_FONTS = {
 /** "Custom" is any installed font, by the name in `customCodeFont`. */
 export type CodeFont = keyof typeof CODE_FONTS | "Custom";
 
+// Only macOS has these; elsewhere they'd render as the system monospace under a wrong name.
+const MAC_ONLY_FONTS: readonly CodeFont[] = ["SF Mono", "Menlo", "Monaco"];
+/** The presets this platform can show. */
+export const codeFontChoices = (Object.keys(CODE_FONTS) as CodeFont[]).filter((f) => IS_MAC || !MAC_ONLY_FONTS.includes(f));
+/** SF Mono on macOS; elsewhere a bundled font, so it looks the same on every desktop. */
+const DEFAULT_CODE_FONT: keyof typeof CODE_FONTS = IS_MAC ? "SF Mono" : "JetBrains Mono";
+
 // System mirrors index.css's --font-ui.
 export const UI_FONTS = {
   System: '-apple-system, BlinkMacSystemFont, "Geist Variable", "Segoe UI", sans-serif',
@@ -29,7 +36,7 @@ export const cleanFontName = (name: string) => name.replace(/["'\\;{}]/g, "").tr
 /** A custom font ahead of the preset: CSS falls through to the preset when it isn't installed. */
 const withCustom = (name: string, preset: string) => (name ? `"${name}", ${preset}` : preset);
 
-export const codeFontFamily = (s: Settings) => (s.codeFont === "Custom" ? withCustom(s.customCodeFont, CODE_FONTS["SF Mono"]) : CODE_FONTS[s.codeFont]);
+export const codeFontFamily = (s: Settings) => (s.codeFont === "Custom" ? withCustom(s.customCodeFont, CODE_FONTS[DEFAULT_CODE_FONT]) : CODE_FONTS[s.codeFont]);
 export const codeFontName = (s: Settings) => (s.codeFont === "Custom" && s.customCodeFont) || s.codeFont;
 const uiFontFamily = (s: Settings) => (s.uiFont === "Custom" ? withCustom(s.customUiFont, UI_FONTS.System) : UI_FONTS[s.uiFont]);
 
@@ -129,7 +136,7 @@ export const DEFAULT_FONT_SIZE = 12.5;
 export const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
 
 const DEFAULTS: Settings = {
-  codeFont: "SF Mono",
+  codeFont: DEFAULT_CODE_FONT,
   customCodeFont: "",
   codeFontSize: DEFAULT_FONT_SIZE,
   lineHeight: 1.6,
@@ -169,6 +176,7 @@ function load(): Settings {
     const raw = localStorage.getItem(KEY);
     const s = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS;
     if (!(s.codeFont in CODE_FONTS) && s.codeFont !== "Custom") s.codeFont = DEFAULTS.codeFont;
+    if (!IS_MAC && MAC_ONLY_FONTS.includes(s.codeFont)) s.codeFont = DEFAULTS.codeFont;
     if (!(s.uiFont in UI_FONTS) && s.uiFont !== "Custom") s.uiFont = DEFAULTS.uiFont;
     s.customCodeFont = typeof s.customCodeFont === "string" ? cleanFontName(s.customCodeFont) : "";
     s.customUiFont = typeof s.customUiFont === "string" ? cleanFontName(s.customUiFont) : "";
