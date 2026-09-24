@@ -19,7 +19,11 @@ pub fn move_to_trash(path: &Path) -> Result<PathBuf, String> {
     if !meta.is_dir() {
         return put(&home, path, path, |from, to| {
             crate::fs::copy_entry(from, to)?;
-            std::fs::remove_file(from).map_err(|e| e.to_string())
+            // Left in place, the file mustn't also stay in the Trash without its .trashinfo.
+            std::fs::remove_file(from).map_err(|e| {
+                let _ = std::fs::remove_file(to);
+                e.to_string()
+            })
         });
     }
     let top = mount_point(path, meta.dev());
