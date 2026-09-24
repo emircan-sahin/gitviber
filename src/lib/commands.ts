@@ -85,11 +85,12 @@ export const COMMANDS = [
   { id: "media.fit", title: "Fit Image", category: "Editor", keys: ["0"], local: "the image view" },
   // ⌃` as in VS Code, ⌘J as its panel toggle. Elsewhere Ctrl+`, as VS Code has it there too.
   { id: "terminal.toggle", title: "Toggle Terminal", category: "Terminal", keys: ["cmd+j", "ctrl+`"], keysOther: ["cmd+j", "cmd+`"] },
-  // Off macOS the Super key ("ctrl"): Ctrl+letter is the shell's. The ones below it only run in the terminal.
-  { id: "terminal.new", title: "New Terminal", category: "Terminal", keys: ["cmd+t"], keysOther: ["ctrl+t"] },
-  { id: "terminal.split", title: "Split Terminal", category: "Terminal", keys: ["cmd+d"], keysOther: ["ctrl+d"], local: "the terminal" },
-  { id: "terminal.clear", title: "Clear Terminal", category: "Terminal", keys: ["cmd+k"], keysOther: ["ctrl+k"], local: "the terminal" },
-  { id: "terminal.close", title: "Close Terminal Pane", category: "Terminal", keys: ["cmd+w"], keysOther: ["ctrl+w"], local: "the terminal" },
+  // Off macOS Ctrl+Shift, as in Linux terminals: Ctrl+letter is the shell's and desktops take Super
+  // chords (KDE: Super+D, Super+W). The ones below it only run in the terminal.
+  { id: "terminal.new", title: "New Terminal", category: "Terminal", keys: ["cmd+t"], keysOther: ["shift+cmd+t"] },
+  { id: "terminal.split", title: "Split Terminal", category: "Terminal", keys: ["cmd+d"], keysOther: ["shift+cmd+d"], local: "the terminal" },
+  { id: "terminal.clear", title: "Clear Terminal", category: "Terminal", keys: ["cmd+k"], keysOther: ["shift+cmd+k"], local: "the terminal" },
+  { id: "terminal.close", title: "Close Terminal Pane", category: "Terminal", keys: ["cmd+w"], keysOther: ["shift+cmd+w"], local: "the terminal" },
   { id: "terminal.prevPane", title: "Previous Terminal Pane", category: "Terminal", keys: ["alt+cmd+left"], keysOther: ["ctrl+alt+left"], local: "the terminal" },
   { id: "terminal.nextPane", title: "Next Terminal Pane", category: "Terminal", keys: ["alt+cmd+right"], keysOther: ["ctrl+alt+right"], local: "the terminal" },
   { id: "explorer.rename", title: "Rename File", category: "Explorer", keys: ["f2"], local: "the explorer" },
@@ -294,12 +295,13 @@ export function runsWhileTyping(chord: string, command: Command, mac = IS_MAC): 
 /**
  * Whether the terminal hands a chord to its command instead of the shell: the physical Ctrl with
  * anything but a letter (⌃Tab, ⌃1), which a shell would only read as a control code. Ctrl+letter
- * (⌃C, ⌃R) is always the shell's.
+ * (⌃C, ⌃R) is always the shell's; Ctrl+Shift+letter is the app's, as in Linux terminals.
  */
 export function takenFromTerminal(chord: string, command: Command, mac = IS_MAC): boolean {
   const mods = chord.split("+");
   const key = mods.pop()!;
-  return mods.includes(mac ? "ctrl" : "cmd") && !/^[a-z]$/.test(key) && runsWhileTyping(chord, command, mac);
+  const shellKey = /^[a-z]$/.test(key) && !mods.includes("shift");
+  return mods.includes(mac ? "ctrl" : "cmd") && !shellKey && runsWhileTyping(chord, command, mac);
 }
 
 /**

@@ -71,7 +71,8 @@ GitViber is built and tested on macOS. The code compiles elsewhere, but nobody h
 
 Every shortcut in the list below except moving around a list or view (arrows, `↵`, `⎋`, `⇧F10`) can be rebound in Settings (`⌘,`).
 While you type, only shortcuts with `⌘`, `⌃` or an F-key apply, except `⌘←` `⌘→` and `⌃` with a letter, which edit the text.
-On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, and Ctrl+Tab / Ctrl+Shift+Tab switch tabs.
+On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+Shift+Tab switch tabs, and the terminal's
+`⌘T` `⌘D` `⌘K` `⌘W` are Ctrl+Shift+T, D, K and W, since Ctrl+letter stays the shell's.
 
 | Keys | |
 | --- | --- |

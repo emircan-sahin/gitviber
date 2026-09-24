@@ -165,6 +165,7 @@ test("the terminal hands the app its Ctrl chords, except Ctrl+letter", () => {
   assert.equal(taken("cmd+b", "view.toggleGitPanel", false), false, "Ctrl+B is the shell's (tmux)");
   assert.equal(taken("cmd+left", "tab.prev", false), false, "Ctrl+← moves by word");
   assert.equal(taken("alt+1", "view.changes", false), false);
+  assert.equal(taken("shift+cmd+t", "terminal.new", false), true, "Ctrl+Shift+T, as in Linux terminals");
 });
 
 test("off macOS, cmd is Ctrl and ctrl is the Windows / Super key", () => {
@@ -223,6 +224,10 @@ test("the terminal's own keys only run there, and keep ⌘W from closing a tab o
   assert.deepEqual(bindingsFor("terminal.split", {}, true), ["cmd+d"]);
   // ⌃` reaches the app from inside the terminal instead of sending NUL.
   assert.ok(takenFromTerminal("ctrl+`", byId("terminal.toggle"), true));
+  // Off macOS Ctrl+letter is the shell's and Super+D / Super+W the desktop's (KDE): Ctrl+Shift.
+  assert.deepEqual(bindingsFor("terminal.split", {}, false), ["shift+cmd+d"]);
+  assert.equal(commandFor("shift+cmd+w", {}, false), undefined);
+  assert.equal(commandFor("cmd+w", {}, false)?.id, "tab.close");
 });
 
 test("only macOS reserves chords", () => {
