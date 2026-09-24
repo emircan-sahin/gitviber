@@ -198,7 +198,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       if (stale) return;
       // Only now: a model made before its language is registered gets retokenized from scratch
       // when it is, and the unified view's deleted lines came out uncolored.
-      const created = createModels(lang, pair.modified.text, diff ? { text: pair.original.text, rows: pair.rows } : null);
+      const oldPath = linksRef.current?.original?.path ?? path;
+      const created = createModels(lang, path, pair.modified.text, diff ? { path: oldPath, text: pair.original.text, rows: pair.rows } : null);
       const { modified, original } = created;
       models = original ? [original, modified] : [modified];
       const old = modelsOf(e);
@@ -285,6 +286,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       const e = editor.current;
       if (!e || ev.isComposing || !(ev.target instanceof HTMLElement)) return;
       if (ev.altKey || ev.ctrlKey || !ev.target.matches("textarea.inputarea")) return;
+      // The peek's own editor moves its cursor, as an editor does.
+      if (ev.target.closest(".peekview-widget")) return;
       // Split view: the side you clicked into; the other one follows.
       const code = isDiff(e) && e.getOriginalEditor().hasTextFocus() ? e.getOriginalEditor() : codeEditor(e);
       const line = code.getOption(monaco.editor.EditorOption.lineHeight);

@@ -1,6 +1,7 @@
 // Go to Definition in the code view, drawn by Monaco as in VS Code: ⌘-click or F12 goes where the
-// name under it is defined, ⌥F12 peeks, several places show as a list. definitions.rs finds names;
-// an import path or path:line (lib/links) goes to the file it names. URLs are Monaco's own links.
+// name under it is defined, ⌥F12 peeks, ⇧F12 (or ⌘-click on a definition) lists where it's used,
+// several places show as a list. definitions.rs finds names; an import path or path:line
+// (lib/links) goes to the file it names. URLs are Monaco's own links.
 import { api, DEFINITIONS_CANCELLED, type Definition, errorMessage, github } from "./api";
 import { narrow, widenColumn } from "./indent";
 import { commandIn } from "./keybindings";
@@ -14,7 +15,7 @@ import { toast } from "./toast";
 /** What each model shows, read when asked: the worktree's revision moves on under it. */
 const sides = new WeakMap<monaco.editor.ITextModel, () => LinkSide | null>();
 
-/** Go to Definition in `editor`, for whatever it shows; `side`: where that is (null: nowhere to go). */
+/** Go to Definition and References in `editor`, for whatever it shows; `side`: where that is (null: nowhere to go). */
 export function followDefinitions(editor: monaco.editor.ICodeEditor, side: () => LinkSide | null): monaco.IDisposable {
   const track = () => {
     const model = editor.getModel();
@@ -23,24 +24,37 @@ export function followDefinitions(editor: monaco.editor.ICodeEditor, side: () =>
   track();
   const subs = [
     editor.onDidChangeModel(track),
-    // Monaco's own F12 and ⌥F12 are off (lib/monaco): these follow the user's bindings.
+    // Monaco's own F12 keys are off (lib/monaco): these follow the user's bindings.
     editor.onKeyDown((e) => {
-      const command = commandIn(["editor.goToDefinition", "editor.peekDefinition"] as const, e.browserEvent);
+      const command = commandIn(Object.keys(ACTIONS) as (keyof typeof ACTIONS)[], e.browserEvent);
       if (!command) return;
       e.preventDefault();
       e.stopPropagation();
       // Commands, not editor actions: getAction doesn't know them. They act on the focused editor.
-      editor.trigger("keyboard", command === "editor.goToDefinition" ? "editor.action.revealDefinition" : "editor.action.peekDefinition", null);
+      editor.trigger("keyboard", ACTIONS[command], null);
     }),
   ];
   return { dispose: () => subs.forEach((s) => s.dispose()) };
 }
 
+const ACTIONS = {
+  "editor.goToDefinition": "editor.action.revealDefinition",
+  "editor.peekDefinition": "editor.action.peekDefinition",
+  "editor.goToReferences": "editor.action.goToReferences",
+} as const;
+
 monaco.languages.registerDefinitionProvider("*", {
   async provideDefinition(model, position) {
     const side = sides.get(model)?.();
     if (!side) return null;
-    return (await linkAt(model, position, side)) ?? (await named(model, position, side));
+    return (await linkAt(model, position, side)) ?? (await named("definitions", model, position, side));
+  },
+});
+
+monaco.languages.registerReferenceProvider("*", {
+  async provideReferences(model, position) {
+    const side = sides.get(model)?.();
+    return side ? named("references", model, position, side) : null;
   },
 });
 
@@ -64,16 +78,16 @@ async function linkAt(model: monaco.editor.ITextModel, pos: monaco.Position, sid
   ];
 }
 
-/** Where the name at `pos` is defined. */
-async function named(model: monaco.editor.ITextModel, pos: monaco.Position, side: LinkSide): Promise<monaco.languages.Location[]> {
+/** Where the name at `pos` is defined, or used. */
+async function named(kind: "definitions" | "references", model: monaco.editor.ITextModel, pos: monaco.Position, side: LinkSide): Promise<monaco.languages.Location[]> {
   const word = model.getWordAtPosition(pos);
   if (!word) return [];
   const unit = unitOf(model);
-  const key = `${model.uri}@${model.getVersionId()}:${pos.lineNumber}:${word.startColumn}:${treeKey(side.tree)}:${side.path}`;
+  const key = `${kind}:${model.uri}@${model.getVersionId()}:${pos.lineNumber}:${word.startColumn}:${treeKey(side.tree)}:${side.path}`;
   let found: Definition[];
   try {
     found = await cached(lookups, key, () =>
-      api.definitions({
+      api[kind]({
         path: side.path,
         text: narrow(model.getValue(), unit),
         line: pos.lineNumber,
@@ -82,15 +96,17 @@ async function named(model: monaco.editor.ITextModel, pos: monaco.Position, side
       }),
     );
   } catch (e) {
-    if (e !== DEFINITIONS_CANCELLED) console.warn("Go to Definition failed:", errorMessage(e));
+    if (e !== DEFINITIONS_CANCELLED) console.warn(`Looking up ${kind} failed:`, errorMessage(e));
     return [];
   }
-  return Promise.all(
+  const places = await Promise.all(
     found.map(async (d) => {
       const file = d.path === side.path ? model : await fileModel(d.path, side.tree);
       return { uri: file.uri, range: rangeIn(file, d.line, d.column, d.endColumn) };
     }),
   );
+  trimFiles(new Set(places.map((p) => p.uri.toString())));
+  return places;
 }
 
 // ⌘-hover asks as the pointer moves and the click asks again: each word once. A failed lookup
@@ -126,23 +142,30 @@ const files = new Map<string, Promise<monaco.editor.ITextModel>>();
 function fileModel(path: string, tree: LinkTree) {
   const uri = monaco.Uri.from({ scheme: SCHEME, path: `/${path}`, query: treeKey(tree) });
   const key = uri.toString();
-  const loading = cached(files, key, async () => {
-    const f = await (tree.rev ? api.textAt(tree.rev, path) : api.readFile(path)).catch(() => null);
-    // An image or a folder still opens in its tab; there's just no text to peek at.
-    const text = f?.exists && !f.binary && !f.tooLarge ? f.text : "";
-    const lang = languageFor(path, text);
-    await prepare(lang, getSettings().codeTheme);
-    const model = monaco.editor.getModel(uri) ?? createPeekModel(text, lang, uri);
-    sides.set(model, () => ({ path, tree }));
-    return model;
-  });
-  // The oldest go: a list of places reads a few files at a time.
-  while (files.size > 32) {
-    const [oldest, model] = files.entries().next().value!;
-    files.delete(oldest);
+  let loading = files.get(key);
+  if (!loading) files.set(key, (loading = load(path, tree, uri)));
+  return loading;
+}
+
+async function load(path: string, tree: LinkTree, uri: monaco.Uri) {
+  const f = await (tree.rev ? api.textAt(tree.rev, path) : api.readFile(path)).catch(() => null);
+  // An image or a folder still opens in its tab; there's just no text to peek at.
+  const text = f?.exists && !f.binary && !f.tooLarge ? f.text : "";
+  const lang = languageFor(path, text);
+  await prepare(lang, getSettings().codeTheme);
+  const model = monaco.editor.getModel(uri) ?? createPeekModel(text, lang, uri);
+  sides.set(model, () => ({ path, tree }));
+  return model;
+}
+
+/** Disposes the oldest files past a few dozen, but none of `shown`: the list about to show them. */
+function trimFiles(shown: Set<string>) {
+  for (const [key, model] of files) {
+    if (files.size <= 32) return;
+    if (shown.has(key)) continue;
+    files.delete(key);
     void model.then((m) => m.dispose(), () => {});
   }
-  return loading;
 }
 
 /** For a repo switch: its worktree revisions start over, so its files' names would repeat. */

@@ -13,7 +13,8 @@ import "monaco-editor/features/codicon/register";
 import "monaco-editor/features/find/register";
 import "monaco-editor/features/clipboard/register";
 import "monaco-editor/features/contextmenu/register";
-// ⌘-click, F12 and peek for lib/definitions (referenceSearch is the peek and its list); ⌘-click on URLs.
+// ⌘-click, F12, references and peek for lib/definitions (referenceSearch is the peek and its list);
+// ⌘-click on URLs.
 import "monaco-editor/features/gotoSymbol/register";
 import "monaco-editor/features/referenceSearch/register";
 import "monaco-editor/features/links/register";
@@ -31,13 +32,14 @@ export { monaco };
 
 // Find opens on editor.find (commands.ts, MonacoView), which the user can rebind; Monaco's own ⌘F would stay behind.
 monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, command: "-actions.find" });
-// Likewise Go to Definition and Peek (editor.goToDefinition, editor.peekDefinition); "to the side" has no side here.
-const { CtrlCmd, Alt } = monaco.KeyMod;
+// Likewise Go to Definition, Peek and References (editor.goToDefinition, …); "to the side" has no side here.
+const { CtrlCmd, Alt, Shift } = monaco.KeyMod;
 const { F12, KeyK } = monaco.KeyCode;
 monaco.editor.addKeybindingRules([
   { keybinding: F12, command: "-editor.action.revealDefinition" },
   { keybinding: CtrlCmd | F12, command: "-editor.action.revealDefinition" },
   { keybinding: Alt | F12, command: "-editor.action.peekDefinition" },
+  { keybinding: Shift | F12, command: "-editor.action.goToReferences" },
   { keybinding: monaco.KeyMod.chord(CtrlCmd | KeyK, F12), command: "-editor.action.revealDefinitionAside" },
   { keybinding: monaco.KeyMod.chord(CtrlCmd | KeyK, CtrlCmd | F12), command: "-editor.action.revealDefinitionAside" },
 ]);
@@ -134,13 +136,14 @@ export function redrawWhenColored(model: monaco.editor.ITextModel) {
 const monacoLanguage = (lang: string) => (lang === "text" ? "plaintext" : lang);
 
 /**
- * Models for a file's two versions (the old one only for a diff, which then shows git's `rows`).
- * `unit`: spaces per indentation level turned into tabs for display (see lib/indent), or 0.
+ * Models for a file's two versions (the old one only for a diff, which then shows git's `rows`),
+ * named by their paths. `unit`: spaces per indentation level turned into tabs for display (see
+ * lib/indent), or 0.
  */
-export function createModels(lang: string, modifiedText: string, original: { text: string; rows: DiffRow[] } | null) {
+export function createModels(lang: string, path: string, modifiedText: string, original: { path: string; text: string; rows: DiffRow[] } | null) {
   const unit = indentUnit(modifiedText, original?.text);
-  const modified = createModel(modifiedText, lang, unit);
-  const old = original && createModel(original.text, lang, unit);
+  const modified = createModel(modifiedText, lang, unit, viewUri(path));
+  const old = original && createModel(original.text, lang, unit, viewUri(original.path));
   if (original) gitDiffs.set(modified, gitDiff(original.rows, original.text, modifiedText, unit));
   return { modified, original: old, unit };
 }
@@ -156,6 +159,11 @@ function createModel(text: string, lang: string, unit: number, uri?: monaco.Uri)
   return model;
 }
 const units = new WeakMap<monaco.editor.ITextModel, number>();
+
+// Go to References lists places by their models' names. Each show makes new models before the
+// old ones go, so a name is only unique with a count.
+let shows = 0;
+const viewUri = (path: string) => monaco.Uri.from({ scheme: "gitviber-view", path: `/${path}`, query: String(++shows) });
 
 /** Spaces per indentation level `model`'s text was widened by (see lib/indent). */
 export const unitOf = (model: monaco.editor.ITextModel) => units.get(model) ?? 0;
@@ -234,6 +242,31 @@ const APP_COLORS: Record<string, string> = {
   "editor.findMatchHighlightBackground": "--find-match",
   "editorOverviewRuler.findMatchForeground": "--find-mark",
   "editorLink.activeForeground": "--primary",
+  // Go to Definition's peek and its list of places (lib/definitions).
+  "peekView.border": "--border-strong",
+  "peekViewTitle.background": "--panel",
+  "peekViewTitleLabel.foreground": "--foreground",
+  "peekViewTitleDescription.foreground": "--subtle",
+  "peekViewEditor.background": "--panel",
+  "peekViewEditorGutter.background": "--panel",
+  "peekViewEditorStickyScroll.background": "--panel",
+  "peekViewEditor.matchHighlightBackground": "--find-match",
+  "peekViewResult.background": "--sidebar",
+  "peekViewResult.fileForeground": "--foreground",
+  "peekViewResult.lineForeground": "--muted-foreground",
+  "peekViewResult.selectionBackground": "--active",
+  "peekViewResult.selectionForeground": "--foreground",
+  "peekViewResult.matchHighlightBackground": "--find-match",
+  "list.activeSelectionBackground": "--active",
+  "list.activeSelectionForeground": "--foreground",
+  "list.inactiveSelectionBackground": "--active",
+  "list.inactiveSelectionForeground": "--foreground",
+  "list.focusBackground": "--active",
+  "list.hoverBackground": "--hover",
+  "list.focusOutline": "--ring",
+  "badge.background": "--elevated",
+  "badge.foreground": "--muted-foreground",
+  "focusBorder": "--ring",
 };
 
 function appColors() {
