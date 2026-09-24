@@ -1,5 +1,6 @@
 import { Children, type ComponentProps, isValidElement, type ReactNode, useMemo } from "react";
 import Markdown, { type Components } from "react-markdown";
+import { PageFind } from "@/components/FindBox";
 import { github } from "@/lib/api";
 import { useHighlight } from "@/lib/highlight";
 import { copyNarrowed, indentUnit, TAB, widen } from "@/lib/indent";
@@ -120,6 +121,7 @@ export function MarkdownView({ text, src, onOpen }: { text: string; src: MediaSo
   return (
     // Focusable so the keyboard can scroll it (focusPanel("code") lands here).
     <div data-code-scroll tabIndex={0} className="h-full overflow-auto outline-none">
+      <PageFind />
       <article className="markdown mx-auto max-w-[860px] px-8 py-6 select-text">
         <MarkdownBody text={text} components={components} />
       </article>

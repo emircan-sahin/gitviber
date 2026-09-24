@@ -2,6 +2,7 @@ import { CircleHelp, FileClock, FolderClock, Loader2, Search, X } from "lucide-r
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage } from "@/lib/api";
+import { useFind } from "@/lib/find";
 import { isTyping, matchesCommand, useShortcut } from "@/lib/keybindings";
 import { isEmptyFilter, parseLogQuery } from "@/lib/logQuery";
 import { ForkHistory } from "./ForkHistory";
@@ -38,6 +39,11 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
   const active = !!scope || !isEmptyFilter(parseLogQuery(query).filter);
   const found = useCommitSearch(active ? search : null, props.commits[0]?.sha);
   const setQuery = (q: string) => onSearch({ ...search, query: q, reveal: null });
+
+  useFind("git", () => {
+    input.current?.focus();
+    input.current?.select();
+  });
 
   useEffect(() => {
     if (!focusRequested) return;

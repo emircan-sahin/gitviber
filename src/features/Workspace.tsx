@@ -1,15 +1,17 @@
-import { ArrowDown, ArrowUp, ChevronsDownUp, PanelLeftClose, PanelRightClose, WrapText } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsDownUp, PanelLeftClose, PanelRightClose, Search, WrapText } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { REVEAL_FAILED } from "@/lib/commands";
+import { find } from "@/lib/find";
 import { newerCopy, resetGitHubCache, useGitHubCacheVersion } from "@/lib/githubCache";
 import { useShownLanguage, warmHighlighter } from "@/lib/highlight";
 import { prepare } from "@/lib/monaco";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { languageLabel } from "@/lib/language";
+import { dropReveal, revealWaits } from "@/lib/reveal";
 import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/panels";
 import type { OpenTarget } from "@/lib/openIn";
@@ -26,9 +28,10 @@ import { showQuickOpen, useQuickOpenSource } from "./CommandPalette";
 import { FileTree, type FileTreeHandle } from "./FileTree";
 import { type HistorySearch, NO_SEARCH, SearchableHistory } from "./HistorySearch";
 import { IssuesPanel } from "./IssuesPanel";
-import { lineInView } from "./MonacoView";
+import { lineInView, selectedText } from "./MonacoView";
 import { OpenInButton } from "./OpenIn";
 import { PullsPanel } from "./PullsPanel";
+import { SearchView } from "./SearchView";
 import { TerminalPanel, TerminalRestoreOffer, useTerminalSetup } from "./TerminalPanel";
 import { changeTotals, TopBar } from "./TopBar";
 import { prefetchSelection, resetPairCache, type Tab, Viewer } from "./Viewer";
@@ -100,6 +103,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useTerminalSetup(root);
   const terminalOpen = useTerminals().open;
   const fileTree = useRef<FileTreeHandle>(null);
+  const findKey = useShortcut("editor.find");
+  // The explorer panel shows the files or Search in Files; `searchAsk` brings the search box up.
+  const [explorerView, setExplorerView] = useState<"files" | "search">("files");
+  const [searchAsk, setSearchAsk] = useState({ id: 0, seed: "" });
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   // Focus goes to a panel once it's rendered: after a view switch or with the panel expanded.
@@ -132,7 +139,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   };
   const revealInExplorer = useCallback((path: string) => {
     filesPanel.current?.expand();
-    fileTree.current?.reveal(path);
+    setExplorerView("files");
+    // Once the tree shows: a hidden one can't take focus.
+    requestAnimationFrame(() => fileTree.current?.reveal(path));
   }, []);
   const showInHistory = useCallback((search: HistorySearch) => {
     setHistorySearch(search);
@@ -334,6 +343,12 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "editor.fontZoomIn": () => updateSettings({ codeFontSize: s.codeFontSize + 0.5 }),
     "editor.fontZoomOut": () => updateSettings({ codeFontSize: s.codeFontSize - 0.5 }),
     "editor.fontZoomReset": () => updateSettings({ codeFontSize: DEFAULT_FONT_SIZE }),
+    "editor.find": find,
+    "search.findInFiles": () => {
+      setExplorerView("search");
+      filesPanel.current?.expand();
+      setSearchAsk((a) => ({ id: a.id + 1, seed: selectedText() }));
+    },
     "view.changes": () => showList("changes"),
     "view.history": () => showList("history"),
     "view.pulls": () => showList("pulls"),
@@ -346,7 +361,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.toggleGitPanel": () => toggle(listPanel, "git"),
     "view.toggleExplorer": () => toggle(filesPanel, "explorer"),
     "view.focusGitPanel": () => show(listPanel, "git"),
-    "view.showExplorer": () => show(filesPanel, "explorer"),
+    "view.showExplorer": () => {
+      setExplorerView("files");
+      show(filesPanel, "explorer");
+    },
     "view.focusCode": () => focusPanel("code"),
     "view.focusNextPanel": () => cycle(1),
     "view.focusPrevPanel": () => cycle(-1),
@@ -386,6 +404,14 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // A tab switched to from the code view keeps the keys there (the view it replaced took focus along).
   useEffect(() => {
     if (codeWantsFocus()) focusPanel("code");
+  }, [activeKey]);
+
+  // A search result's reveal waits for its own file only: any other tab shown drops it, so it
+  // can't land on a later visit (a file too large to show never takes it).
+  useEffect(() => {
+    const t = tabs.find((x) => x.key === activeKey);
+    if (t?.sel.kind !== "file" || !revealWaits(t.sel.path)) dropReveal();
+    // On a tab switch, not on every tab list change.
   }, [activeKey]);
 
   const active = tabs.find((t) => t.key === activeKey) ?? null;
@@ -533,19 +559,37 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
           >
             <div data-panel="explorer" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel outline-none">
               <FocusLine />
-              <div className="flex h-9 shrink-0 items-center border-b border-border pr-1 pl-3">
-                <span className="text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Explorer</span>
+              <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border pr-1 pl-2">
+                <ListTabButton active={explorerView === "files"} onClick={() => setExplorerView("files")}>
+                  Explorer
+                </ListTabButton>
+                <ListTabButton active={explorerView === "search"} onClick={() => setExplorerView("search")}>
+                  Search
+                </ListTabButton>
                 {/* One group: two ml-autos split the free space, leaving Collapse folders mid-header. */}
                 <div className="ml-auto flex items-center gap-0.5">
+                  {explorerView === "files" && (
+                  <>
+                  <Tip label="Filter files" shortcut={findKey}>
+                    <button aria-label="Filter files" onClick={() => fileTree.current?.filter()} className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
+                      <Search className="size-3.5" />
+                    </button>
+                  </Tip>
                   <Tip label="Collapse folders">
                     <button aria-label="Collapse folders" onClick={() => fileTree.current?.collapseAll()} className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
                       <ChevronsDownUp className="size-3.5" />
                     </button>
                   </Tip>
+                  </>
+                  )}
                   <CollapseButton side="right" onClick={() => toggle(filesPanel, "explorer")} />
                 </div>
               </div>
-              <div className="min-h-0 flex-1">
+              {/* Both stay mounted, so each keeps its state (open folders, results) while the other shows. */}
+              <div className={cn("min-h-0 flex-1", explorerView !== "search" && "hidden")}>
+                <SearchView active={explorerView === "search"} ask={searchAsk} onOpen={open} />
+              </div>
+              <div className={cn("min-h-0 flex-1", explorerView !== "files" && "hidden")}>
                 <FileTree
                   ref={fileTree}
                   status={status}

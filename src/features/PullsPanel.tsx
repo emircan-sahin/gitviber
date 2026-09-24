@@ -1,5 +1,6 @@
 import { ExternalLink, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Link, Plus, RefreshCw, Terminal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useListFilter } from "@/components/ListFilter";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -56,6 +57,8 @@ function usePullList(target: string | null, name: string | null, filter: Filter,
 export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, refreshRepo }: Props) {
   const [filter, setFilter] = useState<Filter>("open");
   const [pages, setPages] = useState({ origin: 1, parent: 1 });
+  const find = useListFilter("git", "Filter loaded pull requests");
+  const match = (p: Pull) => find.matches(p.title, `#${p.number}`, p.author, p.headRef);
   // The repository the new PR goes to: origin, or a fork's parent.
   const [creating, setCreating] = useState<GitHubAccess | null>(null);
   // The account only changes with a new sign-in: rechecked every 10 minutes and on every
@@ -103,7 +106,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
   const newLabel = currentPull ? `#${currentPull.number} already open for this branch` : "New pull request";
   const canCreate = !!status?.branch && !currentPull;
 
-  const ownRows = <PullRows pulls={own.data ?? null} error={error} filter={filter} activeKey={activeKey} onOpen={onOpen} roomy={!upstream} {...more("origin", own)} />;
+  const ownRows = <PullRows pulls={own.data ?? null} match={find.needle ? match : null} error={error} filter={filter} activeKey={activeKey} onOpen={onOpen} roomy={!upstream} {...more("origin", own)} />;
 
   return (
     <div className="flex h-full flex-col">
@@ -133,6 +136,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
           )}
         </div>
       </div>
+      {find.bar}
       {upstream && account?.parent ? (
         <div className="min-h-0 flex-1">
           <RepoPanes
@@ -153,6 +157,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
                 children: (
                   <PullRows
                     pulls={up.data ?? null}
+                    match={find.needle ? match : null}
                     error={up.error === undefined ? null : errorMessage(up.error)}
                     filter={filter}
                     activeKey={activeKey}
@@ -311,7 +316,8 @@ export function LinkMenu({ url, children }: { url: string; children: React.React
 }
 
 function PullRows({
-  pulls,
+  pulls: loaded,
+  match,
   error,
   filter,
   activeKey,
@@ -322,6 +328,8 @@ function PullRows({
   onMore,
 }: {
   pulls: Pull[] | null;
+  /** The list filter's test, while it has text. */
+  match: ((p: Pull) => boolean) | null;
   error: string | null;
   filter: Filter;
   activeKey: string | null;
@@ -333,15 +341,18 @@ function PullRows({
   loading: boolean;
   onMore: () => void;
 }) {
-  const full = pulls?.length === shown * PR_PAGE;
+  const full = loaded?.length === shown * PR_PAGE;
+  const pulls = match ? (loaded?.filter(match) ?? null) : loaded;
   const nav = useListNav({ activeKey });
   return (
     <>
       {/* With a cached list on screen, a failed refresh is a note above it, not a blank panel. */}
-      {error && !pulls && <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{error}</div>}
-      {error && pulls && <div className="mx-2 mb-1 rounded-sm bg-removed/10 px-2 py-1.5 text-[11.5px] text-removed">{error}</div>}
+      {error && !loaded && <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{error}</div>}
+      {error && loaded && <div className="mx-2 mb-1 rounded-sm bg-removed/10 px-2 py-1.5 text-[11.5px] text-removed">{error}</div>}
       {pulls?.length === 0 && (
-        <div className={cn("px-4 text-center text-[12px] text-subtle", roomy ? "pt-16" : "py-3")}>No {filter === "all" ? "" : filter} pull requests.</div>
+        <div className={cn("px-4 text-center text-[12px] text-subtle", roomy ? "pt-16" : "py-3")}>
+          {match && loaded?.length ? `None of the ${loaded?.length} loaded pull requests match.` : `No ${filter === "all" ? "" : filter} pull requests.`}
+        </div>
       )}
       <div role="listbox" aria-label="Pull requests" {...nav}>
       {pulls?.map((p) => {
@@ -385,7 +396,7 @@ function PullRows({
         </div>
       )}
       {/* Past github.rs's cap: say so rather than look complete. */}
-      {full && shown >= MAX_PAGES && <div className="px-4 py-2 text-center text-[11px] text-subtle">Showing the {pulls.length} most recently updated</div>}
+      {full && shown >= MAX_PAGES && <div className="px-4 py-2 text-center text-[11px] text-subtle">Showing the {loaded.length} most recently updated</div>}
     </>
   );
 }

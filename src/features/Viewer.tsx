@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type FileChange, type RepoStatus, type Whitespace } from "@/lib/api";
+import { onReveal, revealWaits } from "@/lib/reveal";
 import { type Selection, selectionPath } from "@/lib/selection";
 import { bindingsFor, type CommandId, formatChord, matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { diffWhitespace, getSettings, updateSettings, useSettings } from "@/lib/settings";
@@ -369,12 +370,20 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   const media = mediaKind(selectionPath(sel)) !== null;
   const markdown = isMarkdown(selectionPath(sel));
   const svg = isSvg(selectionPath(sel));
-  // Reading a markdown file starts rendered (unless turned off); reviewing its changes starts on the diff.
-  const [markdownPreview, setMarkdownPreview] = useState(isFile && s.markdownPreview);
+  // Reading a markdown file starts rendered (unless turned off); reviewing its changes starts on the
+  // diff; a search result on its code, where the match shows.
+  const [markdownPreview, setMarkdownPreview] = useState(isFile && s.markdownPreview && !revealWaits(selectionPath(sel)));
   // SVGs open however the last one was left, diffs included.
   const preview = svg ? s.svgPreview : markdownPreview;
   const setPreview = (on: boolean) => (svg ? updateSettings({ svgPreview: on }) : setMarkdownPreview(on));
   const rendered = (markdown || svg) && preview;
+  const toCode = useRef(() => {});
+  toCode.current = () => void (isFile && rendered && setPreview(false));
+  useEffect(() => {
+    const path = selectionPath(sel);
+    if (revealWaits(path)) toCode.current();
+    return onReveal((r) => r.path === path && toCode.current());
+  }, [sel]);
   const [zoom, setZoom] = useState<Zoom>(FIT);
   const [contrast, setContrast] = useState(false);
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile));

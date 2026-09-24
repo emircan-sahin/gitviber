@@ -184,6 +184,32 @@ export interface DiffPair {
 /** Whitespace a diff ignores: changes in its amount (git's -b), or all of it (-w). */
 export type Whitespace = "amount" | "all";
 
+/** Search in files (grep.rs): the query and Monaco's toggles, with VS Code's include/exclude globs. */
+export interface SearchQuery {
+  text: string;
+  matchCase: boolean;
+  wholeWord: boolean;
+  regex: boolean;
+  /** Comma-separated globs; one without a "/" matches at any depth. */
+  include: string;
+  exclude: string;
+}
+
+export interface SearchResult {
+  files: { path: string; hits: { line: number; text: string }[] }[];
+  count: number;
+  /** Stopped at SEARCH_MAX_HITS. */
+  capped: boolean;
+  timedOut: boolean;
+  /** The regex ran as POSIX extended: this git has no PCRE, so \d, \w, \b and lookarounds don't work as usual. */
+  posix: boolean;
+}
+
+/** grep.rs MAX_HITS. */
+export const SEARCH_MAX_HITS = 2000;
+/** What a search a newer one stopped rejects with. */
+export const SEARCH_CANCELLED = "search:cancelled";
+
 export interface Entry {
   name: string;
   path: string;
@@ -359,6 +385,9 @@ export const api = {
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
   /** Tracked and untracked files, not ignored ones: what quick open searches. */
   listFiles: () => invoke<string[]>("list_files"),
+  /** Rejects with SEARCH_CANCELLED when a newer search stops it. */
+  searchFiles: (query: SearchQuery) => invoke<SearchResult>("search_files", { query }),
+  cancelSearch: () => invoke<void>("cancel_search"),
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
   /** `git blame` of the working-tree file. */
   blame: (path: string) => invoke<Blame>("blame", { path }),

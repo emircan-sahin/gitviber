@@ -1,6 +1,7 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, CircleCheck, CircleDot, CircleSlash, ExternalLink, Loader2, Pencil, RefreshCw, Tag, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
@@ -128,6 +129,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
   return (
     // Focusable so the keyboard can scroll it (focusPanel("code") lands here).
     <div data-code-scroll tabIndex={0} className="min-h-0 flex-1 overflow-y-auto outline-none">
+      <PageFind />
       <div className="mx-auto max-w-4xl px-6 py-5">
         {editing && d ? (
           <EditIssue

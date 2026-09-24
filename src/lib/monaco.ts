@@ -204,6 +204,9 @@ const APP_COLORS: Record<string, string> = {
   "diffEditor.border": "--border-strong",
   "diffEditor.diagonalFill": "--hatch",
   "diffEditor.unchangedRegionBackground": "--panel",
+  "editor.findMatchBackground": "--find-current",
+  "editor.findMatchHighlightBackground": "--find-match",
+  "editorOverviewRuler.findMatchForeground": "--find-mark",
 };
 
 function appColors() {

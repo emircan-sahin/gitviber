@@ -1,5 +1,6 @@
 import { Check, ChevronDown, CircleCheck, CircleDot, CircleSlash, MessageSquare, Plus, RefreshCw, Search, Tag, X } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useListFilter } from "@/components/ListFilter";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -75,6 +76,8 @@ export function LabelChip({ label, onClick }: { label: IssueLabel; onClick?: () 
 export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; onOpen: (s: Selection, pin?: boolean) => void }) {
   const [filter, setFilter] = useState<Filter>("open");
   const [labels, setLabels] = useState<IssueLabel[]>([]);
+  const find = useListFilter("git", "Filter loaded issues");
+  const match = (i: Issue) => find.matches(i.title, `#${i.number}`, i.author, ...i.labels.map((l) => l.name));
   const addLabel = (label: IssueLabel) => setLabels((l) => (l.some((m) => m.name === label.name) ? l : [...l, label]));
   // The repository the new issue goes to: origin (null), or a fork's parent.
   const [creating, setCreating] = useState<{ target: Target } | null>(null);
@@ -123,7 +126,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
 
   if (isNotConnected(failure)) return <ConnectGitHub onRetry={load} subject="issues" />;
 
-  const rowProps = { filter, labels, onLabel: addLabel, onClearLabels: () => setLabels([]), activeKey, onOpen };
+  const rowProps = { match: find.needle ? match : null, filter, labels, onLabel: addLabel, onClearLabels: () => setLabels([]), activeKey, onOpen };
   const ownRows = (roomy: boolean) => <IssueRows items={own.data ?? null} error={error} roomy={roomy} {...rowProps} />;
 
   return (
@@ -170,6 +173,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
           )}
         </div>
       )}
+      {find.bar}
       {parent && upstream ? (
         <div className="min-h-0 flex-1">
           <RepoPanes
@@ -226,7 +230,8 @@ function IssuesOff({ repo }: { repo: string }) {
 }
 
 function IssueRows({
-  items,
+  items: loaded,
+  match,
   error,
   filter,
   labels,
@@ -237,6 +242,8 @@ function IssueRows({
   roomy,
 }: {
   items: Issue[] | null;
+  /** The list filter's test, while it has text. */
+  match: ((i: Issue) => boolean) | null;
   error: string | null;
   filter: Filter;
   labels: IssueLabel[];
@@ -248,12 +255,16 @@ function IssueRows({
   roomy: boolean;
 }) {
   const nav = useListNav({ activeKey });
+  const items = match ? (loaded?.filter(match) ?? null) : loaded;
   return (
     <>
       {/* With a cached list on screen, a failed refresh is a note above it, not a blank panel. */}
-      {error && !items && <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{error}</div>}
-      {error && items && <div className="mx-2 mb-1 rounded-sm bg-removed/10 px-2 py-1.5 text-[11.5px] text-removed">{error}</div>}
-      {items?.length === 0 && (
+      {error && !loaded && <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{error}</div>}
+      {error && loaded && <div className="mx-2 mb-1 rounded-sm bg-removed/10 px-2 py-1.5 text-[11.5px] text-removed">{error}</div>}
+      {match && !!loaded?.length && items?.length === 0 && (
+        <div className={cn("px-4 text-center text-[12px] text-subtle", roomy ? "pt-16" : "py-3")}>None of the {loaded?.length} loaded issues match.</div>
+      )}
+      {!(match && loaded?.length) && items?.length === 0 && (
         <div className={cn("px-4 text-center text-[12px] text-subtle", roomy ? "pt-16" : "py-3")}>
           No {filter === "all" ? "" : filter} issues{labels.length > 0 && (labels.length === 1 ? " with this label" : " with all these labels")}.
           {labels.length > 0 && (
