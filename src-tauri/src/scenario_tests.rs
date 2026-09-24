@@ -1582,6 +1582,9 @@ fn repo_with_submodule(sb: &Sandbox) -> PathBuf {
         "sub",
     ];
     run(&r, &add).unwrap();
+    // A clone made by git, not `clone_of`: without its own identity a commit in it
+    // fails where the machine has none (the Linux CI runner).
+    identity(&r.join("sub"));
     commit(&r, "add sub", &CommitOptions::default()).unwrap();
     r
 }
@@ -4116,6 +4119,7 @@ fn submodules_listed_and_set_up() {
         ],
     )
     .unwrap();
+    identity(&r.join("vendor/lib"));
     commit(&r, "add lib", &CommitOptions::default()).unwrap();
     let subs = submodules(&r).unwrap();
     assert_eq!(
