@@ -133,6 +133,17 @@ export interface LogFilter {
   follow: boolean;
 }
 
+/** Which refs the all-branches history walks; refs are full names (refs/heads/…). */
+export interface GraphRefs {
+  local: boolean;
+  remote: boolean;
+  tags: boolean;
+  /** Left out, though still listed where another shown ref reaches them. */
+  hidden: string[];
+  /** Just this ref's history, in place of everything else and HEAD. */
+  only: string | null;
+}
+
 export interface CommitOptions {
   amend?: boolean;
   /** --signoff: a Signed-off-by trailer for the committer. */
@@ -346,9 +357,17 @@ export const api = {
   setGitIdentity: (name: string | null, email: string | null) => invoke<void>("set_git_identity", { name, email }),
   status: () => invoke<RepoStatus>("status"),
   about: () => invoke<About>("about"),
-  /** HEAD's history, or `rev`'s: a remote-tracking branch (refs/remotes/…), e.g. a fork's original. */
-  log: (skip: number, limit: number, rev: string | null = null, filter: LogFilter | null = null) => invoke<Commit[]>("log", { rev, skip, limit, filter }),
-  /** The commit a SHA or SHA prefix names, if exactly one. */
+  /**
+   * HEAD's history, or `rev`'s: a remote-tracking branch (refs/remotes/…), e.g. a fork's original.
+   * `all`: every branch, remote-tracking branch and tag it lets through, with what HEAD lacks marked.
+   */
+  log: (skip: number, limit: number, rev: string | null = null, filter: LogFilter | null = null, all: GraphRefs | null = null) =>
+    invoke<Commit[]>("log", { rev, skip, limit, filter, all }),
+  /** Comparing HEAD with a full ref: what it has that HEAD doesn't (`incoming`), or the other way. */
+  logCompare: (ref: string, incoming: boolean, skip: number, limit: number) => invoke<Commit[]>("log_compare", { with: ref, incoming, skip, limit }),
+  /** [HEAD has and `ref` doesn't, `ref` has and HEAD doesn't]. */
+  compareCounts: (ref: string) => invoke<[number, number]>("compare_counts", { with: ref }),
+  /** The commit a SHA or SHA prefix names, if exactly one, or a full ref's tip (refs/heads/…). */
   findCommit: (sha: string) => invoke<Commit | null>("find_commit", { sha }),
   commitFiles: (sha: string) => invoke<FileChange[]>("commit_files", { sha }),
   diffPair: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null = null, whitespace: Whitespace | null = null) =>

@@ -1,11 +1,13 @@
 import { CircleHelp, FileClock, FolderClock, Loader2, Search, X } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Commit, errorMessage } from "@/lib/api";
+import { api, type Commit, errorMessage, type GraphRefs } from "@/lib/api";
 import { isTyping, matchesCommand, useShortcut } from "@/lib/keybindings";
 import { isEmptyFilter, parseLogQuery } from "@/lib/logQuery";
+import { toast } from "@/lib/toast";
 import { ForkHistory } from "./ForkHistory";
-import { HistoryPanel, type Reveal } from "./HistoryPanel";
+import { CompareHistory, GraphMenu, GraphNotice, hideRefs, useAllBranches, useAllBranchesSetting, useGraphRefs } from "./GraphHistory";
+import { HistoryPanel, type Jump, type RefMenu, type Reveal } from "./HistoryPanel";
 
 const SYNTAX = "Words match the message (all of them, any case).\nauthor:name  path:src/app  code:text a commit added or removed\nA SHA or prefix finds that commit. Quotes keep spaces.";
 
@@ -36,8 +38,23 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
   const input = useRef<HTMLInputElement>(null);
   const shortcut = useShortcut("history.search");
   const active = !!scope || !isEmptyFilter(parseLogQuery(query).filter);
-  const found = useCommitSearch(active ? search : null, props.commits[0]?.sha);
+  const head = props.commits[0]?.sha ?? "";
+  const [allBranches, setAllBranches] = useAllBranchesSetting();
+  const [refs, setRefs] = useGraphRefs(props.status?.root);
+  // A branch's full ref; a search still goes first, and closing it comes back here.
+  const [compare, setCompare] = useState<string | null>(null);
+  const showAll = allBranches && !active && !compare;
+  const found = useCommitSearch(active ? search : null, head, allBranches ? refs : null);
+  const all = useAllBranches(showAll, props.commits, refs);
   const setQuery = (q: string) => onSearch({ ...search, query: q, reveal: null });
+
+  const [jump, setJump] = useState<Jump | null>(null);
+  const jumps = useRef(0);
+  const goTo = async (sha: string, name: string) => {
+    if (await all.reach(sha)) setJump({ sha, id: ++jumps.current });
+    else toast("info", `${name} isn't in the graph`, "It's hidden, or further back than the graph goes.");
+  };
+  const refMenu: RefMenu = { hide: (r) => setRefs(hideRefs(refs, r)), only: (r) => setRefs({ ...refs, only: r }) };
 
   useEffect(() => {
     if (!focusRequested) return;
@@ -87,7 +104,19 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
             <X className="size-3" />
           </button>
         )}
+        <GraphMenu
+          all={allBranches}
+          setAll={setAllBranches}
+          refs={refs}
+          setRefs={setRefs}
+          branches={props.branches}
+          current={props.status?.branch ?? null}
+          onGoToHead={() => goTo(head, "HEAD")}
+          onGoTo={goTo}
+          onCompare={setCompare}
+        />
       </div>
+      {showAll && <GraphNotice refs={refs} setRefs={setRefs} />}
       {scope && (
         <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-1.5">
           <span className="inline-flex min-w-0 items-center gap-1 rounded-full border border-border-strong bg-active pr-0.5 pl-1.5 text-[10.5px] leading-4" title={scope.path}>
@@ -104,21 +133,40 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
         </div>
       )}
       <div className="min-h-0 flex-1">
-        {!active ? (
+        {active ? (
+          found.error && !found.commits ? (
+            <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{found.error}</div>
+          ) : (
+            <HistoryPanel
+              {...props}
+              commits={found.commits ?? []}
+              hasMore={found.hasMore}
+              loadMore={found.loadMore}
+              // Undo and reset act on HEAD, which a list of matches needn't start with.
+              headSha={head}
+              empty={found.commits ? "No commits match." : "Searching…"}
+              graph={false}
+              reveal={reveal}
+            />
+          )
+        ) : compare ? (
+          <CompareHistory {...props} with={compare} current={props.status?.branch ?? "HEAD"} ours={props.commits} headSha={head} onClose={() => setCompare(null)} />
+        ) : !allBranches ? (
           <ForkHistory {...props} />
-        ) : found.error && !found.commits ? (
-          <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{found.error}</div>
+        ) : all.error && !all.commits?.length ? (
+          <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{all.error}</div>
         ) : (
           <HistoryPanel
             {...props}
-            commits={found.commits ?? []}
-            hasMore={found.hasMore}
-            loadMore={found.loadMore}
-            // Undo and reset act on HEAD, which a list of matches needn't start with.
-            headSha={props.commits[0]?.sha ?? ""}
-            empty={found.commits ? "No commits match." : "Searching…"}
-            graph={false}
-            reveal={reveal}
+            commits={all.commits ?? []}
+            hasMore={all.hasMore}
+            loadMore={all.loadMore}
+            // The newest branch goes first, not necessarily HEAD's.
+            headSha={head}
+            pinHead
+            jump={jump}
+            refMenu={refMenu}
+            empty={all.commits ? "No commits yet." : "Loading…"}
           />
         )}
       </div>
@@ -137,22 +185,22 @@ function request({ query, scope }: HistorySearch) {
 /**
  * The commits `search` matches, a page at a time, then any commit a SHA in it names on top.
  * Typing waits DEBOUNCE before asking; a reply to an older search is dropped. `head`: HEAD's
- * commit, to search again when it moves.
+ * commit, to search again when it moves. `all`: search the branches the graph shows, not only HEAD's.
  */
-function useCommitSearch(search: HistorySearch | null, head: string | undefined) {
-  const [result, setResult] = useState<{ key: string; log: Commit[]; found: Commit[]; hasMore: boolean } | null>(null);
+function useCommitSearch(search: HistorySearch | null, head: string | undefined, all: GraphRefs | null) {
+  const [result, setResult] = useState<{ key: string; all: GraphRefs | null; log: Commit[]; found: Commit[]; hasMore: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const seq = useRef(0);
   const current = useRef(result);
   current.current = result;
-  const key = search && JSON.stringify([search.query, search.scope]);
-  const latest = useRef(search);
-  latest.current = search;
+  const key = search && JSON.stringify([search.query, search.scope, all]);
+  const latest = useRef({ search, all });
+  latest.current = { search, all };
 
   useEffect(() => {
     const id = ++seq.current;
-    const s = latest.current;
+    const { search: s, all: refs } = latest.current;
     if (!key || !s) {
       setResult(null);
       setPending(false);
@@ -165,9 +213,9 @@ function useCommitSearch(search: HistorySearch | null, head: string | undefined)
     const limit = Math.max(PAGE, prev?.key === key ? prev.log.length : 0);
     const t = setTimeout(async () => {
       try {
-        const [log, ...found] = await Promise.all([api.log(0, limit, null, filter), ...shas.map((sha) => api.findCommit(sha))]);
+        const [log, ...found] = await Promise.all([api.log(0, limit, null, filter, refs), ...shas.map((sha) => api.findCommit(sha))]);
         if (id !== seq.current) return;
-        setResult({ key, log, found: found.filter((c): c is Commit => !!c), hasMore: log.length === limit });
+        setResult({ key, all: refs, log, found: found.filter((c): c is Commit => !!c), hasMore: log.length === limit });
         setError(null);
       } catch (e) {
         if (id === seq.current) setError(errorMessage(e));
@@ -180,10 +228,10 @@ function useCommitSearch(search: HistorySearch | null, head: string | undefined)
 
   const loadMore = useCallback(async () => {
     const r = current.current;
-    const s = latest.current;
+    const s = latest.current.search;
     if (!r || !s) return;
     const id = seq.current;
-    const more = await api.log(r.log.length, PAGE, null, request(s).filter);
+    const more = await api.log(r.log.length, PAGE, null, request(s).filter, r.all);
     if (id !== seq.current) return;
     setResult((x) => {
       if (!x) return x;
