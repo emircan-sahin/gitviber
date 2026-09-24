@@ -56,3 +56,20 @@ test("a row is only as wide as the lanes it draws", () => {
 test("a parent past the loaded page keeps its lane open to the bottom", () => {
   assert.deepEqual(graphRows([c("b", "a")])[0].out, [{ col: 0, id: 0 }]);
 });
+
+test("HEAD keeps the first lane below a newer branch's tip, with nothing drawn above it", () => {
+  //    f      another branch, newer than HEAD
+  //  h |      HEAD
+  //  |/
+  //  a
+  const rows = graphRows([c("f", "a"), c("h", "a"), c("a")], "h").map(flat);
+  assert.deepEqual(rows[0], { col: 1, id: 1, through: [], into: [], out: [[1, 1]], width: 2 });
+  assert.deepEqual(rows[1], { col: 0, id: 0, through: [[1, 1]], into: [], out: [[0, 0]], width: 2 });
+  assert.deepEqual(rows[2].into, [[0, 0], [1, 1]]);
+});
+
+test("a branch built on HEAD leads into HEAD's lane", () => {
+  // f's first parent is h: f's lane runs down and joins HEAD's.
+  const rows = graphRows([c("f", "h"), c("h", "a"), c("a")], "h").map(flat);
+  assert.deepEqual(rows[1], { col: 0, id: 0, through: [], into: [[1, 1]], out: [[0, 0]], width: 2 });
+});

@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Cherry, Cloud, Copy, ExternalLink, FolderGit2, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
+import { Cherry, Cloud, Copy, ExternalLink, Eye, EyeOff, FolderGit2, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,9 +17,10 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type RemoteTags, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
+import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type GraphRefs, type RemoteTags, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
 import { type GraphRow, type Lane, graphRows } from "@/lib/commitGraph";
 import { matchesCommand } from "@/lib/keybindings";
+import { pointerMoved } from "@/lib/pointer";
 import { withNetActivity } from "@/lib/netActivity";
 import { forgetRemoteTags, remoteTags } from "@/lib/remoteTags";
 import { type Selection, selectionKey } from "@/lib/selection";
@@ -58,6 +59,15 @@ interface Props {
   worktrees?: Worktree[];
   /** Opens a worktree in this window. */
   onOpenRepo?: (path: string) => void;
+  /** Every branch is listed: HEAD's keeps the first lane even below newer branches' tips. */
+  pinHead?: boolean;
+  /** Scroll to this commit and open it; `onJumped` says it's done, so the request can go. */
+  jump?: string | null;
+  onJumped?: () => void;
+  /** The all-branches graph's choices, offered on the refs a commit is decorated with. */
+  refMenu?: RefMenu;
+  /** Only these refs' badges show, as the all-branches graph walks only them. */
+  showRefs?: GraphRefs;
 }
 
 /** Blame's link to a commit: open it and `path` (the file's name there). `id` is new per click. */
@@ -65,6 +75,12 @@ export interface Reveal {
   sha: string;
   path: string;
   id: number;
+}
+
+/** Refs are full names (refs/heads/…). */
+export interface RefMenu {
+  hide: (refs: string[]) => void;
+  only: (ref: string) => void;
 }
 
 /** What a commit's context menu needs from the panel. */
@@ -82,13 +98,16 @@ interface Actions {
   /** Other worktrees with a branch checked out, to cherry-pick onto. */
   pickTargets: Worktree[];
   pickInto: (w: Worktree, commit: Commit) => Promise<void>;
+  remotes: Set<string>;
+  refMenu?: RefMenu;
+  showRefs?: GraphRefs;
 }
 
 /** GitHub only has commits that reached one of origin's branches (or all, for a fork's original). */
 const commitUrl = (c: Commit, { webUrl, everyOnWeb }: Pick<Actions, "webUrl" | "everyOnWeb">) =>
   webUrl && (c.onOrigin || everyOnWeb) ? `${webUrl}/commit/${c.sha}` : undefined;
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo }: Props) {
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs }: Props) {
   const [open, setOpen] = useState<string | null>(reveal?.sha ?? null);
   useEffect(() => {
     if (reveal) setOpen(reveal.sha);
@@ -150,6 +169,9 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     everyOnWeb: !!web,
     pickTargets: worktrees.filter((w) => !w.current && !w.bare && !w.prunable && w.branch),
     pickInto,
+    remotes,
+    refMenu,
+    showRefs,
   };
 
   // Opening a commit collapses the one above it; WebKit has no scroll anchoring, so without
@@ -166,11 +188,23 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
   };
 
   // Without the graph, one line joins each row to the next.
-  const rows = useMemo(() => graphRows(graph ? commits : commits.map((c, i) => ({ sha: c.sha, parents: i + 1 < commits.length ? [commits[i + 1].sha] : [] }))), [commits, graph]);
+  const rows = useMemo(() => {
+    if (!graph) return graphRows(commits.map((c, i) => ({ sha: c.sha, parents: i + 1 < commits.length ? [commits[i + 1].sha] : [] })));
+    return graphRows(commits, pinHead && commits.some((c) => c.sha === head) ? head : undefined);
+  }, [commits, graph, pinHead, head]);
+
+  // A jump waits for its commit to be listed: the caller loads pages until it is.
+  useEffect(() => {
+    if (!jump) return;
+    const row = scroller.current?.querySelector(`[data-row="commit:${jump}"]`);
+    if (!row) return;
+    row.scrollIntoView({ block: "center" });
+    setOpen(jump);
+    onJumped?.();
+  }, [jump, commits, onJumped]);
   // Hovering a commit brings its branch forward, and a merge's merged-in one. Only the lines
   // involved change: rewriting a stylesheet restyled the whole app on each row a scroll carried by.
   const lit = useRef<{ row: GraphRow; lines: Element[] } | null>(null);
-  const pointer = useRef("");
   const light = (row: GraphRow | null) => {
     const list = scroller.current;
     if (!list || (lit.current?.row ?? null) === row) return;
@@ -181,12 +215,8 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     lit.current = row ? { row, lines } : null;
     list.toggleAttribute("data-dim", !!row);
   };
-  // WebKit sends a mousemove as rows scroll under a still pointer; only a real move lights a row.
-  const point = (row: GraphRow, e: React.MouseEvent) => {
-    const at = `${e.screenX},${e.screenY}`;
-    if (at !== pointer.current) light(row);
-    pointer.current = at;
-  };
+  // Rows scrolling under a still pointer get a mousemove too; only a real move lights a row.
+  const point = (row: GraphRow, e: React.MouseEvent) => pointerMoved(e) && light(row);
 
   const more = () => loadMore().catch((e) => toast("error", "Could not load history", errorMessage(e)));
   const nav = useListNav({ activeKey, loadMore: hasMore ? more : null });
@@ -209,6 +239,8 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
           commit={c}
           remotes={remotes}
           graph={rows[i]}
+          isHead={c.sha === head}
+          showRefs={showRefs}
           onPoint={point}
           open={open === c.sha}
           reveal={reveal?.sha === c.sha ? reveal : null}
@@ -298,7 +330,9 @@ function TagMenu({ tag, remote, onOpen, actions }: { tag: string; remote: TagsTh
 
 /** Right-click actions on a commit. `head`: the first row, i.e. the checked-out commit. */
 function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolean; actions: Actions }) {
-  const { status, headSha, webUrl, locked, run } = actions;
+  const { status, headSha, webUrl, locked, run, refMenu } = actions;
+  // The badges shown; a detached HEAD's names no ref to hide.
+  const graphRefs = refMenu ? groupRefs(c.refs, actions.remotes, actions.showRefs).filter((r) => r.refs.length) : [];
   const url = commitUrl(c, actions);
   const short = c.shortSha;
   const target = status?.branch ?? "HEAD";
@@ -414,6 +448,23 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       {tags.map((t) => (
         <TagMenu key={t} tag={t} remote={remote} onOpen={checkRemote} actions={actions} />
       ))}
+      {refMenu && graphRefs.length > 0 && (
+        <>
+          <ContextMenuSeparator />
+          {graphRefs.map((r) => (
+            <Fragment key={r.refs[0]}>
+              <ContextMenuItem onSelect={() => refMenu.hide(r.refs)}>
+                <EyeOff /> Hide <span className="font-mono">{r.name}</span> in graph
+              </ContextMenuItem>
+              {r.kind !== "tag" && (
+                <ContextMenuItem onSelect={() => refMenu.only(r.refs[0])}>
+                  <Eye /> Show only <span className="font-mono">{r.name}</span>
+                </ContextMenuItem>
+              )}
+            </Fragment>
+          ))}
+        </>
+      )}
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={() => copy(c.sha, "SHA copied")}>
         <Copy /> Copy SHA
@@ -491,6 +542,8 @@ function CommitRow({
   commit,
   remotes,
   graph,
+  isHead,
+  showRefs,
   onPoint,
   open,
   reveal,
@@ -504,6 +557,8 @@ function CommitRow({
   commit: Commit;
   remotes: Set<string>;
   graph: GraphRow;
+  isHead: boolean;
+  showRefs: GraphRefs | undefined;
   onPoint: (row: GraphRow, e: React.MouseEvent) => void;
   open: boolean;
   reveal: Reveal | null;
@@ -548,6 +603,8 @@ function CommitRow({
 
   const add = files?.reduce((n, f) => n + (f.additions ?? 0), 0) ?? 0;
   const del = files?.reduce((n, f) => n + (f.deletions ?? 0), 0) ?? 0;
+  const mark = commit.unpushed ? "Not pushed yet" : commit.notInHead ? "Not in your branch yet" : null;
+  const dotLabel = isHead ? ["HEAD", mark].filter(Boolean).join(" · ") : (mark ?? undefined);
 
   return (
     <div className="relative" onMouseMove={(e) => onPoint(graph, e)}>
@@ -570,10 +627,12 @@ function CommitRow({
               className={cn(
                 "relative z-10 mt-[3px] size-[9px] shrink-0 rounded-full border-2",
                 commit.unpushed ? "border-primary bg-primary" : commit.notInHead ? "border-added bg-added" : "border-subtle bg-sidebar",
+                // Where you are, among every branch's commits.
+                isHead && "outline-2 outline-offset-1 outline-primary",
               )}
-              title={commit.unpushed ? "Not pushed yet" : commit.notInHead ? "Not in your branch yet" : undefined}
-              aria-label={commit.unpushed ? "Not pushed yet" : commit.notInHead ? "Not in your branch yet" : undefined}
-              role={commit.unpushed || commit.notInHead ? "img" : undefined}
+              title={dotLabel}
+              aria-label={dotLabel}
+              role={dotLabel ? "img" : undefined}
               // In its lane and its colour, with the text after the row's last lane.
               style={{
                 marginLeft: laneOf(graph.col) * LANE,
@@ -589,7 +648,7 @@ function CommitRow({
                 <CommitTime commit={commit} />
                 <span className="ml-auto shrink-0 font-mono">{commit.shortSha}</span>
               </div>
-              <RefBadges refs={commit.refs} remotes={remotes} />
+              <RefBadges refs={commit.refs} remotes={remotes} show={showRefs} />
             </div>
           </div>
         </ContextMenuTrigger>
@@ -641,13 +700,9 @@ function CommitRow({
   );
 }
 
-type Ref = { name: string; kind: "head" | "local" | "remote" | "tag"; synced: boolean };
+/** `refs`: the full names the badge stands for (a local branch and its remote twin). */
+type Ref = { name: string; kind: "head" | "local" | "remote" | "tag"; synced: boolean; refs: string[] };
 
-/**
- * Groups decorations so they stay readable: a local branch and its remote twin on the same
- * commit (main + origin/main) become one "main ☁" badge; origin/HEAD is dropped.
- * `remotes` tells remote-tracking names apart, since local names can contain "/" too.
- */
 // Lane geometry, matching the dot above: 12px row padding, 9px dot, its centre 13.5px down.
 const LANE = 10;
 const LANE_X = 16.5;
@@ -708,24 +763,38 @@ function CommitTime({ commit: c }: { commit: Commit }) {
   );
 }
 
-function groupRefs(refs: string[], remotes: Set<string>): Ref[] {
+/**
+ * Groups decorations so they stay readable: a local branch and its remote twin on the same
+ * commit (main + origin/main) become one "main ☁" badge; origin/HEAD is dropped, a detached
+ * HEAD gets a badge of its own. `remotes` tells remote-tracking names apart, since local names
+ * can contain "/" too. With `show`, only the refs it lets through, and always HEAD's branch.
+ */
+function groupRefs(refs: string[], remotes: Set<string>, show?: GraphRefs): Ref[] {
   const head = refs.find((r) => r.startsWith("HEAD -> "))?.slice(8);
-  const names = refs.map((r) => (r.startsWith("HEAD -> ") ? r.slice(8) : r));
   const isRemote = (r: string) => remotes.has(r) || (!remotes.size && r.startsWith("origin/"));
   const short = (r: string) => r.slice(r.indexOf("/") + 1);
-  const out: Ref[] = [];
+  const tag = (r: string) => r.startsWith("tag: ");
+  const full = (r: string) => (tag(r) ? `refs/tags/${r.slice(5)}` : isRemote(r) ? `refs/remotes/${r}` : `refs/heads/${r}`);
+  // Before grouping: with local branches off, main's remote twin still gets its badge.
+  const shown = (r: string) =>
+    !show || r === "HEAD" || r === head || ((tag(r) ? show.tags : isRemote(r) ? show.remote : show.local) && !show.hidden.includes(full(r)));
+  const names = refs.map((r) => (r.startsWith("HEAD -> ") ? r.slice(8) : r)).filter(shown);
+  const out: Ref[] = names.includes("HEAD") ? [{ name: "HEAD", kind: "head", synced: false, refs: [] }] : [];
   for (const r of names) {
     if (r === "HEAD" || r.endsWith("/HEAD")) continue;
-    if (r.startsWith("tag: ")) out.push({ name: r.slice(5), kind: "tag", synced: false });
+    if (tag(r)) out.push({ name: r.slice(5), kind: "tag", synced: false, refs: [full(r)] });
     else if (isRemote(r)) {
-      if (!names.includes(short(r))) out.push({ name: r, kind: "remote", synced: false });
-    } else out.push({ name: r, kind: r === head ? "head" : "local", synced: names.some((x) => isRemote(x) && short(x) === r) });
+      if (!names.includes(short(r))) out.push({ name: r, kind: "remote", synced: false, refs: [full(r)] });
+    } else {
+      const twins = names.filter((x) => isRemote(x) && short(x) === r);
+      out.push({ name: r, kind: r === head ? "head" : "local", synced: twins.length > 0, refs: [full(r), ...twins.map(full)] });
+    }
   }
   return out;
 }
 
-function RefBadges({ refs, remotes }: { refs: string[]; remotes: Set<string> }) {
-  const list = groupRefs(refs, remotes);
+function RefBadges({ refs, remotes, show }: { refs: string[]; remotes: Set<string>; show?: GraphRefs }) {
+  const list = groupRefs(refs, remotes, show);
   if (!list.length) return null;
   return (
     <div className="mt-1 flex flex-wrap gap-1">

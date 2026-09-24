@@ -467,6 +467,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 {listTab === "issues" && <IssuesPanel activeKey={activeKey} onOpen={open} />}
                 {listTab === "history" && (
                   <SearchableHistory
+                    main={main}
                     search={historySearch}
                     onSearch={setHistorySearch}
                     focusRequested={searchFocus}

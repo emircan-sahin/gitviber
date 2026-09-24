@@ -1336,7 +1336,7 @@ pub fn log_filtered(
     };
     commits(
         repo,
-        &tip,
+        &[&tip],
         rev.is_none(),
         rev.is_some(),
         skip,
@@ -1345,9 +1345,159 @@ pub fn log_filtered(
     )
 }
 
+/// Which refs the all-branches history walks. Refs are full names: refs/heads/…, refs/remotes/…,
+/// refs/tags/….
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphRefs {
+    pub local: bool,
+    pub remote: bool,
+    pub tags: bool,
+    /// Left out, though still listed where another shown ref reaches them.
+    pub hidden: Vec<String>,
+    /// Just this ref's history, in place of all the others and HEAD.
+    pub only: Option<String>,
+}
+
+impl Default for GraphRefs {
+    fn default() -> Self {
+        Self {
+            local: true,
+            remote: true,
+            tags: true,
+            hidden: vec![],
+            only: None,
+        }
+    }
+}
+
+const REF_KINDS: [(&str, &str); 3] = [
+    ("refs/heads/", "--branches"),
+    ("refs/remotes/", "--remotes"),
+    ("refs/tags/", "--tags"),
+];
+
+/// A full branch, remote-tracking branch or tag name, never an option or a range.
+fn validate_full_ref(repo: &Path, name: &str) -> Result<(), String> {
+    let kind = REF_KINDS.iter().any(|(prefix, _)| name.starts_with(prefix));
+    if !kind || run(repo, &["check-ref-format", name]).is_err() {
+        return Err(format!("not a branch or tag: {name}"));
+    }
+    Ok(())
+}
+
+/// Every branch's history, remote-tracking branches' and tags' too, and HEAD's (it may be
+/// detached), as far as `refs` lets through. Commits HEAD doesn't have yet are marked, as in
+/// another branch's log.
+pub fn log_all(
+    repo: &Path,
+    refs: &GraphRefs,
+    skip: u32,
+    limit: u32,
+    filter: &LogFilter,
+) -> Result<Vec<Commit>, String> {
+    // git tracks a rename across the whole walk: another branch's commits from before it would
+    // drop out of the file's history. Following a file stays on HEAD's.
+    if filter.follows() {
+        return log_filtered(repo, None, skip, limit, filter);
+    }
+    // A new orphan branch has no history of its own yet; the other branches still do, with
+    // nothing to mark as missing from it.
+    let head = has_head(repo);
+    let mut tips: Vec<String> = vec![];
+    if let Some(only) = &refs.only {
+        validate_full_ref(repo, only)?;
+        if run(repo, &["rev-parse", "--verify", "-q", only]).is_err() {
+            return Err(format!("{only} no longer exists"));
+        }
+        tips.push(only.clone());
+    } else {
+        for h in &refs.hidden {
+            validate_full_ref(repo, h)?;
+        }
+        let on = [refs.local, refs.remote, refs.tags];
+        for ((prefix, flag), on) in REF_KINDS.iter().zip(on) {
+            if !on {
+                continue;
+            }
+            // --exclude applies to the next --branches/--remotes/--tags, without its prefix.
+            // Ref names can't hold glob characters, so each pattern matches only its ref.
+            let hidden = refs.hidden.iter().filter_map(|h| h.strip_prefix(prefix));
+            tips.extend(hidden.map(|h| format!("--exclude={h}")));
+            tips.push(flag.to_string());
+        }
+        if head {
+            tips.push("HEAD".into());
+        } else {
+            // With no ref to walk, git would fall back to the unborn HEAD and fail.
+            let kinds = REF_KINDS.iter().zip(on).filter(|(_, on)| *on);
+            let mut args = vec!["for-each-ref", "--format=%(refname)"];
+            args.extend(kinds.map(|((prefix, _), _)| *prefix));
+            let listed = if args.len() > 2 {
+                run_text(repo, &args)?
+            } else {
+                String::new()
+            };
+            if listed.lines().all(|r| refs.hidden.iter().any(|h| h == r)) {
+                return Ok(vec![]);
+            }
+        }
+    }
+    let tips: Vec<&str> = tips.iter().map(String::as_str).collect();
+    commits(repo, &tips, head, head, skip, limit, filter)
+}
+
+/// Comparing HEAD with `with` (a full ref): the commits `with` has that HEAD doesn't
+/// (`incoming`), or those HEAD has that `with` doesn't.
+pub fn log_compare(
+    repo: &Path,
+    with: &str,
+    incoming: bool,
+    skip: u32,
+    limit: u32,
+) -> Result<Vec<Commit>, String> {
+    validate_full_ref(repo, with)?;
+    if !has_head(repo) {
+        return Ok(vec![]);
+    }
+    let range = if incoming {
+        format!("HEAD..{with}")
+    } else {
+        format!("{with}..HEAD")
+    };
+    commits(
+        repo,
+        &[&range],
+        true,
+        true,
+        skip,
+        limit,
+        &LogFilter::default(),
+    )
+}
+
+/// How many commits HEAD has that `with` doesn't, and `with` has that HEAD doesn't.
+pub fn compare_counts(repo: &Path, with: &str) -> Result<(u32, u32), String> {
+    validate_full_ref(repo, with)?;
+    let out = run_text(
+        repo,
+        &[
+            "rev-list",
+            "--left-right",
+            "--count",
+            &format!("HEAD...{with}"),
+        ],
+    )?;
+    let mut n = out.split_whitespace().map(|x| x.parse().unwrap_or(0));
+    Ok((n.next().unwrap_or(0), n.next().unwrap_or(0)))
+}
+
 /// The commit a SHA (or a prefix of one) names, wherever it is: a pasted SHA goes first in a search.
+/// A full ref name (refs/heads/…) finds its tip, for going to a branch in the graph.
 pub fn find_commit(repo: &Path, sha: &str) -> Result<Option<Commit>, String> {
-    if validate_rev(sha).is_err() || sha.len() > 40 || !has_head(repo) {
+    let sha_ok = validate_rev(sha).is_ok() && sha.len() <= 40;
+    let ref_ok = || sha.starts_with("refs/") && validate_full_ref(repo, sha).is_ok();
+    if !(sha_ok || ref_ok()) || !has_head(repo) {
         return Ok(None);
     }
     // Unknown, or a prefix of several: no commit, not an error.
@@ -1357,15 +1507,23 @@ pub fn find_commit(repo: &Path, sha: &str) -> Result<Option<Commit>, String> {
     ) else {
         return Ok(None);
     };
-    let found = commits(repo, full.trim(), true, true, 0, 1, &LogFilter::default())?;
+    let found = commits(
+        repo,
+        &[full.trim()],
+        true,
+        true,
+        0,
+        1,
+        &LogFilter::default(),
+    )?;
     Ok(found.into_iter().next())
 }
 
-/// `limit` commits of `tip`'s history after `skip`. `mark_unpushed` / `mark_not_in_head`: work
+/// `limit` commits of `tips`' history after `skip`. `mark_unpushed` / `mark_not_in_head`: work
 /// out those flags (HEAD's own history is all in HEAD; another branch's is never unpushed).
 fn commits(
     repo: &Path,
-    tip: &str,
+    tips: &[&str],
     mark_unpushed: bool,
     mark_not_in_head: bool,
     skip: u32,
@@ -1390,14 +1548,15 @@ fn commits(
     }
     let mut paths: Vec<&str> = vec!["--"];
     paths.extend(filter.paths.iter().map(String::as_str));
-    // Of `tip`'s matching commits, the ones not reachable from `not`. Log order is the same
+    // Of `tips`' matching commits, the ones not reachable from `not`. Log order is the same
     // with or without `--not`, so the first skip+limit of them cover this page. A search
     // goes through the same filter: its page can sit anywhere in the full history.
     let outside = |not: &str| -> Result<std::collections::HashSet<String>, String> {
         let n = format!("-n{}", skip + limit);
         let mut args = vec!["log", "--format=%H", &n];
         args.extend(filter_args.iter().map(String::as_str));
-        args.extend([tip, "--not", not]);
+        args.extend(tips);
+        args.extend(["--not", not]);
         args.extend(&paths);
         run_text(repo, &args).map(lines)
     };
@@ -1435,7 +1594,7 @@ fn commits(
         args.push("--name-only");
     }
     args.extend(filter_args.iter().map(String::as_str));
-    args.push(tip);
+    args.extend(tips);
     args.extend(&paths);
     let raw = run_text(repo, &args)?;
     Ok(raw

@@ -25,26 +25,29 @@ export interface GraphRow {
 /**
  * Rows for commits listed children first, as `git log` lists them. A parent listed above its child
  * (git's date order under clock skew) gets no line: nothing below would ever close it.
+ * `head`, when listed, is held the first lane and branch 0 even below newer branches' tips.
  */
-export function graphRows(commits: readonly { sha: string; parents: readonly string[] }[]): GraphRow[] {
-  // The commit each lane waits for; null is a free column.
-  const lanes: ({ sha: string; id: number } | null)[] = [];
+export function graphRows(commits: readonly { sha: string; parents: readonly string[] }[], head?: string): GraphRow[] {
+  // The commit each lane waits for; null is a free column. A held lane draws nothing until
+  // something leads into it.
+  const lanes: ({ sha: string; id: number; held?: boolean } | null)[] = head ? [{ sha: head, id: 0, held: true }] : [];
   const seen = new Set<string>();
-  let next = 0;
+  let next = head ? 1 : 0;
   return commits.map(({ sha, parents }) => {
     seen.add(sha);
-    const into = lanes.flatMap((l, col) => (l?.sha === sha ? [{ col, id: l.id }] : []));
+    const waiting = lanes.flatMap((l, col) => (l?.sha === sha ? [{ col, id: l.id, held: l.held }] : []));
     const free = () => (lanes.includes(null) ? lanes.indexOf(null) : lanes.length);
-    const col = into[0]?.col ?? free();
-    const id = into[0]?.id ?? next++;
-    for (const l of into) lanes[l.col] = null;
-    const through = lanes.flatMap((l, c) => (l ? [{ col: c, id: l.id }] : []));
+    const col = waiting[0]?.col ?? free();
+    const id = waiting[0]?.id ?? next++;
+    for (const l of waiting) lanes[l.col] = null;
+    const into = waiting.flatMap((l) => (l.held ? [] : [{ col: l.col, id: l.id }]));
+    const through = lanes.flatMap((l, c) => (l && !l.held ? [{ col: c, id: l.id }] : []));
     const out: Lane[] = [];
     parents.forEach((p, k) => {
       if (seen.has(p)) return;
       // The first parent carries the commit's own lane on; another joins the lane already waiting for it.
-      const waiting = lanes.findIndex((l) => l?.sha === p);
-      const lane = k === 0 ? { col, id } : waiting >= 0 ? { col: waiting, id: lanes[waiting]!.id } : { col: free(), id: next++ };
+      const at = lanes.findIndex((l) => l?.sha === p);
+      const lane = k === 0 ? { col, id } : at >= 0 ? { col: at, id: lanes[at]!.id } : { col: free(), id: next++ };
       lanes[lane.col] = { sha: p, id: lane.id };
       out.push(lane);
     });

@@ -226,6 +226,7 @@ async fn log(
     skip: u32,
     limit: u32,
     filter: Option<git::LogFilter>,
+    all: Option<git::GraphRefs>,
 ) -> Res<Vec<git::Commit>> {
     let r = repo(&state)?;
     let filter = filter.unwrap_or_default();
@@ -234,9 +235,31 @@ async fn log(
         for p in &filter.paths {
             fs::resolve(&r, p)?;
         }
-        git::log_filtered(&r, rev.as_deref(), skip, limit, &filter)
+        match (all, rev) {
+            (Some(_), Some(_)) => Err("all branches, or one: not both".into()),
+            (Some(refs), None) => git::log_all(&r, &refs, skip, limit, &filter),
+            (None, rev) => git::log_filtered(&r, rev.as_deref(), skip, limit, &filter),
+        }
     })
     .await
+}
+
+#[tauri::command]
+async fn log_compare(
+    state: State<'_, AppState>,
+    with: String,
+    incoming: bool,
+    skip: u32,
+    limit: u32,
+) -> Res<Vec<git::Commit>> {
+    let r = repo(&state)?;
+    blocking(move || git::log_compare(&r, &with, incoming, skip, limit)).await
+}
+
+#[tauri::command]
+async fn compare_counts(state: State<'_, AppState>, with: String) -> Res<(u32, u32)> {
+    let r = repo(&state)?;
+    blocking(move || git::compare_counts(&r, &with)).await
 }
 
 #[tauri::command]
@@ -1656,6 +1679,8 @@ pub fn run() {
             set_git_identity,
             status,
             log,
+            log_compare,
+            compare_counts,
             find_commit,
             commit_files,
             diff_pair,
