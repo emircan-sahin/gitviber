@@ -1,8 +1,11 @@
 import type { Commit, FileChange, Issue, Pull } from "./api";
 
-/** A PR's diff range, as computed locally (merge base → head). */
+/** A PR's diff range, as computed locally (merge base → head), or a branch's in a comparison (no `number`, its name as `label`). */
 export interface PullRange {
-  number: number;
+  number?: number;
+  /** The PR's page, for its line comments. */
+  pullUrl?: string;
+  label?: string;
   base: string;
   head: string;
 }
@@ -30,6 +33,6 @@ export function selectionKey(s: Selection) {
   if (s.kind === "pull") return `pull:${s.pull.url}`;
   if (s.kind === "issue") return `issue:${s.issue.url}`;
   // A PR file by its head commit too: a fork's #3 and its original's #3 differ.
-  const scope = s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number}@${s.range.head}` : "";
+  const scope = s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number ?? `${s.range.base}..`}@${s.range.head}` : "";
   return `${s.kind}:${scope}:${selectionPath(s)}`;
 }

@@ -6,6 +6,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type FileChange, type RepoStatus, type Whitespace } from "@/lib/api";
 import { resetDefinitions } from "@/lib/definitions";
 import { type LinkSide, resetLinks } from "@/lib/linkHost";
+import { withNetActivity } from "@/lib/netActivity";
 import { onReveal, revealWaits } from "@/lib/reveal";
 import { type Selection, selectionPath } from "@/lib/selection";
 import { bindingsFor, type CommandId, formatChord, matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
@@ -23,6 +24,7 @@ import { CopyLinkButton, openOnGitHub, PullStateIcon } from "./PullsPanel";
 import { PullView } from "./PullView";
 import { FileIcon } from "./FileIcon";
 import { SignatureBadge, TrailerChips, useCommitDetails } from "./HistoryPanel";
+import { useReview } from "./ReviewThreads";
 import { isSvg, MediaView, mediaKind, SvgView } from "./MediaView";
 import { isMarkdown, MarkdownView } from "./MarkdownView";
 import { LineCounts, PathLabel, StatusPill } from "./StatusBadge";
@@ -303,7 +305,7 @@ function TabItem({
 
 function TabKind({ sel }: { sel: Selection }) {
   const labels: Partial<Record<Selection["kind"], string>> = { staged: "staged", unstaged: "diff", conflict: "conflict" };
-  const label = sel.kind === "commit" ? sel.commit.shortSha : sel.kind === "pr-file" ? `#${sel.range.number}` : labels[sel.kind];
+  const label = sel.kind === "commit" ? sel.commit.shortSha : sel.kind === "pr-file" ? (sel.range.number ? `#${sel.range.number}` : (sel.range.label ?? "compare")) : labels[sel.kind];
   return label ? <span className="shrink-0 font-mono text-[10px] text-subtle">{label}</span> : null;
 }
 
@@ -423,6 +425,8 @@ function findChange(status: RepoStatus | null, path: string): Selection | null {
 function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShowCommit, refresh }: ViewerProps & { tab: Tab; sel: FileSelection }) {
   const s = useSettings();
   const { pair, error } = usePair(sel, revision, diffWhitespace(s));
+  const range = sel.kind === "pr-file" ? sel.range : null;
+  const review = useReview(range?.pullUrl, range?.number, range?.head ?? "", selectionPath(sel));
   const view = useRef<CodeViewHandle>(null);
   const isFile = sel.kind === "file";
   const file: FileChange | null = isFile ? null : sel.file;
@@ -579,7 +583,10 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
         {error ? (
           <Placeholder title="Could not load" detail={error} />
         ) : special ? (
-          <Placeholder title={special} />
+          <Placeholder
+            title={special}
+            action={pair && (pair.modified.lfsMissing || pair.original.lfsMissing) ? { label: "Download with Git LFS", run: () => downloadLfs(selectionPath(sel), refresh) } : undefined}
+          />
         ) : rendered && svg ? (
           pair && (
             <SvgView
@@ -611,6 +618,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               onBlameClick={(c) => onShowCommit(c.sha, c.path)}
               links={linkSides(sel, revision)}
               staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, refresh } : null}
+              review={review}
             />
           )
         )}
@@ -751,13 +759,29 @@ function Kbd({ ids }: { ids: CommandId[] }) {
   return <span className="text-right font-mono text-muted-foreground">{k}</span>;
 }
 
-function Placeholder({ title, detail }: { title: string; detail?: string }) {
+function Placeholder({ title, detail, action }: { title: string; detail?: string; action?: { label: string; run: () => void } }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
       <div className="text-[12.5px] text-muted-foreground">{title}</div>
       {detail && <pre className="max-w-xl font-mono text-[11.5px] whitespace-pre-wrap text-subtle select-text">{detail}</pre>}
+      {action && (
+        <Button variant="secondary" size="sm" className="mt-1" onClick={action.run}>
+          {action.label}
+        </Button>
+      )}
     </div>
   );
+}
+
+/** A Git LFS file's object, fetched as a network command the top bar shows. */
+async function downloadLfs(path: string, refresh: () => unknown) {
+  try {
+    await withNetActivity("Download LFS file", (op) => api.lfsPull(path, op));
+    toast("success", `Downloaded ${path}`);
+  } catch (e) {
+    toast("error", "Could not download the LFS file", errorMessage(e));
+  }
+  await refresh();
 }
 
 /** Unified / split for diffs; a before/after preview stacks or sits side by side to match. */

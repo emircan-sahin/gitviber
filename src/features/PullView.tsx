@@ -246,7 +246,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
           {files.data?.files.map((f) => (
             <button
               key={f.path}
-              onClick={() => onOpen({ kind: "pr-file", range: { number: p.number, base: files.data!.base, head: files.data!.head }, file: f })}
+              onClick={() => onOpen({ kind: "pr-file", range: { number: p.number, pullUrl: p.url, base: files.data!.base, head: files.data!.head }, file: f })}
               className="flex h-7 w-full cursor-pointer items-center gap-2 px-3 text-left text-[12px] outline-none hover:bg-hover focus-visible:bg-hover"
             >
               <FileIcon path={f.path} />

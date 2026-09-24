@@ -9,6 +9,7 @@ import { onReveal, takeReveal } from "@/lib/reveal";
 import { codeWantsFocus, setCodeEditor } from "@/lib/panels";
 import { followDefinitions } from "@/lib/definitions";
 import { followLineActions } from "@/lib/lineActions";
+import { followReviewThreads, type Review } from "./ReviewThreads";
 import { type LinkSide, onReveal as onLinkReveal, takeReveal as takeLinkReveal } from "@/lib/linkHost";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
 import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
@@ -39,6 +40,8 @@ interface Props {
   links?: { original: LinkSide | null; modified: LinkSide } | null;
   /** A working-tree diff whose changes can be staged, unstaged or discarded from here. */
   staging?: { kind: "unstaged" | "staged"; refresh: () => unknown } | null;
+  /** A PR file's line comments, drawn under their lines. */
+  review?: Review | null;
 }
 
 type Editor = monaco.editor.IStandaloneDiffEditor | monaco.editor.IStandaloneCodeEditor;
@@ -74,7 +77,7 @@ export function lineInView(path: string): number | undefined {
 }
 
 /** The code view on Monaco (VS Code's editor): a diff editor for changes, a plain one for files. */
-export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, blameColumn = false, onBlameClick, links = null, staging = null }, ref) {
+export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, blameColumn = false, onBlameClick, links = null, staging = null, review = null }, ref) {
   const s = useSettings();
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<Editor | null>(null);
@@ -93,6 +96,9 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   const linksRef = useRef(links);
   const stagingRef = useRef(staging);
   stagingRef.current = staging;
+  const reviewRef = useRef(review);
+  reviewRef.current = review;
+  const threads = useRef<ReturnType<typeof followReviewThreads> | null>(null);
   // The diff on show, which a newer `pair` replaces only once it's ready.
   const shownPair = useRef<{ pair: DiffPair; path: string } | null>(null);
   linksRef.current = links;
@@ -128,11 +134,19 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
           return s && on ? { ...s, ...on } : null;
         })
       : null;
+    threads.current = isDiff(e)
+      ? followReviewThreads(e, () => {
+          const [r, on] = [reviewRef.current, shownPair.current];
+          return r && on ? { review: r, rows: on.pair.rows, unified: !split.current } : null;
+        })
+      : null;
     return () => {
       click?.dispose();
       linked.forEach((l) => l.dispose());
       marks?.dispose();
       lines?.dispose();
+      threads.current?.dispose();
+      threads.current = null;
       if (shown.current) viewStates.set(shown.current, e.saveViewState()!);
       shown.current = null;
       const models = modelsOf(e);
@@ -192,6 +206,9 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     else e.updateOptions(fileOptions(s, wrap, blameColumn));
   }, [s, mode, collapse, wrap, diff, blameColumn]);
 
+  // New comments, or the other layout (unified view puts old-side threads on the new side).
+  useEffect(() => threads.current?.update(), [review, mode]);
+
   // A blame that lands after the file shows; the swap below marks the one it finds.
   useEffect(() => {
     const e = editor.current;
@@ -245,6 +262,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       old.forEach((m) => m.dispose());
       shown.current = scrollKey;
       shownPair.current = { pair, path };
+      threads.current?.update();
       const code = codeEditor(e);
       // Opened from the code view (J/K, a tab switch) or sent here before it was ready: take the keys.
       if (codeWantsFocus()) code.focus();
