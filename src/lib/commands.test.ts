@@ -10,6 +10,7 @@ import {
   eventChord,
   eventChords,
   formatChordFor,
+  isReserved,
   type KeyLike,
   menuAccelerator,
   runsWhileTyping,
@@ -222,4 +223,13 @@ test("the terminal's own keys only run there, and keep ⌘W from closing a tab o
   assert.deepEqual(bindingsFor("terminal.split", {}, true), ["cmd+d"]);
   // ⌃` reaches the app from inside the terminal instead of sending NUL.
   assert.ok(takenFromTerminal("ctrl+`", byId("terminal.toggle"), true));
+});
+
+test("only macOS reserves chords", () => {
+  assert.equal(isReserved("cmd+q", true), true);
+  assert.equal(isReserved("cmd+h", true), true);
+  assert.equal(isReserved("cmd+b", true), false);
+  // Off macOS "cmd" is Ctrl, which nothing takes from the page.
+  assert.equal(isReserved("cmd+h", false), false);
+  assert.equal(isReserved("cmd+m", false), false);
 });

@@ -139,7 +139,13 @@ export type Overrides = Record<string, string[]>;
 export const isCommandId = (id: string): id is CommandId => COMMANDS.some((c) => c.id === id);
 
 /** macOS handles these before the page sees them (quit, hide, minimize, cycle windows, screenshots). */
-export const RESERVED = ["cmd+q", "cmd+h", "alt+cmd+h", "cmd+m", "cmd+`", "shift+cmd+3", "shift+cmd+4", "shift+cmd+5"];
+const MAC_RESERVED = ["cmd+q", "cmd+h", "alt+cmd+h", "cmd+m", "cmd+`", "shift+cmd+3", "shift+cmd+4", "shift+cmd+5"];
+
+/**
+ * Whether the system takes a chord before the page sees it. Only macOS does: off it "cmd" is
+ * Ctrl, and the GTK menu has no Quit, Hide or Minimize items to claim Ctrl+Q, Ctrl+H or Ctrl+M.
+ */
+export const isReserved = (chord: string, mac = IS_MAC) => mac && MAC_RESERVED.includes(chord);
 
 const MODS = ["ctrl", "alt", "shift", "cmd"] as const;
 
