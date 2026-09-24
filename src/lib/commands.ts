@@ -81,6 +81,8 @@ export const COMMANDS = [
   { id: "editor.fontZoomReset", title: "Reset Code Font Size", category: "Editor", keys: ["alt+cmd+0"] },
   // Monaco's own ⌘F is taken off (monaco.ts), so this is the only key that opens it.
   { id: "editor.find", title: "Find", category: "Editor", keys: ["cmd+f"], local: "the code view" },
+  // The file an import or path under the cursor points to; ⌘-click does the same (lib/codeLinks).
+  { id: "editor.openLink", title: "Open Linked File", category: "Editor", keys: ["f12", "cmd+enter"], local: "the code view" },
   { id: "media.zoomIn", title: "Zoom In Image", category: "Editor", keys: ["=", "shift+="], local: "the image view" },
   { id: "media.zoomOut", title: "Zoom Out Image", category: "Editor", keys: ["-"], local: "the image view" },
   { id: "media.fit", title: "Fit Image", category: "Editor", keys: ["0"], local: "the image view" },

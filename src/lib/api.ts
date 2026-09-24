@@ -360,6 +360,9 @@ export const api = {
   /** Tracked and untracked files, not ignored ones: what quick open searches. */
   listFiles: () => invoke<string[]>("list_files"),
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
+  /** Every file in a commit (`<sha>`, or `<sha>^` for its parent): where its links resolve. */
+  treePaths: (rev: string) => invoke<string[]>("tree_paths", { rev }),
+  textAt: (rev: string, path: string) => invoke<FileText>("text_at", { rev, path }),
   /** `git blame` of the working-tree file. */
   blame: (path: string) => invoke<Blame>("blame", { path }),
   branches: () => invoke<Branch[]>("branches"),

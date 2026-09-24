@@ -1610,6 +1610,31 @@ pub fn blame(repo: &Path, path: &str) -> Result<Blame, String> {
     Ok(blame)
 }
 
+/// A commit id, or one with a trailing `^` for its first parent: the old side of a commit's diff.
+fn validate_tree_rev(rev: &str) -> Result<(), String> {
+    validate_rev(rev.strip_suffix('^').unwrap_or(rev))
+}
+
+/// Every file in a commit's tree (see `validate_tree_rev`), for the code view's links.
+pub fn tree_paths(repo: &Path, rev: &str) -> Result<Vec<String>, String> {
+    validate_tree_rev(rev)?;
+    let out = run(
+        repo,
+        &["ls-tree", "-r", "-z", "--full-tree", "--name-only", rev],
+    )?;
+    Ok(out
+        .split(|&b| b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
+        .collect())
+}
+
+/// A file as it is in a commit's tree (see `validate_tree_rev`); a missing one doesn't exist.
+pub fn text_at(repo: &Path, rev: &str, path: &str) -> Result<FileText, String> {
+    validate_tree_rev(rev)?;
+    Ok(blob(repo, rev, path))
+}
+
 /// Files changed by a commit, compared with its first parent (so merges show what they brought in).
 pub fn commit_files(repo: &Path, sha: &str) -> Result<Vec<FileChange>, String> {
     validate_rev(sha)?;

@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type FileChange, type RepoStatus, type Whitespace } from "@/lib/api";
+import { type LinkSide, resetLinks } from "@/lib/linkHost";
 import { type Selection, selectionPath } from "@/lib/selection";
 import { bindingsFor, type CommandId, formatChord, matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { diffWhitespace, getSettings, updateSettings, useSettings } from "@/lib/settings";
@@ -277,6 +278,18 @@ function pairArgs(sel: FileSelection, revision: number, whitespace: Whitespace |
   return { kind, path, oldPath, sha, base, whitespace, key: `${kind}\0${path}\0${oldPath}\0${sha}\0${base}\0${rev}\0${whitespace}` };
 }
 
+/**
+ * Where the code view's ⌘-click paths resolve: a commit's sides in the commit and its parent, a PR's
+ * in its base and head. Working-tree diffs resolve both sides in the working tree (their old side
+ * is the index or HEAD, close enough for a file list). Links open the working-tree file.
+ */
+function linkSides(sel: FileSelection, revision: number): { original: LinkSide | null; modified: LinkSide } {
+  const path = selectionPath(sel);
+  if (sel.kind === "file") return { original: null, modified: { path, tree: { rev: null, revision } } };
+  const [before, after] = sel.kind === "commit" ? [`${sel.commit.sha}^`, sel.commit.sha] : sel.kind === "pr-file" ? [sel.range.base, sel.range.head] : [null, null];
+  return { original: { path: sel.file.oldPath ?? path, tree: { rev: before, revision } }, modified: { path, tree: { rev: after, revision } } };
+}
+
 // Recently loaded/prefetched diffs; the key includes the revision, so stale entries never match.
 // Revisions restart per repo, so the cache is per repo too: `generation` changes on switch and
 // responses still in flight from the previous repo are dropped.
@@ -285,6 +298,7 @@ let generation = 0;
 export function resetPairCache() {
   pairCache.clear();
   blames.clear();
+  resetLinks();
   generation++;
 }
 function remember(key: string, pair: DiffPair, gen: number) {
@@ -540,6 +554,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               blame={blame?.unavailable ? null : blame}
               blameColumn={!!s.blame && isFile && !blame?.unavailable}
               onBlameClick={(c) => onShowCommit(c.sha, c.path)}
+              links={linkSides(sel, revision)}
             />
           )
         )}

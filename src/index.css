@@ -507,6 +507,14 @@
   color: var(--foreground);
 }
 
+/* ⌘-hover on a path the code view can open (lib/codeLinks). Past the token's own color class. */
+.monaco-editor .view-line .gv-link {
+  color: var(--primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
 /* Unified diffs: Monaco shades the old-line-number column of a whole change, added lines too, which
    read as deletions. Deleted lines keep their shade from their own margin. */
 .monaco-diff-editor:not(.side-by-side) .gutter-delete {

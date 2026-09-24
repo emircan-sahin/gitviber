@@ -2829,3 +2829,23 @@ fn last_fetch_counts_the_main_worktree() {
     assert!(last_fetch(&linked).is_some());
     assert_eq!(last_fetch(&linked), last_fetch(a));
 }
+
+#[test]
+fn tree_paths_and_text_at_read_a_commit_and_its_parent() {
+    let sb = Sandbox::new("tree-paths");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "src/a.ts", "one\n", "a");
+    write_commit(&r, "src/lib/b.ts", "two\n", "b");
+    let head = log(&r, None, 0, 1).unwrap()[0].sha.clone();
+    assert_eq!(tree_paths(&r, &head).unwrap(), ["src/a.ts", "src/lib/b.ts"]);
+    assert_eq!(tree_paths(&r, &format!("{head}^")).unwrap(), ["src/a.ts"]);
+    assert_eq!(text_at(&r, &head, "src/lib/b.ts").unwrap().text, "two\n");
+    assert!(
+        !text_at(&r, &format!("{head}^"), "src/lib/b.ts")
+            .unwrap()
+            .exists
+    );
+    assert!(tree_paths(&r, "HEAD").is_err(), "only commit ids");
+    assert!(tree_paths(&r, &format!("{head}^^")).is_err());
+}

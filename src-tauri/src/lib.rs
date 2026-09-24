@@ -334,6 +334,18 @@ async fn read_file(state: State<'_, AppState>, path: String) -> Res<git::FileTex
 }
 
 #[tauri::command]
+async fn tree_paths(state: State<'_, AppState>, rev: String) -> Res<Vec<String>> {
+    let r = repo(&state)?;
+    blocking(move || git::tree_paths(&r, &rev)).await
+}
+
+#[tauri::command]
+async fn text_at(state: State<'_, AppState>, rev: String, path: String) -> Res<git::FileText> {
+    let r = repo(&state)?;
+    blocking(move || git::text_at(&r, &rev, &path)).await
+}
+
+#[tauri::command]
 async fn branches(state: State<'_, AppState>) -> Res<Vec<git::Branch>> {
     let r = repo(&state)?;
     blocking(move || git::branches(&r)).await
@@ -1651,6 +1663,8 @@ pub fn run() {
             list_dir,
             list_files,
             read_file,
+            tree_paths,
+            text_at,
             blame,
             branches,
             switch_branch,

@@ -2,9 +2,11 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "rea
 import type { Blame, BlameCommit, DiffPair, DiffRow } from "@/lib/api";
 import { showLanguage } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
-import { narrow } from "@/lib/indent";
+import { narrow, widenColumn } from "@/lib/indent";
 import { matchesCommand } from "@/lib/keybindings";
 import { codeWantsFocus, setCodeEditor } from "@/lib/panels";
+import { followLinks } from "@/lib/codeLinks";
+import { type LinkSide, onReveal, takeReveal } from "@/lib/linkHost";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
 import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
 import { relativeTime } from "@/lib/utils";
@@ -30,6 +32,8 @@ interface Props {
   /** Room for that column, set aside before `blame` lands so the code doesn't jump. */
   blameColumn?: boolean;
   onBlameClick?: (commit: BlameCommit) => void;
+  /** Where each side's paths resolve for ⌘-click (the old side only in a diff); none: no links. */
+  links?: { original: LinkSide | null; modified: LinkSide } | null;
 }
 
 type Editor = monaco.editor.IStandaloneDiffEditor | monaco.editor.IStandaloneCodeEditor;
@@ -54,7 +58,7 @@ export function lineInView(path: string): number | undefined {
 }
 
 /** The code view on Monaco (VS Code's editor): a diff editor for changes, a plain one for files. */
-export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, blameColumn = false, onBlameClick }, ref) {
+export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, blameColumn = false, onBlameClick, links = null }, ref) {
   const s = useSettings();
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<Editor | null>(null);
@@ -70,6 +74,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   blameRef.current = diff ? null : blame;
   const onBlameClickRef = useRef(onBlameClick);
   onBlameClickRef.current = onBlameClick;
+  const linksRef = useRef({ lang, links });
+  linksRef.current = { lang, links };
 
   useEffect(() => {
     showLanguage(lang);
@@ -90,8 +96,16 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
           const commit = line && ev.target.element?.classList.contains("gv-blame") ? blameAt(blameRef.current, line) : null;
           if (commit && !isNew(commit)) onBlameClickRef.current?.(commit);
         });
+    const follow = (code: monaco.editor.ICodeEditor, side: "original" | "modified") =>
+      followLinks(
+        code,
+        () => linksRef.current.lang,
+        () => linksRef.current.links?.[side] ?? null,
+      );
+    const linked = isDiff(e) ? [follow(e.getOriginalEditor(), "original"), follow(e.getModifiedEditor(), "modified")] : [follow(e, "modified")];
     return () => {
       click?.dispose();
+      linked.forEach((l) => l.dispose());
       if (shown.current) viewStates.set(shown.current, e.saveViewState()!);
       shown.current = null;
       const models = modelsOf(e);
@@ -104,6 +118,18 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     };
     // Options follow below; only the kind of editor needs a new one.
   }, [diff]);
+
+  // A link to a line of the file already on show.
+  const revealing = useRef<string | null>(null);
+  useEffect(
+    () =>
+      onReveal(() => {
+        const e = editor.current;
+        const line = e && revealing.current ? takeReveal(revealing.current, false) : null;
+        if (e && line) revealAt(codeEditor(e), line, unit.current);
+      }),
+    [],
+  );
 
   // Focus Code View, F6 and → from a list land in the editor that scrolls.
   useEffect(() => setCodeEditor(() => editor.current && codeEditor(editor.current).focus()), []);
@@ -168,6 +194,10 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       const code = codeEditor(e);
       // Opened from the code view (J/K, a tab switch) or sent here before it was ready: take the keys.
       if (codeWantsFocus()) code.focus();
+      // Opened by a link that names a line (path:12, #L12): there, wherever it was left.
+      revealing.current = diff ? null : path;
+      const line = diff ? null : takeReveal(path, true);
+      if (line) return revealAt(code, line, created.unit);
       if (saved) return e.restoreViewState(saved as never);
       // Near the first change. A diff still computing takes it there when it lands, unless you
       // have scrolled since.
@@ -181,6 +211,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     })();
     return () => {
       stale = true;
+      revealing.current = null;
       stopRedraw();
       if (onShow === shows) onShow = null;
       if (!onScreen) return models.forEach((m) => m.dispose());
@@ -388,6 +419,16 @@ function readingLine(e: monaco.editor.ICodeEditor) {
   const cursor = e.getPosition()?.lineNumber;
   if (cursor && visible.some((r) => cursor >= r.startLineNumber && cursor <= r.endLineNumber)) return cursor;
   return visible[0]?.startLineNumber ?? 1;
+}
+
+/** Puts the cursor on `pos` (a column as the file on disk has it, before widening) mid-screen. */
+function revealAt(e: monaco.editor.ICodeEditor, pos: { lineNumber: number; column: number }, unit: number) {
+  const model = e.getModel();
+  if (!model) return;
+  const lineNumber = Math.min(Math.max(1, pos.lineNumber), model.getLineCount());
+  const column = widenColumn(narrow(model.getLineContent(lineNumber), unit), pos.column - 1, unit) + 1;
+  e.setPosition({ lineNumber, column });
+  e.revealPositionInCenter({ lineNumber, column });
 }
 
 /** Puts `line` CONTEXT lines below the top (reveal* only scrolls lines that are off screen). */
