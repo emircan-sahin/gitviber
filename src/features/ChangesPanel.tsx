@@ -56,6 +56,7 @@ import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED, stageable } from "@/lib/worktrees";
 import { FileIcon } from "./FileIcon";
 import { OpenInMenuItem } from "./OpenIn";
+import { openSettings } from "./SettingsDialog";
 import { StashDialog, StashList, useStashes } from "./StashList";
 import { BisectBar } from "./BisectBar";
 import { SubmoduleList, updateSubmodules, useSubmodules } from "./SubmoduleList";
@@ -923,6 +924,8 @@ function CommitBox({ status, shown, head, main, refresh }: Pick<Props, "status" 
   const program = programOf(suggestCommand);
   const canSuggest = suggestEnabled && !suggesting && !busy && (!!amend || hasAny);
   const cancelSuggest = () => api.suggestCancel().catch(() => {});
+  // A missing CLI or a stale model id is fixed there.
+  const toSettings = { label: "Open Settings", run: () => openSettings("commit") };
   // Bumped by a commit or an Amend toggle: a suggestion still on its way describes the diff
   // before them, and would land in a fresh draft or the one set aside.
   const generation = useRef(0);
@@ -940,7 +943,7 @@ function CommitBox({ status, shown, head, main, refresh }: Pick<Props, "status" 
       if (gen !== generation.current) return;
       const message = parseSuggestion(output);
       if (!message) {
-        toast("error", "No message suggested", `${program} printed nothing.`);
+        toast("error", "No message suggested", `${program} printed nothing.`, toSettings);
         return;
       }
       const before = latest.current;
@@ -949,7 +952,7 @@ function CommitBox({ status, shown, head, main, refresh }: Pick<Props, "status" 
       const blank = !before.summary.trim() && (!before.body.trim() || before.body === template);
       if (!blank) toast("info", "Message replaced with the suggestion", undefined, { label: "Restore", run: () => setDraft(before) });
     } catch (e) {
-      if (e !== SUGGEST_CANCELLED && gen === generation.current) toast("error", "Couldn't suggest a message", errorMessage(e));
+      if (e !== SUGGEST_CANCELLED && gen === generation.current) toast("error", "Couldn't suggest a message", errorMessage(e), toSettings);
     } finally {
       running.current = false;
       setSuggesting(false);
