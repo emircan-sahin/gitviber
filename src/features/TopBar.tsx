@@ -239,9 +239,17 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   // warning must say what gets lost. If counting fails, git's own refusal is the fallback.
   const removeWorktree = async (w: Worktree) => {
     const name = folderName(w.path);
-    // Nothing is lost: the folder is gone and the branch stays. A lock is kept for a folder
-    // on a drive that's only unplugged, so that one still asks.
-    if (w.prunable && !w.locked) return run("Prune worktree", () => api.removeWorktree(w.path, false), `Pruned ${name}`);
+    // A missing folder may only be on a drive that isn't plugged in; pruned, the link is gone
+    // for good even once it's back. The branch stays either way.
+    if (w.prunable && !w.locked) {
+      const drive = /^(\/Volumes|\/media|\/run\/media|\/mnt)\//.test(w.path) ? " It was on another drive: if that's only unplugged, plug it in instead." : "";
+      const ok = await ask(`${name}'s folder is gone. Prune it from the worktree list?${drive} The branch${w.branch ? ` ${w.branch}` : ""} stays.`, {
+        title: "Prune worktree",
+        okLabel: "Prune",
+      });
+      if (ok) await run("Prune worktree", () => api.removeWorktree(w.path, false), `Pruned ${name}`);
+      return;
+    }
     const changed = w.prunable ? 0 : await api.worktreeState(w.path).then((s) => s.uncommitted, () => 0);
     const branch = w.branch ? ` The branch ${w.branch} stays.` : "";
     const lost = changed ? ` Its ${changed} uncommitted ${changed === 1 ? "change" : "changes"} will be lost.` : "";

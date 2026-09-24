@@ -13,6 +13,7 @@ import { isMenuKey, openRowMenu } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName, shortPath } from "@/lib/worktrees";
 import { RowAction } from "./BranchPicker";
+import { useWorktreeDialog } from "./WorktreeDialogs";
 
 interface Props {
   worktrees: Worktree[];
@@ -54,6 +55,11 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   // A `git status` and two rev-lists per worktree: fetched when the menu opens, never before.
   const [states, setStates] = useState<Record<string, WorktreeState>>({});
   const listRef = useRef<HTMLDivElement>(null);
+  const afterClose = useRef<(() => void) | null>(null);
+  const dialog = useWorktreeDialog();
+  useEffect(() => {
+    if (dialog) setOpen(false);
+  }, [dialog]);
   const renameKey = useShortcut("worktree.rename");
   useCommands({ "git.switchWorktree": () => setOpen(true) });
 
@@ -107,9 +113,15 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const pick = then((w) => onOpen(w.path));
   const terminal = then((w) => onTerminal(w.path));
   const merge = then((w) => w.branch && onMerge(w.branch));
+  // Dialogs open once the picker is gone: closing hands the focus back to its trigger, which
+  // would take it from the dialog and show the trigger's tooltip over it.
+  const thenDialog = (fn: (w: Worktree) => void) => (w: Worktree) => {
+    afterClose.current = () => fn(w);
+    setOpen(false);
+  };
   const remove = then(onRemove);
-  const rename = then(onRename);
-  const lock = then((w) => (w.locked ? onUnlock(w) : onLock(w)));
+  const rename = thenDialog(onRename);
+  const lock = thenDialog((w) => (w.locked ? onUnlock(w) : onLock(w)));
   const actions = { pick, terminal, merge, rename, lock, remove, reveal: then((w) => void reveal(w.path)), copy: then((w) => void copyPath(w.path)) };
 
   // The hot row's actions, which the mouse finds on the row.
@@ -139,7 +151,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
 
   return (
     <>
-      <Popover open={open} onOpenChange={setOpen}>
+      {/* Never over one of its own dialogs, whatever the order things closed in. */}
+      <Popover open={open && !dialog} onOpenChange={setOpen}>
         <Tip label={linked ? `In worktree ${folderName(current.path)} · switch worktree` : extra === 0 ? "Worktrees" : `${extra} worktree${extra === 1 ? "" : "s"} besides the main one · switch worktree`}>
           <PopoverTrigger asChild>
             <button
@@ -172,6 +185,13 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
             e.preventDefault();
             listRef.current?.focus();
           }}
+          onCloseAutoFocus={(e) => {
+            const run = afterClose.current;
+            if (!run) return;
+            afterClose.current = null;
+            e.preventDefault();
+            run();
+          }}
         >
           {/* Like a native menu: the highlight leaves with the mouse; ↑↓ bring it back. */}
           <div ref={listRef} tabIndex={-1} onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 outline-none">
@@ -191,7 +211,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 onHover={setIndex}
                 actions={actions}
                 // Back to the list, not the row, so ↑↓ and the row keys keep working.
-                onMenuClosed={() => listRef.current?.focus()}
+                onMenuClosed={() => listRef.current?.isConnected && listRef.current.focus()}
               />
             ))}
             {list.length === 1 && (
@@ -219,8 +239,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
             <Tip label="A new branch in its own folder">
               <button
                 onClick={() => {
+                  afterClose.current = onNew;
                   setOpen(false);
-                  onNew();
                 }}
                 className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
               >

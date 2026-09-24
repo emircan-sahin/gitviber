@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { api, type Branch, github, type NetOp, type Target, type Worktree } from "@/lib/api";
-import { loadWorktreeDir, saveWorktreeDir } from "@/lib/session";
+import { loadWorktreeDir, moveRoot, saveWorktreeDir } from "@/lib/session";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminals";
 import { folderName, shortPath } from "@/lib/worktrees";
 import { BaseSelect } from "./BranchDialogs";
@@ -30,6 +30,15 @@ const show = (d: WorktreeDialog | null) => {
   listeners.forEach((l) => l());
 };
 export const openWorktreeDialog = (d: WorktreeDialog) => show(d);
+/** The dialog showing now, if any. */
+export const useWorktreeDialog = () =>
+  useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    () => shown,
+  );
 
 type Run = (label: string, fn: () => Promise<void>, done: string) => Promise<void>;
 
@@ -63,13 +72,7 @@ function defaultBase(branches: Branch[]) {
 }
 
 export function WorktreeDialogs(props: Props) {
-  const dialog = useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => shown,
-  );
+  const dialog = useWorktreeDialog();
   if (!dialog) return null;
   const inner = { ...props, onClose: () => show(null) };
   return (
@@ -87,6 +90,8 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
   const fallback = `${parentOf(main)}${folderName(main)}.worktrees`;
   const [name, setName] = useState("");
   const [from, setFrom] = useState(() => base ?? defaultBase(branches));
+  // No branch to default to (an unborn or detached repo): HEAD is listed, not silently used.
+  const [headOption] = useState(from === "HEAD");
   const [dir, setDir] = useState(() => loadWorktreeDir(main) ?? fallback);
   const [terminal, setTerminal] = useState(true);
   const [switchTo, setSwitchTo] = useState(false);
@@ -97,10 +102,10 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
   };
   const submit = () => {
     onClose();
-    // Remembered for the project, so its next worktree goes there too.
-    saveWorktreeDir(main, dir === fallback ? null : dir);
     const where = dir === fallback ? null : dir;
     const then = (path: string) => {
+      // Remembered for the project once it worked, so its next worktree goes there too.
+      saveWorktreeDir(main, where);
       if (terminal) openTerminal(path);
       if (switchTo) onOpen(path);
     };
@@ -133,7 +138,7 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
             From commit <span className="font-mono text-foreground">{from.slice(0, 7)}</span>
           </div>
         ) : (
-          <BaseSelect value={from} onChange={setFrom} branches={branches} head={false} />
+          <BaseSelect value={from} onChange={setFrom} branches={branches} head={headOption} />
         ))}
       <div className="mt-3 text-[11.5px] text-muted-foreground">
         Folder
@@ -193,7 +198,9 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
       "Rename worktree",
       async () => {
         const to = await api.renameWorktree(w.path, n, moving);
-        if (to !== w.path) folderMoved(w.path, to);
+        if (to === w.path) return;
+        folderMoved(w.path, to);
+        moveRoot(w.path, to);
       },
       done,
     );
