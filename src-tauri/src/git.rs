@@ -927,20 +927,23 @@ pub fn main_worktree(repo: &Path) -> Option<String> {
 /// remote gets a local tracking branch (git's own DWIM for `worktree add`).
 pub fn add_worktree(repo: &Path, branch: &str) -> Result<String, String> {
     validate_branch(repo, branch)?;
-    let main = main_worktree(repo).ok_or("this repository has no main worktree")?;
-    let main = Path::new(&main);
-    let (Some(parent), Some(name)) = (main.parent(), main.file_name()) else {
-        return Err(format!("no folder beside {}", main.display()));
-    };
-    let path = parent
-        .join(format!("{}.worktrees", name.to_string_lossy()))
-        .join(branch.replace('/', "-"));
+    let path = worktrees_dir(repo)?.join(branch.replace('/', "-"));
     if path.exists() {
         return Err(format!("{} already exists", path.display()));
     }
     let target = path.to_string_lossy().into_owned();
     run(repo, &["worktree", "add", &target, branch])?;
     Ok(target)
+}
+
+/// `<parent>/<project>.worktrees`, the folder `add_worktree` puts new worktrees in.
+fn worktrees_dir(repo: &Path) -> Result<PathBuf, String> {
+    let main = main_worktree(repo).ok_or("this repository has no main worktree")?;
+    let main = Path::new(&main);
+    let (Some(parent), Some(name)) = (main.parent(), main.file_name()) else {
+        return Err(format!("no folder beside {}", main.display()));
+    };
+    Ok(parent.join(format!("{}.worktrees", name.to_string_lossy())))
 }
 
 /// One of this repo's worktrees by path. Only paths `git worktree list` reports are
@@ -1063,7 +1066,15 @@ pub fn remove_worktree(repo: &Path, path: &str, force: bool) -> Result<(), Strin
         args.extend(["--force", "--force"]);
     }
     args.push(path);
-    run(repo, &args).map(|_| ())
+    run(repo, &args)?;
+    // The last one out takes the .worktrees folder GitViber made; remove_dir leaves it
+    // while anything is still inside.
+    if let Ok(dir) = worktrees_dir(repo) {
+        if Path::new(path).parent() == Some(dir.as_path()) {
+            let _ = std::fs::remove_dir(&dir);
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- history

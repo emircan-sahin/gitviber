@@ -1287,6 +1287,27 @@ fn same_dir(a: &str, b: &Path) -> bool {
         .is_ok_and(|a| a == b.canonicalize().unwrap())
 }
 
+/// Worktrees made beside the project share `<project>.worktrees`; removing the last one
+/// takes the folder along, while one still inside keeps it.
+#[test]
+fn removing_the_last_worktree_removes_its_folder() {
+    let sb = Sandbox::new("wtdir");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["branch", "one"]).unwrap();
+    run(&r, &["branch", "two"]).unwrap();
+    let one = add_worktree(&r, "one").unwrap();
+    let two = add_worktree(&r, "two").unwrap();
+    let dir = sb.path("r.worktrees");
+    assert!(dir.is_dir());
+
+    remove_worktree(&r, &one, false).unwrap();
+    assert!(dir.is_dir(), "two is still in there");
+    remove_worktree(&r, &two, false).unwrap();
+    assert!(!dir.exists());
+}
+
 #[test]
 fn worktree_list_detached_prunable_and_counts() {
     let sb = Sandbox::new("wtlist");
