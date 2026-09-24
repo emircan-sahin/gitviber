@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "A desktop git client for reviewing what your coding agents wrote."
 edition = "2021"
 authors = ["Emircan Sahin"]
-license = "MIT"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/emircan-sahin/gitviber"
 
 [lib]

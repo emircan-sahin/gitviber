@@ -122,7 +122,7 @@ export function AboutDialog() {
           </Button>
         </div>
         <div className="mt-5 text-[11px] text-subtle">
-          © 2026 Emircan Sahin · MIT License ·{" "}
+          © 2026 Emircan Sahin · GPL-3.0 License ·{" "}
           <button onClick={() => setLicenses(true)} className="hover:text-foreground focus-visible:text-foreground hover:underline">
             Third-Party Licenses
           </button>

@@ -33,9 +33,9 @@
     "active": true,
     "targets": "all",
     "publisher": "Emircan Sahin",
-    "copyright": "© 2026 Emircan Sahin. MIT License.",
+    "copyright": "© 2026 Emircan Sahin. GPL-3.0 License.",
     "category": "DeveloperTool",
-    "shortDescription": "A desktop git client for reviewing what your coding agents wrote.",
+    "shortDescription": "Vibe code from one app: worktrees, live diffs, a file explorer and a terminal.",
     "longDescription": "GitViber shows full-file diffs that update live as agents write, every worktree one click away, and a terminal right under the diff. It runs the git CLI with your own config, hooks, credentials and signing.",
     "homepage": "https://github.com/emircan-sahin/gitviber",
     "icon": [
