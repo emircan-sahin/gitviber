@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Branch, type Worktree, type WorktreeState } from "@/lib/api";
+import { useCommands } from "@/lib/keybindings";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName, shortPath } from "@/lib/worktrees";
 import { RowAction } from "./BranchPicker";
@@ -34,6 +35,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   // A `git status` and two rev-lists per worktree: fetched when the menu opens, never before.
   const [states, setStates] = useState<Record<string, WorktreeState>>({});
   const listRef = useRef<HTMLDivElement>(null);
+  useCommands({ "git.switchWorktree": () => setOpen(true) });
 
   useEffect(() => setList(worktrees), [worktrees]);
   // Fresh on open: whether a lock's session is still running is only asked here.

@@ -5,7 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { type Branch, fullName, github } from "@/lib/api";
 import { useGitHubData } from "@/lib/githubCache";
-import { matchesCommand, useShortcut } from "@/lib/keybindings";
+import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { cn, relativeTime } from "@/lib/utils";
 
 interface Props {
@@ -53,6 +53,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
   // GitHub branch protection, asked when the menu opens. No GitHub, no answer: then only
   // the remote default is held back, and the confirm is what guards the rest.
   const [guarded, setGuarded] = useState<Set<string>>(new Set());
+  useCommands({ "git.switchBranch": () => setOpen(true) });
 
   // Switching to origin/x means switching to x, so a remote row goes with its local branch.
   const elsewhere = useMemo(() => {

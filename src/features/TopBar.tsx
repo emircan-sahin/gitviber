@@ -255,6 +255,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     "git.fetch": busy ? undefined : () => runNet("Fetch", api.fetch),
     "git.pull": busy || !status?.upstream ? undefined : () => runNet("Pull", (op) => api.pull("ff", op), "Pulled"),
     "git.push": busy || !status?.upstream ? undefined : () => push(),
+    "git.newBranch": () => setBranchDialog({ kind: "new", base: status?.branch ? `refs/heads/${status.branch}` : "HEAD" }),
   });
 
   return (
@@ -518,6 +519,7 @@ function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boolean })
 
 function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: Props) {
   const [open, setOpen] = useState(false);
+  useCommands({ "file.switchProject": () => setOpen(true) });
   const totals = changeTotals(repo);
   const name = folderName(main);
   const openKey = useShortcut("file.openRepo");
