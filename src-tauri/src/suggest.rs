@@ -313,11 +313,12 @@ pub fn run(
 }
 
 fn kill_group(child: &mut std::process::Child) {
+    // Not the `kill` command: procps's (Ubuntu) reads `-KILL -12345` as `-1`, every process
+    // of the user, which took down the CI runner.
     #[cfg(unix)]
-    let _ = Command::new("kill")
-        .args(["-KILL", &format!("-{}", child.id())])
-        .stderr(Stdio::null())
-        .status();
+    unsafe {
+        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
+    }
     let _ = child.kill();
     let _ = child.wait();
 }
