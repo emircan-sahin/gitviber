@@ -1816,43 +1816,31 @@ fn checkout_branch_and_tag_at_a_commit() {
     assert!(create_tag(&r, "@", &base, None).is_err());
 }
 
-fn commit_dated(repo: &Path, path: &str, content: &str, msg: &str, date: &str) {
-    fs::write(repo.join(path), content).unwrap();
-    stage(repo, &[path.into()]).unwrap();
-    let ok = std::process::Command::new("git")
-        .current_dir(repo)
-        .args(["commit", "-q", "-m", msg])
-        .env("GIT_AUTHOR_DATE", date)
-        .env("GIT_COMMITTER_DATE", date)
-        .status()
-        .unwrap()
-        .success();
-    assert!(ok);
-}
-
 #[test]
 fn drops_pushed_follows_ancestry_not_log_order() {
     let sb = Sandbox::new("drops");
     let c = sb.remote_with_clones(2);
     let (a, b) = (&c[0], &c[1]);
-    // P is pushed but dated long ago, so the log lists it below newer local commits.
-    commit_dated(a, "p.txt", "p\n", "old pushed", "2000-01-01T00:00:00Z");
+    // P is pushed; merged in as the second parent, "target" lists above it.
+    write_commit(a, "p.txt", "p\n", "old pushed");
     run(a, &["push", "-q"]).unwrap();
     write_commit(b, "t.txt", "t\n", "target");
+    let t = run_text(b, &["rev-parse", "HEAD"]).unwrap();
     run(b, &["fetch", "-q"]).unwrap();
-    run(b, &["merge", "-q", "--no-edit", "origin/main"]).unwrap();
+    run(b, &["reset", "-q", "--hard", "origin/main"]).unwrap();
+    run(b, &["merge", "-q", "--no-ff", "--no-edit", t.trim()]).unwrap();
 
     let commits = log(b, None, 0, 10).unwrap();
     let subjects: Vec<&str> = commits.iter().map(|x| x.subject.as_str()).collect();
-    assert_eq!(subjects[1..], ["target", "base", "old pushed"]);
+    assert_eq!(subjects[1..], ["target", "old pushed", "base"]);
     let (merge, target) = (&commits[0].sha, &commits[1].sha);
     // Only unpushed commits sit above "target", yet resetting to it drops the pushed P.
-    assert!(commits[0].unpushed && commits[1].unpushed && !commits[3].unpushed);
+    assert!(commits[0].unpushed && commits[1].unpushed && !commits[2].unpushed);
     assert!(drops_pushed(b, target).unwrap());
     assert!(!drops_pushed(b, merge).unwrap());
-    // Undoing the merge (moving to its first parent) drops P as well.
-    assert!(drops_pushed(b, &commits[0].parents[0]).unwrap());
-    assert!(commits[3].on_origin && !commits[1].on_origin);
+    // Undoing the merge (moving to its first parent, P) drops nothing pushed.
+    assert!(!drops_pushed(b, &commits[0].parents[0]).unwrap());
+    assert!(commits[2].on_origin && !commits[1].on_origin);
 }
 
 #[test]

@@ -1229,7 +1229,12 @@ fn commits(
     } else {
         Default::default()
     };
-    let filter_args = filter.args();
+    let mut filter_args = filter.args();
+    // An unfiltered log is drawn as a graph: keep each branch's commits together rather than
+    // interleaved by date. A search skips it: with paths, git would diff all of history first.
+    if filter_args.is_empty() && filter.paths.is_empty() {
+        filter_args.push("--topo-order".into());
+    }
     let mut paths: Vec<&str> = vec!["--"];
     paths.extend(filter.paths.iter().map(String::as_str));
     // Of `tip`'s matching commits, the ones not reachable from `not`. Log order is the same
