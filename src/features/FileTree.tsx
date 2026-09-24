@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect,
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
 import { REVEAL_LABEL } from "@/lib/commands";
+import { matchesCommand } from "@/lib/keybindings";
 import { focusPanel } from "@/lib/panels";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/useListNav";
 import { type Selection, selectionKey } from "@/lib/selection";
@@ -250,7 +251,9 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       if (row) setSelected(row.entry.path);
     };
     let handled = true;
-    if (ev.key === "ArrowDown") move(i + 1);
+    if (cur && matchesCommand("explorer.rename", ev.nativeEvent)) setEditing({ mode: "rename", entry: cur });
+    else if (cur && matchesCommand("explorer.delete", ev.nativeEvent)) remove(cur);
+    else if (ev.key === "ArrowDown") move(i + 1);
     else if (ev.key === "ArrowUp") move(i < 0 ? rows.length - 1 : i - 1);
     else if (["Home", "End", "PageUp", "PageDown"].includes(ev.key) && rows.length) {
       const row = rowOf(rows[Math.max(i, 0)].entry.path);
@@ -268,8 +271,6 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       if (cur.isDir && expanded.has(cur.path)) setOpen(cur.path, false);
       else if (parentOf(cur.path)) setSelected(parentOf(cur.path));
     } else if (ev.key === "Enter") activate(cur, true);
-    else if (ev.key === "F2") setEditing({ mode: "rename", entry: cur });
-    else if (ev.key === "Backspace" && ev.metaKey) remove(cur);
     else handled = false;
     if (handled) ev.preventDefault();
   };

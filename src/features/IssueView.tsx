@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { accessFor, type CloseReason, errorMessage, github, type Issue, type IssueLabel, issues, repoOf } from "@/lib/api";
 import { listIsBehind, useGitHubData } from "@/lib/githubCache";
+import { matchesCommand } from "@/lib/keybindings";
 import { toast } from "@/lib/toast";
 import { cn, relativeTime } from "@/lib/utils";
 import { IssueStateIcon, LabelChip, LabelPicker, notifyIssuesChanged } from "./IssuesPanel";
@@ -244,7 +245,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
               value={comment}
               onChange={(e) => setComment(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && text && !busy) {
+                if (matchesCommand("github.postComment", e.nativeEvent) && text && !busy) {
                   e.preventDefault();
                   post();
                 }

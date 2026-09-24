@@ -6,6 +6,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type ProjectInfo } from "@/lib/api";
 import { REVEAL_LABEL } from "@/lib/commands";
+import { matchesCommand } from "@/lib/keybindings";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { folderName } from "@/lib/worktrees";
@@ -58,11 +59,14 @@ export function ProjectList({ recent, current, onOpen, onForget, onReorder, onLo
 
   const onKey = (e: React.KeyboardEvent) => {
     const row = e.target instanceof HTMLElement && e.target.dataset.project !== undefined ? e.target : null;
-    if (!row || e.altKey || e.metaKey || e.ctrlKey) return;
+    if (!row) return;
     const rows = [...e.currentTarget.querySelectorAll<HTMLElement>("[data-project]")];
     const i = rows.indexOf(row);
     const path = row.dataset.project!;
-    if (e.shiftKey ? e.key === "F10" : e.key === "ContextMenu") {
+    if (matchesCommand("project.forget", e.nativeEvent)) {
+      if (path !== current) forget(row, path, onForget);
+    } else if (e.altKey || e.metaKey || e.ctrlKey) return;
+    else if (e.shiftKey ? e.key === "F10" : e.key === "ContextMenu") {
       // Radix opens the menu only on a contextmenu event; place it as a click on the row's start would.
       const r = row.getBoundingClientRect();
       row.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: r.left + 8, clientY: r.top + r.height / 2 }));
@@ -73,7 +77,6 @@ export function ProjectList({ recent, current, onOpen, onForget, onReorder, onLo
       if (info.get(path)?.exists === false) onLocate(path);
       else if (path !== current) onOpen(path);
     }
-    else if ((e.key === "Backspace" || e.key === "Delete") && path !== current) forget(row, path, onForget);
     else return;
     e.preventDefault();
   };

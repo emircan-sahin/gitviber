@@ -25,6 +25,9 @@ import { codeFontFamily, getSettings, subscribeSettings } from "./settings";
 
 export { monaco };
 
+// Find opens on editor.find (commands.ts, MonacoView), which the user can rebind; Monaco's own ⌘F would stay behind.
+monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, command: "-actions.find" });
+
 // Code fonts load lazily (Geist Mono, JetBrains Mono): measure again once they're in, or wrapping and
 // selections keep the fallback font's widths.
 document.fonts.addEventListener("loadingdone", () => monaco.editor.remeasureFonts());

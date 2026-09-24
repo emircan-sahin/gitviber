@@ -5,7 +5,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type FileChange, type RepoStatus, type Whitespace } from "@/lib/api";
 import { type Selection, selectionPath } from "@/lib/selection";
-import { bindingsFor, type CommandId, formatChord, useCommands, useShortcut } from "@/lib/keybindings";
+import { bindingsFor, type CommandId, formatChord, matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { diffWhitespace, getSettings, updateSettings, useSettings } from "@/lib/settings";
 import { FIT, type Zoom } from "@/lib/svg";
 import { toast } from "@/lib/toast";
@@ -93,7 +93,7 @@ function tabLabel(sel: Selection) {
 
 /**
  * A tablist: the open tab is its one tab stop; ←/→ (Home/End) switch tabs, ↵ or Space keeps a
- * preview tab, ⌫ closes, ⌥←/⌥→ reorder, ⇧F10 opens the tab's menu.
+ * preview tab, ⌫ closes, ⌥←/⌥→ reorder (tab.moveLeft / tab.moveRight), ⇧F10 opens the tab's menu.
  */
 function TabStrip({ tabs, active, onActivate, onClose, onPin, onMoveTab, onShowHistory }: ViewerProps) {
   const strip = useRef<HTMLDivElement>(null);
@@ -107,21 +107,23 @@ function TabStrip({ tabs, active, onActivate, onClose, onPin, onMoveTab, onShowH
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const el = e.target instanceof HTMLElement && e.target.getAttribute("role") === "tab" ? e.target : null;
-    if (!el || e.metaKey || e.ctrlKey) return;
+    if (!el) return;
     const els = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
     const i = els.indexOf(el);
     const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
-    if (isMenuKey(e)) openRowMenu(el);
-    else if (e.shiftKey) return;
-    else if (e.altKey) {
-      if (!step || !tabs[i + step]) return;
-      onMoveTab(i, i + step);
+    const shift = matchesCommand("tab.moveRight", e.nativeEvent) ? 1 : matchesCommand("tab.moveLeft", e.nativeEvent) ? -1 : 0;
+    if (!shift && (e.metaKey || e.ctrlKey)) return;
+    if (shift) {
+      if (!tabs[i + shift]) return;
+      onMoveTab(i, i + shift);
       // React may move this very node, and a node taken out of the page loses focus.
       requestAnimationFrame(() => {
         el.focus();
         el.scrollIntoView({ block: "nearest", inline: "nearest" });
       });
-    } else if (step || e.key === "Home" || e.key === "End") {
+    } else if (isMenuKey(e)) openRowMenu(el);
+    else if (e.shiftKey || e.altKey) return;
+    else if (step || e.key === "Home" || e.key === "End") {
       const to = e.key === "Home" ? 0 : e.key === "End" ? els.length - 1 : Math.max(0, Math.min(els.length - 1, i + step));
       onActivate(tabs[to].key);
       els[to].focus();

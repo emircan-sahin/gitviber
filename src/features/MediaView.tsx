@@ -1,5 +1,6 @@
 import { type Dispatch, type ReactNode, type SetStateAction, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, type DiffKind, errorMessage } from "@/lib/api";
+import { matchesCommand } from "@/lib/keybindings";
 import { FIT, panAxis, place, svgSize, type Zoom, zoomAxis, zoomLimits } from "@/lib/svg";
 import { cn } from "@/lib/utils";
 
@@ -211,11 +212,12 @@ function SvgSide({ text, label, tone, zoom, onZoom, backdrop }: { text: string; 
   };
   // The keyboard's wheel and drag: + / − / 0 zoom around the middle, arrows move the view.
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.metaKey || e.ctrlKey || e.altKey || !natural) return;
+    if (!natural) return;
     const step = 48;
-    if (e.key === "=" || e.key === "+") zoomAt(1.25, roomW / 2, roomH / 2);
-    else if (e.key === "-") zoomAt(0.8, roomW / 2, roomH / 2);
-    else if (e.key === "0") onZoom(FIT);
+    if (matchesCommand("media.zoomIn", e.nativeEvent)) zoomAt(1.25, roomW / 2, roomH / 2);
+    else if (matchesCommand("media.zoomOut", e.nativeEvent)) zoomAt(0.8, roomW / 2, roomH / 2);
+    else if (matchesCommand("media.fit", e.nativeEvent)) onZoom(FIT);
+    else if (e.metaKey || e.ctrlKey || e.altKey) return;
     else if (e.key === "ArrowLeft") panBy(step, 0);
     else if (e.key === "ArrowRight") panBy(-step, 0);
     else if (e.key === "ArrowUp") panBy(0, step);

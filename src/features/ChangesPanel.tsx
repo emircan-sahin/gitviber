@@ -317,24 +317,28 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
   const tabStop = active ? activeKey : all[0] && selectionKey(all[0]);
 
   // ↑/↓ (Home/End, PageUp/PageDown) from a focused row (clicking one focuses it), ⇧ to extend the
-  // selection, ⌘A for all of it, Esc to let it go; ↵ keeps the preview tab, Space opens it like a
+  // selection, ⌘A (git.selectAllChanges) for all of it, Esc to let it go; ↵ keeps the preview tab, Space opens it like a
   // click, → goes to its code, ⇧F10 opens its menu. The other lists share the moves through useListNav.
   const onListKey = (e: React.KeyboardEvent) => {
     const key = e.target instanceof HTMLElement ? e.target.dataset.row : undefined;
     const i = key === undefined ? -1 : (index.get(key) ?? -1);
-    if (i < 0 || e.altKey || e.ctrlKey) return;
+    if (i < 0) return;
     const cur = all[i];
+    if (matchesCommand("git.selectAllChanges", e.nativeEvent)) {
+      e.preventDefault();
+      setPicked({ rows: all, anchor: anchor ?? cur, focus: (active ?? cur).file.path });
+      if (!active) onOpen(cur);
+      return;
+    }
+    if (e.altKey || e.ctrlKey) return;
     const move = e.metaKey ? null : moveTarget(e.key, i, all.length, pageOf(e.target as HTMLElement));
     if (isMenuKey(e)) openRowMenu(e.target as HTMLElement);
     else if (e.key === "Escape") {
       // Only when there's a selection to drop; otherwise Esc isn't ours to take.
       if (!picked || stale) return;
       setPicked(null);
-    } else if (e.metaKey) {
-      if (e.shiftKey || e.key.toLowerCase() !== "a") return;
-      setPicked({ rows: all, anchor: anchor ?? cur, focus: (active ?? cur).file.path });
-      if (!active) onOpen(cur);
-    } else if (move !== null) {
+    } else if (e.metaKey) return;
+    else if (move !== null) {
       // A focused row that isn't open yet (Tab into a list with nothing open) opens first.
       const to = all[key !== activeKey ? i : move];
       if (e.shiftKey) setPicked({ rows: range(anchor ?? cur, to), anchor: anchor ?? cur, focus: to.file.path });

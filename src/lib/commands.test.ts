@@ -8,6 +8,7 @@ import {
   cleanOverrides,
   commandFor,
   eventChord,
+  eventChords,
   formatChordFor,
   type KeyLike,
   menuAccelerator,
@@ -199,4 +200,26 @@ test("with the terminal focused, a key goes to the app or the shell, never both"
   assert.equal(app("cmd+1", "tab.goto1", false), true);
   assert.equal(app("cmd+b", "view.toggleGitPanel", false), false);
   assert.equal(app("ctrl+b", "view.toggleGitPanel", false), true);
+});
+
+test("a punctuation key also counts as its US name; letters and digits only as typed", () => {
+  const chords = (key: string, code: string, mods: Partial<Omit<KeyLike, "key" | "code">> = {}) =>
+    eventChords({ key, code, altKey: false, shiftKey: false, metaKey: false, ctrlKey: false, ...mods }, true);
+  // Turkish Q types " on the US ` key: ⌃` still toggles the terminal.
+  assert.deepEqual(chords('"', "Backquote", { ctrlKey: true }), ["ctrl+\"", "ctrl+`"]);
+  assert.equal(commandFor("ctrl+`", {}, true)?.id, "terminal.toggle");
+  assert.deepEqual(chords("`", "Backquote", { ctrlKey: true }), ["ctrl+`"]);
+  // German ⌘Y is the US Z key, and must not undo.
+  assert.deepEqual(chords("y", "KeyZ", { metaKey: true }), ["cmd+y"]);
+  // Without ⌘ or ⌃ a key types: US "?" is not "/", German "-" (the US / key) is not "/".
+  assert.deepEqual(chords("?", "Slash", { shiftKey: true }), ["shift+?"]);
+  assert.deepEqual(chords("-", "Slash"), ["-"]);
+});
+
+test("the terminal's own keys only run there, and keep ⌘W from closing a tab only there", () => {
+  assert.equal(commandFor("cmd+d", {}, true), undefined);
+  assert.equal(commandFor("cmd+w", {}, true)?.id, "tab.close");
+  assert.deepEqual(bindingsFor("terminal.split", {}, true), ["cmd+d"]);
+  // ⌃` reaches the app from inside the terminal instead of sending NUL.
+  assert.ok(takenFromTerminal("ctrl+`", byId("terminal.toggle"), true));
 });

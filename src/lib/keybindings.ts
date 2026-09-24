@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { bindingsFor, type CommandId, commandFor, eventChord, formatChord, runsInTerminal, runsWhileTyping, takenFromTerminal } from "./commands";
+import { bindingsFor, type Command, type CommandId, commandFor, eventChords, formatChord, runsInTerminal, runsWhileTyping, takenFromTerminal } from "./commands";
 import { getSettings, useSettings } from "./settings";
 
 export { bindingsFor, COMMANDS, type Command, type CommandId, eventChord, formatChord, RESERVED } from "./commands";
@@ -13,15 +13,36 @@ export function useShortcut(id: CommandId): string | undefined {
 
 /** For local handlers (e.g. ⌘↵ in the commit box) that still honour the user's binding. */
 export function matchesCommand(id: CommandId, e: KeyboardEvent): boolean {
-  const chord = eventChord(e);
-  return !!chord && bindingsFor(id, getSettings().keybindings).includes(chord);
+  const keys = bindingsFor(id, getSettings().keybindings);
+  return eventChords(e).some((c) => keys.includes(c));
 }
 
+/** Which of these commands a key runs, reading the key once: the terminal asks on every keystroke. */
+export function commandIn<T extends CommandId>(ids: readonly T[], e: KeyboardEvent): T | undefined {
+  const chords = eventChords(e);
+  if (!chords.length) return undefined;
+  const overrides = getSettings().keybindings;
+  return ids.find((id) => bindingsFor(id, overrides).some((k) => chords.includes(k)));
+}
+
+/** The global command a key runs, and the chord it's bound under (see eventChords). */
+function commandOf(e: KeyboardEvent) {
+  const overrides = getSettings().keybindings;
+  for (const chord of eventChords(e)) {
+    const command = commandFor(chord, overrides);
+    if (command) return { chord, command };
+  }
+  return null;
+}
+
+/** Where a key lands: a key event, or `{ target: document.activeElement }` for the next one. */
+type At = { target: EventTarget | null };
+
 /** Focus is in the code view: Monaco's text area, read-only, so not typing (its find box is). */
-const inCodeView = (e: KeyboardEvent) => e.target instanceof HTMLElement && e.target.matches(".monaco-editor textarea.inputarea");
+const inCodeView = (e: At) => e.target instanceof HTMLElement && e.target.matches(".monaco-editor textarea.inputarea");
 
 /** Focus is somewhere that owns its keystrokes: text fields, menus, dialogs, pickers (not the sidebar lists, see useListNav). */
-export function isTyping(e: KeyboardEvent) {
+export function isTyping(e: At) {
   const el = e.target instanceof HTMLElement ? e.target : null;
   return !!el && !inCodeView(e) && (el.isContentEditable || !!el.closest("input,textarea,select,[role=menu],[role=listbox]:not([data-list-nav]),[role=dialog]"));
 }
@@ -29,8 +50,6 @@ export function isTyping(e: KeyboardEvent) {
 /** Menu bar items that aren't key commands (lib.rs `menu`); they run through the same handlers. */
 export const MENU_ACTIONS = [
   "app.about",
-  "terminal.new",
-  "terminal.toggle",
   "help.readme",
   "help.shortcuts",
   "help.reportBug",
@@ -39,11 +58,9 @@ export const MENU_ACTIONS = [
 ] as const;
 export type Action = CommandId | (typeof MENU_ACTIONS)[number];
 
-/** How the command palette lists them; `key` is fixed (TerminalPanel's own ⌘J), not rebindable. */
-export const MENU_ACTION_INFO: Record<(typeof MENU_ACTIONS)[number], { title: string; category: string; key?: string }> = {
+/** How the command palette lists them. */
+export const MENU_ACTION_INFO: Record<(typeof MENU_ACTIONS)[number], { title: string; category: string }> = {
   "app.about": { title: "About GitViber", category: "Help" },
-  "terminal.new": { title: "New Terminal", category: "Terminal" },
-  "terminal.toggle": { title: "Toggle Terminal", category: "Terminal", key: "cmd+j" },
   "help.readme": { title: "GitViber Help", category: "Help" },
   "help.shortcuts": { title: "Keyboard Shortcuts", category: "Help" },
   "help.reportBug": { title: "Report a Bug", category: "Help" },
@@ -51,7 +68,7 @@ export const MENU_ACTION_INFO: Record<(typeof MENU_ACTIONS)[number], { title: st
   "help.license": { title: "View License", category: "Help" },
 };
 
-const MODAL_SAFE: Action[] = ["workbench.openSettings", "window.reload", "view.zoomIn", "view.zoomOut", "view.zoomReset", "app.about", "help.readme", "help.shortcuts", "help.reportBug", "help.releaseNotes", "help.license"];
+const MODAL_SAFE: Action[] = ["workbench.openSettings", "workbench.shortcutOverlay", "window.reload", "view.zoomIn", "view.zoomOut", "view.zoomReset", "app.about", "help.readme", "help.shortcuts", "help.reportBug", "help.releaseNotes", "help.license"];
 
 // Last registered wins, so a nested view can take a command over while it's mounted.
 const handlers = new Map<Action, (() => void)[]>();
@@ -63,6 +80,9 @@ export function onHandlersChange(l: () => void) {
 }
 
 export const hasHandler = (id: Action) => !!handlers.get(id)?.length;
+
+/** Whether a command's key would run it now: it has a handler, and no modal dialog stands in the way. */
+export const canRun = (id: Action) => !!handlerFor(id);
 
 /** The handler a command runs now, if any; none while a modal dialog hides the workspace it acts on. */
 function handlerFor(id: Action) {
@@ -76,22 +96,27 @@ export function runCommand(id: Action) {
   handlerFor(id)?.();
 }
 
+/**
+ * Whether a chord runs its command where it's typed. Text owns most keys (see runsWhileTyping), and
+ * menus and dialogs theirs, the same way. The terminal passes on what it doesn't read without saying
+ * so (xterm leaves the event alone).
+ */
+export function runsAt(e: At, chord: string, command: Command) {
+  const inTerminal = e.target instanceof HTMLElement && !!e.target.closest(".xterm");
+  return inTerminal ? runsInTerminal(chord, command) : !isTyping(e) || runsWhileTyping(chord, command);
+}
+
 function dispatch(e: KeyboardEvent) {
   if (e.isComposing) return;
-  const chord = eventChord(e);
-  if (!chord) return;
+  const chords = eventChords(e);
   // A focused widget that handled the key (e.g. the shortcut recorder) prevents default.
   const handled = e.defaultPrevented;
   // Whatever they're bound to, ⌘W would close the window and ⌘R reload the webview.
-  if (chord === "cmd+w" || chord === "cmd+r") e.preventDefault();
+  if (chords[0] === "cmd+w" || chords[0] === "cmd+r") e.preventDefault();
   if (handled) return;
-  const command = commandFor(chord, getSettings().keybindings);
-  if (!command) return;
-  // Text owns most keys (see runsWhileTyping), and menus and dialogs theirs, the same way. The
-  // terminal passes on what it doesn't read without saying so (xterm leaves the event alone).
-  const inTerminal = e.target instanceof HTMLElement && !!e.target.closest(".xterm");
-  if (inTerminal ? !runsInTerminal(chord, command) : isTyping(e) && !runsWhileTyping(chord, command)) return;
-  const run = handlerFor(command.id);
+  const found = commandOf(e);
+  if (!found || !runsAt(e, found.chord, found.command)) return;
+  const run = handlerFor(found.command.id);
   if (!run) return;
   e.preventDefault();
   // Keep it from Monaco too, which would take F7 for its own diff navigation and ⌘Z as undo.
@@ -106,9 +131,8 @@ window.addEventListener("keydown", (e) => !inCodeView(e) && dispatch(e));
 
 /** A Ctrl chord of the app's (⌃Tab, ⌃1) that the terminal must not turn into a control code for the shell. */
 export function appTakesFromTerminal(e: KeyboardEvent) {
-  const chord = e.ctrlKey ? eventChord(e) : null;
-  const command = chord && commandFor(chord, getSettings().keybindings);
-  return !!command && takenFromTerminal(chord, command) && hasHandler(command.id);
+  const found = e.ctrlKey ? commandOf(e) : null;
+  return !!found && takenFromTerminal(found.chord, found.command) && hasHandler(found.command.id);
 }
 
 /** Registers handlers for commands while the component is mounted; always calls the latest closures. A command left undefined is unavailable (greyed out in the menu). */

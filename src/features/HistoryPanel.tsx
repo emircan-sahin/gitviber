@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type RemoteTags, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
+import { matchesCommand } from "@/lib/keybindings";
 import { withNetActivity } from "@/lib/netActivity";
 import { forgetRemoteTags, remoteTags } from "@/lib/remoteTags";
 import { type Selection, selectionKey } from "@/lib/selection";
@@ -435,7 +436,7 @@ function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "tag"; co
               onChange={(e) => setMessage(e.target.value)}
               // ⌘↵ submits from here too; a plain ↵ is a new line.
               onKeyDown={(e) => {
-                if (e.key === "Enter" && e.metaKey && name.trim()) {
+                if (matchesCommand("git.createTag", e.nativeEvent) && name.trim()) {
                   e.preventDefault();
                   submit();
                 }

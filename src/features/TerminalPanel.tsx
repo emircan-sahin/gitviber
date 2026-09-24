@@ -5,7 +5,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import type { Worktree } from "@/lib/api";
-import { useCommands } from "@/lib/keybindings";
+import { commandIn, useCommands, useShortcut } from "@/lib/keybindings";
 import { focusedPanel, focusPanel } from "@/lib/panels";
 import {
   activateGroup,
@@ -19,6 +19,7 @@ import {
   showWorktree,
   splitActive,
   stepPane,
+  TERMINAL_COMMANDS,
   type TerminalGroup,
   togglePanel,
   useTerminals,
@@ -29,18 +30,6 @@ import { folderName } from "@/lib/worktrees";
 /** What the workspace needs even while the panel is hidden: the panel shortcuts, and following the worktree that's open. */
 export function useTerminalSetup(root: string) {
   useEffect(() => showWorktree(root), [root]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // ⌃` as in VS Code, ⌘J as its panel toggle.
-      if ((e.ctrlKey && e.code === "Backquote") || (e.metaKey && !e.shiftKey && !e.altKey && e.code === "KeyJ")) {
-        e.preventDefault();
-        toggle(root);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [root]);
 
   useCommands({ "terminal.toggle": () => toggle(root), "terminal.new": () => openTerminal(root) });
 }
@@ -64,16 +53,11 @@ export function TerminalPanel({ root, worktrees }: Props) {
 
   // Shortcuts while a terminal has focus. Stopping them here keeps ⌘W from closing a file tab.
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (!e.metaKey || e.ctrlKey) return;
-    if (e.altKey && !e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) stepPane(e.key === "ArrowRight" ? 1 : -1);
-    else if (e.altKey) return;
-    else if (e.code === "KeyD" && !e.shiftKey) splitActive();
-    else if (e.code === "KeyW") closeFocused();
-    else if (e.code === "KeyK") clearFocused();
-    else if (e.code === "KeyT") openTerminal(root);
-    else return;
+    const id = commandIn(TERMINAL_COMMANDS, e.nativeEvent);
+    if (!id) return;
     e.preventDefault();
     e.stopPropagation();
+    ({ "terminal.split": splitActive, "terminal.clear": clearFocused, "terminal.close": closeFocused, "terminal.prevPane": () => stepPane(-1), "terminal.nextPane": () => stepPane(1) })[id]();
   };
 
   const others = worktrees.filter((w) => w.path !== root && !w.bare && !w.prunable);
@@ -108,7 +92,7 @@ export function TerminalPanel({ root, worktrees }: Props) {
           ))}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 px-1.5">
-          <Tip label={`New terminal in ${folderName(root)}`} shortcut="⌘T">
+          <Tip label={`New terminal in ${folderName(root)}`} shortcut={useShortcut("terminal.new")}>
             <Button variant="ghost" size="icon-sm" onClick={() => openTerminal(root)}>
               <Plus />
             </Button>
@@ -134,18 +118,18 @@ export function TerminalPanel({ root, worktrees }: Props) {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          <Tip label="Split terminal" shortcut="⌘D">
+          <Tip label="Split terminal" shortcut={useShortcut("terminal.split")}>
             <Button variant="ghost" size="icon-sm" onClick={splitActive} disabled={!group}>
               <Columns2 />
             </Button>
           </Tip>
-          <Tip label="Kill terminal" shortcut="⌘W">
+          <Tip label="Kill terminal" shortcut={useShortcut("terminal.close")}>
             <Button variant="ghost" size="icon-sm" onClick={closeFocused} disabled={!group}>
               <Trash2 />
             </Button>
           </Tip>
           <div className="mx-0.5 h-4 w-px bg-border-strong" />
-          <Tip label="Hide terminal" shortcut="⌃`">
+          <Tip label="Hide terminal" shortcut={useShortcut("terminal.toggle")}>
             <Button variant="ghost" size="icon-sm" onClick={() => toggle(root)}>
               <ChevronDown />
             </Button>

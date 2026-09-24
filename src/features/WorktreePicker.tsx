@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Branch, type Worktree, type WorktreeState } from "@/lib/api";
-import { useCommands } from "@/lib/keybindings";
+import { matchesCommand, useCommands } from "@/lib/keybindings";
 import { pointerMoved } from "@/lib/pointer";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName, shortPath } from "@/lib/worktrees";
@@ -98,13 +98,14 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
     remove: !!hot && !hot.main && !hot.current,
   };
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (e.key === "ArrowDown") setIndex((i) => Math.min(list.length - 1, i + 1));
+    const n = e.nativeEvent;
+    if (matchesCommand("worktree.openTerminal", n) && can.terminal) terminal(hot);
+    else if (matchesCommand("worktree.merge", n) && can.merge) merge(hot);
+    else if (matchesCommand("worktree.remove", n) && can.remove) remove(hot);
+    else if (e.metaKey || e.ctrlKey || e.altKey) return;
+    else if (e.key === "ArrowDown") setIndex((i) => Math.min(list.length - 1, i + 1));
     else if (e.key === "ArrowUp") setIndex((i) => Math.max(0, i - 1));
     else if (e.key === "Enter" && hot && usable(hot)) pick(hot);
-    else if (e.key === "t" && can.terminal) terminal(hot);
-    else if (e.key === "m" && can.merge) merge(hot);
-    else if ((e.key === "Backspace" || e.key === "Delete") && can.remove) remove(hot);
     else return;
     e.preventDefault();
   };

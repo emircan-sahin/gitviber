@@ -171,7 +171,7 @@ export function CommandPalette() {
         fuzzyMatch,
         (c) => recent.indexOf(c.id),
       ).map(({ item: c, label, match }) => {
-        const chord = isCommandId(c.id) ? bindingsFor(c.id, keybindings)[0] : MENU_ACTION_INFO[c.id as keyof typeof MENU_ACTION_INFO].key;
+        const chord = isCommandId(c.id) ? bindingsFor(c.id, keybindings)[0] : undefined;
         return {
           key: c.id,
           run: pick(() => {

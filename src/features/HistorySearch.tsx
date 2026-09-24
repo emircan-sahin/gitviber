@@ -2,7 +2,7 @@ import { CircleHelp, FileClock, FolderClock, Loader2, Search, X } from "lucide-r
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage } from "@/lib/api";
-import { isTyping, useShortcut } from "@/lib/keybindings";
+import { isTyping, matchesCommand, useShortcut } from "@/lib/keybindings";
 import { isEmptyFilter, parseLogQuery } from "@/lib/logQuery";
 import { ForkHistory } from "./ForkHistory";
 import { HistoryPanel, type Reveal } from "./HistoryPanel";
@@ -49,10 +49,10 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
   const ScopeIcon = scope?.file ? FileClock : FolderClock;
   return (
     <div
-      // Takes focus from clicks in the list, so `/` can reach the search box from there.
+      // Takes focus from clicks in the list, so `/` (history.find) can reach the search box from there.
       tabIndex={-1}
       onKeyDown={(e) => {
-        if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey || isTyping(e.nativeEvent)) return;
+        if (!matchesCommand("history.find", e.nativeEvent) || isTyping(e.nativeEvent)) return;
         e.preventDefault();
         input.current?.focus();
       }}

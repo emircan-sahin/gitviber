@@ -19,6 +19,8 @@ export const COMMANDS = [
   { id: "workbench.quickOpen", title: "Open File", category: "General", keys: ["cmd+p"] },
   { id: "workbench.openChange", title: "Open Changed File", category: "General", keys: [] },
   { id: "workbench.openSettings", title: "Open Settings", category: "General", keys: ["cmd+,"] },
+  // Holding ⌘ alone shows it too (ShortcutOverlay).
+  { id: "workbench.shortcutOverlay", title: "Show Shortcut Overlay", category: "General", keys: ["cmd+/"] },
   { id: "file.openRepo", title: "Open Repository", category: "General", keys: ["cmd+o"] },
   { id: "file.cloneRepo", title: "Clone Repository", category: "General", keys: [] },
   { id: "file.switchProject", title: "Switch Project", category: "General", keys: [] },
@@ -61,6 +63,8 @@ export const COMMANDS = [
   // Elsewhere Ctrl+Tab ("cmd" there); Ctrl+← / Ctrl+→ move by word.
   { id: "tab.next", title: "Next Tab", category: "Tabs", keys: ["shift+cmd+]", "cmd+right", "ctrl+tab"], keysOther: ["cmd+tab", "shift+cmd+]"] },
   { id: "tab.prev", title: "Previous Tab", category: "Tabs", keys: ["shift+cmd+[", "cmd+left", "ctrl+shift+tab"], keysOther: ["shift+cmd+tab", "shift+cmd+["] },
+  { id: "tab.moveLeft", title: "Move Tab Left", category: "Tabs", keys: ["alt+left"], local: "the tab strip" },
+  { id: "tab.moveRight", title: "Move Tab Right", category: "Tabs", keys: ["alt+right"], local: "the tab strip" },
   { id: "review.nextFile", title: "Next Changed File", category: "Review", keys: ["j"] },
   { id: "review.prevFile", title: "Previous Changed File", category: "Review", keys: ["k"] },
   { id: "review.toggleViewed", title: "Toggle File Viewed", category: "Review", keys: ["v"] },
@@ -74,6 +78,22 @@ export const COMMANDS = [
   { id: "editor.fontZoomIn", title: "Increase Code Font Size", category: "Editor", keys: ["alt+cmd+="] },
   { id: "editor.fontZoomOut", title: "Decrease Code Font Size", category: "Editor", keys: ["alt+cmd+-"] },
   { id: "editor.fontZoomReset", title: "Reset Code Font Size", category: "Editor", keys: ["alt+cmd+0"] },
+  // Monaco's own ⌘F is taken off (monaco.ts), so this is the only key that opens it.
+  { id: "editor.find", title: "Find", category: "Editor", keys: ["cmd+f"], local: "the code view" },
+  { id: "media.zoomIn", title: "Zoom In Image", category: "Editor", keys: ["=", "shift+="], local: "the image view" },
+  { id: "media.zoomOut", title: "Zoom Out Image", category: "Editor", keys: ["-"], local: "the image view" },
+  { id: "media.fit", title: "Fit Image", category: "Editor", keys: ["0"], local: "the image view" },
+  // ⌃` as in VS Code, ⌘J as its panel toggle. Elsewhere Ctrl+`, as VS Code has it there too.
+  { id: "terminal.toggle", title: "Toggle Terminal", category: "Terminal", keys: ["cmd+j", "ctrl+`"], keysOther: ["cmd+j", "cmd+`"] },
+  // Off macOS the Super key ("ctrl"): Ctrl+letter is the shell's. The ones below it only run in the terminal.
+  { id: "terminal.new", title: "New Terminal", category: "Terminal", keys: ["cmd+t"], keysOther: ["ctrl+t"] },
+  { id: "terminal.split", title: "Split Terminal", category: "Terminal", keys: ["cmd+d"], keysOther: ["ctrl+d"], local: "the terminal" },
+  { id: "terminal.clear", title: "Clear Terminal", category: "Terminal", keys: ["cmd+k"], keysOther: ["ctrl+k"], local: "the terminal" },
+  { id: "terminal.close", title: "Close Terminal Pane", category: "Terminal", keys: ["cmd+w"], keysOther: ["ctrl+w"], local: "the terminal" },
+  { id: "terminal.prevPane", title: "Previous Terminal Pane", category: "Terminal", keys: ["alt+cmd+left"], keysOther: ["ctrl+alt+left"], local: "the terminal" },
+  { id: "terminal.nextPane", title: "Next Terminal Pane", category: "Terminal", keys: ["alt+cmd+right"], keysOther: ["ctrl+alt+right"], local: "the terminal" },
+  { id: "explorer.rename", title: "Rename File", category: "Explorer", keys: ["f2"], local: "the explorer" },
+  { id: "explorer.delete", title: "Delete File", category: "Explorer", keys: ["cmd+backspace"], local: "the explorer" },
   { id: "git.switchBranch", title: "Switch Branch", category: "Git", keys: [] },
   { id: "git.newBranch", title: "New Branch", category: "Git", keys: [] },
   { id: "git.switchWorktree", title: "Switch Worktree", category: "Git", keys: [] },
@@ -89,6 +109,15 @@ export const COMMANDS = [
   // Local: only `local` listens for it.
   { id: "git.commit", title: "Commit", category: "Git", keys: ["cmd+enter", "ctrl+enter"], local: "the commit message" },
   { id: "git.renameBranch", title: "Rename Branch", category: "Git", keys: ["f2"], local: "the branch picker" },
+  { id: "git.selectAllChanges", title: "Select All Changes", category: "Git", keys: ["cmd+a"], local: "the changes list" },
+  { id: "git.createTag", title: "Create Tag", category: "Git", keys: ["cmd+enter", "ctrl+enter"], local: "the tag message" },
+  // Where "/" takes ⇧ (Turkish, German ⇧7).
+  { id: "history.find", title: "Find in History", category: "Git", keys: ["/", "shift+/"], local: "the history list" },
+  { id: "worktree.openTerminal", title: "Open Terminal in Worktree", category: "Git", keys: ["t"], local: "the worktree picker" },
+  { id: "worktree.merge", title: "Merge Worktree Branch", category: "Git", keys: ["m"], local: "the worktree picker" },
+  { id: "worktree.remove", title: "Remove Worktree", category: "Git", keys: ["backspace", "delete"], local: "the worktree picker" },
+  { id: "project.forget", title: "Remove from Projects", category: "General", keys: ["backspace", "delete"], local: "the project list" },
+  { id: "github.postComment", title: "Post Comment", category: "GitHub", keys: ["cmd+enter", "ctrl+enter"], local: "an issue comment" },
   // Only while suggestions are set up in Settings.
   { id: "git.suggestMessage", title: "Suggest Commit Message", category: "Git", keys: [] },
 ] as const satisfies readonly {
@@ -186,6 +215,20 @@ export function eventChord(e: KeyLike, mac = IS_MAC): string | null {
   if (!key) return null;
   const held = { cmd: mac ? e.metaKey : e.ctrlKey, ctrl: mac ? e.ctrlKey : e.metaKey, alt: e.altKey, shift: e.shiftKey };
   return [...MODS.filter((m) => held[m]), key].join("+");
+}
+
+/**
+ * What a key event may mean: the chord as typed, then for a ⌘ or ⌃ chord on a punctuation key the
+ * chord a US keyboard names it, so a default like ⌃` stays on that key where the layout types
+ * something else there. Letters and digits only count as typed (German ⌘Y, the US Z key, must not
+ * run ⌘Z), and so do keys without ⌘ or ⌃: they type, and "?" is not "/".
+ */
+export function eventChords(e: KeyLike, mac = IS_MAC): string[] {
+  const chord = eventChord(e, mac);
+  const us = CODE_KEYS[e.code];
+  if (!chord || !us || !(e.metaKey || e.ctrlKey)) return chord ? [chord] : [];
+  const physical = [...chord.split("+").slice(0, -1), us].join("+");
+  return physical === chord ? [chord] : [chord, physical];
 }
 
 /** A chord as the native menu (muda) reads it: there "cmd" is always the ⌘ / Windows key. */
@@ -292,10 +335,17 @@ export const formatChord = (chord: string) => formatChordFor(chord, IS_MAC);
 
 /** ⇧⌘E on macOS, Ctrl+Shift+E elsewhere. */
 export function formatChordFor(chord: string, mac: boolean): string {
+  return chordKeysFor(chord, mac).join(mac ? "" : "+");
+}
+
+/** A chord's keys one by one, as keycaps show them: ⇧ ⌘ E on macOS, Ctrl Shift E elsewhere. */
+export const chordKeys = (chord: string) => chordKeysFor(chord, IS_MAC);
+
+export function chordKeysFor(chord: string, mac: boolean): string[] {
   const parts = chord.split("+");
-  if (mac) return parts.map((p) => GLYPHS[p] ?? p.toUpperCase()).join("");
+  if (mac) return parts.map((p) => GLYPHS[p] ?? p.toUpperCase());
   // Windows and Linux lead with Ctrl, not with ⌃⌥⇧⌘'s order.
   const key = parts.pop()!;
   const mods = ["cmd", "ctrl", "alt", "shift"].filter((m) => parts.includes(m)).map((m) => NAMES[m]);
-  return [...mods, GLYPHS[key] ?? key.toUpperCase()].join("+");
+  return [...mods, GLYPHS[key] ?? key.toUpperCase()];
 }

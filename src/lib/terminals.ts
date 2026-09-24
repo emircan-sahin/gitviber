@@ -6,7 +6,7 @@ import { type ITerminalOptions, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useSyncExternalStore } from "react";
 import { errorMessage } from "./api";
-import { appTakesFromTerminal } from "./keybindings";
+import { appTakesFromTerminal, type CommandId, commandIn } from "./keybindings";
 import { codeFontFamily, getSettings, subscribeSettings } from "./settings";
 
 /**
@@ -56,6 +56,9 @@ interface State {
   /** Last run's terminals, until the user restores or dismisses them. */
   restorable: SavedSession | null;
 }
+
+/** Keys the terminal panel runs while it has focus (TerminalPanel), rather than the shell. */
+export const TERMINAL_COMMANDS = ["terminal.split", "terminal.clear", "terminal.close", "terminal.prevPane", "terminal.nextPane"] as const satisfies readonly CommandId[];
 
 const SESSION_KEY = "gitviber.terminals";
 // Serialized with colors, 1000 lines is ~100 KB a pane; localStorage holds a few MB.
@@ -240,8 +243,8 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   term.onResize(({ cols, rows }) => p.pty !== null && void invoke("pty_resize", { id: p.pty, cols, rows }).catch(() => {}));
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   // ⌘ keys are the app's shortcuts (copy and paste arrive as clipboard events, not keys),
-  // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, and ⌃Tab or ⌃1
-  // run their commands.
+  // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, ⌃Tab or ⌃1 run
+  // their commands, and the panel's own keys stay with it whatever they're rebound to.
   term.attachCustomKeyEventHandler((e) => {
     const seq = lineEditKey(e);
     if (seq !== undefined) {
@@ -249,7 +252,7 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
       e.preventDefault();
       return false;
     }
-    return !e.metaKey && !(e.ctrlKey && e.code === "Backquote") && !appTakesFromTerminal(e);
+    return !e.metaKey && !appTakesFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e);
   });
   return { id, cwd, title: "" };
 }

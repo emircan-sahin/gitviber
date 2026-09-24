@@ -3,6 +3,7 @@ import type { Blame, BlameCommit, DiffPair, DiffRow } from "@/lib/api";
 import { showLanguage } from "@/lib/highlight";
 import { languageFor } from "@/lib/language";
 import { narrow } from "@/lib/indent";
+import { matchesCommand } from "@/lib/keybindings";
 import { codeWantsFocus, setCodeEditor } from "@/lib/panels";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
 import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
@@ -212,7 +213,15 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     const el = host.current!;
     const onKey = (ev: KeyboardEvent) => {
       const e = editor.current;
-      if (!e || ev.altKey || ev.ctrlKey || ev.isComposing || !(ev.target instanceof HTMLElement) || !ev.target.matches("textarea.inputarea")) return;
+      if (!e || ev.isComposing || !(ev.target instanceof HTMLElement)) return;
+      // From the text, or from the find box by a chord that can't be typed there; in split view on the side that has focus.
+      if (matchesCommand("editor.find", ev) && (ev.target.matches("textarea.inputarea") || ev.metaKey || ev.ctrlKey)) {
+        (isDiff(e) && e.getOriginalEditor().hasWidgetFocus() ? e.getOriginalEditor() : codeEditor(e)).getAction("actions.find")?.run();
+        ev.preventDefault();
+        ev.stopPropagation();
+        return;
+      }
+      if (ev.altKey || ev.ctrlKey || !ev.target.matches("textarea.inputarea")) return;
       // Split view: the side you clicked into; the other one follows.
       const code = isDiff(e) && e.getOriginalEditor().hasTextFocus() ? e.getOriginalEditor() : codeEditor(e);
       const line = code.getOption(monaco.editor.EditorOption.lineHeight);
