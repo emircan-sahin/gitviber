@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type FileChange, type RepoStatus, type Whitespace } from "@/lib/api";
+import { resetDefinitions } from "@/lib/definitions";
 import { type LinkSide, resetLinks } from "@/lib/linkHost";
 import { onReveal, revealWaits } from "@/lib/reveal";
 import { type Selection, selectionPath } from "@/lib/selection";
@@ -280,9 +281,9 @@ function pairArgs(sel: FileSelection, revision: number, whitespace: Whitespace |
 }
 
 /**
- * Where the code view's ⌘-click paths resolve: a commit's sides in the commit and its parent, a PR's
- * in its base and head. Working-tree diffs resolve both sides in the working tree (their old side
- * is the index or HEAD, close enough for a file list). Links open the working-tree file.
+ * Where the code view's Go to Definition looks: a commit's sides in the commit and its parent, a
+ * PR's in its base and head. Working-tree diffs look in the working tree for both sides (their old
+ * side is the index or HEAD, close enough). A place found opens in the working-tree file.
  */
 function linkSides(sel: FileSelection, revision: number): { original: LinkSide | null; modified: LinkSide } {
   const path = selectionPath(sel);
@@ -300,6 +301,7 @@ export function resetPairCache() {
   pairCache.clear();
   blames.clear();
   resetLinks();
+  resetDefinitions();
   generation++;
 }
 function remember(key: string, pair: DiffPair, gen: number) {

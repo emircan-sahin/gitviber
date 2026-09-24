@@ -7,7 +7,7 @@ import { useFind } from "@/lib/find";
 import { findMatches } from "@/lib/findQuery";
 import { onReveal, takeReveal } from "@/lib/reveal";
 import { codeWantsFocus, setCodeEditor } from "@/lib/panels";
-import { followLinks } from "@/lib/codeLinks";
+import { followDefinitions } from "@/lib/definitions";
 import { type LinkSide, onReveal as onLinkReveal, takeReveal as takeLinkReveal } from "@/lib/linkHost";
 import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
 import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
@@ -34,7 +34,7 @@ interface Props {
   /** Room for that column, set aside before `blame` lands so the code doesn't jump. */
   blameColumn?: boolean;
   onBlameClick?: (commit: BlameCommit) => void;
-  /** Where each side's paths resolve for ⌘-click (the old side only in a diff); none: no links. */
+  /** Each side's file and tree, for Go to Definition (the old side only in a diff); none: nowhere to go. */
   links?: { original: LinkSide | null; modified: LinkSide } | null;
 }
 
@@ -87,8 +87,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   blameRef.current = diff ? null : blame;
   const onBlameClickRef = useRef(onBlameClick);
   onBlameClickRef.current = onBlameClick;
-  const linksRef = useRef({ lang, links });
-  linksRef.current = { lang, links };
+  const linksRef = useRef(links);
+  linksRef.current = links;
   const split = useRef(false);
   split.current = mode === "split";
 
@@ -112,12 +112,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
           const commit = line && ev.target.element?.classList.contains("gv-blame") ? blameAt(blameRef.current, line) : null;
           if (commit && !isNew(commit)) onBlameClickRef.current?.(commit);
         });
-    const follow = (code: monaco.editor.ICodeEditor, side: "original" | "modified") =>
-      followLinks(
-        code,
-        () => linksRef.current.lang,
-        () => linksRef.current.links?.[side] ?? null,
-      );
+    const follow = (code: monaco.editor.ICodeEditor, side: "original" | "modified") => followDefinitions(code, () => linksRef.current?.[side] ?? null);
     const linked = isDiff(e) ? [follow(e.getOriginalEditor(), "original"), follow(e.getModifiedEditor(), "modified")] : [follow(e, "modified")];
     const marks = isDiff(e) ? markFindMatches(e, el, () => split.current) : null;
     return () => {

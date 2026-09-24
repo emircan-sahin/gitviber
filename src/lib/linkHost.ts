@@ -1,6 +1,6 @@
 // Where links (lib/links) resolve and what opening one does: the repo's file lists, loaded on the
-// first ⌘-hover in a tree, and the workspace that opens files. Shared by the code view
-// (lib/codeLinks) and the terminal (terminalLinks below).
+// first ⌘-hover in a tree, and the workspace that opens files. Shared by the code view's Go to
+// Definition (lib/definitions) and the terminal (terminalLinks below).
 import type { IDisposable, ILink, Terminal } from "@xterm/xterm";
 import { api, errorMessage, github } from "./api";
 import { IS_MAC } from "./commands";

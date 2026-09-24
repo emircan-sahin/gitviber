@@ -221,6 +221,25 @@ export const SEARCH_MAX_HITS = 2000;
 /** What a search a newer one stopped rejects with. */
 export const SEARCH_CANCELLED = "search:cancelled";
 
+/** Where a name is defined (definitions.rs): 1-based line, 0-based UTF-16 columns. */
+export interface Definition {
+  path: string;
+  line: number;
+  column: number;
+  endColumn: number;
+}
+
+export interface DefinitionRequest {
+  path: string;
+  text: string;
+  line: number;
+  column: number;
+  rev: string | null;
+}
+
+/** What a lookup a newer one stopped rejects with. */
+export const DEFINITIONS_CANCELLED = "definitions:cancelled";
+
 export interface Entry {
   name: string;
   path: string;
@@ -407,6 +426,8 @@ export const api = {
   /** Rejects with SEARCH_CANCELLED when a newer search stops it. */
   searchFiles: (query: SearchQuery) => invoke<SearchResult>("search_files", { query }),
   cancelSearch: () => invoke<void>("cancel_search"),
+  /** Rejects with DEFINITIONS_CANCELLED when a newer lookup stops it. */
+  definitions: (request: DefinitionRequest) => invoke<Definition[]>("definitions", { request }),
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
   /** Every file in a commit (`<sha>`, or `<sha>^` for its parent): where its links resolve. */
   treePaths: (rev: string) => invoke<string[]>("tree_paths", { rev }),

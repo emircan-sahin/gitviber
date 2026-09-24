@@ -1,7 +1,8 @@
 /**
- * Paths and URLs that ⌘-click opens in the code view and the terminal: found a line at a time
- * (only the line under the pointer is asked for), and resolved against the repo's files or a
- * commit's tree. Go to file, not to definition: no language server. Pure, so it runs under node:test.
+ * Paths and URLs that ⌘-click opens in the terminal, and the paths it opens in the code view (whose
+ * names go to their definitions, lib/definitions): found a line at a time (only the line under the
+ * pointer is asked for), and resolved against the repo's files or a commit's tree. Pure, so it
+ * runs under node:test.
  */
 
 /** How a link's text becomes a target: each kind has its own lookup rules. */

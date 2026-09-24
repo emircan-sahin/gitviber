@@ -82,8 +82,9 @@ export const COMMANDS = [
   // Searches where focus is (lib/find). Monaco's own ⌘F is taken off (monaco.ts), so this is the only key for its find.
   { id: "editor.find", title: "Find", category: "General", keys: ["cmd+f"] },
   { id: "search.findInFiles", title: "Find in Files", category: "General", keys: ["shift+cmd+f"] },
-  // The file an import or path under the cursor points to; ⌘-click does the same (lib/codeLinks).
-  { id: "editor.openLink", title: "Open Linked File", category: "Editor", keys: ["f12", "cmd+enter"], local: "the code view" },
+  // Where the name, import or path under the cursor is defined; ⌘-click does the same (lib/definitions).
+  { id: "editor.goToDefinition", title: "Go to Definition", category: "Editor", keys: ["f12", "cmd+enter"], local: "the code view" },
+  { id: "editor.peekDefinition", title: "Peek Definition", category: "Editor", keys: ["alt+f12"], local: "the code view" },
   { id: "media.zoomIn", title: "Zoom In Image", category: "Editor", keys: ["=", "shift+="], local: "the image view" },
   { id: "media.zoomOut", title: "Zoom Out Image", category: "Editor", keys: ["-"], local: "the image view" },
   { id: "media.fit", title: "Fit Image", category: "Editor", keys: ["0"], local: "the image view" },

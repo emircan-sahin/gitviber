@@ -13,6 +13,10 @@ import "monaco-editor/features/codicon/register";
 import "monaco-editor/features/find/register";
 import "monaco-editor/features/clipboard/register";
 import "monaco-editor/features/contextmenu/register";
+// ⌘-click, F12 and peek for lib/definitions (referenceSearch is the peek and its list); ⌘-click on URLs.
+import "monaco-editor/features/gotoSymbol/register";
+import "monaco-editor/features/referenceSearch/register";
+import "monaco-editor/features/links/register";
 import { createHighlighterCore, type HighlighterCore } from "shiki/core";
 import { createOnigurumaEngine } from "shiki/engine/oniguruma";
 import { bundledLanguages } from "shiki/langs";
@@ -27,6 +31,16 @@ export { monaco };
 
 // Find opens on editor.find (commands.ts, MonacoView), which the user can rebind; Monaco's own ⌘F would stay behind.
 monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, command: "-actions.find" });
+// Likewise Go to Definition and Peek (editor.goToDefinition, editor.peekDefinition); "to the side" has no side here.
+const { CtrlCmd, Alt } = monaco.KeyMod;
+const { F12, KeyK } = monaco.KeyCode;
+monaco.editor.addKeybindingRules([
+  { keybinding: F12, command: "-editor.action.revealDefinition" },
+  { keybinding: CtrlCmd | F12, command: "-editor.action.revealDefinition" },
+  { keybinding: Alt | F12, command: "-editor.action.peekDefinition" },
+  { keybinding: monaco.KeyMod.chord(CtrlCmd | KeyK, F12), command: "-editor.action.revealDefinitionAside" },
+  { keybinding: monaco.KeyMod.chord(CtrlCmd | KeyK, CtrlCmd | F12), command: "-editor.action.revealDefinitionAside" },
+]);
 
 // Code fonts load lazily (Geist Mono, JetBrains Mono): measure again once they're in, or wrapping and
 // selections keep the fallback font's widths.
@@ -41,7 +55,7 @@ subscribeSettings(() => {
   monaco.editor.remeasureFonts();
 });
 
-// Only a fallback computes diffs (see `createModels`); there are no language services to run.
+// The worker computes diffs only as a fallback (see `createModels`), and finds the URLs links open.
 globalThis.MonacoEnvironment = { getWorker: () => new EditorWorker() };
 // The diff overview doubles as the scrollbar (the editors' own are hidden): 14px like the app's
 // other bars, not 30. No option for it; its layout reads these statics (monaco-editor is pinned).
@@ -124,15 +138,27 @@ const monacoLanguage = (lang: string) => (lang === "text" ? "plaintext" : lang);
  * `unit`: spaces per indentation level turned into tabs for display (see lib/indent), or 0.
  */
 export function createModels(lang: string, modifiedText: string, original: { text: string; rows: DiffRow[] } | null) {
-  const id = monacoLanguage(lang);
   const unit = indentUnit(modifiedText, original?.text);
-  const modified = monaco.editor.createModel(widen(modifiedText, unit), id);
-  const old = original && monaco.editor.createModel(widen(original.text, unit), id);
-  // Tabs are 4 wide everywhere; Monaco guesses per file otherwise (2 in a two-space file).
-  for (const m of [modified, old]) m?.updateOptions({ tabSize: TAB, indentSize: TAB });
+  const modified = createModel(modifiedText, lang, unit);
+  const old = original && createModel(original.text, lang, unit);
   if (original) gitDiffs.set(modified, gitDiff(original.rows, original.text, modifiedText, unit));
   return { modified, original: old, unit };
 }
+
+/** A file Go to Definition shows in its peek or hover, widened as the code view would. */
+export const createPeekModel = (text: string, lang: string, uri: monaco.Uri) => createModel(text, lang, indentUnit(text), uri);
+
+function createModel(text: string, lang: string, unit: number, uri?: monaco.Uri) {
+  const model = monaco.editor.createModel(widen(text, unit), monacoLanguage(lang), uri);
+  // Tabs are 4 wide everywhere; Monaco guesses per file otherwise (2 in a two-space file).
+  model.updateOptions({ tabSize: TAB, indentSize: TAB });
+  units.set(model, unit);
+  return model;
+}
+const units = new WeakMap<monaco.editor.ITextModel, number>();
+
+/** Spaces per indentation level `model`'s text was widened by (see lib/indent). */
+export const unitOf = (model: monaco.editor.ITextModel) => units.get(model) ?? 0;
 
 /**
  * Loads a language and theme into Shiki, hands Monaco every grammar loaded so far, and applies
@@ -207,6 +233,7 @@ const APP_COLORS: Record<string, string> = {
   "editor.findMatchBackground": "--find-current",
   "editor.findMatchHighlightBackground": "--find-match",
   "editorOverviewRuler.findMatchForeground": "--find-mark",
+  "editorLink.activeForeground": "--primary",
 };
 
 function appColors() {
