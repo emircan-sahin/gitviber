@@ -431,9 +431,41 @@ async fn worktrees(state: State<'_, AppState>) -> Res<Vec<git::Worktree>> {
 }
 
 #[tauri::command]
-async fn add_worktree(state: State<'_, AppState>, branch: String) -> Res<String> {
+async fn add_worktree(
+    state: State<'_, AppState>,
+    branch: String,
+    base: Option<String>,
+    dir: Option<String>,
+) -> Res<String> {
     let r = repo(&state)?;
-    blocking(move || git::add_worktree(&r, &branch)).await
+    blocking(move || git::add_worktree(&r, &branch, base.as_deref(), dir.as_deref())).await
+}
+
+#[tauri::command]
+async fn rename_worktree(
+    state: State<'_, AppState>,
+    path: String,
+    branch: String,
+    move_folder: bool,
+) -> Res<String> {
+    let r = repo(&state)?;
+    blocking(move || git::rename_worktree(&r, &path, &branch, move_folder)).await
+}
+
+#[tauri::command]
+async fn lock_worktree(
+    state: State<'_, AppState>,
+    path: String,
+    reason: Option<String>,
+) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::lock_worktree(&r, &path, reason.as_deref())).await
+}
+
+#[tauri::command]
+async fn unlock_worktree(state: State<'_, AppState>, path: String) -> Res<()> {
+    let r = repo(&state)?;
+    blocking(move || git::unlock_worktree(&r, &path)).await
 }
 
 #[tauri::command]
@@ -1431,6 +1463,42 @@ async fn pr_checkout(
     .await
 }
 
+/// `pr_checkout` into a new worktree; returns its path. This worktree's HEAD doesn't move.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn pr_checkout_worktree(
+    app: AppHandle,
+    target: Option<String>,
+    number: u64,
+    head_ref: String,
+    same_repo: bool,
+    dir: Option<String>,
+    op: String,
+    progress: Channel<network::Progress>,
+) -> Res<String> {
+    let net = watch_network(&app.state::<AppState>(), op, progress);
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let r = repo(&state)?;
+        let remote = github::fetch_remote(&state.github, &r, target.as_deref())?;
+        let owner = target
+            .as_deref()
+            .filter(|_| remote != "origin")
+            .and_then(|t| t.split('/').next());
+        github::checkout_worktree(
+            &r,
+            &remote,
+            owner,
+            number,
+            &head_ref,
+            same_repo,
+            dir.as_deref(),
+            &net,
+        )
+    })
+    .await
+}
+
 /// Any folder, unlike the repo commands: the shell can `cd` anywhere the user can anyway.
 #[tauri::command]
 fn pty_spawn(
@@ -1595,6 +1663,9 @@ pub fn run() {
             worktrees,
             worktree_state,
             add_worktree,
+            rename_worktree,
+            lock_worktree,
+            unlock_worktree,
             remove_worktree,
             stage,
             unstage,
@@ -1670,6 +1741,7 @@ pub fn run() {
             pr_set_open,
             pr_review,
             pr_checkout,
+            pr_checkout_worktree,
             issue_list,
             issue_counts,
             issue_labels,
