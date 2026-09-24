@@ -98,7 +98,12 @@ pub(crate) fn exec(
         .spawn()
         .map_err(|e| format!("could not run {label}: {e}"))?;
     if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
-        stdin.write_all(data).map_err(|e| e.to_string())?;
+        // A process can exit before reading its input (a failing pre-commit hook stops
+        // `commit -F -`); its status and stderr say why, not the broken pipe.
+        match stdin.write_all(data) {
+            Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => return Err(e.to_string()),
+            _ => {}
+        }
     }
     let drain = |r: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
