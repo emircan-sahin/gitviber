@@ -17,7 +17,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type RemoteTags, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
+import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type GraphRefs, type RemoteTags, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
 import { type GraphRow, type Lane, graphRows } from "@/lib/commitGraph";
 import { matchesCommand } from "@/lib/keybindings";
 import { pointerMoved } from "@/lib/pointer";
@@ -60,21 +60,19 @@ interface Props {
   onOpenRepo?: (path: string) => void;
   /** Every branch is listed: HEAD's keeps the first lane even below newer branches' tips. */
   pinHead?: boolean;
-  /** Scroll to this commit and open it, once per `id`. */
-  jump?: Jump | null;
+  /** Scroll to this commit and open it; `onJumped` says it's done, so the request can go. */
+  jump?: string | null;
+  onJumped?: () => void;
   /** The all-branches graph's choices, offered on the refs a commit is decorated with. */
   refMenu?: RefMenu;
+  /** Only these refs' badges show, as the all-branches graph walks only them. */
+  showRefs?: GraphRefs;
 }
 
 /** Blame's link to a commit: open it and `path` (the file's name there). `id` is new per click. */
 export interface Reveal {
   sha: string;
   path: string;
-  id: number;
-}
-
-export interface Jump {
-  sha: string;
   id: number;
 }
 
@@ -101,13 +99,14 @@ interface Actions {
   pickInto: (w: Worktree, commit: Commit) => Promise<void>;
   remotes: Set<string>;
   refMenu?: RefMenu;
+  showRefs?: GraphRefs;
 }
 
 /** GitHub only has commits that reached one of origin's branches (or all, for a fork's original). */
 const commitUrl = (c: Commit, { webUrl, everyOnWeb }: Pick<Actions, "webUrl" | "everyOnWeb">) =>
   webUrl && (c.onOrigin || everyOnWeb) ? `${webUrl}/commit/${c.sha}` : undefined;
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, refMenu }: Props) {
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs }: Props) {
   const [open, setOpen] = useState<string | null>(reveal?.sha ?? null);
   useEffect(() => {
     if (reveal) setOpen(reveal.sha);
@@ -171,6 +170,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     pickInto,
     remotes,
     refMenu,
+    showRefs,
   };
 
   // Opening a commit collapses the one above it; WebKit has no scroll anchoring, so without
@@ -193,15 +193,14 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
   }, [commits, graph, pinHead, head]);
 
   // A jump waits for its commit to be listed: the caller loads pages until it is.
-  const jumped = useRef<number | null>(null);
   useEffect(() => {
-    if (!jump || jumped.current === jump.id) return;
-    const row = scroller.current?.querySelector(`[data-row="commit:${jump.sha}"]`);
+    if (!jump) return;
+    const row = scroller.current?.querySelector(`[data-row="commit:${jump}"]`);
     if (!row) return;
-    jumped.current = jump.id;
     row.scrollIntoView({ block: "center" });
-    setOpen(jump.sha);
-  }, [jump, commits]);
+    setOpen(jump);
+    onJumped?.();
+  }, [jump, commits, onJumped]);
   // Hovering a commit brings its branch forward, and a merge's merged-in one. Only the lines
   // involved change: rewriting a stylesheet restyled the whole app on each row a scroll carried by.
   const lit = useRef<{ row: GraphRow; lines: Element[] } | null>(null);
@@ -240,6 +239,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
           remotes={remotes}
           graph={rows[i]}
           isHead={c.sha === head}
+          showRefs={showRefs}
           onPoint={point}
           open={open === c.sha}
           reveal={reveal?.sha === c.sha ? reveal : null}
@@ -330,8 +330,8 @@ function TagMenu({ tag, remote, onOpen, actions }: { tag: string; remote: TagsTh
 /** Right-click actions on a commit. `head`: the first row, i.e. the checked-out commit. */
 function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolean; actions: Actions }) {
   const { status, headSha, webUrl, locked, run, refMenu } = actions;
-  // A detached HEAD's badge names no ref to hide.
-  const graphRefs = refMenu ? groupRefs(c.refs, actions.remotes).filter((r) => r.refs.length) : [];
+  // The badges shown; a detached HEAD's names no ref to hide.
+  const graphRefs = refMenu ? groupRefs(c.refs, actions.remotes, actions.showRefs).filter((r) => r.refs.length) : [];
   const url = commitUrl(c, actions);
   const short = c.shortSha;
   const target = status?.branch ?? "HEAD";
@@ -538,6 +538,7 @@ function CommitRow({
   remotes,
   graph,
   isHead,
+  showRefs,
   onPoint,
   open,
   reveal,
@@ -552,6 +553,7 @@ function CommitRow({
   remotes: Set<string>;
   graph: GraphRow;
   isHead: boolean;
+  showRefs: GraphRefs | undefined;
   onPoint: (row: GraphRow, e: React.MouseEvent) => void;
   open: boolean;
   reveal: Reveal | null;
@@ -641,7 +643,7 @@ function CommitRow({
                 <CommitTime commit={commit} />
                 <span className="ml-auto shrink-0 font-mono">{commit.shortSha}</span>
               </div>
-              <RefBadges refs={commit.refs} remotes={remotes} />
+              <RefBadges refs={commit.refs} remotes={remotes} show={showRefs} />
             </div>
           </div>
         </ContextMenuTrigger>
@@ -760,29 +762,34 @@ function CommitTime({ commit: c }: { commit: Commit }) {
  * Groups decorations so they stay readable: a local branch and its remote twin on the same
  * commit (main + origin/main) become one "main ☁" badge; origin/HEAD is dropped, a detached
  * HEAD gets a badge of its own. `remotes` tells remote-tracking names apart, since local names
- * can contain "/" too.
+ * can contain "/" too. With `show`, only the refs it lets through, and always HEAD's branch.
  */
-function groupRefs(refs: string[], remotes: Set<string>): Ref[] {
+function groupRefs(refs: string[], remotes: Set<string>, show?: GraphRefs): Ref[] {
   const head = refs.find((r) => r.startsWith("HEAD -> "))?.slice(8);
-  const names = refs.map((r) => (r.startsWith("HEAD -> ") ? r.slice(8) : r));
   const isRemote = (r: string) => remotes.has(r) || (!remotes.size && r.startsWith("origin/"));
   const short = (r: string) => r.slice(r.indexOf("/") + 1);
+  const tag = (r: string) => r.startsWith("tag: ");
+  const full = (r: string) => (tag(r) ? `refs/tags/${r.slice(5)}` : isRemote(r) ? `refs/remotes/${r}` : `refs/heads/${r}`);
+  // Before grouping: with local branches off, main's remote twin still gets its badge.
+  const shown = (r: string) =>
+    !show || r === "HEAD" || r === head || ((tag(r) ? show.tags : isRemote(r) ? show.remote : show.local) && !show.hidden.includes(full(r)));
+  const names = refs.map((r) => (r.startsWith("HEAD -> ") ? r.slice(8) : r)).filter(shown);
   const out: Ref[] = names.includes("HEAD") ? [{ name: "HEAD", kind: "head", synced: false, refs: [] }] : [];
   for (const r of names) {
     if (r === "HEAD" || r.endsWith("/HEAD")) continue;
-    if (r.startsWith("tag: ")) out.push({ name: r.slice(5), kind: "tag", synced: false, refs: [`refs/tags/${r.slice(5)}`] });
+    if (tag(r)) out.push({ name: r.slice(5), kind: "tag", synced: false, refs: [full(r)] });
     else if (isRemote(r)) {
-      if (!names.includes(short(r))) out.push({ name: r, kind: "remote", synced: false, refs: [`refs/remotes/${r}`] });
+      if (!names.includes(short(r))) out.push({ name: r, kind: "remote", synced: false, refs: [full(r)] });
     } else {
       const twins = names.filter((x) => isRemote(x) && short(x) === r);
-      out.push({ name: r, kind: r === head ? "head" : "local", synced: twins.length > 0, refs: [`refs/heads/${r}`, ...twins.map((x) => `refs/remotes/${x}`)] });
+      out.push({ name: r, kind: r === head ? "head" : "local", synced: twins.length > 0, refs: [full(r), ...twins.map(full)] });
     }
   }
   return out;
 }
 
-function RefBadges({ refs, remotes }: { refs: string[]; remotes: Set<string> }) {
-  const list = groupRefs(refs, remotes);
+function RefBadges({ refs, remotes, show }: { refs: string[]; remotes: Set<string>; show?: GraphRefs }) {
+  const list = groupRefs(refs, remotes, show);
   if (!list.length) return null;
   return (
     <div className="mt-1 flex flex-wrap gap-1">

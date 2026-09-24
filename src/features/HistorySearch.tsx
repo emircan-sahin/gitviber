@@ -7,7 +7,7 @@ import { isEmptyFilter, parseLogQuery } from "@/lib/logQuery";
 import { toast } from "@/lib/toast";
 import { ForkHistory } from "./ForkHistory";
 import { CompareHistory, GraphMenu, GraphNotice, hideRefs, useAllBranches, useAllBranchesSetting, useGraphRefs } from "./GraphHistory";
-import { HistoryPanel, type Jump, type RefMenu, type Reveal } from "./HistoryPanel";
+import { HistoryPanel, type RefMenu, type Reveal } from "./HistoryPanel";
 
 const SYNTAX = "Words match the message (all of them, any case).\nauthor:name  path:src/app  code:text a commit added or removed\nA SHA or prefix finds that commit. Quotes keep spaces.";
 
@@ -30,17 +30,19 @@ type Props = ComponentProps<typeof ForkHistory> & {
   /** The search command asked for the box; `onFocused` says it has it. */
   focusRequested: boolean;
   onFocused: () => void;
+  /** The main worktree: the graph's hidden branches are the repository's, across its worktrees. */
+  main: string;
 };
 
 /** History with a search box on top; while it's searching, the matches replace the full history. */
-export function SearchableHistory({ search, onSearch, focusRequested, onFocused, ...props }: Props) {
+export function SearchableHistory({ search, onSearch, focusRequested, onFocused, main, ...props }: Props) {
   const { query, scope, reveal } = search;
   const input = useRef<HTMLInputElement>(null);
   const shortcut = useShortcut("history.search");
   const active = !!scope || !isEmptyFilter(parseLogQuery(query).filter);
   const head = props.commits[0]?.sha ?? "";
   const [allBranches, setAllBranches] = useAllBranchesSetting();
-  const [refs, setRefs] = useGraphRefs(props.status?.root);
+  const [refs, setRefs] = useGraphRefs(main);
   // A branch's full ref; a search still goes first, and closing it comes back here.
   const [compare, setCompare] = useState<string | null>(null);
   const showAll = allBranches && !active && !compare;
@@ -48,10 +50,10 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
   const all = useAllBranches(showAll, props.commits, refs);
   const setQuery = (q: string) => onSearch({ ...search, query: q, reveal: null });
 
-  const [jump, setJump] = useState<Jump | null>(null);
-  const jumps = useRef(0);
+  const [jump, setJump] = useState<string | null>(null);
+  const jumped = useCallback(() => setJump(null), []);
   const goTo = async (sha: string, name: string) => {
-    if (await all.reach(sha)) setJump({ sha, id: ++jumps.current });
+    if (await all.reach(sha)) setJump(sha);
     else toast("info", `${name} isn't in the graph`, "It's hidden, or further back than the graph goes.");
   };
   const refMenu: RefMenu = { hide: (r) => setRefs(hideRefs(refs, r)), only: (r) => setRefs({ ...refs, only: r }) };
@@ -111,8 +113,9 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
           setRefs={setRefs}
           branches={props.branches}
           current={props.status?.branch ?? null}
-          onGoToHead={() => goTo(head, "HEAD")}
-          onGoTo={goTo}
+          // Only the graph's own list loads pages to go to; a search or a comparison lists others.
+          onGoToHead={showAll ? () => goTo(head, "HEAD") : null}
+          onGoTo={showAll ? goTo : null}
           onCompare={setCompare}
         />
       </div>
@@ -165,7 +168,9 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
             headSha={head}
             pinHead
             jump={jump}
+            onJumped={jumped}
             refMenu={refMenu}
+            showRefs={refs}
             empty={all.commits ? "No commits yet." : "Loading…"}
           />
         )}

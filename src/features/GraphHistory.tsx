@@ -14,6 +14,7 @@ import { RepoPanes } from "./RepoPanes";
 const PAGE = 200;
 // Going to a commit loads pages until it's listed, but not the whole history of a huge repo.
 const MAX_REACH = 20;
+const MAX_RELOADS = 3;
 const ALL_KEY = "gitviber.history.allBranches";
 const REFS_KEY = "gitviber.history.graphRefs";
 
@@ -51,7 +52,10 @@ export function useAllBranchesSetting() {
   return [on, set] as const;
 }
 
-/** Which refs the all-branches graph walks, per repo: hidden branches are that repo's own. */
+/**
+ * Which refs the all-branches graph walks, per repository: `root` is its main worktree, as
+ * every worktree of it shares its branches.
+ */
 export function useGraphRefs(root: string | undefined) {
   const load = (r: string | undefined): GraphRefs => {
     const v = r ? read<Record<string, Partial<GraphRefs>>>(REFS_KEY, {})[r] : undefined;
@@ -83,48 +87,65 @@ export function useGraphRefs(root: string | undefined) {
 export function useAllBranches(on: boolean, ours: Commit[], refs: GraphRefs) {
   const [log, setLog] = useState<{ commits: Commit[]; hasMore: boolean; error: string | null } | null>(null);
   const seq = useRef(0);
+  // What's listed, ahead of the render that shows it: paging reads it between awaits.
   const current = useRef(log);
-  current.current = log;
   const key = JSON.stringify(refs);
   const latest = useRef(refs);
   latest.current = refs;
 
+  // The read in flight, for a jump to wait on when the list is read again under it.
+  const loading = useRef<Promise<void>>(Promise.resolve());
+
   useEffect(() => {
     const id = ++seq.current;
     if (!on) {
+      current.current = null;
       setLog(null);
       return;
     }
     const limit = Math.max(PAGE, current.current?.commits.length ?? 0);
-    api.log(0, limit, null, null, latest.current).then(
-      (commits) => id === seq.current && setLog({ commits, hasMore: commits.length === limit, error: null }),
-      (e) => id === seq.current && setLog({ commits: [], hasMore: false, error: errorMessage(e) }),
+    const show = (l: NonNullable<typeof log>) => {
+      if (id !== seq.current) return;
+      current.current = l;
+      setLog(l);
+    };
+    loading.current = api.log(0, limit, null, null, latest.current).then(
+      (commits) => show({ commits, hasMore: commits.length === limit, error: null }),
+      (e) => show({ commits: [], hasMore: false, error: errorMessage(e) }),
     );
   }, [on, ours, key]);
 
-  // Appends a page; false when there's no more, or the list changed meanwhile.
-  const page = useCallback(async () => {
+  // Appends a page. "stale": the list was read again meanwhile, and the page was the old list's.
+  const page = useCallback(async (): Promise<"more" | "done" | "stale"> => {
     const l = current.current;
-    if (!l?.hasMore) return false;
+    if (!l) return "stale";
+    if (!l.hasMore) return "done";
     const id = seq.current;
     const more = await api.log(l.commits.length, PAGE, null, null, latest.current);
-    if (id !== seq.current) return false;
+    if (id !== seq.current) return "stale";
     const seen = new Set(l.commits.map((c) => c.sha));
     const next = { ...l, commits: [...l.commits, ...more.filter((c) => !seen.has(c.sha))], hasMore: more.length === PAGE };
     current.current = next;
     setLog(next);
-    return true;
+    return "more";
   }, []);
 
   const loadMore = useCallback(async () => void (await page()), [page]);
 
+  // A reload landing mid-way (a background fetch, say) starts the pages over, not the search.
   const reach = useCallback(
     async (sha: string) => {
-      for (let i = 0; i < MAX_REACH; i++) {
-        if (current.current?.commits.some((c) => c.sha === sha)) return true;
-        if (!(await page())) break;
+      const listed = () => !!current.current?.commits.some((c) => c.sha === sha);
+      for (let pages = 0, reloads = 0; pages < MAX_REACH && reloads < MAX_RELOADS; ) {
+        if (listed()) return true;
+        const r = await page();
+        if (r === "done") break;
+        if (r === "stale") {
+          reloads++;
+          await loading.current;
+        } else pages++;
       }
-      return !!current.current?.commits.some((c) => c.sha === sha);
+      return listed();
     },
     [page],
   );
@@ -136,7 +157,8 @@ type Picking = "goto" | "compare";
 
 /**
  * The all-branches toggle, and next to it what to show, where to go and what to compare with.
- * `onGoTo` gets a commit's SHA; `onCompare` a branch's full ref.
+ * `onGoTo` gets a commit's SHA, and is null while the graph isn't what's listed; `onCompare`
+ * gets a branch's full ref.
  */
 export function GraphMenu({
   all,
@@ -155,8 +177,8 @@ export function GraphMenu({
   setRefs: (refs: GraphRefs) => void;
   branches: Branch[];
   current: string | null;
-  onGoToHead: () => void;
-  onGoTo: (sha: string, name: string) => void;
+  onGoToHead: (() => void) | null;
+  onGoTo: ((sha: string, name: string) => void) | null;
   onCompare: (ref: string) => void;
 }) {
   const [picking, setPicking] = useState<Picking | null>(null);
@@ -170,7 +192,7 @@ export function GraphMenu({
     const ref = fullRef(b);
     if (picking === "compare") return onCompare(ref);
     const tip = await api.findCommit(ref).catch(() => null);
-    if (tip) onGoTo(tip.sha, b.name);
+    if (tip) onGoTo?.(tip.sha, b.name);
     else toast("error", `Could not find ${b.name}`);
   };
   const toggle = (k: "local" | "remote" | "tags") => setRefs({ ...refs, [k]: !refs[k], only: null });
@@ -229,13 +251,17 @@ export function GraphMenu({
                   Tags
                 </DropdownMenuCheckboxItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem onSelect={onGoToHead}>
-                  <Crosshair /> Go to HEAD
-                </DropdownMenuItem>
-                <DropdownMenuItem onSelect={() => pick("goto")}>
-                  <Crosshair /> Go to branch…
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
+                {onGoToHead && onGoTo && (
+                  <>
+                    <DropdownMenuItem onSelect={onGoToHead}>
+                      <Crosshair /> Go to HEAD
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => pick("goto")}>
+                      <Crosshair /> Go to branch…
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                  </>
+                )}
               </>
             )}
             <DropdownMenuItem onSelect={() => pick("compare")}>
@@ -401,23 +427,24 @@ function CompareList({ with: ref, incoming, ours, ...props }: ListProps & { with
   const [log, setLog] = useState<{ commits: Commit[]; hasMore: boolean; error: string | null } | null>(null);
   const current = useRef(log);
   current.current = log;
+  // A reread finishing during Load more: its page was fetched at the old list's offset.
+  const seq = useRef(0);
 
   useEffect(() => {
-    let alive = true;
+    const id = ++seq.current;
     const limit = Math.max(PAGE, current.current?.commits.length ?? 0);
     api.logCompare(ref, incoming, 0, limit).then(
-      (commits) => alive && setLog({ commits, hasMore: commits.length === limit, error: null }),
-      (e) => alive && setLog({ commits: [], hasMore: false, error: errorMessage(e) }),
+      (commits) => id === seq.current && setLog({ commits, hasMore: commits.length === limit, error: null }),
+      (e) => id === seq.current && setLog({ commits: [], hasMore: false, error: errorMessage(e) }),
     );
-    return () => {
-      alive = false;
-    };
   }, [ref, incoming, ours]);
 
   const loadMore = async () => {
     const l = current.current;
     if (!l) return;
+    const id = seq.current;
     const more = await api.logCompare(ref, incoming, l.commits.length, PAGE);
+    if (id !== seq.current) return;
     setLog((x) => {
       if (!x) return x;
       const seen = new Set(x.commits.map((c) => c.sha));
