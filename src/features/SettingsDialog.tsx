@@ -32,6 +32,9 @@ import {
 import { SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT } from "@/lib/suggest";
 import { cn } from "@/lib/utils";
 
+// What the System theme follows.
+const DESKTOP = IS_MAC ? "macOS" : "your desktop";
+
 const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "editor", label: "Editor", icon: Code2 },
@@ -136,7 +139,7 @@ function AppearanceSection() {
   const s = useSettings();
   return (
     <>
-      <Field label="Theme" hint="System follows macOS. Dimmed is a softer, lighter dark.">
+      <Field label="Theme" hint={`System follows ${DESKTOP}. Dimmed is a softer, lighter dark.`}>
         <Segmented<Appearance>
           value={s.appearance}
           onChange={(v) => updateSettings({ appearance: v })}
@@ -149,7 +152,7 @@ function AppearanceSection() {
         />
       </Field>
       {s.appearance === "system" && (
-        <Field label="Dark variant" hint="The dark theme System uses while macOS is dark.">
+        <Field label="Dark variant" hint={`The dark theme System uses while ${DESKTOP} is dark.`}>
           <Segmented<Settings["darkVariant"]>
             value={s.darkVariant}
             onChange={(v) => updateSettings({ darkVariant: v })}
@@ -451,7 +454,7 @@ function ShortcutsSection({ recording, setRecording }: { recording: Recording; s
       <div className="sticky top-0 z-10 -mx-5 flex items-center gap-2 bg-elevated px-5 pt-4 pb-3">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle" />
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search commands or keys (e.g. ⌘B)" className="pl-8" />
+          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search commands or keys (e.g. ${formatChord("cmd+b")})`} className="pl-8" />
         </div>
         <Button variant="secondary" disabled={!Object.keys(keybindings).length} onClick={() => updateSettings({ keybindings: {} })}>
           <RotateCcw /> Reset all

@@ -4,6 +4,7 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { REVEAL_FAILED } from "@/lib/commands";
 import { newerCopy, resetGitHubCache, useGitHubCacheVersion } from "@/lib/githubCache";
 import { useShownLanguage, warmHighlighter } from "@/lib/highlight";
 import { prepare } from "@/lib/monaco";
@@ -669,7 +670,7 @@ function VersionInfo() {
 /** The open file's working copy, else the repository's folder (a PR or an issue has no file). */
 function revealInFinder(sel: Selection | undefined) {
   const path = sel && ["file", "unstaged", "staged", "conflict"].includes(sel.kind) ? selectionPath(sel) : "";
-  api.revealPath(path).catch((e) => toast("error", "Could not reveal in Finder", errorMessage(e)));
+  api.revealPath(path).catch((e) => toast("error", REVEAL_FAILED, errorMessage(e)));
 }
 
 /** The open file while it's on disk, at the line in view; else the whole worktree. */

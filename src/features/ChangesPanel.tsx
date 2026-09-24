@@ -36,7 +36,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { Windowed } from "@/components/Windowed";
 import { api, type Commit, errorMessage, type FileChange, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
-import { REVEAL_LABEL } from "@/lib/commands";
+import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/commands";
 import { ignorePattern } from "@/lib/gitignore";
 import { focusPanel } from "@/lib/panels";
 import { pointerMoved } from "@/lib/pointer";
@@ -282,7 +282,7 @@ export function ChangesPanel({ status, head, main, activeKey, onOpen, onHover, r
         >
           <ListTree /> Reveal in Explorer View
         </ContextMenuItem>
-        <ContextMenuItem disabled={!onDisk} onSelect={() => api.revealPath(file.path).catch((e) => toast("error", "Could not reveal in Finder", errorMessage(e)))}>
+        <ContextMenuItem disabled={!onDisk} onSelect={() => api.revealPath(file.path).catch((e) => toast("error", REVEAL_FAILED, errorMessage(e)))}>
           <FolderSearch /> {REVEAL_LABEL}
         </ContextMenuItem>
         <OpenInMenuItem path={file.path} disabled={!onDisk} />

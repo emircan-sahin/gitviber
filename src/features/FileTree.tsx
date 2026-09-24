@@ -3,7 +3,7 @@ import { ChevronRight, Copy, File, FilePlus, FolderPlus, FolderSearch, History, 
 import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
-import { eventChord, formatChord, REVEAL_LABEL } from "@/lib/commands";
+import { eventChord, formatChord, REVEAL_FAILED, REVEAL_LABEL } from "@/lib/commands";
 import { focusPanel } from "@/lib/panels";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/useListNav";
 import { type Selection, selectionKey } from "@/lib/selection";
@@ -230,7 +230,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   };
 
   const copy = (text: string, what: string) => navigator.clipboard.writeText(text).then(() => toast("success", what));
-  const reveal = (path: string) => api.revealPath(path).catch((e) => toast("error", "Could not reveal in Finder", errorMessage(e)));
+  const reveal = (path: string) => api.revealPath(path).catch((e) => toast("error", REVEAL_FAILED, errorMessage(e)));
 
   const onKeyDown = (ev: React.KeyboardEvent) => {
     if (ev.target !== ev.currentTarget || editing) return;

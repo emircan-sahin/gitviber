@@ -13,6 +13,7 @@ const IS_WINDOWS = PLATFORM.startsWith("Win");
 
 /** What the OS calls showing a file in its file manager. */
 export const REVEAL_LABEL = IS_MAC ? "Reveal in Finder" : IS_WINDOWS ? "Show in Explorer" : "Show in Folder";
+export const REVEAL_FAILED = `Could not ${REVEAL_LABEL[0].toLowerCase()}${REVEAL_LABEL.slice(1)}`;
 
 export const COMMANDS = [
   { id: "workbench.showCommands", title: "Command Palette", category: "General", keys: ["shift+cmd+p"] },
