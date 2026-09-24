@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Cherry, Cloud, Copy, ExternalLink, Eye, EyeOff, FolderGit2, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
+import { ArrowDown, ArrowUp, Cherry, SearchCode, Cloud, Copy, ExternalLink, Eye, EyeOff, FolderGit2, GitBranchPlus, GitCommitHorizontal, History, Link, Pencil, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,7 +17,9 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type GraphRefs, type RemoteTags, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
+import { CiBadge } from "@/components/CiBadge";
+import { useCi } from "@/lib/ci";
+import { api, CANCELLED, type CiState, type Commit, type CommitDetails, errorMessage, type FileChange, type GraphRefs, type HistoryEdit, type RemoteTags, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
 import { type GraphRow, type Lane, graphRows } from "@/lib/commitGraph";
 import { matchesCommand } from "@/lib/keybindings";
 import { pointerMoved } from "@/lib/pointer";
@@ -33,6 +35,7 @@ import { FileIcon } from "./FileIcon";
 import { copyLink, openOnGitHub } from "./PullsPanel";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 import { openWorktreeDialog } from "./WorktreeDialogs";
+import { startBisect } from "./BisectBar";
 
 interface Props {
   commits: Commit[];
@@ -49,6 +52,8 @@ interface Props {
   headSha?: string;
   /** Where these commits live on GitHub, when that's not origin: a fork's original has them all. */
   web?: string;
+  /** That repository, owner/name, for its checks. */
+  ciTarget?: string;
   /** What an empty list says. */
   empty?: string;
   /** Draw branches and merges; off for search results, whose neighbours aren't parent and child. */
@@ -93,6 +98,10 @@ interface Actions {
   locked: boolean;
   run: (label: string, fn: () => Promise<void | boolean>, done: string) => Promise<void>;
   name: (kind: "branch" | "tag", commit: Commit) => void;
+  /** Rewrites the branch's history (see HistoryEdit), after warning when it's pushed; `message` asks for a message first. */
+  rewrite: (edit: HistoryEdit, commit: Commit) => Promise<void>;
+  message: (kind: "reword" | "squash", commit: Commit) => void;
+  refresh: () => unknown;
   /** `webUrl` has every listed commit, not only those reached from origin's branches. */
   everyOnWeb: boolean;
   /** Other worktrees with a branch checked out, to cherry-pick onto. */
@@ -107,7 +116,7 @@ interface Actions {
 const commitUrl = (c: Commit, { webUrl, everyOnWeb }: Pick<Actions, "webUrl" | "everyOnWeb">) =>
   webUrl && (c.onOrigin || everyOnWeb) ? `${webUrl}/commit/${c.sha}` : undefined;
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs }: Props) {
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, ciTarget, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs }: Props) {
   const [open, setOpen] = useState<string | null>(reveal?.sha ?? null);
   useEffect(() => {
     if (reveal) setOpen(reveal.sha);
@@ -117,6 +126,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
   const [busy, setBusy] = useState(false);
   const [webUrl, setWebUrl] = useState<string | null>(null);
   const [naming, setNaming] = useState<{ kind: "branch" | "tag"; commit: Commit } | null>(null);
+  const [messaging, setMessaging] = useState<{ kind: "reword" | "squash"; commit: Commit } | null>(null);
 
   // `remotes` is rebuilt on every git refresh, including the one `git remote set-url` causes.
   useEffect(() => {
@@ -159,6 +169,22 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
 
   // HEAD's own history starts at the HEAD the user sees.
   const head = headSha ?? commits[0]?.sha ?? "";
+  const bySha = (sha: string | undefined) => commits.find((x) => x.sha === sha);
+  // Only commits GitHub has have checks: origin's, or all of a fork's original.
+  const ci = useCi(ciTarget ?? null, commits.filter((c) => c.onOrigin || !!web).slice(0, 100).map((c) => c.sha));
+
+  // Everything from the edit's oldest commit on is made again: pushed ones would need a force-push.
+  const rewrite = async (edit: HistoryEdit, c: Commit) => {
+    const oldest = edit.kind === "squash" || (edit.kind === "move" && !edit.up) ? bySha(c.parents[0]) : c;
+    const from = oldest?.parents[0] ?? (oldest ? null : c.parents[0]);
+    const drops = from ? await dropsPushed(from) : false;
+    if (drops === null) return;
+    const verb = { reword: "Reword", squash: edit.kind === "squash" && edit.message === null ? "Fixup" : "Squash", drop: "Drop", move: "Move" }[edit.kind];
+    const warnings = [...(edit.kind === "drop" ? [`Drop "${c.subject}"? Its changes leave the branch.`] : []), ...(drops ? [PUSHED_WARNING] : [])];
+    if (warnings.length && !(await ask(warnings.join("\n\n"), { title: `${verb} commit`, kind: "warning", okLabel: verb }))) return;
+    const done = { reword: "Commit reworded", squash: `Squashed ${c.shortSha} into its parent`, drop: `Dropped ${c.shortSha}`, move: `Moved ${c.shortSha}` }[edit.kind];
+    await run(verb, () => api.rewrite(head, edit), done);
+  };
   const actions: Actions = {
     status,
     headSha: head,
@@ -166,6 +192,9 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     locked: busy || !!status?.operation,
     run,
     name: (kind, commit) => setNaming({ kind, commit }),
+    rewrite,
+    message: (kind, commit) => setMessaging({ kind, commit }),
+    refresh,
     everyOnWeb: !!web,
     pickTargets: worktrees.filter((w) => !w.current && !w.bare && !w.prunable && w.branch),
     pickInto,
@@ -249,6 +278,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
           onOpen={onOpen}
           onHover={onHover}
           url={commitUrl(c, actions)}
+          ci={ci[c.sha]}
           menu={<CommitMenu commit={c} head={c.sha === head} actions={actions} />}
         />
       ))}
@@ -261,6 +291,9 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
         </div>
       )}
       {naming && <NameDialog {...naming} onClose={() => setNaming(null)} run={run} />}
+      {messaging && (
+        <MessageDialog {...messaging} parent={bySha(messaging.commit.parents[0])} onClose={() => setMessaging(null)} onSubmit={(message) => rewrite({ kind: messaging.kind, sha: messaging.commit.sha, message }, messaging.commit)} />
+      )}
     </div>
   );
 }
@@ -393,6 +426,32 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       <ContextMenuItem disabled={locked || !head || !c.parents.length} onSelect={undo}>
         <Undo2 /> Undo commit
       </ContextMenuItem>
+      <ContextMenuSub>
+        {/* Only the branch's own commits: a commit HEAD lacks isn't its history to edit. */}
+        <ContextMenuSubTrigger disabled={locked || c.notInHead}>
+          <Pencil /> Edit history
+        </ContextMenuSubTrigger>
+        <ContextMenuSubContent>
+          <ContextMenuItem onSelect={() => actions.message("reword", c)}>Reword…</ContextMenuItem>
+          <ContextMenuItem disabled={!c.parents.length} onSelect={() => actions.message("squash", c)}>
+            Squash into Parent…
+          </ContextMenuItem>
+          <ContextMenuItem disabled={!c.parents.length} onSelect={() => void actions.rewrite({ kind: "squash", sha: c.sha, message: null }, c)}>
+            Fixup into Parent <span className="ml-auto pl-4 text-[11px] opacity-70">keeps its message</span>
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem disabled={head} onSelect={() => void actions.rewrite({ kind: "move", sha: c.sha, up: true }, c)}>
+            <ArrowUp /> Move Up
+          </ContextMenuItem>
+          <ContextMenuItem disabled={!c.parents.length} onSelect={() => void actions.rewrite({ kind: "move", sha: c.sha, up: false }, c)}>
+            <ArrowDown /> Move Down
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem className="text-destructive" onSelect={() => void actions.rewrite({ kind: "drop", sha: c.sha }, c)}>
+            <Trash2 /> Drop Commit…
+          </ContextMenuItem>
+        </ContextMenuSubContent>
+      </ContextMenuSub>
       {/* Reverting a commit HEAD never had would apply the opposite of a change that isn't there. */}
       <ContextMenuItem disabled={locked || c.notInHead} onSelect={() => run("Revert", () => api.revert(c.sha), `Reverted ${short}`)}>
         <RotateCcw /> Revert commit
@@ -432,6 +491,10 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
         </ContextMenuSubContent>
       </ContextMenuSub>
       <ContextMenuSeparator />
+      {/* HEAD has the bug, this commit didn't: git halves what's between until it finds where it came in. */}
+      <ContextMenuItem disabled={locked || head || c.notInHead} onSelect={() => void startBisect(c.sha, actions.refresh)}>
+        <SearchCode /> Find the Bad Commit Since Here…
+      </ContextMenuItem>
       <ContextMenuItem disabled={locked || head} onSelect={checkout}>
         <GitCommitHorizontal /> Checkout commit
       </ContextMenuItem>
@@ -486,6 +549,62 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
         </>
       )}
     </ContextMenuContent>
+  );
+}
+
+const fullMessage = (c: Commit) => (c.body.trim() ? `${c.subject}\n\n${c.body.trim()}` : c.subject);
+
+/** The message for a reworded commit, or for one squashed into its parent (both messages to start with). */
+function MessageDialog({ kind, commit, parent, onClose, onSubmit }: { kind: "reword" | "squash"; commit: Commit; parent?: Commit; onClose: () => void; onSubmit: (message: string) => void }) {
+  const [message, setMessage] = useState(() => (kind === "reword" ? fullMessage(commit) : [parent && fullMessage(parent), fullMessage(commit)].filter(Boolean).join("\n\n")));
+  const submit = () => {
+    if (!message.trim()) return;
+    onClose();
+    onSubmit(message);
+  };
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogTitle>{kind === "reword" ? "Reword commit" : "Squash into parent"}</DialogTitle>
+        <DialogDescription>
+          {kind === "reword" ? (
+            <>
+              A new message for <span className="font-mono">{commit.shortSha}</span>; its changes stay as they are.
+            </>
+          ) : (
+            <>
+              <span className="font-mono">{commit.shortSha}</span> and the commit before it become one, with this message.
+            </>
+          )}
+        </DialogDescription>
+        <form
+          className="mt-4 flex flex-col gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submit();
+          }}
+        >
+          <Textarea
+            autoFocus
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            onKeyDown={(e) => {
+              // ⌘↵ saves, as in the commit box; a plain ↵ is a new line.
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                submit();
+              }
+            }}
+            rows={8}
+            className="font-mono text-[12px]"
+            spellCheck={false}
+          />
+          <Button type="submit" className="self-end" disabled={!message.trim()}>
+            {kind === "reword" ? "Reword" : "Squash"}
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -552,6 +671,7 @@ function CommitRow({
   onOpen,
   onHover,
   url,
+  ci,
   menu,
 }: {
   commit: Commit;
@@ -567,6 +687,7 @@ function CommitRow({
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
   url: string | undefined;
+  ci?: CiState;
   menu: React.ReactNode;
 }) {
   const [files, setFiles] = useState<FileChange[] | null>(null);
@@ -646,7 +767,8 @@ function CommitRow({
                 <span className="min-w-0 truncate">{commit.authorName}</span>
                 <span>·</span>
                 <CommitTime commit={commit} />
-                <span className="ml-auto shrink-0 font-mono">{commit.shortSha}</span>
+                <CiBadge state={ci} className="ml-auto" />
+                <span className={cn("shrink-0 font-mono", !ci && "ml-auto")}>{commit.shortSha}</span>
               </div>
               <RefBadges refs={commit.refs} remotes={remotes} show={showRefs} />
             </div>

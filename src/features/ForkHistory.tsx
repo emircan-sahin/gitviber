@@ -215,6 +215,7 @@ function OriginalHistory({
       }}
       headSha={headSha}
       web={`https://github.com/${original}`}
+      ciTarget={original}
     />
   );
   if (!missing || !into) return list;

@@ -1,14 +1,18 @@
-import { ChevronDown, Crosshair, GitCompareArrows, GitGraph, X } from "lucide-react";
+import { ChevronDown, Crosshair, GitCompareArrows, GitGraph, History, X } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useRef, useState } from "react";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, type Commit, errorMessage, type GraphRefs } from "@/lib/api";
+import { api, type Branch, type Commit, errorMessage, type FileChange, type GraphRefs } from "@/lib/api";
+import { type Selection, selectionKey } from "@/lib/selection";
+import { FileIcon } from "./FileIcon";
+import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 import { pointerMoved } from "@/lib/pointer";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { HistoryPanel } from "./HistoryPanel";
+import { ReflogDialog } from "./ReflogDialog";
 import { RepoPanes } from "./RepoPanes";
 
 const PAGE = 200;
@@ -182,6 +186,7 @@ export function GraphMenu({
   onCompare: (ref: string) => void;
 }) {
   const [picking, setPicking] = useState<Picking | null>(null);
+  const [reflog, setReflog] = useState(false);
   // Set by the items that open the picker: focus going back to the menu button would close it.
   const opening = useRef(false);
   const pick = (p: Picking) => {
@@ -267,8 +272,12 @@ export function GraphMenu({
             <DropdownMenuItem onSelect={() => pick("compare")}>
               <GitCompareArrows /> Compare with…
             </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setReflog(true)}>
+              <History /> Reflog…
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        {reflog && <ReflogDialog onClose={() => setReflog(false)} />}
       </div>
     </RefPicker>
   );
@@ -416,9 +425,57 @@ export function CompareHistory({ with: ref, current, ours, onClose, ...props }: 
           panes={[
             { id: "incoming", title: "Behind", detail: `in ${name}, not ${current}`, badge: counts?.[1], scrolls: true, children: list(true) },
             { id: "outgoing", title: "Ahead", detail: `in ${current}, not ${name}`, badge: counts?.[0], scrolls: true, children: list(false) },
+            { id: "files", title: "Files", detail: `what ${name} changed since they parted`, scrolls: true, children: <CompareFiles with={ref} ours={ours} activeKey={props.activeKey} onOpen={props.onOpen} /> },
           ]}
         />
       </div>
+    </div>
+  );
+}
+
+/** The files `with` changed since it and HEAD parted: a pull request of it, file by file. */
+function CompareFiles({ with: ref, ours, activeKey, onOpen }: { with: string; ours: Commit[]; activeKey: string | null; onOpen: (s: Selection, pin?: boolean) => void }) {
+  const [found, setFound] = useState<{ base: string; head: string; files: FileChange[] } | { error: string } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    api.compareFiles(ref).then(
+      (f) => alive && setFound(f),
+      (e) => alive && setFound({ error: errorMessage(e) }),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [ref, ours]);
+  if (!found) return <div className="py-1 pl-4 text-[11.5px] text-subtle">Loading…</div>;
+  if ("error" in found) return <div className="px-4 py-2 text-[11.5px] text-muted-foreground">{found.error}</div>;
+  if (!found.files.length) return <div className="py-1 pl-4 text-[11.5px] text-subtle">No changes</div>;
+  const range = { label: shortRef(ref), base: found.base, head: found.head };
+  return (
+    <div role="listbox" aria-label="Changed files">
+      {found.files.map((f) => {
+        const sel: Selection = { kind: "pr-file", range, file: f };
+        const active = activeKey === selectionKey(sel);
+        return (
+          <div
+            key={f.path}
+            role="option"
+            aria-selected={active}
+            tabIndex={-1}
+            onClick={() => onOpen(sel)}
+            onDoubleClick={() => onOpen(sel, true)}
+            className={cn(
+              "relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-4 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+              active ? "bg-primary/15" : "hover:bg-hover focus:bg-hover",
+            )}
+          >
+            {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
+            <FileIcon path={f.path} />
+            <PathLabel path={f.path} className="flex-1" />
+            <LineCounts file={f} />
+            <StatusLetter status={f.status} />
+          </div>
+        );
+      })}
     </div>
   );
 }

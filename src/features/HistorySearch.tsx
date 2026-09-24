@@ -6,6 +6,7 @@ import { useFind } from "@/lib/find";
 import { isTyping, matchesCommand, useShortcut } from "@/lib/keybindings";
 import { isEmptyFilter, parseLogQuery } from "@/lib/logQuery";
 import { toast } from "@/lib/toast";
+import { BisectBar } from "./BisectBar";
 import { ForkHistory } from "./ForkHistory";
 import { CompareHistory, GraphMenu, GraphNotice, hideRefs, useAllBranches, useAllBranchesSetting, useGraphRefs } from "./GraphHistory";
 import { HistoryPanel, type RefMenu, type Reveal } from "./HistoryPanel";
@@ -82,6 +83,7 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
       }}
       className="flex h-full flex-col outline-none"
     >
+      {props.status?.operation?.kind === "bisect" && <BisectBar refresh={props.refresh} />}
       <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border px-2.5">
         {found.pending ? <Loader2 className="size-3.5 shrink-0 animate-spin text-subtle" /> : <Search className="size-3.5 shrink-0 text-subtle" />}
         <input
