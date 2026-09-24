@@ -1,4 +1,4 @@
-import { Check, ChevronsUpDown, GitMerge, Pencil, Undo2 } from "lucide-react";
+import { Check, ChevronsUpDown, Eye, GitMerge, Pencil, Undo2 } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, errorMessage, type FileChange, type Operation } from "@/lib/api";
@@ -71,13 +71,19 @@ export function ConflictView({ file, operation, revision }: Props) {
     });
   const chooseAll = (kind: "ours" | "theirs") => blocks.forEach((b) => choose(b, kind));
 
-  const save = async () => {
-    if (!parsed) return;
-    const out = parsed.segments.flatMap((s) => {
+  // The file as the choices make it; a block not chosen yet keeps its markers (the preview shows them).
+  const result = () =>
+    parsed!.segments.flatMap((s) => {
       if (s.t === "text") return s.lines;
-      const c = choices.get(s.id)!;
+      const c = choices.get(s.id);
+      if (!c) return ["<<<<<<< current", ...s.ours, "=======", ...s.theirs, ">>>>>>> incoming"];
       return c.kind === "custom" && crlf ? c.lines.map((l) => (l.endsWith("\r") ? l : `${l}\r`)) : c.lines;
     });
+  const [preview, setPreview] = useState(false);
+
+  const save = async () => {
+    if (!parsed) return;
+    const out = result();
     setBusy(true);
     try {
       // Something else (an agent, an editor) may have changed the file since we parsed it.
@@ -137,6 +143,9 @@ export function ConflictView({ file, operation, revision }: Props) {
         )}
         {blocks.length > 0 && (
           <div className="ml-auto flex shrink-0 items-center gap-1">
+            <Button variant={preview ? "default" : "secondary"} size="sm" aria-pressed={preview} onClick={() => setPreview((p) => !p)}>
+              <Eye /> Preview result
+            </Button>
             <Button variant="secondary" size="sm" onClick={() => chooseAll("ours")}>
               All current
             </Button>
@@ -153,6 +162,10 @@ export function ConflictView({ file, operation, revision }: Props) {
         <IndentUnit.Provider value={unit}>
           {text == null ? null : blocks.length === 0 ? (
             <WholeFile code={code} busy={busy} onTake={takeSide} onAsIs={markAsIs} rebase={rebase} lossy={lossy} unterminated={unterminated} />
+          ) : preview ? (
+            <div className="py-2">
+              <CodeLines lines={result().map((l) => l.replace(/\r$/, ""))} lang={lang} />
+            </div>
           ) : (
             <div className="py-2">
               {parsed!.segments.map((seg, i) =>

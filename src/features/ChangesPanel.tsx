@@ -1,5 +1,7 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
+  Archive,
+  ArrowUpFromLine,
   ArrowLeftToLine,
   ArrowRightToLine,
   Check,
@@ -17,6 +19,7 @@ import {
   LoaderCircle,
   Minus,
   Plus,
+  RefreshCw,
   ShieldOff,
   Signature,
   Sparkles,
@@ -42,7 +45,7 @@ import { ignorePattern } from "@/lib/gitignore";
 import { focusPanel } from "@/lib/panels";
 import { pointerMoved } from "@/lib/pointer";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/useListNav";
-import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
+import { matchesCommand, runCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { type CommitDraft, loadDraft, saveDraft } from "@/lib/session";
 import { updateSettings, useSettings } from "@/lib/settings";
@@ -54,6 +57,8 @@ import { NESTED_EXPLAINED, stageable } from "@/lib/worktrees";
 import { FileIcon } from "./FileIcon";
 import { OpenInMenuItem } from "./OpenIn";
 import { StashDialog, StashList, useStashes } from "./StashList";
+import { BisectBar } from "./BisectBar";
+import { SubmoduleList, updateSubmodules, useSubmodules } from "./SubmoduleList";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
 interface Props {
@@ -269,6 +274,11 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
             <Minus /> {n > 1 ? `Unstage ${n} Files` : "Unstage Changes"}
           </ContextMenuItem>
         )}
+        {(sel.kind === "unstaged" || sel.kind === "staged") && !status.operation && (
+          <ContextMenuItem onSelect={() => setStashing(rows.filter((r) => !r.file.nested).map((r) => r.file.path))}>
+            <Archive /> {n > 1 ? `Stash ${n} Files…` : "Stash Changes…"}
+          </ContextMenuItem>
+        )}
         {sel.kind === "conflict" && (
           <>
             <ContextMenuItem onSelect={() => stage(rows)}>
@@ -313,7 +323,9 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   };
 
   const stashes = useStashes(full);
-  const [stashing, setStashing] = useState(false);
+  const submodules = useSubmodules(full);
+  // The files to stash, or all of them ([]); null: not stashing.
+  const [stashing, setStashing] = useState<string[] | null>(null);
 
   // The review's progress, whatever the filter shows.
   const total = changeList(full);
@@ -406,7 +418,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   return (
     <div className="flex h-full flex-col">
       {filter.bar}
-      {status.operation && <OperationBanner status={full} refresh={refresh} />}
+      {status.operation?.kind === "bisect" ? <BisectBar refresh={refresh} /> : status.operation && <OperationBanner status={full} refresh={refresh} />}
       {total.length > 0 && (
         <div className="shrink-0 border-b border-border px-3 py-2">
           <div className="flex items-center gap-2 text-[11.5px]">
@@ -529,12 +541,17 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
           </Section>
         )}
         {(stashes.length > 0 || total.length > 0) && (
-          <Section title="Stashes" count={stashes.length} action={total.length > 0 && !status.operation && <SectionBtn onClick={() => setStashing(true)}>Stash…</SectionBtn>}>
+          <Section title="Stashes" count={stashes.length} action={total.length > 0 && !status.operation && <SectionBtn onClick={() => setStashing([])}>Stash…</SectionBtn>}>
             <StashList stashes={stashes} activeKey={activeKey} onOpen={onOpen} onHover={onHover} refresh={refresh} />
           </Section>
         )}
+        {submodules.length > 0 && (
+          <Section title="Submodules" count={submodules.length} action={<SectionBtn onClick={() => void updateSubmodules(refresh)}>Update</SectionBtn>}>
+            <SubmoduleList submodules={submodules} />
+          </Section>
+        )}
       </div>
-      {stashing && <StashDialog status={full} onClose={() => setStashing(false)} refresh={refresh} />}
+      {stashing && <StashDialog status={full} paths={stashing} onClose={() => setStashing(null)} refresh={refresh} />}
       {status.operation ? (
         // Committing by hand mid-rebase would splice an extra commit into the history.
         <div className="shrink-0 border-t border-border bg-panel px-3 py-2.5 text-[11.5px] text-muted-foreground">
@@ -547,7 +564,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   );
 }
 
-const OP_LABEL = { merge: "Merging", rebase: "Rebasing", "cherry-pick": "Cherry-picking", revert: "Reverting" } as const;
+const OP_LABEL = { merge: "Merging", rebase: "Rebasing", "cherry-pick": "Cherry-picking", revert: "Reverting", bisect: "Bisecting" } as const;
 
 /** Shown while a merge/rebase waits for the user: what's happening, what's left, and the way out. */
 function OperationBanner({ status, refresh }: Pick<Props, "status" | "refresh">) {
@@ -862,7 +879,8 @@ function CommitBox({ status, shown, head, main, refresh }: Pick<Props, "status" 
   const pushed = !!amend && !!head && !head.unpushed && !!(status.upstream || status.push?.branch);
   const length = [...draft.summary].length;
 
-  const commit = async () => {
+  // `then`: push or sync right after, as VS Code's Commit & Push (the top bar's commands do it).
+  const commit = async (then?: "git.push" | "git.sync") => {
     if (!canCommit) return;
     dropSuggestion();
     setBusy(true);
@@ -886,6 +904,7 @@ function CommitBox({ status, shown, head, main, refresh }: Pick<Props, "status" 
       if (skipped) toast("info", `${leftOut(all.skipped)} of the commit`, NESTED_EXPLAINED);
     }
     await refresh();
+    if (ok && then) runCommand(then);
   };
 
   const [suggesting, setSuggesting] = useState(false);
@@ -1016,6 +1035,13 @@ function CommitBox({ status, shown, head, main, refresh }: Pick<Props, "status" 
                 <UserPlus /> Add co-author…
               </DropdownMenuItem>
               <DropdownMenuSeparator />
+              <DropdownMenuItem disabled={!canCommit} onSelect={() => commit("git.push")}>
+                <ArrowUpFromLine /> {label} & Push
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={!canCommit} onSelect={() => commit("git.sync")}>
+                <RefreshCw /> {label} & Sync
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               <DropdownMenuCheckboxItem checked={signOff} onCheckedChange={setSignOff}>
                 Sign off <span className="ml-auto text-[11px] opacity-60">this repo</span>
               </DropdownMenuCheckboxItem>
@@ -1029,7 +1055,7 @@ function CommitBox({ status, shown, head, main, refresh }: Pick<Props, "status" 
           label={[target, skipped && leftOut(all.skipped).toLowerCase(), hidden && `including ${files(hidden)} the filter hides`].filter(Boolean).join(", ")}
           shortcut={commitKey}
         >
-          <Button className="ml-auto flex-1" disabled={!canCommit} onClick={commit}>
+          <Button className="ml-auto flex-1" disabled={!canCommit} onClick={() => commit()}>
             {busy ? "Committing…" : hidden ? `${label} · ${hidden} hidden` : label}
           </Button>
         </Tip>

@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Archive, ArchiveRestore, ChevronRight, PackageOpen, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronRight, GitBranchPlus, PackageOpen, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -68,6 +68,7 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
   const [open, setOpen] = useState<string | null>(null);
   const [files, setFiles] = useState<Record<string, StashFiles>>({});
   const [busy, setBusy] = useState(false);
+  const [branching, setBranching] = useState<Stash | null>(null);
   const nav = useListNav({ activeKey });
 
   useEffect(() => {
@@ -183,6 +184,9 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
                 <ContextMenuItem disabled={busy} onSelect={() => apply(s, true)}>
                   <ArchiveRestore /> Pop stash
                 </ContextMenuItem>
+                <ContextMenuItem disabled={busy} onSelect={() => setBranching(s)}>
+                  <GitBranchPlus /> Create Branch from Stash…
+                </ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem disabled={busy} className="text-destructive" onSelect={() => drop(s)}>
                   <Trash2 /> Drop stash…
@@ -199,7 +203,43 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
           </div>
         );
       })}
+      {branching && (
+        <StashBranchDialog
+          stash={branching}
+          onClose={() => setBranching(null)}
+          onCreate={(name) => act("Branch from stash", () => api.stashBranch(name, branching.sha), `Switched to new branch ${name}`, "The stash was applied there and dropped.")}
+        />
+      )}
     </div>
+  );
+}
+
+/** A name for the branch `git stash branch` makes where the stash was taken. */
+function StashBranchDialog({ stash, onClose, onCreate }: { stash: Stash; onClose: () => void; onCreate: (name: string) => void }) {
+  const [name, setName] = useState("");
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogTitle>Create branch from stash</DialogTitle>
+        <DialogDescription>
+          A new branch at the commit “{describe(stash).text}” was made on, with its changes applied there. They can't clash with what came since; the stash is dropped once applied.
+        </DialogDescription>
+        <form
+          className="mt-4 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!name.trim()) return;
+            onClose();
+            onCreate(name.trim());
+          }}
+        >
+          <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Branch name" />
+          <Button type="submit" disabled={!name.trim()}>
+            Create
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -218,17 +258,23 @@ function StashAction({ label, disabled, onClick, children }: { label: string; di
   );
 }
 
-/** Sets local changes aside: tracked ones always, untracked files when asked. */
-export function StashDialog({ status, onClose, refresh }: { status: RepoStatus; onClose: () => void; refresh: () => Promise<void> }) {
+/**
+ * Sets local changes aside: tracked ones always, untracked files when asked, or only what's
+ * staged. With `paths`, only those files (untracked ones among them go too).
+ */
+export function StashDialog({ status, paths = [], onClose, refresh }: { status: RepoStatus; paths?: string[]; onClose: () => void; refresh: () => Promise<void> }) {
   const [message, setMessage] = useState("");
   const [untracked, setUntracked] = useState(false);
+  const [staged, setStaged] = useState(false);
   // Nested repositories are never stashed; git skips them.
   const untrackedCount = status.unstaged.filter((f) => f.status === "?" && !f.nested).length;
+  const some = paths.length > 0;
+  const someUntracked = some && status.unstaged.some((f) => f.status === "?" && paths.includes(f.path));
   const submit = async () => {
     onClose();
     try {
-      await api.stashPush(message, untracked);
-      toast("success", "Changes stashed", message.trim() || undefined);
+      await api.stashPush(message, some ? someUntracked : untracked && !staged, !some && staged, paths);
+      toast("success", some ? `Stashed ${paths.length === 1 ? paths[0] : `${paths.length} files`}` : "Changes stashed", message.trim() || undefined);
     } catch (e) {
       toast("error", "Stash failed", errorMessage(e));
     } finally {
@@ -238,8 +284,11 @@ export function StashDialog({ status, onClose, refresh }: { status: RepoStatus; 
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
-        <DialogTitle>Stash changes</DialogTitle>
-        <DialogDescription>Sets your uncommitted changes aside and leaves the working tree clean. Apply or pop them later from Stashes.</DialogDescription>
+        <DialogTitle>{some ? `Stash ${paths.length === 1 ? paths[0] : `${paths.length} files`}` : "Stash changes"}</DialogTitle>
+        <DialogDescription>
+          {some ? "Sets the changes to these files aside and leaves the rest as they are." : "Sets your uncommitted changes aside and leaves the working tree clean."} Apply or pop them later from
+          Stashes.
+        </DialogDescription>
         <form
           className="mt-4"
           onSubmit={(e) => {
@@ -248,11 +297,19 @@ export function StashDialog({ status, onClose, refresh }: { status: RepoStatus; 
           }}
         >
           <Input autoFocus value={message} onChange={(e) => setMessage(e.target.value)} placeholder="Message (optional)" />
-          <div className="mt-3 flex items-center gap-2">
-            <label className={cn("flex items-center gap-1.5 text-[12px]", !untrackedCount && "text-subtle")}>
-              <input type="checkbox" disabled={!untrackedCount} checked={untracked} onChange={(e) => setUntracked(e.target.checked)} className="accent-primary" />
-              Include {untrackedCount ? `${untrackedCount} untracked ${untrackedCount === 1 ? "file" : "files"}` : "untracked files"}
-            </label>
+          <div className="mt-3 flex items-center gap-3">
+            {!some && (
+              <>
+                <label className={cn("flex items-center gap-1.5 text-[12px]", (!untrackedCount || staged) && "text-subtle")}>
+                  <input type="checkbox" disabled={!untrackedCount || staged} checked={untracked && !staged} onChange={(e) => setUntracked(e.target.checked)} className="accent-primary" />
+                  Include {untrackedCount ? `${untrackedCount} untracked ${untrackedCount === 1 ? "file" : "files"}` : "untracked files"}
+                </label>
+                <label className={cn("flex items-center gap-1.5 text-[12px]", !status.staged.length && "text-subtle")}>
+                  <input type="checkbox" disabled={!status.staged.length} checked={staged} onChange={(e) => setStaged(e.target.checked)} className="accent-primary" />
+                  Only staged changes
+                </label>
+              </>
+            )}
             <Button type="submit" className="ml-auto">
               Stash
             </Button>
