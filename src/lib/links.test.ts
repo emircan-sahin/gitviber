@@ -172,6 +172,59 @@ test("resolves paths with positions, from the file's folder or the root", () => 
   assert.deepEqual(at("https://x.com/a", "url", "README.md"), { url: "https://x.com/a" });
 });
 
+/** How long `fn` takes, in ms. */
+const time = (fn: () => void) => {
+  const t = performance.now();
+  fn();
+  return performance.now() - t;
+};
+
+test("long lines only cost the window around the pointer", () => {
+  // A minified bundle: one 1 MB line of require()s.
+  const bundle = `var a=require("./a.js");`.repeat(45_000);
+  let found: ReturnType<typeof findLinks> = [];
+  const mid = bundle.length / 2;
+  assert.ok(time(() => (found = findLinks(bundle, "javascript", { start: mid, end: mid }))) < 150);
+  assert.ok(found.length > 10 && found.every((l) => bundle.slice(l.start, l.end) === "./a.js"));
+  assert.ok(found.some((l) => l.start <= mid + 10 && l.end >= mid - 30), "the links near the pointer are there");
+  // Wrapped terminal output: 500 KB of paths.
+  const out = "src/lib/api.ts:12 ".repeat(28_000);
+  assert.ok(time(() => (found = findTerminalLinks(out, { start: 250_000, end: 250_080 }))) < 150);
+  assert.ok(found.length > 10 && found.every((l) => /^src\/lib\/api\.ts:12$/.test(out.slice(l.start, l.end))));
+  // Cut by the window: a path half inside it isn't a link to a file named after its tail.
+  const long = `${"a/".repeat(3000)}c.ts`;
+  assert.deepEqual(findTerminalLinks(long).map((l) => l.spec), [long]);
+  assert.deepEqual(findTerminalLinks(long, { start: long.length - 1, end: long.length }), []);
+  // The same line read whole or around the pointer: the same links near it.
+  const line = `see ${"src/lib/api.ts:12 ".repeat(400)}`;
+  const near = { start: 3000, end: 3001 };
+  const around = (ls: ReturnType<typeof findLinks>) => ls.filter((l) => l.end > near.start - 500 && l.start < near.end + 500);
+  assert.deepEqual(around(findLinks(line, "markdown", near)), around(findLinks(line, "markdown")));
+});
+
+test("pathological input stays linear", () => {
+  const bound = 150;
+  assert.ok(time(() => findTerminalLinks(`https://x.com/${".".repeat(100_000)}a`)) < bound, "a URL of dots");
+  assert.ok(time(() => findTerminalLinks(`https://x.com/a${")".repeat(20_000)}`)) < bound, "a URL of closing brackets");
+  assert.deepEqual(findTerminalLinks(`(https://x.com/a_(b)).`).map((l) => l.spec), ["https://x.com/a_(b)"]);
+  assert.ok(time(() => findLinks(`from ${".".repeat(20_000)}`, "python")) < bound, "a python import of dots");
+  assert.ok(time(() => findTerminalLinks(`a${".".repeat(20_000)}b`)) < bound, "a path of dots");
+  assert.ok(time(() => findLinks(`see ${"a.".repeat(20_000)}`, "markdown")) < bound, "a path of dotted names");
+  // .cjsx looks emitted but has no source extension.
+  assert.equal(resolve("./x.cjsx", "module", "src/lib/api.ts"), null);
+});
+
+test("Windows paths", () => {
+  assert.deepEqual(
+    findTerminalLinks(`C:\\repo\\src\\lib\\api.ts:4:2 failed`).map((l) => l.spec),
+    ["C:\\repo\\src\\lib\\api.ts:4:2"],
+  );
+  const open = (spec: string, cwd: string | null) => resolveTerminalLink({ start: 0, end: spec.length, spec, kind: "file" }, cwd, index, "C:/repo");
+  assert.deepEqual(open("C:\\repo\\src\\lib\\api.ts:4:2", null), { path: "src/lib/api.ts", line: 4, column: 2 });
+  assert.deepEqual(open("lib\\api.ts", "src"), { path: "src/lib/api.ts", line: undefined, column: undefined });
+  assert.equal(open("D:\\other\\api.ts", "src"), null);
+});
+
 test("terminal output: URLs, paths from the shell's folder, bare names", () => {
   const term = (line: string) => findTerminalLinks(line).map((l) => [line.slice(l.start, l.end), l.kind]);
   assert.deepEqual(term(`  ➜  Local:   http://localhost:1420/`), [["http://localhost:1420/", "url"]]);

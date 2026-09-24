@@ -14,7 +14,8 @@ interface Found {
 /** The link at `pos` in `lang` code, resolved (null: no link there, or one that goes nowhere). */
 async function linkAt(model: monaco.editor.ITextModel, pos: monaco.IPosition, lang: string, side: LinkSide): Promise<Found | null> {
   // Ends included, as VS Code's links: the pointer's column is the caret spot nearest to it.
-  const link = findLinks(model.getLineContent(pos.lineNumber), lang).find((l) => pos.column >= l.start + 1 && pos.column <= l.end + 1);
+  const at = { start: pos.column - 1, end: pos.column - 1 };
+  const link = findLinks(model.getLineContent(pos.lineNumber), lang, at).find((l) => pos.column >= l.start + 1 && pos.column <= l.end + 1);
   if (!link) return null;
   const target = (await resolverFor(side))(link);
   return target && { range: new monaco.Range(pos.lineNumber, link.start + 1, pos.lineNumber, link.end + 1), target };

@@ -4,7 +4,7 @@
 import type { IDisposable, ILink, Terminal } from "@xterm/xterm";
 import { api, errorMessage, github } from "./api";
 import { IS_MAC } from "./commands";
-import { type Alias, dirname, type FileIndex, findTerminalLinks, indexFiles, type Link, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
+import { type Alias, dirname, type FileIndex, findTerminalLinks, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, slashes, type Target } from "./links";
 import { toast } from "./toast";
 
 /** Where a file's paths resolve: a commit's tree (`<sha>`, `<sha>^`), or the working tree (null) as of `revision`. */
@@ -31,14 +31,13 @@ export function setLinkHost(h: LinkHost | null) {
   host = h;
 }
 
-// A failure (a PR head that isn't fetched) stays cached as no files, rather than running git on every hover.
 const indexes = new Map<string, Promise<FileIndex>>();
-const aliasSets = new Map<string, Promise<Alias[]>>();
+// Per index: aliases read from a tree that failed to list would outlive it.
+const aliasSets = new WeakMap<FileIndex, Map<string, Promise<Alias[]>>>();
 
 /** For a repo switch: the trees were the other repo's. */
 export function resetLinks() {
   indexes.clear();
-  aliasSets.clear();
 }
 
 function cached<T>(map: Map<string, T>, key: string, make: () => T) {
@@ -49,8 +48,17 @@ function cached<T>(map: Map<string, T>, key: string, make: () => T) {
   return value;
 }
 
-const treeKey = (tree: LinkTree) => tree.rev ?? `worktree@${tree.revision}`;
-const indexOf = (tree: LinkTree) => cached(indexes, treeKey(tree), () => (tree.rev ? api.treePaths(tree.rev) : api.listFiles()).then(indexFiles, () => indexFiles([])));
+const NO_FILES = indexFiles([]);
+
+/** A tree's files. A failure (a PR head not fetched yet) isn't kept: the next hover asks again. */
+function indexOf(tree: LinkTree) {
+  const key = tree.rev ?? `worktree@${tree.revision}`;
+  const loading = cached(indexes, key, () => (tree.rev ? api.treePaths(tree.rev) : api.listFiles()).then(indexFiles));
+  return loading.catch(() => {
+    if (indexes.get(key) === loading) indexes.delete(key);
+    return NO_FILES;
+  });
+}
 
 /** Resolves links in the file `side` shows. */
 export async function resolverFor({ path, tree }: LinkSide) {
@@ -59,7 +67,9 @@ export async function resolverFor({ path, tree }: LinkSide) {
     const f = await (tree.rev ? api.textAt(tree.rev, p) : api.readFile(p));
     return f.exists && !f.binary && !f.tooLarge ? f.text : null;
   };
-  const aliases = await cached(aliasSets, `${treeKey(tree)}\0${dirname(path)}`, () => loadAliases(path, index, read));
+  let byDir = aliasSets.get(index);
+  if (!byDir) aliasSets.set(index, (byDir = new Map()));
+  const aliases = await cached(byDir, dirname(path), () => loadAliases(path, index, read));
   const root = host?.root ?? "";
   return (link: Link) => resolveLink(link, path, index, aliases, root);
 }
@@ -105,22 +115,31 @@ export function terminalLinks(term: Terminal, cwd: string): IDisposable {
     provideLinks(y, callback) {
       const h = host;
       const buf = term.buffer.active;
-      // A long line wraps over several rows: read it whole. Its rows are full, so offsets map back
-      // by the width (wide characters take two cells and would shift what follows them).
+      // A long line wraps over several rows: read the rows of it around this one, as far as links
+      // are looked for (LINK_WINDOW). Rows are full, so offsets map back by the width (wide
+      // characters take two cells and would shift what follows them).
+      const reach = Math.ceil(LINK_WINDOW / term.cols) + 1;
       let first = y - 1;
-      while (first > 0 && buf.getLine(first)?.isWrapped) first--;
+      while (first > y - 1 - reach && first > 0 && buf.getLine(first)?.isWrapped) first--;
       let last = y - 1;
-      while (buf.getLine(last + 1)?.isWrapped) last++;
+      while (last < y - 1 + reach && buf.getLine(last + 1)?.isWrapped) last++;
+      // Rows cut off either side: a link at that edge may go on past it.
+      const [cutBefore, cutAfter] = [!!buf.getLine(first)?.isWrapped, !!buf.getLine(last + 1)?.isWrapped];
       let text = "";
       for (let r = first; r <= last; r++) text += buf.getLine(r)?.translateToString(r === last) ?? "";
       const at = (i: number) => ({ x: (i % term.cols) + 1, y: first + Math.floor(i / term.cols) + 1 });
-      const found = findTerminalLinks(text).filter((l) => at(l.start).y <= y && at(l.end - 1).y >= y);
+      const row = (y - 1 - first) * term.cols;
+      const found = findTerminalLinks(text, { start: row, end: row + term.cols }).filter(
+        (l) => at(l.start).y <= y && at(l.end - 1).y >= y && (!cutBefore || l.start > 0) && (!cutAfter || l.end < text.length),
+      );
       if (!found.length || !h) return callback(undefined);
-      const dir = cwd === h.root ? "" : cwd.startsWith(`${h.root}/`) ? cwd.slice(h.root.length + 1) : null;
+      // Windows paths come with backslashes; the index and the links have forward ones.
+      const [root, from] = [slashes(h.root), slashes(cwd)];
+      const dir = from === root ? "" : from.startsWith(`${root}/`) ? from.slice(root.length + 1) : null;
       const needsIndex = found.some((l) => l.kind !== "url");
-      void (needsIndex ? indexOf({ rev: null, revision: h.revision }) : Promise.resolve(indexFiles([]))).then((index) => {
+      void (needsIndex ? indexOf({ rev: null, revision: h.revision }) : Promise.resolve(NO_FILES)).then((index) => {
         const links = found.flatMap((l): ILink[] => {
-          const target = resolveTerminalLink(l, dir, index, h.root);
+          const target = resolveTerminalLink(l, dir, index, root);
           if (!target) return [];
           return [{ range: { start: at(l.start), end: at(l.end - 1) }, text: l.spec, activate: (e) => linkKey(e) && openTarget(target, true) }];
         });

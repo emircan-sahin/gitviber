@@ -57,7 +57,8 @@ const DOC_PATTERNS: Pattern[] = [
   [/\b(?:src|href)\s*=\s*(["'])([^"']+)\1/dg, "doc"],
 ];
 const RUST_PATTERNS: Pattern[] = [[/^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(?:r#)?([A-Za-z_]\w*)\s*;/dg, "rust"]];
-const PYTHON_PATTERNS: Pattern[] = [[/^\s*from\s+(\.+[\w.]*|[A-Za-z_][\w.]*)\s+import\b/dg, "python"]];
+// Dots, then a name that starts with a letter: `\.+[\w.]*` backtracks over a long run of dots.
+const PYTHON_PATTERNS: Pattern[] = [[/^\s*from\s+(\.+(?:[A-Za-z_][\w.]*)?|[A-Za-z_][\w.]*)\s+import\b/dg, "python"]];
 const PATH_PATTERNS: Pattern[] = [[/(["'`])(\.\.?\/[^"'`\s]*)\1/dg, "path"]];
 
 function patternsFor(lang: string): Pattern[] {
@@ -68,63 +69,110 @@ function patternsFor(lang: string): Pattern[] {
 
 type Add = (start: number, spec: string, kind: LinkKind) => void;
 
-/** Collects links; the first to claim some text keeps it. */
+/** Collects links, kept in order; the first to claim some text keeps it. */
 function collector() {
   const out: Link[] = [];
   const add: Add = (start, spec, kind) => {
     const end = start + spec.length;
-    if (spec && !out.some((l) => start < l.end && l.start < end)) out.push({ start, end, spec, kind });
+    if (!spec) return;
+    // The first link starting at or after `start`; only it and the one before can overlap.
+    let lo = 0;
+    for (let hi = out.length; lo < hi; ) {
+      const mid = (lo + hi) >> 1;
+      if (out[mid].start < start) lo = mid + 1;
+      else hi = mid;
+    }
+    if ((lo > 0 && out[lo - 1].end > start) || (lo < out.length && out[lo].start < end)) return;
+    out.splice(lo, 0, { start, end, spec, kind });
   };
-  return { add, links: () => out.sort((a, b) => a.start - b.start) };
+  return { add, links: out };
 }
 
-/** The links in one line of a `lang` file (a Shiki id), in order. */
-export function findLinks(line: string, lang: string): Link[] {
+/** Where a lookup looks: `[start, end)` offsets in the line, the pointer's or the cursor's. */
+export interface Near {
+  start: number;
+  end: number;
+}
+
+// Characters either side of `near` that are read. A minified bundle is one line of a megabyte, and
+// terminal output wraps into one: reading all of it on every pointer move froze the UI.
+export const LINK_WINDOW = 2000;
+
+/**
+ * Runs `find` over the part of `line` around `near` (all of it without one), with offsets in `line`.
+ * `find` is told whether the part starts the line, for patterns anchored there. A link the window
+ * cuts isn't one: its tail could name another file.
+ */
+function windowed(line: string, near: Near | undefined, find: (text: string, whole: boolean, add: Add) => void): Link[] {
+  const from = near ? Math.max(0, near.start - LINK_WINDOW) : 0;
+  const to = near ? Math.min(line.length, near.end + LINK_WINDOW) : line.length;
   const { add, links } = collector();
-  // First: a URL in an import or a markdown link is still a URL.
-  urls(line, add);
-  for (const [re, kind] of patternsFor(lang)) {
-    for (const m of line.matchAll(re)) {
-      const g = m.length - 1;
-      add(m.indices![g]![0], m[g], kind);
+  find(from || to < line.length ? line.slice(from, to) : line, from === 0, add);
+  return links.filter((l) => (from === 0 || l.start > 0) && (to === line.length || l.end < to - from)).map((l) => ({ ...l, start: l.start + from, end: l.end + from }));
+}
+
+/** The links in one line of a `lang` file (a Shiki id), in order; with `near`, only those around it. */
+export function findLinks(line: string, lang: string, near?: Near): Link[] {
+  return windowed(line, near, (text, whole, add) => {
+    // First: a URL in an import or a markdown link is still a URL.
+    urls(text, add);
+    for (const [re, kind] of patternsFor(lang)) {
+      if (!whole && re.source.startsWith("^")) continue;
+      for (const m of text.matchAll(re)) {
+        const g = m.length - 1;
+        add(m.indices![g]![0], m[g], kind);
+      }
     }
-  }
-  if (lang === "python") pythonImports(line, add);
-  // src/lib/api.ts:42 in a comment or a doc. A bare name.ext only with a line, or `a.b` would be one.
-  filePaths(line, add, lang === "markdown" || lang === "text");
-  return links();
+    if (lang === "python" && whole) pythonImports(text, add);
+    // src/lib/api.ts:42 in a comment or a doc. A bare name.ext only with a line, or `a.b` would be one.
+    filePaths(text, add, lang === "markdown" || lang === "text");
+  });
 }
 
 /** The links in a line of terminal output: URLs, and paths with or without a line (`ls` prints bare names). */
-export function findTerminalLinks(line: string): Link[] {
-  const { add, links } = collector();
-  urls(line, add);
-  filePaths(line, add, true);
-  return links();
+export function findTerminalLinks(line: string, near?: Near): Link[] {
+  return windowed(line, near, (text, _, add) => {
+    urls(text, add);
+    filePaths(text, add, true);
+  });
 }
+
+// Left off a URL's end: the sentence around it.
+const TRAILING = new Set([".", ",", ";", ":", "!", "?", "*", "'", '"']);
 
 function urls(line: string, add: Add) {
   for (const m of line.matchAll(/\bhttps?:\/\/[^\s"'`<>{}|\\^]+/gi)) {
-    let url = m[0].replace(/[.,;:!?*'"]+$/, "");
+    const url = m[0];
     // A closing bracket belongs to the URL only if it opened one: (see https://x.com/a_(b)).
-    for (const [open, close] of ["()", "[]"]) {
-      while (url.endsWith(close) && url.split(close).length > url.split(open).length) url = url.slice(0, -1).replace(/[.,;:!?]+$/, "");
+    const count = (c: string) => url.split(c).length - 1;
+    let [parens, brackets] = [count(")") - count("("), count("]") - count("[")];
+    let end = url.length;
+    for (; end > 0; end--) {
+      const c = url[end - 1];
+      if (c === ")" && parens > 0) parens--;
+      else if (c === "]" && brackets > 0) brackets--;
+      else if (!TRAILING.has(c)) break;
     }
-    add(m.index, url, "url");
+    add(m.index, url.slice(0, end), "url");
   }
 }
 
 // A path, then maybe where in it: `:12`, `:12:5`, `(12,5)` (tsc), `#L12`, `#L12C5`, `#L12-L20` (GitHub).
-const FILE = /(?<![\w./@~+-])(?:\.{1,2}\/|\/)?[\w@+-][\w@.+-]*(?:\/[\w@.+-]+)*(?::\d+(?::\d+)?|\(\d+(?:,\s*\d+)?\)|#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?)?/g;
+// Windows too: a drive letter, and backslashes.
+const FILE = /(?<![\w./\\@~+-])(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])?[\w@+-][\w@.+-]*(?:[\\/][\w@.+-]+)*(?::\d+(?::\d+)?|\(\d+(?:,\s*\d+)?\)|#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?)?/g;
 const POSITION = /(?::(\d+)(?::(\d+))?|\((\d+)(?:,\s*(\d+))?\)|#L(\d+)(?:C(\d+))?(?:-L?\d+(?:C\d+)?)?)$/;
 
 function filePaths(line: string, add: Add, bareNames: boolean) {
   for (const m of line.matchAll(FILE)) {
     const at = POSITION.exec(m[0]);
-    // A sentence's full stop isn't the extension's.
-    const path = (at ? m[0].slice(0, at.index) : m[0]).replace(/\.+$/, "");
-    if (!/\.[A-Za-z][\w-]*$/.test(path.slice(path.lastIndexOf("/") + 1)) && !at) continue;
-    if (!path.includes("/") && !at && !bareNames) continue;
+    let path = at ? m[0].slice(0, at.index) : m[0];
+    // A sentence's full stop isn't the extension's (a loop: /\.+$/ backtracks over a run of dots).
+    let end = path.length;
+    while (end > 0 && path[end - 1] === ".") end--;
+    path = path.slice(0, end);
+    const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+    if (!/\.[A-Za-z][\w-]*$/.test(path.slice(slash + 1)) && !at) continue;
+    if (slash < 0 && !at && !bareNames) continue;
     add(m.index, at && path.length === at.index ? m[0] : path, "file");
   }
 }
@@ -184,7 +232,7 @@ const isExternal = (spec: string) => /^([a-z][a-z\d+.-]*:|\/\/|#)/i.test(spec);
 function moduleCandidates(base: string) {
   const dir = base ? `${base}/` : "";
   const ext = /\.[cm]?jsx?$/.exec(base)?.[0];
-  const emitted = ext ? EMITTED[ext].map((e) => base.slice(0, -ext.length) + e) : [];
+  const emitted = ext ? (EMITTED[ext] ?? []).map((e) => base.slice(0, -ext.length) + e) : [];
   return [...(base ? [base, ...MODULE_EXTS.map((e) => base + e)] : []), ...emitted, ...MODULE_EXTS.map((e) => `${dir}index${e}`)];
 }
 
@@ -231,9 +279,15 @@ export function resolveTerminalLink(link: Link, cwd: string | null, index: FileI
   return link.kind === "url" ? { url: link.spec } : resolveFile(link.spec, cwd, index, root);
 }
 
+/** A path with forward slashes, as git and the index have them (Windows prints backslashes). */
+export const slashes = (p: string) => p.replace(/\\/g, "/");
+
 function resolveFile(spec: string, dir: string | null, index: FileIndex, root: string): Target | null {
-  const { path, line, column } = splitPosition(spec);
-  const candidates = path.startsWith("/") ? [root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : null] : dir == null ? [] : [join(dir, path), join("", path)];
+  const { path: raw, line, column } = splitPosition(spec);
+  const path = slashes(raw);
+  const base = slashes(root);
+  const absolute = path.startsWith("/") || /^[A-Za-z]:\//.test(path);
+  const candidates = absolute ? [base && path.startsWith(`${base}/`) ? path.slice(base.length + 1) : null] : dir == null ? [] : [join(slashes(dir), path), join("", path)];
   const found = firstIn(index.files, candidates.filter((c): c is string => !!c));
   return found ? { path: found, line, column } : null;
 }
