@@ -18,7 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type RemoteTags, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
-import { type GraphRow, graphRows } from "@/lib/commitGraph";
+import { type GraphRow, type Lane, graphRows } from "@/lib/commitGraph";
 import { matchesCommand } from "@/lib/keybindings";
 import { withNetActivity } from "@/lib/netActivity";
 import { forgetRemoteTags, remoteTags } from "@/lib/remoteTags";
@@ -166,6 +166,26 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
 
   // Without the graph, one line joins each row to the next.
   const rows = useMemo(() => graphRows(graph ? commits : commits.map((c, i) => ({ sha: c.sha, parents: i + 1 < commits.length ? [commits[i + 1].sha] : [] }))), [commits, graph]);
+  // Hovering a commit brings its branch forward, and a merge's merged-in one. Only the lines
+  // involved change: rewriting a stylesheet restyled the whole app on each row a scroll carried by.
+  const lit = useRef<{ row: GraphRow; lines: Element[] } | null>(null);
+  const pointer = useRef("");
+  const light = (row: GraphRow | null) => {
+    const list = scroller.current;
+    if (!list || (lit.current?.row ?? null) === row) return;
+    for (const el of lit.current?.lines ?? []) el.removeAttribute("data-lit");
+    const ids = row ? new Set([row.id, ...row.out.map((l) => l.id)]) : [];
+    const lines = [...ids].flatMap((id) => [...list.querySelectorAll(`[data-lane="${id}"]`)]);
+    for (const el of lines) el.setAttribute("data-lit", "");
+    lit.current = row ? { row, lines } : null;
+    list.toggleAttribute("data-dim", !!row);
+  };
+  // WebKit sends a mousemove as rows scroll under a still pointer; only a real move lights a row.
+  const point = (row: GraphRow, e: React.MouseEvent) => {
+    const at = `${e.screenX},${e.screenY}`;
+    if (at !== pointer.current) light(row);
+    pointer.current = at;
+  };
 
   const more = () => loadMore().catch((e) => toast("error", "Could not load history", errorMessage(e)));
   const nav = useListNav({ activeKey, loadMore: hasMore ? more : null });
@@ -175,7 +195,12 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
   }
 
   return (
-    <div ref={scroller} className="h-full overflow-x-hidden overflow-y-auto py-1">
+    <div
+      ref={scroller}
+      onScroll={() => light(null)}
+      onMouseLeave={() => light(null)}
+      className="h-full overflow-x-hidden overflow-y-auto py-1 [&[data-dim]_[data-lane]:not([data-lit])]:opacity-25"
+    >
       <div role="tree" aria-label="History" {...nav}>
       {commits.map((c, i) => (
         <CommitRow
@@ -183,6 +208,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
           commit={c}
           remotes={remotes}
           graph={rows[i]}
+          onPoint={point}
           open={open === c.sha}
           reveal={reveal?.sha === c.sha ? reveal : null}
           onToggle={(el) => toggle(c.sha, el)}
@@ -460,6 +486,7 @@ function CommitRow({
   commit,
   remotes,
   graph,
+  onPoint,
   open,
   reveal,
   onToggle,
@@ -472,6 +499,7 @@ function CommitRow({
   commit: Commit;
   remotes: Set<string>;
   graph: GraphRow;
+  onPoint: (row: GraphRow, e: React.MouseEvent) => void;
   open: boolean;
   reveal: Reveal | null;
   onToggle: (row: HTMLElement) => void;
@@ -513,12 +541,11 @@ function CommitRow({
     if (file) onOpen({ kind: "commit", commit, file, url });
   }, [reveal, open, files, commit, url, onOpen]);
 
-  const merge = commit.parents.length > 1;
   const add = files?.reduce((n, f) => n + (f.additions ?? 0), 0) ?? 0;
   const del = files?.reduce((n, f) => n + (f.deletions ?? 0), 0) ?? 0;
 
   return (
-    <div className="relative">
+    <div className="relative" onMouseMove={(e) => onPoint(graph, e)}>
       <GraphLines row={graph} />
       <ContextMenu>
         <ContextMenuTrigger asChild>
@@ -537,13 +564,17 @@ function CommitRow({
             <span
               className={cn(
                 "relative z-10 mt-[3px] size-[9px] shrink-0 rounded-full border-2",
-                commit.unpushed ? "border-primary bg-primary" : commit.notInHead ? "border-added bg-added" : merge ? "border-renamed bg-sidebar" : "border-subtle bg-sidebar",
+                commit.unpushed ? "border-primary bg-primary" : commit.notInHead ? "border-added bg-added" : "border-subtle bg-sidebar",
               )}
               title={commit.unpushed ? "Not pushed yet" : commit.notInHead ? "Not in your branch yet" : undefined}
               aria-label={commit.unpushed ? "Not pushed yet" : commit.notInHead ? "Not in your branch yet" : undefined}
               role={commit.unpushed || commit.notInHead ? "img" : undefined}
-              // In its lane, with the text after the row's last lane.
-              style={{ marginLeft: laneOf(graph.col) * LANE, marginRight: (lanesOf(graph) - 1 - laneOf(graph.col)) * LANE }}
+              // In its lane and its colour, with the text after the row's last lane.
+              style={{
+                marginLeft: laneOf(graph.col) * LANE,
+                marginRight: (lanesOf(graph) - 1 - laneOf(graph.col)) * LANE,
+                borderColor: commit.unpushed || commit.notInHead || !graph.id ? undefined : laneColor(graph.id),
+              }}
             />
             <div className="min-w-0 flex-1">
               <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
@@ -622,28 +653,32 @@ const MAX_LANES = 8;
 const laneOf = (i: number) => Math.min(i, MAX_LANES - 1);
 const lanesOf = (row: GraphRow) => Math.min(row.width, MAX_LANES);
 const laneX = (i: number) => LANE_X + laneOf(i) * LANE;
-// The first lane is the branch itself, in the quiet line it has always been; merged-in branches get colour.
+// Colour follows the branch, not the column. The list's own branch is grey like its dots, but not
+// border-faint: branches have to be seen joining it.
 const LANE_COLORS = ["var(--renamed)", "var(--modified)", "var(--primary)", "var(--conflict)", "var(--added)"];
-const laneColor = (i: number) => (i === 0 ? "var(--border-strong)" : LANE_COLORS[(i - 1) % LANE_COLORS.length]);
+const laneColor = (id: number) => (id === 0 ? "var(--subtle)" : LANE_COLORS[(id - 1) % LANE_COLORS.length]);
 
 /** A row's share of the graph: lines passing by, ending at the dot, and leaving it for its parents. */
 function GraphLines({ row }: { row: GraphRow }) {
   const x = laneX(row.col);
-  const shown = (i: number) => i < MAX_LANES || i === row.col;
-  const line = (i: number, from: number | string, to: number | string, key: string) => <line key={key} x1={laneX(i)} x2={laneX(i)} y1={from} y2={to} stroke={laneColor(i)} />;
+  const shown = (l: Lane) => l.col < MAX_LANES || l.col === row.col;
+  const curve = (l: Lane, d: string, key: string) => <path key={key} data-lane={l.id} d={d} stroke={laneColor(l.id)} />;
+  const line = (l: Lane, from: number | string, to: number | string, key: string) => (
+    <line key={key} data-lane={l.id} x1={laneX(l.col)} x2={laneX(l.col)} y1={from} y2={to} stroke={laneColor(l.id)} />
+  );
   return (
     <svg aria-hidden className="pointer-events-none absolute inset-y-0 left-0 h-full" width={laneX(lanesOf(row) - 1) + LANE / 2} fill="none">
-      {row.through.filter(shown).map((i) => line(i, 0, "100%", `t${i}`))}
-      {row.into.filter(shown).map((i) =>
-        i === row.col ? line(i, 0, DOT_Y, `i${i}`) : <path key={`i${i}`} d={`M${laneX(i)} 0C${laneX(i)} ${DOT_Y} ${x} 0 ${x} ${DOT_Y}`} stroke={laneColor(i)} />,
+      {row.through.filter(shown).map((l) => line(l, 0, "100%", `t${l.col}`))}
+      {row.into.filter(shown).map((l) =>
+        l.col === row.col ? line(l, 0, DOT_Y, `i${l.col}`) : curve(l, `M${laneX(l.col)} 0C${laneX(l.col)} ${DOT_Y} ${x} 0 ${x} ${DOT_Y}`, `i${l.col}`),
       )}
-      {row.out.filter(shown).map((j) =>
-        j === row.col ? (
-          line(j, DOT_Y, "100%", `o${j}`)
+      {row.out.filter(shown).map((l) =>
+        l.col === row.col ? (
+          line(l, DOT_Y, "100%", `o${l.col}`)
         ) : (
-          <Fragment key={`o${j}`}>
-            <path d={`M${x} ${DOT_Y}C${x} ${BEND_Y} ${laneX(j)} ${DOT_Y} ${laneX(j)} ${BEND_Y}`} stroke={laneColor(j)} />
-            {line(j, BEND_Y, "100%", `b${j}`)}
+          <Fragment key={`o${l.col}`}>
+            {curve(l, `M${x} ${DOT_Y}C${x} ${BEND_Y} ${laneX(l.col)} ${DOT_Y} ${laneX(l.col)} ${BEND_Y}`, "c")}
+            {line(l, BEND_Y, "100%", "b")}
           </Fragment>
         ),
       )}

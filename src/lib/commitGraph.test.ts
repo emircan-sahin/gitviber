@@ -1,14 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { graphRows } from "./commitGraph.ts";
+import { type GraphRow, graphRows } from "./commitGraph.ts";
 
 const c = (sha: string, ...parents: string[]) => ({ sha, parents });
 
+// Lanes as [column, branch] pairs, to keep the expected rows short.
+const flat = (r: GraphRow) => ({ ...r, through: r.through.map((l) => [l.col, l.id]), into: r.into.map((l) => [l.col, l.id]), out: r.out.map((l) => [l.col, l.id]) });
+
 test("a straight history stays in one lane", () => {
-  assert.deepEqual(graphRows([c("c", "b"), c("b", "a"), c("a")]), [
-    { col: 0, through: [], into: [], out: [0], width: 1 },
-    { col: 0, through: [], into: [0], out: [0], width: 1 },
-    { col: 0, through: [], into: [0], out: [], width: 1 },
+  assert.deepEqual(graphRows([c("c", "b"), c("b", "a"), c("a")]).map(flat), [
+    { col: 0, id: 0, through: [], into: [], out: [[0, 0]], width: 1 },
+    { col: 0, id: 0, through: [], into: [[0, 0]], out: [[0, 0]], width: 1 },
+    { col: 0, id: 0, through: [], into: [[0, 0]], out: [], width: 1 },
   ]);
 });
 
@@ -19,12 +22,19 @@ test("a merge opens a lane for the merged branch, which closes where it forked",
   //  b |
   //  |/
   //  a
-  assert.deepEqual(graphRows([c("m", "b", "f"), c("f", "a"), c("b", "a"), c("a")]), [
-    { col: 0, through: [], into: [], out: [0, 1], width: 2 },
-    { col: 1, through: [0], into: [1], out: [1], width: 2 },
-    { col: 0, through: [1], into: [0], out: [0], width: 2 },
-    { col: 0, through: [], into: [0, 1], out: [], width: 2 },
+  assert.deepEqual(graphRows([c("m", "b", "f"), c("f", "a"), c("b", "a"), c("a")]).map(flat), [
+    { col: 0, id: 0, through: [], into: [], out: [[0, 0], [1, 1]], width: 2 },
+    { col: 1, id: 1, through: [[0, 0]], into: [[1, 1]], out: [[1, 1]], width: 2 },
+    { col: 0, id: 0, through: [[1, 1]], into: [[0, 0]], out: [[0, 0]], width: 2 },
+    { col: 0, id: 0, through: [], into: [[0, 0], [1, 1]], out: [], width: 2 },
   ]);
+});
+
+test("a branch keeps its own id in a reused column", () => {
+  // f's lane closes at m1; g's opens in the same column, but it's another branch.
+  const rows = graphRows([c("m2", "m1", "g"), c("g", "m1"), c("m1", "b", "f"), c("f", "b"), c("b")]);
+  assert.equal(rows[1].col, rows[3].col);
+  assert.notEqual(rows[1].id, rows[3].id);
 });
 
 test("a freed lane is reused rather than widening the graph", () => {
@@ -34,7 +44,7 @@ test("a freed lane is reused rather than widening the graph", () => {
 
 test("a parent listed above its child gets no line", () => {
   // Clock skew: git's date order put the parent first.
-  assert.deepEqual(graphRows([c("a"), c("b", "a")])[1], { col: 0, through: [], into: [], out: [], width: 1 });
+  assert.deepEqual(graphRows([c("a"), c("b", "a")])[1], { col: 0, id: 1, through: [], into: [], out: [], width: 1 });
 });
 
 test("a row is only as wide as the lanes it draws", () => {
@@ -44,5 +54,5 @@ test("a row is only as wide as the lanes it draws", () => {
 });
 
 test("a parent past the loaded page keeps its lane open to the bottom", () => {
-  assert.deepEqual(graphRows([c("b", "a")])[0].out, [0]);
+  assert.deepEqual(graphRows([c("b", "a")])[0].out, [{ col: 0, id: 0 }]);
 });
