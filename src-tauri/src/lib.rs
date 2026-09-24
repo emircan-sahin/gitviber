@@ -4,6 +4,7 @@ mod errors;
 mod fs;
 mod git;
 mod github;
+mod grep;
 mod journal;
 mod lfs;
 mod menu;
@@ -315,6 +316,19 @@ async fn list_dir(state: State<'_, AppState>, path: String) -> Res<Vec<fs::Entry
 async fn list_files(state: State<'_, AppState>) -> Res<Vec<String>> {
     let r = repo(&state)?;
     blocking(move || fs::list_files(&r)).await
+}
+
+/// Search in files; a newer search stops this one, which then fails with grep::CANCELLED.
+#[tauri::command]
+async fn search_files(state: State<'_, AppState>, query: grep::Query) -> Res<grep::Found> {
+    let r = repo(&state)?;
+    blocking(move || grep::search(&r, &query)).await
+}
+
+/// Stops the running search: its query was cleared, or the view went.
+#[tauri::command]
+fn cancel_search() {
+    grep::cancel();
 }
 
 #[tauri::command]
@@ -1582,6 +1596,8 @@ pub fn run() {
             media,
             list_dir,
             list_files,
+            search_files,
+            cancel_search,
             read_file,
             blame,
             branches,

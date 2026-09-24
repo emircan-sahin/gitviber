@@ -2775,3 +2775,180 @@ fn last_fetch_counts_the_main_worktree() {
     assert!(last_fetch(&linked).is_some());
     assert_eq!(last_fetch(&linked), last_fetch(a));
 }
+
+// Search in files. One search runs at a time (a newer one stops the older), so these take turns.
+use crate::grep;
+
+static GREP_TURN: Mutex<()> = Mutex::new(());
+
+fn grep_repo(sb: &Sandbox) -> PathBuf {
+    let r = sb.path("r");
+    init(&r);
+    write_commit(
+        &r,
+        "src/app.ts",
+        "const Needle = 1;\nneedle();\nneedles\n",
+        "a",
+    );
+    write_commit(&r, "docs/guide.md", "a needle here\n", "b");
+    fs::write(r.join(".gitignore"), "build/\n").unwrap();
+    fs::create_dir_all(r.join("build")).unwrap();
+    fs::write(r.join("build/out.ts"), "needle\n").unwrap();
+    // Untracked, not ignored: searched, as the explorer lists it.
+    fs::write(r.join("notes.txt"), "needle in notes\n").unwrap();
+    fs::write(r.join("blob.bin"), b"needle\0\x01\x02").unwrap();
+    r
+}
+
+fn grep_query(text: &str) -> grep::Query {
+    grep::Query {
+        text: text.into(),
+        ..Default::default()
+    }
+}
+
+fn hits(found: &grep::Found) -> Vec<(String, u32)> {
+    found
+        .files
+        .iter()
+        .flat_map(|f| f.hits.iter().map(|h| (f.path.clone(), h.line)))
+        .collect()
+}
+
+#[test]
+fn grep_searches_what_the_explorer_lists() {
+    let _turn = GREP_TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new("grep-files");
+    let r = grep_repo(&sb);
+    let found = grep::search(&r, &grep_query("needle")).unwrap();
+    // Any case by default; ignored and binary files left out.
+    assert_eq!(
+        hits(&found),
+        [
+            ("docs/guide.md".into(), 1),
+            ("notes.txt".into(), 1),
+            ("src/app.ts".into(), 1),
+            ("src/app.ts".into(), 2),
+            ("src/app.ts".into(), 3),
+        ]
+    );
+    assert_eq!(found.count, 5);
+    assert!(!found.capped && !found.timed_out);
+    assert_eq!(found.files[2].hits[0].text, "const Needle = 1;");
+    assert_eq!(grep::search(&r, &grep_query("absent")).unwrap().count, 0);
+}
+
+#[test]
+fn grep_options_case_word_regex() {
+    let _turn = GREP_TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new("grep-options");
+    let r = grep_repo(&sb);
+    let only_app = |q: grep::Query| {
+        let q = grep::Query {
+            include: "src".into(),
+            ..q
+        };
+        hits(&grep::search(&r, &q).unwrap())
+            .into_iter()
+            .map(|(_, l)| l)
+            .collect::<Vec<_>>()
+    };
+    let q = grep_query("Needle");
+    assert_eq!(
+        only_app(grep::Query {
+            match_case: true,
+            ..q.clone()
+        }),
+        [1]
+    );
+    assert_eq!(
+        only_app(grep::Query {
+            whole_word: true,
+            ..q.clone()
+        }),
+        [1, 2]
+    );
+    assert_eq!(
+        only_app(grep::Query {
+            text: r"needle\(\)|needles$".into(),
+            regex: true,
+            ..q.clone()
+        }),
+        [2, 3]
+    );
+    // Not a regex: its characters are literal.
+    assert_eq!(only_app(grep_query("needle()")), [2]);
+    // A regex that doesn't parse is git's error, not an empty result.
+    let bad = grep::Query {
+        text: "(".into(),
+        regex: true,
+        ..q
+    };
+    assert!(grep::search(&r, &bad).is_err());
+}
+
+#[test]
+fn grep_include_and_exclude_globs() {
+    let _turn = GREP_TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new("grep-globs");
+    let r = grep_repo(&sb);
+    let files = |include: &str, exclude: &str| {
+        let q = grep::Query {
+            include: include.into(),
+            exclude: exclude.into(),
+            ..grep_query("needle")
+        };
+        let found = grep::search(&r, &q).unwrap();
+        found.files.into_iter().map(|f| f.path).collect::<Vec<_>>()
+    };
+    assert_eq!(files("*.ts", ""), ["src/app.ts"]);
+    assert_eq!(files("*.md, *.txt", ""), ["docs/guide.md", "notes.txt"]);
+    // A bare folder name, and a path.
+    assert_eq!(files("docs", ""), ["docs/guide.md"]);
+    assert_eq!(files("src/**", ""), ["src/app.ts"]);
+    assert_eq!(files("", "src, *.md"), ["notes.txt"]);
+    assert_eq!(files("*.ts,*.md", "docs"), ["src/app.ts"]);
+    // Braces, which git's globs don't have.
+    assert_eq!(files("*.{ts,md}", ""), ["docs/guide.md", "src/app.ts"]);
+    assert_eq!(files("", "{docs,src}"), ["notes.txt"]);
+}
+
+#[test]
+fn grep_stops_at_the_cap_and_cuts_long_lines() {
+    let _turn = GREP_TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new("grep-cap");
+    let r = sb.path("r");
+    init(&r);
+    let many = "hit\n".repeat(grep::MAX_HITS + 500);
+    fs::write(r.join("many.txt"), &many).unwrap();
+    let found = grep::search(&r, &grep_query("hit")).unwrap();
+    assert!(found.capped);
+    assert_eq!(found.count, grep::MAX_HITS);
+    // A minified line: the match and a little around it, not megabytes.
+    fs::remove_file(r.join("many.txt")).unwrap();
+    let line = format!("{}target{}\n", "x".repeat(200_000), "y".repeat(200_000));
+    fs::write(r.join("min.js"), line).unwrap();
+    let found = grep::search(&r, &grep_query("target")).unwrap();
+    let text = &found.files[0].hits[0].text;
+    assert!(
+        text.contains("target") && text.len() < 400,
+        "{}",
+        text.len()
+    );
+}
+
+#[test]
+fn grep_a_newer_search_stops_an_older_one() {
+    let _turn = GREP_TURN.lock().unwrap_or_else(|e| e.into_inner());
+    let sb = Sandbox::new("grep-cancel");
+    let r = grep_repo(&sb);
+    // Overtaken before it starts: it doesn't run.
+    let id = grep::LATEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    grep::LATEST.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        grep::run(&r, &grep_query("needle"), id, true).unwrap_err(),
+        grep::CANCELLED
+    );
+    // The latest one does.
+    assert_eq!(grep::search(&r, &grep_query("needle")).unwrap().count, 5);
+}

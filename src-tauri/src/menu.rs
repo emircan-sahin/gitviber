@@ -135,6 +135,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &native(PredefinedMenuItem::copy)?,
             &native(PredefinedMenuItem::paste)?,
             &native(PredefinedMenuItem::select_all)?,
+            &sep()?,
+            &b.command("editor.find", "Find")?,
+            &b.command("search.findInFiles", "Find in Files")?,
         ],
     )?;
 
