@@ -1,5 +1,6 @@
 mod diff;
 mod display;
+mod errors;
 mod fs;
 mod git;
 mod github;
@@ -1504,6 +1505,12 @@ fn open_url(url: String) -> Res<()> {
     github::open_url(&url)
 }
 
+/// The page's errors (src/lib/errorLog.ts), into the app's error log.
+#[tauri::command]
+fn log_error(source: String, message: String) {
+    errors::write(&source, &message);
+}
+
 #[tauri::command]
 fn set_menu(
     app: AppHandle,
@@ -1538,6 +1545,9 @@ pub fn run() {
         })
         .manage(AppState::default())
         .setup(|app| {
+            if let Ok(dir) = app.path().app_log_dir() {
+                errors::init(dir);
+            }
             #[cfg(target_os = "macos")]
             menu::keep_typed_key_equivalents();
             if let Some(webview) = app.get_webview_window("main") {
@@ -1556,6 +1566,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            log_error,
             open_repo,
             git_info,
             install_git,

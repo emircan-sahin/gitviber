@@ -111,6 +111,7 @@ Credential Manager). The token stays in memory.
 ## Privacy
 
 No API keys, no telemetry. The app talks to your git remotes and, for pull requests and issues, GitHub.
+Errors go to a local file (`~/Library/Logs/app.gitviber.desktop/errors.log` on macOS) and nowhere else.
 It only reads files inside the repository you open. Markdown from GitHub is cut down to
 GitHub's own HTML allowlist (no scripts, styles or forms), and an image hosted outside GitHub
 loads only when you click it.

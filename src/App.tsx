@@ -160,8 +160,8 @@ class WorkspaceBoundary extends Component<{ children: ReactNode; onOpenRepo: () 
   static getDerivedStateFromError(e: unknown) {
     return { error: e instanceof Error && e.stack ? e.stack : errorMessage(e) };
   }
-  componentDidCatch(e: unknown, info: ErrorInfo) {
-    console.error(e, info.componentStack);
+  // Logged with its component stack by main.tsx.
+  componentDidCatch(_: unknown, info: ErrorInfo) {
     // The component stack names what threw; the JS stack alone is minified in release builds.
     this.setState((s) => ({ error: `${s.error}\n${info.componentStack ?? ""}` }));
   }
