@@ -74,13 +74,20 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let submenu =
         |text: &str, items: &[&dyn IsMenuItem<Wry>]| Submenu::with_items(app, text, true, items);
 
+    // Opens the app's own About window: a native panel can't hold links or buttons.
+    let about = b.command("app.about", "About GitViber")?;
+    let settings = b.command("workbench.openSettings", "Settings…")?;
+    // The app menu and Window are macOS's. GTK only builds separators, clipboard items and
+    // About, so off macOS they'd be near empty: Settings goes under File and About under
+    // Help instead, as Linux apps have them.
+    let mac = cfg!(target_os = "macos");
+
     let app_menu = submenu(
         "GitViber",
         &[
-            // Opens the app's own About window: a native panel can't hold links or buttons.
-            &b.command("app.about", "About GitViber")?,
+            &about,
             &sep()?,
-            &b.command("workbench.openSettings", "Settings…")?,
+            &settings,
             &sep()?,
             &native(PredefinedMenuItem::services)?,
             &sep()?,
@@ -113,6 +120,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &b.command("file.openIn", "Open in…")?,
         ],
     )?;
+    if !mac {
+        file.append_items(&[&sep()?, &settings])?;
+    }
 
     // The native items, so text fields keep their own undo, clipboard and selection.
     let edit = submenu(
@@ -224,6 +234,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &b.command("help.license", "View License")?,
         ],
     )?;
+    if !mac {
+        help.append_items(&[&sep()?, &about])?;
+    }
 
     // Window lists the open windows; Help gets macOS's search box, which finds menu items.
     #[cfg(target_os = "macos")]
@@ -232,10 +245,14 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         help.set_as_help_menu_for_nsapp()?;
     }
 
-    let menu = Menu::with_items(
-        app,
-        &[&app_menu, &file, &edit, &view, &go, &git, &window, &help],
-    )?;
+    let menu = if mac {
+        Menu::with_items(
+            app,
+            &[&app_menu, &file, &edit, &view, &go, &git, &window, &help],
+        )?
+    } else {
+        Menu::with_items(app, &[&file, &edit, &view, &go, &git, &help])?
+    };
     app.manage(Handles {
         items: b.items,
         recent,
