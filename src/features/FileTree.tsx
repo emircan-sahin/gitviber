@@ -3,7 +3,7 @@ import { ChevronRight, Copy, File, FilePlus, FolderPlus, FolderSearch, History, 
 import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
-import { REVEAL_LABEL } from "@/lib/commands";
+import { eventChord, formatChord, REVEAL_LABEL } from "@/lib/commands";
 import { focusPanel } from "@/lib/panels";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/useListNav";
 import { type Selection, selectionKey } from "@/lib/selection";
@@ -269,7 +269,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       else if (parentOf(cur.path)) setSelected(parentOf(cur.path));
     } else if (ev.key === "Enter") activate(cur, true);
     else if (ev.key === "F2") setEditing({ mode: "rename", entry: cur });
-    else if (ev.key === "Backspace" && ev.metaKey) remove(cur);
+    else if (eventChord(ev) === "cmd+backspace") remove(cur);
     else handled = false;
     if (handled) ev.preventDefault();
   };
@@ -410,7 +410,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
               </ContextMenuItem>
             )}
             <ContextMenuItem onSelect={() => remove(t)}>
-              <Trash2 /> Delete <ContextMenuShortcut>⌘⌫</ContextMenuShortcut>
+              <Trash2 /> Delete <ContextMenuShortcut>{formatChord("cmd+backspace")}</ContextMenuShortcut>
             </ContextMenuItem>
           </>
         )}
