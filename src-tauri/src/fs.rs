@@ -348,7 +348,7 @@ fn is_link(p: &Path) -> bool {
     p.symlink_metadata().is_ok_and(|m| m.is_symlink())
 }
 
-fn copy_entry(src: &Path, dst: &Path) -> Result<(), String> {
+pub(crate) fn copy_entry(src: &Path, dst: &Path) -> Result<(), String> {
     #[cfg(unix)]
     if is_link(src) {
         let target = std::fs::read_link(src).map_err(|e| e.to_string())?;
@@ -414,12 +414,17 @@ fn move_to_trash(path: &Path) -> Result<PathBuf, String> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
-fn move_to_trash(_: &Path) -> Result<PathBuf, String> {
-    Err("Moving to Trash is only supported on macOS".into())
+#[cfg(target_os = "linux")]
+fn move_to_trash(path: &Path) -> Result<PathBuf, String> {
+    crate::trash::move_to_trash(path)
 }
 
-/// Selects the entry in a Finder window. `rel` may be empty for the repo root.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn move_to_trash(_: &Path) -> Result<PathBuf, String> {
+    Err("Moving to Trash is not supported on this platform yet".into())
+}
+
+/// Selects the entry in the file manager. `rel` may be empty for the repo root.
 pub fn reveal(root: &Path, rel: &str) -> Result<(), String> {
     // Like the other entry actions, a link is revealed itself, wherever it points.
     let path = if rel.is_empty() {
@@ -438,10 +443,40 @@ pub fn reveal(root: &Path, rel: &str) -> Result<(), String> {
         Ok(s) => Err(format!("open -R failed ({s})")),
         Err(e) => Err(e.to_string()),
     };
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::{Command, Stdio};
+        // The file manager's own interface selects the entry (Dolphin, Nautilus, Nemo, …).
+        let uri = format!("array:string:file://{}", crate::trash::encode(&path));
+        let shown = Command::new("dbus-send")
+            .args([
+                "--session",
+                "--print-reply",
+                "--dest=org.freedesktop.FileManager1",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                &uri,
+                "string:",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        if shown.is_ok_and(|s| s.success()) {
+            return Ok(());
+        }
+        // Without one, open the folder it's in. xdg-open may stay until that window closes,
+        // so it's reaped on a thread.
+        let mut child = Command::new("xdg-open")
+            .arg(path.parent().unwrap_or(&path))
+            .spawn()
+            .map_err(|e| format!("xdg-open: {e}"))?;
+        std::thread::spawn(move || child.wait());
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = path;
-        Err("Reveal is only supported on macOS".into())
+        Err("Reveal is not supported on this platform yet".into())
     }
 }
 

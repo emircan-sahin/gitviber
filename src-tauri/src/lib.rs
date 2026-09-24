@@ -15,6 +15,8 @@ mod scenario_tests;
 mod shell;
 mod suggest;
 mod titlebar;
+#[cfg(target_os = "linux")]
+mod trash;
 mod watch;
 
 use journal::{Action, Mode};

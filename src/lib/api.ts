@@ -420,7 +420,7 @@ export const api = {
   createFile: (path: string) => invoke<void>("create_file", { path }),
   createDir: (path: string) => invoke<void>("create_dir", { path }),
   renamePath: (from: string, to: string) => invoke<void>("rename_path", { from, to }),
-  /** Moves to the macOS Trash, so it can be put back. */
+  /** Moves to the system Trash, so it can be put back. */
   trashPath: (path: string) => invoke<void>("trash_path", { path }),
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   /** Known editors, terminals and git apps found on this machine (open_in.rs). */
