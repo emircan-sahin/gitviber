@@ -171,7 +171,7 @@ const DEFAULTS: Settings = {
   // Off until asked for: turning it on is what asks the OS for permission.
   notify: false,
   cloneParent: null,
-  suggestEnabled: false,
+  suggestEnabled: true,
   suggestCommand: "claude -p",
   suggestModels: {},
   openInApp: "",
