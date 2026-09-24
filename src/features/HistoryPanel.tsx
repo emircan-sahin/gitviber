@@ -1,6 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Cherry, Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   ContextMenu,
@@ -18,6 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { api, CANCELLED, type Commit, type CommitDetails, errorMessage, type FileChange, type RemoteTags, type RepoStatus, type ResetMode, type Worktree } from "@/lib/api";
+import { type GraphRow, graphRows } from "@/lib/commitGraph";
 import { matchesCommand } from "@/lib/keybindings";
 import { withNetActivity } from "@/lib/netActivity";
 import { forgetRemoteTags, remoteTags } from "@/lib/remoteTags";
@@ -48,6 +49,8 @@ interface Props {
   web?: string;
   /** What an empty list says. */
   empty?: string;
+  /** Draw branches and merges; off for search results, whose neighbours aren't parent and child. */
+  graph?: boolean;
   /** Blame's link: open this commit and this file in it, once per `id` (each click is new). */
   reveal?: Reveal | null;
   /** This repo's worktrees: a commit can be picked onto the branch checked out in another. */
@@ -84,7 +87,7 @@ interface Actions {
 const commitUrl = (c: Commit, { webUrl, everyOnWeb }: Pick<Actions, "webUrl" | "everyOnWeb">) =>
   webUrl && (c.onOrigin || everyOnWeb) ? `${webUrl}/commit/${c.sha}` : undefined;
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", reveal = null, worktrees = [], onOpenRepo }: Props) {
+export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo }: Props) {
   const [open, setOpen] = useState<string | null>(reveal?.sha ?? null);
   useEffect(() => {
     if (reveal) setOpen(reveal.sha);
@@ -161,6 +164,9 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
     setOpen(open === sha ? null : sha);
   };
 
+  // Without the graph, one line joins each row to the next.
+  const rows = useMemo(() => graphRows(graph ? commits : commits.map((c, i) => ({ sha: c.sha, parents: i + 1 < commits.length ? [commits[i + 1].sha] : [] }))), [commits, graph]);
+
   const more = () => loadMore().catch((e) => toast("error", "Could not load history", errorMessage(e)));
   const nav = useListNav({ activeKey, loadMore: hasMore ? more : null });
 
@@ -176,8 +182,7 @@ export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refr
           key={c.sha}
           commit={c}
           remotes={remotes}
-          first={i === 0}
-          last={i === commits.length - 1}
+          graph={rows[i]}
           open={open === c.sha}
           reveal={reveal?.sha === c.sha ? reveal : null}
           onToggle={(el) => toggle(c.sha, el)}
@@ -454,8 +459,7 @@ function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "tag"; co
 function CommitRow({
   commit,
   remotes,
-  first,
-  last,
+  graph,
   open,
   reveal,
   onToggle,
@@ -467,8 +471,7 @@ function CommitRow({
 }: {
   commit: Commit;
   remotes: Set<string>;
-  first: boolean;
-  last: boolean;
+  graph: GraphRow;
   open: boolean;
   reveal: Reveal | null;
   onToggle: (row: HTMLElement) => void;
@@ -516,7 +519,7 @@ function CommitRow({
 
   return (
     <div className="relative">
-      <div className={cn("absolute left-[15px] w-px bg-border-strong", first ? "top-3" : "top-0", last && !open ? "h-3" : "bottom-0")} />
+      <GraphLines row={graph} />
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
@@ -539,13 +542,15 @@ function CommitRow({
               title={commit.unpushed ? "Not pushed yet" : commit.notInHead ? "Not in your branch yet" : undefined}
               aria-label={commit.unpushed ? "Not pushed yet" : commit.notInHead ? "Not in your branch yet" : undefined}
               role={commit.unpushed || commit.notInHead ? "img" : undefined}
+              // In its lane, with the text after the row's last lane.
+              style={{ marginLeft: laneOf(graph.col) * LANE, marginRight: (lanesOf(graph) - 1 - laneOf(graph.col)) * LANE }}
             />
             <div className="min-w-0 flex-1">
               <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
               <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] text-subtle">
                 <span className="min-w-0 truncate">{commit.authorName}</span>
                 <span>·</span>
-                <span className="shrink-0">{relativeTime(commit.timestamp)}</span>
+                <CommitTime commit={commit} />
                 <span className="ml-auto shrink-0 font-mono">{commit.shortSha}</span>
               </div>
               <RefBadges refs={commit.refs} remotes={remotes} />
@@ -607,6 +612,62 @@ type Ref = { name: string; kind: "head" | "local" | "remote" | "tag"; synced: bo
  * commit (main + origin/main) become one "main ☁" badge; origin/HEAD is dropped.
  * `remotes` tells remote-tracking names apart, since local names can contain "/" too.
  */
+// Lane geometry, matching the dot above: 12px row padding, 9px dot, its centre 13.5px down.
+const LANE = 10;
+const LANE_X = 16.5;
+const DOT_Y = 13.5;
+const BEND_Y = DOT_Y + 10;
+// Past this many lanes the rest are cut off; their commits sit on the last one shown.
+const MAX_LANES = 8;
+const laneOf = (i: number) => Math.min(i, MAX_LANES - 1);
+const lanesOf = (row: GraphRow) => Math.min(row.width, MAX_LANES);
+const laneX = (i: number) => LANE_X + laneOf(i) * LANE;
+// The first lane is the branch itself, in the quiet line it has always been; merged-in branches get colour.
+const LANE_COLORS = ["var(--renamed)", "var(--modified)", "var(--primary)", "var(--conflict)", "var(--added)"];
+const laneColor = (i: number) => (i === 0 ? "var(--border-strong)" : LANE_COLORS[(i - 1) % LANE_COLORS.length]);
+
+/** A row's share of the graph: lines passing by, ending at the dot, and leaving it for its parents. */
+function GraphLines({ row }: { row: GraphRow }) {
+  const x = laneX(row.col);
+  const shown = (i: number) => i < MAX_LANES || i === row.col;
+  const line = (i: number, from: number | string, to: number | string, key: string) => <line key={key} x1={laneX(i)} x2={laneX(i)} y1={from} y2={to} stroke={laneColor(i)} />;
+  return (
+    <svg aria-hidden className="pointer-events-none absolute inset-y-0 left-0 h-full" width={laneX(lanesOf(row) - 1) + LANE / 2} fill="none">
+      {row.through.filter(shown).map((i) => line(i, 0, "100%", `t${i}`))}
+      {row.into.filter(shown).map((i) =>
+        i === row.col ? line(i, 0, DOT_Y, `i${i}`) : <path key={`i${i}`} d={`M${laneX(i)} 0C${laneX(i)} ${DOT_Y} ${x} 0 ${x} ${DOT_Y}`} stroke={laneColor(i)} />,
+      )}
+      {row.out.filter(shown).map((j) =>
+        j === row.col ? (
+          line(j, DOT_Y, "100%", `o${j}`)
+        ) : (
+          <Fragment key={`o${j}`}>
+            <path d={`M${x} ${DOT_Y}C${x} ${BEND_Y} ${laneX(j)} ${DOT_Y} ${laneX(j)} ${BEND_Y}`} stroke={laneColor(j)} />
+            {line(j, BEND_Y, "100%", `b${j}`)}
+          </Fragment>
+        ),
+      )}
+    </svg>
+  );
+}
+
+/**
+ * When the commit landed on the branch, which is the order the list is in. A rebase or cherry-pick
+ * keeps the date it was written, which then reads out of order: that one is in the tooltip.
+ */
+function CommitTime({ commit: c }: { commit: Commit }) {
+  const date = (t: number) => new Date(t * 1000).toLocaleString();
+  const moved = relativeTime(c.timestamp) !== relativeTime(c.committedAt);
+  const title = moved
+    ? `Committed ${relativeTime(c.committedAt)} by ${c.committerName} (${date(c.committedAt)})\nAuthored ${relativeTime(c.timestamp)} by ${c.authorName} (${date(c.timestamp)})`
+    : date(c.committedAt);
+  return (
+    <span className={cn("shrink-0", moved && "underline decoration-subtle/60 decoration-dotted underline-offset-2")} title={title}>
+      {relativeTime(c.committedAt)}
+    </span>
+  );
+}
+
 function groupRefs(refs: string[], remotes: Set<string>): Ref[] {
   const head = refs.find((r) => r.startsWith("HEAD -> "))?.slice(8);
   const names = refs.map((r) => (r.startsWith("HEAD -> ") ? r.slice(8) : r));

@@ -117,6 +117,7 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
             // Undo and reset act on HEAD, which a list of matches needn't start with.
             headSha={props.commits[0]?.sha ?? ""}
             empty={found.commits ? "No commits match." : "Searching…"}
+            graph={false}
             reveal={reveal}
           />
         )}
