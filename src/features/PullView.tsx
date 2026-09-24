@@ -1,6 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { Check, ChevronDown, CircleDashed, ExternalLink, GitBranch, GitMerge, GitPullRequest, GitPullRequestClosed, Image as ImageIcon, Loader2, MessageSquare, MinusCircle, RefreshCw, X } from "lucide-react";
-import { type ComponentProps, useCallback, useEffect, useMemo, useState } from "react";
+import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Components } from "react-markdown";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -39,6 +39,19 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   useEffect(() => {
     if (d && pull.updatedAt > d.updatedAt) refresh(true);
   }, [pull.updatedAt]);
+  // GitHub computes mergeability in the background and answers null until it's done; the
+  // regular recheck is minutes away, so ask again soon, backing off, then leave it to ⟳.
+  const polls = useRef(0);
+  const checking = d?.state === "open" && d.mergeable === null;
+  useEffect(() => {
+    if (!checking) polls.current = 0;
+    if (!checking || polls.current >= 5) return;
+    const t = setTimeout(() => {
+      polls.current++;
+      refresh(true);
+    }, 2000 * 2 ** polls.current);
+    return () => clearTimeout(t);
+  }, [checking, d]);
   // Fetching the PR's commits can take a moment; the page shows without waiting for it.
   // The result depends only on the two commits, so it's rarely worth recomputing.
   const files = useGitHubData(
