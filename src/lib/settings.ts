@@ -106,6 +106,8 @@ export interface Settings {
   svgPreview: boolean;
   /** The file view shows who last changed each line. Set from the viewer, not the dialog. */
   blame: boolean;
+  /** Holding ⌘ by itself shows the shortcuts that apply (ShortcutOverlay); its key command works either way. */
+  shortcutOverlay: boolean;
   /** Per-command overrides of the default key bindings; an empty list unbinds. */
   keybindings: Record<string, string[]>;
   /** Repos (main worktree paths) whose commits are signed off: people who sign off always do. Set from the commit box. */
@@ -149,6 +151,7 @@ const DEFAULTS: Settings = {
   markdownPreview: true,
   svgPreview: false,
   blame: false,
+  shortcutOverlay: true,
   keybindings: {},
   signOffRepos: [],
   // Off until asked for: a fetch can prompt for an SSH key (1Password, a hardware key) every few minutes.
@@ -182,6 +185,7 @@ function load(): Settings {
     if (typeof s.blame !== "boolean") s.blame = DEFAULTS.blame;
     if (typeof s.ignoreWhitespace !== "boolean") s.ignoreWhitespace = DEFAULTS.ignoreWhitespace;
     if (!["amount", "all"].includes(s.whitespaceMode)) s.whitespaceMode = DEFAULTS.whitespaceMode;
+    if (typeof s.shortcutOverlay !== "boolean") s.shortcutOverlay = DEFAULTS.shortcutOverlay;
     s.keybindings = cleanOverrides(s.keybindings);
     if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;

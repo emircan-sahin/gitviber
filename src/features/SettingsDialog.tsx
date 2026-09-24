@@ -424,7 +424,10 @@ function setBinding(id: CommandId, keys: string[] | null, overrides: Record<stri
 
 /** Why a chord is ambiguous, naming which command actually runs. */
 function clashNote(c: Command, chord: string, overrides: Record<string, string[]>): string | null {
-  const others = COMMANDS.filter((o) => o.id !== c.id && bindingsFor(o.id, overrides).includes(chord));
+  // By default some local commands take a global key over in their own place (⌘W in the terminal,
+  // ⌘⌫ in the explorer): not a clash until the user rebinds one of the two.
+  const meant = (o: Command) => ("local" in o) !== ("local" in c) && !(o.id in overrides) && !(c.id in overrides);
+  const others = COMMANDS.filter((o) => o.id !== c.id && bindingsFor(o.id, overrides).includes(chord) && !meant(o));
   if (!others.length) return null;
   const k = formatChord(chord);
   const global = others.filter((o) => !("local" in o));
@@ -436,7 +439,7 @@ function clashNote(c: Command, chord: string, overrides: Record<string, string[]
 }
 
 function ShortcutsSection({ recording, setRecording }: { recording: Recording; setRecording: (r: Recording) => void }) {
-  const { keybindings } = useSettings();
+  const { keybindings, shortcutOverlay } = useSettings();
   const [query, setQuery] = useState("");
 
   const q = query.trim().toLowerCase();
@@ -448,6 +451,13 @@ function ShortcutsSection({ recording, setRecording }: { recording: Recording; s
 
   return (
     <>
+      <Field
+        label={`Hold ${IS_MAC ? "⌘" : "Ctrl"} to show shortcuts`}
+        hint="Hold it by itself for a second to see the shortcuts that work where you are. The key below shows them too."
+        commands={["workbench.shortcutOverlay"]}
+      >
+        <Switch checked={shortcutOverlay} onChange={(v) => updateSettings({ shortcutOverlay: v })} />
+      </Field>
       <div className="sticky top-0 z-10 -mx-5 flex items-center gap-2 bg-elevated px-5 pt-4 pb-3">
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle" />

@@ -69,13 +69,14 @@ GitViber is built and tested on macOS. The code compiles elsewhere, but nobody h
 
 ## Shortcuts
 
-Every shortcut in the list below except the terminal ones can be rebound in Settings (`⌘,`).
+Every shortcut in the list below except moving around a list or view (arrows, `↵`, `⎋`, `⇧F10`) can be rebound in Settings (`⌘,`).
 While you type, only shortcuts with `⌘`, `⌃` or an F-key apply, except `⌘←` `⌘→` and `⌃` with a letter, which edit the text.
 On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, and Ctrl+Tab / Ctrl+Shift+Tab switch tabs.
 
 | Keys | |
 | --- | --- |
 | `⌘,` | Settings |
+| Hold `⌘`, or `⌘/` | Show every shortcut, the ones that don't work where you are dimmed (the hold can be turned off in Settings) |
 | `⌃1` `⌃2` `⌃3` `⌃4` | Changes, History, PRs, Issues |
 | `⌘1` … `⌘8`, `⌘9` | Go to tab 1 to 8, the last tab |
 | `⇧⌘]` `⇧⌘[`, `⌘→` `⌘←`, `⌃⇥` `⌃⇧⇥` | Next / previous tab |
@@ -92,7 +93,8 @@ On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, and Ctrl+Tab / C
 | `→` `⎋` | From a file in a list to its code, and back |
 | `↑` `↓` `PgUp` `PgDn` `Space` `Home` `End` | Scroll the focused code view, `←` `→` sideways |
 | `⌘J` or `⌃` `` ` `` | Toggle the terminal |
-| `⌘T` `⌘D` `⌘K` | New terminal, split, clear (in the terminal) |
+| `⌘T` | New terminal |
+| `⌘D` `⌘K`, `⌥⌘←` `⌥⌘→` | Split, clear, previous / next pane (in the terminal) |
 | `⌘=` `⌘−` `⌘0` | Zoom the interface |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |

@@ -10,6 +10,7 @@ import { CommandPalette, showCommands } from "@/features/CommandPalette";
 import { IdentityDialog } from "@/features/IdentityDialog";
 import { NeedsGit } from "@/features/NeedsGit";
 import { openSettings, SettingsDialog } from "@/features/SettingsDialog";
+import { ShortcutOverlay } from "@/features/ShortcutOverlay";
 import { Welcome } from "@/features/Welcome";
 import { Workspace } from "@/features/Workspace";
 import { api, errorMessage, type GitInfo, NOT_A_REPO, type OpenedRepo } from "@/lib/api";
@@ -130,6 +131,7 @@ export function App() {
       <SettingsDialog />
       <AboutDialog />
       <CommandPalette />
+      <ShortcutOverlay />
       <Toaster />
       <Splash ready={!booting} />
     </TooltipProvider>

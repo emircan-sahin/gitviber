@@ -217,6 +217,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         &[
             &b.command("help.readme", "GitViber Help")?,
             &b.command("help.shortcuts", "Keyboard Shortcuts")?,
+            &b.command("workbench.shortcutOverlay", "Show Shortcut Overlay")?,
             &sep()?,
             &b.command("help.reportBug", "Report a Bug…")?,
             &b.command("help.releaseNotes", "Release Notes")?,
