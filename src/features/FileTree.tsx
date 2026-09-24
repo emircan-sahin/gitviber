@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect,
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
 import { REVEAL_LABEL } from "@/lib/commands";
-import { matchesCommand } from "@/lib/keybindings";
+import { matchesCommand, useShortcut } from "@/lib/keybindings";
 import { focusPanel } from "@/lib/panels";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/useListNav";
 import { type Selection, selectionKey } from "@/lib/selection";
@@ -49,6 +49,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   // Keyboard cursor, separate from the open tab (activeKey) like VS Code's focused item.
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
+  const renameKey = useShortcut("explorer.rename");
+  const deleteKey = useShortcut("explorer.delete");
   // Right-clicked entry; null = the empty area below the tree (acts on the repo root).
   const [menuTarget, setMenuTarget] = useState<Entry | null>(null);
   const treeRef = useRef<HTMLDivElement>(null);
@@ -403,7 +405,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
             </ContextMenuItem>
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => startEditing({ mode: "rename", entry: t })}>
-              <Pencil /> Rename… <ContextMenuShortcut>F2</ContextMenuShortcut>
+              <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}
             </ContextMenuItem>
             {discardable.has(t.path) && (
               <ContextMenuItem onSelect={() => discard(t)}>
@@ -411,7 +413,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
               </ContextMenuItem>
             )}
             <ContextMenuItem onSelect={() => remove(t)}>
-              <Trash2 /> Delete <ContextMenuShortcut>⌘⌫</ContextMenuShortcut>
+              <Trash2 /> Delete{deleteKey && <ContextMenuShortcut>{deleteKey}</ContextMenuShortcut>}
             </ContextMenuItem>
           </>
         )}
