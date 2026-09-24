@@ -419,6 +419,13 @@ fn log_search_narrows_and_pages() {
     assert_eq!(find_commit(a, &head[..8]).unwrap().unwrap().sha, head);
     assert!(find_commit(a, "0000000").unwrap().is_none());
     assert!(find_commit(a, "--all").unwrap().is_none());
+    // A branch's tip by its full name, for going to it in the graph; a short name isn't one.
+    assert_eq!(
+        find_commit(a, "refs/heads/main").unwrap().unwrap().sha,
+        head
+    );
+    assert!(find_commit(a, "main").unwrap().is_none());
+    assert!(find_commit(a, "refs/heads/gone").unwrap().is_none());
 }
 
 #[test]
@@ -1841,6 +1848,162 @@ fn drops_pushed_follows_ancestry_not_log_order() {
     // Undoing the merge (moving to its first parent, P) drops nothing pushed.
     assert!(!drops_pushed(b, &commits[0].parents[0]).unwrap());
     assert!(commits[2].on_origin && !commits[1].on_origin);
+}
+
+#[test]
+fn log_all_lists_other_branches_and_marks_what_head_lacks() {
+    let sb = Sandbox::new("logall");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    switch_branch(a, "feat", true).unwrap();
+    write_commit(a, "f.txt", "f\n", "on feat");
+    switch_branch(a, "main", false).unwrap();
+    write_commit(a, "m.txt", "m\n", "on main");
+
+    assert!(log(a, None, 0, 10)
+        .unwrap()
+        .iter()
+        .all(|x| x.subject != "on feat"));
+    let every = GraphRefs::default();
+    let all = log_all(a, &every, 0, 10, &LogFilter::default()).unwrap();
+    let find = |s: &str| all.iter().find(|x| x.subject == s).unwrap();
+    let (feat, main, base) = (find("on feat"), find("on main"), find("base"));
+    assert!(feat.not_in_head && !main.not_in_head && !base.not_in_head);
+    assert!(main.unpushed && !feat.unpushed && base.on_origin);
+    // One branch or all of them; a search goes through the same filter.
+    let grep = LogFilter {
+        grep: vec!["feat".into()],
+        ..Default::default()
+    };
+    let found = log_all(a, &every, 0, 10, &grep).unwrap();
+    assert_eq!(
+        found.iter().map(|x| x.subject.as_str()).collect::<Vec<_>>(),
+        ["on feat"]
+    );
+}
+
+#[test]
+fn log_all_shows_only_the_refs_asked_for() {
+    let sb = Sandbox::new("logrefs");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    // Each off main: a local branch, a branch only on the remote, and a tag nothing else reaches.
+    let side = |name: &str, file: &str, subject: &str| {
+        switch_branch(a, "main", false).unwrap();
+        switch_branch(a, name, true).unwrap();
+        write_commit(a, file, "x\n", subject);
+    };
+    side("feat", "f.txt", "on feat");
+    side("rem", "r.txt", "on rem");
+    run(a, &["push", "-q", "origin", "rem"]).unwrap();
+    side("tagged", "t.txt", "tagged");
+    run(a, &["tag", "v1"]).unwrap();
+    switch_branch(a, "main", false).unwrap();
+    run(a, &["branch", "-q", "-D", "rem", "tagged"]).unwrap();
+
+    let subjects = |refs: &GraphRefs| -> Vec<String> {
+        let log = log_all(a, refs, 0, 20, &LogFilter::default()).unwrap();
+        log.into_iter().map(|x| x.subject).collect()
+    };
+    let has = |refs: GraphRefs, s: &str| subjects(&refs).iter().any(|x| x == s);
+    let every = GraphRefs::default;
+    for s in ["on feat", "on rem", "tagged", "base"] {
+        assert!(has(every(), s), "{s}");
+    }
+    let no_local = GraphRefs {
+        local: false,
+        ..every()
+    };
+    assert!(
+        !has(no_local, "on feat")
+            && has(
+                GraphRefs {
+                    local: false,
+                    ..every()
+                },
+                "on rem"
+            )
+    );
+    assert!(!has(
+        GraphRefs {
+            remote: false,
+            ..every()
+        },
+        "on rem"
+    ));
+    assert!(!has(
+        GraphRefs {
+            tags: false,
+            ..every()
+        },
+        "tagged"
+    ));
+    // HEAD's history stays, whatever is turned off.
+    let nothing = GraphRefs {
+        local: false,
+        remote: false,
+        tags: false,
+        ..every()
+    };
+    assert_eq!(subjects(&nothing), ["base"]);
+
+    let hidden = GraphRefs {
+        hidden: vec!["refs/heads/feat".into(), "refs/remotes/origin/rem".into()],
+        ..every()
+    };
+    let shown = subjects(&hidden);
+    assert!(!shown.contains(&"on feat".into()) && !shown.contains(&"on rem".into()));
+    assert!(shown.contains(&"tagged".into()));
+
+    let only = GraphRefs {
+        only: Some("refs/heads/feat".into()),
+        ..every()
+    };
+    assert_eq!(subjects(&only), ["on feat", "base"]);
+
+    let gone = GraphRefs {
+        only: Some("refs/heads/gone".into()),
+        ..every()
+    };
+    assert!(log_all(a, &gone, 0, 20, &LogFilter::default()).is_err());
+    for bad in ["--all", "HEAD", "refs/heads/a..b", "feat"] {
+        let refs = GraphRefs {
+            hidden: vec![bad.into()],
+            ..every()
+        };
+        assert!(
+            log_all(a, &refs, 0, 20, &LogFilter::default()).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn compare_lists_both_sides_and_counts_them() {
+    let sb = Sandbox::new("compare");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    switch_branch(a, "feat", true).unwrap();
+    write_commit(a, "f.txt", "f\n", "on feat");
+    write_commit(a, "g.txt", "g\n", "more on feat");
+    switch_branch(a, "main", false).unwrap();
+    write_commit(a, "m.txt", "m\n", "on main");
+
+    let with = "refs/heads/feat";
+    assert_eq!(compare_counts(a, with).unwrap(), (1, 2));
+    let subjects = |incoming| -> Vec<String> {
+        let log = log_compare(a, with, incoming, 0, 20).unwrap();
+        log.into_iter().map(|x| x.subject).collect()
+    };
+    assert_eq!(subjects(true), ["more on feat", "on feat"]);
+    assert_eq!(subjects(false), ["on main"]);
+    // What HEAD lacks is marked, so it can be picked from here.
+    assert!(log_compare(a, with, true, 0, 20)
+        .unwrap()
+        .iter()
+        .all(|x| x.not_in_head));
+    assert!(log_compare(a, "HEAD", true, 0, 20).is_err());
+    assert!(compare_counts(a, "refs/heads/feat..main").is_err());
 }
 
 #[test]
