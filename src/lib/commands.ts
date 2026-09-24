@@ -9,7 +9,7 @@
 // Lives here, not in its own module: node:test loads this file without a bundler.
 const PLATFORM = typeof navigator === "undefined" ? "" : navigator.platform;
 export const IS_MAC = /Mac|iPhone|iPad/.test(PLATFORM);
-const IS_WINDOWS = PLATFORM.startsWith("Win");
+export const IS_WINDOWS = PLATFORM.startsWith("Win");
 
 /** What the OS calls showing a file in its file manager. */
 export const REVEAL_LABEL = IS_MAC ? "Reveal in Finder" : IS_WINDOWS ? "Show in Explorer" : "Show in Folder";
