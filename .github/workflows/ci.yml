@@ -11,9 +11,17 @@ concurrency:
 
 jobs:
   check:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      # WebKitGTK for Tauri's webview; it pulls in GTK 3 and libsoup 3.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev
 
       - uses: pnpm/action-setup@v4
         with:
