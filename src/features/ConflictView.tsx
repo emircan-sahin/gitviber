@@ -265,7 +265,8 @@ function CodeLines({ lines: raw, lang, className }: { lines: string[]; lang: str
   const tok = useMemo(() => tokenLookup(hl), [hl]);
   return (
     <div
-      className={cn("px-4 select-text", s.wordWrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "overflow-x-auto whitespace-pre", className)}
+      // The I-beam over the whole block, as an editor has it, not only over the letters.
+      className={cn("cursor-text px-4 select-text", s.wordWrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "overflow-x-auto whitespace-pre", className)}
       style={{ ...style, color: hl?.data.fg }}
     >
       {lines.map((l, i) => (
