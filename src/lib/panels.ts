@@ -10,7 +10,9 @@ export type Panel = "git" | "code" | "explorer" | "terminal";
 /** F6 order. */
 export const PANELS: Panel[] = ["git", "code", "explorer", "terminal"];
 
-const panelOf = (el: Element | null) => (el?.closest<HTMLElement>("[data-panel]")?.dataset.panel as Panel | undefined) ?? null;
+// Named ones only: react-resizable-panels marks its own panels data-panel="true", and the terminal's splits are those.
+const PANEL_SELECTOR = PANELS.map((p) => `[data-panel="${p}"]`).join(",");
+const panelOf = (el: Element | null) => (el?.closest<HTMLElement>(PANEL_SELECTOR)?.dataset.panel as Panel | undefined) ?? null;
 const panelEl = (p: Panel) => document.querySelector<HTMLElement>(`[data-panel="${p}"]`);
 
 // Where focus was last, and the list Esc in the code view goes back to.
