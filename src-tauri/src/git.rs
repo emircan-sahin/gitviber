@@ -1770,7 +1770,7 @@ pub fn blame(repo: &Path, path: &str) -> Result<Blame, String> {
 }
 
 /// A commit id, or one with a trailing `^` for its first parent: the old side of a commit's diff.
-fn validate_tree_rev(rev: &str) -> Result<(), String> {
+pub(crate) fn validate_tree_rev(rev: &str) -> Result<(), String> {
     validate_rev(rev.strip_suffix('^').unwrap_or(rev))
 }
 

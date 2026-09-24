@@ -1,3 +1,4 @@
+mod definitions;
 mod diff;
 mod display;
 mod errors;
@@ -352,6 +353,16 @@ async fn search_files(state: State<'_, AppState>, query: grep::Query) -> Res<gre
 #[tauri::command]
 fn cancel_search() {
     grep::cancel();
+}
+
+/// Go to Definition in the code view; a newer lookup stops this one (definitions::CANCELLED).
+#[tauri::command]
+async fn definitions(
+    state: State<'_, AppState>,
+    request: definitions::Request,
+) -> Res<Vec<definitions::Location>> {
+    let r = repo(&state)?;
+    blocking(move || definitions::find(&r, &request)).await
 }
 
 #[tauri::command]
@@ -1702,6 +1713,7 @@ pub fn run() {
             list_dir,
             list_files,
             search_files,
+            definitions,
             cancel_search,
             read_file,
             tree_paths,

@@ -3245,3 +3245,54 @@ fn grep_a_newer_search_stops_an_older_one() {
     // The latest one does.
     assert_eq!(grep::search(&r, &grep_query("needle")).unwrap().count, 5);
 }
+
+#[test]
+fn definitions_are_found_in_other_files_of_the_worktree_and_a_commit() {
+    use crate::definitions::{find, Location, Request};
+    let sb = Sandbox::new("definitions");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "src/git.rs", "pub fn run() {}\n", "git");
+    write_commit(
+        &r,
+        "src/other.rs",
+        "pub fn run() {}\nfn unrelated() {}\n",
+        "other",
+    );
+    let head = log(&r, None, 0, 1).unwrap()[0].sha.clone();
+    // Not committed: the worktree has it, the commit doesn't.
+    fs::write(r.join("src/new.rs"), "pub struct Fresh;\n").unwrap();
+    let at = |text: &str, line, column, rev: Option<&str>| {
+        let req = Request {
+            path: "src/lib.rs".into(),
+            text: text.into(),
+            line,
+            column,
+            rev: rev.map(String::from),
+        };
+        find(&r, &req).unwrap()
+    };
+    let loc = |path: &str, line, column, end_column| Location {
+        path: path.into(),
+        line,
+        column,
+        end_column,
+    };
+
+    // `git::run` names the file: that one alone.
+    let src = "mod git;\nfn f() { git::run(); }\n";
+    assert_eq!(at(src, 2, 14, None), [loc("src/git.rs", 1, 7, 10)]);
+    assert_eq!(at(src, 2, 14, Some(&head)), [loc("src/git.rs", 1, 7, 10)]);
+    // Nothing to go by: every file that defines it.
+    let src = "fn f() { run(); }\n";
+    assert_eq!(
+        at(src, 1, 9, None),
+        [loc("src/git.rs", 1, 7, 10), loc("src/other.rs", 1, 7, 10)]
+    );
+    let src = "fn f() -> Fresh { Fresh }\n";
+    assert_eq!(at(src, 1, 10, None), [loc("src/new.rs", 1, 11, 16)]);
+    assert!(at(src, 1, 10, Some(&head)).is_empty());
+    // An import no file defines: the import itself.
+    let src = "use outside::Thing;\nfn f(t: Thing) {}\n";
+    assert_eq!(at(src, 2, 8, None), [loc("src/lib.rs", 1, 13, 18)]);
+}
