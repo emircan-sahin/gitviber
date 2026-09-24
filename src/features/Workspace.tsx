@@ -179,13 +179,30 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   }, [root, repo.revision, open]);
   useEffect(() => () => setLinkHost(null), []);
 
+  // Closed tabs, the latest last, where they were: ⇧⌘T brings them back as browsers do.
+  const [closed, setClosed] = useState<{ sel: Selection; index: number }[]>([]);
+  const tabsNow = useRef(tabs);
+  tabsNow.current = tabs;
   const close = useCallback((key: string) => {
+    const index = tabsNow.current.findIndex((t) => t.key === key);
+    if (index >= 0) setClosed((c) => [...c.filter((t) => selectionKey(t.sel) !== key), { sel: tabsNow.current[index].sel, index }].slice(-20));
     setTabState(({ tabs: prev, active }) => {
       const i = prev.findIndex((t) => t.key === key);
       const next = prev.filter((t) => t.key !== key);
       return { tabs: next, active: active === key ? (next[Math.min(i, next.length - 1)]?.key ?? null) : active };
     });
   }, []);
+
+  const reopen = () => {
+    const last = closed.at(-1);
+    if (!last) return;
+    setClosed((c) => c.slice(0, -1));
+    const key = selectionKey(last.sel);
+    setTabState(({ tabs: prev }) => ({
+      tabs: prev.some((t) => t.key === key) ? prev : [...prev.slice(0, last.index), { key, sel: last.sel, preview: false }, ...prev.slice(last.index)],
+      active: key,
+    }));
+  };
 
   const moveTab = useCallback((from: number, to: number) => setTabState((st) => ({ ...st, tabs: arrayMove(st.tabs, from, to) })), []);
 
@@ -383,6 +400,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.focusNextPanel": () => cycle(1),
     "view.focusPrevPanel": () => cycle(-1),
     "tab.close": activeKey ? () => close(activeKey) : undefined,
+    "tab.reopenClosed": closed.length ? reopen : undefined,
     "tab.goto1": goTab(0),
     "tab.goto2": goTab(1),
     "tab.goto3": goTab(2),
