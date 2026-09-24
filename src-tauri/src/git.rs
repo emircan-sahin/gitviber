@@ -2556,7 +2556,10 @@ fn bisect_step(out: Vec<u8>) -> BisectStep {
     let text = String::from_utf8_lossy(&out).into_owned();
     let first_bad = text
         .lines()
-        .find(|l| l.ends_with(" is the first bad commit"))
+        // Newer git quotes the term: "<sha> is the first 'bad' commit".
+        .find(|l| {
+            l.ends_with(" is the first bad commit") || l.ends_with(" is the first 'bad' commit")
+        })
         .and_then(|l| l.split_whitespace().next())
         .map(str::to_string);
     let message = text.lines().next().unwrap_or_default().to_string();
