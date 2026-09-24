@@ -29,14 +29,14 @@ export function OpenInButton({ target }: { target: () => OpenTarget }) {
   return (
     <div className="flex items-center">
       <Tip label={last ? `Open in ${last.name}` : "Open in…"} shortcut={shortcut}>
-        <button onClick={run} className="flex items-center gap-1 hover:text-foreground">
+        <button onClick={run} className="flex items-center gap-1 hover:text-foreground focus-visible:text-foreground">
           <SquareArrowOutUpRight className="size-3" />
           {last ? last.name : "Open in…"}
         </button>
       </Tip>
       <DropdownMenu open={open} onOpenChange={show}>
         <DropdownMenuTrigger asChild>
-          <button aria-label="Open in…" className="flex items-center pl-0.5 hover:text-foreground">
+          <button aria-label="Open in…" className="flex items-center pl-0.5 hover:text-foreground focus-visible:text-foreground">
             <ChevronDown className="size-3" />
           </button>
         </DropdownMenuTrigger>

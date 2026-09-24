@@ -1,10 +1,13 @@
-import { FileClock, FolderClock, Loader2, Search, X } from "lucide-react";
+import { CircleHelp, FileClock, FolderClock, Loader2, Search, X } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage } from "@/lib/api";
 import { isTyping, useShortcut } from "@/lib/keybindings";
 import { isEmptyFilter, parseLogQuery } from "@/lib/logQuery";
 import { ForkHistory } from "./ForkHistory";
 import { HistoryPanel, type Reveal } from "./HistoryPanel";
+
+const SYNTAX = "Words match the message (all of them, any case).\nauthor:name  path:src/app  code:text a commit added or removed\nA SHA or prefix finds that commit. Quotes keep spaces.";
 
 const PAGE = 200;
 const DEBOUNCE = 250;
@@ -70,12 +73,17 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
             else input.current?.blur();
           }}
           placeholder={`Search commits${shortcut ? ` (${shortcut})` : ""}  ·  author: path: code:`}
-          title={"Words match the message (all of them, any case).\nauthor:name  path:src/app  code:text a commit added or removed\nA SHA or prefix finds that commit. Quotes keep spaces."}
           spellCheck={false}
           className="h-full min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-subtle"
         />
+        {/* Not the input's title: that tooltip never shows to the keyboard. */}
+        <Tip label={SYNTAX}>
+          <button aria-label={`Search syntax: ${SYNTAX}`} className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle outline-none hover:text-foreground focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring">
+            <CircleHelp className="size-3" />
+          </button>
+        </Tip>
         {query && (
-          <button aria-label="Clear search" onClick={() => setQuery("")} className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground">
+          <button aria-label="Clear search" onClick={() => setQuery("")} className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
             <X className="size-3" />
           </button>
         )}
@@ -88,7 +96,7 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
             <button
               aria-label="Show all history"
               onClick={() => onSearch({ ...search, scope: null })}
-              className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-hover hover:text-foreground"
+              className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
             >
               <X className="size-2.5" />
             </button>

@@ -19,7 +19,7 @@ function TooltipContent({ className, sideOffset = 6, collisionPadding = WINDOW_S
         sideOffset={sideOffset}
         collisionPadding={collisionPadding}
         className={cn(
-          "z-50 rounded-md border border-border-strong bg-elevated px-1.5 py-0.5 text-[11.5px] text-foreground shadow-md shadow-black/40 animate-in fade-in-0 zoom-in-95",
+          "z-50 max-w-96 rounded-md border border-border-strong bg-elevated px-1.5 py-0.5 text-[11.5px] whitespace-pre-line text-foreground shadow-md shadow-black/40 animate-in fade-in-0 zoom-in-95",
           className,
         )}
         {...props}

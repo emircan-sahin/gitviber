@@ -7,6 +7,9 @@ import { focusPanel } from "./panels";
  * mouse does on them: landing on a row is a click (the preview), ↵ a double-click (keeps the
  * tab), → goes on to its code. A row with aria-expanded (a commit) only opens and closes, with
  * ↵, Space or → / ←.
+ *
+ * Rows (and tabs) moved to by arrow keys get focus from script, which WebKit doesn't count as
+ * :focus-visible: their hover-like fill uses :focus, or the keyboard's row showed only its icons.
  */
 export function useListNav({ activeKey, loadMore }: { activeKey: string | null; loadMore?: (() => Promise<unknown>) | null }) {
   const ref = useRef<HTMLDivElement>(null);

@@ -534,7 +534,7 @@ function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReord
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button className="flex h-7 max-w-64 min-w-0 items-center gap-2 rounded-md px-2 hover:bg-hover data-[state=open]:bg-active">
+        <button className="flex h-7 max-w-64 min-w-0 items-center gap-2 rounded-md px-2 hover:bg-hover focus-visible:bg-hover data-[state=open]:bg-active">
           <ProjectTile name={name} />
           <span className="truncate text-[12.5px] font-semibold">{name}</span>
           {totals.files > 0 && (
@@ -551,7 +551,7 @@ function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReord
           <ProjectList recent={recent} current={main} onOpen={pick} onForget={onForgetRepo} onReorder={onReorderRepos} onLocate={locate} />
         </div>
         <div className="border-t border-border p-1">
-          <button onClick={() => pick()} className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover">
+          <button onClick={() => pick()} className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover focus-visible:bg-hover">
             <Plus className="size-3.5 text-muted-foreground" /> Open repository…
             <span className="ml-auto font-mono text-[11px] text-subtle">{openKey}</span>
           </button>
@@ -560,7 +560,7 @@ function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReord
               setOpen(false);
               openClone();
             }}
-            className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover"
+            className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover focus-visible:bg-hover"
           >
             <FolderDown className="size-3.5 text-muted-foreground" /> Clone repository…
           </button>
@@ -575,7 +575,8 @@ function PublishButton({ remotes, preferred, disabled, onPublish }: { remotes: s
   if (!remotes.length) {
     return (
       <Tip label="This repository has no remote. Add one (git remote add origin <url>) to publish.">
-        <span>
+        {/* The disabled button can't take focus; this does, so the keyboard gets the reason too. */}
+        <span tabIndex={0} className="rounded-md outline-none focus-visible:ring-1 focus-visible:ring-ring">
           <Button disabled>
             <UploadCloud /> Publish
           </Button>

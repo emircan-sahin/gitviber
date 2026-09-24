@@ -98,13 +98,13 @@ export function SettingsDialog() {
               onClick={() => setOpen(id)}
               className={cn(
                 "flex h-7 items-center gap-2 rounded-md px-2 text-left text-[12.5px]",
-                section === id ? "bg-active text-foreground" : "text-muted-foreground hover:bg-hover hover:text-foreground",
+                section === id ? "bg-active text-foreground" : "text-muted-foreground hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
               )}
             >
               <Icon className="size-3.5 shrink-0" /> {label}
             </button>
           ))}
-          <button onClick={resetAll} className="mt-auto flex h-7 items-center gap-2 rounded-md px-2 text-left text-[12px] text-muted-foreground hover:bg-hover hover:text-foreground">
+          <button onClick={resetAll} className="mt-auto flex h-7 items-center gap-2 rounded-md px-2 text-left text-[12px] text-muted-foreground hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
             <RotateCcw className="size-3.5 shrink-0" /> Reset all settings
           </button>
         </nav>
@@ -470,14 +470,16 @@ function ShortcutsSection({ recording, setRecording }: { recording: Recording; s
           });
           const adding = record(keys.length);
           return (
-            <div key={c.id} className="group flex min-h-9 items-center gap-3 border-b border-border px-3 py-1 last:border-0 hover:bg-hover/50">
+            <div key={c.id} className="group flex min-h-9 items-center gap-3 border-b border-border px-3 py-1 last:border-0 hover:bg-hover/50 focus-visible:bg-hover/50">
               <div className="min-w-0 flex-1">
                 <div className="truncate text-[12.5px]">{c.title}</div>
                 <div className="truncate text-[11px] text-subtle">{c.category}</div>
               </div>
               {clashes.length > 0 && (
                 <Tip label={clashes.join(". ")}>
-                  <TriangleAlert className="size-3.5 shrink-0 text-modified" />
+                  <span tabIndex={0} aria-label={clashes.join(". ")} className="shrink-0 rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                    <TriangleAlert className="size-3.5 text-modified" />
+                  </span>
                 </Tip>
               )}
               <div className="flex shrink-0 items-center gap-1">
@@ -579,7 +581,7 @@ function Recorder({
       onKeyDown={onKeyDown}
       className={cn(
         "flex h-7 min-w-7 cursor-pointer items-center justify-center rounded-md px-1 outline-none select-none focus-visible:ring-1 focus-visible:ring-ring",
-        active ? "ring-1 ring-primary" : "hover:bg-active",
+        active ? "ring-1 ring-primary" : "hover:bg-active focus-visible:bg-active",
         className,
       )}
     >
@@ -622,7 +624,7 @@ function Segmented<T extends string>({ value, onChange, options }: { value: T; o
           onClick={() => onChange(v)}
           className={cn(
             "border-r border-border-strong px-2.5 text-[12px] last:border-r-0",
-            v === value ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-hover hover:text-foreground",
+            v === value ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
           )}
         >
           {label}

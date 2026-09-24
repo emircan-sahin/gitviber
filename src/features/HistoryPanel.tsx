@@ -527,7 +527,7 @@ function CommitRow({
             onClick={(e) => onToggle(e.currentTarget)}
             className={cn(
               "relative flex cursor-pointer items-start gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset data-[state=open]:bg-hover",
-              open ? "bg-active" : "hover:bg-hover",
+              open ? "bg-active" : "hover:bg-hover focus:bg-hover",
             )}
           >
             <span
@@ -536,6 +536,8 @@ function CommitRow({
                 commit.unpushed ? "border-primary bg-primary" : commit.notInHead ? "border-added bg-added" : merge ? "border-renamed bg-sidebar" : "border-subtle bg-sidebar",
               )}
               title={commit.unpushed ? "Not pushed yet" : commit.notInHead ? "Not in your branch yet" : undefined}
+              aria-label={commit.unpushed ? "Not pushed yet" : commit.notInHead ? "Not in your branch yet" : undefined}
+              role={commit.unpushed || commit.notInHead ? "img" : undefined}
             />
             <div className="min-w-0 flex-1">
               <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
@@ -580,7 +582,7 @@ function CommitRow({
                 onMouseEnter={() => onHover(sel)}
                 className={cn(
                   "relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-8 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-                  active ? "bg-primary/15" : "hover:bg-hover",
+                  active ? "bg-primary/15" : "hover:bg-hover focus:bg-hover",
                 )}
               >
                 {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
@@ -690,8 +692,9 @@ export function SignatureBadge({ details: d }: { details: CommitDetails }) {
   if (!sig) return null;
   const Icon = sig.icon;
   return (
+    // Focusable so the keyboard can read the tooltip too (Radix opens it on focus).
     <Tip label={sig.tip(d.signer || "an unknown key")}>
-      <span className={cn("flex items-center gap-1", sig.tone)}>
+      <span tabIndex={0} className={cn("flex items-center gap-1 rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring", sig.tone)}>
         <Icon className="size-3.5" />
         {sig.label}
       </span>
@@ -706,7 +709,7 @@ export function TrailerChips({ details: d, className }: { details: CommitDetails
     <div className={cn("flex flex-wrap gap-1", className)}>
       {d.trailers.map(([key, value], i) => (
         <Tip key={i} label={`${key}: ${value}`}>
-          <span className="flex h-5 max-w-72 items-center gap-1 rounded-[3px] bg-elevated px-1.5 text-[11px]">
+          <span tabIndex={0} className="flex h-5 max-w-72 items-center gap-1 rounded-[3px] bg-elevated px-1.5 text-[11px] outline-none focus-visible:ring-1 focus-visible:ring-ring">
             <span className="shrink-0 text-subtle">{key}</span>
             <span className="truncate text-muted-foreground">{value.replace(/\s*<[^>]*>$/, "") || value}</span>
           </span>

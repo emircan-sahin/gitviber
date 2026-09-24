@@ -299,7 +299,7 @@ function TextRun({ lines, lang }: { lines: string[]; lang: string }) {
   return (
     <>
       <CodeLines lines={lines.slice(0, CONTEXT)} lang={lang} className="text-foreground/70" />
-      <button onClick={() => setOpen(true)} className="flex w-full items-center gap-2 border-y border-border bg-panel px-4 py-1 text-[11.5px] text-subtle hover:bg-elevated hover:text-foreground">
+      <button onClick={() => setOpen(true)} className="flex w-full items-center gap-2 border-y border-border bg-panel px-4 py-1 text-[11.5px] text-subtle hover:bg-elevated focus-visible:bg-elevated hover:text-foreground focus-visible:text-foreground">
         <ChevronsUpDown className="size-3.5" /> {lines.length - CONTEXT * 2} unchanged lines
       </button>
       <CodeLines lines={lines.slice(-CONTEXT)} lang={lang} className="text-foreground/70" />

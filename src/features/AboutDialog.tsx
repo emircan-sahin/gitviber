@@ -106,7 +106,7 @@ export function AboutDialog() {
           <Row label="System">{about ? `${about.os} ${about.arch}` : "…"}</Row>
           <Row label="git">{about ? (about.git ?? <span className="text-destructive">not found</span>) : "…"}</Row>
         </dl>
-        <button onClick={copy} disabled={!about} className="mt-2 inline-flex items-center gap-1 text-[11px] text-subtle hover:text-foreground">
+        <button onClick={copy} disabled={!about} className="mt-2 inline-flex items-center gap-1 text-[11px] text-subtle hover:text-foreground focus-visible:text-foreground">
           <Copy className="size-3" /> Copy for a bug report
         </button>
 
@@ -123,7 +123,7 @@ export function AboutDialog() {
         </div>
         <div className="mt-5 text-[11px] text-subtle">
           © 2026 Emircan Sahin · MIT License ·{" "}
-          <button onClick={() => setLicenses(true)} className="hover:text-foreground hover:underline">
+          <button onClick={() => setLicenses(true)} className="hover:text-foreground focus-visible:text-foreground hover:underline">
             Third-Party Licenses
           </button>
         </div>
@@ -180,7 +180,7 @@ function LicensesDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                 <div key={key}>
                   <button
                     onClick={() => setExpanded(isOpen ? null : key)}
-                    className={cn("flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-[12px] hover:bg-hover", isOpen && "bg-hover")}
+                    className={cn("flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left text-[12px] hover:bg-hover focus-visible:bg-hover", isOpen && "bg-hover")}
                   >
                     <ChevronRight className={cn("size-3 shrink-0 text-subtle transition-transform", isOpen && "rotate-90")} />
                     <span className="min-w-0 truncate">{p.name}</span>

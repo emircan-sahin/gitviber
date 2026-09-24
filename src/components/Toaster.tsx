@@ -32,12 +32,12 @@ export function Toaster() {
                   dismissToast(t.id);
                   t.action!.run();
                 }}
-                className="h-fit shrink-0 rounded-sm px-1.5 py-0.5 text-[12px] font-medium text-primary hover:bg-hover"
+                className="h-fit shrink-0 rounded-sm px-1.5 py-0.5 text-[12px] font-medium text-primary hover:bg-hover focus-visible:bg-hover"
               >
                 {t.action.label}
               </button>
             )}
-            <button onClick={() => dismissToast(t.id)} aria-label="Dismiss notification" className="h-fit text-subtle hover:text-foreground">
+            <button onClick={() => dismissToast(t.id)} aria-label="Dismiss notification" className="h-fit text-subtle hover:text-foreground focus-visible:text-foreground">
               <X className="size-3.5" />
             </button>
           </div>
