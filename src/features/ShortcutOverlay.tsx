@@ -2,12 +2,13 @@ import { Fragment, useEffect, useSyncExternalStore } from "react";
 import { bindingsFor, chordKeys, COMMANDS, commandFor, IS_MAC, type Overrides } from "@/lib/commands";
 import { canRun, eventChord, matchesCommand, runsAt, useCommands } from "@/lib/keybindings";
 import { focusedPanel, type Panel } from "@/lib/panels";
+import { pointerMoved } from "@/lib/pointer";
 import { getSettings, useSettings } from "@/lib/settings";
 
 /**
  * Hold ⌘ by itself for a moment and every shortcut shows over the app, until ⌘ is released.
- * ⌘/ shows the same until the next key or click. It never takes focus or clicks
- * (pointer-events: none), so the app underneath keeps both.
+ * ⌘/ shows the same until the next key or click. It holds the pointer, so nothing underneath
+ * hovers through it, and a click on it only closes it, leaving focus where it was.
  */
 
 // Off macOS "cmd" is Ctrl (commands.ts), so that's the key to hold there.
@@ -145,16 +146,21 @@ export function ShortcutOverlay() {
       cancel();
       if (shown === "held") set(null);
     };
+    // ⌘ held while the pointer travels is a ⌘-click on its way, which the overlay would swallow.
+    // Capture runs before pointer.ts's own listener, so pointerMoved still sees the last position.
+    const onMouseMove = (e: MouseEvent) => timer && pointerMoved(e) && cancel();
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
-    // ⌘-click is a click, and ⌘Tab leaves without a keyup.
-    window.addEventListener("pointerdown", hide, true);
+    window.addEventListener("mousemove", onMouseMove, true);
+    window.addEventListener("pointerdown", cancel, true);
+    // ⌘Tab leaves without a keyup.
     window.addEventListener("blur", hide);
     return () => {
       hide();
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
-      window.removeEventListener("pointerdown", hide, true);
+      window.removeEventListener("mousemove", onMouseMove, true);
+      window.removeEventListener("pointerdown", cancel, true);
       window.removeEventListener("blur", hide);
     };
   }, []);
@@ -163,7 +169,15 @@ export function ShortcutOverlay() {
   const list = groups(keybindings);
   // Above the scrollbar layer (index.css .sb-layer, z-index 70). No backdrop-filter: over the terminal's WebGL canvas it isn't safe in WebKit.
   return (
-    <div className="pointer-events-none fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-6 select-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150">
+    <div
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => set(null)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        set(null);
+      }}
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-6 select-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
+    >
       <div className="flex max-h-full w-full max-w-[1320px] flex-col overflow-hidden rounded-lg border border-border-strong bg-elevated shadow-xl shadow-black/60">
         <div className="flex shrink-0 items-baseline gap-3 border-b border-border px-5 py-3">
           <span className="text-[13px] font-semibold">Keyboard Shortcuts</span>
