@@ -5,7 +5,7 @@ import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type ProjectInfo } from "@/lib/api";
-import { REVEAL_LABEL } from "@/lib/commands";
+import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/commands";
 import { matchesCommand } from "@/lib/keybindings";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -29,7 +29,7 @@ const copy = (text: string, what: string) =>
     (e) => toast("error", "Could not copy", errorMessage(e)),
   );
 
-const reveal = (path: string) => api.revealProject(path).catch((e) => toast("error", "Could not reveal in Finder", errorMessage(e)));
+const reveal = (path: string) => api.revealProject(path).catch((e) => toast("error", REVEAL_FAILED, errorMessage(e)));
 
 /** Asked each time a list mounts (the switcher mounts on open), so a moved folder shows up at once. */
 function useProjectInfo(paths: string[]) {
