@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, ExternalLink, Eye, FileCode2, FoldVertical, GitCommitHorizontal, GitCompareArrows, History, Rows2, Space, UserSearch, X } from "lucide-react";
-import { Component, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Component, type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
@@ -9,6 +9,7 @@ import { bindingsFor, type CommandId, formatChord, useCommands, useShortcut } fr
 import { diffWhitespace, getSettings, updateSettings, useSettings } from "@/lib/settings";
 import { FIT, type Zoom } from "@/lib/svg";
 import { toast } from "@/lib/toast";
+import { isMenuKey, openRowMenu } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 import { type CodeViewHandle, MonacoView } from "./MonacoView";
 import { SortableList, useSortableItem } from "@/components/Sortable";
@@ -90,12 +91,70 @@ function tabLabel(sel: Selection) {
   return path.slice(path.lastIndexOf("/") + 1);
 }
 
+/**
+ * A tablist: the open tab is its one tab stop; ←/→ (Home/End) switch tabs, ↵ or Space keeps a
+ * preview tab, ⌫ closes, ⌥←/⌥→ reorder, ⇧F10 opens the tab's menu.
+ */
 function TabStrip({ tabs, active, onActivate, onClose, onPin, onMoveTab, onShowHistory }: ViewerProps) {
+  const strip = useRef<HTMLDivElement>(null);
+  // Set when a tab holding focus closes: focus goes on to the tab that opens in its place.
+  const lostFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (!lostFocus.current) return;
+    lostFocus.current = false;
+    strip.current?.querySelector<HTMLElement>('[role="tab"][tabindex="0"]')?.focus();
+  });
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const el = e.target instanceof HTMLElement && e.target.getAttribute("role") === "tab" ? e.target : null;
+    if (!el || e.metaKey || e.ctrlKey) return;
+    const els = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
+    const i = els.indexOf(el);
+    const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
+    if (isMenuKey(e)) openRowMenu(el);
+    else if (e.shiftKey) return;
+    else if (e.altKey) {
+      if (!step || !tabs[i + step]) return;
+      onMoveTab(i, i + step);
+      // React may move this very node, and a node taken out of the page loses focus.
+      requestAnimationFrame(() => {
+        el.focus();
+        el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      });
+    } else if (step || e.key === "Home" || e.key === "End") {
+      const to = e.key === "Home" ? 0 : e.key === "End" ? els.length - 1 : Math.max(0, Math.min(els.length - 1, i + step));
+      onActivate(tabs[to].key);
+      els[to].focus();
+      els[to].scrollIntoView({ block: "nearest", inline: "nearest" });
+    } else if (e.key === "Enter" || e.key === " ") onPin(tabs[i].key);
+    else if (e.key === "Backspace" || e.key === "Delete") onClose(tabs[i].key);
+    else return;
+    e.preventDefault();
+  };
+
   return (
-    <div data-tauri-drag-region data-scrollbar="none" className="flex h-9 shrink-0 items-stretch overflow-x-auto overflow-y-hidden border-b border-border bg-panel">
+    <div
+      ref={strip}
+      role="tablist"
+      aria-label="Open tabs"
+      onKeyDown={onKeyDown}
+      data-tauri-drag-region
+      data-scrollbar="none"
+      className="flex h-9 shrink-0 items-stretch overflow-x-auto overflow-y-hidden border-b border-border bg-panel"
+    >
       <SortableList ids={tabs.map((t) => t.key)} axis="x" onMove={onMoveTab}>
-        {tabs.map((t) => (
-          <TabItem key={t.key} tab={t} active={t.key === active?.key} onActivate={onActivate} onClose={onClose} onPin={onPin} onShowHistory={onShowHistory} />
+        {tabs.map((t, i) => (
+          <TabItem
+            key={t.key}
+            tab={t}
+            active={t.key === active?.key}
+            tabStop={active ? t.key === active.key : i === 0}
+            lostFocus={lostFocus}
+            onActivate={onActivate}
+            onClose={onClose}
+            onPin={onPin}
+            onShowHistory={onShowHistory}
+          />
         ))}
       </SortableList>
     </div>
@@ -105,6 +164,8 @@ function TabStrip({ tabs, active, onActivate, onClose, onPin, onMoveTab, onShowH
 function TabItem({
   tab: t,
   active: isActive,
+  tabStop,
+  lostFocus,
   onActivate,
   onClose,
   onPin,
@@ -112,22 +173,38 @@ function TabItem({
 }: {
   tab: Tab;
   active: boolean;
+  tabStop: boolean;
+  lostFocus: RefObject<boolean>;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
   onPin: (key: string) => void;
   onShowHistory: (path: string) => void;
 }) {
   const { props, dragging, guard } = useSortableItem(t.key);
+  const el = useRef<HTMLDivElement | null>(null);
+  // Runs before the node leaves the page, while it can still say whether it had focus.
+  useLayoutEffect(
+    () => () => {
+      if (el.current?.contains(document.activeElement)) lostFocus.current = true;
+    },
+    [lostFocus],
+  );
   const tab = (
     <div
       {...props}
+      ref={(node) => {
+        props.ref(node);
+        el.current = node;
+      }}
       role="tab"
+      aria-selected={isActive}
+      tabIndex={tabStop ? 0 : -1}
       onClick={guard(() => onActivate(t.key))}
       onDoubleClick={() => onPin(t.key)}
       onAuxClick={(e) => e.button === 1 && onClose(t.key)}
       className={cn(
-        "group relative flex max-w-56 shrink-0 cursor-pointer items-center gap-1.5 border-r border-border pr-1.5 pl-3 text-[12px] select-none",
-        isActive ? "bg-background text-foreground" : "bg-panel text-muted-foreground hover:bg-hover hover:text-foreground",
+        "group relative flex max-w-56 shrink-0 cursor-pointer items-center gap-1.5 border-r border-border pr-1.5 pl-3 text-[12px] outline-none select-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+        isActive ? "bg-background text-foreground" : "bg-panel text-muted-foreground hover:bg-hover hover:text-foreground focus:bg-hover focus:text-foreground",
         dragging && "cursor-grabbing bg-elevated text-foreground shadow-lg ring-1 shadow-black/50 ring-border-strong",
       )}
     >
@@ -143,13 +220,19 @@ function TabItem({
       <span className={cn("truncate", t.preview && "italic")}>{tabLabel(t.sel)}</span>
       <TabKind sel={t.sel} />
       <button
+        aria-label="Close tab"
+        // Off the Tab order: the tab closes with ⌫, and one stop per tab would crowd it.
+        tabIndex={-1}
         // Pressing the close button must not start a drag.
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
           onClose(t.key);
         }}
-        className={cn("flex size-5 items-center justify-center rounded-sm text-subtle hover:bg-active hover:text-foreground", !isActive && "opacity-0 group-hover:opacity-100")}
+        className={cn(
+          "flex size-5 items-center justify-center rounded-sm text-subtle hover:bg-active focus-visible:bg-active hover:text-foreground focus-visible:text-foreground",
+          !isActive && "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100",
+        )}
       >
         <X className="size-3" />
       </button>
@@ -310,7 +393,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
         <FileIcon path={selectionPath(sel)} />
         <PathLabel path={selectionPath(sel)} className="min-w-0 text-[12px]" />
         <Tip label="Copy path">
-          <button className="text-subtle hover:text-foreground" onClick={() => copy(selectionPath(sel), "Path copied")}>
+          <button className="text-subtle hover:text-foreground focus-visible:text-foreground" onClick={() => copy(selectionPath(sel), "Path copied")}>
             <Copy className="size-3" />
           </button>
         </Tip>
@@ -364,7 +447,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
                 </div>
               </Tip>
               <Tip label={contrast ? "Theme background" : s.dark ? "Light background" : "Dark background"}>
-                <Button variant="ghost" size="icon-sm" onClick={() => setContrast(!contrast)} className={cn(contrast && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary")}>
+                <Button variant="ghost" size="icon-sm" onClick={() => setContrast(!contrast)} className={cn(contrast && "bg-primary/15 text-primary hover:bg-primary/20 focus-visible:bg-primary/20 hover:text-primary focus-visible:text-primary")}>
                   <Contrast />
                 </Button>
               </Tip>
@@ -400,7 +483,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
                 variant={viewed(sel) ? "default" : "secondary"}
                 size="sm"
                 onClick={() => toggleViewed(sel)}
-                className={cn(viewed(sel) && "bg-added-fill text-on-status hover:bg-added-fill/85")}
+                className={cn(viewed(sel) && "bg-added-fill text-on-status hover:bg-added-fill/85 focus-visible:bg-added-fill/85")}
               >
                 <Check /> Viewed
               </Button>
@@ -527,7 +610,7 @@ function CommitBar({ commit, url }: { commit: import("@/lib/api").Commit; url?: 
           <span className="text-subtle">·</span>
           <span title={new Date(commit.timestamp * 1000).toLocaleString()}>{relativeTime(commit.timestamp)}</span>
           {details && <SignatureBadge details={details} />}
-          <button className="rounded-sm bg-elevated px-1.5 py-px font-mono text-[11px] hover:text-foreground" onClick={() => copy(commit.sha, "Commit SHA copied")}>
+          <button className="rounded-sm bg-elevated px-1.5 py-px font-mono text-[11px] hover:text-foreground focus-visible:text-foreground" onClick={() => copy(commit.sha, "Commit SHA copied")}>
             {commit.shortSha}
           </button>
           {commit.body && (
@@ -616,7 +699,7 @@ function LayoutToggle() {
 function IconBtn({ label, command, active, onClick, children }: { label: string; command: CommandId; active?: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <Tip label={label} shortcut={useShortcut(command)}>
-      <Button variant="ghost" size="icon-sm" onClick={onClick} className={cn(active && "bg-primary/15 text-primary hover:bg-primary/20 hover:text-primary")}>
+      <Button variant="ghost" size="icon-sm" onClick={onClick} className={cn(active && "bg-primary/15 text-primary hover:bg-primary/20 focus-visible:bg-primary/20 hover:text-primary focus-visible:text-primary")}>
         {children}
       </Button>
     </Tip>
@@ -639,9 +722,10 @@ function Segmented<T extends string>({
           key={o.value}
           onClick={() => onChange(o.value)}
           className={cn(
-            "flex items-center gap-1 px-2 text-[11.5px] font-medium transition-colors",
+            // The wrapper's overflow-hidden would clip an outer focus ring.
+            "flex items-center gap-1 px-2 text-[11.5px] font-medium transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
             i > 0 && "border-l border-border-strong",
-            value === o.value ? "bg-active text-foreground" : "text-subtle hover:text-foreground",
+            value === o.value ? "bg-active text-foreground" : "text-subtle hover:text-foreground focus-visible:text-foreground",
           )}
         >
           {o.icon && <o.icon className="size-3.5" />}

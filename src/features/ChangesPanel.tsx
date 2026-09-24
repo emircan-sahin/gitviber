@@ -39,6 +39,7 @@ import { api, type Commit, errorMessage, type FileChange, type RepoStatus, SUGGE
 import { REVEAL_LABEL } from "@/lib/commands";
 import { ignorePattern } from "@/lib/gitignore";
 import { focusPanel } from "@/lib/panels";
+import { pointerMoved } from "@/lib/pointer";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/useListNav";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
 import { type Selection, selectionKey } from "@/lib/selection";
@@ -581,7 +582,7 @@ function Section({ title, count, tone, action, pinned, children }: { title: stri
   return (
     <div>
       <div className="group sticky top-0 z-10 flex h-7 items-center gap-1 border-b border-border bg-panel pr-1.5 pl-2">
-        <button className="flex items-center gap-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase hover:text-foreground" onClick={() => setOpen(!open)}>
+        <button className="flex items-center gap-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase hover:text-foreground focus-visible:text-foreground" onClick={() => setOpen(!open)}>
           <ChevronDown className={cn("size-3 transition-transform", !open && "-rotate-90")} />
           <span className={tone}>{title}</span>
           <span className="ml-1 font-mono tracking-normal text-muted-foreground">{count}</span>
@@ -595,7 +596,7 @@ function Section({ title, count, tone, action, pinned, children }: { title: stri
 
 function SectionBtn({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
   return (
-    <button onClick={onClick} className="h-5 rounded-sm px-1.5 text-[11px] text-muted-foreground outline-none hover:bg-active hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring">
+    <button onClick={onClick} className="h-5 rounded-sm px-1.5 text-[11px] text-muted-foreground outline-none hover:bg-active focus-visible:bg-active hover:text-foreground focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring">
       {children}
     </button>
   );
@@ -659,7 +660,7 @@ function Row({
           onMouseEnter={() => onHover(sel)}
           className={cn(
             "group/row relative flex h-[26px] scroll-mt-7 cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-            selected ? (dim ? "bg-active" : "bg-primary/15") : "hover:bg-hover data-[state=open]:bg-hover",
+            selected ? (dim ? "bg-active" : "bg-primary/15") : "hover:bg-hover focus:bg-hover data-[state=open]:bg-hover",
           )}
         >
           {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
@@ -710,10 +711,10 @@ function NestedRow({ file }: { file: FileChange }) {
       <span className="size-3.5 shrink-0" />
       <FolderGit2 className="size-4 shrink-0 text-subtle" />
       <PathLabel path={file.path.replace(/\/$/, "")} className="flex-1" />
-      <span className="max-w-32 shrink-0 truncate rounded-sm bg-elevated px-1 font-mono text-[10.5px] leading-4 text-muted-foreground group-hover/row:hidden">
+      <span className="max-w-32 shrink-0 truncate rounded-sm bg-elevated px-1 font-mono text-[10.5px] leading-4 text-muted-foreground group-focus-within/row:hidden group-hover/row:hidden">
         nested repo
       </span>
-      <div className="hidden items-center group-hover/row:flex">
+      <div className="hidden items-center group-focus-within/row:flex group-hover/row:flex">
         <RowAction label="Can't stage a separate git repository" onClick={() => toast("info", "Not stageable", NESTED_EXPLAINED)}>
           <Plus className="opacity-40" />
         </RowAction>
@@ -729,7 +730,7 @@ function RowAction({ label, onClick, children }: { label: string; onClick: () =>
       <button
         onClick={onClick}
         aria-label={label}
-        className="flex size-5 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-active hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3.5"
+        className="flex size-5 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-active focus-visible:bg-active hover:text-foreground focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3.5"
       >
         {children}
       </button>
@@ -765,6 +766,8 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
   // One commit only: a hook that's broken today shouldn't be skipped forever.
   const [noVerify, setNoVerify] = useState(false);
   const [addingCoAuthor, setAddingCoAuthor] = useState(false);
+  // Set by Add co-author: focus going back to the options button would steal it from the picker.
+  const pickingCoAuthor = useRef(false);
 
   // An empty message starts from commit.template, as git's editor would.
   const [template, setTemplate] = useState<string | null>(null);
@@ -963,9 +966,21 @@ function CommitBox({ status, head, main, refresh }: Pick<Props, "status" | "head
                 </Button>
               </DropdownMenuTrigger>
             </Tip>
-            {/* Focus goes to the co-author field, not back to this button. */}
-            <DropdownMenuContent side="top" align="end" className="w-56" onCloseAutoFocus={(e) => e.preventDefault()}>
-              <DropdownMenuItem onSelect={() => setAddingCoAuthor(true)}>
+            <DropdownMenuContent
+              side="top"
+              align="end"
+              className="w-56"
+              onCloseAutoFocus={(e) => {
+                if (pickingCoAuthor.current) e.preventDefault();
+                pickingCoAuthor.current = false;
+              }}
+            >
+              <DropdownMenuItem
+                onSelect={() => {
+                  pickingCoAuthor.current = true;
+                  setAddingCoAuthor(true);
+                }}
+              >
                 <UserPlus /> Add co-author…
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -1015,7 +1030,7 @@ function OptionChip({ label, tip, warn, onRemove, children }: { label: string; t
       >
         {children}
         <span className="truncate">{label}</span>
-        <button aria-label={`Remove ${label}`} onClick={onRemove} className="flex size-4 items-center justify-center rounded-sm opacity-70 outline-none hover:bg-active hover:opacity-100 focus-visible:ring-1 focus-visible:ring-ring">
+        <button aria-label={`Remove ${label}`} onClick={onRemove} className="flex size-4 items-center justify-center rounded-sm opacity-70 outline-none hover:bg-active focus-visible:bg-active hover:opacity-100 focus-visible:ring-1 focus-visible:ring-ring">
           <X />
         </button>
       </span>
@@ -1081,13 +1096,13 @@ function CoAuthorPicker({
           }}
           spellCheck={false}
         />
-        <div className="mt-1 max-h-56 overflow-y-auto" onMouseLeave={() => setIndex(-1)}>
+        <div className="mt-1 max-h-56 overflow-y-auto" onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)}>
           {options.map((a, i) => (
             <div
               key={a}
               role="option"
               aria-selected={i === index}
-              onMouseMove={() => setIndex(i)}
+              onMouseMove={(e) => pointerMoved(e) && setIndex(i)}
               onClick={() => add(a)}
               className={cn("flex h-7 cursor-pointer items-center gap-2 rounded-sm px-2 text-[12px] select-none", i === index && "bg-primary text-primary-foreground")}
             >

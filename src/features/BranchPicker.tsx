@@ -6,6 +6,8 @@ import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/to
 import { type Branch, fullName, github } from "@/lib/api";
 import { useGitHubData } from "@/lib/githubCache";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
+import { pointerMoved } from "@/lib/pointer";
+import { isMenuKey, openRowMenu } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 
 interface Props {
@@ -50,6 +52,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
   const [query, setQuery] = useState("");
   const [index, setIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null);
   // GitHub branch protection, asked when the menu opens. No GitHub, no answer: then only
   // the remote default is held back, and the confirm is what guards the rest.
   const [guarded, setGuarded] = useState<Set<string>>(new Set());
@@ -156,7 +159,10 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     else if (e.key === "ArrowDown") setIndex((i) => Math.min(options.length - 1, i + 1));
     else if (e.key === "ArrowUp") setIndex((i) => Math.max(0, i - 1));
     else if (e.key === "Enter") choose(options[index]);
-    else return;
+    else if (isMenuKey(e)) {
+      const row = listRef.current?.querySelector<HTMLElement>(`[data-option="${index}"]`);
+      if (row) openRowMenu(row);
+    } else return;
     e.preventDefault();
   };
 
@@ -182,8 +188,14 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
 
   /** Right-click actions on a branch row. */
   const branchMenu = (b: Branch) => (
-    // The dialog these open takes the focus; the closed picker has nowhere to give it back.
-    <ContextMenuContent onCloseAutoFocus={(e) => e.preventDefault()}>
+    // Not to the row, which can't take it: back to the search box while the picker is open. The
+    // dialogs these open take the focus themselves.
+    <ContextMenuContent
+      onCloseAutoFocus={(e) => {
+        e.preventDefault();
+        if (input.current?.isConnected) input.current.focus();
+      }}
+    >
       {!b.remote && (
         <ContextMenuItem onSelect={menuAct(() => onRename(b))}>
           <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}
@@ -213,7 +225,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
         data-option={i}
         role="option"
         aria-selected={hot}
-        onMouseMove={() => setIndex(i)}
+        onMouseMove={(e) => pointerMoved(e) && setIndex(i)}
         onClick={() => choose(o)}
         className={cn(
           "flex h-7 items-center gap-2 rounded-sm px-2 text-[12px]",
@@ -287,7 +299,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button className="flex h-7 max-w-72 min-w-0 items-center gap-1.5 rounded-md px-2 text-left hover:bg-hover data-[state=open]:bg-active">
+        <button className="flex h-7 max-w-72 min-w-0 items-center gap-1.5 rounded-md px-2 text-left hover:bg-hover focus-visible:bg-hover data-[state=open]:bg-active">
           <GitBranch className="size-3.5 shrink-0 text-primary" />
           <span className="truncate font-mono text-[12px]">{label}</span>
           <ChevronsUpDown className="size-3 shrink-0 text-subtle" />
@@ -297,6 +309,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
         <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border px-2.5">
           <Search className="size-3.5 shrink-0 text-subtle" />
           <input
+            ref={input}
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -306,7 +319,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
           />
         </div>
         {/* Like a native menu: the highlight leaves with the mouse; ↑↓ bring it back. */}
-        <div ref={listRef} onMouseLeave={() => setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
+        <div ref={listRef} onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
           {groups.length === 0 && options.length === 0 && (
             <div className="px-2 py-3 text-center text-[12px] text-subtle">
               {branches.some(elsewhere) ? "No branches here · ones checked out in other worktrees are in the worktree menu" : "No branches"}
@@ -320,7 +333,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
                 onClick={() => toggleGroup(g.name)}
                 disabled={!!q}
                 aria-expanded={isOpen(g.name)}
-                className="flex w-full items-center gap-1 px-1 pt-2 pb-1 text-left text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase hover:text-foreground disabled:hover:text-subtle"
+                className="flex w-full items-center gap-1 px-1 pt-2 pb-1 text-left text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase hover:text-foreground focus-visible:text-foreground disabled:hover:text-subtle"
               >
                 <ChevronRight className={cn("size-3 shrink-0 transition-transform", isOpen(g.name) && "rotate-90")} />
                 {g.name}
@@ -332,14 +345,14 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
           {options.at(-1)?.kind === "create" && optionRow(options.at(-1)!, options.length - 1)}
         </div>
         <div className="flex shrink-0 items-center gap-2 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
-          <span className="min-w-0 flex-1 truncate">↑↓ navigate · ↵ switch · {renameKey ? `${renameKey} rename · ` : ""}right-click for more</span>
+          <span className="min-w-0 flex-1 truncate">↑↓ navigate · ↵ switch · {renameKey ? `${renameKey} rename · ` : ""}⇧F10 or right-click for more</span>
           <Tip label={`New branch from ${current ?? "HEAD"}, or from any branch or tag`}>
             <button
               onClick={() => {
                 onNewBranch(current ? `refs/heads/${current}` : "HEAD");
                 close();
               }}
-              className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover hover:text-foreground"
+              className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
             >
               New branch…
             </button>
@@ -351,7 +364,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
                   onCleanUp(stale);
                   close();
                 }}
-                className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover hover:text-foreground"
+                className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
               >
                 Clean up {stale.length} merged
               </button>
@@ -368,7 +381,7 @@ export function RowAction({ label, hot, onClick, children }: { label: string; ho
   return (
     <Tooltip disableHoverableContent>
       <TooltipTrigger asChild>
-        <button aria-label={label} onClick={onClick} className="flex size-5 items-center justify-center rounded-sm bg-white/15 hover:bg-white/25 [&_svg]:size-3">
+        <button aria-label={label} onClick={onClick} className="flex size-5 items-center justify-center rounded-sm bg-white/15 hover:bg-white/25 focus-visible:bg-white/25 [&_svg]:size-3">
           {children}
         </button>
       </TooltipTrigger>

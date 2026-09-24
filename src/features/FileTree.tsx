@@ -5,6 +5,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator,
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
 import { REVEAL_LABEL } from "@/lib/commands";
 import { focusPanel } from "@/lib/panels";
+import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/useListNav";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { tracked, undoAction } from "@/lib/undo";
@@ -233,6 +234,13 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
 
   const onKeyDown = (ev: React.KeyboardEvent) => {
     if (ev.target !== ev.currentTarget || editing) return;
+    if (isMenuKey(ev)) {
+      // With nothing selected, the tree's own menu: New File / New Folder at the root.
+      const row = selected ? rowOf(selected) : null;
+      openRowMenu(row instanceof HTMLElement ? row : (ev.currentTarget as HTMLElement));
+      ev.preventDefault();
+      return;
+    }
     // ⌥↑/⌥↓ (next/previous change) and ⌘-arrows belong to the global shortcuts.
     if (ev.key.startsWith("Arrow") && (ev.altKey || ev.metaKey)) return;
     const i = rows.findIndex((r) => r.entry.path === selected);
@@ -244,6 +252,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     let handled = true;
     if (ev.key === "ArrowDown") move(i + 1);
     else if (ev.key === "ArrowUp") move(i < 0 ? rows.length - 1 : i - 1);
+    else if (["Home", "End", "PageUp", "PageDown"].includes(ev.key) && rows.length) {
+      const row = rowOf(rows[Math.max(i, 0)].entry.path);
+      move(moveTarget(ev.key, Math.max(i, 0), rows.length, row instanceof HTMLElement ? pageOf(row) : 1)!);
+    }
     else if (!cur) handled = false;
     else if (ev.key === "ArrowRight") {
       // A file: open it and read it.
@@ -311,7 +323,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
                   className={cn(
                     active ? "bg-primary/15" : "hover:bg-hover",
                     e.ignored && "opacity-40",
-                    selected === e.path && "group-focus/tree:outline group-focus/tree:-outline-offset-1 group-focus/tree:outline-primary/70",
+                    // The tree holds the focus, not the row: the keyboard's row looks hovered too.
+                    selected === e.path && "group-focus/tree:bg-hover group-focus/tree:outline group-focus/tree:-outline-offset-1 group-focus/tree:outline-primary/70",
                   )}
                 >
                   {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}

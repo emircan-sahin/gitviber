@@ -1,4 +1,4 @@
-import { type Dispatch, type ReactNode, type SetStateAction, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type Dispatch, type ReactNode, type SetStateAction, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, type DiffKind, errorMessage } from "@/lib/api";
 import { FIT, panAxis, place, svgSize, type Zoom, zoomAxis, zoomLimits } from "@/lib/svg";
 import { cn } from "@/lib/utils";
@@ -167,46 +167,72 @@ function SvgSide({ text, label, tone, zoom, onZoom, backdrop }: { text: string; 
   useLayoutEffect(() => {
     layout.current = { roomW, roomH, fit, natural };
   });
-  useEffect(() => {
-    if (!stage) return;
-    const wheel = (e: WheelEvent) => {
+  /** Zooms by `factor`, keeping the point (x, y) of the stage where it is. */
+  const zoomAt = useCallback(
+    (factor: number, x: number, y: number) => {
       const { roomW, roomH, fit, natural } = layout.current;
       if (!natural) return;
-      e.preventDefault();
-      // Pinches arrive as ctrl+wheel with small deltas; line-mode wheels scroll ~3 lines a notch.
-      const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
-      const factor = Math.exp(-delta * (e.ctrlKey ? 0.01 : 0.002));
       const [min, max] = zoomLimits(natural, fit);
-      const r = stage.getBoundingClientRect();
       onZoom((z) => {
         const from = Math.min(z.scale ?? fit, max);
         const to = Math.min(max, Math.max(min, from * factor));
-        return {
-          scale: to,
-          u: zoomAxis(roomW, natural[0] * from, natural[0] * to, z.u, e.clientX - r.left),
-          v: zoomAxis(roomH, natural[1] * from, natural[1] * to, z.v, e.clientY - r.top),
-        };
+        return { scale: to, u: zoomAxis(roomW, natural[0] * from, natural[0] * to, z.u, x), v: zoomAxis(roomH, natural[1] * from, natural[1] * to, z.v, y) };
       });
+    },
+    [onZoom],
+  );
+  useEffect(() => {
+    if (!stage) return;
+    const wheel = (e: WheelEvent) => {
+      if (!layout.current.natural) return;
+      e.preventDefault();
+      // Pinches arrive as ctrl+wheel with small deltas; line-mode wheels scroll ~3 lines a notch.
+      const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+      const r = stage.getBoundingClientRect();
+      zoomAt(Math.exp(-delta * (e.ctrlKey ? 0.01 : 0.002)), e.clientX - r.left, e.clientY - r.top);
     };
     stage.addEventListener("wheel", wheel, { passive: false });
     return () => stage.removeEventListener("wheel", wheel);
-  }, [stage, onZoom]);
+  }, [stage, zoomAt]);
 
+  const panBy = (dx: number, dy: number) => {
+    if (!natural) return;
+    onZoom((z) => {
+      const s = Math.min(z.scale ?? fit, zoomLimits(natural, fit)[1]);
+      return { ...z, u: panAxis(roomW, natural[0] * s, z.u, dx), v: panAxis(roomH, natural[1] * s, z.v, dy) };
+    });
+  };
   const drag = useRef<{ x: number; y: number } | null>(null);
   const pan = (e: React.PointerEvent) => {
     const from = drag.current;
-    if (!from || !natural) return;
+    if (!from) return;
     drag.current = { x: e.clientX, y: e.clientY };
-    onZoom((z) => {
-      const s = Math.min(z.scale ?? fit, zoomLimits(natural, fit)[1]);
-      return { ...z, u: panAxis(roomW, natural[0] * s, z.u, e.clientX - from.x), v: panAxis(roomH, natural[1] * s, z.v, e.clientY - from.y) };
-    });
+    panBy(e.clientX - from.x, e.clientY - from.y);
+  };
+  // The keyboard's wheel and drag: + / − / 0 zoom around the middle, arrows move the view.
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.metaKey || e.ctrlKey || e.altKey || !natural) return;
+    const step = 48;
+    if (e.key === "=" || e.key === "+") zoomAt(1.25, roomW / 2, roomH / 2);
+    else if (e.key === "-") zoomAt(0.8, roomW / 2, roomH / 2);
+    else if (e.key === "0") onZoom(FIT);
+    else if (e.key === "ArrowLeft") panBy(step, 0);
+    else if (e.key === "ArrowRight") panBy(-step, 0);
+    else if (e.key === "ArrowUp") panBy(0, step);
+    else if (e.key === "ArrowDown") panBy(0, -step);
+    else return;
+    e.preventDefault();
   };
 
   return (
     <Panel label={label} tone={tone} details={[!broken && natural && `${natural[0]}×${natural[1]}`, !broken && natural && `${Math.round(scale * 100)}%`, url && formatBytes(size)]}>
       <div
         ref={setStage}
+        // Where focusPanel("code") lands (see panels.ts), so the keys below work from F6 too.
+        data-code-scroll
+        tabIndex={0}
+        aria-label={`${label ? `${label}: ` : ""}SVG preview. + and − zoom, 0 fits, arrows move it`}
+        onKeyDown={onKeyDown}
         onPointerDown={(e) => {
           if (e.button !== 0 || !pannable) return;
           e.currentTarget.setPointerCapture(e.pointerId);
@@ -216,7 +242,7 @@ function SvgSide({ text, label, tone, zoom, onZoom, backdrop }: { text: string; 
         onPointerUp={() => (drag.current = null)}
         onPointerCancel={() => (drag.current = null)}
         onDoubleClick={() => onZoom(FIT)}
-        className={cn("absolute inset-0 overflow-hidden", pannable && "cursor-grab active:cursor-grabbing")}
+        className={cn("absolute inset-0 overflow-hidden outline-none", pannable && "cursor-grab active:cursor-grabbing")}
       >
         {broken ? (
           <div className="flex h-full flex-col items-center justify-center p-4 text-center">

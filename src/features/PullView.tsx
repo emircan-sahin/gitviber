@@ -126,7 +126,8 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    // Focusable so the keyboard can scroll it (focusPanel("code") lands here).
+    <div data-code-scroll tabIndex={0} className="min-h-0 flex-1 overflow-y-auto outline-none">
       <div className="mx-auto max-w-4xl px-6 py-5">
         <div className="flex items-start gap-3">
           <PullStateIcon pull={p} className="mt-1.5 size-4" />
@@ -202,7 +203,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
                 <CheckIcon state={c.state} />
                 <span className="truncate">{c.name}</span>
                 {c.url?.startsWith("https://github.com/") && (
-                  <button onClick={() => github.openUrl(c.url!)} className="ml-auto text-[11px] text-subtle hover:text-foreground">
+                  <button onClick={() => github.openUrl(c.url!)} className="ml-auto text-[11px] text-subtle hover:text-foreground focus-visible:text-foreground">
                     Details
                   </button>
                 )}
@@ -221,17 +222,16 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
               </div>
             ))}
           {files.data?.files.map((f) => (
-            <div
+            <button
               key={f.path}
-              role="button"
               onClick={() => onOpen({ kind: "pr-file", range: { number: p.number, base: files.data!.base, head: files.data!.head }, file: f })}
-              className="flex h-7 cursor-pointer items-center gap-2 px-3 text-[12px] hover:bg-hover"
+              className="flex h-7 w-full cursor-pointer items-center gap-2 px-3 text-left text-[12px] outline-none hover:bg-hover focus-visible:bg-hover"
             >
               <FileIcon path={f.path} />
               <PathLabel path={f.path} className="flex-1" />
               <LineCounts file={f} />
               <StatusLetter status={f.status} />
-            </div>
+            </button>
           ))}
         </Section>
 
@@ -518,7 +518,7 @@ function ExternalImage({ src, alt, ...props }: { src: string } & Omit<ComponentP
       type="button"
       title={src}
       onClick={() => setLoad(true)}
-      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-panel px-2 py-1 align-middle text-[12px] text-muted-foreground hover:text-foreground"
+      className="inline-flex max-w-full items-center gap-1.5 rounded-md border border-border bg-panel px-2 py-1 align-middle text-[12px] text-muted-foreground hover:text-foreground focus-visible:text-foreground"
     >
       <ImageIcon className="size-3.5 shrink-0" />
       <span className="truncate">

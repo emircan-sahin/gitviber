@@ -125,7 +125,8 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
+    // Focusable so the keyboard can scroll it (focusPanel("code") lands here).
+    <div data-code-scroll tabIndex={0} className="min-h-0 flex-1 overflow-y-auto outline-none">
       <div className="mx-auto max-w-4xl px-6 py-5">
         {editing && d ? (
           <EditIssue
@@ -166,7 +167,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
                   >
                     <button
                       disabled={!!busy || !d}
-                      className="inline-flex items-center gap-1 rounded-full border border-dashed border-border-strong px-1.5 text-[10.5px] leading-4 text-subtle hover:text-foreground disabled:opacity-50 data-[state=open]:text-foreground"
+                      className="inline-flex items-center gap-1 rounded-full border border-dashed border-border-strong px-1.5 text-[10.5px] leading-4 text-subtle hover:text-foreground focus-visible:text-foreground disabled:opacity-50 data-[state=open]:text-foreground"
                     >
                       <Tag className="size-2.5" /> {(labels ?? i.labels).length ? "Edit labels" : "Add labels"}
                     </button>
@@ -211,7 +212,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
           )}
           {/* GitHub lets repository admins alone delete issues. */}
           {access?.admin && (
-            <Button variant="ghost" size="sm" className="ml-auto text-removed hover:text-removed" disabled={!!busy} onClick={remove}>
+            <Button variant="ghost" size="sm" className="ml-auto text-removed hover:text-removed focus-visible:text-removed" disabled={!!busy} onClick={remove}>
               <Trash2 /> Delete
             </Button>
           )}

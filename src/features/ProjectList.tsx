@@ -73,15 +73,13 @@ export function ProjectList({ recent, current, onOpen, onForget, onReorder, onLo
       if (info.get(path)?.exists === false) onLocate(path);
       else if (path !== current) onOpen(path);
     }
-    else if ((e.key === "Backspace" || e.key === "Delete") && path !== current) {
-      (rows[i + 1] ?? rows[i - 1])?.focus();
-      onForget(path);
-    } else return;
+    else if ((e.key === "Backspace" || e.key === "Delete") && path !== current) forget(row, path, onForget);
+    else return;
     e.preventDefault();
   };
 
   return (
-    <div onKeyDown={onKey}>
+    <div data-project-list onKeyDown={onKey}>
       <SortableList ids={recent} axis="y" onMove={(from, to) => onReorder(arrayMove(recent, from, to))}>
         {recent.map((p, i) => (
           <ProjectRow
@@ -140,7 +138,7 @@ function ProjectRow({
           onClick={guard(() => (missing ? onLocate(path) : !current && onOpen(path)))}
           className={cn(
             "group flex h-9 items-center gap-2.5 rounded-sm px-2 outline-none select-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-            current ? "cursor-default bg-active" : "cursor-pointer hover:bg-hover data-[state=open]:bg-hover",
+            current ? "cursor-default bg-active" : "cursor-pointer hover:bg-hover focus:bg-hover data-[state=open]:bg-hover",
             dragging && "cursor-grabbing bg-elevated shadow-lg ring-1 shadow-black/40 ring-border-strong",
           )}
         >
@@ -167,7 +165,7 @@ function ProjectRow({
                 </>
               )}
               {!current && (
-                <RowAction label="Remove from list" onClick={() => onForget(path)}>
+                <RowAction label="Remove from list" onClick={(e) => forget(e.currentTarget, path, onForget)}>
                   <X />
                 </RowAction>
               )}
@@ -207,7 +205,7 @@ function ProjectRow({
         <ContextMenuItem disabled={first} onSelect={onMoveToTop}>
           <ArrowUpToLine /> Move to Top
         </ContextMenuItem>
-        <ContextMenuItem disabled={current} onSelect={() => onForget(path)}>
+        <ContextMenuItem disabled={current} onSelect={() => forget(document.querySelector(`[data-project="${CSS.escape(path)}"]`), path, onForget)}>
           <X /> Remove from List
           <ContextMenuShortcut>⌫</ContextMenuShortcut>
         </ContextMenuItem>
@@ -216,7 +214,16 @@ function ProjectRow({
   );
 }
 
-function RowAction({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+/** Removing a row takes the focus with it, to the page: hand it to a neighbouring row first. */
+function forget(inRow: Element | null, path: string, onForget: (p: string) => void) {
+  const row = inRow?.closest("[data-project]");
+  const rows = [...(row?.closest("[data-project-list]")?.querySelectorAll<HTMLElement>("[data-project]") ?? [])];
+  const i = rows.findIndex((r) => r === row);
+  if (i >= 0) (rows[i + 1] ?? rows[i - 1])?.focus();
+  onForget(path);
+}
+
+function RowAction({ label, onClick, children }: { label: string; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; children: React.ReactNode }) {
   return (
     <Tip label={label}>
       <button
@@ -225,9 +232,9 @@ function RowAction({ label, onClick, children }: { label: string; onClick: () =>
         onPointerDown={(e) => e.stopPropagation()}
         onClick={(e) => {
           e.stopPropagation();
-          onClick();
+          onClick(e);
         }}
-        className="flex size-5 items-center justify-center rounded-sm text-subtle outline-none hover:bg-active hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3"
+        className="flex size-5 items-center justify-center rounded-sm text-subtle outline-none hover:bg-active hover:text-foreground focus-visible:bg-active focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3"
       >
         {children}
       </button>

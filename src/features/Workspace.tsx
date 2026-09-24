@@ -483,7 +483,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                   tabIndex={-1}
                   onKeyDown={(e) => {
                     const target = e.target as HTMLElement;
-                    if (e.key === "Escape" && (target === e.currentTarget || target.matches(".monaco-editor textarea.inputarea"))) focusList();
+                    if (e.key === "Escape" && (target === e.currentTarget || target.matches(".monaco-editor textarea.inputarea, [data-code-scroll]"))) focusList();
                   }}
                   className="group/panel relative h-full outline-none"
                 >
@@ -537,7 +537,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 {/* One group: two ml-autos split the free space, leaving Collapse folders mid-header. */}
                 <div className="ml-auto flex items-center gap-0.5">
                   <Tip label="Collapse folders">
-                    <button aria-label="Collapse folders" onClick={() => fileTree.current?.collapseAll()} className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground">
+                    <button aria-label="Collapse folders" onClick={() => fileTree.current?.collapseAll()} className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
                       <ChevronsDownUp className="size-3.5" />
                     </button>
                   </Tip>
@@ -576,7 +576,7 @@ function CollapseButton({ side, onClick }: { side: "left" | "right"; onClick: ()
   const shortcut = useShortcut(side === "left" ? "view.toggleGitPanel" : "view.toggleExplorer");
   return (
     <Tip label={side === "left" ? "Hide panel" : "Hide explorer"} shortcut={shortcut}>
-      <button onClick={onClick} className="ml-auto flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground">
+      <button onClick={onClick} className="ml-auto flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
         <Icon className="size-3.5" />
       </button>
     </Tip>
@@ -589,7 +589,7 @@ function ListTabButton({ active, onClick, count, children }: { active: boolean; 
       onClick={onClick}
       className={cn(
         "flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium",
-        active ? "bg-active text-foreground" : "text-subtle hover:text-foreground",
+        active ? "bg-active text-foreground" : "text-subtle hover:text-foreground focus-visible:text-foreground",
       )}
     >
       {children}
@@ -640,7 +640,7 @@ function StatusBar({ repo, reviewed, openTarget }: { repo: ReturnType<typeof use
       <Tip label="Word wrap" shortcut={wrapKey}>
         <button
           onClick={() => updateSettings({ wordWrap: !s.wordWrap })}
-          className={cn("flex items-center gap-1 hover:text-foreground", s.wordWrap && "text-primary hover:text-primary")}
+          className={cn("flex items-center gap-1 hover:text-foreground focus-visible:text-foreground", s.wordWrap && "text-primary hover:text-primary focus-visible:text-primary")}
         >
           <WrapText className="size-3" />
           Wrap
@@ -659,7 +659,7 @@ function VersionInfo() {
   if (!about) return null;
   return (
     <Tip label="About GitViber">
-      <button onClick={openAbout} className="hover:text-foreground">
+      <button onClick={openAbout} className="hover:text-foreground focus-visible:text-foreground">
         v{about.version} · {about.os}
       </button>
     </Tip>

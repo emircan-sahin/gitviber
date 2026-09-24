@@ -394,15 +394,25 @@ export function clearFocused() {
   if (g) panes.get(g.focused)?.term.clear();
 }
 
-export function activateGroup(id: number) {
+/** `focus: false` keeps focus where it is: arrowing along the tabs. */
+export function activateGroup(id: number, focus = true) {
   if (state.active !== id) set({ active: id });
-  focusActive();
+  if (focus) focusActive();
 }
 
 function focusPane(id: number) {
   const g = state.groups.find((x) => x.panes.some((p) => p.id === id));
   if (!g || (g.focused === id && state.active === g.id)) return;
   set({ active: g.id, groups: state.groups.map((x) => (x === g ? { ...g, focused: id } : x)) });
+}
+
+/** The next split pane of the open tab (⌥⌘←/→, as in VS Code), wrapping around. */
+export function stepPane(dir: 1 | -1) {
+  const g = activeGroup();
+  if (!g || g.panes.length < 2) return;
+  const at = g.panes.findIndex((p) => p.id === g.focused);
+  focusPane(g.panes[(at + dir + g.panes.length) % g.panes.length].id);
+  focusActive();
 }
 
 /** Opens the panel (with a first terminal in `cwd` if there is none), or hides it. */

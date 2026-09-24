@@ -9,6 +9,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage, type FileChange, type RepoStatus, type Stash, type StashFiles } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
+import { useListNav } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 import { FileIcon } from "./FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
@@ -65,6 +66,7 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
   const [open, setOpen] = useState<string | null>(null);
   const [files, setFiles] = useState<Record<string, StashFiles>>({});
   const [busy, setBusy] = useState(false);
+  const nav = useListNav({ activeKey });
 
   useEffect(() => {
     if (!open || files[open]) return;
@@ -106,11 +108,18 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
     return (
       <div
         key={`${sha}:${f.path}`}
-        role="button"
+        role="treeitem"
+        aria-level={2}
+        aria-selected={active}
+        tabIndex={-1}
+        data-row={selectionKey(sel)}
         onClick={() => onOpen(sel)}
         onDoubleClick={() => onOpen(sel, true)}
         onMouseEnter={() => onHover(sel)}
-        className={cn("relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-8 text-[12px]", active ? "bg-primary/15" : "hover:bg-hover")}
+        className={cn(
+          "relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-8 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+          active ? "bg-primary/15" : "hover:bg-hover focus:bg-hover",
+        )}
       >
         {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
         <FileIcon path={f.path} />
@@ -122,7 +131,7 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
   };
 
   return (
-    <>
+    <div role="tree" aria-label="Stashes" {...nav}>
       {stashes.map((s) => {
         const { text, branch } = describe(s);
         const expanded = open === s.sha;
@@ -132,21 +141,27 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
             <ContextMenu>
               <ContextMenuTrigger asChild>
                 <div
-                  role="button"
+                  role="treeitem"
+                  aria-level={1}
                   aria-expanded={expanded}
+                  tabIndex={-1}
+                  data-row={`stash:${s.sha}`}
                   onClick={() => setOpen(expanded ? null : s.sha)}
-                  className={cn("group/row flex h-[26px] cursor-pointer items-center gap-1.5 pr-2 pl-2 text-[12px] data-[state=open]:bg-hover", expanded ? "bg-active" : "hover:bg-hover")}
+                  className={cn(
+                    "group/row flex h-[26px] cursor-pointer items-center gap-1.5 pr-2 pl-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset data-[state=open]:bg-hover",
+                    expanded ? "bg-active" : "hover:bg-hover focus:bg-hover",
+                  )}
                 >
                   <ChevronRight className={cn("size-3 shrink-0 text-subtle transition-transform", expanded && "rotate-90")} />
                   <Archive className="size-3.5 shrink-0 text-subtle" />
                   <span className="min-w-0 flex-1 truncate" title={s.message}>
                     {text}
                   </span>
-                  <span className="shrink-0 text-[10.5px] text-subtle group-hover/row:hidden">
+                  <span className="shrink-0 text-[10.5px] text-subtle group-focus-within/row:hidden group-hover/row:hidden">
                     {branch && <span className="font-mono">{branch} · </span>}
                     {relativeTime(s.timestamp)}
                   </span>
-                  <div className="hidden items-center group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
+                  <div className="hidden items-center group-focus-within/row:flex group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
                     <StashAction label="Apply (keep the stash)" disabled={busy} onClick={() => apply(s, false)}>
                       <PackageOpen />
                     </StashAction>
@@ -182,7 +197,7 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
           </div>
         );
       })}
-    </>
+    </div>
   );
 }
 
@@ -193,7 +208,7 @@ function StashAction({ label, disabled, onClick, children }: { label: string; di
         onClick={onClick}
         disabled={disabled}
         aria-label={label}
-        className="flex size-5 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-active hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 [&_svg]:size-3.5"
+        className="flex size-5 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-active focus-visible:bg-active hover:text-foreground focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 [&_svg]:size-3.5"
       >
         {children}
       </button>

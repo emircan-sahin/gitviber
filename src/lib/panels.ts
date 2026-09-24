@@ -48,7 +48,8 @@ export function focusPanel(p: Panel): boolean {
   const el = panelEl(p);
   if (!el || !el.offsetWidth || !el.offsetHeight) return false;
   if (p === "terminal") focusActive();
-  else if (p === "code") (focusEditor ?? (() => el.focus()))();
+  // Without an editor, a view's scroller (a PR, an issue, Markdown), so the keys scroll it.
+  else if (p === "code") (focusEditor ?? (() => (el.querySelector<HTMLElement>("[data-code-scroll]") ?? el).focus()))();
   // A list's one tab stop (useListNav, the Changes list), the explorer's tree.
   else (el.querySelector<HTMLElement>('[data-row][tabindex="0"]') ?? el.querySelector<HTMLElement>('[tabindex="0"]') ?? el).focus();
   return true;

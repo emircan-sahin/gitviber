@@ -8,6 +8,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { errorMessage, fullName, github, type Issue, type IssueCounts, type IssueLabel, isNotConnected, issues, type Target } from "@/lib/api";
 import { invalidate, useGitHubData } from "@/lib/githubCache";
+import { pointerMoved } from "@/lib/pointer";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
 import { useListNav } from "@/lib/useListNav";
@@ -51,6 +52,8 @@ export function LabelChip({ label, onClick }: { label: IssueLabel; onClick?: () 
     <El
       {...(onClick && {
         title: "Filter by this label",
+        // Not a tab stop in every row: the Label filter above does the same from the keyboard.
+        tabIndex: -1,
         onClick: (e: React.MouseEvent) => {
           e.stopPropagation();
           onClick();
@@ -60,7 +63,7 @@ export function LabelChip({ label, onClick }: { label: IssueLabel; onClick?: () 
       })}
       className={cn(
         "inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 text-[10.5px] leading-4 text-muted-foreground",
-        onClick && "hover:border-border-strong hover:text-foreground",
+        onClick && "hover:border-border-strong hover:text-foreground focus-visible:text-foreground",
       )}
     >
       <LabelDot label={label} />
@@ -154,14 +157,14 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
               <button
                 aria-label={`Remove ${l.name}`}
                 onClick={() => setLabels((ls) => ls.filter((m) => m.name !== l.name))}
-                className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-hover hover:text-foreground"
+                className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
               >
                 <X className="size-2.5" />
               </button>
             </span>
           ))}
           {labels.length > 1 && (
-            <button onClick={() => setLabels([])} className="ml-auto px-1 text-[10.5px] text-subtle hover:text-foreground">
+            <button onClick={() => setLabels([])} className="ml-auto px-1 text-[10.5px] text-subtle hover:text-foreground focus-visible:text-foreground">
               Clear
             </button>
           )}
@@ -274,7 +277,7 @@ function IssueRows({
             data-row={key}
             onClick={() => onOpen(sel)}
             onDoubleClick={() => onOpen(sel, true)}
-            className={cn("relative flex cursor-pointer gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset", active ? "bg-primary/15" : "hover:bg-hover")}
+            className={cn("relative flex cursor-pointer gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset", active ? "bg-primary/15" : "hover:bg-hover focus:bg-hover")}
           >
             {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
             <IssueStateIcon issue={i} className="mt-0.5" />
@@ -341,7 +344,7 @@ function LabelFilter({
         className={cn(
           "flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11.5px]",
           counted ? "@max-[380px]:px-1" : "@max-[300px]:px-1",
-          selected.length ? "bg-active text-foreground" : "text-muted-foreground hover:bg-hover hover:text-foreground data-[state=open]:bg-hover data-[state=open]:text-foreground",
+          selected.length ? "bg-active text-foreground" : "text-muted-foreground hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground data-[state=open]:bg-hover data-[state=open]:text-foreground",
         )}
       >
         <Tag className="size-3" />
@@ -455,9 +458,10 @@ export function LabelPicker({
               return (
                 <button
                   key={l.name}
-                  // Keep the focus in the search box.
+                  // Keep the focus in the search box; ↑↓ there walk these.
+                  tabIndex={-1}
                   onMouseDown={(e) => e.preventDefault()}
-                  onMouseEnter={() => setIndex(i)}
+                  onMouseMove={(e) => pointerMoved(e) && setIndex(i)}
                   onClick={() => toggle(l)}
                   className={cn("flex w-full items-start gap-2 rounded-sm px-2 py-1.5 text-left", i === index && "bg-hover")}
                 >
@@ -475,7 +479,7 @@ export function LabelPicker({
         <div className="flex shrink-0 items-center gap-2 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
           <span className="min-w-0 flex-1 truncate">{hint ?? "↑↓ navigate · ↵ select"}</span>
           {selected.length > 0 && (
-            <button onClick={() => onChange([])} className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover hover:text-foreground">
+            <button onClick={() => onChange([])} className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
               Clear
             </button>
           )}

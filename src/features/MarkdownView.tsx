@@ -118,7 +118,8 @@ export function MarkdownView({ text, src, onOpen }: { text: string; src: MediaSo
   };
 
   return (
-    <div className="h-full overflow-auto">
+    // Focusable so the keyboard can scroll it (focusPanel("code") lands here).
+    <div data-code-scroll tabIndex={0} className="h-full overflow-auto outline-none">
       <article className="markdown mx-auto max-w-[860px] px-8 py-6 select-text">
         <MarkdownBody text={text} components={components} />
       </article>

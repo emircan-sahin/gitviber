@@ -220,19 +220,30 @@ export function FilterTabs<F extends "open" | "closed" | "all">({
   onChange: (f: F) => void;
   counts?: Partial<Record<F, string>>;
 }) {
+  const tabs = ["open", "closed", "all"] as F[];
+  // A tablist is one tab stop; ←/→ pick the neighbour, as WAI-ARIA's tabs pattern.
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    const step = { ArrowLeft: -1, ArrowRight: 1 }[e.key];
+    if (!step || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    const i = (tabs.indexOf(value) + step + tabs.length) % tabs.length;
+    onChange(tabs[i]);
+    e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')[i]?.focus();
+    e.preventDefault();
+  };
   return (
-    <div role="tablist" className="flex shrink-0 items-center gap-0.5">
-      {(["open", "closed", "all"] as F[]).map((f) => {
+    <div role="tablist" onKeyDown={onKeyDown} className="flex shrink-0 items-center gap-0.5">
+      {tabs.map((f) => {
         const on = value === f;
         return (
           <button
             key={f}
             role="tab"
             aria-selected={on}
+            tabIndex={on ? 0 : -1}
             onClick={() => onChange(f)}
             className={cn(
               "flex h-5 items-center gap-1 rounded-sm px-1.5 text-[11.5px] font-medium capitalize",
-              on ? "bg-active text-foreground" : "text-subtle hover:text-foreground",
+              on ? "bg-active text-foreground" : "text-subtle hover:text-foreground focus:text-foreground",
             )}
           >
             {f}
@@ -346,7 +357,7 @@ function PullRows({
             data-row={key}
             onClick={() => onOpen(sel)}
             onDoubleClick={() => onOpen(sel, true)}
-            className={cn("relative flex cursor-pointer gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset", active ? "bg-primary/15" : "hover:bg-hover")}
+            className={cn("relative flex cursor-pointer gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset", active ? "bg-primary/15" : "hover:bg-hover focus:bg-hover")}
           >
             {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
             <PullStateIcon pull={p} className="mt-0.5" />

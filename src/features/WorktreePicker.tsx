@@ -5,6 +5,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Branch, type Worktree, type WorktreeState } from "@/lib/api";
 import { useCommands } from "@/lib/keybindings";
+import { pointerMoved } from "@/lib/pointer";
 import { cn, relativeTime } from "@/lib/utils";
 import { folderName, shortPath } from "@/lib/worktrees";
 import { RowAction } from "./BranchPicker";
@@ -89,10 +90,21 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const merge = then((w) => w.branch && onMerge(w.branch));
   const remove = then(onRemove);
 
+  // The hot row's actions, which the mouse finds on the row.
+  const hot = list[index];
+  const can = {
+    terminal: !!hot && !hot.prunable && !hot.bare,
+    merge: !!hot && !!current?.branch && !!hot.branch && !hot.current && !!states[hot.path]?.commits,
+    remove: !!hot && !hot.main && !hot.current,
+  };
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (e.key === "ArrowDown") setIndex((i) => Math.min(list.length - 1, i + 1));
     else if (e.key === "ArrowUp") setIndex((i) => Math.max(0, i - 1));
-    else if (e.key === "Enter" && list[index] && usable(list[index])) pick(list[index]);
+    else if (e.key === "Enter" && hot && usable(hot)) pick(hot);
+    else if (e.key === "t" && can.terminal) terminal(hot);
+    else if (e.key === "m" && can.merge) merge(hot);
+    else if ((e.key === "Backspace" || e.key === "Delete") && can.remove) remove(hot);
     else return;
     e.preventDefault();
   };
@@ -105,7 +117,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
             <button
               aria-label={linked ? `Worktree ${folderName(current.path)}, switch worktree` : extra === 0 ? "Worktrees" : `Switch worktree (${extra} besides the main one)`}
               className={cn(
-                "flex h-7 max-w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2 hover:bg-hover data-[state=open]:bg-active",
+                "flex h-7 max-w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2 hover:bg-hover focus-visible:bg-hover data-[state=open]:bg-active",
                 linked && "bg-primary/10",
               )}
             >
@@ -134,7 +146,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
           }}
         >
           {/* Like a native menu: the highlight leaves with the mouse; ↑↓ bring it back. */}
-          <div ref={listRef} tabIndex={-1} onMouseLeave={() => setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 outline-none">
+          <div ref={listRef} tabIndex={-1} onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 outline-none">
             <div className="px-2 pt-2 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Worktrees</div>
             {list.map((w, i) => (
               <WorktreeRow
@@ -162,7 +174,17 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
             )}
           </div>
           <div className="shrink-0 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
-            ↑↓ navigate · ↵ open here · hover for actions
+            ↑↓ navigate · ↵ open here{can.terminal && " · T terminal"}
+            {can.merge && " · M merge"}
+            {can.remove && " · ⌫ remove"}
+            {/* The lock's reason is otherwise only in a tooltip, out of the keyboard's reach. */}
+            {hot?.locked && (
+              <>
+                <br />
+                {hot.inUse ? "In use" : "Locked"}
+                {hot.lockReason ? `: ${hot.lockReason}` : ""}
+              </>
+            )}
             {list.some((w) => w.prunable) && (
               <>
                 <br />
@@ -224,7 +246,7 @@ function WorktreeRow({
       role="option"
       aria-selected={hot}
       aria-disabled={!usable}
-      onMouseMove={() => onHover(i)}
+      onMouseMove={(e) => pointerMoved(e) && onHover(i)}
       onClick={() => usable && onPick(w)}
       className={cn(
         "flex h-9 items-center gap-2 rounded-sm px-2 select-none",
