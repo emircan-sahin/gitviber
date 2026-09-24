@@ -4,14 +4,14 @@ GitViber is early and has one maintainer, so small and focused lands much faster
 
 ## Get it running
 
-You need macOS, a current stable Rust toolchain, Node.js 22+, pnpm and git. The [GitHub CLI](https://cli.github.com) is optional; it's the easiest way to sign in for the pull request features.
+You need macOS or Linux, a current stable Rust toolchain, Node.js 22+, pnpm and git. The [GitHub CLI](https://cli.github.com) is optional; it's the easiest way to sign in for the pull request features.
 
 ```sh
 pnpm install
 pnpm tauri dev
 ```
 
-macOS is the only platform tested today. If you get it running on Linux or Windows, an issue describing what broke is a great first contribution.
+On Linux, install WebKitGTK first (the README lists the packages). macOS is where GitViber is used daily; Linux is being worked through in #35, and nobody has tried Windows. An issue describing what broke on either is a great first contribution.
 
 ## Where things live
 

@@ -65,7 +65,19 @@ pnpm install:mac    # release build, installed into /Applications (quits and rep
 pnpm check          # what CI runs: build, tests, rustfmt, clippy
 ```
 
-GitViber is built and tested on macOS. The code compiles elsewhere, but nobody has used it there yet.
+On Linux, Tauri's webview also needs WebKitGTK 4.1 and a C toolchain:
+
+```sh
+sudo apt install libwebkit2gtk-4.1-dev build-essential        # Debian, Ubuntu
+sudo dnf install webkit2gtk4.1-devel gcc                       # Fedora
+sudo pacman -S --needed webkit2gtk-4.1 base-devel              # Arch
+```
+
+`pnpm tauri build` makes a `.deb`, an `.rpm` and an AppImage. If the AppImage step fails in
+`linuxdeploy` (its bundled `strip` is too old for current toolchains, e.g. on Arch), run it with `NO_STRIP=true`.
+
+GitViber is used daily on macOS. CI also builds and tests it on Linux, but the app itself is only
+starting to get used there ([#35](https://github.com/emircan-sahin/gitviber/issues/35)). Windows is untested.
 
 ## Shortcuts
 
