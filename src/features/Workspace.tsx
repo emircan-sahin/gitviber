@@ -7,6 +7,7 @@ import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { REVEAL_FAILED } from "@/lib/commands";
 import { newerCopy, resetGitHubCache, useGitHubCacheVersion } from "@/lib/githubCache";
 import { useShownLanguage, warmHighlighter } from "@/lib/highlight";
+import { setLinkHost } from "@/lib/linkHost";
 import { prepare } from "@/lib/monaco";
 import { useCommands, useShortcut } from "@/lib/keybindings";
 import { languageLabel } from "@/lib/language";
@@ -155,6 +156,19 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       return { tabs: [...prev, tab], active: key };
     });
   }, []);
+
+  // ⌘-click in the code view and the terminal opens files here (lib/linkHost).
+  useEffect(() => {
+    setLinkHost({
+      root,
+      revision: repo.revision,
+      open: (path, focus) => {
+        open({ kind: "file", path }, true);
+        if (focus) focusPanel("code");
+      },
+    });
+  }, [root, repo.revision, open]);
+  useEffect(() => () => setLinkHost(null), []);
 
   const close = useCallback((key: string) => {
     setTabState(({ tabs: prev, active }) => {

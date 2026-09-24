@@ -7,6 +7,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useSyncExternalStore } from "react";
 import { errorMessage } from "./api";
 import { appTakesFromTerminal, type CommandId, commandIn } from "./keybindings";
+import { terminalLinks } from "./linkHost";
 import { codeFontFamily, getSettings, subscribeSettings } from "./settings";
 
 /**
@@ -233,6 +234,7 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   term.loadAddon(fit);
   const serialize = new SerializeAddon();
   term.loadAddon(serialize);
+  terminalLinks(term, cwd);
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
   const p: Pane = { id, cwd, term, fit, serialize, host, pty: null, started: false, pending: "", writing: false };

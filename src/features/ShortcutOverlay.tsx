@@ -127,7 +127,8 @@ export function ShortcutOverlay() {
         const alone = !e.altKey && !e.shiftKey && !(IS_MAC ? e.ctrlKey : e.metaKey);
         // The other ⌘ going down restarts it: one timer, which the first keyup cancels.
         cancel();
-        if (alone && !e.repeat && !shown && getSettings().shortcutOverlay) timer = window.setTimeout(() => set("held"), HOLD_MS);
+        // Held over a link (the code view's underline, the terminal's pointer), it's a ⌘-click about to happen.
+        if (alone && !e.repeat && !shown && getSettings().shortcutOverlay) timer = window.setTimeout(() => !document.querySelector(".gv-link, .xterm-cursor-pointer") && set("held"), HOLD_MS);
         return;
       }
       cancel();
