@@ -5,6 +5,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import type { Worktree } from "@/lib/api";
+import { formatChord, IS_MAC, terminalPanelChord, terminalPanelKey } from "@/lib/commands";
 import { useCommands } from "@/lib/keybindings";
 import { focusedPanel, focusPanel } from "@/lib/panels";
 import {
@@ -64,13 +65,12 @@ export function TerminalPanel({ root, worktrees }: Props) {
 
   // Shortcuts while a terminal has focus. Stopping them here keeps ⌘W from closing a file tab.
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (!e.metaKey || e.ctrlKey) return;
-    if (e.altKey && !e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) stepPane(e.key === "ArrowRight" ? 1 : -1);
-    else if (e.altKey) return;
-    else if (e.code === "KeyD" && !e.shiftKey) splitActive();
-    else if (e.code === "KeyW") closeFocused();
-    else if (e.code === "KeyK") clearFocused();
-    else if (e.code === "KeyT") openTerminal(root);
+    const action = terminalPanelKey(e);
+    if (action === "new") openTerminal(root);
+    else if (action === "split") splitActive();
+    else if (action === "clear") clearFocused();
+    else if (action === "close") closeFocused();
+    else if (e.metaKey && e.altKey && !e.ctrlKey && !e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) stepPane(e.key === "ArrowRight" ? 1 : -1);
     else return;
     e.preventDefault();
     e.stopPropagation();
@@ -108,7 +108,7 @@ export function TerminalPanel({ root, worktrees }: Props) {
           ))}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 px-1.5">
-          <Tip label={`New terminal in ${folderName(root)}`} shortcut="⌘T">
+          <Tip label={`New terminal in ${folderName(root)}`} shortcut={formatChord(terminalPanelChord("t"))}>
             <Button variant="ghost" size="icon-sm" onClick={() => openTerminal(root)}>
               <Plus />
             </Button>
@@ -134,18 +134,18 @@ export function TerminalPanel({ root, worktrees }: Props) {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          <Tip label="Split terminal" shortcut="⌘D">
+          <Tip label="Split terminal" shortcut={formatChord(terminalPanelChord("d"))}>
             <Button variant="ghost" size="icon-sm" onClick={splitActive} disabled={!group}>
               <Columns2 />
             </Button>
           </Tip>
-          <Tip label="Kill terminal" shortcut="⌘W">
+          <Tip label="Kill terminal" shortcut={formatChord(terminalPanelChord("w"))}>
             <Button variant="ghost" size="icon-sm" onClick={closeFocused} disabled={!group}>
               <Trash2 />
             </Button>
           </Tip>
           <div className="mx-0.5 h-4 w-px bg-border-strong" />
-          <Tip label="Hide terminal" shortcut="⌃`">
+          <Tip label="Hide terminal" shortcut={IS_MAC ? "⌃`" : "Ctrl+`"}>
             <Button variant="ghost" size="icon-sm" onClick={() => toggle(root)}>
               <ChevronDown />
             </Button>

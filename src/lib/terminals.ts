@@ -6,6 +6,7 @@ import { type ITerminalOptions, Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useSyncExternalStore } from "react";
 import { errorMessage } from "./api";
+import { terminalPanelKey } from "./commands";
 import { appTakesFromTerminal } from "./keybindings";
 import { codeFontFamily, getSettings, subscribeSettings } from "./settings";
 
@@ -249,7 +250,7 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
       e.preventDefault();
       return false;
     }
-    return !e.metaKey && !(e.ctrlKey && e.code === "Backquote") && !appTakesFromTerminal(e);
+    return !e.metaKey && !(e.ctrlKey && e.code === "Backquote") && !terminalPanelKey(e) && !appTakesFromTerminal(e);
   });
   return { id, cwd, title: "" };
 }

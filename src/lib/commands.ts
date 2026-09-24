@@ -263,6 +263,24 @@ export function runsInTerminal(chord: string, command: Command, mac = IS_MAC): b
   return takenFromTerminal(chord, command, mac);
 }
 
+export type TerminalPanelAction = "new" | "split" | "clear" | "close";
+const PANEL_KEYS: Record<string, TerminalPanelAction> = { KeyT: "new", KeyD: "split", KeyK: "clear", KeyW: "close" };
+
+/**
+ * The terminal panel's own keys. On macOS they're ⌘T ⌘D ⌘K ⌘W. Elsewhere Ctrl+letter is the
+ * shell's and desktops take Super chords (KDE: Super+D, Super+W), so they're Ctrl+Shift+letter,
+ * as in Linux terminals.
+ */
+export function terminalPanelKey(e: KeyLike, mac = IS_MAC): TerminalPanelAction | null {
+  const action = PANEL_KEYS[e.code];
+  if (!action || e.altKey) return null;
+  if (mac) return e.metaKey && !e.ctrlKey && !(e.shiftKey && action === "split") ? action : null;
+  return e.ctrlKey && e.shiftKey && !e.metaKey ? action : null;
+}
+
+/** A terminal panel key as a chord, for labels. */
+export const terminalPanelChord = (letter: "t" | "d" | "k" | "w", mac = IS_MAC) => (mac ? `cmd+${letter}` : `shift+cmd+${letter}`);
+
 const GLYPHS: Record<string, string> = {
   ctrl: "⌃",
   alt: "⌥",

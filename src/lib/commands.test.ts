@@ -14,6 +14,7 @@ import {
   runsWhileTyping,
   runsInTerminal,
   takenFromTerminal,
+  terminalPanelKey,
 } from "./commands.ts";
 
 const press = (key: string, code: string, mods: Partial<Omit<KeyLike, "key" | "code">> = {}, mac = true): string | null =>
@@ -199,4 +200,21 @@ test("with the terminal focused, a key goes to the app or the shell, never both"
   assert.equal(app("cmd+1", "tab.goto1", false), true);
   assert.equal(app("cmd+b", "view.toggleGitPanel", false), false);
   assert.equal(app("ctrl+b", "view.toggleGitPanel", false), true);
+});
+
+test("terminal panel keys: ⌘ on macOS, Ctrl+Shift elsewhere", () => {
+  const key = (code: string, mods: Partial<Omit<KeyLike, "key" | "code">>, mac: boolean) =>
+    terminalPanelKey({ key: code.slice(3).toLowerCase(), code, altKey: false, shiftKey: false, metaKey: false, ctrlKey: false, ...mods }, mac);
+  assert.equal(key("KeyT", { metaKey: true }, true), "new");
+  assert.equal(key("KeyD", { metaKey: true }, true), "split");
+  assert.equal(key("KeyD", { metaKey: true, shiftKey: true }, true), null);
+  assert.equal(key("KeyW", { ctrlKey: true }, true), null, "⌃W is the shell's");
+  // Off macOS Ctrl+letter stays the shell's (^D, ^W, ^K), and Super belongs to the desktop.
+  assert.equal(key("KeyD", { ctrlKey: true }, false), null);
+  assert.equal(key("KeyW", { metaKey: true }, false), null);
+  assert.equal(key("KeyT", { ctrlKey: true, shiftKey: true }, false), "new");
+  assert.equal(key("KeyD", { ctrlKey: true, shiftKey: true }, false), "split");
+  assert.equal(key("KeyK", { ctrlKey: true, shiftKey: true }, false), "clear");
+  assert.equal(key("KeyW", { ctrlKey: true, shiftKey: true }, false), "close");
+  assert.equal(key("KeyW", { ctrlKey: true, shiftKey: true, altKey: true }, false), null);
 });
