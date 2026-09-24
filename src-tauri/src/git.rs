@@ -937,6 +937,25 @@ pub fn add_worktree(
     base: Option<&str>,
     dir: Option<&str>,
 ) -> Result<String, String> {
+    let target = worktree_target(repo, branch, dir)?;
+    match base {
+        Some(base) => {
+            validate_base(repo, base)?;
+            let args = ["worktree", "add", "--no-track", "-b", branch, &target, base];
+            run(repo, &args)?
+        }
+        None => run(repo, &["worktree", "add", &target, branch])?,
+    };
+    Ok(target)
+}
+
+/// The folder `add_worktree` would make for `branch`, refused if it's taken; callers with
+/// work to do first (a fetch) ask before it, so a refusal changes nothing.
+pub(crate) fn worktree_target(
+    repo: &Path,
+    branch: &str,
+    dir: Option<&str>,
+) -> Result<String, String> {
     validate_branch(repo, branch)?;
     let dir = match dir {
         Some(d) if Path::new(d).is_absolute() => PathBuf::from(d),
@@ -947,16 +966,22 @@ pub fn add_worktree(
     if path.exists() {
         return Err(format!("{} already exists", path.display()));
     }
-    let target = path.to_string_lossy().into_owned();
-    match base {
-        Some(base) => {
-            validate_base(repo, base)?;
-            let args = ["worktree", "add", "--no-track", "-b", branch, &target, base];
-            run(repo, &args)?
-        }
-        None => run(repo, &["worktree", "add", &target, branch])?,
-    };
-    Ok(target)
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Two paths name one folder: on a case-insensitive disk "Feat" and "feat" do.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((a.metadata(), b.metadata()), (Ok(x), Ok(y)) if x.dev() == y.dev() && x.ino() == y.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        b.exists()
+            && a.to_string_lossy()
+                .eq_ignore_ascii_case(&b.to_string_lossy())
+    }
 }
 
 /// Renames a worktree's branch to `branch` and, with `move_folder`, its folder to match,
@@ -992,25 +1017,58 @@ pub fn rename_worktree(
         if w.prunable {
             return Err(format!("this worktree has no files on disk: {path}"));
         }
-        if to.exists() {
+        if to.exists() && !same_folder(from, &to) {
             return Err(format!("{} already exists", to.display()));
         }
     }
     let renaming = branch != old;
+    // A case-only rename: on a case-insensitive disk git reads "case" as the existing "Case"
+    // and refuses. -M is safe once no branch has exactly the new name.
+    let flag = if renaming && branch.eq_ignore_ascii_case(&old) {
+        let names = run_text(
+            repo,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+        )?;
+        let exact = format!("refs/heads/{branch}");
+        if names.lines().any(|n| n == exact) {
+            return Err(format!("a branch named '{branch}' already exists"));
+        }
+        "-M"
+    } else {
+        "-m"
+    };
     if renaming {
-        run(repo, &["branch", "-m", &old, branch])?;
+        run(repo, &["branch", flag, &old, branch])?;
     }
     if !moving {
         return Ok(path.to_string());
     }
     let target = to.to_string_lossy().into_owned();
-    if let Err(e) = run(repo, &["worktree", "move", path, &target]) {
-        if renaming {
-            let _ = run(repo, &["branch", "-m", branch, &old]);
+    if let Err(e) = move_worktree(repo, path, &target) {
+        if renaming && run(repo, &["branch", flag, branch, &old]).is_err() {
+            return Err(format!(
+                "{e}\nThe folder stayed, and the branch is still named {branch}."
+            ));
         }
         return Err(e);
     }
     Ok(target)
+}
+
+/// `git worktree move`. A case-only rename goes by way of a third name: git sees "feat"
+/// as taken by "Feat" on a case-insensitive disk.
+fn move_worktree(repo: &Path, from: &str, to: &str) -> Result<(), String> {
+    if !same_folder(Path::new(from), Path::new(to)) {
+        return run(repo, &["worktree", "move", from, to]).map(|_| ());
+    }
+    let step = format!("{to}.gitviber-rename");
+    run(repo, &["worktree", "move", from, &step])?;
+    run(repo, &["worktree", "move", &step, to])
+        .map(|_| ())
+        .map_err(|e| match run(repo, &["worktree", "move", &step, from]) {
+            Ok(_) => e,
+            Err(_) => format!("{e}\nIts folder is left at {step}."),
+        })
 }
 
 /// `git worktree lock`: kept from prune, move and remove until unlocked, as for a folder on
@@ -3374,6 +3432,25 @@ mod tests {
         assert!(w.locked && w.lock_reason.is_none());
         unlock_worktree(&repo, &moved).unwrap();
         assert!(unlock_worktree(&repo, "/not/a/worktree").is_err());
+
+        // Only the case changes: on a case-insensitive disk the new folder name is "taken" by the old.
+        let upper = add_worktree(&repo, "Case", Some("refs/heads/main"), Some(d)).unwrap();
+        let lower = rename_worktree(&repo, &upper, "case", true).unwrap();
+        assert_eq!(Path::new(&lower), dir.join("case"));
+        assert_eq!(listed("case").unwrap().path, lower);
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"case".to_string()) && !names.contains(&"Case".to_string()));
+        // The branch renamed alone, the folder catches up later under the same name.
+        assert_eq!(
+            rename_worktree(&repo, &lower, "later", false).unwrap(),
+            lower
+        );
+        let caught_up = rename_worktree(&repo, &lower, "later", true).unwrap();
+        assert_eq!(Path::new(&caught_up), dir.join("later"));
+        assert_eq!(listed("later").unwrap().path, caught_up);
 
         // The main worktree's folder stays; its branch can still be renamed. It can't be locked.
         let main = listed("main").unwrap().path;

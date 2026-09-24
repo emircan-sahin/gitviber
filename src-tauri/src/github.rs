@@ -1615,6 +1615,8 @@ pub fn checkout_worktree(
     {
         return Err(format!("{local} is already checked out in {}", w.path));
     }
+    // A taken folder is refused before the fetch leaves a branch and its tracking behind.
+    git::worktree_target(repo, &local, dir)?;
     let diverged =
         || format!("Local branch {local} has diverged from the pull request; reconcile it first.");
     let branch = format!("refs/heads/{local}");

@@ -1298,6 +1298,12 @@ fn pr_checkout_worktree_leaves_head_and_fast_forwards() {
 
     // A fork's PR: pr/<n>, following refs/pull/<n>/head.
     run(a, &["push", "-q", "origin", "HEAD:refs/pull/7/head"]).unwrap();
+    // A taken folder is refused before the fetch: no branch, no tracking left behind.
+    fs::create_dir_all(dir.join("pr-7")).unwrap();
+    assert!(checkout_worktree(b, "origin", None, 7, "theirs", false, Some(d), &net).is_err());
+    assert!(run(b, &["rev-parse", "--verify", "-q", "refs/heads/pr/7"]).is_err());
+    assert!(run(b, &["config", "branch.pr/7.merge"]).is_err());
+    fs::remove_dir(dir.join("pr-7")).unwrap();
     let wt = checkout_worktree(b, "origin", None, 7, "theirs", false, Some(d), &net).unwrap();
     assert_eq!(Path::new(&wt), dir.join("pr-7"));
     let merge = run_text(b, &["config", "branch.pr/7.merge"]).unwrap();
