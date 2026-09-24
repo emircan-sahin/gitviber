@@ -927,18 +927,171 @@ pub fn main_worktree(repo: &Path) -> Option<String> {
         .map(|w| w.path)
 }
 
-/// Checks `branch` out in a new worktree beside the main one, at
-/// `<parent>/<project>.worktrees/<branch>`, and returns its path. A branch only on a
-/// remote gets a local tracking branch (git's own DWIM for `worktree add`).
-pub fn add_worktree(repo: &Path, branch: &str) -> Result<String, String> {
+/// Checks `branch` out in a new worktree and returns its path, `<dir>/<branch>`; `dir` is
+/// `<parent>/<project>.worktrees` unless given. With `base`, `branch` is a new branch made
+/// there, tracking nothing like `create_branch`'s. Without, a branch only on a remote gets a
+/// local tracking branch (git's own DWIM for `worktree add`).
+pub fn add_worktree(
+    repo: &Path,
+    branch: &str,
+    base: Option<&str>,
+    dir: Option<&str>,
+) -> Result<String, String> {
+    let target = worktree_target(repo, branch, dir)?;
+    match base {
+        Some(base) => {
+            validate_base(repo, base)?;
+            let args = ["worktree", "add", "--no-track", "-b", branch, &target, base];
+            run(repo, &args)?
+        }
+        None => run(repo, &["worktree", "add", &target, branch])?,
+    };
+    Ok(target)
+}
+
+/// The folder `add_worktree` would make for `branch`, refused if it's taken; callers with
+/// work to do first (a fetch) ask before it, so a refusal changes nothing.
+pub(crate) fn worktree_target(
+    repo: &Path,
+    branch: &str,
+    dir: Option<&str>,
+) -> Result<String, String> {
     validate_branch(repo, branch)?;
-    let path = worktrees_dir(repo)?.join(branch.replace('/', "-"));
+    let dir = match dir {
+        Some(d) if Path::new(d).is_absolute() => PathBuf::from(d),
+        Some(d) => return Err(format!("not an absolute path: {d}")),
+        None => worktrees_dir(repo)?,
+    };
+    let path = dir.join(branch.replace('/', "-"));
     if path.exists() {
         return Err(format!("{} already exists", path.display()));
     }
-    let target = path.to_string_lossy().into_owned();
-    run(repo, &["worktree", "add", &target, branch])?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Two paths name one folder: on a case-insensitive disk "Feat" and "feat" do.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        matches!((a.metadata(), b.metadata()), (Ok(x), Ok(y)) if x.dev() == y.dev() && x.ino() == y.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        b.exists()
+            && a.to_string_lossy()
+                .eq_ignore_ascii_case(&b.to_string_lossy())
+    }
+}
+
+/// Renames a worktree's branch to `branch` and, with `move_folder`, its folder to match,
+/// beside where it is now. Returns the worktree's path afterwards.
+pub fn rename_worktree(
+    repo: &Path,
+    path: &str,
+    branch: &str,
+    move_folder: bool,
+) -> Result<String, String> {
+    let w = listed_worktree(repo, path)?;
+    let old = w.branch.ok_or("this worktree has no branch to rename")?;
+    validate_branch(repo, branch)?;
+    let from = Path::new(path);
+    let to = from
+        .parent()
+        .ok_or_else(|| format!("no folder above {path}"))?
+        .join(branch.replace('/', "-"));
+    let moving = move_folder && to != from;
+    // Checked before anything changes, so a refusal leaves everything as it was.
+    if moving {
+        if w.main {
+            return Err("the main worktree's folder can't be moved".into());
+        }
+        if w.current {
+            return Err("this window has that worktree open; switch to another one first".into());
+        }
+        if w.locked {
+            return Err(
+                "this worktree is locked; unlock it (its row's lock) before moving it".into(),
+            );
+        }
+        if w.prunable {
+            return Err(format!("this worktree has no files on disk: {path}"));
+        }
+        if to.exists() && !same_folder(from, &to) {
+            return Err(format!("{} already exists", to.display()));
+        }
+    }
+    let renaming = branch != old;
+    // A case-only rename: on a case-insensitive disk git reads "case" as the existing "Case"
+    // and refuses. -M is safe once no branch has exactly the new name.
+    let flag = if renaming && branch.eq_ignore_ascii_case(&old) {
+        let names = run_text(
+            repo,
+            &["for-each-ref", "--format=%(refname)", "refs/heads/"],
+        )?;
+        let exact = format!("refs/heads/{branch}");
+        if names.lines().any(|n| n == exact) {
+            return Err(format!("a branch named '{branch}' already exists"));
+        }
+        "-M"
+    } else {
+        "-m"
+    };
+    if renaming {
+        run(repo, &["branch", flag, &old, branch])?;
+    }
+    if !moving {
+        return Ok(path.to_string());
+    }
+    let target = to.to_string_lossy().into_owned();
+    if let Err(e) = move_worktree(repo, path, &target) {
+        if renaming && run(repo, &["branch", flag, branch, &old]).is_err() {
+            return Err(format!(
+                "{e}\nThe folder stayed, and the branch is still named {branch}."
+            ));
+        }
+        return Err(e);
+    }
     Ok(target)
+}
+
+/// `git worktree move`. A case-only rename goes by way of a third name: git sees "feat"
+/// as taken by "Feat" on a case-insensitive disk.
+fn move_worktree(repo: &Path, from: &str, to: &str) -> Result<(), String> {
+    if !same_folder(Path::new(from), Path::new(to)) {
+        return run(repo, &["worktree", "move", from, to]).map(|_| ());
+    }
+    let step = format!("{to}.gitviber-rename");
+    run(repo, &["worktree", "move", from, &step])?;
+    run(repo, &["worktree", "move", &step, to])
+        .map(|_| ())
+        .map_err(|e| match run(repo, &["worktree", "move", &step, from]) {
+            Ok(_) => e,
+            Err(_) => format!("{e}\nIts folder is left at {step}."),
+        })
+}
+
+/// `git worktree lock`: kept from prune, move and remove until unlocked, as for a folder on
+/// a drive that isn't always plugged in. `reason` shows on its row.
+pub fn lock_worktree(repo: &Path, path: &str, reason: Option<&str>) -> Result<(), String> {
+    let w = listed_worktree(repo, path)?;
+    if w.main {
+        return Err("the main worktree can't be locked".into());
+    }
+    let reason = reason.map(str::trim).filter(|r| !r.is_empty());
+    if reason.is_some_and(|r| r.contains(['\n', '\r'])) {
+        return Err("the reason must be one line of text".into());
+    }
+    let flag = reason.map(|r| format!("--reason={r}"));
+    let mut args = vec!["worktree", "lock"];
+    args.extend(flag.as_deref());
+    args.push(path);
+    run(repo, &args).map(|_| ())
+}
+
+pub fn unlock_worktree(repo: &Path, path: &str) -> Result<(), String> {
+    listed_worktree(repo, path)?;
+    run(repo, &["worktree", "unlock", path]).map(|_| ())
 }
 
 /// `<parent>/<project>.worktrees`, the folder `add_worktree` puts new worktrees in.
@@ -2423,20 +2576,28 @@ pub fn switch_branch(repo: &Path, name: &str, create: bool) -> Result<(), String
 /// another name would refuse its pushes. `switch` checks it out as well.
 pub fn create_branch(repo: &Path, name: &str, base: &str, switch: bool) -> Result<(), String> {
     validate_branch(repo, name)?;
-    if base != "HEAD"
-        && !["refs/heads/", "refs/remotes/", "refs/tags/"]
-            .iter()
-            .any(|p| base.starts_with(p))
-    {
-        return Err(format!("not a branch or tag: {base}"));
-    }
-    validate_ref(repo, base)?;
+    validate_base(repo, base)?;
     let args = if switch {
         vec!["switch", "--no-track", "-c", name, base]
     } else {
         vec!["branch", "--no-track", name, base]
     };
     run(repo, &args).map(|_| ())
+}
+
+/// What a new branch may start at: HEAD, a full ref to a local or remote branch or a tag,
+/// or a commit's full id (SHA-1 or SHA-256).
+fn validate_base(repo: &Path, base: &str) -> Result<(), String> {
+    let sha = matches!(base.len(), 40 | 64) && base.chars().all(|c| c.is_ascii_hexdigit());
+    if base != "HEAD"
+        && !sha
+        && !["refs/heads/", "refs/remotes/", "refs/tags/"]
+            .iter()
+            .any(|p| base.starts_with(p))
+    {
+        return Err(format!("not a branch or tag: {base}"));
+    }
+    validate_ref(repo, base)
 }
 
 /// `git branch -m`. With `remote` the branch's upstream is renamed too: the new name is
@@ -3189,8 +3350,8 @@ mod tests {
             .any(|b| b.name == "feat/x" && b.current));
 
         switch_branch(&repo, "main", false).unwrap();
-        assert!(add_worktree(&repo, "--evil").is_err());
-        let wt = add_worktree(&repo, "feat/x").unwrap();
+        assert!(add_worktree(&repo, "--evil", None, None).is_err());
+        let wt = add_worktree(&repo, "feat/x", None, None).unwrap();
         // git reports real paths: /var/folders is /private/var/folders on macOS.
         let real = repo.canonicalize().unwrap();
         let expected = real.with_file_name(format!(
@@ -3202,9 +3363,111 @@ mod tests {
             .unwrap()
             .iter()
             .any(|w| w.branch.as_deref() == Some("feat/x")));
-        assert!(add_worktree(&repo, "feat/x").is_err());
+        assert!(add_worktree(&repo, "feat/x", None, None).is_err());
         let _ = fs::remove_dir_all(&repo);
         let _ = fs::remove_dir_all(&expected);
+    }
+
+    #[test]
+    fn worktree_new_branch_rename_and_prune() {
+        let repo = temp_repo("worktrees");
+        commit_file(&repo, "a.txt", "a\n", "first");
+        // Canonical, as git reports it: /var/folders is /private/var/folders on macOS.
+        let tmp = std::env::temp_dir().canonicalize().unwrap();
+        let dir = tmp.join(format!("gitviber-test-wtdir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let d = dir.to_str().unwrap();
+        let listed = |branch: &str| {
+            worktrees(&repo)
+                .unwrap()
+                .into_iter()
+                .find(|w| w.branch.as_deref() == Some(branch))
+        };
+
+        // A new branch, made in a chosen folder, tracking nothing.
+        assert!(add_worktree(&repo, "x", Some("main"), Some(d)).is_err());
+        assert!(add_worktree(&repo, "x", Some("refs/heads/main"), Some("rel")).is_err());
+        let wt = add_worktree(&repo, "feat/new", Some("refs/heads/main"), Some(d)).unwrap();
+        assert_eq!(Path::new(&wt), dir.join("feat-new"));
+        assert_eq!(listed("feat/new").unwrap().path, wt);
+        let upstream = run_text(
+            &repo,
+            &[
+                "for-each-ref",
+                "--format=%(upstream)",
+                "refs/heads/feat/new",
+            ],
+        );
+        assert_eq!(upstream.unwrap().trim(), "");
+        // From a commit, by its full id only.
+        let first = run_text(&repo, &["rev-parse", "HEAD"]).unwrap();
+        let first = first.trim();
+        assert!(add_worktree(&repo, "at", Some(&first[..12]), Some(d)).is_err());
+        assert!(add_worktree(&repo, "at", Some(&"0".repeat(40)), Some(d)).is_err());
+        let at = add_worktree(&repo, "at/first", Some(first), Some(d)).unwrap();
+        let head = run_text(Path::new(&at), &["rev-parse", "HEAD"]).unwrap();
+        assert_eq!(head.trim(), first);
+        remove_worktree(&repo, &listed("at/first").unwrap().path, false).unwrap();
+
+        // Branch and folder together.
+        let moved = rename_worktree(&repo, &wt, "feat/renamed", true).unwrap();
+        assert_eq!(Path::new(&moved), dir.join("feat-renamed"));
+        assert!(!Path::new(&wt).exists());
+        assert_eq!(listed("feat/renamed").unwrap().path, moved);
+        // A taken name changes nothing.
+        assert!(rename_worktree(&repo, &moved, "main", true).is_err());
+        assert!(Path::new(&moved).exists() && listed("feat/renamed").is_some());
+        // Locked with a reason, it keeps its folder and its branch; unlocked, it moves again.
+        assert!(lock_worktree(&repo, &moved, Some("usb\ndrive")).is_err());
+        lock_worktree(&repo, &moved, Some("  --on the usb drive ")).unwrap();
+        let w = listed("feat/renamed").unwrap();
+        assert!(w.locked);
+        assert_eq!(w.lock_reason.as_deref(), Some("--on the usb drive"));
+        assert!(rename_worktree(&repo, &moved, "feat/locked", true).is_err());
+        assert!(listed("feat/renamed").is_some());
+        unlock_worktree(&repo, &moved).unwrap();
+        assert!(!listed("feat/renamed").unwrap().locked);
+        lock_worktree(&repo, &moved, None).unwrap();
+        let w = listed("feat/renamed").unwrap();
+        assert!(w.locked && w.lock_reason.is_none());
+        unlock_worktree(&repo, &moved).unwrap();
+        assert!(unlock_worktree(&repo, "/not/a/worktree").is_err());
+
+        // Only the case changes: on a case-insensitive disk the new folder name is "taken" by the old.
+        let upper = add_worktree(&repo, "Case", Some("refs/heads/main"), Some(d)).unwrap();
+        let lower = rename_worktree(&repo, &upper, "case", true).unwrap();
+        assert_eq!(Path::new(&lower), dir.join("case"));
+        assert_eq!(listed("case").unwrap().path, lower);
+        let names: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"case".to_string()) && !names.contains(&"Case".to_string()));
+        // The branch renamed alone, the folder catches up later under the same name.
+        assert_eq!(
+            rename_worktree(&repo, &lower, "later", false).unwrap(),
+            lower
+        );
+        let caught_up = rename_worktree(&repo, &lower, "later", true).unwrap();
+        assert_eq!(Path::new(&caught_up), dir.join("later"));
+        assert_eq!(listed("later").unwrap().path, caught_up);
+
+        // The main worktree's folder stays; its branch can still be renamed. It can't be locked.
+        let main = listed("main").unwrap().path;
+        assert!(lock_worktree(&repo, &main, None).is_err());
+        assert!(rename_worktree(&repo, &main, "trunk", true).is_err());
+        assert_eq!(rename_worktree(&repo, &main, "trunk", false).unwrap(), main);
+        assert!(listed("trunk").is_some_and(|w| w.main));
+
+        // A worktree whose folder is gone is pruned by removing it.
+        let gone = add_worktree(&repo, "gone", Some("refs/heads/trunk"), Some(d)).unwrap();
+        fs::remove_dir_all(&gone).unwrap();
+        assert!(listed("gone").unwrap().prunable);
+        remove_worktree(&repo, &gone, false).unwrap();
+        assert!(listed("gone").is_none());
+
+        let _ = fs::remove_dir_all(&repo);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn commit_file(repo: &Path, path: &str, content: &str, msg: &str) {

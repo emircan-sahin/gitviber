@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Cherry, Cloud, Copy, ExternalLink, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
+import { Cherry, Cloud, Copy, ExternalLink, FolderGit2, GitBranchPlus, GitCommitHorizontal, History, Link, RotateCcw, ShieldAlert, ShieldCheck, ShieldX, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,6 +31,7 @@ import { folderName } from "@/lib/worktrees";
 import { FileIcon } from "./FileIcon";
 import { copyLink, openOnGitHub } from "./PullsPanel";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
+import { openWorktreeDialog } from "./WorktreeDialogs";
 
 interface Props {
   commits: Commit[];
@@ -402,6 +403,10 @@ function CommitMenu({ commit: c, head, actions }: { commit: Commit; head: boolea
       </ContextMenuItem>
       <ContextMenuItem disabled={locked} onSelect={() => name("branch")}>
         <GitBranchPlus /> Create branch from here…
+      </ContextMenuItem>
+      {/* Not held back by an operation here: it's another worktree's checkout. */}
+      <ContextMenuItem onSelect={() => openWorktreeDialog({ kind: "new", base: c.sha })}>
+        <FolderGit2 /> New worktree from here…
       </ContextMenuItem>
       <ContextMenuItem disabled={locked} onSelect={() => name("tag")}>
         <Tag /> Create tag here…

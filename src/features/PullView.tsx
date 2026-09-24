@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Check, ChevronDown, CircleDashed, ExternalLink, GitBranch, GitMerge, GitPullRequest, GitPullRequestClosed, Image as ImageIcon, Loader2, MessageSquare, MinusCircle, RefreshCw, X } from "lucide-react";
+import { Check, ChevronDown, CircleDashed, ExternalLink, FolderGit2, GitBranch, GitMerge, GitPullRequest, GitPullRequestClosed, Image as ImageIcon, Loader2, MessageSquare, MinusCircle, RefreshCw, X } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Components } from "react-markdown";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,8 @@ import { tracked, undoAction } from "@/lib/undo";
 import { cn, relativeTime } from "@/lib/utils";
 import { FileIcon } from "./FileIcon";
 import { followLink, MarkdownBody } from "./MarkdownView";
-import { CopyLinkButton, isoToUnix, notifyPullsChanged, openOnGitHub, PullStateIcon } from "./PullsPanel";
+import { CopyLinkButton, isoToUnix, notifyPullsChanged, openOnGitHub, PullStateIcon, pullSource } from "./PullsPanel";
+import { openWorktreeDialog } from "./WorktreeDialogs";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
 
 const METHODS: Record<MergeMethod, string> = { merge: "Create a merge commit", squash: "Squash and merge", rebase: "Rebase and merge" };
@@ -94,8 +95,8 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   // But an author can't reopen what a maintainer closed.
   const canReopen = !!access?.push || !!access?.triage || (own && d?.closedBy === account?.login);
   const inOrigin = !!access && access === account?.origin;
-  // Where Checkout lands: the original's PRs get their own names (pr/<owner>/<n>).
-  const checkoutBranch = sameRepo ? p.headRef : inOrigin ? `pr/${p.number}` : `pr/${repoOf(p.url).split("/")[0]}/${p.number}`;
+  const source = pullSource(p, account);
+  const checkoutBranch = source?.branch ?? p.headRef;
   // A fix pushed to origin updates the PR only when its branch lives there.
   const canResolve = sameRepo && !!access;
 
@@ -173,6 +174,12 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
           {p.state === "open" && (
             <Button variant="secondary" size="sm" disabled={!!busy || !account} onClick={() => act("Checkout", () => github.checkout(target, p.number, p.headRef, sameRepo), `Switched to ${checkoutBranch}`)}>
               <GitBranch /> Checkout
+            </Button>
+          )}
+          {/* Reviewing without leaving this worktree's branch: an agent, or you, works in the new one. */}
+          {p.state === "open" && (
+            <Button variant="secondary" size="sm" disabled={!!busy || !source} onClick={() => source && openWorktreeDialog({ kind: "new", pull: source })}>
+              <FolderGit2 /> Check out in new worktree…
             </Button>
           )}
           {p.state === "open" && <ReviewButton own={own} counts={!!access?.push} busy={!!busy} onSubmit={(event, body) => act("Review", () => github.review(target, p.number, event, body), REVIEWS[event].done)} />}

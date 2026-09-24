@@ -8,6 +8,7 @@ import { useSyncExternalStore } from "react";
 import { errorMessage } from "./api";
 import { appTakesFromTerminal, type CommandId, commandIn } from "./keybindings";
 import { codeFontFamily, getSettings, subscribeSettings } from "./settings";
+import { isInside } from "./worktrees";
 
 /**
  * Terminals live here, not in React: switching worktrees remounts the whole workspace, and
@@ -440,6 +441,18 @@ export function restoreSession() {
 
 export function dismissRestore() {
   set({ restorable: null });
+}
+
+const within = (cwd: string, dir: string) => cwd === dir || isInside(cwd, dir);
+
+/** How many terminals were started in `dir` or below it. */
+export const terminalsIn = (dir: string) => state.groups.reduce((n, g) => n + g.panes.filter((p) => within(p.cwd, dir)).length, 0);
+
+/** A folder was moved. Its shells went along (a cwd is the folder, not its path), so splits and restores follow. */
+export function folderMoved(from: string, to: string) {
+  const moved = (cwd: string) => (within(cwd, from) ? to + cwd.slice(from.length) : cwd);
+  for (const p of panes.values()) p.cwd = moved(p.cwd);
+  set({ groups: state.groups.map((g) => ({ ...g, panes: g.panes.map((p) => ({ ...p, cwd: moved(p.cwd) })) })) });
 }
 
 /** Switching to a worktree brings up a terminal that's already in it. */

@@ -37,8 +37,10 @@ GitViber is one window for all of it, and it's small:
 ### Many agents, one screen
 
 Give every agent its own worktree and switch between them from the top bar, each with its change
-count. Check a branch out into a new worktree in one step and remove it when the work is merged.
-Every worktree keeps its own terminals, so nothing gets lost when you hop between them.
+count. Start one from any branch or commit, in the folder you choose, or check a pull request out
+into its own worktree without touching yours. Rename one along with its folder, lock it, and
+remove or prune it when the work is merged. Every worktree keeps its own terminals, so nothing
+gets lost when you hop between them.
 
 ### Watch the work land
 

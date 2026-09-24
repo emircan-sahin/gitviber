@@ -1,15 +1,16 @@
-import { ExternalLink, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Link, Plus, RefreshCw, Terminal } from "lucide-react";
+import { ExternalLink, FolderGit2, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, Link, Plus, RefreshCw, Terminal } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, type Commit, errorMessage, fullName, type GitHubAccess, github, isNotConnected, PR_PAGE, type Pull, type RepoStatus } from "@/lib/api";
+import { accessFor, api, type Branch, type Commit, errorMessage, fullName, type GitHubAccess, type GitHubAccount, github, isNotConnected, PR_PAGE, type Pull, type RepoStatus, repoOf } from "@/lib/api";
 import { cached, invalidate, useGitHubData } from "@/lib/githubCache";
 import { type Selection, selectionKey } from "@/lib/selection";
 import { toast } from "@/lib/toast";
+import { openWorktreeDialog, type PullSource } from "./WorktreeDialogs";
 import { useListNav } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 import { RepoPanes } from "./RepoPanes";
@@ -103,7 +104,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
   const newLabel = currentPull ? `#${currentPull.number} already open for this branch` : "New pull request";
   const canCreate = !!status?.branch && !currentPull;
 
-  const ownRows = <PullRows pulls={own.data ?? null} error={error} filter={filter} activeKey={activeKey} onOpen={onOpen} roomy={!upstream} {...more("origin", own)} />;
+  const ownRows = <PullRows pulls={own.data ?? null} error={error} filter={filter} activeKey={activeKey} onOpen={onOpen} account={account} roomy={!upstream} {...more("origin", own)} />;
 
   return (
     <div className="flex h-full flex-col">
@@ -157,6 +158,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
                     filter={filter}
                     activeKey={activeKey}
                     onOpen={onOpen}
+                    account={account}
                     roomy={false}
                     {...more("parent", up)}
                   />
@@ -293,12 +295,29 @@ export function CopyLinkButton({ url }: { url: string }) {
   );
 }
 
-/** A PR or issue row's right-click menu. */
-export function LinkMenu({ url, children }: { url: string; children: React.ReactNode }) {
+/**
+ * Where Checkout puts a PR: its own branch when that lives on origin (a pushed fix then updates
+ * the PR), otherwise pr/<n>, or pr/<owner>/<n> for a fork's original, which numbers its own.
+ * Unknown until the account loads: a guess could fetch another repo's same-named branch.
+ */
+export function pullSource(p: Pull, account: GitHubAccount | null): PullSource | null {
+  if (!account) return null;
+  const origin = account.origin ? fullName(account.origin.repo) : null;
+  const sameRepo = !!origin && p.headRepo?.toLowerCase() === origin.toLowerCase();
+  const access = accessFor(account, p.url);
+  const inOrigin = !!access && access === account.origin;
+  const target = repoOf(p.url);
+  const branch = sameRepo ? p.headRef : inOrigin ? `pr/${p.number}` : `pr/${target.split("/")[0]}/${p.number}`;
+  return { target, number: p.number, headRef: p.headRef, sameRepo, branch };
+}
+
+/** A PR or issue row's right-click menu; `extra` goes first. */
+export function LinkMenu({ url, extra, children }: { url: string; extra?: React.ReactNode; children: React.ReactNode }) {
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent>
+        {extra}
         <ContextMenuItem onSelect={() => copyLink(url)}>
           <Link /> Copy link
         </ContextMenuItem>
@@ -316,6 +335,7 @@ function PullRows({
   filter,
   activeKey,
   onOpen,
+  account,
   roomy,
   shown,
   loading,
@@ -326,6 +346,8 @@ function PullRows({
   filter: Filter;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
+  /** For where a PR would be checked out; null until it loads. */
+  account: GitHubAccount | null;
   /** The whole panel, not a pane: the empty note sits lower. */
   roomy: boolean;
   /** Pages in `pulls`; a full last page means there may be more. */
@@ -348,8 +370,17 @@ function PullRows({
         const sel: Selection = { kind: "pull", pull: p };
         const key = selectionKey(sel);
         const active = activeKey === key;
+        const source = p.state === "open" ? pullSource(p, account) : null;
+        const extra = source && (
+          <>
+            <ContextMenuItem onSelect={() => openWorktreeDialog({ kind: "new", pull: source })}>
+              <FolderGit2 /> Check out in new worktree…
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+          </>
+        );
         return (
-          <LinkMenu key={p.number} url={p.url}>
+          <LinkMenu key={p.number} url={p.url} extra={extra}>
           <div
             role="option"
             aria-selected={active}

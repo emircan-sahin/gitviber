@@ -19,6 +19,7 @@ export interface CommitDraft {
 
 const KEY = "gitviber.workspaces";
 const DRAFTS_KEY = "gitviber.drafts";
+const WORKTREE_DIRS_KEY = "gitviber.worktreeDirs";
 // Agent worktrees come and go; keep only the most recently used.
 const MAX = 30;
 
@@ -77,4 +78,25 @@ export function loadDraft(root: string): CommitDraft | null {
 /** An empty draft is dropped rather than stored. */
 export function saveDraft(root: string, draft: CommitDraft) {
   put(DRAFTS_KEY, root, draft.summary || draft.body || draft.coAuthors.length ? draft : null);
+}
+
+/** A worktree's folder moved: its layout and unsent commit message, kept by path, go along. */
+export function moveRoot(from: string, to: string) {
+  for (const key of [KEY, DRAFTS_KEY]) {
+    const saved = all(key)[from];
+    if (saved === undefined) continue;
+    put(key, from, null);
+    put(key, to, saved);
+  }
+}
+
+/** The folder the project `main` puts new worktrees in, when it isn't the default one beside it. */
+export function loadWorktreeDir(main: string): string | null {
+  const d = all(WORKTREE_DIRS_KEY)[main];
+  return typeof d === "string" ? d : null;
+}
+
+/** null goes back to the default folder. */
+export function saveWorktreeDir(main: string, dir: string | null) {
+  put(WORKTREE_DIRS_KEY, main, dir);
 }

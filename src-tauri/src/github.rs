@@ -1500,13 +1500,7 @@ pub fn checkout(
     same_repo: bool,
     net: &Net,
 ) -> Result<(), String> {
-    let local = match (same_repo, owner) {
-        (true, _) => head_ref.to_string(),
-        (false, Some(o)) => format!("pr/{o}/{number}"),
-        (false, None) => format!("pr/{number}"),
-    };
-    git::run(repo, &["check-ref-format", "--branch", &local])
-        .map_err(|_| format!("invalid branch: {local}"))?;
+    let local = pr_branch(repo, owner, number, head_ref, same_repo)?;
     let diverged =
         || format!("Local branch {local} has diverged from the pull request; reconcile it first.");
     let branch = format!("refs/heads/{local}");
@@ -1548,26 +1542,109 @@ pub fn checkout(
             }
         });
     }
-    // Not forced: creates the branch or fast-forwards it, and refuses one that diverged.
-    git::fetch_objects(repo, remote, &[format!("{source}:{branch}")], net).map_err(|e| {
-        if e.contains("non-fast-forward") {
-            diverged()
-        } else {
-            e
-        }
-    })?;
+    fetch_pr_into(repo, remote, number, &branch, net).map_err(|e| e.unwrap_or_else(diverged))?;
     git::switch_branch(repo, &local, false)?;
     if !exists {
-        // Like `gh pr checkout`: the branch follows the PR, so Pull brings its new commits,
-        // and it never looks unpublished (a Publish would copy it into origin).
-        let key = |k: &str| format!("branch.{local}.{k}");
-        git::run(repo, &["config", &key("remote"), remote])?;
-        git::run(
-            repo,
-            &["config", &key("merge"), &format!("refs/pull/{number}/head")],
-        )?;
+        follow_pr(repo, &local, remote, number)?;
     }
     Ok(())
+}
+
+/// Fetches PR `number` from `remote` straight into `branch`. Not forced: it creates the branch
+/// or fast-forwards it, and refuses one that diverged, which is `Err(None)`.
+fn fetch_pr_into(
+    repo: &Path,
+    remote: &str,
+    number: u64,
+    branch: &str,
+    net: &Net,
+) -> Result<(), Option<String>> {
+    let spec = format!("refs/pull/{number}/head:{branch}");
+    // Not fetch_objects: its --quiet drops the "(non-fast-forward)" line this looks for.
+    let args = ["fetch", "--no-write-fetch-head", "--no-tags", remote, &spec];
+    git::run_network(repo, &args, net)
+        .map(|_| ())
+        .map_err(|e| (!e.contains("non-fast-forward")).then_some(e))
+}
+
+/// The local branch `checkout` puts PR `number` on.
+fn pr_branch(
+    repo: &Path,
+    owner: Option<&str>,
+    number: u64,
+    head_ref: &str,
+    same_repo: bool,
+) -> Result<String, String> {
+    let local = match (same_repo, owner) {
+        (true, _) => head_ref.to_string(),
+        (false, Some(o)) => format!("pr/{o}/{number}"),
+        (false, None) => format!("pr/{number}"),
+    };
+    git::run(repo, &["check-ref-format", "--branch", &local])
+        .map_err(|_| format!("invalid branch: {local}"))?;
+    Ok(local)
+}
+
+/// Like `gh pr checkout`: the branch follows the PR, so Pull brings its new commits,
+/// and it never looks unpublished (a Publish would copy it into origin).
+fn follow_pr(repo: &Path, local: &str, remote: &str, number: u64) -> Result<(), String> {
+    let key = |k: &str| format!("branch.{local}.{k}");
+    git::run(repo, &["config", &key("remote"), remote])?;
+    let merge = format!("refs/pull/{number}/head");
+    git::run(repo, &["config", &key("merge"), &merge]).map(|_| ())
+}
+
+/// `checkout`, into a new worktree in `dir` (see `git::add_worktree`) instead of this one;
+/// returns its path. The branch is brought up to date the same way, only fast-forwarded.
+#[allow(clippy::too_many_arguments)]
+pub fn checkout_worktree(
+    repo: &Path,
+    remote: &str,
+    owner: Option<&str>,
+    number: u64,
+    head_ref: &str,
+    same_repo: bool,
+    dir: Option<&str>,
+    net: &Net,
+) -> Result<String, String> {
+    let local = pr_branch(repo, owner, number, head_ref, same_repo)?;
+    // git refuses both the fetch and the worktree for a branch that's out somewhere already.
+    if let Some(w) = git::worktrees(repo)?
+        .into_iter()
+        .find(|w| w.branch.as_deref() == Some(local.as_str()))
+    {
+        return Err(format!("{local} is already checked out in {}", w.path));
+    }
+    // A taken folder is refused before the fetch leaves a branch and its tracking behind.
+    git::worktree_target(repo, &local, dir)?;
+    let diverged =
+        || format!("Local branch {local} has diverged from the pull request; reconcile it first.");
+    let branch = format!("refs/heads/{local}");
+    let exists = git::run(repo, &["rev-parse", "--verify", "-q", &branch]).is_ok();
+    if same_repo {
+        let tracked = format!("refs/remotes/origin/{local}");
+        let refspec = format!("+refs/heads/{local}:{tracked}");
+        git::fetch_objects(repo, "origin", &[refspec], net)?;
+        if exists {
+            // `merge --ff-only` without a checkout: moved when behind, kept when ahead.
+            let within =
+                |a: &str, b: &str| git::run(repo, &["merge-base", "--is-ancestor", a, b]).is_ok();
+            if within(&branch, &tracked) {
+                git::run(repo, &["update-ref", &branch, &tracked])?;
+            } else if !within(&tracked, &branch) {
+                return Err(diverged());
+            }
+        } else {
+            git::run(repo, &["branch", "--track", &local, &tracked])?;
+        }
+    } else {
+        fetch_pr_into(repo, remote, number, &branch, net)
+            .map_err(|e| e.unwrap_or_else(diverged))?;
+        if !exists {
+            follow_pr(repo, &local, remote, number)?;
+        }
+    }
+    git::add_worktree(repo, &local, None, dir)
 }
 
 /// Links in GitHub text are written by anyone, so only http(s) passes, in the canonical
