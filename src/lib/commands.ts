@@ -15,9 +15,13 @@ const IS_WINDOWS = PLATFORM.startsWith("Win");
 export const REVEAL_LABEL = IS_MAC ? "Reveal in Finder" : IS_WINDOWS ? "Show in Explorer" : "Show in Folder";
 
 export const COMMANDS = [
+  { id: "workbench.showCommands", title: "Command Palette", category: "General", keys: ["shift+cmd+p"] },
+  { id: "workbench.quickOpen", title: "Open File", category: "General", keys: ["cmd+p"] },
+  { id: "workbench.openChange", title: "Open Changed File", category: "General", keys: [] },
   { id: "workbench.openSettings", title: "Open Settings", category: "General", keys: ["cmd+,"] },
   { id: "file.openRepo", title: "Open Repository", category: "General", keys: ["cmd+o"] },
   { id: "file.cloneRepo", title: "Clone Repository", category: "General", keys: [] },
+  { id: "file.switchProject", title: "Switch Project", category: "General", keys: [] },
   { id: "window.reload", title: "Reload Window", category: "General", keys: ["cmd+r"] },
   // The file watcher refreshes on its own; this is for changes it can't see.
   { id: "repo.refresh", title: "Refresh", category: "General", keys: [] },
@@ -27,10 +31,10 @@ export const COMMANDS = [
   { id: "file.openIn", title: "Open in External App", category: "General", keys: ["shift+cmd+o"] },
   // ⌘1–⌘9 pick tabs, as in browsers. Listed before the tabs, so a user who bound ⌘1 here keeps it.
   // Elsewhere "ctrl" is the Super key, which the OS takes; Alt+1–4 is the usual there.
-  { id: "view.changes", title: "Show Changes", category: "View", keys: ["ctrl+1"], keysOther: ["alt+1"] },
-  { id: "view.history", title: "Show History", category: "View", keys: ["ctrl+2"], keysOther: ["alt+2"] },
-  { id: "view.pulls", title: "Show Pull Requests", category: "View", keys: ["ctrl+3"], keysOther: ["alt+3"] },
-  { id: "view.issues", title: "Show Issues", category: "View", keys: ["ctrl+4"], keysOther: ["alt+4"] },
+  { id: "view.changes", title: "Focus Changes", category: "View", keys: ["ctrl+1"], keysOther: ["alt+1"] },
+  { id: "view.history", title: "Focus History", category: "View", keys: ["ctrl+2"], keysOther: ["alt+2"] },
+  { id: "view.pulls", title: "Focus Pull Requests", category: "View", keys: ["ctrl+3"], keysOther: ["alt+3"] },
+  { id: "view.issues", title: "Focus Issues", category: "View", keys: ["ctrl+4"], keysOther: ["alt+4"] },
   // ⌘F stays the code view's find.
   { id: "history.search", title: "Search History", category: "View", keys: ["alt+cmd+f"] },
   { id: "view.toggleGitPanel", title: "Toggle Git Panel", category: "View", keys: ["cmd+b"] },
@@ -70,6 +74,9 @@ export const COMMANDS = [
   { id: "editor.fontZoomIn", title: "Increase Code Font Size", category: "Editor", keys: ["alt+cmd+="] },
   { id: "editor.fontZoomOut", title: "Decrease Code Font Size", category: "Editor", keys: ["alt+cmd+-"] },
   { id: "editor.fontZoomReset", title: "Reset Code Font Size", category: "Editor", keys: ["alt+cmd+0"] },
+  { id: "git.switchBranch", title: "Switch Branch", category: "Git", keys: [] },
+  { id: "git.newBranch", title: "New Branch", category: "Git", keys: [] },
+  { id: "git.switchWorktree", title: "Switch Worktree", category: "Git", keys: [] },
   { id: "git.fetch", title: "Fetch", category: "Git", keys: [] },
   { id: "git.pull", title: "Pull", category: "Git", keys: [] },
   { id: "git.push", title: "Push", category: "Git", keys: [] },

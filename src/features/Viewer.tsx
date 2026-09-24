@@ -559,6 +559,8 @@ function EmptyViewer({ hasTabs }: { hasTabs: boolean }) {
       <GitCompareArrows className="size-8 text-border-strong" strokeWidth={1.5} />
       <div className="text-[12.5px] text-muted-foreground">{hasTabs ? "No tab selected" : "Select a file to review"}</div>
       <div className="grid grid-cols-[auto_auto] gap-x-4 gap-y-1.5 text-left text-[11.5px] text-subtle">
+        <Kbd ids={["workbench.showCommands"]} /> <span>All commands</span>
+        <Kbd ids={["workbench.quickOpen"]} /> <span>Open a file</span>
         <Kbd ids={["view.changes", "view.history", "view.pulls", "view.issues"]} /> <span>Changes · History · PRs · Issues</span>
         <Kbd ids={["view.toggleGitPanel", "view.toggleExplorer"]} /> <span>Toggle git panel · explorer</span>
         <Kbd ids={["review.nextFile", "review.prevFile"]} /> <span>Next / previous file</span>

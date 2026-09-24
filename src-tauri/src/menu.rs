@@ -102,6 +102,9 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &b.command("file.cloneRepo", "Clone Repository…")?,
             &recent,
             &sep()?,
+            &b.command("workbench.quickOpen", "Open File…")?,
+            &b.command("workbench.openChange", "Open Changed File…")?,
+            &sep()?,
             &b.command("terminal.new", "New Terminal")?,
             &sep()?,
             &b.command("tab.close", "Close Tab")?,
@@ -128,6 +131,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let view = submenu(
         "View",
         &[
+            &b.command("workbench.showCommands", "Command Palette…")?,
+            &sep()?,
             &b.command("view.changes", "Changes")?,
             &b.command("view.history", "History")?,
             &b.command("view.pulls", "Pull Requests")?,

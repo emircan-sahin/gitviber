@@ -39,6 +39,18 @@ export const MENU_ACTIONS = [
 ] as const;
 export type Action = CommandId | (typeof MENU_ACTIONS)[number];
 
+/** How the command palette lists them; `key` is fixed (TerminalPanel's own ⌘J), not rebindable. */
+export const MENU_ACTION_INFO: Record<(typeof MENU_ACTIONS)[number], { title: string; category: string; key?: string }> = {
+  "app.about": { title: "About GitViber", category: "Help" },
+  "terminal.new": { title: "New Terminal", category: "Terminal" },
+  "terminal.toggle": { title: "Toggle Terminal", category: "Terminal", key: "cmd+j" },
+  "help.readme": { title: "GitViber Help", category: "Help" },
+  "help.shortcuts": { title: "Keyboard Shortcuts", category: "Help" },
+  "help.reportBug": { title: "Report a Bug", category: "Help" },
+  "help.releaseNotes": { title: "Release Notes", category: "Help" },
+  "help.license": { title: "View License", category: "Help" },
+};
+
 const MODAL_SAFE: Action[] = ["workbench.openSettings", "window.reload", "view.zoomIn", "view.zoomOut", "view.zoomReset", "app.about", "help.readme", "help.shortcuts", "help.reportBug", "help.releaseNotes", "help.license"];
 
 // Last registered wins, so a nested view can take a command over while it's mounted.

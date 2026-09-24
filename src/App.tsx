@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AboutDialog } from "@/features/AboutDialog";
 import { CloneDialog, openClone } from "@/features/CloneDialog";
+import { CommandPalette, showCommands } from "@/features/CommandPalette";
 import { IdentityDialog } from "@/features/IdentityDialog";
 import { NeedsGit } from "@/features/NeedsGit";
 import { openSettings, SettingsDialog } from "@/features/SettingsDialog";
@@ -106,6 +107,7 @@ export function App() {
     "file.openRepo": () => onOpen(),
     "file.cloneRepo": openClone,
     "workbench.openSettings": () => openSettings(),
+    "workbench.showCommands": showCommands,
     "help.shortcuts": () => openSettings("shortcuts"),
     "view.zoomIn": () => stepUiScale(1),
     "view.zoomOut": () => stepUiScale(-1),
@@ -127,6 +129,7 @@ export function App() {
       <CloneDialog onCloned={onOpen} />
       <SettingsDialog />
       <AboutDialog />
+      <CommandPalette />
       <Toaster />
       <Splash ready={!booting} />
     </TooltipProvider>

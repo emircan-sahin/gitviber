@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
 import { bindingsFor, COMMANDS, eventChord, isCommandId, menuAccelerator } from "./commands";
-import { type Action, hasHandler, MENU_ACTIONS, onHandlersChange, runCommand } from "./keybindings";
+import { type Action, hasHandler, MENU_ACTION_INFO, MENU_ACTIONS, onHandlersChange, runCommand } from "./keybindings";
 import { lastOpenApp, subscribeOpenApps } from "./openIn";
 import { getSettings, type Settings, subscribeSettings } from "./settings";
 import { folderName } from "./worktrees";
@@ -13,9 +13,6 @@ import { folderName } from "./worktrees";
  */
 
 const ITEMS: Action[] = [...COMMANDS.map((c) => c.id), ...MENU_ACTIONS];
-
-// TerminalPanel's own keys, which aren't rebindable.
-const FIXED_KEYS: Partial<Record<Action, string>> = { "terminal.toggle": "cmd+j" };
 
 const CHECKED: Partial<Record<Action, (s: Settings) => boolean>> = {
   "diff.toggleSplit": (s) => s.sideBySide,
@@ -44,7 +41,7 @@ function send() {
   const s = getSettings();
   const items: Record<string, unknown> = {};
   for (const id of ITEMS) {
-    const chord = isCommandId(id) ? bindingsFor(id, s.keybindings)[0] : FIXED_KEYS[id];
+    const chord = isCommandId(id) ? bindingsFor(id, s.keybindings)[0] : MENU_ACTION_INFO[id].key;
     const state = JSON.stringify({
       enabled: hasHandler(id),
       accelerator: chord ? menuAccelerator(chord) : null,

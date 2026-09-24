@@ -21,6 +21,7 @@ import { useRepo } from "@/lib/useRepo";
 import { cn } from "@/lib/utils";
 import { openAbout, useAbout } from "./AboutDialog";
 import { ChangesPanel, changeList } from "./ChangesPanel";
+import { showQuickOpen, useQuickOpenSource } from "./CommandPalette";
 import { FileTree, type FileTreeHandle } from "./FileTree";
 import { type HistorySearch, NO_SEARCH, SearchableHistory } from "./HistorySearch";
 import { IssuesPanel } from "./IssuesPanel";
@@ -362,6 +363,23 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "tab.prev": stepTab(-1),
     "file.reveal": () => revealInFinder(tabs.find((t) => t.key === activeKey)?.sel),
     "repo.refresh": () => repo.refresh(),
+    "workbench.quickOpen": () => showQuickOpen(),
+    "workbench.openChange": changes.length ? () => showQuickOpen("changes") : undefined,
+  });
+
+  // Quick open's picks take the code view along, where a new tab then takes focus (MonacoView).
+  useQuickOpenSource({
+    root,
+    changes,
+    openFile: (path) => {
+      focusPanel("code");
+      open({ kind: "file", path }, true);
+    },
+    openChange: (change) => {
+      focusPanel("code");
+      open(change, true);
+      setListTab("changes");
+    },
   });
 
   // A tab switched to from the code view keeps the keys there (the view it replaced took focus along).
