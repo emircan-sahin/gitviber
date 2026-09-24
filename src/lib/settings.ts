@@ -121,6 +121,8 @@ export interface Settings {
   signOffRepos: string[];
   /** Minutes between quiet fetches of the open repo (one of FETCH_INTERVALS); 0 is off. */
   backgroundFetch: number;
+  /** A desktop notification when a push, pull or the like ends while the app is in the background. */
+  notify: boolean;
   /** Where the last clone went; the next one offers the same folder. */
   cloneParent: string | null;
   /** A ✦ button in the commit box runs `suggestCommand` for a message. Off: nothing is ever run. */
@@ -163,6 +165,8 @@ const DEFAULTS: Settings = {
   signOffRepos: [],
   // Off until asked for: a fetch can prompt for an SSH key (1Password, a hardware key) every few minutes.
   backgroundFetch: 0,
+  // Off until asked for: turning it on is what asks the OS for permission.
+  notify: false,
   cloneParent: null,
   suggestEnabled: false,
   suggestCommand: "claude -p",
@@ -195,6 +199,7 @@ function load(): Settings {
     if (!["amount", "all"].includes(s.whitespaceMode)) s.whitespaceMode = DEFAULTS.whitespaceMode;
     if (typeof s.shortcutOverlay !== "boolean") s.shortcutOverlay = DEFAULTS.shortcutOverlay;
     s.keybindings = cleanOverrides(s.keybindings);
+    if (typeof s.notify !== "boolean") s.notify = DEFAULTS.notify;
     if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;
     s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;

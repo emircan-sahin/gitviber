@@ -267,6 +267,13 @@ const APP_COLORS: Record<string, string> = {
   "badge.background": "--elevated",
   "badge.foreground": "--muted-foreground",
   "focusBorder": "--ring",
+  // Its context menu, as the app's own.
+  "menu.background": "--elevated",
+  "menu.foreground": "--foreground",
+  "menu.selectionBackground": "--primary",
+  "menu.selectionForeground": "--primary-foreground",
+  "menu.separatorBackground": "--border",
+  "menu.border": "--border-strong",
 };
 
 function appColors() {

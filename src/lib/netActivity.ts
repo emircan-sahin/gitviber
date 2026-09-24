@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
-import { type NetOp, netOp, type Progress } from "./api";
+import { CANCELLED, errorMessage, type NetOp, netOp, type Progress } from "./api";
+import { notifyIfAway } from "./notify";
 
 /** The network command the top bar shows with its progress and Cancel, whichever panel started it. */
 export interface NetActivity {
@@ -24,7 +25,12 @@ export async function withNetActivity<T>(label: string, fn: (op: NetOp) => Promi
   const op = netOp((progress) => update(active.map((a) => (a.op === op ? { ...a, progress } : a))));
   update([...active, { label, op, progress: null }]);
   try {
-    return await fn(op);
+    const value = await fn(op);
+    notifyIfAway(`${label} finished`);
+    return value;
+  } catch (e) {
+    if (e !== CANCELLED) notifyIfAway(`${label} failed`, errorMessage(e));
+    throw e;
   } finally {
     update(active.filter((a) => a.op !== op));
   }

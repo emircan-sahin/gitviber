@@ -4,8 +4,10 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { api, CANCELLED, cancelNetwork, errorMessage, type NetOp, netOp, type Progress } from "@/lib/api";
+import { Lock } from "lucide-react";
+import { api, CANCELLED, cancelNetwork, errorMessage, github, type NetOp, netOp, type Progress } from "@/lib/api";
 import { cloneFolderName, cloneUrl } from "@/lib/clone";
+import { notifyIfAway } from "@/lib/notify";
 import { updateSettings, useSettings } from "@/lib/settings";
 import { toast } from "@/lib/toast";
 
@@ -37,6 +39,16 @@ export function CloneDialog({ onCloned }: { onCloned: (path: string) => void }) 
   const [error, setError] = useState<string | null>(null);
 
   const folder = name ?? cloneFolderName(cloneUrl(url));
+  // The GitHub account's repositories, to pick from instead of typing; none without an account.
+  const [repos, setRepos] = useState<Awaited<ReturnType<typeof github.ownRepos>> | null>(null);
+  useEffect(() => {
+    if (!visible || repos) return;
+    github.ownRepos().then(setRepos, () => setRepos([]));
+  }, [visible, repos]);
+  // What's typed narrows the list, until it's a URL.
+  const typed = url.trim().toLowerCase();
+  const picking = !/[:@]/.test(typed);
+  const matches = picking ? (repos ?? []).filter((r) => r.fullName.toLowerCase().includes(typed)).slice(0, 50) : [];
   const ready = !op && !!url.trim() && !!folder.trim() && !!parent;
 
   // The last clone's folder, else the home folder.
@@ -67,12 +79,16 @@ export function CloneDialog({ onCloned }: { onCloned: (path: string) => void }) 
     setProgress(null);
     try {
       const path = await api.cloneRepo(cloneUrl(url), parent, folder.trim(), o);
+      notifyIfAway("Clone finished", folder.trim());
       updateSettings({ cloneParent: parent });
       close();
       onCloned(path);
     } catch (e) {
       if (e === CANCELLED) toast("info", "Clone cancelled");
-      else setError(errorMessage(e));
+      else {
+        setError(errorMessage(e));
+        notifyIfAway("Clone failed", errorMessage(e));
+      }
     } finally {
       setOp(null);
     }
@@ -91,7 +107,25 @@ export function CloneDialog({ onCloned }: { onCloned: (path: string) => void }) 
             void clone();
           }}
         >
-          <Input autoFocus value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://github.com/owner/name.git" disabled={!!op} spellCheck={false} />
+          <Input autoFocus value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://github.com/owner/name.git, or search your repositories" disabled={!!op} spellCheck={false} />
+          {!op && matches.length > 0 && !(repos ?? []).some((r) => r.fullName.toLowerCase() === typed) && (
+            <div role="listbox" aria-label="Your GitHub repositories" className="-mt-1 max-h-44 overflow-y-auto rounded-md border border-border">
+              {matches.map((r) => (
+                <button
+                  key={r.fullName}
+                  type="button"
+                  role="option"
+                  aria-selected={false}
+                  onClick={() => setUrl(r.fullName)}
+                  className="flex h-7 w-full items-center gap-2 px-2.5 text-left text-[12px] hover:bg-hover focus-visible:bg-hover focus-visible:outline-none"
+                >
+                  <span className="shrink-0 font-mono text-[11.5px]">{r.fullName}</span>
+                  {r.private && <Lock className="size-3 shrink-0 text-subtle" aria-label="Private" />}
+                  <span className="min-w-0 flex-1 truncate text-[11px] text-subtle">{r.description}</span>
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex flex-col gap-1 text-[11.5px] text-muted-foreground">
             Clone into
             <div className="flex items-center gap-2">

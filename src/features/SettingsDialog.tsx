@@ -1,12 +1,13 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Code2, GitBranch, GitCompareArrows, Keyboard, Palette, Plus, RotateCcw, Search, Sparkles, SquareArrowOutUpRight, TriangleAlert, X } from "lucide-react";
+import { Code2, GitBranch, GitCompareArrows, Keyboard, Palette, Pencil, Plus, RotateCcw, Search, Sparkles, SquareArrowOutUpRight, Trash2, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
-import type { Whitespace } from "@/lib/api";
+import { api, errorMessage, type GitIdentity, type Whitespace } from "@/lib/api";
 import { bindingsFor, COMMANDS, type Command, type CommandId, commandFor, eventChord, formatChord, IS_MAC, isReserved } from "@/lib/commands";
+import { runCommand } from "@/lib/keybindings";
 import { refreshOpenApps, useOpenApps } from "@/lib/openIn";
 import {
   type Appearance,
@@ -30,6 +31,8 @@ import {
   useSettings,
 } from "@/lib/settings";
 import { SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT } from "@/lib/suggest";
+import { enableNotifications } from "@/lib/notify";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 // What the System theme follows.
@@ -294,12 +297,176 @@ function DiffSection() {
 function GitSection() {
   const s = useSettings();
   return (
-    <Field label="Fetch in the background" hint="Keeps ahead / behind and the remote branches current for the open repository. A fetch that fails, say while offline, stays quiet.">
-      <Segmented<string>
-        value={String(s.backgroundFetch)}
-        onChange={(v) => updateSettings({ backgroundFetch: Number(v) })}
-        options={FETCH_INTERVALS.map((m) => [String(m), m ? `${m} min` : "Off"])}
-      />
+    <>
+      <Field label="Fetch in the background" hint="Keeps ahead / behind and the remote branches current for the open repository. A fetch that fails, say while offline, stays quiet.">
+        <Segmented<string>
+          value={String(s.backgroundFetch)}
+          onChange={(v) => updateSettings({ backgroundFetch: Number(v) })}
+          options={FETCH_INTERVALS.map((m) => [String(m), m ? `${m} min` : "Off"])}
+        />
+      </Field>
+      <Field label="Notify when done in the background" hint="A desktop notification when a push, pull, fetch or clone ends while GitViber isn't the app in front. Turning it on asks your OS for permission.">
+        <Switch checked={s.notify} onChange={(v) => void enableNotifications(v)} />
+      </Field>
+      <RepoIdentityField />
+      <RemotesField />
+    </>
+  );
+}
+
+type RemoteRow = Awaited<ReturnType<typeof api.remoteList>>[number];
+
+/** The repository's remotes: add, rename, repoint or remove one (VS Code's Add / Remove Remote). */
+function RemotesField() {
+  const [remotes, setRemotes] = useState<RemoteRow[] | null>(null);
+  // The remote being edited (its name then), or "" for a new one.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const load = () => api.remoteList().then(setRemotes, () => setRemotes(null));
+  useEffect(() => void load(), []);
+  if (!remotes) return null;
+  const edit = (r: RemoteRow | null) => {
+    setEditing(r?.name ?? "");
+    setName(r?.name ?? (remotes.length ? "" : "origin"));
+    setUrl(r?.url ?? "");
+  };
+  const act = async (fn: () => Promise<void>) => {
+    try {
+      await fn();
+      setEditing(null);
+    } catch (e) {
+      toast("error", "Could not change the remote", errorMessage(e));
+    }
+    await load();
+    runCommand("repo.refresh");
+  };
+  const save = () =>
+    act(async () => {
+      if (!editing) return api.remoteEdit("add", name.trim(), url.trim());
+      const was = remotes.find((r) => r.name === editing);
+      if (was && url.trim() !== was.url) await api.remoteEdit("set-url", editing, url.trim());
+      if (name.trim() !== editing) await api.remoteEdit("rename", editing, name.trim());
+    });
+  const remove = async (r: RemoteRow) => {
+    const ok = await ask(`Remove ${r.name}? Its remote branches go from this repository, and branches that track them stop tracking. The repository at ${r.url} is untouched.`, {
+      title: "Remove remote",
+      kind: "warning",
+      okLabel: "Remove",
+    });
+    if (ok) await act(() => api.remoteEdit("remove", r.name));
+  };
+  const form = (
+    <form
+      className="flex flex-col gap-2 rounded-md border border-border p-2"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (name.trim() && url.trim()) void save();
+      }}
+    >
+      <Input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Name (origin, upstream…)" spellCheck={false} />
+      <Input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="URL (https://… or git@…)" spellCheck={false} className="font-mono" />
+      <div className="flex justify-end gap-2">
+        <Button type="button" size="sm" variant="secondary" onClick={() => setEditing(null)}>
+          Cancel
+        </Button>
+        <Button type="submit" size="sm" disabled={!name.trim() || !url.trim()}>
+          {editing ? "Save" : "Add"}
+        </Button>
+      </div>
+    </form>
+  );
+  return (
+    <Field label="Remotes" hint="Where this repository fetches from and pushes to.">
+      <div className="flex w-64 flex-col gap-1.5">
+        {remotes.map((r) =>
+          editing === r.name ? (
+            <div key={r.name}>{form}</div>
+          ) : (
+            <div key={r.name} className="group flex items-center gap-2 text-[12px]">
+              <span className="shrink-0 font-medium">{r.name}</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground" title={r.pushUrl ? `${r.url}\npush: ${r.pushUrl}` : r.url}>
+                {r.url}
+              </span>
+              <Tip label="Edit">
+                <button type="button" className="text-subtle hover:text-foreground" onClick={() => edit(r)} aria-label={`Edit ${r.name}`}>
+                  <Pencil className="size-3.5" />
+                </button>
+              </Tip>
+              <Tip label="Remove…">
+                <button type="button" className="text-subtle hover:text-destructive" onClick={() => void remove(r)} aria-label={`Remove ${r.name}`}>
+                  <Trash2 className="size-3.5" />
+                </button>
+              </Tip>
+            </div>
+          ),
+        )}
+        {editing === "" ? (
+          form
+        ) : (
+          <Button type="button" size="sm" variant="secondary" className="self-start" onClick={() => edit(null)}>
+            <Plus /> Add remote
+          </Button>
+        )}
+      </div>
+    </Field>
+  );
+}
+
+const who = (i: GitIdentity) => (i.name || i.email ? `${i.name ?? "no name"} <${i.email ?? "no email"}>` : "not set");
+
+/** As GitHub Desktop's repository settings: commit here as someone else than everywhere else. */
+function RepoIdentityField() {
+  const [loaded, setLoaded] = useState<{ own: GitIdentity; global: GitIdentity } | null>(null);
+  const [own, setOwn] = useState(false);
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const load = () =>
+    api.repoIdentity().then(
+      (r) => {
+        setLoaded(r);
+        setOwn(!!(r.own.name || r.own.email));
+        setName(r.own.name ?? r.global.name ?? "");
+        setEmail(r.own.email ?? r.global.email ?? "");
+      },
+      // No repository open: nothing to set.
+      () => setLoaded(null),
+    );
+  useEffect(() => void load(), []);
+  if (!loaded) return null;
+  const save = (identity: { name: string; email: string } | null) =>
+    api.setRepoIdentity(identity).then(load, (e) => toast("error", "Could not set the identity", errorMessage(e)));
+  const changed = own && (name.trim() !== (loaded.own.name ?? "") || email.trim() !== (loaded.own.email ?? ""));
+  return (
+    <Field label="Commit as" hint={`Who commits in this repository. Everywhere else: ${who(loaded.global)} (your global git config).`}>
+      <div className="flex w-64 flex-col gap-2">
+        <Segmented<"global" | "own">
+          value={own ? "own" : "global"}
+          onChange={(v) => {
+            setOwn(v === "own");
+            if (v === "global" && (loaded.own.name || loaded.own.email)) void save(null);
+          }}
+          options={[
+            ["global", "Global"],
+            ["own", "This repository"],
+          ]}
+        />
+        {own && (
+          <form
+            className="flex flex-col gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (name.trim() && email.trim()) void save({ name, email });
+            }}
+          >
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name" spellCheck={false} />
+            <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email" spellCheck={false} />
+            <Button type="submit" size="sm" disabled={!changed || !name.trim() || !email.trim()}>
+              Save
+            </Button>
+          </form>
+        )}
+      </div>
     </Field>
   );
 }
