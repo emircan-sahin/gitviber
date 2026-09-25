@@ -42,13 +42,13 @@ API key. Delete the exported `.p12` afterwards; the certificate stays in your ke
 | or `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | Apple ID, app-specific password, team ID |
 | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The updater key, already set |
 
-A tag build fails if signing or notarization secrets are missing, rather than publish an app
-Gatekeeper blocks. Re-run the script when the certificate is renewed or the API key revoked.
+A tag build fails if a signing, notarization or updater secret is missing, rather than publish
+an app Gatekeeper blocks or one that can't update. Re-run the script when the certificate is renewed or the API key revoked.
 
 ### The updater key
 
-Every build is signed with the updater key, and installed copies only accept updates signed by
-it. The private key is `~/.tauri/gitviber-updater.key`, its password is in the macOS Keychain
+`tauri.conf.json` leaves updater bundles off, so any build works without this key; tag builds
+turn them on and sign them with it, and installed copies only accept updates signed by it. The private key is `~/.tauri/gitviber-updater.key`, its password is in the macOS Keychain
 (`security find-generic-password -s "gitviber updater key password" -w`), and both are already in
 the `release` environment. **Back both up somewhere safe and offline.** If the key or its password
 is lost, no installed copy can be updated again; everyone has to download the next version by
