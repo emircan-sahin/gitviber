@@ -10,10 +10,13 @@ pub fn enabled(config: &tauri::Config) -> bool {
 
 /// "install" in place (the .app, an AppImage), "download" from the Releases page (a .deb or .rpm
 /// belongs to the package manager, and installing one asks for a password), None when off.
+/// The bundler stamps the bundle type into the binary: APPIMAGE is inherited by anything started
+/// from an AppImage's terminal, so it can't say which one this is.
 pub fn mode(config: &tauri::Config) -> Option<&'static str> {
+    use tauri::utils::{config::BundleType, platform::bundle_type};
     if !enabled(config) {
         None
-    } else if cfg!(target_os = "linux") && std::env::var_os("APPIMAGE").is_none() {
+    } else if cfg!(target_os = "linux") && bundle_type() != Some(BundleType::AppImage) {
         Some("download")
     } else {
         Some("install")
