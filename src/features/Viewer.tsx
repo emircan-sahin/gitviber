@@ -2,6 +2,7 @@ import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, ExternalLink, Eye,
 import { Component, type ReactNode, type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { Segmented } from "@/components/ui/segmented";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type FileChange, type RepoStatus, type Whitespace } from "@/lib/api";
 import { resetDefinitions } from "@/lib/definitions";
@@ -810,36 +811,6 @@ function IconBtn({ label, command, active, onClick, children }: { label: string;
         {children}
       </Button>
     </Tip>
-  );
-}
-
-function Segmented<T extends string>({
-  value,
-  onChange,
-  options,
-}: {
-  value: T;
-  onChange: (v: T) => void;
-  options: { value: T; label: string; icon?: React.ComponentType<{ className?: string }> }[];
-}) {
-  return (
-    <div className="flex h-6 overflow-hidden rounded-md border border-border-strong">
-      {options.map((o, i) => (
-        <button
-          key={o.value}
-          onClick={() => onChange(o.value)}
-          className={cn(
-            // The wrapper's overflow-hidden would clip an outer focus ring.
-            "flex items-center gap-1 px-2 text-[11.5px] font-medium transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-            i > 0 && "border-l border-border-strong",
-            value === o.value ? "bg-active text-foreground" : "text-subtle hover:text-foreground focus-visible:text-foreground",
-          )}
-        >
-          {o.icon && <o.icon className="size-3.5" />}
-          {o.label}
-        </button>
-      ))}
-    </div>
   );
 }
 
