@@ -6,7 +6,7 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-09-26
 
 The first public release. Signed and notarized for macOS (universal: Apple Silicon and Intel),
 with `.deb`, `.rpm` and AppImage builds for Linux.
