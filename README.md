@@ -29,6 +29,9 @@ GitViber is one window for all of it, and it's small:
 
 - **14 MB app.** GitHub Desktop is 681 MB. No bundled Chromium, a Rust core and the system webview.
 - **Idles at 0% CPU.** It wakes up when files change, not on a timer.
+- **Memory it gives back.** Activity Monitor also counts memory the app is done with but WebKit
+  hasn't collected yet, so the number climbs while you click around and drops again after a few
+  idle minutes. Closing a terminal frees its GPU memory at once.
 - **Fast on big diffs.** Diffs are computed in Rust and highlighted off the main thread.
 - **Plain git underneath.** Your config, hooks, credentials and signing. Nothing of its own goes into the repo.
 
