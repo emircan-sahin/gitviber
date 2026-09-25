@@ -69,6 +69,13 @@ fatal: failed to write commit object`;
 
 const NO_USERNAME = "fatal: could not read Username for 'https://github.com': terminal prompts disabled";
 
+// A prompt the user cancelled (askpass.rs).
+const CANCELLED_LOGIN = `error: unable to read askpass response from '/Applications/GitViber.app/Contents/MacOS/gitviber'
+${NO_USERNAME}`;
+
+const HOST_KEY = `Host key verification failed.
+fatal: Could not read from remote repository.`;
+
 const BAD_TOKEN = `remote: Invalid username or token. Password authentication is not supported for Git operations.
 fatal: Authentication failed for 'https://github.com/owner/repo.git/'`;
 
@@ -96,7 +103,7 @@ test("a missing identity or a failed signature say what to set up", () => {
 });
 
 test("credentials are explained, with nothing to click", () => {
-  for (const message of [NO_USERNAME, BAD_TOKEN, SSH_KEY]) {
+  for (const message of [NO_USERNAME, CANCELLED_LOGIN, BAD_TOKEN, SSH_KEY, HOST_KEY]) {
     const help = explainGitError(message);
     assert.ok(help, message);
     assert.equal(help.fix, undefined);

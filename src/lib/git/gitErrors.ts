@@ -58,7 +58,14 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
     /^fatal: (Authentication failed for|could not read (Username|Password) for)/m,
     {
       title: "The remote wants you to sign in",
-      explanation: "git has no credentials that work here, and can't ask for them without a terminal. For GitHub, run `gh auth login` in a terminal and let it set up git; elsewhere, store a token in git's credential helper.",
+      explanation: "git has no credentials that work here, and the sign-in was cancelled or refused. For GitHub, run `gh auth login` in a terminal and let it set up git, or give a personal access token as the password; elsewhere, store a token in git's credential helper.",
+    },
+  ],
+  [
+    /^Host key verification failed\./m,
+    {
+      title: "ssh doesn't trust this host",
+      explanation: "The host's key is new and wasn't accepted, or it changed since you last connected (ssh warns above if so). Check the fingerprint your provider publishes before you trust it.",
     },
   ],
   [
