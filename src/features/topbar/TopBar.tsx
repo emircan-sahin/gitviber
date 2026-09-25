@@ -85,7 +85,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const terminalOpen = useTerminals().open;
   const fullscreen = useFullscreen();
 
-  const { busy, run, runNet, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
+  const { busy, run, runNet, pull, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
 
   const activity = busy ?? net?.label;
   const progress = net?.progress ? `${net.progress.phase}${net.progress.percent !== null ? ` ${net.progress.percent}%` : ""}` : "";
@@ -93,10 +93,10 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
 
   useCommands({
     "git.fetch": busy ? undefined : () => runNet("Fetch", api.fetch),
-    "git.pull": busy || !status?.upstream ? undefined : () => runNet("Pull", (op) => api.pull("ff", op), "Pulled"),
+    "git.pull": busy || !status?.upstream ? undefined : () => pull("ff"),
     // With no upstream yet, pushing is publishing, where Publish would without asking.
     "git.push": busy ? undefined : status?.upstream ? () => push() : publishTo ? () => publish(publishTo) : undefined,
-    "git.sync": busy || !status?.upstream ? undefined : () => runNet("Sync", async (op) => (await api.pull("ff", op)) || api.push(false, undefined, op), "Synced"),
+    "git.sync": busy || !status?.upstream ? undefined : () => runNet("Sync", async (op, autostash) => (await api.pull("ff", op, autostash)) || api.push(false, undefined, op), "Synced"),
     "git.newBranch": () => setBranchDialog({ kind: "new", base: status?.branch ? `refs/heads/${status.branch}` : "HEAD" }),
     "git.newWorktree": () => openWorktreeDialog({ kind: "new" }),
   });
@@ -180,7 +180,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       </Tip>
       <div className="flex">
         <Tip label="Pull (fast-forward only)">
-          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !status?.upstream} onClick={() => runNet("Pull", (op) => api.pull("ff", op), "Pulled")}>
+          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !status?.upstream} onClick={() => pull("ff")}>
             <ArrowDownToLine /> Pull
             {!!status?.behind && <span className="font-mono text-[10.5px] text-primary">{status.behind}</span>}
           </Button>
@@ -193,10 +193,10 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">
             <DropdownMenuLabel>When branches have diverged</DropdownMenuLabel>
-            <DropdownMenuItem onSelect={() => runNet("Pull", (op) => api.pull("merge", op), "Pulled (merge)")}>
+            <DropdownMenuItem onSelect={() => pull("merge")}>
               <GitMerge /> Pull with merge
             </DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => runNet("Pull", (op) => api.pull("rebase", op), "Pulled (rebase)")}>
+            <DropdownMenuItem onSelect={() => pull("rebase")}>
               <GitPullRequestArrow /> Pull with rebase
             </DropdownMenuItem>
           </DropdownMenuContent>

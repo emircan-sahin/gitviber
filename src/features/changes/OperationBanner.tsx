@@ -2,7 +2,8 @@ import { ask } from "@tauri-apps/plugin-dialog";
 import { GitMerge } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { api, errorMessage, type RepoStatus } from "@/lib/api";
+import { api, type RepoStatus } from "@/lib/api";
+import { gitFailed } from "@/hooks/useGitAction";
 import { toast } from "@/lib/app/toast";
 import { tracked, undoAction } from "@/lib/repo/undo";
 import { plural } from "@/lib/format";
@@ -22,7 +23,7 @@ export function OperationBanner({ status, refresh }: { status: RepoStatus; refre
       // Finished: the entry is the whole merge or rebase, from where it started.
       else if (entry !== null) toast("success", `${op.kind[0].toUpperCase()}${op.kind.slice(1)} finished`, undefined, undoAction(entry, refresh));
     } catch (e) {
-      toast("error", title, errorMessage(e));
+      gitFailed(title, e);
     } finally {
       setBusy(false);
       await refresh();

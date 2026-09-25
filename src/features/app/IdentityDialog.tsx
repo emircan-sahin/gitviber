@@ -3,28 +3,31 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { api, errorMessage, type GitIdentity } from "@/lib/api";
+import { identityAsks } from "@/lib/app/identity";
 import { toast } from "@/lib/app/toast";
 
-// Asked once per launch: a user who closes it may be setting it up their own way.
-let dismissed = false;
+// Asked once per launch: a user who closes it may be setting it up their own way. A commit
+// that fails for want of one asks again (askForIdentity); this is the ask it was closed on.
+let dismissedAt: number | null = null;
 
 /**
  * On a fresh machine the first commit fails with "Author identity unknown". This asks for the
- * missing parts when a repo opens, as git resolves them there (includeIf applies), and sets
- * them globally.
+ * missing parts when a repo opens, or when that commit's toast asks, as git resolves them
+ * there (includeIf applies), and sets them globally.
  */
 export function IdentityDialog({ root }: { root: string | null }) {
   const [missing, setMissing] = useState<GitIdentity | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
+  const asks = identityAsks.use();
 
   useEffect(() => {
-    if (!root || dismissed) return;
+    if (!root || dismissedAt === asks) return;
     let live = true;
     api.gitIdentity().then(
       ({ current, suggested }) => {
-        if (!live || dismissed || (current.name && current.email)) return;
+        if (!live || dismissedAt === asks || (current.name && current.email)) return;
         setName(suggested?.name ?? "");
         setEmail(suggested?.email ?? "");
         setMissing(current);
@@ -34,11 +37,11 @@ export function IdentityDialog({ root }: { root: string | null }) {
     return () => {
       live = false;
     };
-  }, [root]);
+  }, [root, asks]);
 
   if (!missing) return null;
   const close = () => {
-    dismissed = true;
+    dismissedAt = asks;
     setMissing(null);
   };
   const needName = !missing.name;

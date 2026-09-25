@@ -10,7 +10,7 @@ import { useGitAction } from "@/hooks/useGitAction";
 /** The top bar's git actions: switching, merging, deleting branches, worktrees, push and publish. */
 export function useRepoActions(repo: RepoData, root: string, main: string) {
   const { status, branches } = repo;
-  const { busy, run, runNet } = useGitAction({ refresh: repo.refresh });
+  const { busy, run, runNet, pull } = useGitAction({ refresh: repo.refresh });
 
   // A terminal on another branch gets its own worktree rather than a checkout here, which
   // would pull the files out from under this window.
@@ -66,7 +66,8 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     run(how === "squash" ? "Squash merge" : "Merge", () => api.merge(name, how), how === "squash" ? `Squashed ${name} into one commit` : `Merged ${name}`);
   // Rejected as non-fast-forward: the remote has commits this branch dropped, usually its own
   // old ones after a rebase or amend. Replacing them is a force push, so it asks first.
-  // "fetch first" (commits not fetched yet) isn't offered: those want a pull.
+  // "fetch first" (commits not fetched yet) isn't offered: those want a pull, which the error
+  // toast offers (gitErrors.ts).
   // `tags`: --follow-tags, annotated tags on the pushed commits go along.
   const push = (tags = false) =>
     runNet(
@@ -160,5 +161,5 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     await run("Unlock worktree", () => api.unlockWorktree(w.path), `Unlocked ${name}`);
   };
 
-  return { busy, run, runNet, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree };
+  return { busy, run, runNet, pull, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree };
 }
