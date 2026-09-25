@@ -28,6 +28,7 @@ mod suggest;
 mod titlebar;
 #[cfg(target_os = "linux")]
 mod trash;
+mod updates;
 mod watch;
 
 use state::AppState;
@@ -43,10 +44,17 @@ pub fn run() {
     } else {
         None
     };
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(navigation::guard(dev_url))
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_notification::init());
+    #[cfg(desktop)]
+    if updates::enabled(context.config()) {
+        builder = builder
+            .plugin(tauri_plugin_updater::Builder::new().build())
+            .plugin(tauri_plugin_process::init());
+    }
+    builder
         .menu(menu::build)
         .on_menu_event(|app, event| {
             let _ = app.emit("menu", event.id().as_ref());
@@ -232,7 +240,9 @@ pub fn run() {
             commands::app::pty_spawn,
             commands::app::pty_write,
             commands::app::pty_resize,
-            commands::app::pty_kill
+            commands::app::pty_kill,
+            commands::app::pty_busy,
+            commands::app::update_mode
         ])
         .run(context)
         .expect("error while running GitViber");

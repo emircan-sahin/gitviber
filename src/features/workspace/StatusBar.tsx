@@ -9,6 +9,8 @@ import type { useRepo } from "@/lib/repo/useRepo";
 import { codeFontName, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { openAbout, useAbout } from "@/features/app/AboutDialog";
+import { UpdateButton } from "@/features/app/UpdateDialog";
+import { useUpdates } from "@/lib/app/updates";
 import { changeTotals } from "@/features/changes/changeList";
 import { lineInView } from "@/features/viewer/activeEditor";
 import { OpenInButton } from "./OpenIn";
@@ -69,9 +71,11 @@ export function StatusBar({ repo, reviewed, active }: { repo: ReturnType<typeof 
   );
 }
 
-/** `v0.1.0 · macOS 15.5`; opens About, which can copy it for a bug report. */
+/** `v0.1.0 · macOS 15.5`; opens About, which can copy it for a bug report. Update to vX once there's one. */
 function VersionInfo() {
   const about = useAbout();
+  const { release } = useUpdates();
+  if (release) return <UpdateButton />;
   if (!about) return null;
   return (
     <Tip label="About GitViber">
