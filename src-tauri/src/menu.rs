@@ -63,6 +63,13 @@ const REVEAL: &str = if cfg!(target_os = "macos") {
     "Show in Folder"
 };
 
+/// GitHub Desktop's name for it.
+const SHOW_LOGS: &str = if cfg!(target_os = "macos") {
+    "Show Logs in Finder"
+} else {
+    "Show Logs"
+};
+
 pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let mut b = Builder {
         app,
@@ -238,6 +245,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &b.command("workbench.shortcutOverlay", "Show Shortcut Overlay")?,
             &sep()?,
             &b.command("help.reportBug", "Report a Bug…")?,
+            &b.command("help.copyDiagnostics", "Copy Diagnostics")?,
+            &b.command("help.showLogs", SHOW_LOGS)?,
             &b.command("help.releaseNotes", "Release Notes")?,
             &b.command("help.license", "View License")?,
         ],

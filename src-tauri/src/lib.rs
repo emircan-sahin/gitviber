@@ -78,6 +78,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::app::log_error,
+            commands::app::show_logs,
             commands::repo::open_repo,
             commands::repo::git_info,
             commands::repo::install_git,

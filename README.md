@@ -122,8 +122,11 @@ is untested.
 
 No telemetry, no API keys. The app talks to your git remotes and, for pull requests and issues,
 GitHub. For those it borrows a login you already have, the GitHub CLI (`gh auth token`) first,
-then git's stored github.com credential, and keeps the token in memory. Errors go to a local file
-(`~/Library/Logs/app.gitviber.desktop/errors.log` on macOS) and nowhere else. Markdown from GitHub
+then git's stored github.com credential, and keeps the token in memory. Errors, including every
+error message the app shows you (a failed push's git output, say), go to a local file
+(`~/Library/Logs/app.gitviber.desktop/errors.log` on macOS, Help → Show Logs) and nowhere else,
+with logins in URLs and GitHub tokens blanked out. Help → Copy Diagnostics copies only the versions
+of GitViber, the OS, git, `gh` and WebKit, for you to paste into a bug report. Markdown from GitHub
 is cut down to GitHub's own HTML allowlist, and an image hosted outside GitHub loads only when you
 click it. Commit message suggestions go wherever the command you picked sends them.
 
