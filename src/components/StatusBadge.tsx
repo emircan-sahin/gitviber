@@ -1,5 +1,6 @@
 import type { ChangeStatus, FileChange } from "@/lib/api";
-import { cn, splitPath } from "@/lib/utils";
+import { cn } from "@/lib/utils";
+import { splitPath } from "@/lib/path";
 
 const STATUS: Record<ChangeStatus, { letter: string; label: string; text: string; bg: string }> = {
   M: { letter: "M", label: "Modified", text: "text-modified", bg: "bg-modified-fill" },

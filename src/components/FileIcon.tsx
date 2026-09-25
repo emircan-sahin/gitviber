@@ -1,4 +1,4 @@
-import { fileIconUrl, folderIconUrl } from "@/lib/icons";
+import { fileIconUrl, folderIconUrl } from "@/lib/ui/icons";
 import { cn } from "@/lib/utils";
 
 export function FileIcon({ path, className }: { path: string; className?: string }) {

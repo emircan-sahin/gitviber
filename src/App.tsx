@@ -1,24 +1,26 @@
 import { ask, open } from "@tauri-apps/plugin-dialog";
-import { Component, type ErrorInfo, type ReactNode, useCallback, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Splash } from "@/components/Splash";
 import { Toaster } from "@/components/Toaster";
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { AboutDialog } from "@/features/AboutDialog";
-import { CloneDialog, openClone } from "@/features/CloneDialog";
-import { CommandPalette, showCommands } from "@/features/CommandPalette";
-import { IdentityDialog } from "@/features/IdentityDialog";
-import { NeedsGit } from "@/features/NeedsGit";
-import { openSettings, SettingsDialog } from "@/features/SettingsDialog";
-import { ShortcutOverlay } from "@/features/ShortcutOverlay";
-import { Welcome } from "@/features/Welcome";
-import { Workspace } from "@/features/Workspace";
+import { AboutDialog } from "@/features/app/AboutDialog";
+import { CloneDialog, openClone } from "@/features/projects/CloneDialog";
+import { CommandPalette, showCommands } from "@/features/palette/CommandPalette";
+import { IdentityDialog } from "@/features/app/IdentityDialog";
+import { NeedsGit } from "@/features/app/NeedsGit";
+import { openSettings, SettingsDialog } from "@/features/settings/SettingsDialog";
+import { ShortcutOverlay } from "@/features/app/ShortcutOverlay";
+import { Welcome } from "@/features/projects/Welcome";
+import { Workspace } from "@/features/workspace/Workspace";
 import { api, errorMessage, type GitInfo, NOT_A_REPO, type OpenedRepo } from "@/lib/api";
-import { useCommands } from "@/lib/keybindings";
-import { useRecentMenu } from "@/lib/menu";
-import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder, stepUiScale } from "@/lib/settings";
-import { toast } from "@/lib/toast";
-import { folderName, isInside } from "@/lib/worktrees";
+import { useCommands } from "@/lib/commands/keybindings";
+import { useRecentMenu } from "@/lib/commands/menu";
+import { stepUiScale } from "@/lib/settings";
+import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder } from "@/lib/repo/recent";
+import { toast } from "@/lib/app/toast";
+import { folderName, isInside } from "@/lib/path";
 
 export function App() {
   const [opened, setOpened] = useState<OpenedRepo | null>(null);
@@ -155,29 +157,26 @@ async function initAsked(path: string) {
 }
 
 /** Without this, a render error anywhere in the workspace unmounts the app and leaves a black window. */
-class WorkspaceBoundary extends Component<{ children: ReactNode; onOpenRepo: () => void }, { error: string | null }> {
-  state = { error: null as string | null };
-  static getDerivedStateFromError(e: unknown) {
-    return { error: e instanceof Error && e.stack ? e.stack : errorMessage(e) };
-  }
-  // Logged with its component stack by main.tsx.
-  componentDidCatch(_: unknown, info: ErrorInfo) {
-    // The component stack names what threw; the JS stack alone is minified in release builds.
-    this.setState((s) => ({ error: `${s.error}\n${info.componentStack ?? ""}` }));
-  }
-  render() {
-    if (!this.state.error) return this.props.children;
-    return (
-      <div data-tauri-drag-region className="flex h-full flex-col items-center justify-center gap-3 bg-background p-6">
-        <div className="text-[13px] font-medium">Something went wrong in this window</div>
-        <pre className="max-h-[50vh] max-w-3xl overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] whitespace-pre-wrap text-subtle select-text">{this.state.error}</pre>
-        <div className="flex gap-2">
-          <Button onClick={() => location.reload()}>Reload</Button>
-          <Button variant="secondary" onClick={() => this.props.onOpenRepo()}>
-            Open another repository…
-          </Button>
+function WorkspaceBoundary({ children, onOpenRepo }: { children: ReactNode; onOpenRepo: () => void }) {
+  return (
+    <ErrorBoundary
+      fallback={(e, componentStack) => (
+        <div data-tauri-drag-region className="flex h-full flex-col items-center justify-center gap-3 bg-background p-6">
+          <div className="text-[13px] font-medium">Something went wrong in this window</div>
+          <pre className="max-h-[50vh] max-w-3xl overflow-auto rounded-md border border-border bg-panel p-3 font-mono text-[11px] whitespace-pre-wrap text-subtle select-text">
+            {/* The component stack names what threw; the JS stack alone is minified in release builds. */}
+            {`${e instanceof Error && e.stack ? e.stack : errorMessage(e)}\n${componentStack}`}
+          </pre>
+          <div className="flex gap-2">
+            <Button onClick={() => location.reload()}>Reload</Button>
+            <Button variant="secondary" onClick={() => onOpenRepo()}>
+              Open another repository…
+            </Button>
+          </div>
         </div>
-      </div>
-    );
-  }
+      )}
+    >
+      {children}
+    </ErrorBoundary>
+  );
 }

@@ -1,5 +1,5 @@
 import { isValidElement, type ReactNode, useLayoutEffect, useRef, useState } from "react";
-import { renderedRows, visibleRows } from "@/lib/windowing";
+import { renderedRows, visibleRows } from "@/lib/ui/windowing";
 
 /** Up to this many rows render as they are; windowing pays off only for long lists. */
 const ALL = 150;

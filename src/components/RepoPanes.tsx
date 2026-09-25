@@ -3,6 +3,7 @@ import { type ReactNode, useState } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
+import { readJson, stringList, writeJson } from "@/lib/storage";
 
 export interface Pane {
   id: string;
@@ -17,15 +18,6 @@ export interface Pane {
   scrolls?: boolean;
 }
 
-function loadCollapsed(key: string): string[] {
-  try {
-    const v: unknown = JSON.parse(localStorage.getItem(key) ?? "[]");
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
 /**
  * VS Code-style stacked panes, for a fork's own and original lists. Each opens and closes on
  * its own; open ones share the height and resize against each other, and with all closed the
@@ -36,15 +28,12 @@ function loadCollapsed(key: string): string[] {
  */
 export function RepoPanes({ id, panes }: { id: string; panes: Pane[] }) {
   const key = `gitviber.${id}-panes.collapsed`;
-  const [collapsed, setCollapsed] = useState(() => loadCollapsed(key));
+  const [collapsed, setCollapsed] = useState(() => stringList(readJson<unknown>(key, [])));
   const toggle = (pane: string) => {
     const next = collapsed.includes(pane) ? collapsed.filter((p) => p !== pane) : [...collapsed, pane];
     setCollapsed(next);
-    try {
-      localStorage.setItem(key, JSON.stringify(next));
-    } catch {
-      // Remembered for this session only.
-    }
+    // Remembered for this session only when storage fails.
+    writeJson(key, next);
   };
   const open = panes.filter((p) => !collapsed.includes(p.id));
   // The library balances whatever it's given; closed panes stay out of it.

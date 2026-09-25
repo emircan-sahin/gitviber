@@ -1,5 +1,5 @@
 import { CheckCircle2, Info, X, XCircle } from "lucide-react";
-import { dismissToast, holdToast, useToasts } from "@/lib/toast";
+import { dismissToast, holdToast, useToasts } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 
 const ICONS = { error: XCircle, success: CheckCircle2, info: Info };

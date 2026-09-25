@@ -7,8 +7,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { CrashScreen } from "./components/CrashScreen";
-import { installErrorLog, logError } from "./lib/errorLog";
-import { installScrollbars } from "./lib/scrollbars";
+import { installErrorLog, logError } from "./lib/app/errorLog";
+import { installScrollbars } from "./lib/app/scrollbars";
 
 import { Fixture } from "./dev-fixture";
 

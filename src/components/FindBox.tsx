@@ -1,9 +1,9 @@
 import { ArrowDown, ArrowUp, CaseSensitive, Regex, WholeWord, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { IS_MAC } from "@/lib/commands";
-import { useFind } from "@/lib/find";
-import { findMatches, type FindOptions, NO_OPTIONS, optionKey } from "@/lib/findQuery";
-import type { Panel } from "@/lib/panels";
+import { IS_MAC } from "@/lib/platform";
+import { useFind } from "@/lib/ui/find";
+import { findMatches, type FindOptions, NO_OPTIONS, optionKey } from "@/lib/ui/findQuery";
+import type { Panel } from "@/lib/ui/panels";
 import { cn } from "@/lib/utils";
 
 /**

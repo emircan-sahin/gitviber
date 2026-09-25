@@ -1,7 +1,7 @@
 import { Search, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { useFind } from "@/lib/find";
-import { focusPanel, type Panel } from "@/lib/panels";
+import { useFind } from "@/lib/ui/find";
+import { focusPanel, type Panel } from "@/lib/ui/panels";
 
 /**
  * A list's filter: a row like History's search box, which Find (⌘F) opens while focus is in the

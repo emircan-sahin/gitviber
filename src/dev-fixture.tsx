@@ -1,6 +1,6 @@
 // TEMP: renders the code view with a fixed diff so it can be inspected in Safari (same engine).
 import { useState } from "react";
-import { MonacoView } from "./features/MonacoView";
+import { MonacoView } from "./features/viewer/MonacoView";
 import type { DiffPair } from "./lib/api";
 
 const text = Array.from({ length: 300 }, (_, i) => `line ${i + 1}: "value": ${i}`).join("\n") + "\n";
