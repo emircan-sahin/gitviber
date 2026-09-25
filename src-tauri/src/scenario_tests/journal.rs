@@ -145,7 +145,7 @@ fn undo_takes_back_a_pull_but_not_a_pushed_commit() {
     let before = rev(b, "HEAD");
     let j = Journal::default();
     j.record(b, Action::new("Pull", Mode::Keep), |r| {
-        pull(r, PullMode::Ff, &Net::default())
+        pull(r, PullMode::Ff, false, &Net::default())
     })
     .unwrap();
     step(&j, b, false).unwrap();

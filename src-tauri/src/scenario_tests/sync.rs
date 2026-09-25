@@ -15,15 +15,55 @@ fn pull_modes_on_diverged_branches() {
     assert_eq!((st.ahead, st.behind), (1, 1));
 
     // Fast-forward only must refuse, and must not leave an operation behind.
-    assert!(pull(b, PullMode::Ff, &Net::default()).is_err());
+    assert!(pull(b, PullMode::Ff, false, &Net::default()).is_err());
     assert!(operation(b).is_none());
     // A clean merge finishes without stopping.
-    assert!(!pull(b, PullMode::Merge, &Net::default()).unwrap());
+    assert!(!pull(b, PullMode::Merge, false, &Net::default()).unwrap());
     assert_eq!(log(b, None, 0, 1).unwrap()[0].parents.len(), 2);
     assert_eq!(
         fs::read_to_string(b.join("a.txt")).unwrap(),
         "one\ntwo\nthree\nfour\n"
     );
+}
+
+/// Uncommitted changes to a file the pull touches: every mode refuses, in the words gitErrors.ts
+/// keys on, and autostash sets them aside and puts them back. Reapplied onto a conflict, they
+/// stop as conflicts and stay in the stash.
+#[test]
+fn pull_with_autostash_over_uncommitted_changes() {
+    let sb = Sandbox::new("autostash");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    write_commit(a, "a.txt", "one\ntwo\nthree\nfour\n", "a appends");
+    run(a, &["push", "-q"]).unwrap();
+    fs::write(b.join("a.txt"), "zero\none\ntwo\nthree\n").unwrap();
+
+    let refused = pull(b, PullMode::Ff, false, &Net::default()).unwrap_err();
+    assert!(
+        refused.contains("would be overwritten by merge"),
+        "{refused}"
+    );
+    let refused = pull(b, PullMode::Rebase, false, &Net::default()).unwrap_err();
+    assert!(refused.contains("cannot pull with rebase"), "{refused}");
+
+    assert!(!pull(b, PullMode::Ff, true, &Net::default()).unwrap());
+    assert_eq!(
+        fs::read_to_string(b.join("a.txt")).unwrap(),
+        "zero\none\ntwo\nthree\nfour\n"
+    );
+    assert!(stashes(b).unwrap().is_empty());
+
+    write_commit(
+        a,
+        "a.txt",
+        "one\ntwo\nthree\nfour\nfive\n",
+        "a appends again",
+    );
+    run(a, &["push", "-q"]).unwrap();
+    fs::write(b.join("a.txt"), "zero\none\ntwo\nthree\nfour\nmine\n").unwrap();
+    assert!(pull(b, PullMode::Rebase, true, &Net::default()).unwrap());
+    assert_eq!(status(b).unwrap().conflicted.len(), 1);
+    assert_eq!(stashes(b).unwrap().len(), 1);
 }
 
 /// After an amend the plain push is rejected as non-fast-forward (the UI keys on those words);

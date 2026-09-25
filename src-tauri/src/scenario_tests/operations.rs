@@ -13,7 +13,7 @@ fn pull_rebase_conflict_then_abort_restores() {
     let before = log(b, None, 0, 1).unwrap()[0].sha.clone();
 
     assert!(
-        pull(b, PullMode::Rebase, &Net::default()).unwrap(),
+        pull(b, PullMode::Rebase, false, &Net::default()).unwrap(),
         "should stop on the conflict"
     );
     assert_eq!(operation(b).unwrap().kind, "rebase");

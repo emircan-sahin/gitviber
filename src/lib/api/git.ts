@@ -132,7 +132,8 @@ export const api = {
    */
   push: (force = false, remote?: string, op?: NetOp, tags = false) => network<void>("push", { force, remote, tags }, op),
   // The boolean results mean "stopped on conflicts".
-  pull: (mode: PullMode, op?: NetOp) => network<boolean>("pull", { mode }, op),
+  /** `autostash`: uncommitted changes in the way are stashed first and reapplied after. */
+  pull: (mode: PullMode, op?: NetOp, autostash = false) => network<boolean>("pull", { mode, autostash }, op),
   /** `how`: fast-forward when possible, always a merge commit, or the branch's changes as one commit. */
   merge: (name: string, how: "ff" | "no-ff" | "squash" = "ff") => invoke<boolean>("merge", { name, how }),
   rebase: (onto: string) => invoke<boolean>("rebase", { onto }),
