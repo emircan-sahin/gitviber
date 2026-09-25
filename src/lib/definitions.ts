@@ -17,7 +17,11 @@ const sides = new WeakMap<monaco.editor.ITextModel, () => LinkSide | null>();
 
 /** Go to Definition and References in `editor`, for whatever it shows; `side`: where that is (null: nowhere to go). */
 export function followDefinitions(editor: monaco.editor.ICodeEditor, side: () => LinkSide | null): monaco.IDisposable {
-  const track = () => {
+  // A model outlives the view (lib/monaco keeps it): its entry goes when it leaves this editor,
+  // or it would keep the view's closure alive.
+  const untrack = (model: monaco.editor.ITextModel | null) => model && sides.get(model) === side && sides.delete(model);
+  const track = (e?: monaco.editor.IModelChangedEvent) => {
+    if (e?.oldModelUrl) untrack(monaco.editor.getModel(e.oldModelUrl));
     const model = editor.getModel();
     if (model) sides.set(model, side);
   };
@@ -34,7 +38,12 @@ export function followDefinitions(editor: monaco.editor.ICodeEditor, side: () =>
       editor.trigger("keyboard", ACTIONS[command], null);
     }),
   ];
-  return { dispose: () => subs.forEach((s) => s.dispose()) };
+  return {
+    dispose: () => {
+      subs.forEach((s) => s.dispose());
+      untrack(editor.getModel());
+    },
+  };
 }
 
 const ACTIONS = {

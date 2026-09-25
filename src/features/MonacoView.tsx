@@ -11,7 +11,7 @@ import { followDefinitions } from "@/lib/definitions";
 import { followLineActions } from "@/lib/lineActions";
 import { followReviewThreads, type Review } from "./ReviewThreads";
 import { type LinkSide, onReveal as onLinkReveal, takeReveal as takeLinkReveal } from "@/lib/linkHost";
-import { colorThrough, createModels, monaco, prepare, redrawWhenColored } from "@/lib/monaco";
+import { colorThrough, createModels, monaco, prepare, redrawWhenColored, releaseModels } from "@/lib/monaco";
 import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
 import { relativeTime } from "@/lib/utils";
 
@@ -45,10 +45,16 @@ interface Props {
 }
 
 type Editor = monaco.editor.IStandaloneDiffEditor | monaco.editor.IStandaloneCodeEditor;
+type FindState = { searchString: string; replaceString: string; isReplaceRevealed: boolean; searchScope: null };
+type FindController = { closeFindWidget(): void; getState(): { change(state: FindState, moveCursor: boolean, updateHistory: boolean): void } };
 const isDiff = (e: Editor): e is monaco.editor.IStandaloneDiffEditor => "getLineChanges" in e;
 
 // Where each file was left, for the life of the app (tab switches included).
 const viewStates = new Map<string, monaco.editor.IDiffEditorViewState | monaco.editor.ICodeEditorViewState>();
+// An idle editor of each kind, empty and detached, for the next view to take. Every tab switch
+// remounts the view, and each disposed editor left its DOM to a garbage collection WebKit puts off
+// until the page nears 1 GB: opening and closing files kept adding 50-100 MB.
+const parked: Record<"diff" | "file", { e: Editor; box: HTMLDivElement } | null> = { diff: null, file: null };
 // How long a new file waits for its diff before showing, so deleted lines are there from the first
 // paint instead of pushing the text down a moment later. git's diff is ready at once; this bounds
 // the fallback, Monaco computing one itself.
@@ -114,7 +120,15 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   const viewModel = useRef<monaco.editor.IDiffEditorViewModel | null>(null);
   useEffect(() => {
     const el = host.current!;
-    const e = diff ? monaco.editor.createDiffEditor(el, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(el, fileOptions(s, wrap, blameColumn));
+    const kind = diff ? "diff" : "file";
+    const reused = parked[kind];
+    parked[kind] = null;
+    const box = reused?.box ?? document.createElement("div");
+    box.style.cssText = "width:100%;height:100%";
+    el.appendChild(box);
+    const e = reused?.e ?? (diff ? monaco.editor.createDiffEditor(box, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(box, fileOptions(s, wrap, blameColumn)));
+    // Detached, it was laid out at 0x0: measure now, before a file is scrolled into place.
+    if (reused) e.layout();
     editor.current = e;
     live = e;
     // A click on a blame entry shows its commit.
@@ -150,11 +164,20 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       if (shown.current) viewStates.set(shown.current, e.saveViewState()!);
       shown.current = null;
       const models = modelsOf(e);
-      e.dispose();
+      // A fresh view opens with Find closed and empty; Monaco would reopen it on the next model.
+      for (const code of isDiff(e) ? [e.getOriginalEditor(), e.getModifiedEditor()] : [e]) {
+        const find = code.getContribution("editor.contrib.findController") as FindController | null;
+        find?.closeFindWidget();
+        find?.getState().change({ searchString: "", replaceString: "", isReplaceRevealed: false, searchScope: null }, false, false);
+      }
+      e.setModel(null);
       // A view model handed to setModel stays ours to dispose.
       viewModel.current?.dispose();
       viewModel.current = null;
-      models.forEach((m) => m.dispose());
+      releaseModels(models);
+      box.remove();
+      if (parked[kind]) e.dispose();
+      else parked[kind] = { e, box };
       editor.current = null;
       if (live === e) live = null;
     };
@@ -259,7 +282,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       // A staged diff or a commit shows another version: its line numbers aren't the file's.
       if (onDisk) onShow = shows;
       unit.current = created.unit;
-      old.forEach((m) => m.dispose());
+      releaseModels(old);
       shown.current = scrollKey;
       shownPair.current = { pair, path };
       threads.current?.update();
@@ -287,7 +310,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       revealing.current = null;
       stopRedraw();
       if (onShow === shows) onShow = null;
-      if (!onScreen) return models.forEach((m) => m.dispose());
+      if (!onScreen) return releaseModels(models);
       // Still on the editor (not disposed with it): remember where it was left.
       if (editor.current === e) viewStates.set(scrollKey, e.saveViewState()!);
     };
@@ -414,6 +437,8 @@ function markFindMatches(e: monaco.editor.IStandaloneDiffEditor, host: HTMLEleme
       cancelAnimationFrame(frame);
       subs.forEach((s) => s.dispose());
       canvas.remove();
+      // WebKit frees the backing store only once the canvas is collected, which it puts off.
+      canvas.width = canvas.height = 0;
     },
   };
 }

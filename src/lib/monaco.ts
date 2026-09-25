@@ -140,12 +140,69 @@ const monacoLanguage = (lang: string) => (lang === "text" ? "plaintext" : lang);
  * named by their paths. `unit`: spaces per indentation level turned into tabs for display (see
  * lib/indent), or 0.
  */
-export function createModels(lang: string, path: string, modifiedText: string, original: { path: string; text: string; rows: DiffRow[] } | null) {
+export function createModels(lang: string, path: string, modifiedText: string, original: OldSide | null) {
+  const i = kept.findIndex(
+    (k) =>
+      k.lang === lang &&
+      k.path === path &&
+      k.text === modifiedText &&
+      (k.original === original || (!!k.original && !!original && k.original.path === original.path && k.original.text === original.text && sameRows(k.original.rows, original.rows))),
+  );
+  if (i >= 0) return kept.splice(i, 1)[0].models;
   const unit = indentUnit(modifiedText, original?.text);
   const modified = createModel(modifiedText, lang, unit, viewUri(path));
   const old = original && createModel(original.text, lang, unit, viewUri(original.path));
   if (original) gitDiffs.set(modified, gitDiff(original.rows, original.text, modifiedText, unit));
-  return { modified, original: old, unit };
+  const models = { modified, original: old, unit };
+  keptBy.set(modified, { lang, path, text: modifiedText, original, models, generation });
+  return models;
+}
+
+const sameRows = (a: DiffRow[], b: DiffRow[]) =>
+  a === b || (a.length === b.length && a.every((r, i) => r.k === b[i].k && r.o === b[i].o && r.n === b[i].n && String(r.e) === String(b[i].e)));
+
+type OldSide = { path: string; text: string; rows: DiffRow[] };
+interface Kept {
+  lang: string;
+  path: string;
+  text: string;
+  original: OldSide | null;
+  models: { modified: monaco.editor.ITextModel; original: monaco.editor.ITextModel | null; unit: number };
+  generation: number;
+}
+// Models of files shown lately, for the same text's next show (as VS Code keeps an open editor's):
+// a tab switch remounts the view, and new models each time left hundreds of MB of garbage that
+// WebKit collects late. Bounded by count and by text; the newest always stays.
+const kept: Kept[] = [];
+const keptBy = new WeakMap<monaco.editor.ITextModel, Kept>();
+const KEPT = 8;
+const KEPT_CHARS = 4_000_000;
+const keptChars = (k: Kept) => k.text.length + (k.original?.text.length ?? 0);
+// Bumped on a repo switch: the old repo's views release their models only after it.
+let generation = 0;
+
+/** For a repo switch: the kept files were the other repo's. */
+export function resetModels() {
+  generation++;
+  for (const k of kept.splice(0)) {
+    k.models.modified.dispose();
+    k.models.original?.dispose();
+  }
+}
+
+/** Done showing `models` (a file's, from createModels): kept for its next show, the oldest disposed. */
+export function releaseModels(models: monaco.editor.ITextModel[]) {
+  const k = models.map((m) => keptBy.get(m)).find((x) => x);
+  if (!k || k.generation !== generation) return models.forEach((m) => m.dispose());
+  if (kept.includes(k) || k.models.modified.isDisposed()) return;
+  kept.push(k);
+  let chars = kept.reduce((n, x) => n + keptChars(x), 0);
+  while (kept.length > KEPT || (kept.length > 1 && chars > KEPT_CHARS)) {
+    const old = kept.shift()!;
+    chars -= keptChars(old);
+    old.models.modified.dispose();
+    old.models.original?.dispose();
+  }
 }
 
 /** A file Go to Definition shows in its peek or hover, widened as the code view would. */
