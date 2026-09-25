@@ -1,11 +1,12 @@
 import { Fragment, useEffect } from "react";
-import { bindingsFor, chordKeys, COMMANDS, commandFor, type Overrides } from "@/lib/commands/commands";
+import { bindingsFor, COMMANDS, commandFor, type Overrides } from "@/lib/commands/commands";
 import { IS_MAC } from "@/lib/platform";
 import { canRun, eventChord, matchesCommand, runsAt, useCommands } from "@/lib/commands/keybindings";
 import { focusedPanel, type Panel } from "@/lib/ui/panels";
 import { pointerMoved } from "@/lib/ui/pointer";
 import { getSettings, useSettings } from "@/lib/settings";
 import { createStore } from "@/lib/store";
+import { Keycaps } from "@/components/ui/kbd";
 
 /**
  * Hold ⌘ by itself for a moment and every shortcut shows over the app, until ⌘ is released.
@@ -208,21 +209,5 @@ export function ShortcutOverlay() {
         </div>
       </div>
     </div>
-  );
-}
-
-/** One keycap per key, in the system font, whose ⌘ ⇧ ⌥ ⌃ glyphs read at this size where a monospace font's run together. */
-function Keycaps({ chord }: { chord: string }) {
-  return (
-    <span className="flex gap-[3px]">
-      {chordKeys(chord).map((k, i) => (
-        <kbd
-          key={i}
-          className="flex h-[19px] min-w-[19px] items-center justify-center rounded-[4px] border border-b-2 border-border-strong bg-background px-1 [font-family:system-ui] text-[11.5px] leading-none font-medium text-foreground"
-        >
-          {k}
-        </kbd>
-      ))}
-    </span>
   );
 }

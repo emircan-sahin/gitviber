@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
 import { Input } from "@/components/ui/input";
-import { bindingsFor, type CommandId, formatChord } from "@/lib/commands/commands";
+import { bindingsFor, type CommandId } from "@/lib/commands/commands";
 import { cleanFontName, useSettings } from "@/lib/settings";
 import { Select } from "@/components/ui/select";
-import { Kbd } from "@/components/ui/kbd";
+import { Keycaps } from "@/components/ui/kbd";
 
 export function Field({ label, hint, commands, children }: { label: string; hint?: React.ReactNode; commands?: CommandId[]; children: React.ReactNode }) {
   const { keybindings } = useSettings();
@@ -14,9 +14,9 @@ export function Field({ label, hint, commands, children }: { label: string; hint
         <div className="text-[12.5px] font-medium">{label}</div>
         {hint && <div className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">{hint}</div>}
         {keys.length > 0 && (
-          <div className="mt-1.5 flex gap-1">
+          <div className="mt-1.5 flex gap-2">
             {keys.map((k) => (
-              <Kbd key={k}>{formatChord(k)}</Kbd>
+              <Keycaps key={k} chord={k} />
             ))}
           </div>
         )}

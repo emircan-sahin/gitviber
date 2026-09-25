@@ -8,7 +8,7 @@ import { IS_MAC } from "@/lib/platform";
 import { updateSettings, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
-import { Kbd } from "@/components/ui/kbd";
+import { Keycaps } from "@/components/ui/kbd";
 import { Field } from "@/features/settings/controls";
 
 export type Recording = { id: CommandId; index: number } | null;
@@ -94,7 +94,7 @@ export function ShortcutsSection({ recording, setRecording }: { recording: Recor
               )}
               <div className="flex shrink-0 items-center gap-1">
                 {keys.map((k, i) => (
-                  <Recorder key={k} label={<Kbd>{formatChord(k)}</Kbd>} title="Change this key" {...record(i)} />
+                  <Recorder key={k} label={<Keycaps chord={k} />} title="Change this key" {...record(i)} />
                 ))}
                 <Recorder
                   label={keys.length ? <Plus className="size-3.5" /> : <span className="text-[11.5px] text-subtle">Unbound</span>}
