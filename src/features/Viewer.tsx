@@ -7,6 +7,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type FileChange, type RepoStatus, type Whitespace } from "@/lib/api";
 import { resetDefinitions } from "@/lib/definitions";
 import { type LinkSide, resetLinks } from "@/lib/linkHost";
+import { resetModels } from "@/lib/monaco";
 import { withNetActivity } from "@/lib/netActivity";
 import { onReveal, revealWaits } from "@/lib/reveal";
 import { type Selection, selectionPath } from "@/lib/selection";
@@ -324,7 +325,8 @@ function pairArgs(sel: FileSelection, revision: number, whitespace: Whitespace |
   const base = sel.kind === "pr-file" ? sel.range.base : null;
   // Commits and PR ranges never change, so only working-tree views follow the revision counter.
   const rev = sel.kind === "commit" || sel.kind === "pr-file" ? 0 : revision;
-  return { kind, path, oldPath, sha, base, whitespace, key: `${kind}\0${path}\0${oldPath}\0${sha}\0${base}\0${rev}\0${whitespace}` };
+  const id = `${kind}\0${path}\0${oldPath}\0${sha}\0${base}\0${whitespace}`;
+  return { kind, path, oldPath, sha, base, whitespace, id, rev, key: `${id}\0${rev}` };
 }
 
 /**
@@ -339,33 +341,44 @@ function linkSides(sel: FileSelection, revision: number): { original: LinkSide |
   return { original: { path: sel.file.oldPath ?? path, tree: { rev: before, revision } }, modified: { path, tree: { rev: after, revision } } };
 }
 
-// Recently loaded/prefetched diffs; the key includes the revision, so stale entries never match.
-// Revisions restart per repo, so the cache is per repo too: `generation` changes on switch and
-// responses still in flight from the previous repo are dropped.
-const pairCache = new Map<string, DiffPair>();
+// Recent diffs, one per view of a file (`id`) at the revision it was read at: keyed by revision,
+// every change an agent made kept another copy. Per repo: `generation` changes on a switch, and
+// replies still in flight from the previous repo are dropped.
+const pairCache = new Map<string, { rev: number; pair: DiffPair }>();
+const cachedPair = (id: string, rev: number) => {
+  const hit = pairCache.get(id);
+  return hit?.rev === rev ? hit.pair : undefined;
+};
 let generation = 0;
 export function resetPairCache() {
   pairCache.clear();
   blames.clear();
   resetLinks();
   resetDefinitions();
+  resetModels();
   generation++;
 }
-function remember(key: string, pair: DiffPair, gen: number) {
-  if (gen !== generation) return;
-  pairCache.set(key, pair);
+function remember(id: string, rev: number, pair: DiffPair, gen: number) {
+  const had = pairCache.get(id);
+  // A late reply for an older revision doesn't replace a newer one.
+  if (gen !== generation || (had && had.rev > rev)) return pair;
+  // The same diff read again keeps the copy already here: the code view's kept models match it by identity.
+  const same = had && samePair(had.pair, pair) ? had.pair : pair;
+  pairCache.delete(id);
+  pairCache.set(id, { rev, pair: same });
   if (pairCache.size > 32) pairCache.delete(pairCache.keys().next().value!);
+  return same;
 }
 
 /** Loads a diff in the background, so opening it next is instant. */
 export function prefetchSelection(sel: Selection, revision: number) {
   if (sel.kind === "pull" || sel.kind === "issue") return;
-  const { kind, path, oldPath, sha, base, whitespace, key } = pairArgs(sel, revision, diffWhitespace(getSettings()));
-  if (pairCache.has(key)) return;
+  const { kind, path, oldPath, sha, base, whitespace, id, rev } = pairArgs(sel, revision, diffWhitespace(getSettings()));
+  if (cachedPair(id, rev)) return;
   const gen = generation;
   api
     .diffPair(kind, path, oldPath, sha, base, whitespace)
-    .then((p) => remember(key, p, gen))
+    .then((p) => remember(id, rev, p, gen))
     .catch(() => {});
 }
 
@@ -380,14 +393,14 @@ const sameRows = (a: DiffRow[], b: DiffRow[]) =>
   a.length === b.length && a.every((r, i) => r.k === b[i].k && r.o === b[i].o && r.n === b[i].n && String(r.e) === String(b[i].e));
 
 function usePair(sel: FileSelection, revision: number, ws: Whitespace | null) {
-  const { kind, path, oldPath, sha, base, whitespace, key } = pairArgs(sel, revision, ws);
-  const [pair, setPair] = useState<DiffPair | null>(() => pairCache.get(key) ?? null);
+  const { kind, path, oldPath, sha, base, whitespace, id, rev, key } = pairArgs(sel, revision, ws);
+  const [pair, setPair] = useState<DiffPair | null>(() => cachedPair(id, rev) ?? null);
   const [error, setError] = useState<string | null>(null);
   const latest = useRef(0);
   const applied = useRef(0);
 
   useEffect(() => {
-    const hit = pairCache.get(key);
+    const hit = cachedPair(id, rev);
     if (hit) {
       // Counts as the newest reply: one still in flight for another key (the other whitespace
       // setting, say) must not replace it when it lands.
@@ -403,10 +416,10 @@ function usePair(sel: FileSelection, revision: number, ws: Whitespace | null) {
     api
       .diffPair(kind, path, oldPath, sha, base, whitespace)
       .then((p) => {
-        remember(key, p, gen);
+        const q = remember(id, rev, p, gen);
         if (seq > applied.current) {
           applied.current = seq;
-          setPair((prev) => (samePair(prev, p) ? prev : p));
+          setPair((prev) => (samePair(prev, q) ? prev : q));
           setError(null);
         }
       })

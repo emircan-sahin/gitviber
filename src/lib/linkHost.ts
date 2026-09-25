@@ -53,6 +53,9 @@ const NO_FILES = indexFiles([]);
 /** A tree's files. A failure (a PR head not fetched yet) isn't kept: the next hover asks again. */
 function indexOf(tree: LinkTree) {
   const key = tree.rev ?? `worktree@${tree.revision}`;
+  // The working tree's list at an older revision is out of date, and one full copy of every path
+  // piled up per change while an agent wrote files. Only older ones go: a late ask can't evict a newer.
+  if (!tree.rev) for (const k of indexes.keys()) if (k.startsWith("worktree@") && Number(k.slice(9)) < tree.revision) indexes.delete(k);
   const loading = cached(indexes, key, () => (tree.rev ? api.treePaths(tree.rev) : api.listFiles()).then(indexFiles));
   return loading.catch(() => {
     if (indexes.get(key) === loading) indexes.delete(key);
