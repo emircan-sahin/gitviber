@@ -20,3 +20,9 @@ export function network<T>(cmd: string, args: Record<string, unknown>, op = netO
 
 /** Stops a network command; its call then rejects with CANCELLED. */
 export const cancelNetwork = (op: NetOp) => invoke<void>("cancel_network", { op: op.id });
+
+/** A background command's prompts are declined unseen: a dialog nobody asked for would be a surprise. */
+export const isBackgroundOp = (id: string | null) => [...running].some((o) => o.id === id && o.background);
+
+/** Answers a git or ssh prompt; null is Cancel. The answer goes to git once and is kept nowhere. */
+export const answerPrompt = (id: number, answer: string | null) => invoke<void>("askpass_answer", { id, answer });

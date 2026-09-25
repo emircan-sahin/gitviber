@@ -381,4 +381,17 @@ export interface NetOp {
   background?: boolean;
 }
 
+/** Something git or ssh asks during a network command: a password, a passphrase, a new host's key (askpass.rs). */
+export interface AskPrompt {
+  id: number;
+  /** git's or ssh's own words, e.g. "Password for 'https://me@github.com': ". */
+  text: string;
+  /** ssh's SSH_ASKPASS_PROMPT: "confirm" (yes/no) or "none" (a notice ssh closes itself). */
+  kind: string | null;
+  /** The command asking, e.g. "git push". */
+  label: string;
+  /** The NetOp id of that command. */
+  op: string | null;
+}
+
 export type ResetMode = "soft" | "mixed" | "hard";
