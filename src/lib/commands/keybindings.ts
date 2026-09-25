@@ -125,7 +125,7 @@ function dispatch(e: KeyboardEvent) {
   e.preventDefault();
   // Keep it from Monaco too, which would take F7 for its own diff navigation and ⌘Z as undo.
   e.stopPropagation();
-  run();
+  if (!(e.repeat && "noRepeat" in found.command)) run();
 }
 
 // Clicking into the code view focuses Monaco's text area, which sees keys before the window does:
