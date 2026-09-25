@@ -3,7 +3,7 @@ import { GitMerge } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, type RepoStatus } from "@/lib/api";
-import { gitFailed } from "@/hooks/useGitAction";
+import { gitFailed } from "@/lib/app/gitFailed";
 import { toast } from "@/lib/app/toast";
 import { tracked, undoAction } from "@/lib/repo/undo";
 import { plural } from "@/lib/format";

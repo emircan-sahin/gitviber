@@ -66,6 +66,34 @@ fn pull_with_autostash_over_uncommitted_changes() {
     assert_eq!(stashes(b).unwrap().len(), 1);
 }
 
+/// A merge pull that stops on conflicts holds the autostashed changes (MERGE_AUTOSTASH) out of
+/// the worktree, not in Stashes; the banner's Continue (`commit --no-edit`) brings them back.
+#[test]
+fn autostash_waits_out_a_conflicted_merge_pull() {
+    let sb = Sandbox::new("mergeautostash");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    write_commit(a, "a.txt", "a\n", "a edits");
+    run(a, &["push", "-q"]).unwrap();
+    write_commit(b, "a.txt", "b\n", "b edits");
+    write_commit(b, "notes.txt", "kept\n", "notes");
+    fs::write(b.join("notes.txt"), "uncommitted\n").unwrap();
+
+    assert!(pull(b, PullMode::Merge, true, &Net::default()).unwrap());
+    assert_eq!(operation(b).unwrap().kind, "merge");
+    assert_eq!(fs::read_to_string(b.join("notes.txt")).unwrap(), "kept\n");
+    assert!(stashes(b).unwrap().is_empty());
+
+    fs::write(b.join("a.txt"), "a and b\n").unwrap();
+    stage(b, &["a.txt".into()]).unwrap();
+    assert!(!op_continue(b).unwrap());
+    assert!(operation(b).is_none());
+    assert_eq!(
+        fs::read_to_string(b.join("notes.txt")).unwrap(),
+        "uncommitted\n"
+    );
+}
+
 /// After an amend the plain push is rejected as non-fast-forward (the UI keys on those words);
 /// the lease push replaces the old commit, but not over someone else's unfetched push.
 #[test]

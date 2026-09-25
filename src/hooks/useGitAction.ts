@@ -1,34 +1,19 @@
-import { useState } from "react";
-import { api, CANCELLED, errorMessage, github, type NetOp, type PullMode } from "@/lib/api";
-import { askForIdentity } from "@/lib/app/identity";
-import { explainedError, failed, toast, type ToastAction } from "@/lib/app/toast";
-import { explainGitError, type GitFix, SIGNING_HELP } from "@/lib/git/gitErrors";
+import { useEffect, useRef, useState } from "react";
+import { CANCELLED, type NetOp } from "@/lib/api";
+import { gitFailed, type GitFixes } from "@/lib/app/gitFailed";
+import { toast } from "@/lib/app/toast";
 import { withNetActivity } from "@/lib/repo/netActivity";
 import { tracked, undoAction } from "@/lib/repo/undo";
 
+/** What only this call knows: the ways out of its failures, and what to say if it stops on conflicts. */
+export interface RunExtras {
+  fixes?: GitFixes;
+  conflicts?: string;
+}
+
 /** Runs one action; resolves true when it went through. `done`: the success toast, none without it. */
 export type GitRun = (label: string, fn: () => Promise<unknown>, done?: string, detail?: string) => Promise<boolean>;
-/** `autostash`: true when retried from the toast of a pull that uncommitted changes were in the way of. */
-export type NetRun = (label: string, fn: (op: NetOp, autostash: boolean) => Promise<unknown>, done?: string) => Promise<boolean>;
-
-type Fixes = Partial<Record<GitFix, ToastAction[]>>;
-
-const ALWAYS: Fixes = {
-  identity: [{ label: "Set name and email", run: askForIdentity }],
-  signing: [{ label: "Signing guide", run: () => void github.openUrl(SIGNING_HELP).catch(failed("Could not open the link")) }],
-};
-
-/**
- * The error toast for a failed git action: git's own words, or for a failure gitErrors knows,
- * what it means and the way out, with git's words under Details. `fixes`: the ways out only
- * the caller can take (a pull, a retry).
- */
-export function gitFailed(title: string, e: unknown, fixes: Fixes = {}) {
-  const message = errorMessage(e);
-  const help = explainGitError(message);
-  if (!help) return toast("error", title, message);
-  explainedError(help.title, help.explanation, message, (help.fix && { ...ALWAYS, ...fixes }[help.fix]) || []);
-}
+export type NetRun = (label: string, fn: (op: NetOp) => Promise<unknown>, done?: string, extras?: RunExtras) => Promise<boolean>;
 
 interface Options {
   /** Re-reads the repo: after every action, gone through or not, and after an undo from its toast. */
@@ -47,25 +32,44 @@ interface Options {
  */
 export function useGitAction({ refresh, onDone, tracked: undoable = true, conflicts = "Resolve them in Changes, then continue." }: Options = {}) {
   const [busy, setBusy] = useState<string | null>(null);
+  const running = useRef<string | null>(null);
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => void (mounted.current = false);
+  }, []);
 
-  const attempt = async (label: string, fn: () => Promise<unknown>, done?: string, detail?: string, autostash?: () => unknown) => {
-    setBusy(label);
+  // An error toast stays until dismissed, so its buttons can be pressed while another action
+  // runs, or after another repo opened (this view is gone with its repo).
+  const guarded = (fixes: GitFixes = {}): GitFixes =>
+    Object.fromEntries(
+      Object.entries(fixes).map(([fix, actions]) => [
+        fix,
+        actions?.map((a) => ({
+          ...a,
+          run: () => {
+            if (!mounted.current) toast("info", `${a.label} not run`, "It was for the repository open before this one.");
+            else if (running.current) toast("info", `${a.label} not run`, `Wait for ${running.current} to finish.`);
+            else a.run();
+          },
+        })),
+      ]),
+    );
+
+  const attempt = async (label: string, fn: () => Promise<unknown>, done?: string, detail?: string, extras: RunExtras = {}) => {
+    setBusy((running.current = label));
     try {
       const [stopped, entry] = undoable ? await tracked(fn) : [await fn(), null];
-      if (stopped === true) toast("info", `${label} stopped on conflicts`, conflicts);
+      if (stopped === true) toast("info", `${label} stopped on conflicts`, extras.conflicts ?? conflicts);
       else if (done) toast("success", done, detail, undoAction(entry, refresh ?? (() => {})));
       await onDone?.();
       return true;
     } catch (e) {
       if (e === CANCELLED) toast("info", `${label} cancelled`);
-      else
-        gitFailed(`${label} failed`, e, {
-          pull: [pullAction("merge"), pullAction("rebase")],
-          autostash: autostash && [{ label: "Retry with autostash", run: autostash }],
-        });
+      else gitFailed(`${label} failed`, e, guarded(extras.fixes));
       return false;
     } finally {
-      setBusy(null);
+      setBusy((running.current = null));
       await refresh?.();
     }
   };
@@ -73,11 +77,7 @@ export function useGitAction({ refresh, onDone, tracked: undoable = true, confli
   const run: GitRun = (label, fn, done, detail) => attempt(label, fn, done, detail);
 
   /** Fetch, pull and push: git's progress shows in the top bar, and Cancel stops it. */
-  const runNet: NetRun = (label, fn, done) =>
-    attempt(label, () => withNetActivity(label, (op) => fn(op, false)), done, undefined, () => runNet(label, (op) => fn(op, true), done));
+  const runNet: NetRun = (label, fn, done, extras) => attempt(label, () => withNetActivity(label, fn), done, undefined, extras);
 
-  const pull = (mode: PullMode) => runNet("Pull", (op, autostash) => api.pull(mode, op, autostash), mode === "ff" ? "Pulled" : `Pulled (${mode})`);
-  const pullAction = (mode: "merge" | "rebase"): ToastAction => ({ label: `Pull (${mode})`, run: () => pull(mode) });
-
-  return { busy, run, runNet, pull };
+  return { busy, run, runNet };
 }

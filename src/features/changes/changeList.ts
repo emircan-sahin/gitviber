@@ -1,5 +1,5 @@
 import type { FileChange, RepoStatus } from "@/lib/api";
-import { gitFailed } from "@/hooks/useGitAction";
+import { gitFailed } from "@/lib/app/gitFailed";
 import type { Selection } from "@/lib/repo/selection";
 import type { RepoData } from "@/lib/repo/useRepo";
 

@@ -85,7 +85,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const terminalOpen = useTerminals().open;
   const fullscreen = useFullscreen();
 
-  const { busy, run, runNet, pull, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
+  const { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
 
   const activity = busy ?? net?.label;
   const progress = net?.progress ? `${net.progress.phase}${net.progress.percent !== null ? ` ${net.progress.percent}%` : ""}` : "";
@@ -96,7 +96,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     "git.pull": busy || !status?.upstream ? undefined : () => pull("ff"),
     // With no upstream yet, pushing is publishing, where Publish would without asking.
     "git.push": busy ? undefined : status?.upstream ? () => push() : publishTo ? () => publish(publishTo) : undefined,
-    "git.sync": busy || !status?.upstream ? undefined : () => runNet("Sync", async (op, autostash) => (await api.pull("ff", op, autostash)) || api.push(false, undefined, op), "Synced"),
+    "git.sync": busy || !status?.upstream ? undefined : () => sync(),
     "git.newBranch": () => setBranchDialog({ kind: "new", base: status?.branch ? `refs/heads/${status.branch}` : "HEAD" }),
     "git.newWorktree": () => openWorktreeDialog({ kind: "new" }),
   });
