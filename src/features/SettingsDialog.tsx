@@ -1,4 +1,4 @@
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask, open } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, Code2, GitBranch, GitCompareArrows, Keyboard, Palette, Pencil, Plus, RotateCcw, Search, Sparkles, SquareArrowOutUpRight, Trash2, TriangleAlert, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
@@ -309,9 +309,41 @@ function GitSection() {
       <Field label="Notify when done in the background" hint="A desktop notification when a push, pull, fetch or clone ends while GitViber isn't the app in front. Turning it on asks your OS for permission.">
         <Switch checked={s.notify} onChange={(v) => void enableNotifications(v)} />
       </Field>
+      <WorktreeRootField />
       <RepoIdentityField />
       <RemotesField />
     </>
+  );
+}
+
+/** Off by default: worktrees stay in `<project>.worktrees` beside the project. */
+function WorktreeRootField() {
+  const { worktreeRoot } = useSettings();
+  // Turning it on is picking the folder; a cancelled picker leaves it as it was.
+  const choose = async () => {
+    const picked = await open({ directory: true, defaultPath: worktreeRoot ?? undefined, title: "Folder for all worktrees" });
+    if (typeof picked === "string") updateSettings({ worktreeRoot: picked });
+  };
+  return (
+    <Field
+      label="One folder for all worktrees"
+      hint="New worktrees go in a subfolder named after the project, instead of a .worktrees folder beside each project. A folder picked for a project when making a worktree still comes first."
+    >
+      <div className="flex items-center gap-2">
+        {worktreeRoot && (
+          <>
+            {/* The end of the path is what tells folders apart; see the New worktree dialog. */}
+            <span dir="rtl" className="max-w-44 truncate text-left font-mono text-[11px] text-muted-foreground" title={worktreeRoot}>
+              {`\u200e${worktreeRoot}\u200e`}
+            </span>
+            <Button type="button" variant="outline" size="sm" onClick={() => void choose()}>
+              Change…
+            </Button>
+          </>
+        )}
+        <Switch checked={!!worktreeRoot} onChange={(v) => (v ? void choose() : updateSettings({ worktreeRoot: null }))} />
+      </div>
+    </Field>
   );
 }
 

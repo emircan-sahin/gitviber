@@ -8,6 +8,12 @@ export const folderName = (path: string) => {
   return path.replace(new RegExp(`${sep.source}+$`), "").split(sep).pop() ?? path;
 };
 
+/** `name` inside the folder `dir`, joined with the separator `dir` already uses. */
+export const joinPath = (dir: string, name: string) => {
+  const sep = separator(dir);
+  return `${dir.replace(new RegExp(`${sep.source}+$`), "")}${sep.test("\\") && dir.includes("\\") ? "\\" : "/"}${name}`;
+};
+
 /** `path` is somewhere inside the folder `dir`. */
 export const isInside = (path: string, dir: string) => path.startsWith(dir) && separator(dir).test(path.charAt(dir.length));
 

@@ -1,4 +1,6 @@
 import { type Selection, selectionKey } from "./selection";
+import { getSettings } from "./settings";
+import { folderName, joinPath } from "./worktrees";
 
 /** What a worktree's window looked like, so reopening the app picks up where it was. */
 export interface WorkspaceSnapshot {
@@ -100,3 +102,12 @@ export function loadWorktreeDir(main: string): string | null {
 export function saveWorktreeDir(main: string, dir: string | null) {
   put(WORKTREE_DIRS_KEY, main, dir);
 }
+
+/** The project's own subfolder of the worktree folder set in Settings, or null while that's off. */
+export function sharedWorktreeDir(main: string): string | null {
+  const root = getSettings().worktreeRoot;
+  return root ? joinPath(root, folderName(main)) : null;
+}
+
+/** Where `main`'s next worktree goes; null is `<project>.worktrees` beside it. */
+export const worktreeDir = (main: string) => loadWorktreeDir(main) ?? sharedWorktreeDir(main);

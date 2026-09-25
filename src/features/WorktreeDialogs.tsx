@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { api, type Branch, github, type NetOp, type Target, type Worktree } from "@/lib/api";
-import { loadWorktreeDir, moveRoot, saveWorktreeDir } from "@/lib/session";
+import { loadWorktreeDir, moveRoot, saveWorktreeDir, sharedWorktreeDir } from "@/lib/session";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminals";
 import { folderName, shortPath } from "@/lib/worktrees";
 import { BaseSelect } from "./BranchDialogs";
@@ -87,7 +87,8 @@ export function WorktreeDialogs(props: Props) {
 }
 
 function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen }: { base?: string; pull?: PullSource } & Inner) {
-  const fallback = `${parentOf(main)}${folderName(main)}.worktrees`;
+  const beside = `${parentOf(main)}${folderName(main)}.worktrees`;
+  const fallback = sharedWorktreeDir(main) ?? beside;
   const [name, setName] = useState("");
   const [from, setFrom] = useState(() => base ?? defaultBase(branches));
   // No branch to default to (an unborn or detached repo): HEAD is listed, not silently used.
@@ -102,10 +103,10 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
   };
   const submit = () => {
     onClose();
-    const where = dir === fallback ? null : dir;
+    const where = dir === beside ? null : dir;
     const then = (path: string) => {
       // Remembered for the project once it worked, so its next worktree goes there too.
-      saveWorktreeDir(main, where);
+      saveWorktreeDir(main, dir === fallback ? null : dir);
       if (terminal) openTerminal(path);
       if (switchTo) onOpen(path);
     };
@@ -143,8 +144,10 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
       <div className="mt-3 text-[11.5px] text-muted-foreground">
         Folder
         <div className="mt-1 flex items-center gap-2">
-          <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-foreground" title={dir}>
-            {shortPath(dir, main)}/{n ? folderFor(n) : "…"}
+          {/* rtl cuts the start of a long path, keeping the branch's folder in view. The LRMs keep
+              it reading left to right; a <bdi> did too, but WebKit drew the … over a letter. */}
+          <span dir="rtl" className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-foreground" title={dir}>
+            {`\u200e${shortPath(dir, main)}/${n ? folderFor(n) : "…"}\u200e`}
           </span>
           {dir !== fallback && (
             <Button type="button" variant="ghost" size="sm" onClick={() => setDir(fallback)}>

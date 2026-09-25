@@ -45,7 +45,7 @@ import { openTerminal, togglePanel, useTerminals } from "@/lib/terminals";
 import { toast } from "@/lib/toast";
 import { useNetActivity, withNetActivity } from "@/lib/netActivity";
 import { forgetRemoteTags } from "@/lib/remoteTags";
-import { loadWorktreeDir } from "@/lib/session";
+import { worktreeDir } from "@/lib/session";
 import { tracked, travel, undoAction } from "@/lib/undo";
 import type { RepoData } from "@/lib/useRepo";
 import { cn, relativeTime } from "@/lib/utils";
@@ -151,7 +151,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   // would pull the files out from under this window.
   const branchTerminal = async (name: string) => {
     if (name === status?.branch) return openTerminal(root);
-    const dir = loadWorktreeDir(main);
+    const dir = worktreeDir(main);
     const where = `${dir ?? `${folderName(main)}.worktrees`}/${name.replaceAll("/", "-")}`;
     const ok = await ask(`${name} isn't checked out anywhere. Create a worktree for it at ${where}${dir ? "" : ", next to this project,"} and open a terminal there?`, {
       title: "Open terminal on branch",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FileChange } from "./api.ts";
-import { folderName, isInside, shortPath, stageable } from "./worktrees.ts";
+import { folderName, isInside, joinPath, shortPath, stageable } from "./worktrees.ts";
 
 test("short worktree paths", () => {
   const main = "/Users/me/code/app";
@@ -42,4 +42,12 @@ test("stage all leaves nested repositories out", () => {
   });
   assert.deepEqual(stageable([file("a.txt"), file("vendor/lib/", true), file("b.txt")]), { paths: ["a.txt", "b.txt"], skipped: 1 });
   assert.deepEqual(stageable([]), { paths: [], skipped: 0 });
+});
+
+test("joined paths keep the folder's own separator", () => {
+  assert.equal(joinPath("/Users/me/worktrees", "app"), "/Users/me/worktrees/app");
+  assert.equal(joinPath("/Users/me/worktrees/", "app"), "/Users/me/worktrees/app");
+  assert.equal(joinPath("/", "app"), "/app");
+  assert.equal(joinPath("C:\\worktrees\\", "app"), "C:\\worktrees\\app");
+  assert.equal(joinPath("C:/worktrees", "app"), "C:/worktrees/app");
 });

@@ -126,6 +126,8 @@ export interface Settings {
   notify: boolean;
   /** Where the last clone went; the next one offers the same folder. */
   cloneParent: string | null;
+  /** New worktrees go in `<worktreeRoot>/<project>/` rather than `<project>.worktrees` beside it; null is off. */
+  worktreeRoot: string | null;
   /** A ✦ button in the commit box runs `suggestCommand` for a message. Off: nothing is ever run. */
   suggestEnabled: boolean;
   /** The user's own agent CLI, split like a shell command line (suggest.rs). */
@@ -171,6 +173,7 @@ const DEFAULTS: Settings = {
   // Off until asked for: turning it on is what asks the OS for permission.
   notify: false,
   cloneParent: null,
+  worktreeRoot: null,
   suggestEnabled: true,
   suggestCommand: "claude -p",
   suggestModels: {},
@@ -211,6 +214,7 @@ function load(): Settings {
     s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;
     if (!FETCH_INTERVALS.includes(s.backgroundFetch)) s.backgroundFetch = DEFAULTS.backgroundFetch;
     if (typeof s.cloneParent !== "string") s.cloneParent = null;
+    if (typeof s.worktreeRoot !== "string") s.worktreeRoot = null;
     if (typeof s.openInApp !== "string") s.openInApp = DEFAULTS.openInApp;
     s.openInCustom = Array.isArray(s.openInCustom)
       ? s.openInCustom.filter((c: CustomApp) => c && typeof c.id === "string" && typeof c.name === "string" && typeof c.command === "string")
