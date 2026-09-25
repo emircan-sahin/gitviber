@@ -48,7 +48,7 @@
     "macOS": {
       "minimumSystemVersion": "13.0"
     },
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
   "plugins": {
     "updater": {

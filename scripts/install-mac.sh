@@ -3,9 +3,8 @@
 set -e
 cd "$(dirname "$0")/.."
 
-# The .app alone: the DMG isn't needed to install locally. No updater archive either: signing
-# it needs the release key, which only the release workflow has.
-pnpm tauri build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+# The .app alone: the DMG isn't needed to install locally.
+pnpm tauri build --bundles app
 
 osascript -e 'if application "GitViber" is running then quit application "GitViber"'
 rm -rf /Applications/GitViber.app
