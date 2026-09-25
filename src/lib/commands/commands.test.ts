@@ -272,4 +272,8 @@ test("stage, unstage and discard the change at the cursor leave Monaco's keys an
   // ⌥ turns S into ß and N into a dead key; the physical key counts.
   assert.equal(press("ß", "KeyS", { altKey: true, metaKey: true }), "alt+cmd+s");
   assert.equal(press("Dead", "KeyN", { altKey: true, metaKey: true }), "alt+cmd+n");
+  // WebKit reports ⌥⌘N as the dead key's own "~": the key's letter still finds the command.
+  const tilde = { key: "~", code: "KeyN", altKey: true, shiftKey: false, metaKey: true, ctrlKey: false };
+  assert.deepEqual(eventChords(tilde, true), ["alt+cmd+~", "alt+cmd+n"]);
+  assert.equal(commandFor("alt+cmd+n", {}, true)?.id, "diff.unstageChange");
 });

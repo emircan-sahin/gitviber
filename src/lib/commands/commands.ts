@@ -229,6 +229,11 @@ function keyToken(e: KeyLike): string | null {
   }
   if (plainAscii(e.key)) return e.key.toLowerCase();
   // ⌥ produced a symbol or a dead key: fall back to what that key types without ⌥.
+  return unmodified(e);
+}
+
+/** What the key types without ⌥. */
+function unmodified(e: KeyLike): string | null {
   if (layout.has(e.code)) return layout.get(e.code)!;
   if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3).toLowerCase();
   if (/^Digit\d$/.test(e.code)) return e.code.slice(5);
@@ -252,10 +257,16 @@ export function eventChord(e: KeyLike, mac = IS_MAC): string | null {
  */
 export function eventChords(e: KeyLike, mac = IS_MAC): string[] {
   const chord = eventChord(e, mac);
+  if (!chord || !(e.metaKey || e.ctrlKey)) return chord ? [chord] : [];
+  const mods = chord.split("+").slice(0, -1);
+  const chords = [chord];
+  // ⌥ can still type ASCII: German ⌥L is @, and WebKit reports US ⌥⌘N (the dead key) as "~".
+  // A default like ⌥⌘N names the key itself.
+  const own = e.altKey && plainAscii(e.key) ? unmodified(e) : null;
+  if (own) chords.push([...mods, own].join("+"));
   const us = CODE_KEYS[e.code];
-  if (!chord || !us || !(e.metaKey || e.ctrlKey)) return chord ? [chord] : [];
-  const physical = [...chord.split("+").slice(0, -1), us].join("+");
-  return physical === chord ? [chord] : [chord, physical];
+  if (us) chords.push([...mods, us].join("+"));
+  return [...new Set(chords)];
 }
 
 /** A chord as the native menu (muda) reads it: there "cmd" is always the ⌘ / Windows key. */
