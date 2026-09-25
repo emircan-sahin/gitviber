@@ -1,6 +1,6 @@
 use crate::journal::{Action, Mode};
 use crate::state::{in_repo, journaled, watch_network, with_index_lock, AppState, Res};
-use crate::{git, network};
+use crate::{askpass, git, network};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -143,4 +143,10 @@ pub async fn last_fetch(state: State<'_, AppState>) -> Res<Option<u64>> {
 #[tauri::command]
 pub fn cancel_network(state: State<'_, AppState>, op: String) {
     state.network.cancel(&op)
+}
+
+/// The page's answer to a git or ssh prompt; None is Cancel. Never logged or kept.
+#[tauri::command]
+pub fn askpass_answer(id: u64, answer: Option<String>) {
+    askpass::answer(id, answer)
 }
