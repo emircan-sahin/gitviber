@@ -55,8 +55,11 @@ ask_secret() {
 ask_file() {
   local path
   path=$(ask "$1")
+  # A file dropped on the terminal arrives quoted or escaped, with a trailing space.
+  path="${path%"${path##*[![:space:]]}"}"
   path="${path#\'}" path="${path%\'}" path="${path#\"}" path="${path%\"}" path="${path//\\ / }"
   path="${path/#\~/$HOME}"
+  [ -n "$path" ] || die "no file given; export it first (see the steps at the top of $0), then drop it here"
   [ -f "$path" ] || die "no such file: $path"
   printf '%s' "$path"
 }
