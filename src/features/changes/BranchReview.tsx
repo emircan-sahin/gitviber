@@ -17,26 +17,40 @@ export type ReviewFiles = { base: string; files: FileChange[] };
 
 /**
  * HEAD's branch against `ref` (a full ref; "" while none is picked): its commits and uncommitted
- * work as one list, read again on every change on disk (`revision`).
+ * work as one list, read again on every change on disk (`revision`) while `live`.
  */
-export function useBranchReview(ref: string | null, revision: number) {
+export function useBranchReview(ref: string | null, revision: number, live: boolean) {
   const [state, setState] = useState<{ ref: string; review: ReviewFiles | null; error: string | null } | null>(null);
-  const latest = useRef(0);
-  const applied = useRef(0);
-  useEffect(() => {
-    if (!ref) return;
-    // Any reply newer than the one shown lands: an agent writing faster than this loads must not freeze the list.
-    const seq = ++latest.current;
+  const wanted = useRef(ref);
+  wanted.current = ref;
+  // A read costs a few statuses: one at a time, and changes during it make one more once it lands.
+  const running = useRef(false);
+  const again = useRef(false);
+  const load = useRef(() => {});
+  load.current = () => {
+    const at = wanted.current;
+    if (!at) return;
+    if (running.current) {
+      again.current = true;
+      return;
+    }
+    running.current = true;
     const land = (review: ReviewFiles | null, error: string | null) => {
-      if (seq < applied.current) return;
-      applied.current = seq;
-      setState({ ref, review, error });
+      running.current = false;
+      setState({ ref: at, review, error });
+      if (again.current) {
+        again.current = false;
+        load.current();
+      }
     };
-    api.branchReview(ref).then(
+    api.branchReview(at).then(
       (r) => land(r, null),
       (e) => land(null, errorMessage(e)),
     );
-  }, [ref, revision]);
+  };
+  useEffect(() => {
+    if (live) load.current();
+  }, [ref, revision, live]);
   const shown = ref && state?.ref === ref ? state : null;
   const review = shown?.review ?? null;
   const rows = useMemo<BranchChange[]>(() => (review && ref ? review.files.map((file) => ({ kind: "branch", base: review.base, label: shortRef(ref), file })) : []), [review, ref]);
@@ -114,7 +128,6 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
                   onOpen={onOpen}
                   onHover={onHover}
                   onToggleViewed={() => setViewed([sel], !isViewed)}
-                  menu={() => null}
                 />
               );
             }}

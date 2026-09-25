@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type FileChange, type RepoStatus } from "@/lib/api";
 import type { Selection } from "@/lib/repo/selection";
 import type { loadWorkspace } from "@/lib/repo/session";
@@ -14,17 +14,31 @@ export function useViewed(saved: ReturnType<typeof loadWorkspace>, status: RepoS
   // Viewed marks remember the file's content id; a new edit by the agent clears them.
   const [viewedMap, setViewedMap] = useState<Map<string, string>>(() => new Map(saved?.viewed));
 
-  // The file as it is now, and its mark's key: a branch review's are per merge base.
+  // A branch review's marks are per merge base: a rebase or another base leaves the old ones behind for good.
+  const reviewBase = review?.base;
+  useEffect(() => {
+    if (!reviewBase) return;
+    setViewedMap((m) => {
+      const stale = [...m.keys()].filter((k) => k.startsWith("branch:") && !k.startsWith(`branch:${reviewBase}:`));
+      if (!stale.length) return m;
+      const next = new Map(m);
+      for (const k of stale) next.delete(k);
+      return next;
+    });
+  }, [reviewBase]);
+  const reviewFiles = useMemo(() => new Map(review?.files.map((f) => [f.path, f])), [review]);
+
+  // The file as it is now, and its mark's key.
   const marked = useCallback(
     (sel: Selection) => {
       if (sel.kind !== "branch") {
         const f = currentFile(status, sel);
         return f && { f, key: `${sel.kind}:${f.path}` };
       }
-      const f = review?.base === sel.base ? review.files.find((x) => x.path === sel.file.path) : undefined;
+      const f = review?.base === sel.base ? reviewFiles.get(sel.file.path) : undefined;
       return f && { f, key: `branch:${sel.base}:${f.path}` };
     },
-    [status, review],
+    [status, review, reviewFiles],
   );
 
   const viewed = useCallback(

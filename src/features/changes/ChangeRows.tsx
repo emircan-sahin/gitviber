@@ -88,8 +88,8 @@ export function Row({
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
   onToggleViewed: () => void;
-  /** Built only once the menu is first opened: thousands of rows each building theirs made the list slow. */
-  menu: () => React.ReactNode;
+  /** Built only once the menu is first opened: thousands of rows each building theirs made the list slow. None: no menu. */
+  menu?: () => React.ReactNode;
   children?: React.ReactNode;
 }) {
   const file = sel.file;
@@ -102,56 +102,58 @@ export function Row({
     ref.current?.scrollIntoView({ block: "nearest" });
     if (document.activeElement instanceof HTMLElement && document.activeElement.dataset.row !== undefined) ref.current?.focus();
   }, [active]);
-  return (
-    <ContextMenu onOpenChange={(open) => open && setMenuOpened(true)}>
-      <ContextMenuTrigger asChild>
-        <div
-          ref={ref}
-          role="button"
-          tabIndex={tabStop ? 0 : -1}
-          data-row={selectionKey(sel)}
-          aria-current={active || undefined}
-          onClick={onClick}
-          onDoubleClick={() => onOpen(sel, true)}
-          onMouseEnter={() => onHover(sel)}
+  const row = (
+    <div
+      ref={ref}
+      role="button"
+      tabIndex={tabStop ? 0 : -1}
+      data-row={selectionKey(sel)}
+      aria-current={active || undefined}
+      onClick={onClick}
+      onDoubleClick={() => onOpen(sel, true)}
+      onMouseEnter={() => onHover(sel)}
+      className={cn(
+        "group/row relative flex h-[26px] scroll-mt-7 cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+        selected ? (dim ? "bg-active" : "bg-primary/15") : "hover:bg-hover focus:bg-hover data-[state=open]:bg-hover",
+      )}
+    >
+      {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
+      {sel.kind === "conflict" ? (
+        <GitMerge className="size-3.5 shrink-0 text-conflict" />
+      ) : (
+      <Tip label={checkLabel}>
+        <button
+          role="checkbox"
+          tabIndex={tabStop ? undefined : -1}
+          aria-checked={viewed}
+          aria-label={sel.kind === "staged" ? "Staged" : "Viewed"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onToggleViewed();
+          }}
           className={cn(
-            "group/row relative flex h-[26px] scroll-mt-7 cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-            selected ? (dim ? "bg-active" : "bg-primary/15") : "hover:bg-hover focus:bg-hover data-[state=open]:bg-hover",
+            "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            viewed ? "border-added-fill bg-added-fill text-on-status" : "border-border-strong hover:border-muted-foreground",
           )}
         >
-          {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
-          {sel.kind === "conflict" ? (
-            <GitMerge className="size-3.5 shrink-0 text-conflict" />
-          ) : (
-          <Tip label={checkLabel}>
-            <button
-              role="checkbox"
-              tabIndex={tabStop ? undefined : -1}
-              aria-checked={viewed}
-              aria-label={sel.kind === "staged" ? "Staged" : "Viewed"}
-              onClick={(e) => {
-                e.stopPropagation();
-                onToggleViewed();
-              }}
-              className={cn(
-                "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border outline-none focus-visible:ring-1 focus-visible:ring-ring",
-                viewed ? "border-added-fill bg-added-fill text-on-status" : "border-border-strong hover:border-muted-foreground",
-              )}
-            >
-              {viewed && <Check className="size-2.5" strokeWidth={3} />}
-            </button>
-          </Tip>
-          )}
-          <FileIcon path={file.path} />
-          <PathLabel path={file.path} className={cn("flex-1", viewed && "opacity-45")} />
-          {/* Shown on the active row too, so Tab can reach them without a mouse. */}
-          <LineCounts file={file} className={active ? "hidden" : "group-focus-within/row:hidden group-hover/row:hidden"} />
-          <div className={cn("items-center", active ? "flex" : "hidden group-focus-within/row:flex group-hover/row:flex")} onClick={(e) => e.stopPropagation()}>
-            {children}
-          </div>
-          <StatusLetter status={file.status} />
-        </div>
-      </ContextMenuTrigger>
+          {viewed && <Check className="size-2.5" strokeWidth={3} />}
+        </button>
+      </Tip>
+      )}
+      <FileIcon path={file.path} />
+      <PathLabel path={file.path} className={cn("flex-1", viewed && "opacity-45")} />
+      {/* Shown on the active row too, so Tab can reach them without a mouse. */}
+      <LineCounts file={file} className={active ? "hidden" : "group-focus-within/row:hidden group-hover/row:hidden"} />
+      <div className={cn("items-center", active ? "flex" : "hidden group-focus-within/row:flex group-hover/row:flex")} onClick={(e) => e.stopPropagation()}>
+        {children}
+      </div>
+      <StatusLetter status={file.status} />
+    </div>
+  );
+  if (!menu) return row;
+  return (
+    <ContextMenu onOpenChange={(open) => open && setMenuOpened(true)}>
+      <ContextMenuTrigger asChild>{row}</ContextMenuTrigger>
       {menuOpened && menu()}
     </ContextMenu>
   );

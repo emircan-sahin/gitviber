@@ -77,10 +77,11 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const searchFocused = useCallback(() => setSearchFocus(false), []);
   // Blame clicks so far: each is a new request, even for the commit already on show.
   const reveals = useRef(0);
-  const { tabs, activeKey, setActiveKey, open, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status);
   // The full ref Changes reviews the branch against, in place of the uncommitted list; null: not reviewing.
   const [review, setReview] = useState<string | null>(() => (typeof saved?.review === "string" ? saved.review : null));
-  const branchReview = useBranchReview(review, repo.revision);
+  const reviewing = listTab === "changes" && review !== null;
+  const branchReview = useBranchReview(review, repo.revision, reviewing);
+  const { tabs, activeKey, setActiveKey, open, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
   const { viewedMap, viewed, setViewed, toggleViewed } = useViewed(saved, status, repo.refresh, branchReview.review);
   useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap], review }), [root, tabs, activeKey, listTab, viewedMap, review]);
   // Git work on the left, files on the right; both collapse to give code the room.
@@ -159,7 +160,6 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     showList("changes");
   };
   const reviewLabel = shortRef(review || reviewBase(repo.branches) || "") || "a base branch";
-  const reviewing = listTab === "changes" && review !== null;
   const remoteNames = useMemo(() => new Set(repo.branches.filter((b) => b.remote).map((b) => b.name)), [repo.branches]);
 
   // A merge/rebase that stopped on conflicts: bring the conflicts into view.
