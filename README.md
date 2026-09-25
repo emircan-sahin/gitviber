@@ -11,12 +11,21 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/emircan-sahin/gitviber/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/emircan-sahin/gitviber?style=flat-square&label=release"></a>
   <a href="https://github.com/emircan-sahin/gitviber/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/emircan-sahin/gitviber/ci.yml?branch=main&style=flat-square&label=CI"></a>
   <img alt="macOS and Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey?style=flat-square">
   <a href="LICENSE"><img alt="GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square"></a>
 </p>
 
 ![GitViber with a diff, the file explorer and the terminal open](assets/screenshot-dark.png)
+
+<p align="center">
+  <a href="https://github.com/emircan-sahin/gitviber/releases/latest"><b>Download for macOS or Linux</b></a>
+  ·
+  <a href="#install">Install</a>
+  ·
+  <a href="CHANGELOG.md">What's new</a>
+</p>
 
 ## Why GitViber
 
@@ -93,8 +102,46 @@ has a shortcut, every shortcut can be rebound, and holding `⌘` shows them all.
 
 ## Install
 
-There are no signed release builds yet, so for now you build it. You need Rust (stable), Node 22+,
-pnpm and git.
+Grab the latest build from [Releases](https://github.com/emircan-sahin/gitviber/releases/latest):
+
+| | |
+| --- | --- |
+| **macOS** 13 or later | `GitViber_<version>_universal.dmg`, one app for Apple Silicon and Intel, signed and notarized |
+| **Linux** x86_64 | `.deb` for Debian and Ubuntu, `.rpm` for Fedora, `.AppImage` for the rest |
+
+Or with Homebrew:
+
+```sh
+brew install --cask emircan-sahin/tap/gitviber
+```
+
+On Linux:
+
+```sh
+sudo apt install ./GitViber_*_amd64.deb          # Debian, Ubuntu
+sudo dnf install ./GitViber-*.x86_64.rpm         # Fedora
+chmod +x GitViber_*.AppImage && ./GitViber_*.AppImage
+```
+
+GitViber tells you when a new version is out. The macOS app and the AppImage update in place;
+a `.deb` or `.rpm` install gets a link to the release to download it from. What changed is in the [changelog](CHANGELOG.md), and every release lists SHA-256
+checksums in `SHA256SUMS`.
+
+GitViber is used daily on macOS. The Linux builds are tested in CI, but the app itself is only
+starting to get used there ([#35](https://github.com/emircan-sahin/gitviber/issues/35)). Windows
+is untested and has no build yet.
+
+### Requirements
+
+- **git 2.36 or newer.** GitViber runs your own git, and says so on first launch if it's missing
+  or older. On macOS, `xcode-select --install` or Homebrew's `git` will do.
+- **Optional:** the [GitHub CLI](https://cli.github.com) (`gh auth login`) for pull requests and
+  issues; git's stored github.com credential works too. `claude` or `codex` if you want commit
+  messages written for you.
+
+### Build from source
+
+You need Rust (stable), Node 22+, pnpm and git.
 
 ```sh
 git clone https://github.com/emircan-sahin/gitviber && cd gitviber
@@ -114,21 +161,42 @@ sudo pacman -S --needed webkit2gtk-4.1 base-devel              # Arch
 If the AppImage step fails in `linuxdeploy` (its bundled `strip` is too old for current
 toolchains, e.g. on Arch), run it with `NO_STRIP=true`.
 
-GitViber is used daily on macOS. CI builds and tests it on Linux too, but the app itself is only
-starting to get used there ([#35](https://github.com/emircan-sahin/gitviber/issues/35)). Windows
-is untested.
-
 ## Privacy
 
 No telemetry, no API keys. The app talks to your git remotes and, for pull requests and issues,
 GitHub. For those it borrows a login you already have, the GitHub CLI (`gh auth token`) first,
-then git's stored github.com credential, and keeps the token in memory. Errors, including every
+then git's stored github.com credential, and keeps the token in memory. GitViber checks GitHub
+Releases for updates at launch and every few hours; turn it off in Settings → Updates. Errors, including every
 error message the app shows you (a failed push's git output, say), go to a local file
 (`~/Library/Logs/app.gitviber.desktop/errors.log` on macOS, Help → Show Logs) and nowhere else,
 with logins in URLs and GitHub tokens blanked out. Help → Copy Diagnostics copies only the versions
 of GitViber, the OS, git, `gh` and WebKit, for you to paste into a bug report. Markdown from GitHub
 is cut down to GitHub's own HTML allowlist, and an image hosted outside GitHub loads only when you
 click it. Commit message suggestions go wherever the command you picked sends them.
+
+## FAQ
+
+**Will macOS say it "can't be opened" or "is damaged"?** Not for a release: the app is signed
+with a Developer ID and notarized by Apple. If it does, the download didn't come from
+[Releases](https://github.com/emircan-sahin/gitviber/releases) or was changed on the way; check
+it against `SHA256SUMS` and download it again. A build of your own isn't notarized, but it's
+already trusted on the Mac that built it.
+
+**How do I sign in to GitHub?** There's no sign-in of its own. Run `gh auth login` once, or have
+git remember a github.com login (any HTTPS push does), and GitViber borrows it. See
+[Privacy](#privacy).
+
+**Where are the logs?** Help → Show Logs. They're at `~/Library/Logs/app.gitviber.desktop/` on
+macOS and `~/.local/share/app.gitviber.desktop/logs/` on Linux. Help → Copy Diagnostics copies
+the versions a bug report needs.
+
+**Where are my settings?** In the app's own storage, never in your repositories:
+`~/Library/WebKit/app.gitviber.desktop` on macOS, `~/.local/share/app.gitviber.desktop` on Linux.
+
+**How do I uninstall it?** On macOS, drag GitViber to the Trash (or
+`brew uninstall --cask --zap gitviber`, which also removes its settings, caches and logs). On
+Linux, `sudo apt remove git-viber` or `sudo dnf remove git-viber`, or delete the AppImage. To
+remove the settings by hand, delete the folders above and `~/Library/Caches/app.gitviber.desktop`.
 
 ## Shortcuts
 

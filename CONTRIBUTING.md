@@ -39,7 +39,7 @@ These are the product, not style preferences. A PR that breaks one will be sent 
 pnpm check
 ```
 
-That runs what CI runs: `tsc`, a production build, the third-party license list being up to date, `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test`. If you change how a git operation behaves, add or update a scenario in `scenario_tests/`.
+That runs what CI runs: the version matching across `package.json` and `Cargo.toml`, `tsc`, a production build, the third-party license list being up to date, `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test`. If you change how a git operation behaves, add or update a scenario in `scenario_tests/`.
 
 ## Pull requests
 
