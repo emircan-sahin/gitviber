@@ -1,5 +1,5 @@
 //! Every error, in one file in the app's log folder (~/Library/Logs/app.gitviber.desktop on
-//! macOS), and on the terminal running `pnpm tauri dev`: the page's (src/lib/errorLog.ts) and
+//! macOS), and on the terminal running `pnpm tauri dev`: the page's (src/lib/app/errorLog.ts) and
 //! Rust panics. The webview's console is rarely open, so an error there went unnoticed.
 
 use std::fs::OpenOptions;

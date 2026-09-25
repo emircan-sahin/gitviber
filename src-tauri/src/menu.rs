@@ -1,6 +1,6 @@
-//! The menu bar. Its items run the page's commands (src/lib/commands.ts): a click emits
+//! The menu bar. Its items run the page's commands (src/lib/commands/commands.ts): a click emits
 //! "menu" with the item's id, and the page reports back each item's shortcut and whether it
-//! applies right now (src/lib/menu.ts), so the menu follows the user's key bindings.
+//! applies right now (src/lib/commands/menu.ts), so the menu follows the user's key bindings.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -54,7 +54,7 @@ impl Builder<'_> {
     }
 }
 
-/// As REVEAL_LABEL in commands.ts: Finder is macOS's file manager.
+/// As REVEAL_LABEL in src/lib/platform.ts: Finder is macOS's file manager.
 const REVEAL: &str = if cfg!(target_os = "macos") {
     "Reveal in Finder"
 } else if cfg!(windows) {
