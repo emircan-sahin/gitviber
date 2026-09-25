@@ -1,4 +1,5 @@
 import { errorMessage } from "../api";
+import { logError } from "./errorLog";
 import { createStore } from "../store";
 
 interface Toast {
@@ -26,8 +27,13 @@ export function dismissToast(id: number) {
   toasts.set(toasts.get().filter((t) => t.id !== id));
 }
 
-/** Errors stay until dismissed: they carry hook, GPG or push output that takes a while to read. */
+/**
+ * Errors stay until dismissed: they carry hook, GPG or push output that takes a while to read. They
+ * also go to the error log (errors.rs blanks out credentials), for a bug report; a cancelled or
+ * conflicted action is an info toast, so it doesn't.
+ */
 export function toast(kind: Toast["kind"], title: string, detail?: string, action?: ToastAction) {
+  if (kind === "error") logError("toast", detail ? `${title}: ${detail}` : title);
   const id = nextId++;
   for (const old of toasts.get().slice(0, -3)) dismissToast(old.id);
   toasts.set([...toasts.get(), { id, kind, title, detail, action }]);

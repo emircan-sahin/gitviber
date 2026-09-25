@@ -26,10 +26,10 @@ export function useAbout(ask = false) {
   return about;
 }
 
-/** What the bug report template asks for, in one line. */
-export function versionLine(a: About) {
+/** What a bug report needs to know about the setup, in one line. */
+export function diagnostics(a: About) {
   const build = a.commit ? ` (${a.commit})` : "";
-  return `GitViber ${a.version}${build} · ${a.os} ${a.arch} · git ${a.git ?? "not found"}`;
+  return [`GitViber ${a.version}${build}`, `${a.os} ${a.arch}`, `git ${a.git ?? "not found"}`, `gh ${a.gh ?? "not found"}`, a.webview].filter(Boolean).join(" · ");
 }
 
 const open = createStore(false);
@@ -58,14 +58,17 @@ export function AboutDialog() {
     "app.about": openAbout,
     "help.readme": () => openLink(`${REPO}#readme`),
     "help.reportBug": reportBug,
+    "help.copyDiagnostics": () => copy(),
+    "help.showLogs": () => api.showLogs().catch(failed("Could not show the logs")),
     "help.releaseNotes": () => openLink(`${REPO}/releases`),
     "help.license": () => openLink(`${REPO}/blob/main/LICENSE`),
   });
 
+  // Synchronous: WebKit lets the page write the clipboard only while handling a click or key.
   const copy = () => {
-    if (!about) return;
-    const line = versionLine(about);
-    void copyText(line, "Version info copied", line);
+    if (!about) return toast("error", "Could not copy", "The version info hasn't loaded.");
+    const line = diagnostics(about);
+    void copyText(line, "Diagnostics copied", line);
   };
 
   return (
@@ -94,6 +97,8 @@ export function AboutDialog() {
           </Row>
           <Row label="System">{about ? `${about.os} ${about.arch}` : "…"}</Row>
           <Row label="git">{about ? (about.git ?? <span className="text-destructive">not found</span>) : "…"}</Row>
+          <Row label="gh">{about ? (about.gh ?? <span className="text-subtle">not installed</span>) : "…"}</Row>
+          <Row label="Web view">{about ? (about.webview ?? <span className="text-subtle">unknown</span>) : "…"}</Row>
         </dl>
         <button onClick={copy} disabled={!about} className="mt-2 inline-flex items-center gap-1 text-[11px] text-subtle hover:text-foreground focus-visible:text-foreground">
           <Copy className="size-3" /> Copy for a bug report

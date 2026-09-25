@@ -205,4 +205,6 @@ export const api = {
   setMenu: (items: Record<string, unknown>, recent: unknown) => invoke<void>("set_menu", { items, recent }),
   /** Into the app's error log (errors.rs). */
   logError: (source: string, message: string) => invoke<void>("log_error", { source, message }),
+  /** Selects the error log in the file manager. */
+  showLogs: () => invoke<void>("show_logs"),
 };
