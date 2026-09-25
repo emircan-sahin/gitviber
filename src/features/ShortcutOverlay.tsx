@@ -13,7 +13,7 @@ import { getSettings, useSettings } from "@/lib/settings";
 
 // Off macOS "cmd" is Ctrl (commands.ts), so that's the key to hold there.
 const HOLD_KEY = IS_MAC ? "Meta" : "Control";
-const HOLD_MS = 450;
+const HOLD_MS = 1450;
 
 /** The panel's own command categories, listed first while it has focus. */
 const PANEL_FIRST: Record<Panel, string[]> = { code: ["Review", "Diff", "Editor"], git: ["Git", "Review"], explorer: ["Explorer"], terminal: ["Terminal"] };
