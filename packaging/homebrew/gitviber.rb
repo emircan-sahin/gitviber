@@ -21,8 +21,10 @@ cask "gitviber" do
 
   zap trash: [
     "~/Library/Caches/app.gitviber.desktop",
+    "~/Library/HTTPStorages/app.gitviber.desktop",
     "~/Library/Logs/app.gitviber.desktop",
     "~/Library/Preferences/app.gitviber.desktop.plist",
+    "~/Library/Saved Application State/app.gitviber.desktop.savedState",
     "~/Library/WebKit/app.gitviber.desktop",
   ]
 end
