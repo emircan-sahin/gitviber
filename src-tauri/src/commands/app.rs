@@ -123,9 +123,10 @@ pub async fn show_logs() -> Res<()> {
     blocking(move || launch::reveal(path)).await
 }
 
-/// The page's errors (src/lib/app/errorLog.ts), into the app's error log.
+/// The page's errors (src/lib/app/errorLog.ts), into the app's error log. Async, so the file
+/// write for every error toast stays off the main thread.
 #[tauri::command]
-pub fn log_error(source: String, message: String) {
+pub async fn log_error(source: String, message: String) {
     errors::write(&source, &message);
 }
 

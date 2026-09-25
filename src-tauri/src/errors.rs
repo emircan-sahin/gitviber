@@ -51,7 +51,8 @@ pub fn write(source: &str, message: &str) {
     }
 }
 
-/// GitHub's token prefixes; a real token has 30+ characters after one, a branch name rarely.
+/// GitHub's token prefixes. A real token has 30+ characters after one; asking for 20 leaves a
+/// branch like `ghp_fix-login` alone.
 const TOKENS: [&str; 6] = ["github_pat_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_"];
 
 /// Credentials never reach the log: a URL's `user:token@` (git prints remote URLs as they are
@@ -81,28 +82,28 @@ fn hide_logins(text: &str) -> String {
     out + rest
 }
 
-/// `ghp_abc…` → `ghp_***`.
+/// `ghp_abc…` → `ghp_***`. One pass: every prefix starts with a `g`, and a token's body is
+/// skipped once read, so a 1 MB hook output doesn't stall the log.
 fn hide_tokens(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some((i, prefix)) = TOKENS
-        .iter()
-        .filter_map(|p| rest.find(p).map(|i| (i, p)))
-        .min()
-    {
-        let start = i + prefix.len();
-        let len = rest[start..]
+    let (mut copied, mut from) = (0, 0);
+    while let Some(g) = text[from..].find('g').map(|i| from + i) {
+        let Some(prefix) = TOKENS.iter().find(|p| text[g..].starts_with(*p)) else {
+            from = g + 1;
+            continue;
+        };
+        let start = g + prefix.len();
+        let len = text[start..]
             .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .unwrap_or(rest.len() - start);
-        out.push_str(&rest[..start]);
-        out.push_str(if len >= 20 {
-            "***"
-        } else {
-            &rest[start..start + len]
-        });
-        rest = &rest[start + len..];
+            .unwrap_or(text.len() - start);
+        if len >= 20 {
+            out.push_str(&text[copied..start]);
+            out.push_str("***");
+            copied = start + len;
+        }
+        from = start + len;
     }
-    out + rest
+    out + &text[copied..]
 }
 
 /// `2026-09-24T14:03:07Z`, without a date crate: days since the epoch to a civil date (Hinnant).
@@ -157,5 +158,17 @@ mod tests {
         );
         assert_eq!(r("branch ghp_fix-login"), "branch ghp_fix-login");
         assert_eq!(r("naïve → ok"), "naïve → ok");
+        assert_eq!(r("gghp_x ghp_ ghg"), "gghp_x ghp_ ghg");
+    }
+
+    #[test]
+    fn redacts_large_dense_text_in_one_pass() {
+        // Took seconds at 120 KB and minutes at 1 MB when each prefix was searched per hit.
+        let dense = "ghp_x ".repeat(200_000);
+        assert_eq!(super::redact(&dense), dense);
+        let tokens = format!("ghp_{} ", "a".repeat(30)).repeat(30_000);
+        assert_eq!(super::redact(&tokens), "ghp_*** ".repeat(30_000));
+        let urls = "https://u:p@h/ ".repeat(70_000);
+        assert_eq!(super::redact(&urls), "https://***@h/ ".repeat(70_000));
     }
 }

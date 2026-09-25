@@ -66,7 +66,7 @@ export function AboutDialog() {
 
   // Synchronous: WebKit lets the page write the clipboard only while handling a click or key.
   const copy = () => {
-    if (!about) return;
+    if (!about) return toast("error", "Could not copy", "The version info hasn't loaded.");
     const line = diagnostics(about);
     void copyText(line, "Diagnostics copied", line);
   };
