@@ -1,4 +1,5 @@
 import { errorMessage } from "../api";
+import { logError } from "./errorLog";
 import { createStore } from "../store";
 
 interface Toast {
@@ -28,7 +29,11 @@ export function dismissToast(id: number) {
   toasts.set(toasts.get().filter((t) => t.id !== id));
 }
 
-/** Errors stay until dismissed: they carry hook, GPG or push output that takes a while to read. */
+/**
+ * Errors stay until dismissed: they carry hook, GPG or push output that takes a while to read. They
+ * also go to the error log (errors.rs blanks out credentials), for a bug report; a cancelled or
+ * conflicted action is an info toast, so it doesn't.
+ */
 export function toast(kind: Toast["kind"], title: string, detail?: string, action?: ToastAction) {
   show({ kind, title, detail, actions: action ? [action] : [] });
 }
@@ -38,7 +43,9 @@ export function explainedError(title: string, note: string, detail: string, acti
   show({ kind: "error", title, note, detail, actions });
 }
 
+// The log gets git's own words, not the note: that's the app's canned explanation of them.
 function show(t: Omit<Toast, "id">) {
+  if (t.kind === "error") logError("toast", t.detail ? `${t.title}: ${t.detail}` : t.title);
   const id = nextId++;
   for (const old of toasts.get().slice(0, -3)) dismissToast(old.id);
   toasts.set([...toasts.get(), { id, ...t }]);
