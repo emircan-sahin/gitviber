@@ -8,7 +8,7 @@ import { findMatches } from "@/lib/ui/findQuery";
 import { type CodeReveal, onReveal, takeReveal } from "@/lib/editor/reveal";
 import { codeWantsFocus, setCodeEditor } from "@/lib/ui/panels";
 import { followDefinitions } from "@/lib/editor/definitions";
-import { followLineActions } from "@/lib/editor/lineActions";
+import { followLineActions, type LineAction, type LineActions } from "@/lib/editor/lineActions";
 import { codeEditor, type Editor, hideEditor, hideFile, isDiff, showEditor, showFile } from "./activeEditor";
 import { followReviewThreads, type Review } from "@/features/github/pulls/ReviewThreads";
 import type { LinkSide } from "@/lib/links/linkHost";
@@ -20,6 +20,8 @@ import { CONTEXT, type CodeMode, diffOptions, fileOptions } from "./editorOption
 export interface CodeViewHandle {
   next(): void;
   prev(): void;
+  /** Stage, unstage or discard the selected lines, else the change at the cursor. */
+  lineAction(action: LineAction): void;
 }
 
 interface Props {
@@ -83,6 +85,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   const reviewRef = useRef(review);
   reviewRef.current = review;
   const threads = useRef<ReturnType<typeof followReviewThreads> | null>(null);
+  const lines = useRef<LineActions | null>(null);
   // The diff on show, which a newer `pair` replaces only once it's ready.
   const shownPair = useRef<{ pair: DiffPair; path: string } | null>(null);
   linksRef.current = links;
@@ -120,7 +123,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     const follow = (code: monaco.editor.ICodeEditor, side: "original" | "modified") => followDefinitions(code, () => linksRef.current?.[side] ?? null);
     const linked = isDiff(e) ? [follow(e.getOriginalEditor(), "original"), follow(e.getModifiedEditor(), "modified")] : [follow(e, "modified")];
     const marks = isDiff(e) ? markFindMatches(e, el, () => split.current) : null;
-    const lines = isDiff(e)
+    lines.current = isDiff(e)
       ? followLineActions(e, () => {
           const [s, on] = [stagingRef.current, shownPair.current];
           return s && on ? { ...s, ...on } : null;
@@ -136,7 +139,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       click?.dispose();
       linked.forEach((l) => l.dispose());
       marks?.dispose();
-      lines?.dispose();
+      lines.current?.dispose();
+      lines.current = null;
       threads.current?.dispose();
       threads.current = null;
       if (shown.current) viewStates.set(shown.current, e.saveViewState()!);
@@ -258,7 +262,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       // have scrolled since.
       const toFirst = () => {
         const [line] = changeStarts(e, bars);
-        if (line) scrollToLine(code, line);
+        if (line) goToLine(code, line);
       };
       if (ready) return toFirst();
       const top = code.getScrollTop();
@@ -343,9 +347,9 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
         const at = (code.getVisibleRanges()[0]?.startLineNumber ?? 1) + CONTEXT;
         const starts = changeStarts(e, bars);
         const to = dir === 1 ? starts.find((l) => l > at) : [...starts].reverse().find((l) => l < at);
-        if (to != null) scrollToLine(code, to);
+        if (to != null) goToLine(code, to);
       };
-      return { next: () => go(1), prev: () => go(-1) };
+      return { next: () => go(1), prev: () => go(-1), lineAction: (action) => lines.current?.act(action) };
     },
     [bars],
   );
@@ -401,8 +405,12 @@ function revealAt(e: monaco.editor.ICodeEditor, pos: { lineNumber: number; colum
   e.revealPositionInCenter({ lineNumber, column });
 }
 
-/** Puts `line` CONTEXT lines below the top (reveal* only scrolls lines that are off screen). */
-function scrollToLine(e: monaco.editor.ICodeEditor, line: number) {
+/**
+ * Puts `line` CONTEXT lines below the top (reveal* only scrolls lines that are off screen), with
+ * the cursor on it: the change the keys stage or discard is the one moved to (lib/editor/lineActions).
+ */
+function goToLine(e: monaco.editor.ICodeEditor, line: number) {
+  e.setPosition({ lineNumber: line, column: 1 });
   e.setScrollTop(e.getTopForLineNumber(Math.max(1, line - CONTEXT)));
 }
 

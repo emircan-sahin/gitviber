@@ -70,6 +70,12 @@ export const COMMANDS = [
   { id: "review.toggleViewed", title: "Toggle File Viewed", category: "Review", keys: ["v"] },
   { id: "diff.nextChange", title: "Next Change", category: "Diff", keys: ["f7", "alt+down"] },
   { id: "diff.prevChange", title: "Previous Change", category: "Diff", keys: ["shift+f7", "alt+up"] },
+  // The selected lines, else the change at the cursor (which Next / Previous Change put there). VS Code
+  // has ⌘K ⌘⌥S and ⌘K ⌘N: with no two-key chords here, their second key. Its ⌘K ⌘R is Monaco's ⌥⌘R
+  // (Toggle Regex in Find) and ⌘R reloads, so discard is ⌘⌫ (the file's) with ⇧. Not from text fields.
+  { id: "diff.stageChange", title: "Stage Change or Selected Lines", category: "Diff", keys: ["alt+cmd+s"], outsideText: true, noRepeat: true },
+  { id: "diff.unstageChange", title: "Unstage Change or Selected Lines", category: "Diff", keys: ["alt+cmd+n"], outsideText: true, noRepeat: true },
+  { id: "diff.discardChange", title: "Discard Change or Selected Lines", category: "Diff", keys: ["shift+cmd+backspace"], outsideText: true, noRepeat: true },
   { id: "diff.toggleSplit", title: "Toggle Unified / Split", category: "Diff", keys: ["alt+s"] },
   { id: "diff.toggleCollapse", title: "Toggle Collapse Unchanged", category: "Diff", keys: ["alt+c"] },
   { id: "diff.toggleWhitespace", title: "Toggle Ignore Whitespace", category: "Diff", keys: ["alt+w"] },
@@ -141,6 +147,8 @@ export const COMMANDS = [
   /** Where it listens, for a command only one place handles. */
   local?: string;
   outsideText?: boolean;
+  /** Held down, it runs once: each run changes what the next one would act on. */
+  noRepeat?: boolean;
 }[];
 
 export type CommandId = (typeof COMMANDS)[number]["id"];
