@@ -8,6 +8,19 @@ export function BaseSelect({ value, onChange, branches, head }: { value: string;
   useEffect(() => {
     api.tags().then(setTags, () => setTags([]));
   }, []);
+  return (
+    <label className="mt-3 block text-[11.5px] text-muted-foreground">
+      From
+      <Select value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 w-full font-mono">
+        {head && <option value="HEAD">HEAD</option>}
+        <RefOptions branches={branches} tags={tags} />
+      </Select>
+    </label>
+  );
+}
+
+/** Local and remote branches, and tags, grouped: options whose values are full refs. */
+export function RefOptions({ branches, tags = [] }: { branches: Branch[]; tags?: string[] }) {
   const group = (title: string, prefix: string, names: string[]) =>
     names.length > 0 && (
       <optgroup label={title}>
@@ -19,22 +32,18 @@ export function BaseSelect({ value, onChange, branches, head }: { value: string;
       </optgroup>
     );
   return (
-    <label className="mt-3 block text-[11.5px] text-muted-foreground">
-      From
-      <Select value={value} onChange={(e) => onChange(e.target.value)} className="mt-1 w-full font-mono">
-        {head && <option value="HEAD">HEAD</option>}
-        {group(
-          "Local",
-          "refs/heads/",
-          branches.filter((b) => !b.remote).map((b) => b.name),
-        )}
-        {group(
-          "Remote",
-          "refs/remotes/",
-          branches.filter((b) => b.remote).map((b) => b.name),
-        )}
-        {group("Tags", "refs/tags/", tags)}
-      </Select>
-    </label>
+    <>
+      {group(
+        "Local",
+        "refs/heads/",
+        branches.filter((b) => !b.remote).map((b) => b.name),
+      )}
+      {group(
+        "Remote",
+        "refs/remotes/",
+        branches.filter((b) => b.remote).map((b) => b.name),
+      )}
+      {group("Tags", "refs/tags/", tags)}
+    </>
   );
 }

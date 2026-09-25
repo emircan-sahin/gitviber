@@ -219,7 +219,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               <FileCode2 /> Open file
             </Button>
           )}
-          {(sel.kind === "unstaged" || sel.kind === "staged") && (
+          {(sel.kind === "unstaged" || sel.kind === "staged" || sel.kind === "branch") && (
             <Tip label={sel.kind === "staged" ? "Unstage" : viewed(sel) ? "Mark as not viewed" : "Mark as viewed"}>
               <Button
                 variant={viewed(sel) ? "default" : "secondary"}
@@ -279,7 +279,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               collapse={s.hideUnchanged}
               wrap={s.wordWrap}
               scrollKey={tab.key}
-              onDisk={sel.kind === "file" || sel.kind === "unstaged"}
+              onDisk={sel.kind === "file" || sel.kind === "unstaged" || sel.kind === "branch"}
               blame={blame?.unavailable ? null : blame}
               blameColumn={!!s.blame && isFile && !blame?.unavailable}
               onBlameClick={(c) => onShowCommit(c.sha, c.path)}

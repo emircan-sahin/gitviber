@@ -89,6 +89,7 @@ pub fn run() {
             commands::repo::remote_edit,
             commands::repo::set_repo_identity,
             commands::changes::status,
+            commands::changes::branch_review,
             commands::history::log,
             commands::history::log_compare,
             commands::history::compare_counts,

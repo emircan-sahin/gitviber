@@ -11,7 +11,6 @@ import { matchesCommand, useCommands } from "@/lib/commands/keybindings";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { toast } from "@/lib/app/toast";
 import { tracked, undoAction } from "@/lib/repo/undo";
-import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED, stageable } from "@/lib/git/worktrees";
 import { StashDialog, StashList, useStashes } from "./StashList";
 import { BisectBar } from "@/features/history/BisectBar";
@@ -19,7 +18,7 @@ import { SubmoduleList, updateSubmodules, useSubmodules } from "./SubmoduleList"
 import { attempt, type Change, changeList, files, filtered, leftOut, paths, sumLines } from "./changeList";
 import { ChangeRowMenu } from "./ChangeRowMenu";
 import { OperationBanner } from "./OperationBanner";
-import { AllCaughtUp, NestedRow, Row, Section, SectionBtn } from "./ChangeRows";
+import { AllCaughtUp, NestedRow, ReviewSummary, Row, Section, SectionBtn } from "./ChangeRows";
 import { CommitBox } from "./CommitBox";
 import { RowAction } from "@/components/RowAction";
 
@@ -267,24 +266,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     <div className="flex h-full flex-col">
       {filter.bar}
       {status.operation?.kind === "bisect" ? <BisectBar refresh={refresh} /> : status.operation && <OperationBanner status={full} refresh={refresh} />}
-      {total.length > 0 && (
-        <div className="shrink-0 border-b border-border px-3 py-2">
-          <div className="flex items-center gap-2 text-[11.5px]">
-            <span className="text-muted-foreground">
-              <span className="font-semibold text-foreground">{total.length}</span> {total.length === 1 ? "file" : "files"}
-            </span>
-            <span className="font-mono text-[11px]">
-              <span className="text-added">+{add}</span> <span className="text-removed">-{del}</span>
-            </span>
-            <span className="ml-auto text-muted-foreground">
-              <span className={cn("font-semibold", reviewed === total.length ? "text-added" : "text-foreground")}>{reviewed}</span>/{total.length} reviewed
-            </span>
-          </div>
-          <div className="mt-1.5 h-[3px] overflow-hidden bg-border">
-            <div className="h-full bg-added transition-[width] duration-300" style={{ width: `${(reviewed / total.length) * 100}%` }} />
-          </div>
-        </div>
-      )}
+      {total.length > 0 && <ReviewSummary files={total.length} add={add} del={del} reviewed={reviewed} />}
       <div
         onKeyDown={onListKey}
         // React focus events bubble out of portals too, so a row's open context menu still counts as the list.

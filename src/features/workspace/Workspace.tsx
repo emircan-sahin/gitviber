@@ -1,4 +1,4 @@
-import { ChevronsDownUp, PanelLeftClose, PanelRightClose, Search } from "lucide-react";
+import { ChevronsDownUp, GitCompareArrows, PanelLeftClose, PanelRightClose, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -16,10 +16,12 @@ import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { useTerminals } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
+import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
 import { revealPath } from "@/lib/app/openIn";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
 import { changeList } from "@/features/changes/changeList";
+import { BranchReview, useBranchReview } from "@/features/changes/BranchReview";
 import { showQuickOpen, useQuickOpenSource } from "@/features/palette/CommandPalette";
 import { FileTree, type FileTreeHandle } from "@/features/explorer/FileTree";
 import { type HistorySearch, NO_SEARCH, SearchableHistory } from "@/features/history/HistorySearch";
@@ -75,9 +77,13 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const searchFocused = useCallback(() => setSearchFocus(false), []);
   // Blame clicks so far: each is a new request, even for the commit already on show.
   const reveals = useRef(0);
-  const { tabs, activeKey, setActiveKey, open, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status);
-  const { viewedMap, viewed, setViewed, toggleViewed } = useViewed(saved, status, repo.refresh);
-  useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap] }), [root, tabs, activeKey, listTab, viewedMap]);
+  // The full ref Changes reviews the branch against, in place of the uncommitted list; null: not reviewing.
+  const [review, setReview] = useState<string | null>(() => (typeof saved?.review === "string" ? saved.review : null));
+  const reviewing = listTab === "changes" && review !== null;
+  const branchReview = useBranchReview(review, repo.revision, reviewing);
+  const { tabs, activeKey, setActiveKey, open, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
+  const { viewedMap, viewed, setViewed, toggleViewed } = useViewed(saved, status, repo.refresh, branchReview.review);
+  useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap], review }), [root, tabs, activeKey, listTab, viewedMap, review]);
   // Git work on the left, files on the right; both collapse to give code the room.
   const listPanel = usePanelRef();
   const filesPanel = usePanelRef();
@@ -146,13 +152,22 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   }, [root, repo.revision, open]);
   useEffect(() => () => setLinkHost(null), []);
 
-  const changes = useMemo(() => (status ? changeList(status) : []), [status]);
+  const uncommitted = useMemo(() => (status ? changeList(status) : []), [status]);
+  // What J/K walk: the list Changes shows.
+  const changes: Selection[] = review === null ? uncommitted : branchReview.rows;
+  const startReview = () => {
+    setReview((r) => r ?? reviewBase(repo.branches) ?? "");
+    showList("changes");
+  };
+  const reviewLabel = shortRef(review || reviewBase(repo.branches) || "") || "a base branch";
   const remoteNames = useMemo(() => new Set(repo.branches.filter((b) => b.remote).map((b) => b.name)), [repo.branches]);
 
   // A merge/rebase that stopped on conflicts: bring the conflicts into view.
   const conflictCount = status?.conflicted.length ?? 0;
   useEffect(() => {
-    if (conflictCount > 0) setListTab("changes");
+    if (conflictCount === 0) return;
+    setListTab("changes");
+    setReview(null);
   }, [conflictCount]);
 
   const prefetch = useCallback((sel: Selection) => prefetchSelection(sel, repo.revision), [repo.revision]);
@@ -185,6 +200,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useCommands({
     "review.nextFile": () => step(1),
     "review.prevFile": () => step(-1),
+    "review.branch": startReview,
     "review.toggleViewed": () => {
       const t = tabs.find((x) => x.key === activeKey);
       // On a staged file this would unstage it; too much for a stray single key.
@@ -243,13 +259,13 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "file.reveal": () => revealInFinder(tabs.find((t) => t.key === activeKey)?.sel),
     "repo.refresh": () => repo.refresh(),
     "workbench.quickOpen": () => showQuickOpen(),
-    "workbench.openChange": changes.length ? () => showQuickOpen("changes") : undefined,
+    "workbench.openChange": uncommitted.length ? () => showQuickOpen("changes") : undefined,
   });
 
   // Quick open's picks take the code view along, where a new tab then takes focus (MonacoView).
   useQuickOpenSource({
     root,
-    changes,
+    changes: uncommitted,
     openFile: (path) => {
       focusPanel("code");
       open({ kind: "file", path }, true);
@@ -275,7 +291,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   }, [activeKey]);
 
   const active = tabs.find((t) => t.key === activeKey) ?? null;
-  const changeCount = changes.length;
+  const changeCount = uncommitted.length;
 
   return (
     <div className="flex h-full flex-col">
@@ -320,10 +336,40 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 <ListTabButton active={listTab === "issues"} onClick={() => setListTab("issues")}>
                   Issues
                 </ListTabButton>
-                <CollapseButton side="left" onClick={() => toggle(listPanel, "git")} />
+                {/* One group: two ml-autos split the free space. */}
+                <div className="ml-auto flex items-center gap-0.5">
+                  <Tip label={reviewing ? "Back to uncommitted changes" : `Review branch against ${reviewLabel}`}>
+                    <button
+                      aria-label={reviewing ? "Back to uncommitted changes" : "Review branch"}
+                      aria-pressed={reviewing}
+                      onClick={reviewing ? () => setReview(null) : startReview}
+                      className={cn(
+                        "flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
+                        reviewing && "bg-active text-foreground",
+                      )}
+                    >
+                      <GitCompareArrows className="size-3.5" />
+                    </button>
+                  </Tip>
+                  <CollapseButton side="left" onClick={() => toggle(listPanel, "git")} />
+                </div>
               </div>
               <div className="min-h-0 flex-1">
-                {listTab === "changes" && status && (
+                {reviewing && (
+                  <BranchReview
+                    base={review}
+                    data={branchReview}
+                    branches={repo.branches}
+                    activeKey={activeKey}
+                    onOpen={open}
+                    onHover={prefetch}
+                    viewed={viewed}
+                    setViewed={setViewed}
+                    onBase={setReview}
+                    onClose={() => setReview(null)}
+                  />
+                )}
+                {listTab === "changes" && review === null && status && (
                   <ChangesPanel status={status} head={repo.commits[0] ?? null} main={main} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} setViewed={setViewed} onRevealInExplorer={revealInExplorer} onShowHistory={(path) => showHistory(path, true)} />
                 )}
                 {listTab === "pulls" && (
@@ -468,7 +514,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
-      <StatusBar repo={repo} reviewed={changes.filter(viewed).length} active={active?.sel} />
+      <StatusBar repo={repo} reviewed={uncommitted.filter(viewed).length} active={active?.sel} />
       <TerminalRestoreOffer />
     </div>
   );
@@ -508,6 +554,6 @@ function ListTabButton({ active, onClick, count, children }: { active: boolean; 
 
 /** The open file's working copy, else the repository's folder (a PR or an issue has no file). */
 function revealInFinder(sel: Selection | undefined) {
-  const path = sel && ["file", "unstaged", "staged", "conflict"].includes(sel.kind) ? selectionPath(sel) : "";
+  const path = sel && ["file", "unstaged", "staged", "conflict", "branch"].includes(sel.kind) ? selectionPath(sel) : "";
   void revealPath(path);
 }

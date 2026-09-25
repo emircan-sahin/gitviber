@@ -158,6 +158,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &b.command("view.history", "History")?,
             &b.command("view.pulls", "Pull Requests")?,
             &b.command("view.issues", "Issues")?,
+            &b.command("review.branch", "Review Branch Against Base")?,
             &b.command("history.search", "Search History")?,
             &sep()?,
             &b.command("view.toggleGitPanel", "Toggle Git Panel")?,

@@ -332,7 +332,7 @@ export interface OpenInApp {
   group: "editor" | "terminal" | "other";
 }
 
-export type DiffKind = "unstaged" | "staged" | "worktree" | "commit" | "range";
+export type DiffKind = "unstaged" | "staged" | "worktree" | "commit" | "range" | "base";
 
 export interface About {
   version: string;

@@ -5,10 +5,12 @@ import { newerCopy, useGitHubCacheVersion } from "@/lib/github/githubCache";
 import { type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import type { loadWorkspace } from "@/lib/repo/session";
 import { isChange, relocate } from "@/features/changes/changeList";
+import type { BranchChange } from "@/features/changes/BranchReview";
 import { type Tab, type TabGroup, tabGroup } from "@/features/viewer/tabs";
 
 /** The code view's tabs: preview and pinned, closed ones to reopen, and following their files through git and renames. */
-export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoStatus | null) {
+/** `review`: the branch review's rows as last loaded, null while it isn't. */
+export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoStatus | null, review: BranchChange[] | null) {
   // Tabs and the active key change together, so they live in one state (no nested updates).
   const [tabState, setTabState] = useState<{ tabs: Tab[]; active: string | null }>(() => ({ tabs: saved?.tabs ?? [], active: saved?.active ?? null }));
   const { tabs, active: activeKey } = tabState;
@@ -99,15 +101,13 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     });
   }, []);
 
-  // Keep change tabs in sync with git: a staged or resolved file moves lists, a
-  // committed/discarded one disappears. Two tabs that land on the same file merge.
-  useEffect(() => {
-    if (!status) return;
+  // Tabs as `move` places them now; null closes one. Two that land on the same file merge.
+  const follow = useCallback((move: (sel: Selection) => Selection | null) => {
     setTabState(({ tabs: prev, active }) => {
       const moved = new Map<string, string | null>();
       const next: Tab[] = [];
       for (const t of prev) {
-        const sel = isChange(t.sel) ? relocate(status, t.sel) : t.sel;
+        const sel = move(t.sel);
         if (!sel) {
           moved.set(t.key, null);
           continue;
@@ -122,7 +122,21 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
       const nextActive = active && moved.has(active) ? (moved.get(active) ?? next[0]?.key ?? null) : active;
       return { tabs: next, active: nextActive };
     });
-  }, [status]);
+  }, []);
+
+  // Keep change tabs in sync with git: a staged or resolved file moves lists, a
+  // committed/discarded one disappears.
+  useEffect(() => {
+    if (status) follow((sel) => (isChange(sel) ? relocate(status, sel) : sel));
+  }, [status, follow]);
+
+  // Branch review tabs follow the review: onto the new merge base after a rebase or another base,
+  // closed once their file is no longer in it.
+  useEffect(() => {
+    if (!review) return;
+    const rows = new Map(review.map((r) => [r.file.path, r]));
+    follow((sel) => (sel.kind === "branch" ? (rows.get(sel.file.path) ?? null) : sel));
+  }, [review, follow]);
 
   // Issue and PR tabs hold the item as it was when opened, saved across restarts too. When a
   // list or detail read brings a newer copy (closed, renamed), the tab's title and icon follow.

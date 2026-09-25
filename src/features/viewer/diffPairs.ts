@@ -12,11 +12,11 @@ export type FileSelection = Exclude<Selection, { kind: "pull" | "issue" }>;
 
 export function pairArgs(sel: FileSelection, revision: number, whitespace: Whitespace | null = null) {
   const kind: DiffKind =
-    sel.kind === "file" ? "worktree" : sel.kind === "conflict" ? "unstaged" : sel.kind === "pr-file" ? "range" : sel.kind;
+    sel.kind === "file" ? "worktree" : sel.kind === "conflict" ? "unstaged" : sel.kind === "pr-file" ? "range" : sel.kind === "branch" ? "base" : sel.kind;
   const path = selectionPath(sel);
   const oldPath = sel.kind === "file" ? null : sel.file.oldPath;
   const sha = sel.kind === "commit" ? sel.commit.sha : sel.kind === "pr-file" ? sel.range.head : null;
-  const base = sel.kind === "pr-file" ? sel.range.base : null;
+  const base = sel.kind === "pr-file" ? sel.range.base : sel.kind === "branch" ? sel.base : null;
   // Commits and PR ranges never change, so only working-tree views follow the revision counter.
   const rev = sel.kind === "commit" || sel.kind === "pr-file" ? 0 : revision;
   const id = `${kind}\0${path}\0${oldPath}\0${sha}\0${base}\0${whitespace}`;
@@ -25,13 +25,15 @@ export function pairArgs(sel: FileSelection, revision: number, whitespace: White
 
 /**
  * Where the code view's Go to Definition looks: a commit's sides in the commit and its parent, a
- * PR's in its base and head. Working-tree diffs look in the working tree for both sides (their old
- * side is the index or HEAD, close enough). A place found opens in the working-tree file.
+ * PR's in its base and head, a branch review's in its merge base and the working tree. Other
+ * working-tree diffs look in the working tree for both sides (their old side is the index or HEAD,
+ * close enough). A place found opens in the working-tree file.
  */
 export function linkSides(sel: FileSelection, revision: number): { original: LinkSide | null; modified: LinkSide } {
   const path = selectionPath(sel);
   if (sel.kind === "file") return { original: null, modified: { path, tree: { rev: null, revision } } };
-  const [before, after] = sel.kind === "commit" ? [`${sel.commit.sha}^`, sel.commit.sha] : sel.kind === "pr-file" ? [sel.range.base, sel.range.head] : [null, null];
+  const [before, after] =
+    sel.kind === "commit" ? [`${sel.commit.sha}^`, sel.commit.sha] : sel.kind === "pr-file" ? [sel.range.base, sel.range.head] : sel.kind === "branch" ? [sel.base, null] : [null, null];
   return { original: { path: sel.file.oldPath ?? path, tree: { rev: before, revision } }, modified: { path, tree: { rev: after, revision } } };
 }
 

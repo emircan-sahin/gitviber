@@ -242,16 +242,38 @@ pub struct CompareFiles {
 }
 
 pub fn compare_files(repo: &Path, with: &str) -> Result<CompareFiles, String> {
-    validate_full_ref(repo, with)?;
-    let base = run_text(repo, &["merge-base", "HEAD", with])
-        .map_err(|_| "They have no commit in common.".to_string())?
-        .trim()
-        .to_string();
+    let base = parted_at(repo, with)?;
     let head = run_text(repo, &["rev-parse", &format!("{with}^{{commit}}")])?
         .trim()
         .to_string();
     let files = range_files(repo, &base, &head)?;
     Ok(CompareFiles { base, head, files })
+}
+
+/// Where HEAD and `with` (a full ref) parted: their merge base. A branch that isn't here (not
+/// fetched, or deleted) says so, rather than that they share no commit.
+pub(super) fn parted_at(repo: &Path, with: &str) -> Result<String, String> {
+    validate_full_ref(repo, with)?;
+    if run(
+        repo,
+        &["rev-parse", "--verify", "-q", &format!("{with}^{{commit}}")],
+    )
+    .is_err()
+    {
+        let name = REF_KINDS
+            .iter()
+            .find_map(|(prefix, _)| with.strip_prefix(prefix))
+            .unwrap_or(with);
+        return Err(format!(
+            "{name} doesn't exist here. Fetch, or pick another branch."
+        ));
+    }
+    if !has_head(repo) {
+        return Err("There are no commits yet.".into());
+    }
+    run_text(repo, &["merge-base", "HEAD", with])
+        .map(|s| s.trim().to_string())
+        .map_err(|_| "They have no commit in common.".to_string())
 }
 
 /// A place HEAD has been: what took it there (git's "reflog subject") and when.
