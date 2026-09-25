@@ -5,7 +5,6 @@ import type { Components } from "react-markdown";
 import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Textarea } from "@/components/ui/textarea";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { accessFor, api, errorMessage, fullName, github, type MergeMethod, type Pull, type PullCheck, type PullDetail, repoOf, type ReviewEvent } from "@/lib/api";
 import { listIsBehind, revalidate, useGitHubData } from "@/lib/githubCache";
@@ -19,6 +18,7 @@ import { followLink, MarkdownBody } from "./MarkdownView";
 import { CopyLinkButton, isoToUnix, notifyPullsChanged, openOnGitHub, PullStateIcon, pullSource } from "./PullsPanel";
 import { openWorktreeDialog } from "./WorktreeDialogs";
 import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
+import { MarkdownInput } from "./MarkdownInput";
 
 const METHODS: Record<MergeMethod, string> = { merge: "Create a merge commit", squash: "Squash and merge", rebase: "Rebase and merge" };
 
@@ -184,7 +184,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
               <FolderGit2 /> Check out in new worktree…
             </Button>
           )}
-          {p.state === "open" && <ReviewButton own={own} counts={!!access?.push} busy={!!busy} onSubmit={(event, body) => act("Review", () => github.review(target, p.number, event, body), REVIEWS[event].done)} />}
+          {p.state === "open" && <ReviewButton pull={p} own={own} counts={!!access?.push} busy={!!busy} onSubmit={(event, body) => act("Review", () => github.review(target, p.number, event, body), REVIEWS[event].done)} />}
           {p.state === "open" && canClose && (
             <Button variant="secondary" size="sm" disabled={!!busy} onClick={() => setOpen(false)}>
               <GitPullRequestClosed /> Close
@@ -365,11 +365,13 @@ const REVIEWS: Record<ReviewEvent, { label: string; note: string; done: string }
 /** GitHub's "Review changes": a verdict plus a note, which GitHub requires unless approving. */
 /** `counts`: write access. Anyone may review, but GitHub only counts a writer's verdict toward merging. */
 function ReviewButton({
+  pull,
   own,
   counts,
   busy,
   onSubmit,
 }: {
+  pull: MarkdownHome;
   own: boolean;
   counts: boolean;
   busy: boolean;
@@ -394,7 +396,7 @@ function ReviewButton({
         </Button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-80 p-3">
-        <Textarea autoFocus value={body} onChange={(e) => setBody(e.target.value)} placeholder="Leave a comment (markdown)" rows={4} className="text-[12px]" />
+        <MarkdownInput pull={pull} autoFocus value={body} onChange={(e) => setBody(e.target.value)} placeholder="Leave a comment (markdown)" rows={4} className="text-[12px]" />
         <div className="mt-2 space-y-1.5">
           {(Object.keys(REVIEWS) as ReviewEvent[]).map((e) => {
             const disabled = own && e !== "COMMENT";
@@ -475,9 +477,13 @@ export function Section({ title, aside, children }: { title: string; aside?: str
   );
 }
 
+/** Where markdown lives: a PR or issue, or for a draft of a new one (`number` null) its repo's url. */
+export type MarkdownHome = { url: string; number: number | null };
+
 /** A PR or issue description or comment, rendered like GitHub does (see MarkdownBody for what's allowed). */
-export function PullMarkdown({ pull, idPrefix, text, empty, className }: { pull: Pick<Pull, "url" | "number">; idPrefix: string; text: string; empty?: string; className?: string }) {
-  // Keyed on the tab's PR, not its refreshed detail: new components would remount every image.
+export function PullMarkdown({ pull, idPrefix, text, empty, className }: { pull: MarkdownHome; idPrefix: string; text: string; empty?: string; className?: string }) {
+  // Keyed on the PR's values, not the object (refreshed detail, a draft's inline one): new
+  // components would remount every image.
   const components = useMemo<Components>(() => {
     // Relative links in PR or issue text are relative to its page, as on github.com.
     const absolute = (href: string) => {
@@ -491,7 +497,7 @@ export function PullMarkdown({ pull, idPrefix, text, empty, className }: { pull:
       a: markdownLink((href) => followLink(href, (href) => followLink(absolute(href), () => {}), idPrefix)),
       img: ({ src, alt, width, height, title }) => (typeof src === "string" && absolute(src) ? <GitHubImage src={absolute(src)} pull={pull} alt={alt} width={width} height={height} title={title} /> : null),
     };
-  }, [pull, idPrefix]);
+  }, [pull.url, pull.number, idPrefix]);
   if (!text.trim()) return empty ? <div className={cn("px-3 py-2.5 text-[12px] text-subtle italic", className)}>{empty}</div> : null;
   return (
     <div className={cn("markdown px-3 py-2.5 select-text", className)}>
@@ -508,14 +514,16 @@ const ATTACHMENT = /^https:\/\/github\.com\/(?:user-attachments\/assets|[^/]+\/[
  * Public repos' attachments load as they are. A private repo's need a github.com login the
  * webview doesn't have; on failure, swap in the signed link the API hands out instead.
  */
-function GitHubImage({ src, pull, ...props }: { src: string; pull: Pick<Pull, "url" | "number"> } & Omit<ComponentProps<"img">, "src">) {
+function GitHubImage({ src, pull, ...props }: { src: string; pull: MarkdownHome } & Omit<ComponentProps<"img">, "src">) {
   const [signed, setSigned] = useState<string | null>(null);
   if (!isGitHubHosted(src)) return <ExternalImage src={src} {...props} />;
   const id = ATTACHMENT.exec(src)?.[1];
   const onError = () => {
-    if (!id || signed) return;
+    // A draft has no page on GitHub to sign its links from.
+    if (!id || signed || pull.number === null) return;
+    const number = pull.number;
     // Signed links expire after 5 minutes; reuse a lookup for 4.
-    revalidate(`attachments:${pull.url}`, () => github.attachments(repoOf(pull.url), pull.number), 240_000)
+    revalidate(`attachments:${pull.url}`, () => github.attachments(repoOf(pull.url), number), 240_000)
       .then((urls) => urls[id] && setSigned(urls[id]))
       .catch(() => {});
   };

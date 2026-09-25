@@ -5,7 +5,6 @@ import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { accessFor, type CloseReason, errorMessage, github, type Issue, type IssueLabel, issues, repoOf } from "@/lib/api";
 import { listIsBehind, useGitHubData } from "@/lib/githubCache";
 import { matchesCommand } from "@/lib/keybindings";
@@ -14,6 +13,7 @@ import { cn, relativeTime } from "@/lib/utils";
 import { IssueStateIcon, LabelChip, LabelPicker, notifyIssuesChanged } from "./IssuesPanel";
 import { CopyLinkButton, isoToUnix, openOnGitHub } from "./PullsPanel";
 import { PullMarkdown, Section } from "./PullView";
+import { MarkdownInput } from "./MarkdownInput";
 
 const CLOSE: Record<CloseReason, { label: string; note: string }> = {
   completed: { label: "Close as completed", note: "Done, closed, fixed, resolved" },
@@ -133,6 +133,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
       <div className="mx-auto max-w-4xl px-6 py-5">
         {editing && d ? (
           <EditIssue
+            issue={issue}
             detail={d}
             busy={!!busy}
             onCancel={() => setEditing(false)}
@@ -243,7 +244,8 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
 
         <Section title="Add a comment">
           <div className="p-2">
-            <Textarea
+            <MarkdownInput
+              pull={issue}
               value={comment}
               onChange={(e) => setComment(e.target.value)}
               onKeyDown={(e) => {
@@ -298,11 +300,13 @@ function CloseButton({ busy, withComment, onClose }: { busy: boolean; withCommen
 }
 
 function EditIssue({
+  issue,
   detail,
   busy,
   onCancel,
   onSave,
 }: {
+  issue: Issue;
   detail: { title: string; body: string };
   busy: boolean;
   onCancel: () => void;
@@ -319,7 +323,7 @@ function EditIssue({
       }}
     >
       <Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
-      <Textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Description (markdown)" rows={12} className="text-[12px]" />
+      <MarkdownInput pull={issue} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Description (markdown)" rows={12} className="text-[12px]" />
       <div className="flex justify-end gap-1.5">
         <Button type="button" variant="ghost" size="sm" onClick={onCancel} disabled={busy}>
           Cancel

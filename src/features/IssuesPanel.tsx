@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { errorMessage, fullName, github, type Issue, type IssueCounts, type IssueLabel, isNotConnected, issues, type Target } from "@/lib/api";
 import { invalidate, useGitHubData } from "@/lib/githubCache";
@@ -16,6 +15,7 @@ import { useListNav } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 import { ConnectGitHub, FilterTabs, isoToUnix, LinkMenu, NewButton } from "./PullsPanel";
 import { RepoPanes } from "./RepoPanes";
+import { MarkdownInput } from "./MarkdownInput";
 
 type Filter = "open" | "closed" | "all";
 
@@ -213,6 +213,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
       {creating && (
         <CreateIssueDialog
           target={creating.target}
+          repo={creating.target ?? fullName(origin!.repo)}
           onClose={() => setCreating(null)}
           onCreated={(i) => {
             setCreating(null);
@@ -500,7 +501,8 @@ export function LabelPicker({
   );
 }
 
-function CreateIssueDialog({ target, onClose, onCreated }: { target: Target; onClose: () => void; onCreated: (i: Issue) => void }) {
+/** `repo`: owner/name of `target`, which is null for origin. */
+function CreateIssueDialog({ target, repo, onClose, onCreated }: { target: Target; repo: string; onClose: () => void; onCreated: (i: Issue) => void }) {
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
@@ -531,7 +533,7 @@ function CreateIssueDialog({ target, onClose, onCreated }: { target: Target; onC
           }}
         >
           <Input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
-          <Textarea value={body} onChange={(e) => setBody(e.target.value)} placeholder="Description (markdown)" rows={8} />
+          <MarkdownInput pull={{ url: `https://github.com/${repo}`, number: null }} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Description (markdown)" rows={8} />
           <div className="flex justify-end">
             <Button type="submit" disabled={busy || !title.trim()}>
               {busy ? "Creating…" : "Create"}

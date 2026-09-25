@@ -4,7 +4,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
 import { type DiffRow, errorMessage, github, repoOf, type ReviewComment } from "@/lib/api";
 import { useGitHubData } from "@/lib/githubCache";
 import { monaco } from "@/lib/monaco";
@@ -12,6 +11,7 @@ import { toast } from "@/lib/toast";
 import { relativeTime } from "@/lib/utils";
 import { isoToUnix } from "./PullsPanel";
 import { PullMarkdown } from "./PullView";
+import { MarkdownInput } from "./MarkdownInput";
 
 type Side = "LEFT" | "RIGHT";
 
@@ -149,6 +149,7 @@ export function followReviewThreads(diff: monaco.editor.IStandaloneDiffEditor, g
       add(
         spot(side, line, s),
         <Composer
+          pull={s.review.pull}
           label={`Comment on line ${line}${side === "LEFT" ? " (old)" : ""}`}
           onCancel={() => {
             draft = null;
@@ -211,7 +212,7 @@ function Thread({ review, thread }: { review: Review; thread: ReviewComment[] })
       ))}
       <div className="border-t border-border px-3 py-2">
         {replying ? (
-          <Composer label="Reply" onCancel={() => setReplying(false)} onSubmit={(body) => review.post(root.side, root.line ?? 0, body, root.id)} bare />
+          <Composer pull={review.pull} label="Reply" onCancel={() => setReplying(false)} onSubmit={(body) => review.post(root.side, root.line ?? 0, body, root.id)} bare />
         ) : (
           <button className="w-full rounded-sm border border-border bg-background px-2 py-1 text-left text-[11.5px] text-subtle hover:border-border-strong" onClick={() => setReplying(true)}>
             Reply…
@@ -222,7 +223,7 @@ function Thread({ review, thread }: { review: Review; thread: ReviewComment[] })
   );
 }
 
-function Composer({ label, onSubmit, onCancel, bare = false }: { label: string; onSubmit: (body: string) => Promise<void>; onCancel: () => void; bare?: boolean }) {
+function Composer({ pull, label, onSubmit, onCancel, bare = false }: { pull: Review["pull"]; label: string; onSubmit: (body: string) => Promise<void>; onCancel: () => void; bare?: boolean }) {
   const [body, setBody] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = async () => {
@@ -240,7 +241,8 @@ function Composer({ label, onSubmit, onCancel, bare = false }: { label: string; 
   };
   const box = (
     <div className="flex flex-col gap-2">
-      <Textarea
+      <MarkdownInput
+        pull={pull}
         autoFocus
         value={body}
         onChange={(e) => setBody(e.target.value)}

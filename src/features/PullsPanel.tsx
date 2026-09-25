@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
 import { accessFor, api, type Branch, type Commit, errorMessage, fullName, type GitHubAccess, type GitHubAccount, github, isNotConnected, PR_PAGE, type Pull, type RepoStatus, repoOf, type Target } from "@/lib/api";
 import { CiBadge } from "@/components/CiBadge";
@@ -17,6 +16,7 @@ import { openWorktreeDialog, type PullSource } from "./WorktreeDialogs";
 import { useListNav } from "@/lib/useListNav";
 import { cn, relativeTime } from "@/lib/utils";
 import { RepoPanes } from "./RepoPanes";
+import { MarkdownInput } from "./MarkdownInput";
 
 type Filter = "open" | "closed" | "all";
 
@@ -595,7 +595,8 @@ function CreatePullDialog({
               setTitle(e.target.value);
               setTyped((t) => ({ ...t, title: true }));
             }} placeholder="Title" />
-          <Textarea
+          <MarkdownInput
+            pull={{ url: `https://github.com/${fullName(target.repo)}`, number: null }}
             value={body}
             onChange={(e) => {
               setBody(e.target.value);
