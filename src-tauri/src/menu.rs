@@ -63,6 +63,13 @@ const REVEAL: &str = if cfg!(target_os = "macos") {
     "Show in Folder"
 };
 
+/// GitHub Desktop's name for it.
+const SHOW_LOGS: &str = if cfg!(target_os = "macos") {
+    "Show Logs in Finder"
+} else {
+    "Show Logs"
+};
+
 pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let mut b = Builder {
         app,
@@ -208,6 +215,10 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &b.command("git.toggleStage", "Stage / Unstage Changes")?,
             &b.command("git.discard", "Discard Changes")?,
             &sep()?,
+            &b.command("diff.stageChange", "Stage Change or Selected Lines")?,
+            &b.command("diff.unstageChange", "Unstage Change or Selected Lines")?,
+            &b.command("diff.discardChange", "Discard Change or Selected Lines")?,
+            &sep()?,
             &b.command("git.fetch", "Fetch")?,
             &b.command("git.pull", "Pull")?,
             &b.command("git.push", "Push")?,
@@ -235,6 +246,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &b.command("workbench.shortcutOverlay", "Show Shortcut Overlay")?,
             &sep()?,
             &b.command("help.reportBug", "Report a Bug…")?,
+            &b.command("help.copyDiagnostics", "Copy Diagnostics")?,
+            &b.command("help.showLogs", SHOW_LOGS)?,
             &b.command("help.releaseNotes", "Release Notes")?,
             &b.command("help.license", "View License")?,
         ],

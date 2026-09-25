@@ -123,6 +123,9 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   useCommands({
     "diff.nextChange": diff ? () => view.current?.next() : undefined,
     "diff.prevChange": diff ? () => view.current?.prev() : undefined,
+    "diff.stageChange": code && sel.kind === "unstaged" ? () => view.current?.lineAction("stage") : undefined,
+    "diff.unstageChange": code && sel.kind === "staged" ? () => view.current?.lineAction("unstage") : undefined,
+    "diff.discardChange": code && sel.kind === "unstaged" ? () => view.current?.lineAction("discard") : undefined,
   });
 
   return (

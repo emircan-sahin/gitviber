@@ -1,6 +1,7 @@
 // Staging part of a file from its diff, as in VS Code: hovering a change shows Stage and Discard
-// (Unstage on the staged side), and the context menu stages, unstages or discards the selected
-// lines, or the change at the cursor. lib/git/lineStaging says which lines; lines.rs writes them.
+// (Unstage on the staged side), and the context menu and the Diff commands' keys stage, unstage or
+// discard the selected lines, or the change at the cursor. lib/git/lineStaging says which lines;
+// lines.rs writes them.
 import { api, type DiffPair, errorMessage } from "../api";
 import { type Change, changeAt, changes, isEmpty, type Picked, pick, type Side, whole } from "../git/lineStaging";
 import { monaco } from "./monaco";
@@ -15,17 +16,17 @@ export interface Staging {
   refresh: () => unknown;
 }
 
-type Action = "stage" | "unstage" | "discard";
+export type LineAction = "stage" | "unstage" | "discard";
 
-const LABELS: Record<Action, [change: string, lines: string, failed: string]> = {
+const LABELS: Record<LineAction, [change: string, lines: string, failed: string]> = {
   stage: ["Stage Change", "Stage Selected Lines", "Stage failed"],
   unstage: ["Unstage Change", "Unstage Selected Lines", "Unstage failed"],
   discard: ["Discard Change", "Discard Selected Lines", "Discard failed"],
 };
 
-const actionsFor = (kind: Staging["kind"]): Action[] => (kind === "unstaged" ? ["stage", "discard"] : ["unstage"]);
+const actionsFor = (kind: Staging["kind"]): LineAction[] => (kind === "unstaged" ? ["stage", "discard"] : ["unstage"]);
 
-async function run(s: Staging, action: Action, p: Picked) {
+async function run(s: Staging, action: LineAction, p: Picked) {
   if (isEmpty(p)) return;
   const { pair } = s;
   const request = {
@@ -48,9 +49,21 @@ async function run(s: Staging, action: Action, p: Picked) {
   await s.refresh();
 }
 
+export interface LineActions extends monaco.IDisposable {
+  /** The keyboard's Stage / Unstage / Discard Change: the context menu's pick, if it's on screen. */
+  act(action: LineAction): void;
+}
+
 /** Stage, unstage and discard in `diff` for what `staging` says it shows (null: a diff that can't). */
-export function followLineActions(diff: monaco.editor.IStandaloneDiffEditor, staging: () => Staging | null): monaco.IDisposable {
+export function followLineActions(diff: monaco.editor.IStandaloneDiffEditor, staging: () => Staging | null): LineActions {
   const subs: monaco.IDisposable[] = [];
+  const pickers = new Map<monaco.editor.ICodeEditor, () => Picked | null>();
+  // The side the keys act on: where the cursor was last put in this file (a click, a selection, Next
+  // Change). Split view has a cursor on each side, and restoring a file's view moves both.
+  // Staged and unstaged share the editor, each with its own cursors.
+  let last: { path: string; kind: Staging["kind"]; code: monaco.editor.ICodeEditor } | null = null;
+  // Until the last one's refresh lands: the diff it read is stale by then.
+  let busy = false;
   // Read on every pointer move: worked out once per diff.
   let memo: { rows: DiffPair["rows"]; list: Change[] } | null = null;
   const list = () => {
@@ -83,8 +96,14 @@ export function followLineActions(diff: monaco.editor.IStandaloneDiffEditor, sta
       kind.set(s?.kind ?? "");
       onChange.set(!!s && !!changeAt(list(), side, code.getPosition()?.lineNumber ?? 0));
     };
-    subs.push(code.onDidChangeCursorPosition(update), code.onDidChangeModel(update), code.onDidFocusEditorText(update));
-    for (const action of ["stage", "unstage", "discard"] as Action[]) {
+    const moved = (e: monaco.editor.ICursorPositionChangedEvent) => {
+      const s = staging();
+      if (s && e.source !== "restoreState") last = { path: s.path, kind: s.kind, code };
+      update();
+    };
+    pickers.set(code, chosen);
+    subs.push(code.onDidChangeCursorPosition(moved), code.onDidChangeModel(update), code.onDidFocusEditorText(update));
+    for (const action of ["stage", "unstage", "discard"] as LineAction[]) {
       const on = `gitviberStaging == ${action === "unstage" ? "staged" : "unstaged"}`;
       const [change, lines] = LABELS[action];
       const go = () => {
@@ -101,7 +120,22 @@ export function followLineActions(diff: monaco.editor.IStandaloneDiffEditor, sta
   }
 
   subs.push(hoverBar(diff, staging, list));
-  return { dispose: () => subs.forEach((s) => s.dispose()) };
+  return {
+    act(action) {
+      const s = staging();
+      if (!s || busy || !actionsFor(s.kind).includes(action)) return;
+      const code = last?.path === s.path && last.kind === s.kind ? last.code : diff.getModifiedEditor();
+      const sel = code.getSelection();
+      // The cursor stays put while the arrows scroll: a change scrolled out of sight isn't the one being read.
+      const seen = !!sel && code.getVisibleRanges().some((r) => r.startLineNumber <= sel.endLineNumber && sel.startLineNumber <= r.endLineNumber);
+      const p = seen ? pickers.get(code)?.() : null;
+      if (p && !isEmpty(p)) {
+        busy = true;
+        void run(s, action, p).finally(() => (busy = false));
+      } else toast("info", "No change at the cursor", "Click into a change, or go to one with Next Change.");
+    },
+    dispose: () => subs.forEach((s) => s.dispose()),
+  };
 }
 
 /** Buttons over the change under the pointer, at its top right. */

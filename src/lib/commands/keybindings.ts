@@ -53,6 +53,8 @@ export const MENU_ACTIONS = [
   "help.readme",
   "help.shortcuts",
   "help.reportBug",
+  "help.copyDiagnostics",
+  "help.showLogs",
   "help.releaseNotes",
   "help.license",
 ] as const;
@@ -64,11 +66,13 @@ export const MENU_ACTION_INFO: Record<(typeof MENU_ACTIONS)[number], { title: st
   "help.readme": { title: "GitViber Help", category: "Help" },
   "help.shortcuts": { title: "Keyboard Shortcuts", category: "Help" },
   "help.reportBug": { title: "Report a Bug", category: "Help" },
+  "help.copyDiagnostics": { title: "Copy Diagnostics", category: "Help" },
+  "help.showLogs": { title: "Show Logs", category: "Help" },
   "help.releaseNotes": { title: "Release Notes", category: "Help" },
   "help.license": { title: "View License", category: "Help" },
 };
 
-const MODAL_SAFE: Action[] = ["workbench.openSettings", "workbench.shortcutOverlay", "window.reload", "view.zoomIn", "view.zoomOut", "view.zoomReset", "app.about", "help.readme", "help.shortcuts", "help.reportBug", "help.releaseNotes", "help.license"];
+const MODAL_SAFE: Action[] = ["workbench.openSettings", "workbench.shortcutOverlay", "window.reload", "view.zoomIn", "view.zoomOut", "view.zoomReset", "app.about", "help.readme", "help.shortcuts", "help.reportBug", "help.copyDiagnostics", "help.showLogs", "help.releaseNotes", "help.license"];
 
 // Last registered wins, so a nested view can take a command over while it's mounted.
 const handlers = new Map<Action, (() => void)[]>();
@@ -121,7 +125,7 @@ function dispatch(e: KeyboardEvent) {
   e.preventDefault();
   // Keep it from Monaco too, which would take F7 for its own diff navigation and ⌘Z as undo.
   e.stopPropagation();
-  run();
+  if (!(e.repeat && "noRepeat" in found.command)) run();
 }
 
 // Clicking into the code view focuses Monaco's text area, which sees keys before the window does:

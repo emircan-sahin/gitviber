@@ -122,8 +122,11 @@ is untested.
 
 No telemetry, no API keys. The app talks to your git remotes and, for pull requests and issues,
 GitHub. For those it borrows a login you already have, the GitHub CLI (`gh auth token`) first,
-then git's stored github.com credential, and keeps the token in memory. Errors go to a local file
-(`~/Library/Logs/app.gitviber.desktop/errors.log` on macOS) and nowhere else. Markdown from GitHub
+then git's stored github.com credential, and keeps the token in memory. Errors, including every
+error message the app shows you (a failed push's git output, say), go to a local file
+(`~/Library/Logs/app.gitviber.desktop/errors.log` on macOS, Help → Show Logs) and nowhere else,
+with logins in URLs and GitHub tokens blanked out. Help → Copy Diagnostics copies only the versions
+of GitViber, the OS, git, `gh` and WebKit, for you to paste into a bug report. Markdown from GitHub
 is cut down to GitHub's own HTML allowlist, and an image hosted outside GitHub loads only when you
 click it. Commit message suggestions go wherever the command you picked sends them.
 
@@ -153,6 +156,7 @@ On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+
 | `V` | Mark file viewed |
 | `S` `⌘⌫` | Stage or unstage, discard the open file |
 | `F7` `⇧F7`, `⌥↓` `⌥↑` | Next / previous change |
+| `⌥⌘S` `⌥⌘N` `⇧⌘⌫` | Stage, unstage, discard the selected lines, else the change at the cursor (next / previous change puts it there) |
 | `⌥S` `⌥C` `⌥Z` | Split view, collapse unchanged, word wrap |
 | `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
 | `⇧⌘G` `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer |

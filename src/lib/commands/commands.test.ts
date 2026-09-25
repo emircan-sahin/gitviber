@@ -238,3 +238,38 @@ test("only macOS reserves chords", () => {
   assert.equal(isReserved("cmd+h", false), false);
   assert.equal(isReserved("cmd+m", false), false);
 });
+
+test("no two global commands share a default, and macOS takes none of them", () => {
+  for (const mac of [true, false]) {
+    const owner = new Map<string, string>();
+    for (const c of COMMANDS) {
+      if ("local" in c) continue;
+      for (const chord of bindingsFor(c.id, {}, mac)) {
+        assert.equal(owner.get(chord), undefined, `${chord} is ${owner.get(chord)}'s and ${c.id}'s (mac: ${mac})`);
+        assert.equal(isReserved(chord, mac), false, `${chord} (${c.id})`);
+        owner.set(chord, c.id);
+      }
+    }
+  }
+});
+
+// Monaco's own ⌥⌘ keys (Ctrl+Alt elsewhere), from its default keybindings: the code view's capture
+// listener would take them from it. Find's toggles (⌥⌘C W R L P), replace (⌥⌘F), remove brackets (⌥⌘⌫).
+const MONACO_ALT_CMD = ["c", "w", "r", "l", "p", "f", "backspace", "space", "[", "]", "up", "down", ".", "enter"].map((k) => `alt+cmd+${k}`);
+
+test("stage, unstage and discard the change at the cursor leave Monaco's keys and text fields alone", () => {
+  for (const id of ["diff.stageChange", "diff.unstageChange", "diff.discardChange"]) {
+    for (const mac of [true, false]) {
+      for (const chord of bindingsFor(id as Command["id"], {}, mac)) {
+        assert.ok(!MONACO_ALT_CMD.includes(chord), `${id}: ${chord} is Monaco's`);
+        // A key meant for the code view mustn't stage or discard from the commit message or the terminal.
+        assert.equal(runsWhileTyping(chord, byId(id), mac), false, `${id}: ${chord}`);
+        assert.equal(runsInTerminal(chord, byId(id), mac), false, `${id}: ${chord}`);
+      }
+    }
+  }
+  assert.equal(commandFor("cmd+r", {}, true)?.id, "window.reload");
+  // ⌥ turns S into ß and N into a dead key; the physical key counts.
+  assert.equal(press("ß", "KeyS", { altKey: true, metaKey: true }), "alt+cmd+s");
+  assert.equal(press("Dead", "KeyN", { altKey: true, metaKey: true }), "alt+cmd+n");
+});

@@ -342,6 +342,10 @@ export interface About {
   arch: string;
   /** `git --version` without the prefix; null when git can't run. */
   git: string | null;
+  /** `gh --version`'s version; null when the GitHub CLI isn't installed. */
+  gh: string | null;
+  /** The web view and its version, e.g. "WebKit 20621.1.15". */
+  webview: string | null;
 }
 
 export interface GitInfo {
