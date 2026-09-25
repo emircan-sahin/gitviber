@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED } from "@/lib/git/worktrees";
 import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
+import type { BranchChange } from "./BranchReview";
 import type { Change } from "./changeList";
 import { RowAction } from "@/components/RowAction";
 
@@ -26,6 +27,28 @@ export function Section({ title, count, tone, action, pinned, children }: { titl
         <div className={cn("ml-auto flex gap-0.5", !pinned && "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100")}>{action}</div>
       </div>
       {open && <div className="py-0.5">{children}</div>}
+    </div>
+  );
+}
+
+/** How far the review is: files, lines, and how many are marked viewed, over a progress bar. */
+export function ReviewSummary({ files, add, del, reviewed }: { files: number; add: number; del: number; reviewed: number }) {
+  return (
+    <div className="shrink-0 border-b border-border px-3 py-2">
+      <div className="flex items-center gap-2 text-[11.5px]">
+        <span className="text-muted-foreground">
+          <span className="font-semibold text-foreground">{files}</span> {files === 1 ? "file" : "files"}
+        </span>
+        <span className="font-mono text-[11px]">
+          <span className="text-added">+{add}</span> <span className="text-removed">-{del}</span>
+        </span>
+        <span className="ml-auto text-muted-foreground">
+          <span className={cn("font-semibold", reviewed === files ? "text-added" : "text-foreground")}>{reviewed}</span>/{files} reviewed
+        </span>
+      </div>
+      <div className="mt-1.5 h-[3px] overflow-hidden bg-border">
+        <div className="h-full bg-added transition-[width] duration-300" style={{ width: `${(reviewed / files) * 100}%` }} />
+      </div>
     </div>
   );
 }
@@ -53,7 +76,7 @@ export function Row({
   menu,
   children,
 }: {
-  sel: Change;
+  sel: Change | BranchChange;
   active: boolean;
   selected: boolean;
   /** Selected while focus is elsewhere: shown fainter, like VS Code's inactive selection. The open row keeps its color. */

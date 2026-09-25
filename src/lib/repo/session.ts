@@ -10,6 +10,8 @@ interface WorkspaceSnapshot {
   listTab: string;
   /** Viewed marks: `kind:path` → the file's content signature when it was marked. */
   viewed: [string, string][];
+  /** The full ref the branch is reviewed against, while Changes shows that review ("" before one is picked). */
+  review?: string | null;
 }
 
 /** A commit message being written in a worktree, kept until it's committed. */

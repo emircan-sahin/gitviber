@@ -68,6 +68,8 @@ export const COMMANDS = [
   { id: "review.nextFile", title: "Next Changed File", category: "Review", keys: ["j"] },
   { id: "review.prevFile", title: "Previous Changed File", category: "Review", keys: ["k"] },
   { id: "review.toggleViewed", title: "Toggle File Viewed", category: "Review", keys: ["v"] },
+  // Changes then lists the branch's commits and uncommitted work since it left the default branch.
+  { id: "review.branch", title: "Review Branch Against Base", category: "Review", keys: [] },
   { id: "diff.nextChange", title: "Next Change", category: "Diff", keys: ["f7", "alt+down"] },
   { id: "diff.prevChange", title: "Previous Change", category: "Diff", keys: ["shift+f7", "alt+up"] },
   { id: "diff.toggleSplit", title: "Toggle Unified / Split", category: "Diff", keys: ["alt+s"] },

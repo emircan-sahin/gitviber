@@ -46,6 +46,8 @@ export const api = {
   reflog: (limit = 200) => invoke<{ sha: string; selector: string; message: string; timestamp: number }[]>("reflog", { limit }),
   /** What a full ref changed since it and HEAD parted (a PR of it), as a range and its files. */
   compareFiles: (ref: string) => invoke<{ base: string; head: string; files: FileChange[] }>("compare_files", { with: ref }),
+  /** What HEAD's branch changed since it left a full ref, uncommitted work included: the merge base, and files from it to the working tree. */
+  branchReview: (base: string) => invoke<{ base: string; files: FileChange[] }>("branch_review", { base }),
   compareCounts: (ref: string) => invoke<[number, number]>("compare_counts", { with: ref }),
   /** The commit a SHA or SHA prefix names, if exactly one, or a full ref's tip (refs/heads/…). */
   findCommit: (sha: string) => invoke<Commit | null>("find_commit", { sha }),

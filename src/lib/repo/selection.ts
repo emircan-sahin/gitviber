@@ -17,7 +17,9 @@ export type Selection =
   | { kind: "file"; path: string }
   | { kind: "pull"; pull: Pull }
   | { kind: "issue"; issue: Issue }
-  | { kind: "pr-file"; range: PullRange; file: FileChange };
+  | { kind: "pr-file"; range: PullRange; file: FileChange }
+  // A branch under review: `base` is the merge base (a commit id), `label` the branch it was compared with.
+  | { kind: "branch"; base: string; label: string; file: FileChange };
 
 /** File path for file-like tabs; for a PR or issue overview, a label. */
 export function selectionPath(s: Selection) {
@@ -33,6 +35,6 @@ export function selectionKey(s: Selection) {
   if (s.kind === "pull") return `pull:${s.pull.url}`;
   if (s.kind === "issue") return `issue:${s.issue.url}`;
   // A PR file by its head commit too: a fork's #3 and its original's #3 differ.
-  const scope = s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number ?? `${s.range.base}..`}@${s.range.head}` : "";
+  const scope = s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number ?? `${s.range.base}..`}@${s.range.head}` : s.kind === "branch" ? s.base : "";
   return `${s.kind}:${scope}:${selectionPath(s)}`;
 }

@@ -84,7 +84,7 @@ function VersionInfo() {
 
 /** The open file while it's on disk, at the line in view; else the whole worktree. */
 function openTarget(sel: Selection | undefined): OpenTarget {
-  const change = sel?.kind === "unstaged" || sel?.kind === "staged" || sel?.kind === "conflict";
+  const change = sel?.kind === "unstaged" || sel?.kind === "staged" || sel?.kind === "conflict" || sel?.kind === "branch";
   const path = sel?.kind === "file" ? sel.path : change && sel.file.status !== "D" ? sel.file.path : null;
   return path === null ? { path: "" } : { path, line: lineInView(path) };
 }
