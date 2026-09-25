@@ -114,9 +114,13 @@ test("a hook quoting git's messages isn't taken for them", () => {
   assert.equal(explainGitError(HOOK_OUTPUT), null);
 });
 
+test("a push refused over commits someone else pushed, fetched or not, wants a pull", () => {
+  // useRepoActions asks to force push first when the remote's commits were the branch's own.
+  for (const refused of [FETCH_FIRST, NON_FAST_FORWARD]) assert.equal(explainGitError(refused)?.fix, "fetch-first");
+});
+
 test("what the app handles elsewhere, or doesn't know, stays git's own words", () => {
-  // useRepoActions asks to force push, and to stash and switch.
-  assert.equal(explainGitError(NON_FAST_FORWARD), null);
+  // useRepoActions asks to stash and switch.
   assert.equal(explainGitError(OVERWRITTEN_BY_CHECKOUT), null);
   assert.equal(explainGitError("fatal: 'origin' does not appear to be a git repository"), null);
   assert.equal(explainGitError(""), null);

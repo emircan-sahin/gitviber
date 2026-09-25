@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { api, type Branch, errorMessage, type PullMode, type Worktree } from "@/lib/api";
+import { api, type Branch, CANCELLED, errorMessage, type PullMode, type Worktree } from "@/lib/api";
 import { openTerminal } from "@/lib/terminal/terminals";
 import { forgetRemoteTags } from "@/lib/repo/remoteTags";
 import { worktreeDir } from "@/lib/repo/session";
@@ -86,9 +86,9 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
   const publishTo = status?.branch && status.head ? (status.publish ?? (status.remotes.length === 1 ? status.remotes[0] : null)) : null;
   const merge = (name: string, how: "ff" | "no-ff" | "squash" = "ff") =>
     run(how === "squash" ? "Squash merge" : "Merge", () => api.merge(name, how), how === "squash" ? `Squashed ${name} into one commit` : `Merged ${name}`);
-  // Rejected as non-fast-forward: the remote has commits this branch dropped, usually its own
-  // old ones after a rebase or amend. Replacing them is a force push, so it asks first.
-  // "fetch first" (commits not fetched yet) isn't offered: those want a pull, which the error
+  // Rejected as non-fast-forward: when the remote's extra commits are this branch's own from
+  // before a rebase or amend, replacing them is a force push, so it asks first. Anyone else's
+  // (already fetched in the background, so not "fetch first") want a pull, which the error
   // toast offers.
   // `tags`: --follow-tags, annotated tags on the pushed commits go along.
   const push = (tags = false) =>
@@ -98,12 +98,12 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
         try {
           await api.push(false, undefined, op, tags);
         } catch (e) {
-          if (!errorMessage(e).includes("non-fast-forward")) throw e;
+          if (!errorMessage(e).includes("non-fast-forward") || !(await api.remoteWasOurs())) throw e;
           const ok = await ask(
             "The remote branch has commits yours no longer has, as after a rebase or an amend. Replace them with yours?\n\nThis force-pushes (with lease): it is refused if someone pushed commits there that your branch never had. Anyone who pulled the old commits will have to reconcile.",
             { title: "Force push", kind: "warning", okLabel: "Force push" },
           );
-          if (!ok) throw e;
+          if (!ok) throw CANCELLED;
           await api.push(true, undefined, op, tags);
         }
         if (tags) forgetRemoteTags();

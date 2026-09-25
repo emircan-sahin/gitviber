@@ -141,6 +141,29 @@ pub fn push_with_tags(
     push_as(repo, force, remote, true, net)
 }
 
+/// After a push is refused as non-fast-forward: whether what only the remote has was this
+/// branch's own before a rebase or an amend, the one case a force push is for. It's
+/// --force-if-includes' test: the remote tip is in the branch's reflog, or behind an entry of it.
+/// Commits someone else pushed never are, and those want a pull.
+pub fn remote_was_ours(repo: &Path) -> bool {
+    let tip = |rev: &str| run_text(repo, &["rev-parse", "--verify", "--quiet", rev]).ok();
+    let (Some(remote), Ok(branch)) = (
+        tip("@{push}").or_else(|| tip("@{upstream}")),
+        run_text(repo, &["symbolic-ref", "--quiet", "HEAD"]),
+    ) else {
+        return false;
+    };
+    let Ok(log) = run_text(
+        repo,
+        &["log", "-g", "--format=%H", "-n", "200", branch.trim()],
+    ) else {
+        return false;
+    };
+    let mut args = vec!["rev-list", "--max-count=1", remote.trim(), "--not"];
+    args.extend(log.lines());
+    run_text(repo, &args).is_ok_and(|left| left.trim().is_empty())
+}
+
 fn push_as(
     repo: &Path,
     force: bool,

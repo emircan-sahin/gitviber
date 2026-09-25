@@ -133,6 +133,8 @@ export const api = {
    * `tags`: --follow-tags, annotated tags on the pushed commits go too.
    */
   push: (force = false, remote?: string, op?: NetOp, tags = false) => network<void>("push", { force, remote, tags }, op),
+  /** After a non-fast-forward push: the remote's extra commits were this branch's own (rebased or amended since). */
+  remoteWasOurs: () => invoke<boolean>("remote_was_ours"),
   // The boolean results mean "stopped on conflicts".
   /** `autostash`: uncommitted changes in the way are stashed first and reapplied after. */
   pull: (mode: PullMode, op?: NetOp, autostash = false) => network<boolean>("pull", { mode, autostash }, op),

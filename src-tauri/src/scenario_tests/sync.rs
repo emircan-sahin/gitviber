@@ -106,6 +106,7 @@ fn force_push_with_lease_after_amend() {
     commit(a, "mine, reworded", &AMEND).unwrap();
     let err = push(a, false, None, &Net::default()).unwrap_err();
     assert!(err.contains("non-fast-forward"), "{err}");
+    assert!(remote_was_ours(a), "the remote only has the amended commit");
     push(a, true, None, &Net::default()).unwrap();
     // b pushes meanwhile; a, not having fetched it, amends again: the lease refuses.
     fetch(b, &Net::default()).unwrap();
@@ -135,6 +136,8 @@ fn force_push_after_a_background_fetch_keeps_their_commit() {
     push(b, false, None, &Net::default()).unwrap();
     let theirs = run_text(b, &["rev-parse", "HEAD"]).unwrap();
     fetch(a, &Net::default()).unwrap();
+    // Their commit is fetched, so git says non-fast-forward, not "fetch first": still not ours.
+    assert!(!remote_was_ours(a));
 
     assert!(push(a, true, None, &Net::default()).is_err());
     let remote = run_text(&sb.path("origin.git"), &["rev-parse", "main"]).unwrap();

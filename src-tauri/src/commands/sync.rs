@@ -25,6 +25,12 @@ pub async fn push(
     .await
 }
 
+/// See git::remote_was_ours.
+#[tauri::command]
+pub async fn remote_was_ours(state: State<'_, AppState>) -> Res<bool> {
+    in_repo(&state, |r| Ok(git::remote_was_ours(r))).await
+}
+
 /// The bool results below mean "stopped on conflicts".
 #[tauri::command]
 pub async fn pull(
