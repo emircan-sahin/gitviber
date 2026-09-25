@@ -153,6 +153,7 @@ On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+
 | `V` | Mark file viewed |
 | `S` `⌘⌫` | Stage or unstage, discard the open file |
 | `F7` `⇧F7`, `⌥↓` `⌥↑` | Next / previous change |
+| `⌥⌘S` `⌥⌘N` `⇧⌘⌫` | Stage, unstage, discard the selected lines, else the change at the cursor (next / previous change puts it there) |
 | `⌥S` `⌥C` `⌥Z` | Split view, collapse unchanged, word wrap |
 | `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
 | `⇧⌘G` `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer |
