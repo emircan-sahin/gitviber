@@ -1,5 +1,5 @@
 use crate::state::{blocking, AppState, Res};
-use crate::{errors, git, launch, menu, process};
+use crate::{errors, git, launch, menu, process, updates};
 use std::path::Path;
 use tauri::{AppHandle, Manager, State};
 
@@ -29,6 +29,18 @@ pub fn pty_resize(state: State<'_, AppState>, id: u32, cols: u16, rows: u16) -> 
 #[tauri::command]
 pub fn pty_kill(state: State<'_, AppState>, id: u32) {
     state.ptys.kill(id)
+}
+
+/// How many terminals are running a command, which restarting the app would stop.
+#[tauri::command]
+pub fn pty_busy(state: State<'_, AppState>) -> usize {
+    state.ptys.busy()
+}
+
+/// See updates.rs.
+#[tauri::command]
+pub fn update_mode(app: AppHandle) -> Option<&'static str> {
+    updates::mode(app.config())
 }
 
 /// What a bug report asks for: app version and commit, OS, git, gh and the web view. Nothing

@@ -212,4 +212,6 @@ export const api = {
   logError: (source: string, message: string) => invoke<void>("log_error", { source, message }),
   /** Selects the error log in the file manager. */
   showLogs: () => invoke<void>("show_logs"),
+  /** How this install updates (updates.rs): in place, from the Releases page, or not at all. */
+  updateMode: () => invoke<"install" | "download" | null>("update_mode"),
 };
