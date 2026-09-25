@@ -4,7 +4,7 @@ import { flushSync } from "react-dom";
 import { Segmented } from "@/components/ui/segmented";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
-import { type MarkdownHome, PullMarkdown } from "./PullView";
+import { type MarkdownHome, PullMarkdown } from "./GitHubMarkdown";
 
 /** A textarea for PR or issue markdown with GitHub's Write/Preview switch. `pull`: where it will be posted. */
 export function MarkdownInput({ pull, value, className, ...props }: { pull: MarkdownHome; value: string } & Omit<ComponentProps<typeof Textarea>, "value" | "ref">) {

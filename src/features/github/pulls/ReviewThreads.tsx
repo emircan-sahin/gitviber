@@ -5,13 +5,12 @@ import { useCallback, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Button } from "@/components/ui/button";
 import { type DiffRow, errorMessage, github, repoOf, type ReviewComment } from "@/lib/api";
-import { useGitHubData } from "@/lib/githubCache";
-import { monaco } from "@/lib/monaco";
-import { toast } from "@/lib/toast";
-import { relativeTime } from "@/lib/utils";
-import { isoToUnix } from "./PullsPanel";
-import { PullMarkdown } from "./PullView";
-import { MarkdownInput } from "./MarkdownInput";
+import { useGitHubData } from "@/lib/github/githubCache";
+import { monaco } from "@/lib/editor/monaco";
+import { toast } from "@/lib/app/toast";
+import { isoToUnix, relativeTime } from "@/lib/format";
+import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
+import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
 
 type Side = "LEFT" | "RIGHT";
 

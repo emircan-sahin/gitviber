@@ -5,15 +5,23 @@ import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { accessFor, type CloseReason, errorMessage, github, type Issue, type IssueLabel, issues, repoOf } from "@/lib/api";
-import { listIsBehind, useGitHubData } from "@/lib/githubCache";
-import { matchesCommand } from "@/lib/keybindings";
-import { toast } from "@/lib/toast";
-import { cn, relativeTime } from "@/lib/utils";
-import { IssueStateIcon, LabelChip, LabelPicker, notifyIssuesChanged } from "./IssuesPanel";
-import { CopyLinkButton, isoToUnix, openOnGitHub } from "./PullsPanel";
-import { PullMarkdown, Section } from "./PullView";
-import { MarkdownInput } from "./MarkdownInput";
+import { accessFor, type CloseReason, errorMessage, type Issue, type IssueLabel, issues, repoOf } from "@/lib/api";
+import { listIsBehind, useGitHubData } from "@/lib/github/githubCache";
+import { matchesCommand } from "@/lib/commands/keybindings";
+import { toast } from "@/lib/app/toast";
+import { cn } from "@/lib/utils";
+import { isoToUnix, relativeTime } from "@/lib/format";
+import { openOnGitHub } from "@/lib/github/url";
+import { LabelChip } from "./IssueBadges";
+import { LabelPicker } from "./LabelPicker";
+import { notifyIssuesChanged } from "@/features/github/shared/changed";
+import { IssueStateIcon, IssueStatePill } from "@/features/github/shared/StateBadges";
+import { CopyLinkButton } from "@/features/github/shared/LinkMenu";
+import { Section } from "@/features/github/shared/Section";
+import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
+import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
+import { useGitAction } from "@/hooks/useGitAction";
+import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
 
 const CLOSE: Record<CloseReason, { label: string; note: string }> = {
   completed: { label: "Close as completed", note: "Done, closed, fixed, resolved" },
@@ -21,7 +29,6 @@ const CLOSE: Record<CloseReason, { label: string; note: string }> = {
 };
 
 export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () => void }) {
-  const [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [comment, setComment] = useState("");
   // The labels being picked, shown in place of the issue's until they're saved.
@@ -43,26 +50,20 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
   useEffect(() => {
     if (d && issue.updatedAt > d.updatedAt) refresh(true);
   }, [issue.updatedAt]);
-  // Same cache entry as the Issues panel's, so this is normally already loaded.
-  const account = useGitHubData("account", github.account, 600_000).data ?? null;
+  // Normally already loaded, by the Issues panel.
+  const { account } = useGitHubAccount();
   const load = () => detail.refresh(true);
 
-  /** Runs one write; returns whether it went through. */
-  const act = async (label: string, fn: () => Promise<unknown>, done: string) => {
-    setBusy(label);
-    try {
-      await fn();
-      toast("success", done);
+  const { busy: acting, run: act } = useGitAction({
+    tracked: false,
+    onDone: () => {
       notifyIssuesChanged();
-      await load();
-      return true;
-    } catch (e) {
-      toast("error", `${label} failed`, errorMessage(e));
-      return false;
-    } finally {
-      setBusy(null);
-    }
-  };
+      return load();
+    },
+  });
+  // A deleted issue's tab closes: nothing to reload.
+  const [deleting, setDeleting] = useState(false);
+  const busy = deleting ? "Delete" : acting;
 
   const i = d ?? issue;
   const text = comment.trim();
@@ -110,7 +111,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
       kind: "warning",
     });
     if (!ok) return;
-    setBusy("Delete");
+    setDeleting(true);
     try {
       await issues.delete(target, i.number);
       toast("success", `Deleted #${i.number}`);
@@ -118,7 +119,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
       onDeleted();
     } catch (e) {
       toast("error", "Delete failed", errorMessage(e));
-      setBusy(null);
+      setDeleting(false);
     }
   };
 
@@ -149,7 +150,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
                 {i.title} <span className="font-normal text-subtle">#{i.number}</span>
               </h1>
               <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted-foreground">
-                <StatePill issue={i} />
+                <IssueStatePill issue={i} />
                 <span className="text-foreground/85">{i.author}</span>
                 <span>opened {relativeTime(isoToUnix(i.createdAt))}</span>
                 {i.assignees.length > 0 && (
@@ -336,12 +337,3 @@ function EditIssue({
   );
 }
 
-function StatePill({ issue }: { issue: Pick<Issue, "state" | "stateReason"> }) {
-  const [label, cls] =
-    issue.state === "open"
-      ? ["Open", "bg-added-fill text-on-status"]
-      : issue.stateReason === "not_planned"
-        ? ["Closed as not planned", "bg-elevated text-muted-foreground border border-border-strong"]
-        : ["Closed", "bg-renamed-fill text-on-status"];
-  return <span className={cn("rounded-sm px-1.5 py-px text-[10.5px] font-semibold", cls)}>{label}</span>;
-}
