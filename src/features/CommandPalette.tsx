@@ -262,9 +262,12 @@ export function CommandPalette() {
         onCloseAutoFocus={(e) => {
           const run = picked.current;
           picked.current = null;
+          // Held past the close, it kept a closed editor's whole DOM alive.
+          const back = before;
+          before = null;
           if (!run) return;
           e.preventDefault();
-          if (before instanceof HTMLElement && before.isConnected) before.focus();
+          if (back instanceof HTMLElement && back.isConnected) back.focus();
           run();
         }}
       >
