@@ -80,9 +80,9 @@ and the repository exists.`;
 
 const fix = (message: string) => explainGitError(message)?.fix;
 
-test("a diverged pull and a push behind the remote offer the pulls", () => {
-  assert.equal(fix(DIVERGED), "pull");
-  assert.equal(fix(FETCH_FIRST), "pull");
+test("a diverged pull and a push behind the remote are told apart", () => {
+  assert.equal(fix(DIVERGED), "diverged");
+  assert.equal(fix(FETCH_FIRST), "fetch-first");
 });
 
 test("uncommitted changes in a pull's way offer autostash", () => {
@@ -91,7 +91,7 @@ test("uncommitted changes in a pull's way offer autostash", () => {
 
 test("a missing identity or a failed signature say what to set up", () => {
   assert.equal(fix(NO_IDENTITY), "identity");
-  assert.equal(fix(NO_IDENTITY.replace("no email was given and auto-detection is disabled", "empty ident name (for <a@b>) not allowed")), "identity");
+  assert.equal(fix("fatal: empty ident name (for <a@b>) not allowed"), "identity");
   assert.equal(fix(GPG), "signing");
 });
 
@@ -101,6 +101,17 @@ test("credentials are explained, with nothing to click", () => {
     assert.ok(help, message);
     assert.equal(help.fix, undefined);
   }
+});
+
+// A pre-commit hook's output ends up in the same message; words it quotes aren't git's verdict.
+const HOOK_OUTPUT = `husky - pre-commit script failed (code 1)
+✖ test "retries when Authentication failed for the mirror"
+  expected: "fatal: Not possible to fast-forward, aborting."
+  log: error: gpg failed to sign the data (fixture)
+  ! [rejected]  main -> main (fetch first)  (fixture)`;
+
+test("a hook quoting git's messages isn't taken for them", () => {
+  assert.equal(explainGitError(HOOK_OUTPUT), null);
 });
 
 test("what the app handles elsewhere, or doesn't know, stays git's own words", () => {
