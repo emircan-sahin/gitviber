@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { copyText } from "@/lib/app/clipboard";
 import { createStore } from "@/lib/store";
 
-const REPO = "https://github.com/emircan-sahin/gitviber";
+export const REPO = "https://github.com/emircan-sahin/gitviber";
 
 let aboutOnce: Promise<About> | null = null;
 

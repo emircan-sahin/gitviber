@@ -126,6 +126,8 @@ export interface Settings {
   backgroundFetch: number;
   /** A desktop notification when a push, pull or the like ends while the app is in the background. */
   notify: boolean;
+  /** Ask GitHub Releases for a newer GitViber at launch and every few hours (updates.ts). */
+  autoUpdate: boolean;
   /** Where the last clone went; the next one offers the same folder. */
   cloneParent: string | null;
   /** New worktrees go in `<worktreeRoot>/<project>/` rather than `<project>.worktrees` beside it; null is off. */
@@ -174,6 +176,7 @@ const DEFAULTS: Settings = {
   backgroundFetch: 0,
   // Off until asked for: turning it on is what asks the OS for permission.
   notify: false,
+  autoUpdate: true,
   cloneParent: null,
   worktreeRoot: null,
   suggestEnabled: true,
@@ -209,6 +212,7 @@ function load(): Settings {
     if (typeof s.shortcutOverlay !== "boolean") s.shortcutOverlay = DEFAULTS.shortcutOverlay;
     s.keybindings = cleanOverrides(s.keybindings);
     if (typeof s.notify !== "boolean") s.notify = DEFAULTS.notify;
+    if (typeof s.autoUpdate !== "boolean") s.autoUpdate = DEFAULTS.autoUpdate;
     if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;
     const models = s.suggestModels && typeof s.suggestModels === "object" ? s.suggestModels : {};
