@@ -1,11 +1,13 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow, type Theme as WindowTheme } from "@tauri-apps/api/window";
 import type { Whitespace } from "./api";
-import { cleanOverrides, IS_MAC, IS_WINDOWS } from "./commands";
-import { SUGGEST_PRESETS, type SuggestPreset } from "./suggest";
+import { cleanOverrides } from "./commands/commands";
+import { IS_MAC, IS_WINDOWS } from "./platform";
+import { writeJson } from "./storage";
+import { SUGGEST_PRESETS, type SuggestPreset } from "./git/suggest";
 import { useSyncExternalStore } from "react";
 
-export const CODE_FONTS = {
+const CODE_FONTS = {
   "SF Mono": 'ui-monospace, "SF Mono", Menlo, monospace',
   "Geist Mono": '"Geist Mono Variable", ui-monospace, monospace',
   "JetBrains Mono": '"JetBrains Mono Variable", ui-monospace, monospace',
@@ -227,7 +229,7 @@ function load(): Settings {
 }
 
 /** Settings plus what they resolve to right now: `system` follows the OS appearance. */
-export interface ResolvedSettings extends Settings {
+interface ResolvedSettings extends Settings {
   theme: Theme;
   dark: boolean;
   /** The Shiki theme for the active appearance. */
@@ -322,11 +324,8 @@ export function updateSettings(patch: Partial<Settings>) {
   current.codeFontSize = Math.min(24, Math.max(10, Math.round(current.codeFontSize * 2) / 2));
   current.customCodeFont = cleanFontName(current.customCodeFont);
   current.customUiFont = cleanFontName(current.customUiFont);
-  try {
-    localStorage.setItem(KEY, JSON.stringify(current));
-  } catch {
-    // Settings still apply for this session.
-  }
+  // Settings still apply for this session when they can't be stored.
+  writeJson(KEY, current);
   emit();
 }
 
@@ -363,56 +362,4 @@ export function getSettings() {
 
 export function useSettings() {
   return useSyncExternalStore(subscribeSettings, getSettings);
-}
-
-const RECENT_KEY = "gitviber.recent";
-
-export function recentRepos(): string[] {
-  try {
-    const list: unknown = JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
-    // Saved lists have held nulls (an undefined path serializes as null), and one null crashed
-    // the project switcher's sortable list.
-    return Array.isArray(list) ? list.filter((p): p is string => typeof p === "string") : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveRepos(list: string[]) {
-  try {
-    localStorage.setItem(RECENT_KEY, JSON.stringify(list));
-  } catch {
-    // Not critical.
-  }
-}
-
-/** Adds a repo to the projects list. The user owns the order: opening never moves it. */
-export function rememberRepo(path: string) {
-  const list = recentRepos();
-  if (!list.includes(path)) saveRepos([...list, path]);
-}
-
-export function setRepoOrder(list: string[]) {
-  saveRepos(list);
-}
-
-/** The repo to reopen on launch (the list order no longer tells). */
-const LAST_KEY = "gitviber.last";
-export function lastRepo(): string | null {
-  try {
-    return localStorage.getItem(LAST_KEY);
-  } catch {
-    return null;
-  }
-}
-export function setLastRepo(path: string) {
-  try {
-    localStorage.setItem(LAST_KEY, path);
-  } catch {
-    // Not critical.
-  }
-}
-
-export function forgetRepo(path: string) {
-  saveRepos(recentRepos().filter((p) => p !== path));
 }
