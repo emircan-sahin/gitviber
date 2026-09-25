@@ -572,3 +572,12 @@
 .monaco-editor .view-line.char-delete {
   background: none !important;
 }
+/* Monaco paints line decorations over selections, and a diff's line colors are opaque: a selection
+   on a changed line didn't show. It goes up among the overlays only (isolated, the text stays over
+   it), and not the background-colored corner pieces. */
+.monaco-editor .view-overlays {
+  isolation: isolate;
+}
+.monaco-editor .view-overlays .cslr.selected-text {
+  z-index: 1;
+}
