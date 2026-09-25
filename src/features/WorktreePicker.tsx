@@ -341,7 +341,10 @@ function WorktreeRow({
         </div>
         <div className={cn("flex min-w-0 items-center gap-1 text-[10.5px]", hot ? "opacity-80" : "text-subtle")}>
           <FolderGit2 className="size-3 shrink-0" />
-          <span className="truncate">{w.main ? folderName(w.path) : shortPath(w.path, main)}</span>
+          {/* A worktree away from the project has a long path; rtl cuts its start, not its folder (LRMs: see the New worktree dialog). */}
+          <span dir="rtl" className="truncate text-left">
+            {`\u200e${w.main ? folderName(w.path) : shortPath(w.path, main)}\u200e`}
+          </span>
         </div>
       </div>
       {/* Mounted on every row, shown on the hot one, like the branch picker's actions. */}
