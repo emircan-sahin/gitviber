@@ -13,6 +13,7 @@ struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     killer: Box<dyn ChildKiller + Send + Sync>,
+    shell: Option<u32>,
 }
 
 #[derive(Default)]
@@ -73,6 +74,7 @@ impl Ptys {
                 master: pair.master,
                 writer,
                 killer: child.clone_killer(),
+                shell: child.process_id(),
             },
         );
 
@@ -128,6 +130,22 @@ impl Ptys {
         if let Some(mut s) = session {
             let _ = s.killer.kill();
         }
+    }
+
+    /// Sessions whose foreground job isn't the shell itself: a command is running there.
+    #[cfg(unix)]
+    pub fn busy(&self) -> usize {
+        let sessions = self.sessions.lock().unwrap();
+        let running = |s: &&Session| {
+            let leader = s.master.process_group_leader();
+            leader.is_some_and(|pid| Some(pid as u32) != s.shell)
+        };
+        sessions.values().filter(running).count()
+    }
+
+    #[cfg(not(unix))]
+    pub fn busy(&self) -> usize {
+        0
     }
 
     /// A reloaded page has lost every terminal it had; without this their shells run on unseen.

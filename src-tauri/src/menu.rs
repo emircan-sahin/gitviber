@@ -83,6 +83,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 
     // Opens the app's own About window: a native panel can't hold links or buttons.
     let about = b.command("app.about", "About GitViber")?;
+    let check_updates = b.command("app.checkForUpdates", "Check for Updates…")?;
     let settings = b.command("workbench.openSettings", "Settings…")?;
     // The app menu and Window are macOS's. GTK only builds separators, clipboard items and
     // About, so off macOS they'd be near empty: Settings goes under File and About under
@@ -93,6 +94,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         "GitViber",
         &[
             &about,
+            &check_updates,
             &sep()?,
             &settings,
             &sep()?,
@@ -253,7 +255,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         ],
     )?;
     if !mac {
-        help.append_items(&[&sep()?, &about])?;
+        help.append_items(&[&sep()?, &check_updates, &about])?;
     }
 
     // Window lists the open windows; Help gets macOS's search box, which finds menu items.

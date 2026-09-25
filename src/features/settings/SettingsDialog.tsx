@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { Code2, GitBranch, GitCompareArrows, Keyboard, Palette, RotateCcw, Sparkles, SquareArrowOutUpRight, X } from "lucide-react";
+import { CircleArrowUp, Code2, GitBranch, GitCompareArrows, Keyboard, Palette, RotateCcw, Sparkles, SquareArrowOutUpRight, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -13,6 +13,7 @@ import { GitSection } from "./sections/Git";
 import { CommitSection } from "./sections/Commit";
 import { OpenInSection } from "./sections/OpenIn";
 import { type Recording, ShortcutsSection } from "./sections/Shortcuts";
+import { UpdatesSection } from "./sections/Updates";
 
 const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette },
@@ -22,6 +23,7 @@ const SECTIONS = [
   { id: "commit", label: "Commit Messages", icon: Sparkles },
   { id: "openIn", label: "Open In", icon: SquareArrowOutUpRight },
   { id: "shortcuts", label: "Keyboard Shortcuts", icon: Keyboard },
+  { id: "updates", label: "Updates", icon: CircleArrowUp },
 ] as const;
 type Section = (typeof SECTIONS)[number]["id"];
 
@@ -65,7 +67,7 @@ export function SettingsDialog() {
       >
         <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar p-2">
           <DialogTitle className="px-2 pt-1.5 pb-2.5">Settings</DialogTitle>
-          <DialogDescription className="sr-only">Appearance, editor, diff, git, commit message, Open in and keyboard shortcut preferences.</DialogDescription>
+          <DialogDescription className="sr-only">Appearance, editor, diff, git, commit message, Open in, keyboard shortcut and update preferences.</DialogDescription>
           {SECTIONS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -99,6 +101,7 @@ export function SettingsDialog() {
             {section === "commit" && <CommitSection />}
             {section === "openIn" && <OpenInSection />}
             {section === "shortcuts" && <ShortcutsSection recording={recording} setRecording={setRecording} />}
+            {section === "updates" && <UpdatesSection />}
           </div>
         </div>
       </DialogContent>

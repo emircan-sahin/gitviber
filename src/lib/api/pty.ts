@@ -11,4 +11,6 @@ export const pty = {
   write: (id: number, data: string) => invoke<void>("pty_write", { id, data }),
   resize: (id: number, cols: number, rows: number) => invoke<void>("pty_resize", { id, cols, rows }),
   kill: (id: number) => invoke<void>("pty_kill", { id }),
+  /** How many are running a command rather than sitting at the prompt. */
+  busy: () => invoke<number>("pty_busy"),
 };

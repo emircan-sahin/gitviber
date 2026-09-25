@@ -35,3 +35,4 @@ export async function withNetActivity<T>(label: string, fn: (op: NetOp) => Promi
 }
 
 export const useNetActivity = current.use;
+export const netActivity = current.get;

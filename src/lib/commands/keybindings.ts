@@ -50,6 +50,7 @@ export function isTyping(e: At) {
 /** Menu bar items that aren't key commands (lib.rs `menu`); they run through the same handlers. */
 export const MENU_ACTIONS = [
   "app.about",
+  "app.checkForUpdates",
   "help.readme",
   "help.shortcuts",
   "help.reportBug",
@@ -63,6 +64,7 @@ export type Action = CommandId | (typeof MENU_ACTIONS)[number];
 /** How the command palette lists them. */
 export const MENU_ACTION_INFO: Record<(typeof MENU_ACTIONS)[number], { title: string; category: string }> = {
   "app.about": { title: "About GitViber", category: "Help" },
+  "app.checkForUpdates": { title: "Check for Updates", category: "Help" },
   "help.readme": { title: "GitViber Help", category: "Help" },
   "help.shortcuts": { title: "Keyboard Shortcuts", category: "Help" },
   "help.reportBug": { title: "Report a Bug", category: "Help" },
@@ -72,7 +74,7 @@ export const MENU_ACTION_INFO: Record<(typeof MENU_ACTIONS)[number], { title: st
   "help.license": { title: "View License", category: "Help" },
 };
 
-const MODAL_SAFE: Action[] = ["workbench.openSettings", "workbench.shortcutOverlay", "window.reload", "view.zoomIn", "view.zoomOut", "view.zoomReset", "app.about", "help.readme", "help.shortcuts", "help.reportBug", "help.copyDiagnostics", "help.showLogs", "help.releaseNotes", "help.license"];
+const MODAL_SAFE: Action[] = ["workbench.openSettings", "workbench.shortcutOverlay", "window.reload", "view.zoomIn", "view.zoomOut", "view.zoomReset", "app.about", "app.checkForUpdates", "help.readme", "help.shortcuts", "help.reportBug", "help.copyDiagnostics", "help.showLogs", "help.releaseNotes", "help.license"];
 
 // Last registered wins, so a nested view can take a command over while it's mounted.
 const handlers = new Map<Action, (() => void)[]>();
