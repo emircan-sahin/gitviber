@@ -22,9 +22,11 @@ export interface UpdateState {
   checking: boolean;
   /** When a check last got an answer (ms). */
   checkedAt: number | null;
+  /** Restart to Update was clicked: asking, installing, then relaunching. */
+  restarting: boolean;
 }
 
-export const INITIAL: UpdateState = { release: null, download: null, checking: false, checkedAt: null };
+export const INITIAL: UpdateState = { release: null, download: null, checking: false, checkedAt: null, restarting: false };
 
 /** What a check found. A release being downloaded or waiting for a restart stays: that's what installs. */
 export function checked(s: UpdateState, found: Release | null, now: number): UpdateState {
@@ -42,9 +44,9 @@ export function downloaded(s: UpdateState, e: DownloadEvent): UpdateState {
   return s;
 }
 
-/** Whole percent of a download, null when its size is unknown. */
-export function percent(d: Download): number | null {
-  if (!d.total) return null;
+/** Whole percent of a running download; null when there's none or its size is unknown. */
+export function percent(d: UpdateState["download"]): number | null {
+  if (typeof d !== "object" || !d?.total) return null;
   return Math.min(100, Math.floor((d.received / d.total) * 100));
 }
 

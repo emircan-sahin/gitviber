@@ -7,7 +7,7 @@ const v3: Release = { version: "0.3.0", notes: "", date: null };
 
 test("a check shows what it found, and an empty answer clears it", () => {
   const found = checked({ ...INITIAL, checking: true }, v2, 1000);
-  assert.deepEqual(found, { release: v2, download: null, checking: false, checkedAt: 1000 });
+  assert.deepEqual(found, { ...INITIAL, release: v2, checkedAt: 1000 });
   assert.equal(checked(found, null, 2000).release, null);
   assert.equal(checked(found, v3, 2000).release, v3);
 });
@@ -33,6 +33,8 @@ test("percent rounds down, caps at 100 and needs a size", () => {
   assert.equal(percent({ received: 300, total: 200 }), 100);
   assert.equal(percent({ received: 5, total: null }), null);
   assert.equal(percent({ received: 5, total: 0 }), null);
+  assert.equal(percent("ready"), null);
+  assert.equal(percent(null), null);
 });
 
 test("a check is due when never done or old enough", () => {

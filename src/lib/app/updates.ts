@@ -9,7 +9,7 @@ import { getSettings } from "../settings";
 import { createStore } from "../store";
 import { logError } from "./errorLog";
 import { toast } from "./toast";
-import { checked, downloaded, due, INITIAL, isExpectedFailure, type UpdateState } from "./updateState";
+import { checked, downloaded, due, INITIAL, isExpectedFailure, percent, type UpdateState } from "./updateState";
 
 /**
  * GitViber's own updates (tauri-plugin-updater, set up in updates.rs): checked quietly at launch
@@ -80,8 +80,14 @@ export async function downloadUpdate() {
   const update = pending;
   if (!update || state.get().download !== null) return;
   set({ download: { received: 0, total: null } });
+  // Events come per network chunk; the store (and the status bar) only hears of a new percent.
+  let progress = state.get();
   try {
-    await update.download((e) => state.set(downloaded(state.get(), e)));
+    await update.download((e) => {
+      const before = percent(progress.download);
+      progress = downloaded(progress, e);
+      if (percent(progress.download) !== before) set({ download: progress.download });
+    });
     set({ download: "ready" });
   } catch (e) {
     set({ download: null });
@@ -89,18 +95,30 @@ export async function downloadUpdate() {
   }
 }
 
+/** The downloaded update is in place; only the relaunch is left. */
+let installed = false;
+
 /** Installs the downloaded update and restarts into it, once the user agrees to stop what's running. */
 export async function restartToUpdate() {
   const update = pending;
-  if (!update || state.get().download !== "ready" || !(await restartAsked())) return;
+  // Set before the first await: a second click would install twice.
+  if (!update || state.get().download !== "ready" || state.get().restarting) return;
+  set({ restarting: true });
   try {
-    await update.install();
-  } catch (e) {
-    // Its bytes may be spent: offer the download again.
-    set({ download: null });
-    return toast("error", "Could not install the update", errorMessage(e));
+    if (!(await restartAsked())) return;
+    if (!installed) {
+      try {
+        await update.install();
+      } catch (e) {
+        // The downloaded bytes stay with the update, so another click tries again.
+        return toast("error", "Could not install the update", errorMessage(e));
+      }
+      installed = true;
+    }
+    await relaunch().catch((e) => toast("error", "Could not restart GitViber", `The update is installed: quit and reopen GitViber to start it.\n${errorMessage(e)}`));
+  } finally {
+    set({ restarting: false });
   }
-  await relaunch().catch(() => toast("info", "Update installed", "Quit and reopen GitViber to start the new version."));
 }
 
 async function restartAsked() {
