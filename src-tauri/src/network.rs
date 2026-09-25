@@ -2,11 +2,12 @@
 //! comes, and the user can stop one while it transfers. A transfer that keeps reporting runs
 //! as long as it needs; only silence times out.
 
+use crate::process;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -16,6 +17,9 @@ pub const CANCELLED: &str = "git:cancelled";
 
 /// A dead connection or a hanging proxy goes quiet; a live transfer reports every second.
 const SILENCE_TIMEOUT: Duration = Duration::from_secs(300);
+/// Stopping sends SIGTERM first and waits this long, so git can remove its lock files and a
+/// half-made clone.
+const STOP_GRACE: Duration = Duration::from_secs(3);
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Progress {
@@ -151,8 +155,7 @@ pub fn run(
         return Err(CANCELLED.into());
     }
     // Its own process group, so stopping it also stops the ssh or remote helper it started.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    process::in_own_group(&mut cmd);
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -186,12 +189,12 @@ pub fn run(
                 Ok(Some(st)) => break Ok(st),
                 Ok(None) => {}
                 Err(e) => {
-                    stop(&mut child);
+                    process::kill_group(&mut child, STOP_GRACE);
                     break Err(e.to_string());
                 }
             }
             if net.cancelled() {
-                stop(&mut child);
+                process::kill_group(&mut child, STOP_GRACE);
                 break Err(CANCELLED.to_string());
             }
             if let Some((path, before)) = marker {
@@ -207,7 +210,7 @@ pub fn run(
                 .elapsed()
                 .saturating_sub(Duration::from_millis(heard.load(Ordering::Relaxed)));
             if quiet > SILENCE_TIMEOUT {
-                stop(&mut child);
+                process::kill_group(&mut child, STOP_GRACE);
                 break Err(format!("{label} timed out: no response for 5 minutes"));
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -269,27 +272,6 @@ fn read_stderr(pipe: Option<impl Read>, net: &Net, touch: &dyn Fn()) -> String {
     }
     piece(&pending);
     kept
-}
-
-/// SIGTERM first, so git can remove its lock files and a half-made clone; then SIGKILL for
-/// anything in the group still there.
-fn stop(child: &mut Child) {
-    #[cfg(unix)]
-    let group = child.id() as libc::pid_t;
-    #[cfg(unix)]
-    unsafe {
-        libc::killpg(group, libc::SIGTERM);
-    }
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    #[cfg(unix)]
-    unsafe {
-        libc::killpg(group, libc::SIGKILL);
-    }
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //! GitViber itself sends nothing anywhere: it runs the command the user picked, in the repo,
 //! with the prompt and the diff on stdin. Where that goes is up to the command.
 
-use crate::git;
+use crate::{git, process};
 use serde::Deserialize;
 use std::io::{Read, Write};
 use std::path::Path;
@@ -54,71 +54,6 @@ impl Suggester {
             flag.store(true, Ordering::Relaxed);
         }
     }
-}
-
-/// Splits a command line into argv the way a shell would quote it, without a shell: no
-/// variables, globs or pipes, so the template can't do more than run one program.
-pub fn split_command(template: &str) -> Result<Vec<String>, String> {
-    let mut args = Vec::new();
-    let mut cur = String::new();
-    // A quoted empty string ("") is still an argument.
-    let mut started = false;
-    let mut chars = template.chars();
-    while let Some(c) = chars.next() {
-        match c {
-            c if c.is_whitespace() => {
-                if started {
-                    args.push(std::mem::take(&mut cur));
-                    started = false;
-                }
-            }
-            '\'' => {
-                started = true;
-                loop {
-                    match chars.next() {
-                        Some('\'') => break,
-                        Some(c) => cur.push(c),
-                        None => return Err("The command has an unclosed ' quote.".into()),
-                    }
-                }
-            }
-            '"' => {
-                started = true;
-                loop {
-                    match chars.next() {
-                        Some('"') => break,
-                        Some('\\') => match chars.next() {
-                            Some(c @ ('"' | '\\')) => cur.push(c),
-                            Some(c) => {
-                                cur.push('\\');
-                                cur.push(c);
-                            }
-                            None => return Err("The command has an unclosed \" quote.".into()),
-                        },
-                        Some(c) => cur.push(c),
-                        None => return Err("The command has an unclosed \" quote.".into()),
-                    }
-                }
-            }
-            '\\' => {
-                started = true;
-                if let Some(c) = chars.next() {
-                    cur.push(c);
-                }
-            }
-            c => {
-                started = true;
-                cur.push(c);
-            }
-        }
-    }
-    if started {
-        args.push(cur);
-    }
-    if args.is_empty() {
-        return Err("No command is set. Pick one in Settings → Commit Messages.".into());
-    }
-    Ok(args)
 }
 
 /// The diff to describe, cut to MAX_DIFF at a line end; true when it was cut.
@@ -178,7 +113,10 @@ fn diff(repo: &Path, scope: Scope) -> Result<(String, bool), String> {
 /// What goes to the command: the prompt as `{prompt}` in its arguments, or ahead of the diff
 /// on stdin when the template has no `{prompt}` (`codex exec` reads stdin only without one).
 fn prepare(template: &str, prompt: &str, diff: &str) -> Result<(Vec<String>, String), String> {
-    let mut argv = split_command(template)?;
+    let mut argv = process::split_command(template)?;
+    if argv.is_empty() {
+        return Err("No command is set. Pick one in Settings → Commit Messages.".into());
+    }
     if argv.iter().any(|a| a.contains("{prompt}")) {
         for a in &mut argv {
             *a = a.replace("{prompt}", prompt);
@@ -221,7 +159,7 @@ pub fn run(
     cmd.args(&argv[1..])
         .current_dir(repo)
         // The same PATH git runs with; a Finder-launched app's own is bare.
-        .env("PATH", git::search_path())
+        .env("PATH", process::search_path())
         // Set when GitViber was started from a Claude Code terminal; `claude` then refuses to
         // run, taking itself for a nested session.
         .env_remove("CLAUDECODE")
@@ -230,8 +168,7 @@ pub fn run(
         .stderr(Stdio::piped());
     // Its own process group, so a cancel also stops what an agent CLI spawned (MCP servers,
     // tools) and nothing is left holding the output pipes open.
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
+    process::in_own_group(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => format!(
             "Couldn't find \"{}\". Put its full path in Settings → Commit Messages (`which {}` in Terminal shows it).",
@@ -277,7 +214,7 @@ pub fn run(
         }
         let cancelled = cancel.load(Ordering::Relaxed);
         if cancelled || Instant::now() > deadline {
-            kill_group(&mut child);
+            process::kill_group(&mut child, Duration::ZERO);
             // The output threads aren't joined: a straggler holding the pipes would hang us.
             return Err(if cancelled {
                 CANCELLED.into()
@@ -312,57 +249,15 @@ pub fn run(
     })
 }
 
-fn kill_group(child: &mut std::process::Child) {
-    // Not the `kill` command: procps's (Ubuntu) reads `-KILL -12345` as `-1`, every process
-    // of the user, which took down the CI runner.
-    #[cfg(unix)]
-    unsafe {
-        libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
-    }
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn split(s: &str) -> Vec<String> {
-        split_command(s).unwrap()
-    }
-
-    #[test]
-    fn splits_like_a_shell() {
-        assert_eq!(split("claude -p"), ["claude", "-p"]);
-        assert_eq!(split("  codex   exec  "), ["codex", "exec"]);
-        assert_eq!(
-            split(r#"/Users/me/My\ Tools/llm --system 'be brief' -m "gpt 4""#),
-            [
-                "/Users/me/My Tools/llm",
-                "--system",
-                "be brief",
-                "-m",
-                "gpt 4"
-            ]
-        );
-        assert_eq!(
-            split(r#"a "x \"y\" \n" 'no $HOME'"#),
-            ["a", r#"x "y" \n"#, "no $HOME"]
-        );
-        assert_eq!(split(r#"a "" b''c"#), ["a", "", "bc"]);
-        // Shell syntax is just text: nothing is piped or substituted.
-        assert_eq!(
-            split("a | b $(rm -rf x)"),
-            ["a", "|", "b", "$(rm", "-rf", "x)"]
-        );
-    }
-
     #[test]
     fn rejects_bad_templates() {
-        assert!(split_command("").is_err());
-        assert!(split_command("   ").is_err());
-        assert!(split_command("claude -p 'oops").is_err());
-        assert!(split_command("claude -p \"oops").is_err());
+        assert!(prepare("", "p", "d").is_err());
+        assert!(prepare("   ", "p", "d").is_err());
+        assert!(prepare("claude -p 'oops", "p", "d").is_err());
     }
 
     #[test]

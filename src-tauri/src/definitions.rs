@@ -3,7 +3,7 @@
 //! top-level ones in other files `git grep` finds it in. By name, so it can offer several; there's
 //! no index to build or keep, and a commit's tree reads the same as the worktree.
 
-use crate::{fs, git};
+use crate::{fs, git, process};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -803,7 +803,7 @@ fn mentions(repo: &Path, rev: Option<&str>, lang: Lang, name: &str) -> Result<Ve
     // `*.rs` is a glob here, at any depth.
     cmd.env_remove("GIT_LITERAL_PATHSPECS");
     // 1: no file has it.
-    let out = git::exec(cmd, "git grep", &[1], None, Some(Duration::from_secs(10)))?;
+    let out = process::exec(cmd, "git grep", &[1], None, Some(Duration::from_secs(10)))?;
     let prefix = rev.map(|r| format!("{r}:")).unwrap_or_default();
     Ok(out
         .split(|&b| b == 0)
@@ -849,7 +849,7 @@ fn read_all(
 /// `git cat-file --batch` for `input`, a `<rev>:<path>` line for each of `asked`.
 fn batch(repo: &Path, input: &str, asked: &[&String]) -> Result<Vec<(String, String)>, String> {
     let cmd = git::command(repo, &["cat-file", "--batch"]);
-    let out = git::exec(
+    let out = process::exec(
         cmd,
         "git cat-file",
         &[],

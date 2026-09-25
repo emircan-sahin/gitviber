@@ -2,7 +2,7 @@
 //! or fixup one into its parent, drop one, or move one past its neighbour. An interactive rebase
 //! does it from a todo written here, so no editor opens; conflicts stop it as any rebase's do.
 
-use crate::git;
+use crate::{git, process};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -143,7 +143,7 @@ pub fn run(repo: &Path, head: &str, edit: &Edit) -> Result<bool, String> {
     let mut cmd = git::command(repo, &args);
     // git hands the todo it wrote to this "editor", which puts ours in its place.
     cmd.env("GIT_SEQUENCE_EDITOR", format!("cp {}", quote(&todo_file)));
-    git::stoppable(repo, git::exec(cmd, "git rebase", &[], None, None))
+    git::stoppable(repo, process::exec(cmd, "git rebase", &[], None, None))
 }
 
 /// A folder in the git dir for the todo and the messages; they're read until the rebase ends,

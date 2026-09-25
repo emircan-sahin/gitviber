@@ -79,7 +79,7 @@ static PROBE: Mutex<Probe> = Mutex::new(Probe {
     answered: false,
 });
 static FINISHED: Condvar = Condvar::new();
-/// Bumped whenever `path` changes, so git.rs can cache its merged PATH until then.
+/// Bumped whenever `path` changes, so process.rs can cache its merged PATH until then.
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 fn probe() -> MutexGuard<'static, Probe> {
@@ -242,7 +242,11 @@ mod tests {
     /// A later probe's PATH reaches git without a restart; a failed one keeps the last.
     #[test]
     fn a_new_login_path_replaces_the_cached_one() {
-        let starts = |dir: &str| crate::git::search_path().to_string_lossy().starts_with(dir);
+        let starts = |dir: &str| {
+            crate::process::search_path()
+                .to_string_lossy()
+                .starts_with(dir)
+        };
         let path = |dir: &str| {
             let mut p = OsString::from(dir);
             p.push(":/usr/bin:/bin");

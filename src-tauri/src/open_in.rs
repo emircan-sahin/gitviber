@@ -226,37 +226,6 @@ fn fill(arg: &str, values: &[(&str, &str)]) -> String {
     out
 }
 
-/// Splits a command line into arguments with shell-style quoting and nothing else a shell
-/// does: no variables, globs or pipes. '…' is literal; elsewhere `\` takes the next character.
-fn split(command: &str) -> Result<Vec<String>, String> {
-    let mut args = Vec::new();
-    // None between arguments, so `""` still makes an (empty) argument.
-    let mut arg: Option<String> = None;
-    let mut quote: Option<char> = None;
-    let mut chars = command.chars();
-    while let Some(c) = chars.next() {
-        match (quote, c) {
-            (None, c) if c.is_whitespace() => args.extend(arg.take()),
-            (None, '\'' | '"') => {
-                quote = Some(c);
-                arg.get_or_insert_with(String::new);
-            }
-            (Some(q), c) if c == q => quote = None,
-            (Some('\''), c) => arg.get_or_insert_with(String::new).push(c),
-            (_, '\\') => {
-                let next = chars.next().ok_or("the command ends with a backslash")?;
-                arg.get_or_insert_with(String::new).push(next);
-            }
-            (_, c) => arg.get_or_insert_with(String::new).push(c),
-        }
-    }
-    if quote.is_some() {
-        return Err("the command has an unclosed quote".into());
-    }
-    args.extend(arg);
-    Ok(args)
-}
-
 /// `rel` in the worktree ("" is the worktree itself): the folder to open, and the file if
 /// it is one. Both go through fs::resolve, which keeps them inside the repo.
 fn target(root: &Path, rel: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
@@ -311,7 +280,7 @@ pub fn open(root: &Path, rel: &str, line: Option<u32>, id: &str) -> Result<(), S
 /// A user's own command (Settings → General → Open In). With no placeholder it gets the
 /// file, or the folder, as its last argument.
 pub fn open_custom(root: &Path, rel: &str, line: Option<u32>, command: &str) -> Result<(), String> {
-    let mut template = split(command)?;
+    let mut template = crate::process::split_command(command)?;
     if template.is_empty() {
         return Err("the command is empty".into());
     }
@@ -340,7 +309,7 @@ fn launch(argv: &[String], dir: &Path) -> Result<(), String> {
         .args(args)
         .current_dir(dir)
         // Also where a bare program name is looked up: Homebrew's bin isn't on a Finder app's PATH.
-        .env("PATH", crate::git::search_path())
+        .env("PATH", crate::process::search_path())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -418,19 +387,6 @@ mod tests {
             expand(&["{path}", "{app}", "{nope}"], &c),
             ["/w/{line}$(rm -rf ~)", "{app}", "{nope}"]
         );
-    }
-
-    #[test]
-    fn splits_like_a_shell_without_one() {
-        assert_eq!(split("  nvim-qt   {path} ").unwrap(), ["nvim-qt", "{path}"]);
-        assert_eq!(
-            split(r#"'/Apps/My Editor' --opt="a b" c\ d '$HOME' """#).unwrap(),
-            ["/Apps/My Editor", "--opt=a b", "c d", "$HOME", ""]
-        );
-        assert_eq!(split(r#"say "it's""#).unwrap(), ["say", "it's"]);
-        assert!(split("code 'oops").is_err());
-        assert!(split("code \\").is_err());
-        assert!(split("   ").unwrap().is_empty());
     }
 
     #[test]
