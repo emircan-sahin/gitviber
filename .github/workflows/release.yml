@@ -55,7 +55,7 @@ jobs:
     needs: prepare
     runs-on: macos-latest
     environment: ${{ github.event_name == 'push' && 'release' || '' }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
     steps:
@@ -70,21 +70,22 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-          cache: pnpm
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-03
         with:
           toolchain: stable
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: src-tauri
-
       # Also applies the xterm patch in patches/.
       - run: pnpm install --frozen-lockfile
 
-      # The certificate goes into a keychain of its own, deleted with the key files below.
+      # Everything that runs code from dependencies (install scripts, Vite, build.rs) happens
+      # before any secret is in reach. Signing only bundles the binary built here.
+      - name: Build
+        run: pnpm tauri build --target universal-apple-darwin --no-bundle
+
+      # The certificate goes into a keychain of its own, non-extractable, deleted with the key
+      # files at the end.
       - name: Signing and notarization
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
@@ -111,6 +112,7 @@ jobs:
             exit 0
           fi
 
+          umask 077
           keychain="$RUNNER_TEMP/signing.keychain-db"
           keychain_password=$(openssl rand -hex 24)
           echo "::add-mask::$keychain_password"
@@ -118,7 +120,7 @@ jobs:
           security set-keychain-settings -lut 21600 "$keychain"
           security unlock-keychain -p "$keychain_password" "$keychain"
           printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
-          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -f pkcs12 \
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -f pkcs12 -x \
             -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign > /dev/null
           rm -f "$RUNNER_TEMP/certificate.p12"
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
@@ -150,7 +152,8 @@ jobs:
             problem "Signed but not notarized: set APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_PRIVATE_KEY, or APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID."
           fi
 
-      - name: Build
+      # Signs and notarizes the .app, packs the .dmg, and signs the updater bundle.
+      - name: Bundle
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -172,17 +175,48 @@ jobs:
             echo "::error::TAURI_SIGNING_PRIVATE_KEY isn't set in the release environment; installed copies couldn't update."
             exit 1
           else
-            echo "::warning::No updater signing key, so no updater bundles (.app.tar.gz and .sig)."
+            echo "::warning::No updater signing key, so no updater bundle (.app.tar.gz and .sig)."
           fi
-          pnpm tauri build "${args[@]}"
+          pnpm tauri bundle "${args[@]}"
+
+      # Tauri notarizes the app inside; the .dmg around it gets its own ticket, so opening the
+      # download doesn't ask Apple either.
+      - name: Notarize the .dmg
+        if: env.NOTARIZED == 'true'
+        env:
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "${APPLE_API_KEY_PATH:-}" ]; then
+            auth=(--key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER")
+          else
+            auth=(--apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID")
+          fi
+          dmg=$(echo src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          result=$(xcrun notarytool submit "$dmg" "${auth[@]}" --wait --output-format json)
+          echo "$result"
+          if [ "$(jq -r .status <<< "$result")" != Accepted ]; then
+            xcrun notarytool log "$(jq -r .id <<< "$result")" "${auth[@]}" || true
+            echo "::error::Apple didn't accept the .dmg."
+            exit 1
+          fi
+          xcrun stapler staple "$dmg"
 
       - name: Check that Gatekeeper accepts it
         if: env.NOTARIZED == 'true'
         run: |
-          app=src-tauri/target/universal-apple-darwin/release/bundle/macos/GitViber.app
+          bundle=src-tauri/target/universal-apple-darwin/release/bundle
+          app="$bundle/macos/GitViber.app"
           codesign --verify --deep --strict "$app"
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=2 "$app"
+          for dmg in "$bundle"/dmg/*.dmg; do
+            xcrun stapler validate "$dmg"
+            spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
+          done
 
       - name: Collect the bundles
         run: |
@@ -196,6 +230,7 @@ jobs:
           done
           ls -l "$out"
 
+      # Before any other action runs.
       - name: Remove the keychain and key files
         if: always()
         run: |
@@ -230,35 +265,35 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
-          cache: pnpm
 
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-03
         with:
           toolchain: stable
 
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          workspaces: src-tauri
-
       - run: pnpm install --frozen-lockfile
 
+      # No secrets here: the bundles (.deb, .rpm, AppImage) are built without the updater key,
+      # and only the Tauri CLI sees it, in the next step.
       - name: Build
+        run: pnpm tauri build
+
+      - name: Sign for the updater
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          # bundle.targets "all" is .deb, .rpm and AppImage here.
-          args=()
-          if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
-            args+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
-          elif [ "$RELEASE" = true ]; then
-            echo "::error::TAURI_SIGNING_PRIVATE_KEY isn't set in the release environment; installed copies couldn't update."
-            exit 1
-          else
-            unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            if [ "$RELEASE" = true ]; then
+              echo "::error::TAURI_SIGNING_PRIVATE_KEY isn't set in the release environment; installed copies couldn't update."
+              exit 1
+            fi
             echo "::warning::No updater signing key, so no updater signatures (.sig)."
+            exit 0
           fi
-          pnpm tauri build "${args[@]}"
+          for file in src-tauri/target/release/bundle/{deb/*.deb,rpm/*.rpm,appimage/*.AppImage}; do
+            node_modules/.bin/tauri signer sign "$file" > /dev/null
+            echo "signed $file"
+          done
 
       - name: Collect the bundles
         run: |

@@ -1,9 +1,9 @@
 # Releasing
 
 A pushed `v*` tag runs [`release.yml`](.github/workflows/release.yml): it builds a universal
-macOS app (signed and notarized) and the Linux `.deb`, `.rpm` and AppImage, then leaves them on a
-**draft** release with `SHA256SUMS`, the updater's `latest.json` and notes from
-[CHANGELOG.md](CHANGELOG.md). Nothing is public until you publish the draft.
+macOS app (the app and its `.dmg` signed and notarized) and the Linux `.deb`, `.rpm` and
+AppImage, then leaves them on a **draft** release with `SHA256SUMS`, the updater's `latest.json`
+and notes from [CHANGELOG.md](CHANGELOG.md). Nothing is public until you publish the draft.
 
 ## How it's locked down
 
@@ -11,11 +11,15 @@ macOS app (signed and notarized) and the Linux `.deb`, `.rpm` and AppImage, then
   only lets `v*` tags use it. A branch, a pull request or a dry run never sees them.
 - **Only admins can create, move or delete `v*` tags** (the "Release tags" ruleset), so only an
   admin can start a signed build.
+- **Dependency code never runs next to a secret.** Each build job installs and compiles first
+  (`tauri build --no-bundle` on macOS, the whole Linux build), with no secret in reach; only
+  then do the Tauri CLI's bundle and sign steps get them. No caches are restored, so nothing a
+  CI run on a branch left behind ends up in a release.
 - **Only the last job can write to the repository.** The build jobs have read access; `publish`
   gets `contents: write` to create the draft, and runs for tags only.
-- Actions are pinned to commit SHAs. The certificate goes into a temporary keychain and the
-  certificate and API key files into `$RUNNER_TEMP`; all of them are deleted when the job ends,
-  failed or not.
+- Actions are pinned to commit SHAs. The certificate goes into a temporary keychain as a
+  non-extractable key, and the certificate and API key files into `$RUNNER_TEMP`; all of them
+  are deleted when the job ends, failed or not, before any other action runs.
 
 ## One-time setup
 
@@ -43,14 +47,16 @@ API key. Delete the exported `.p12` afterwards; the certificate stays in your ke
 | `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | The updater key, already set |
 
 A tag build fails if a signing, notarization or updater secret is missing, rather than publish
-an app Gatekeeper blocks or one that can't update. Re-run the script when the certificate is renewed or the API key revoked.
+an app Gatekeeper blocks or one that can't update. Re-run the script when the certificate is
+renewed or the API key revoked.
 
 ### The updater key
 
 `tauri.conf.json` leaves updater bundles off, so any build works without this key; tag builds
-turn them on and sign them with it, and installed copies only accept updates signed by it. The private key is `~/.tauri/gitviber-updater.key`, its password is in the macOS Keychain
-(`security find-generic-password -s "gitviber updater key password" -w`), and both are already in
-the `release` environment. **Back both up somewhere safe and offline.** If the key or its password
+turn them on and sign them with it, and installed copies only accept updates signed by it. The
+private key is `~/.tauri/gitviber-updater.key`, its password is in the macOS Keychain
+(`security find-generic-password -s "gitviber updater key password" -w`), and both are already
+in the `release` environment. **Back both up somewhere safe and offline.** If the key or its password
 is lost, no installed copy can be updated again; everyone has to download the next version by
 hand. If it leaks, anyone who can serve a `latest.json` to users can ship them an update.
 
@@ -79,17 +85,18 @@ gh repo create emircan-sahin/homebrew-tap --public --description "Homebrew casks
    ```
 
    The workflow checks that the tag matches the version before it builds anything.
-5. **Check the draft** under Releases once the run is green (about half an hour): the `.dmg`,
-   `.app.tar.gz` and `.sig`, `.deb`, `.rpm`, `.AppImage` and their `.sig`, `SHA256SUMS` and
-   `latest.json`. Download the `.dmg` and open it on a Mac that has never run GitViber: it
+5. **Check the draft** under Releases once the run is green (under an hour; nothing is cached):
+   the `.dmg`, `.app.tar.gz` and `.sig`, `.deb`, `.rpm`, `.AppImage` and their `.sig`,
+   `SHA256SUMS` and `latest.json`. Download the `.dmg` and open it on a Mac that has never run GitViber: it
    should open without a Gatekeeper warning.
 6. **Publish** the draft. From then on `releases/latest/download/latest.json` points at it and
    installed copies offer the update.
 7. **Update the Homebrew cask** (below).
 
-If a build job fails, fix the cause and re-run the failed jobs: the publish job reuses its draft
-and replaces what's there. It never touches a published release; for a broken published one,
-tag the next patch version.
+Re-running failed jobs builds the same tagged commit again, so it only helps with a flaky runner
+or an Apple outage; the publish job reuses its draft and replaces what's there. A fix in the code
+needs a new tag: delete the draft and tag the fix as the next rc, or the next patch version. The
+workflow never touches a published release.
 
 ### Test a signed build without releasing
 
