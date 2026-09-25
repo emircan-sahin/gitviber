@@ -22,8 +22,10 @@ export function IdentityDialog({ root }: { root: string | null }) {
   const [busy, setBusy] = useState(false);
   const asks = identityAsks.use();
 
+  const open = missing !== null;
   useEffect(() => {
-    if (!root || dismissedAt === asks) return;
+    // Already open: another ask mustn't reset what's typed.
+    if (!root || dismissedAt === asks || open) return;
     let live = true;
     api.gitIdentity().then(
       ({ current, suggested }) => {
@@ -37,7 +39,7 @@ export function IdentityDialog({ root }: { root: string | null }) {
     return () => {
       live = false;
     };
-  }, [root, asks]);
+  }, [root, asks, open]);
 
   if (!missing) return null;
   const close = () => {
