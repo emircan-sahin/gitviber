@@ -1,5 +1,7 @@
 mod commands;
 mod definitions;
+#[cfg(debug_assertions)]
+mod dev_bridge;
 mod diff;
 mod display;
 mod errors;
@@ -61,6 +63,8 @@ pub fn run() {
             }
             #[cfg(target_os = "macos")]
             menu::keep_typed_key_equivalents();
+            #[cfg(debug_assertions)]
+            dev_bridge::start(app.handle().clone());
             if let Some(webview) = app.get_webview_window("main") {
                 display::unlock_high_refresh_rate(&webview);
                 titlebar::setup(&webview);
@@ -146,6 +150,7 @@ pub fn run() {
             commands::changes::suggest_cancel,
             commands::history::commit_details,
             commands::sync::push,
+            commands::sync::remote_was_ours,
             commands::sync::pull,
             commands::sync::fetch,
             commands::sync::last_fetch,

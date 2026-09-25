@@ -7,6 +7,8 @@
 #   ui.sh type <text>          text into the webview only
 #   ui.sh panel <path>         type a path into a native open panel (⌘⇧G, path, return, return)
 #   ui.sh esc-panel            cancel a native open panel
+#   ui.sh js '<body>'          run a function body in the page (debug builds, dev_bridge.rs), print its JSON result;
+#                              prelude.js's helpers ($, byText, press, typeInto, waitFor, toasts…) are in scope
 set -e
 UI_DIR=${UI_DIR:?set UI_DIR to a scratchpad folder}
 HERE=${0:a:h}
@@ -23,8 +25,8 @@ front_keys() {
 
 case $1 in
   init)
-    # The main window is the big one; tauri also owns a small hidden 500x500 one.
-    ./winid gitviber | sort -k4 -n | tail -1 | read WID WX WY WW WH PID
+    # The main window is the tallest: tauri also owns a hidden 500x500 one, and the menu bar strips are wider.
+    ./winid gitviber | sort -k5 -n | tail -1 | read WID WX WY WW WH PID
     echo $PID > pid; echo $WID > win; echo "$WX $WY $WW" > origin
     echo "pid $PID window $WID at $WX,$WY width $WW";;
   shot)
@@ -39,5 +41,14 @@ case $1 in
     front_keys -e 'keystroke "g" using {command down, shift down}' -e 'delay 0.8' \
       -e "keystroke \"$2\"" -e 'delay 0.8' -e 'keystroke return' -e 'delay 1' -e 'keystroke return';;
   esc-panel) front_keys -e 'key code 53';;
-  *) sed -n '2,9p' $0; exit 1;;
+  js)
+    # dev_bridge.rs listens on the dev server's port + 100.
+    PORT=$(( ${GITVIBER_DEV_PORT:-1420} + 100 ))
+    { cat $HERE/prelude.js; print -r -- "$2"; } | python3 -c '
+import socket, sys
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=30)
+s.sendall(sys.stdin.buffer.read()); s.shutdown(socket.SHUT_WR)
+out = b"".join(iter(lambda: s.recv(65536), b""))
+print(out.decode())' $PORT;;
+  *) sed -n '2,11p' $0; exit 1;;
 esac

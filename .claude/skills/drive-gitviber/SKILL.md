@@ -1,6 +1,6 @@
 ---
 name: drive-gitviber
-description: Launch the GitViber dev app and drive its real window (clicks, keys, native file pickers, screenshots) to check a UI change. Only after the user said yes to a live UI test — ask first; scripted checks come before this.
+description: Launch the GitViber dev app and drive its real window (DOM through the dev bridge, clicks, keys, native file pickers, screenshots) to check a UI change. Only after the user said yes to a live UI test — ask first; scripted checks come before this.
 ---
 
 # Driving the real GitViber window
@@ -37,7 +37,21 @@ The dev app reopens its last repo, often the real git_viber. Switch first: `$UI 
 
 ## Driving
 
-`$UI shot a1`, then Read `a1-s.png`. Coordinates for `$UI click x y` are points of that
+Start with the DOM, not screenshots. Debug builds run `src-tauri/src/dev_bridge.rs`, so
+`$UI js '<function body>'` runs in the page and prints `{"ok":…,"value"|"error":…}`. The
+helpers in `prelude.js` are in scope: `$`, `$$`, `byText`, `press` (pointer events too, which
+Radix menus need), `rightClick`, `key`, `typeInto`, `waitFor`, `text`, `toasts`. Example:
+`$UI js 'press(byText("History")); await sleep(500); return toasts()'`. Keep what it returns
+small: `innerText` of a region, not `textContent` of everything (that includes `<style>`).
+
+- Labels can differ from what shows: the PR/Issue filters are "open/closed/all" in the DOM,
+  capitalized by CSS.
+- Success toasts close after a few seconds; press their buttons in the same script.
+- Hot reload doesn't re-run module-level listeners (keybindings): after changing those, ⌘R.
+- Synthetic events are untrusted but the app doesn't check. Native menus, open panels and
+  real key equivalents still need the tools below.
+
+Screenshots are for what only pixels show (layout, colors, Monaco). `$UI shot a1`, then Read `a1-s.png`. Coordinates for `$UI click x y` are points of that
 1200-wide `-s` image. For detail, crop the 2x `a1.png`: `sips -c H W --cropOffset Y X`
 (Y comes first).
 
@@ -50,6 +64,10 @@ What already failed, so don't retry it:
   That runs in another process, so `panel`/`esc-panel` use System Events, and only while
   GitViber is verified frontmost. An unguarded keystroke once typed into the user's terminal.
 - After a hot reload, Settings opens on Appearance again, not the last section.
+- A window behind others paints nothing (WebKit stops drawing it): a black or empty shot
+  means bring it to the front first, not that the page is broken.
+- The native menu is scriptable with System Events on the app's pid (`click menu item …`),
+  which covers Help and Git menu items, and the clipboard reads back with `pbpaste`.
 
 ## Cleanup (always)
 
