@@ -1,21 +1,21 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import type { Blame, BlameCommit, DiffPair, DiffRow } from "@/lib/api";
-import { showLanguage } from "@/lib/highlight";
-import { languageFor } from "@/lib/language";
-import { narrow, widenColumn } from "@/lib/indent";
-import { useFind } from "@/lib/find";
-import { findMatches } from "@/lib/findQuery";
-import { onReveal, takeReveal } from "@/lib/reveal";
-import { codeWantsFocus, setCodeEditor } from "@/lib/panels";
-import { followDefinitions } from "@/lib/definitions";
-import { followLineActions } from "@/lib/lineActions";
-import { followReviewThreads, type Review } from "./ReviewThreads";
-import { type LinkSide, onReveal as onLinkReveal, takeReveal as takeLinkReveal } from "@/lib/linkHost";
-import { colorThrough, createModels, monaco, prepare, redrawWhenColored, releaseModels } from "@/lib/monaco";
-import { codeFontFamily, type Settings, useSettings } from "@/lib/settings";
-import { relativeTime } from "@/lib/utils";
-
-export type CodeMode = "unified" | "split" | "file";
+import { showLanguage } from "@/lib/editor/shownLanguage";
+import { languageFor } from "@/lib/editor/language";
+import { narrow, widenColumn } from "@/lib/editor/indent";
+import { useFind } from "@/lib/ui/find";
+import { findMatches } from "@/lib/ui/findQuery";
+import { type CodeReveal, onReveal, takeReveal } from "@/lib/editor/reveal";
+import { codeWantsFocus, setCodeEditor } from "@/lib/ui/panels";
+import { followDefinitions } from "@/lib/editor/definitions";
+import { followLineActions } from "@/lib/editor/lineActions";
+import { codeEditor, type Editor, hideEditor, hideFile, isDiff, showEditor, showFile } from "./activeEditor";
+import { followReviewThreads, type Review } from "@/features/github/pulls/ReviewThreads";
+import type { LinkSide } from "@/lib/links/linkHost";
+import { colorThrough, createModels, monaco, prepare, redrawWhenColored, releaseModels } from "@/lib/editor/monaco";
+import { useSettings } from "@/lib/settings";
+import { blameAt, changeBars, isNew, markBars, markBlame, markFindMatches } from "./decorations";
+import { CONTEXT, type CodeMode, diffOptions, fileOptions } from "./editorOptions";
 
 export interface CodeViewHandle {
   next(): void;
@@ -44,10 +44,8 @@ interface Props {
   review?: Review | null;
 }
 
-type Editor = monaco.editor.IStandaloneDiffEditor | monaco.editor.IStandaloneCodeEditor;
 type FindState = { searchString: string; replaceString: string; isReplaceRevealed: boolean; searchScope: null };
 type FindController = { closeFindWidget(): void; getState(): { change(state: FindState, moveCursor: boolean, updateHistory: boolean): void } };
-const isDiff = (e: Editor): e is monaco.editor.IStandaloneDiffEditor => "getLineChanges" in e;
 
 // Where each file was left, for the life of the app (tab switches included).
 const viewStates = new Map<string, monaco.editor.IDiffEditorViewState | monaco.editor.ICodeEditorViewState>();
@@ -59,28 +57,8 @@ const parked: Record<"diff" | "file", { e: Editor; box: HTMLDivElement } | null>
 // paint instead of pushing the text down a moment later. git's diff is ready at once; this bounds
 // the fallback, Monaco computing one itself.
 const DIFF_WAIT = 300;
-const CONTEXT = 3;
 // Lines past where a file opens that are colored before it shows.
 const SCREEN = 150;
-
-// The file on show and where it's read, for "Open in" an editor at that line.
-let onShow: { path: string; line: () => number } | null = null;
-
-/** The line being read in `path` if the code view shows it: the cursor's if it's on screen, else the top one. */
-// The code view's editor, while one is shown.
-let live: Editor | null = null;
-
-/** The text selected in the code view, if it's on one line: what Search in Files starts from. */
-export function selectedText(): string {
-  const code = live && (isDiff(live) && live.getOriginalEditor().hasWidgetFocus() ? live.getOriginalEditor() : codeEditor(live));
-  const sel = code?.getSelection();
-  if (!code || !sel || sel.isEmpty() || sel.startLineNumber !== sel.endLineNumber) return "";
-  return code.getModel()?.getValueInRange(sel) ?? "";
-}
-
-export function lineInView(path: string): number | undefined {
-  return onShow?.path === path ? onShow.line() : undefined;
-}
 
 /** The code view on Monaco (VS Code's editor): a diff editor for changes, a plain one for files. */
 export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, blameColumn = false, onBlameClick, links = null, staging = null, review = null }, ref) {
@@ -130,7 +108,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     // Detached, it was laid out at 0x0: measure now, before a file is scrolled into place.
     if (reused) e.layout();
     editor.current = e;
-    live = e;
+    showEditor(e);
     // A click on a blame entry shows its commit.
     const click = isDiff(e)
       ? null
@@ -179,43 +157,25 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       if (parked[kind]) e.dispose();
       else parked[kind] = { e, box };
       editor.current = null;
-      if (live === e) live = null;
+      hideEditor(e);
     };
     // Options follow below; only the kind of editor needs a new one.
   }, [diff]);
 
-  // A link to a line of the file already on show.
+  // A line asked for (lib/editor/reveal) in the file already on show.
   const revealing = useRef<string | null>(null);
   useEffect(
     () =>
-      onLinkReveal(() => {
+      onReveal(() => {
         const e = editor.current;
-        const line = e && revealing.current ? takeLinkReveal(revealing.current, false) : null;
-        if (e && line) revealAt(codeEditor(e), line, unit.current);
+        const r = e && revealing.current ? takeReveal(revealing.current) : null;
+        if (e && r) showReveal(codeEditor(e), r, unit.current);
       }),
     [],
   );
 
   // Focus Code View, F6 and → from a list land in the editor that scrolls.
   useEffect(() => setCodeEditor(() => editor.current && codeEditor(editor.current).focus()), []);
-
-  // A search result's match (lib/reveal), once this file view shows its file: its line, the match selected.
-  const reveal = useRef<() => boolean>(() => false);
-  reveal.current = () => {
-    const e = editor.current;
-    if (!e || isDiff(e) || shown.current !== scrollKey) return false;
-    const r = takeReveal(path);
-    if (!r) return false;
-    const model = e.getModel()!;
-    const line = Math.min(r.line, model.getLineCount());
-    const found = findMatches(model.getLineContent(line), r.query, r.options, 1);
-    const [start, end] = (!(found instanceof Error) && found[0]) || [0, 0];
-    const range = new monaco.Range(line, start + 1, line, end + 1);
-    e.setSelection(range);
-    e.revealRangeInCenter(range);
-    return true;
-  };
-  useEffect(() => onReveal(() => void reveal.current()), []);
 
   // Find is Monaco's own box: in split view on the side that has focus, else the new side.
   useFind("code", () => {
@@ -280,7 +240,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       }
       onScreen = true;
       // A staged diff or a commit shows another version: its line numbers aren't the file's.
-      if (onDisk) onShow = shows;
+      if (onDisk) showFile(shows);
       unit.current = created.unit;
       releaseModels(old);
       shown.current = scrollKey;
@@ -289,11 +249,10 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       const code = codeEditor(e);
       // Opened from the code view (J/K, a tab switch) or sent here before it was ready: take the keys.
       if (codeWantsFocus()) code.focus();
-      // Opened by a link that names a line (path:12, #L12): there, wherever it was left.
+      // Opened by a link that names a line (path:12, #L12) or a search result: there, wherever it was left.
       revealing.current = diff ? null : path;
-      const line = diff ? null : takeLinkReveal(path, true);
-      if (line) return revealAt(code, line, created.unit);
-      if (reveal.current()) return;
+      const r = diff ? null : takeReveal(path, true);
+      if (r) return showReveal(code, r, created.unit);
       if (saved) return e.restoreViewState(saved as never);
       // Near the first change. A diff still computing takes it there when it lands, unless you
       // have scrolled since.
@@ -309,7 +268,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       stale = true;
       revealing.current = null;
       stopRedraw();
-      if (onShow === shows) onShow = null;
+      hideFile(shows);
       if (!onScreen) return releaseModels(models);
       // Still on the editor (not disposed with it): remember where it was left.
       if (editor.current === e) viewStates.set(scrollKey, e.saveViewState()!);
@@ -394,149 +353,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   return <div ref={host} data-scrollbar="none" className="relative h-full" />;
 });
 
-// The color find's decorations ask an editor's own overview ruler for (past 1000 matches, merged ones).
-const FIND_MARK = "editorOverviewRuler.findMatchForeground";
-
-/**
- * Find's matches on a diff's overview, which stands in for the editors' own scrollbars (hidden,
- * see diffOptions) where Monaco would mark them: each side's on its half, as the diff's own colors are.
- */
-function markFindMatches(e: monaco.editor.IStandaloneDiffEditor, host: HTMLElement, split: () => boolean) {
-  const canvas = document.createElement("canvas");
-  canvas.className = "gv-find-marks";
-  host.appendChild(canvas);
-  const sides = [e.getOriginalEditor(), e.getModifiedEditor()];
-  let frame = 0;
-  const draw = () => {
-    frame = 0;
-    const ratio = window.devicePixelRatio;
-    canvas.width = Math.round(canvas.clientWidth * ratio);
-    canvas.height = Math.round(canvas.clientHeight * ratio);
-    const ctx = canvas.getContext("2d")!;
-    ctx.fillStyle = getComputedStyle(canvas).color;
-    // Both sides scroll as one; the new side's height counts the unified view's deleted lines too.
-    const scale = canvas.height / Math.max(1, sides[1].getScrollHeight());
-    const half = canvas.width / 2;
-    // The unified view hides the old side, which keeps any matches from while it showed.
-    sides.slice(split() ? 0 : 1).forEach((side) => {
-      const model = side.getModel();
-      const x = side === sides[0] ? 0 : half;
-      for (const d of (model && side.getDecorationsInRange(model.getFullModelRange())) ?? []) {
-        const mark = d.options.overviewRuler?.color;
-        if (typeof mark !== "object" || mark.id !== FIND_MARK) continue;
-        const top = side.getTopForLineNumber(d.range.startLineNumber);
-        const bottom = side.getBottomForLineNumber(d.range.endLineNumber);
-        ctx.fillRect(x, Math.floor(top * scale), half, Math.max(3 * ratio, Math.ceil((bottom - top) * scale)));
-      }
-    });
-  };
-  const redraw = () => (frame ||= requestAnimationFrame(draw));
-  const subs = sides.flatMap((side) => [side.onDidChangeModelDecorations(redraw), side.onDidContentSizeChange(redraw), side.onDidLayoutChange(redraw)]);
-  return {
-    dispose() {
-      cancelAnimationFrame(frame);
-      subs.forEach((s) => s.dispose());
-      canvas.remove();
-      // WebKit frees the backing store only once the canvas is collected, which it puts off.
-      canvas.width = canvas.height = 0;
-    },
-  };
-}
-
-const barDecorations = new WeakMap<monaco.editor.ICodeEditor, monaco.editor.IEditorDecorationsCollection>();
-
-/** The file view's VS Code-style change bars, in the gutter and on the scrollbar. */
-function markBars(e: monaco.editor.ICodeEditor, bars: ReturnType<typeof changeBars>) {
-  const css = getComputedStyle(document.documentElement);
-  const color = { add: css.getPropertyValue("--added"), mod: css.getPropertyValue("--primary"), del: css.getPropertyValue("--removed") };
-  let collection = barDecorations.get(e);
-  if (!collection) barDecorations.set(e, (collection = e.createDecorationsCollection()));
-  collection.set(
-    bars.map((b) => ({
-      range: new monaco.Range(b.line, 1, b.line, 1),
-      options: {
-        isWholeLine: true,
-        linesDecorationsClassName: `gv-bar gv-bar-${b.kind}`,
-        overviewRuler: { color: color[b.kind].trim(), position: monaco.editor.OverviewRulerLane.Left },
-      },
-    })),
-  );
-}
-
-const blameDecorations = new WeakMap<monaco.editor.ICodeEditor, monaco.editor.IEditorDecorationsCollection>();
-
-/** A line's blame entry; lines git has none for (past its end, not in HEAD) are new. */
-function blameAt(blame: Blame | null, line: number): BlameCommit | null {
-  if (!blame) return null;
-  return blame.commits[blame.lines[line - 1]] ?? NEW_LINE;
-}
-const NEW_LINE: BlameCommit = { sha: "0".repeat(40), authorName: "", authorEmail: "", timestamp: 0, message: "", path: "" };
-const isNew = (c: BlameCommit) => /^0+$/.test(c.sha);
-
-/**
- * The blame column: one entry per run of lines from the same commit, labeled on its first
- * line (a class per label, whose ::after holds the text), with the whole message on hover.
- */
-function markBlame(e: monaco.editor.ICodeEditor, blame: Blame | null) {
-  let collection = blameDecorations.get(e);
-  if (!collection) blameDecorations.set(e, (collection = e.createDecorationsCollection()));
-  const model = e.getModel();
-  if (!blame || !model) return collection.clear();
-  // A final newline leaves an empty last line in the editor that isn't a line to git: no entry.
-  const count = model.getLineCount();
-  const n = count > 1 && count > blame.lines.length && model.getLineContent(count) === "" ? count - 1 : count;
-  const out: monaco.editor.IModelDeltaDecoration[] = [];
-  for (let line = 1; line <= n; ) {
-    const c = blameAt(blame, line)!;
-    let end = line;
-    while (end < n && blameAt(blame, end + 1)!.sha === c.sha) end++;
-    const kind = isNew(c) ? "gv-blame gv-blame-new" : "gv-blame";
-    out.push({
-      range: new monaco.Range(line, 1, end, 1),
-      options: {
-        linesDecorationsClassName: kind,
-        firstLineDecorationClassName: `${kind} gv-blame-first ${blameLabel(c)}`,
-        linesDecorationsTooltip: blameTooltip(c),
-      },
-    });
-    line = end + 1;
-  }
-  collection.set(out);
-}
-
-/** Characters in a blame label: short SHA, author, age. */
-const BLAME_CHARS = 33;
-const AUTHOR_CHARS = 16;
-
-const labelClasses = new Map<string, string>();
-let labelSheet: CSSStyleSheet | null = null;
-
-/** The class that shows `c`'s label, made the first time it's needed. */
-function blameLabel(c: BlameCommit) {
-  const author = c.authorName.length > AUTHOR_CHARS ? `${c.authorName.slice(0, AUTHOR_CHARS - 1)}…` : c.authorName.padEnd(AUTHOR_CHARS);
-  const text = isNew(c) ? "Uncommitted" : `${c.sha.slice(0, 7)} ${author} ${relativeTime(c.timestamp)}`;
-  let cls = labelClasses.get(text);
-  if (cls) return cls;
-  cls = `gvb-${labelClasses.size}`;
-  labelClasses.set(text, cls);
-  if (!labelSheet) {
-    const style = document.createElement("style");
-    document.head.appendChild(style);
-    labelSheet = style.sheet!;
-  }
-  const content = text.replace(/[\\"]/g, "\\$&").replace(/\n/g, " ");
-  labelSheet.insertRule(`.monaco-editor .${cls}::after { content: "${content}"; }`, labelSheet.cssRules.length);
-  return cls;
-}
-
-function blameTooltip(c: BlameCommit) {
-  if (isNew(c)) return "Not committed yet";
-  const when = new Date(c.timestamp * 1000).toLocaleString();
-  return `${c.sha.slice(0, 10)} · ${c.authorName} <${c.authorEmail}> · ${when}\n\n${c.message}\n\nClick to show it in History`;
-}
-
 /** The editor that scrolls: the diff's new side, which carries the old one along. */
-const codeEditor = (e: Editor) => (isDiff(e) ? e.getModifiedEditor() : e);
 
 /** First line of each change, in the editor that scrolls (a deletion: the line after it). */
 function changeStarts(e: Editor, bars: ReturnType<typeof changeBars>) {
@@ -561,6 +378,19 @@ function readingLine(e: monaco.editor.ICodeEditor) {
   return visible[0]?.startLineNumber ?? 1;
 }
 
+/** A link's line at its column, or a search result's with its match selected. */
+function showReveal(e: monaco.editor.ICodeEditor, r: CodeReveal, unit: number) {
+  const model = e.getModel();
+  if (!model) return;
+  if (!("query" in r)) return revealAt(e, { lineNumber: r.line, column: r.column }, unit);
+  const line = Math.min(r.line, model.getLineCount());
+  const found = findMatches(model.getLineContent(line), r.query, r.options, 1);
+  const [start, end] = (!(found instanceof Error) && found[0]) || [0, 0];
+  const range = new monaco.Range(line, start + 1, line, end + 1);
+  e.setSelection(range);
+  e.revealRangeInCenter(range);
+}
+
 /** Puts the cursor on `pos` (a column as the file on disk has it, before widening) mid-screen. */
 function revealAt(e: monaco.editor.ICodeEditor, pos: { lineNumber: number; column: number }, unit: number) {
   const model = e.getModel();
@@ -580,77 +410,4 @@ function modelsOf(e: Editor) {
   if (!isDiff(e)) return e.getModel() ? [e.getModel()!] : [];
   const m = e.getModel();
   return m ? [m.original, m.modified] : [];
-}
-
-function common(s: Settings, wrap: boolean): monaco.editor.IEditorOptions & monaco.editor.IGlobalEditorOptions {
-  return {
-    readOnly: true,
-    automaticLayout: true,
-    fontFamily: codeFontFamily(s),
-    fontSize: s.codeFontSize,
-    lineHeight: Math.round(s.codeFontSize * s.lineHeight),
-    fontLigatures: s.ligatures,
-    wordWrap: wrap ? "on" : "off",
-    wrappingIndent: "same",
-    // Plain text only: the HTML copy would carry the widened indentation.
-    copyWithSyntaxHighlighting: false,
-    minimap: { enabled: false },
-    scrollBeyondLastLine: false,
-    renderLineHighlight: "none",
-    folding: false,
-    glyphMargin: false,
-    stickyScroll: { enabled: false },
-    guides: { indentation: false },
-    overviewRulerBorder: false,
-    scrollbar: { useShadows: false, verticalScrollbarSize: 14, horizontalScrollbarSize: 10 },
-    padding: { top: 4 },
-  };
-}
-
-function diffOptions(s: Settings, mode: CodeMode, collapse: boolean, wrap: boolean): monaco.editor.IDiffEditorConstructionOptions {
-  return {
-    ...common(s, wrap),
-    renderSideBySide: mode === "split",
-    // The layout is the user's choice, not the window width's.
-    useInlineViewWhenSpaceIsLimited: false,
-    hideUnchangedRegions: { enabled: collapse, contextLineCount: CONTEXT, minimumLineCount: 3, revealLineCount: 20 },
-    // Whitespace changes are changes, as git counts them.
-    ignoreTrimWhitespace: false,
-    originalEditable: false,
-    renderMarginRevertIcon: false,
-    renderGutterMenu: false,
-    diffWordWrap: "inherit",
-    // A word change on one side only has an empty range on the other (see lib/diffHunks): no marker.
-    experimental: { showEmptyDecorations: false },
-    // Room around the +/− signs, like the old gutter's sign column.
-    lineDecorationsWidth: 20,
-    scrollbar: { ...common(s, wrap).scrollbar, vertical: "hidden", verticalScrollbarSize: 0 },
-  };
-}
-
-function fileOptions(s: Settings, wrap: boolean, blame: boolean): monaco.editor.IStandaloneEditorConstructionOptions {
-  // Blame's label goes after the change bars (index.css), in the code font's widths.
-  return { ...common(s, wrap), lineDecorationsWidth: blame ? `${BLAME_CHARS + 3}ch` : 12 };
-}
-
-/** Lines to mark in the file view: added, modified, and where lines were deleted. */
-function changeBars(rows: DiffRow[]) {
-  const out: { line: number; kind: "add" | "mod" | "del" }[] = [];
-  let last = 0;
-  for (let i = 0; i < rows.length; ) {
-    if (rows[i].k === 0) {
-      last = rows[i++].n;
-      continue;
-    }
-    let j = i;
-    let dels = 0;
-    while (j < rows.length && rows[j].k !== 0) if (rows[j++].k === 2) dels++;
-    const adds = rows.slice(i, j).filter((r) => r.k === 1);
-    for (const r of adds) out.push({ line: r.n, kind: dels ? "mod" : "add" });
-    // Deleted lines: marked on the line after them (the last line at the end of the file).
-    if (dels && !adds.length) out.push({ line: j < rows.length ? rows[j].n : Math.max(1, last), kind: "del" });
-    if (adds.length) last = adds[adds.length - 1].n;
-    i = j;
-  }
-  return out;
 }

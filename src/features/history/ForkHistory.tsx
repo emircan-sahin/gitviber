@@ -2,15 +2,14 @@ import { ArrowDownToLine, RefreshCw } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, type Commit, errorMessage, fullName, type GitHubAccess, github } from "@/lib/api";
-import { useGitHubData } from "@/lib/githubCache";
-import { toast } from "@/lib/toast";
-import { tracked, undoAction } from "@/lib/undo";
+import { api, type Branch, type Commit, errorMessage, fullName, type GitHubAccess, github, LOG_PAGE } from "@/lib/api";
+import { toast } from "@/lib/app/toast";
+import { tracked, undoAction } from "@/lib/repo/undo";
 import { cn } from "@/lib/utils";
 import { HistoryPanel } from "./HistoryPanel";
-import { RepoPanes } from "./RepoPanes";
+import { RepoPanes } from "@/components/RepoPanes";
+import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
 
-const PAGE = 200;
 /** A fetch of the original is a network round trip: not on every switch to History. */
 const REFETCH_AFTER = 5 * 60_000;
 const lastFetch = new Map<string, number>();
@@ -22,10 +21,7 @@ type Props = ComponentProps<typeof HistoryPanel> & { branches: Branch[] };
  * your branch doesn't have yet marked. Without GitHub, or for any other repo, just the history.
  */
 export function ForkHistory(props: Props) {
-  // Same cache entry as the PRs panel's.
-  const account = useGitHubData("account", github.account, 600_000).data ?? null;
-  const parent = account?.parent ?? null;
-  const origin = account?.origin ?? null;
+  const { parent, origin } = useGitHubAccount();
   // Bumped by the pane's refresh button: fetch the original again.
   const [fetches, setFetches] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -115,9 +111,9 @@ function OriginalHistory({
         if (fetch) lastFetch.set(original, Date.now());
         setRemote(name);
         if (name) {
-          const log = await api.log(0, PAGE, `refs/remotes/${name}/${branch}`);
+          const log = await api.log(0, LOG_PAGE, `refs/remotes/${name}/${branch}`);
           setCommits(log);
-          setHasMore(log.length === PAGE);
+          setHasMore(log.length === LOG_PAGE);
         }
         setError(null);
       } catch (e) {
@@ -150,12 +146,12 @@ function OriginalHistory({
 
   const loadMore = async () => {
     if (!rev) return;
-    const more = await api.log(commits.length, PAGE, rev);
+    const more = await api.log(commits.length, LOG_PAGE, rev);
     setCommits((c) => {
       const seen = new Set(c.map((x) => x.sha));
       return [...c, ...more.filter((x) => !seen.has(x.sha))];
     });
-    setHasMore(more.length === PAGE);
+    setHasMore(more.length === LOG_PAGE);
   };
 
   const add = async () => {

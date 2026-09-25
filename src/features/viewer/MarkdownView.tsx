@@ -2,13 +2,14 @@ import { Children, type ComponentProps, isValidElement, type ReactNode, useMemo 
 import Markdown, { type Components } from "react-markdown";
 import { PageFind } from "@/components/FindBox";
 import { github } from "@/lib/api";
-import { useHighlight } from "@/lib/highlight";
-import { copyNarrowed, indentUnit, TAB, widen } from "@/lib/indent";
-import { languageFor } from "@/lib/language";
-import { markdownLink, markdownOptions, safeDecode } from "@/lib/markdown";
-import type { Selection } from "@/lib/selection";
+import { useHighlight } from "@/lib/editor/highlight";
+import { copyNarrowed, indentUnit, TAB, widen } from "@/lib/editor/indent";
+import { languageFor } from "@/lib/editor/language";
+import { markdownLink, markdownOptions, safeDecode } from "@/lib/github/markdown";
+import type { Selection } from "@/lib/repo/selection";
 import { useSettings } from "@/lib/settings";
-import { toast } from "@/lib/toast";
+import { failed, toast } from "@/lib/app/toast";
+import { copyText } from "@/lib/app/clipboard";
 import { type MediaSource, useMediaUrl } from "./MediaView";
 
 export function isMarkdown(path: string) {
@@ -76,9 +77,9 @@ export function followLink(href: string, local: (href: string) => void, idPrefix
     } catch {
       // Left as written; the backend refuses it and it's copied instead.
     }
-    github.openUrl(url).catch(() => navigator.clipboard.writeText(href).then(() => toast("info", "Link copied", "It can't be opened from here.")));
+    github.openUrl(url).catch(() => navigator.clipboard.writeText(href).then(() => toast("info", "Link copied", "It can't be opened from here."), failed("Could not copy")));
   } else if (isExternal(href)) {
-    navigator.clipboard.writeText(href).then(() => toast("success", "Link copied"));
+    void copyText(href, "Link copied");
   } else {
     local(href);
   }

@@ -1,8 +1,9 @@
 import { type Dispatch, type ReactNode, type SetStateAction, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { api, type DiffKind, errorMessage } from "@/lib/api";
-import { matchesCommand } from "@/lib/keybindings";
-import { FIT, panAxis, place, svgSize, type Zoom, zoomAxis, zoomLimits } from "@/lib/svg";
+import { matchesCommand } from "@/lib/commands/keybindings";
+import { FIT, panAxis, place, svgSize, type Zoom, zoomAxis, zoomLimits } from "@/lib/ui/svg";
 import { cn } from "@/lib/utils";
+import { basename } from "@/lib/path";
 
 type MediaKind = "image" | "video" | "audio" | "pdf";
 
@@ -38,7 +39,7 @@ const TYPES: Record<string, [MediaKind, string]> = {
 };
 
 function typeOf(path: string) {
-  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const name = basename(path).toLowerCase();
   const dot = name.lastIndexOf(".");
   return dot > 0 ? TYPES[name.slice(dot + 1)] : undefined;
 }

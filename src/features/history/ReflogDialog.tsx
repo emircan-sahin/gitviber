@@ -8,9 +8,8 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage } from "@/lib/api";
-import { toast } from "@/lib/toast";
-import { tracked, undoAction } from "@/lib/undo";
-import { relativeTime } from "@/lib/utils";
+import { relativeTime } from "@/lib/format";
+import { useGitAction } from "@/hooks/useGitAction";
 
 type Entry = Awaited<ReturnType<typeof api.reflog>>[number];
 
@@ -23,15 +22,7 @@ export function ReflogDialog({ onClose }: { onClose: () => void }) {
     api.reflog().then(setEntries, (e) => setEntries({ error: errorMessage(e) }));
   }, []);
 
-  const run = async (label: string, fn: () => Promise<void>, done: string) => {
-    try {
-      const [, entry] = await tracked(fn);
-      toast("success", done, undefined, undoAction(entry, () => {}));
-      onClose();
-    } catch (e) {
-      toast("error", `${label} failed`, errorMessage(e));
-    }
-  };
+  const { run } = useGitAction({ onDone: onClose });
   const list = Array.isArray(entries) ? entries : [];
   const head = list[0]?.sha ?? "";
 

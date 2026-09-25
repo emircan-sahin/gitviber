@@ -2,19 +2,20 @@ import { Check, ChevronsUpDown, Eye, GitMerge, Pencil, Undo2 } from "lucide-reac
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, errorMessage, type FileChange, type Operation } from "@/lib/api";
-import { showLanguage, type TokenLine, tokenLookup, useHighlight } from "@/lib/highlight";
-import { copyNarrowed, indentUnit, TAB, widenLine } from "@/lib/indent";
-import { languageFor } from "@/lib/language";
+import { type TokenLine, tokenLookup, useHighlight } from "@/lib/editor/highlight";
+import { showLanguage } from "@/lib/editor/shownLanguage";
+import { copyNarrowed, indentUnit, TAB, widenLine } from "@/lib/editor/indent";
+import { languageFor } from "@/lib/editor/language";
 import { codeFontFamily, useSettings } from "@/lib/settings";
-import { type Block, oursText, parseConflicts, type Segment } from "@/lib/conflicts";
-import { toast } from "@/lib/toast";
+import { type Block, oursText, parseConflicts, type Segment } from "@/lib/git/conflicts";
+import { failed, toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
-import { FileIcon } from "./FileIcon";
-import { PathLabel } from "./StatusBadge";
+import { FileIcon } from "@/components/FileIcon";
+import { PathLabel } from "@/components/StatusBadge";
 
 type Choice = { kind: "ours" | "theirs" | "both" | "custom"; lines: string[] };
 
-/** Spaces per indentation level the file's code is shown widened from (see lib/indent). */
+/** Spaces per indentation level the file's code is shown widened from (see lib/editor/indent). */
 const IndentUnit = createContext(0);
 
 interface Props {
@@ -39,7 +40,7 @@ export function ConflictView({ file, operation, revision }: Props) {
         setText(f.exists && !f.binary && !f.tooLarge ? f.text : "");
         setLossy(f.lossy);
       })
-      .catch((e) => toast("error", "Could not read file", errorMessage(e)));
+      .catch(failed("Could not read file"));
   }, [file.path, revision, choices.size]);
 
   // Non-UTF-8 text can't be edited safely here (it was decoded lossily): whole-file only.

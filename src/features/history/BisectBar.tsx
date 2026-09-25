@@ -2,26 +2,16 @@
 // skip it) until git names the first bad one, then stop to go back where it started.
 import { ask } from "@tauri-apps/plugin-dialog";
 import { SearchCode } from "lucide-react";
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, errorMessage } from "@/lib/api";
-import { toast } from "@/lib/toast";
+import { toast } from "@/lib/app/toast";
+import { createStore } from "@/lib/store";
 
 // What git said last, shared by both bars.
-let said: { message: string; firstBad: string | null } | null = null;
-const listeners = new Set<() => void>();
-const tell = (s: typeof said) => {
-  said = s;
-  listeners.forEach((l) => l());
-};
-const useSaid = () =>
-  useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => void listeners.delete(l);
-    },
-    () => said,
-  );
+const said = createStore<{ message: string; firstBad: string | null } | null>(null);
+const tell = said.set;
+const useSaid = said.use;
 
 /** Starts looking for the first bad commit between `good` and HEAD (bad). */
 export async function startBisect(good: string, refresh: () => unknown) {

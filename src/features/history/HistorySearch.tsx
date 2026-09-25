@@ -1,19 +1,23 @@
 import { CircleHelp, FileClock, FolderClock, Loader2, Search, X } from "lucide-react";
 import { type ComponentProps, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Commit, errorMessage, type GraphRefs } from "@/lib/api";
-import { useFind } from "@/lib/find";
-import { isTyping, matchesCommand, useShortcut } from "@/lib/keybindings";
-import { isEmptyFilter, parseLogQuery } from "@/lib/logQuery";
-import { toast } from "@/lib/toast";
+import { api, type Commit, errorMessage, type GraphRefs, LOG_PAGE } from "@/lib/api";
+import { useFind } from "@/lib/ui/find";
+import { isTyping, matchesCommand, useShortcut } from "@/lib/commands/keybindings";
+import { isEmptyFilter, parseLogQuery } from "@/lib/git/logQuery";
+import { toast } from "@/lib/app/toast";
 import { BisectBar } from "./BisectBar";
 import { ForkHistory } from "./ForkHistory";
-import { CompareHistory, GraphMenu, GraphNotice, hideRefs, useAllBranches, useAllBranchesSetting, useGraphRefs } from "./GraphHistory";
-import { HistoryPanel, type RefMenu, type Reveal } from "./HistoryPanel";
+import { CompareHistory } from "./CompareHistory";
+import { GraphMenu, GraphNotice } from "./GraphMenu";
+import { useAllBranches } from "./useAllBranches";
+import { hideRefs, useAllBranchesSetting, useGraphRefs } from "./useGraphRefs";
+import { HistoryPanel } from "./HistoryPanel";
+import type { RefMenu } from "./commitActions";
+import type { Reveal } from "./CommitRow";
 
 const SYNTAX = "Words match the message (all of them, any case).\nauthor:name  path:src/app  code:text a commit added or removed\nA SHA or prefix finds that commit. Quotes keep spaces.";
 
-const PAGE = 200;
 const DEBOUNCE = 250;
 
 export interface HistorySearch {
@@ -222,7 +226,7 @@ function useCommitSearch(search: HistorySearch | null, head: string | undefined,
     const { filter, shas } = request(s);
     // A refresh of the same search keeps the pages loaded so far.
     const prev = current.current;
-    const limit = Math.max(PAGE, prev?.key === key ? prev.log.length : 0);
+    const limit = Math.max(LOG_PAGE, prev?.key === key ? prev.log.length : 0);
     const t = setTimeout(async () => {
       try {
         const [log, ...found] = await Promise.all([api.log(0, limit, null, filter, refs), ...shas.map((sha) => api.findCommit(sha))]);
@@ -243,12 +247,12 @@ function useCommitSearch(search: HistorySearch | null, head: string | undefined,
     const s = latest.current.search;
     if (!r || !s) return;
     const id = seq.current;
-    const more = await api.log(r.log.length, PAGE, null, request(s).filter, r.all);
+    const more = await api.log(r.log.length, LOG_PAGE, null, request(s).filter, r.all);
     if (id !== seq.current) return;
     setResult((x) => {
       if (!x) return x;
       const seen = new Set(x.log.map((c) => c.sha));
-      return { ...x, log: [...x.log, ...more.filter((c) => !seen.has(c.sha))], hasMore: more.length === PAGE };
+      return { ...x, log: [...x.log, ...more.filter((c) => !seen.has(c.sha))], hasMore: more.length === LOG_PAGE };
     });
   }, []);
 
