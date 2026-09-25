@@ -1,41 +1,39 @@
-import { ArrowDown, ArrowUp, ChevronsDownUp, PanelLeftClose, PanelRightClose, Search, WrapText } from "lucide-react";
+import { ChevronsDownUp, PanelLeftClose, PanelRightClose, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
-import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
-import { REVEAL_FAILED } from "@/lib/commands";
-import { find } from "@/lib/find";
-import { newerCopy, resetGitHubCache, useGitHubCacheVersion } from "@/lib/githubCache";
-import { useShownLanguage, warmHighlighter } from "@/lib/highlight";
-import { setLinkHost } from "@/lib/linkHost";
-import { prepare } from "@/lib/monaco";
-import { useCommands, useShortcut } from "@/lib/keybindings";
-import { languageLabel } from "@/lib/language";
-import { dropReveal, revealWaits } from "@/lib/reveal";
-import { type Selection, selectionKey, selectionPath } from "@/lib/selection";
-import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/panels";
-import type { OpenTarget } from "@/lib/openIn";
-import { loadWorkspace, saveWorkspace } from "@/lib/session";
-import { codeFontName, DEFAULT_FONT_SIZE, LIGHT_SYNTAX_THEMES, SYNTAX_THEMES, updateSettings, useSettings } from "@/lib/settings";
-import { arrayMove } from "@dnd-kit/sortable";
-import { useTerminals } from "@/lib/terminals";
-import { toast } from "@/lib/toast";
-import { useRepo } from "@/lib/useRepo";
+import { find } from "@/lib/ui/find";
+import { resetGitHubCache } from "@/lib/github/githubCache";
+import { warmHighlighter } from "@/lib/editor/highlight";
+import { setLinkHost } from "@/lib/links/linkHost";
+import { prepare } from "@/lib/editor/monaco";
+import { useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { dropReveal, revealWaits } from "@/lib/editor/reveal";
+import { type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
+import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
+import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
+import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
+import { useTerminals } from "@/lib/terminal/terminals";
+import { useRepo } from "@/lib/repo/useRepo";
 import { cn } from "@/lib/utils";
-import { openAbout, useAbout } from "./AboutDialog";
-import { ChangesPanel, changeList } from "./ChangesPanel";
-import { showQuickOpen, useQuickOpenSource } from "./CommandPalette";
-import { FileTree, type FileTreeHandle } from "./FileTree";
-import { type HistorySearch, NO_SEARCH, SearchableHistory } from "./HistorySearch";
-import { IssuesPanel } from "./IssuesPanel";
-import { lineInView, selectedText } from "./MonacoView";
-import { OpenInButton } from "./OpenIn";
-import { PullsPanel } from "./PullsPanel";
-import { SearchView } from "./SearchView";
-import { TerminalPanel, TerminalRestoreOffer, useTerminalSetup } from "./TerminalPanel";
-import { changeTotals, TopBar } from "./TopBar";
-import { prefetchSelection, resetPairCache, type Tab, type TabGroup, tabGroup, Viewer } from "./Viewer";
+import { revealPath } from "@/lib/app/openIn";
+import { ChangesPanel } from "@/features/changes/ChangesPanel";
+import { changeList } from "@/features/changes/changeList";
+import { showQuickOpen, useQuickOpenSource } from "@/features/palette/CommandPalette";
+import { FileTree, type FileTreeHandle } from "@/features/explorer/FileTree";
+import { type HistorySearch, NO_SEARCH, SearchableHistory } from "@/features/history/HistorySearch";
+import { IssuesPanel } from "@/features/github/issues/IssuesPanel";
+import { selectedText } from "@/features/viewer/activeEditor";
+import { StatusBar } from "./StatusBar";
+import { useTabs } from "./useTabs";
+import { useViewed } from "./useViewed";
+import { PullsPanel } from "@/features/github/pulls/PullsPanel";
+import { SearchView } from "@/features/explorer/SearchView";
+import { TerminalPanel, TerminalRestoreOffer, useTerminalSetup } from "@/features/terminal/TerminalPanel";
+import { TopBar } from "@/features/topbar/TopBar";
+import { Viewer } from "@/features/viewer/Viewer";
+import { prefetchSelection, resetPairCache } from "@/features/viewer/diffPairs";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
 type ListTab = (typeof LIST_TABS)[number];
@@ -51,34 +49,20 @@ interface Props {
   onLocateRepo: (path: string) => void;
 }
 
-const fileSig = (f: FileChange) => `${f.status}:${f.oid ?? `${f.additions}:${f.deletions}`}`;
-
-type ChangeKind = "conflict" | "staged" | "unstaged";
-const LISTS: Record<ChangeKind, (s: RepoStatus) => FileChange[]> = {
-  conflict: (s) => s.conflicted,
-  staged: (s) => s.staged,
-  unstaged: (s) => s.unstaged,
-};
-const isChange = (sel: Selection): sel is Selection & { kind: ChangeKind } => sel.kind in LISTS;
-
-function currentFile(status: RepoStatus | null, sel: Selection): FileChange | undefined {
-  if (!status || !isChange(sel)) return undefined;
-  return LISTS[sel.kind](status).find((f) => f.path === sel.file.path);
-}
-
-/** Where a change tab's file lives now: same list first, else wherever it moved (resolved → staged…). */
-function relocate(status: RepoStatus, sel: Selection & { kind: ChangeKind }): Selection | null {
-  for (const kind of [sel.kind, "conflict", "staged", "unstaged"] as const) {
-    const file = LISTS[kind](status).find((f) => f.path === sel.file.path);
-    if (file) return { kind, file };
-  }
-  return null;
+/**
+ * Diffs are cached by revision, which restarts per repo, and GitHub data is per repo: both start
+ * over with each repo, during its first render, before anything in it reads them.
+ */
+function useFreshCaches(root: string) {
+  const cleared = useRef<string | null>(null);
+  if (cleared.current === root) return;
+  cleared.current = root;
+  resetPairCache();
+  resetGitHubCache();
 }
 
 export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: Props) {
-  // Diffs are cached by revision, which restarts per repo.
-  useState(resetPairCache);
-  useState(resetGitHubCache);
+  useFreshCaches(root);
   const repo = useRepo(root);
   const { status } = repo;
   const s = useSettings();
@@ -91,12 +75,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const searchFocused = useCallback(() => setSearchFocus(false), []);
   // Blame clicks so far: each is a new request, even for the commit already on show.
   const reveals = useRef(0);
-  // Tabs and the active key change together, so they live in one state (no nested updates).
-  const [tabState, setTabState] = useState<{ tabs: Tab[]; active: string | null }>(() => ({ tabs: saved?.tabs ?? [], active: saved?.active ?? null }));
-  const { tabs, active: activeKey } = tabState;
-  const setActiveKey = useCallback((key: string | null) => setTabState((t) => ({ ...t, active: key })), []);
-  // Viewed marks remember the file's content id; a new edit by the agent clears them.
-  const [viewedMap, setViewedMap] = useState<Map<string, string>>(() => new Map(saved?.viewed));
+  const { tabs, activeKey, setActiveKey, open, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status);
+  const { viewedMap, viewed, setViewed, toggleViewed } = useViewed(saved, status, repo.refresh);
   useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap] }), [root, tabs, activeKey, listTab, viewedMap]);
   // Git work on the left, files on the right; both collapse to give code the room.
   const listPanel = usePanelRef();
@@ -153,20 +133,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const layout = useDefaultLayout({ id: "gitviber-main-v4", storage: localStorage });
   const viewerLayout = useDefaultLayout({ id: "gitviber-viewer-v1", storage: localStorage, panelIds: terminalOpen ? ["editor", "terminal"] : ["editor"] });
 
-  const open = useCallback((sel: Selection, pin = false) => {
-    const key = selectionKey(sel);
-    setTabState(({ tabs: prev }) => {
-      const existing = prev.find((t) => t.key === key);
-      if (existing) return { tabs: prev.map((t) => (t.key === key ? { ...t, sel, preview: t.preview && !pin } : t)), active: key };
-      // Single click reuses the preview tab (VS Code style); double click keeps it.
-      const previewAt = prev.findIndex((t) => t.preview);
-      const tab = { key, sel, preview: !pin };
-      if (previewAt >= 0 && !pin) return { tabs: prev.map((t, i) => (i === previewAt ? tab : t)), active: key };
-      return { tabs: [...prev, tab], active: key };
-    });
-  }, []);
-
-  // ⌘-click in the code view and the terminal opens files here (lib/linkHost).
+  // ⌘-click in the code view and the terminal opens files here (lib/links/linkHost).
   useEffect(() => {
     setLinkHost({
       root,
@@ -178,162 +145,6 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     });
   }, [root, repo.revision, open]);
   useEffect(() => () => setLinkHost(null), []);
-
-  // Closed tabs, the latest last, where they were: ⇧⌘T brings them back as browsers do.
-  const [closed, setClosed] = useState<{ sel: Selection; index: number }[]>([]);
-  const tabsNow = useRef(tabs);
-  tabsNow.current = tabs;
-  const closeTabs = useCallback((keys: string[]) => {
-    const gone = new Set(keys);
-    const shut = tabsNow.current.flatMap((t, index) => (gone.has(t.key) ? [{ sel: t.sel, index }] : []));
-    if (!shut.length) return;
-    // The leftmost comes back first, so each returns to its own place.
-    setClosed((c) => [...c.filter((t) => !gone.has(selectionKey(t.sel))), ...shut.reverse()].slice(-20));
-    setTabState(({ tabs: prev, active }) => {
-      const next = prev.filter((t) => !gone.has(t.key));
-      if (!active || !gone.has(active)) return { tabs: next, active };
-      // The next open tab to the right, else to the left.
-      const i = prev.findIndex((t) => t.key === active);
-      const near = prev.slice(i + 1).find((t) => !gone.has(t.key)) ?? prev.slice(0, i).reverse().find((t) => !gone.has(t.key));
-      return { tabs: next, active: near?.key ?? null };
-    });
-  }, []);
-  const close = useCallback((key: string) => closeTabs([key]), [closeTabs]);
-  // Close Others and the like, around the active tab.
-  const closeAround = (which: TabGroup) => {
-    const i = tabs.findIndex((t) => t.key === activeKey);
-    const keys = i < 0 ? [] : tabGroup(tabs, i, which);
-    return keys.length ? () => closeTabs(keys) : undefined;
-  };
-
-  const reopen = () => {
-    const last = closed.at(-1);
-    if (!last) return;
-    setClosed((c) => c.slice(0, -1));
-    const key = selectionKey(last.sel);
-    setTabState(({ tabs: prev }) => ({
-      tabs: prev.some((t) => t.key === key) ? prev : [...prev.slice(0, last.index), { key, sel: last.sel, preview: false }, ...prev.slice(last.index)],
-      active: key,
-    }));
-  };
-
-  const moveTab = useCallback((from: number, to: number) => setTabState((st) => ({ ...st, tabs: arrayMove(st.tabs, from, to) })), []);
-
-  // ⌘1–⌘9 and next/previous (wrapping), as in browsers.
-  const goTab = (i: number) => (tabs[i] ? () => setActiveKey(tabs[i].key) : undefined);
-  const stepTab = (dir: 1 | -1) =>
-    tabs.length > 1 ? () => setActiveKey(tabs[(tabs.findIndex((t) => t.key === activeKey) + dir + tabs.length) % tabs.length].key) : undefined;
-
-  const pin = useCallback((key: string) => setTabState((st) => ({ ...st, tabs: st.tabs.map((t) => (t.key === key ? { ...t, preview: false } : t)) })), []);
-
-  // Explorer rename/trash: file tabs at or under `from` move to `to` in place, or close when it's null.
-  const onPathMoved = useCallback((from: string, to: string | null) => {
-    setTabState(({ tabs: prev, active }) => {
-      const hit = (t: Tab) => t.sel.kind === "file" && (t.sel.path === from || t.sel.path.startsWith(`${from}/`));
-      const i = prev.findIndex((t) => t.key === active);
-      if (to === null) {
-        // Like closing a tab: the next surviving one to the right, else to the left.
-        const near = prev.slice(i + 1).find((t) => !hit(t)) ?? prev.slice(0, Math.max(i, 0)).reverse().find((t) => !hit(t));
-        return { tabs: prev.filter((t) => !hit(t)), active: i >= 0 && hit(prev[i]) ? (near?.key ?? null) : active };
-      }
-      // A tab already open at the new path absorbs the moved one, as in the git sync below.
-      const tabs: Tab[] = [];
-      let nextActive = active;
-      for (const t of prev) {
-        const sel: Selection = hit(t) ? { kind: "file", path: to + selectionPath(t.sel).slice(from.length) } : t.sel;
-        const key = selectionKey(sel);
-        if (t.key === active) nextActive = key;
-        const twin = tabs.findIndex((x) => x.key === key);
-        if (twin >= 0) tabs[twin] = { ...tabs[twin], preview: tabs[twin].preview && t.preview };
-        else tabs.push(key === t.key ? t : { ...t, key, sel });
-      }
-      return { tabs, active: nextActive };
-    });
-  }, []);
-
-  // Keep change tabs in sync with git: a staged or resolved file moves lists, a
-  // committed/discarded one disappears. Two tabs that land on the same file merge.
-  useEffect(() => {
-    if (!status) return;
-    setTabState(({ tabs: prev, active }) => {
-      const moved = new Map<string, string | null>();
-      const next: Tab[] = [];
-      for (const t of prev) {
-        const sel = isChange(t.sel) ? relocate(status, t.sel) : t.sel;
-        if (!sel) {
-          moved.set(t.key, null);
-          continue;
-        }
-        const key = selectionKey(sel);
-        if (key !== t.key) moved.set(t.key, key);
-        const twin = next.findIndex((x) => x.key === key);
-        if (twin >= 0) next[twin] = { ...next[twin], preview: next[twin].preview && t.preview };
-        else next.push({ ...t, key, sel });
-      }
-      if (!moved.size && next.length === prev.length && next.every((t, i) => t.sel === prev[i].sel)) return { tabs: prev, active };
-      const nextActive = active && moved.has(active) ? (moved.get(active) ?? next[0]?.key ?? null) : active;
-      return { tabs: next, active: nextActive };
-    });
-  }, [status]);
-
-  // Issue and PR tabs hold the item as it was when opened, saved across restarts too. When a
-  // list or detail read brings a newer copy (closed, renamed), the tab's title and icon follow.
-  const gitHubVersion = useGitHubCacheVersion();
-  useEffect(() => {
-    setTabState((st) => {
-      let changed = false;
-      const tabs = st.tabs.map((t): Tab => {
-        let sel: Selection | null = null;
-        if (t.sel.kind === "issue") {
-          const issue = newerCopy(t.sel.issue);
-          if (issue) sel = { kind: "issue", issue };
-        } else if (t.sel.kind === "pull") {
-          const pull = newerCopy(t.sel.pull);
-          if (pull) sel = { kind: "pull", pull };
-        }
-        if (!sel) return t;
-        changed = true;
-        return { ...t, sel };
-      });
-      return changed ? { ...st, tabs } : st;
-    });
-  }, [gitHubVersion]);
-
-  const viewed = useCallback(
-    (sel: Selection) => {
-      // Staging is the act of accepting a file, so staged files always count as reviewed.
-      if (sel.kind === "staged") return true;
-      const f = currentFile(status, sel);
-      return !!f && viewedMap.get(`${sel.kind}:${f.path}`) === fileSig(f);
-    },
-    [status, viewedMap],
-  );
-
-  const setViewed = useCallback(
-    (sels: Selection[], on: boolean) => {
-      const files = sels.flatMap((sel) => {
-        const f = currentFile(status, sel);
-        return f ? [{ kind: sel.kind, f }] : [];
-      });
-      // Unchecking a staged file takes it back out of the commit; the tab follows it to Changes.
-      const unstage = on ? [] : files.filter((x) => x.kind === "staged").map((x) => x.f.path);
-      setViewedMap((m) => {
-        const next = new Map(m);
-        for (const { kind, f } of files) {
-          // Drop the mark it had in Changes before staging, or it would come back already checked.
-          if (kind === "staged") next.delete(`unstaged:${f.path}`);
-          else if (on) next.set(`${kind}:${f.path}`, fileSig(f));
-          else next.delete(`${kind}:${f.path}`);
-        }
-        return next;
-      });
-      // One call for all of them: parallel git calls would fight over index.lock.
-      if (unstage.length) api.unstage(unstage).catch((e) => toast("error", "Unstage failed", errorMessage(e))).finally(() => repo.refresh(false));
-    },
-    [status, repo.refresh],
-  );
-
-  const toggleViewed = useCallback((sel: Selection) => setViewed([sel], !viewed(sel)), [setViewed, viewed]);
 
   const changes = useMemo(() => (status ? changeList(status) : []), [status]);
   const remoteNames = useMemo(() => new Set(repo.branches.filter((b) => b.remote).map((b) => b.name)), [repo.branches]);
@@ -413,7 +224,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.focusNextPanel": () => cycle(1),
     "view.focusPrevPanel": () => cycle(-1),
     "tab.close": activeKey ? () => close(activeKey) : undefined,
-    "tab.reopenClosed": closed.length ? reopen : undefined,
+    "tab.reopenClosed": canReopen ? reopen : undefined,
     "tab.closeOthers": closeAround("others"),
     "tab.closeLeft": closeAround("left"),
     "tab.closeRight": closeAround("right"),
@@ -657,7 +468,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
-      <StatusBar repo={repo} reviewed={changes.filter(viewed).length} openTarget={() => openTarget(active?.sel)} />
+      <StatusBar repo={repo} reviewed={changes.filter(viewed).length} active={active?.sel} />
       <TerminalRestoreOffer />
     </div>
   );
@@ -695,83 +506,8 @@ function ListTabButton({ active, onClick, count, children }: { active: boolean; 
   );
 }
 
-function StatusBar({ repo, reviewed, openTarget }: { repo: ReturnType<typeof useRepo>; reviewed: number; openTarget: () => OpenTarget }) {
-  const s = useSettings();
-  const language = useShownLanguage();
-  const wrapKey = useShortcut("editor.toggleWrap");
-  const { status } = repo;
-  const totals = changeTotals(repo);
-  return (
-    // The branch is in the top bar's breadcrumb already, so it isn't repeated here.
-    <div className="flex h-6 shrink-0 items-center gap-3 border-t border-border bg-sidebar px-3 text-[11px] text-subtle">
-      {status?.upstream && (
-        <span className="flex items-center gap-1.5 font-mono">
-          <span className={cn("flex items-center", status.ahead && "text-primary")}>
-            <ArrowUp className="size-3" />
-            {status.ahead}
-          </span>
-          <span className={cn("flex items-center", status.behind && "text-modified")}>
-            <ArrowDown className="size-3" />
-            {status.behind}
-          </span>
-        </span>
-      )}
-      {status?.operation && (
-        <span className="font-semibold text-conflict uppercase">
-          {status.operation.kind}
-          {status.operation.step != null && ` ${status.operation.step}/${status.operation.total}`}
-          {status.conflicted.length > 0 && ` · ${status.conflicted.length} ${status.conflicted.length === 1 ? "conflict" : "conflicts"}`}
-        </span>
-      )}
-      {totals.files > 0 && (
-        <span>
-          {totals.files} changed · <span className="font-mono text-added">+{totals.add}</span> <span className="font-mono text-removed">-{totals.del}</span> · {reviewed}/
-          {totals.files} reviewed
-        </span>
-      )}
-      <span className="ml-auto">{s.dark ? SYNTAX_THEMES[s.syntaxTheme] : LIGHT_SYNTAX_THEMES[s.lightSyntaxTheme]}</span>
-      <span>
-        {codeFontName(s)} {s.codeFontSize}
-      </span>
-      <span>{s.sideBySide ? "Split" : "Unified"}</span>
-      <Tip label="Word wrap" shortcut={wrapKey}>
-        <button
-          onClick={() => updateSettings({ wordWrap: !s.wordWrap })}
-          className={cn("flex items-center gap-1 hover:text-foreground focus-visible:text-foreground", s.wordWrap && "text-primary hover:text-primary focus-visible:text-primary")}
-        >
-          <WrapText className="size-3" />
-          Wrap
-        </button>
-      </Tip>
-      {language && <span>{languageLabel(language)}</span>}
-      <VersionInfo />
-      <OpenInButton target={openTarget} />
-    </div>
-  );
-}
-
-/** `v0.1.0 · macOS 15.5`; opens About, which can copy it for a bug report. */
-function VersionInfo() {
-  const about = useAbout();
-  if (!about) return null;
-  return (
-    <Tip label="About GitViber">
-      <button onClick={openAbout} className="hover:text-foreground focus-visible:text-foreground">
-        v{about.version} · {about.os}
-      </button>
-    </Tip>
-  );
-}
-
 /** The open file's working copy, else the repository's folder (a PR or an issue has no file). */
 function revealInFinder(sel: Selection | undefined) {
   const path = sel && ["file", "unstaged", "staged", "conflict"].includes(sel.kind) ? selectionPath(sel) : "";
-  api.revealPath(path).catch((e) => toast("error", REVEAL_FAILED, errorMessage(e)));
-}
-
-/** The open file while it's on disk, at the line in view; else the whole worktree. */
-function openTarget(sel: Selection | undefined): OpenTarget {
-  const change = sel?.kind === "unstaged" || sel?.kind === "staged" || sel?.kind === "conflict";
-  const path = sel?.kind === "file" ? sel.path : change && sel.file.status !== "D" ? sel.file.path : null;
-  return path === null ? { path: "" } : { path, line: lineInView(path) };
+  void revealPath(path);
 }

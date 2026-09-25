@@ -3,10 +3,10 @@ import { Fragment, useState } from "react";
 import { ContextMenuItem, ContextMenuLabel, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tip } from "@/components/ui/tooltip";
-import { useCommands, useShortcut } from "@/lib/keybindings";
-import { GROUPS, type OpenApp, type OpenTarget, openIn, refreshOpenApps, useOpenApps } from "@/lib/openIn";
-import { lineInView } from "./MonacoView";
-import { openSettings } from "./SettingsDialog";
+import { useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { GROUPS, type OpenApp, type OpenTarget, openIn, refreshOpenApps, useOpenApps } from "@/lib/app/openIn";
+import { lineInView } from "@/features/viewer/activeEditor";
+import { openSettings } from "@/features/settings/SettingsDialog";
 
 const grouped = (apps: OpenApp[]) => GROUPS.map(([group, label]) => [label, apps.filter((a) => a.group === group)] as const).filter(([, list]) => list.length);
 

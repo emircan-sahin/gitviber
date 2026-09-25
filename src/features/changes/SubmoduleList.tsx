@@ -1,28 +1,17 @@
 // The repository's submodules and whether each is checked out at the commit it records, with
 // Update to set them up and bring them there (git submodule update --init --recursive).
 import { FolderGit2 } from "lucide-react";
-import { useEffect, useState } from "react";
 import { api, CANCELLED, errorMessage, type RepoStatus } from "@/lib/api";
-import { withNetActivity } from "@/lib/netActivity";
-import { toast } from "@/lib/toast";
+import { withNetActivity } from "@/lib/repo/netActivity";
+import { toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
+import { useAsyncValue } from "@/hooks/useAsyncValue";
 
 type Submodule = Awaited<ReturnType<typeof api.submodules>>[number];
 
 /** Reread with status: `git submodule status` is quick, and a checkout may have moved them. */
 export function useSubmodules(status: RepoStatus) {
-  const [list, setList] = useState<Submodule[]>([]);
-  useEffect(() => {
-    let live = true;
-    api.submodules().then(
-      (l) => live && setList(l),
-      () => live && setList([]),
-    );
-    return () => {
-      live = false;
-    };
-  }, [status]);
-  return list;
+  return useAsyncValue(() => api.submodules().catch((): Submodule[] => []), [status], []);
 }
 
 const LOOK: Record<string, [string, string]> = {

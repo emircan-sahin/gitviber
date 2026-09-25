@@ -3,7 +3,7 @@ import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { api, errorMessage } from "@/lib/api";
-import { remoteTags } from "@/lib/remoteTags";
+import { remoteTags } from "@/lib/repo/remoteTags";
 
 type Unpushed = { remote: string; tags: string[] } | { error: string } | null;
 

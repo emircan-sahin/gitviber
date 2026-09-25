@@ -5,29 +5,21 @@ import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage, type FileChange, type RepoStatus, type Stash, type StashFiles } from "@/lib/api";
-import { type Selection, selectionKey } from "@/lib/selection";
-import { toast } from "@/lib/toast";
-import { useListNav } from "@/lib/useListNav";
-import { cn, relativeTime } from "@/lib/utils";
-import { FileIcon } from "./FileIcon";
-import { LineCounts, PathLabel, StatusLetter } from "./StatusBadge";
+import { type Selection, selectionKey } from "@/lib/repo/selection";
+import { toast } from "@/lib/app/toast";
+import { useListNav } from "@/lib/ui/useListNav";
+import { cn } from "@/lib/utils";
+import { relativeTime } from "@/lib/format";
+import { FileIcon } from "@/components/FileIcon";
+import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
+import { RowAction } from "@/components/RowAction";
+import { useGitAction } from "@/hooks/useGitAction";
+import { useAsyncValue } from "@/hooks/useAsyncValue";
 
 /** The stash list, reread whenever status is: `git stash list` is one cheap reflog walk. */
 export function useStashes(status: RepoStatus) {
-  const [list, setList] = useState<Stash[]>([]);
-  useEffect(() => {
-    let live = true;
-    api.stashes().then(
-      (l) => live && setList(l),
-      () => {},
-    );
-    return () => {
-      live = false;
-    };
-  }, [status]);
-  return list;
+  return useAsyncValue(api.stashes, [status], []);
 }
 
 /** "On main: message" → message and branch; "WIP on main: abc123 subject" keeps its subject. */
@@ -67,7 +59,8 @@ interface Props {
 export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Props) {
   const [open, setOpen] = useState<string | null>(null);
   const [files, setFiles] = useState<Record<string, StashFiles>>({});
-  const [busy, setBusy] = useState(false);
+  // Conflicts from an apply or pop land in Changes like a merge's; git keeps the stash then.
+  const { busy, run: act } = useGitAction({ refresh, tracked: false, conflicts: "Resolve them in Changes. The stash is kept; drop it once you're done." });
   const [branching, setBranching] = useState<Stash | null>(null);
   const nav = useListNav({ activeKey });
 
@@ -83,19 +76,6 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
     };
   }, [open, files]);
 
-  // Conflicts from an apply or pop land in Changes like a merge's; git keeps the stash then.
-  const act = async (label: string, fn: () => Promise<boolean | void>, done: string, detail?: string) => {
-    setBusy(true);
-    try {
-      if (await fn()) toast("info", `${label} stopped on conflicts`, "Resolve them in Changes. The stash is kept; drop it once you're done.");
-      else toast("success", done, detail);
-    } catch (e) {
-      toast("error", `${label} failed`, errorMessage(e));
-    } finally {
-      setBusy(false);
-      await refresh();
-    }
-  };
   const apply = (s: Stash, pop: boolean) => act(pop ? "Pop" : "Apply", () => api.stashApply(s.sha, pop), pop ? "Stash popped" : "Stash applied");
   const drop = async (s: Stash) => {
     const ok = await ask(`Drop "${describe(s).text}"? Its changes are thrown away; GitViber can't undo this.`, { title: "Drop stash", kind: "warning", okLabel: "Drop" });
@@ -165,30 +145,30 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
                     {relativeTime(s.timestamp)}
                   </span>
                   <div className="hidden items-center group-focus-within/row:flex group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
-                    <StashAction label="Apply (keep the stash)" disabled={busy} onClick={() => apply(s, false)}>
+                    <RowAction label="Apply (keep the stash)" disabled={!!busy} onClick={() => apply(s, false)}>
                       <PackageOpen />
-                    </StashAction>
-                    <StashAction label="Pop (apply, then drop it)" disabled={busy} onClick={() => apply(s, true)}>
+                    </RowAction>
+                    <RowAction label="Pop (apply, then drop it)" disabled={!!busy} onClick={() => apply(s, true)}>
                       <ArchiveRestore />
-                    </StashAction>
-                    <StashAction label="Drop…" disabled={busy} onClick={() => drop(s)}>
+                    </RowAction>
+                    <RowAction label="Drop…" disabled={!!busy} onClick={() => drop(s)}>
                       <Trash2 />
-                    </StashAction>
+                    </RowAction>
                   </div>
                 </div>
               </ContextMenuTrigger>
               <ContextMenuContent>
-                <ContextMenuItem disabled={busy} onSelect={() => apply(s, false)}>
+                <ContextMenuItem disabled={!!busy} onSelect={() => apply(s, false)}>
                   <PackageOpen /> Apply stash
                 </ContextMenuItem>
-                <ContextMenuItem disabled={busy} onSelect={() => apply(s, true)}>
+                <ContextMenuItem disabled={!!busy} onSelect={() => apply(s, true)}>
                   <ArchiveRestore /> Pop stash
                 </ContextMenuItem>
-                <ContextMenuItem disabled={busy} onSelect={() => setBranching(s)}>
+                <ContextMenuItem disabled={!!busy} onSelect={() => setBranching(s)}>
                   <GitBranchPlus /> Create Branch from Stash…
                 </ContextMenuItem>
                 <ContextMenuSeparator />
-                <ContextMenuItem disabled={busy} className="text-destructive" onSelect={() => drop(s)}>
+                <ContextMenuItem disabled={!!busy} className="text-destructive" onSelect={() => drop(s)}>
                   <Trash2 /> Drop stash…
                 </ContextMenuItem>
               </ContextMenuContent>
@@ -240,21 +220,6 @@ function StashBranchDialog({ stash, onClose, onCreate }: { stash: Stash; onClose
         </form>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function StashAction({ label, disabled, onClick, children }: { label: string; disabled: boolean; onClick: () => void; children: React.ReactNode }) {
-  return (
-    <Tip label={label}>
-      <button
-        onClick={onClick}
-        disabled={disabled}
-        aria-label={label}
-        className="flex size-5 items-center justify-center rounded-sm text-muted-foreground outline-none hover:bg-active focus-visible:bg-active hover:text-foreground focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 [&_svg]:size-3.5"
-      >
-        {children}
-      </button>
-    </Tip>
   );
 }
 
