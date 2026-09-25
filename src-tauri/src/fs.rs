@@ -432,52 +432,7 @@ pub fn reveal(root: &Path, rel: &str) -> Result<(), String> {
     } else {
         resolve_entry(root, rel)?
     };
-    // Waited on (it returns at once) so no zombie is left behind per click.
-    #[cfg(target_os = "macos")]
-    return match std::process::Command::new("open")
-        .arg("-R")
-        .arg(path)
-        .status()
-    {
-        Ok(s) if s.success() => Ok(()),
-        Ok(s) => Err(format!("open -R failed ({s})")),
-        Err(e) => Err(e.to_string()),
-    };
-    #[cfg(target_os = "linux")]
-    {
-        use std::process::{Command, Stdio};
-        // The file manager's own interface selects the entry (Dolphin, Nautilus, Nemo, …).
-        let uri = format!("array:string:file://{}", crate::trash::encode(&path));
-        let shown = Command::new("dbus-send")
-            .args([
-                "--session",
-                "--print-reply",
-                "--dest=org.freedesktop.FileManager1",
-                "/org/freedesktop/FileManager1",
-                "org.freedesktop.FileManager1.ShowItems",
-                &uri,
-                "string:",
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if shown.is_ok_and(|s| s.success()) {
-            return Ok(());
-        }
-        // Without one, open the folder it's in. xdg-open may stay until that window closes,
-        // so it's reaped on a thread.
-        let mut child = Command::new("xdg-open")
-            .arg(path.parent().unwrap_or(&path))
-            .spawn()
-            .map_err(|e| format!("xdg-open: {e}"))?;
-        std::thread::spawn(move || child.wait());
-        Ok(())
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    {
-        let _ = path;
-        Err("Reveal is not supported on this platform yet".into())
-    }
+    crate::launch::reveal(path)
 }
 
 #[cfg(test)]
