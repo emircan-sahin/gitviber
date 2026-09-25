@@ -2,6 +2,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // git and ssh run this binary to ask for a password (askpass.rs); that never opens the app.
+    if let Some(code) = gitviber_lib::askpass::helper() {
+        std::process::exit(code);
+    }
     #[cfg(target_os = "linux")]
     avoid_nvidia_dmabuf_crash();
     gitviber_lib::run()

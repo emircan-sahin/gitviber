@@ -2,7 +2,7 @@
 //! comes, and the user can stop one while it transfers. A transfer that keeps reporting runs
 //! as long as it needs; only silence times out.
 
-use crate::process;
+use crate::{askpass, process};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Read;
@@ -83,6 +83,11 @@ pub struct Net {
 }
 
 impl Net {
+    /// The page's id for this command, if it registered one.
+    fn op(&self) -> Option<&str> {
+        self.registered.as_ref().map(|(_, id)| id.as_str())
+    }
+
     pub fn cancelled(&self) -> bool {
         self.state.load(Ordering::Relaxed) == CANCELLED_STATE
     }
@@ -154,8 +159,10 @@ pub fn run(
     if net.cancelled() {
         return Err(CANCELLED.into());
     }
-    // Its own process group, so stopping it also stops the ssh or remote helper it started.
+    // Its own process group, so stopping it also stops the ssh or remote helper it started,
+    // and the askpass helper either of them is waiting on, which closes the dialog.
     process::in_own_group(&mut cmd);
+    let asking = askpass::attach(&mut cmd, label, net.op());
     let mut child = cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -205,6 +212,10 @@ pub fn run(
                         cancellable: false,
                     });
                 }
+            }
+            // An open prompt waits for the user, not the remote.
+            if asking.as_ref().is_some_and(askpass::Asking::prompting) {
+                touch();
             }
             let quiet = start
                 .elapsed()

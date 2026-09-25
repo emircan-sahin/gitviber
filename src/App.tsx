@@ -11,6 +11,7 @@ import { CloneDialog, openClone } from "@/features/projects/CloneDialog";
 import { CommandPalette, showCommands } from "@/features/palette/CommandPalette";
 import { IdentityDialog } from "@/features/app/IdentityDialog";
 import { NeedsGit } from "@/features/app/NeedsGit";
+import { PromptDialog } from "@/features/app/PromptDialog";
 import { openSettings, SettingsDialog } from "@/features/settings/SettingsDialog";
 import { ShortcutOverlay } from "@/features/app/ShortcutOverlay";
 import { Welcome } from "@/features/projects/Welcome";
@@ -133,6 +134,7 @@ export function App() {
       <CloneDialog onCloned={onOpen} />
       <SettingsDialog />
       <AboutDialog />
+      <PromptDialog />
       <UpdateDialog />
       <CommandPalette />
       <ShortcutOverlay />

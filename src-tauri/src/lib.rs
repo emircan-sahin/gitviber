@@ -1,3 +1,4 @@
+pub mod askpass;
 mod commands;
 mod definitions;
 #[cfg(debug_assertions)]
@@ -62,6 +63,7 @@ pub fn run() {
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
                 webview.state::<AppState>().ptys.kill_all();
+                askpass::decline_all();
             }
         })
         .manage(AppState::default())
@@ -69,6 +71,7 @@ pub fn run() {
             if let Ok(dir) = app.path().app_log_dir() {
                 errors::init(dir);
             }
+            askpass::serve(app.handle().clone());
             #[cfg(target_os = "macos")]
             menu::keep_typed_key_equivalents();
             #[cfg(debug_assertions)]
@@ -163,6 +166,8 @@ pub fn run() {
             commands::sync::fetch,
             commands::sync::last_fetch,
             commands::sync::cancel_network,
+            commands::sync::askpass_answer,
+            commands::sync::askpass_ready,
             commands::repo::clone_repo,
             commands::repo::init_repo,
             commands::sync::merge,
