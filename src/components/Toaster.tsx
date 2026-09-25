@@ -4,6 +4,8 @@ import { cn } from "@/lib/utils";
 
 const ICONS = { error: XCircle, success: CheckCircle2, info: Info };
 
+const detail = (text: string) => <pre className="mt-1 max-h-40 overflow-auto font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground select-text">{text}</pre>;
+
 export function Toaster() {
   const toasts = useToasts();
   return (
@@ -24,18 +26,32 @@ export function Toaster() {
             <Icon className={cn("mt-0.5 size-4 shrink-0", t.kind === "error" ? "text-destructive" : t.kind === "success" ? "text-added" : "text-primary")} />
             <div className="min-w-0 flex-1">
               <div className="text-[12px] font-medium">{t.title}</div>
-              {t.detail && <pre className="mt-1 max-h-40 overflow-auto font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground select-text">{t.detail}</pre>}
+              {t.note && <div className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground select-text">{t.note}</div>}
+              {t.detail &&
+                (t.note ? (
+                  <details className="mt-1 text-[11px] text-subtle">
+                    <summary className="cursor-default hover:text-foreground">Details</summary>
+                    {detail(t.detail)}
+                  </details>
+                ) : (
+                  detail(t.detail)
+                ))}
             </div>
-            {t.action && (
-              <button
-                onClick={() => {
-                  dismissToast(t.id);
-                  t.action!.run();
-                }}
-                className="h-fit shrink-0 rounded-sm px-1.5 py-0.5 text-[12px] font-medium text-primary hover:bg-hover focus-visible:bg-hover"
-              >
-                {t.action.label}
-              </button>
+            {t.actions.length > 0 && (
+              <div className="flex shrink-0 flex-col items-end gap-0.5">
+                {t.actions.map((a) => (
+                  <button
+                    key={a.label}
+                    onClick={() => {
+                      dismissToast(t.id);
+                      a.run();
+                    }}
+                    className="h-fit rounded-sm px-1.5 py-0.5 text-[12px] font-medium whitespace-nowrap text-primary hover:bg-hover focus-visible:bg-hover"
+                  >
+                    {a.label}
+                  </button>
+                ))}
+              </div>
             )}
             <button onClick={() => dismissToast(t.id)} aria-label="Dismiss notification" className="h-fit text-subtle hover:text-foreground focus-visible:text-foreground">
               <X className="size-3.5" />

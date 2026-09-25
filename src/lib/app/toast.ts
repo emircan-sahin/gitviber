@@ -5,9 +5,11 @@ interface Toast {
   id: number;
   kind: "error" | "success" | "info";
   title: string;
+  /** Plain words above `detail`, which then folds away under Details: what a git error means. */
+  note?: string;
   detail?: string;
-  /** A button on the toast, e.g. Undo. */
-  action?: ToastAction;
+  /** Buttons on the toast, e.g. Undo. */
+  actions: ToastAction[];
 }
 
 export interface ToastAction {
@@ -28,9 +30,18 @@ export function dismissToast(id: number) {
 
 /** Errors stay until dismissed: they carry hook, GPG or push output that takes a while to read. */
 export function toast(kind: Toast["kind"], title: string, detail?: string, action?: ToastAction) {
+  show({ kind, title, detail, actions: action ? [action] : [] });
+}
+
+/** An error the app can explain: `note` says what it means and `detail` keeps git's own words. */
+export function explainedError(title: string, note: string, detail: string, actions: ToastAction[]) {
+  show({ kind: "error", title, note, detail, actions });
+}
+
+function show(t: Omit<Toast, "id">) {
   const id = nextId++;
   for (const old of toasts.get().slice(0, -3)) dismissToast(old.id);
-  toasts.set([...toasts.get(), { id, kind, title, detail, action }]);
+  toasts.set([...toasts.get(), { id, ...t }]);
   holdToast(id, false);
 }
 
@@ -46,7 +57,7 @@ export function holdToast(id: number, held: boolean) {
   timers.set(
     id,
     // An action needs time to reach for.
-    setTimeout(() => dismissToast(id), t.action ? 6000 : 3000),
+    setTimeout(() => dismissToast(id), t.actions.length ? 6000 : 3000),
   );
 }
 
