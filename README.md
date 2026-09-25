@@ -123,8 +123,8 @@ sudo dnf install ./GitViber-*.x86_64.rpm         # Fedora
 chmod +x GitViber_*.AppImage && ./GitViber_*.AppImage
 ```
 
-GitViber keeps itself up to date: it tells you when a new version is out and installs it when you
-say so. What changed is in the [changelog](CHANGELOG.md), and every release lists SHA-256
+GitViber tells you when a new version is out. The macOS app and the AppImage update in place;
+a `.deb` or `.rpm` install gets a link to the release to download it from. What changed is in the [changelog](CHANGELOG.md), and every release lists SHA-256
 checksums in `SHA256SUMS`.
 
 GitViber is used daily on macOS. The Linux builds are tested in CI, but the app itself is only
@@ -164,9 +164,9 @@ toolchains, e.g. on Arch), run it with `NO_STRIP=true`.
 ## Privacy
 
 No telemetry, no API keys. The app talks to your git remotes and, for pull requests and issues,
-GitHub. GitViber checks GitHub Releases for updates at launch and every few hours; turn it off in
-Settings → Updates. For those it borrows a login you already have, the GitHub CLI (`gh auth token`) first,
-then git's stored github.com credential, and keeps the token in memory. Errors, including every
+GitHub. For those it borrows a login you already have, the GitHub CLI (`gh auth token`) first,
+then git's stored github.com credential, and keeps the token in memory. GitViber checks GitHub
+Releases for updates at launch and every few hours; turn it off in Settings → Updates. Errors, including every
 error message the app shows you (a failed push's git output, say), go to a local file
 (`~/Library/Logs/app.gitviber.desktop/errors.log` on macOS, Help → Show Logs) and nowhere else,
 with logins in URLs and GitHub tokens blanked out. Help → Copy Diagnostics copies only the versions
