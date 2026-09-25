@@ -24,7 +24,12 @@ interface Pane {
   term: Terminal;
   fit: FitAddon;
   serialize: SerializeAddon;
+  /** The history last saved, until new output or a resize: a quiet pane isn't serialized again. */
+  saved: string | null;
   search: SearchAddon;
+  /** The WebGL renderer, while the pane has one, and its context to lose on close. */
+  gl: WebglAddon | null;
+  glContext: WebGL2RenderingContext | null;
   host: HTMLDivElement;
   pty: number | null;
   started: boolean;
@@ -79,6 +84,18 @@ function loadSession(): SavedSession | null {
 }
 
 const panes = new Map<number, Pane>();
+// The WebGL glyph atlas's page canvases. xterm shares one atlas between terminals with the same
+// font and colors, and drops it with the last of them. Weak: an atlas replaced by a theme, font or
+// scale change is xterm's to drop.
+let atlasPages: WeakRef<HTMLCanvasElement>[] = [];
+
+/**
+ * WebKit frees a canvas's backing store, and a WebGL context, only once the canvas is collected,
+ * which it puts off until the page nears 1 GB: closed panes kept hundreds of MB.
+ */
+function releaseCanvases(canvases: Iterable<HTMLCanvasElement>) {
+  for (const c of canvases) c.width = c.height = 0;
+}
 let state: State = { open: false, groups: [], active: null, restorable: loadSession() };
 let nextId = 1;
 const listeners = new Set<() => void>();
@@ -114,7 +131,7 @@ function saveSession() {
         panes: g.panes.map(({ id, cwd }) => {
           const p = panes.get(id);
           // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
-          return { cwd, history: history && p ? p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true }) : "" };
+          return { cwd, history: history && p ? (p.saved ??= p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true })) : "" };
         }),
       })),
     });
@@ -245,12 +262,19 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, term, fit, serialize, search, host, pty: null, started: false, pending: "", writing: false };
+  const p: Pane = { id, cwd, term, fit, serialize, saved: null, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
-  term.onWriteParsed(scheduleSave);
+  term.onWriteParsed(() => {
+    p.saved = null;
+    scheduleSave();
+  });
   term.onData((data) => send(p, data));
-  term.onResize(({ cols, rows }) => p.pty !== null && void invoke("pty_resize", { id: p.pty, cols, rows }).catch(() => {}));
+  term.onResize(({ cols, rows }) => {
+    // Reflow rewraps the history.
+    p.saved = null;
+    if (p.pty !== null) void invoke("pty_resize", { id: p.pty, cols, rows }).catch(() => {});
+  });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   // ⌘ keys are the app's shortcuts (copy and paste arrive as clipboard events, not keys),
   // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, ⌃Tab or ⌃1 run
@@ -329,8 +353,23 @@ export function attachPane(id: number, container: HTMLElement) {
     try {
       const gl = new WebglAddon();
       // WebKit caps live WebGL contexts; past that, a pane falls back to the DOM renderer.
-      gl.onContextLoss(() => gl.dispose());
+      gl.onContextLoss(() => {
+        gl.dispose();
+        p.gl = null;
+        p.glContext = null;
+      });
+      const track = (c: HTMLCanvasElement) => void atlasPages.push(new WeakRef(c));
+      gl.onAddTextureAtlasCanvas(track);
+      // A new atlas (theme, font, scale) announces its first page only here.
+      gl.onChangeTextureAtlas(track);
+      const had = new Set(p.host.querySelectorAll("canvas"));
       p.term.loadAddon(gl);
+      p.gl = gl;
+      // From the canvases it just made, each made with its context: on one without, getContext
+      // would make a new WebGL context, and WebKit caps them.
+      for (const c of p.host.querySelectorAll("canvas")) if (!had.has(c)) p.glContext ??= c.getContext("webgl2");
+      // The first page predates the listeners.
+      if (gl.textureAtlas) track(gl.textureAtlas);
     } catch {
       // DOM renderer.
     }
@@ -376,7 +415,15 @@ export function closePane(id: number) {
   panes.delete(id);
   if (searching?.pane === p) searching = null;
   if (p.pty !== null) void invoke("pty_kill", { id: p.pty }).catch(() => {});
+  const canvases = [...(p.term.element?.querySelectorAll("canvas") ?? [])];
   p.term.dispose();
+  p.glContext?.getExtension("WEBGL_lose_context")?.loseContext();
+  releaseCanvases(canvases);
+  // The atlas is shared by the panes on WebGL and goes with the last of them.
+  if (![...panes.values()].some((x) => x.gl)) {
+    releaseCanvases(atlasPages.flatMap((r) => r.deref() ?? []));
+    atlasPages = [];
+  }
   p.host.remove();
   const groups = state.groups.flatMap((g) => {
     const i = g.panes.findIndex((x) => x.id === id);
@@ -460,8 +507,12 @@ function solid(color: string, under: string) {
 }
 
 export function clearFocused() {
-  const g = activeGroup();
-  if (g) panes.get(g.focused)?.term.clear();
+  const p = panes.get(activeGroup()?.focused ?? -1);
+  if (!p) return;
+  p.term.clear();
+  // clear() skips the parser, so onWriteParsed doesn't drop the saved copy.
+  p.saved = null;
+  scheduleSave();
 }
 
 /** `focus: false` keeps focus where it is: arrowing along the tabs. */
