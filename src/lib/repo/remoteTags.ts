@@ -18,7 +18,8 @@ export function remoteTags(): Promise<RemoteTags> {
   if (cached && Date.now() - cached.at < FRESH_MS) return Promise.resolve(cached.value);
   if (!navigator.onLine) return Promise.reject(new Error("You're offline."));
   if (asking) return asking;
-  const op = netOp();
+  // Quiet: a login dialog would vanish mid-typing when the menu gives up.
+  const op = netOp(undefined, false, true);
   const gen = generation;
   const timer = setTimeout(() => void cancelNetwork(op), GIVE_UP_MS);
   const ask = api
