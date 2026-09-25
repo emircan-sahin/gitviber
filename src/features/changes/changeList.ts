@@ -1,5 +1,5 @@
-import { errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
-import { toast } from "@/lib/app/toast";
+import type { FileChange, RepoStatus } from "@/lib/api";
+import { gitFailed } from "@/lib/app/gitFailed";
 import type { Selection } from "@/lib/repo/selection";
 import type { RepoData } from "@/lib/repo/useRepo";
 
@@ -60,7 +60,7 @@ export async function attempt(title: string, fn: () => Promise<unknown>) {
     await fn();
     return true;
   } catch (e) {
-    toast("error", title, errorMessage(e));
+    gitFailed(title, e);
     return false;
   }
 }

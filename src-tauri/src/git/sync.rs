@@ -178,15 +178,20 @@ pub enum PullMode {
     Rebase,
 }
 
-/// Returns true if it stopped on conflicts.
-pub fn pull(repo: &Path, mode: PullMode, net: &Net) -> Result<bool, String> {
+/// Returns true if it stopped on conflicts. `autostash`: uncommitted changes in the way are
+/// stashed first and reapplied after; if they conflict then, they also stay in the stash.
+pub fn pull(repo: &Path, mode: PullMode, autostash: bool, net: &Net) -> Result<bool, String> {
     ensure_idle(repo)?;
     let flag = match mode {
         PullMode::Ff => "--ff-only",
         PullMode::Merge => "--no-rebase",
         PullMode::Rebase => "--rebase",
     };
-    stoppable(repo, run_network(repo, &["pull", "--no-edit", flag], net))
+    let mut args = vec!["pull", "--no-edit", flag];
+    if autostash {
+        args.push("--autostash");
+    }
+    stoppable(repo, run_network(repo, &args, net))
 }
 
 /// Every remote: a plain fetch takes only the current branch's (on a fork's dev tracking

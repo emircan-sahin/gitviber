@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { api, type Branch, errorMessage, type Worktree } from "@/lib/api";
+import { api, type Branch, errorMessage, type PullMode, type Worktree } from "@/lib/api";
 import { openTerminal } from "@/lib/terminal/terminals";
 import { forgetRemoteTags } from "@/lib/repo/remoteTags";
 import { worktreeDir } from "@/lib/repo/session";
@@ -7,7 +7,7 @@ import type { RepoData } from "@/lib/repo/useRepo";
 import { folderName } from "@/lib/path";
 import { useGitAction } from "@/hooks/useGitAction";
 
-/** The top bar's git actions: switching, merging, deleting branches, worktrees, push and publish. */
+/** The top bar's git actions: switching, merging, deleting branches, worktrees, pull, push and publish. */
 export function useRepoActions(repo: RepoData, root: string, main: string) {
   const { status, branches } = repo;
   const { busy, run, runNet } = useGitAction({ refresh: repo.refresh });
@@ -59,6 +59,28 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     if (ok) await run("Clean up", () => api.deleteBranches(names, false), `Deleted ${names.length} merged branches`);
   };
 
+  // A pull brings in the upstream, which can't help a push that goes elsewhere (a fork pulling
+  // upstream/dev and pushing origin/dev).
+  const pushesUpstream = !status?.push?.branch || status.push.branch === status.upstream;
+  const pulls = (["merge", "rebase"] as const).map((mode) => ({ label: `Pull (${mode})`, run: () => void pull(mode) }));
+  const behind = pushesUpstream ? pulls : undefined;
+  // Autostashed changes wait out a stopped merge or rebase (MERGE_AUTOSTASH), and git keeps them
+  // in the stash as well when they conflict coming back.
+  const stashedFor = (autostash: boolean) =>
+    autostash
+      ? "Resolve them in Changes. Your uncommitted changes were set aside for the pull and come back when it finishes (Continue or Abort, if it's waiting on you). If they conflict coming back, they're kept in Stashes too: drop that stash once resolved."
+      : undefined;
+  const pull = (mode: PullMode, autostash = false): Promise<boolean> =>
+    runNet("Pull", (op) => api.pull(mode, op, autostash), mode === "ff" ? "Pulled" : `Pulled (${mode})`, {
+      fixes: { diverged: pulls, autostash: [{ label: "Retry with autostash", run: () => void pull(mode, true) }] },
+      conflicts: stashedFor(autostash),
+    });
+  const sync = (autostash = false): Promise<boolean> =>
+    runNet("Sync", async (op) => (await api.pull("ff", op, autostash)) || api.push(false, undefined, op), "Synced", {
+      fixes: { diverged: pulls, "fetch-first": behind, autostash: [{ label: "Retry with autostash", run: () => void sync(true) }] },
+      conflicts: stashedFor(autostash),
+    });
+
   const publish = (remote: string) => runNet("Publish", (op) => api.push(false, remote, op), `Branch published to ${remote}`);
   // Where Publish goes without asking: the preferred remote, or the only one.
   const publishTo = status?.branch && status.head ? (status.publish ?? (status.remotes.length === 1 ? status.remotes[0] : null)) : null;
@@ -66,7 +88,8 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     run(how === "squash" ? "Squash merge" : "Merge", () => api.merge(name, how), how === "squash" ? `Squashed ${name} into one commit` : `Merged ${name}`);
   // Rejected as non-fast-forward: the remote has commits this branch dropped, usually its own
   // old ones after a rebase or amend. Replacing them is a force push, so it asks first.
-  // "fetch first" (commits not fetched yet) isn't offered: those want a pull.
+  // "fetch first" (commits not fetched yet) isn't offered: those want a pull, which the error
+  // toast offers.
   // `tags`: --follow-tags, annotated tags on the pushed commits go along.
   const push = (tags = false) =>
     runNet(
@@ -86,6 +109,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
         if (tags) forgetRemoteTags();
       },
       tags ? "Pushed with tags" : "Pushed",
+      { fixes: { "fetch-first": behind } },
     );
   // Unknown until the push target has the branch; then a push is due.
   const pushAhead = status?.push ? (status.push.branch ? status.push.ahead : null) : (status?.ahead ?? 0);
@@ -160,5 +184,5 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     await run("Unlock worktree", () => api.unlockWorktree(w.path), `Unlocked ${name}`);
   };
 
-  return { busy, run, runNet, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree };
+  return { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree };
 }

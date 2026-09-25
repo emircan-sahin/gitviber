@@ -30,6 +30,7 @@ pub async fn push(
 pub async fn pull(
     state: State<'_, AppState>,
     mode: git::PullMode,
+    autostash: Option<bool>,
     op: String,
     progress: Channel<network::Progress>,
 ) -> Res<bool> {
@@ -40,7 +41,7 @@ pub async fn pull(
     };
     let net = watch_network(&state, op, progress);
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::pull(r, mode, &net)
+        git::pull(r, mode, autostash.unwrap_or(false), &net)
     })
     .await
 }
