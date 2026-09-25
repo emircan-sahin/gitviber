@@ -31,7 +31,8 @@ pub fn pty_kill(state: State<'_, AppState>, id: u32) {
     state.ptys.kill(id)
 }
 
-/// What a bug report asks for: app version and commit, OS, and git.
+/// What a bug report asks for: app version and commit, OS, git, gh and the web view. Nothing
+/// about the user or their repos.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct About {
@@ -40,6 +41,10 @@ pub struct About {
     os: String,
     arch: String,
     git: Option<String>,
+    /// `gh --version`'s version, None when the GitHub CLI isn't installed.
+    gh: Option<String>,
+    /// "WebKit 20621.1.15" on macOS, "WebKitGTK 2.46.3" on Linux.
+    webview: Option<String>,
 }
 
 #[tauri::command]
@@ -62,7 +67,20 @@ pub async fn about(app: AppHandle) -> Res<About> {
                 "macOS {}",
                 text("sw_vers", &["-productVersion"]).unwrap_or_default()
             ),
+            // "Ubuntu 24.04.1 LTS", "Fedora Linux 40 (Workstation Edition)"
+            "linux" => std::fs::read_to_string("/etc/os-release")
+                .ok()
+                .and_then(|f| {
+                    let name = f.lines().find_map(|l| l.strip_prefix("PRETTY_NAME="))?;
+                    Some(name.trim_matches('"').to_string())
+                })
+                .unwrap_or_else(|| "Linux".into()),
             other => other.to_string(),
+        };
+        let engine = match std::env::consts::OS {
+            "macos" => "WebKit",
+            "linux" => "WebKitGTK",
+            _ => "WebView",
         };
         Ok(About {
             version,
@@ -73,6 +91,14 @@ pub async fn about(app: AppHandle) -> Res<About> {
             git: checked
                 .and_then(|g| g.version)
                 .or_else(|| git::check_install().version),
+            // "gh version 2.62.0 (2024-11-14)\nhttps://github.com/cli/cli/releases/…"
+            gh: text("gh", &["--version"]).and_then(|v| {
+                let first = v.lines().next()?;
+                Some(first.trim_start_matches("gh version ").to_string())
+            }),
+            webview: tauri::webview_version()
+                .ok()
+                .map(|v| format!("{engine} {v}")),
         })
     })
     .await
@@ -81,6 +107,20 @@ pub async fn about(app: AppHandle) -> Res<About> {
 #[tauri::command]
 pub fn open_url(url: String) -> Res<()> {
     launch::open_url(&url)
+}
+
+/// Help → Show Logs: the error log selected in the file manager, or its folder before the first
+/// error has created it.
+#[tauri::command]
+pub async fn show_logs() -> Res<()> {
+    let file = errors::file().ok_or("The log folder could not be found.")?;
+    let path = if file.exists() {
+        file
+    } else {
+        file.parent().unwrap_or(file)
+    };
+    let path = path.to_path_buf();
+    blocking(move || launch::reveal(path)).await
 }
 
 /// The page's errors (src/lib/app/errorLog.ts), into the app's error log.
