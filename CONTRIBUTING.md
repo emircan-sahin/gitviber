@@ -15,11 +15,13 @@ On Linux, install WebKitGTK first (the README lists the packages). macOS is wher
 
 ## Where things live
 
-- `src/features/` - the UI: top bar, changes / history / PR panels, file tree, and the viewers (`CodeView` is the diff and file viewer)
-- `src/components/ui/` - shadcn/ui-style primitives on Radix and Tailwind
-- `src/lib/` - `api.ts` wraps every Tauri command, `useRepo.ts` holds repo state, `highlight.worker.ts` runs Shiki off the main thread
-- `src-tauri/src/` - the Rust side: `git.rs` (the git CLI wrapper), `diff.rs`, `github.rs` (pull requests and issues), `fs.rs` (file explorer), `watch.rs` (file watcher)
-- `src-tauri/src/scenario_tests.rs` - end-to-end git scenarios against temporary repos and a local bare remote
+- `src/features/` - the UI, a folder per area: `workspace/` (the window's layout), `topbar/`, `changes/`, `history/`, `github/` (`pulls/`, `issues/`, and `shared/` for what both use), `viewer/` (`MonacoView` is the diff and file viewer), `explorer/`, `branches/`, `worktrees/`, `projects/`, `terminal/`, `settings/`, `palette/`, and `app/` for app-wide dialogs. One area may import another's module; `components/` never imports a feature
+- `src/components/` - UI shared across features (`FileIcon`, `StatusBadge`, `RowAction`, `ErrorBoundary`, …); `ui/` holds the shadcn/ui-style primitives on Radix and Tailwind
+- `src/hooks/` - React hooks features share: `useGitAction` (busy state, toasts and undo around a git action), `useAsyncValue`, `usePickerIndex`
+- `src/lib/` - the rest, by area: `api/` wraps every Tauri command, `repo/useRepo.ts` holds repo state, `editor/highlight.worker.ts` runs Shiki off the main thread; `git/`, `github/`, `links/`, `terminal/`, `commands/` (keys and the menu bar), `app/` and `ui/` hold the others. Helpers every area shares sit at the top: `storage.ts` (localStorage), `store.ts` (state outside React), `format.ts`, `path.ts`, `platform.ts`
+- `*.test.ts` - run by `node --test`, no bundler: a tested module, and whatever it imports at runtime, imports other modules relatively and with the extension (`../path.ts`), never through `@/`
+- `src-tauri/src/` - the Rust side: `commands/` (the Tauri commands, one file per area; `lib.rs` only registers them), `state.rs` (what they share: the open repo, the index lock, the blocking pool), `git/` (the git CLI wrapper, one file per area), `github/` (pull requests and issues), `process.rs` (running programs with the user's PATH), `diff.rs`, `fs.rs` (file explorer), `watch.rs` (file watcher)
+- `src-tauri/src/scenario_tests/` - end-to-end git scenarios against temporary repos and a local bare remote, one file per topic
 
 ## Ground rules
 
@@ -37,7 +39,7 @@ These are the product, not style preferences. A PR that breaks one will be sent 
 pnpm check
 ```
 
-That runs what CI runs: `tsc`, a production build, the third-party license list being up to date, `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test`. If you change how a git operation behaves, add or update a scenario in `scenario_tests.rs`.
+That runs what CI runs: `tsc`, a production build, the third-party license list being up to date, `cargo fmt --check`, `cargo clippy -D warnings` and `cargo test`. If you change how a git operation behaves, add or update a scenario in `scenario_tests/`.
 
 ## Pull requests
 
