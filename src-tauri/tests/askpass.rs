@@ -33,6 +33,7 @@ fn serve() {
             if let Event::Ask(p) = event {
                 std::thread::spawn(move || askpass::answer(p.id, respond(&p.text)));
             }
+            true
         })
     });
 }
@@ -162,4 +163,24 @@ fn the_helper_alone_declines() {
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
     assert!(out.stdout.is_empty());
+}
+
+/// An askpass of the user's own (core.askPass here) keeps answering git; ssh still asks the app.
+#[test]
+fn leaves_the_users_own_askpass_alone() {
+    serve();
+    let dir = sandbox("own");
+    assert!(git(&dir, &["init", "-q"]).status().unwrap().success());
+    let set = git(
+        &dir,
+        &["config", "core.askPass", "/usr/local/bin/my-askpass"],
+    );
+    assert!({ set }.status().unwrap().success());
+    let mut cmd = Command::new("git");
+    cmd.current_dir(&dir);
+    let _asking = askpass::attach(&mut cmd, "git fetch", None).unwrap();
+    let env = |k: &str| cmd.get_envs().any(|(key, v)| key == k && v.is_some());
+    assert!(!env("GIT_ASKPASS"));
+    assert!(env("SSH_ASKPASS"));
+    let _ = std::fs::remove_dir_all(&dir);
 }

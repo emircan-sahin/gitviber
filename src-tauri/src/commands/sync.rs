@@ -150,3 +150,9 @@ pub fn cancel_network(state: State<'_, AppState>, op: String) {
 pub fn askpass_answer(id: u64, answer: Option<String>) {
     askpass::answer(id, answer)
 }
+
+/// The page listens for prompts; until then (and while it reloads) they're declined at once.
+#[tauri::command]
+pub fn askpass_ready() {
+    askpass::page_ready()
+}

@@ -6,9 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -33,6 +33,9 @@ pub struct Prompt {
     pub label: String,
     /// The page's id for that command, if it gave one.
     pub op: Option<String>,
+    /// The hosts that command talks to, so a prompt naming another one stands out. Empty when
+    /// unknown (a submodule update).
+    pub hosts: Vec<String>,
 }
 
 pub enum Event {
@@ -58,6 +61,8 @@ struct Reply {
 struct Session {
     label: String,
     op: Option<String>,
+    repo: Option<PathBuf>,
+    args: Vec<String>,
     /// Its prompts on screen right now.
     open: Arc<AtomicUsize>,
 }
@@ -68,7 +73,8 @@ struct Server {
     sessions: Mutex<HashMap<String, Session>>,
     waiting: Mutex<HashMap<u64, Sender<Option<String>>>>,
     next: AtomicU64,
-    emit: Box<dyn Fn(Event) + Send + Sync>,
+    /// False when the page couldn't be told: the prompt is declined at once.
+    emit: Box<dyn Fn(Event) -> bool + Send + Sync>,
     timeout: Duration,
 }
 
@@ -102,25 +108,43 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// (it failed to start, or not on unix): the command then fails as it did before.
 pub fn attach(cmd: &mut Command, label: &str, op: Option<&str>) -> Option<Asking> {
     let server = SERVER.get()?.clone();
+    let repo = cmd.get_current_dir().map(Path::to_path_buf);
+    // An askpass the user set up keeps answering. git asks GIT_ASKPASS, then core.askPass,
+    // then SSH_ASKPASS; ssh only SSH_ASKPASS.
+    let set = |var| std::env::var_os(var).is_some_and(|v| !v.is_empty());
+    let own_ssh = set("SSH_ASKPASS");
+    let own_git = own_ssh
+        || set("GIT_ASKPASS")
+        || repo
+            .as_deref()
+            .is_some_and(|r| crate::git::config_value(r, None, "core.askPass").is_some());
+    if own_git && own_ssh {
+        return None;
+    }
     let token = random_hex(16)?;
     let open = Arc::new(AtomicUsize::new(0));
     let session = Session {
         label: label.to_string(),
         op: op.map(str::to_string),
+        repo,
+        args: cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect(),
         open: open.clone(),
     };
     lock(&server.sessions).insert(token.clone(), session);
     // git still tries the credential helpers first; only what they can't answer reaches us.
     // GIT_TERMINAL_PROMPT=0 (cmd.rs) stays: git asks askpass before it would try a terminal.
-    cmd.env("GIT_ASKPASS", &server.helper)
-        .env("SSH_ASKPASS", &server.helper)
-        .env("SSH_ASKPASS_REQUIRE", "force")
-        .env(SOCKET_ENV, &server.socket)
-        .env(TOKEN_ENV, &token);
-    // OpenSSH before 8.4 ignores SSH_ASKPASS_REQUIRE and asks only with a DISPLAY; Linux
-    // desktops on Wayland alone may not set one. macOS 13+ ships a newer ssh.
-    if cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_none() {
-        cmd.env("DISPLAY", ":0");
+    cmd.env(SOCKET_ENV, &server.socket).env(TOKEN_ENV, &token);
+    if !own_git {
+        cmd.env("GIT_ASKPASS", &server.helper);
+    }
+    // OpenSSH before 8.4 ignores SSH_ASKPASS_REQUIRE and asks only with a DISPLAY, which X11
+    // and XWayland sessions set; none is made up for Wayland alone. macOS 13+ has a newer ssh.
+    if !own_ssh {
+        cmd.env("SSH_ASKPASS", &server.helper)
+            .env("SSH_ASKPASS_REQUIRE", "force");
     }
     Some(Asking {
         server,
@@ -136,8 +160,16 @@ pub fn answer(id: u64, answer: Option<String>) {
     }
 }
 
-/// Declines every open prompt: a reloaded page no longer shows them.
+/// Whether the page listens for prompts; until it does, they're declined at once.
+static PAGE_READY: AtomicBool = AtomicBool::new(false);
+
+pub fn page_ready() {
+    PAGE_READY.store(true, Ordering::Relaxed);
+}
+
+/// The page is (re)loading: it no longer shows the open prompts, nor sees new ones yet.
 pub fn decline_all() {
+    PAGE_READY.store(false, Ordering::Relaxed);
     if let Some(server) = SERVER.get() {
         let waiting = std::mem::take(&mut *lock(&server.waiting));
         for tx in waiting.into_values() {
@@ -160,17 +192,17 @@ pub fn serve(app: tauri::AppHandle) {
     let Ok(helper) = std::env::current_exe() else {
         return;
     };
-    start(helper, move |event| {
-        let _ = match event {
-            Event::Ask(prompt) => app.emit("askpass", prompt),
-            Event::Done(id) => app.emit("askpass-done", id),
-        };
+    start(helper, move |event| match event {
+        Event::Ask(prompt) => {
+            PAGE_READY.load(Ordering::Relaxed) && app.emit("askpass", prompt).is_ok()
+        }
+        Event::Done(id) => app.emit("askpass-done", id).is_ok(),
     });
 }
 
 /// Starts the one server, with `helper` as the program git and ssh run to ask. A failure only
 /// leaves prompts unanswered, as before.
-pub fn start(helper: PathBuf, emit: impl Fn(Event) + Send + Sync + 'static) {
+pub fn start(helper: PathBuf, emit: impl Fn(Event) -> bool + Send + Sync + 'static) {
     #[cfg(unix)]
     if let Some(server) = unix::listen(helper, Box::new(emit), PROMPT_TIMEOUT) {
         if SERVER.set(server).is_ok() {
@@ -214,6 +246,91 @@ pub fn helper() -> Option<i32> {
     })
 }
 
+/// The hosts a network command talks to, from its arguments and the repo's remotes.
+fn remote_hosts(repo: &Path, args: &[String]) -> Vec<String> {
+    use crate::git;
+    let Some(sub) = args.first().map(String::as_str) else {
+        return vec![];
+    };
+    // Each submodule has remotes of its own.
+    if sub == "submodule" {
+        return vec![];
+    }
+    let remotes = git::remotes(repo);
+    let named = if args.iter().any(|a| a == "--all") {
+        remotes.clone()
+    } else {
+        // `lfs pull`'s first word is its own subcommand; it uses the default remote.
+        let first = args[1..]
+            .iter()
+            .find(|a| !a.starts_with('-'))
+            .filter(|_| sub != "lfs");
+        match first {
+            Some(r) if remotes.contains(r) => vec![r.clone()],
+            Some(url) if host_of(url).is_some() => return host_of(url).into_iter().collect(),
+            _ => default_remote(repo, sub == "push", &remotes)
+                .into_iter()
+                .collect(),
+        }
+    };
+    let mut hosts = vec![];
+    for name in named {
+        let mut get = vec!["remote", "get-url"];
+        if sub == "push" {
+            get.push("--push");
+        }
+        get.push(&name);
+        let host = git::run_text(repo, &get)
+            .ok()
+            .and_then(|u| host_of(u.trim()));
+        if let Some(h) = host.filter(|h| !hosts.contains(h)) {
+            hosts.push(h);
+        }
+    }
+    hosts
+}
+
+/// The remote git picks when none is named: the branch's (for a push its pushRemote, or
+/// remote.pushDefault, first), else origin, else the only one.
+fn default_remote(repo: &Path, push: bool, remotes: &[String]) -> Option<String> {
+    use crate::git::{config_value, run_text};
+    let branch = run_text(repo, &["symbolic-ref", "--short", "-q", "HEAD"]).ok();
+    let key = |k: &str| {
+        let b = branch.as_deref()?.trim();
+        config_value(repo, None, &format!("branch.{b}.{k}")).filter(|r| remotes.contains(r))
+    };
+    push.then(|| {
+        key("pushRemote").or_else(|| {
+            config_value(repo, None, "remote.pushDefault").filter(|r| remotes.contains(r))
+        })
+    })
+    .flatten()
+    .or_else(|| key("remote"))
+    .or_else(|| remotes.iter().find(|r| *r == "origin").cloned())
+    .or_else(|| (remotes.len() == 1).then(|| remotes[0].clone()))
+}
+
+/// `https://me:secret@host:8443/x`, `ssh://git@[::1]/x` and `git@host:owner/x` → the host.
+/// None for a local path.
+fn host_of(url: &str) -> Option<String> {
+    let rest = match url.split_once("://") {
+        Some(("file", _)) => return None,
+        Some((_, rest)) => rest,
+        // scp-like `host:path`; a local path has a slash before any colon.
+        None => url
+            .find(':')
+            .filter(|&i| !url[..i].contains('/'))
+            .map(|_| url)?,
+    };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit('@').next()?;
+    let host = match host.strip_prefix('[') {
+        Some(v6) => v6.split(']').next()?,
+        None => host.split(':').next()?,
+    };
+    (!host.is_empty()).then(|| host.to_string())
+}
+
 /// `n` random bytes, in hex.
 fn random_hex(n: usize) -> Option<String> {
     use std::io::Read;
@@ -241,7 +358,7 @@ mod unix {
     /// carry the token of a command still running.
     pub(super) fn listen(
         helper: PathBuf,
-        emit: Box<dyn Fn(Event) + Send + Sync>,
+        emit: Box<dyn Fn(Event) -> bool + Send + Sync>,
         timeout: Duration,
     ) -> Option<Arc<Server>> {
         let dir = std::env::temp_dir().join(format!("gitviber-{}", random_hex(6)?));
@@ -303,16 +420,21 @@ mod unix {
             let (tx, rx) = channel();
             lock(&self.waiting).insert(id, tx);
             session.open.fetch_add(1, Ordering::Relaxed);
-            (self.emit)(Event::Ask(Prompt {
+            let hosts = session
+                .repo
+                .as_deref()
+                .map_or_else(Vec::new, |r| remote_hosts(r, &session.args));
+            let shown = (self.emit)(Event::Ask(Prompt {
                 id,
                 text: request.prompt,
                 kind: request.kind,
                 label: session.label,
                 op: session.op,
+                hosts,
             }));
-            let answer = stream
-                .set_nonblocking(true)
-                .ok()
+            let answer = shown
+                .then(|| stream.set_nonblocking(true).ok())
+                .flatten()
                 .and_then(|_| self.wait(&rx, stream));
             lock(&self.waiting).remove(&id);
             session.open.fetch_sub(1, Ordering::Relaxed);
@@ -362,17 +484,30 @@ mod unix {
             timeout: Duration,
             respond: impl Fn(&Prompt) -> Option<Option<String>> + Send + Sync + 'static,
         ) -> (Arc<Server>, Arc<Mutex<Vec<u64>>>) {
+            server_for(timeout, true, respond)
+        }
+
+        /// `listening`: false plays a page that isn't there to show the prompt.
+        fn server_for(
+            timeout: Duration,
+            listening: bool,
+            respond: impl Fn(&Prompt) -> Option<Option<String>> + Send + Sync + 'static,
+        ) -> (Arc<Server>, Arc<Mutex<Vec<u64>>>) {
             let done = Arc::new(Mutex::new(vec![]));
             let slot: Arc<OnceLock<std::sync::Weak<Server>>> = Arc::default();
             let (s, d) = (slot.clone(), done.clone());
             let emit = move |e: Event| match e {
                 Event::Ask(p) => {
-                    if let Some(a) = respond(&p) {
+                    if let Some(a) = respond(&p).filter(|_| listening) {
                         let server = s.get().and_then(|w| w.upgrade()).unwrap();
                         std::thread::spawn(move || server.answer(p.id, a));
                     }
+                    listening
                 }
-                Event::Done(id) => d.lock().unwrap().push(id),
+                Event::Done(id) => {
+                    d.lock().unwrap().push(id);
+                    true
+                }
             };
             let server = listen(PathBuf::from("/unused"), Box::new(emit), timeout).unwrap();
             let _ = slot.set(Arc::downgrade(&server));
@@ -386,6 +521,8 @@ mod unix {
                 Session {
                     label: "git push".into(),
                     op: Some("op-1".into()),
+                    repo: None,
+                    args: vec![],
                     open: open.clone(),
                 },
             );
@@ -473,6 +610,90 @@ mod unix {
             assert_eq!(open.load(Ordering::Relaxed), 0);
             assert!(lock(&server.waiting).is_empty());
             cleanup(&server);
+        }
+
+        #[test]
+        fn a_prompt_the_page_cant_show_is_declined_at_once() {
+            let (server, done) =
+                server_for(Duration::from_secs(60), false, |_| Some(Some("x".into())));
+            session(&server, "t");
+            let start = Instant::now();
+            assert_eq!(ask(&server.socket, &req("t", "Password: ")), None);
+            assert!(start.elapsed() < Duration::from_secs(5));
+            assert_eq!(done.lock().unwrap().len(), 1);
+            cleanup(&server);
+        }
+
+        #[test]
+        fn names_hosts_without_credentials() {
+            for (url, host) in [
+                ("https://me:s3cret@github.com/a/b.git", Some("github.com")),
+                ("https://git.example.com:8443/a", Some("git.example.com")),
+                ("ssh://git@[::1]:22/x", Some("::1")),
+                ("git@gitlab.com:group/x.git", Some("gitlab.com")),
+                ("work-github:owner/x", Some("work-github")),
+                ("/srv/repos/x.git", None),
+                ("../x", None),
+                ("file:///srv/x", None),
+            ] {
+                assert_eq!(host_of(url).as_deref(), host, "{url}");
+            }
+        }
+
+        #[test]
+        fn finds_the_hosts_a_command_talks_to() {
+            let dir = std::env::temp_dir().join(format!("gitviber-hosts-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            let git = |args: &[&str]| crate::git::run(&dir, args).unwrap();
+            git(&["init", "-q", "-b", "main"]);
+            git(&[
+                "remote",
+                "add",
+                "origin",
+                "https://me:tok@github.com/me/x.git",
+            ]);
+            git(&["remote", "add", "upstream", "git@gitlab.com:them/x.git"]);
+            git(&[
+                "remote",
+                "set-url",
+                "--push",
+                "upstream",
+                "ssh://push.example/x",
+            ]);
+            let hosts = |args: &[&str]| {
+                let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+                remote_hosts(&dir, &args)
+            };
+            assert_eq!(hosts(&["fetch", "--progress", "upstream"]), ["gitlab.com"]);
+            assert_eq!(
+                hosts(&["push", "--progress", "-u", "upstream", "HEAD"]),
+                ["push.example"]
+            );
+            assert_eq!(
+                hosts(&["pull", "--progress", "--no-edit", "--ff-only"]),
+                ["github.com"]
+            );
+            assert_eq!(
+                hosts(&["fetch", "--progress", "--all", "--prune"]),
+                ["github.com", "gitlab.com"]
+            );
+            assert_eq!(
+                hosts(&["clone", "--progress", "--", "https://evil.example/x", "d"]),
+                ["evil.example"]
+            );
+            assert_eq!(
+                hosts(&["lfs", "pull", "--include", "upstream", "--exclude", ""]),
+                ["github.com"]
+            );
+            assert!(hosts(&["submodule", "update", "--init"]).is_empty());
+            git(&["config", "branch.main.remote", "upstream"]);
+            assert_eq!(
+                hosts(&["pull", "--progress", "--no-edit", "--ff-only"]),
+                ["gitlab.com"]
+            );
+            assert_eq!(hosts(&["push", "--progress"]), ["push.example"]);
+            let _ = std::fs::remove_dir_all(&dir);
         }
 
         #[test]

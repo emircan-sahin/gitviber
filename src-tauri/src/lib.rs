@@ -159,6 +159,7 @@ pub fn run() {
             commands::sync::last_fetch,
             commands::sync::cancel_network,
             commands::sync::askpass_answer,
+            commands::sync::askpass_ready,
             commands::repo::clone_repo,
             commands::repo::init_repo,
             commands::sync::merge,

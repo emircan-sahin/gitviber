@@ -4,7 +4,7 @@ import type { NetOp, Progress } from "./types";
 // Unique across page reloads too: a command from before a reload may still be running.
 const netSession = Date.now().toString(36);
 let netCount = 0;
-export const netOp = (onProgress?: (p: Progress) => void, background = false): NetOp => ({ id: `${netSession}-${++netCount}`, onProgress, background });
+export const netOp = (onProgress?: (p: Progress) => void, background = false, quiet = background): NetOp => ({ id: `${netSession}-${++netCount}`, onProgress, background, quiet });
 
 const running = new Set<NetOp>();
 /** Some network command is running. */
@@ -21,8 +21,11 @@ export function network<T>(cmd: string, args: Record<string, unknown>, op = netO
 /** Stops a network command; its call then rejects with CANCELLED. */
 export const cancelNetwork = (op: NetOp) => invoke<void>("cancel_network", { op: op.id });
 
-/** A background command's prompts are declined unseen: a dialog nobody asked for would be a surprise. */
-export const isBackgroundOp = (id: string | null) => [...running].some((o) => o.id === id && o.background);
+/** A quiet command's prompts are declined unseen: a dialog nobody asked for would be a surprise. */
+export const isQuietOp = (id: string | null) => [...running].some((o) => o.id === id && o.quiet);
 
 /** Answers a git or ssh prompt; null is Cancel. The answer goes to git once and is kept nowhere. */
 export const answerPrompt = (id: number, answer: string | null) => invoke<void>("askpass_answer", { id, answer });
+
+/** The page shows prompts from here on; before, the backend declines them. */
+export const promptsReady = () => invoke<void>("askpass_ready");

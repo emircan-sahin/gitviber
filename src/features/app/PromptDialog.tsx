@@ -3,8 +3,8 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { type AskPrompt, answerPrompt, isBackgroundOp } from "@/lib/api";
-import { promptForm } from "@/lib/git/askpass";
+import { type AskPrompt, answerPrompt, isQuietOp, promptsReady } from "@/lib/api";
+import { promptContext, promptForm } from "@/lib/git/askpass";
 
 /**
  * What git or ssh asks during a network command (askpass.rs): a login, an SSH key's passphrase,
@@ -17,10 +17,14 @@ export function PromptDialog() {
   useEffect(() => {
     const drop = (id: number) => setQueue((q) => q.filter((p) => p.id !== id));
     const asked = listen<AskPrompt>("askpass", ({ payload: p }) => {
-      if (isBackgroundOp(p.op)) void answerPrompt(p.id, null).catch(() => {});
+      if (isQuietOp(p.op)) void answerPrompt(p.id, null).catch(() => {});
       else setQueue((q) => [...q, p]);
     });
     const done = listen<number>("askpass-done", ({ payload }) => drop(payload));
+    // Until this, and again while the page reloads, the backend declines prompts at once.
+    void Promise.all([asked, done])
+      .then(() => promptsReady())
+      .catch(() => {});
     return () => {
       void asked.then((off) => off());
       void done.then((off) => off());
@@ -44,14 +48,16 @@ function Prompt({ prompt, onReply }: { prompt: AskPrompt; onReply: (answer: stri
 
   return (
     <Dialog open onOpenChange={(open) => !open && onReply(null)}>
-      <DialogContent className="max-w-lg">
+      {/* Only Cancel or Esc cancels: a stray click outside mustn't fail the command. */}
+      <DialogContent className="max-w-lg" onInteractOutside={(e) => e.preventDefault()}>
+        <div className="mb-1.5 truncate font-mono text-[11px] text-subtle">{promptContext(prompt)}</div>
         <DialogTitle>{form.title}</DialogTitle>
         <DialogDescription>
           {form.type === "confirm" && form.hostKey
-            ? `${prompt.label} is connecting to a host ssh hasn't seen before. Trust it only if the fingerprint matches the one your provider publishes.`
+            ? "ssh hasn't seen this host before. Trust it only if the fingerprint matches the one your provider publishes."
             : form.type === "confirm"
               ? form.question
-              : `${prompt.label} is asking.`}
+              : "git or ssh needs this to go on."}
         </DialogDescription>
         {details && <pre className="mt-3 max-h-40 overflow-auto rounded-md border border-border bg-panel p-2.5 font-mono text-[11px] whitespace-pre-wrap text-subtle select-text">{details}</pre>}
         {form.type === "text" || form.type === "secret" ? (
@@ -62,7 +68,7 @@ function Prompt({ prompt, onReply }: { prompt: AskPrompt; onReply: (answer: stri
               onReply(value);
             }}
           >
-            <label className="text-[12px] text-muted-foreground break-all">{form.label}</label>
+            <label className="text-[12px] whitespace-pre-wrap break-all text-muted-foreground">{form.label}</label>
             <Input autoFocus type={form.type === "secret" ? "password" : "text"} value={value} onChange={(e) => setValue(e.target.value)} spellCheck={false} autoComplete="off" autoCapitalize="off" autoCorrect="off" />
             {form.type === "secret" && <p className="text-[11px] text-subtle">Passed to git once; GitViber keeps nothing. Your credential helper may save it, as in a terminal.</p>}
             <div className="mt-2 flex justify-end gap-2">
