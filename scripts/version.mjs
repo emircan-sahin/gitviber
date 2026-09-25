@@ -1,6 +1,7 @@
 // The app version lives in package.json; tauri.conf.json points at it. Cargo can't read it
 // from there, so Cargo.toml and Cargo.lock carry a copy that has to match.
-//   node scripts/version.mjs check [vX.Y.Z]   fails on a mismatch, or when the tag differs
+//   node scripts/version.mjs check [tag]      fails on a mismatch, or when the tag isn't
+//                                             vX.Y.Z or a test tag like vX.Y.Z-rc.1
 //   node scripts/version.mjs set X.Y.Z        writes the version to all three files
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -42,7 +43,9 @@ function check(tag) {
   if (off.length) {
     fail(`${off.map((f) => `${f.rel} has ${f.version}`).join(", ")}, package.json has ${version}. Run pnpm version:set ${version}`);
   }
-  if (tag !== undefined && tag !== `v${version}`) fail(`tag ${tag} doesn't match the version, v${version}`);
+  if (tag !== undefined && tag !== `v${version}` && !tag.startsWith(`v${version}-`)) {
+    fail(`tag ${tag} doesn't match the version, v${version}`);
+  }
   console.log(version);
 }
 
@@ -57,4 +60,4 @@ function set(version) {
 const [command, arg] = process.argv.slice(2);
 if (command === "check") check(arg);
 else if (command === "set") set(arg);
-else fail("usage: node scripts/version.mjs check [vX.Y.Z] | set X.Y.Z");
+else fail("usage: node scripts/version.mjs check [tag] | set X.Y.Z");

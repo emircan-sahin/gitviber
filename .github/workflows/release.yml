@@ -1,0 +1,358 @@
+name: Release
+
+# A pushed v* tag builds the app, signs and notarizes it for macOS, and leaves everything on a
+# draft release that a maintainer publishes by hand (RELEASING.md). Run from the Actions tab
+# it's a dry run: the same builds, unsigned, kept as workflow artifacts, and no release.
+#
+# The signing secrets live in the `release` environment, which only v* tags may use, so only
+# the build jobs of a tag run see them. Only the publish job can write to the repository.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  # Never stop a release halfway through notarizing or uploading.
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  RELEASE: ${{ github.event_name == 'push' }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      # Fails before an hour of building when the tag, the version or the notes are off.
+      - id: version
+        run: |
+          if [ "$RELEASE" = true ]; then
+            version=$(node scripts/version.mjs check "$GITHUB_REF_NAME")
+            node scripts/release-notes.mjs "$GITHUB_REF_NAME" > /dev/null
+          else
+            version=$(node scripts/version.mjs check)
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  macos:
+    needs: prepare
+    runs-on: macos-latest
+    environment: ${{ github.event_name == 'push' && 'release' || '' }}
+    timeout-minutes: 90
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-03
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+
+      # Also applies the xterm patch in patches/.
+      - run: pnpm install --frozen-lockfile
+
+      # The certificate goes into a keychain of its own, deleted with the key files below.
+      - name: Signing and notarization
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_PRIVATE_KEY: ${{ secrets.APPLE_API_PRIVATE_KEY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # A tag must not ship a build Gatekeeper blocks; a dry run goes on without signing.
+          problem() {
+            if [ "$RELEASE" = true ]; then echo "::error::$1"; exit 1; fi
+            echo "::warning::$1"
+            echo "**Warning:** $1" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          if [ -z "$APPLE_CERTIFICATE" ] || [ -z "$APPLE_CERTIFICATE_PASSWORD" ]; then
+            problem "No signing certificate (the release environment's secrets reach tag runs only), so the app is ad-hoc signed and Gatekeeper will block it."
+            # Ad hoc, so it at least runs on Apple Silicon after xattr -cr.
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          keychain="$RUNNER_TEMP/signing.keychain-db"
+          keychain_password=$(openssl rand -hex 24)
+          echo "::add-mask::$keychain_password"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/certificate.p12"
+          security import "$RUNNER_TEMP/certificate.p12" -k "$keychain" -f pkcs12 \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign > /dev/null
+          rm -f "$RUNNER_TEMP/certificate.p12"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain" > /dev/null
+          # codesign looks the identity up in the search list, so the keychain joins it.
+          existing=$(security list-keychains -d user | tr -d '"' | xargs)
+          # shellcheck disable=SC2086 # one path per word
+          security list-keychains -d user -s "$keychain" $existing
+
+          identity="$APPLE_SIGNING_IDENTITY"
+          if [ -z "$identity" ]; then
+            identity=$(security find-identity -v -p codesigning "$keychain" | sed -n 's/.*"\(Developer ID Application: .*\)"$/\1/p' | head -n 1)
+          fi
+          if [ -z "$identity" ]; then
+            echo "::error::APPLE_CERTIFICATE has no Developer ID Application identity."
+            exit 1
+          fi
+          echo "APPLE_SIGNING_IDENTITY=$identity" >> "$GITHUB_ENV"
+
+          if [ -n "$APPLE_API_KEY" ] && [ -n "$APPLE_API_ISSUER" ] && [ -n "$APPLE_API_PRIVATE_KEY" ]; then
+            key="$RUNNER_TEMP/AuthKey_$APPLE_API_KEY.p8"
+            printf '%s\n' "$APPLE_API_PRIVATE_KEY" > "$key"
+            echo "APPLE_API_KEY_PATH=$key" >> "$GITHUB_ENV"
+            echo "NOTARIZED=true" >> "$GITHUB_ENV"
+            echo "Signed, and notarized with the App Store Connect API key." >> "$GITHUB_STEP_SUMMARY"
+          elif [ -n "$APPLE_ID" ] && [ -n "$APPLE_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            echo "NOTARIZED=true" >> "$GITHUB_ENV"
+            echo "Signed, and notarized with the Apple ID." >> "$GITHUB_STEP_SUMMARY"
+          else
+            problem "Signed but not notarized: set APPLE_API_KEY, APPLE_API_ISSUER and APPLE_API_PRIVATE_KEY, or APPLE_ID, APPLE_PASSWORD and APPLE_TEAM_ID."
+          fi
+
+      - name: Build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # Tauri counts an empty variable as set (an empty APPLE_ID makes it try to notarize).
+          for name in APPLE_API_KEY APPLE_API_ISSUER APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then unset "$name"; fi
+          done
+          args=(--target universal-apple-darwin)
+          if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+            echo "::warning::No updater signing key, so no updater bundles (.app.tar.gz and .sig)."
+            args+=(--config '{"bundle":{"createUpdaterArtifacts":false}}')
+          fi
+          pnpm tauri build "${args[@]}"
+
+      - name: Check that Gatekeeper accepts it
+        if: env.NOTARIZED == 'true'
+        run: |
+          app=src-tauri/target/universal-apple-darwin/release/bundle/macos/GitViber.app
+          codesign --verify --deep --strict "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+
+      - name: Collect the bundles
+        run: |
+          bundle=src-tauri/target/universal-apple-darwin/release/bundle
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out"
+          cp "$bundle"/dmg/*.dmg "$out/"
+          # The updater bundle is plain GitViber.app.tar.gz; give it the version, as the .dmg has.
+          for file in "$bundle"/macos/GitViber.app.tar.gz "$bundle"/macos/GitViber.app.tar.gz.sig; do
+            if [ -e "$file" ]; then cp "$file" "$out/GitViber_${VERSION}_universal.${file##*/GitViber.}"; fi
+          done
+          ls -l "$out"
+
+      - name: Remove the keychain and key files
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/signing.keychain-db" 2> /dev/null || true
+          rm -f "$RUNNER_TEMP/certificate.p12" "$RUNNER_TEMP"/AuthKey_*.p8
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 14
+
+  linux:
+    needs: prepare
+    # The oldest supported runner, so the binaries need no newer glibc than 22.04's.
+    runs-on: ubuntu-22.04
+    environment: ${{ github.event_name == 'push' && 'release' || '' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # WebKitGTK for Tauri's webview as in CI, plus what the AppImage bundler uses.
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev librsvg2-dev patchelf
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: 10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, 2026-09-03
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          # bundle.targets "all" is .deb, .rpm and AppImage here.
+          args=()
+          if [ -z "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+            unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+            echo "::warning::No updater signing key, so no updater signatures (.sig)."
+            args+=(--config '{"bundle":{"createUpdaterArtifacts":false}}')
+          fi
+          pnpm tauri build "${args[@]}"
+
+      - name: Collect the bundles
+        run: |
+          out="$RUNNER_TEMP/release"
+          mkdir -p "$out"
+          find src-tauri/target/release/bundle/{deb,rpm,appimage} -maxdepth 1 -type f \
+            \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.sig' \) -exec cp {} "$out/" \;
+          ls -l "$out"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Checksums, latest.json and the Homebrew cask, on a dry run too.
+  package:
+    needs: [prepare, macos, linux]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Notes and latest.json
+        if: github.event_name == 'push'
+        run: |
+          node scripts/release-notes.mjs "$GITHUB_REF_NAME" > notes.md
+          if compgen -G "release/*.sig" > /dev/null; then
+            node scripts/updater-json.mjs release "$GITHUB_REF_NAME" "$VERSION" notes.md
+          else
+            echo "::warning::No updater signatures, so no latest.json: bundle.createUpdaterArtifacts is off."
+          fi
+
+      - name: SHA256SUMS
+        run: |
+          (cd release && find . -maxdepth 1 -type f ! -name latest.json ! -name SHA256SUMS -printf '%P\n' | sort | xargs -d '\n' sha256sum) > release/SHA256SUMS
+          cat release/SHA256SUMS
+
+      - name: Homebrew cask
+        run: |
+          sha=$(sha256sum "release/GitViber_${VERSION}_universal.dmg" | cut -d ' ' -f 1)
+          sed -e '/^#/d' -e "s/__VERSION__/$VERSION/" -e "s/__SHA256__/$sha/" packaging/homebrew/gitviber.rb > gitviber.rb
+          {
+            echo "### Homebrew cask"
+            echo "Once the release is published, commit this as \`Casks/gitviber.rb\` in emircan-sahin/homebrew-tap:"
+            echo '```ruby'
+            cat gitviber.rb
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: |
+            release/
+            notes.md
+            gitviber.rb
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    if: github.event_name == 'push'
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+
+      - name: Draft release
+        run: |
+          # A re-run updates its own draft; a published release is never touched.
+          if draft=$(gh release view "$TAG" --json isDraft --jq .isDraft 2> /dev/null); then
+            if [ "$draft" != true ]; then
+              echo "::error::$TAG is already published. Tag a new version."
+              exit 1
+            fi
+            gh release edit "$TAG" --notes-file notes.md
+            gh release upload "$TAG" release/* --clobber
+          else
+            flags=()
+            # A test tag (v0.1.0-rc.1) must never become the release the updater serves.
+            if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$TAG" release/* --draft --verify-tag "${flags[@]}" \
+              --title "GitViber ${TAG#v}" --notes-file notes.md
+          fi
+          echo "Draft: $(gh release view "$TAG" --json url --jq .url)" >> "$GITHUB_STEP_SUMMARY"
