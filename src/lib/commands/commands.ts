@@ -70,6 +70,11 @@ export const COMMANDS = [
   { id: "review.toggleViewed", title: "Toggle File Viewed", category: "Review", keys: ["v"] },
   { id: "diff.nextChange", title: "Next Change", category: "Diff", keys: ["f7", "alt+down"] },
   { id: "diff.prevChange", title: "Previous Change", category: "Diff", keys: ["shift+f7", "alt+up"] },
+  // The selected lines, else the change at the cursor (which Next / Previous Change put there). VS Code
+  // has ⌘K ⌘⌥S, ⌘K ⌘N and ⌘K ⌘R; with no two-key chords here, ⌥⌘ and the letter (⌘R reloads).
+  { id: "diff.stageChange", title: "Stage Change or Selected Lines", category: "Diff", keys: ["alt+cmd+s"] },
+  { id: "diff.unstageChange", title: "Unstage Change or Selected Lines", category: "Diff", keys: ["alt+cmd+n"] },
+  { id: "diff.discardChange", title: "Discard Change or Selected Lines", category: "Diff", keys: ["alt+cmd+r"] },
   { id: "diff.toggleSplit", title: "Toggle Unified / Split", category: "Diff", keys: ["alt+s"] },
   { id: "diff.toggleCollapse", title: "Toggle Collapse Unchanged", category: "Diff", keys: ["alt+c"] },
   { id: "diff.toggleWhitespace", title: "Toggle Ignore Whitespace", category: "Diff", keys: ["alt+w"] },

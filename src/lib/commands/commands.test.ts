@@ -238,3 +238,32 @@ test("only macOS reserves chords", () => {
   assert.equal(isReserved("cmd+h", false), false);
   assert.equal(isReserved("cmd+m", false), false);
 });
+
+test("no two global commands share a default, and macOS takes none of them", () => {
+  for (const mac of [true, false]) {
+    const owner = new Map<string, string>();
+    for (const c of COMMANDS) {
+      if ("local" in c) continue;
+      for (const chord of bindingsFor(c.id, {}, mac)) {
+        assert.equal(owner.get(chord), undefined, `${chord} is ${owner.get(chord)}'s and ${c.id}'s (mac: ${mac})`);
+        assert.equal(isReserved(chord, mac), false, `${chord} (${c.id})`);
+        owner.set(chord, c.id);
+      }
+    }
+  }
+});
+
+test("stage, unstage and discard the change at the cursor: VS Code's second keys, with ⌥", () => {
+  for (const mac of [true, false]) {
+    assert.equal(commandFor("alt+cmd+s", {}, mac)?.id, "diff.stageChange");
+    assert.equal(commandFor("alt+cmd+n", {}, mac)?.id, "diff.unstageChange");
+    assert.equal(commandFor("alt+cmd+r", {}, mac)?.id, "diff.discardChange");
+  }
+  // ⌘R stays Reload Window.
+  assert.equal(commandFor("cmd+r", {}, true)?.id, "window.reload");
+  // ⌥ turns S into ß; the physical key counts.
+  assert.equal(press("ß", "KeyS", { altKey: true, metaKey: true }), "alt+cmd+s");
+  assert.equal(formatChordFor("alt+cmd+s", true), "⌥⌘S");
+  assert.equal(formatChordFor("alt+cmd+r", false), "Ctrl+Alt+R");
+  assert.equal(menuAccelerator("alt+cmd+n", false), "alt+ctrl+n");
+});
