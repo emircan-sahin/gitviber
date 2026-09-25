@@ -11,3 +11,8 @@ The areas that matter most:
 - **Rendering remote content.** Text from GitHub (PR titles, descriptions, comments) must never be rendered as raw HTML or run as script. Markdown is rendered through a sanitizing allowlist, links open in the browser (the app window refuses to navigate anywhere but the app), and images hosted outside GitHub load only when clicked.
 
 GitViber runs the real `git` CLI, so repository hooks run just as they would in your terminal. A malicious repo with hooks is the same risk here as with `git` itself.
+
+## Supported versions
+
+GitViber is before 1.0, so only the [latest release](https://github.com/emircan-sahin/gitviber/releases/latest)
+gets security fixes. They ship as a new release, which the app offers to install.
