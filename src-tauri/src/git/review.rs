@@ -1,10 +1,11 @@
 //! Reviewing a branch: everything it changed since it left its base, uncommitted work included.
 
 use super::{
-    apply_numstat, change, count_lines, disk_oid, has_head, parse_name_status, parse_numstat, run,
-    run_text, untracked_nested_root, validate_full_ref, CountBudget, FileChange,
+    apply_numstat, change, count_lines, disk_oid, parse_name_status, parse_numstat, parted_at, run,
+    untracked_nested_root, CountBudget, FileChange,
 };
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::Path;
 
 #[derive(Serialize)]
@@ -19,26 +20,24 @@ pub struct BranchReview {
 /// unstaged edits and untracked files, as one diff from the merge base to the working tree.
 /// From the merge base, so what `base` gained since doesn't show up here as undone.
 pub fn branch_review(repo: &Path, base: &str) -> Result<BranchReview, String> {
-    validate_full_ref(repo, base)?;
-    if !has_head(repo) {
-        return Err("There are no commits yet.".into());
-    }
-    let merge_base = run_text(repo, &["merge-base", "HEAD", base])
-        .map_err(|_| "They have no commit in common.".to_string())?
-        .trim()
-        .to_string();
+    let merge_base = parted_at(repo, base)?;
     let diff = |format: &str| run(repo, &["diff", "-z", "-M", format, &merge_base, "--"]);
     let mut files = parse_name_status(&diff("--name-status")?);
     apply_numstat(&mut files, &parse_numstat(&diff("--numstat")?));
 
-    let untracked = run(repo, &["ls-files", "-z", "--others", "--exclude-standard"])?;
-    let mut budget = CountBudget::default();
-    for raw in untracked.split(|b| *b == 0).filter(|p| !p.is_empty()) {
-        let path = String::from_utf8_lossy(raw);
+    let raw = run(repo, &["ls-files", "-z", "--others", "--exclude-standard"])?;
+    let untracked: HashSet<String> = raw
+        .split(|b| *b == 0)
+        .filter(|p| !p.is_empty())
+        .map(|p| String::from_utf8_lossy(p).into_owned())
         // Another repository (a worktree kept inside this one) has no diff to review.
-        if untracked_nested_root(repo, &path).is_some() {
-            continue;
-        }
+        .filter(|p| untracked_nested_root(repo, p).is_none())
+        .collect();
+    // Untracked again after its deletion was staged or committed (`git rm --cached`): the file
+    // is on disk, so it's one row, the untracked one, not a deletion too.
+    files.retain(|f| f.status != "D" || !untracked.contains(&f.path));
+    let mut budget = CountBudget::default();
+    for path in untracked {
         let mut f = change(&path, None, '?');
         if let Some(n) = count_lines(repo, &path, &mut budget) {
             f.additions = n;

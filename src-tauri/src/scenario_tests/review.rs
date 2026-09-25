@@ -21,6 +21,7 @@ fn branch_review_is_everything_since_the_merge_base() {
     write_commit(&r, "keep.txt", "keep\n", "base");
     write_commit(&r, "gone.txt", "gone\n", "base");
     write_commit(&r, "back.txt", "back\n", "base");
+    write_commit(&r, "keep-disk.txt", "k\n", "base");
     write_commit(&r, "old.txt", long, "base");
     run(&r, &["switch", "-q", "-c", "feature"]).unwrap();
 
@@ -41,6 +42,8 @@ fn branch_review_is_everything_since_the_merge_base() {
     fs::write(r.join("keep.txt"), "keep\nunstaged\n").unwrap();
     fs::remove_file(r.join("gone.txt")).unwrap();
     fs::write(r.join("untracked.txt"), "u1\nu2\n").unwrap();
+    // Out of the index but still on disk: one row, untracked, not a deletion as well.
+    run(&r, &["rm", "-q", "--cached", "keep-disk.txt"]).unwrap();
 
     let review = branch_review(&r, "refs/heads/main").unwrap();
     assert_eq!(review.base, rev(&r, "main~1"));
@@ -49,6 +52,7 @@ fn branch_review_is_everything_since_the_merge_base() {
         [
             ("a.txt", "M", None),
             ("gone.txt", "D", None),
+            ("keep-disk.txt", "?", None),
             ("keep.txt", "M", None),
             ("new.txt", "R", Some("old.txt")),
             ("staged.txt", "A", None),
@@ -85,6 +89,11 @@ fn branch_review_is_everything_since_the_merge_base() {
 
     // Names from the page: a full ref for the base, a commit id for the diff.
     assert!(branch_review(&r, "main").is_err());
+    // A branch that isn't here says so, here and in History's compare.
+    let missing = "refs/remotes/origin/main";
+    let err = branch_review(&r, missing).err().unwrap();
+    assert!(err.contains("origin/main doesn't exist"), "{err}");
+    assert_eq!(compare_files(&r, missing).err(), Some(err));
     assert!(branch_review(&r, "refs/heads/--output=x").is_err());
     assert!(diff_pair(&r, "base", "a.txt", None, None, Some("HEAD"), None, wt).is_err());
 }
