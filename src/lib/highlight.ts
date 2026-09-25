@@ -45,6 +45,13 @@ const jobs = new Map<string, Job>();
 // Keyed by a hash so a big file's text isn't copied into a key string on every revision;
 // the entry keeps a reference to the (shared) text to rule out collisions.
 const cache = new Map<string, { code: string; data: Highlighted }>();
+// Tokens cost many times their text, and ConflictView highlights the whole resolved file anew on
+// every choice: the cache is bounded by text too, not only by count.
+const CACHE_CHARS = 2_000_000;
+let cachedChars = 0;
+// Like Monaco's own worker: its heap, and every grammar it compiled, only while it's in use.
+const IDLE_MS = 5 * 60_000;
+let idle: ReturnType<typeof setTimeout> | undefined;
 function cacheKey(code: string, lang: string, theme: string) {
   let h = 0x811c9dc5;
   for (let i = 0; i < code.length; i++) h = Math.imul(h ^ code.charCodeAt(i), 0x01000193);
@@ -85,14 +92,23 @@ function getWorker() {
 /** Starts the worker (and its WASM engine) ahead of the first file, so that one opens sooner. */
 export function warmHighlighter() {
   getWorker();
+  pump();
 }
 
 function finish(job: Job, r: Highlighted | null) {
   jobs.delete(job.key);
   if (r) {
+    // A hash collision replaces the other text's entry, moved to the newest end.
+    cachedChars -= cache.get(job.key)?.code.length ?? 0;
+    cache.delete(job.key);
     cache.set(job.key, { code: job.code, data: r });
+    cachedChars += job.code.length;
     // Small LRU: the code being looked at now and recently.
-    if (cache.size > 48) cache.delete(cache.keys().next().value!);
+    while (cache.size > 1 && (cache.size > 48 || cachedChars > CACHE_CHARS)) {
+      const [key, oldest] = cache.entries().next().value!;
+      cache.delete(key);
+      cachedChars -= oldest.code.length;
+    }
   }
   job.resolve(r);
 }
@@ -103,7 +119,17 @@ function drop(job: Job) {
 }
 
 function pump() {
-  if (running || !queue.length) return;
+  clearTimeout(idle);
+  if (running) return;
+  if (!queue.length) {
+    idle = worker
+      ? setTimeout(() => {
+          worker?.terminate();
+          worker = null;
+        }, IDLE_MS)
+      : undefined;
+    return;
+  }
   const job = queue.shift()!;
   running = { id: nextId++, job };
   getWorker().postMessage({ id: running.id, code: job.code, lang: job.lang, theme: job.theme });
