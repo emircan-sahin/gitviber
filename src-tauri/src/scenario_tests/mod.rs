@@ -9,6 +9,7 @@ mod journal;
 mod lines;
 mod operations;
 mod pr_checkout;
+mod review;
 mod rewrite;
 mod search;
 mod stash;

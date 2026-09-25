@@ -53,7 +53,15 @@ fn tree_files(repo: &Path, range: &[&str]) -> Result<Vec<FileChange>, String> {
         "--name-status",
     ];
     args.extend(range);
-    let raw = run(repo, &args)?;
+    let mut files = parse_name_status(&run(repo, &args)?);
+    let mut args = vec!["diff-tree", "-r", "-z", "-M", "--no-commit-id", "--numstat"];
+    args.extend(range);
+    apply_numstat(&mut files, &parse_numstat(&run(repo, &args)?));
+    Ok(files)
+}
+
+/// Parses `--name-status -z`; a rename or copy carries its old path.
+pub(super) fn parse_name_status(raw: &[u8]) -> Vec<FileChange> {
     let mut files = vec![];
     let mut tokens = raw
         .split(|b| *b == 0)
@@ -71,11 +79,7 @@ fn tree_files(repo: &Path, range: &[&str]) -> Result<Vec<FileChange>, String> {
             files.push(change(&path, None, letter));
         }
     }
-
-    let mut args = vec!["diff-tree", "-r", "-z", "-M", "--no-commit-id", "--numstat"];
-    args.extend(range);
-    apply_numstat(&mut files, &parse_numstat(&run(repo, &args)?));
-    Ok(files)
+    files
 }
 
 pub fn merge_base(repo: &Path, a: &str, b: &str) -> Result<String, String> {

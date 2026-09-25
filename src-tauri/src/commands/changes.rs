@@ -9,6 +9,11 @@ pub async fn status(state: State<'_, AppState>) -> Res<git::RepoStatus> {
 }
 
 #[tauri::command]
+pub async fn branch_review(state: State<'_, AppState>, base: String) -> Res<git::BranchReview> {
+    in_repo(&state, move |r| git::branch_review(r, &base)).await
+}
+
+#[tauri::command]
 pub async fn stage(state: State<'_, AppState>, paths: Vec<String>, allow_nested: bool) -> Res<()> {
     indexed(&state, move |r| git::stage_with(r, &paths, allow_nested)).await
 }

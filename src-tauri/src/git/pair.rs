@@ -40,6 +40,12 @@ fn sides(
             validate_rev(sha)?;
             (rev(base), rev(sha))
         }
+        // A branch review: its merge base against the working tree (see `branch_review`).
+        "base" => {
+            let base = base.ok_or("missing base")?;
+            validate_rev(base)?;
+            (rev(base), None)
+        }
         other => return Err(format!("unknown diff kind: {other}")),
     })
 }
@@ -80,7 +86,7 @@ pub fn media(
 }
 
 /// `kind`: "unstaged" (index → worktree), "staged" (HEAD → index), "worktree" (HEAD → worktree),
-/// "commit" (parent → commit) or "range" (base → sha, e.g. a pull request).
+/// "commit" (parent → commit), "range" (base → sha, e.g. a pull request) or "base" (base → worktree).
 /// `whitespace`: "all" or "amount" to ignore those changes (see `diff::whitespace_mode`).
 #[allow(clippy::too_many_arguments)]
 pub fn diff_pair(

@@ -126,7 +126,7 @@ pub(super) fn apply_numstat(
 /// What one status may read to count lines of untracked files not counted before. A big
 /// generated folder shows `?` for the rest instead of stalling the refresh; each refresh
 /// counts more of it, as counts are cached.
-struct CountBudget {
+pub(super) struct CountBudget {
     files: usize,
     bytes: u64,
 }
@@ -143,7 +143,7 @@ impl Default for CountBudget {
 /// Line count of an untracked file (None: binary or unreadable), or None when it's past
 /// the budget. Status runs on every change on disk, so counts are cached by size and mtime:
 /// a big untracked folder is read once, not on each refresh.
-fn count_lines(repo: &Path, rel: &str, budget: &mut CountBudget) -> Option<Option<u32>> {
+pub(super) fn count_lines(repo: &Path, rel: &str, budget: &mut CountBudget) -> Option<Option<u32>> {
     type Key = (std::path::PathBuf, u64, Option<std::time::SystemTime>);
     static CACHE: OnceLock<std::sync::Mutex<HashMap<Key, Option<u32>>>> = OnceLock::new();
     let path = repo.join(rel);
@@ -288,14 +288,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     }
 
     for f in &mut st.unstaged {
-        if let Ok(meta) = std::fs::metadata(repo.join(&f.path)) {
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_nanos());
-            f.oid = Some(format!("{}:{mtime}", meta.len()));
-        }
+        f.oid = disk_oid(repo, &f.path);
     }
     if let Some(b) = &st.branch {
         st.push = push_target(repo, b);
@@ -316,6 +309,17 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         apply_numstat(&mut st.staged, &stats);
     }
     Ok(st)
+}
+
+/// A working-tree file's `oid`: its size and mtime, None once it's gone.
+pub(super) fn disk_oid(repo: &Path, path: &str) -> Option<String> {
+    let meta = std::fs::metadata(repo.join(path)).ok()?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    Some(format!("{}:{mtime}", meta.len()))
 }
 
 /// With `--untracked-files=all` git lists a directory only when it is another repository's
