@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { api, errorMessage, type GitIdentity } from "@/lib/api";
-import { toast } from "@/lib/toast";
+import { toast } from "@/lib/app/toast";
 
 // Asked once per launch: a user who closes it may be setting it up their own way.
 let dismissed = false;

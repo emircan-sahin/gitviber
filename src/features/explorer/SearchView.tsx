@@ -3,14 +3,15 @@ import { Fragment, useEffect, useRef, useState } from "react";
 import { FindToggles, flipOnKey } from "@/components/FindBox";
 import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, SEARCH_CANCELLED, SEARCH_MAX_HITS, type SearchResult } from "@/lib/api";
-import { useFind } from "@/lib/find";
-import { findMatches, type FindOptions, NO_OPTIONS } from "@/lib/findQuery";
-import { focusPanel } from "@/lib/panels";
-import { revealInCode } from "@/lib/reveal";
-import type { Selection } from "@/lib/selection";
-import { useListNav } from "@/lib/useListNav";
+import { useFind } from "@/lib/ui/find";
+import { findMatches, type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
+import { focusPanel } from "@/lib/ui/panels";
+import { revealInCode } from "@/lib/editor/reveal";
+import type { Selection } from "@/lib/repo/selection";
+import { useListNav } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
-import { FileIcon } from "./FileIcon";
+import { basename, dirname } from "@/lib/path";
+import { FileIcon } from "@/components/FileIcon";
 
 const DEBOUNCE = 250;
 
@@ -183,7 +184,6 @@ export function SearchView({ active, ask, onOpen }: Props) {
         <div role="listbox" aria-label="Search results" {...nav}>
           {result?.files.map((f) => {
             const expanded = !collapsed.has(f.path);
-            const slash = f.path.lastIndexOf("/");
             return (
               <Fragment key={f.path}>
                 <div
@@ -199,8 +199,8 @@ export function SearchView({ active, ask, onOpen }: Props) {
                 >
                   <ChevronRight className={cn("size-3 shrink-0 text-subtle transition-transform duration-100", expanded && "rotate-90")} />
                   <FileIcon path={f.path} />
-                  <span className="shrink-0 text-foreground/90">{f.path.slice(slash + 1)}</span>
-                  <span className="min-w-0 truncate text-[11px] text-subtle">{f.path.slice(0, Math.max(0, slash))}</span>
+                  <span className="shrink-0 text-foreground/90">{basename(f.path)}</span>
+                  <span className="min-w-0 truncate text-[11px] text-subtle">{dirname(f.path)}</span>
                   <span className="ml-auto shrink-0 rounded-sm bg-elevated px-1 font-mono text-[10px] leading-4 text-muted-foreground">{f.hits.length}</span>
                 </div>
                 {expanded &&

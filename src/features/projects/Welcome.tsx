@@ -1,6 +1,6 @@
 import { FolderDown, FolderOpen } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useShortcut } from "@/lib/keybindings";
+import { useShortcut } from "@/lib/commands/keybindings";
 import { openClone } from "./CloneDialog";
 import { ProjectList } from "./ProjectList";
 

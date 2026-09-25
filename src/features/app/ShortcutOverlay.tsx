@@ -1,9 +1,11 @@
-import { Fragment, useEffect, useSyncExternalStore } from "react";
-import { bindingsFor, chordKeys, COMMANDS, commandFor, IS_MAC, type Overrides } from "@/lib/commands";
-import { canRun, eventChord, matchesCommand, runsAt, useCommands } from "@/lib/keybindings";
-import { focusedPanel, type Panel } from "@/lib/panels";
-import { pointerMoved } from "@/lib/pointer";
+import { Fragment, useEffect } from "react";
+import { bindingsFor, chordKeys, COMMANDS, commandFor, type Overrides } from "@/lib/commands/commands";
+import { IS_MAC } from "@/lib/platform";
+import { canRun, eventChord, matchesCommand, runsAt, useCommands } from "@/lib/commands/keybindings";
+import { focusedPanel, type Panel } from "@/lib/ui/panels";
+import { pointerMoved } from "@/lib/ui/pointer";
 import { getSettings, useSettings } from "@/lib/settings";
+import { createStore } from "@/lib/store";
 
 /**
  * Hold ⌘ by itself for a moment and every shortcut shows over the app, until ⌘ is released.
@@ -54,13 +56,8 @@ const FIXED: { category: string; rows: [string[], string][] }[] = [
 /** Between two chords: a range (⌘1 … ⌘8) rather than alternatives. */
 const THROUGH = "…";
 
-let shown: "held" | "pinned" | null = null;
-const listeners = new Set<() => void>();
-const set = (s: typeof shown) => {
-  if (s === shown) return;
-  shown = s;
-  listeners.forEach((l) => l());
-};
+const shown = createStore<"held" | "pinned" | null>(null);
+const set = shown.set;
 
 /** `keys` are chords, each an alternative, or THROUGH between two. */
 type Row = { id: string; title: string; keys: readonly string[]; where?: string; off?: boolean };
@@ -100,16 +97,10 @@ function groups(overrides: Overrides) {
 }
 
 export function ShortcutOverlay() {
-  const state = useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => shown,
-  );
+  const state = shown.use();
   const { keybindings } = useSettings();
 
-  useCommands({ "workbench.shortcutOverlay": () => set(shown === "pinned" ? null : "pinned") });
+  useCommands({ "workbench.shortcutOverlay": () => set(shown.get() === "pinned" ? null : "pinned") });
 
   useEffect(() => {
     let timer = 0;
@@ -128,14 +119,14 @@ export function ShortcutOverlay() {
         // The other ⌘ going down restarts it: one timer, which the first keyup cancels.
         cancel();
         // Held over a link (the code view's underline, the terminal's pointer), it's a ⌘-click about to happen.
-        if (alone && !e.repeat && !shown && getSettings().shortcutOverlay) timer = window.setTimeout(() => !document.querySelector(".goto-definition-link, .detected-link-active, .xterm-cursor-pointer") && set("held"), HOLD_MS);
+        if (alone && !e.repeat && !shown.get() && getSettings().shortcutOverlay) timer = window.setTimeout(() => !document.querySelector(".goto-definition-link, .detected-link-active, .xterm-cursor-pointer") && set("held"), HOLD_MS);
         return;
       }
       cancel();
       // Its own key toggles it (the command above), wherever it was shown from.
-      if (!shown || matchesCommand("workbench.shortcutOverlay", e)) return;
+      if (!shown.get() || matchesCommand("workbench.shortcutOverlay", e)) return;
       // Shown by key, it waits for ⌘ to go down again and the next real key, which still does its job.
-      if (shown === "pinned" && !eventChord(e)) return;
+      if (shown.get() === "pinned" && !eventChord(e)) return;
       set(null);
       if (e.key === "Escape") {
         e.preventDefault();
@@ -145,7 +136,7 @@ export function ShortcutOverlay() {
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key !== HOLD_KEY) return;
       cancel();
-      if (shown === "held") set(null);
+      if (shown.get() === "held") set(null);
     };
     // ⌘ held while the pointer travels is a ⌘-click on its way, which the overlay would swallow.
     // Capture runs before pointer.ts's own listener, so pointerMoved still sees the last position.

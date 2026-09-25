@@ -1,13 +1,16 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { api, type Branch, github, type NetOp, type Target, type Worktree } from "@/lib/api";
-import { loadWorktreeDir, moveRoot, saveWorktreeDir, sharedWorktreeDir } from "@/lib/session";
-import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminals";
-import { folderName, shortPath } from "@/lib/worktrees";
-import { BaseSelect } from "./BranchDialogs";
+import { api, type Branch, github, type Target, type Worktree } from "@/lib/api";
+import { loadWorktreeDir, moveRoot, saveWorktreeDir, sharedWorktreeDir } from "@/lib/repo/session";
+import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminal/terminals";
+import { shortPath } from "@/lib/git/worktrees";
+import { folderName, parentFolder } from "@/lib/path";
+import { createStore } from "@/lib/store";
+import { BaseSelect } from "@/features/branches/BaseSelect";
+import { type GitRun, type NetRun } from "@/hooks/useGitAction";
 
 /** A pull request to check out, as PullView's Checkout would. */
 export interface PullSource {
@@ -23,45 +26,30 @@ export interface PullSource {
 export type WorktreeDialog = { kind: "new"; base?: string; pull?: PullSource } | { kind: "rename"; worktree: Worktree } | { kind: "lock"; worktree: Worktree };
 
 // Opened from the top bar, History and pull requests alike; the top bar shows it.
-let shown: WorktreeDialog | null = null;
-const listeners = new Set<() => void>();
-const show = (d: WorktreeDialog | null) => {
-  shown = d;
-  listeners.forEach((l) => l());
-};
+const shown = createStore<WorktreeDialog | null>(null);
+const show = shown.set;
 export const openWorktreeDialog = (d: WorktreeDialog) => show(d);
 /** The dialog showing now, if any. */
-export const useWorktreeDialog = () =>
-  useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => shown,
-  );
-
-type Run = (label: string, fn: () => Promise<void>, done: string) => Promise<void>;
+export const useWorktreeDialog = shown.use;
 
 interface Props {
   branches: Branch[];
   /** The main worktree: new worktrees go beside it by default, and paths are shown from it. */
   main: string;
-  run: Run;
+  run: GitRun;
   /** For a pull request's fetch: its progress shows in the top bar, with Cancel. */
-  runNet: (label: string, fn: (op: NetOp) => Promise<void>, done: string) => Promise<void>;
+  runNet: NetRun;
   /** Opens a worktree in this window. */
   onOpen: (path: string) => void;
 }
 
 type Inner = Props & { onClose: () => void };
 
-/** The folder `path` is in, with its trailing separator. */
-const parentOf = (path: string) => path.slice(0, path.length - folderName(path).length);
 /** Worktree folders are named after their branch, "/" being a folder separator. */
 const folderFor = (branch: string) => branch.replaceAll("/", "-");
 const isCommit = (base: string) => /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(base);
 
-/** The default branch, as git.rs's default_branch finds it: local if there is one. */
+/** The default branch, as git/branch.rs's default_branch finds it: local if there is one. */
 function defaultBase(branches: Branch[]) {
   const remote = branches.find((b) => b.remoteDefault && b.name.startsWith("origin/"));
   const name = remote ? remote.name.slice("origin/".length) : "main";
@@ -87,7 +75,7 @@ export function WorktreeDialogs(props: Props) {
 }
 
 function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen }: { base?: string; pull?: PullSource } & Inner) {
-  const beside = `${parentOf(main)}${folderName(main)}.worktrees`;
+  const beside = `${parentFolder(main)}${folderName(main)}.worktrees`;
   const fallback = sharedWorktreeDir(main) ?? beside;
   const [name, setName] = useState("");
   const [from, setFrom] = useState(() => base ?? defaultBase(branches));
@@ -190,7 +178,7 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
         : null;
   const [move, setMove] = useState(!stays);
   const n = name.trim();
-  const target = `${parentOf(w.path)}${folderFor(n)}`;
+  const target = `${parentFolder(w.path)}${folderFor(n)}`;
   const moving = move && !stays && !!n && target !== w.path;
   const terminals = moving ? terminalsIn(w.path) : 0;
   const upstream = branches.find((b) => !b.remote && b.name === old)?.upstream;

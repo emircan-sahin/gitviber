@@ -4,16 +4,20 @@ import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, errorMessage, type Worktree, type WorktreeState } from "@/lib/api";
-import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/commands";
-import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
-import { pointerMoved } from "@/lib/pointer";
-import { toast } from "@/lib/toast";
-import { isMenuKey, openRowMenu } from "@/lib/useListNav";
-import { cn, relativeTime } from "@/lib/utils";
-import { folderName, shortPath } from "@/lib/worktrees";
-import { RowAction } from "./BranchPicker";
+import { api, type Branch, type Worktree, type WorktreeState } from "@/lib/api";
+import { REVEAL_LABEL } from "@/lib/platform";
+import { matchesCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { pointerMoved } from "@/lib/ui/pointer";
+import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
+import { cn } from "@/lib/utils";
+import { plural, relativeTime } from "@/lib/format";
+import { shortPath } from "@/lib/git/worktrees";
+import { folderName } from "@/lib/path";
+import { copyText } from "@/lib/app/clipboard";
+import { revealProject } from "@/lib/app/openIn";
+import { RowAction } from "@/components/RowAction";
 import { useWorktreeDialog } from "./WorktreeDialogs";
+import { usePickerIndex } from "@/hooks/usePickerIndex";
 
 interface Props {
   worktrees: Worktree[];
@@ -34,14 +38,6 @@ interface Props {
   onNew: () => void;
 }
 
-// reveal_project, not reveal_path: that one only reaches inside the open worktree.
-const reveal = (path: string) => api.revealProject(path).catch((e) => toast("error", REVEAL_FAILED, errorMessage(e)));
-const copyPath = (path: string) =>
-  navigator.clipboard.writeText(path).then(
-    () => toast("success", "Path copied"),
-    (e) => toast("error", "Could not copy", errorMessage(e)),
-  );
-
 /**
  * `git worktree list` as a switcher. Always shown, even with only the main worktree, so
  * the feature is found at all; then it says how to make one.
@@ -51,7 +47,7 @@ const copyPath = (path: string) =>
 export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew }: Props) {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState(worktrees);
-  const [index, setIndex] = useState(0);
+  const { index, setIndex, move } = usePickerIndex(list.length);
   // A `git status` and two rev-lists per worktree: fetched when the menu opens, never before.
   const [states, setStates] = useState<Record<string, WorktreeState>>({});
   const listRef = useRef<HTMLDivElement>(null);
@@ -122,7 +118,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const remove = then(onRemove);
   const rename = thenDialog(onRename);
   const lock = thenDialog((w) => (w.locked ? onUnlock(w) : onLock(w)));
-  const actions = { pick, terminal, merge, rename, lock, remove, reveal: then((w) => void reveal(w.path)), copy: then((w) => void copyPath(w.path)) };
+  // revealProject, not revealPath: that one only reaches inside the open worktree.
+  const actions = { pick, terminal, merge, rename, lock, remove, reveal: then((w) => void revealProject(w.path)), copy: then((w) => void copyText(w.path, "Path copied")) };
 
   // The hot row's actions, which the mouse finds on the row.
   const hot = list[index];
@@ -142,8 +139,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
       const row = listRef.current?.querySelector<HTMLElement>(`[data-option="${index}"]`);
       if (row) openRowMenu(row);
     } else if (e.metaKey || e.ctrlKey || e.altKey) return;
-    else if (e.key === "ArrowDown") setIndex((i) => Math.min(list.length - 1, i + 1));
-    else if (e.key === "ArrowUp") setIndex((i) => Math.max(0, i - 1));
+    else if (e.key === "ArrowDown") move(1);
+    else if (e.key === "ArrowUp") move(-1);
     else if (e.key === "Enter" && hot && usable(hot)) pick(hot);
     else return;
     e.preventDefault();
@@ -153,7 +150,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
     <>
       {/* Never over one of its own dialogs, whatever the order things closed in. */}
       <Popover open={open && !dialog} onOpenChange={setOpen}>
-        <Tip label={linked ? `In worktree ${folderName(current.path)} · switch worktree` : extra === 0 ? "Worktrees" : `${extra} worktree${extra === 1 ? "" : "s"} besides the main one · switch worktree`}>
+        <Tip label={linked ? `In worktree ${folderName(current.path)} · switch worktree` : extra === 0 ? "Worktrees" : `${plural(extra, "worktree")} besides the main one · switch worktree`}>
           <PopoverTrigger asChild>
             <button
               aria-label={linked ? `Worktree ${folderName(current.path)}, switch worktree` : extra === 0 ? "Worktrees" : `Switch worktree (${extra} besides the main one)`}
@@ -350,27 +347,27 @@ function WorktreeRow({
       {/* Mounted on every row, shown on the hot one, like the branch picker's actions. */}
       <span className={cn("shrink-0 gap-0.5", hot && !w.bare ? "flex" : "hidden")}>
         {onDisk && (
-          <RowAction hot={hot} label="Open a terminal here" onClick={act(a.terminal)}>
+          <RowAction variant="picker" hot={hot} label="Open a terminal here" onClick={act(a.terminal)}>
             <SquareTerminal />
           </RowAction>
         )}
         {can.merge && (
-          <RowAction hot={hot} label={mergeLabel} onClick={act(a.merge)}>
+          <RowAction variant="picker" hot={hot} label={mergeLabel} onClick={act(a.merge)}>
             <GitMerge />
           </RowAction>
         )}
         {can.rename && (
-          <RowAction hot={hot} label="Rename…" onClick={act(a.rename)}>
+          <RowAction variant="picker" hot={hot} label="Rename…" onClick={act(a.rename)}>
             <Pencil />
           </RowAction>
         )}
         {can.lock && (
-          <RowAction hot={hot} label={w.locked ? `Unlock${w.lockReason ? ` (${w.lockReason})` : ""}` : "Lock: keep it from being pruned, moved or removed…"} onClick={act(a.lock)}>
+          <RowAction variant="picker" hot={hot} label={w.locked ? `Unlock${w.lockReason ? ` (${w.lockReason})` : ""}` : "Lock: keep it from being pruned, moved or removed…"} onClick={act(a.lock)}>
             {w.locked ? <LockOpen /> : <Lock />}
           </RowAction>
         )}
         {can.remove && (
-          <RowAction hot={hot} label={w.prunable ? "Prune: its folder is gone, drop it from the list" : "Remove worktree…"} onClick={act(a.remove)}>
+          <RowAction variant="picker" hot={hot} label={w.prunable ? "Prune: its folder is gone, drop it from the list" : "Remove worktree…"} onClick={act(a.remove)}>
             {w.prunable ? <Eraser /> : <Trash2 />}
           </RowAction>
         )}
@@ -449,7 +446,6 @@ function WorktreeRow({
 
 /** Uncommitted files and unmerged commits side by side; "merged" or "no changes" only when neither. */
 function StateLabel({ state: s, hot }: { state: WorktreeState; hot: boolean }) {
-  const plural = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
   const parts: [string, string][] = [];
   if (s.uncommitted) parts.push([plural(s.uncommitted, "change"), "text-removed"]);
   if (s.commits) parts.push([plural(s.commits, "commit"), "text-added"]);

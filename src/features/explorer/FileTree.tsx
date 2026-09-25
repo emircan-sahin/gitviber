@@ -4,17 +4,20 @@ import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect,
 import { useListFilter } from "@/components/ListFilter";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
-import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/commands";
-import { matchesCommand, useShortcut } from "@/lib/keybindings";
-import { focusPanel } from "@/lib/panels";
-import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/useListNav";
-import { type Selection, selectionKey } from "@/lib/selection";
-import { toast } from "@/lib/toast";
-import { tracked, undoAction } from "@/lib/undo";
+import { REVEAL_LABEL } from "@/lib/platform";
+import { matchesCommand, useShortcut } from "@/lib/commands/keybindings";
+import { focusPanel } from "@/lib/ui/panels";
+import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/ui/useListNav";
+import { type Selection, selectionKey } from "@/lib/repo/selection";
+import { toast } from "@/lib/app/toast";
+import { tracked, undoAction } from "@/lib/repo/undo";
 import { cn } from "@/lib/utils";
-import { FileIcon, FolderIcon } from "./FileIcon";
-import { OpenInMenuItem } from "./OpenIn";
-import { statusInfo } from "./StatusBadge";
+import { copyText } from "@/lib/app/clipboard";
+import { revealPath } from "@/lib/app/openIn";
+import { basename, childPath, dirname } from "@/lib/path";
+import { FileIcon, FolderIcon } from "@/components/FileIcon";
+import { OpenInMenuItem } from "@/features/workspace/OpenIn";
+import { statusInfo } from "@/components/StatusBadge";
 
 export interface FileTreeHandle {
   collapseAll: () => void;
@@ -41,10 +44,7 @@ type Editing = { mode: "rename"; entry: Entry } | { mode: "new"; parent: string;
 
 const INDENT = 12;
 
-const parentOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf("/")));
-const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 const isInside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
-const nameOf = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 /** The filter lists this many files at most: the tree renders every row it has. */
 const MAX_MATCHES = 1000;
@@ -52,14 +52,14 @@ const MAX_MATCHES = 1000;
 /** The files that match and the folders down to them, all open, in the order list_dir sorts a folder. */
 function matchingTree(files: string[], matches: (path: string) => boolean) {
   const children: Record<string, Entry[]> = {};
-  const add = (path: string, isDir: boolean) => (children[parentOf(path)] ??= []).push({ name: nameOf(path), path, isDir, ignored: false });
+  const add = (path: string, isDir: boolean) => (children[dirname(path)] ??= []).push({ name: basename(path), path, isDir, ignored: false });
   const expanded = new Set([""]);
   let found = 0;
   for (const path of files) {
     if (!matches(path)) continue;
     if (++found > MAX_MATCHES) break;
     add(path, false);
-    for (let dir = parentOf(path); dir && !expanded.has(dir); dir = parentOf(dir)) {
+    for (let dir = dirname(path); dir && !expanded.has(dir); dir = dirname(dir)) {
       expanded.add(dir);
       add(dir, true);
     }
@@ -240,8 +240,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     name = name?.trim() ?? "";
     if (!ed || !name || (ed.mode === "rename" && name === ed.entry.name)) return;
     if (name.includes("/") || name === "." || name === "..") return toast("error", "Invalid name", `"${name}" is not a valid file or folder name.`);
-    const dir = ed.mode === "rename" ? parentOf(ed.entry.path) : ed.parent;
-    const path = join(dir, name);
+    const dir = ed.mode === "rename" ? dirname(ed.entry.path) : ed.parent;
+    const path = childPath(dir, name);
     try {
       if (ed.mode === "rename") {
         await api.renamePath(ed.entry.path, path);
@@ -277,7 +277,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       const i = rows.findIndex((r) => r.entry.path === e.path);
       const next = rows.slice(i + 1).find((r) => !isInside(r.entry.path, e.path)) ?? rows[i - 1];
       setSelected(next?.entry.path ?? null);
-      loadDir(parentOf(e.path));
+      loadDir(dirname(e.path));
     } catch (err) {
       toast("error", "Could not move to Trash", errorMessage(err));
     }
@@ -294,9 +294,6 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       toast("error", "Discard failed", errorMessage(err));
     }
   };
-
-  const copy = (text: string, what: string) => navigator.clipboard.writeText(text).then(() => toast("success", what));
-  const reveal = (path: string) => api.revealPath(path).catch((e) => toast("error", REVEAL_FAILED, errorMessage(e)));
 
   const onKeyDown = (ev: React.KeyboardEvent) => {
     if (ev.target !== ev.currentTarget || editing) return;
@@ -331,10 +328,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
         activate(cur);
         focusPanel("code");
       } else if (!shown.expanded.has(cur.path)) setOpen(cur.path, true);
-      else if (rows[i + 1] && parentOf(rows[i + 1].entry.path) === cur.path) move(i + 1);
+      else if (rows[i + 1] && dirname(rows[i + 1].entry.path) === cur.path) move(i + 1);
     } else if (ev.key === "ArrowLeft") {
       if (cur.isDir && shown.expanded.has(cur.path) && !matching) setOpen(cur.path, false);
-      else if (parentOf(cur.path)) setSelected(parentOf(cur.path));
+      else if (dirname(cur.path)) setSelected(dirname(cur.path));
     } else if (ev.key === "Enter") activate(cur, true);
     else handled = false;
     if (handled) ev.preventDefault();
@@ -458,16 +455,16 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
             <ContextMenuSeparator />
           </>
         )}
-        <ContextMenuItem onSelect={() => reveal(t?.path ?? "")}>
+        <ContextMenuItem onSelect={() => revealPath(t?.path ?? "")}>
           <FolderSearch /> {REVEAL_LABEL}
         </ContextMenuItem>
         <OpenInMenuItem path={t?.path ?? ""} />
-        <ContextMenuItem disabled={!status} onSelect={() => status && copy(t ? `${status.root}/${t.path}` : status.root, "Path copied")}>
+        <ContextMenuItem disabled={!status} onSelect={() => status && copyText(t ? `${status.root}/${t.path}` : status.root, "Path copied")}>
           <Copy /> Copy Path
         </ContextMenuItem>
         {t && (
           <>
-            <ContextMenuItem onSelect={() => copy(t.path, "Relative path copied")}>
+            <ContextMenuItem onSelect={() => copyText(t.path, "Relative path copied")}>
               <Copy /> Copy Relative Path
             </ContextMenuItem>
             <ContextMenuSeparator />

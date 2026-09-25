@@ -1,34 +1,25 @@
 import { homeDir } from "@tauri-apps/api/path";
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Lock } from "lucide-react";
 import { api, CANCELLED, cancelNetwork, errorMessage, github, type NetOp, netOp, type Progress } from "@/lib/api";
-import { cloneFolderName, cloneUrl } from "@/lib/clone";
-import { notifyIfAway } from "@/lib/notify";
+import { cloneFolderName, cloneUrl } from "@/lib/git/clone";
+import { notifyIfAway } from "@/lib/app/notify";
 import { updateSettings, useSettings } from "@/lib/settings";
-import { toast } from "@/lib/toast";
+import { toast } from "@/lib/app/toast";
+import { createStore } from "@/lib/store";
 
-let shown = false;
-const listeners = new Set<() => void>();
-function setShown(s: boolean) {
-  shown = s;
-  listeners.forEach((l) => l());
-}
+const shown = createStore(false);
+const setShown = shown.set;
 /** Welcome, File → Clone Repository… and the project switcher open it. */
 export const openClone = () => setShown(true);
 
 /** Clones a repository into a folder of the user's choice, then opens it. */
 export function CloneDialog({ onCloned }: { onCloned: (path: string) => void }) {
-  const visible = useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => shown,
-  );
+  const visible = shown.use();
   const { cloneParent } = useSettings();
   const [url, setUrl] = useState("");
   // Follows the URL until the user types a name of their own.

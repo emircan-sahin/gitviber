@@ -1,14 +1,14 @@
 import { ChevronDown, Columns2, FolderGit2, Plus, SquareTerminal, Trash2, X } from "lucide-react";
 import { FindBox, useFindBox } from "@/components/FindBox";
-import { type FindOptions, NO_OPTIONS } from "@/lib/findQuery";
+import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import type { Worktree } from "@/lib/api";
-import { commandIn, useCommands, useShortcut } from "@/lib/keybindings";
-import { focusedPanel, focusPanel } from "@/lib/panels";
+import { commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { focusedPanel, focusPanel } from "@/lib/ui/panels";
 import {
   activateGroup,
   attachPane,
@@ -28,9 +28,10 @@ import {
   type TerminalGroup,
   togglePanel,
   useTerminals,
-} from "@/lib/terminals";
+} from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
-import { folderName } from "@/lib/worktrees";
+import { folderName } from "@/lib/path";
+import { plural } from "@/lib/format";
 
 /** What the workspace needs even while the panel is hidden: the panel shortcuts, and following the worktree that's open. */
 export function useTerminalSetup(root: string) {
@@ -264,7 +265,7 @@ export function TerminalRestoreOffer() {
       <SquareTerminal className="mt-0.5 size-4 shrink-0 text-primary" />
       <div className="min-w-0 flex-1">
         <div className="text-[12px] font-medium">
-          Restore {cwds.length} terminal{cwds.length === 1 ? "" : "s"} from last session?
+          Restore {plural(cwds.length, "terminal")} from last session?
         </div>
         <div className="mt-1 truncate text-[11.5px] text-muted-foreground">{folders.join(", ")}</div>
         <div className="mt-2.5 flex gap-2">

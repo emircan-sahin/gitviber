@@ -1,24 +1,27 @@
 import { Dialog as DialogPrimitive } from "radix-ui";
-import { type ReactNode, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { api, errorMessage } from "@/lib/api";
-import { bindingsFor, COMMANDS, formatChord, isCommandId } from "@/lib/commands";
-import { fuzzyMatch, type Match, matchPath, prepareQuery } from "@/lib/fuzzy";
-import { type Action, hasHandler, MENU_ACTION_INFO, MENU_ACTIONS, matchesCommand, runCommand } from "@/lib/keybindings";
-import { pointerMoved } from "@/lib/pointer";
+import { bindingsFor, COMMANDS, formatChord, isCommandId } from "@/lib/commands/commands";
+import { fuzzyMatch, type Match, matchPath, prepareQuery } from "@/lib/ui/fuzzy";
+import { type Action, hasHandler, MENU_ACTION_INFO, MENU_ACTIONS, matchesCommand, runCommand } from "@/lib/commands/keybindings";
+import { pointerMoved } from "@/lib/ui/pointer";
 import { useSettings } from "@/lib/settings";
-import { useTerminals } from "@/lib/terminals";
-import { cn, splitPath } from "@/lib/utils";
-import type { changeList } from "./ChangesPanel";
-import { FileIcon } from "./FileIcon";
-import { StatusLetter } from "./StatusBadge";
+import { useTerminals } from "@/lib/terminal/terminals";
+import { cn } from "@/lib/utils";
+import { splitPath } from "@/lib/path";
+import { readJson, stringList, writeJson } from "@/lib/storage";
+import { createStore } from "@/lib/store";
+import type { Change } from "@/features/changes/changeList";
+import { FileIcon } from "@/components/FileIcon";
+import { StatusLetter } from "@/components/StatusBadge";
+import { usePickerIndex } from "@/hooks/usePickerIndex";
 
 /**
  * ⇧⌘P runs any command, ⌘P opens a file, as in VS Code: one box, and a leading ">" in it means
  * commands. "Open Changed File" lists the changes instead, and opens their diffs.
  */
 
-type Change = ReturnType<typeof changeList>[number];
 type Mode = "files" | "changes";
 
 /** What the open workspace gives quick open; none on the welcome screen. */
@@ -44,17 +47,13 @@ export function useQuickOpenSource(src: QuickOpenSource) {
   );
 }
 
-let shown: { mode: Mode; query: string; id: number } | null = null;
-const listeners = new Set<() => void>();
-const set = (s: typeof shown) => {
-  shown = s;
-  listeners.forEach((l) => l());
-};
+const shown = createStore<{ mode: Mode; query: string; id: number } | null>(null);
+const set = shown.set;
 let opens = 0;
 // Where focus was, for Radix to put it back on close; a picked command runs after that.
 let before: Element | null = null;
 function show(mode: Mode, query: string) {
-  if (!shown) before = document.activeElement;
+  if (!shown.get()) before = document.activeElement;
   set({ mode, query, id: ++opens });
 }
 export const showCommands = () => show("files", ">");
@@ -66,30 +65,13 @@ const RECENT = 20;
 const RECENT_COMMANDS = "gitviber.palette.commands";
 const RECENT_FILES = "gitviber.palette.files";
 
-function load<T>(key: string, fallback: T): T {
-  try {
-    return (JSON.parse(localStorage.getItem(key) ?? "null") as T) ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function save(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    // Not critical.
-  }
-}
-
-const strings = (v: unknown) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const bump = (list: string[], item: string) => [item, ...list.filter((x) => x !== item)].slice(0, RECENT);
 
-const recentCommands = () => strings(load(RECENT_COMMANDS, []));
+const recentCommands = () => stringList(readJson<unknown>(RECENT_COMMANDS, []));
 // Per repository, by its worktree's path.
-const recentFiles = (root: string) => strings(load<Record<string, unknown>>(RECENT_FILES, {})[root]);
+const recentFiles = (root: string) => stringList(readJson<Record<string, unknown>>(RECENT_FILES, {})[root]);
 function rememberFile(root: string, path: string) {
-  save(RECENT_FILES, { ...load<Record<string, unknown>>(RECENT_FILES, {}), [root]: bump(recentFiles(root), path) });
+  writeJson(RECENT_FILES, { ...readJson<Record<string, unknown>>(RECENT_FILES, {}), [root]: bump(recentFiles(root), path) });
 }
 
 // A repo's file list, kept between opens so the palette shows it at once while a new one loads.
@@ -102,16 +84,9 @@ interface Item {
 }
 
 export function CommandPalette() {
-  const state = useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => shown,
-  );
+  const state = shown.use();
   const [query, setQuery] = useState("");
   const [mode, setMode] = useState<Mode>("files");
-  const [index, setIndex] = useState(0);
   const [list, setList] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // What was picked runs once the palette has closed and its dialog no longer blocks commands.
@@ -175,7 +150,7 @@ export function CommandPalette() {
         return {
           key: c.id,
           run: pick(() => {
-            save(RECENT_COMMANDS, bump(recentCommands(), c.id));
+            writeJson(RECENT_COMMANDS, bump(recentCommands(), c.id));
             runCommand(c.id);
           }),
           row: () => (
@@ -218,6 +193,7 @@ export function CommandPalette() {
       ),
     }));
   }, [state, query, mode, list, keybindings, terminalOpen]);
+  const { index, setIndex, move } = usePickerIndex(items.length, { wrap: true });
 
   useEffect(() => setIndex(0), [query, mode, state, list]);
   useEffect(() => {
@@ -230,10 +206,10 @@ export function CommandPalette() {
     else if (matchesCommand("workbench.quickOpen", e.nativeEvent) && root) {
       setMode("files");
       setQuery("");
-    } else if (e.key === "ArrowDown") setIndex((i) => (i + 1 < items.length ? i + 1 : 0));
-    else if (e.key === "ArrowUp") setIndex((i) => (i > 0 ? i - 1 : items.length - 1));
-    else if (e.key === "PageDown") setIndex((i) => Math.min(items.length - 1, i + 10));
-    else if (e.key === "PageUp") setIndex((i) => Math.max(0, i - 10));
+    } else if (e.key === "ArrowDown") move(1);
+    else if (e.key === "ArrowUp") move(-1);
+    else if (e.key === "PageDown") move(10);
+    else if (e.key === "PageUp") move(-10);
     else if (e.key === "Enter" && !e.nativeEvent.isComposing) items[index]?.run();
     else return;
     e.preventDefault();

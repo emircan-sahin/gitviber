@@ -1,13 +1,15 @@
 import { Bug, ChevronRight, Copy, ExternalLink, Scale } from "lucide-react";
-import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Logo } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { type About, api, errorMessage, github } from "@/lib/api";
-import { useCommands } from "@/lib/keybindings";
-import { toast } from "@/lib/toast";
+import { useCommands } from "@/lib/commands/keybindings";
+import { failed, toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
+import { copyText } from "@/lib/app/clipboard";
+import { createStore } from "@/lib/store";
 
 const REPO = "https://github.com/emircan-sahin/gitviber";
 
@@ -30,25 +32,15 @@ export function versionLine(a: About) {
   return `GitViber ${a.version}${build} · ${a.os} ${a.arch} · git ${a.git ?? "not found"}`;
 }
 
-let open = false;
-const listeners = new Set<() => void>();
-function setOpen(o: boolean) {
-  open = o;
-  listeners.forEach((l) => l());
-}
+const open = createStore(false);
+const setOpen = open.set;
 export const openAbout = () => setOpen(true);
 
-const openLink = (url: string) => github.openUrl(url).catch((e) => toast("error", "Could not open the link", errorMessage(e)));
+const openLink = (url: string) => github.openUrl(url).catch(failed("Could not open the link"));
 
 /** GitViber → About GitViber in the menu bar, and the version in the status bar. */
 export function AboutDialog() {
-  const shown = useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => open,
-  );
+  const shown = open.use();
   const about = useAbout(shown);
   const [licenses, setLicenses] = useState(false);
 
@@ -73,10 +65,7 @@ export function AboutDialog() {
   const copy = () => {
     if (!about) return;
     const line = versionLine(about);
-    navigator.clipboard.writeText(line).then(
-      () => toast("success", "Version info copied", line),
-      (e) => toast("error", "Could not copy", errorMessage(e)),
-    );
+    void copyText(line, "Version info copied", line);
   };
 
   return (

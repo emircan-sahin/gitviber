@@ -2,13 +2,17 @@ import { Check, ChevronRight, ChevronsUpDown, Cloud, GitBranch, GitBranchPlus, G
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Tip } from "@/components/ui/tooltip";
 import { type Branch, fullName, github } from "@/lib/api";
-import { useGitHubData } from "@/lib/githubCache";
-import { matchesCommand, useCommands, useShortcut } from "@/lib/keybindings";
-import { pointerMoved } from "@/lib/pointer";
-import { isMenuKey, openRowMenu } from "@/lib/useListNav";
-import { cn, relativeTime } from "@/lib/utils";
+import { matchesCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { pointerMoved } from "@/lib/ui/pointer";
+import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
+import { cn } from "@/lib/utils";
+import { relativeTime } from "@/lib/format";
+import { RowAction } from "@/components/RowAction";
+import { useAsyncValue } from "@/hooks/useAsyncValue";
+import { usePickerIndex } from "@/hooks/usePickerIndex";
+import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
 
 interface Props {
   label: string;
@@ -50,12 +54,11 @@ const LOCAL = "Local";
 export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemote, onCreate, onMerge, onRebase, onTerminal, onDelete, onCleanUp, onRename, onNewBranch, onSetUpstream, onUnsetUpstream, side = "bottom" }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [index, setIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
   // GitHub branch protection, asked when the menu opens. No GitHub, no answer: then only
   // the remote default is held back, and the confirm is what guards the rest.
-  const [guarded, setGuarded] = useState<Set<string>>(new Set());
+  const guarded = useAsyncValue(open ? () => github.protectedBranches().then((names) => new Set(names.map((n) => `origin/${n}`))) : null, [open], new Set<string>());
   useCommands({ "git.switchBranch": () => setOpen(true) });
 
   // Switching to origin/x means switching to x, so a remote row goes with its local branch.
@@ -92,39 +95,18 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     const exact = branches.some((b) => b.name === query.trim() || localName(b) === query.trim());
     return q && !exact ? [...found, { kind: "create", name: query.trim() }] : found;
   }, [groups, branches, query, q, collapsed]);
+  const { index, setIndex, move } = usePickerIndex(options.length);
 
   // Which GitHub repository each remote is, so branches on one you can't push to (a fork's
   // original) offer no delete.
-  const [remoteRepos, setRemoteRepos] = useState<Map<string, string | null>>(new Map());
-  const account = useGitHubData(open ? "account" : null, github.account, 600_000).data ?? null;
+  const remoteRepos = useAsyncValue(open ? () => github.remotes().then((list) => new Map(list.map((r) => [r.name, r.repo]))) : null, [open], new Map<string, string | null>());
+  const { account } = useGitHubAccount(open);
   const accessOf = (remote: string) => {
     const repo = remoteRepos.get(remote)?.toLowerCase();
     return repo ? ([account?.origin, account?.parent].find((a) => a && fullName(a.repo).toLowerCase() === repo) ?? null) : null;
   };
 
   useEffect(() => setIndex(0), [query, open]);
-  useEffect(() => {
-    if (!open) return;
-    let live = true;
-    github
-      .remotes()
-      .then((list) => live && setRemoteRepos(new Map(list.map((r) => [r.name, r.repo]))))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [open]);
-  useEffect(() => {
-    if (!open) return;
-    let live = true;
-    github
-      .protectedBranches()
-      .then((names) => live && setGuarded(new Set(names.map((n) => `origin/${n}`))))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [open]);
 
   useEffect(() => {
     listRef.current?.querySelector(`[data-option="${index}"]`)?.scrollIntoView({ block: "nearest" });
@@ -156,8 +138,8 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (matchesCommand("git.renameBranch", e.nativeEvent)) rename(options[index]);
-    else if (e.key === "ArrowDown") setIndex((i) => Math.min(options.length - 1, i + 1));
-    else if (e.key === "ArrowUp") setIndex((i) => Math.max(0, i - 1));
+    else if (e.key === "ArrowDown") move(1);
+    else if (e.key === "ArrowUp") move(-1);
     else if (e.key === "Enter") choose(options[index]);
     else if (isMenuKey(e)) {
       const row = listRef.current?.querySelector<HTMLElement>(`[data-option="${index}"]`);
@@ -267,22 +249,22 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
             {/* Mounted on every row, shown on the hot one: a tooltip whose button unmounts
                 as the highlight moves gets stuck open or shows the previous label. */}
             <span className={cn("ml-auto shrink-0 gap-0.5", hot ? "flex" : "hidden")}>
-              <RowAction hot={hot} label={o.branch.current ? "Open a terminal here" : "Open a terminal in a new worktree"} onClick={act(onTerminal, localName(o.branch))}>
+              <RowAction variant="picker" hot={hot} label={o.branch.current ? "Open a terminal here" : "Open a terminal in a new worktree"} onClick={act(onTerminal, localName(o.branch))}>
                 <SquareTerminal />
               </RowAction>
               {!o.branch.current && current && (
                 <>
-                  <RowAction hot={hot} label={`Merge into ${current}`} onClick={act(onMerge, o.branch.name)}>
+                  <RowAction variant="picker" hot={hot} label={`Merge into ${current}`} onClick={act(onMerge, o.branch.name)}>
                     <GitMerge />
                   </RowAction>
-                  <RowAction hot={hot} label={`Rebase ${current} onto it`} onClick={act(onRebase, o.branch.name)}>
+                  <RowAction variant="picker" hot={hot} label={`Rebase ${current} onto it`} onClick={act(onRebase, o.branch.name)}>
                     <GitPullRequestArrow />
                   </RowAction>
                 </>
               )}
               {/* Where you can't push, GitHub would refuse the delete anyway. */}
               {!o.branch.current && !o.branch.remoteDefault && !guarded.has(o.branch.name) && !(o.branch.remote && accessOf(remoteOf(o.branch))?.push === false) && (
-                <RowAction hot={hot} label={o.branch.remote ? "Delete from the remote…" : o.branch.merged ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch), o.branch.name)}>
+                <RowAction variant="picker" hot={hot} label={o.branch.remote ? "Delete from the remote…" : o.branch.merged ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch), o.branch.name)}>
                   <Trash2 />
                 </RowAction>
               )}
@@ -390,17 +372,3 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
   );
 }
 
-/** Icon button with a tooltip that closes as soon as the pointer leaves it. */
-export function RowAction({ label, hot, onClick, children }: { label: string; hot: boolean; onClick: (e: React.MouseEvent) => void; children: React.ReactNode }) {
-  return (
-    <Tooltip disableHoverableContent>
-      <TooltipTrigger asChild>
-        <button aria-label={label} onClick={onClick} className="flex size-5 items-center justify-center rounded-sm bg-white/15 hover:bg-white/25 focus-visible:bg-white/25 [&_svg]:size-3">
-          {children}
-        </button>
-      </TooltipTrigger>
-      {/* Arrow keys can move the highlight off a hovered button without a pointerleave. */}
-      {hot && <TooltipContent>{label}</TooltipContent>}
-    </Tooltip>
-  );
-}

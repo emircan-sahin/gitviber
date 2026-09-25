@@ -1,9 +1,9 @@
 import { Download, Loader2, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { api, errorMessage, type GitInfo } from "@/lib/api";
-import { IS_MAC } from "@/lib/commands";
-import { toast } from "@/lib/toast";
+import { api, type GitInfo } from "@/lib/api";
+import { IS_MAC } from "@/lib/platform";
+import { failed, toast } from "@/lib/app/toast";
 
 /** Takes the welcome screen's place while git can't run: nothing else works without it. */
 export function NeedsGit({ info, onRecheck }: { info: GitInfo; onRecheck: () => Promise<void> }) {
@@ -20,7 +20,7 @@ export function NeedsGit({ info, onRecheck }: { info: GitInfo; onRecheck: () => 
   const install = () =>
     api.installGit().then(
       () => toast("info", "Follow the installer macOS opened", "Then come back and click Check again."),
-      (e) => toast("error", "Could not start the installer", errorMessage(e)),
+      failed("Could not start the installer"),
     );
   return (
     <div data-tauri-drag-region className="flex h-full items-center justify-center bg-background">

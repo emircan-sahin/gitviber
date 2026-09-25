@@ -1,16 +1,17 @@
 import { ArrowUpToLine, Check, Copy, ExternalLink, FolderOpen, FolderSearch, X } from "lucide-react";
 import { arrayMove } from "@dnd-kit/sortable";
-import { useEffect, useState } from "react";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { Tip } from "@/components/ui/tooltip";
-import { api, errorMessage, type ProjectInfo } from "@/lib/api";
-import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/commands";
-import { matchesCommand } from "@/lib/keybindings";
-import { toast } from "@/lib/toast";
+import { api, type ProjectInfo } from "@/lib/api";
+import { REVEAL_LABEL } from "@/lib/platform";
+import { matchesCommand } from "@/lib/commands/keybindings";
 import { cn } from "@/lib/utils";
-import { folderName } from "@/lib/worktrees";
-import { openOnGitHub } from "./PullsPanel";
+import { folderName } from "@/lib/path";
+import { openOnGitHub } from "@/lib/github/url";
+import { copyText } from "@/lib/app/clipboard";
+import { revealProject } from "@/lib/app/openIn";
+import { RowAction } from "@/components/RowAction";
+import { useAsyncValue } from "@/hooks/useAsyncValue";
 
 export interface ProjectListProps {
   recent: string[];
@@ -23,30 +24,18 @@ export interface ProjectListProps {
   onLocate: (path: string) => void;
 }
 
-const copy = (text: string, what: string) =>
-  navigator.clipboard.writeText(text).then(
-    () => toast("success", what),
-    (e) => toast("error", "Could not copy", errorMessage(e)),
-  );
-
-const reveal = (path: string) => api.revealProject(path).catch((e) => toast("error", REVEAL_FAILED, errorMessage(e)));
-
 /** Asked each time a list mounts (the switcher mounts on open), so a moved folder shows up at once. */
 function useProjectInfo(paths: string[]) {
-  const [info, setInfo] = useState(new Map<string, ProjectInfo>());
   const key = paths.join("\n");
-  useEffect(() => {
-    let live = true;
-    const list = key ? key.split("\n") : [];
-    api
-      .projectInfo(list)
-      .then((all) => live && setInfo(new Map(list.map((p, i) => [p, all[i]]))))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [key]);
-  return info;
+  return useAsyncValue(
+    async () => {
+      const list = key ? key.split("\n") : [];
+      const all = await api.projectInfo(list);
+      return new Map(list.map((p, i) => [p, all[i]]));
+    },
+    [key],
+    new Map<string, ProjectInfo>(),
+  );
 }
 
 /**
@@ -154,21 +143,21 @@ function ProjectRow({
           {!dragging && (
             <div className="hidden shrink-0 items-center group-focus-within:flex group-hover:flex">
               {missing ? (
-                <RowAction label="Locate…" onClick={() => onLocate(path)}>
+                <RowAction variant="subtle" stopPropagation label="Locate…" onClick={() => onLocate(path)}>
                   <FolderSearch />
                 </RowAction>
               ) : (
                 <>
-                  <RowAction label={REVEAL_LABEL} onClick={() => reveal(path)}>
+                  <RowAction variant="subtle" stopPropagation label={REVEAL_LABEL} onClick={() => revealProject(path)}>
                     <FolderSearch />
                   </RowAction>
-                  <RowAction label="Copy path" onClick={() => copy(path, "Path copied")}>
+                  <RowAction variant="subtle" stopPropagation label="Copy path" onClick={() => copyText(path, "Path copied")}>
                     <Copy />
                   </RowAction>
                 </>
               )}
               {!current && (
-                <RowAction label="Remove from list" onClick={(e) => forget(e.currentTarget, path, onForget)}>
+                <RowAction variant="subtle" stopPropagation label="Remove from list" onClick={(e) => forget(e.currentTarget, path, onForget)}>
                   <X />
                 </RowAction>
               )}
@@ -187,7 +176,7 @@ function ProjectRow({
               <FolderOpen /> Open
               <ContextMenuShortcut>↵</ContextMenuShortcut>
             </ContextMenuItem>
-            <ContextMenuItem onSelect={() => reveal(path)}>
+            <ContextMenuItem onSelect={() => revealProject(path)}>
               <FolderSearch /> {REVEAL_LABEL}
             </ContextMenuItem>
             {github && (
@@ -198,10 +187,10 @@ function ProjectRow({
           </>
         )}
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => copy(path, "Path copied")}>
+        <ContextMenuItem onSelect={() => copyText(path, "Path copied")}>
           <Copy /> Copy Path
         </ContextMenuItem>
-        <ContextMenuItem onSelect={() => copy(name, "Name copied")}>
+        <ContextMenuItem onSelect={() => copyText(name, "Name copied")}>
           <Copy /> Copy Name
         </ContextMenuItem>
         <ContextMenuSeparator />
@@ -224,25 +213,6 @@ function forget(inRow: Element | null, path: string, onForget: (p: string) => vo
   const i = rows.findIndex((r) => r === row);
   if (i >= 0) (rows[i + 1] ?? rows[i - 1])?.focus();
   onForget(path);
-}
-
-function RowAction({ label, onClick, children }: { label: string; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; children: React.ReactNode }) {
-  return (
-    <Tip label={label}>
-      <button
-        aria-label={label}
-        // Pressing the button must not start a drag, and the click must not open the row.
-        onPointerDown={(e) => e.stopPropagation()}
-        onClick={(e) => {
-          e.stopPropagation();
-          onClick(e);
-        }}
-        className="flex size-5 items-center justify-center rounded-sm text-subtle outline-none hover:bg-active hover:text-foreground focus-visible:bg-active focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3"
-      >
-        {children}
-      </button>
-    </Tip>
-  );
 }
 
 /** Square letter tile with a stable hue per project, so repos are recognizable at a glance. */

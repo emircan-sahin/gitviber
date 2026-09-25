@@ -1,24 +1,24 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { api, type Branch, type NetOp } from "@/lib/api";
+import { api, type Branch } from "@/lib/api";
+import { shortRef } from "@/lib/git/refs";
+import { Select } from "@/components/ui/select";
+import { BaseSelect } from "./BaseSelect";
+import { type GitRun, type NetRun } from "@/hooks/useGitAction";
 
 /** The branch picker's actions that need more than a click. `base`: a full ref, or HEAD. */
 export type BranchDialog = { kind: "rename"; branch: Branch } | { kind: "new"; base: string } | { kind: "upstream"; branch: Branch };
-
-type Run = (label: string, fn: () => Promise<void>, done: string) => Promise<void>;
 
 interface Props {
   dialog: BranchDialog;
   branches: Branch[];
   onClose: () => void;
-  run: Run;
+  run: GitRun;
   /** For what reaches the remote: its progress shows in the top bar, with Cancel. */
-  runNet: (label: string, fn: (op: NetOp) => Promise<void>, done: string) => Promise<void>;
+  runNet: NetRun;
 }
-
-const SELECT = "h-7 w-full rounded-md border border-border-strong bg-background px-2 font-mono text-[12px] text-foreground outline-none focus:border-primary";
 
 export function BranchDialogs({ dialog, branches, onClose, run, runNet }: Props) {
   return (
@@ -87,7 +87,7 @@ function NewBranch({ base, branches, onClose, run }: { base: string } & Pick<Pro
   const [from, setFrom] = useState(base);
   const [switchTo, setSwitchTo] = useState(true);
   const n = name.trim();
-  const label = from === "HEAD" ? "HEAD" : from.replace(/^refs\/(heads|remotes|tags)\//, "");
+  const label = from === "HEAD" ? "HEAD" : shortRef(from);
   const submit = () => {
     onClose();
     void run("Create branch", () => api.createBranch(n, from, switchTo), switchTo ? `Switched to new branch ${n}` : `Created ${n} from ${label}`);
@@ -113,43 +113,6 @@ function NewBranch({ base, branches, onClose, run }: { base: string } & Pick<Pro
         </Button>
       </div>
     </form>
-  );
-}
-
-/** What a new branch starts at: a local or remote branch, a tag, or with `head` HEAD. Values are full refs. */
-export function BaseSelect({ value, onChange, branches, head }: { value: string; onChange: (ref: string) => void; branches: Branch[]; head: boolean }) {
-  const [tags, setTags] = useState<string[]>([]);
-  useEffect(() => {
-    api.tags().then(setTags, () => setTags([]));
-  }, []);
-  const group = (title: string, prefix: string, names: string[]) =>
-    names.length > 0 && (
-      <optgroup label={title}>
-        {names.map((b) => (
-          <option key={b} value={`${prefix}${b}`}>
-            {b}
-          </option>
-        ))}
-      </optgroup>
-    );
-  return (
-    <label className="mt-3 block text-[11.5px] text-muted-foreground">
-      From
-      <select value={value} onChange={(e) => onChange(e.target.value)} className={`${SELECT} mt-1`}>
-        {head && <option value="HEAD">HEAD</option>}
-        {group(
-          "Local",
-          "refs/heads/",
-          branches.filter((b) => !b.remote).map((b) => b.name),
-        )}
-        {group(
-          "Remote",
-          "refs/remotes/",
-          branches.filter((b) => b.remote).map((b) => b.name),
-        )}
-        {group("Tags", "refs/tags/", tags)}
-      </select>
-    </label>
   );
 }
 
@@ -179,13 +142,13 @@ function Upstream({ branch, branches, onClose, run }: { branch: Branch } & Pick<
         .
       </DialogDescription>
       {remotes.length ? (
-        <select autoFocus value={upstream} onChange={(e) => setUpstream(e.target.value)} className={`${SELECT} mt-4`}>
+        <Select autoFocus value={upstream} onChange={(e) => setUpstream(e.target.value)} className="mt-4 w-full font-mono">
           {remotes.map((r) => (
             <option key={r} value={r}>
               {r}
             </option>
           ))}
-        </select>
+        </Select>
       ) : (
         <div className="mt-4 text-[12px] text-muted-foreground">No remote branches. Fetch, or publish the branch first.</div>
       )}
