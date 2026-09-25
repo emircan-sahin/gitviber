@@ -33,6 +33,11 @@ tree-sitter-typescript = "=0.23.2"
 tree-sitter-python = "=0.25.0"
 tree-sitter-go = "=0.25.0"
 
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+# Update to vX in the status bar (src/lib/app/updates.ts); process relaunches into it.
+tauri-plugin-updater = "=2.11.0"
+tauri-plugin-process = "=2.3.1"
+
 [target.'cfg(unix)'.dependencies]
 # Already linked through tauri and portable-pty; stops a cancelled git with the ssh it started.
 libc = "=0.2.189"
