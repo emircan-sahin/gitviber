@@ -472,7 +472,13 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 <ListTabButton active={explorerView === "files"} onClick={() => setExplorerView("files")}>
                   Explorer
                 </ListTabButton>
-                <ListTabButton active={explorerView === "search"} onClick={() => setExplorerView("search")}>
+                <ListTabButton
+                  active={explorerView === "search"}
+                  onClick={() => {
+                    setExplorerView("search");
+                    setSearchAsk((a) => ({ id: a.id + 1, seed: "" }));
+                  }}
+                >
                   Search
                 </ListTabButton>
                 {/* One group: two ml-autos split the free space, leaving Collapse folders mid-header. */}
