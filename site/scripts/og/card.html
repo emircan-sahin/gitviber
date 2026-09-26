@@ -77,6 +77,14 @@
     line-height: 1.4;
     text-wrap: balance;
   }
+  /* Japanese has no spaces: break between phrases, not inside a word (as the site does). */
+  :lang(ja) :is(h1, .tagline) {
+    word-break: auto-phrase;
+  }
+  /* A hyphenated word ("Live-Diffs") stays on one line. */
+  .nowrap {
+    white-space: nowrap;
+  }
   .facts {
     display: flex;
     gap: 10px;
@@ -193,6 +201,9 @@
     };
 
     /** Shrinks the headline until it fits in `lines` lines, so longer translations still fit. */
+    const keepHyphenated = (text) =>
+      text.split(/(\S+-\S+)/).map((part, i) => (i % 2 ? el("span", { className: "nowrap" }, part) : part));
+
     function fit(h1, lines) {
       let size = parseFloat(getComputedStyle(h1).fontSize);
       const lineHeight = () => parseFloat(getComputedStyle(h1).lineHeight);
@@ -219,7 +230,7 @@
           { className: "copy" },
           el("div", { className: "brand" }, el("img", { src: icon, alt: "" }), "GitViber"),
           h1,
-          el("p", { className: "tagline" }, tagline),
+          el("p", { className: "tagline" }, ...keepHyphenated(tagline)),
           el("p", { className: "facts" }, ...facts.map((f) => el("span", {}, f))),
         );
         const stage = el(
