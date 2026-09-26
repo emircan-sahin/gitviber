@@ -13,7 +13,12 @@ const dist = path.join(root, out);
 const ssr = path.join(root, `${out}-ssr`);
 
 const { render, LOCALES, pageUrl, ogImagePath, siteUrl, version, REPO_URL, BREW, AUTHOR, chapters, chapterText } = await import(pathToFileURL(path.join(ssr, "entry-server.js")).href);
-const template = readFileSync(path.join(dist, "index.html"), "utf8");
+// The stylesheet goes inline: one small file, and as a <link> it held up the first paint (~150 ms
+// on PageSpeed's mobile run). Its font URLs are absolute, so they resolve the same from <style>.
+const template = readFileSync(path.join(dist, "index.html"), "utf8").replace(
+  /<link rel="stylesheet"[^>]*href="[^"]*\/(assets\/[^"]+\.css)"[^>]*>/,
+  (_, file) => `<style>${readFileSync(path.join(dist, file), "utf8")}</style>`,
+);
 for (const marker of ['<html lang="en">', "<!--head-->", "<!--app-->"]) {
   if (!template.includes(marker)) throw new Error(`prerender: no ${marker} in dist/index.html`);
 }
