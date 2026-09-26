@@ -347,7 +347,7 @@ jobs:
           sed -e '/^#/d' -e "s/__VERSION__/$VERSION/" -e "s/__SHA256__/$sha/" packaging/homebrew/gitviber.rb > gitviber.rb
           {
             echo "### Homebrew cask"
-            echo "Once the release is published, commit this as \`Casks/gitviber.rb\` in emircan-sahin/homebrew-tap:"
+            echo "Publishing the release commits this to emircan-sahin/homebrew-tap (homebrew.yml):"
             echo '```ruby'
             cat gitviber.rb
             echo '```'

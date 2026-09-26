@@ -68,20 +68,29 @@ Once, create the tap repository:
 gh repo create emircan-sahin/homebrew-tap --public --description "Homebrew casks for GitViber"
 ```
 
+and give the Homebrew workflow a deploy key that can write to it, and to nothing else:
+
+```sh
+ssh-keygen -t ed25519 -N "" -C "gitviber Homebrew workflow -> homebrew-tap" -f tap_key
+gh repo deploy-key add tap_key.pub --repo emircan-sahin/homebrew-tap --allow-write --title "gitviber Homebrew workflow"
+gh secret set HOMEBREW_TAP_KEY --repo emircan-sahin/gitviber < tap_key
+rm tap_key tap_key.pub
+```
+
 ## Each release
 
-1. **Bump the version** everywhere at once: `pnpm version:set 0.2.0`. It writes `package.json`,
+1. **Bump the version** everywhere at once: `pnpm version:set 0.1.1`. It writes `package.json`,
    `src-tauri/Cargo.toml` and `Cargo.lock` (`tauri.conf.json` reads `package.json`), and
    `pnpm check` fails if they ever disagree.
 2. **Write the changelog.** Move what's under `## [Unreleased]` into
-   `## [0.2.0] - YYYY-MM-DD` with today's date, and update the links at the bottom. The section
+   `## [0.1.1] - YYYY-MM-DD` with today's date, and update the links at the bottom. The section
    becomes the release notes and what the updater shows; the workflow refuses an undated or
    missing one.
-3. **Commit and push** to `main` (`chore(release): 0.2.0`), and let CI pass.
+3. **Commit and push** to `main` (`chore(release): 0.1.1`), and let CI pass.
 4. **Tag and push the tag:**
 
    ```sh
-   git tag v0.2.0 && git push origin v0.2.0
+   git tag v0.1.1 && git push origin v0.1.1
    ```
 
    The workflow checks that the tag matches the version before it builds anything.
@@ -91,7 +100,7 @@ gh repo create emircan-sahin/homebrew-tap --public --description "Homebrew casks
    should open without a Gatekeeper warning.
 6. **Publish** the draft. From then on `releases/latest/download/latest.json` points at it and
    installed copies offer the update.
-7. **Update the Homebrew cask** (below).
+   Publishing also commits the new cask to the Homebrew tap (below); nothing to do there.
 
 Re-running failed jobs builds the same tagged commit again, so it only helps with a flaky runner
 or an Apple outage; the publish job reuses its draft and replaces what's there. A fix in the code
@@ -104,10 +113,10 @@ A test tag signs and notarizes like a release, but its draft is marked as a pre-
 `releases/latest` (and so the updater) skips. It builds the current version, so there's no bump:
 
 ```sh
-git tag v0.2.0-rc.1 && git push origin v0.2.0-rc.1
+git tag v0.1.1-rc.1 && git push origin v0.1.1-rc.1
 ```
 
-Delete the draft and the tag afterwards (`gh release delete v0.2.0-rc.1 --cleanup-tag`).
+Delete the draft and the tag afterwards (`gh release delete v0.1.1-rc.1 --cleanup-tag`).
 
 ### Dry run
 
@@ -120,19 +129,12 @@ a workflow or build change before tagging.
 
 The official `homebrew/cask` only takes apps that meet its notability rules, so GitViber has its
 own tap until it does. [`packaging/homebrew/gitviber.rb`](packaging/homebrew/gitviber.rb) is the
-cask's template; every release run fills in the version and the `.dmg`'s SHA-256 and prints the
-result on the run's summary page (also in the `release` artifact as `gitviber.rb`).
-
-After publishing a release, commit it to the tap:
-
-```sh
-gh run download <run id> --repo emircan-sahin/gitviber --name release --dir /tmp/gitviber-release
-gh repo clone emircan-sahin/homebrew-tap /tmp/homebrew-tap
-mkdir -p /tmp/homebrew-tap/Casks
-cp /tmp/gitviber-release/gitviber.rb /tmp/homebrew-tap/Casks/gitviber.rb
-git -C /tmp/homebrew-tap add Casks/gitviber.rb
-git -C /tmp/homebrew-tap commit -m "gitviber 0.2.0" && git -C /tmp/homebrew-tap push
-```
+cask's template. Publishing a release runs the Homebrew workflow
+([`homebrew.yml`](.github/workflows/homebrew.yml)): it fills in the version and the `.dmg`'s
+SHA-256 from the release's `SHA256SUMS` and commits `Casks/gitviber.rb` to the tap. A prerelease
+is skipped. If it fails (say, the deploy key was removed), fix that and run the workflow from the
+Actions tab with the tag. Every release run also prints the filled-in cask on its summary page,
+to check before publishing.
 
 Users install it with
 `brew install --cask emircan-sahin/tap/gitviber`. The cask sets `auto_updates true`, so

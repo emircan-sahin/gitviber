@@ -1,0 +1,66 @@
+name: Homebrew
+
+# Publishing a release commits its cask to emircan-sahin/homebrew-tap, so `brew install` gets it
+# with no step by hand. The checksum comes from the release's SHA256SUMS. It pushes with a deploy
+# key that can write to the tap and nothing else (the HOMEBREW_TAP_KEY secret, RELEASING.md).
+# Run from the Actions tab with a tag to redo one.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "A published release's tag, like v0.1.1"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew
+  cancel-in-progress: false
+
+jobs:
+  cask:
+    # A test tag's prerelease must never reach brew.
+    if: github.event_name == 'workflow_dispatch' || !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Fill in the cask
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Not a release tag: $TAG"; exit 1; }
+          version="${TAG#v}"
+          dmg="GitViber_${version}_universal.dmg"
+          sha=$(gh release download "$TAG" --pattern SHA256SUMS --output - | awk -v f="$dmg" '$2 == f { print $1 }')
+          [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::No checksum for $dmg in $TAG's SHA256SUMS"; exit 1; }
+          sed -e '/^#/d' -e "s/__VERSION__/$version/" -e "s/__SHA256__/$sha/" packaging/homebrew/gitviber.rb > "$RUNNER_TEMP/gitviber.rb"
+          cat "$RUNNER_TEMP/gitviber.rb"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: emircan-sahin/homebrew-tap
+          ssh-key: ${{ secrets.HOMEBREW_TAP_KEY }}
+          path: tap
+
+      - name: Commit to the tap
+        working-directory: tap
+        run: |
+          mkdir -p Casks
+          cp "$RUNNER_TEMP/gitviber.rb" Casks/gitviber.rb
+          git add Casks/gitviber.rb
+          if git diff --cached --quiet; then
+            echo "The tap already has ${TAG#v}." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "gitviber ${TAG#v}"
+          git push
+          echo "Committed gitviber ${TAG#v} to emircan-sahin/homebrew-tap." >> "$GITHUB_STEP_SUMMARY"
