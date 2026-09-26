@@ -4,6 +4,11 @@ import { matchesCommand } from "@/lib/commands/keybindings";
 import { FIT, panAxis, place, svgSize, type Zoom, zoomAxis, zoomLimits } from "@/lib/ui/svg";
 import { cn } from "@/lib/utils";
 import { basename } from "@/lib/path";
+import { Copy } from "lucide-react";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { copyFiles } from "@/lib/app/clipboard";
+import { failed } from "@/lib/app/toast";
+import { IS_MAC } from "@/lib/platform";
 
 type MediaKind = "image" | "video" | "audio" | "pdf";
 
@@ -79,11 +84,13 @@ function Side({ src, original, label, tone }: { src: MediaSource; original: bool
       {error ? (
         <div className="text-[12.5px] text-muted-foreground">{error}</div>
       ) : !url ? null : kind === "image" ? (
-        <img
-          src={url}
-          onLoad={(e) => setDims(`${e.currentTarget.naturalWidth}×${e.currentTarget.naturalHeight}`)}
-          className="checkerboard max-h-full max-w-full object-contain"
-        />
+        <ImageMenu src={src} original={original}>
+          <img
+            src={url}
+            onLoad={(e) => setDims(`${e.currentTarget.naturalWidth}×${e.currentTarget.naturalHeight}`)}
+            className="checkerboard max-h-full max-w-full object-contain"
+          />
+        </ImageMenu>
       ) : kind === "video" ? (
         <video src={url} controls className="max-h-full max-w-full" />
       ) : kind === "audio" ? (
@@ -92,6 +99,26 @@ function Side({ src, original, label, tone }: { src: MediaSource; original: bool
         <iframe src={url} className="absolute inset-0 size-full border-0" />
       )}
     </Panel>
+  );
+}
+
+/** Right-click "Copy Image" on one side; the before side has no file on disk, so it's saved first. */
+function ImageMenu({ src, original, children }: { src: MediaSource; original: boolean; children: ReactNode }) {
+  if (!IS_MAC) return children;
+  const copy = () =>
+    api
+      .mediaFile(src.kind, src.path, src.oldPath, src.sha, src.base, original)
+      .then((path) => copyFiles([path]))
+      .catch(failed("Could not copy"));
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
+      <ContextMenuContent>
+        <ContextMenuItem onSelect={copy}>
+          <Copy /> Copy Image
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 

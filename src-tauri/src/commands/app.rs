@@ -27,6 +27,12 @@ pub fn terminal_paste() -> Res<clipboard::Paste> {
     clipboard::read()
 }
 
+/// Sync for the same reason as `terminal_paste`.
+#[tauri::command]
+pub fn copy_files(paths: Vec<String>) -> Res<()> {
+    clipboard::copy_files(paths)
+}
+
 #[tauri::command]
 pub fn keep_dropped(paths: Vec<String>) -> Vec<String> {
     clipboard::keep_dropped(paths)

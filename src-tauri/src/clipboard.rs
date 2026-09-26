@@ -28,7 +28,12 @@ fn paste_dir() -> Result<PathBuf, String> {
             .and_then(|m| m.modified())
             .is_ok_and(|t| t < old);
         if stale {
-            let _ = std::fs::remove_file(entry.path());
+            let path = entry.path();
+            let _ = if path.is_dir() {
+                std::fs::remove_dir_all(path)
+            } else {
+                std::fs::remove_file(path)
+            };
         }
     }
     Ok(dir)
@@ -48,6 +53,28 @@ fn new_paste_file(name: &str) -> Result<PathBuf, String> {
         }
         n += 1;
     }
+}
+
+/// `bytes` saved as `name` in a folder of their own, so a copy pasted into Finder keeps the name.
+pub fn save_named(name: &str, bytes: &[u8]) -> Result<String, String> {
+    let dir = new_paste_file("copy")?;
+    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Files onto the pasteboard as Finder's ⌘C puts them, so they paste as files into Finder, Slack
+/// or a terminal (which pastes their paths); an image also carries its picture for apps that
+/// only take one.
+#[cfg(target_os = "macos")]
+pub fn copy_files(paths: Vec<String>) -> Result<(), String> {
+    objc2::rc::autoreleasepool(|_| unsafe { pasteboard::write_files(&paths) })
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn copy_files(_paths: Vec<String>) -> Result<(), String> {
+    Err("Copying files is only supported on macOS".into())
 }
 
 /// Dropped files, with the ones macOS takes back once the drag ends (a screenshot's floating
@@ -104,7 +131,8 @@ pub fn read() -> Result<Paste, String> {
 mod pasteboard {
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject};
-    use std::ffi::{c_char, CStr};
+    use std::ffi::{c_char, CStr, CString};
+    use std::path::Path;
 
     unsafe fn ns_string(s: &CStr) -> *mut AnyObject {
         let Some(cls) = AnyClass::get(c"NSString") else {
@@ -177,6 +205,82 @@ mod pasteboard {
         (files, text, png)
     }
 
+    /// Extensions NSImage reads, whose picture goes on the pasteboard next to the file.
+    const IMAGES: &[&str] = &[
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic", "avif", "ico",
+    ];
+
+    /// One pasteboard item per file: its URL, and an image's TIFF (and its PNG bytes, kept exact).
+    pub unsafe fn write_files(paths: &[String]) -> Result<(), String> {
+        let (
+            Some(pb_class),
+            Some(url_class),
+            Some(item_class),
+            Some(array_class),
+            Some(image_class),
+        ) = (
+            AnyClass::get(c"NSPasteboard"),
+            AnyClass::get(c"NSURL"),
+            AnyClass::get(c"NSPasteboardItem"),
+            AnyClass::get(c"NSMutableArray"),
+            AnyClass::get(c"NSImage"),
+        )
+        else {
+            return Err("AppKit is unavailable".into());
+        };
+        let items: *mut AnyObject = msg_send![array_class, array];
+        for path in paths {
+            let Ok(c_path) = CString::new(path.as_str()) else {
+                continue;
+            };
+            let ns_path = ns_string(&c_path);
+            let url: *mut AnyObject = msg_send![url_class, fileURLWithPath: ns_path];
+            let url_string: *mut AnyObject = msg_send![url, absoluteString];
+            let item: *mut AnyObject = msg_send![item_class, new];
+            let _: bool =
+                msg_send![item, setString: url_string, forType: ns_string(c"public.file-url")];
+            let ext = Path::new(path)
+                .extension()
+                .map(|e| e.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            if IMAGES.contains(&ext.as_str()) {
+                if ext == "png" {
+                    if let Ok(png) = std::fs::read(path) {
+                        let _: bool = msg_send![item, setData: ns_data(&png), forType: ns_string(c"public.png")];
+                    }
+                }
+                let image: *mut AnyObject = msg_send![image_class, alloc];
+                let image: *mut AnyObject = msg_send![image, initWithContentsOfFile: ns_path];
+                if !image.is_null() {
+                    let tiff: *mut AnyObject = msg_send![image, TIFFRepresentation];
+                    if !tiff.is_null() {
+                        let _: bool =
+                            msg_send![item, setData: tiff, forType: ns_string(c"public.tiff")];
+                    }
+                    let _: () = msg_send![image, release];
+                }
+            }
+            let _: () = msg_send![items, addObject: item];
+            let _: () = msg_send![item, release];
+        }
+        let count: usize = msg_send![items, count];
+        if count == 0 {
+            return Err("Nothing to copy".into());
+        }
+        let pb: *mut AnyObject = msg_send![pb_class, generalPasteboard];
+        let _: isize = msg_send![pb, clearContents];
+        let ok: bool = msg_send![pb, writeObjects: items];
+        ok.then_some(())
+            .ok_or_else(|| "Could not write to the pasteboard".into())
+    }
+
+    unsafe fn ns_data(bytes: &[u8]) -> *mut AnyObject {
+        let Some(cls) = AnyClass::get(c"NSData") else {
+            return std::ptr::null_mut();
+        };
+        msg_send![cls, dataWithBytes: bytes.as_ptr().cast::<std::ffi::c_void>(), length: bytes.len()]
+    }
+
     unsafe fn tiff_to_png(tiff: *mut AnyObject) -> Option<Vec<u8>> {
         let (Some(rep_class), Some(dict_class)) = (
             AnyClass::get(c"NSBitmapImageRep"),
@@ -224,5 +328,36 @@ mod tests {
         assert_eq!(std::fs::read(&kept[0]).unwrap(), b"png");
         let _ = std::fs::remove_file(&kept[0]);
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn a_saved_version_keeps_its_name() {
+        let path = save_named("logo.png", b"png").unwrap();
+        assert!(path.ends_with("-copy/logo.png"));
+        assert_eq!(std::fs::read(&path).unwrap(), b"png");
+        let _ = std::fs::remove_dir_all(Path::new(&path).parent().unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "replaces the clipboard"]
+    fn copied_files_paste_back_as_files_with_their_picture() {
+        // A 1×1 PNG.
+        let png = [
+            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52,
+            0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, 0, 0, 0, 0x0d, 0x49,
+            0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0, 0x05, 0, 0x01,
+            0xff, 0x89, 0x99, 0x3d, 0x1d, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60,
+            0x82,
+        ];
+        let image = save_named("a b.png", &png).unwrap();
+        let text = save_named("notes.txt", b"hi").unwrap();
+        copy_files(vec![image.clone(), text.clone()]).unwrap();
+        let (files, _, picture) = objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() });
+        assert_eq!(files, vec![image.clone(), text.clone()]);
+        assert_eq!(picture.as_deref(), Some(&png[..]));
+        for p in [image, text] {
+            let _ = std::fs::remove_dir_all(Path::new(&p).parent().unwrap());
+        }
     }
 }

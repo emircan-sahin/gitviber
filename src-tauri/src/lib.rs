@@ -113,6 +113,7 @@ pub fn run() {
             commands::history::commit_files,
             commands::files::diff_pair,
             commands::files::media,
+            commands::files::media_file,
             commands::files::list_dir,
             commands::files::list_files,
             commands::files::search_files,
@@ -249,6 +250,7 @@ pub fn run() {
             commands::app::pty_kill,
             commands::app::terminal_paste,
             commands::app::keep_dropped,
+            commands::app::copy_files,
             commands::app::pty_busy,
             commands::app::update_mode
         ])

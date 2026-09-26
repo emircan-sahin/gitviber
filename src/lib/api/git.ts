@@ -57,6 +57,11 @@ export const api = {
   /** Raw bytes of one side of a diff (`original` = the before side), for media previews. */
   media: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null, original: boolean) =>
     invoke<ArrayBuffer>("media", { kind, path, oldPath, sha, base, original }),
+  /** That side as a file to copy: the working tree's own, or a stored version saved under its name. */
+  mediaFile: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null, original: boolean) =>
+    invoke<string>("media_file", { kind, path, oldPath, sha, base, original }),
+  /** Absolute paths onto the pasteboard as Finder copies files; an image carries its picture too. macOS only. */
+  copyFiles: (paths: string[]) => invoke<void>("copy_files", { paths }),
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
   /** Tracked and untracked files, not ignored ones: what quick open searches. */
   listFiles: () => invoke<string[]>("list_files"),

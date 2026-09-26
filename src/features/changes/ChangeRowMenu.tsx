@@ -2,9 +2,9 @@ import { Archive, ArrowLeftToLine, ArrowRightToLine, Check, Copy, Diff, EyeOff, 
 import { useRef } from "react";
 import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import type { FileChange } from "@/lib/api";
-import { REVEAL_LABEL } from "@/lib/platform";
+import { IS_MAC, REVEAL_LABEL } from "@/lib/platform";
 import type { Selection } from "@/lib/repo/selection";
-import { copyText } from "@/lib/app/clipboard";
+import { copyFiles, copyLabel, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
 import { type Change, paths } from "./changeList";
@@ -51,6 +51,8 @@ export function ChangeRowMenu({
   const n = rows.length;
   const untracked = rows.filter((r) => r.file.status === "?").map((r) => r.file);
   const isViewed = viewed(sel);
+  // A deleted file has nothing on disk to copy; its old version copies from the diff view.
+  const onDiskPaths = [...new Set(rows.filter((r) => r.file.status !== "D").map((r) => r.file.path))];
   return (
     <ContextMenuContent
       onCloseAutoFocus={(e) => {
@@ -126,6 +128,11 @@ export function ChangeRowMenu({
       </ContextMenuItem>
       <OpenInMenuItem path={file.path} disabled={!onDisk} />
       <ContextMenuSeparator />
+      {IS_MAC && onDiskPaths.length > 0 && (
+        <ContextMenuItem onSelect={() => copyFiles(onDiskPaths.map((p) => `${root}/${p}`))}>
+          <Copy /> {copyLabel(onDiskPaths)}
+        </ContextMenuItem>
+      )}
       <ContextMenuItem onSelect={() => copyText(paths(rows).map((p) => `${root}/${p}`).join("\n"), n > 1 ? `${n} paths copied` : "Path copied")}>
         <Copy /> {n > 1 ? "Copy Paths" : "Copy Path"}
       </ContextMenuItem>

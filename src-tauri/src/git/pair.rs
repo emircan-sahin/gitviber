@@ -50,6 +50,17 @@ fn sides(
     })
 }
 
+/// Whether that side of a diff is the working tree's file rather than a stored version.
+pub fn side_on_disk(
+    kind: &str,
+    sha: Option<&str>,
+    base: Option<&str>,
+    original: bool,
+) -> Result<bool, String> {
+    let (a, b) = sides(kind, sha, base)?;
+    Ok(if original { a.is_none() } else { b.is_none() })
+}
+
 /// Media previews load whole files into the webview; past this they are refused.
 pub const MAX_MEDIA_BYTES: u64 = 512 * 1024 * 1024;
 

@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect,
 import { useListFilter } from "@/components/ListFilter";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
-import { REVEAL_LABEL } from "@/lib/platform";
+import { IS_MAC, REVEAL_LABEL } from "@/lib/platform";
 import { matchesCommand, useShortcut } from "@/lib/commands/keybindings";
 import { focusPanel } from "@/lib/ui/panels";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/ui/useListNav";
@@ -12,7 +12,7 @@ import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { toast } from "@/lib/app/toast";
 import { tracked, undoAction } from "@/lib/repo/undo";
 import { cn } from "@/lib/utils";
-import { copyText } from "@/lib/app/clipboard";
+import { copyFiles, copyLabel, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
 import { basename, childPath, dirname } from "@/lib/path";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
@@ -459,6 +459,11 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
           <FolderSearch /> {REVEAL_LABEL}
         </ContextMenuItem>
         <OpenInMenuItem path={t?.path ?? ""} />
+        {IS_MAC && t && !t.isDir && status && (
+          <ContextMenuItem onSelect={() => copyFiles([`${status.root}/${t.path}`])}>
+            <Copy /> {copyLabel([t.path])}
+          </ContextMenuItem>
+        )}
         <ContextMenuItem disabled={!status} onSelect={() => status && copyText(t ? `${status.root}/${t.path}` : status.root, "Path copied")}>
           <Copy /> Copy Path
         </ContextMenuItem>

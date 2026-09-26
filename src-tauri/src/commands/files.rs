@@ -1,5 +1,5 @@
 use crate::state::{blocking, in_repo, AppState, Res};
-use crate::{definitions, fs, git, grep, open_in};
+use crate::{clipboard, definitions, fs, git, grep, open_in};
 use tauri::State;
 
 #[tauri::command]
@@ -52,6 +52,44 @@ pub async fn media(
     })
     .await?;
     Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// One side of a diff as a file to copy: the working tree's own, or a stored version saved under its name.
+#[tauri::command]
+pub async fn media_file(
+    state: State<'_, AppState>,
+    kind: String,
+    path: String,
+    old_path: Option<String>,
+    sha: Option<String>,
+    base: Option<String>,
+    original: bool,
+) -> Res<String> {
+    in_repo(&state, move |r| {
+        let side = if original {
+            old_path.as_deref().unwrap_or(&path)
+        } else {
+            &path
+        };
+        if git::side_on_disk(&kind, sha.as_deref(), base.as_deref(), original)? {
+            return Ok(fs::resolve(r, side)?.to_string_lossy().into_owned());
+        }
+        let name = std::path::Path::new(side)
+            .file_name()
+            .map_or("file".into(), |n| n.to_string_lossy().into_owned());
+        let bytes = git::media(
+            r,
+            &kind,
+            &path,
+            old_path.as_deref(),
+            sha.as_deref(),
+            base.as_deref(),
+            original,
+            |p| fs::read_media(r, p),
+        )?;
+        clipboard::save_named(&name, &bytes)
+    })
+    .await
 }
 
 #[tauri::command]
