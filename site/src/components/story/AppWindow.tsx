@@ -74,6 +74,8 @@ export function AppWindow({ chapter, t }: { chapter: number; t: number }) {
   let key: string | undefined;
   let overlay: ReactNode = null;
   let dimDiff = false;
+  // Close in on the commit box, the way a screencast zooms to where the click happens.
+  let zoom = false;
   let tree = { paths: treeOf(scene), ...revealed(scene.file) };
   let spot: (typeof TOUR_SPOTS)[number] | undefined;
 
@@ -140,8 +142,9 @@ export function AppWindow({ chapter, t }: { chapter: number; t: number }) {
     const state = commitAt(t);
     files = state.files;
     rows = files.length ? <CommitRows files={files} /> : <AllCaughtUp />;
-    footer = <CommitBox {...state} />;
+    footer = <CommitBox {...state.box} />;
     terminalHeight = 0;
+    zoom = state.zoom;
     dimDiff = state.committed;
     key = state.key;
     overlay = <CommitToast show={state.committed} summary={SUMMARY} />;
@@ -157,54 +160,59 @@ export function AppWindow({ chapter, t }: { chapter: number; t: number }) {
   const lit = (part: (typeof TOUR_SPOTS)[number]) => cx("transition-opacity duration-500", spot && spot !== part && "opacity-30");
 
   return (
-    <Window>
-      <TopBar
-        repo="acme-web"
-        branch={scene.branch}
-        worktree={scene.folder}
-        worktrees={WORKTREES.length}
-        added={add}
-        removed={del}
-        menuOpen={chapter === 0}
-      />
-      <div className="relative flex min-h-0 flex-1">
-        <div className={lit("changes")}>
-          <GitPanel files={files} active={active} width={320} footer={footer}>
-            {rows}
-          </GitPanel>
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col bg-bg">
-          <div className={cx("flex min-h-0 flex-1 flex-col", lit("diff"))}>
-            <EditorTab name={diff.path.split("/").pop()!} kind={file ? undefined : "diff"} preview={file?.preview ?? true} unsaved={file?.unsaved} />
-            <div className={cx("flex min-h-0 flex-1 flex-col transition-opacity duration-500", dimDiff && "opacity-0")}>
-              <FileHeader path={diff.path} add={open.add} del={open.del} status={open.status} file={!!file} />
-              <div className="min-h-0 flex-1 overflow-hidden">
-                {file ? (
-                  <FileRows lines={file.lines} caret={file.caret} />
-                ) : (
-                  <DiffRows lines={visible} fresh={diff.shown < lines.length ? diff.shown - 1 : undefined} />
-                )}
+    <div
+      className="h-full origin-[0%_96%] transition-transform duration-900 ease-[cubic-bezier(0.4,0,0.2,1)]"
+      style={{ transform: zoom ? "scale(1.9)" : undefined }}
+    >
+      <Window>
+        <TopBar
+          repo="acme-web"
+          branch={scene.branch}
+          worktree={scene.folder}
+          worktrees={WORKTREES.length}
+          added={add}
+          removed={del}
+          menuOpen={chapter === 0}
+        />
+        <div className="relative flex min-h-0 flex-1">
+          <div className={lit("changes")}>
+            <GitPanel files={files} active={active} width={320} footer={footer}>
+              {rows}
+            </GitPanel>
+          </div>
+          <div className="flex min-w-0 flex-1 flex-col bg-bg">
+            <div className={cx("flex min-h-0 flex-1 flex-col", lit("diff"))}>
+              <EditorTab name={diff.path.split("/").pop()!} kind={file ? undefined : "diff"} preview={file?.preview ?? true} unsaved={file?.unsaved} />
+              <div className={cx("flex min-h-0 flex-1 flex-col transition-opacity duration-500", dimDiff && "opacity-0")}>
+                <FileHeader path={diff.path} add={open.add} del={open.del} status={open.status} file={!!file} />
+                <div className="min-h-0 flex-1 overflow-hidden">
+                  {file ? (
+                    <FileRows lines={file.lines} caret={file.caret} />
+                  ) : (
+                    <DiffRows lines={visible} fresh={diff.shown < lines.length ? diff.shown - 1 : undefined} />
+                  )}
+                </div>
               </div>
             </div>
+            <div
+              className={cx(
+                "flex shrink-0 flex-col overflow-hidden transition-[height,opacity] duration-500 ease-[cubic-bezier(0.3,0.7,0.1,1)]",
+                terminalHeight > 0 && "border-t border-border",
+                lit("terminal"),
+              )}
+              style={{ height: terminalHeight }}
+            >
+              {terminal}
+            </div>
           </div>
-          <div
-            className={cx(
-              "flex shrink-0 flex-col overflow-hidden transition-[height,opacity] duration-500 ease-[cubic-bezier(0.3,0.7,0.1,1)]",
-              terminalHeight > 0 && "border-t border-border",
-              lit("terminal"),
-            )}
-            style={{ height: terminalHeight }}
-          >
-            {terminal}
+          <div className={lit("explorer")}>
+            <ExplorerPanel paths={tree.paths} open={tree.open} active={tree.active} status={status} />
           </div>
+          {overlay}
+          <KeyHud label={key} className="right-5 bottom-5" />
         </div>
-        <div className={lit("explorer")}>
-          <ExplorerPanel paths={tree.paths} open={tree.open} active={tree.active} status={status} />
-        </div>
-        {overlay}
-        <KeyHud label={key} className="right-5 bottom-5" />
-      </div>
-      <StatusBar files={files.length} add={add} del={del} reviewed={files.filter((f) => f.viewed).length} />
-    </Window>
+        <StatusBar files={files.length} add={add} del={del} reviewed={files.filter((f) => f.viewed).length} />
+      </Window>
+    </div>
   );
 }

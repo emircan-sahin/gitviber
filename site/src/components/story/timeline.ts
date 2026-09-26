@@ -146,21 +146,29 @@ export function terminalAt(t: number) {
 export const SUMMARY = "feat(search): add fuzzy matching to quick open";
 const DESCRIPTION = "Scores consecutive hits and word starts higher, so the file you meant comes first.";
 
-const SUMMARY_FROM = 900;
+// The pointer glides to the sparkle and clicks it while the view zooms in on the commit box; the
+// view zooms back out once the message is written, for the commit itself.
+const CLICK_AT = 1000;
+const SUMMARY_FROM = CLICK_AT + 600;
 const DESCRIPTION_FROM = SUMMARY_FROM + SUMMARY.length * 28 + 200;
 const WRITTEN = DESCRIPTION_FROM + DESCRIPTION.length * 16;
-const COMMIT_AT = WRITTEN + 700;
+const ZOOM_OUT = WRITTEN + 500;
+const COMMIT_AT = ZOOM_OUT + 1000;
 
-/** Commit: the sparkle asks the agent, it writes the message, ⌘↵ commits and the list empties. */
-export function commitAt(t: number): CommitState & { committed: boolean; key?: string; files: ChangeFile[] } {
+/** Commit: a click on the sparkle asks the agent, it writes the message, ⌘↵ commits and the list empties. */
+export function commitAt(t: number): { box: CommitState; committed: boolean; zoom: boolean; key?: string; files: ChangeFile[] } {
   const committed = t >= COMMIT_AT + 250;
   return {
-    summary: committed ? "" : typed(SUMMARY, t, SUMMARY_FROM, 28),
-    description: committed ? "" : typed(DESCRIPTION, t, DESCRIPTION_FROM, 16),
-    caret: committed || t < SUMMARY_FROM ? undefined : t < DESCRIPTION_FROM ? "summary" : t < WRITTEN ? "description" : undefined,
-    asking: t >= 300 && t < WRITTEN,
-    pressed: t >= COMMIT_AT && t < COMMIT_AT + 250,
+    box: {
+      summary: committed ? "" : typed(SUMMARY, t, SUMMARY_FROM, 28),
+      description: committed ? "" : typed(DESCRIPTION, t, DESCRIPTION_FROM, 16),
+      caret: committed || t < SUMMARY_FROM ? undefined : t < DESCRIPTION_FROM ? "summary" : t < WRITTEN ? "description" : undefined,
+      asking: t >= CLICK_AT && t < WRITTEN,
+      pressed: t >= COMMIT_AT && t < COMMIT_AT + 250,
+      pointer: t < CLICK_AT ? "move" : t < CLICK_AT + 700 ? "click" : undefined,
+    },
     committed,
+    zoom: t < ZOOM_OUT,
     key: keyAt([[COMMIT_AT, "⌘↵"]], t),
     files: committed ? [] : FUZZY.files.map((f) => ({ ...f, viewed: true })),
   };

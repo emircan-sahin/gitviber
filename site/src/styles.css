@@ -168,6 +168,33 @@
   animation: touched-row 1.2s ease-out;
 }
 
+/* The pointer gliding in to click, and the ring its click leaves. */
+@keyframes pointer-in {
+  from {
+    opacity: 0;
+    translate: 240px -170px;
+  }
+  25% {
+    opacity: 1;
+  }
+}
+@keyframes click-ring {
+  from {
+    opacity: 0.9;
+    scale: 0.3;
+  }
+  to {
+    opacity: 0;
+    scale: 1.4;
+  }
+}
+.pointer-in {
+  animation: pointer-in 0.85s cubic-bezier(0.3, 0.7, 0.2, 1);
+}
+.click-ring {
+  animation: click-ring 0.5s ease-out forwards;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .line-in,
   .animate-blink,
@@ -175,7 +202,9 @@
   .pane-in,
   .menu-in,
   .key-pop,
-  .touched-row {
+  .touched-row,
+  .pointer-in,
+  .click-ring {
     animation: none !important;
   }
 }

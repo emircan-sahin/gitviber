@@ -13,6 +13,7 @@ import { useEffect, useRef, useState, type ReactNode, type RefObject } from "rea
 import { useInView } from "../hooks/useInView.ts";
 import { useMediaQuery } from "../hooks/useMediaQuery.ts";
 import { useReducedMotion } from "../hooks/useReducedMotion.ts";
+import { chapters, CHAPTER_KEYS } from "../chapters.ts";
 import { fill, rich, useI18n } from "../i18n/index.tsx";
 import { BREW, release } from "../release.ts";
 import { DiffRows, numbered } from "./app/Diff.tsx";
@@ -26,8 +27,6 @@ import { usePlayhead } from "./story/usePlayhead.ts";
 import { CopyCommand, cx, DownloadButton, Keys } from "./ui.tsx";
 
 const ICONS: LucideIcon[] = [FolderGit2, Zap, ArrowLeftRight, GitBranchPlus, ListChecks, SquareTerminal, FolderTree, GitCommitHorizontal];
-// The shortcut each chapter's text names, if any.
-const KEYS: Record<number, string[]> = { 5: ["⌘", "J"], 6: ["⌘", "P"] };
 
 const windowShadow = "rounded-[10px] shadow-[0_50px_140px_-30px_rgb(0_0_0/0.95),0_0_0_1px_rgb(255_255_255/0.03)]";
 
@@ -56,7 +55,7 @@ export function Story() {
   const inView = useInView(ref);
   // -1 is the tour of the window, from the hero until the first chapter.
   const [chapter, setChapter] = useState(-1);
-  const [elapsed, seek] = usePlayhead(chapter, desktop && inView && !reduced, { length: clipLength(chapter), hold: HOLD_MS });
+  const [elapsed, seek, wait] = usePlayhead(chapter, desktop && inView && !reduced, { length: clipLength(chapter), hold: HOLD_MS });
 
   // The window's dock progress, and each chapter's copy: held level with the window's top while
   // its clip plays, then fading out as the next one comes up.
@@ -85,11 +84,14 @@ export function Story() {
       el.style.setProperty("--tail", `${Math.max(0, innerHeight - pin - last.offsetHeight)}px`);
       const current = blocks.findLastIndex((b) => b.getBoundingClientRect().top <= innerHeight * 0.6);
       setChapter(Math.max(-1, current - 1));
-      // Scrolling drives the clip too: by the time its copy starts to fade, a fast scroll has
-      // played it through, and scrolling back rewinds it. Not in the hero, where the window docks.
+      // A chapter's clip waits on its first frame until the copy settles next to it, so a short one
+      // isn't over before it can be read. Then scrolling drives it too: by the time the copy starts
+      // to fade, a fast scroll has played it through, and scrolling back rewinds it.
       const dy = scrollY - lastY;
       lastY = scrollY;
-      if (current >= 0 && dy) {
+      const settled = current < 1 || pin - blocks[current].getBoundingClientRect().top >= 0;
+      wait(!settled);
+      if (current >= 0 && settled && dy) {
         const block = blocks[current];
         const room = block.offsetHeight - (block.firstElementChild as HTMLElement).offsetHeight;
         seek((dy * clipLength(current - 1)) / (room * 0.6));
@@ -102,15 +104,16 @@ export function Story() {
       removeEventListener("scroll", update);
       removeEventListener("resize", update);
     };
-  }, [seek]);
+    // Another language changes the copy's heights.
+  }, [seek, wait, t]);
 
-  const copy = [...t.agents.steps, t.review, t.terminal, t.explorer, t.commit];
+  const copy = chapters(t);
   const slot = "lg:h-[140svh]";
   const held = "lg:sticky lg:top-[var(--pin)] lg:[opacity:var(--fade,1)]";
 
   return (
     <section ref={ref} id="top" className="relative [--dock:0]">
-      <div aria-hidden className="sticky top-0 hidden h-svh lg:block">
+      <div aria-hidden data-nosnippet className="sticky top-0 hidden h-svh lg:block">
         <div className="mx-auto grid h-full max-w-[88rem] grid-cols-[minmax(0,0.34fr)_minmax(0,0.66fr)] items-center gap-12 px-8 pt-10 [container-type:inline-size]">
           <div ref={dockRef} className="col-start-2 [perspective:1800px]">
             <div className="origin-top" style={{ transform: HERO_POSE }}>
@@ -149,10 +152,10 @@ export function Story() {
                     </p>
                     <h2 className="mt-4 text-4xl leading-[1.05] font-semibold tracking-[-0.03em] text-balance lg:text-5xl">{c.title}</h2>
                     <p className="mt-5 max-w-md text-lg leading-relaxed text-pretty text-muted">
-                      {rich(c.text, { keys: KEYS[i] && <Keys keys={KEYS[i]} className="align-middle" /> })}
+                      {rich(c.text, { keys: CHAPTER_KEYS[i] && <Keys keys={CHAPTER_KEYS[i]} className="align-middle" /> })}
                     </p>
                   </div>
-                  <div aria-hidden className="mt-12 lg:hidden">
+                  <div aria-hidden data-nosnippet className="mt-12 lg:hidden">
                     <PhonePanel chapter={i} />
                   </div>
                 </div>
@@ -194,7 +197,7 @@ function PhoneTour() {
   const ref = useRef<HTMLDivElement>(null);
   const { t, progress } = usePhoneClip(-1, ref);
   return (
-    <div ref={ref} aria-hidden className="mx-auto max-w-xl px-5 lg:hidden">
+    <div ref={ref} aria-hidden data-nosnippet className="mx-auto max-w-xl px-5 lg:hidden">
       <Scaled width={WIN_W} height={WIN_H} className={windowShadow}>
         <AppWindow chapter={-1} t={t} />
       </Scaled>
@@ -276,7 +279,7 @@ function PhonePanel({ chapter }: { chapter: number }) {
     const state = commitAt(t);
     panel = (
       <Frame>
-        <GitPanel files={state.files} width={320} footer={<CommitBox {...state} />}>
+        <GitPanel files={state.files} width={320} footer={<CommitBox {...state.box} />}>
           {/* Fixed height, so emptying the list doesn't move the page. */}
           <div className="h-[132px]">
             {state.files.length ? <CommitRows files={state.files} /> : <AllCaughtUp className="pt-5" />}

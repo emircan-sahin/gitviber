@@ -428,11 +428,25 @@ export interface CommitState {
   /** The sparkle while claude -p is writing. */
   asking?: boolean;
   pressed?: boolean;
+  /** The mouse pointer gliding to the sparkle, then clicking it. */
+  pointer?: "move" | "click";
 }
 
 const Caret = () => <span className="ml-px inline-block h-3.5 w-px translate-y-[3px] animate-blink bg-primary" />;
 
-export function CommitBox({ summary, description, caret, asking, pressed }: CommitState) {
+/** The macOS arrow, for a click the story shows rather than a shortcut. */
+function Pointer({ clicking }: { clicking: boolean }) {
+  return (
+    <span className="pointer-in pointer-events-none absolute top-1/2 left-1/2 z-10">
+      {clicking && <span className="click-ring absolute -top-4 -left-4 size-8 rounded-full border-2 border-primary" />}
+      <svg viewBox="0 0 16 24" className={cx("relative h-[22px] w-[15px] drop-shadow-[0_2px_3px_rgb(0_0_0/0.6)] transition-transform duration-150", clicking && "scale-85")}>
+        <path d="M1 1v19.5l4.9-4.7 3.2 7.2 3.1-1.4-3.1-7H15.5z" fill="#fff" stroke="#000" strokeWidth="1.2" strokeLinejoin="round" />
+      </svg>
+    </span>
+  );
+}
+
+export function CommitBox({ summary, description, caret, asking, pressed, pointer }: CommitState) {
   return (
     <div className="shrink-0 border-t border-border bg-panel p-2">
       <div
@@ -461,11 +475,12 @@ export function CommitBox({ summary, description, caret, asking, pressed }: Comm
         </span>
         <span
           className={cx(
-            "grid size-6 place-items-center rounded-md transition-colors",
+            "relative grid size-6 place-items-center rounded-md transition-colors",
             asking ? "bg-primary/15 text-primary" : "text-muted",
           )}
         >
           <Sparkles className={cx("size-3.5", asking && "animate-pulse")} />
+          {pointer && <Pointer clicking={pointer === "click"} />}
         </span>
         <span className="grid size-6 place-items-center text-muted">
           <Ellipsis className="size-3.5" />
