@@ -31,7 +31,8 @@ export function followDefinitions(editor: monaco.editor.ICodeEditor, side: () =>
     // Monaco's own F12 keys are off (lib/editor/monaco): these follow the user's bindings.
     editor.onKeyDown((e) => {
       const command = commandIn(Object.keys(ACTIONS) as (keyof typeof ACTIONS)[], e.browserEvent);
-      if (!command) return;
+      // A file open for editing keeps ⌘↵ as Insert Line Below, as VS Code has it; F12 still goes.
+      if (!command || (e.keyCode === monaco.KeyCode.Enter && !editor.getOption(monaco.editor.EditorOption.readOnly))) return;
       e.preventDefault();
       e.stopPropagation();
       // Commands, not editor actions: getAction doesn't know them. They act on the focused editor.

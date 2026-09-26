@@ -1,5 +1,5 @@
-// Monaco, set up once for a read-only viewer: only the editor features it uses, colored by
-// Shiki's TextMate grammars and themes (the ones the rest of the app uses), loaded as files open.
+// Monaco, set up once: only the editor features the app uses, colored by Shiki's TextMate grammars
+// and themes (the ones the rest of the app uses), loaded as files open.
 import { shikiToMonaco, textmateThemeToMonacoTheme } from "@shikijs/monaco";
 import * as monaco from "monaco-editor/editor/editor.api";
 import { WorkerBasedDocumentDiffProvider } from "monaco-editor/editor/browser/widget/diffEditor/diffProviderFactoryService";
@@ -18,6 +18,19 @@ import "monaco-editor/features/contextmenu/register";
 import "monaco-editor/features/gotoSymbol/register";
 import "monaco-editor/features/referenceSearch/register";
 import "monaco-editor/features/links/register";
+// Editing the file view as in VS Code: word and subword moves (⌥←, ⌃⌥←, ⌥⌫), line moves and copies
+// (⌥↑, ⇧⌥↓, ⇧⌘K, ⌘↵, ⌘]), multiple cursors (⌘D, ⌥⌘↓), ⌘L, ⌘U, ⌃T, expand selection, ⌃G, text dragging.
+// Left out: what needs a language's rules or a language server (comments, brackets, suggestions).
+import "monaco-editor/features/wordOperations/register";
+import "monaco-editor/features/wordPartOperations/register";
+import "monaco-editor/features/linesOperations/register";
+import "monaco-editor/features/multicursor/register";
+import "monaco-editor/features/lineSelection/register";
+import "monaco-editor/features/cursorUndo/register";
+import "monaco-editor/features/caretOperations/register";
+import "monaco-editor/features/smartSelect/register";
+import "monaco-editor/features/gotoLine/register";
+import "monaco-editor/features/dnd/register";
 import { createHighlighterCore, type HighlighterCore } from "shiki/core";
 import { createOnigurumaEngine } from "shiki/engine/oniguruma";
 import { bundledLanguages } from "shiki/langs";
@@ -45,17 +58,20 @@ monaco.editor.addKeybindingRules([
   { keybinding: monaco.KeyMod.chord(CtrlCmd | KeyK, CtrlCmd | F12), command: "-editor.action.revealDefinitionAside" },
 ]);
 
-// Code fonts load lazily (Geist Mono, JetBrains Mono): measure again once they're in, or wrapping and
-// selections keep the fallback font's widths.
-document.fonts.addEventListener("loadingdone", () => monaco.editor.remeasureFonts());
-// Monaco keeps a font's widths for good once measured, including a custom font's fallback widths
-// from before it was installed: a new pick measures afresh.
+// Code fonts load lazily (Geist Mono, JetBrains Mono), and Monaco keeps the widths it measured: the
+// fallback font's, when it measured first. Every column then drifts (Geist Mono at 13.5px: 8.35px
+// measured, 8.1px drawn, so the cursor sat two characters off by a line's end). WebKit never fires
+// FontFaceSet's loadingdone, so the font is loaded here and measured again once it's in.
 let codeFont = codeFontFamily(getSettings());
+const measureLoaded = () => void document.fonts.load(`16px ${codeFont}`).then(() => monaco.editor.remeasureFonts(), () => {});
+measureLoaded();
+// A new pick measures afresh, a custom font's too (Monaco kept its fallback's widths from before it was installed).
 subscribeSettings(() => {
   const next = codeFontFamily(getSettings());
   if (next === codeFont) return;
   codeFont = next;
   monaco.editor.remeasureFonts();
+  measureLoaded();
 });
 
 // The worker computes diffs only as a fallback (see `createModels`), and finds the URLs links open.
@@ -209,10 +225,20 @@ export function releaseModels(models: monaco.editor.ITextModel[]) {
 /** A file Go to Definition shows in its peek or hover, widened as the code view would. */
 export const createPeekModel = (text: string, lang: string, uri: monaco.Uri) => createModel(text, lang, indentUnit(text), uri);
 
+/** A file's unsaved edit brought back from storage: never kept for another show (see detachModel). */
+export const createEditModel = (text: string, lang: string, path: string) => createModel(text, lang, indentUnit(text), viewUri(path));
+
+/** A model being edited no longer holds the text it's kept under: disposed on release, not kept. */
+export function detachModel(model: monaco.editor.ITextModel) {
+  keptBy.delete(model);
+}
+
 function createModel(text: string, lang: string, unit: number, uri?: monaco.Uri) {
-  const model = monaco.editor.createModel(widen(text, unit), monacoLanguage(lang), uri);
-  // Tabs are 4 wide everywhere; Monaco guesses per file otherwise (2 in a two-space file).
-  model.updateOptions({ tabSize: TAB, indentSize: TAB });
+  const wide = widen(text, unit);
+  const model = monaco.editor.createModel(wide, monacoLanguage(lang), uri);
+  // Tabs are 4 wide everywhere; Monaco guesses per file otherwise (2 in a two-space file). Tab
+  // types a tab where indentation is tabs, widened ones included (saved back as the file's spaces).
+  model.updateOptions({ tabSize: TAB, indentSize: TAB, insertSpaces: !/^\t/m.test(wide) });
   units.set(model, unit);
   return model;
 }
