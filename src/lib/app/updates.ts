@@ -16,7 +16,8 @@ import { checked, downloaded, due, INITIAL, isExpectedFailure, percent, type Upd
  * and every few hours, downloaded when the user asks, installed on "Restart to Update".
  */
 
-const FIRST_CHECK_MS = 10_000;
+// A launch checks at once; if that failed (the network wasn't up yet, say), again this soon after.
+const RETRY_MS = 10_000;
 // Asleep, a timer doesn't run: a short tick finds a check overdue soon after waking.
 const TICK_MS = 30 * 60_000;
 const CHECK_EVERY_MS = 4 * 3600_000;
@@ -129,19 +130,21 @@ async function restartAsked() {
   return ask(`Restarting GitViber stops what's still running: ${running.join(", ")}.`, { title: "Restart to update", kind: "warning", okLabel: "Restart" });
 }
 
-/** Asks how this install updates, then checks after launch and every few hours while Settings allows. */
+/** Asks how this install updates, then checks at launch and every few hours while Settings allows. */
 export function startUpdates() {
   let live = true;
   let first: ReturnType<typeof setTimeout> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
-  // A failed check leaves checkedAt alone, so the next tick tries again.
+  // A failed check leaves checkedAt alone, so the next tick tries again; after one that worked,
+  // ticks do nothing until the next check is due.
   const tick = () => {
     if (getSettings().autoUpdate && due(state.get().checkedAt, Date.now(), CHECK_EVERY_MS)) void checkForUpdates(false);
   };
   api.updateMode().then((m) => {
     if (!live || !m) return;
     mode.set(m);
-    first = setTimeout(tick, FIRST_CHECK_MS);
+    tick();
+    first = setTimeout(tick, RETRY_MS);
     timer = setInterval(tick, TICK_MS);
   }, () => {});
   return () => {
