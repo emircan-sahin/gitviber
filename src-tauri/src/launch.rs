@@ -51,22 +51,41 @@ pub fn reveal(path: PathBuf) -> Result<(), String> {
     {
         use std::process::Stdio;
         // The file manager's own interface selects the entry (Dolphin, Nautilus, Nemo, …).
-        let uri = format!("array:string:file://{}", crate::trash::encode(&path));
-        let shown = Command::new("dbus-send")
-            .args([
+        // gdbus comes with GLib, which the app needs anyway; dbus-send is a separate package on
+        // some distros. The URI is percent-encoded, so no quote or comma breaks either syntax.
+        let uri = format!("file://{}", crate::trash::encode(&path));
+        let (items, array) = (format!("['{uri}']"), format!("array:string:{uri}"));
+        let calls: [&[&str]; 2] = [
+            &[
+                "gdbus",
+                "call",
+                "--session",
+                "--dest=org.freedesktop.FileManager1",
+                "--object-path=/org/freedesktop/FileManager1",
+                "--method=org.freedesktop.FileManager1.ShowItems",
+                items.as_str(),
+                "''",
+            ],
+            &[
+                "dbus-send",
                 "--session",
                 "--print-reply",
                 "--dest=org.freedesktop.FileManager1",
                 "/org/freedesktop/FileManager1",
                 "org.freedesktop.FileManager1.ShowItems",
-                &uri,
+                array.as_str(),
                 "string:",
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if shown.is_ok_and(|s| s.success()) {
-            return Ok(());
+            ],
+        ];
+        for call in calls {
+            let shown = Command::new(call[0])
+                .args(&call[1..])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+            if shown.is_ok_and(|s| s.success()) {
+                return Ok(());
+            }
         }
         // Without one, open the folder it's in. xdg-open may stay until that window closes,
         // so it's reaped on a thread.

@@ -27,9 +27,42 @@ pub fn move_to_trash(path: &Path) -> Result<PathBuf, String> {
         });
     }
     let top = mount_point(path, meta.dev());
-    let trash = top.join(format!(".Trash-{}", unsafe { libc::getuid() }));
+    let trash = top_trash(&top, unsafe { libc::getuid() })?;
     let recorded = path.strip_prefix(&top).unwrap_or(path);
     put(&trash, recorded, path, rename)
+}
+
+/// A filesystem's own trash, as the spec orders them: the administrator's `$topdir/.Trash/$uid`
+/// when `.Trash` is a real folder with the sticky bit, else `$topdir/.Trash-$uid`. A symlink or
+/// another user's folder in either place could be a trap, so it isn't used.
+fn top_trash(top: &Path, uid: u32) -> Result<PathBuf, String> {
+    let shared = top.join(".Trash");
+    let sticky = shared
+        .symlink_metadata()
+        .is_ok_and(|m| m.is_dir() && m.mode() & 0o1000 != 0);
+    if sticky {
+        let own = shared.join(uid.to_string());
+        if ours_or_missing(&own, uid) {
+            return Ok(own);
+        }
+    }
+    let own = top.join(format!(".Trash-{uid}"));
+    if ours_or_missing(&own, uid) {
+        Ok(own)
+    } else {
+        Err(format!(
+            "{} isn't a folder of yours, so nothing is trashed there",
+            own.display()
+        ))
+    }
+}
+
+/// Missing (put creates it, only for us), or a real folder we own.
+fn ours_or_missing(dir: &Path, uid: u32) -> bool {
+    dir.symlink_metadata().map_or_else(
+        |e| e.kind() == ErrorKind::NotFound,
+        |m| m.is_dir() && m.uid() == uid,
+    )
 }
 
 fn rename(from: &Path, to: &Path) -> Result<(), String> {
@@ -165,6 +198,34 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn a_top_directory_trashes_to_the_admins_sticky_trash_first() {
+        use std::os::unix::fs::PermissionsExt;
+        let top = sandbox("top");
+        let uid = unsafe { libc::getuid() };
+        assert_eq!(top_trash(&top, uid), Ok(top.join(format!(".Trash-{uid}"))));
+
+        // Not sticky: not the administrator's, so it's passed over.
+        fs::create_dir(top.join(".Trash")).unwrap();
+        assert_eq!(top_trash(&top, uid), Ok(top.join(format!(".Trash-{uid}"))));
+
+        fs::set_permissions(top.join(".Trash"), fs::Permissions::from_mode(0o1777)).unwrap();
+        assert_eq!(
+            top_trash(&top, uid),
+            Ok(top.join(".Trash").join(uid.to_string()))
+        );
+        fs::remove_dir_all(&top).unwrap();
+    }
+
+    #[test]
+    fn a_symlinked_trash_is_refused() {
+        let top = sandbox("link");
+        let uid = unsafe { libc::getuid() };
+        std::os::unix::fs::symlink(&top, top.join(format!(".Trash-{uid}"))).unwrap();
+        assert!(top_trash(&top, uid).is_err());
+        fs::remove_dir_all(&top).unwrap();
     }
 
     #[test]
