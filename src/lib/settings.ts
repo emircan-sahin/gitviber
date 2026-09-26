@@ -30,8 +30,14 @@ const DEFAULT_CODE_FONT: keyof typeof CODE_FONTS = IS_MAC ? "SF Mono" : "JetBrai
 export const UI_FONTS = {
   System: '-apple-system, BlinkMacSystemFont, "Geist Variable", "Segoe UI", sans-serif',
   Geist: '"Geist Variable", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+  // Installed with macOS, so nothing to bundle.
+  "Helvetica Neue": '"Helvetica Neue", -apple-system, BlinkMacSystemFont, sans-serif',
+  "Avenir Next": '"Avenir Next", -apple-system, BlinkMacSystemFont, sans-serif',
 } as const;
 export type UiFont = keyof typeof UI_FONTS | "Custom";
+const MAC_ONLY_UI_FONTS: readonly UiFont[] = ["Helvetica Neue", "Avenir Next"];
+/** The presets this platform can show. */
+export const uiFontChoices = (Object.keys(UI_FONTS) as UiFont[]).filter((f) => IS_MAC || !MAC_ONLY_UI_FONTS.includes(f));
 
 /** A typed font name without the characters that could break out of a quoted CSS family name. */
 export const cleanFontName = (name: string) => name.replace(/["'\\;{}]/g, "").trim();
@@ -49,6 +55,7 @@ export const SYNTAX_THEMES = {
   "one-dark-pro": "One Dark Pro",
   "vitesse-dark": "Vitesse Dark",
   "tokyo-night": "Tokyo Night",
+  "solarized-dark": "Solarized Dark",
   "catppuccin-mocha": "Catppuccin Mocha",
   vesper: "Vesper",
   houston: "Houston",
@@ -82,9 +89,27 @@ export interface CustomApp {
   command: string;
 }
 
-export type Appearance = "system" | "light" | "dark" | "dim";
-/** The palettes behind [data-theme] in index.css; dark and dim both count as dark. */
-export type Theme = "light" | "dark" | "dim";
+export type Appearance = "system" | "light" | "dark";
+
+/** The palettes behind [data-theme] in index.css, each with the syntax theme picking it sets. */
+export const THEMES = {
+  dark: { label: "Dark", dark: true, syntax: "dark-plus" },
+  dim: { label: "Dimmed", dark: true, syntax: "dark-plus" },
+  nord: { label: "Nord", dark: true, syntax: "nord" },
+  "catppuccin-mocha": { label: "Catppuccin Mocha", dark: true, syntax: "catppuccin-mocha" },
+  "tokyo-night": { label: "Tokyo Night", dark: true, syntax: "tokyo-night" },
+  "rose-pine": { label: "Rosé Pine", dark: true, syntax: "rose-pine" },
+  "solarized-dark": { label: "Solarized Dark", dark: true, syntax: "solarized-dark" },
+  light: { label: "Light", dark: false, syntax: "github-light-default" },
+  "catppuccin-latte": { label: "Catppuccin Latte", dark: false, syntax: "catppuccin-latte" },
+  "rose-pine-dawn": { label: "Rosé Pine Dawn", dark: false, syntax: "rose-pine-dawn" },
+  "solarized-light": { label: "Solarized Light", dark: false, syntax: "solarized-light" },
+} as const satisfies Record<string, { label: string; dark: boolean; syntax: SyntaxTheme | LightSyntaxTheme }>;
+export type Theme = keyof typeof THEMES;
+export type DarkTheme = { [K in Theme]: (typeof THEMES)[K]["dark"] extends true ? K : never }[Theme];
+export type LightTheme = Exclude<Theme, DarkTheme>;
+export const DARK_THEMES = Object.fromEntries(Object.entries(THEMES).filter(([, t]) => t.dark).map(([id, t]) => [id, t.label])) as Record<DarkTheme, string>;
+export const LIGHT_THEMES = Object.fromEntries(Object.entries(THEMES).filter(([, t]) => !t.dark).map(([id, t]) => [id, t.label])) as Record<LightTheme, string>;
 
 /** Minutes between background fetches; 0 is off. */
 export const FETCH_INTERVALS = [0, 5, 15, 30];
@@ -94,9 +119,10 @@ export interface Settings {
   customCodeFont: string;
   codeFontSize: number;
   lineHeight: number;
+  /** System follows the OS between `lightTheme` and `darkTheme`. */
   appearance: Appearance;
-  /** The dark palette System uses while macOS is dark. */
-  darkVariant: "dark" | "dim";
+  darkTheme: DarkTheme;
+  lightTheme: LightTheme;
   uiFont: UiFont;
   customUiFont: string;
   syntaxTheme: SyntaxTheme;
@@ -154,10 +180,11 @@ const DEFAULTS: Settings = {
   codeFontSize: DEFAULT_FONT_SIZE,
   lineHeight: 1.6,
   appearance: "system",
-  darkVariant: "dark",
+  darkTheme: "dark",
+  lightTheme: "light",
   uiFont: "System",
   customUiFont: "",
-  syntaxTheme: "nord",
+  syntaxTheme: "dark-plus",
   lightSyntaxTheme: "github-light-default",
   sideBySide: false,
   hideUnchanged: false,
@@ -197,12 +224,19 @@ function load(): Settings {
     if (!(s.codeFont in CODE_FONTS) && s.codeFont !== "Custom") s.codeFont = DEFAULTS.codeFont;
     if (!IS_MAC && MAC_ONLY_FONTS.includes(s.codeFont)) s.codeFont = DEFAULTS.codeFont;
     if (!(s.uiFont in UI_FONTS) && s.uiFont !== "Custom") s.uiFont = DEFAULTS.uiFont;
+    if (!IS_MAC && MAC_ONLY_UI_FONTS.includes(s.uiFont)) s.uiFont = DEFAULTS.uiFont;
     s.customCodeFont = typeof s.customCodeFont === "string" ? cleanFontName(s.customCodeFont) : "";
     s.customUiFont = typeof s.customUiFont === "string" ? cleanFontName(s.customUiFont) : "";
     if (!(s.syntaxTheme in SYNTAX_THEMES)) s.syntaxTheme = DEFAULTS.syntaxTheme;
     if (!(s.lightSyntaxTheme in LIGHT_SYNTAX_THEMES)) s.lightSyntaxTheme = DEFAULTS.lightSyntaxTheme;
-    if (!["system", "light", "dark", "dim"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
-    if (!["dark", "dim"].includes(s.darkVariant)) s.darkVariant = DEFAULTS.darkVariant;
+    // Before the named themes, Dimmed was an appearance of its own and System's dark a darkVariant.
+    const old = s as { appearance: string; darkVariant?: string };
+    if (old.appearance === "dim" || (old.appearance === "system" && old.darkVariant === "dim" && s.darkTheme === DEFAULTS.darkTheme)) s.darkTheme = "dim";
+    if (old.appearance === "dim") s.appearance = "dark";
+    delete old.darkVariant;
+    if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
+    if (!(s.darkTheme in DARK_THEMES)) s.darkTheme = DEFAULTS.darkTheme;
+    if (!(s.lightTheme in LIGHT_THEMES)) s.lightTheme = DEFAULTS.lightTheme;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
@@ -247,8 +281,8 @@ let resolved = resolve();
 const listeners = new Set<() => void>();
 
 function resolve(): ResolvedSettings {
-  const theme = current.appearance !== "system" ? current.appearance : systemDark.matches ? current.darkVariant : "light";
-  const dark = theme !== "light";
+  const dark = current.appearance === "system" ? systemDark.matches : current.appearance === "dark";
+  const theme = dark ? current.darkTheme : current.lightTheme;
   return { ...current, theme, dark, codeTheme: dark ? current.syntaxTheme : current.lightSyntaxTheme };
 }
 

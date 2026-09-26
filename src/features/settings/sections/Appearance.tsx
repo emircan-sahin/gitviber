@@ -1,14 +1,18 @@
 import { IS_MAC } from "@/lib/platform";
 import {
   type Appearance,
+  DARK_THEMES,
+  type DarkTheme,
   LIGHT_SYNTAX_THEMES,
+  LIGHT_THEMES,
   type LightSyntaxTheme,
-  type Settings,
+  type LightTheme,
   SYNTAX_THEMES,
   type SyntaxTheme,
-  UI_FONTS,
+  THEMES,
   UI_SCALES,
   type UiFont,
+  uiFontChoices,
   updateSettings,
   useSettings,
 } from "@/lib/settings";
@@ -22,7 +26,7 @@ export function AppearanceSection() {
   const s = useSettings();
   return (
     <>
-      <Field label="Theme" hint={`System follows ${DESKTOP}. Dimmed is a softer, lighter dark.`}>
+      <Field label="Theme" hint={`System follows ${DESKTOP} between the light and dark themes below.`}>
         <Segmented<Appearance>
           value={s.appearance}
           onChange={(v) => updateSettings({ appearance: v })}
@@ -30,21 +34,22 @@ export function AppearanceSection() {
             { value: "system", label: "System" },
             { value: "light", label: "Light" },
             { value: "dark", label: "Dark" },
-            { value: "dim", label: "Dimmed" },
           ]}
           variant="field"
         />
       </Field>
-      {s.appearance === "system" && (
-        <Field label="Dark variant" hint={`The dark theme System uses while ${DESKTOP} is dark.`}>
-          <Segmented<Settings["darkVariant"]>
-            value={s.darkVariant}
-            onChange={(v) => updateSettings({ darkVariant: v })}
-            options={[
-              { value: "dark", label: "Dark" },
-              { value: "dim", label: "Dimmed" },
-            ]}
-            variant="field"
+      {/* Picking a theme picks its own syntax theme too; either can be changed after. */}
+      {s.appearance !== "light" && (
+        <Field label="Dark theme" hint="The whole app's colors while it's dark. Dimmed is a softer, lighter dark.">
+          <OptionSelect value={s.darkTheme} options={DARK_THEMES} onChange={(v) => updateSettings({ darkTheme: v as DarkTheme, syntaxTheme: THEMES[v as DarkTheme].syntax })} />
+        </Field>
+      )}
+      {s.appearance !== "dark" && (
+        <Field label="Light theme" hint="The whole app's colors while it's light.">
+          <OptionSelect
+            value={s.lightTheme}
+            options={LIGHT_THEMES}
+            onChange={(v) => updateSettings({ lightTheme: v as LightTheme, lightSyntaxTheme: THEMES[v as LightTheme].syntax })}
           />
         </Field>
       )}
@@ -57,7 +62,7 @@ export function AppearanceSection() {
       </Field>
       <Field label="Interface font" hint="The code font is under Editor.">
         <FontPicker
-          fonts={Object.keys(UI_FONTS)}
+          fonts={uiFontChoices}
           value={s.uiFont}
           custom={s.customUiFont}
           onChange={(uiFont, customUiFont) => updateSettings({ uiFont: uiFont as UiFont, customUiFont })}

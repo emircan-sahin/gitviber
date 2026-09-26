@@ -1,7 +1,7 @@
-// The terminal's look: the code view's font, the app's colors (index.css), ANSI colors per light or dark.
+// The terminal's look: the code view's font, the app's colors (index.css), ANSI colors per theme.
 import type { ISearchDecorationOptions } from "@xterm/addon-search";
 import type { ITerminalOptions } from "@xterm/xterm";
-import { codeFontFamily, getSettings } from "../settings";
+import { codeFontFamily, getSettings, type Theme } from "../settings";
 import { cssVar, toHex } from "../ui/color";
 
 const ANSI_DARK = {
@@ -42,6 +42,26 @@ const ANSI_LIGHT = {
   brightWhite: "#8c959f",
 };
 
+const NAMES = ["black", "red", "green", "yellow", "blue", "magenta", "cyan", "white"] as const;
+/** Eight colors and their eight bright ones, in xterm's order. */
+const ansi = (normal: string, bright: string) => {
+  const [n, b] = [normal.split(" "), bright.split(" ")];
+  return Object.fromEntries(NAMES.flatMap((name, i) => [[name, n[i]], [`bright${name[0].toUpperCase()}${name.slice(1)}`, b[i]]]));
+};
+
+// Each named theme's own terminal colors (its VS Code theme's terminal.ansi*).
+const SOLARIZED = ansi("#073642 #dc322f #859900 #b58900 #268bd2 #d33682 #2aa198 #eee8d5", "#002b36 #cb4b16 #586e75 #657b83 #839496 #6c71c4 #93a1a1 #fdf6e3");
+const ANSI: Partial<Record<Theme, Record<string, string>>> = {
+  nord: ansi("#3b4252 #bf616a #a3be8c #ebcb8b #81a1c1 #b48ead #88c0d0 #e5e9f0", "#4c566a #bf616a #a3be8c #ebcb8b #81a1c1 #b48ead #8fbcbb #eceff4"),
+  "catppuccin-mocha": ansi("#45475a #f38ba8 #a6e3a1 #f9e2af #89b4fa #f5c2e7 #94e2d5 #a6adc8", "#585b70 #f37799 #89d88b #ebd391 #74a8fc #f2aede #6bd7ca #bac2de"),
+  "tokyo-night": ansi("#363b54 #f7768e #73daca #e0af68 #7aa2f7 #bb9af7 #7dcfff #787c99", "#363b54 #f7768e #73daca #e0af68 #7aa2f7 #bb9af7 #7dcfff #acb0d0"),
+  "rose-pine": ansi("#26233a #eb6f92 #31748f #f6c177 #9ccfd8 #c4a7e7 #ebbcba #e0def4", "#908caa #eb6f92 #31748f #f6c177 #9ccfd8 #c4a7e7 #ebbcba #e0def4"),
+  "solarized-dark": SOLARIZED,
+  "catppuccin-latte": ansi("#5c5f77 #d20f39 #40a02b #df8e1d #1e66f5 #ea76cb #179299 #acb0be", "#6c6f85 #de293e #49af3d #eea02d #456eff #fe85d8 #2d9fa8 #bcc0cc"),
+  "rose-pine-dawn": ansi("#f2e9e1 #b4637a #286983 #ea9d34 #56949f #907aa9 #d7827e #575279", "#797593 #b4637a #286983 #ea9d34 #56949f #907aa9 #d7827e #575279"),
+  "solarized-light": SOLARIZED,
+};
+
 /** Styled like the code view: its font and size, the app's own background and accents. */
 export function terminalOptions(): ITerminalOptions {
   const s = getSettings();
@@ -51,7 +71,7 @@ export function terminalOptions(): ITerminalOptions {
     // The code view's 1.6 is for reading; TUIs draw box lines that need to touch.
     lineHeight: 1.2,
     theme: {
-      ...(s.dark ? ANSI_DARK : ANSI_LIGHT),
+      ...(ANSI[s.theme] ?? (s.dark ? ANSI_DARK : ANSI_LIGHT)),
       background: cssVar("--background"),
       foreground: cssVar("--foreground"),
       cursor: cssVar("--primary"),

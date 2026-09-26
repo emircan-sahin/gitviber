@@ -1,9 +1,9 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-/* Dark by default, dimmed and light via [data-theme] (set from settings.ts). Neutral graphite,
-   hard 1px lines, one blue accent. Diff colors are saturated on purpose: changes should be
-   found at a glance. */
+/* Dark by default; dimmed, light and the named themes below via [data-theme] (set from
+   settings.ts). Neutral graphite, hard 1px lines, one blue accent. Diff colors are saturated
+   on purpose: changes should be found at a glance. */
 :root {
   --radius: 4px;
   --sidebar: #0e0e0f;
@@ -124,6 +124,276 @@
   --del-bg: #fdeeee;
   --del-gutter: #fad5d5;
   --del-emph: rgb(207 34 46 / 0.17);
+  color-scheme: light;
+}
+
+/* Named themes, from each one's own VS Code colors (Shiki's copy): surfaces, text, accent, git
+   and diff colors. The sidebar and panel steps are derived where a theme has one background.
+   Text and status colors are nudged to the same AA floor as above, up to --elevated; a light
+   theme's chips keep its original bright colors as fills. Terminal ANSI colors: terminal/theme.ts. */
+:root[data-theme="nord"] {
+  --sidebar: #272c36;
+  --panel: #2b303b;
+  --background: #2e3440;
+  --elevated: #333946;
+  --hover: #d8dee912;
+  --active: #d8dee91c;
+  --border: #3b4252;
+  --border-strong: #434c5e;
+  --foreground: #eceff4;
+  --muted-foreground: #d8dee9;
+  --subtle: #a4adbd;
+  --primary: #88c0d0;
+  --primary-foreground: #2e3440;
+  --ring: #88c0d0;
+  --destructive: #d29097;
+  --added: #a3be8c;
+  --removed: #d29097;
+  --modified: #ebcb8b;
+  --renamed: #ba97b4;
+  --conflict: #d5937e;
+  --hatch: #ffffff08;
+
+  --add-bg: #3b4348;
+  --add-gutter: #414a4c;
+  --add-emph: rgb(163 190 140 / 0.2);
+  --del-bg: #403e4a;
+  --del-gutter: #48434e;
+  --del-emph: rgb(210 144 151 / 0.22);
+}
+
+:root[data-theme="catppuccin-mocha"] {
+  --sidebar: #11111b;
+  --panel: #181825;
+  --background: #1e1e2e;
+  --elevated: #282839;
+  --hover: #cdd6f412;
+  --active: #cdd6f41c;
+  --border: #313244;
+  --border-strong: #45475a;
+  --foreground: #cdd6f4;
+  --muted-foreground: #bac2de;
+  --subtle: #9399b2;
+  --primary: #cba6f7;
+  --primary-foreground: #11111b;
+  --ring: #cba6f7;
+  --destructive: #f38ba8;
+  --added: #a6e3a1;
+  --removed: #f38ba8;
+  --modified: #f9e2af;
+  --renamed: #89b4fa;
+  --conflict: #fab387;
+  --hatch: #ffffff08;
+
+  --add-bg: #2d343b;
+  --add-gutter: #343e40;
+  --add-emph: rgb(166 227 161 / 0.2);
+  --del-bg: #352a3b;
+  --del-gutter: #402f42;
+  --del-emph: rgb(243 139 168 / 0.22);
+}
+
+:root[data-theme="tokyo-night"] {
+  --sidebar: #16161e;
+  --panel: #181922;
+  --background: #1a1b26;
+  --elevated: #1f2335;
+  --hover: #c0caf510;
+  --active: #c0caf51a;
+  --border: #232433;
+  --border-strong: #2f3549;
+  --foreground: #c0caf5;
+  --muted-foreground: #a9b1d6;
+  --subtle: #8689a3;
+  --primary: #7aa2f7;
+  --primary-foreground: #1a1b26;
+  --ring: #7aa2f7;
+  --destructive: #f7768e;
+  --added: #9ece6a;
+  --removed: #f7768e;
+  --modified: #e0af68;
+  --renamed: #bb9af7;
+  --conflict: #ff9e64;
+  --hatch: #ffffff08;
+
+  --add-bg: #292f2d;
+  --add-gutter: #2f3831;
+  --add-emph: rgb(158 206 106 / 0.2);
+  --del-bg: #322531;
+  --del-gutter: #3d2a37;
+  --del-emph: rgb(247 118 142 / 0.22);
+}
+
+:root[data-theme="rose-pine"] {
+  --sidebar: #15131e;
+  --panel: #171521;
+  --background: #191724;
+  --elevated: #1f1d2e;
+  --hover: #6e6a861a;
+  --active: #6e6a8633;
+  --border: #26233a;
+  --border-strong: #403d52;
+  --foreground: #e0def4;
+  --muted-foreground: #b8b5d0;
+  --subtle: #908caa;
+  --primary: #c4a7e7;
+  --primary-foreground: #191724;
+  --ring: #c4a7e7;
+  --destructive: #eb6f92;
+  --added: #9ccfd8;
+  --removed: #eb6f92;
+  --modified: #ebbcba;
+  --renamed: #c4a7e7;
+  --conflict: #f6c177;
+  --hatch: #ffffff08;
+
+  --add-bg: #272b38;
+  --add-gutter: #2e3441;
+  --add-emph: rgb(156 207 216 / 0.2);
+  --del-bg: #302130;
+  --del-gutter: #3b2536;
+  --del-emph: rgb(235 111 146 / 0.22);
+}
+
+:root[data-theme="solarized-dark"] {
+  --sidebar: #00212b;
+  --panel: #002631;
+  --background: #002b36;
+  --elevated: #073642;
+  --hover: #93a1a112;
+  --active: #93a1a11c;
+  --border: #0a3945;
+  --border-strong: #174652;
+  --foreground: #93a1a1;
+  --muted-foreground: #8d9d9e;
+  --subtle: #8c9ea2;
+  --primary: #268bd2;
+  --primary-foreground: #ffffff;
+  --ring: #268bd2;
+  --destructive: #e87876;
+  --added: #8fa114;
+  --removed: #e87876;
+  --modified: #bc951a;
+  --renamed: #8f93d2;
+  --conflict: #e176aa;
+  --hatch: #ffffff08;
+
+  --add-bg: #103832;
+  --add-gutter: #173e31;
+  --add-emph: rgb(143 161 20 / 0.2);
+  --del-bg: #1a333d;
+  --del-gutter: #253740;
+  --del-emph: rgb(232 120 118 / 0.22);
+}
+
+:root[data-theme="catppuccin-latte"] {
+  --sidebar: #dce0e8;
+  --panel: #e6e9ef;
+  --background: #eff1f5;
+  --elevated: #f7f8fa;
+  --hover: #4c4f690b;
+  --active: #4c4f6914;
+  --border: #ccd0da;
+  --border-strong: #bcc0cc;
+  --foreground: #4c4f69;
+  --muted-foreground: #5c5f77;
+  --subtle: #5f6275;
+  --primary: #8839ef;
+  --primary-foreground: #ffffff;
+  --ring: #8839ef;
+  --destructive: #c50e36;
+  --added: #2d701e;
+  --removed: #c50e36;
+  --modified: #8a5812;
+  --renamed: #1a5ad8;
+  --conflict: #b33641;
+  --added-fill: #40a02b;
+  --removed-fill: #d20f39;
+  --modified-fill: #df8e1d;
+  --renamed-fill: #1e66f5;
+  --conflict-fill: #e64553;
+  --hatch: #0000000a;
+
+  --add-bg: #dce4e0;
+  --add-gutter: #ccdace;
+  --add-emph: rgb(45 112 30 / 0.2);
+  --del-bg: #ecdfe6;
+  --del-gutter: #e8cdd6;
+  --del-emph: rgb(197 14 54 / 0.17);
+  color-scheme: light;
+}
+
+:root[data-theme="rose-pine-dawn"] {
+  --sidebar: #f2e9e1;
+  --panel: #f4ede8;
+  --background: #faf4ed;
+  --elevated: #fffaf3;
+  --hover: #6e6a860d;
+  --active: #6e6a8617;
+  --border: #dfdad9;
+  --border-strong: #cecacd;
+  --foreground: #575279;
+  --muted-foreground: #6a6681;
+  --subtle: #6a6781;
+  --primary: #286983;
+  --primary-foreground: #ffffff;
+  --ring: #286983;
+  --destructive: #975366;
+  --added: #417079;
+  --removed: #975366;
+  --modified: #925856;
+  --renamed: #736287;
+  --conflict: #8c5e1f;
+  --added-fill: #56949f;
+  --removed-fill: #b4637a;
+  --modified-fill: #d7827e;
+  --renamed-fill: #907aa9;
+  --conflict-fill: #ea9d34;
+  --hatch: #0000000a;
+
+  --add-bg: #e8e7e1;
+  --add-gutter: #d9dcd8;
+  --add-emph: rgb(65 112 121 / 0.2);
+  --del-bg: #f2e7e2;
+  --del-gutter: #eadad7;
+  --del-emph: rgb(151 83 102 / 0.17);
+  color-scheme: light;
+}
+
+:root[data-theme="solarized-light"] {
+  --sidebar: #eee8d5;
+  --panel: #f5efdc;
+  --background: #fdf6e3;
+  --elevated: #fffbf0;
+  --hover: #586e750d;
+  --active: #586e7517;
+  --border: #e4ddc8;
+  --border-strong: #d6cfb8;
+  --foreground: #586e75;
+  --muted-foreground: #576a71;
+  --subtle: #5b6a70;
+  --primary: #268bd2;
+  --primary-foreground: #ffffff;
+  --ring: #268bd2;
+  --destructive: #c22c29;
+  --added: #606e00;
+  --removed: #c22c29;
+  --modified: #826300;
+  --renamed: #5d61a9;
+  --conflict: #ba3072;
+  --added-fill: #859900;
+  --removed-fill: #dc322f;
+  --modified-fill: #b58900;
+  --renamed-fill: #6c71c4;
+  --conflict-fill: #d33682;
+  --hatch: #0000000a;
+
+  --add-bg: #ede8cc;
+  --add-gutter: #e1deba;
+  --add-emph: rgb(96 110 0 / 0.2);
+  --del-bg: #f8e6d4;
+  --del-gutter: #f4d6c5;
+  --del-emph: rgb(194 44 41 / 0.17);
   color-scheme: light;
 }
 
