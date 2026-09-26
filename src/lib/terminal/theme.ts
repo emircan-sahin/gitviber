@@ -68,6 +68,9 @@ export function terminalOptions(): ITerminalOptions {
   return {
     fontFamily: codeFontFamily(s),
     fontSize: s.codeFontSize,
+    fontWeight: s.codeFontWeight,
+    // Bold stays two steps above whatever the text is, so it still stands out at Semibold.
+    fontWeightBold: s.codeFontWeight + 200,
     // The code view's 1.6 is for reading; TUIs draw box lines that need to touch.
     lineHeight: 1.2,
     // As VS Code's terminal does: a theme's own dim colors (Solarized Dark's bright black is its

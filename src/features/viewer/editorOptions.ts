@@ -12,6 +12,7 @@ function common(s: Settings, wrap: boolean): monaco.editor.IEditorOptions & mona
     automaticLayout: true,
     fontFamily: codeFontFamily(s),
     fontSize: s.codeFontSize,
+    fontWeight: String(s.codeFontWeight),
     lineHeight: Math.round(s.codeFontSize * s.lineHeight),
     fontLigatures: s.ligatures,
     wordWrap: wrap ? "on" : "off",

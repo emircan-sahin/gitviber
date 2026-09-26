@@ -267,7 +267,7 @@ function WholeFile({
 
 function useCodeStyle() {
   const s = useSettings();
-  return { fontFamily: codeFontFamily(s), fontSize: s.codeFontSize, lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`, tabSize: TAB } as const;
+  return { fontFamily: codeFontFamily(s), fontSize: s.codeFontSize, fontWeight: s.codeFontWeight, lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`, tabSize: TAB } as const;
 }
 
 function CodeLines({ lines: raw, lang, className }: { lines: string[]; lang: string; className?: string }) {

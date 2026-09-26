@@ -16,6 +16,10 @@ const CODE_FONTS = {
   Monaco: "Monaco, ui-monospace, monospace",
   "Courier New": '"Courier New", ui-monospace, monospace',
 } as const;
+/** The code font's weights, as VS Code's editor.fontWeight; bold text goes two steps up from it. */
+export const CODE_FONT_WEIGHTS = { 300: "Light", 400: "Regular", 500: "Medium", 600: "Semibold" } as const;
+export type CodeFontWeight = keyof typeof CODE_FONT_WEIGHTS;
+
 /** "Custom" is any installed font, by the name in `customCodeFont`. */
 export type CodeFont = keyof typeof CODE_FONTS | "Custom";
 
@@ -118,6 +122,7 @@ export interface Settings {
   codeFont: CodeFont;
   customCodeFont: string;
   codeFontSize: number;
+  codeFontWeight: CodeFontWeight;
   lineHeight: number;
   /** System follows the OS between `lightTheme` and `darkTheme`. */
   appearance: Appearance;
@@ -178,6 +183,7 @@ const DEFAULTS: Settings = {
   codeFont: DEFAULT_CODE_FONT,
   customCodeFont: "",
   codeFontSize: DEFAULT_FONT_SIZE,
+  codeFontWeight: 500,
   lineHeight: 1.6,
   appearance: "system",
   darkTheme: "dark",
@@ -222,6 +228,7 @@ function load(): Settings {
     const raw = localStorage.getItem(KEY);
     const s = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS;
     if (!(s.codeFont in CODE_FONTS) && s.codeFont !== "Custom") s.codeFont = DEFAULTS.codeFont;
+    if (!(s.codeFontWeight in CODE_FONT_WEIGHTS)) s.codeFontWeight = DEFAULTS.codeFontWeight;
     if (!IS_MAC && MAC_ONLY_FONTS.includes(s.codeFont)) s.codeFont = DEFAULTS.codeFont;
     if (!(s.uiFont in UI_FONTS) && s.uiFont !== "Custom") s.uiFont = DEFAULTS.uiFont;
     if (!IS_MAC && MAC_ONLY_UI_FONTS.includes(s.uiFont)) s.uiFont = DEFAULTS.uiFont;

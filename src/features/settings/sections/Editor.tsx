@@ -1,7 +1,7 @@
 import { RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
-import { type CodeFont, codeFontChoices, codeFontFamily, DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
+import { CODE_FONT_WEIGHTS, type CodeFont, type CodeFontWeight, codeFontChoices, codeFontFamily, DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
 import { Field, FontPicker } from "@/features/settings/controls";
@@ -18,6 +18,7 @@ export function EditorSection() {
         style={{
           fontFamily: codeFontFamily(s),
           fontSize: s.codeFontSize,
+          fontWeight: s.codeFontWeight,
           lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`,
           fontVariantLigatures: s.ligatures ? "normal" : "none",
         }}
@@ -47,6 +48,14 @@ export function EditorSection() {
             </Button>
           </Tip>
         </div>
+      </Field>
+      <Field label="Font weight" hint="The code view, diffs and the terminal. Bold text stays bolder.">
+        <Segmented<string>
+          value={String(s.codeFontWeight)}
+          onChange={(v) => updateSettings({ codeFontWeight: Number(v) as CodeFontWeight })}
+          options={Object.entries(CODE_FONT_WEIGHTS).map(([value, label]) => ({ value, label }))}
+          variant="field"
+        />
       </Field>
       <Field label="Line height">
         <Segmented<string>
