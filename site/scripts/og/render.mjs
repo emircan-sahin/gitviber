@@ -168,7 +168,8 @@ try {
 
   // Uploaded by hand in the repo's Settings → Social preview, and shown at the top of the README.
   const en = copy("en");
-  await shoot(page, path.join(assets, "social-preview.png"), { kind: "hero", width: 1280, height: 640, stageTop: 48, ...common, ...en });
+  // At 2x: GitHub shows it past 1280px wide on retina screens, and at 1x it was visibly soft.
+  await shoot(page, path.join(assets, "social-preview.png"), { kind: "hero", width: 1280, height: 640, stageTop: 48, scale: 2, ...common, ...en });
   await shoot(page, path.join(assets, "banner.png"), { kind: "banner", width: 1280, height: 400, scale: 2, ...common, ...en });
 } finally {
   await close();
