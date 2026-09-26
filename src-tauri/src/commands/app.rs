@@ -1,5 +1,5 @@
 use crate::state::{blocking, AppState, Res};
-use crate::{errors, git, launch, menu, process, updates};
+use crate::{clipboard, errors, git, launch, menu, process, updates};
 use std::path::Path;
 use tauri::{AppHandle, Manager, State};
 
@@ -19,6 +19,17 @@ pub fn pty_spawn(
 #[tauri::command]
 pub fn pty_write(state: State<'_, AppState>, id: u32, data: String) -> Res<()> {
     state.ptys.write(id, &data)
+}
+
+/// Sync, so it runs on the main thread, where AppKit's pasteboard belongs.
+#[tauri::command]
+pub fn terminal_paste() -> Res<clipboard::Paste> {
+    clipboard::read()
+}
+
+#[tauri::command]
+pub fn keep_dropped(paths: Vec<String>) -> Vec<String> {
+    clipboard::keep_dropped(paths)
 }
 
 #[tauri::command]

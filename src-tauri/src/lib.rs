@@ -1,4 +1,5 @@
 pub mod askpass;
+mod clipboard;
 mod commands;
 mod definitions;
 #[cfg(debug_assertions)]
@@ -246,6 +247,8 @@ pub fn run() {
             commands::app::pty_write,
             commands::app::pty_resize,
             commands::app::pty_kill,
+            commands::app::terminal_paste,
+            commands::app::keep_dropped,
             commands::app::pty_busy,
             commands::app::update_mode
         ])

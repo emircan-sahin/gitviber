@@ -14,6 +14,9 @@ import { isInside } from "../path";
 import { readJson } from "../storage";
 import { setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
+import { pathPastes } from "./paste";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { IS_MAC } from "../platform";
 
 /**
  * Terminals live here, not in React: switching worktrees remounts the whole workspace, and
@@ -211,6 +214,18 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
     if (p.pty !== null) void pty.resize(p.pty, cols, rows).catch(() => {});
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
+  // ⌘V reads the pasteboard natively (clipboard.rs): the webview's paste carries only text, so a
+  // copied image or Finder file pasted nothing. Ahead of xterm's own handler on its text area.
+  if (IS_MAC)
+    host.addEventListener(
+      "paste",
+      (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        void pasteInto(p);
+      },
+      true,
+    );
   // ⌘ keys are the app's shortcuts (copy and paste arrive as clipboard events, not keys),
   // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, ⌃Tab or ⌃1 run
   // their commands, and the panel's own keys stay with it whatever they're rebound to.
@@ -225,6 +240,44 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   });
   return { id, cwd, title: "" };
 }
+
+async function pasteInto(p: Pane) {
+  const got = await pty.paste().catch(() => null);
+  if (!got) return;
+  if (got.kind === "text") p.term.paste(got.text);
+  else if (got.kind === "files") pastePaths(p, got.paths);
+  else if (got.kind === "image") pastePaths(p, [got.path]);
+}
+
+/** Paths as the AI CLIs take them: each its own (bracketed) paste, never typed as keys. */
+function pastePaths(p: Pane, paths: string[]) {
+  for (const text of pathPastes(paths)) p.term.paste(text);
+}
+
+// Files dropped on a pane paste their paths into it (Tauri hands over the paths, the page only
+// their names). The pane under the pointer is outlined while they're dragged.
+let dropTarget: Pane | null = null;
+function paneAt(pos: { x: number; y: number }) {
+  const el = document.elementFromPoint(pos.x / devicePixelRatio, pos.y / devicePixelRatio);
+  return el ? ([...panes.values()].find((p) => p.host.contains(el)) ?? null) : null;
+}
+function markDropTarget(p: Pane | null) {
+  if (p === dropTarget) return;
+  dropTarget?.host.classList.remove("gv-drop-target");
+  p?.host.classList.add("gv-drop-target");
+  dropTarget = p;
+}
+void getCurrentWebview()
+  .onDragDropEvent(async ({ payload }) => {
+    if (payload.type === "leave") return markDropTarget(null);
+    const p = paneAt(payload.position);
+    if (payload.type !== "drop") return markDropTarget(p);
+    markDropTarget(null);
+    if (!p) return;
+    pastePaths(p, await pty.keepDropped(payload.paths).catch(() => payload.paths));
+    p.term.focus();
+  })
+  .catch(() => {});
 
 /**
  * macOS line editing, as in VS Code's terminal. xterm.js sends ⌥← / ⌥→ / ⌥⌦ as

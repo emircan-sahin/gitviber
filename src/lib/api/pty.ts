@@ -13,4 +13,10 @@ export const pty = {
   kill: (id: number) => invoke<void>("pty_kill", { id }),
   /** How many are running a command rather than sitting at the prompt. */
   busy: () => invoke<number>("pty_busy"),
+  /** What ⌘V pastes into a terminal (clipboard.rs): copied files, text, or an image saved as a PNG. */
+  paste: () => invoke<TerminalPaste>("terminal_paste"),
+  /** Dropped files, the ones macOS takes back after the drag copied somewhere that lasts. */
+  keepDropped: (paths: string[]) => invoke<string[]>("keep_dropped", { paths }),
 };
+
+export type TerminalPaste = { kind: "files"; paths: string[] } | { kind: "text"; text: string } | { kind: "image"; path: string } | { kind: "empty" };

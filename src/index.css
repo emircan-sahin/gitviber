@@ -584,3 +584,17 @@
 .monaco-editor .view-overlays .cslr.selected-text {
   z-index: 1;
 }
+
+/* A terminal pane that files are dragged over (lib/terminal/terminals): dropped, their paths paste into it. */
+.gv-drop-target {
+  position: relative;
+}
+.gv-drop-target::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  border: 2px solid var(--primary);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+  pointer-events: none;
+}
