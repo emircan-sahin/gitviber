@@ -231,7 +231,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         />
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
-      <Tip label={terminalOpen ? "Hide terminal" : "Show terminal"} shortcut="⌃`">
+      <Tip label={terminalOpen ? "Hide terminal" : "Show terminal"} shortcut={useShortcut("terminal.toggle")}>
         <Button variant="ghost" size="icon" onClick={() => togglePanel(root)} className={cn(terminalOpen && "text-foreground")}>
           <SquareTerminal />
         </Button>
