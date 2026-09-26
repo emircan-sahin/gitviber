@@ -88,6 +88,14 @@ pub async fn pr_list(
 }
 
 #[tauri::command]
+pub async fn pr_counts(app: AppHandle, target: Option<String>) -> Res<github::StateCounts> {
+    with_github(app, move |gh, r| {
+        github::pull_counts(gh, r, target.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn pr_review_comments(
     app: AppHandle,
     target: Option<String>,
@@ -295,7 +303,7 @@ pub async fn issue_counts(
     app: AppHandle,
     target: Option<String>,
     labels: Vec<String>,
-) -> Res<github::IssueCounts> {
+) -> Res<github::StateCounts> {
     with_github(app, move |gh, r| {
         github::issue_counts(gh, r, target.as_deref(), &labels)
     })

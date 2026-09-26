@@ -290,8 +290,9 @@ pub fn issue_delete(
     Ok(())
 }
 
+/// How many issues or pull requests are open and closed (a PR's closed counts the merged).
 #[derive(Serialize)]
-pub struct IssueCounts {
+pub struct StateCounts {
     pub open: u64,
     pub closed: u64,
 }
@@ -303,7 +304,7 @@ pub fn issue_counts(
     repo: &Path,
     to: Option<&str>,
     labels: &[String],
-) -> Result<IssueCounts, String> {
+) -> Result<StateCounts, String> {
     let r = target(session, repo, to)?;
     let count = |v: &Value| v.as_u64().unwrap_or_default();
     let v = graphql(
@@ -318,7 +319,7 @@ pub fn issue_counts(
     )?;
     let found = &v["repository"];
     if labels.is_empty() {
-        return Ok(IssueCounts {
+        return Ok(StateCounts {
             open: count(&found["open"]["totalCount"]),
             closed: count(&found["closed"]["totalCount"]),
         });
@@ -339,7 +340,7 @@ pub fn issue_counts(
         }",
         json!({ "open": q("open"), "closed": q("closed") }),
     )?;
-    Ok(IssueCounts {
+    Ok(StateCounts {
         open: count(&v["open"]["issueCount"]),
         closed: count(&v["closed"]["issueCount"]),
     })

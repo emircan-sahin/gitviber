@@ -116,12 +116,20 @@ export interface ReviewComment {
   url: string;
 }
 
+/** How many issues or pull requests are open and closed (a PR's closed counts the merged). */
+export interface StateCounts {
+  open: number;
+  closed: number;
+}
+
 export const github = {
   account: () => invoke<GitHubAccount>("gh_account"),
   /** Origin's branches under branch protection (names without "origin/"). */
   protectedBranches: () => invoke<string[]>("gh_protected_branches"),
   /** The most recently updated `pages` × PR_PAGE. */
   list: (target: Target, filter: "open" | "closed" | "all", pages = 1) => invoke<Pull[]>("pr_list", { target, filter, pages }),
+  /** All of them, not just the pages listed. */
+  counts: (target: Target) => invoke<StateCounts>("pr_counts", { target }),
   detail: (target: Target, number: number) => invoke<PullDetail>("pr_detail", { target, number }),
   reviewComments: (target: Target, number: number) => invoke<ReviewComment[]>("pr_review_comments", { target, number }),
   /** On `line` of `path` at the PR's head `commit`, on `side`; with `replyTo`, an answer in that thread. */

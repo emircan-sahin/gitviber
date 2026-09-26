@@ -80,9 +80,14 @@ function PaneHeader({ pane, open, onToggle }: { pane: Pane; open: boolean; onTog
       <button onClick={onToggle} aria-expanded={open} className="flex h-full min-w-0 flex-1 items-center gap-1 pl-1 text-left">
         <ChevronRight className={cn("size-3.5 shrink-0 text-subtle transition-transform", open && "rotate-90")} />
         <span className="shrink-0 text-[10.5px] font-semibold tracking-[0.08em] uppercase">{pane.title}</span>
-        <span className="min-w-0 truncate font-mono text-[10.5px] text-subtle">{pane.detail}</span>
+        {/* Beside the title (past a long detail it went unseen), badged as the tabs' counts are: an open pane's as the active tab's. */}
+        {pane.badge !== undefined && (
+          <span className={cn("shrink-0 rounded-sm px-1 font-mono text-[10px] leading-4 tracking-normal", open ? "bg-modified-fill text-on-status" : "bg-elevated text-muted-foreground")}>
+            {pane.badge}
+          </span>
+        )}
+        <span className="ml-1 min-w-0 truncate font-mono text-[10.5px] text-subtle">{pane.detail}</span>
       </button>
-      {pane.badge !== undefined && <span className="shrink-0 px-1 text-[10.5px] text-subtle tabular-nums">{pane.badge}</span>}
       {/* Like VS Code's pane actions: out of the way until the header is hovered. */}
       {pane.actions && <div className="flex shrink-0 items-center opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">{pane.actions}</div>}
     </div>

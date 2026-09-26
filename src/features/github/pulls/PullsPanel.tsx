@@ -9,7 +9,7 @@ import type { Selection } from "@/lib/repo/selection";
 import { cn } from "@/lib/utils";
 import { RepoPanes } from "@/components/RepoPanes";
 import { ConnectGitHub } from "@/features/github/shared/ConnectGitHub";
-import { type Filter, FilterTabs } from "@/features/github/shared/FilterTabs";
+import { type Filter, filterCounts, FilterTabs } from "@/features/github/shared/FilterTabs";
 import { NewButton } from "@/features/github/shared/NewButton";
 import { pullsChanged } from "@/features/github/shared/changed";
 import { useGitHubAccount, useReloadAll } from "@/features/github/shared/useGitHubAccount";
@@ -56,7 +56,10 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
   const error = failure === undefined ? null : errorMessage(failure);
   const loading = acct.loading || own.loading || up.loading;
 
-  const load = useReloadAll(pullsChanged, acct, own, up);
+  // Counted apart from the list, which holds only the pages loaded.
+  const ownCounts = useGitHubData("pulls:counts:origin", useCallback(() => github.counts(null), []));
+  const upCounts = useGitHubData(upstream ? `pulls:counts:${upstream}` : null, useCallback(() => github.counts(upstream), [upstream]));
+  const load = useReloadAll(pullsChanged, acct, own, up, ownCounts, upCounts);
 
   if (isNotConnected(failure)) return <ConnectGitHub onRetry={load} />;
 
@@ -74,13 +77,17 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
+      {/* A container, so the counts go when it gets narrow (FilterTabs). */}
+      <div className="@container flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
+        {/* Closed is All less Open, so it goes uncounted. A fork's two lists count in their own pane headers,
+            so none show before the account says whether it's one. */}
         <FilterTabs
           value={filter}
           onChange={(f) => {
             setFilter(f);
             setPages({ origin: 1, parent: 1 });
           }}
+          counts={!account || upstream || !ownCounts.data ? undefined : { ...filterCounts(ownCounts.data), closed: undefined }}
         />
         <div className="ml-auto flex items-center gap-0.5">
           <Tip label="Refresh">
@@ -110,6 +117,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
                 id: "origin",
                 title: "Your fork",
                 detail: origin ? fullName(origin.repo) : "",
+                badge: ownCounts.data ? filterCounts(ownCounts.data)[filter] : undefined,
                 actions: <NewButton label={newLabel} disabled={!origin || !canCreate} onClick={() => setCreating(origin)} />,
                 children: ownRows,
               },
@@ -117,6 +125,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
                 id: "parent",
                 title: "Original",
                 detail: upstream,
+                badge: upCounts.data ? filterCounts(upCounts.data)[filter] : undefined,
                 actions: <NewButton label={newLabel} disabled={!canCreate} onClick={() => setCreating(account.parent)} />,
                 children: (
                   <PullRows

@@ -222,6 +222,7 @@ pub fn run() {
             commands::branches::switch_tracking,
             commands::github::gh_add_original_remote,
             commands::github::pr_list,
+            commands::github::pr_counts,
             commands::github::pr_detail,
             commands::github::pr_attachments,
             commands::github::pr_files,

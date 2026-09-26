@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { PullComment, Target } from "./github";
+import type { PullComment, StateCounts, Target } from "./github";
 
 export interface IssueLabel {
   name: string;
@@ -30,18 +30,13 @@ export interface IssueDetail extends Issue {
   closedBy: string | null;
 }
 
-export interface IssueCounts {
-  open: number;
-  closed: number;
-}
-
 export type CloseReason = "completed" | "not_planned";
 
 export const issues = {
   /** `labels`: only issues carrying all of them. */
   list: (target: Target, filter: "open" | "closed" | "all", labels: string[] = []) => invoke<Issue[]>("issue_list", { target, filter, labels }),
   /** How many issues are open and closed, carrying all of `labels`. */
-  counts: (target: Target, labels: string[] = []) => invoke<IssueCounts>("issue_counts", { target, labels }),
+  counts: (target: Target, labels: string[] = []) => invoke<StateCounts>("issue_counts", { target, labels }),
   /** Every label defined in the repository. */
   labels: (target: Target) => invoke<IssueLabel[]>("issue_labels", { target }),
   detail: (target: Target, number: number) => invoke<IssueDetail>("issue_detail", { target, number }),

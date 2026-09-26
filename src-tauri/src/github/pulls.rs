@@ -2,7 +2,7 @@
 
 use super::{
     all_pages, call, fetch_remote, graphql, list_state, pages, repo_ref, string, target, Method,
-    Session, JSON, MAX_PAGES,
+    Session, StateCounts, JSON, MAX_PAGES,
 };
 use crate::git;
 use crate::network::Net;
@@ -72,6 +72,29 @@ pub fn list(
         pages.clamp(1, MAX_PAGES),
     )?;
     Ok(list.iter().map(pull_from).collect())
+}
+
+/// How many pull requests are open and closed: the list holds only the pages loaded so far.
+pub fn pull_counts(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+) -> Result<StateCounts, String> {
+    let r = target(session, repo, to)?;
+    let v = graphql(
+        session,
+        repo,
+        "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
+            open: pullRequests(states: OPEN) { totalCount }
+            closed: pullRequests(states: [CLOSED, MERGED]) { totalCount }
+        } }",
+        json!({ "owner": r.owner, "name": r.name }),
+    )?;
+    let count = |v: &Value| v.as_u64().unwrap_or_default();
+    Ok(StateCounts {
+        open: count(&v["repository"]["open"]["totalCount"]),
+        closed: count(&v["repository"]["closed"]["totalCount"]),
+    })
 }
 
 /// CI's verdict on each commit that has one, as GitHub rolls its checks and statuses up:

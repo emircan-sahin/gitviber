@@ -3,7 +3,7 @@ import { useCallback, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
-import { errorMessage, fullName, type Issue, type IssueCounts, type IssueLabel, isNotConnected, issues, type Target } from "@/lib/api";
+import { errorMessage, fullName, type Issue, type IssueLabel, isNotConnected, issues, type Target } from "@/lib/api";
 import { useGitHubData } from "@/lib/github/githubCache";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { useListNav } from "@/lib/ui/useListNav";
@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { isoToUnix, relativeTime } from "@/lib/format";
 import { NewButton } from "@/features/github/shared/NewButton";
 import { LinkMenu } from "@/features/github/shared/LinkMenu";
-import { type Filter, FilterTabs } from "@/features/github/shared/FilterTabs";
+import { type Filter, filterCounts, FilterTabs } from "@/features/github/shared/FilterTabs";
 import { ConnectGitHub } from "@/features/github/shared/ConnectGitHub";
 import { RepoPanes } from "@/components/RepoPanes";
 import { IssueStateIcon } from "@/features/github/shared/StateBadges";
@@ -21,14 +21,6 @@ import { EmptyNote, ListError, SignedInAs } from "@/features/github/shared/ListN
 import { LabelChip, LabelDot } from "./IssueBadges";
 import { LabelFilter } from "./LabelPicker";
 import { CreateIssueDialog } from "./CreateIssueDialog";
-
-const compact = new Intl.NumberFormat("en", { notation: "compact" });
-/** Each filter's count: "all" is the other two together. */
-const counts = (c: IssueCounts): Record<Filter, string> => ({
-  open: compact.format(c.open),
-  closed: compact.format(c.closed),
-  all: compact.format(c.open + c.closed),
-});
 
 export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; onOpen: (s: Selection, pin?: boolean) => void }) {
   const [filter, setFilter] = useState<Filter>("open");
@@ -67,10 +59,11 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
 
   return (
     <div className="flex h-full flex-col">
-      {/* A container: narrower, the Label and New buttons drop their words, then the counts go (measured: all of it needs ~385px). */}
+      {/* A container: narrower, the Label and New buttons drop their words, then the counts go (measured inside the padding: all of it needs ~385px, the counts ~260px). */}
       <div className="@container flex h-8 shrink-0 items-center gap-1 border-b border-border px-2">
-        {/* Closed is All less Open, so it goes uncounted. A fork's two lists count in their own pane headers. */}
-        <FilterTabs value={filter} onChange={setFilter} counts={parent || !ownCounts.data ? undefined : { ...counts(ownCounts.data), closed: undefined }} />
+        {/* Closed is All less Open, so it goes uncounted. A fork's two lists count in their own pane headers,
+            so none show before the account says whether it's one. */}
+        <FilterTabs value={filter} onChange={setFilter} counts={!account || parent || !origin?.issues || !ownCounts.data ? undefined : { ...filterCounts(ownCounts.data), closed: undefined }} />
         <div className="ml-auto flex items-center gap-0.5">
           <LabelFilter upstream={parent?.issues ? upstream : null} selected={labels} onChange={setLabels} counted={!parent} />
           <Tip label="Refresh">
@@ -119,7 +112,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
                 id: "origin",
                 title: "Your fork",
                 detail: origin ? fullName(origin.repo) : "",
-                badge: origin?.issues && ownCounts.data ? counts(ownCounts.data)[filter] : undefined,
+                badge: origin?.issues && ownCounts.data ? filterCounts(ownCounts.data)[filter] : undefined,
                 actions: origin?.issues && <NewButton label="New issue" onClick={() => setCreating({ target: null })} />,
                 children: origin?.issues ? ownRows(false) : <IssuesOff repo={origin ? fullName(origin.repo) : "your fork"} />,
               },
@@ -127,7 +120,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
                 id: "parent",
                 title: "Original",
                 detail: upstream,
-                badge: parent.issues && upCounts.data ? counts(upCounts.data)[filter] : undefined,
+                badge: parent.issues && upCounts.data ? filterCounts(upCounts.data)[filter] : undefined,
                 actions: parent.issues && <NewButton label="New issue" onClick={() => setCreating({ target: upstream })} />,
                 children: parent.issues ? (
                   <IssueRows items={up.data ?? null} error={up.error === undefined ? null : errorMessage(up.error)} roomy={false} {...rowProps} />
