@@ -4,9 +4,12 @@ import { useI18n } from "../i18n/index.tsx";
 import { LOCALES } from "../i18n/locales.ts";
 import { cx } from "./ui.tsx";
 
-/** Links to the other languages' pages, in the app's dropdown style. `up` opens it above. */
+/**
+ * Links to the other languages' pages, in the app's dropdown style. `up` opens it above. A plain
+ * click swaps the language in place; the links stay real for crawlers and new tabs.
+ */
 export function LanguageMenu({ up }: { up?: boolean }) {
-  const { locale, t } = useI18n();
+  const { locale, t, switchTo } = useI18n();
   const ref = useRef<HTMLDetailsElement>(null);
 
   // <details> doesn't close on its own; an outside click or Escape does here.
@@ -49,6 +52,12 @@ export function LanguageMenu({ up }: { up?: boolean }) {
             hrefLang={l.code}
             lang={l.code}
             aria-current={l.code === locale.code ? "page" : undefined}
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+              e.preventDefault();
+              if (ref.current) ref.current.open = false;
+              switchTo(l);
+            }}
             className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-[13px] text-fg hover:bg-primary hover:text-white"
           >
             <Check className={cx("size-3.5", l.code !== locale.code && "invisible")} />

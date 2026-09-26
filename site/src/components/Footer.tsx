@@ -1,5 +1,6 @@
 import { rich, useI18n } from "../i18n/index.tsx";
-import { release, REPO_URL } from "../release.ts";
+import { AUTHOR, release, REPO_URL } from "../release.ts";
+import { LinkedInIcon, XIcon } from "./icons.tsx";
 import { LanguageMenu } from "./LanguageMenu.tsx";
 
 export function Footer() {
@@ -14,15 +15,25 @@ export function Footer() {
   return (
     <footer className="border-t border-border">
       <div className="mx-auto flex max-w-6xl flex-col gap-5 px-5 py-10 text-[13px] text-subtle sm:flex-row sm:items-center sm:justify-between sm:px-8">
-        <p>
-          {rich(t.footer.made, {
-            author: (
-              <a href="https://github.com/emircan-sahin" className="text-muted transition hover:text-fg">
-                Emircan Sahin
-              </a>
-            ),
-          })}
-        </p>
+        <div className="flex items-center gap-4">
+          <p>
+            {rich(t.footer.made, {
+              author: (
+                <a href={AUTHOR.github} className="text-muted transition hover:text-fg">
+                  {AUTHOR.name}
+                </a>
+              ),
+            })}
+          </p>
+          <span className="flex items-center gap-3 text-muted [&_a]:transition [&_a:hover]:text-fg">
+            <a href={AUTHOR.x} aria-label={t.nav.x}>
+              <XIcon className="size-[14px]" />
+            </a>
+            <a href={AUTHOR.linkedin} aria-label={t.nav.linkedin}>
+              <LinkedInIcon className="size-[15px]" />
+            </a>
+          </span>
+        </div>
         <nav aria-label={t.footer.project} className="flex flex-wrap items-center gap-x-6 gap-y-3">
           {links.map((l) => (
             <a key={l.label} href={l.href} className="transition hover:text-fg">

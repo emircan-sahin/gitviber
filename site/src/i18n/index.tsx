@@ -1,15 +1,47 @@
-import { createContext, Fragment, useContext, type ReactNode } from "react";
-import type { Locale, Messages } from "./locales.ts";
+import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { loadMessages, localeFromPath, type Locale, type Messages } from "./locales.ts";
 
 interface I18n {
   locale: Locale;
   t: Messages;
+  /** Swaps the page's language in place and moves the URL to that locale's page. */
+  switchTo: (locale: Locale) => void;
 }
 
 const Context = createContext<I18n | null>(null);
 
 export function I18nProvider({ locale, messages, children }: { locale: Locale; messages: Messages; children: ReactNode }) {
-  return <Context.Provider value={{ locale, t: messages }}>{children}</Context.Provider>;
+  const [current, setCurrent] = useState({ locale, t: messages });
+  const code = useRef(locale.code);
+
+  const show = useCallback(async (next: Locale) => {
+    if (next.code === code.current) return;
+    code.current = next.code;
+    const t = await loadMessages(next);
+    // A quicker second pick wins.
+    if (code.current !== next.code) return;
+    setCurrent({ locale: next, t });
+    document.documentElement.lang = next.code;
+    document.title = t.meta.title;
+  }, []);
+
+  const switchTo = useCallback(
+    (next: Locale) => {
+      if (next.code === code.current) return;
+      history.pushState(null, "", `${import.meta.env.BASE_URL}${next.path}${location.hash}`);
+      void show(next);
+    },
+    [show],
+  );
+
+  // Back and forward move between the locales' pages too.
+  useEffect(() => {
+    const onPop = () => void show(localeFromPath(location.pathname, import.meta.env.BASE_URL));
+    addEventListener("popstate", onPop);
+    return () => removeEventListener("popstate", onPop);
+  }, [show]);
+
+  return <Context.Provider value={{ ...current, switchTo }}>{children}</Context.Provider>;
 }
 
 export function useI18n() {

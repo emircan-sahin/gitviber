@@ -18,15 +18,28 @@ interface GitHubRelease {
   assets: { name: string; browser_download_url: string }[];
 }
 
+const headers = () => {
+  const token = process.env.GITHUB_TOKEN;
+  return { Accept: "application/vnd.github+json", ...(token && { Authorization: `Bearer ${token}` }) };
+};
+
+/** The repo's star count at build time; the page refreshes it live (src/hooks/useStars.ts). */
+export async function repoStars(): Promise<number | null> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}`, { headers: headers(), signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+    return ((await res.json()) as { stargazers_count: number }).stargazers_count;
+  } catch (err) {
+    console.warn(`site: no star count (${(err as Error).message})`);
+    return null;
+  }
+}
+
 /** The latest published release, or links to the releases page when GitHub can't be reached. */
 export async function latestRelease(): Promise<Release> {
   const fallback: Release = { version: null, url: RELEASES_URL, assets: {} };
   try {
-    const token = process.env.GITHUB_TOKEN;
-    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
-      headers: { Accept: "application/vnd.github+json", ...(token && { Authorization: `Bearer ${token}` }) },
-      signal: AbortSignal.timeout(8000),
-    });
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: headers(), signal: AbortSignal.timeout(8000) });
     if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
     const data = (await res.json()) as GitHubRelease;
     const assets: Release["assets"] = {};

@@ -1,7 +1,9 @@
+import { Star } from "lucide-react";
 import { useEffect, useRef } from "react";
-import { useI18n } from "../i18n/index.tsx";
-import { REPO_URL } from "../release.ts";
-import { GitHubIcon, Logo } from "./icons.tsx";
+import { formatStars, useStars } from "../hooks/useStars.ts";
+import { rich, useI18n } from "../i18n/index.tsx";
+import { AUTHOR, REPO_URL } from "../release.ts";
+import { GitHubIcon, LinkedInIcon, Logo, XIcon } from "./icons.tsx";
 import { LanguageMenu } from "./LanguageMenu.tsx";
 
 /** How far down the page you are, as a line along the header's bottom edge. */
@@ -25,6 +27,33 @@ function usePageProgress() {
   return ref;
 }
 
+const iconLink = "grid size-9 place-items-center rounded-md text-muted transition hover:bg-hover hover:text-fg";
+
+/** The repo link, with its live star count once there is one. */
+function Stars() {
+  const { t } = useI18n();
+  const stars = useStars();
+  if (stars === null) {
+    return (
+      <a href={REPO_URL} aria-label={t.nav.github} className={iconLink}>
+        <GitHubIcon className="size-[18px]" />
+      </a>
+    );
+  }
+  const count = <b className="font-semibold text-fg">{formatStars(stars)}</b>;
+  return (
+    <a
+      href={REPO_URL}
+      aria-label={t.nav.github}
+      className="mr-1 flex h-8 items-center gap-1.5 rounded-full border border-border-strong bg-panel px-3 text-[13px] text-muted transition hover:border-subtle hover:text-fg"
+    >
+      <Star className="size-3.5 fill-modified text-modified" />
+      <span className="hidden sm:inline">{rich(t.nav.stars, { count })}</span>
+      <span className="sm:hidden">{count}</span>
+    </a>
+  );
+}
+
 export function TopBar() {
   const { t } = useI18n();
   const progress = usePageProgress();
@@ -35,27 +64,28 @@ export function TopBar() {
   ];
   return (
     <header className="fixed inset-x-0 top-0 z-40 border-b border-border/80 bg-page/70 backdrop-blur-xl backdrop-saturate-150">
-      <div className="mx-auto flex h-13 max-w-6xl items-center gap-8 px-5 sm:px-8">
+      <div className="mx-auto flex h-13 max-w-6xl items-center gap-6 px-5 sm:px-8">
         <a href="#top" className="flex items-center gap-2 text-[15px] font-semibold">
           <Logo className="size-6" />
           GitViber
         </a>
-        <nav aria-label={t.nav.sections} className="ml-auto hidden gap-7 text-[13px] text-muted sm:flex">
+        <span aria-hidden className="hidden h-5 w-px bg-border-strong sm:block" />
+        <nav aria-label={t.nav.sections} className="hidden gap-6 text-[13px] text-muted sm:flex">
           {links.map((l) => (
             <a key={l.href} href={l.href} className="transition hover:text-fg">
               {l.label}
             </a>
           ))}
         </nav>
-        <div className="-mr-2 ml-auto flex items-center gap-1 sm:ml-0">
-          <LanguageMenu />
-          <a
-            href={REPO_URL}
-            aria-label={t.nav.github}
-            className="grid size-9 place-items-center rounded-md text-muted transition hover:bg-hover hover:text-fg"
-          >
-            <GitHubIcon className="size-[18px]" />
+        <div className="-mr-2 ml-auto flex items-center gap-1">
+          <Stars />
+          <a href={AUTHOR.x} aria-label={t.nav.x} className={`${iconLink} max-sm:hidden`}>
+            <XIcon className="size-[15px]" />
           </a>
+          <a href={AUTHOR.linkedin} aria-label={t.nav.linkedin} className={`${iconLink} max-sm:hidden`}>
+            <LinkedInIcon className="size-[16px]" />
+          </a>
+          <LanguageMenu />
         </div>
       </div>
       <div
