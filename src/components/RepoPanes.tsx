@@ -4,6 +4,7 @@ import { useDefaultLayout } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
 import { readJson, stringList, writeJson } from "@/lib/storage";
+import { CountBadge } from "./CountBadge";
 
 export interface Pane {
   id: string;
@@ -81,11 +82,7 @@ function PaneHeader({ pane, open, onToggle }: { pane: Pane; open: boolean; onTog
         <ChevronRight className={cn("size-3.5 shrink-0 text-subtle transition-transform", open && "rotate-90")} />
         <span className="shrink-0 text-[10.5px] font-semibold tracking-[0.08em] uppercase">{pane.title}</span>
         {/* Beside the title (past a long detail it went unseen), badged as the tabs' counts are: an open pane's as the active tab's. */}
-        {pane.badge !== undefined && (
-          <span className={cn("shrink-0 rounded-sm px-1 font-mono text-[10px] leading-4 tracking-normal", open ? "bg-modified-fill text-on-status" : "bg-elevated text-muted-foreground")}>
-            {pane.badge}
-          </span>
-        )}
+        {pane.badge !== undefined && <CountBadge active={open}>{pane.badge}</CountBadge>}
         <span className="ml-1 min-w-0 truncate font-mono text-[10.5px] text-subtle">{pane.detail}</span>
       </button>
       {/* Like VS Code's pane actions: out of the way until the header is hovered. */}

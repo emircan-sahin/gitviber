@@ -1,5 +1,6 @@
 import type { StateCounts } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { CountBadge } from "@/components/CountBadge";
 
 export type Filter = "open" | "closed" | "all";
 
@@ -53,9 +54,9 @@ export function FilterTabs<F extends Filter>({
             {f}
             {counts?.[f] !== undefined && (
               // Counts go first when the header runs out of room (the panels' headers are containers).
-              <span className={cn("rounded-sm px-1 font-mono text-[10px] leading-4 @max-[260px]:hidden", on ? "bg-modified-fill text-on-status" : "bg-elevated text-muted-foreground")}>
+              <CountBadge active={on} className="@max-[260px]:hidden">
                 {counts[f]}
-              </span>
+              </CountBadge>
             )}
           </button>
         );

@@ -1,5 +1,5 @@
 /**
- * Paths and URLs that ⌘-click opens in the terminal, and the paths it opens in the code view (whose
+ * Paths and URLs that ⌘-click (Ctrl off macOS) opens in the terminal, and the paths it opens in the code view (whose
  * names go to their definitions, lib/editor/definitions): found a line at a time (only the line under the
  * pointer is asked for), and resolved against the repo's files or a commit's tree. Pure, so it
  * runs under node:test.

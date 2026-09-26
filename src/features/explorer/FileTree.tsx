@@ -46,6 +46,9 @@ const INDENT = 12;
 
 const isInside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 
+/** `list` without the entries inside a folder also in it: trashing the folder takes them along. */
+const topmost = (list: Entry[]) => list.filter((e) => !list.some((d) => d !== e && d.isDir && isInside(e.path, d.path)));
+
 /** The filter lists this many files at most: the tree renders every row it has. */
 const MAX_MATCHES = 1000;
 
@@ -147,6 +150,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     collapseAll: () => {
       filter.close();
       setExpanded(new Set([""]));
+      setPicked(null);
       setSelected((s) => s && s.split("/")[0]);
     },
     reveal: (path) => {
@@ -162,6 +166,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   // Leaving the filter, the file picked in it stays picked, shown in its folders.
   const wasFiltering = useRef(false);
   useEffect(() => {
+    // Rows picked on one side of the filter aren't what the other side shows.
+    setPicked(null);
     if (wasFiltering.current && !filtering && selected) openTo(selected);
     wasFiltering.current = filtering;
     // Only on the way out.
@@ -199,17 +205,21 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     const [i, j] = [rows.findIndex((r) => r.entry.path === from), rows.findIndex((r) => r.entry.path === to)];
     return new Set(i < 0 || j < 0 ? [to] : rows.slice(Math.min(i, j), Math.max(i, j) + 1).map((r) => r.entry.path));
   };
+  const shows = (path: string | null | undefined): path is string => !!path && rows.some((r) => r.entry.path === path);
+  /** Where a ⇧-range starts: the last anchor while its row still shows (a collapsed folder or the filter can hide it). */
+  const anchorFor = (fallback: string) => (shows(picked?.anchor) ? picked.anchor : fallback);
 
   // ⌘-click (Ctrl off macOS) toggles a row, ⇧-click picks the range from the anchor; neither opens it, as in VS Code.
+  // The ⌘ check comes first, as in the Changes panel.
   const click = (e: Entry, ev: React.MouseEvent) => {
     setSelected(e.path);
-    if (ev.shiftKey) {
-      const anchor = picked?.anchor ?? selected ?? e.path;
-      setPicked({ paths: range(anchor, e.path), anchor });
-    } else if (primaryKey(ev)) {
+    if (primaryKey(ev)) {
       const paths = new Set(picked?.paths ?? (selected ? [selected] : []));
       if (!paths.delete(e.path)) paths.add(e.path);
       setPicked({ paths, anchor: e.path });
+    } else if (ev.shiftKey) {
+      const anchor = anchorFor(shows(selected) ? selected : e.path);
+      setPicked({ paths: range(anchor, e.path), anchor });
     } else {
       setPicked(null);
       activate(e);
@@ -289,8 +299,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   };
 
   const remove = async (list: Entry[]) => {
-    // A picked folder takes what's picked inside it along.
-    const top = list.filter((e) => !list.some((d) => d !== e && d.isDir && isInside(e.path, d.path)));
+    const top = topmost(list);
     const [one] = top;
     if (!one) return;
     const many = top.length > 1;
@@ -355,7 +364,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     const move = (to: number) => {
       const row = rows[Math.max(0, Math.min(rows.length - 1, to))];
       if (!row) return;
-      const anchor = picked?.anchor ?? cur?.path ?? row.entry.path;
+      const anchor = anchorFor(cur?.path ?? row.entry.path);
       setPicked(ev.shiftKey ? { paths: range(anchor, row.entry.path), anchor } : null);
       setSelected(row.entry.path);
     };
@@ -378,7 +387,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       } else if (!shown.expanded.has(cur.path)) setOpen(cur.path, true);
       else if (rows[i + 1] && dirname(rows[i + 1].entry.path) === cur.path) move(i + 1);
     } else if (ev.key === "ArrowLeft") {
-      if (cur.isDir && shown.expanded.has(cur.path) && !matching) setOpen(cur.path, false);
+      if (cur.isDir && shown.expanded.has(cur.path) && !matching) {
+        setOpen(cur.path, false);
+        setPicked(null);
+      }
       else if (dirname(cur.path)) setSelected(dirname(cur.path));
     } else if (ev.key === "Enter") activate(cur, true);
     else handled = false;
@@ -539,11 +551,11 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
             )}
             {targetDiscardable.length > 0 && (
               <ContextMenuItem onSelect={() => discard(targetDiscardable)}>
-                <Undo2 /> {multi ? `Discard Changes to ${targetDiscardable.length} Files` : "Discard Changes"}
+                <Undo2 /> {targetDiscardable.length > 1 ? `Discard Changes to ${targetDiscardable.length} Files` : "Discard Changes"}
               </ContextMenuItem>
             )}
             <ContextMenuItem onSelect={() => remove(targets)}>
-              <Trash2 /> {multi ? `Delete ${targets.length} Items` : "Delete"}
+              <Trash2 /> {topmost(targets).length > 1 ? `Delete ${topmost(targets).length} Items` : "Delete"}
               {deleteKey && <ContextMenuShortcut>{deleteKey}</ContextMenuShortcut>}
             </ContextMenuItem>
           </>

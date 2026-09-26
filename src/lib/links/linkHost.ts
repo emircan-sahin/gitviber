@@ -89,7 +89,7 @@ export function openTarget(target: Target, focus = false) {
 }
 
 /**
- * ⌘-click in terminal output: URLs, and repo files by paths from the shell's starting folder
+ * ⌘-click (Ctrl off macOS) in terminal output: URLs, and repo files by paths from the shell's starting folder
  * (it can't be told where a `cd` went) or the repo root, with a line when one follows.
  */
 export function terminalLinks(term: Terminal, cwd: string): IDisposable {

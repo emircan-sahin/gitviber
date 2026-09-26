@@ -37,6 +37,7 @@ import { TopBar } from "@/features/topbar/TopBar";
 import { Viewer } from "@/features/viewer/Viewer";
 import { prefetchSelection, resetPairCache } from "@/features/viewer/diffPairs";
 import { openEdits } from "@/lib/editor/edits";
+import { CountBadge } from "@/components/CountBadge";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
 type ListTab = (typeof LIST_TABS)[number];
@@ -555,7 +556,7 @@ function ListTabButton({ active, onClick, count, children }: { active: boolean; 
       )}
     >
       {children}
-      {!!count && <span className={cn("rounded-sm px-1 font-mono text-[10px] leading-4", active ? "bg-modified-fill text-on-status" : "bg-elevated text-muted-foreground")}>{count}</span>}
+      {!!count && <CountBadge active={active}>{count}</CountBadge>}
     </button>
   );
 }
