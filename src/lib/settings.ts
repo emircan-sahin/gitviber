@@ -231,7 +231,8 @@ function load(): Settings {
     if (!(s.lightSyntaxTheme in LIGHT_SYNTAX_THEMES)) s.lightSyntaxTheme = DEFAULTS.lightSyntaxTheme;
     // Before the named themes, Dimmed was an appearance of its own and System's dark a darkVariant.
     const old = s as { appearance: string; darkVariant?: string };
-    if (old.appearance === "dim" || (old.appearance === "system" && old.darkVariant === "dim" && s.darkTheme === DEFAULTS.darkTheme)) s.darkTheme = "dim";
+    // Dark always meant the graphite dark; Light switched to System later took the variant.
+    if (old.appearance === "dim" || (old.appearance !== "dark" && old.darkVariant === "dim" && s.darkTheme === DEFAULTS.darkTheme)) s.darkTheme = "dim";
     if (old.appearance === "dim") s.appearance = "dark";
     delete old.darkVariant;
     if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;

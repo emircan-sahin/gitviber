@@ -70,6 +70,9 @@ export function terminalOptions(): ITerminalOptions {
     fontSize: s.codeFontSize,
     // The code view's 1.6 is for reading; TUIs draw box lines that need to touch.
     lineHeight: 1.2,
+    // As VS Code's terminal does: a theme's own dim colors (Solarized Dark's bright black is its
+    // background) are lifted until they read, so autosuggestions and dimmed output show.
+    minimumContrastRatio: 4.5,
     theme: {
       ...(ANSI[s.theme] ?? (s.dark ? ANSI_DARK : ANSI_LIGHT)),
       background: cssVar("--background"),

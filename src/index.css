@@ -129,8 +129,9 @@
 
 /* Named themes, from each one's own VS Code colors (Shiki's copy): surfaces, text, accent, git
    and diff colors. The sidebar and panel steps are derived where a theme has one background.
-   Text and status colors are nudged to the same AA floor as above, up to --elevated; a light
-   theme's chips keep its original bright colors as fills. Terminal ANSI colors: terminal/theme.ts. */
+   Text, accent and status colors are nudged to the same AA floor as above, up to --elevated,
+   with muted text kept between the text and subtle; a light theme's chips keep its original
+   bright colors as fills. Terminal ANSI colors: terminal/theme.ts. */
 :root[data-theme="nord"] {
   --sidebar: #272c36;
   --panel: #2b303b;
@@ -144,7 +145,7 @@
   --muted-foreground: #d8dee9;
   --subtle: #a4adbd;
   --primary: #88c0d0;
-  --primary-foreground: #2e3440;
+  --primary-foreground: #272c36;
   --ring: #88c0d0;
   --destructive: #d29097;
   --added: #a3be8c;
@@ -206,7 +207,7 @@
   --muted-foreground: #a9b1d6;
   --subtle: #8689a3;
   --primary: #7aa2f7;
-  --primary-foreground: #1a1b26;
+  --primary-foreground: #16161e;
   --ring: #7aa2f7;
   --destructive: #f7768e;
   --added: #9ece6a;
@@ -237,7 +238,7 @@
   --muted-foreground: #b8b5d0;
   --subtle: #908caa;
   --primary: #c4a7e7;
-  --primary-foreground: #191724;
+  --primary-foreground: #15131e;
   --ring: #c4a7e7;
   --destructive: #eb6f92;
   --added: #9ccfd8;
@@ -264,12 +265,12 @@
   --active: #93a1a11c;
   --border: #0a3945;
   --border-strong: #174652;
-  --foreground: #93a1a1;
-  --muted-foreground: #8d9d9e;
-  --subtle: #8c9ea2;
-  --primary: #268bd2;
-  --primary-foreground: #ffffff;
-  --ring: #268bd2;
+  --foreground: #c2c6bc;
+  --muted-foreground: #a8b2ad;
+  --subtle: #8d9d9e;
+  --primary: #4da0da;
+  --primary-foreground: #00212b;
+  --ring: #4da0da;
   --destructive: #e87876;
   --added: #8fa114;
   --removed: #e87876;
@@ -296,11 +297,11 @@
   --border: #ccd0da;
   --border-strong: #bcc0cc;
   --foreground: #4c4f69;
-  --muted-foreground: #5c5f77;
+  --muted-foreground: #56596f;
   --subtle: #5f6275;
-  --primary: #8839ef;
+  --primary: #7d34dc;
   --primary-foreground: #ffffff;
-  --ring: #8839ef;
+  --ring: #7d34dc;
   --destructive: #c50e36;
   --added: #2d701e;
   --removed: #c50e36;
@@ -333,7 +334,7 @@
   --border: #dfdad9;
   --border-strong: #cecacd;
   --foreground: #575279;
-  --muted-foreground: #6a6681;
+  --muted-foreground: #615d7d;
   --subtle: #6a6781;
   --primary: #286983;
   --primary-foreground: #ffffff;
@@ -369,12 +370,12 @@
   --active: #586e7517;
   --border: #e4ddc8;
   --border-strong: #d6cfb8;
-  --foreground: #586e75;
-  --muted-foreground: #576a71;
-  --subtle: #5b6a70;
-  --primary: #268bd2;
+  --foreground: #30525c;
+  --muted-foreground: #445e67;
+  --subtle: #576a71;
+  --primary: #1e6ca4;
   --primary-foreground: #ffffff;
-  --ring: #268bd2;
+  --ring: #1e6ca4;
   --destructive: #c22c29;
   --added: #606e00;
   --removed: #c22c29;

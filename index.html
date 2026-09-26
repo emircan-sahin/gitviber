@@ -5,21 +5,30 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GitViber</title>
     <!-- A reload (⌘R) paints before any CSS or module loads: start on the theme's color, not
-         white. Mirrors settings.ts (appearance) and index.css (body's --sidebar).
+         white. Mirrors settings.ts (appearance, darkTheme, lightTheme) and each theme's --sidebar in
+         index.css.
          tauri.conf.json keeps Tauri from giving this tag a style-src nonce: a nonce turns off
          'unsafe-inline', and Monaco's syntax colors are inline styles it adds at runtime. -->
     <style>
       html { background: #0e0e0f; }
       html[data-theme="dim"] { background: #1c1c1f; }
       html[data-theme="light"] { background: #f3f3f4; }
+      html[data-theme="nord"] { background: #272c36; }
+      html[data-theme="catppuccin-mocha"] { background: #11111b; }
+      html[data-theme="tokyo-night"] { background: #16161e; }
+      html[data-theme="rose-pine"] { background: #15131e; }
+      html[data-theme="solarized-dark"] { background: #00212b; }
+      html[data-theme="catppuccin-latte"] { background: #dce0e8; }
+      html[data-theme="rose-pine-dawn"] { background: #f2e9e1; }
+      html[data-theme="solarized-light"] { background: #eee8d5; }
     </style>
     <script>
       try {
         var saved = JSON.parse(localStorage.getItem("gitviber.settings.v2") || "{}");
-        var theme = saved.appearance;
-        if (theme !== "light" && theme !== "dark" && theme !== "dim")
-          theme = matchMedia("(prefers-color-scheme: light)").matches ? "light" : saved.darkVariant === "dim" ? "dim" : "dark";
-        document.documentElement.dataset.theme = theme;
+        var dark = saved.appearance === "system" || !saved.appearance ? !matchMedia("(prefers-color-scheme: light)").matches : saved.appearance !== "light";
+        // Settings saved before the named themes: Dimmed was an appearance, or System's darkVariant.
+        var darkTheme = saved.darkTheme || (saved.appearance === "dim" || (saved.darkVariant === "dim" && saved.appearance !== "dark") ? "dim" : "dark");
+        document.documentElement.dataset.theme = dark ? darkTheme : saved.lightTheme || "light";
       } catch {}
     </script>
   </head>
