@@ -60,6 +60,10 @@ export const api = {
   /** That side as a file to copy: the working tree's own, or a stored version saved under its name. */
   mediaFile: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null, original: boolean) =>
     invoke<string>("media_file", { kind, path, oldPath, sha, base, original }),
+  /** Puts `gitviber` on PATH (cli.rs) and says where. */
+  installCli: () => invoke<string>("install_cli"),
+  /** Folders opened from outside the window (a CLI, the Dock, a second launch) since last asked. */
+  takeOpened: () => invoke<string[]>("take_opened"),
   /** Absolute paths onto the pasteboard as Finder copies files; an image carries its picture too. macOS only. */
   copyFiles: (paths: string[]) => invoke<void>("copy_files", { paths }),
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),

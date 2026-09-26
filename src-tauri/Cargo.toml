@@ -53,6 +53,11 @@ lto = true
 opt-level = 3
 strip = true
 
+[target.'cfg(any(target_os = "linux", windows))'.dependencies]
+# A second `gitviber <path>` hands its path to the running app (opened.rs). macOS needs none:
+# LaunchServices keeps one instance. 2.4.3, not the newest: a week-old release waits.
+tauri-plugin-single-instance = "=2.4.3"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 # Same version tauri already links; reads the clipboard for the terminal's paste (clipboard.rs).
 gtk = "=0.18.2"

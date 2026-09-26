@@ -60,6 +60,8 @@ export function AboutDialog() {
     "help.reportBug": reportBug,
     "help.copyDiagnostics": () => copy(),
     "help.showLogs": () => api.showLogs().catch(failed("Could not show the logs")),
+    "app.installCli": () =>
+      api.installCli().then((path) => toast("success", "Installed the gitviber command", `${path}: run gitviber in a repository to open it here.`), failed("Could not install the command")),
     "help.releaseNotes": () => openLink(`${REPO}/releases`),
     "help.license": () => openLink(`${REPO}/blob/main/LICENSE`),
   });

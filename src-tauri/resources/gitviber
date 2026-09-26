@@ -1,0 +1,8 @@
+#!/bin/sh
+# `gitviber [path ...]`: opens the repository at each path in GitViber, the current folder by
+# default. GitViber → Install 'gitviber' Command links it onto PATH (cli.rs). `open -b`
+# finds the app by its bundle id wherever it's installed, and hands a running app the folder.
+[ $# -eq 0 ] && set -- .
+for path in "$@"; do
+  open -b app.gitviber.desktop "$path" || exit
+done

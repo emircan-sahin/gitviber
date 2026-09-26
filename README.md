@@ -123,6 +123,10 @@ sudo dnf install ./GitViber-*.x86_64.rpm         # Fedora
 chmod +x GitViber_*.AppImage && ./GitViber_*.AppImage
 ```
 
+To open a repository from a terminal, run `gitviber .` (or any path inside one). Homebrew and
+the Linux packages put the command on your `PATH`; otherwise use **Install 'gitviber' Command**
+in the app menu (File on Linux). A folder dropped on the Dock icon opens too.
+
 GitViber tells you when a new version is out. The macOS app and the AppImage update in place;
 a `.deb` or `.rpm` install gets a link to the release to download it from. What changed is in the [changelog](CHANGELOG.md), and every release lists SHA-256
 checksums in `SHA256SUMS`.

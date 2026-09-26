@@ -1,4 +1,5 @@
 pub mod askpass;
+mod cli;
 mod clipboard;
 mod commands;
 mod definitions;
@@ -19,6 +20,7 @@ mod menu;
 mod navigation;
 mod network;
 mod open_in;
+mod opened;
 mod process;
 mod pty;
 mod rewrite;
@@ -46,7 +48,13 @@ pub fn run() {
     } else {
         None
     };
-    let mut builder = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    // First: a second launch exits in its setup, before the other plugins start theirs.
+    #[cfg(any(target_os = "linux", windows))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        opened::push(app, opened::from_args(&args, std::path::Path::new(&cwd)));
+    }));
+    let mut builder = builder
         .plugin(navigation::guard(dev_url))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init());
@@ -68,13 +76,22 @@ pub fn run() {
             }
         })
         .manage(AppState::default())
+        .manage(opened::Opened::default())
         .setup(|app| {
+            // `gitviber <path>` on Linux runs the binary with the path; macOS delivers it as an
+            // open-documents event instead (below).
+            let args: Vec<String> = std::env::args().collect();
+            if let Ok(cwd) = std::env::current_dir() {
+                opened::push(app.handle(), opened::from_args(&args, &cwd));
+            }
             if let Ok(dir) = app.path().app_log_dir() {
                 errors::init(dir);
             }
             askpass::serve(app.handle().clone());
             #[cfg(target_os = "macos")]
             menu::keep_typed_key_equivalents();
+            #[cfg(target_os = "linux")]
+            menu::free_f10();
             #[cfg(debug_assertions)]
             dev_bridge::start(app.handle().clone());
             if let Some(webview) = app.get_webview_window("main") {
@@ -253,8 +270,19 @@ pub fn run() {
             commands::app::keep_dropped,
             commands::app::copy_files,
             commands::app::pty_busy,
-            commands::app::update_mode
+            commands::app::update_mode,
+            commands::app::take_opened,
+            commands::app::install_cli
         ])
-        .run(context)
-        .expect("error while running GitViber");
+        .build(context)
+        .expect("error while building GitViber")
+        .run(|app, event| {
+            // A folder dropped on the Dock icon, opened with Finder's Open With or `open -a`.
+            #[cfg(target_os = "macos")]
+            if let tauri::RunEvent::Opened { urls } = event {
+                opened::push(app, urls.iter().filter_map(|u| u.to_file_path().ok()));
+            }
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
 }

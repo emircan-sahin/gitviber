@@ -1,5 +1,5 @@
 use crate::state::{blocking, AppState, Res};
-use crate::{clipboard, errors, git, launch, menu, process, updates};
+use crate::{cli, clipboard, errors, git, launch, menu, process, updates};
 use std::path::Path;
 use tauri::{AppHandle, Manager, State};
 
@@ -31,6 +31,18 @@ pub fn terminal_paste() -> Res<clipboard::Paste> {
 #[tauri::command]
 pub fn copy_files(paths: Vec<String>) -> Res<()> {
     clipboard::copy_files(paths)
+}
+
+/// The `gitviber` command (cli.rs). Off the main thread: macOS may wait on a password.
+#[tauri::command]
+pub async fn install_cli() -> Res<String> {
+    blocking(cli::install).await
+}
+
+/// Folders opened from outside the window since the page last asked (opened.rs).
+#[tauri::command]
+pub fn take_opened(app: AppHandle) -> Vec<String> {
+    crate::opened::take(&app)
 }
 
 #[tauri::command]

@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { ask, open } from "@tauri-apps/plugin-dialog";
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
@@ -73,16 +74,37 @@ export function App() {
     }
   }, []);
 
-  // Reopen the last repository on launch. Agent worktrees are short-lived: if the last one
-  // is gone, fall back to the project it was under, else the first project.
+  // Reopen the last repository on launch, unless the launch named one (`gitviber <path>`, a
+  // folder dropped on the Dock icon). Agent worktrees are short-lived: if the last one is gone,
+  // fall back to the project it was under, else the first project.
   useEffect(() => {
     const last = lastRepo();
     const projects = recentRepos();
     const fallback = projects.find((p) => last && isInside(last, p)) ?? projects[0];
     (async () => {
+      const asked = (await api.takeOpened().catch(() => [])).at(-1);
+      if (asked && (await openRepo(asked))) return;
       if (last && (await openRepo(last, true))) return;
       if (fallback && fallback !== last) await openRepo(fallback, true);
     })().finally(() => setBooting(false));
+  }, [openRepo]);
+
+  // Folders opened from outside while the app runs (opened.rs): the last one wins.
+  useEffect(() => {
+    let live = true;
+    let unlisten: Promise<() => void> | undefined;
+    try {
+      unlisten = listen("opened", async () => {
+        const asked = (await api.takeOpened().catch(() => [])).at(-1);
+        if (live && asked) await openRepo(asked);
+      });
+    } catch {
+      // Not in Tauri (the browser-only dev fixture).
+    }
+    return () => {
+      live = false;
+      void unlisten?.then((stop) => stop()).catch(() => {});
+    };
   }, [openRepo]);
 
   const onOpen = useCallback((p?: string) => void openRepo(p), [openRepo]);

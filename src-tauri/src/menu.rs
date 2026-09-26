@@ -70,6 +70,18 @@ const SHOW_LOGS: &str = if cfg!(target_os = "macos") {
     "Show Logs"
 };
 
+/// GTK opens the menu bar on F10 before the page sees the key, which took it from htop and mc
+/// in the terminal. Geany and Vim turn it off for the same reason; the menu stays a click away.
+#[cfg(target_os = "linux")]
+pub fn free_f10() {
+    use gtk::prelude::*;
+    if let Some(settings) = gtk::Settings::default() {
+        if settings.find_property("gtk-menu-bar-accel").is_some() {
+            settings.set_property("gtk-menu-bar-accel", None::<&str>);
+        }
+    }
+}
+
 pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let mut b = Builder {
         app,
@@ -85,6 +97,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     let about = b.command("app.about", "About GitViber")?;
     let check_updates = b.command("app.checkForUpdates", "Check for Updates…")?;
     let settings = b.command("workbench.openSettings", "Settings…")?;
+    let install_cli = b.command("app.installCli", "Install 'gitviber' Command…")?;
     // The app menu and Window are macOS's. GTK only builds separators, clipboard items and
     // About, so off macOS they'd be near empty: Settings goes under File and About under
     // Help instead, as Linux apps have them.
@@ -97,6 +110,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &check_updates,
             &sep()?,
             &settings,
+            &install_cli,
             &sep()?,
             &native(PredefinedMenuItem::services)?,
             &sep()?,
@@ -132,25 +146,33 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         ],
     )?;
     if !mac {
-        file.append_items(&[&sep()?, &settings])?;
+        file.append_items(&[&sep()?, &settings, &install_cli])?;
     }
 
-    // The native items, so text fields keep their own undo, clipboard and selection.
-    let edit = submenu(
-        "Edit",
-        &[
-            &native(PredefinedMenuItem::undo)?,
-            &native(PredefinedMenuItem::redo)?,
-            &sep()?,
-            &native(PredefinedMenuItem::cut)?,
-            &native(PredefinedMenuItem::copy)?,
-            &native(PredefinedMenuItem::paste)?,
-            &native(PredefinedMenuItem::select_all)?,
-            &sep()?,
-            &b.command("editor.find", "Find")?,
-            &b.command("search.findInFiles", "Find in Files")?,
-        ],
-    )?;
+    let find = b.command("editor.find", "Find")?;
+    let find_in_files = b.command("search.findInFiles", "Find in Files")?;
+    // The native items, so text fields keep their own undo, clipboard and selection. GTK's only
+    // show their keys (clicked, they'd need libxdo, and type into a terminal), so off macOS the
+    // menu has just the finds; the keys work in text fields either way.
+    let edit = if mac {
+        submenu(
+            "Edit",
+            &[
+                &native(PredefinedMenuItem::undo)?,
+                &native(PredefinedMenuItem::redo)?,
+                &sep()?,
+                &native(PredefinedMenuItem::cut)?,
+                &native(PredefinedMenuItem::copy)?,
+                &native(PredefinedMenuItem::paste)?,
+                &native(PredefinedMenuItem::select_all)?,
+                &sep()?,
+                &find,
+                &find_in_files,
+            ],
+        )?
+    } else {
+        submenu("Edit", &[&find, &find_in_files])?
+    };
 
     let view = submenu(
         "View",
