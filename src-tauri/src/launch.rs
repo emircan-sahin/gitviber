@@ -17,6 +17,15 @@ fn openable(url: &str) -> Option<String> {
         .filter(|_| plain)
 }
 
+/// A desktop tool with the session's environment, not ours: inside an AppImage ours points at
+/// its bundled libraries and xdg-open, and the host's file manager crashed on them.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn desktop_tool(program: &str) -> Command {
+    let mut cmd = Command::new(program);
+    cmd.env_clear().envs(crate::shell::clean_env());
+    cmd
+}
+
 /// Opens a web page in the default browser.
 pub fn open_url(url: &str) -> Result<(), String> {
     let url = openable(url).ok_or("refusing to open this URL")?;
@@ -30,7 +39,7 @@ pub fn open_url(url: &str) -> Result<(), String> {
         c
     };
     #[cfg(all(unix, not(target_os = "macos")))]
-    let mut cmd = Command::new("xdg-open");
+    let mut cmd = desktop_tool("xdg-open");
     cmd.arg(&url).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
@@ -78,7 +87,7 @@ pub fn reveal(path: PathBuf) -> Result<(), String> {
             ],
         ];
         for call in calls {
-            let shown = Command::new(call[0])
+            let shown = desktop_tool(call[0])
                 .args(&call[1..])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -89,7 +98,7 @@ pub fn reveal(path: PathBuf) -> Result<(), String> {
         }
         // Without one, open the folder it's in. xdg-open may stay until that window closes,
         // so it's reaped on a thread.
-        let mut child = Command::new("xdg-open")
+        let mut child = desktop_tool("xdg-open")
             .arg(path.parent().unwrap_or(&path))
             .spawn()
             .map_err(|e| format!("xdg-open: {e}"))?;

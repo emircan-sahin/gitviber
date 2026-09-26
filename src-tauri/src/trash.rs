@@ -40,14 +40,16 @@ fn top_trash(top: &Path, uid: u32) -> Result<PathBuf, String> {
     let sticky = shared
         .symlink_metadata()
         .is_ok_and(|m| m.is_dir() && m.mode() & 0o1000 != 0);
+    // Made here, not by put: when it can't be (a .Trash only root may write to), the next one is
+    // tried, as GLib does.
     if sticky {
         let own = shared.join(uid.to_string());
-        if ours_or_missing(&own, uid) {
+        if ours(&own, uid) {
             return Ok(own);
         }
     }
     let own = top.join(format!(".Trash-{uid}"));
-    if ours_or_missing(&own, uid) {
+    if ours(&own, uid) {
         Ok(own)
     } else {
         Err(format!(
@@ -57,12 +59,14 @@ fn top_trash(top: &Path, uid: u32) -> Result<PathBuf, String> {
     }
 }
 
-/// Missing (put creates it, only for us), or a real folder we own.
-fn ours_or_missing(dir: &Path, uid: u32) -> bool {
-    dir.symlink_metadata().map_or_else(
-        |e| e.kind() == ErrorKind::NotFound,
-        |m| m.is_dir() && m.uid() == uid,
-    )
+/// A real folder we own, made (for us alone) if missing. Checked again after making it: a FAT
+/// drive's folders all belong to whoever mounted it.
+fn ours(dir: &Path, uid: u32) -> bool {
+    let owned = |dir: &Path| {
+        dir.symlink_metadata()
+            .is_ok_and(|m| m.is_dir() && m.uid() == uid)
+    };
+    owned(dir) || (DirBuilder::new().mode(0o700).create(dir).is_ok() && owned(dir))
 }
 
 fn rename(from: &Path, to: &Path) -> Result<(), String> {
@@ -216,6 +220,18 @@ mod tests {
             top_trash(&top, uid),
             Ok(top.join(".Trash").join(uid.to_string()))
         );
+        assert!(top.join(".Trash").join(uid.to_string()).is_dir());
+
+        // Sticky but not writable: its $uid folder can't be made, so .Trash-$uid is used.
+        let other = sandbox("top-readonly");
+        fs::create_dir(other.join(".Trash")).unwrap();
+        fs::set_permissions(other.join(".Trash"), fs::Permissions::from_mode(0o1555)).unwrap();
+        assert_eq!(
+            top_trash(&other, uid),
+            Ok(other.join(format!(".Trash-{uid}")))
+        );
+        fs::set_permissions(other.join(".Trash"), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::remove_dir_all(&other).unwrap();
         fs::remove_dir_all(&top).unwrap();
     }
 

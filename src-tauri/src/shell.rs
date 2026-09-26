@@ -19,7 +19,12 @@ pub fn clean_env() -> Vec<(OsString, OsString)> {
         .filter_map(|k| std::env::var_os(k).map(|v| (k.into(), v)))
         .collect();
     if cfg!(target_os = "linux") {
-        env.extend(std::env::vars_os().filter(|(k, _)| k.to_string_lossy().starts_with("LC_")));
+        let locale: Vec<_> = std::env::vars_os()
+            .filter(|(k, _)| {
+                k.to_string_lossy().starts_with("LC_") && !env.iter().any(|(e, _)| e == k)
+            })
+            .collect();
+        env.extend(locale);
         if let Some(i) = env.iter().position(|(k, _)| k == "XDG_DATA_DIRS") {
             match without_appimage(&env[i].1, std::env::var_os("APPDIR")) {
                 Some(dirs) => env[i].1 = dirs,
@@ -73,6 +78,7 @@ const DESKTOP: &[&str] = &[
     "GTK_IM_MODULE",
     "QT_IM_MODULE",
     "XMODIFIERS",
+    "BROWSER",
 ];
 
 #[cfg(not(target_os = "linux"))]
@@ -195,13 +201,25 @@ fn run(timeout: Duration) -> Result<(), String> {
     found.map(|_| ())
 }
 
-/// $SHELL, else the one passwd(5) records for the user (the terminal's pty does the same),
-/// else /bin/sh: many Linux systems have no zsh.
-fn login_shell() -> OsString {
+/// $SHELL, else the one passwd(5) records for the user, else /bin/sh: many Linux systems have
+/// no zsh. The terminal's pty is given the same one, so a `chsh` reaches both at once.
+pub fn login_shell() -> OsString {
     std::env::var_os("SHELL")
-        .filter(|s| !s.is_empty())
-        .or_else(passwd_shell)
+        .filter(|s| runnable(Path::new(s)))
+        .or_else(|| passwd_shell().filter(|s| runnable(Path::new(s))))
         .unwrap_or_else(|| "/bin/sh".into())
+}
+
+#[cfg(unix)]
+fn runnable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    path.metadata()
+        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn runnable(path: &Path) -> bool {
+    path.is_file()
 }
 
 #[cfg(unix)]

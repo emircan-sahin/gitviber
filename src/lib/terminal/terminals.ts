@@ -217,10 +217,15 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   // ⌘V reads the pasteboard natively (clipboard.rs): the webview's paste carries only text, so a
   // copied image or Finder file pasted nothing. Ahead of xterm's own handler on its text area.
   // Linux reads GTK's clipboard the same way (Shift+Insert, Ctrl+Shift+V below); Windows is untried.
+  // A middle-click pastes Linux's primary selection, which xterm moves its text area under the
+  // pointer for: that paste is left to it.
+  let middleAt = -Infinity;
+  if (IS_LINUX) host.addEventListener("mousedown", (e) => e.button === 1 && (middleAt = performance.now()), true);
   if (!IS_WINDOWS)
     host.addEventListener(
       "paste",
       (e) => {
+        if (performance.now() - middleAt < 1000) return void (middleAt = -Infinity);
         e.preventDefault();
         e.stopPropagation();
         void pasteInto(p);
@@ -232,10 +237,12 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   // their commands, and the panel's own keys stay with it whatever they're rebound to.
   term.attachCustomKeyEventHandler((e) => {
     // Linux terminals copy and paste with Ctrl+Shift+C/V: Ctrl+C and Ctrl+V belong to the shell.
-    if (IS_LINUX && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && (e.code === "KeyC" || e.code === "KeyV")) {
+    // The letter as typed (Dvorak's C isn't on the C key), or the key's place on a non-Latin layout.
+    const letter = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase() : e.code.replace(/^Key/, "").toLowerCase();
+    if (IS_LINUX && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && (letter === "c" || letter === "v")) {
       if (e.type === "keydown") {
         const selection = term.getSelection();
-        if (e.code === "KeyV") void pasteInto(p);
+        if (letter === "v") void pasteInto(p);
         else if (selection) void navigator.clipboard.writeText(selection).catch(() => {});
       }
       e.preventDefault();

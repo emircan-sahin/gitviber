@@ -127,7 +127,8 @@ fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
 }
 
 /// GTK's clipboard, read as the pasteboard is: a file manager's copied files arrive as URIs.
-/// Stops at the first kind found, since `read` takes them in this order.
+/// Asks once what's offered, then only for the first kind `read` takes: each request can wait
+/// GTK's 30 s on an owner that has hung.
 #[cfg(target_os = "linux")]
 fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
     // GTK panics off its thread; terminal_paste is sync so it runs there, but never crash on it.
@@ -135,23 +136,31 @@ fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
         return (vec![], None, None);
     }
     let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
-    let files: Vec<String> = clipboard
-        .wait_for_uris()
-        .iter()
-        .filter_map(|uri| gtk::glib::filename_from_uri(uri.as_str()).ok())
-        .map(|(path, _)| path.to_string_lossy().into_owned())
-        .collect();
-    if !files.is_empty() {
-        return (files, None, None);
+    let Some(targets) = clipboard.wait_for_targets() else {
+        return (vec![], None, None);
+    };
+    if gtk::targets_include_uri(&targets) {
+        let files: Vec<String> = clipboard
+            .wait_for_uris()
+            .iter()
+            .filter_map(|uri| gtk::glib::filename_from_uri(uri.as_str()).ok())
+            .map(|(path, _)| path.to_string_lossy().into_owned())
+            .collect();
+        if !files.is_empty() {
+            return (files, None, None);
+        }
     }
-    let text = clipboard.wait_for_text().map(String::from);
-    if text.as_deref().is_some_and(|t| !t.is_empty()) {
-        return (files, text, None);
+    if gtk::targets_include_text(&targets) {
+        let text = clipboard.wait_for_text().map(String::from);
+        if text.as_deref().is_some_and(|t| !t.is_empty()) {
+            return (vec![], text, None);
+        }
     }
-    let png = clipboard
-        .wait_for_image()
+    let png = gtk::targets_include_image(&targets, false)
+        .then(|| clipboard.wait_for_image())
+        .flatten()
         .and_then(|image| image.save_to_bufferv("png", &[]).ok());
-    (files, text, png)
+    (vec![], None, png)
 }
 
 /// Elsewhere the terminal keeps the webview's own paste (terminals.ts), so this isn't called.

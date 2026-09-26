@@ -55,6 +55,9 @@ impl Ptys {
         for (key, value) in crate::shell::clean_env() {
             cmd.env(key, value);
         }
+        // Else portable-pty takes passwd's shell while the PATH probe took $SHELL (shell.rs).
+        #[cfg(unix)]
+        cmd.env("SHELL", crate::shell::login_shell());
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "GitViber");
