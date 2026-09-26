@@ -15,7 +15,9 @@
     "version:check": "node scripts/version.mjs check",
     "version:set": "node scripts/version.mjs set",
     "tauri": "node scripts/tauri.mjs",
-    "install:mac": "sh scripts/install-mac.sh"
+    "install:mac": "sh scripts/install-mac.sh",
+    "site:dev": "pnpm -C site dev",
+    "site:build": "pnpm -C site build"
   },
   "dependencies": {
     "@dnd-kit/core": "6.3.1",

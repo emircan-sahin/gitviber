@@ -13,6 +13,8 @@
 # Build output
 node_modules/
 dist/
+dist-ssr/
+dist-*/
 src-tauri/target/
 src-tauri/gen/
 
