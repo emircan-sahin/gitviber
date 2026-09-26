@@ -75,6 +75,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
   // Keyboard cursor, separate from the open tab (activeKey) like VS Code's focused item.
   const [selected, setSelected] = useState<string | null>(null);
+  // Rows picked with ⌘/⇧ (clicks or ⇧-arrows) from `anchor`, as in the Changes panel; null: just `selected`.
+  const [picked, setPicked] = useState<{ paths: Set<string>; anchor: string } | null>(null);
   const [editing, setEditing] = useState<Editing | null>(null);
   const renameKey = useShortcut("explorer.rename");
   const deleteKey = useShortcut("explorer.delete");
@@ -151,6 +153,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       filter.close();
       openTo(path);
       setSelected(path);
+      setPicked(null);
       treeRef.current?.focus();
     },
     filter: filter.open,
@@ -190,6 +193,28 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     walk("", 0);
     return out;
   }, [shown.children, shown.expanded]);
+
+  /** The paths from `from` to `to` in the order they show; just `to` if `from` is gone. */
+  const range = (from: string, to: string) => {
+    const [i, j] = [rows.findIndex((r) => r.entry.path === from), rows.findIndex((r) => r.entry.path === to)];
+    return new Set(i < 0 || j < 0 ? [to] : rows.slice(Math.min(i, j), Math.max(i, j) + 1).map((r) => r.entry.path));
+  };
+
+  // ⌘-click toggles a row, ⇧-click picks the range from the anchor; neither opens it, as in VS Code.
+  const click = (e: Entry, ev: React.MouseEvent) => {
+    setSelected(e.path);
+    if (ev.shiftKey) {
+      const anchor = picked?.anchor ?? selected ?? e.path;
+      setPicked({ paths: range(anchor, e.path), anchor });
+    } else if (ev.metaKey) {
+      const paths = new Set(picked?.paths ?? (selected ? [selected] : []));
+      if (!paths.delete(e.path)) paths.add(e.path);
+      setPicked({ paths, anchor: e.path });
+    } else {
+      setPicked(null);
+      activate(e);
+    }
+  };
 
   // The edited entry (or the folder a new one goes into) vanished on a refresh: drop the input,
   // or keyboard navigation stays disabled with nothing to type into.
@@ -263,33 +288,51 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     }
   };
 
-  const remove = async (e: Entry) => {
-    const ok = await ask(`Move "${e.path}" to the Trash?${e.isDir ? " Everything inside it goes too." : ""}`, {
-      title: e.isDir ? "Delete folder" : "Delete file",
-      kind: "warning",
-      okLabel: "Move to Trash",
-    });
+  const remove = async (list: Entry[]) => {
+    // A picked folder takes what's picked inside it along.
+    const top = list.filter((e) => !list.some((d) => d !== e && d.isDir && isInside(e.path, d.path)));
+    const [one] = top;
+    if (!one) return;
+    const many = top.length > 1;
+    const ok = await ask(
+      many
+        ? `Move ${top.length} items to the Trash?${top.some((e) => e.isDir) ? " Everything inside the folders goes too." : ""}`
+        : `Move "${one.path}" to the Trash?${one.isDir ? " Everything inside it goes too." : ""}`,
+      { title: many ? `Delete ${top.length} items` : one.isDir ? "Delete folder" : "Delete file", kind: "warning", okLabel: "Move to Trash" },
+    );
     if (!ok) return;
+    const gone: Entry[] = [];
     try {
-      await api.trashPath(e.path);
-      onPathMoved(e.path, null);
-      // Land on the next row outside the deleted entry, like VS Code.
-      const i = rows.findIndex((r) => r.entry.path === e.path);
-      const next = rows.slice(i + 1).find((r) => !isInside(r.entry.path, e.path)) ?? rows[i - 1];
-      setSelected(next?.entry.path ?? null);
-      loadDir(dirname(e.path));
+      for (const e of top) {
+        await api.trashPath(e.path);
+        gone.push(e);
+        onPathMoved(e.path, null);
+      }
     } catch (err) {
       toast("error", "Could not move to Trash", errorMessage(err));
     }
+    if (!gone.length) return;
+    // Land on the next row outside the deleted entries, like VS Code.
+    const kept = (r: { entry: Entry }) => !gone.some((e) => isInside(r.entry.path, e.path));
+    const i = rows.findIndex((r) => !kept(r));
+    const next = rows.slice(i + 1).find(kept) ?? rows.slice(0, i).reverse().find(kept);
+    setSelected(next?.entry.path ?? null);
+    setPicked(null);
+    new Set(gone.map((e) => dirname(e.path))).forEach((d) => loadDir(d));
   };
 
-  const discard = async (e: Entry) => {
-    const ok = await ask(`Discard changes to ${e.path}? Its current version is moved to the Trash.`, { title: "Discard changes", kind: "warning", okLabel: "Discard" });
+  const discard = async (list: Entry[]) => {
+    const what = list.length > 1 ? `${list.length} files` : list[0].path;
+    const ok = await ask(`Discard changes to ${what}? ${list.length > 1 ? "Their current versions are" : "Its current version is"} moved to the Trash.`, {
+      title: "Discard changes",
+      kind: "warning",
+      okLabel: "Discard",
+    });
     if (!ok) return;
     try {
-      const [, entry] = await tracked(() => api.discard([e.path]));
+      const [, entry] = await tracked(() => api.discard(list.map((e) => e.path)));
       // The file watcher refreshes after an undo writes the file back.
-      toast("success", `Discarded ${e.path}`, "The old version is in the Trash.", undoAction(entry, () => {}));
+      toast("success", `Discarded ${what}`, list.length > 1 ? "The old versions are in the Trash." : "The old version is in the Trash.", undoAction(entry, () => {}));
     } catch (err) {
       toast("error", "Discard failed", errorMessage(err));
     }
@@ -308,13 +351,18 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     if (ev.key.startsWith("Arrow") && (ev.altKey || ev.metaKey)) return;
     const i = rows.findIndex((r) => r.entry.path === selected);
     const cur = rows[i]?.entry;
+    // ⇧ extends the picked range from its anchor, as in the Changes panel.
     const move = (to: number) => {
       const row = rows[Math.max(0, Math.min(rows.length - 1, to))];
-      if (row) setSelected(row.entry.path);
+      if (!row) return;
+      const anchor = picked?.anchor ?? cur?.path ?? row.entry.path;
+      setPicked(ev.shiftKey ? { paths: range(anchor, row.entry.path), anchor } : null);
+      setSelected(row.entry.path);
     };
     let handled = true;
     if (cur && matchesCommand("explorer.rename", ev.nativeEvent)) setEditing({ mode: "rename", entry: cur });
-    else if (cur && matchesCommand("explorer.delete", ev.nativeEvent)) remove(cur);
+    else if (cur && matchesCommand("explorer.delete", ev.nativeEvent)) remove(picked?.paths.has(cur.path) ? pickedEntries : [cur]);
+    else if (ev.key === "Escape" && picked) setPicked(null);
     else if (ev.key === "ArrowDown") move(i + 1);
     else if (ev.key === "ArrowUp") move(i < 0 ? rows.length - 1 : i - 1);
     else if (["Home", "End", "PageUp", "PageDown"].includes(ev.key) && rows.length) {
@@ -346,8 +394,14 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       </Row>
     );
 
+  const pickedEntries = picked ? rows.filter((r) => picked.paths.has(r.entry.path)).map((r) => r.entry) : [];
   const t = menuTarget;
-  const menuDir = t ? (t.isDir ? t.path : null) : "";
+  // What the menu acts on: the picked rows when it opened on one of them.
+  const targets = t && picked?.paths.has(t.path) && pickedEntries.length > 1 ? pickedEntries : t ? [t] : [];
+  const multi = targets.length > 1;
+  const targetFiles = targets.filter((e) => !e.isDir);
+  const targetDiscardable = targets.filter((e) => discardable.has(e.path));
+  const menuDir = t ? (t.isDir && !multi ? t.path : null) : "";
 
   return (
     <div className="flex h-full flex-col">
@@ -363,6 +417,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
             const entry = rows.find((r) => r.entry.path === path)?.entry ?? null;
             setMenuTarget(entry);
             if (entry) setSelected(entry.path);
+            if (!entry || !picked?.paths.has(entry.path)) setPicked(null);
           }}
           className="group/tree min-h-0 flex-1 overflow-x-hidden overflow-y-auto py-1 outline-none"
         >
@@ -380,14 +435,11 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
                 <Row
                   depth={depth}
                   path={e.path}
-                  onClick={() => {
-                    setSelected(e.path);
-                    activate(e);
-                  }}
+                  onClick={(ev) => click(e, ev)}
                   onDoubleClick={() => !e.isDir && onOpen(sel, true)}
                   onMouseEnter={() => !e.isDir && !e.ignored && onHover(sel)}
                   className={cn(
-                    active ? "bg-primary/15" : "hover:bg-hover",
+                    active || picked?.paths.has(e.path) ? "bg-primary/15" : "hover:bg-hover",
                     e.ignored && "opacity-40",
                     // The tree holds the focus, not the row: the keyboard's row looks hovered too.
                     selected === e.path && "group-focus/tree:bg-hover group-focus/tree:outline group-focus/tree:-outline-offset-1 group-focus/tree:outline-primary/70",
@@ -428,7 +480,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
           keepFocus.current = false;
         }}
       >
-        {t && !t.isDir && (
+        {t && !t.isDir && !multi && (
           <>
             <ContextMenuItem onSelect={() => activate(t, true)}>
               <File /> Open <ContextMenuShortcut>↵</ContextMenuShortcut>
@@ -447,7 +499,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
             <ContextMenuSeparator />
           </>
         )}
-        {t && (
+        {t && !multi && (
           <>
             <ContextMenuItem disabled={t.ignored || fileStatus.get(t.path) === "?"} onSelect={() => onShowHistory(t.path, !t.isDir)}>
               <History /> Show History
@@ -455,34 +507,44 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
             <ContextMenuSeparator />
           </>
         )}
-        <ContextMenuItem onSelect={() => revealPath(t?.path ?? "")}>
-          <FolderSearch /> {REVEAL_LABEL}
-        </ContextMenuItem>
-        <OpenInMenuItem path={t?.path ?? ""} />
-        {IS_MAC && t && !t.isDir && status && (
-          <ContextMenuItem onSelect={() => copyFiles([`${status.root}/${t.path}`])}>
-            <Copy /> {copyLabel([t.path])}
+        {!multi && (
+          <>
+            <ContextMenuItem onSelect={() => revealPath(t?.path ?? "")}>
+              <FolderSearch /> {REVEAL_LABEL}
+            </ContextMenuItem>
+            <OpenInMenuItem path={t?.path ?? ""} />
+          </>
+        )}
+        {IS_MAC && targetFiles.length > 0 && status && (
+          <ContextMenuItem onSelect={() => copyFiles(targetFiles.map((e) => `${status.root}/${e.path}`))}>
+            <Copy /> {copyLabel(targetFiles.map((e) => e.path))}
           </ContextMenuItem>
         )}
-        <ContextMenuItem disabled={!status} onSelect={() => status && copyText(t ? `${status.root}/${t.path}` : status.root, "Path copied")}>
-          <Copy /> Copy Path
+        <ContextMenuItem
+          disabled={!status}
+          onSelect={() => status && copyText(t ? targets.map((e) => `${status.root}/${e.path}`).join("\n") : status.root, multi ? `${targets.length} paths copied` : "Path copied")}
+        >
+          <Copy /> {multi ? "Copy Paths" : "Copy Path"}
         </ContextMenuItem>
         {t && (
           <>
-            <ContextMenuItem onSelect={() => copyText(t.path, "Relative path copied")}>
-              <Copy /> Copy Relative Path
+            <ContextMenuItem onSelect={() => copyText(targets.map((e) => e.path).join("\n"), multi ? `${targets.length} relative paths copied` : "Relative path copied")}>
+              <Copy /> {multi ? "Copy Relative Paths" : "Copy Relative Path"}
             </ContextMenuItem>
             <ContextMenuSeparator />
-            <ContextMenuItem onSelect={() => startEditing({ mode: "rename", entry: t })}>
-              <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}
-            </ContextMenuItem>
-            {discardable.has(t.path) && (
-              <ContextMenuItem onSelect={() => discard(t)}>
-                <Undo2 /> Discard Changes
+            {!multi && (
+              <ContextMenuItem onSelect={() => startEditing({ mode: "rename", entry: t })}>
+                <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}
               </ContextMenuItem>
             )}
-            <ContextMenuItem onSelect={() => remove(t)}>
-              <Trash2 /> Delete{deleteKey && <ContextMenuShortcut>{deleteKey}</ContextMenuShortcut>}
+            {targetDiscardable.length > 0 && (
+              <ContextMenuItem onSelect={() => discard(targetDiscardable)}>
+                <Undo2 /> {multi ? `Discard Changes to ${targetDiscardable.length} Files` : "Discard Changes"}
+              </ContextMenuItem>
+            )}
+            <ContextMenuItem onSelect={() => remove(targets)}>
+              <Trash2 /> {multi ? `Delete ${targets.length} Items` : "Delete"}
+              {deleteKey && <ContextMenuShortcut>{deleteKey}</ContextMenuShortcut>}
             </ContextMenuItem>
           </>
         )}
