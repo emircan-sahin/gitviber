@@ -23,6 +23,7 @@ import { stepUiScale } from "@/lib/settings";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder } from "@/lib/repo/recent";
 import { toast } from "@/lib/app/toast";
 import { folderName, isInside } from "@/lib/path";
+import { IS_MAC } from "@/lib/platform";
 
 export function App() {
   const [opened, setOpened] = useState<OpenedRepo | null>(null);
@@ -37,7 +38,7 @@ export function App() {
       if (!live) return;
       setGit(info);
       // Errors stay until dismissed, and an old git does fail: every repo open lists worktrees.
-      if (info.state === "old") toast("error", `git ${info.version} is older than GitViber needs (${info.minimum})`, "Worktrees and some actions will fail. Update git, e.g. brew install git.");
+      if (info.state === "old") toast("error", `git ${info.version} is older than GitViber needs (${info.minimum})`, `Worktrees and some actions will fail. Update git${IS_MAC ? ", e.g. brew install git" : " with your package manager"}.`);
     }, () => {});
     return () => {
       live = false;

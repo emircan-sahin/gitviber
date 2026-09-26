@@ -21,6 +21,7 @@ import { OperationBanner } from "./OperationBanner";
 import { AllCaughtUp, NestedRow, ReviewSummary, Row, Section, SectionBtn } from "./ChangeRows";
 import { CommitBox } from "./CommitBox";
 import { RowAction } from "@/components/RowAction";
+import { primaryKey } from "@/lib/platform";
 
 interface Props {
   status: RepoStatus;
@@ -143,10 +144,10 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     return i < 0 || j < 0 ? [to] : all.slice(Math.min(i, j), Math.max(i, j) + 1);
   };
 
-  // ⌘-click toggles a row, ⇧-click picks the range from the anchor. The open tab follows the clicked row either way.
-  const pick = (c: Change, e: { metaKey: boolean; shiftKey: boolean }) => {
+  // ⌘-click (Ctrl off macOS) toggles a row, ⇧-click picks the range from the anchor. The open tab follows the clicked row either way.
+  const pick = (c: Change, e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => {
     const key = selectionKey(c);
-    if (e.metaKey) setPicked({ rows: selected.has(key) ? [...selected.values()].filter((s) => selectionKey(s) !== key) : [...selected.values(), c], anchor: c, focus: c.file.path });
+    if (primaryKey(e)) setPicked({ rows: selected.has(key) ? [...selected.values()].filter((s) => selectionKey(s) !== key) : [...selected.values(), c], anchor: c, focus: c.file.path });
     else if (e.shiftKey && anchor) setPicked({ rows: range(anchor, c), anchor, focus: c.file.path });
     else setPicked(null);
     onOpen(c);

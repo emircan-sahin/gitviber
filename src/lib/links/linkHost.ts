@@ -3,7 +3,7 @@
 // Definition (lib/editor/definitions) and the terminal (terminalLinks below).
 import type { IDisposable, ILink, Terminal } from "@xterm/xterm";
 import { api, github } from "../api";
-import { IS_MAC } from "../platform";
+import { primaryKey } from "../platform";
 import { type Alias, type FileIndex, findTerminalLinks, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
 import { dirname, slashes } from "../path";
 import { failed } from "../app/toast";
@@ -79,8 +79,6 @@ export async function resolverFor({ path, tree }: LinkSide) {
   return (link: Link) => resolveLink(link, path, index, aliases, root);
 }
 
-/** ⌘ on macOS, Ctrl elsewhere: what makes a click follow a link. */
-const linkKey = (e: { metaKey: boolean; ctrlKey: boolean }) => (IS_MAC ? e.metaKey : e.ctrlKey);
 
 /** Opens a link's target: a page in the browser, or a file in a tab at its line. `focus`: the code view takes the keys. */
 export function openTarget(target: Target, focus = false) {
@@ -125,7 +123,7 @@ export function terminalLinks(term: Terminal, cwd: string): IDisposable {
         const links = found.flatMap((l): ILink[] => {
           const target = resolveTerminalLink(l, dir, index, root);
           if (!target) return [];
-          return [{ range: { start: at(l.start), end: at(l.end - 1) }, text: l.spec, activate: (e) => linkKey(e) && openTarget(target, true) }];
+          return [{ range: { start: at(l.start), end: at(l.end - 1) }, text: l.spec, activate: (e) => primaryKey(e) && openTarget(target, true) }];
         });
         callback(links.length ? links : undefined);
       });

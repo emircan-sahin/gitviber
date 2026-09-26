@@ -1,5 +1,6 @@
 import { GitPullRequest, Terminal } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { IS_MAC } from "@/lib/platform";
 
 /** No token from the GitHub CLI or git's credential store: explain the two ways to connect. */
 export function ConnectGitHub({ onRetry, subject = "pull requests" }: { onRetry: () => void; subject?: string }) {
@@ -12,10 +13,12 @@ export function ConnectGitHub({ onRetry, subject = "pull requests" }: { onRetry:
       </div>
       <div className="mt-5 space-y-2 text-left">
         <Step n={1} title="With the GitHub CLI (recommended)">
-          <code className="block rounded-sm bg-background px-2 py-1 font-mono text-[11.5px]">brew install gh && gh auth login</code>
+          {/* Homebrew is macOS's; elsewhere gh comes from the distro or cli.github.com. */}
+          {!IS_MAC && <span className="mb-1 block text-[11.5px] text-muted-foreground">Install gh (cli.github.com), then:</span>}
+          <code className="block rounded-sm bg-background px-2 py-1 font-mono text-[11.5px]">{IS_MAC ? "brew install gh && gh auth login" : "gh auth login"}</code>
         </Step>
         <Step n={2} title="Or push once over HTTPS">
-          <span className="text-[11.5px] text-muted-foreground">If git has stored your github.com login (Keychain, GitHub Desktop, Git Credential Manager), it's picked up automatically.</span>
+          <span className="text-[11.5px] text-muted-foreground">If git has stored your github.com login ({IS_MAC ? "Keychain, GitHub Desktop, " : "a credential helper, "}Git Credential Manager), it's picked up automatically.</span>
         </Step>
       </div>
       <Button variant="secondary" size="sm" className="mt-5" onClick={onRetry}>

@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect,
 import { useListFilter } from "@/components/ListFilter";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
-import { IS_MAC, REVEAL_LABEL } from "@/lib/platform";
+import { IS_MAC, primaryKey, REVEAL_LABEL } from "@/lib/platform";
 import { matchesCommand, useShortcut } from "@/lib/commands/keybindings";
 import { focusPanel } from "@/lib/ui/panels";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/ui/useListNav";
@@ -200,13 +200,13 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     return new Set(i < 0 || j < 0 ? [to] : rows.slice(Math.min(i, j), Math.max(i, j) + 1).map((r) => r.entry.path));
   };
 
-  // ⌘-click toggles a row, ⇧-click picks the range from the anchor; neither opens it, as in VS Code.
+  // ⌘-click (Ctrl off macOS) toggles a row, ⇧-click picks the range from the anchor; neither opens it, as in VS Code.
   const click = (e: Entry, ev: React.MouseEvent) => {
     setSelected(e.path);
     if (ev.shiftKey) {
       const anchor = picked?.anchor ?? selected ?? e.path;
       setPicked({ paths: range(anchor, e.path), anchor });
-    } else if (ev.metaKey) {
+    } else if (primaryKey(ev)) {
       const paths = new Set(picked?.paths ?? (selected ? [selected] : []));
       if (!paths.delete(e.path)) paths.add(e.path);
       setPicked({ paths, anchor: e.path });

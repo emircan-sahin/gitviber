@@ -11,6 +11,7 @@ import { toast } from "@/lib/app/toast";
 import { isoToUnix, relativeTime } from "@/lib/format";
 import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
 import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
+import { IS_MAC } from "@/lib/platform";
 
 type Side = "LEFT" | "RIGHT";
 
@@ -253,7 +254,7 @@ function Composer({ pull, label, onSubmit, onCancel, bare = false }: { pull: Rev
           } else if (e.key === "Escape") onCancel();
         }}
         rows={3}
-        placeholder={`${label}… (Markdown; ⌘↵ to post)`}
+        placeholder={`${label}… (Markdown; ${IS_MAC ? "⌘↵" : "Ctrl+Enter"} to post)`}
       />
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="secondary" onClick={onCancel}>
