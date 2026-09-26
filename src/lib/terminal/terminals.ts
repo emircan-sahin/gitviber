@@ -258,7 +258,10 @@ function pastePaths(p: Pane, paths: string[]) {
 // their names). The pane under the pointer is outlined while they're dragged.
 let dropTarget: Pane | null = null;
 function paneAt(pos: { x: number; y: number }) {
-  const el = document.elementFromPoint(pos.x / devicePixelRatio, pos.y / devicePixelRatio);
+  // Typed physical, but on macOS wry hands over AppKit points unscaled (drag_drop.rs): halved on
+  // Retina, the point landed in the sidebar and no drop reached a pane.
+  const scale = IS_MAC ? 1 : devicePixelRatio;
+  const el = document.elementFromPoint(pos.x / scale, pos.y / scale);
   return el ? ([...panes.values()].find((p) => p.host.contains(el)) ?? null) : null;
 }
 function markDropTarget(p: Pane | null) {
