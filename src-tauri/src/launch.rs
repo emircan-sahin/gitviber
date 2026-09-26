@@ -18,11 +18,15 @@ fn openable(url: &str) -> Option<String> {
 }
 
 /// A desktop tool with the session's environment, not ours: inside an AppImage ours points at
-/// its bundled libraries and xdg-open, and the host's file manager crashed on them.
+/// its bundled libraries and xdg-open, and the host's file manager crashed on them. The login
+/// shell's PATH where it's known, so NixOS's tools and a $BROWSER in ~/.local/bin are found.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn desktop_tool(program: &str) -> Command {
     let mut cmd = Command::new(program);
     cmd.env_clear().envs(crate::shell::clean_env());
+    if let Some(path) = crate::shell::login_path() {
+        cmd.env("PATH", path);
+    }
     cmd
 }
 

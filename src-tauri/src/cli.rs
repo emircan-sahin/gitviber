@@ -19,6 +19,12 @@ pub fn install() -> Result<String, String> {
         .map(|contents| contents.join("Resources/bin/gitviber"))
         .filter(|p| p.is_file())
         .ok_or("The command comes with the installed app, not a development build")?;
+    // Run from Downloads (macOS moves it to a random read-only place) or from the disk image, the
+    // link would point somewhere gone by tomorrow.
+    let place = script.to_string_lossy();
+    if place.contains("/AppTranslocation/") || place.starts_with("/Volumes/") {
+        return Err("Move GitViber to Applications first, then install the command".into());
+    }
     for dir in BIN_DIRS {
         let link = Path::new(dir).join("gitviber");
         if std::fs::read_link(&link).is_ok_and(|to| to == script) {
@@ -60,10 +66,25 @@ pub fn install() -> Result<String, String> {
     let bin = std::path::Path::new(&home).join(".local/bin");
     std::fs::create_dir_all(&bin).map_err(|e| e.to_string())?;
     let launcher = bin.join("gitviber");
+    // Only our own launcher is replaced, as macOS leaves another program's link alone.
+    const MARK: &str = "# GitViber's launcher";
+    if std::fs::read_to_string(&launcher).is_ok_and(|s| !s.contains(MARK))
+        || launcher
+            .symlink_metadata()
+            .is_ok_and(|m| m.file_type().is_symlink())
+    {
+        return Err(format!(
+            "{} is another program's; remove it first",
+            launcher.display()
+        ));
+    }
     let image = image.to_string_lossy().replace('\'', r"'\''");
-    std::fs::write(&launcher, format!("#!/bin/sh\nexec '{image}' \"$@\"\n"))
-        .and_then(|()| std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)))
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        &launcher,
+        format!("#!/bin/sh\n{MARK}\nexec '{image}' \"$@\"\n"),
+    )
+    .and_then(|()| std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)))
+    .map_err(|e| e.to_string())?;
     Ok(launcher.to_string_lossy().into_owned())
 }
 

@@ -146,7 +146,11 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         ],
     )?;
     if !mac {
-        file.append_items(&[&sep()?, &settings, &install_cli])?;
+        file.append_items(&[&sep()?, &settings])?;
+        // Windows has no installer for it yet.
+        if cfg!(target_os = "linux") {
+            file.append(&install_cli)?;
+        }
     }
 
     let find = b.command("editor.find", "Find")?;

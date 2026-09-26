@@ -7,36 +7,45 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
 #[derive(Default)]
-pub struct Opened(Mutex<Vec<String>>);
+pub struct Opened(Mutex<Vec<PathBuf>>);
 
-/// Queues `paths` (a file stands for its folder), tells the page and brings the window up.
-pub fn push(app: &AppHandle, paths: impl IntoIterator<Item = PathBuf>) {
-    let folders: Vec<String> = paths.into_iter().filter_map(|p| folder(&p)).collect();
-    if folders.is_empty() {
+/// Queues `paths` and tells the page. Not resolved here: this runs on the main thread, where a
+/// stalled network volume would freeze the window; `take` resolves them off it.
+pub fn push(app: &AppHandle, paths: Vec<PathBuf>) {
+    if paths.is_empty() {
         return;
     }
     app.state::<Opened>()
         .0
         .lock()
         .unwrap_or_else(|e| e.into_inner())
-        .extend(folders);
+        .extend(paths);
     let _ = app.emit("opened", ());
-    if let Some(window) = app.get_webview_window("main") {
+    raise(app);
+}
+
+/// Brings the window forward, once the page has shown it: a still-hidden window at launch waits
+/// for its theme (main.tsx), or it would flash unstyled.
+pub fn raise(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if window.is_visible().unwrap_or(false) {
         let _ = window.unminimize();
-        let _ = window.show();
         let _ = window.set_focus();
     }
 }
 
-/// What's queued, emptied.
+/// What's queued, emptied, as the folders to open (a file stands for its own).
 pub fn take(app: &AppHandle) -> Vec<String> {
-    std::mem::take(
+    let paths = std::mem::take(
         &mut *app
             .state::<Opened>()
             .0
             .lock()
             .unwrap_or_else(|e| e.into_inner()),
-    )
+    );
+    paths.iter().filter_map(|p| folder(p)).collect()
 }
 
 fn folder(path: &Path) -> Option<String> {
@@ -50,10 +59,10 @@ fn folder(path: &Path) -> Option<String> {
 }
 
 /// The paths among a launch's arguments, against the folder it was run in. Flags aren't paths.
-pub fn from_args(args: &[String], cwd: &Path) -> Vec<PathBuf> {
+pub fn from_args(args: &[std::ffi::OsString], cwd: &Path) -> Vec<PathBuf> {
     args.iter()
         .skip(1)
-        .filter(|a| !a.starts_with('-'))
+        .filter(|a| !a.to_string_lossy().starts_with('-'))
         .map(|a| cwd.join(a))
         .collect()
 }
@@ -67,7 +76,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gitviber-opened-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/a.txt"), "").unwrap();
-        let args = ["gitviber", "--flag", "sub/a.txt", "sub", "missing"].map(String::from);
+        let args =
+            ["gitviber", "--flag", "sub/a.txt", "sub", "missing"].map(std::ffi::OsString::from);
         let found: Vec<_> = from_args(&args, &dir)
             .iter()
             .filter_map(|p| folder(p))

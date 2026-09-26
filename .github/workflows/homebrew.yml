@@ -30,13 +30,17 @@ jobs:
       GH_REPO: ${{ github.repository }}
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
+      - name: Check the tag
+        run: '[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Not a release tag: $TAG"; exit 1; }'
+
+      # The template as it was at the tag: the cask must match what that release's app holds.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ env.TAG }}
           persist-credentials: false
 
       - name: Fill in the cask
         run: |
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Not a release tag: $TAG"; exit 1; }
           version="${TAG#v}"
           dmg="GitViber_${version}_universal.dmg"
           sha=$(gh release download "$TAG" --pattern SHA256SUMS --output - | awk -v f="$dmg" '$2 == f { print $1 }')

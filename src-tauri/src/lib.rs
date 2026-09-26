@@ -49,10 +49,14 @@ pub fn run() {
         None
     };
     let builder = tauri::Builder::default();
-    // First: a second launch exits in its setup, before the other plugins start theirs.
-    #[cfg(any(target_os = "linux", windows))]
+    // First: a second launch exits in its setup, before the other plugins start theirs. Not in
+    // dev builds, which would hand their arguments to the installed app and quit.
+    #[cfg(all(any(target_os = "linux", windows), not(debug_assertions)))]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, cwd| {
+        let args: Vec<std::ffi::OsString> = args.into_iter().map(Into::into).collect();
         opened::push(app, opened::from_args(&args, std::path::Path::new(&cwd)));
+        // A launcher click names no folder, but still means "show me the app".
+        opened::raise(app);
     }));
     let mut builder = builder
         .plugin(navigation::guard(dev_url))
@@ -80,7 +84,7 @@ pub fn run() {
         .setup(|app| {
             // `gitviber <path>` on Linux runs the binary with the path; macOS delivers it as an
             // open-documents event instead (below).
-            let args: Vec<String> = std::env::args().collect();
+            let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
             if let Ok(cwd) = std::env::current_dir() {
                 opened::push(app.handle(), opened::from_args(&args, &cwd));
             }
@@ -280,7 +284,10 @@ pub fn run() {
             // A folder dropped on the Dock icon, opened with Finder's Open With or `open -a`.
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::Opened { urls } = event {
-                opened::push(app, urls.iter().filter_map(|u| u.to_file_path().ok()));
+                opened::push(
+                    app,
+                    urls.iter().filter_map(|u| u.to_file_path().ok()).collect(),
+                );
             }
             #[cfg(not(target_os = "macos"))]
             let _ = (app, event);

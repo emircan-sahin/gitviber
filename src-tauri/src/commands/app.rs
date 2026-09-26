@@ -33,16 +33,17 @@ pub fn copy_files(paths: Vec<String>) -> Res<()> {
     clipboard::copy_files(paths)
 }
 
-/// The `gitviber` command (cli.rs). Off the main thread: macOS may wait on a password.
+/// The `gitviber` command (cli.rs).
 #[tauri::command]
 pub async fn install_cli() -> Res<String> {
     blocking(cli::install).await
 }
 
-/// Folders opened from outside the window since the page last asked (opened.rs).
+/// Folders opened from outside the window since the page last asked (opened.rs). Off the main
+/// thread: resolving a path on a stalled network volume can hang.
 #[tauri::command]
-pub fn take_opened(app: AppHandle) -> Vec<String> {
-    crate::opened::take(&app)
+pub async fn take_opened(app: AppHandle) -> Res<Vec<String>> {
+    blocking(move || Ok(crate::opened::take(&app))).await
 }
 
 #[tauri::command]

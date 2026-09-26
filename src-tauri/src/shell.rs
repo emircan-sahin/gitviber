@@ -79,6 +79,9 @@ const DESKTOP: &[&str] = &[
     "QT_IM_MODULE",
     "XMODIFIERS",
     "BROWSER",
+    // xdg-open on Plasma picks kde-open by these; without them it falls back to Konqueror's tool.
+    "KDE_SESSION_VERSION",
+    "KDE_FULL_SESSION",
 ];
 
 #[cfg(not(target_os = "linux"))]

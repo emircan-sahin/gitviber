@@ -143,8 +143,8 @@ Users install it with
 ## App icon
 
 macOS 26 draws the icon from `src-tauri/icons/Assets.car`, compiled from the Icon Composer source
-`src-tauri/icons/AppIcon.icon` (a gradient fill and the mark as one glass layer); older macOS
-versions use `icon.icns`. The `.car` is committed so the release doesn't depend on the runner's
+`src-tauri/icons/AppIcon.icon` (a gradient fill and the mark as one glass layer). macOS 13–15
+take the `.car`'s flattened sizes or `icon.icns`, both the same design. The `.car` is committed so the release doesn't depend on the runner's
 `actool`. After editing the `.icon` (in Icon Composer, which comes with Xcode 26), rebuild it:
 
 ```sh
