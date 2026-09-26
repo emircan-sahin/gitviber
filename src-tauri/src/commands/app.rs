@@ -21,7 +21,7 @@ pub fn pty_write(state: State<'_, AppState>, id: u32, data: String) -> Res<()> {
     state.ptys.write(id, &data)
 }
 
-/// Sync, so it runs on the main thread, where AppKit's pasteboard belongs.
+/// Sync, so it runs on the main thread, where AppKit's pasteboard and GTK's clipboard belong.
 #[tauri::command]
 pub fn terminal_paste() -> Res<clipboard::Paste> {
     clipboard::read()

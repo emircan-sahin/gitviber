@@ -53,6 +53,10 @@ lto = true
 opt-level = 3
 strip = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Same version tauri already links; reads the clipboard for the terminal's paste (clipboard.rs).
+gtk = "=0.18.2"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 # Same version wry already links; used to lift WebKit's 60fps cap (see display.rs).
 objc2 = "=0.6.4"

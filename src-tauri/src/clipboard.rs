@@ -126,8 +126,36 @@ fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
     objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() })
 }
 
+/// GTK's clipboard, read as the pasteboard is: a file manager's copied files arrive as URIs.
+/// Stops at the first kind found, since `read` takes them in this order.
+#[cfg(target_os = "linux")]
+fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
+    // GTK panics off its thread; terminal_paste is sync so it runs there, but never crash on it.
+    if !gtk::is_initialized_main_thread() {
+        return (vec![], None, None);
+    }
+    let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
+    let files: Vec<String> = clipboard
+        .wait_for_uris()
+        .iter()
+        .filter_map(|uri| gtk::glib::filename_from_uri(uri.as_str()).ok())
+        .map(|(path, _)| path.to_string_lossy().into_owned())
+        .collect();
+    if !files.is_empty() {
+        return (files, None, None);
+    }
+    let text = clipboard.wait_for_text().map(String::from);
+    if text.as_deref().is_some_and(|t| !t.is_empty()) {
+        return (files, text, None);
+    }
+    let png = clipboard
+        .wait_for_image()
+        .and_then(|image| image.save_to_bufferv("png", &[]).ok());
+    (files, text, png)
+}
+
 /// Elsewhere the terminal keeps the webview's own paste (terminals.ts), so this isn't called.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
     (vec![], None, None)
 }

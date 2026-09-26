@@ -9,14 +9,14 @@ import { errorMessage, pty } from "../api";
 import { compileFind, type FindOptions } from "../ui/findQuery";
 import { appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
 import { terminalLinks } from "../links/linkHost";
-import { subscribeSettings } from "../settings";
+import { getSettings, subscribeSettings } from "../settings";
 import { isInside } from "../path";
 import { readJson } from "../storage";
 import { setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
 import { pathPastes } from "./paste";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { IS_MAC } from "../platform";
+import { IS_LINUX, IS_WINDOWS } from "../platform";
 
 /**
  * Terminals live here, not in React: switching worktrees remounts the whole workspace, and
@@ -216,7 +216,8 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   // ⌘V reads the pasteboard natively (clipboard.rs): the webview's paste carries only text, so a
   // copied image or Finder file pasted nothing. Ahead of xterm's own handler on its text area.
-  if (IS_MAC)
+  // Linux reads GTK's clipboard the same way (Shift+Insert, Ctrl+Shift+V below); Windows is untried.
+  if (!IS_WINDOWS)
     host.addEventListener(
       "paste",
       (e) => {
@@ -230,6 +231,16 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, ⌃Tab or ⌃1 run
   // their commands, and the panel's own keys stay with it whatever they're rebound to.
   term.attachCustomKeyEventHandler((e) => {
+    // Linux terminals copy and paste with Ctrl+Shift+C/V: Ctrl+C and Ctrl+V belong to the shell.
+    if (IS_LINUX && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && (e.code === "KeyC" || e.code === "KeyV")) {
+      if (e.type === "keydown") {
+        const selection = term.getSelection();
+        if (e.code === "KeyV") void pasteInto(p);
+        else if (selection) void navigator.clipboard.writeText(selection).catch(() => {});
+      }
+      e.preventDefault();
+      return false;
+    }
     const seq = lineEditKey(e);
     if (seq !== undefined) {
       if (e.type === "keydown") term.input(seq);
@@ -258,9 +269,10 @@ function pastePaths(p: Pane, paths: string[]) {
 // their names). The pane under the pointer is outlined while they're dragged.
 let dropTarget: Pane | null = null;
 function paneAt(pos: { x: number; y: number }) {
-  // Typed physical, but on macOS wry hands over AppKit points unscaled (drag_drop.rs): halved on
-  // Retina, the point landed in the sidebar and no drop reached a pane.
-  const scale = IS_MAC ? 1 : devicePixelRatio;
+  // Typed physical, but on macOS and Linux wry hands over window points unscaled (drag_drop.rs):
+  // halved on Retina, the point landed in the sidebar. Page zoom (the UI scale) makes a CSS pixel
+  // bigger than a point. Windows' pixels are physical, and Chromium's ratio includes the zoom.
+  const scale = IS_WINDOWS ? devicePixelRatio : getSettings().uiScale;
   const el = document.elementFromPoint(pos.x / scale, pos.y / scale);
   return el ? ([...panes.values()].find((p) => p.host.contains(el)) ?? null) : null;
 }
