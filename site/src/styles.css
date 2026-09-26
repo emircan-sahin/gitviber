@@ -1,0 +1,181 @@
+@import "tailwindcss";
+
+/* The app's own dark theme (src/index.css): neutral graphite, hard 1px lines, one blue accent. */
+@theme {
+  --color-page: #0b0b0c;
+  --color-sidebar: #0e0e0f;
+  --color-panel: #131314;
+  --color-bg: #171718;
+  --color-elevated: #1e1e20;
+  --color-hover: #ffffff12;
+  --color-active: #ffffff17;
+  --color-border: #242426;
+  --color-border-strong: #303033;
+  --color-fg: #ececee;
+  --color-muted: #a2a2a8;
+  --color-subtle: #86868d;
+  --color-primary: #4a9ff5;
+  --color-added: #57d17a;
+  --color-removed: #f47067;
+  --color-modified: #e2b84c;
+  --color-renamed: #b392f0;
+  --color-add-bg: #1d2821;
+  --color-add-gutter: #203126;
+  --color-add-emph: rgb(87 209 122 / 0.2);
+  --color-del-bg: #2b1f1f;
+  --color-del-gutter: #362323;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Geist Variable", "Segoe UI", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, "JetBrains Mono Variable", Menlo, monospace;
+
+  --animate-blink: blink 1.1s steps(1) infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+@layer base {
+  html {
+    background: var(--color-page);
+    color: var(--color-fg);
+    color-scheme: dark;
+    scroll-padding-top: 4rem;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body {
+    font-family: var(--font-sans);
+  }
+  ::selection {
+    background: rgb(74 159 245 / 0.35);
+  }
+  /* Japanese has no spaces, so headlines would break mid-word; break between phrases instead
+     where the browser can (Chrome, Edge). Others keep the default. */
+  :lang(ja) :is(h1, h2, h3, p) {
+    word-break: auto-phrase;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-primary);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+}
+
+@layer components {
+  /* The app's keycap (settings and the hold-⌘ overlay). */
+  .kbd {
+    display: inline-flex;
+    min-width: 1.65em;
+    height: 1.65em;
+    align-items: center;
+    justify-content: center;
+    padding: 0 0.35em;
+    border: 1px solid var(--color-border-strong);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    background: var(--color-bg);
+    color: var(--color-fg);
+    font-family: system-ui;
+    font-size: 0.8em;
+    font-weight: 500;
+    line-height: 1;
+    white-space: nowrap;
+  }
+}
+
+/* Reveal on scroll. Only with JS (index.html marks <html>), so the prerendered page never hides content. */
+@media (prefers-reduced-motion: no-preference) {
+  .js .reveal {
+    opacity: 0;
+    translate: 0 40px;
+    transition:
+      opacity 0.9s cubic-bezier(0.2, 0.7, 0.1, 1),
+      translate 0.9s cubic-bezier(0.2, 0.7, 0.1, 1);
+    transition-delay: var(--delay, 0ms);
+  }
+  .js .reveal[data-in] {
+    opacity: 1;
+    translate: 0 0;
+  }
+}
+
+/* A line an agent just saved. */
+@keyframes line-in {
+  from {
+    background: rgb(87 209 122 / 0.35);
+    clip-path: inset(0 100% 0 0);
+  }
+  to {
+    clip-path: inset(0 0 0 0);
+  }
+}
+.line-in {
+  animation: line-in 0.3s ease-out;
+}
+
+/* Motion inside the story's window: a tab or pane opening, a menu dropping, a key press, a row
+   the agent just saved again. */
+@keyframes tab-in {
+  from {
+    opacity: 0;
+    translate: -12px 0;
+  }
+}
+@keyframes pane-in {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 0 100%);
+  }
+}
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    translate: 0 -4px;
+    scale: 0.98;
+  }
+}
+@keyframes key-pop {
+  from {
+    opacity: 0;
+    scale: 0.8;
+  }
+  60% {
+    scale: 1.06;
+  }
+}
+@keyframes touched-row {
+  0% {
+    background: rgb(226 184 76 / 0.28);
+  }
+}
+.tab-in {
+  animation: tab-in 0.35s ease-out;
+}
+.pane-in {
+  animation: pane-in 0.45s cubic-bezier(0.3, 0.7, 0.1, 1);
+}
+.menu-in {
+  animation: menu-in 0.18s ease-out;
+  transform-origin: top;
+}
+.key-pop {
+  animation: key-pop 0.3s ease-out;
+}
+.touched-row {
+  animation: touched-row 1.2s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .line-in,
+  .animate-blink,
+  .tab-in,
+  .pane-in,
+  .menu-in,
+  .key-pop,
+  .touched-row {
+    animation: none !important;
+  }
+}

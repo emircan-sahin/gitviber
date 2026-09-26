@@ -1,0 +1,201 @@
+{
+  "meta": {
+    "title": "GitViber : client git pour agents IA en worktrees parallèles",
+    "description": "Client git de ~14 Mo pour le vibe coding. Lancez Claude Code ou Codex en worktrees parallèles, suivez les diffs en direct, testez et committez. macOS et Linux.",
+    "keywords": "client git, interface graphique git, agents IA, agents de code, Claude Code, Codex, git worktree, agents en parallèle, vibe coding, revue de code, visualiseur de diff, alternative à GitHub Desktop, macOS, Linux, open source",
+    "ogTitle": "GitViber : tout le vibe coding dans une app",
+    "ogDescription": "Faites tourner vos agents dans leurs propres worktrees, relisez leur code dans une interface pensée pour la revue, testez et committez. ~14 Mo, macOS et Linux.",
+    "ogImageAlt": "GitViber : tout le vibe coding dans une app. La fenêtre de l'app avec un diff en direct, les fichiers modifiés et un terminal."
+  },
+  "og": {
+    "tagline": "Des agents en worktrees parallèles, des diffs en direct, un terminal et le commit, dans une seule fenêtre.",
+    "facts": [
+      "~14 Mo",
+      "macOS et Linux",
+      "Gratuit et open source"
+    ]
+  },
+  "nav": {
+    "skip": "Aller au contenu",
+    "sections": "Sections",
+    "features": "Fonctionnalités",
+    "download": "Télécharger",
+    "faq": "FAQ",
+    "github": "GitViber sur GitHub",
+    "language": "Langue"
+  },
+  "cta": {
+    "downloadMac": "Télécharger pour macOS",
+    "downloadLinux": "Télécharger pour Linux",
+    "get": "Obtenir GitViber",
+    "copy": "Copier la commande",
+    "copied": "Copié"
+  },
+  "hero": {
+    "release": "GitViber {version} pour macOS et Linux",
+    "title": "Tout le vibe coding dans une app.",
+    "lead": "Faites tourner vos agents côte à côte dans leurs propres worktrees, relisez ce qu'ils ont écrit dans une interface pensée pour la revue, testez et committez. Sans éditeur qui dévore des gigaoctets de RAM.",
+    "screenshotAlt": "GitViber avec un diff ouvert, la liste des modifications à gauche, un terminal en bas et l'explorateur de fichiers à droite"
+  },
+  "story": {
+    "title": "Une fenêtre. Pas quatre.",
+    "text": "Pas d'éditeur pour lire les fichiers, pas de GitHub Desktop pour les diffs, pas de pile de terminaux.",
+    "labels": [
+      "Worktrees",
+      "Diffs en direct",
+      "Bascule",
+      "Tout point de départ",
+      "Relecture",
+      "Terminal",
+      "Explorateur",
+      "Commit"
+    ]
+  },
+  "agents": {
+    "demo": "GitViber avec trois agents, chacun dans son propre worktree. Le diff du worktree ouvert se remplit ligne par ligne à chaque enregistrement de l'agent.",
+    "steps": [
+      {
+        "title": "Plusieurs agents. Un seul écran.",
+        "text": "Donnez à chaque agent son propre worktree. Ils travaillent côte à côte sans se marcher dessus, et vous passez de l'un à l'autre depuis la barre du haut."
+      },
+      {
+        "title": "Regardez le travail arriver.",
+        "text": "Le diff se met à jour dès qu'un agent enregistre, sans vous faire perdre le fil. Pas de rechargement, pas de git status."
+      },
+      {
+        "title": "Passez de l'un à l'autre.",
+        "text": "Chaque worktree garde ses propres terminaux et sa propre progression de revue, donc rien ne se perd quand vous changez."
+      },
+      {
+        "title": "Partez de n'importe où.",
+        "text": "D'une branche ou d'un commit, ou récupérez une pull request dans son propre worktree sans toucher au vôtre."
+      }
+    ]
+  },
+  "review": {
+    "title": "Fait pour lire du code, pas pour en taper.",
+    "text": "Avec les agents, la journée se passe à lire du code. Parcourez les fichiers modifiés au clavier, marquez-les comme vus, et quand un agent retouche l'un d'eux, la marque disparaît pour que vous sachiez qu'il faut y rejeter un œil."
+  },
+  "terminal": {
+    "title": "Testez sans quitter le diff.",
+    "text": "Un vrai terminal se trouve sous le diff, avec onglets et panneaux. Lancez les tests, démarrez le serveur de dev ou parlez à l'agent, juste à côté du changement que vous lisez. {keys} l'affiche ou le masque."
+  },
+  "explorer": {
+    "title": "Parcourez le code, pas seulement le diff.",
+    "text": "Un vrai explorateur de fichiers avec des barres de modification dans la marge, et {keys} pour sauter à n'importe quel fichier. Corrigez une ligne directement dans la vue du fichier et enregistrez. La plupart du temps, plus besoin de garder l'éditeur ouvert."
+  },
+  "commit": {
+    "title": "Votre agent écrit le message.",
+    "text": "Cliquez sur l'étincelle à côté du champ de commit et votre propre `claude -p` ou `codex exec` le rédige à partir du diff. Pas de clé API, pas de compte en plus."
+  },
+  "numbers": {
+    "title": "Pas un éditeur de plus qui dévore votre RAM.",
+    "subtitle": "Les éditeurs comme Cursor prennent facilement des gigaoctets rien que pour vous laisser lire.",
+    "items": [
+      {
+        "big": "~14 Mo",
+        "title": "L'app entière.",
+        "text": "GitHub Desktop pèse 681 Mo. GitViber n'embarque pas Chromium : un cœur en Rust et la webview du système."
+      },
+      {
+        "big": "0 %",
+        "title": "De CPU au repos.",
+        "text": "GitViber se réveille quand des fichiers changent, pas à intervalles fixes. Les diffs sont calculés en Rust et colorés hors du thread principal."
+      }
+    ]
+  },
+  "rest": {
+    "title": "Et tout le reste de git.",
+    "subtitle": "Votre propre git 2.36+, votre config, vos hooks et vos signatures.",
+    "items": [
+      {
+        "title": "Historique",
+        "text": "Branches et merges sous forme de graphe coloré. Annulez, faites un revert, un reset, un checkout ou posez un tag."
+      },
+      {
+        "title": "Branches",
+        "text": "Merge, rebase, et pull en fast-forward, merge ou rebase."
+      },
+      {
+        "title": "Conflits",
+        "text": "Résolvez bloc par bloc, puis continuez, sautez l'étape ou abandonnez."
+      },
+      {
+        "title": "Pull requests",
+        "text": "Lecture, revue dans le même visualiseur de diff, création, merge et checkout."
+      },
+      {
+        "title": "Issues",
+        "text": "Ouvrez, modifiez, commentez, fermez et rouvrez, sans passer par le navigateur."
+      },
+      {
+        "title": "Raccourcis",
+        "text": "Chaque action a le sien, et tous se reconfigurent. Maintenez ⌘ pour les voir."
+      }
+    ]
+  },
+  "faq": {
+    "title": "Questions.",
+    "more": "Plus de détails dans le {readme}.",
+    "readme": "README",
+    "items": [
+      {
+        "q": "Qu'est-ce que GitViber ?",
+        "a": "Un client git gratuit et open source pour macOS et Linux, conçu pour coder avec des agents. Faites tourner Claude Code, Codex ou n'importe quel autre agent dans des worktrees parallèles, suivez leurs diffs en direct, parcourez le code, testez-le dans le terminal intégré et committez, le tout dans une app de ~14 Mo."
+      },
+      {
+        "q": "GitViber est-il gratuit ?",
+        "a": "Oui. Il est open source sous licence GPL-3.0, sans compte, sans télémétrie et sans offre payante."
+      },
+      {
+        "q": "Comment faire tourner plusieurs agents Claude Code ou Codex en parallèle ?",
+        "a": "Donnez à chaque agent son propre git worktree : un dossier séparé sur sa propre branche, pour qu'ils ne se marchent pas dessus. Dans GitViber, vous en créez un depuis n'importe quelle branche, commit ou pull request, vous y ouvrez un terminal et vous y lancez l'agent. La barre du haut passe d'un worktree à l'autre et affiche le nombre de modifications de chacun."
+      },
+      {
+        "q": "Est-ce que ça marche avec Claude Code et Codex ?",
+        "a": "Ça marche avec n'importe quel agent qui modifie des fichiers dans un dossier : GitViber surveille le worktree, pas l'agent. Pour les messages de commit, il peut lancer `claude -p` ou `codex exec` pour vous, sans clé API."
+      },
+      {
+        "q": "Quelle différence avec GitHub Desktop ?",
+        "a": "GitViber est pensé autour des worktrees et des agents : des diffs qui se mettent à jour dès qu'un agent enregistre, un terminal et un explorateur de fichiers dans la même fenêtre, et une progression de revue conservée par worktree. Il pèse aussi ~14 Mo, contre 681 Mo pour GitHub Desktop."
+      },
+      {
+        "q": "Ai-je encore besoin d'un éditeur comme Cursor ou VS Code ?",
+        "a": "Pas pour relire ce qu'un agent a écrit. GitViber propose des diffs sur fichiers entiers avec surlignage mot par mot, un explorateur de fichiers avec ouverture rapide et un terminal. Les éditeurs comme Cursor prennent facilement des gigaoctets de RAM rien que pour vous laisser lire."
+      },
+      {
+        "q": "Est-ce qu'il consomme beaucoup de RAM ou de CPU ?",
+        "a": "Non. C'est une app de ~14 Mo sans Chromium embarqué : un cœur en Rust et la webview du système. Au repos, il tourne à 0 % de CPU et ne se réveille que quand des fichiers changent. Le Moniteur d'activité peut montrer la mémoire qui grimpe pendant que vous cliquez un peu partout ; c'est de la mémoire que WebKit n'a pas encore libérée, et elle redescend après quelques minutes d'inactivité."
+      },
+      {
+        "q": "Sur quelles plateformes tourne-t-il ?",
+        "a": "macOS 13 ou plus récent, en une seule app universelle pour Apple Silicon et Intel, et Linux x86_64 en .deb, .rpm ou AppImage. macOS est utilisé au quotidien ; les builds Linux sont testés en CI. Windows n'est pas testé et n'a pas encore de build."
+      },
+      {
+        "q": "Comment me connecter à GitHub ?",
+        "a": "L'app n'a pas de connexion à elle. Lancez `gh auth login` une fois, ou laissez git mémoriser un login github.com, et GitViber le réutilise. Le token reste en mémoire."
+      },
+      {
+        "q": "Est-ce qu'il envoie des données quelque part ?",
+        "a": "Il communique avec vos remotes git et, pour les pull requests et les issues, avec GitHub. Il cherche les mises à jour sur GitHub Releases, ce que vous pouvez désactiver dans les Réglages. Les erreurs vont dans un fichier de log local et nulle part ailleurs."
+      }
+    ]
+  },
+  "install": {
+    "title": "Fermez les autres fenêtres.",
+    "lead": "Gratuit et open source. Sans compte, sans télémétrie.",
+    "mac": "macOS 13 ou plus récent, une app universelle, signée et notarisée.",
+    "linux": "Linux x86_64 : {files}. Nécessite git 2.36 ou plus récent.",
+    "source": "Ou {link}.",
+    "sourceLink": "compilez-le depuis les sources"
+  },
+  "footer": {
+    "made": "GPL-3.0 · Créé par {author}",
+    "project": "Projet",
+    "source": "Code source",
+    "releases": "Versions",
+    "changelog": "Changelog",
+    "contributing": "Contribuer",
+    "security": "Sécurité"
+  }
+}

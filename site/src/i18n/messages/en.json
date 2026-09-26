@@ -1,0 +1,201 @@
+{
+  "meta": {
+    "title": "GitViber: git client for coding agents in parallel worktrees",
+    "description": "A ~14 MB git client for vibe coding. Run Claude Code or Codex in parallel worktrees, watch the diffs land live, test in a terminal and commit. macOS and Linux.",
+    "keywords": "git client, coding agents, Claude Code, Codex, git worktrees, parallel agents, vibe coding, code review, diff viewer, GitHub Desktop alternative, macOS, Linux, open source",
+    "ogTitle": "GitViber: vibe code from one app",
+    "ogDescription": "Run your agents side by side in their own worktrees, read what they wrote in a UI made for reviewing, test it and commit. A ~14 MB app for macOS and Linux.",
+    "ogImageAlt": "GitViber: vibe code from one app. The app window with a live diff, the changed files and a terminal."
+  },
+  "og": {
+    "tagline": "Agents in parallel worktrees, live diffs, a terminal and commit, in one window.",
+    "facts": [
+      "~14 MB",
+      "macOS and Linux",
+      "Free and open source"
+    ]
+  },
+  "nav": {
+    "skip": "Skip to content",
+    "sections": "Sections",
+    "features": "Features",
+    "download": "Download",
+    "faq": "FAQ",
+    "github": "GitViber on GitHub",
+    "language": "Language"
+  },
+  "cta": {
+    "downloadMac": "Download for macOS",
+    "downloadLinux": "Download for Linux",
+    "get": "Get GitViber",
+    "copy": "Copy command",
+    "copied": "Copied"
+  },
+  "hero": {
+    "release": "GitViber {version} for macOS and Linux",
+    "title": "Vibe code from one app.",
+    "lead": "Run your agents side by side in their own worktrees, read what they wrote in a UI made for reviewing, test it and commit. Without an editor eating gigabytes of RAM.",
+    "screenshotAlt": "GitViber with a diff open, the changes list on the left, a terminal below and the file explorer on the right"
+  },
+  "story": {
+    "title": "One window. Not four.",
+    "text": "No editor to read the files, no GitHub Desktop for the diffs, no pile of terminals.",
+    "labels": [
+      "Worktrees",
+      "Live diffs",
+      "Switching",
+      "Any starting point",
+      "Review",
+      "Terminal",
+      "Explorer",
+      "Commit"
+    ]
+  },
+  "agents": {
+    "demo": "GitViber with three agents, each in its own worktree. The open worktree's diff fills in line by line as the agent saves.",
+    "steps": [
+      {
+        "title": "Many agents. One screen.",
+        "text": "Give every agent its own worktree. They work side by side without stepping on each other, and you switch between them from the top bar."
+      },
+      {
+        "title": "Watch the work land.",
+        "text": "The diff refreshes the moment an agent saves, without losing your place. No reloading, no git status."
+      },
+      {
+        "title": "Hop between them.",
+        "text": "Each worktree keeps its own terminals and its own review progress, so nothing gets lost when you switch."
+      },
+      {
+        "title": "Start from anything.",
+        "text": "Any branch or commit, or check a pull request out into its own worktree without touching yours."
+      }
+    ]
+  },
+  "review": {
+    "title": "Built for reading code, not typing it.",
+    "text": "Agents turned the day into reading code. Walk the changed files with the keyboard, mark them viewed, and when an agent touches one again, the mark clears so you know to look again."
+  },
+  "terminal": {
+    "title": "Test it without leaving the diff.",
+    "text": "A real terminal sits under the diff, with tabs and splits. Run the tests, start the dev server or talk to the agent, right next to the change you're reading. {keys} toggles it."
+  },
+  "explorer": {
+    "title": "Browse the code, not just the diff.",
+    "text": "A full file explorer with change bars in the gutter, and {keys} to jump to any file. Fix a line right in the file view and save it. For most days, that's the editor you no longer need open."
+  },
+  "commit": {
+    "title": "Your agent writes the message.",
+    "text": "Hit the sparkle next to the commit box and your own `claude -p` or `codex exec` writes it from the diff. No API key, no extra account."
+  },
+  "numbers": {
+    "title": "Not another editor eating your RAM.",
+    "subtitle": "Editors like Cursor easily take gigabytes just to let you read.",
+    "items": [
+      {
+        "big": "~14 MB",
+        "title": "The whole app.",
+        "text": "GitHub Desktop is 681 MB. GitViber has no bundled Chromium: a Rust core and the system webview."
+      },
+      {
+        "big": "0%",
+        "title": "CPU at idle.",
+        "text": "It wakes up when files change, not on a timer. Diffs are computed in Rust and highlighted off the main thread."
+      }
+    ]
+  },
+  "rest": {
+    "title": "And the rest of git.",
+    "subtitle": "Your own git 2.36+, your config, hooks and signing.",
+    "items": [
+      {
+        "title": "History",
+        "text": "Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag."
+      },
+      {
+        "title": "Branches",
+        "text": "Merge, rebase, and pull with fast-forward, merge or rebase."
+      },
+      {
+        "title": "Conflicts",
+        "text": "Resolve block by block, then continue, skip or abort."
+      },
+      {
+        "title": "Pull requests",
+        "text": "Read, review in the same diff viewer, create, merge and check out."
+      },
+      {
+        "title": "Issues",
+        "text": "Open, edit, comment, close and reopen, without the browser."
+      },
+      {
+        "title": "Shortcuts",
+        "text": "Every action has one, every one can be rebound. Hold ⌘ to see them."
+      }
+    ]
+  },
+  "faq": {
+    "title": "Questions.",
+    "more": "More in the {readme}.",
+    "readme": "README",
+    "items": [
+      {
+        "q": "What is GitViber?",
+        "a": "A free, open-source git client for macOS and Linux, made for coding with agents. Run Claude Code, Codex or any other agent in parallel worktrees, watch their diffs land live, browse the code, test it in a built-in terminal and commit, all in one ~14 MB app."
+      },
+      {
+        "q": "Is it free?",
+        "a": "Yes. It's open source under the GPL-3.0, with no account, no telemetry and no paid tier."
+      },
+      {
+        "q": "How do I run several Claude Code or Codex agents in parallel?",
+        "a": "Give each agent its own git worktree: a separate folder on its own branch, so they don't step on each other. In GitViber you start one from any branch, commit or pull request, open a terminal in it and start the agent there. The top bar switches between worktrees and shows each one's change count."
+      },
+      {
+        "q": "Does it work with Claude Code and Codex?",
+        "a": "It works with any agent that edits files in a folder: GitViber watches the worktree, not the agent. For commit messages it can run `claude -p` or `codex exec` for you, with no API key."
+      },
+      {
+        "q": "How is it different from GitHub Desktop?",
+        "a": "GitViber is built around worktrees and agents: diffs that refresh the moment an agent saves, a terminal and a file explorer in the same window, and review progress kept per worktree. It's also ~14 MB; GitHub Desktop is 681 MB."
+      },
+      {
+        "q": "Do I still need an editor like Cursor or VS Code?",
+        "a": "Not to review what an agent wrote. GitViber has whole-file diffs with word-level highlights, a file explorer with quick open and a terminal. Editors like Cursor easily take gigabytes of RAM just to let you read."
+      },
+      {
+        "q": "Does it use a lot of RAM or CPU?",
+        "a": "No. It's a ~14 MB app with no bundled Chromium: a Rust core and the system webview. It idles at 0% CPU and wakes up only when files change. Activity Monitor can show memory climbing while you click around; that's memory WebKit hasn't collected yet, and it drops after a few idle minutes."
+      },
+      {
+        "q": "Which platforms does it run on?",
+        "a": "macOS 13 or later, as one universal app for Apple Silicon and Intel, and Linux x86_64 as a .deb, .rpm or AppImage. macOS is used daily; the Linux builds are tested in CI. Windows is untested and has no build yet."
+      },
+      {
+        "q": "How do I sign in to GitHub?",
+        "a": "There's no sign-in of its own. Run `gh auth login` once, or have git remember a github.com login, and GitViber borrows it. The token stays in memory."
+      },
+      {
+        "q": "Does it send anything anywhere?",
+        "a": "It talks to your git remotes and, for pull requests and issues, GitHub. It checks GitHub Releases for updates, which you can turn off in Settings. Errors go to a local log file and nowhere else."
+      }
+    ]
+  },
+  "install": {
+    "title": "Close the other windows.",
+    "lead": "Free and open source. No account, no telemetry.",
+    "mac": "macOS 13 or later, one universal app, signed and notarized.",
+    "linux": "Linux x86_64: {files}. Needs git 2.36 or newer.",
+    "source": "Or {link}.",
+    "sourceLink": "build it from source"
+  },
+  "footer": {
+    "made": "GPL-3.0 · Made by {author}",
+    "project": "Project",
+    "source": "Source",
+    "releases": "Releases",
+    "changelog": "Changelog",
+    "contributing": "Contributing",
+    "security": "Security"
+  }
+}

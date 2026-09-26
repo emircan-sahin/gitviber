@@ -1,0 +1,201 @@
+{
+  "meta": {
+    "title": "GitViber：多 Agent 并行开发的 git 客户端",
+    "description": "约 14 MB 的 vibe coding git 客户端。在多个 worktree 中并行运行 Claude Code 或 Codex，实时查看 diff，在终端里测试，然后直接提交。支持 macOS 和 Linux。",
+    "keywords": "git 客户端, Git GUI, AI 编程, 编程 Agent, Claude Code, Codex, git worktree, 并行开发, 多 Agent, vibe coding, 氛围编程, 代码审查, diff 查看器, GitHub Desktop 替代品, macOS, Linux, 开源",
+    "ogTitle": "GitViber：一个应用搞定 vibe coding",
+    "ogDescription": "让每个 Agent 在各自的 worktree 里并行工作，在专为审查设计的界面里读它们写的代码，测试后提交。约 14 MB，支持 macOS 和 Linux。",
+    "ogImageAlt": "GitViber：一个应用搞定 vibe coding。应用窗口，显示实时 diff、改动的文件和终端。"
+  },
+  "og": {
+    "tagline": "并行 worktree 里的 Agent、实时 diff、终端和提交，全在一个窗口里。",
+    "facts": [
+      "~14 MB",
+      "macOS 和 Linux",
+      "免费开源"
+    ]
+  },
+  "nav": {
+    "skip": "跳到正文",
+    "sections": "页面章节",
+    "features": "功能",
+    "download": "下载",
+    "faq": "常见问题",
+    "github": "GitHub 上的 GitViber",
+    "language": "语言"
+  },
+  "cta": {
+    "downloadMac": "下载 macOS 版",
+    "downloadLinux": "下载 Linux 版",
+    "get": "获取 GitViber",
+    "copy": "复制命令",
+    "copied": "已复制"
+  },
+  "hero": {
+    "release": "GitViber {version}，支持 macOS 和 Linux",
+    "title": "一个应用，搞定 vibe coding。",
+    "lead": "让 Agent 在各自的 worktree 里并行工作，在专为审查设计的界面里读它们写的代码，测试，然后提交。不用再开一个吃掉好几 GB 内存的编辑器。",
+    "screenshotAlt": "打开了 diff 的 GitViber：左侧是改动列表，下方是终端，右侧是文件浏览器"
+  },
+  "story": {
+    "title": "一个窗口，顶四个。",
+    "text": "不用开编辑器看文件，不用开 GitHub Desktop 看 diff，也不用堆一堆终端。",
+    "labels": [
+      "worktree",
+      "实时 diff",
+      "切换",
+      "任意起点",
+      "审查",
+      "终端",
+      "文件浏览",
+      "提交"
+    ]
+  },
+  "agents": {
+    "demo": "GitViber 中有三个 Agent，各自在自己的 worktree 里工作。Agent 每保存一次，当前 worktree 的 diff 就一行行地填进来。",
+    "steps": [
+      {
+        "title": "多个 Agent，一块屏幕。",
+        "text": "给每个 Agent 一个独立的 worktree。它们并行工作、互不干扰，你在顶栏随时切换。"
+      },
+      {
+        "title": "看着代码落地。",
+        "text": "Agent 一保存，diff 就立即刷新，你正在看的位置也不会丢。不用刷新，不用 git status。"
+      },
+      {
+        "title": "随时来回切换。",
+        "text": "每个 worktree 都有自己的终端和审查进度，切过去再切回来，什么都不会丢。"
+      },
+      {
+        "title": "从任意起点开始。",
+        "text": "可以从任意分支或提交创建，也可以把 PR 检出到独立的 worktree，不影响你自己的工作区。"
+      }
+    ]
+  },
+  "review": {
+    "title": "为读代码设计，而不是写代码。",
+    "text": "有了 Agent，一天的工作变成了读代码。用键盘逐个浏览改动的文件，标记为已查看；Agent 再次改动某个文件时，标记会自动清除，提醒你再看一遍。"
+  },
+  "terminal": {
+    "title": "不离开 diff 就能测试。",
+    "text": "diff 下方就是真正的终端，支持标签页和分屏。跑测试、启动 dev server、和 Agent 对话，都在你正在读的改动旁边完成。按 {keys} 显示或隐藏。"
+  },
+  "explorer": {
+    "title": "不只看 diff，整个项目随手翻。",
+    "text": "完整的文件浏览器，行号旁的改动条标出每处修改，按 {keys} 即可跳到任意文件。直接在文件视图里改一行、保存。大多数时候，编辑器已经不用开着了。"
+  },
+  "commit": {
+    "title": "提交信息，交给 Agent 写。",
+    "text": "点一下提交框旁边的闪光按钮，你本地的 `claude -p` 或 `codex exec` 就会根据 diff 写好提交信息。不需要 API key，也不用额外注册账号。"
+  },
+  "numbers": {
+    "title": "别再让编辑器吃光你的内存。",
+    "subtitle": "像 Cursor 这样的编辑器，光是用来看代码就能轻松占掉好几 GB。",
+    "items": [
+      {
+        "big": "~14 MB",
+        "title": "整个应用就这么大。",
+        "text": "GitHub Desktop 有 681 MB。GitViber 不内置 Chromium，用的是 Rust 内核加系统 WebView。"
+      },
+      {
+        "big": "0%",
+        "title": "空闲时的 CPU 占用。",
+        "text": "只在文件变化时才唤醒，不靠定时轮询。diff 在 Rust 中计算，高亮在主线程之外完成。"
+      }
+    ]
+  },
+  "rest": {
+    "title": "git 的其他操作，也都有。",
+    "subtitle": "用的是你自己的 git 2.36+，沿用你的配置、hooks 和签名。",
+    "items": [
+      {
+        "title": "历史",
+        "text": "用彩色泳道图展示分支和合并。支持撤销、revert、reset、检出和打标签。"
+      },
+      {
+        "title": "分支",
+        "text": "合并、变基，拉取时可选 fast-forward、merge 或 rebase。"
+      },
+      {
+        "title": "冲突",
+        "text": "逐块解决，然后继续、跳过或中止。"
+      },
+      {
+        "title": "Pull Request",
+        "text": "查看，在同一个 diff 查看器里审查，创建、合并和检出。"
+      },
+      {
+        "title": "Issue",
+        "text": "新建、编辑、评论、关闭和重新打开，不用开浏览器。"
+      },
+      {
+        "title": "快捷键",
+        "text": "每个操作都有快捷键，全部可以重新绑定。按住 ⌘ 即可查看。"
+      }
+    ]
+  },
+  "faq": {
+    "title": "常见问题。",
+    "more": "更多内容见 {readme}。",
+    "readme": "README",
+    "items": [
+      {
+        "q": "GitViber 是什么？",
+        "a": "一款免费、开源的 git 客户端，支持 macOS 和 Linux，专为和 Agent 一起写代码而设计。在并行的 worktree 中运行 Claude Code、Codex 或其他任何 Agent，实时查看它们的 diff，浏览代码，在内置终端里测试并提交，全部在一个约 14 MB 的应用里完成。"
+      },
+      {
+        "q": "免费吗？",
+        "a": "免费。基于 GPL-3.0 开源，无需账号，没有遥测，也没有付费版。"
+      },
+      {
+        "q": "怎样并行运行多个 Claude Code 或 Codex Agent？",
+        "a": "给每个 Agent 分配一个独立的 git worktree：它是一个单独的文件夹，有自己的分支，所以 Agent 之间互不干扰。在 GitViber 里，你可以从任意分支、提交或 PR 创建 worktree，在其中打开终端并启动 Agent。顶栏用来在 worktree 之间切换，并显示每个 worktree 的改动数量。"
+      },
+      {
+        "q": "支持 Claude Code 和 Codex 吗？",
+        "a": "任何在文件夹里编辑文件的 Agent 都能用：GitViber 监视的是 worktree，而不是 Agent。生成提交信息时，它可以替你运行 `claude -p` 或 `codex exec`，不需要 API key。"
+      },
+      {
+        "q": "和 GitHub Desktop 有什么不同？",
+        "a": "GitViber 围绕 worktree 和 Agent 设计：Agent 一保存 diff 就刷新，终端和文件浏览器在同一个窗口里，审查进度按 worktree 分别保存。而且它只有约 14 MB，GitHub Desktop 则有 681 MB。"
+      },
+      {
+        "q": "还需要 Cursor 或 VS Code 这类编辑器吗？",
+        "a": "如果只是审查 Agent 写的代码，就不需要。GitViber 提供带词级高亮的完整文件 diff、支持快速打开的文件浏览器，还有终端。像 Cursor 这样的编辑器，光是用来看代码就能轻松占掉好几 GB 内存。"
+      },
+      {
+        "q": "会占用很多内存或 CPU 吗？",
+        "a": "不会。它是一个约 14 MB 的应用，不内置 Chromium，用的是 Rust 内核和系统 WebView。空闲时 CPU 占用为 0%，只在文件变化时唤醒。你在界面里点来点去时，活动监视器里的内存可能会上涨；那是 WebKit 还没回收的内存，闲置几分钟后就会降下来。"
+      },
+      {
+        "q": "支持哪些平台？",
+        "a": "macOS 13 及以上版本，提供同时支持 Apple Silicon 和 Intel 的通用应用；Linux x86_64 提供 .deb、.rpm 和 AppImage。macOS 版每天都在用，Linux 版在 CI 中测试。Windows 尚未测试，也还没有构建版本。"
+      },
+      {
+        "q": "怎么登录 GitHub？",
+        "a": "GitViber 没有自己的登录流程。运行一次 `gh auth login`，或者让 git 记住 github.com 的登录信息，GitViber 就会直接借用。token 只保存在内存中。"
+      },
+      {
+        "q": "它会向外发送数据吗？",
+        "a": "它只和你的 git 远程仓库通信，PR 和 Issue 功能会连接 GitHub。它会通过 GitHub Releases 检查更新，这可以在设置中关闭。错误只写入本地日志文件，不会发到任何地方。"
+      }
+    ]
+  },
+  "install": {
+    "title": "其他窗口，可以关了。",
+    "lead": "免费开源。无需账号，没有遥测。",
+    "mac": "macOS 13 及以上，通用应用，已签名并通过公证。",
+    "linux": "Linux x86_64：{files}。需要 git 2.36 或更高版本。",
+    "source": "也可以{link}。",
+    "sourceLink": "从源码构建"
+  },
+  "footer": {
+    "made": "GPL-3.0 · 作者 {author}",
+    "project": "项目",
+    "source": "源码",
+    "releases": "版本发布",
+    "changelog": "更新日志",
+    "contributing": "参与贡献",
+    "security": "安全"
+  }
+}

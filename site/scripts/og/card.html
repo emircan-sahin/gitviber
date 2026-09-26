@@ -1,0 +1,245 @@
+<!doctype html>
+<!-- Link previews, the repo's social preview, the README banner and the icons. scripts/og/render.mjs
+     loads this page, calls render() with one image's copy and size, and screenshots it. -->
+<meta charset="utf-8" />
+<style>
+  @font-face {
+    font-family: "Geist Variable";
+    src: url(../../node_modules/@fontsource-variable/geist/files/geist-latin-wght-normal.woff2);
+    font-weight: 100 900;
+  }
+  @font-face {
+    font-family: "JetBrains Mono Variable";
+    src: url(../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2);
+    font-weight: 100 900;
+  }
+  /* The site's tokens (src/styles.css), which are the app's dark theme. */
+  :root {
+    --page: #0b0b0c;
+    --border-strong: #303033;
+    --fg: #ececee;
+    --muted: #a2a2a8;
+    --subtle: #86868d;
+    --primary: #4a9ff5;
+    --sans: -apple-system, BlinkMacSystemFont, "Geist Variable", "Segoe UI", sans-serif;
+    --mono: "SF Mono", "JetBrains Mono Variable", Menlo, monospace;
+  }
+  * {
+    margin: 0;
+    box-sizing: border-box;
+  }
+  html,
+  body {
+    background: transparent;
+  }
+  body {
+    overflow: hidden;
+    color: var(--fg);
+    font-family: var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    position: relative;
+    overflow: hidden;
+    background: var(--page);
+  }
+  .glow {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(60% 70% at 50% 0%, rgb(74 159 245 / 0.16), transparent);
+  }
+  .copy {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 26px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .brand img {
+    width: 44px;
+    height: 44px;
+  }
+  h1 {
+    font-weight: 600;
+    letter-spacing: -0.035em;
+    line-height: 1.02;
+    text-wrap: balance;
+  }
+  .tagline {
+    color: var(--muted);
+    line-height: 1.4;
+    text-wrap: balance;
+  }
+  .facts {
+    display: flex;
+    gap: 10px;
+    font-family: var(--mono);
+    color: var(--subtle);
+  }
+  .facts span:not(:last-child)::after {
+    content: "·";
+    margin-left: 10px;
+    color: var(--border-strong);
+  }
+  .stage {
+    position: absolute;
+    perspective: 1600px;
+  }
+  .window {
+    overflow: hidden;
+    border: 1px solid var(--border-strong);
+    border-radius: 10px;
+    transform-origin: 50% 0;
+    box-shadow:
+      0 50px 140px -30px rgb(0 0 0 / 0.95),
+      0 0 0 1px rgb(255 255 255 / 0.03);
+  }
+  .window img {
+    display: block;
+    width: 100%;
+  }
+  /* Fades the window into the page where the card cuts it off. */
+  .fade {
+    position: absolute;
+    inset: auto 0 0;
+    z-index: 2;
+    background: linear-gradient(transparent, var(--page));
+  }
+
+  /* 1200x630 link preview and 1280x640 repo preview: the site's hero, centered. */
+  .hero .copy {
+    align-items: center;
+    padding: 46px 60px 0;
+    text-align: center;
+  }
+  .hero h1 {
+    margin-top: 30px;
+    font-size: 80px;
+  }
+  .hero .tagline {
+    max-width: 880px;
+    margin-top: 18px;
+    font-size: 26px;
+  }
+  .hero .facts {
+    margin-top: 16px;
+    font-size: 17px;
+  }
+  .hero .stage {
+    left: 50%;
+    width: 1000px;
+    translate: -50% 0;
+  }
+  .hero .window {
+    transform: rotateX(24deg) scale(0.96);
+  }
+  .hero .fade {
+    height: 90px;
+  }
+
+  /* 1280x400 README banner: copy on the left, the window leaning in from the right. */
+  .banner .glow {
+    background: radial-gradient(55% 90% at 78% 0%, rgb(74 159 245 / 0.16), transparent);
+  }
+  .banner .copy {
+    width: 560px;
+    height: 100%;
+    justify-content: center;
+    padding-left: 64px;
+  }
+  .banner h1 {
+    margin-top: 26px;
+    font-size: 56px;
+  }
+  .banner .tagline {
+    margin-top: 16px;
+    font-size: 20px;
+    text-wrap: pretty;
+  }
+  .banner .facts {
+    margin-top: 16px;
+    font-size: 14px;
+  }
+  .banner .stage {
+    left: 600px;
+    top: 44px;
+    width: 900px;
+    perspective: 1400px;
+  }
+  .banner .window {
+    transform: rotateY(-16deg) rotateX(6deg);
+    transform-origin: 0 0;
+  }
+  .banner .fade {
+    height: 60px;
+  }
+
+  .icon {
+    display: block;
+  }
+</style>
+<body>
+  <div id="root"></div>
+  <script>
+    const el = (tag, props = {}, ...children) => {
+      const node = Object.assign(document.createElement(tag), props);
+      node.append(...children);
+      return node;
+    };
+
+    /** Shrinks the headline until it fits in `lines` lines, so longer translations still fit. */
+    function fit(h1, lines) {
+      let size = parseFloat(getComputedStyle(h1).fontSize);
+      const lineHeight = () => parseFloat(getComputedStyle(h1).lineHeight);
+      // offsetHeight, not scrollHeight: the system font's ascenders overflow a 1.02 line height.
+      while (size > 24 && (h1.offsetHeight > lineHeight() * lines + 2 || h1.scrollWidth > h1.clientWidth)) {
+        h1.style.fontSize = `${(size -= 2)}px`;
+      }
+    }
+
+    window.render = async ({ kind, width, height, lang, headline, tagline, facts, icon, screenshot, stageTop }) => {
+      document.documentElement.lang = lang ?? "en";
+      const root = document.getElementById("root");
+      root.replaceChildren();
+
+      if (kind === "icon") {
+        root.append(el("img", { className: "icon", src: icon, width, height }));
+      } else {
+        const card = el("div", { className: `card ${kind}` });
+        card.style.width = `${width}px`;
+        card.style.height = `${height}px`;
+        const h1 = el("h1", {}, headline);
+        const copy = el(
+          "div",
+          { className: "copy" },
+          el("div", { className: "brand" }, el("img", { src: icon, alt: "" }), "GitViber"),
+          h1,
+          el("p", { className: "tagline" }, tagline),
+          el("p", { className: "facts" }, ...facts.map((f) => el("span", {}, f))),
+        );
+        const stage = el(
+          "div",
+          { className: "stage" },
+          el("div", { className: "window" }, el("img", { src: screenshot, alt: "" })),
+        );
+        const fade = el("div", { className: "fade" });
+        card.append(el("div", { className: "glow" }), copy, stage, fade);
+        root.append(card);
+        await document.fonts.ready;
+        fit(h1, kind === "banner" ? 2 : 1);
+        // The window starts under the copy, however tall the translation made it.
+        if (kind === "hero") stage.style.top = `${copy.offsetHeight + stageTop}px`;
+      }
+
+      await document.fonts.ready;
+      await Promise.all([...document.images].map((img) => img.decode()));
+    };
+  </script>
+</body>

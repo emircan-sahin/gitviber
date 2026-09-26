@@ -1,0 +1,201 @@
+{
+  "meta": {
+    "title": "GitViber: paralel ajanlar ve worktree'ler için git istemcisi",
+    "description": "Vibe coding için ~14 MB'lık bir git istemcisi. Claude Code ya da Codex'i paralel worktree'lerde çalıştır, diff'leri canlı izle, terminalde test et, commit'le.",
+    "keywords": "git istemcisi, git arayüzü, kodlama ajanları, yapay zeka ajanları, Claude Code, Codex, git worktree, paralel ajanlar, vibe coding, kod inceleme, diff görüntüleyici, GitHub Desktop alternatifi, ücretsiz git istemcisi, macOS, Linux, açık kaynak",
+    "ogTitle": "GitViber: vibe coding, tek uygulamada",
+    "ogDescription": "Ajanlarını kendi worktree'lerinde yan yana çalıştır, yazdıklarını inceleme için yapılmış bir arayüzde oku, test et ve commit'le. macOS ve Linux için ~14 MB.",
+    "ogImageAlt": "GitViber: vibe coding, tek uygulamada. Canlı bir diff, değişen dosyalar ve terminalle uygulama penceresi."
+  },
+  "og": {
+    "tagline": "Paralel worktree'lerde ajanlar, canlı diff'ler, terminal ve commit. Hepsi tek pencerede.",
+    "facts": [
+      "~14 MB",
+      "macOS ve Linux",
+      "Ücretsiz ve açık kaynak"
+    ]
+  },
+  "nav": {
+    "skip": "İçeriğe geç",
+    "sections": "Bölümler",
+    "features": "Özellikler",
+    "download": "İndir",
+    "faq": "SSS",
+    "github": "GitHub'da GitViber",
+    "language": "Dil"
+  },
+  "cta": {
+    "downloadMac": "macOS için indir",
+    "downloadLinux": "Linux için indir",
+    "get": "GitViber'ı indir",
+    "copy": "Komutu kopyala",
+    "copied": "Kopyalandı"
+  },
+  "hero": {
+    "release": "macOS ve Linux için GitViber {version}",
+    "title": "Vibe coding, tek uygulamada.",
+    "lead": "Ajanlarını kendi worktree'lerinde yan yana çalıştır, yazdıklarını inceleme için yapılmış bir arayüzde oku, test et ve commit'le. Gigabaytlarca RAM yiyen bir editöre gerek kalmadan.",
+    "screenshotAlt": "GitViber'da açık bir diff: solda değişiklik listesi, altta terminal, sağda dosya gezgini"
+  },
+  "story": {
+    "title": "Tek pencere. Dört değil.",
+    "text": "Dosyaları okumak için editöre, diff'ler için GitHub Desktop'a, üst üste açılmış terminallere gerek yok.",
+    "labels": [
+      "Worktree'ler",
+      "Canlı diff'ler",
+      "Geçiş",
+      "İstediğin yerden",
+      "İnceleme",
+      "Terminal",
+      "Gezgin",
+      "Commit"
+    ]
+  },
+  "agents": {
+    "demo": "Her biri kendi worktree'sinde çalışan üç ajanla GitViber. Açık worktree'nin diff'i, ajan kaydettikçe satır satır doluyor.",
+    "steps": [
+      {
+        "title": "Çok ajan. Tek ekran.",
+        "text": "Her ajana kendi worktree'sini ver. Birbirlerinin ayağına basmadan yan yana çalışırlar, sen de aralarında üst çubuktan geçersin."
+      },
+      {
+        "title": "Kod geldikçe izle.",
+        "text": "Ajan kaydettiği anda diff yenilenir, kaldığın yer kaybolmaz. Yeniden yükleme yok, git status yok."
+      },
+      {
+        "title": "Birinden diğerine atla.",
+        "text": "Her worktree'nin kendi terminalleri ve kendi inceleme ilerlemesi var. Geçiş yaptığında hiçbir şey kaybolmaz."
+      },
+      {
+        "title": "İstediğin yerden başla.",
+        "text": "Herhangi bir branch'ten ya da commit'ten başla. İstersen bir pull request'i, seninkine dokunmadan kendi worktree'sine checkout et."
+      }
+    ]
+  },
+  "review": {
+    "title": "Kod yazmak için değil, okumak için yapıldı.",
+    "text": "Ajanlar yüzünden gün artık kod okumakla geçiyor. Değişen dosyaları klavyeyle gez, incelendi diye işaretle. Ajan birine tekrar dokunursa işaret kalkar, yeniden bakman gerektiğini bilirsin."
+  },
+  "terminal": {
+    "title": "Diff'ten ayrılmadan test et.",
+    "text": "Diff'in altında sekmeli ve bölünebilir gerçek bir terminal var. Testleri çalıştır, dev server'ı başlat ya da ajanla konuş, hepsi okuduğun değişikliğin hemen yanında. {keys} ile açıp kapatırsın."
+  },
+  "explorer": {
+    "title": "Sadece diff'i değil, kodun tamamını gez.",
+    "text": "Satır kenarında değişiklik çubukları olan tam bir dosya gezgini ve istediğin dosyaya atlamak için {keys}. Bir satırı doğrudan dosya görünümünde düzelt ve kaydet. Çoğu gün editörü açık tutmana artık gerek kalmıyor."
+  },
+  "commit": {
+    "title": "Mesajı ajanın yazsın.",
+    "text": "Commit kutusunun yanındaki parıltı simgesine bas, kendi `claude -p` ya da `codex exec` komutun mesajı diff'e bakıp yazsın. API anahtarı yok, ekstra hesap yok."
+  },
+  "numbers": {
+    "title": "RAM'ini yiyen bir editör daha değil.",
+    "subtitle": "Cursor gibi editörler sırf kod okuyabilmen için bile gigabaytlarca RAM harcıyor.",
+    "items": [
+      {
+        "big": "~14 MB",
+        "title": "Uygulamanın tamamı.",
+        "text": "GitHub Desktop 681 MB. GitViber'ın içinde gömülü Chromium yok: Rust bir çekirdek ve sistemin kendi webview'u."
+      },
+      {
+        "big": "%0",
+        "title": "Boşta CPU kullanımı.",
+        "text": "Zamanlayıcıyla değil, dosyalar değişince uyanır. Diff'ler Rust'ta hesaplanır, vurgulama ana thread'in dışında yapılır."
+      }
+    ]
+  },
+  "rest": {
+    "title": "Ve git'in geri kalanı.",
+    "subtitle": "Kendi git 2.36+ kurulumun, config'in, hook'ların ve imzalama ayarların.",
+    "items": [
+      {
+        "title": "Geçmiş",
+        "text": "Branch ve merge'ler renkli şeritli bir grafikte. Geri al, revert et, reset'le, checkout et ya da tag'le."
+      },
+      {
+        "title": "Branch'ler",
+        "text": "Merge ve rebase yap, pull'u fast-forward, merge ya da rebase ile çek."
+      },
+      {
+        "title": "Conflict'ler",
+        "text": "Blok blok çöz, sonra devam et, atla ya da iptal et."
+      },
+      {
+        "title": "Pull request'ler",
+        "text": "Oku, aynı diff görüntüleyicide incele, oluştur, merge et ve checkout et."
+      },
+      {
+        "title": "Issue'lar",
+        "text": "Tarayıcıya gitmeden aç, düzenle, yorum yaz, kapat ve yeniden aç."
+      },
+      {
+        "title": "Kısayollar",
+        "text": "Her işlemin bir kısayolu var, hepsi değiştirilebilir. Görmek için ⌘ tuşunu basılı tut."
+      }
+    ]
+  },
+  "faq": {
+    "title": "Sorular.",
+    "more": "Fazlası {readme} dosyasında.",
+    "readme": "README",
+    "items": [
+      {
+        "q": "GitViber nedir?",
+        "a": "macOS ve Linux için ücretsiz, açık kaynak bir git istemcisi. Ajanlarla kod yazmak için yapıldı. Claude Code, Codex ya da başka bir ajanı paralel worktree'lerde çalıştır, diff'lerin canlı gelişini izle, kodda gez, dahili terminalde test et ve commit'le. Hepsi ~14 MB'lık tek bir uygulamada."
+      },
+      {
+        "q": "Ücretsiz mi?",
+        "a": "Evet. GPL-3.0 lisanslı açık kaynak bir proje. Hesap yok, telemetri yok, ücretli paket yok."
+      },
+      {
+        "q": "Birden fazla Claude Code ya da Codex ajanını paralel nasıl çalıştırırım?",
+        "a": "Her ajana kendi git worktree'sini ver. Worktree, kendi branch'inde duran ayrı bir klasör, böylece ajanlar birbirinin ayağına basmaz. GitViber'da herhangi bir branch, commit ya da pull request'ten bir worktree başlatırsın, içinde bir terminal açıp ajanı orada çalıştırırsın. Üst çubuk worktree'ler arasında geçiş yapar ve her birinin değişiklik sayısını gösterir."
+      },
+      {
+        "q": "Claude Code ve Codex ile çalışır mı?",
+        "a": "Bir klasördeki dosyaları düzenleyen her ajanla çalışır, çünkü GitViber ajanı değil worktree'yi izler. Commit mesajları için senin yerine `claude -p` ya da `codex exec` çalıştırabilir, API anahtarı gerekmez."
+      },
+      {
+        "q": "GitHub Desktop'tan farkı ne?",
+        "a": "GitViber worktree'ler ve ajanlar üzerine kurulu: ajan kaydettiği anda yenilenen diff'ler, aynı pencerede terminal ve dosya gezgini, her worktree için ayrı tutulan inceleme ilerlemesi. Bir de boyutu ~14 MB; GitHub Desktop 681 MB."
+      },
+      {
+        "q": "Cursor ya da VS Code gibi bir editöre hâlâ ihtiyacım var mı?",
+        "a": "Ajanın yazdığını incelemek için yok. GitViber'da kelime düzeyinde vurgulu tam dosya diff'leri, hızlı açmalı bir dosya gezgini ve bir terminal var. Cursor gibi editörler sırf kod okuyabilmen için bile gigabaytlarca RAM harcıyor."
+      },
+      {
+        "q": "Çok RAM ya da CPU kullanıyor mu?",
+        "a": "Hayır. İçinde gömülü Chromium olmayan ~14 MB'lık bir uygulama: Rust bir çekirdek ve sistemin kendi webview'u. Boştayken %0 CPU kullanır, sadece dosyalar değişince uyanır. Arayüzde gezinirken Etkinlik Monitörü'nde belleğin tırmandığını görebilirsin. Bu, WebKit'in henüz temizlemediği bellek ve birkaç dakika boşta kalınca düşer."
+      },
+      {
+        "q": "Hangi platformlarda çalışır?",
+        "a": "macOS 13 ve sonrasında, Apple Silicon ve Intel için tek bir universal uygulama olarak. Linux x86_64'te de .deb, .rpm ya da AppImage olarak. macOS'ta her gün kullanılıyor, Linux derlemeleri CI'da test ediliyor. Windows'ta test edilmedi, henüz derlemesi de yok."
+      },
+      {
+        "q": "GitHub'a nasıl giriş yaparım?",
+        "a": "Kendine ait bir giriş ekranı yok. Bir kere `gh auth login` çalıştır ya da git'in bir github.com girişini hatırlamasını sağla, GitViber onu ödünç alır. Token sadece bellekte tutulur."
+      },
+      {
+        "q": "Bir yere bir şey gönderiyor mu?",
+        "a": "Git remote'larınla, pull request'ler ve issue'lar için de GitHub'la konuşur. Güncellemeler için GitHub Releases'e bakar, bunu Ayarlar'dan kapatabilirsin. Hatalar yerel bir log dosyasına yazılır, başka hiçbir yere gitmez."
+      }
+    ]
+  },
+  "install": {
+    "title": "Diğer pencereleri kapat.",
+    "lead": "Ücretsiz ve açık kaynak. Hesap yok, telemetri yok.",
+    "mac": "macOS 13 ve sonrası, tek bir universal uygulama, imzalı ve notarize edilmiş.",
+    "linux": "Linux x86_64: {files}. git 2.36 ya da daha yenisi gerekir.",
+    "source": "Ya da {link}.",
+    "sourceLink": "kaynak koddan derle"
+  },
+  "footer": {
+    "made": "GPL-3.0 · {author} tarafından yapıldı",
+    "project": "Proje",
+    "source": "Kaynak kod",
+    "releases": "Sürümler",
+    "changelog": "Değişiklik günlüğü",
+    "contributing": "Katkıda bulun",
+    "security": "Güvenlik"
+  }
+}
