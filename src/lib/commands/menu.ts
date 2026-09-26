@@ -6,6 +6,7 @@ import { lastOpenApp, subscribeOpenApps } from "../app/openIn";
 import { getSettings, type Settings, subscribeSettings } from "../settings";
 import { folderName } from "../path";
 import { api } from "../api";
+import { IS_MAC } from "../platform";
 
 /**
  * The menu bar (menu.rs) runs the same commands as the keyboard. It learns from here which
@@ -44,7 +45,10 @@ function send() {
     const chord = isCommandId(id) ? bindingsFor(id, s.keybindings)[0] : undefined;
     const state = JSON.stringify({
       enabled: hasHandler(id),
-      accelerator: chord ? menuAccelerator(chord) : null,
+      // Off macOS a menu's key fires before the page sees it (GTK runs accelerators ahead of the
+      // focused widget): Ctrl+R in a terminal reloaded the window, "s" in a text field staged.
+      // The page's own keydown runs every command anyway, so only macOS's menu gets the keys.
+      accelerator: IS_MAC && chord ? menuAccelerator(chord) : null,
       checked: CHECKED[id]?.(s),
       text: TEXT[id]?.(s),
     });
