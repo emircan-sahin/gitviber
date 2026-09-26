@@ -41,8 +41,11 @@
     "screenshotAlt": "GitViber'da açık bir diff: solda değişiklik listesi, altta terminal, sağda dosya gezgini"
   },
   "story": {
+    "label": "Tek pencere",
     "title": "Tek pencere. Dört değil.",
     "text": "Dosyaları okumak için editöre, diff'ler için GitHub Desktop'a, üst üste açılmış terminallere gerek yok.",
+    "previous": "Önceki bölüm",
+    "next": "Sonraki bölüm",
     "labels": [
       "Worktree'ler",
       "Canlı diff'ler",

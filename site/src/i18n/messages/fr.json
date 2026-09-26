@@ -41,8 +41,11 @@
     "screenshotAlt": "GitViber avec un diff ouvert, la liste des modifications à gauche, un terminal en bas et l'explorateur de fichiers à droite"
   },
   "story": {
+    "label": "Une fenêtre",
     "title": "Une fenêtre. Pas quatre.",
     "text": "Pas d'éditeur pour lire les fichiers, pas de GitHub Desktop pour les diffs, pas de pile de terminaux.",
+    "previous": "Chapitre précédent",
+    "next": "Chapitre suivant",
     "labels": [
       "Worktrees",
       "Diffs en direct",

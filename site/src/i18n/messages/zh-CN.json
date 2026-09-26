@@ -41,8 +41,11 @@
     "screenshotAlt": "打开了 diff 的 GitViber：左侧是改动列表，下方是终端，右侧是文件浏览器"
   },
   "story": {
+    "label": "一个窗口",
     "title": "一个窗口，顶四个。",
     "text": "不用开编辑器看文件，不用开 GitHub Desktop 看 diff，也不用堆一堆终端。",
+    "previous": "上一章",
+    "next": "下一章",
     "labels": [
       "worktree",
       "实时 diff",

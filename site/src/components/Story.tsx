@@ -1,9 +1,12 @@
 import {
   ArrowLeftRight,
+  ChevronDown,
+  ChevronUp,
   FolderGit2,
   FolderTree,
   GitBranchPlus,
   GitCommitHorizontal,
+  PanelsTopLeft,
   ListChecks,
   SquareTerminal,
   Zap,
@@ -107,20 +110,53 @@ export function Story() {
     // Another language changes the copy's heights.
   }, [seek, wait, t]);
 
+  // The arrows: to where the previous or next chapter's copy settles, or past the story's end.
+  const go = (step: 1 | -1) => {
+    const el = ref.current;
+    const dock = dockRef.current;
+    if (!el || !dock) return;
+    const settles = [...el.querySelectorAll<HTMLElement>("[data-chapter]")].map((b) => scrollY + b.getBoundingClientRect().top - dock.offsetTop + 2);
+    const top =
+      step > 0
+        ? (settles.find((y) => y > scrollY + 4) ?? scrollY + el.getBoundingClientRect().bottom - 64)
+        : (settles.findLast((y) => y < scrollY - 4) ?? 0);
+    scrollTo({ top, behavior: reduced ? "auto" : "smooth" });
+  };
+
   const copy = chapters(t);
   const slot = "lg:h-[140svh]";
   const held = "lg:sticky lg:top-[var(--pin)] lg:[opacity:var(--fade,1)]";
 
   return (
     <section ref={ref} id="top" className="relative [--dock:0]">
-      <div aria-hidden data-nosnippet className="sticky top-0 hidden h-svh lg:block">
+      {/* Above the copy, which scrolls over the same space, but only the controls take clicks. */}
+      <div data-nosnippet className="pointer-events-none sticky top-0 z-10 hidden h-svh lg:block">
         <div className="mx-auto grid h-full max-w-[88rem] grid-cols-[minmax(0,0.34fr)_minmax(0,0.66fr)] items-center gap-12 px-8 pt-10 [container-type:inline-size]">
           <div ref={dockRef} className="col-start-2 [perspective:1800px]">
             <div className="origin-top" style={{ transform: HERO_POSE }}>
-              <Scaled width={WIN_W} height={WIN_H} className={windowShadow}>
-                <AppWindow chapter={chapter} t={elapsed} />
-              </Scaled>
-              <Progress count={copy.length + 1} current={chapter + 1} value={played(chapter, elapsed)} className="mt-5 [opacity:var(--dock)]" />
+              <div aria-hidden>
+                <Scaled width={WIN_W} height={WIN_H} className={windowShadow}>
+                  <AppWindow chapter={chapter} t={elapsed} />
+                </Scaled>
+              </div>
+              {/* A player's control bar: where the story is, how far this clip has played, and a way
+                  to the chapter before or after. */}
+              <div className="pointer-events-auto mx-auto mt-6 flex max-w-[44rem] items-center gap-3 rounded-full border border-border-strong bg-panel/90 p-1.5 pl-4 shadow-[0_18px_50px_-20px_rgb(0_0_0/0.9)] backdrop-blur [opacity:var(--dock)]">
+                <span className="shrink-0 font-mono text-[12px] text-fg tabular-nums">
+                  {pad(chapter + 2)}
+                  <span className="text-subtle">/{pad(copy.length + 1)}</span>
+                </span>
+                <span className="w-32 shrink-0 truncate text-[13px] text-muted">{chapter < 0 ? t.story.label : t.story.labels[chapter]}</span>
+                <Progress count={copy.length + 1} current={chapter + 1} value={played(chapter, elapsed)} className="min-w-0 flex-1" />
+                <span className="flex shrink-0 gap-1">
+                  <StepButton label={t.story.previous} onClick={() => go(-1)}>
+                    <ChevronUp className="size-4" />
+                  </StepButton>
+                  <StepButton label={t.story.next} onClick={() => go(1)}>
+                    <ChevronDown className="size-4" />
+                  </StepButton>
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -136,7 +172,8 @@ export function Story() {
             {/* The window has just docked: say what it is while it shows itself part by part. */}
             <div data-chapter className={slot}>
               <div className={held}>
-                <h2 className="text-4xl leading-[1.05] font-semibold tracking-[-0.03em] text-balance lg:text-5xl">{t.story.title}</h2>
+                <Eyebrow Icon={PanelsTopLeft} n={1} label={t.story.label} />
+                <h2 className="mt-4 text-4xl leading-[1.05] font-semibold tracking-[-0.03em] text-balance lg:text-5xl">{t.story.title}</h2>
                 <p className="mt-5 max-w-md text-lg leading-relaxed text-pretty text-muted">{t.story.text}</p>
               </div>
             </div>
@@ -145,11 +182,7 @@ export function Story() {
               return (
                 <div key={i} data-chapter className={cx("py-20 lg:py-0", slot)}>
                   <div className={held}>
-                    <p className="flex items-center gap-2 text-sm font-medium text-primary">
-                      <Icon className="size-4" />
-                      <span className="font-mono text-[12px] text-subtle">0{i + 1}</span>
-                      {t.story.labels[i]}
-                    </p>
+                    <Eyebrow Icon={Icon} n={i + 2} label={t.story.labels[i]} />
                     <h2 className="mt-4 text-4xl leading-[1.05] font-semibold tracking-[-0.03em] text-balance lg:text-5xl">{c.title}</h2>
                     <p className="mt-5 max-w-md text-lg leading-relaxed text-pretty text-muted">
                       {rich(c.text, { keys: CHAPTER_KEYS[i] && <Keys keys={CHAPTER_KEYS[i]} className="align-middle" /> })}
@@ -165,6 +198,33 @@ export function Story() {
         </div>
       </div>
     </section>
+  );
+}
+
+const pad = (n: number) => String(n).padStart(2, "0");
+
+/** A chapter's number and name over its title; the intro is the first. */
+function Eyebrow({ Icon, n, label }: { Icon: LucideIcon; n: number; label: string }) {
+  return (
+    <p className="flex items-center gap-2 text-sm font-medium text-primary">
+      <Icon className="size-4" />
+      <span className="font-mono text-[12px] text-subtle">{pad(n)}</span>
+      {label}
+    </p>
+  );
+}
+
+function StepButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className="grid size-8 place-items-center rounded-full bg-elevated text-muted transition hover:bg-active hover:text-fg active:scale-95"
+    >
+      {children}
+    </button>
   );
 }
 

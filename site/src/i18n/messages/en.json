@@ -41,8 +41,11 @@
     "screenshotAlt": "GitViber with a diff open, the changes list on the left, a terminal below and the file explorer on the right"
   },
   "story": {
+    "label": "One window",
     "title": "One window. Not four.",
     "text": "No editor to read the files, no GitHub Desktop for the diffs, no pile of terminals.",
+    "previous": "Previous chapter",
+    "next": "Next chapter",
     "labels": [
       "Worktrees",
       "Live diffs",
