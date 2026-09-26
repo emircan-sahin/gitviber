@@ -6233,6 +6233,18 @@
    ]
   },
   {
+   "name": "tauri-plugin-single-instance",
+   "version": "2.4.3",
+   "license": "Apache-2.0 OR MIT",
+   "url": "https://github.com/tauri-apps/plugins-workspace",
+   "source": "cargo",
+   "texts": [
+    10,
+    8,
+    271
+   ]
+  },
+  {
    "name": "tauri-plugin-updater",
    "version": "2.11.0",
    "license": "Apache-2.0 OR MIT",
@@ -6284,7 +6296,7 @@
    "url": "https://github.com/tauri-apps/winrt-notification",
    "source": "cargo",
    "texts": [
-    271,
+    272,
     8,
     9
    ]
@@ -6297,7 +6309,7 @@
    "source": "cargo",
    "texts": [
     29,
-    272
+    273
    ]
   },
   {
@@ -6308,7 +6320,7 @@
    "source": "cargo",
    "texts": [
     29,
-    273
+    274
    ]
   },
   {
@@ -6363,7 +6375,7 @@
    "source": "cargo",
    "texts": [
     8,
-    274
+    275
    ]
   },
   {
@@ -6374,7 +6386,7 @@
    "source": "cargo",
    "texts": [
     8,
-    274
+    275
    ]
   },
   {
@@ -6385,7 +6397,7 @@
    "source": "cargo",
    "texts": [
     8,
-    274
+    275
    ]
   },
   {
@@ -6417,7 +6429,7 @@
    "url": "https://github.com/tokio-rs/tokio",
    "source": "cargo",
    "texts": [
-    275
+    276
    ]
   },
   {
@@ -6427,8 +6439,8 @@
    "url": "https://github.com/rustls/tokio-rustls",
    "source": "cargo",
    "texts": [
-    276,
-    277
+    277,
+    278
    ]
   },
   {
@@ -6438,7 +6450,7 @@
    "url": "https://github.com/tokio-rs/tokio",
    "source": "cargo",
    "texts": [
-    275
+    276
    ]
   },
   {
@@ -6536,7 +6548,7 @@
    "url": "https://github.com/tower-rs/tower",
    "source": "cargo",
    "texts": [
-    278
+    279
    ]
   },
   {
@@ -6546,7 +6558,7 @@
    "url": "https://github.com/tower-rs/tower-http",
    "source": "cargo",
    "texts": [
-    279
+    280
    ]
   },
   {
@@ -6556,7 +6568,7 @@
    "url": "https://github.com/tower-rs/tower",
    "source": "cargo",
    "texts": [
-    278
+    279
    ]
   },
   {
@@ -6566,7 +6578,7 @@
    "url": "https://github.com/tower-rs/tower",
    "source": "cargo",
    "texts": [
-    278
+    279
    ]
   },
   {
@@ -6576,7 +6588,7 @@
    "url": "https://github.com/tokio-rs/tracing",
    "source": "cargo",
    "texts": [
-    280
+    281
    ]
   },
   {
@@ -6586,7 +6598,7 @@
    "url": "https://github.com/tokio-rs/tracing",
    "source": "cargo",
    "texts": [
-    280
+    281
    ]
   },
   {
@@ -6596,7 +6608,7 @@
    "url": "https://github.com/tokio-rs/tracing",
    "source": "cargo",
    "texts": [
-    280
+    281
    ]
   },
   {
@@ -6608,7 +6620,7 @@
    "texts": [
     29,
     182,
-    281
+    282
    ]
   },
   {
@@ -6618,7 +6630,7 @@
    "url": "https://github.com/tree-sitter/tree-sitter",
    "source": "cargo",
    "texts": [
-    282
+    283
    ]
   },
   {
@@ -6628,7 +6640,7 @@
    "url": "https://github.com/tree-sitter/tree-sitter-go",
    "source": "cargo",
    "texts": [
-    283
+    284
    ]
   },
   {
@@ -6638,7 +6650,7 @@
    "url": "https://github.com/tree-sitter/tree-sitter-javascript",
    "source": "cargo",
    "texts": [
-    283
+    284
    ]
   },
   {
@@ -6648,7 +6660,7 @@
    "url": "https://github.com/tree-sitter/tree-sitter",
    "source": "cargo",
    "texts": [
-    282
+    283
    ]
   },
   {
@@ -6658,7 +6670,7 @@
    "url": "https://github.com/tree-sitter/tree-sitter-python",
    "source": "cargo",
    "texts": [
-    284
+    285
    ]
   },
   {
@@ -6668,7 +6680,7 @@
    "url": "https://github.com/tree-sitter/tree-sitter-rust",
    "source": "cargo",
    "texts": [
-    285
+    286
    ]
   },
   {
@@ -6699,7 +6711,7 @@
    "url": "wooorm/trough",
    "source": "npm",
    "texts": [
-    286
+    287
    ]
   },
   {
@@ -6709,7 +6721,7 @@
    "url": "https://github.com/seanmonstar/try-lock",
    "source": "cargo",
    "texts": [
-    287
+    288
    ]
   },
   {
@@ -6719,7 +6731,7 @@
    "url": "https://www.typescriptlang.org/",
    "source": "npm",
    "texts": [
-    288
+    289
    ]
   },
   {
@@ -6740,9 +6752,9 @@
    "url": "https://github.com/paholg/typenum",
    "source": "cargo",
    "texts": [
-    289,
     290,
-    291
+    291,
+    292
    ]
   },
   {
@@ -6752,7 +6764,7 @@
    "url": "https://github.com/haraldh/rust_uds_windows",
    "source": "cargo",
    "texts": [
-    292
+    293
    ]
   },
   {
@@ -6819,7 +6831,7 @@
    "texts": [
     28,
     20,
-    293
+    294
    ]
   },
   {
@@ -6840,7 +6852,7 @@
    "url": "https://unifiedjs.com",
    "source": "npm",
    "texts": [
-    294
+    295
    ]
   },
   {
@@ -6850,7 +6862,7 @@
    "url": "syntax-tree/unist-util-is",
    "source": "npm",
    "texts": [
-    295
+    296
    ]
   },
   {
@@ -6900,7 +6912,7 @@
    "url": "https://github.com/briansmith/untrusted",
    "source": "cargo",
    "texts": [
-    296
+    297
    ]
   },
   {
@@ -6911,7 +6923,7 @@
    "source": "cargo",
    "texts": [
     91,
-    297
+    298
    ]
   },
   {
@@ -6922,7 +6934,7 @@
    "source": "cargo",
    "texts": [
     91,
-    298
+    299
    ]
   },
   {
@@ -6943,7 +6955,7 @@
    "url": "https://github.com/denoland/rust-urlpattern",
    "source": "cargo",
    "texts": [
-    299
+    300
    ]
   },
   {
@@ -6985,7 +6997,7 @@
    "source": "cargo",
    "texts": [
     91,
-    300
+    301
    ]
   },
   {
@@ -6996,7 +7008,7 @@
    "source": "cargo",
    "texts": [
     29,
-    301
+    302
    ]
   },
   {
@@ -7006,7 +7018,7 @@
    "url": "vfile/vfile",
    "source": "npm",
    "texts": [
-    294
+    295
    ]
   },
   {
@@ -7048,7 +7060,7 @@
    "url": "https://github.com/seanmonstar/want",
    "source": "cargo",
    "texts": [
-    302
+    303
    ]
   },
   {
@@ -7180,7 +7192,7 @@
    "url": "https://github.com/tauri-apps/webkit2gtk-rs",
    "source": "cargo",
    "texts": [
-    303
+    304
    ]
   },
   {
@@ -7190,7 +7202,7 @@
    "url": "https://github.com/tauri-apps/webkit2gtk-rs",
    "source": "cargo",
    "texts": [
-    304
+    305
    ]
   },
   {
@@ -7200,7 +7212,7 @@
    "url": "https://github.com/rustls/webpki-roots",
    "source": "cargo",
    "texts": [
-    305
+    306
    ]
   },
   {
@@ -7210,7 +7222,7 @@
    "url": "https://github.com/rustls/webpki-roots",
    "source": "cargo",
    "texts": [
-    305
+    306
    ]
   },
   {
@@ -7254,7 +7266,7 @@
    "source": "cargo",
    "texts": [
     63,
-    306
+    307
    ]
   },
   {
@@ -7299,8 +7311,8 @@
    "source": "cargo",
    "texts": [
     29,
-    307,
-    308
+    308,
+    309
    ]
   },
   {
@@ -7310,7 +7322,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7321,7 +7333,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7332,7 +7344,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7343,7 +7355,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7354,7 +7366,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7365,7 +7377,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7376,7 +7388,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7387,7 +7399,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7398,7 +7410,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7409,7 +7421,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7420,7 +7432,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7431,7 +7443,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7442,7 +7454,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7453,7 +7465,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7464,7 +7476,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7475,7 +7487,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7486,7 +7498,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7497,7 +7509,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7508,7 +7520,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7519,7 +7531,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7530,7 +7542,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7541,7 +7553,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7552,7 +7564,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7563,7 +7575,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7574,7 +7586,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7585,7 +7597,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7596,7 +7608,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7607,7 +7619,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7618,7 +7630,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7629,7 +7641,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7640,7 +7652,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7651,7 +7663,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7662,7 +7674,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7673,7 +7685,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7684,7 +7696,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7695,7 +7707,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7706,7 +7718,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7717,7 +7729,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7728,7 +7740,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7739,7 +7751,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7750,7 +7762,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7761,7 +7773,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7772,7 +7784,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7783,7 +7795,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7794,7 +7806,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7805,7 +7817,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7816,7 +7828,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7827,7 +7839,7 @@
    "url": "https://github.com/microsoft/windows-rs",
    "source": "cargo",
    "texts": [
-    309,
+    310,
     11
    ]
   },
@@ -7838,7 +7850,7 @@
    "url": "https://github.com/winnow-rs/winnow",
    "source": "cargo",
    "texts": [
-    310
+    311
    ]
   },
   {
@@ -7848,7 +7860,7 @@
    "url": "https://github.com/winnow-rs/winnow",
    "source": "cargo",
    "texts": [
-    310
+    311
    ]
   },
   {
@@ -7858,7 +7870,7 @@
    "url": "https://github.com/gentoo90/winreg-rs",
    "source": "cargo",
    "texts": [
-    311
+    312
    ]
   },
   {
@@ -7891,8 +7903,8 @@
    "source": "cargo",
    "texts": [
     29,
-    312,
-    313
+    313,
+    314
    ]
   },
   {
@@ -7923,7 +7935,7 @@
    "source": "cargo",
    "texts": [
     29,
-    272
+    273
    ]
   },
   {
@@ -7953,7 +7965,7 @@
    "url": "https://github.com/z-galaxy/zbus/",
    "source": "cargo",
    "texts": [
-    314
+    315
    ]
   },
   {
@@ -7963,7 +7975,7 @@
    "url": "https://github.com/z-galaxy/zbus/",
    "source": "cargo",
    "texts": [
-    314
+    315
    ]
   },
   {
@@ -7973,7 +7985,7 @@
    "url": "https://github.com/z-galaxy/zbus/",
    "source": "cargo",
    "texts": [
-    314
+    315
    ]
   },
   {
@@ -7983,7 +7995,7 @@
    "url": "https://github.com/z-galaxy/zcheapstr/",
    "source": "cargo",
    "texts": [
-    315
+    316
    ]
   },
   {
@@ -7993,9 +8005,9 @@
    "url": "https://github.com/google/zerocopy",
    "source": "cargo",
    "texts": [
-    316,
     317,
-    318
+    318,
+    319
    ]
   },
   {
@@ -8005,9 +8017,9 @@
    "url": "https://github.com/google/zerocopy",
    "source": "cargo",
    "texts": [
-    316,
     317,
-    318
+    318,
+    319
    ]
   },
   {
@@ -8038,7 +8050,7 @@
    "source": "cargo",
    "texts": [
     91,
-    319
+    320
    ]
   },
   {
@@ -8078,7 +8090,7 @@
    "url": "https://github.com/zip-rs/zip2",
    "source": "cargo",
    "texts": [
-    320
+    321
    ]
   },
   {
@@ -8088,7 +8100,7 @@
    "url": "https://github.com/trifectatechfoundation/zlib-rs",
    "source": "cargo",
    "texts": [
-    321
+    322
    ]
   },
   {
@@ -8108,7 +8120,7 @@
    "url": "https://github.com/z-galaxy/zbus/",
    "source": "cargo",
    "texts": [
-    314
+    315
    ]
   },
   {
@@ -8118,7 +8130,7 @@
    "url": "https://github.com/z-galaxy/zbus/",
    "source": "cargo",
    "texts": [
-    314
+    315
    ]
   },
   {
@@ -8414,6 +8426,7 @@
   "MIT License\n\nCopyright (c) 2022 - Present Tauri Apps Contributors\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.",
   "SPDXVersion: SPDX-2.1\nDataLicense: CC0-1.0\nPackageName: tao-macros\nDataFormat: SPDXRef-1\nPackageSupplier: Organization: The Tauri Programme in the Commons Conservancy\nPackageHomePage: https://tauri.app\nPackageLicenseDeclared: Apache-2.0\nPackageLicenseDeclared: MIT\nPackageCopyrightText: 2020-2023, The Tauri Programme in the Commons Conservancy\nPackageSummary: <text>tao-macros is part of Tao, the official, rust-based window manager for Wry.\n                </text>\nPackageComment: <text>The package includes the following libraries; see\nRelationship information.\n                </text>\nCreated: 2020-05-20T09:00:00Z\nPackageDownloadLocation: git://github.com/tauri-apps/tao\nPackageDownloadLocation: git+https://github.com/tauri-apps/tao.git\nPackageDownloadLocation: git+ssh://github.com/tauri-apps/tao.git\nCreator: Person: Daniel Thompson-Yvetot",
   "Copyright (c) The tar-rs Project Contributors\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.",
+  "MIT License\n\nCopyright (c) 2017 - Present The Tauri Programme in the Commons Conservancy\n\nPermission is hereby granted, free of charge, to any person obtaining a copy\nof this software and associated documentation files (the \"Software\"), to deal\nin the Software without restriction, including without limitation the rights\nto use, copy, modify, merge, publish, distribute, sublicense, and/or sell\ncopies of the Software, and to permit persons to whom the Software is\nfurnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all\ncopies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\nIMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\nFITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\nAUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\nLIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\nOUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\nSOFTWARE.",
   "SPDXVersion: SPDX-2.1\nDataLicense: CC0-1.0\nPackageName: winrt-notification\nDataFormat: SPDXRef-1\nPackageSupplier: Organization: The Tauri Programme in the Commons Conservancy\nPackageHomePage: https://tauri.app\nPackageLicenseDeclared: Apache-2.0\nPackageLicenseDeclared: MIT\nPackageCopyrightText: 2022-2022, The Tauri Programme in the Commons Conservancy\nPackageSummary: <text>An incomplete wrapper over the WinRT toast api.\n                </text>\nPackageComment: <text>The package includes the following libraries; see\nRelationship information.\n                </text>\nCreated: 2019-05-20T09:00:00Z\nPackageDownloadLocation: git://github.com/tauri-apps/winrt-notification\nPackageDownloadLocation: git+https://github.com/tauri-apps/winrt-notification.git\nPackageDownloadLocation: git+ssh://github.com/tauri-apps/winrt-notification.git\nCreator: Person: Daniel Thompson-Yvetot",
   "Copyright (c) 2015 Steven Allen\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.",
   "Copyright (c) 2015 Keegan McAllister\n\nPermission is hereby granted, free of charge, to any\nperson obtaining a copy of this software and associated\ndocumentation files (the \"Software\"), to deal in the\nSoftware without restriction, including without\nlimitation the rights to use, copy, modify, merge,\npublish, distribute, sublicense, and/or sell copies of\nthe Software, and to permit persons to whom the Software\nis furnished to do so, subject to the following\nconditions:\n\nThe above copyright notice and this permission notice\nshall be included in all copies or substantial portions\nof the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF\nANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED\nTO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A\nPARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT\nSHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY\nCLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION\nOF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR\nIN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER\nDEALINGS IN THE SOFTWARE.",
