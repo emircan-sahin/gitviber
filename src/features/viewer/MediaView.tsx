@@ -102,7 +102,7 @@ function Side({ src, original, label, tone }: { src: MediaSource; original: bool
   );
 }
 
-/** Right-click "Copy Image" on one side; the before side has no file on disk, so it's saved first. */
+/** Right-click "Copy Image" on one side: the working tree's own file, or a stored version saved first. */
 function ImageMenu({ src, original, children }: { src: MediaSource; original: boolean; children: ReactNode }) {
   if (!IS_MAC) return children;
   const copy = () =>

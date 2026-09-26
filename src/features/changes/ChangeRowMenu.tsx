@@ -51,8 +51,9 @@ export function ChangeRowMenu({
   const n = rows.length;
   const untracked = rows.filter((r) => r.file.status === "?").map((r) => r.file);
   const isViewed = viewed(sel);
-  // A deleted file has nothing on disk to copy; its old version copies from the diff view.
-  const onDiskPaths = [...new Set(rows.filter((r) => r.file.status !== "D").map((r) => r.file.path))];
+  // A deleted file has nothing on disk to copy (its old version copies from the diff view), and a
+  // submodule is a folder, not a file.
+  const onDiskPaths = [...new Set(rows.filter((r) => r.file.status !== "D" && !r.file.nested).map((r) => r.file.path))];
   return (
     <ContextMenuContent
       onCloseAutoFocus={(e) => {

@@ -1,4 +1,4 @@
-//! The terminal's ⌘V and file drops (src/lib/terminal/paste.ts), as the AI CLIs in it take them:
+//! The terminal's ⌘V and file drops (src/lib/terminal/terminals.ts), as the AI CLIs in it take them:
 //! a copied Finder file pastes its path, and so does an image, saved to a PNG first. Claude Code,
 //! Codex and Gemini attach an image path that arrives in a paste; the webview's own paste only
 //! carries text, so an image on the pasteboard pasted nothing.
@@ -18,8 +18,13 @@ pub enum Paste {
 
 /// Pasted images, out of the repo (no git noise) and per user; a CLI may read one well after the paste.
 fn paste_dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join("gitviber").join("paste");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let dir = user_temp().join("gitviber").join("paste");
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    // A screenshot can hold anything: only its owner reads it.
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir).map_err(|e| e.to_string())?;
     // A day is long past any CLI reading its attachment.
     let old = SystemTime::now() - Duration::from_secs(24 * 60 * 60);
     for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
@@ -37,6 +42,22 @@ fn paste_dir() -> Result<PathBuf, String> {
         }
     }
     Ok(dir)
+}
+
+/// macOS's temp dir is the user's own; Linux's /tmp is everyone's, and the first user to paste
+/// would own the folder, so there it's the session's runtime dir (or ~/.cache).
+fn user_temp() -> PathBuf {
+    #[cfg(target_os = "linux")]
+    {
+        let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
+        if let Some(dir) = runtime.filter(|d| d.is_absolute() && d.is_dir()) {
+            return dir;
+        }
+        if let Some(home) = std::env::var_os("HOME") {
+            return Path::new(&home).join(".cache");
+        }
+    }
+    std::env::temp_dir()
 }
 
 /// A new file in the paste folder, named `name` after a timestamp.
@@ -57,8 +78,15 @@ fn new_paste_file(name: &str) -> Result<PathBuf, String> {
 
 /// `bytes` saved as `name` in a folder of their own, so a copy pasted into Finder keeps the name.
 pub fn save_named(name: &str, bytes: &[u8]) -> Result<String, String> {
-    let dir = new_paste_file("copy")?;
-    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    // Claimed by creating it: two copies in the same millisecond would both find a name free.
+    let dir = loop {
+        let dir = new_paste_file("copy")?;
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break dir,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    };
     let path = dir.join(name);
     std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into_owned())
@@ -252,7 +280,8 @@ mod pasteboard {
         "png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "heic", "avif", "ico",
     ];
 
-    /// One pasteboard item per file: its URL, and an image's TIFF (and its PNG bytes, kept exact).
+    /// One pasteboard item per file that exists: its URL, and for a single image its picture (a
+    /// PNG's own bytes, another format as TIFF).
     pub unsafe fn write_files(paths: &[String]) -> Result<(), String> {
         let (
             Some(pb_class),
@@ -271,7 +300,14 @@ mod pasteboard {
             return Err("AppKit is unavailable".into());
         };
         let items: *mut AnyObject = msg_send![array_class, array];
+        // A picture goes with a single file only, as a paste into an image app takes one: every
+        // image decoded here would hold the main thread.
+        let picture = paths.len() == 1;
         for path in paths {
+            // A deleted file's URL would paste nothing, after "copied".
+            if !Path::new(path).exists() {
+                continue;
+            }
             let Ok(c_path) = CString::new(path.as_str()) else {
                 continue;
             };
@@ -285,12 +321,12 @@ mod pasteboard {
                 .extension()
                 .map(|e| e.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
-            if IMAGES.contains(&ext.as_str()) {
-                if ext == "png" {
-                    if let Ok(png) = std::fs::read(path) {
-                        let _: bool = msg_send![item, setData: ns_data(&png), forType: ns_string(c"public.png")];
-                    }
+            if picture && ext == "png" {
+                if let Ok(png) = std::fs::read(path) {
+                    let _: bool =
+                        msg_send![item, setData: ns_data(&png), forType: ns_string(c"public.png")];
                 }
+            } else if picture && IMAGES.contains(&ext.as_str()) {
                 let image: *mut AnyObject = msg_send![image_class, alloc];
                 let image: *mut AnyObject = msg_send![image, initWithContentsOfFile: ns_path];
                 if !image.is_null() {
@@ -394,10 +430,19 @@ mod tests {
         ];
         let image = save_named("a b.png", &png).unwrap();
         let text = save_named("notes.txt", b"hi").unwrap();
-        copy_files(vec![image.clone(), text.clone()]).unwrap();
-        let (files, _, picture) = objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() });
-        assert_eq!(files, vec![image.clone(), text.clone()]);
+        let read = || objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() });
+
+        copy_files(vec![image.clone()]).unwrap();
+        let (files, _, picture) = read();
+        assert_eq!(files, vec![image.clone()]);
         assert_eq!(picture.as_deref(), Some(&png[..]));
+
+        // Several files carry no picture, and a missing one is left out.
+        let gone = format!("{text}.gone");
+        copy_files(vec![image.clone(), gone, text.clone()]).unwrap();
+        let (files, _, picture) = read();
+        assert_eq!(files, vec![image.clone(), text.clone()]);
+        assert_eq!(picture, None);
         for p in [image, text] {
             let _ = std::fs::remove_dir_all(Path::new(&p).parent().unwrap());
         }

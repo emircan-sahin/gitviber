@@ -17,6 +17,7 @@ import { findColors, terminalOptions } from "./theme";
 import { pathPastes } from "./paste";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { IS_LINUX, IS_WINDOWS } from "../platform";
+import { toast } from "../app/toast";
 
 /**
  * Terminals live here, not in React: switching worktrees remounts the whole workspace, and
@@ -226,9 +227,11 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
       "paste",
       (e) => {
         if (performance.now() - middleAt < 1000) return void (middleAt = -Infinity);
+        // Kept for when the native read fails: the text at least still pastes.
+        const text = e.clipboardData?.getData("text/plain") ?? "";
         e.preventDefault();
         e.stopPropagation();
-        void pasteInto(p);
+        void pasteInto(p, text);
       },
       true,
     );
@@ -259,9 +262,16 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   return { id, cwd, title: "" };
 }
 
-async function pasteInto(p: Pane) {
-  const got = await pty.paste().catch(() => null);
-  if (!got) return;
+/** `fallback`: the webview's own text, pasted if the native read fails or finds nothing. */
+async function pasteInto(p: Pane, fallback = "") {
+  const got = await pty.paste().catch((e) => {
+    if (!fallback) toast("error", "Could not paste", errorMessage(e));
+    return null;
+  });
+  if (!got || got.kind === "empty") {
+    if (fallback) p.term.paste(fallback);
+    return;
+  }
   if (got.kind === "text") p.term.paste(got.text);
   else if (got.kind === "files") pastePaths(p, got.paths);
   else if (got.kind === "image") pastePaths(p, [got.path]);
@@ -289,17 +299,18 @@ function markDropTarget(p: Pane | null) {
   p?.host.classList.add("gv-drop-target");
   dropTarget = p;
 }
-void getCurrentWebview()
-  .onDragDropEvent(async ({ payload }) => {
-    if (payload.type === "leave") return markDropTarget(null);
-    const p = paneAt(payload.position);
-    if (payload.type !== "drop") return markDropTarget(p);
-    markDropTarget(null);
-    if (!p) return;
-    pastePaths(p, await pty.keepDropped(payload.paths).catch(() => payload.paths));
-    p.term.focus();
-  })
-  .catch(() => {});
+const dropListener = getCurrentWebview().onDragDropEvent(async ({ payload }) => {
+  if (payload.type === "leave") return markDropTarget(null);
+  const p = paneAt(payload.position);
+  if (payload.type !== "drop") return markDropTarget(p);
+  markDropTarget(null);
+  if (!p) return;
+  pastePaths(p, await pty.keepDropped(payload.paths).catch(() => payload.paths));
+  p.term.focus();
+});
+dropListener.catch(() => {});
+// A hot reload re-runs this module: the old listener goes, or each drop would paste twice.
+import.meta.hot?.dispose(() => void dropListener.then((stop) => stop()).catch(() => {}));
 
 /**
  * macOS line editing, as in VS Code's terminal. xterm.js sends ⌥← / ⌥→ / ⌥⌦ as
