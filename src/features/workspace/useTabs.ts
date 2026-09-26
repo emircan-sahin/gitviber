@@ -7,6 +7,7 @@ import type { loadWorkspace } from "@/lib/repo/session";
 import { isChange, relocate } from "@/features/changes/changeList";
 import type { BranchChange } from "@/features/changes/BranchReview";
 import { type Tab, type TabGroup, tabGroup } from "@/features/viewer/tabs";
+import { moveEdits, settleEdits, useEdited } from "@/lib/editor/edits";
 
 /** The code view's tabs: preview and pinned, closed ones to reopen, and following their files through git and renames. */
 /** `review`: the branch review's rows as last loaded, null while it isn't. */
@@ -33,7 +34,7 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
   const [closed, setClosed] = useState<{ sel: Selection; index: number }[]>([]);
   const tabsNow = useRef(tabs);
   tabsNow.current = tabs;
-  const closeTabs = useCallback((keys: string[]) => {
+  const dropTabs = useCallback((keys: string[]) => {
     const gone = new Set(keys);
     const shut = tabsNow.current.flatMap((t, index) => (gone.has(t.key) ? [{ sel: t.sel, index }] : []));
     if (!shut.length) return;
@@ -48,6 +49,14 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
       return { tabs: next, active: near?.key ?? null };
     });
   }, []);
+  // Files with unsaved edits ask first: save, drop the edits, or keep the tabs.
+  const closeTabs = useCallback(
+    async (keys: string[]) => {
+      const paths = tabsNow.current.flatMap((t) => (keys.includes(t.key) && t.sel.kind === "file" ? [t.sel.path] : []));
+      if (await settleEdits(paths)) dropTabs(keys);
+    },
+    [dropTabs],
+  );
   const close = useCallback((key: string) => closeTabs([key]), [closeTabs]);
   // Close Others and the like, around the active tab.
   const closeAround = (which: TabGroup) => {
@@ -76,8 +85,16 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
 
   const pin = useCallback((key: string) => setTabState((st) => ({ ...st, tabs: st.tabs.map((t) => (t.key === key ? { ...t, preview: false } : t)) })), []);
 
+  // A preview tab typed into stays, as in VS Code: opening another file doesn't replace it.
+  const edited = useEdited();
+  useEffect(() => {
+    const typed = (t: Tab) => t.preview && t.sel.kind === "file" && edited.has(t.sel.path);
+    setTabState((st) => (st.tabs.some(typed) ? { ...st, tabs: st.tabs.map((t) => (typed(t) ? { ...t, preview: false } : t)) } : st));
+  }, [edited]);
+
   // Explorer rename/trash: file tabs at or under `from` move to `to` in place, or close when it's null.
   const onPathMoved = useCallback((from: string, to: string | null) => {
+    moveEdits(from, to);
     setTabState(({ tabs: prev, active }) => {
       const hit = (t: Tab) => t.sel.kind === "file" && (t.sel.path === from || t.sel.path.startsWith(`${from}/`));
       const i = prev.findIndex((t) => t.key === active);

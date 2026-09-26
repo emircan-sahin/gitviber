@@ -38,8 +38,8 @@ function commandOf(e: KeyboardEvent) {
 /** Where a key lands: a key event, or `{ target: document.activeElement }` for the next one. */
 type At = { target: EventTarget | null };
 
-/** Focus is in the code view: Monaco's text area, read-only, so not typing (its find box is). */
-const inCodeView = (e: At) => e.target instanceof HTMLElement && e.target.matches(".monaco-editor textarea.inputarea");
+/** Focus is in the code view: Monaco's text area, read-only, so not typing (its find box is, and so is a file open for editing). */
+const inCodeView = (e: At) => e.target instanceof HTMLElement && e.target.matches(".monaco-editor textarea.inputarea") && !e.target.closest("[data-editable]");
 
 /** Focus is somewhere that owns its keystrokes: text fields, menus, dialogs, pickers (not the sidebar lists, see useListNav). */
 export function isTyping(e: At) {

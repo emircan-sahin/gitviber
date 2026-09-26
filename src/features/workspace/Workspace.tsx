@@ -36,6 +36,7 @@ import { TerminalPanel, TerminalRestoreOffer, useTerminalSetup } from "@/feature
 import { TopBar } from "@/features/topbar/TopBar";
 import { Viewer } from "@/features/viewer/Viewer";
 import { prefetchSelection, resetPairCache } from "@/features/viewer/diffPairs";
+import { openEdits } from "@/lib/editor/edits";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
 type ListTab = (typeof LIST_TABS)[number];
@@ -52,8 +53,8 @@ interface Props {
 }
 
 /**
- * Diffs are cached by revision, which restarts per repo, and GitHub data is per repo: both start
- * over with each repo, during its first render, before anything in it reads them.
+ * Diffs are cached by revision, which restarts per repo, and GitHub data and unsaved file edits are
+ * per repo: they start over with each repo, during its first render, before anything in it reads them.
  */
 function useFreshCaches(root: string) {
   const cleared = useRef<string | null>(null);
@@ -61,6 +62,7 @@ function useFreshCaches(root: string) {
   cleared.current = root;
   resetPairCache();
   resetGitHubCache();
+  openEdits(root);
 }
 
 export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: Props) {

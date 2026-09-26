@@ -24,6 +24,7 @@ export interface CommitDraft {
 
 const KEY = "gitviber.workspaces";
 const DRAFTS_KEY = "gitviber.drafts";
+const EDITS_KEY = "gitviber.fileEdits";
 const WORKTREE_DIRS_KEY = "gitviber.worktreeDirs";
 // Agent worktrees come and go; keep only the most recently used.
 const MAX = 30;
@@ -36,7 +37,7 @@ function put(key: string, root: string, value: unknown) {
   const { [root]: _, ...rest } = all(key);
   // Insertion order is recency: the one saved now goes last, the oldest drop off the front.
   const entries = [...Object.entries(rest), ...(value === null ? [] : [[root, value] as const])].slice(-MAX);
-  writeJson(key, Object.fromEntries(entries));
+  return writeJson(key, Object.fromEntries(entries));
 }
 
 export function loadWorkspace(root: string): WorkspaceSnapshot | null {
@@ -75,9 +76,27 @@ export function saveDraft(root: string, draft: CommitDraft) {
   put(DRAFTS_KEY, root, draft.summary || draft.body || draft.coAuthors.length ? draft : null);
 }
 
-/** A worktree's folder moved: its layout and unsent commit message, kept by path, go along. */
+/** A file edited in the file view and not saved: its text, and the file's when the edit began. */
+export interface FileEdit {
+  text: string;
+  base: string;
+}
+
+export function loadEdits(root: string): Record<string, FileEdit> {
+  const saved = all(EDITS_KEY)[root];
+  if (!isRecord(saved)) return {};
+  const ok = (e: unknown): e is FileEdit => isRecord(e) && typeof e.text === "string" && typeof e.base === "string";
+  return Object.fromEntries(Object.entries(saved).filter((entry): entry is [string, FileEdit] => ok(entry[1])));
+}
+
+/** False when storage is full: the edits then live only until the app quits. */
+export function saveEdits(root: string, edits: Record<string, FileEdit>) {
+  return put(EDITS_KEY, root, Object.keys(edits).length ? edits : null);
+}
+
+/** A worktree's folder moved: its layout, unsent commit message and unsaved files, kept by path, go along. */
 export function moveRoot(from: string, to: string) {
-  for (const key of [KEY, DRAFTS_KEY]) {
+  for (const key of [KEY, DRAFTS_KEY, EDITS_KEY]) {
     const saved = all(key)[from];
     if (saved === undefined) continue;
     put(key, from, null);

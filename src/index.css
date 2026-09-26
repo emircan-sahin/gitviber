@@ -462,10 +462,13 @@
   }
 }
 
-/* The code view is read-only: a blinking caret reads as "type here". The cursor still marks
-   the clicked line (Open in, find), it just isn't drawn. */
+/* Read-only code: a blinking caret reads as "type here". The cursor still marks the clicked
+   line (Open in, find), it just isn't drawn. A file open for editing does take typing. */
 .monaco-editor .cursors-layer {
   display: none;
+}
+[data-editable] .monaco-editor .cursors-layer {
+  display: block;
 }
 
 /* Find's matches on a diff's overview (MonacoView markFindMatches), which is its right 14px:

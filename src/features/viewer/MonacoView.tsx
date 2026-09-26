@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "rea
 import type { Blame, BlameCommit, DiffPair, DiffRow } from "@/lib/api";
 import { showLanguage } from "@/lib/editor/shownLanguage";
 import { languageFor } from "@/lib/editor/language";
-import { narrow, widenColumn } from "@/lib/editor/indent";
+import { narrow, widen, widenColumn } from "@/lib/editor/indent";
 import { useFind } from "@/lib/ui/find";
 import { findMatches } from "@/lib/ui/findQuery";
 import { type CodeReveal, onReveal, takeReveal } from "@/lib/editor/reveal";
@@ -12,9 +12,10 @@ import { followLineActions, type LineAction, type LineActions } from "@/lib/edit
 import { codeEditor, type Editor, hideEditor, hideFile, isDiff, showEditor, showFile } from "./activeEditor";
 import { followReviewThreads, type Review } from "@/features/github/pulls/ReviewThreads";
 import type { LinkSide } from "@/lib/links/linkHost";
-import { colorThrough, createModels, monaco, prepare, redrawWhenColored, releaseModels } from "@/lib/editor/monaco";
+import { colorThrough, createModels, monaco, prepare, redrawWhenColored, releaseModels, unitOf } from "@/lib/editor/monaco";
+import { editModel, holdsEdit, track, useEdited } from "@/lib/editor/edits";
 import { useSettings } from "@/lib/settings";
-import { blameAt, changeBars, isNew, markBars, markBlame, markFindMatches } from "./decorations";
+import { blameAt, changeBars, isNew, liveBars, markBars, markBlame, markFindMatches } from "./decorations";
 import { CONTEXT, type CodeMode, diffOptions, fileOptions } from "./editorOptions";
 
 export interface CodeViewHandle {
@@ -44,6 +45,8 @@ interface Props {
   staging?: { kind: "unstaged" | "staged"; refresh: () => unknown } | null;
   /** A PR file's line comments, drawn under their lines. */
   review?: Review | null;
+  /** The file view of a file on disk that can be typed into and saved (lib/editor/edits). */
+  editable?: boolean;
 }
 
 type FindState = { searchString: string; replaceString: string; isReplaceRevealed: boolean; searchScope: null };
@@ -63,7 +66,7 @@ const DIFF_WAIT = 300;
 const SCREEN = 150;
 
 /** The code view on Monaco (VS Code's editor): a diff editor for changes, a plain one for files. */
-export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, blameColumn = false, onBlameClick, links = null, staging = null, review = null }, ref) {
+export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView({ pair, path, mode, collapse, wrap, scrollKey, onDisk = true, blame = null, blameColumn = false, onBlameClick, links = null, staging = null, review = null, editable = false }, ref) {
   const s = useSettings();
   const host = useRef<HTMLDivElement>(null);
   const editor = useRef<Editor | null>(null);
@@ -74,9 +77,24 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   const diff = mode !== "file";
   const lang = useMemo(() => languageFor(path, pair.modified.exists ? pair.modified.text : pair.original.text), [path, pair]);
   const bars = useMemo(() => (diff || !pair.original.exists || !pair.modified.exists ? [] : changeBars(pair.rows)), [diff, pair]);
+  // Unsaved: blame is the saved file's, by line numbers typing has moved.
+  const dirty = useEdited().has(path) && editable;
+  // The change bars on show: git's, or for a file being typed into its text now against HEAD's.
+  const shownBars = useRef(bars);
+  const drawBars = useRef(() => {});
+  drawBars.current = () => {
+    const e = editor.current;
+    const model = e && !isDiff(e) ? e.getModel() : null;
+    if (!e || !model) return;
+    const head = editable && pair.original.exists && pair.modified.exists ? pair.original.text : null;
+    shownBars.current = head === null ? bars : liveBars(widen(head, unitOf(model)).split(/\r?\n/), model.getLinesContent());
+    markBars(codeEditor(e), shownBars.current);
+  };
   // Read by the file swap (which lands later) and by clicks.
   const blameRef = useRef(blame);
-  blameRef.current = diff ? null : blame;
+  blameRef.current = diff || dirty ? null : blame;
+  const editableRef = useRef(editable);
+  editableRef.current = editable;
   const onBlameClickRef = useRef(onBlameClick);
   onBlameClickRef.current = onBlameClick;
   const linksRef = useRef(links);
@@ -107,7 +125,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     const box = reused?.box ?? document.createElement("div");
     box.style.cssText = "width:100%;height:100%";
     el.appendChild(box);
-    const e = reused?.e ?? (diff ? monaco.editor.createDiffEditor(box, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(box, fileOptions(s, wrap, blameColumn)));
+    const e = reused?.e ?? (diff ? monaco.editor.createDiffEditor(box, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(box, fileOptions(s, wrap, blameColumn, editable)));
     // Detached, it was laid out at 0x0: measure now, before a file is scrolled into place.
     if (reused) e.layout();
     editor.current = e;
@@ -119,6 +137,14 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
           const line = ev.target.position?.lineNumber;
           const commit = line && ev.target.element?.classList.contains("gv-blame") ? blameAt(blameRef.current, line) : null;
           if (commit && !isNew(commit)) onBlameClickRef.current?.(commit);
+        });
+    // Typing redraws the change bars, once it pauses.
+    let redraw: ReturnType<typeof setTimeout> | undefined;
+    const typed = isDiff(e)
+      ? null
+      : e.onDidChangeModelContent(() => {
+          clearTimeout(redraw);
+          redraw = setTimeout(() => drawBars.current(), 150);
         });
     const follow = (code: monaco.editor.ICodeEditor, side: "original" | "modified") => followDefinitions(code, () => linksRef.current?.[side] ?? null);
     const linked = isDiff(e) ? [follow(e.getOriginalEditor(), "original"), follow(e.getModifiedEditor(), "modified")] : [follow(e, "modified")];
@@ -136,6 +162,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
         })
       : null;
     return () => {
+      clearTimeout(redraw);
+      typed?.dispose();
       click?.dispose();
       linked.forEach((l) => l.dispose());
       marks?.dispose();
@@ -156,7 +184,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       // A view model handed to setModel stays ours to dispose.
       viewModel.current?.dispose();
       viewModel.current = null;
-      releaseModels(models);
+      releaseModels(models.filter((m) => !holdsEdit(m)));
       box.remove();
       if (parked[kind]) e.dispose();
       else parked[kind] = { e, box };
@@ -190,17 +218,18 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   useEffect(() => {
     const e = editor.current!;
     if (isDiff(e)) e.updateOptions(diffOptions(s, mode, collapse, wrap));
-    else e.updateOptions(fileOptions(s, wrap, blameColumn));
-  }, [s, mode, collapse, wrap, diff, blameColumn]);
+    else e.updateOptions(fileOptions(s, wrap, blameColumn, editable));
+  }, [s, mode, collapse, wrap, diff, blameColumn, editable]);
 
   // New comments, or the other layout (unified view puts old-side threads on the new side).
   useEffect(() => threads.current?.update(), [review, mode]);
 
-  // A blame that lands after the file shows; the swap below marks the one it finds.
+  // A blame that lands after the file shows (the swap below marks the one it finds), and goes
+  // while the file has unsaved edits.
   useEffect(() => {
     const e = editor.current;
-    if (e && !isDiff(e) && shown.current === scrollKey) markBlame(e, blame);
-  }, [blame, scrollKey]);
+    if (e && !isDiff(e) && shown.current === scrollKey) markBlame(e, blameRef.current);
+  }, [blame, scrollKey, dirty]);
 
   // Swap in the file: colored and diffed before it's shown, then back where it was left. A new
   // theme swaps it in again: recoloring flushes the tokens the unified view drew deleted lines with.
@@ -217,10 +246,15 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       // Only now: a model made before its language is registered gets retokenized from scratch
       // when it is, and the unified view's deleted lines came out uncolored.
       const oldPath = linksRef.current?.original?.path ?? path;
-      const created = createModels(lang, path, pair.modified.text, diff ? { path: oldPath, text: pair.original.text, rows: pair.rows } : null);
+      // Typed into: the edit's model, or after a save the model on show, which still holds the file.
+      const edited = editable && !isDiff(e) ? editModel(path, lang, pair.modified.text, e.getModel()) : null;
+      const created = edited
+        ? { modified: edited, original: null, unit: unitOf(edited) }
+        : createModels(lang, path, pair.modified.text, diff ? { path: oldPath, text: pair.original.text, rows: pair.rows } : null);
       const { modified, original } = created;
+      if (editable && !isDiff(e)) track(modified, path, pair.modified.text);
       models = original ? [original, modified] : [modified];
-      const old = modelsOf(e);
+      const old = modelsOf(e).filter((m) => m !== modified && !holdsEdit(m));
       let diffed: Promise<unknown> = Promise.resolve();
       let ready = true;
       const saved = viewStates.get(scrollKey);
@@ -239,7 +273,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
         stopRedraw = redrawWhenColored(original!);
       } else {
         e.setModel(modified);
-        markBars(e, bars);
+        drawBars.current();
         markBlame(e, blameRef.current);
       }
       onScreen = true;
@@ -261,7 +295,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       // Near the first change. A diff still computing takes it there when it lands, unless you
       // have scrolled since.
       const toFirst = () => {
-        const [line] = changeStarts(e, bars);
+        const [line] = changeStarts(e, shownBars.current);
         if (line) goToLine(code, line);
       };
       if (ready) return toFirst();
@@ -273,12 +307,12 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       revealing.current = null;
       stopRedraw();
       hideFile(shows);
-      if (!onScreen) return releaseModels(models);
+      if (!onScreen) return releaseModels(models.filter((m) => !holdsEdit(m) && !modelsOf(e).includes(m)));
       // Still on the editor (not disposed with it): remember where it was left.
       if (editor.current === e) viewStates.set(scrollKey, e.saveViewState()!);
     };
     // The file, and the colors it's drawn in (the app's palette too: dark and dimmed share a syntax theme).
-  }, [pair, lang, diff, scrollKey, onDisk, s.codeTheme, s.theme]);
+  }, [pair, lang, diff, scrollKey, onDisk, s.codeTheme, s.theme, editable]);
 
   // Copies carry the file's own indentation, not the tabs it's shown with. Monaco has filled the
   // clipboard by the time this bubbles up from its text area.
@@ -303,7 +337,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     const el = host.current!;
     const onKey = (ev: KeyboardEvent) => {
       const e = editor.current;
-      if (!e || ev.isComposing || !(ev.target instanceof HTMLElement)) return;
+      // Typing into the file: the keys move its cursor, as in any editor.
+      if (!e || ev.isComposing || !(ev.target instanceof HTMLElement) || editableRef.current) return;
       if (ev.altKey || ev.ctrlKey || !ev.target.matches("textarea.inputarea")) return;
       // The peek's own editor moves its cursor, as an editor does.
       if (ev.target.closest(".peekview-widget")) return;
@@ -345,16 +380,16 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
         if (!e) return;
         const code = codeEditor(e);
         const at = (code.getVisibleRanges()[0]?.startLineNumber ?? 1) + CONTEXT;
-        const starts = changeStarts(e, bars);
+        const starts = changeStarts(e, shownBars.current);
         const to = dir === 1 ? starts.find((l) => l > at) : [...starts].reverse().find((l) => l < at);
         if (to != null) goToLine(code, to);
       };
       return { next: () => go(1), prev: () => go(-1), lineAction: (action) => lines.current?.act(action) };
     },
-    [bars],
+    [],
   );
 
-  return <div ref={host} data-scrollbar="none" className="relative h-full" />;
+  return <div ref={host} data-scrollbar="none" data-editable={editable || undefined} className="relative h-full" />;
 });
 
 /** The editor that scrolls: the diff's new side, which carries the old one along. */

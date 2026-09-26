@@ -12,6 +12,8 @@ test("two-space code is widened, four-space code isn't", () => {
 test("a file with tabs is left alone", () => {
   assert.equal(indentUnit("a\n  b\n\tc\n"), 0);
   assert.equal(indentUnit("a\n  b\n", "x\n\ty\n"), 0);
+  // Two spaces then a tab would widen to two tabs, which turn back as four spaces.
+  assert.equal(indentUnit("a\n  b\n  \tc\n"), 0);
 });
 
 test("nothing indented, nothing to widen", () => {

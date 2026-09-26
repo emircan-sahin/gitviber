@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Main window: core IPC, showing the window once the page has its theme, window theme (follows the Light/Dark setting), webview zoom (the Interface scale setting) + native open-folder / confirm dialogs, desktop notifications when the user turns them on, and the updater: checking GitHub Releases, downloading and installing an update, then restarting into it. All file and git access goes through our own commands, which are confined to the opened repo.",
   "windows": ["main"],
-  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-set-theme", "core:window:allow-show", "core:webview:allow-set-webview-zoom", "dialog:allow-open", "dialog:allow-ask", "notification:default", "updater:allow-check", "updater:allow-download", "updater:allow-install", "process:allow-restart"]
+  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-set-theme", "core:window:allow-show", "core:webview:allow-set-webview-zoom", "dialog:allow-open", "dialog:allow-ask", "dialog:allow-message", "notification:default", "updater:allow-check", "updater:allow-download", "updater:allow-install", "process:allow-restart"]
 }

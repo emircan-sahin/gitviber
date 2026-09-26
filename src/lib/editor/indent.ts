@@ -6,14 +6,14 @@ export const TAB = 4;
 
 /**
  * Spaces per indentation level to widen, from the most common step between indented lines;
- * 0 when it's already a tab stop or more, or when a line starts with a tab (a file with tabs
- * couldn't be turned back exactly).
+ * 0 when it's already a tab stop or more, or when a tab starts a line or ends its leading spaces
+ * (either couldn't be turned back exactly, and the file view saves what it shows).
  */
 export function indentUnit(...texts: (string | null | undefined)[]) {
   const steps = new Map<number, number>();
   for (const text of texts) {
     if (!text) continue;
-    if (/^\t/m.test(text)) return 0;
+    if (/^ *\t/m.test(text)) return 0;
     let prev = 0;
     for (const line of text.split("\n")) {
       if (!line.trim()) continue;

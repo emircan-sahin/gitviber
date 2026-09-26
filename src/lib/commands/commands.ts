@@ -22,6 +22,8 @@ export const COMMANDS = [
   // The file watcher refreshes on its own; this is for changes it can't see.
   { id: "repo.refresh", title: "Refresh", category: "General", keys: [] },
   { id: "tab.close", title: "Close Tab", category: "General", keys: ["cmd+w"] },
+  // The file open in the file view, typed into (lib/editor/edits).
+  { id: "file.save", title: "Save", category: "General", keys: ["cmd+s"] },
   { id: "file.reveal", title: REVEAL_LABEL, category: "General", keys: [] },
   // The app last picked under "Open in"; the list of apps until there is one.
   { id: "file.openIn", title: "Open in External App", category: "General", keys: ["shift+cmd+o"] },

@@ -5,6 +5,7 @@ import { type Selection, selectionPath } from "@/lib/repo/selection";
 import { matchesCommand, useShortcut } from "@/lib/commands/keybindings";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
+import { useEdited } from "@/lib/editor/edits";
 import { basename } from "@/lib/path";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { IssueStateIcon, PullStateIcon } from "@/features/github/shared/StateBadges";
@@ -126,6 +127,8 @@ function TabItem({
   onShowHistory: (path: string) => void;
 }) {
   const { props, dragging, guard } = useSortableItem(t.key);
+  // Unsaved edits: a dot where the close button goes, the button on hover (as VS Code).
+  const unsaved = useEdited().has(selectionPath(t.sel)) && t.sel.kind === "file";
   const closeKey = useShortcut("tab.close");
   const closeOthersKey = useShortcut("tab.closeOthers");
   const el = useRef<HTMLDivElement | null>(null);
@@ -167,7 +170,7 @@ function TabItem({
       <span className={cn("truncate", t.preview && "italic")}>{tabLabel(t.sel)}</span>
       <TabKind sel={t.sel} />
       <button
-        aria-label="Close tab"
+        aria-label={unsaved ? "Close tab (unsaved changes)" : "Close tab"}
         // Off the Tab order: the tab closes with ⌫, and one stop per tab would crowd it.
         tabIndex={-1}
         // Pressing the close button must not start a drag.
@@ -178,10 +181,11 @@ function TabItem({
         }}
         className={cn(
           "flex size-5 items-center justify-center rounded-sm text-subtle hover:bg-active focus-visible:bg-active hover:text-foreground focus-visible:text-foreground",
-          !isActive && "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100",
+          !isActive && !unsaved && "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100",
         )}
       >
-        <X className="size-3" />
+        {unsaved && <span data-unsaved className="size-2 rounded-full bg-current group-hover:hidden" />}
+        <X className={cn("size-3", unsaved && "hidden group-hover:block")} />
       </button>
     </div>
   );

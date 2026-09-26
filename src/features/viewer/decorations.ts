@@ -1,5 +1,6 @@
 import type { Blame, BlameCommit, DiffRow } from "@/lib/api";
 import { monaco } from "@/lib/editor/monaco";
+import { DefaultLinesDiffComputer } from "monaco-editor/editor/common/diff/defaultLinesDiffComputer/defaultLinesDiffComputer";
 import { fullDate, relativeTime } from "@/lib/format";
 
 // The color find's decorations ask an editor's own overview ruler for (past 1000 matches, merged ones).
@@ -71,9 +72,11 @@ export function markBars(e: monaco.editor.ICodeEditor, bars: ReturnType<typeof c
   );
 }
 
+type Bar = { line: number; kind: "add" | "mod" | "del" };
+
 /** Lines to mark in the file view: added, modified, and where lines were deleted. */
 export function changeBars(rows: DiffRow[]) {
-  const out: { line: number; kind: "add" | "mod" | "del" }[] = [];
+  const out: Bar[] = [];
   let last = 0;
   for (let i = 0; i < rows.length; ) {
     if (rows[i].k === 0) {
@@ -89,6 +92,22 @@ export function changeBars(rows: DiffRow[]) {
     if (dels && !adds.length) out.push({ line: j < rows.length ? rows[j].n : Math.max(1, last), kind: "del" });
     if (adds.length) last = adds[adds.length - 1].n;
     i = j;
+  }
+  return out;
+}
+
+/**
+ * changeBars for a file being typed into: its `lines` now against `head`'s, redrawn as it changes
+ * (as VS Code's are). Monaco's line diff, the diff editor's, cut short on a huge file so typing doesn't wait.
+ */
+export function liveBars(head: string[], lines: string[]) {
+  const { changes } = new DefaultLinesDiffComputer().computeDiff(head, lines, { ignoreTrimWhitespace: false, maxComputationTimeMs: 100, computeMoves: false });
+  const out: Bar[] = [];
+  for (const { original: o, modified: m } of changes) {
+    // Deleted lines: marked on the line after them (the last line at the end of the file).
+    if (m.startLineNumber === m.endLineNumberExclusive) out.push({ line: Math.max(1, Math.min(m.startLineNumber, lines.length)), kind: "del" });
+    const kind = o.startLineNumber === o.endLineNumberExclusive ? "add" : "mod";
+    for (let line = m.startLineNumber; line < m.endLineNumberExclusive; line++) out.push({ line, kind });
   }
   return out;
 }

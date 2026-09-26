@@ -123,6 +123,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &sep()?,
             &b.command("terminal.new", "New Terminal")?,
             &sep()?,
+            &b.command("file.save", "Save")?,
             &b.command("tab.close", "Close Tab")?,
             &b.command("tab.reopenClosed", "Reopen Closed Tab")?,
             &sep()?,

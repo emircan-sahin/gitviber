@@ -52,7 +52,7 @@ export function diffOptions(s: Settings, mode: CodeMode, collapse: boolean, wrap
   };
 }
 
-export function fileOptions(s: Settings, wrap: boolean, blame: boolean): monaco.editor.IStandaloneEditorConstructionOptions {
+export function fileOptions(s: Settings, wrap: boolean, blame: boolean, editable: boolean): monaco.editor.IStandaloneEditorConstructionOptions {
   // Blame's label goes after the change bars (index.css), in the code font's widths.
-  return { ...common(s, wrap), lineDecorationsWidth: blame ? `${BLAME_CHARS + 3}ch` : 12 };
+  return { ...common(s, wrap), readOnly: !editable, lineDecorationsWidth: blame ? `${BLAME_CHARS + 3}ch` : 12 };
 }

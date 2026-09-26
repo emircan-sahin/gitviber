@@ -6,6 +6,8 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, type DiffPair, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { withNetActivity } from "@/lib/repo/netActivity";
 import { onReveal, revealWaits } from "@/lib/editor/reveal";
+import { editedText, saveEdit, useEdited } from "@/lib/editor/edits";
+import { keepsLineEndings } from "@/lib/editor/lineEndings";
 import { type Selection, selectionPath } from "@/lib/repo/selection";
 import { bindingsFor, type CommandId, formatChord, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { diffWhitespace, updateSettings, useSettings } from "@/lib/settings";
@@ -120,7 +122,13 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   const note = diff && pair && !special ? (pair.eolOnly ? "Only line endings changed" : pair.whitespaceHidden ? "Whitespace changes hidden" : null) : null;
   const code = !media && !rendered && !!pair && !special;
   const blame = useBlame(isFile && code && s.blame ? sel.path : null, pair, status?.head ?? null);
+  // Text the file view can't turn back into the file's bytes stays read-only.
+  const editable = isFile && !!pair && !pair.modified.lossy && keepsLineEndings(pair.modified.text);
+  const dirty = useEdited().has(selectionPath(sel)) && isFile;
+  // A preview shows the file as edited.
+  const unsaved = dirty && rendered ? editedText(selectionPath(sel)) : undefined;
   useCommands({
+    "file.save": dirty ? () => void saveEdit(selectionPath(sel)) : undefined,
     "diff.nextChange": diff ? () => view.current?.next() : undefined,
     "diff.prevChange": diff ? () => view.current?.prev() : undefined,
     "diff.stageChange": code && sel.kind === "unstaged" ? () => view.current?.lineAction("stage") : undefined,
@@ -258,7 +266,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
           pair && (
             <SvgView
               before={!isFile && pair.original.exists ? pair.original.text : null}
-              after={pair.modified.exists ? pair.modified.text : null}
+              after={unsaved ?? (pair.modified.exists ? pair.modified.text : null)}
               stacked={!isFile && !s.sideBySide}
               zoom={zoom}
               onZoom={setZoom}
@@ -266,7 +274,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
             />
           )
         ) : rendered ? (
-          pair && <MarkdownView text={pair.modified.exists ? pair.modified.text : pair.original.text} src={pairArgs(sel, revision)} onOpen={onOpen} />
+          pair && <MarkdownView text={unsaved ?? (pair.modified.exists ? pair.modified.text : pair.original.text)} src={pairArgs(sel, revision)} onOpen={onOpen} />
         ) : media ? (
           pair && <MediaView src={pairArgs(sel, revision)} before={!isFile && pair.original.exists} after={pair.modified.exists} />
         ) : (
@@ -286,6 +294,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               links={linkSides(sel, revision)}
               staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, refresh } : null}
               review={review}
+              editable={editable}
             />
           )
         )}
