@@ -19,7 +19,7 @@ export function Footer() {
           <p>
             {rich(t.footer.made, {
               author: (
-                <a href={AUTHOR.github} className="text-muted transition hover:text-fg">
+                <a href={AUTHOR.github} className="text-muted underline decoration-border-strong underline-offset-4 transition hover:text-fg hover:decoration-fg">
                   {AUTHOR.name}
                 </a>
               ),

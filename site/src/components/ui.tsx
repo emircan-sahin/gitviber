@@ -45,7 +45,7 @@ export function PrimaryLink({ href, children }: { href: string; children: ReactN
   return (
     <a
       href={href}
-      className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg bg-primary px-5 text-[15px] font-medium text-white transition hover:brightness-110 active:translate-y-px"
+      className="inline-flex h-12 shrink-0 items-center justify-center gap-2 rounded-lg bg-cta px-5 text-[15px] font-medium text-white transition hover:bg-cta-hover active:translate-y-px"
     >
       {children}
     </a>

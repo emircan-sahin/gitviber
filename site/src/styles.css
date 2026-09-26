@@ -15,6 +15,9 @@
   --color-muted: #a2a2a8;
   --color-subtle: #86868d;
   --color-primary: #4a9ff5;
+  /* The app's blue is 2.8:1 under white text; the download button takes a deeper one for 4.5:1. */
+  --color-cta: #2371c7;
+  --color-cta-hover: #1d63af;
   --color-added: #57d17a;
   --color-removed: #f47067;
   --color-modified: #e2b84c;
