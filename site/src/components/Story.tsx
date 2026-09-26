@@ -69,36 +69,35 @@ export function Story() {
     const blocks = [...el.querySelectorAll<HTMLElement>("[data-chapter]")];
     let lastY = scrollY;
     const update = () => {
-      el.style.setProperty("--dock", Math.min(1, Math.max(0, -el.getBoundingClientRect().top / (innerHeight * 0.7))).toFixed(4));
+      // Every measurement first, then every write: a read after a style write forces a layout,
+      // and one per chapter was a reflow per chapter on every scroll.
+      const top = el.getBoundingClientRect().top;
       // The docked window's top, measured in its sticky box, which sits at the top of the screen.
       const pin = dock.offsetTop;
+      const rects = blocks.map((b) => b.getBoundingClientRect());
+      const copies = blocks.map((b) => (b.firstElementChild as HTMLElement).offsetHeight);
+
+      el.style.setProperty("--dock", Math.min(1, Math.max(0, -top / (innerHeight * 0.7))).toFixed(4));
       el.style.setProperty("--pin", `${pin}px`);
       blocks.forEach((block, i) => {
-        const copy = block.firstElementChild as HTMLElement;
-        const r = block.getBoundingClientRect();
-        const held = pin - r.top;
-        const room = r.height - copy.offsetHeight;
+        const held = pin - rects[i].top;
+        const room = rects[i].height - copies[i];
         const fadeIn = held >= 0 ? 1 : Math.max(0.25, 1 + held / (innerHeight * 0.4));
         const fadeOut = i === blocks.length - 1 ? 1 : Math.min(1, Math.max(0, (room - held) / (room * 0.4)));
         block.style.setProperty("--fade", Math.min(fadeIn, fadeOut).toFixed(3));
       });
       // The last copy lets go when the window does, when the section's end reaches the screen's.
-      const last = blocks[blocks.length - 1].firstElementChild as HTMLElement;
-      el.style.setProperty("--tail", `${Math.max(0, innerHeight - pin - last.offsetHeight)}px`);
-      const current = blocks.findLastIndex((b) => b.getBoundingClientRect().top <= innerHeight * 0.6);
+      el.style.setProperty("--tail", `${Math.max(0, innerHeight - pin - copies[copies.length - 1])}px`);
+      const current = rects.findLastIndex((r) => r.top <= innerHeight * 0.6);
       setChapter(Math.max(-1, current - 1));
       // A chapter's clip waits on its first frame until the copy settles next to it, so a short one
       // isn't over before it can be read. Then scrolling drives it too: by the time the copy starts
       // to fade, a fast scroll has played it through, and scrolling back rewinds it.
       const dy = scrollY - lastY;
       lastY = scrollY;
-      const settled = current < 1 || pin - blocks[current].getBoundingClientRect().top >= 0;
+      const settled = current < 1 || pin - rects[current].top >= 0;
       wait(!settled);
-      if (current >= 0 && settled && dy) {
-        const block = blocks[current];
-        const room = block.offsetHeight - (block.firstElementChild as HTMLElement).offsetHeight;
-        seek((dy * clipLength(current - 1)) / (room * 0.6));
-      }
+      if (current >= 0 && settled && dy) seek((dy * clipLength(current - 1)) / ((rects[current].height - copies[current]) * 0.6));
     };
     update();
     addEventListener("scroll", update, { passive: true });
