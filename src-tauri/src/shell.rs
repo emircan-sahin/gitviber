@@ -15,13 +15,68 @@ use std::time::Duration;
 pub fn clean_env() -> Vec<(OsString, OsString)> {
     let mut env: Vec<(OsString, OsString)> = KEEP
         .iter()
+        .chain(DESKTOP)
         .filter_map(|k| std::env::var_os(k).map(|v| (k.into(), v)))
         .collect();
+    if cfg!(target_os = "linux") {
+        env.extend(std::env::vars_os().filter(|(k, _)| k.to_string_lossy().starts_with("LC_")));
+        if let Some(i) = env.iter().position(|(k, _)| k == "XDG_DATA_DIRS") {
+            match without_appimage(&env[i].1, std::env::var_os("APPDIR")) {
+                Some(dirs) => env[i].1 = dirs,
+                None => drop(env.remove(i)),
+            }
+        }
+    }
     if cfg!(unix) {
         env.push(("PATH".into(), "/usr/bin:/bin:/usr/sbin:/sbin".into()));
     }
     env
 }
+
+/// `dirs` without the ones an AppImage's launcher put first, inside its own mount; None if
+/// nothing else is left.
+fn without_appimage(dirs: &OsString, app: Option<OsString>) -> Option<OsString> {
+    let Some(app) = app.filter(|a| !a.is_empty()) else {
+        return Some(dirs.clone());
+    };
+    let app = Path::new(&app);
+    let kept: Vec<_> = std::env::split_paths(dirs)
+        .filter(|d| !d.starts_with(app))
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    std::env::join_paths(kept).ok()
+}
+
+/// A Linux desktop session's: without them `xdg-open`, `code .`, a browser login, a keyring
+/// or the clipboard tools an AI CLI pastes images with can't reach the display or D-Bus.
+/// macOS apps get none of these from launchd.
+#[cfg(target_os = "linux")]
+const DESKTOP: &[&str] = &[
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_SESSION_DESKTOP",
+    "DESKTOP_SESSION",
+    "XDG_DATA_DIRS",
+    "XDG_CONFIG_DIRS",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+    "LANGUAGE",
+    "GTK_IM_MODULE",
+    "QT_IM_MODULE",
+    "XMODIFIERS",
+];
+
+#[cfg(not(target_os = "linux"))]
+const DESKTOP: &[&str] = &[];
 
 #[cfg(not(windows))]
 const KEEP: &[&str] = &[
@@ -135,12 +190,47 @@ fn run(timeout: Duration) -> Result<(), String> {
         let mut p = p;
         p.running = true;
     }
-    let shell = std::env::var_os("SHELL")
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "/bin/zsh".into());
-    let found = probe_path(Path::new(&shell), timeout);
+    let found = probe_path(Path::new(&login_shell()), timeout);
     record(&found);
     found.map(|_| ())
+}
+
+/// $SHELL, else the one passwd(5) records for the user (the terminal's pty does the same),
+/// else /bin/sh: many Linux systems have no zsh.
+fn login_shell() -> OsString {
+    std::env::var_os("SHELL")
+        .filter(|s| !s.is_empty())
+        .or_else(passwd_shell)
+        .unwrap_or_else(|| "/bin/sh".into())
+}
+
+#[cfg(unix)]
+fn passwd_shell() -> Option<OsString> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut buf = vec![0 as libc::c_char; 4096];
+    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    // The _r form: getpwuid's static buffer isn't safe beside other threads.
+    let rc = unsafe {
+        libc::getpwuid_r(
+            libc::getuid(),
+            &mut pwd,
+            buf.as_mut_ptr(),
+            buf.len(),
+            &mut found,
+        )
+    };
+    if rc != 0 || found.is_null() || pwd.pw_shell.is_null() {
+        return None;
+    }
+    let shell = unsafe { std::ffi::CStr::from_ptr(pwd.pw_shell) }.to_bytes();
+    // An empty field means /bin/sh, which the caller falls back to.
+    (!shell.is_empty()).then(|| std::ffi::OsStr::from_bytes(shell).to_os_string())
+}
+
+#[cfg(not(unix))]
+fn passwd_shell() -> Option<OsString> {
+    None
 }
 
 fn record(found: &Result<OsString, String>) {
@@ -231,6 +321,28 @@ fn between_marks(text: &str, mark: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn passwd_names_a_shell_that_exists() {
+        let shell = passwd_shell().expect("the user has a passwd entry");
+        assert!(Path::new(&shell).is_file(), "{shell:?}");
+    }
+
+    #[test]
+    fn appimage_data_dirs_are_dropped() {
+        let dirs = OsString::from("/tmp/.mount_GitVib/usr/share:/usr/share:/usr/local/share");
+        let app = Some(OsString::from("/tmp/.mount_GitVib"));
+        assert_eq!(
+            without_appimage(&dirs, app.clone()),
+            Some("/usr/share:/usr/local/share".into())
+        );
+        assert_eq!(without_appimage(&dirs, None), Some(dirs));
+        assert_eq!(
+            without_appimage(&"/tmp/.mount_GitVib/usr/share".into(), app),
+            None
+        );
+    }
 
     #[test]
     fn reads_between_marks_only() {
