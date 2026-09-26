@@ -103,9 +103,8 @@ pub fn keep_dropped(paths: Vec<String>) -> Vec<String> {
 
 /// What ⌘V pastes into the terminal: copied files' paths first (a Finder copy also carries the
 /// file's name as text and its icon as an image), then text, then an image saved as a PNG.
-#[cfg(target_os = "macos")]
 pub fn read() -> Result<Paste, String> {
-    let (files, text, png) = objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() });
+    let (files, text, png) = contents();
     if !files.is_empty() {
         return Ok(Paste::Files { paths: files });
     }
@@ -122,9 +121,15 @@ pub fn read() -> Result<Paste, String> {
     })
 }
 
+#[cfg(target_os = "macos")]
+fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
+    objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() })
+}
+
+/// Elsewhere the terminal keeps the webview's own paste (terminals.ts), so this isn't called.
 #[cfg(not(target_os = "macos"))]
-pub fn read() -> Result<Paste, String> {
-    Ok(Paste::Empty)
+fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
+    (vec![], None, None)
 }
 
 #[cfg(target_os = "macos")]
