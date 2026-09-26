@@ -61,12 +61,13 @@ const shown = createStore<"held" | "pinned" | null>(null);
 const set = shown.set;
 
 /** `keys` are chords, each an alternative, or THROUGH between two. */
-type Row = { id: string; title: string; keys: readonly string[]; where?: string; off?: boolean };
+type Row = { id: string; title: string; keys: readonly string[]; where?: string };
 
 /**
- * Every bound command by category. A global one is dimmed when none of its keys would run it from
+ * Every bound command by category. A global one is left out when none of its keys would run it from
  * where focus is (no handler, a dialog in the way, a text field or the terminal eating the key, an
- * earlier command taking the chord). A local one works in its own place, which it names instead.
+ * earlier command taking the chord): greyed out, they crowded the ones that work. A local one works
+ * in its own place, which it names instead.
  */
 function groups(overrides: Overrides) {
   const at = { target: document.activeElement };
@@ -79,15 +80,14 @@ function groups(overrides: Overrides) {
     if (/^tab\.goto[2-8]$/.test(c.id)) continue;
     if (c.id === "tab.goto1") {
       const last = bindingsFor("tab.goto8", overrides)[0];
-      add(c.category, { id: c.id, title: "Go to Tab 1–8", keys: last ? [keys[0], THROUGH, last] : [keys[0]], off: !canRun(c.id) });
+      if (canRun(c.id)) add(c.category, { id: c.id, title: "Go to Tab 1–8", keys: last ? [keys[0], THROUGH, last] : [keys[0]] });
       continue;
     }
     if ("local" in c) {
       add(c.category, { id: c.id, title: c.title, keys, where: c.local });
       continue;
     }
-    const off = !canRun(c.id) || !keys.some((k) => commandFor(k, overrides) === c && runsAt(at, k, c));
-    add(c.category, { id: c.id, title: c.title, keys, off });
+    if (canRun(c.id) && keys.some((k) => commandFor(k, overrides) === c && runsAt(at, k, c))) add(c.category, { id: c.id, title: c.title, keys });
   }
   const panel = focusedPanel();
   const order = [...new Set([...(panel ? PANEL_FIRST[panel] : []), ...byCategory.keys()])];
@@ -182,7 +182,7 @@ export function ShortcutOverlay() {
             <section key={g.category} className="mb-3.5 break-inside-avoid">
               <div className="mb-1 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">{g.category}</div>
               {g.rows.map((r) => (
-                <div key={r.id} className={`flex min-h-[22px] items-center gap-2 py-px text-[11.5px] ${r.off ? "opacity-40" : ""}`}>
+                <div key={r.id} className="flex min-h-[22px] items-center gap-2 py-px text-[11.5px]">
                   <span className="min-w-0 flex-1 leading-tight">
                     {r.title}
                     {r.where && <span className="block text-[10.5px] text-subtle">in {r.where}</span>}
