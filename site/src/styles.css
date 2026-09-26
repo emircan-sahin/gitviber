@@ -49,6 +49,12 @@
   body {
     font-family: var(--font-sans);
   }
+  /* Tailwind 4 leaves buttons on the arrow cursor; anything clickable here gets the hand. */
+  button:not(:disabled),
+  [role="button"],
+  summary {
+    cursor: pointer;
+  }
   ::selection {
     background: rgb(74 159 245 / 0.35);
   }
