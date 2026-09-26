@@ -9,7 +9,8 @@ const ascii = (s) =>
     .replace(/→/g, "->")
     .replace(/·/g, "-")
     .replace(/[‘’]/g, "'")
-    .replace(/[“”]/g, '"');
+    .replace(/[“”]/g, '"')
+    .replace(/⌘/g, "Cmd+");
 
 /** A `## heading` section of the README, without the heading, links made absolute. */
 function section(readme, heading, repo) {
@@ -25,7 +26,7 @@ function section(readme, heading, repo) {
     .replace(/\]\((?!https?:)([^)]+)\)/g, `](${repo}/blob/main/$1)`);
 }
 
-export function llms({ t, readme, locales, pageUrl, siteUrl, version, repo, brew }) {
+export function llms({ t, readme, locales, pageUrl, siteUrl, version, repo, brew, author, chapters, chapterText }) {
   const home = `${siteUrl}/`;
   // The FAQ opens with what GitViber is: the summary both files start with.
   const intro = `${t.faq.items[0].a} Licensed under the GPL-3.0, with no account and no telemetry.`;
@@ -44,6 +45,11 @@ export function llms({ t, readme, locales, pageUrl, siteUrl, version, repo, brew
     `- [License](${repo}/blob/main/LICENSE): GPL-3.0`,
   ];
   const pages = locales.map((l) => `- [GitViber, ${l.name}](${pageUrl(l)})`);
+  const contact = [
+    `- Bugs and feature requests: [GitHub Issues](${repo}/issues)`,
+    `- Security reports: [security policy](${repo}/security/policy)`,
+    `- Author: ${author.name}, [GitHub](${author.github}), [X](${author.x}) (${author.xHandle}), [LinkedIn](${author.linkedin})`,
+  ];
 
   const short = `# GitViber
 
@@ -65,6 +71,10 @@ ${links.join("\n")}
 
 - Homebrew: \`${brew}\`
 - Or download from the [latest release](${repo}/releases/latest). Needs git 2.36 or newer.
+
+## Contact
+
+${contact.join("\n")}
 `;
 
   const feature = (title, text) => `- **${title}** ${text}`;
@@ -76,7 +86,7 @@ ${intro}
 
 - Website: ${home}
 - Version: ${version}
-- Made by Emircan Sahin (https://github.com/emircan-sahin)
+- Made by ${author.name} (${author.github})
 - Site languages: ${locales.map((l) => l.name).join(", ")}. The app's interface is in English.
 
 ## Links
@@ -95,8 +105,8 @@ ${t.numbers.items.map((i) => feature(`${i.big}: ${i.title}`, i.text)).join("\n")
 
 ${t.story.text}
 
-${[...t.agents.steps, t.review, t.terminal, t.commit]
-  .map((c, i) => feature(`${t.story.labels[i]}: ${c.title}`, c.text.replace("{keys}", "⌘J")))
+${chapters(t)
+  .map((c, i) => feature(`${t.story.labels[i]}: ${c.title}`, chapterText(c.text, i)))
   .join("\n")}
 
 ### ${t.rest.title}
@@ -116,6 +126,10 @@ ${section(readme, "Privacy", repo)}
 ## FAQ
 
 ${[...faq, ...readmeFaq].join("\n\n")}
+
+## Contact
+
+${contact.join("\n")}
 `;
 
   return { short: ascii(short), full: ascii(full) };

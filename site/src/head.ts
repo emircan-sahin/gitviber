@@ -1,7 +1,8 @@
 // Everything in <head> that depends on the language, rendered once per locale at build time
 // (scripts/prerender.mjs). index.html keeps what's the same for every page.
+import { chapters, chapterText } from "./chapters.ts";
 import { LOCALES, type Locale, type Messages } from "./i18n/locales.ts";
-import { REPO_URL, siteUrl, version } from "./release.ts";
+import { AUTHOR, REPO_URL, siteUrl, version } from "./release.ts";
 
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -9,7 +10,6 @@ const esc = (s: string) =>
 /** Messages keep `code` in backticks for the page; structured data wants plain text. */
 const plain = (s: string) => s.replace(/`/g, "");
 
-const AUTHOR = { name: "Emircan Sahin", url: "https://github.com/emircan-sahin" };
 // The README's screenshot, at a URL that doesn't change with every build like the site's hashed copy.
 const SCREENSHOT = "https://raw.githubusercontent.com/emircan-sahin/gitviber/main/assets/screenshot-dark.png";
 
@@ -72,7 +72,7 @@ export function renderHead(locale: Locale, t: Messages) {
         image,
         screenshot: { "@type": "ImageObject", url: SCREENSHOT, caption: t.hero.screenshotAlt, width: 2960, height: 1840 },
         featureList: [
-          ...[...t.agents.steps, t.review, t.terminal, t.commit].map((c, i) => `${t.story.labels[i]}: ${c.text.replace("{keys}", "⌘J")}`),
+          ...chapters(t).map((c, i) => `${t.story.labels[i]}: ${chapterText(c.text, i)}`),
           ...t.rest.items.map((r) => `${r.title}: ${r.text}`),
         ].map(plain),
         keywords: t.meta.keywords,
@@ -91,7 +91,7 @@ export function renderHead(locale: Locale, t: Messages) {
         author: { "@id": id.author },
         targetProduct: { "@id": id.app },
       },
-      { "@type": "Person", "@id": id.author, name: AUTHOR.name, url: AUTHOR.url, sameAs: [AUTHOR.url] },
+      { "@type": "Person", "@id": id.author, name: AUTHOR.name, url: AUTHOR.github, sameAs: [AUTHOR.github, AUTHOR.x, AUTHOR.linkedin] },
     ],
   };
 
@@ -115,6 +115,7 @@ export function renderHead(locale: Locale, t: Messages) {
     `<meta property="og:locale" content="${locale.og}" />`,
     ...LOCALES.filter((l) => l !== locale).map((l) => `<meta property="og:locale:alternate" content="${l.og}" />`),
     `<meta name="twitter:card" content="summary_large_image" />`,
+    `<meta name="twitter:creator" content="${AUTHOR.xHandle}" />`,
     `<meta name="twitter:title" content="${esc(t.meta.ogTitle)}" />`,
     `<meta name="twitter:description" content="${esc(t.meta.ogDescription)}" />`,
     `<meta name="twitter:image" content="${image}" />`,

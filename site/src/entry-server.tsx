@@ -8,7 +8,8 @@ import { LOCALES, type Messages } from "./i18n/locales.ts";
 const messages = import.meta.glob<Messages>("./i18n/messages/*.json", { import: "default", eager: true });
 
 export { LOCALES, ogImagePath, pageUrl };
-export { BREW, REPO_URL, siteUrl, version } from "./release.ts";
+export { chapters, chapterText } from "./chapters.ts";
+export { AUTHOR, BREW, REPO_URL, siteUrl, version } from "./release.ts";
 
 /** One locale's page: its <body> markup and its <head> tags. */
 export function render(code: string) {

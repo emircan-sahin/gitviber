@@ -1,6 +1,7 @@
 // Renders one static page per locale into dist/ (dist/index.html, dist/tr/index.html, …), so
 // crawlers and link previews get the whole page in every language: GitHub Pages only serves
 // files, there's nothing to render on request.
+import { execFileSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -11,7 +12,7 @@ const out = process.env.SITE_OUT || "dist";
 const dist = path.join(root, out);
 const ssr = path.join(root, `${out}-ssr`);
 
-const { render, LOCALES, pageUrl, ogImagePath, siteUrl, version, REPO_URL, BREW } = await import(pathToFileURL(path.join(ssr, "entry-server.js")).href);
+const { render, LOCALES, pageUrl, ogImagePath, siteUrl, version, REPO_URL, BREW, AUTHOR, chapters, chapterText } = await import(pathToFileURL(path.join(ssr, "entry-server.js")).href);
 const template = readFileSync(path.join(dist, "index.html"), "utf8");
 for (const marker of ['<html lang="en">', "<!--head-->", "<!--app-->"]) {
   if (!template.includes(marker)) throw new Error(`prerender: no ${marker} in dist/index.html`);
@@ -39,12 +40,17 @@ for (const locale of LOCALES.slice(1)) {
 
 // Every locale lists every other, the way hreflang in the pages does.
 const home = pageUrl(LOCALES[0]);
-const today = new Date().toISOString().slice(0, 10);
+// The last change to the site, not the build: a lastmod that moves on every build gets ignored.
+let lastmod;
+try {
+  lastmod = execFileSync("git", ["log", "-1", "--format=%cs", "--", "."], { cwd: root, encoding: "utf8" }).trim();
+} catch {}
+lastmod ||= new Date().toISOString().slice(0, 10);
 const alternates = LOCALES.map((l) => `    <xhtml:link rel="alternate" hreflang="${l.code}" href="${pageUrl(l)}" />`).join("\n");
 const urls = LOCALES.map(
   (l) => `  <url>
     <loc>${pageUrl(l)}</loc>
-    <lastmod>${today}</lastmod>
+    <lastmod>${lastmod}</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
 ${alternates}
@@ -76,6 +82,33 @@ writeFileSync(path.join(dist, "robots.txt"), `${robots}\nSitemap: ${home}sitemap
 
 const en = JSON.parse(readFileSync(path.join(root, "src/i18n/messages/en.json"), "utf8"));
 const readme = readFileSync(path.join(root, "../README.md"), "utf8");
-const { short, full } = llms({ t: en, readme, locales: LOCALES, pageUrl, siteUrl, version, repo: REPO_URL, brew: BREW });
+const { short, full } = llms({ t: en, readme, locales: LOCALES, pageUrl, siteUrl, version, repo: REPO_URL, brew: BREW, author: AUTHOR, chapters, chapterText });
 writeFileSync(path.join(dist, "llms.txt"), short);
 writeFileSync(path.join(dist, "llms-full.txt"), full);
+
+// GitHub Pages serves this for any path that doesn't exist, such as /pt-BR/ instead of /pt-br/.
+writeFileSync(
+  path.join(dist, "404.html"),
+  `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="robots" content="noindex" />
+<title>Not found - GitViber</title>
+<style>
+  body { margin: 0; min-height: 100svh; display: grid; place-items: center; background: #0b0b0c; color: #ececee; font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align: center; }
+  h1 { margin: 0 0 8px; font-size: 32px; letter-spacing: -0.02em; }
+  p { margin: 0; color: #a2a2a8; }
+  a { color: #4a9ff5; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Page not found</h1>
+  <p>${LOCALES.map((l) => `<a href="${pageUrl(l)}" hreflang="${l.code}" lang="${l.code}">${l.name}</a>`).join(" · ")}</p>
+</main>
+</body>
+</html>
+`,
+);
