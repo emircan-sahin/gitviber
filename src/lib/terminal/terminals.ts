@@ -239,12 +239,11 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, ⌃Tab or ⌃1 run
   // their commands, and the panel's own keys stay with it whatever they're rebound to.
   term.attachCustomKeyEventHandler((e) => {
-    // xterm's Meta ⌥ can't tell left from right: for the left one only, it's on while that key is down.
+    // xterm's Meta ⌥ can't tell left from right: for the left one only, it's set as a key is typed
+    // with ⌥ (xterm reads it after this), and only when the side changed, as a change redraws.
     if (getSettings().optionAsMeta === "left") {
       if (e.code === "AltLeft") leftOptionDown = e.type === "keydown";
-      // Its release went to another window.
-      else if (!e.altKey) leftOptionDown = false;
-      term.options.macOptionIsMeta = e.altKey && leftOptionDown;
+      else if (e.altKey && e.key !== "Alt" && term.options.macOptionIsMeta !== leftOptionDown) term.options.macOptionIsMeta = leftOptionDown;
     }
     // Linux terminals copy and paste with Ctrl+Shift+C/V: Ctrl+C and Ctrl+V belong to the shell.
     // The letter as typed (Dvorak's C isn't on the C key), or the key's place on a non-Latin layout.
@@ -269,8 +268,9 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   return { id, cwd, title: "" };
 }
 
-/** Whether the left ⌥ is held, for the left-only Meta setting. */
+/** Whether the left ⌥ is held, for the left-only Meta setting. Its release may go to another window. */
 let leftOptionDown = false;
+window.addEventListener("blur", () => (leftOptionDown = false));
 
 /** `fallback`: the webview's own text, pasted if the native read fails or finds nothing. */
 async function pasteInto(p: Pane, fallback = "") {

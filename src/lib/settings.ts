@@ -116,7 +116,7 @@ export const DARK_THEMES = Object.fromEntries(Object.entries(THEMES).filter(([, 
 export const LIGHT_THEMES = Object.fromEntries(Object.entries(THEMES).filter(([, t]) => !t.dark).map(([id, t]) => [id, t.label])) as Record<LightTheme, string>;
 
 /** What ⌥ does in the terminal on macOS: type characters, or send Meta (ESC + the key) from the left ⌥ or either. */
-export const OPTION_KEYS = { off: "Types characters", left: "Left ⌥ is Meta", both: "Both ⌥ are Meta" } as const;
+export const OPTION_KEYS = { off: "Off", left: "Left ⌥", both: "Both ⌥" } as const;
 export type OptionKey = keyof typeof OPTION_KEYS;
 
 /** Minutes between background fetches; 0 is off. */

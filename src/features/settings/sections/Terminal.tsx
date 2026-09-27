@@ -1,15 +1,21 @@
 import { OPTION_KEYS, type OptionKey, updateSettings, useSettings } from "@/lib/settings";
-import { Field, OptionSelect } from "@/features/settings/controls";
+import { Segmented } from "@/components/ui/segmented";
+import { Field } from "@/features/settings/controls";
 
-/** macOS only: Linux sends Alt as Meta already. */
+/** Shown on macOS only (SettingsDialog): its one setting is macOS's ⌥ key. */
 export function TerminalSection() {
   const s = useSettings();
   return (
     <Field
-      label="Option key"
-      hint="As Meta, ⌥ keys go to the shell and agents (Claude Code's ⌥P, readline's ⌥B and ⌥F) instead of typing characters like @ or œ. Left only keeps the right ⌥ for the characters your layout needs."
+      label="Option as Meta"
+      hint="Off, ⌥ types characters like @ or œ. As Meta, ⌥ keys go to the shell and agents instead (Claude Code's ⌥P, readline's ⌥B and ⌥F). Left ⌥ keeps the right one for the characters your layout needs."
     >
-      <OptionSelect value={s.optionAsMeta} options={OPTION_KEYS} onChange={(v) => updateSettings({ optionAsMeta: v as OptionKey })} />
+      <Segmented<string>
+        value={s.optionAsMeta}
+        onChange={(v) => updateSettings({ optionAsMeta: v as OptionKey })}
+        options={Object.entries(OPTION_KEYS).map(([value, label]) => ({ value, label }))}
+        variant="field"
+      />
     </Field>
   );
 }
