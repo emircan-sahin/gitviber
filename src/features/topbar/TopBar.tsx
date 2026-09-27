@@ -145,6 +145,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onLock={(worktree) => openWorktreeDialog({ kind: "lock", worktree })}
         onUnlock={unlockWorktree}
         onNew={() => openWorktreeDialog({ kind: "new" })}
+        onGitHub={!!status?.webUrl}
         onOpenPull={onOpenPull}
       />
       <WorktreeDialogs branches={branches} main={main} run={run} runNet={runNet} onOpen={onOpenRepo} />

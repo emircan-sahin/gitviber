@@ -1,8 +1,8 @@
 import { useEffect } from "react";
-import { type CiState, fullName, type GitHubAccount, github, type Pull, repoOf, type Target } from "@/lib/api";
+import { type CiState, fullName, type GitHubAccount, github, type Pull, repoOf, type Target, type Worktree } from "@/lib/api";
 import { pullForBranch } from "@/lib/github/branchPulls";
 import { useCi } from "@/lib/github/ci";
-import { cached, cachedRows, revalidate, useGitHubCacheVersion } from "@/lib/github/githubCache";
+import { cached, cachedRows, onGitHubWake, revalidate, useGitHubCacheVersion } from "@/lib/github/githubCache";
 
 /**
  * One request per repository for every worktree: its most recently updated PRs, open or closed,
@@ -27,15 +27,23 @@ export interface BranchPull {
 }
 
 /**
- * Each branch's pull request, from whatever PR lists are cached, and its head's checks when open.
- * `fetch` (the picker opening) loads the lists once, no polling; `read` false neither reads nor
- * re-renders. Checks are asked once for `ciFor`, and only for a PR a list had: a token is in hand
- * then, so nothing runs gh or the keychain unasked.
+ * Each worktree's pull request, from whatever PR lists are cached, and its head's checks. `open`
+ * (the picker) loads the lists, again on a wake or a new origin, never on a timer; the top bar's
+ * linked worktree only reads what's cached, since opening a worktree shouldn't reach GitHub on
+ * its own. Checks are asked only for a PR a list had: a token is in hand then, so nothing runs
+ * gh or the keychain unasked. `onGitHub` false (origin isn't on GitHub): nothing at all.
  */
-export function useWorktreePulls(branches: (string | null)[], ciFor: (string | null)[], read: boolean, fetch: boolean) {
+export function useWorktreePulls(list: Worktree[], open: boolean, onGitHub: boolean) {
+  const current = list.find((w) => w.current);
+  const linked = !!current && !current.main;
+  const read = onGitHub && (open || linked);
+  const fetch = onGitHub && open;
   useGitHubCacheVersion(read);
   useEffect(() => {
-    if (fetch) loadLists().catch(() => {});
+    if (!fetch) return;
+    const load = () => void loadLists().catch(() => {});
+    load();
+    return onGitHubWake(load);
   }, [fetch]);
 
   const account = read ? cached<GitHubAccount>("account") : undefined;
@@ -43,13 +51,15 @@ export function useWorktreePulls(branches: (string | null)[], ciFor: (string | n
   const upstream = account?.parent ? fullName(account.parent.repo) : null;
   const rows = origin ? cachedRows<Pull>("pulls:") : [];
   const found = new Map<string, BranchPull>();
-  for (const branch of branches) {
-    const pull = branch && origin ? pullForBranch(rows, branch, origin) : undefined;
+  for (const w of list) {
+    const pull = w.branch && origin ? pullForBranch(rows, w.branch, origin, w.head) : undefined;
     if (!pull) continue;
     const repo = repoOf(pull.url).toLowerCase();
-    if (repo === origin!.toLowerCase()) found.set(branch!, { pull, target: null });
-    else if (repo === upstream?.toLowerCase()) found.set(branch!, { pull, target: upstream });
+    if (repo === origin!.toLowerCase()) found.set(w.branch!, { pull, target: null });
+    else if (repo === upstream?.toLowerCase()) found.set(w.branch!, { pull, target: upstream });
   }
+  // Every row's while the picker is open; otherwise just the top bar's.
+  const ciFor = open ? list.map((w) => w.branch) : linked ? [current.branch] : [];
   const heads = (target: Target) =>
     ciFor.flatMap((b) => {
       const f = b ? found.get(b) : undefined;

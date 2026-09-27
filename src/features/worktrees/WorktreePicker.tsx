@@ -39,6 +39,8 @@ interface Props {
   onLock: (w: Worktree) => void;
   onUnlock: (w: Worktree) => void;
   onNew: () => void;
+  /** Origin is on GitHub: its pull requests show. */
+  onGitHub: boolean;
   /** Opens a pull request in the app. */
   onOpenPull: (p: Pull) => void;
 }
@@ -49,7 +51,7 @@ interface Props {
  * Rows lead with the branch, the name people know a worktree by; the folder comes second.
  * In a linked worktree it names it and offers the way back to the main one.
  */
-export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew, onOpenPull }: Props) {
+export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew, onGitHub, onOpenPull }: Props) {
   const [open, setOpen] = useState(false);
   const [list, setList] = useState(worktrees);
   const { index, setIndex, move } = usePickerIndex(list.length);
@@ -103,9 +105,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
 
   const current = list.find((w) => w.current);
   const linked = !!current && !current.main;
-  // The PR badges: every row's, loaded as the menu opens. The top bar's, for a linked worktree,
-  // only from what's cached: opening a worktree shouldn't reach GitHub on its own.
-  const pullOf = useWorktreePulls(list.map((w) => w.branch), open ? list.map((w) => w.branch) : linked ? [current.branch] : [], open || linked, open);
+  const pullOf = useWorktreePulls(list, open, onGitHub);
 
   if (!list.length) return null;
   const extra = list.filter((w) => !w.main).length;

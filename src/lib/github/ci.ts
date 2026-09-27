@@ -1,8 +1,9 @@
 // CI's verdict on commits, from GitHub's status rollup (github/pulls.rs ci_states): for the PR list and
 // History. Asked in one request per list, kept a while, and asked again sooner while running.
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { type CiState, github, type Target } from "../api";
 import { createStore } from "../store";
+import { onGitHubWake } from "./githubCache";
 
 const RUNNING = 30_000;
 const SETTLED = 10 * 60_000;
@@ -38,14 +39,19 @@ async function ask(target: Target, shas: string[]) {
   }
 }
 
-/** CI's state for each of `shas` that has one, kept current while shown; `live` false asks once. */
+/**
+ * CI's state for each of `shas` that has one, kept current while shown. `live` false: asked again
+ * only on the GitHub views' wakes (focus), for a badge that's always on screen.
+ */
 export function useCi(target: Target, shas: string[], live = true): Record<string, CiState> {
-  version.use();
+  // With nothing to show, no re-render on every answer app-wide.
+  useSyncExternalStore(version.subscribe, () => (shas.length ? version.get() : -1));
   const list = shas.join(",");
   useEffect(() => {
     const all = list ? list.split(",") : [];
+    if (!all.length) return;
     void ask(target, all);
-    if (!live) return;
+    if (!live) return onGitHubWake(() => void ask(target, all));
     const timer = window.setInterval(() => void ask(target, all), RUNNING);
     return () => window.clearInterval(timer);
   }, [target, list, live]);

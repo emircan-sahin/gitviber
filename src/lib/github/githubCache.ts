@@ -151,6 +151,12 @@ if (typeof window !== "undefined") {
   setInterval(wake, POLL);
 }
 
+/** Calls `w` on those same wakes, and when origin changes; returns the unsubscribe. */
+export function onGitHubWake(w: () => void) {
+  wakers.add(w);
+  return () => void wakers.delete(w);
+}
+
 const subscribe = (l: () => void) => {
   listeners.add(l);
   return () => void listeners.delete(l);
