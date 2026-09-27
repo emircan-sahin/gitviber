@@ -110,7 +110,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // Where a terminal can start besides this repo's worktrees, without switching the window there.
   const projects = recent.filter((p) => p !== main);
   const terminalOpen = useTerminalsOpen();
-  const terminalMaximized = useTerminalsMaximized();
+  const terminalMaximized = !!useTerminalsMaximized();
   // goGroup and stepGroup are read as this renders: a tab opened since was out of ⌘1–⌘9's reach.
   useTerminalTabCount();
   const fileTree = useRef<FileTreeHandle>(null);

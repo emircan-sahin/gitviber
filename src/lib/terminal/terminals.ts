@@ -92,8 +92,8 @@ interface State {
   active: number | null;
   /** Last run's terminals, until the user restores or dismisses them. */
   restorable: SavedSession | null;
-  /** The panel covers the whole workspace, its code view and side panels hidden behind it. */
-  maximized: boolean;
+  /** Over the whole workspace, its code view and side panels hidden behind: the panel, or its focused pane alone (as cmux zooms one). */
+  maximized: false | "panel" | "pane";
 }
 
 /** Keys the terminal panel runs while it has focus (TerminalPanel), rather than the shell. */
@@ -109,6 +109,7 @@ export const TERMINAL_COMMANDS = [
   "terminal.focusUp",
   "terminal.focusDown",
   "terminal.toggleMaximize",
+  "terminal.zoomPane",
 ] as const satisfies readonly CommandId[];
 
 export const panes = new Map<number, Pane>();
@@ -523,6 +524,9 @@ export function attachPane(id: number, container: HTMLElement) {
   observer.observe(container);
   return () => {
     observer.disconnect();
+    // WebKit fires no blur for a focused element taken out of the page: the pane would go on drawing
+    // its cursor as focused, and a program that asked for focus reports (Claude Code) never hear it left.
+    if (p.host.contains(document.activeElement)) p.term.blur();
     p.host.remove();
   };
 }
@@ -566,7 +570,8 @@ export async function splitActive(way: Split["dir"]) {
   const pane = createPane(g.panes[at].cwd, undefined, dir);
   // Right after `from` in reading order too (splitPane).
   const next = { ...g, panes: [...g.panes.slice(0, at + 1), pane, ...g.panes.slice(at + 1)], layout: splitPane(g.layout, from.id, pane.id, way), focused: pane.id };
-  set({ groups: state.groups.map((x) => (x.id === g.id ? next : x)) });
+  // A zoomed pane's split shows the two side by side.
+  set({ groups: state.groups.map((x) => (x.id === g.id ? next : x)), maximized: state.maximized && "panel" });
   focusActive();
 }
 
@@ -602,7 +607,7 @@ function closePane(id: number, byUser = false) {
     const i = state.groups.findIndex((g) => g.id === active);
     active = groups[Math.min(i, groups.length - 1)]?.id ?? null;
   }
-  set({ groups, active, open: state.open && groups.length > 0, maximized: state.maximized && groups.length > 0 });
+  set({ groups, active, open: state.open && groups.length > 0, maximized: groups.length > 0 && state.maximized });
   // A shell exiting moves only focus it took away (the commit box keeps it); the user's close also
   // moves it on from the panel's buttons, but ⌫ on a tab stays on the tabs.
   requestAnimationFrame(() => {
@@ -779,7 +784,7 @@ function focusPane(id: number) {
   set({ active: g.id, groups: state.groups.map((x) => (x === g ? { ...g, focused: id } : x)) });
 }
 
-/** The next split pane of the open tab (⌥⌘←/→, as in VS Code), wrapping around. */
+/** The next split pane of the open tab, wrapping around. */
 export function stepPane(dir: 1 | -1) {
   const g = activeGroup();
   if (!g || g.panes.length < 2) return;
@@ -788,7 +793,7 @@ export function stepPane(dir: 1 | -1) {
   focusActive();
 }
 
-/** The open tab's pane on that side of the focused one (⇧⌘←/→/↑/↓), as drawn: a pane's minimum size can outweigh its saved share. */
+/** The open tab's pane on that side of the focused one (⇧⌘ or ⌥⌘ arrows), as drawn: a pane's minimum size can outweigh its saved share. */
 export function focusToward(dir: Direction) {
   const g = activeGroup();
   if (!g) return;
@@ -804,10 +809,10 @@ export function resizeSplit(group: number, path: number[], sizes: number[]) {
   set({ groups: state.groups.map((g) => (g.id === group ? { ...g, layout: resize(g.layout, path, sizes) } : g)) });
 }
 
-/** The panel over the whole workspace, or back in its place; opened first (with a terminal in `cwd`) when hidden. */
-export function toggleMaximize(cwd: string) {
+/** The panel, or its focused pane, over the whole workspace, or back in its place; the panel opened first (with a terminal in `cwd`) when hidden. */
+export function toggleMaximize(cwd: string, what: "panel" | "pane") {
   if (!state.maximized && !state.open) togglePanel(cwd);
-  set({ maximized: !state.maximized });
+  set({ maximized: state.maximized === what ? false : what });
   focusActive();
 }
 

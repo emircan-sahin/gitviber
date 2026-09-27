@@ -147,7 +147,8 @@ export function CommandPalette() {
         (c) => {
           let title: string = c.title;
           if (c.id === "terminal.toggle") title = terminalOpen ? "Hide Terminal" : "Show Terminal";
-          else if (c.id === "terminal.toggleMaximize" && terminalMaximized) title = "Exit Maximized Terminal";
+          else if (c.id === "terminal.toggleMaximize" && terminalMaximized === "panel") title = "Exit Maximized Terminal";
+          else if (c.id === "terminal.zoomPane" && terminalMaximized === "pane") title = "Exit Zoomed Terminal Pane";
           return c.category === "General" ? title : `${c.category}: ${title}`;
         },
         fuzzyMatch,
