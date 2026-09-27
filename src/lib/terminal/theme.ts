@@ -71,8 +71,9 @@ export function terminalOptions(): ITerminalOptions {
     fontWeight: s.codeFontWeight,
     // Bold stays two steps above whatever the text is, so it still stands out at Semibold.
     fontWeightBold: s.codeFontWeight + 200,
-    // The code view's 1.6 is for reading; TUIs draw box lines that need to touch.
-    lineHeight: 1.2,
+    // The font's own, as Ghostty (cmux), iTerm2 and VS Code: at 1.2 a pane had a sixth fewer rows,
+    // and Claude Code drops its usage lines, then its header, below ~16 rows.
+    lineHeight: 1,
     // As VS Code's terminal does: a theme's own dim colors (Solarized Dark's bright black is its
     // background) are lifted until they read, so autosuggestions and dimmed output show.
     minimumContrastRatio: 4.5,
