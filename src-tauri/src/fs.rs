@@ -225,7 +225,12 @@ fn io_error(rel: &str, e: std::io::Error) -> String {
 fn new_entry(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let path = resolve_entry(root, rel)?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(parent).map_err(|e| {
+            let file = Path::new(rel).ancestors().find(|a| root.join(a).is_file());
+            file.map_or(e.to_string(), |f| {
+                format!("{} is a file, not a folder", f.display())
+            })
+        })?;
     }
     Ok(path)
 }
@@ -621,6 +626,10 @@ mod tests {
         assert!(root.join("new/deeper/x.txt").is_file());
         create_dir(root, "more/dir").unwrap();
         assert!(root.join("more/dir").is_dir());
+        assert_eq!(
+            create_file(root, "src/main.rs/deeper/x.txt").unwrap_err(),
+            "src/main.rs is a file, not a folder"
+        );
     }
 
     #[test]
