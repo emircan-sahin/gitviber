@@ -3,13 +3,14 @@ import { ChevronDown, ClipboardPaste, Columns2, Copy, Eraser, FolderGit2, Folder
 import { FindBox, useFindBox } from "@/components/FindBox";
 import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Worktree } from "@/lib/api";
-import { commandIn, matchesCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { focusMovedTab, focusTab, tabMove } from "@/lib/ui/useListNav";
 import { focusedPanel, focusPanel } from "@/lib/ui/panels";
 import {
   activateGroup,
@@ -119,7 +120,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
   // (tab.moveLeft / tab.moveRight), ↵ or Space goes into the terminal, ⌫ kills it.
   const onTabKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const el = e.target instanceof HTMLElement && e.target.getAttribute("role") === "tab" ? e.target : null;
-    const shift = matchesCommand("tab.moveRight", e.nativeEvent) ? 1 : matchesCommand("tab.moveLeft", e.nativeEvent) ? -1 : 0;
+    const shift = tabMove(e);
     if (!el || (!shift && (e.altKey || e.metaKey || e.ctrlKey || e.shiftKey))) return;
     const els = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
     const i = els.indexOf(el);
@@ -127,16 +128,11 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
     if (shift) {
       if (!groups[i + shift]) return;
       moveGroup(groups[i].id, shift);
-      // React may move this very node, and a node taken out of the page loses focus.
-      requestAnimationFrame(() => {
-        el.focus();
-        el.scrollIntoView({ block: "nearest", inline: "nearest" });
-      });
+      focusMovedTab(el);
     } else if (to !== undefined) {
       const at = Math.max(0, Math.min(els.length - 1, to));
       activateGroup(groups[at].id, false);
-      els[at].focus();
-      els[at].scrollIntoView({ block: "nearest", inline: "nearest" });
+      focusTab(els[at]);
     } else if (e.key === "Enter" || e.key === " ") activateGroup(groups[i].id);
     else if (e.key === "Backspace" || e.key === "Delete") {
       const next = els[i + 1] ?? els[i - 1];
@@ -243,10 +239,9 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
   );
 }
 
-function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGroup; active: boolean; here: boolean; branch: string | null; alone: boolean }) {
+// Memoized: every title a program sets re-renders the panel, and the other tabs keep their group object.
+const GroupTab = memo(function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGroup; active: boolean; here: boolean; branch: string | null; alone: boolean }) {
   const [renaming, setRenaming] = useState(false);
-  // Renaming from the menu: the menu mustn't hand focus back to the tab, which would end it.
-  const keepFocus = useRef(false);
   const cwd = g.panes[0].cwd;
   const title = g.panes.find((p) => p.id === g.focused)?.title;
   const where = title ? `${cwd} · ${title}` : cwd;
@@ -312,18 +307,9 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
       <Tip label={label}>
         <ContextMenuTrigger asChild>{tab}</ContextMenuTrigger>
       </Tip>
-      <ContextMenuContent
-        onCloseAutoFocus={(e) => {
-          if (keepFocus.current) e.preventDefault();
-          keepFocus.current = false;
-        }}
-      >
-        <ContextMenuItem
-          onSelect={() => {
-            keepFocus.current = true;
-            setRenaming(true);
-          }}
-        >
+      <ContextMenuContent>
+        {/* Focus going back to the tab would end the rename. */}
+        <ContextMenuItem keepFocus onSelect={() => setRenaming(true)}>
           <Pencil /> Rename…
         </ContextMenuItem>
         <ContextMenuSeparator />
@@ -343,7 +329,7 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
       </ContextMenuContent>
     </ContextMenu>
   );
-}
+});
 
 /** Find (⌘F with focus in the terminal): the focused pane's text, its scrollback included. */
 function TerminalFind() {

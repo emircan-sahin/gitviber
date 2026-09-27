@@ -1,8 +1,8 @@
 import type { IMarker, Terminal } from "@xterm/xterm";
 
 /**
- * An OSC 133 mark (shell integration; VS Code's OSC 633 uses the same letters): A a prompt starts,
- * B the typed command does, C its output does, D it ended, with its exit code when the shell gives one.
+ * An OSC 133 mark (shell integration): A a prompt starts, B the typed command does, C its output
+ * does, D it ended, with its exit code when the shell gives one.
  */
 export function parseMark(data: string): { kind: "A" | "B" | "C" | "D"; exit?: number } | null {
   const [kind, arg] = data.split(";");
@@ -10,25 +10,8 @@ export function parseMark(data: string): { kind: "A" | "B" | "C" | "D"; exit?: n
   return kind === "D" && arg !== undefined && /^\d+$/.test(arg) ? { kind, exit: Number(arg) } : { kind };
 }
 
-/**
- * The folder an OSC 7 reports: `file://host/path` percent-encoded (fish, and most shells' own), or
- * kitty's `kitty-shell-cwd://host/path` as it is (GitViber's scripts).
- */
-export function cwdFromOsc7(data: string): string | null {
-  const m = /^(file|kitty-shell-cwd):\/\/[^/]*(\/.*)$/.exec(data);
-  if (!m) return null;
-  if (m[1] === "kitty-shell-cwd") return m[2];
-  try {
-    return decodeURIComponent(m[2]);
-  } catch {
-    return m[2];
-  }
-}
-
-/** A value in VS Code's OSC 633 (its `P;Cwd=`): `\\` and `\xNN` escapes, as its deserializeVSCodeOscMessage reads them. */
-export function unescape633(value: string): string {
-  return value.replace(/\\(\\|x([0-9a-f]{2}))/gi, (_, op: string, hex?: string) => (hex ? String.fromCharCode(parseInt(hex, 16)) : op));
-}
+/** Commands kept marked: each marker is updated as lines scroll off or get cleared. */
+const MAX_COMMANDS = 300;
 
 interface Command {
   prompt: IMarker;
@@ -50,8 +33,6 @@ export class CommandMarks {
   private current: Command | null = null;
   /** The last one that ended: the only one that keeps its output's markers. */
   private last: Command | null = null;
-  /** The folder the shell last reported (OSC 7, or 633's Cwd), null until it does. */
-  cwd: string | null = null;
   private term: Terminal;
   private prompted = () => {};
   /** The shell's first prompt is up: it reads what's typed now. */
@@ -59,16 +40,9 @@ export class CommandMarks {
 
   constructor(term: Terminal) {
     this.term = term;
-    for (const code of [133, 633])
-      term.parser.registerOscHandler(code, (data) => {
-        const mark = parseMark(data);
-        if (mark) this.on(mark.kind, mark.exit);
-        else if (code === 633 && data.startsWith("P;Cwd=")) this.cwd = unescape633(data.slice(6));
-        // 633's other kinds (E, the other P's) aren't read here; nothing else would.
-        return true;
-      });
-    term.parser.registerOscHandler(7, (data) => {
-      this.cwd = cwdFromOsc7(data) ?? this.cwd;
+    term.parser.registerOscHandler(133, (data) => {
+      const mark = parseMark(data);
+      if (mark) this.on(mark.kind, mark.exit);
       return true;
     });
   }
@@ -88,6 +62,8 @@ export class CommandMarks {
       this.current.output = this.term.registerMarker(0);
       this.commands = this.commands.filter((x) => !x.prompt.isDisposed);
       this.commands.push(this.current);
+      // Its mark goes with its marker.
+      if (this.commands.length > MAX_COMMANDS) this.commands.shift()!.prompt.dispose();
     } else if (kind === "D" && this.current?.output && !this.current.end) {
       this.ended(this.current, exit);
       this.current = null;
@@ -134,6 +110,11 @@ export class CommandMarks {
     if (!c?.output || !c.end || c.end.isDisposed) return null;
     // Its start scrolled off the history: what's left of it.
     return { start: Math.max(0, c.output.line), end: c.end.line, endX: c.endX ?? 0 };
+  }
+
+  /** Whether any command is marked (on screen or in the history), for the jump keys. */
+  hasCommands() {
+    return this.commands.some((c) => !c.prompt.isDisposed);
   }
 
   hasOutput() {

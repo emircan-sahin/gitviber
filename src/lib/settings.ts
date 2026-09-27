@@ -150,7 +150,7 @@ export interface Settings {
   uiScale: number;
   /** macOS: whether the terminal's ⌥ is Meta (OPTION_KEYS). */
   optionAsMeta: OptionKey;
-  /** New terminals load the shell integration (zsh and bash): command marks, ⌘↑ / ⌘↓ between prompts. */
+  /** New terminals load the shell integration (zsh, bash 4.4+): command marks, ⌘↑ / ⌘↓ between prompts. */
   shellIntegration: boolean;
   /** Markdown files open rendered rather than as source (diffs always start on the diff). */
   markdownPreview: boolean;

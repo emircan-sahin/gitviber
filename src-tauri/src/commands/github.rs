@@ -7,17 +7,6 @@ use std::path::PathBuf;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager, State};
 
-/// https://github.com/owner/name when origin is on GitHub, for "Open on GitHub" links.
-#[tauri::command]
-pub async fn github_web_url(state: State<'_, AppState>) -> Res<Option<String>> {
-    in_repo(&state, move |r| {
-        Ok(git::remote_url(r, "origin")
-            .and_then(|u| github::parse_remote(&u))
-            .map(|g| format!("https://github.com/{}/{}", g.owner, g.name)))
-    })
-    .await
-}
-
 /// The commit to link `path` (or its `lines`) to on GitHub, so the link keeps showing that code.
 #[tauri::command]
 pub async fn github_permalink(
@@ -171,6 +160,19 @@ pub async fn ci_states(
 ) -> Res<std::collections::HashMap<String, String>> {
     with_github(app, move |gh, r| {
         github::ci_states(gh, r, target.as_deref(), &shas)
+    })
+    .await
+}
+
+/// Why check run `id` failed: its output, annotations and job log's tail. Asked for from its row.
+#[tauri::command]
+pub async fn check_failure(
+    app: AppHandle,
+    target: Option<String>,
+    id: u64,
+) -> Res<github::CheckFailure> {
+    with_github(app, move |gh, r| {
+        github::check_failure(gh, r, target.as_deref(), id)
     })
     .await
 }

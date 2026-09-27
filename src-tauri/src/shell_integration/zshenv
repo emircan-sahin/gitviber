@@ -4,12 +4,12 @@
 'builtin' 'unset' ZDOTDIR
 {
   'builtin' 'typeset' _gitviber_file=$HOME/.zshenv
-  [[ ! -r $_gitviber_file ]] || 'builtin' 'source' -- $_gitviber_file
+  [[ ! -r $_gitviber_file ]] || 'builtin' 'source' -- "$_gitviber_file"
 } always {
   if [[ -o interactive ]]; then
     # %x: this file, wherever the app keeps it.
     _gitviber_file=${${(%):-%x}:A:h}/gitviber.zsh
-    [[ ! -r $_gitviber_file ]] || 'builtin' 'source' -- $_gitviber_file
+    [[ ! -r $_gitviber_file ]] || 'builtin' 'source' -- "$_gitviber_file"
   fi
   'builtin' 'unset' _gitviber_file
 }

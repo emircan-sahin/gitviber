@@ -1,23 +1,34 @@
-# GitViber's shell integration for bash, started as `bash --init-file <this file>`, as VS Code does.
-# It marks where each prompt starts (OSC 133;A), where a command's output starts (C), how it
-# ended (D;status) and the folder (OSC 7), as in
+# GitViber's shell integration for bash 4.4+. It marks where each prompt starts (OSC 133;A), where
+# a command's output starts (C) and how it ended (D;status), as in
 # https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
+# Loaded as Ghostty loads its own: bash starts as `bash --login --posix` with ENV naming this file,
+# which POSIX mode reads in place of the startup files; this ends POSIX mode and reads those.
 
-# --init-file can't be a login shell's, so the login files are read here, in bash's order (as in
-# VS Code's shellIntegration-bash.sh).
-if [ -r /etc/profile ]; then . /etc/profile; fi
-if [ -r ~/.bash_profile ]; then . ~/.bash_profile
-elif [ -r ~/.bash_login ]; then . ~/.bash_login
-elif [ -r ~/.profile ]; then . ~/.profile
+builtin unset ENV
+builtin set +o posix
+builtin shopt -u inherit_errexit 2>/dev/null
+# Set only so POSIX mode's ~/.sh_history wasn't taken; bash doesn't export it.
+builtin export -n HISTFILE
+# A login shell's files, in bash's order (INVOCATION in bash(1)).
+if [ -r /etc/profile ]; then builtin source /etc/profile; fi
+for __gitviber_file in ~/.bash_profile ~/.bash_login ~/.profile; do
+  if [ -r "$__gitviber_file" ]; then
+    builtin source "$__gitviber_file"
+    break
+  fi
+done
+builtin unset __gitviber_file
+
+if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))); then
+  # D follows an empty line too, but no C came before it (bash prints PS0 only for a command),
+  # so the terminal doesn't take it for a command's end.
+  __gitviber_prompt() {
+    local ret=$?
+    builtin printf '\033]133;D;%s\007\033]133;A\007' "$ret"
+    return "$ret"
+  }
+  # First, to read the command's status, which the rest of PROMPT_COMMAND still gets.
+  PROMPT_COMMAND="__gitviber_prompt${PROMPT_COMMAND:+$'\n'$PROMPT_COMMAND}"
+  # Printed as a command starts.
+  PS0="${PS0-}"$'\033]133;C\007'
 fi
-
-__gitviber_prompt() {
-  local ret=$?
-  # The folder too, for splits and restores: OSC 7 in kitty's form, which takes the path as it is.
-  builtin printf '\033]133;D;%s\007\033]7;kitty-shell-cwd://%s%s\007\033]133;A\007' "$ret" "$HOSTNAME" "$PWD"
-  return "$ret"
-}
-# First, to read the command's status, which the rest of PROMPT_COMMAND still gets.
-PROMPT_COMMAND="__gitviber_prompt${PROMPT_COMMAND:+$'\n'$PROMPT_COMMAND}"
-# Printed as a command starts, in bash 4.4 and later; older ones get the prompt marks only.
-PS0="${PS0-}"$'\033]133;C\007'

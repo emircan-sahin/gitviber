@@ -10,7 +10,7 @@ export function TerminalSection() {
     <>
       <Field
         label="Shell integration"
-        hint="Lets zsh and bash mark where each command starts and ends, without changing your dotfiles: a dot beside each command, red when it failed, keys to jump between them, and Copy Last Command Output on right-click. fish marks its own. Terminals opened after a change pick it up."
+        hint="Lets zsh and bash 4.4+ mark where each command starts and ends, without changing your dotfiles: a dot beside each command, red when it failed, keys to jump between them, and Copy Last Command Output on right-click. fish marks its own. Terminals opened after a change pick it up."
         commands={["terminal.prevCommand", "terminal.nextCommand"]}
       >
         <Switch checked={s.shellIntegration} onChange={(v) => updateSettings({ shellIntegration: v })} />

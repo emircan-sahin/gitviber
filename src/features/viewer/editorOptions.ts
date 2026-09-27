@@ -26,6 +26,10 @@ function common(s: Settings, wrap: boolean): monaco.editor.IEditorOptions & mona
     glyphMargin: false,
     stickyScroll: { enabled: false },
     guides: { indentation: false },
+    // Brackets keep the theme's colors (lib/editor/languageConfig gives languages their brackets).
+    bracketPairColorization: { enabled: false },
+    // Read-only code draws no cursor (index.css) to match a bracket at.
+    matchBrackets: "never",
     overviewRulerBorder: false,
     scrollbar: { useShadows: false, verticalScrollbarSize: 14, horizontalScrollbarSize: 10 },
     padding: { top: 4 },
@@ -55,5 +59,13 @@ export function diffOptions(s: Settings, mode: CodeMode, collapse: boolean, wrap
 
 export function fileOptions(s: Settings, wrap: boolean, blame: boolean, editable: boolean): monaco.editor.IStandaloneEditorConstructionOptions {
   // Blame's label goes after the change bars (index.css), in the code font's widths.
-  return { ...common(s, wrap), readOnly: !editable, lineDecorationsWidth: blame ? `${BLAME_CHARS + 3}ch` : 12 };
+  return {
+    ...common(s, wrap),
+    readOnly: !editable,
+    matchBrackets: editable ? "always" : "never",
+    // Where typing goes, as VS Code shows it; only while typing can go there.
+    renderLineHighlight: editable ? "line" : "none",
+    renderLineHighlightOnlyWhenFocus: true,
+    lineDecorationsWidth: blame ? `${BLAME_CHARS + 3}ch` : 12,
+  };
 }

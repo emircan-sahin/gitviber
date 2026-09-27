@@ -144,7 +144,7 @@ function saveSession() {
   try {
     if (!state.groups.length) return localStorage.removeItem(SESSION_KEY);
     // A shell that doesn't report its folder is asked as its new output is saved, for the next save.
-    for (const p of panes.values()) if (p.saved === null && !p.marks.cwd) void shellDir(p);
+    for (const p of panes.values()) if (p.saved === null) void shellDir(p);
     const snapshot = (history: boolean): SavedSession => ({
       savedAt: Date.now(),
       active: Math.max(0, state.groups.findIndex((g) => g.id === state.active)),
@@ -153,7 +153,7 @@ function saveSession() {
         focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
         panes: g.panes.map(({ id, cwd }) => {
           const p = panes.get(id);
-          const dir = p && (p.marks.cwd ?? p.dir);
+          const dir = p?.dir;
           // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
           return { cwd, dir: dir !== cwd ? dir : undefined, history: history && p ? (p.saved ??= p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true })) : "" };
         }),
@@ -183,8 +183,15 @@ export function useTerminals() {
 const activeGroup = () => state.groups.find((g) => g.id === state.active);
 
 // settings.ts sets the theme attribute before notifying, so the CSS variables are current.
+// Every setting notifies (the viewer's image toggle too), and xterm takes even an equal new theme
+// object as a change: it rebuilt its glyph atlas and redrew each pane. The rest is set each time:
+// a pane's macOptionIsMeta may differ from the settings' (left ⌥ held), and equal values are no-ops.
+let appliedTheme = "";
 subscribeSettings(() => {
-  const next = terminalOptions();
+  const { theme, ...rest } = terminalOptions();
+  const key = JSON.stringify(theme);
+  const next = key === appliedTheme ? rest : { ...rest, theme };
+  appliedTheme = key;
   for (const p of panes.values()) {
     Object.assign(p.term.options, next);
     fitPane(p);
@@ -303,10 +310,10 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
       e.preventDefault();
       return false;
     }
-    // ⌘↑ / ⌘↓ between the marked prompts; in a full-screen program the keys stay its own. Plain
-    // typing isn't looked up.
+    // ⌘↑ / ⌘↓ between the marked prompts. A full-screen program keeps the keys, and so does a
+    // shell with no marks (Ctrl+↑/↓ off macOS). Plain typing isn't looked up.
     const jump = (e.metaKey || e.ctrlKey || e.altKey) && commandIn(JUMP_COMMANDS, e);
-    if (jump && term.buffer.active.type === "normal") {
+    if (jump && term.buffer.active.type === "normal" && p.marks.hasCommands()) {
       if (e.type === "keydown") p.marks.jump(jump === "terminal.prevCommand" ? -1 : 1);
       e.preventDefault();
       return false;
@@ -492,7 +499,9 @@ function runAtPrompt(p: Pane, command: string, integrated: boolean) {
   const type = () => {
     if (sent || !panes.has(p.id)) return;
     sent = true;
-    send(p, command);
+    // Whatever was typed before the prompt is on its line: ⌃U clears it first. VS Code sends ⌃C
+    // before a command when the line may hold text; ⌃U does it without a new prompt.
+    send(p, `\x15${command}`);
   };
   void p.marks.ready.then(type);
   window.setTimeout(type, RUN_WAIT);
@@ -574,7 +583,6 @@ export function openTerminal(cwd: string, run?: string) {
  * (VS Code's inherited split folder), else where it was last seen.
  */
 async function shellDir(p: Pane) {
-  if (p.marks.cwd) return p.marks.cwd;
   if (p.pty !== null) p.dir = (await pty.cwd(p.pty).catch(() => null)) ?? p.dir;
   return p.dir;
 }
@@ -839,7 +847,6 @@ export function folderMoved(from: string, to: string) {
   for (const p of panes.values()) {
     p.cwd = moved(p.cwd);
     p.dir = moved(p.dir);
-    if (p.marks.cwd) p.marks.cwd = moved(p.marks.cwd);
   }
   set({ groups: state.groups.map((g) => ({ ...g, panes: g.panes.map((p) => ({ ...p, cwd: moved(p.cwd) })) })) });
 }
@@ -849,4 +856,15 @@ export function showWorktree(cwd: string) {
   if (activeGroup()?.panes.some((p) => p.cwd === cwd)) return;
   const g = state.groups.find((x) => x.panes.some((p) => p.cwd === cwd));
   if (g) set({ active: g.id });
+}
+
+/** Whether the panel is open, alone: useTerminals re-renders on every title a program sets. */
+export function useTerminalsOpen() {
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    () => state.open,
+  );
 }
