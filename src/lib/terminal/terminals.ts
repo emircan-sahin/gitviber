@@ -6,13 +6,13 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { errorMessage, pty, type PtyExit } from "../api";
 import { compileFind, type FindOptions } from "../ui/findQuery";
 import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
 import { terminalLinks } from "../links/linkHost";
 import { getSettings, subscribeSettings } from "../settings";
-import { isInside } from "../path";
+import { folderName, isInside } from "../path";
 import { readJson } from "../storage";
 import { focusedPanel, focusPanel, setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
@@ -24,6 +24,8 @@ import { ask } from "../app/ask";
 import { plural } from "../format";
 import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
+import { kittyNotes, type Note, osc777Note, osc9Note } from "./attention";
+import { notifyIfAway } from "../app/notify";
 
 /**
  * Terminals live here, not in React: switching worktrees remounts the whole workspace, and
@@ -57,6 +59,8 @@ interface PaneInfo {
   cwd: string;
   /** What the shell set as the window title (OSC 0/2), if anything. */
   title: string;
+  /** It rang or sent a notification while not looked at, and hasn't been since. */
+  needsYou?: boolean;
 }
 
 /** A tab: one or more panes side by side. */
@@ -256,6 +260,7 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
     if (p.pty !== null) void pty.resize(p.pty, cols, rows).catch(() => {});
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
+  watchAttention(p);
   // OSC 52 copies (clipboard.rs writes macOS's and Linux's only). Taken from the pane in use alone,
   // where a yank or a tmux copy happens: output in the background can't replace the clipboard.
   if (!IS_WINDOWS)
@@ -731,9 +736,64 @@ export function moveGroup(id: number, dir: 1 | -1) {
 }
 
 function focusPane(id: number) {
+  lookedAt(id);
   const g = state.groups.find((x) => x.panes.some((p) => p.id === id));
   if (!g || (g.focused === id && state.active === g.id)) return;
   set({ active: g.id, groups: state.groups.map((x) => (x === g ? { ...g, focused: id } : x)) });
+}
+
+/**
+ * A bell, or a notification escape (OSC 9, 777, 99: Claude Code, Codex), from a pane not being
+ * looked at marks it, its tab and its worktree, and tells the OS when the app is in the background
+ * and the user turned that on. Once until it's looked at: a program ringing on and on is one mark.
+ */
+function watchAttention(p: Pane) {
+  p.term.onBell(() => needsYou(p));
+  const readers: [number, (data: string) => Note | null][] = [[9, osc9Note], [777, osc777Note], [99, kittyNotes()]];
+  for (const [code, read] of readers)
+    p.term.parser.registerOscHandler(code, (data) => {
+      const note = read(data);
+      if (note) needsYou(p, note);
+      // Not a notification (OSC 9;4 is a progress bar): left to any other handler.
+      return !!note;
+    });
+}
+
+function needsYou(p: Pane, note?: Note) {
+  const g = state.groups.find((x) => x.panes.some((i) => i.id === p.id));
+  const info = g?.panes.find((i) => i.id === p.id);
+  if (!g || !info || info.needsYou || (document.hasFocus() && document.activeElement === p.term.textarea)) return;
+  update(p.id, (i) => ({ ...i, needsYou: true }));
+  const text = [note?.title, note?.body].filter(Boolean).join(": ");
+  notifyIfAway(g.name ?? (folderName(p.cwd) || p.cwd), text || info.title || "Needs you");
+}
+
+function lookedAt(id: number) {
+  if (state.groups.some((g) => g.panes.some((p) => p.id === id && p.needsYou))) update(id, (p) => ({ ...p, needsYou: false }));
+}
+
+// Back in the window, the pane that has the keys is looked at again.
+window.addEventListener("focus", () => {
+  for (const p of panes.values()) if (document.activeElement === p.term.textarea) lookedAt(p.id);
+});
+
+/** Folders of the panes that need the user, "\0"-joined: a string, so a hook re-renders only when it changes. */
+const needing = () =>
+  state.groups
+    .flatMap((g) => g.panes.filter((p) => p.needsYou).map((p) => p.cwd))
+    .sort()
+    .join("\0");
+
+/** The folders of panes that need the user (needsYou), for the worktree picker's marks. */
+export function useNeedsYou() {
+  const key = useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    needing,
+  );
+  return useMemo(() => (key ? key.split("\0") : []), [key]);
 }
 
 /** The next split pane of the open tab (⌥⌘←/→, as in VS Code), wrapping around. */

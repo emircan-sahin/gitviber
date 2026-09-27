@@ -38,6 +38,7 @@ import {
 import { cn } from "@/lib/utils";
 import { folderName, parentFolder } from "@/lib/path";
 import { NameInput } from "@/components/NameInput";
+import { NeedsYouDot } from "@/components/NeedsYouDot";
 import { plural } from "@/lib/format";
 import { ProjectTile } from "@/features/projects/ProjectList";
 
@@ -239,7 +240,8 @@ const GroupTab = memo(function GroupTab({ group: g, active, here, branch, alone 
   const cwd = g.panes[0].cwd;
   const title = g.panes.find((p) => p.id === g.focused)?.title;
   const where = title ? `${cwd} · ${title}` : cwd;
-  const label = g.name ? `${g.name} · ${where}` : where;
+  const calling = g.panes.some((p) => p.needsYou);
+  const label = (g.name ? `${g.name} · ${where}` : where) + (calling ? " · needs you" : "");
   // "/" has no name of its own.
   const shown = g.name ?? (folderName(cwd) || cwd);
   const [splitKey, clearKey] = [useShortcut("terminal.split"), useShortcut("terminal.clear")];
@@ -280,6 +282,7 @@ const GroupTab = memo(function GroupTab({ group: g, active, here, branch, alone 
         <span className="truncate">{shown}</span>
       )}
       {branch && <span className="min-w-0 truncate font-mono text-[10.5px] text-subtle">{branch}</span>}
+      {calling && <NeedsYouDot />}
       {g.panes.length > 1 && <span className="rounded-sm bg-elevated px-1 font-mono text-[10px] leading-4 text-muted-foreground">{g.panes.length}</span>}
       <button
         aria-label="Kill terminal"
