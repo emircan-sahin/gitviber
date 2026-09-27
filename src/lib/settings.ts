@@ -150,6 +150,8 @@ export interface Settings {
   uiScale: number;
   /** macOS: whether the terminal's ⌥ is Meta (OPTION_KEYS). */
   optionAsMeta: OptionKey;
+  /** New terminals load the shell integration (zsh, bash 4.4+): command marks, ⌘↑ / ⌘↓ between prompts. */
+  shellIntegration: boolean;
   /** Markdown files open rendered rather than as source (diffs always start on the diff). */
   markdownPreview: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
@@ -211,6 +213,7 @@ const DEFAULTS: Settings = {
   ligatures: false,
   uiScale: 1,
   optionAsMeta: "off",
+  shellIntegration: true,
   markdownPreview: true,
   svgPreview: false,
   imageCompare: "side",
@@ -260,6 +263,7 @@ function load(): Settings {
     if (!(s.lightTheme in LIGHT_THEMES)) s.lightTheme = DEFAULTS.lightTheme;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (!(s.optionAsMeta in OPTION_KEYS)) s.optionAsMeta = DEFAULTS.optionAsMeta;
+    if (typeof s.shellIntegration !== "boolean") s.shellIntegration = DEFAULTS.shellIntegration;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     if (!["side", "swipe", "onion"].includes(s.imageCompare)) s.imageCompare = DEFAULTS.imageCompare;

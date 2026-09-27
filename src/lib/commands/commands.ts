@@ -114,6 +114,9 @@ export const COMMANDS = [
   { id: "terminal.close", title: "Close Terminal Pane", category: "Terminal", keys: ["cmd+w"], keysOther: ["shift+cmd+w"], local: "the terminal" },
   { id: "terminal.prevPane", title: "Previous Terminal Pane", category: "Terminal", keys: ["alt+cmd+left"], keysOther: ["ctrl+alt+left"], local: "the terminal" },
   { id: "terminal.nextPane", title: "Next Terminal Pane", category: "Terminal", keys: ["alt+cmd+right"], keysOther: ["ctrl+alt+right"], local: "the terminal" },
+  // The prompts shell integration marks, as in VS Code (Ctrl+↑/↓ elsewhere, "cmd" there); a full-screen program keeps the keys.
+  { id: "terminal.prevCommand", title: "Scroll to Previous Command", category: "Terminal", keys: ["cmd+up"], local: "the terminal" },
+  { id: "terminal.nextCommand", title: "Scroll to Next Command", category: "Terminal", keys: ["cmd+down"], local: "the terminal" },
   { id: "explorer.rename", title: "Rename File", category: "Explorer", keys: ["f2"], local: "the explorer" },
   { id: "explorer.delete", title: "Delete File", category: "Explorer", keys: ["cmd+backspace"], local: "the explorer" },
   { id: "git.switchBranch", title: "Switch Branch", category: "Git", keys: [] },

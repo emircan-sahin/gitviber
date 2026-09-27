@@ -63,9 +63,11 @@ the agent touches it again, the mark clears so you know to look again.
 ### Test it right there
 
 A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the tests, start the dev
-server or talk to the agent without leaving the change you're reading. When an agent in another
-tab or worktree waits for you, its tab and its worktree get a dot, and a desktop notification if
-you turned those on. Claude Code sends one here once its Notifications setting (`/config`) is `iterm2`.
+server or talk to the agent without leaving the change you're reading. In zsh and bash 4.4+ each
+command gets a mark, red when it failed, `⌘↑` / `⌘↓` jump between them, and the last one's output
+copies from the right-click menu; your dotfiles stay as they are. When an agent in another tab or
+worktree waits for you, its tab and its worktree get a dot, and a desktop notification if you
+turned those on. Claude Code sends one here once its Notifications setting (`/config`) is `iterm2`.
 
 ### Browse the code, not just the diff
 
@@ -242,6 +244,7 @@ On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+
 | `⌘J` or `⌃` `` ` `` | Toggle the terminal |
 | `⌘T` | New terminal |
 | `⌘D` `⌘K`, `⌥⌘←` `⌥⌘→` | Split, clear, previous / next pane (in the terminal) |
+| `⌘↑` `⌘↓` | Scroll to the previous / next command's prompt (in the terminal, with shell integration) |
 | `⌘=` `⌘−` `⌘0` | Zoom the interface |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |

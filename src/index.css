@@ -869,3 +869,19 @@
   background: color-mix(in srgb, var(--primary) 8%, transparent);
   pointer-events: none;
 }
+
+/* A command shell integration marked (lib/terminal/commandMarks), beside its prompt in the pane's
+   left padding: xterm's decoration sits on the first cell, so the dot is pulled out of it. */
+.gv-command-mark {
+  position: absolute;
+  left: -8px;
+  top: calc(50% - 2.5px);
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--subtle);
+  pointer-events: auto;
+}
+.gv-command-mark[data-failed] {
+  background: var(--destructive);
+}

@@ -2,11 +2,14 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 /** The shells behind the terminal's panes (pty.rs), by the id `spawn` gives. */
 export const pty = {
-  /** `onOutput` gets what the shell prints, `onExit` how it ended (null if unknown). */
-  spawn: (cwd: string, cols: number, rows: number, onOutput: (bytes: ArrayBuffer) => void, onExit: (exit: PtyExit | null) => void) => {
+  /**
+   * `onOutput` gets what the shell prints, `onExit` how it ended (null if unknown). `integration`
+   * loads the shell integration (zsh, bash 4.4+); `integrated` says whether it was.
+   */
+  spawn: (cwd: string, cols: number, rows: number, integration: boolean, onOutput: (bytes: ArrayBuffer) => void, onExit: (exit: PtyExit | null) => void) => {
     const output = new Channel<ArrayBuffer>(onOutput);
     const exit = new Channel<PtyExit | null>(onExit);
-    return invoke<number>("pty_spawn", { cwd, cols, rows, output, exit });
+    return invoke<{ id: number; integrated: boolean }>("pty_spawn", { cwd, cols, rows, integration, output, exit });
   },
   write: (id: number, data: string) => invoke<void>("pty_write", { id, data }),
   resize: (id: number, cols: number, rows: number) => invoke<void>("pty_resize", { id, cols, rows }),

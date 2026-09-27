@@ -28,6 +28,13 @@ pub struct Exit {
     signal: Option<String>,
 }
 
+/// A started shell, and whether it was started with the shell integration (shell_integration.rs).
+#[derive(serde::Serialize)]
+pub struct Spawned {
+    id: u32,
+    integrated: bool,
+}
+
 struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Writer,
@@ -65,15 +72,17 @@ fn start_dir(cwd: &Path) -> Option<PathBuf> {
 }
 
 impl Ptys {
-    /// Starts the user's login shell in `cwd`. `exit` gets how it ended once it's gone.
+    /// Starts the user's login shell in `cwd`, with the shell integration's scripts from
+    /// `integration` if given. `exit` gets how it ended once it's gone.
     pub fn spawn(
         &self,
         cwd: &Path,
         cols: u16,
         rows: u16,
+        integration: Option<&Path>,
         output: Channel<Response>,
         exit: Channel<Option<Exit>>,
-    ) -> Result<u32, String> {
+    ) -> Result<Spawned, String> {
         // A removed worktree's restored terminals, and their splits, still start, saying where.
         let start = start_dir(cwd).ok_or_else(|| format!("folder not found: {}", cwd.display()))?;
         if start != cwd {
@@ -87,8 +96,17 @@ impl Ptys {
         let pair = native_pty_system()
             .openpty(size(cols, rows))
             .map_err(|e| e.to_string())?;
+        #[cfg(unix)]
+        let inject = integration.and_then(|dir| {
+            crate::shell_integration::injection(Path::new(&crate::shell::login_shell()), dir)
+        });
+        #[cfg(not(unix))]
+        let inject: Option<crate::shell_integration::Injection> = None;
         // The user's login shell, like Terminal.app: a Finder-launched app has a bare PATH.
-        let mut cmd = CommandBuilder::new_default_prog();
+        let mut cmd = match &inject {
+            Some(i) if !i.args.is_empty() => CommandBuilder::from_argv(i.args.clone()),
+            _ => CommandBuilder::new_default_prog(),
+        };
         cmd.cwd(&start);
         // Not our environment: with npm_config_prefix from `pnpm tauri dev`, pnpm went missing.
         cmd.env_clear();
@@ -104,6 +122,9 @@ impl Ptys {
         // GUI apps get no locale; without one zsh and git print UTF-8 as escapes.
         if std::env::var_os("LANG").is_none() {
             cmd.env("LANG", "en_US.UTF-8");
+        }
+        for (key, value) in inject.iter().flat_map(|i| &i.env) {
+            cmd.env(key, value);
         }
         let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(pair.slave);
@@ -141,7 +162,10 @@ impl Ptys {
             sessions.lock().unwrap().remove(&id);
             let _ = exit.send(status);
         });
-        Ok(id)
+        Ok(Spawned {
+            id,
+            integrated: inject.is_some(),
+        })
     }
 
     fn with<T>(

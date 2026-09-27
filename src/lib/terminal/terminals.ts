@@ -18,12 +18,14 @@ import { focusedPanel, focusPanel, setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
 import { pastedLines, pathPastes } from "./paste";
 import { osc52Text } from "./osc52";
+import { CommandMarks } from "./commandMarks";
 import { dueForSave, SAVE_MS, type SaveState } from "./saveRound";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask } from "../app/ask";
 import { plural } from "../format";
 import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
+import { copyText } from "../app/clipboard";
 import { kittyNotes, type Note, osc777Note, osc9Note } from "./attention";
 import { notifyIfAway } from "../app/notify";
 
@@ -52,6 +54,10 @@ interface Pane extends SaveState {
   writing: boolean;
   /** A column change held back from a long history (fitPane). */
   fitTimer?: number;
+  /** The commands shell integration marks. */
+  marks: CommandMarks;
+  /** A command to type into the shell once it's up (openTerminal). */
+  run?: string;
 }
 
 interface PaneInfo {
@@ -245,7 +251,7 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false };
+  const p: Pane = { id, cwd, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, marks: new CommandMarks(term) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   term.onWriteParsed(() => {
@@ -317,6 +323,14 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
     // all only reached xterm's hidden text area.
     if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && letter === "a" && !appRunsFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e)) {
       if (e.type === "keydown") term.selectAll();
+      e.preventDefault();
+      return false;
+    }
+    // ⌘↑ / ⌘↓ between the marked prompts. A full-screen program keeps the keys, and so does a
+    // shell with no marks (Ctrl+↑/↓ off macOS). Plain typing isn't looked up.
+    const jump = (e.metaKey || e.ctrlKey || e.altKey) && commandIn(JUMP_COMMANDS, e);
+    if (jump && term.buffer.active.type === "normal" && p.marks.hasCommands()) {
+      if (e.type === "keydown") p.marks.jump(jump === "terminal.prevCommand" ? -1 : 1);
       e.preventDefault();
       return false;
     }
@@ -425,6 +439,8 @@ const LINE_EDIT: Record<string, string> = {
   "alt+Delete": "\x1bd", // delete next word
 };
 
+const JUMP_COMMANDS = ["terminal.prevCommand", "terminal.nextCommand"] as const satisfies readonly CommandId[];
+
 /** ⌘Home/End/PgUp/PgDn, as in Ghostty and VS Code; a full-screen program's keys stay its own. */
 const SCROLL_KEYS: Record<string, (term: Terminal) => void> = {
   Home: (t) => t.scrollToTop(),
@@ -475,17 +491,39 @@ async function start(p: Pane) {
   try {
     const { cols, rows } = p.term;
     const began = performance.now();
-    const id = await pty.spawn(p.cwd, cols, rows, (bytes) => p.term.write(new Uint8Array(bytes)), (exit) => exited(p, exit, performance.now() - began));
+    const { id, integrated } = await pty.spawn(p.cwd, cols, rows, getSettings().shellIntegration, (bytes) => p.term.write(new Uint8Array(bytes)), (exit) => exited(p, exit, performance.now() - began));
     // Closed while it was starting.
     if (!panes.has(p.id)) return void pty.kill(id).catch(() => {});
     p.pty = id;
     // A resize while it was starting had no shell to reach.
     if (p.term.cols !== cols || p.term.rows !== rows) void pty.resize(id, p.term.cols, p.term.rows).catch(() => {});
     send(p, "");
+    if (p.run) runAtPrompt(p, `${p.run}\r`, integrated);
   } catch (e) {
     p.term.write(`\x1b[31m${errorMessage(e)}\x1b[0m\r\n`);
   }
 }
+
+/**
+ * Typed at the shell's first prompt when shell integration says when that is, so an rc file that
+ * reads the terminal or clears it can't take it; else (or after RUN_WAIT) typed ahead as it starts.
+ */
+function runAtPrompt(p: Pane, command: string, integrated: boolean) {
+  p.run = undefined;
+  if (!integrated) return send(p, command);
+  let sent = false;
+  const type = () => {
+    if (sent || !panes.has(p.id)) return;
+    sent = true;
+    // Whatever was typed before the prompt is on its line: ⌃U clears it first. VS Code sends ⌃C
+    // before a command when the line may hold text; ⌃U does it without a new prompt.
+    send(p, `\x15${command}`);
+  };
+  void p.marks.ready.then(type);
+  window.setTimeout(type, RUN_WAIT);
+}
+/** How long a command waits for the first prompt, as VS Code's shell integration timeout: past it, typing ahead is no worse. */
+const RUN_WAIT = 5000;
 
 /** A shell gone within a second (a broken rc file or login shell) leaves its pane up to be read, for ⌘W to close. */
 function exited(p: Pane, exit: PtyExit | null, lived: number) {
@@ -547,10 +585,10 @@ export function focusActive() {
 }
 setTerminalFocus(focusActive);
 
-/** `run`: typed into the shell as it starts, which stays once the command exits. */
+/** `run`: typed into the shell at its first prompt (runAtPrompt), which stays once the command exits. */
 export function openTerminal(cwd: string, run?: string) {
   const pane = createPane(cwd);
-  if (run) send(panes.get(pane.id)!, `${run}\r`);
+  if (run) panes.get(pane.id)!.run = run;
   const group = { id: nextId++, panes: [pane], focused: pane.id };
   set({ open: true, groups: [...state.groups, group], active: group.id });
   focusActive();
@@ -699,6 +737,33 @@ export async function clearFocused() {
   // clear() skips the parser, so onWriteParsed doesn't mark the pane.
   p.dirty = true;
   scheduleSave();
+}
+
+/** What a pane's menu can do now: copy a selection, paste, and reach the last command's output. */
+export function paneMenuState(id: number) {
+  const p = panes.get(id);
+  return { selection: !!p?.term.hasSelection(), paste: !!p && !p.term.options.disableStdin, output: !!p?.marks.hasOutput() };
+}
+
+export function copyPaneSelection(id: number) {
+  const text = panes.get(id)?.term.getSelection();
+  if (text) navigator.clipboard.writeText(text).catch(failed("Could not copy"));
+}
+
+export function pasteIntoPane(id: number) {
+  const p = panes.get(id);
+  if (p) void pasteInto(p);
+}
+
+/** The last command's output, from shell integration's marks (commandMarks.ts). */
+export function copyLastOutput(id: number) {
+  const text = panes.get(id)?.marks.lastOutput();
+  if (text) void copyText(text, "Output copied", plural(text.split("\n").length, "line"));
+  else if (text === "") toast("info", "Nothing to copy", "The last command printed nothing.");
+}
+
+export function selectLastOutput(id: number) {
+  panes.get(id)?.marks.selectLastOutput();
 }
 
 /** `focus: false` keeps focus where it is: arrowing along the tabs. */

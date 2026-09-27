@@ -1,5 +1,5 @@
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, Columns2, Eraser, FolderGit2, FolderOpen, ListX, Pencil, Plus, SquareTerminal, Trash2, X } from "lucide-react";
+import { ChevronDown, ClipboardPaste, Columns2, Copy, Eraser, FolderGit2, FolderOpen, ListX, Pencil, Plus, SquareTerminal, TextSelect, Trash2, X } from "lucide-react";
 import { FindBox, useFindBox } from "@/components/FindBox";
 import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
@@ -20,13 +20,19 @@ import {
   closeGroup,
   clearFind,
   closeOtherGroups,
+  copyLastOutput,
+  copyPaneSelection,
   dismissRestore,
   endFind,
   findInTerminal,
+  focusActive,
   moveGroup,
   openTerminal,
+  paneMenuState,
+  pasteIntoPane,
   renameGroup,
   restoreSession,
+  selectLastOutput,
   showWorktree,
   splitActive,
   stepPane,
@@ -409,6 +415,35 @@ function PaneView({ id }: { id: number }) {
   const ref = useRef<HTMLDivElement>(null);
   // Layout effect: the pane is in place before paint, so focusing it next frame works.
   useLayoutEffect(() => attachPane(id, ref.current!), [id]);
-  // Inset from the edges like the code view's text; the scrollbar keeps the right edge.
-  return <div ref={ref} className="h-full w-full pt-2 pb-1 pl-3" />;
+  // Read as the menu opens: the selection and the last command change under it.
+  const [can, setCan] = useState(() => paneMenuState(id));
+  return (
+    <ContextMenu onOpenChange={(open) => open && setCan(paneMenuState(id))}>
+      <ContextMenuTrigger asChild>
+        {/* Inset from the edges like the code view's text; the scrollbar keeps the right edge, command marks the left. */}
+        <div ref={ref} className="h-full w-full pt-2 pb-1 pl-3" />
+      </ContextMenuTrigger>
+      <ContextMenuContent
+        onCloseAutoFocus={(e) => {
+          e.preventDefault();
+          focusActive();
+        }}
+      >
+        <ContextMenuItem disabled={!can.selection} onSelect={() => copyPaneSelection(id)}>
+          <Copy /> Copy
+        </ContextMenuItem>
+        <ContextMenuItem disabled={!can.paste} onSelect={() => pasteIntoPane(id)}>
+          <ClipboardPaste /> Paste
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        {/* Shell integration marks where it starts and ends (Settings → Terminal). */}
+        <ContextMenuItem disabled={!can.output} onSelect={() => copyLastOutput(id)}>
+          <Copy /> Copy Last Command Output
+        </ContextMenuItem>
+        <ContextMenuItem disabled={!can.output} onSelect={() => selectLastOutput(id)}>
+          <TextSelect /> Select Last Command Output
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
+  );
 }

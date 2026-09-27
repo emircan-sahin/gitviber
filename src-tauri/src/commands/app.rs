@@ -4,16 +4,31 @@ use std::path::Path;
 use tauri::{AppHandle, Manager, State};
 
 /// Any folder, unlike the repo commands: the shell can `cd` anywhere the user can anyway.
+/// `integration`: load the shell integration, whose scripts live in the app's cache folder.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn pty_spawn(
+    app: AppHandle,
     state: State<'_, AppState>,
     cwd: String,
     cols: u16,
     rows: u16,
+    integration: bool,
     output: tauri::ipc::Channel<tauri::ipc::Response>,
     exit: tauri::ipc::Channel<Option<pty::Exit>>,
-) -> Res<u32> {
-    state.ptys.spawn(Path::new(&cwd), cols, rows, output, exit)
+) -> Res<pty::Spawned> {
+    let scripts = integration
+        .then(|| app.path().app_cache_dir().ok())
+        .flatten()
+        .map(|dir| dir.join("shell-integration"));
+    state.ptys.spawn(
+        Path::new(&cwd),
+        cols,
+        rows,
+        scripts.as_deref(),
+        output,
+        exit,
+    )
 }
 
 /// Off the main thread: a paste into a program that isn't reading blocks until it reads.
