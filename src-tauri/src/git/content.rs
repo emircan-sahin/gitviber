@@ -17,7 +17,8 @@ pub struct FileText {
     pub too_large: bool,
     /// False when the file does not exist on that side (added / deleted).
     pub exists: bool,
-    /// Not valid UTF-8 (e.g. Latin-1); text was decoded lossily, so never write it back.
+    /// Not the file's own UTF-8 text: invalid UTF-8 (e.g. Latin-1) decoded lossily, or a
+    /// symlink's target. Never write it back.
     pub lossy: bool,
     /// A Git LFS file whose object isn't downloaded: says so, with its size.
     pub lfs_missing: Option<String>,

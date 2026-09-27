@@ -179,6 +179,21 @@ pub fn read_file(root: &Path, rel: &str) -> FileText {
     }
 }
 
+/// A diff's working-tree side. A symlink is its target path, as git stores and diffs it (the
+/// file it points to may be another one, or outside the repo). That text is never written back.
+pub fn read_diff_side(root: &Path, rel: &str) -> FileText {
+    let link = resolve_entry(root, rel)
+        .ok()
+        .filter(|p| p.symlink_metadata().is_ok_and(|m| m.is_symlink()));
+    match link.and_then(|p| std::fs::read_link(p).ok()) {
+        Some(target) => FileText {
+            lossy: true,
+            ..git::to_file_text(target.into_os_string().into_encoded_bytes())
+        },
+        None => read_file(root, rel),
+    }
+}
+
 pub fn read_media(root: &Path, rel: &str) -> Result<Vec<u8>, String> {
     let path = resolve(root, rel)?;
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;

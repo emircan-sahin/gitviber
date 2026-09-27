@@ -289,6 +289,37 @@ fn symlinks_cannot_escape_the_repo() {
     vfs::write_file(&r, "ok.txt", "fine").unwrap();
 }
 
+#[cfg(unix)]
+#[test]
+fn a_symlink_diffs_as_its_target_path() {
+    let sb = Sandbox::new("linkdiff");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "a");
+    write_commit(&r, "b.txt", "b\n", "b");
+    std::os::unix::fs::symlink("a.txt", r.join("link")).unwrap();
+    stage(&r, &["link".into()]).unwrap();
+    commit(&r, "link", &CommitOptions::default()).unwrap();
+
+    fs::remove_file(r.join("link")).unwrap();
+    std::os::unix::fs::symlink("b.txt", r.join("link")).unwrap();
+    let wt = |p: &str| vfs::read_diff_side(&r, p);
+    let pair = diff_pair(&r, "unstaged", "link", None, None, None, None, wt).unwrap();
+    assert_eq!(
+        (pair.original.text.as_str(), pair.modified.text.as_str()),
+        ("a.txt", "b.txt")
+    );
+    // The file view still opens what it points to.
+    assert_eq!(vfs::read_file(&r, "link").text, "b\n");
+
+    // One pointing out of the repo is a path like any other, not a deleted file.
+    let outside = sb.path("outside.txt");
+    fs::write(&outside, "secret").unwrap();
+    std::os::unix::fs::symlink(&outside, r.join("out")).unwrap();
+    let out = vfs::read_diff_side(&r, "out");
+    assert!(out.exists && out.text == outside.to_string_lossy());
+}
+
 #[test]
 fn git_internals_are_off_limits() {
     let sb = Sandbox::new("dotgit");
