@@ -361,6 +361,21 @@ fn special_and_non_utf8_files_are_safe() {
     let f = vfs::read_file(&r, "latin1.txt");
     assert!(f.exists && f.lossy);
     assert!(!vfs::read_file(&r, "x.txt").lossy);
+
+    // UTF-16 with its byte order mark, either way round: text, read-only.
+    let le: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain("hé\n".encode_utf16().flat_map(u16::to_le_bytes))
+        .collect();
+    let be: Vec<u8> = [0xFE, 0xFF]
+        .into_iter()
+        .chain("hé\n".encode_utf16().flat_map(u16::to_be_bytes))
+        .collect();
+    for bytes in [le, be] {
+        fs::write(r.join("utf16.txt"), bytes).unwrap();
+        let f = vfs::read_file(&r, "utf16.txt");
+        assert!(!f.binary && f.lossy && f.text == "hé\n");
+    }
 }
 
 #[test]
