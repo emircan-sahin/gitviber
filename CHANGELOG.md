@@ -6,6 +6,121 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-27
+
+### Added
+
+- **Each worktree's pull request and checks** in the worktree picker and the top bar; the PR's
+  number opens it in the app. In #101.
+- **Start work on an issue in its own worktree** from the issue view's Start in a worktree…: the
+  branch is named after the issue, `{issue}` in the Run command is its number, and a pull
+  request from that branch gets `Closes #N` in its body. In #100.
+- **Run a command in a new worktree's terminal**, such as `claude`, from New worktree. It's typed
+  at the shell's first prompt and remembered for the repository. In #99.
+- **`.worktreeinclude`:** a new worktree gets copies of the ignored files it lists, and New
+  worktree says how many. In #95.
+- **A terminal that needs you** gets a dot on its tab when it rings or a program like Claude Code
+  or Codex sends a notification, as do its worktree in the picker and the hidden terminal's top
+  bar button. With Notify in the background on (Settings → Git), the OS shows it too. In #90.
+- **Shell integration** for zsh and bash 4.4+, with your dotfiles untouched (fish 4 marks its
+  own): a dot beside each command, red when it failed, ⌘↑ / ⌘↓ to jump between them, and the
+  last one's output to copy or select from a pane's new right-click menu. Settings → Terminal
+  turns it off. In #105.
+- **A terminal in another project** or any folder, from the menu beside the terminal's +, a
+  project's row in the project switcher, or New Terminal in Project… in the palette. Its tab
+  shows that project's branch. In #110.
+- **Terminal path links** say what ⌘-click does on hover, select the opened file in the explorer,
+  open the explorer on a folder, and reach ignored files and shortened `…/a/b.ts` paths. In #109.
+- **See why a check failed:** Show failure reads its output, its annotations (each `path:line`
+  opens in the code view) and a GitHub Actions job's log tail, and Copy for agent puts it all in
+  one block for the terminal. In #102.
+- **Pull request titles and descriptions from your agent CLI:** New pull request gets the commit
+  box's ✦ button, which reads the branch's commits, its diff and the repository's pull request
+  template. In #98.
+- **Squash- and rebase-merged branches** whose upstream was deleted count as merged when their
+  changes are in the default branch, so Clean up takes them too, checking each again before it
+  deletes. In #96.
+- **Links to GitHub:** Copy GitHub Link and Open on GitHub, for a file or its selected lines, in
+  the code view's and the explorer's right-click menus and the palette. A link points at the
+  newest commit origin has, so it keeps showing the same code. In #103.
+- **`gitviber src/app.ts:42`** (or `:42:7`) opens the file's repository with the file at that
+  line and column, and a file without a line opens in the code view. In #107.
+- **Swipe and Onion skin** for a changed image or SVG, beside 2-up. In #108.
+- **Hyperlinks that programs print** (OSC 8) open with ⌘-click like detected links and show
+  their target on hover; a file link opens only inside the repository. In #93.
+- **Programs copy to the clipboard** with OSC 52, as tmux and neovim do, from the terminal pane
+  in use only; they can't read it. In #106.
+- **Shift+Enter** reaches Claude Code, Codex, neovim and fish 4 as its own key, through the kitty
+  keyboard protocol they turn on. In #89.
+- **macOS: Option as Meta** in Settings → Terminal, Left ⌥ or Both ⌥, so the shell and agents get
+  ⌥ keys like readline's ⌥B and ⌥F. It's off by default. In #91.
+- **Rename terminal tabs** with a double-click or the tab's new right-click menu, which also
+  splits, clears, and kills the terminal or the others. In #104.
+- **⌘Home, ⌘End, ⌘PgUp and ⌘PgDn** scroll the terminal's history.
+- **Reveal in Explorer View** from a file tab's right-click menu or the palette.
+- **`#123` and `@mentions` in a commit message** link to GitHub.
+
+### Changed
+
+- **Scrolling a terminal while agents print** no longer stalls every 2 s: the session save stores
+  a busy pane when it goes quiet or every 30 s, one pane at a time. Part of #97.
+- **A split or restored terminal** starts in the folder its shell moved to, not where it opened,
+  and relative paths link from there, following a `cd`. In #94.
+- **The terminal asks first** before closing a tab or pane, or killing the others, while a
+  command runs there, and before pasting several lines into a program that would run each one.
+- **While the terminal has focus,** ⌘1–⌘9 and next / previous tab switch its tabs, ⌥← / ⌥→ move
+  them, and ⌘A selects its text.
+- **Resizing a terminal with a long history** rewraps it once the drag settles.
+- **Removing a worktree** says how many terminals run in it.
+- **The explorer sorts numbers by value,** `file2` before `file10`, and New File and New Folder
+  take a path like `src/a.ts`, making its folders.
+- **Updates are checked for** as the app opens, rather than 10 s later.
+
+### Fixed
+
+- **Editing a file** now behaves as in VS Code: brackets and quotes close and Enter indents, ⌘/
+  comments lines out instead of opening the shortcut overlay, the matching bracket lights up
+  (⇧⌘\ jumps to it), the cursor's line is highlighted, and ⌥Z wraps instead of typing Ω.
+- **Quitting** with ⌘Q, the close button or an update's relaunch now saves the terminals' output
+  and unsaved edits first; the app could end before they were saved.
+- **Emoji and other wide characters** take two cells in the terminal, so programs draw in line and
+  the cursor no longer lands a cell off. In #92.
+- **A paste into a busy program** froze the window and the other terminal panes.
+- **⌘K** cut half the screen out from under a running program such as Claude Code or vim; it now
+  leaves it alone.
+- **Esc on a confirmation** reached the terminal behind it instead of cancelling.
+- **A terminal whose folder is gone** starts in the nearest folder left and says so, and a shell
+  that exits at once leaves its pane up with its exit code or signal.
+- **A terminal pane closing** pulled focus from wherever you were typing; closed from the panel's
+  button, focus now moves on to the next terminal.
+- **Diffs that change no text** say what changed: the final newline, the file mode, an empty new
+  or deleted file, or a pure rename or copy. A symlink diffs as the path it points to.
+- **Next change** got stuck when the last changes shared one screen.
+- **UTF-16 files** with a byte order mark show as text, read-only, instead of binary, and saving
+  over a file that turned UTF-16 or non-UTF-8 on disk asks first.
+- **Unstaging renames and copies:** a rename's old path is unstaged too, a copy's source keeps
+  its staged edits, and lines of a renamed file unstage against its old path.
+- **Stage, unstage and discard** failed on a very large number of files at once.
+- **Mark resolved** asks first when a file still has conflict markers or can't be checked.
+- **The commit box** starts from the message a squash merge or `cherry-pick -n` prepared, and a
+  multi-line paste into Summary fills the description too.
+- **Submodules:** one with changes inside says so and Discard leaves it out, Discard brings back a
+  deleted one, and removing a worktree with submodules asks to force instead of failing.
+- **A branch deleted on the remote** says so and offers Publish instead of a failing Pull.
+- **A checked-out fork pull request** pulls from the fork and no longer offers Publish or New pull
+  request.
+- **During a rebase** the top bar names the branch being rebased, not detached HEAD.
+- **Branch names:** the dialogs show what git will make of a typed name and block one that's taken
+  (on macOS, one differing only in case too); they, Set upstream and Lock stay open when git
+  refuses.
+- **Merge and rebase from the branch picker** offer Retry with autostash when changes are in the
+  way.
+- **Merging a pull request** uses a method the repository allows, and the menu lists only those.
+- **A refused force push** explains why and offers a pull.
+- **A 403 from SAML single sign-on** says where to authorize the token.
+- **A new origin URL** updates the GitHub account and lists without a reload, and a failed remote
+  read no longer empties the GitHub views.
+
 ## [0.1.1] - 2026-09-26
 
 ### Added
@@ -129,6 +244,7 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/emircan-sahin/gitviber/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/emircan-sahin/gitviber/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/emircan-sahin/gitviber/releases/tag/v0.1.0
