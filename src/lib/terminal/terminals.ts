@@ -1,3 +1,4 @@
+import { arrayMove } from "@dnd-kit/sortable";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
@@ -279,6 +280,13 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
         if (letter === "v") void pasteInto(p);
         else if (selection) void navigator.clipboard.writeText(selection).catch(() => {});
       }
+      e.preventDefault();
+      return false;
+    }
+    // ⌘A selects the terminal's text, as in VS Code, iTerm2 and Ghostty; the webview's own select
+    // all only reached xterm's hidden text area.
+    if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && letter === "a" && !appRunsFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e)) {
+      if (e.type === "keydown") term.selectAll();
       e.preventDefault();
       return false;
     }
@@ -662,6 +670,34 @@ export function clearFocused() {
 export function activateGroup(id: number, focus = true) {
   if (state.active !== id) set({ active: id });
   if (focus) focusActive();
+}
+
+// From a tab, focus stays on the tabs (the panel moves it to the one opened), as ←/→ keep it.
+const pick = (id: number) => activateGroup(id, !document.activeElement?.closest('[role="tab"]'));
+
+/** ⌘1–⌘9 with focus in the panel: the tab at `i`, -1 the last; undefined while the panel shows none. */
+export function goGroup(i: number) {
+  if (!state.open || !state.groups.at(i)) return undefined;
+  return () => {
+    const g = state.groups.at(i);
+    if (g) pick(g.id);
+  };
+}
+
+/** Next / previous tab with focus in the panel, wrapping; undefined while the panel shows fewer than two. */
+export function stepGroup(dir: 1 | -1) {
+  if (!state.open || state.groups.length < 2) return undefined;
+  return () => {
+    const n = state.groups.length;
+    const at = state.groups.findIndex((g) => g.id === state.active);
+    pick(state.groups[(at + dir + n) % n].id);
+  };
+}
+
+/** Moves a tab one place along (⌥←/⌥→ on the tabs, as on the code view's). */
+export function moveGroup(id: number, dir: 1 | -1) {
+  const i = state.groups.findIndex((g) => g.id === id);
+  if (i >= 0 && state.groups[i + dir]) set({ groups: arrayMove(state.groups, i, i + dir) });
 }
 
 function focusPane(id: number) {

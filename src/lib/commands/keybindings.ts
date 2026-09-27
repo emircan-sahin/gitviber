@@ -78,8 +78,11 @@ export const MENU_ACTION_INFO: Record<(typeof MENU_ACTIONS)[number], { title: st
 
 const MODAL_SAFE: Action[] = ["workbench.openSettings", "workbench.shortcutOverlay", "window.reload", "view.zoomIn", "view.zoomOut", "view.zoomReset", "app.about", "app.checkForUpdates", "app.installCli", "help.readme", "help.shortcuts", "help.reportBug", "help.copyDiagnostics", "help.showLogs", "help.releaseNotes", "help.license"];
 
+/** Returns false when it can't act where focus is: its key then goes on (⌘→ to the text). Anything else is done. */
+type Handler = () => unknown;
+
 // Last registered wins, so a nested view can take a command over while it's mounted.
-const handlers = new Map<Action, (() => void)[]>();
+const handlers = new Map<Action, Handler[]>();
 const changeListeners = new Set<() => void>();
 
 /** Called when a command gains or loses its handler, which is what greys it out in the menu. */
@@ -126,10 +129,10 @@ function dispatch(e: KeyboardEvent) {
   if (!found || !runsAt(e, found.chord, found.command)) return;
   const run = handlerFor(found.command.id);
   if (!run) return;
+  if (!(e.repeat && "noRepeat" in found.command) && run() === false) return;
   e.preventDefault();
   // Keep it from Monaco too, which would take F7 for its own diff navigation and ⌘Z as undo.
   e.stopPropagation();
-  if (!(e.repeat && "noRepeat" in found.command)) run();
 }
 
 // Clicking into the code view focuses Monaco's text area, which sees keys before the window does:
@@ -150,7 +153,7 @@ export function appRunsFromTerminal(e: KeyboardEvent) {
 }
 
 /** Registers handlers for commands while the component is mounted; always calls the latest closures. A command left undefined is unavailable (greyed out in the menu). */
-export function useCommands(map: Partial<Record<Action, () => void>>) {
+export function useCommands(map: Partial<Record<Action, Handler>>) {
   const ref = useRef(map);
   useEffect(() => {
     ref.current = map;

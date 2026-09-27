@@ -16,7 +16,7 @@ import { onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
-import { useTerminals } from "@/lib/terminal/terminals";
+import { goGroup, stepGroup, useTerminals } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
 import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
@@ -204,6 +204,17 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     setListTab("changes");
   };
 
+  // With focus in the terminal (a pane, its tabs, its find), the tab keys pick its tabs, as in iTerm2.
+  // Where focus is now, not the panel it was last in, which may be hidden since. When that side has
+  // no such tab, the key goes on (⌘→ to the code view's text).
+  const orTerminal = (code: (() => void) | undefined, terminal: (() => void) | undefined) =>
+    code || terminal
+      ? () => {
+          const run = document.activeElement?.closest('[data-panel="terminal"]') ? terminal : code;
+          return run ? run() : false;
+        }
+      : undefined;
+
   const active = tabs.find((t) => t.key === activeKey) ?? null;
   useCommands({
     "review.nextFile": () => step(1),
@@ -244,7 +255,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       setExplorerView("files");
       show(filesPanel, "explorer");
     },
-    "view.focusCode": () => focusPanel("code"),
+    "view.focusCode": () => void focusPanel("code"),
     "view.focusNextPanel": () => cycle(1),
     "view.focusPrevPanel": () => cycle(-1),
     "tab.close": activeKey ? () => close(activeKey) : undefined,
@@ -253,17 +264,17 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "tab.closeLeft": closeAround("left"),
     "tab.closeRight": closeAround("right"),
     "tab.closeAll": closeAround("all"),
-    "tab.goto1": goTab(0),
-    "tab.goto2": goTab(1),
-    "tab.goto3": goTab(2),
-    "tab.goto4": goTab(3),
-    "tab.goto5": goTab(4),
-    "tab.goto6": goTab(5),
-    "tab.goto7": goTab(6),
-    "tab.goto8": goTab(7),
-    "tab.last": goTab(tabs.length - 1),
-    "tab.next": stepTab(1),
-    "tab.prev": stepTab(-1),
+    "tab.goto1": orTerminal(goTab(0), goGroup(0)),
+    "tab.goto2": orTerminal(goTab(1), goGroup(1)),
+    "tab.goto3": orTerminal(goTab(2), goGroup(2)),
+    "tab.goto4": orTerminal(goTab(3), goGroup(3)),
+    "tab.goto5": orTerminal(goTab(4), goGroup(4)),
+    "tab.goto6": orTerminal(goTab(5), goGroup(5)),
+    "tab.goto7": orTerminal(goTab(6), goGroup(6)),
+    "tab.goto8": orTerminal(goTab(7), goGroup(7)),
+    "tab.last": orTerminal(goTab(tabs.length - 1), goGroup(-1)),
+    "tab.next": orTerminal(stepTab(1), stepGroup(1)),
+    "tab.prev": orTerminal(stepTab(-1), stepGroup(-1)),
     "file.reveal": () => revealInFinder(active?.sel),
     "file.revealInExplorer": active && onDisk(active.sel) ? () => revealInExplorer(selectionPath(active.sel)) : undefined,
     "repo.refresh": () => repo.refresh(),
