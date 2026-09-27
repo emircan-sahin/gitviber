@@ -63,9 +63,11 @@ the agent touches it again, the mark clears so you know to look again.
 ### Test it right there
 
 A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the tests, start the dev
-server or talk to the agent without leaving the change you're reading. In zsh and bash 4.4+ each command
-gets a mark, red when it failed, `⌘↑` / `⌘↓` jump between them, and the last one's output copies
-from the right-click menu; your dotfiles stay as they are.
+server or talk to the agent without leaving the change you're reading. In zsh and bash 4.4+ each
+command gets a mark, red when it failed, `⌘↑` / `⌘↓` jump between them, and the last one's output
+copies from the right-click menu; your dotfiles stay as they are. When an agent in another tab or
+worktree waits for you, its tab and its worktree get a dot, and a desktop notification if you
+turned those on. Claude Code sends one here once its Notifications setting (`/config`) is `iterm2`.
 
 ### Browse the code, not just the diff
 
@@ -125,7 +127,8 @@ sudo dnf install ./GitViber-*.x86_64.rpm         # Fedora
 chmod +x GitViber_*.AppImage && ./GitViber_*.AppImage
 ```
 
-To open a repository from a terminal, run `gitviber .` (or any path inside one). Homebrew and
+To open a repository from a terminal, run `gitviber .` (or any path inside one); a file opens in
+the code view, at a line with `gitviber src/app.ts:42` or `:42:7`. Homebrew and
 the Linux packages put the command on your `PATH`; otherwise use **Install 'gitviber' Command**
 in the app menu (File on Linux). A folder dropped on the Dock icon opens too.
 

@@ -24,6 +24,7 @@ import { useRecentMenu } from "@/lib/commands/menu";
 import { stepUiScale } from "@/lib/settings";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder } from "@/lib/repo/recent";
 import { toast } from "@/lib/app/toast";
+import { openTargetIn } from "@/lib/links/linkHost";
 import { folderName, isInside } from "@/lib/path";
 import { IS_MAC } from "@/lib/platform";
 
@@ -53,8 +54,8 @@ export function App() {
   }, []);
   const noGit = git?.state === "missing" || git?.state === "tools";
 
-  /** `replacing`: a saved project whose folder moved; this repo takes its place in the list. */
-  const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string) => {
+  /** `replacing`: a saved project whose folder moved; this repo takes its place in the list. Its root once open. */
+  const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string): Promise<string | false | undefined> => {
     const target = path ?? (await open({ directory: true, title: "Open a git repository" }));
     if (typeof target !== "string") return;
     try {
@@ -66,7 +67,7 @@ export function App() {
       setLastRepo(repo.root);
       setRecent(recentRepos());
       setOpened(repo);
-      return true;
+      return repo.root;
     } catch (e) {
       if (quiet) return false;
       if (e === NOT_A_REPO && (await initAsked(target))) return openRepo(target, quiet, replacing);
@@ -74,6 +75,16 @@ export function App() {
       return false;
     }
   }, []);
+
+  // The last path opened from outside wins (opened.rs); a file shows once its repository is open.
+  const openAsked = useCallback(async () => {
+    const { open: targets, missing } = await api.takeOpened().catch(() => ({ open: [], missing: [] }));
+    for (const path of missing) toast("error", "No such file or folder", path);
+    const asked = targets.at(-1);
+    const root = asked && (await openRepo(asked.folder));
+    if (root && asked.file) openTargetIn(root, { path: asked.file, line: asked.line ?? undefined, column: asked.column ?? undefined });
+    return !!root;
+  }, [openRepo]);
 
   const booted = useRef<Promise<void>>(Promise.resolve());
   // Reopen the last repository on launch, unless the launch named one (`gitviber <path>`, a
@@ -84,14 +95,13 @@ export function App() {
     const projects = recentRepos();
     const fallback = projects.find((p) => last && isInside(last, p)) ?? projects[0];
     booted.current = (async () => {
-      const asked = (await api.takeOpened().catch(() => [])).at(-1);
-      if (asked && (await openRepo(asked))) return;
+      if (await openAsked()) return;
       if (last && (await openRepo(last, true))) return;
       if (fallback && fallback !== last) await openRepo(fallback, true);
     })().finally(() => setBooting(false));
-  }, [openRepo]);
+  }, [openRepo, openAsked]);
 
-  // Folders opened from outside while the app runs (opened.rs): the last one wins. One that comes
+  // Paths opened from outside while the app runs (opened.rs): the last one wins. One that comes
   // during the launch's own reopen waits for it (`booted`), so the last repository can't replace it.
   useEffect(() => {
     let live = true;
@@ -99,8 +109,7 @@ export function App() {
     try {
       unlisten = listen("opened", async () => {
         await booted.current;
-        const asked = (await api.takeOpened().catch(() => [])).at(-1);
-        if (live && asked) await openRepo(asked);
+        if (live) await openAsked();
       });
       unlisten.catch(() => {});
     } catch {
@@ -110,7 +119,7 @@ export function App() {
       live = false;
       void unlisten?.then((stop) => stop()).catch(() => {});
     };
-  }, [openRepo]);
+  }, [openAsked]);
 
   const onOpen = useCallback((p?: string) => void openRepo(p), [openRepo]);
   const onReorder = useCallback((list: string[]) => {

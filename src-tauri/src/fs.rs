@@ -161,6 +161,29 @@ pub fn list_files(root: &Path) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// What a path in the repo is on disk.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    File,
+    Dir,
+}
+
+/// Each path's kind, None when it's missing or outside the repo: a terminal link to an ignored
+/// file or folder, which the file list doesn't have, is one stat.
+pub fn kinds(root: &Path, rels: &[String]) -> Vec<Option<Kind>> {
+    rels.iter()
+        .map(|rel| {
+            let meta = resolve(root, rel).and_then(|p| p.metadata().map_err(|e| e.to_string()));
+            match meta {
+                Ok(m) if m.is_dir() => Some(Kind::Dir),
+                Ok(m) if m.is_file() => Some(Kind::File),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// Writes a file inside the repo (used to save a resolved conflict).
 pub fn write_file(root: &Path, rel: &str, content: &str) -> Result<(), String> {
     std::fs::write(resolve(root, rel)?, content).map_err(|e| e.to_string())
@@ -544,6 +567,26 @@ mod tests {
         let mut files = list_files(root).unwrap();
         files.sort();
         assert_eq!(files, [".gitignore", "src/new file.rs", "tracked.txt"]);
+    }
+
+    #[test]
+    fn kinds_of_ignored_paths_and_escapes() {
+        let sb = Sandbox::new("kinds");
+        let root = &sb.0;
+        fs::create_dir_all(root.join("dist")).unwrap();
+        fs::write(root.join("dist/index.js"), "x").unwrap();
+        let ask = |p: &[&str]| kinds(root, &p.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert_eq!(
+            ask(&[
+                "dist",
+                "dist/index.js",
+                "missing.ts",
+                "../x",
+                "/etc",
+                ".git"
+            ]),
+            [Some(Kind::Dir), Some(Kind::File), None, None, None, None]
+        );
     }
 
     #[test]

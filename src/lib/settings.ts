@@ -168,7 +168,7 @@ export interface Settings {
   signOffRepos: string[];
   /** Minutes between quiet fetches of the open repo (one of FETCH_INTERVALS); 0 is off. */
   backgroundFetch: number;
-  /** A desktop notification when a push, pull or the like ends while the app is in the background. */
+  /** A desktop notification when a push, pull or the like ends, or a terminal asks for the user, while the app is in the background. */
   notify: boolean;
   /** Ask GitHub Releases for a newer GitViber at launch and every few hours (updates.ts). */
   autoUpdate: boolean;

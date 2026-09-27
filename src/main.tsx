@@ -9,6 +9,7 @@ import { App } from "./App";
 import { CrashScreen } from "./components/CrashScreen";
 import { installErrorLog, logError } from "./lib/app/errorLog";
 import { installScrollbars } from "./lib/app/scrollbars";
+import "./lib/app/quit";
 
 import { Fixture } from "./dev-fixture";
 
