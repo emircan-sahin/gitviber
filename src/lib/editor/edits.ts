@@ -120,7 +120,8 @@ async function write(path: string) {
   const version = model?.getAlternativeVersionId();
   try {
     const disk = await api.readFile(path);
-    if (disk.exists && !disk.lossy && disk.text !== e.base) {
+    // Text this view can't have been editing (e.g. now UTF-16) changed too.
+    if (disk.exists && (disk.lossy || disk.text !== e.base)) {
       const ok = await ask(`${basename(path)} changed on disk since you began editing it. Overwrite it with your version?`, {
         title: "Save",
         kind: "warning",
