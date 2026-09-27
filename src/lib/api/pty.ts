@@ -15,6 +15,8 @@ export const pty = {
   busy: () => invoke<number>("pty_busy"),
   /** What ⌘V pastes into a terminal (clipboard.rs): copied files, text, or an image saved as a PNG. */
   paste: () => invoke<TerminalPaste>("terminal_paste"),
+  /** Text a program in the terminal copies (OSC 52) onto the clipboard, natively (clipboard.rs). */
+  copy: (text: string) => invoke<void>("terminal_copy", { text }),
   /** Dropped files, the ones macOS takes back after the drag copied somewhere that lasts. */
   keepDropped: (paths: string[]) => invoke<string[]>("keep_dropped", { paths }),
 };

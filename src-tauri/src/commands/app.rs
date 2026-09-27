@@ -33,6 +33,12 @@ pub fn copy_files(paths: Vec<String>) -> Res<()> {
     clipboard::copy_files(paths)
 }
 
+/// What a program in the terminal copies (OSC 52). Sync for the same reason as `terminal_paste`.
+#[tauri::command]
+pub fn terminal_copy(text: String) -> Res<()> {
+    clipboard::write_text(&text)
+}
+
 /// The `gitviber` command (cli.rs).
 #[tauri::command]
 pub async fn install_cli() -> Res<String> {

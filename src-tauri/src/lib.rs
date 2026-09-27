@@ -272,6 +272,7 @@ pub fn run() {
             commands::app::pty_resize,
             commands::app::pty_kill,
             commands::app::terminal_paste,
+            commands::app::terminal_copy,
             commands::app::keep_dropped,
             commands::app::copy_files,
             commands::app::pty_busy,
