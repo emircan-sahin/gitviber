@@ -376,6 +376,9 @@ fn special_and_non_utf8_files_are_safe() {
         let f = vfs::read_file(&r, "utf16.txt");
         assert!(!f.binary && f.lossy && f.text == "hé\n");
     }
+    // UTF-32LE starts the same way; so can any binary file.
+    fs::write(r.join("utf32.txt"), [0xFF, 0xFE, 0, 0, b'h', 0, 0, 0]).unwrap();
+    assert!(vfs::read_file(&r, "utf32.txt").binary);
 }
 
 #[test]
