@@ -41,6 +41,9 @@ type At = { target: EventTarget | null };
 /** Focus is in the code view: Monaco's text area, read-only, so not typing (its find box is, and so is a file open for editing). */
 const inCodeView = (e: At) => e.target instanceof HTMLElement && e.target.matches(".monaco-editor textarea.inputarea") && !e.target.closest("[data-editable]");
 
+/** Focus is in a file open for editing (see inCodeView). */
+const inEditedFile = (e: At) => e.target instanceof HTMLElement && e.target.matches("[data-editable] .monaco-editor textarea.inputarea");
+
 /** Focus is somewhere that owns its keystrokes: text fields, menus, dialogs, pickers (not the sidebar lists, see useListNav). */
 export function isTyping(e: At) {
   const el = e.target instanceof HTMLElement ? e.target : null;
@@ -114,7 +117,7 @@ export function runCommand(id: Action) {
  */
 export function runsAt(e: At, chord: string, command: Command) {
   const inTerminal = e.target instanceof HTMLElement && !!e.target.closest(".xterm");
-  return inTerminal ? runsInTerminal(chord, command) : !isTyping(e) || runsWhileTyping(chord, command);
+  return inTerminal ? runsInTerminal(chord, command) : !isTyping(e) || runsWhileTyping(chord, command) || ("inEditor" in command && /\b(alt|ctrl|cmd)\+/.test(chord) && inEditedFile(e));
 }
 
 function dispatch(e: KeyboardEvent) {
