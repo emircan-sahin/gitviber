@@ -1,7 +1,7 @@
 //! Staging, unstaging and discarding whole files.
 
 use super::{has_head, new_gitlink, run_text, run_with, untracked_nested_root};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 
 pub(super) fn with_paths<'a>(mut args: Vec<&'a str>, paths: &'a [String]) -> Vec<&'a str> {
@@ -42,38 +42,54 @@ pub fn stage_with(repo: &Path, paths: &[String], allow_nested: bool) -> Result<(
 }
 
 /// Nested repositories at or under `paths` that `git add` would turn into new gitlinks (or
-/// whose files it would take as ours). Plain files outside any nested repo skip the status call,
-/// which runs on the whole tree: `status` takes no pathspec file, and argv can't hold them all.
+/// whose files it would take as ours). Only folders, and files inside a folder with a `.git`,
+/// can be one or lie in one: plain files skip the status call.
 fn nested_repos(repo: &Path, paths: &[String]) -> Result<Vec<String>, String> {
-    if !paths
-        .iter()
-        .any(|p| repo.join(p).is_dir() || untracked_nested_root(repo, p).is_some())
-    {
-        return Ok(vec![]);
+    // Whether a folder is or lies in one, as found once: the thousands of files of one
+    // node_modules share their folders.
+    let mut known: HashMap<&Path, bool> = HashMap::new();
+    let mut suspect = vec![];
+    for p in paths {
+        let (mut walked, mut inside) = (vec![], false);
+        for a in Path::new(p).ancestors().skip(1) {
+            if a.as_os_str().is_empty() {
+                break;
+            }
+            if let Some(&k) = known.get(a) {
+                inside = k;
+                break;
+            }
+            walked.push(a);
+            if repo.join(a).join(".git").exists() {
+                inside = true;
+                break;
+            }
+        }
+        known.extend(walked.into_iter().map(|a| (a, inside)));
+        if inside || repo.join(p).is_dir() {
+            suspect.push(p.clone());
+        }
     }
-    let wanted: HashSet<&str> = paths.iter().map(|p| p.trim_end_matches('/')).collect();
-    let asked = |p: &str| {
-        wanted.contains(".")
-            || Path::new(p.trim_end_matches('/'))
-                .ancestors()
-                .any(|a| a.to_str().is_some_and(|a| wanted.contains(a)))
-    };
-    let args = ["status", "--porcelain=v2", "-z", "--untracked-files=all"];
-    let raw = run_text(repo, &args)?;
     let mut found = vec![];
-    let mut records = raw.split('\0');
-    while let Some(rec) = records.next() {
-        if let Some(p) = rec.strip_prefix("? ") {
-            if asked(p) {
+    // Few in practice; in chunks that fit on argv, which `status` needs (no pathspec file).
+    for chunk in suspect.chunks(500) {
+        let args = with_paths(
+            vec!["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+            chunk,
+        );
+        let raw = run_text(repo, &args)?;
+        let mut records = raw.split('\0');
+        while let Some(rec) = records.next() {
+            if let Some(p) = rec.strip_prefix("? ") {
                 found.extend(untracked_nested_root(repo, p));
-            }
-        } else if let Some(kind @ ('1' | '2')) = rec.chars().next() {
-            let fields: Vec<&str> = rec.splitn(if kind == '1' { 9 } else { 10 }, ' ').collect();
-            if kind == '2' {
-                records.next();
-            }
-            if new_gitlink(&fields) {
-                found.extend(fields.last().filter(|p| asked(p)).map(|p| p.to_string()));
+            } else if let Some(kind @ ('1' | '2')) = rec.chars().next() {
+                let fields: Vec<&str> = rec.splitn(if kind == '1' { 9 } else { 10 }, ' ').collect();
+                if kind == '2' {
+                    records.next();
+                }
+                if new_gitlink(&fields) {
+                    found.extend(fields.last().map(|p| p.to_string()));
+                }
             }
         }
     }
