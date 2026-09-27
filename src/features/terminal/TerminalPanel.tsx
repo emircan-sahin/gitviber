@@ -1,10 +1,11 @@
-import { ChevronDown, Columns2, Eraser, FolderGit2, ListX, Pencil, Plus, SquareTerminal, Trash2, X } from "lucide-react";
+import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+import { ChevronDown, Columns2, Eraser, FolderGit2, FolderOpen, ListX, Pencil, Plus, SquareTerminal, Trash2, X } from "lucide-react";
 import { FindBox, useFindBox } from "@/components/FindBox";
 import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import type { Worktree } from "@/lib/api";
@@ -37,6 +38,7 @@ import { cn } from "@/lib/utils";
 import { folderName } from "@/lib/path";
 import { NameInput } from "@/components/NameInput";
 import { plural } from "@/lib/format";
+import { ProjectTile } from "@/features/projects/ProjectList";
 
 /** What the workspace needs even while the panel is hidden: the panel shortcuts, and following the worktree that's open. */
 export function useTerminalSetup(root: string) {
@@ -55,9 +57,17 @@ function toggle(root: string) {
 interface Props {
   root: string;
   worktrees: Worktree[];
+  /** The saved projects other than this one: a terminal there leaves the window on this one. */
+  projects: string[];
 }
 
-export function TerminalPanel({ root, worktrees }: Props) {
+/** Any folder: a terminal in it, the window staying on this project. */
+async function chooseFolder() {
+  const dir = await pickFolder({ directory: true, title: "New terminal in folder" });
+  if (typeof dir === "string") openTerminal(dir);
+}
+
+export function TerminalPanel({ root, worktrees, projects }: Props) {
   const { groups, active } = useTerminals();
   const group = groups.find((g) => g.id === active) ?? null;
   const branchOf = (cwd: string) => worktrees.find((w) => w.path === cwd)?.branch ?? null;
@@ -122,27 +132,45 @@ export function TerminalPanel({ root, worktrees }: Props) {
               <Plus />
             </Button>
           </Tip>
-          {others.length > 0 && (
-            <DropdownMenu>
-              <Tip label="New terminal in another worktree">
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon-sm" className="w-4">
-                    <ChevronDown className="size-3" />
-                  </Button>
-                </DropdownMenuTrigger>
-              </Tip>
-              <DropdownMenuContent align="end" className="w-72">
-                <DropdownMenuLabel>New terminal in worktree</DropdownMenuLabel>
-                {others.map((w) => (
-                  <DropdownMenuItem key={w.path} onSelect={() => openTerminal(w.path)}>
-                    <FolderGit2 />
-                    <span className="truncate">{folderName(w.path)}</span>
-                    <span className="ml-auto truncate font-mono text-[11px] text-subtle">{w.branch ?? "detached"}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          <DropdownMenu>
+            <Tip label="New terminal in another folder">
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="w-4">
+                  <ChevronDown className="size-3" />
+                </Button>
+              </DropdownMenuTrigger>
+            </Tip>
+            <DropdownMenuContent align="end" className="w-72">
+              {others.length > 0 && (
+                <>
+                  <DropdownMenuLabel>New terminal in worktree</DropdownMenuLabel>
+                  {others.map((w) => (
+                    <DropdownMenuItem key={w.path} onSelect={() => openTerminal(w.path)}>
+                      <FolderGit2 />
+                      <span className="truncate">{folderName(w.path)}</span>
+                      <span className="ml-auto truncate font-mono text-[11px] text-subtle">{w.branch ?? "detached"}</span>
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              {projects.length > 0 && (
+                <>
+                  <DropdownMenuLabel>New terminal in project</DropdownMenuLabel>
+                  {projects.map((p) => (
+                    <DropdownMenuItem key={p} title={p} onSelect={() => openTerminal(p)}>
+                      <ProjectTile name={folderName(p)} />
+                      <span className="truncate">{folderName(p)}</span>
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              <DropdownMenuItem onSelect={() => void chooseFolder()}>
+                <FolderOpen /> Choose Folder…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Tip label="Split terminal" shortcut={useShortcut("terminal.split")}>
             <Button variant="ghost" size="icon-sm" onClick={splitActive} disabled={!group}>
               <Columns2 />

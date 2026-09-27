@@ -7,6 +7,7 @@ import { folderName } from "@/lib/path";
 import { openClone } from "@/features/projects/CloneDialog";
 import { ProjectList, ProjectTile } from "@/features/projects/ProjectList";
 import { changeTotals } from "@/features/changes/changeList";
+import { openTerminal } from "@/lib/terminal/terminals";
 
 export interface ProjectSwitcherProps {
   repo: RepoData;
@@ -33,6 +34,10 @@ export function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, 
     setOpen(false);
     onLocateRepo(p);
   };
+  const terminal = (p: string) => {
+    setOpen(false);
+    openTerminal(p);
+  };
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -50,7 +55,7 @@ export function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, 
       <PopoverContent align="start" className="flex w-80 flex-col overflow-hidden">
         <div className="px-3 pt-2.5 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Projects</div>
         <div className="max-h-[360px] min-h-0 overflow-x-hidden overflow-y-auto p-1">
-          <ProjectList recent={recent} current={main} onOpen={pick} onForget={onForgetRepo} onReorder={onReorderRepos} onLocate={locate} />
+          <ProjectList recent={recent} current={main} onOpen={pick} onForget={onForgetRepo} onReorder={onReorderRepos} onLocate={locate} onTerminal={terminal} />
         </div>
         <div className="border-t border-border p-1">
           <button onClick={() => pick()} className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover focus-visible:bg-hover">

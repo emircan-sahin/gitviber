@@ -7,27 +7,31 @@ import { fuzzyMatch, type Match, matchPath, prepareQuery } from "@/lib/ui/fuzzy"
 import { type Action, hasHandler, MENU_ACTION_INFO, MENU_ACTIONS, matchesCommand, runCommand } from "@/lib/commands/keybindings";
 import { pointerMoved } from "@/lib/ui/pointer";
 import { useSettings } from "@/lib/settings";
-import { useTerminals } from "@/lib/terminal/terminals";
+import { openTerminal, useTerminals } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
-import { splitPath } from "@/lib/path";
+import { folderName, splitPath } from "@/lib/path";
 import { readJson, stringList, writeJson } from "@/lib/storage";
 import { createStore } from "@/lib/store";
 import type { Change } from "@/features/changes/changeList";
 import { FileIcon } from "@/components/FileIcon";
 import { StatusLetter } from "@/components/StatusBadge";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
+import { ProjectTile } from "@/features/projects/ProjectList";
 
 /**
  * ⇧⌘P runs any command, ⌘P opens a file, as in VS Code: one box, and a leading ">" in it means
- * commands. "Open Changed File" lists the changes instead, and opens their diffs.
+ * commands. "Open Changed File" lists the changes instead, and opens their diffs; "New Terminal in
+ * Project" the other saved projects, to start a terminal in without switching to them.
  */
 
-type Mode = "files" | "changes";
+type Mode = "files" | "changes" | "projects";
 
 /** What the open workspace gives quick open; none on the welcome screen. */
 export interface QuickOpenSource {
   root: string;
   changes: Change[];
+  /** The saved projects other than this one. */
+  projects: string[];
   openFile: (path: string) => void;
   openChange: (change: Change) => void;
 }
@@ -165,6 +169,13 @@ export function CommandPalette() {
     }
     const src = source;
     if (!src) return [];
+    if (mode === "projects") {
+      return rank(query, src.projects, (p) => p, matchPath).map(({ item: path, match }) => ({
+        key: path,
+        run: pick(() => openTerminal(path)),
+        row: () => <PathRow path={path} hits={match.hits} icon={<ProjectTile name={folderName(path)} />} />,
+      }));
+    }
     if (mode === "changes") {
       return rank(query, src.changes, (c) => c.file.path, matchPath).map(({ item: c, label, match }) => ({
         key: `${c.kind}:${c.file.path}`,
@@ -223,7 +234,9 @@ export function CommandPalette() {
         ? source?.changes.length
           ? "No matching changes"
           : "No changes"
-        : error
+        : mode === "projects"
+          ? "No matching projects"
+          : error
           ? `Could not list files: ${error}`
           : list === null
             ? "Listing files…"
@@ -247,7 +260,7 @@ export function CommandPalette() {
           run();
         }}
       >
-        <DialogPrimitive.Title className="sr-only">{commands ? "Command palette" : mode === "changes" ? "Open changed file" : "Open file"}</DialogPrimitive.Title>
+        <DialogPrimitive.Title className="sr-only">{commands ? "Command palette" : mode === "changes" ? "Open changed file" : mode === "projects" ? "New terminal in project" : "Open file"}</DialogPrimitive.Title>
         <input
           autoFocus
           role="combobox"
@@ -259,7 +272,15 @@ export function CommandPalette() {
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={onKeyDown}
           spellCheck={false}
-          placeholder={commands ? "Type a command" : mode === "changes" ? "Open a changed file's diff · type > for commands" : "Search files by name · type > for commands"}
+          placeholder={
+            commands
+              ? "Type a command"
+              : mode === "changes"
+                ? "Open a changed file's diff · type > for commands"
+                : mode === "projects"
+                  ? "Open a terminal in a project · type > for commands"
+                  : "Search files by name · type > for commands"
+          }
           className="h-10 shrink-0 border-b border-border bg-transparent px-3 text-[13px] outline-none placeholder:text-subtle"
         />
         <div ref={listRef} id={listId} role="listbox" className="max-h-[min(420px,60vh)] min-h-0 overflow-x-hidden overflow-y-auto p-1">
@@ -300,11 +321,11 @@ function rank<T>(query: string, list: T[], text: (t: T) => string, match: (q: st
   return out.slice(0, LIMIT);
 }
 
-function PathRow({ path, hits }: { path: string; hits: number[] }) {
+function PathRow({ path, hits, icon }: { path: string; hits: number[]; icon?: ReactNode }) {
   const { dir, name } = splitPath(path);
   return (
     <>
-      <FileIcon path={path} />
+      {icon ?? <FileIcon path={path} />}
       <Highlight text={name} hits={hits} offset={dir.length} className="shrink-0 truncate" />
       <Highlight text={dir.replace(/\/$/, "")} hits={hits} className="min-w-0 flex-1 truncate text-[11.5px] opacity-60" />
     </>

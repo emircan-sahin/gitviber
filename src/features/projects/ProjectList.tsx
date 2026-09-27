@@ -1,4 +1,4 @@
-import { ArrowUpToLine, Check, Copy, ExternalLink, FolderOpen, FolderSearch, X } from "lucide-react";
+import { ArrowUpToLine, Check, Copy, ExternalLink, FolderOpen, FolderSearch, SquareTerminal, X } from "lucide-react";
 import { arrayMove } from "@dnd-kit/sortable";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -22,6 +22,8 @@ export interface ProjectListProps {
   onReorder: (list: string[]) => void;
   /** Pick the new place of a folder that was moved. */
   onLocate: (path: string) => void;
+  /** Open a terminal in a project, the window staying where it is; only where a window is open. */
+  onTerminal?: (path: string) => void;
 }
 
 /** Asked each time a list mounts (the switcher mounts on open), so a moved folder shows up at once. */
@@ -42,7 +44,7 @@ function useProjectInfo(paths: string[]) {
  * The saved projects, shared by the top bar's switcher and the welcome screen. Rows open on
  * click or ↵, reorder by dragging, and have hover actions and a right-click menu (also ⇧F10).
  */
-export function ProjectList({ recent, current, onOpen, onForget, onReorder, onLocate }: ProjectListProps) {
+export function ProjectList({ recent, current, onOpen, onForget, onReorder, onLocate, onTerminal }: ProjectListProps) {
   const info = useProjectInfo(recent);
   const tabStop = current && recent.includes(current) ? current : recent[0];
 
@@ -84,6 +86,7 @@ export function ProjectList({ recent, current, onOpen, onForget, onReorder, onLo
             onOpen={onOpen}
             onForget={onForget}
             onLocate={onLocate}
+            onTerminal={onTerminal}
             onMoveToTop={() => onReorder([p, ...recent.filter((x) => x !== p)])}
           />
         ))}
@@ -101,6 +104,7 @@ function ProjectRow({
   onOpen,
   onForget,
   onLocate,
+  onTerminal,
   onMoveToTop,
 }: {
   path: string;
@@ -111,6 +115,7 @@ function ProjectRow({
   onOpen: (p: string) => void;
   onForget: (p: string) => void;
   onLocate: (p: string) => void;
+  onTerminal?: (p: string) => void;
   onMoveToTop: () => void;
 }) {
   const { props, dragging, guard } = useSortableItem(path);
@@ -148,6 +153,11 @@ function ProjectRow({
                 </RowAction>
               ) : (
                 <>
+                  {onTerminal && (
+                    <RowAction variant="subtle" stopPropagation label="New terminal" onClick={() => onTerminal(path)}>
+                      <SquareTerminal />
+                    </RowAction>
+                  )}
                   <RowAction variant="subtle" stopPropagation label={REVEAL_LABEL} onClick={() => revealProject(path)}>
                     <FolderSearch />
                   </RowAction>
@@ -176,6 +186,11 @@ function ProjectRow({
               <FolderOpen /> Open
               <ContextMenuShortcut>↵</ContextMenuShortcut>
             </ContextMenuItem>
+            {onTerminal && (
+              <ContextMenuItem onSelect={() => onTerminal(path)}>
+                <SquareTerminal /> New Terminal
+              </ContextMenuItem>
+            )}
             <ContextMenuItem onSelect={() => revealProject(path)}>
               <FolderSearch /> {REVEAL_LABEL}
             </ContextMenuItem>
