@@ -65,6 +65,17 @@ export async function attempt(title: string, fn: () => Promise<unknown>) {
   }
 }
 
+/** A submodule with edits or untracked files inside it, which only it can commit or discard. */
+export const changedInside = (f: FileChange | null) => !!f?.submodule && /[MU]/.test(f.submodule.slice(2));
+
+/** git restore leaves a submodule's checkout (its commit, its files) as it is; only a deleted one comes back. */
+export const keptByRestore = (f: FileChange) => !!f.submodule && f.status !== "D";
+
 export const leftOut = (n: number) => `Left out ${n} nested ${n === 1 ? "repository" : "repositories"}`;
 export const paths = (rows: Change[]) => rows.map((r) => r.file.path);
+/**
+ * What to unstage: a staged rename's old path too, or its deletion would stay staged. A copy's
+ * source (status.renames=copies) is a file of its own, whose staged edits stay.
+ */
+export const unstagePaths = (files: FileChange[]) => files.flatMap((f) => (f.status === "R" && f.oldPath ? [f.path, f.oldPath] : [f.path]));
 export const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;

@@ -109,3 +109,101 @@ fn staging_no_paths_stages_nothing() {
         "`git add -A --` would take everything, nested repos too"
     );
 }
+
+#[test]
+fn unstaging_a_rename_with_its_old_path_undoes_it() {
+    let sb = Sandbox::new("unrename");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["mv", "a.txt", "b.txt"]).unwrap();
+    let st = status(&r).unwrap();
+    assert_eq!(st.staged[0].old_path.as_deref(), Some("a.txt"));
+    unstage(&r, &["b.txt".into(), "a.txt".into()]).unwrap();
+    let st = status(&r).unwrap();
+    assert!(st.staged.is_empty(), "a.txt's deletion stayed staged");
+    let unstaged: Vec<_> = st
+        .unstaged
+        .iter()
+        .map(|f| (f.path.as_str(), f.status.as_str()))
+        .collect();
+    assert_eq!(unstaged, [("a.txt", "D"), ("b.txt", "?")]);
+}
+
+/// Past the OS's argv limit (an agent's unignored node_modules) git couldn't be started at all.
+#[test]
+fn staging_unstaging_and_discarding_more_paths_than_argv_holds() {
+    let sb = Sandbox::new("manypaths");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "seed", "s\n", "seed");
+    // 3000 paths of ~890 bytes: 2.6 MB, past macOS's 1 MB and Linux's usual 2 MB. Each file
+    // is named 6 times over, as git matches every path against every pathspec.
+    let dir = ["d", "e", "f", "g"].map(|c| c.repeat(220)).join("/");
+    fs::create_dir_all(r.join(&dir)).unwrap();
+    let files: Vec<String> = (0..500).map(|i| format!("{dir}/f{i}")).collect();
+    for f in &files {
+        fs::write(r.join(f), "a\n").unwrap();
+    }
+    let many: Vec<String> = (0..6).flat_map(|_| files.clone()).collect();
+    // A folder among them takes stage's check for nested repositories.
+    let mut with_dir = many.clone();
+    with_dir.push(dir.clone());
+    stage(&r, &with_dir).unwrap();
+    assert_eq!(status(&r).unwrap().staged.len(), 500);
+    unstage(&r, &many).unwrap();
+    assert!(status(&r).unwrap().staged.is_empty());
+
+    stage(&r, &files).unwrap();
+    commit(&r, "many", &CommitOptions::default()).unwrap();
+    for f in &files {
+        fs::write(r.join(f), "b\n").unwrap();
+    }
+    discard(&r, &many).unwrap();
+    assert!(status(&r).unwrap().unstaged.is_empty());
+    assert_eq!(fs::read_to_string(r.join(&files[499])).unwrap(), "a\n");
+}
+
+/// chmod +x alone has no text diff; status says what changed.
+#[cfg(unix)]
+#[test]
+fn a_mode_change_is_reported() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new("mode");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "run.sh", "echo\n", "base");
+    fs::set_permissions(r.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    let st = status(&r).unwrap();
+    assert_eq!(st.unstaged[0].mode.as_deref(), Some("100644 → 100755"));
+    stage(&r, &["run.sh".into()]).unwrap();
+    let st = status(&r).unwrap();
+    assert_eq!(st.staged[0].mode.as_deref(), Some("100644 → 100755"));
+    assert!(st.unstaged.is_empty());
+    // A new file has no old mode to compare.
+    fs::write(r.join("new.sh"), "x\n").unwrap();
+    stage(&r, &["new.sh".into()]).unwrap();
+    let st = status(&r).unwrap();
+    assert!(st
+        .staged
+        .iter()
+        .find(|f| f.path == "new.sh")
+        .unwrap()
+        .mode
+        .is_none());
+}
+
+/// Changes inside a submodule show as the submodule's row, with nothing of its own to diff.
+#[test]
+fn a_submodule_with_changes_inside_says_so() {
+    let sb = Sandbox::new("subinside");
+    let r = repo_with_submodule(&sb);
+    fs::write(r.join("sub/l.txt"), "edited\n").unwrap();
+    fs::write(r.join("sub/new.txt"), "n\n").unwrap();
+    fs::write(r.join("a.txt"), "b\n").unwrap();
+    let st = status(&r).unwrap();
+    let sub = st.unstaged.iter().find(|f| f.path == "sub").unwrap();
+    assert_eq!(sub.submodule.as_deref(), Some("S.MU"));
+    let a = st.unstaged.iter().find(|f| f.path == "a.txt").unwrap();
+    assert!(a.submodule.is_none());
+}

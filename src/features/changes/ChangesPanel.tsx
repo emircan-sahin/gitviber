@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Windowed } from "@/components/Windowed";
 import { api, type Commit, type FileChange, type RepoStatus } from "@/lib/api";
+import { hasConflictMarkers } from "@/lib/git/conflicts";
 import { ignorePattern } from "@/lib/git/gitignore";
 import { focusPanel } from "@/lib/ui/panels";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/ui/useListNav";
@@ -15,7 +16,7 @@ import { NESTED_EXPLAINED, stageable } from "@/lib/git/worktrees";
 import { StashDialog, StashList, useStashes } from "./StashList";
 import { BisectBar } from "@/features/history/BisectBar";
 import { SubmoduleList, updateSubmodules, useSubmodules } from "./SubmoduleList";
-import { attempt, type Change, changeList, files, filtered, leftOut, paths, sumLines } from "./changeList";
+import { attempt, type Change, changeList, files, filtered, keptByRestore, leftOut, paths, sumLines, unstagePaths } from "./changeList";
 import { ChangeRowMenu } from "./ChangeRowMenu";
 import { OperationBanner } from "./OperationBanner";
 import { AllCaughtUp, NestedRow, ReviewSummary, Row, Section, SectionBtn } from "./ChangeRows";
@@ -64,28 +65,65 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   };
 
   const stage = (rows: Change[]) => act("Stage failed", () => api.stage(paths(rows)));
-  const unstage = (rows: Change[]) => act("Unstage failed", () => api.unstage(paths(rows)));
+  const unstage = (rows: Change[]) => act("Unstage failed", () => api.unstage(unstagePaths(rows.map((r) => r.file))));
+  // Both sides edited (UU) or added (AA) the file, so git wrote markers into it; staging them
+  // as they are would commit them.
+  const markResolved = async (rows: Change[]) => {
+    const check = async ({ file }: Change): Promise<"markers" | "unknown" | null> => {
+      if (file.conflict !== "UU" && file.conflict !== "AA") return null;
+      const now = await api.readFile(file.path).catch(() => null);
+      if (!now) return "unknown";
+      // Deleted, or binary: git writes no markers into those.
+      if (!now.exists || now.binary) return null;
+      if (now.tooLarge || now.lfsMissing) return "unknown";
+      return hasConflictMarkers(now.text) ? "markers" : null;
+    };
+    // One at a time: each read can be megabytes.
+    const found: Awaited<ReturnType<typeof check>>[] = [];
+    for (const r of rows) found.push(await check(r));
+    const pathsOf = (kind: "markers" | "unknown") => rows.filter((_, i) => found[i] === kind).map((r) => r.file.path);
+    const [markers, unknown] = [pathsOf("markers"), pathsOf("unknown")];
+    const flagged = markers.length + unknown.length;
+    if (flagged) {
+      const name = (list: string[]) => (list.length === 1 ? list[0] : files(list.length));
+      const said = [
+        markers.length && `${name(markers)} still ${markers.length === 1 ? "has" : "have"} conflict markers.`,
+        unknown.length && `${name(unknown)} couldn't be read to check for ${markers.length ? "them" : "conflict markers"}.`,
+      ];
+      const ok = await ask(`${said.filter(Boolean).join(" ")} Mark ${flagged === 1 ? "it" : "them"} resolved anyway?`, { title: "Mark resolved", kind: "warning", okLabel: "Mark Resolved" });
+      if (!ok) return;
+    }
+    await stage(rows);
+  };
   const resolve = (rows: Change[], side: "ours" | "theirs") =>
     act("Resolve failed", async () => {
       for (const r of rows) await api.resolveSide(r.file.path, side);
     });
+
+  const discardable = status.unstaged.filter((f) => f.status !== "?" && !keptByRestore(f));
 
   // Nested repos can't be marked viewed, so every path here is stageable.
   const viewedPaths = status.unstaged.filter((file) => !file.nested && viewed({ kind: "unstaged", file })).map((f) => f.path);
 
   // Untracked files have nothing to restore; like VS Code, discarding one deletes it (to the Trash here).
   // Tracked ones keep a copy of what they were in the Trash, which Undo (and ⌘Z) writes back.
-  const discard = async (list: FileChange[]) => {
+  const discard = async (picked: FileChange[]) => {
+    // Submodules: nothing to discard there, or to keep in the Trash.
+    const submodules = picked.filter(keptByRestore);
+    if (submodules.length) toast("info", `Left out ${submodules.length === 1 ? submodules[0].path : `${submodules.length} submodules`}`, "Discard in the submodule itself: git restore leaves its commit and files as they are.");
+    const list = picked.filter((f) => !keptByRestore(f));
     const restorable = list.filter((f) => f.status !== "?");
     const untracked = list.filter((f) => f.status === "?");
     if (!list.length) return;
     const one = list.length === 1 ? list[0].path : null;
     const trashOnly = !restorable.length;
+    // A deleted file or submodule comes back, with no current version to keep.
+    const copied = restorable.filter((f) => f.status !== "D").length;
     const message = trashOnly
       ? one
         ? `Move ${one} to the Trash? It is untracked, so git has no copy of it.`
         : `Move ${untracked.length} untracked files to the Trash? Git has no copy of them.`
-      : `Discard changes to ${one ?? files(restorable.length)}? ${restorable.length === 1 ? "Its current version is" : "Their current versions are"} moved to the Trash.${untracked.length ? ` ${files(untracked.length)} git doesn't track will be moved to the Trash too.` : ""}`;
+      : `Discard changes to ${one ?? files(restorable.length)}?${copied ? ` ${restorable.length === 1 ? "Its current version is" : "Their current versions are"} moved to the Trash.` : ""}${untracked.length ? ` ${files(untracked.length)} git doesn't track will be moved to the Trash too.` : ""}`;
     const ok = await ask(message, trashOnly ? { title: one ? "Delete file" : "Delete files", kind: "warning", okLabel: "Move to Trash" } : { title: "Discard changes", kind: "warning", okLabel: "Discard" });
     if (!ok) return;
     let entry: number | null = null;
@@ -95,7 +133,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     });
     if (done && restorable.length) {
       const single = restorable.length === 1;
-      toast("success", `Discarded ${single ? restorable[0].path : files(restorable.length)}`, `The old ${single ? "version is" : "versions are"} in the Trash.`, undoAction(entry, refresh));
+      toast("success", `Discarded ${single ? restorable[0].path : files(restorable.length)}`, copied ? `The old ${copied === 1 ? "version is" : "versions are"} in the Trash.` : undefined, undoAction(entry, refresh));
     }
     await refresh();
   };
@@ -166,7 +204,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   useCommands({
     // The tab and the selection follow the files into the other list, so pressing it again undoes it. Conflicts are left to their own actions.
     "git.toggleStage": active?.kind === "unstaged" ? () => stage(targets(active)) : active?.kind === "staged" ? () => unstage(targets(active)) : undefined,
-    "git.discard": active?.kind === "unstaged" ? () => discard(targets(active).map((r) => r.file)) : undefined,
+    "git.discard": active?.kind === "unstaged" && !targets(active).every((r) => keptByRestore(r.file)) ? () => discard(targets(active).map((r) => r.file)) : undefined,
     // Only while several rows are selected: registering then puts it over Workspace's V, which marks
     // just the open file. Staged rows stay out, as there: unmarking one unstages it.
     "review.toggleViewed": active && active.kind !== "staged" && targets(active).length > 1 ? () => setViewed(targets(active), !viewed(active)) : undefined,
@@ -245,6 +283,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
             onRevealInExplorer={onRevealInExplorer}
             stage={stage}
             unstage={unstage}
+            markResolved={markResolved}
             discard={discard}
             ignore={ignore}
             resolve={resolve}
@@ -283,12 +322,12 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
             count={status.conflicted.length}
             tone="text-conflict"
             pinned={!!pickedConflicts}
-            action={pickedConflicts && <SectionBtn onClick={() => stage(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
+            action={pickedConflicts && <SectionBtn onClick={() => markResolved(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
           >
             {rowsOf("conflict", status.conflicted, (file) =>
               row({ kind: "conflict", file }, (rows) => (
                 <>
-                  <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => stage(rows)}>
+                  <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => markResolved(rows)}>
                     <Check />
                   </RowAction>
                   <RowAction label={rows.length > 1 ? `Take current version of ${files(rows.length)}` : "Take current version"} onClick={() => resolve(rows, "ours")}>
@@ -311,7 +350,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
               pickedStaged ? (
                 <SectionBtn onClick={() => unstage(pickedStaged)}>Unstage {files(pickedStaged.length)}</SectionBtn>
               ) : (
-                <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged.map((f) => f.path)))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
+                <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(unstagePaths(status.staged)))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
               )
             }
           >
@@ -338,9 +377,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
               ) : (
                 <>
                   {/* Leaves untracked files alone; deleting one is a per-file choice. */}
-                  <SectionBtn onClick={() => discard(status.unstaged.filter((f) => f.status !== "?"))}>
-                    {filtering ? `Discard ${status.unstaged.filter((f) => f.status !== "?").length} shown…` : "Discard"}
-                  </SectionBtn>
+                  <SectionBtn onClick={() => discard(discardable)}>{filtering ? `Discard ${discardable.length} shown…` : "Discard"}</SectionBtn>
                   {viewedPaths.length > 0 && (
                     <SectionBtn onClick={() => act("Stage failed", () => api.stage(viewedPaths))}>
                       Stage {viewedPaths.length} viewed{filtering && " shown"}
@@ -357,7 +394,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
               ) : (
                 row({ kind: "unstaged", file }, (rows) => (
                   <>
-                    {file.status !== "?" && (
+                    {file.status !== "?" && !keptByRestore(file) && (
                       <RowAction label={rows.length > 1 ? `Discard ${files(rows.length)}` : "Discard changes"} onClick={() => discard(rows.map((r) => r.file))}>
                         <Undo2 />
                       </RowAction>

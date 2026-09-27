@@ -46,7 +46,7 @@ interface Props {
   /** Each side's file and tree, for Go to Definition (the old side only in a diff); none: nowhere to go. */
   links?: { original: LinkSide | null; modified: LinkSide } | null;
   /** A working-tree diff whose changes can be staged, unstaged or discarded from here. */
-  staging?: { kind: "unstaged" | "staged"; refresh: () => unknown } | null;
+  staging?: { kind: "unstaged" | "staged"; oldPath: string | null; refresh: () => unknown } | null;
   /** A PR file's line comments, drawn under their lines. */
   review?: Review | null;
   /** The file view of a file on disk that can be typed into and saved (lib/editor/edits). */

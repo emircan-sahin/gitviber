@@ -482,6 +482,13 @@ fn discard_files(
         });
     }
     restore()?;
+    // A deleted submodule comes back as its folder, which undo must not take away again.
+    files.retain(|f| {
+        !repo
+            .join(&f.path)
+            .symlink_metadata()
+            .is_ok_and(|m| m.is_dir())
+    });
     for f in &mut files {
         f.stamps[1] = fs::stamp(repo, &f.path);
     }

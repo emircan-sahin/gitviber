@@ -22,6 +22,8 @@ test("stage all leaves nested repositories out", () => {
     deletions: null,
     oid: null,
     conflict: null,
+    mode: null,
+    submodule: null,
     nested: nested ? { path: `/r/${path}` } : null,
   });
   assert.deepEqual(stageable([file("a.txt"), file("vendor/lib/", true), file("b.txt")]), { paths: ["a.txt", "b.txt"], skipped: 1 });

@@ -1,6 +1,6 @@
 //! Committing, and what the commit form reads: template, recent authors, details.
 
-use super::{command, has_head, run, run_text, run_with, validate_rev};
+use super::{command, git_dir, has_head, run, run_text, run_with, validate_rev};
 use crate::process::exec;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -51,12 +51,24 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions) -> Result<(), St
     run_with(repo, &args, &[], Some(message.as_bytes())).map(|_| ())
 }
 
-/// `commit.template`'s text as git would start the message: comment lines stripped.
-/// None when it isn't set, or can't be read (git reports that itself when it commits).
+/// Where git leaves a message for the next commit, in the order `git commit` joins them.
+pub(super) const PREPARED: [&str; 2] = ["SQUASH_MSG", "MERGE_MSG"];
+
+/// The message as git would start it, comment lines stripped: the one a `merge --squash` or
+/// `cherry-pick -n` prepared (SQUASH_MSG then MERGE_MSG, joined as `git commit` does), else
+/// `commit.template`'s. None when there's neither, or it can't be read (git reports that itself).
 pub fn commit_template(repo: &Path) -> Option<String> {
-    let path = run_text(repo, &["config", "--path", "--get", "commit.template"]).ok()?;
-    // A relative path is relative to where git runs, the worktree root.
-    let bytes = std::fs::read(repo.join(path.trim())).ok()?;
+    let prepared: Vec<u8> = git_dir(repo)
+        .map(|d| PREPARED.map(|f| std::fs::read(d.join(f)).unwrap_or_default()))
+        .unwrap_or_default()
+        .concat();
+    let bytes = if prepared.is_empty() {
+        let path = run_text(repo, &["config", "--path", "--get", "commit.template"]).ok()?;
+        // A relative path is relative to where git runs, the worktree root.
+        std::fs::read(repo.join(path.trim())).ok()?
+    } else {
+        prepared
+    };
     let text = run_with(repo, &["stripspace", "--strip-comments"], &[], Some(&bytes)).ok()?;
     let text = String::from_utf8_lossy(&text).trim().to_string();
     (!text.is_empty()).then_some(text)

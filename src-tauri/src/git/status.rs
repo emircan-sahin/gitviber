@@ -1,8 +1,8 @@
 //! The working tree's status: changed files, line counts, nested repos, the operation under way.
 
 use super::{
-    command, is_binary, operation, publish_config, publish_remote_among, push_target, read_regular,
-    remotes, run, worktrees, PushTarget, MAX_TEXT_BYTES,
+    command, git_dir, is_binary, operation_in, publish_config, publish_remote_among, push_target,
+    read_regular, remotes, run, worktrees, PushTarget, MAX_TEXT_BYTES, PREPARED,
 };
 use crate::process::exec;
 use serde::Serialize;
@@ -25,6 +25,11 @@ pub struct FileChange {
     /// For conflicts, git's two-letter code: UU both modified, AA both added,
     /// UD deleted by them, DU deleted by us, AU/UA added by one side, DD both deleted.
     pub conflict: Option<String>,
+    /// "100644 → 100755" when the mode changed (chmod +x), which the text diff doesn't show.
+    pub mode: Option<String>,
+    /// A submodule's unstaged entry: porcelain v2's `S<c><m><u>` (its commit moved, tracked
+    /// changes, untracked files inside it, each a letter or `.`).
+    pub submodule: Option<String>,
     /// Untracked entries that are another repository's root. This repo's own linked
     /// worktrees are left out of status: the worktree picker reaches them.
     pub nested: Option<Nested>,
@@ -76,6 +81,9 @@ pub struct RepoStatus {
     pub unstaged: Vec<FileChange>,
     pub conflicted: Vec<FileChange>,
     pub operation: Option<Operation>,
+    /// Set while git has left a message for the next commit, which `commit_template` reads, and
+    /// changes with it: the message files' sizes and mtimes.
+    pub prepared_message: Option<String>,
 }
 
 pub(super) fn change(path: &str, old_path: Option<&str>, status: char) -> FileChange {
@@ -87,6 +95,8 @@ pub(super) fn change(path: &str, old_path: Option<&str>, status: char) -> FileCh
         deletions: None,
         oid: None,
         conflict: None,
+        mode: None,
+        submodule: None,
         nested: None,
     }
 }
@@ -200,6 +210,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
             "--untracked-files=all",
         ],
     )?;
+    let dir = git_dir(repo);
     let mut st = RepoStatus {
         root: repo.to_string_lossy().into_owned(),
         branch: None,
@@ -215,7 +226,8 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         staged: vec![],
         unstaged: vec![],
         conflicted: vec![],
-        operation: operation(repo),
+        operation: dir.as_deref().and_then(operation_in),
+        prepared_message: dir.as_deref().and_then(prepared_stamp),
     };
 
     let mut nested_roots = std::collections::HashSet::new();
@@ -260,11 +272,17 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
                 if x != '.' {
                     let mut f = change(path, orig.as_deref(), x);
                     f.oid = fields.get(7).map(|h| h.to_string());
+                    f.mode = mode_change(&fields, 3, 4);
                     st.staged.push(f);
                 }
                 if y != '.' {
                     // In the worktree the rename is already recorded in the index, so show it as M.
                     let mut f = change(path, None, y);
+                    f.mode = mode_change(&fields, 4, 5);
+                    f.submodule = fields
+                        .get(2)
+                        .filter(|s| s.starts_with('S'))
+                        .map(|s| s.to_string());
                     if new_gitlink(&fields) {
                         f.nested = Some(nested(repo, path));
                     }
@@ -333,6 +351,23 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         apply_numstat(&mut st.staged, &stats);
     }
     Ok(st)
+}
+
+/// "mA → mB" for a split porcelain v2 record's modes at `from` and `to` (mH 3, mI 4, mW 5)
+/// when they differ; not for a side that has no file (000000), whose status says so.
+fn mode_change(fields: &[&str], from: usize, to: usize) -> Option<String> {
+    let (a, b) = (*fields.get(from)?, *fields.get(to)?);
+    (a != b && a != "000000" && b != "000000").then(|| format!("{a} → {b}"))
+}
+
+/// `prepared_message` for git dir `dir`: an empty message file counts as none, as in `commit_template`.
+fn prepared_stamp(dir: &Path) -> Option<String> {
+    let stamps: Vec<String> = PREPARED
+        .iter()
+        .filter_map(|f| disk_oid(dir, f))
+        .filter(|s| !s.starts_with("0:"))
+        .collect();
+    (!stamps.is_empty()).then(|| stamps.join(" "))
 }
 
 /// A working-tree file's `oid`: its size and mtime, None once it's gone.

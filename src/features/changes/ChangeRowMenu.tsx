@@ -7,7 +7,7 @@ import type { Selection } from "@/lib/repo/selection";
 import { copyFiles, copyLabel, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
-import { type Change, paths } from "./changeList";
+import { type Change, keptByRestore, paths } from "./changeList";
 
 /** The row's right-click menu, modeled on VS Code's Source Control view. `rows`: what its git actions cover. */
 export function ChangeRowMenu({
@@ -22,6 +22,7 @@ export function ChangeRowMenu({
   onRevealInExplorer,
   stage,
   unstage,
+  markResolved,
   discard,
   ignore,
   resolve,
@@ -38,6 +39,7 @@ export function ChangeRowMenu({
   onRevealInExplorer: (path: string) => void;
   stage: (rows: Change[]) => void;
   unstage: (rows: Change[]) => void;
+  markResolved: (rows: Change[]) => void;
   discard: (list: FileChange[]) => void;
   ignore: (list: FileChange[]) => void;
   resolve: (rows: Change[], side: "ours" | "theirs") => void;
@@ -76,7 +78,7 @@ export function ChangeRowMenu({
           <ContextMenuItem onSelect={() => stage(rows)}>
             <Plus /> {n > 1 ? `Stage ${n} Files` : "Stage Changes"}
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => discard(rows.map((r) => r.file))}>
+          <ContextMenuItem disabled={rows.every((r) => keptByRestore(r.file))} onSelect={() => discard(rows.map((r) => r.file))}>
             <Undo2 /> {n > 1 ? `Discard ${n} Files…` : "Discard Changes"}
           </ContextMenuItem>
           {untracked.length > 0 && (
@@ -98,7 +100,7 @@ export function ChangeRowMenu({
       )}
       {sel.kind === "conflict" && (
         <>
-          <ContextMenuItem onSelect={() => stage(rows)}>
+          <ContextMenuItem onSelect={() => markResolved(rows)}>
             <Check /> {n > 1 ? `Mark ${n} as Resolved` : "Mark as Resolved"}
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => resolve(rows, "ours")}>

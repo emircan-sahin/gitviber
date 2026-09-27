@@ -48,6 +48,12 @@ export function parseConflicts(text: string): { segments: Segment[]; trailingNew
   return { segments, trailingNewline };
 }
 
+/** Whether a file still has conflict blocks, or a start marker left open. */
+export function hasConflictMarkers(text: string): boolean {
+  const parsed = parseConflicts(text);
+  return !parsed || parsed.segments.some((s) => s.t === "conflict");
+}
+
 /** The file as "current" would leave it, for sniffing its language without the marker lines. */
 export function oursText(segments: Segment[]): string {
   return segments.flatMap((s) => (s.t === "text" ? s.lines : s.ours)).join("\n");

@@ -12,6 +12,8 @@ import { tracked, undoAction } from "../repo/undo";
 export interface Staging {
   kind: "unstaged" | "staged";
   path: string;
+  /** A staged rename's old path: HEAD's side of the diff is read there. */
+  oldPath: string | null;
   pair: DiffPair;
   refresh: () => unknown;
 }
@@ -36,6 +38,7 @@ async function run(s: Staging, action: LineAction, p: Picked) {
   const { pair } = s;
   const request = {
     path: s.path,
+    oldPath: s.oldPath,
     kind: s.kind,
     action,
     original: pair.original.exists ? pair.original.text : null,

@@ -12,6 +12,7 @@ import { toast } from "@/lib/app/toast";
 import { tracked, undoAction } from "@/lib/repo/undo";
 import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED, stageable } from "@/lib/git/worktrees";
+import { pasteMessage } from "@/lib/git/pasteMessage";
 import { attempt, files, leftOut } from "./changeList";
 import { SectionBtn } from "./ChangeRows";
 import { CoAuthorChip, CoAuthorPicker, OptionChip } from "./CoAuthorPicker";
@@ -22,7 +23,7 @@ const SUMMARY_LIMIT = 72;
 
 /** `shown`: what the list's filter leaves, while it has text; the button says how many files it takes that the list hides. */
 export function CommitBox({ status, shown, head, main, refresh }: { status: RepoStatus; shown: RepoStatus | null; head: Commit | null; main: string; refresh: () => Promise<void> }) {
-  const { draft, setDraft, amend, edited, template, toggleAmend, clear } = useCommitDraft(status.root, head);
+  const { draft, setDraft, amend, edited, startBody, toggleAmend, clear } = useCommitDraft(status.root, head, status.preparedMessage);
   const [busy, setBusy] = useState(false);
   const { signOffRepos, suggestEnabled } = useSettings();
   const signOff = signOffRepos.includes(main);
@@ -81,7 +82,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     if (ok && then) runCommand(then);
   };
 
-  const { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest } = useSuggestMessage({ draft, setDraft, template, amend: !!amend, hasStaged, hasAny, busy });
+  const { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest } = useSuggestMessage({ draft, setDraft, startBody, amend: !!amend, hasStaged, hasAny, busy });
 
   useCommands({ "git.commit": canCommit ? commit : undefined, "git.suggestMessage": canSuggest ? suggest : undefined });
   const commitKey = useShortcut("git.commit");
@@ -93,10 +94,21 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     }
   };
 
+  const onSummaryPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const el = e.currentTarget;
+    const end = draft.summary.length;
+    const pasted = pasteMessage(draft, startBody, e.clipboardData.getData("text/plain"), el.selectionStart ?? end, el.selectionEnd ?? end);
+    if (!pasted) return;
+    e.preventDefault();
+    setDraft({ ...draft, summary: pasted.summary, body: pasted.body });
+    // The new value puts the caret at the end; a paste leaves it after what came in.
+    requestAnimationFrame(() => el.setSelectionRange(pasted.caret, pasted.caret));
+  };
+
   return (
     <div className="shrink-0 border-t border-border bg-panel p-2">
       <div className="relative">
-        <Input placeholder="Summary" value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} onKeyDown={onKey} className={cn("font-medium", length > 50 && "pr-8")} />
+        <Input placeholder="Summary" value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} onPaste={onSummaryPaste} onKeyDown={onKey} className={cn("font-medium", length > 50 && "pr-8")} />
         {length > 50 && (
           <Tip label={`Summaries over ${SUMMARY_LIMIT} characters get cut off in git log and on GitHub`}>
             <span className={cn("absolute top-1/2 right-2 -translate-y-1/2 font-mono text-[10.5px]", length > SUMMARY_LIMIT ? "text-modified" : "text-subtle")}>{length}</span>

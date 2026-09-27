@@ -10,6 +10,10 @@ export interface FileChange {
   oid: string | null;
   /** Conflicts only: UU both modified, AA both added, UD/DU deleted by them/us, AU/UA, DD. */
   conflict: string | null;
+  /** "100644 → 100755" when the file mode changed (chmod +x); the text diff doesn't show it. */
+  mode: string | null;
+  /** A submodule's unstaged entry: `S<c><m><u>`, C its commit moved, M tracked changes and U untracked files inside it (else `.`). */
+  submodule: string | null;
   /** Untracked entry that is another repository's root (never one of this repo's worktrees). */
   nested: Nested | null;
 }
@@ -77,6 +81,8 @@ export interface RepoStatus {
   unstaged: FileChange[];
   conflicted: FileChange[];
   operation: Operation | null;
+  /** Set while git has left a message for the next commit (a squash merge, `cherry-pick -n`), which commitTemplate returns; changes with it. */
+  preparedMessage: string | null;
 }
 
 export interface Commit {
@@ -246,6 +252,7 @@ export type HistoryEdit =
 
 export interface LinesRequest {
   path: string;
+  oldPath: string | null;
   kind: "unstaged" | "staged";
   action: "stage" | "unstage" | "discard";
   /** The texts the diff showed (null: no such file), so a file changed since isn't touched. */

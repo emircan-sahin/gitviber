@@ -127,7 +127,7 @@ export const api = {
   changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
   /** An empty `message` with `amend` keeps the old one (--no-edit). */
   commit: (message: string, options: CommitOptions) => invoke<void>("commit", { message, options }),
-  /** `commit.template` without its comment lines; null when unset. */
+  /** The message git would start with, comment lines stripped: a squash merge's or `cherry-pick -n`'s, else `commit.template`; null for neither. */
   commitTemplate: () => invoke<string | null>("commit_template"),
   /** "Name <email>" of recent authors and co-authors, newest first, not the user. */
   recentAuthors: () => invoke<string[]>("recent_authors"),

@@ -17,7 +17,11 @@ fn read_trim(path: std::path::PathBuf) -> Option<String> {
 }
 
 pub fn operation(repo: &Path) -> Option<Operation> {
-    let dir = git_dir(repo)?;
+    operation_in(&git_dir(repo)?)
+}
+
+/// `operation` for the repository whose git dir is `dir`.
+pub(crate) fn operation_in(dir: &Path) -> Option<Operation> {
     // `git am` also uses rebase-apply/, marked by an `applying` file.
     if dir.join("rebase-apply/applying").exists() {
         return Some(Operation {

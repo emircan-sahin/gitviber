@@ -31,6 +31,7 @@ import type { Tab } from "./tabs";
 import { TabStrip } from "./TabStrip";
 import { CommitBar } from "./CommitBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { changedInside } from "@/features/changes/changeList";
 
 interface ViewerProps {
   tabs: Tab[];
@@ -127,7 +128,8 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile, file));
 
   const diff = !isFile && !media && !rendered;
-  const note = diff && pair && !special ? (pair.eolOnly ? "Only line endings changed" : (newlineNote(pair) ?? (pair.whitespaceHidden ? "Whitespace changes hidden" : null))) : null;
+  const textNote = pair?.eolOnly ? "Only line endings changed" : pair && (newlineNote(pair) ?? (pair.whitespaceHidden ? "Whitespace changes hidden" : null));
+  const note = diff && pair && !special ? [fileNote(file), textNote].filter(Boolean).join(" · ") || null : null;
   const code = !media && !rendered && !!pair && !special;
   const blame = useBlame(isFile && code && s.blame ? sel.path : null, pair, status?.head ?? null);
   // Text the file view can't turn back into the file's bytes stays read-only.
@@ -315,7 +317,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               blameColumn={!!s.blame && isFile && !blame?.unavailable}
               onBlameClick={(c) => onShowCommit(c.sha, c.path)}
               links={linkSides(sel, revision)}
-              staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, refresh } : null}
+              staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, oldPath: sel.file.oldPath, refresh } : null}
               review={review}
               editable={editable}
               github={github}
@@ -327,6 +329,17 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   );
 }
 
+const KINDS: Record<string, string> = { "100644": "file", "100755": "file", "120000": "symlink", "160000": "submodule" };
+
+/** What a text diff can't show about a change: its mode or type, or a submodule's own changes. */
+function fileNote(file: FileChange | null) {
+  if (file?.mode) {
+    const [from, to] = file.mode.split(" → ").map((m) => KINDS[m]);
+    return from && to && from !== to ? `Changed from a ${from} to a ${to} (${file.mode})` : `File mode changed: ${file.mode}`;
+  }
+  return changedInside(file) ? "This submodule has changes inside it; commit them in the submodule" : null;
+}
+
 function placeholderFor(pair: DiffPair, isFile: boolean, file: FileChange | null) {
   const { original: a, modified: b } = pair;
   if (isFile && !b.exists) return "This file no longer exists";
@@ -334,6 +347,9 @@ function placeholderFor(pair: DiffPair, isFile: boolean, file: FileChange | null
   if (a.binary || b.binary) return "Binary file";
   if (a.tooLarge || b.tooLarge) return "File is too large to display";
   if (!isFile && !pair.rows.some((r) => r.k !== 0)) {
+    // First: an added or renamed file whose mode changed isn't only that.
+    const note = fileNote(file);
+    if (note) return note;
     if (pair.whitespaceHidden) return "Only whitespace changed (hidden)";
     // Added or deleted with no line changed: there were none.
     if (a.exists !== b.exists) return "Empty file";

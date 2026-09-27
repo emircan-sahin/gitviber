@@ -20,6 +20,8 @@ export interface CommitDraft {
   body: string;
   /** "Name <email>", added as Co-authored-by trailers. */
   coAuthors: string[];
+  /** What summary and body started as (a prepared message, commit.template), to tell an untouched draft from the user's. */
+  from?: { summary: string; body: string };
 }
 
 const KEY = "gitviber.workspaces";
@@ -69,7 +71,8 @@ export function loadDraft(root: string): CommitDraft | null {
   const d = all(DRAFTS_KEY)[root] as Partial<CommitDraft> | undefined;
   if (!d || typeof d.summary !== "string" || typeof d.body !== "string") return null;
   const coAuthors = Array.isArray(d.coAuthors) ? d.coAuthors.filter((a) => typeof a === "string") : [];
-  return { summary: d.summary, body: d.body, coAuthors };
+  const from = isRecord(d.from) && typeof d.from.summary === "string" && typeof d.from.body === "string" ? { summary: d.from.summary, body: d.from.body } : undefined;
+  return { summary: d.summary, body: d.body, coAuthors, from };
 }
 
 /** An empty draft is dropped rather than stored. */

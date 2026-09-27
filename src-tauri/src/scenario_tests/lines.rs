@@ -10,13 +10,26 @@ fn request(
     removed: &[u32],
     added: &[u32],
 ) -> Request {
-    let pair = diff_pair(repo, kind, path, None, None, None, None, |p| {
+    request_renamed(repo, kind, action, (path, None), removed, added)
+}
+
+/// The same for a file that may have been renamed from `path.1`.
+fn request_renamed(
+    repo: &Path,
+    kind: &str,
+    action: &str,
+    (path, old_path): (&str, Option<&str>),
+    removed: &[u32],
+    added: &[u32],
+) -> Request {
+    let pair = diff_pair(repo, kind, path, old_path, None, None, None, |p| {
         vfs::read_diff_side(repo, p)
     })
     .unwrap();
     let shown = |f: &FileText| f.exists.then(|| f.text.clone());
     Request {
         path: path.into(),
+        old_path: old_path.map(Into::into),
         kind: kind.into(),
         action: action.into(),
         original: shown(&pair.original),
@@ -59,6 +72,25 @@ fn staging_one_change_of_two_leaves_the_other() {
     // And back: unstaging it.
     act(&r, "staged", "unstage", "a.txt", &[2], &[2]);
     assert_eq!(index(&r, "a.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n");
+}
+
+#[test]
+fn unstaging_lines_of_a_renamed_file() {
+    let (_sb, r) = repo("lines-rename");
+    write_commit(&r, "a.txt", "1\n2\n3\n4\n5\n6\n7\n8\n9\n", "base");
+    run(&r, &["mv", "a.txt", "b.txt"]).unwrap();
+    fs::write(r.join("b.txt"), "1\nTWO\n3\n4\n5\n6\n7\n8\n9\n").unwrap();
+    stage(&r, &["b.txt".into()]).unwrap();
+    let req = request_renamed(
+        &r,
+        "staged",
+        "unstage",
+        ("b.txt", Some("a.txt")),
+        &[2],
+        &[2],
+    );
+    change(&r, &req).unwrap();
+    assert_eq!(index(&r, "b.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n");
 }
 
 #[test]
