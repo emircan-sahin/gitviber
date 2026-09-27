@@ -409,8 +409,10 @@ export function focusActive() {
 }
 setTerminalFocus(focusActive);
 
-export function openTerminal(cwd: string) {
+/** `run`: typed into the shell as it starts, which stays once the command exits. */
+export function openTerminal(cwd: string, run?: string) {
   const pane = createPane(cwd);
+  if (run) send(panes.get(pane.id)!, `${run}\r`);
   const group = { id: nextId++, panes: [pane], focused: pane.id };
   set({ open: true, groups: [...state.groups, group], active: group.id });
   focusActive();
