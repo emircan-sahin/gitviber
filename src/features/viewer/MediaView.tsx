@@ -179,7 +179,7 @@ export function SvgView({ before, after, stacked, ...props }: { before: string |
 }
 
 /** One of two SVGs laid over each other (ImageCompare): both are placed in `frame` (null until both sizes are known); `backdrop`: its own, frame-sized. */
-export interface SvgLayer {
+interface SvgLayer {
   frame: [number, number] | null;
   onSize: (n: [number, number]) => void;
   backdrop: boolean;

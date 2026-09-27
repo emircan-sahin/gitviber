@@ -21,7 +21,7 @@ pub fn operation(repo: &Path) -> Option<Operation> {
 }
 
 /// `operation` for the repository whose git dir is `dir`.
-pub(crate) fn operation_in(dir: &Path) -> Option<Operation> {
+pub(super) fn operation_in(dir: &Path) -> Option<Operation> {
     // `git am` also uses rebase-apply/, marked by an `applying` file.
     if dir.join("rebase-apply/applying").exists() {
         return Some(Operation {
