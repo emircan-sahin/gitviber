@@ -7,6 +7,7 @@ import { api, type Branch, github, type Target, type Worktree } from "@/lib/api"
 import { loadWorktreeDir, moveRoot, saveWorktreeDir, sharedWorktreeDir } from "@/lib/repo/session";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { shortPath } from "@/lib/git/worktrees";
+import { plural } from "@/lib/format";
 import { folderName, parentFolder } from "@/lib/path";
 import { createStore } from "@/lib/store";
 import { BaseSelect } from "@/features/branches/BaseSelect";
@@ -150,7 +151,7 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
         </div>
         {includes > 0 && (
           <div className="mt-1.5">
-            Copies {includes === 1 ? "1 ignored file" : `${includes.toLocaleString()} ignored files`} listed in <span className="font-mono">.worktreeinclude</span>
+            Copies {plural(includes, "ignored file")} listed in <span className="font-mono">.worktreeinclude</span>
           </div>
         )}
       </div>

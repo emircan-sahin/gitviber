@@ -35,8 +35,22 @@ pub fn worktree_includes(root: &Path) -> Result<Vec<String>, String> {
         "--directory",
     ];
     let ignored = run(root, &args)?;
-    let (dirs, files): (Vec<&str>, Vec<&str>) = entries(&ignored).partition(|p| p.ends_with('/'));
-    let dirs: HashSet<&str> = dirs.iter().map(|d| d.trim_end_matches('/')).collect();
+    let listed: Vec<&str> = entries(&ignored).collect();
+    // A folder holding only ignored files is listed too, and then what's in it: only one with
+    // nothing listed under it is collapsed.
+    let parents: HashSet<&str> = listed
+        .iter()
+        .flat_map(|p| {
+            let p = p.trim_end_matches('/');
+            p.match_indices('/').map(move |(i, _)| &p[..i])
+        })
+        .collect();
+    let (dirs, files): (Vec<&str>, Vec<&str>) = listed.into_iter().partition(|p| p.ends_with('/'));
+    let dirs: HashSet<&str> = dirs
+        .iter()
+        .map(|d| d.trim_end_matches('/'))
+        .filter(|d| !parents.contains(d))
+        .collect();
     let files: HashSet<&str> = files.into_iter().collect();
     let skip: Vec<String> = dirs
         .iter()
