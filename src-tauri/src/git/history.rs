@@ -1,8 +1,8 @@
 //! The commit log, its filters and graph, reflog and branch comparisons.
 
 use super::{
-    has_head, pushed_base, range_files, run, run_text, validate_branch, validate_full_ref,
-    validate_rev, FileChange, REF_KINDS,
+    has_head, has_origin, pushed_base, range_files, run, run_text, validate_branch,
+    validate_full_ref, validate_rev, FileChange, REF_KINDS,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -401,9 +401,7 @@ fn commits(
         run_text(repo, &args).map(lines)
     };
     // No origin refs at all means nothing is on origin; skip the walk, it would list the whole history.
-    let has_origin = run_text(repo, &["for-each-ref", "--count=1", "refs/remotes/origin"])
-        .is_ok_and(|s| !s.trim().is_empty());
-    let off_origin = if has_origin {
+    let off_origin = if has_origin(repo) {
         Some(outside("--remotes=origin")?)
     } else {
         None

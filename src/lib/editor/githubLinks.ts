@@ -4,21 +4,15 @@ import type { GitHubSide } from "../github/permalink";
 import { gitHubLink } from "../github/url";
 import { toast } from "../app/toast";
 import { isEdited } from "./edits";
+import { selectedLines } from "./lineActions";
 import type { monaco } from "./monaco";
 
-export type Side = "original" | "modified";
-
-/** The selected lines, none for an empty selection. One that ends at the start of a line doesn't take that line. */
-function selectedLines(code: monaco.editor.ICodeEditor): [number, number] | null {
-  const sel = code.getSelection();
-  if (!sel || sel.isEmpty()) return null;
-  const to = sel.endColumn === 1 && sel.endLineNumber > sel.startLineNumber ? sel.endLineNumber - 1 : sel.endLineNumber;
-  return [sel.startLineNumber, to];
-}
+type Side = "original" | "modified";
 
 /** Copies (or opens) the link to what `code`, showing `side`, has selected. */
 export function linkSelection(side: GitHubSide, code: monaco.editor.ICodeEditor, open: boolean) {
-  const lines = selectedLines(code);
+  const sel = code.getSelection();
+  const lines = sel && !sel.isEmpty() ? selectedLines(sel) : null;
   // The saved file's lines are what's matched against GitHub's.
   if (lines && !side.sha && isEdited(side.path)) return toast("info", "Save the file first", "The link goes by the saved file's line numbers.");
   void gitHubLink(side, lines, open);

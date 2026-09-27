@@ -417,6 +417,9 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   const targetFiles = targets.filter((e) => !e.isDir);
   const targetDiscardable = targets.filter((e) => discardable.has(e.path));
   const menuDir = t ? (t.isDir && !multi ? t.path : null) : "";
+  // Untracked or ignored: GitHub has no copy, as History has none.
+  const offGitHub = !!t && (t.ignored || fileStatus.get(t.path) === "?");
+  const gitHubItem = (open: boolean) => webUrl && void gitHubLink({ web: webUrl, path: t?.path ?? "", sha: null }, null, open);
 
   return (
     <div className="flex h-full flex-col">
@@ -528,13 +531,13 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
               <FolderSearch /> {REVEAL_LABEL}
             </ContextMenuItem>
             <OpenInMenuItem path={t?.path ?? ""} />
-            {webUrl && !t?.ignored && (
+            {webUrl && (
               <>
-                <ContextMenuItem onSelect={() => void gitHubLink({ web: webUrl, path: t?.path ?? "", sha: null }, null, true)}>
-                  <ExternalLink /> Open on GitHub
-                </ContextMenuItem>
-                <ContextMenuItem onSelect={() => void gitHubLink({ web: webUrl, path: t?.path ?? "", sha: null }, null, false)}>
+                <ContextMenuItem disabled={offGitHub} onSelect={() => gitHubItem(false)}>
                   <Link /> Copy GitHub Link
+                </ContextMenuItem>
+                <ContextMenuItem disabled={offGitHub} onSelect={() => gitHubItem(true)}>
+                  <ExternalLink /> Open on GitHub
                 </ContextMenuItem>
               </>
             )}

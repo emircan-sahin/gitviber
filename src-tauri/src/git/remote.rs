@@ -80,6 +80,12 @@ pub fn remote_set_url(repo: &Path, name: &str, url: &str) -> Result<(), String> 
     run(repo, &["remote", "set-url", "--", name, url.trim()]).map(|_| ())
 }
 
+/// Any remote-tracking branch of origin's: none means nothing is known to be on origin.
+pub(super) fn has_origin(repo: &Path) -> bool {
+    run_text(repo, &["for-each-ref", "--count=1", "refs/remotes/origin"])
+        .is_ok_and(|s| !s.trim().is_empty())
+}
+
 pub fn remote_url(repo: &Path, remote: &str) -> Option<String> {
     run_text(repo, &["remote", "get-url", remote])
         .ok()

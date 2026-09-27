@@ -1,6 +1,6 @@
 //! Links to a file on GitHub that keep pointing at the same code: at a commit, not a branch.
 
-use super::run_text;
+use super::{has_head, has_origin, run_text};
 use serde::Serialize;
 use std::path::Path;
 
@@ -38,6 +38,9 @@ pub fn permalink(repo: &Path, path: &str, lines: Option<(u32, u32)>) -> Result<P
                 &[
                     "diff",
                     "-U0",
+                    // Hunks for any file (a `-diff` attribute, a NUL byte), never merged by the user's config.
+                    "--text",
+                    "--inter-hunk-context=0",
                     "--no-color",
                     "--no-ext-diff",
                     "--no-textconv",
@@ -54,32 +57,31 @@ pub fn permalink(repo: &Path, path: &str, lines: Option<(u32, u32)>) -> Result<P
     Ok(Permalink { sha, tree, lines })
 }
 
-/// HEAD if origin has it, else the newest of its ancestors that origin has: the commits on
-/// the boundary of what isn't pushed. Walks only the unpushed commits.
+/// HEAD if origin has it, else the newest commit of its first-parent line that origin has: the
+/// parent of the oldest unpushed one. A merged-in branch's commits aren't this branch's line.
+/// Walks only the unpushed commits.
 fn pushed_head(repo: &Path) -> Result<String, String> {
     const NOT_PUSHED: &str = "Nothing on this branch is on GitHub yet. Push it first.";
-    let has_origin = run_text(repo, &["for-each-ref", "--count=1", "refs/remotes/origin"])
-        .is_ok_and(|s| !s.trim().is_empty());
-    if !has_origin {
+    if !has_head(repo) || !has_origin(repo) {
         return Err(NOT_PUSHED.into());
     }
     let out = run_text(
         repo,
         &[
             "rev-list",
-            "--boundary",
+            "--first-parent",
             "HEAD",
             "--not",
             "--remotes=origin",
         ],
     )?;
-    if out.trim().is_empty() {
-        return run_text(repo, &["rev-parse", "HEAD"]).map(|s| s.trim().to_string());
-    }
-    out.lines()
-        .find_map(|l| l.strip_prefix('-'))
-        .map(str::to_string)
-        .ok_or_else(|| NOT_PUSHED.into())
+    let at = match out.lines().last() {
+        None => "HEAD".to_string(),
+        Some(oldest) => format!("{oldest}^1"),
+    };
+    run_text(repo, &["rev-parse", "--verify", "-q", &at])
+        .map(|s| s.trim().to_string())
+        .map_err(|_| NOT_PUSHED.into())
 }
 
 /// Lines `from..=to` of the new side of `diff` (`git diff -U0`) on its old side, if no change

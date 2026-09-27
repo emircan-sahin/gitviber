@@ -13,7 +13,7 @@ test("a file links to its commit, with the lines picked", () => {
 test("folders are trees, and names are escaped per segment", () => {
   assert.equal(permalinkUrl(WEB, "abc", "", { tree: true }), `${WEB}/tree/abc`);
   assert.equal(permalinkUrl(WEB, "abc", "app/[id] #1/p?.tsx"), `${WEB}/blob/abc/app/%5Bid%5D%20%231/p%3F.tsx`);
-  assert.equal(permalinkUrl(WEB, "abc", "docs", { tree: true, lines: [1, 2] }), `${WEB}/tree/abc/docs`);
+  assert.equal(permalinkUrl(WEB, "abc", "docs", { tree: true }), `${WEB}/tree/abc/docs`);
 });
 
 test("a commit page's repo", () => {

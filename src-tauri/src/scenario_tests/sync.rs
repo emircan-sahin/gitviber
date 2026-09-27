@@ -192,6 +192,38 @@ fn permalink_points_at_the_last_pushed_commit() {
     assert_eq!(permalink(a, "d", None).unwrap().sha, rev(a, "HEAD"));
 }
 
+#[test]
+fn permalink_follows_the_branch_past_a_merge_and_diffs_any_file() {
+    let sb = Sandbox::new("permalink-merge");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    // Diffed as binary by default: lines still move past a change above them.
+    write_commit(a, ".gitattributes", "*.dat -diff\n", "attributes");
+    write_commit(a, "f.dat", "one\ntwo\n", "data");
+    run(a, &["switch", "-q", "-c", "feat"]).unwrap();
+    write_commit(a, "f1.txt", "f\n", "f1");
+    run(a, &["push", "-q", "-u", "origin", "feat"]).unwrap();
+    let pushed = rev(a, "HEAD");
+    // main moves on elsewhere and is merged in here, unpushed: its tip isn't this branch's line.
+    write_commit(b, "m.txt", "m\n", "on main");
+    run(b, &["push", "-q"]).unwrap();
+    run(a, &["fetch", "-q"]).unwrap();
+    run(a, &["merge", "-q", "--no-edit", "origin/main"]).unwrap();
+    assert_eq!(permalink(a, "f1.txt", None).unwrap().sha, pushed);
+    fs::write(a.join("f.dat"), "zero\none\ntwo\n").unwrap();
+    assert_eq!(
+        permalink(a, "f.dat", Some((2, 3))).unwrap().lines,
+        Some((1, 2))
+    );
+    assert!(permalink(a, "f.dat", Some((1, 1))).is_err());
+
+    let r = sb.path("unborn");
+    init(&r);
+    assert!(permalink(&r, "x", None)
+        .unwrap_err()
+        .contains("Push it first"));
+}
+
 /// The fork workflow git documents: pull from upstream, push to origin (remote.pushDefault).
 #[test]
 fn push_target_follows_push_default_not_the_upstream() {

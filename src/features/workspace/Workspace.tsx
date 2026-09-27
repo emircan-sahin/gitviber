@@ -166,9 +166,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   };
   const reviewLabel = shortRef(review || reviewBase(repo.branches) || "") || "a base branch";
   const remoteNames = useMemo(() => new Set(repo.branches.filter((b) => b.remote).map((b) => b.name)), [repo.branches]);
-  // For GitHub links to files. Asked again when remote branches come or go, not on every refresh.
-  const remoteKey = [...remoteNames].sort().join("\n");
-  const webUrl = useAsyncValue(() => api.githubWebUrl().catch(() => null), [root, remoteKey], null);
+  // origin's page on GitHub, for links. `remoteNames` is rebuilt on every git refresh, including the one `git remote set-url` causes.
+  const webUrl = useAsyncValue(() => api.githubWebUrl().catch(() => null), [remoteNames], null);
 
   // A merge/rebase that stopped on conflicts: bring the conflicts into view.
   const conflictCount = status?.conflicted.length ?? 0;
@@ -402,6 +401,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     branches={repo.branches}
                     status={status}
                     remotes={remoteNames}
+                    webUrl={webUrl}
                     hasMore={repo.hasMore}
                     loadMore={repo.loadMore}
                     refresh={() => repo.refresh()}

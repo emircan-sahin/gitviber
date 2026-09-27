@@ -20,6 +20,8 @@ interface Props {
   status: RepoStatus | null;
   /** Remote-tracking branch names (origin/main…), to group decorations. */
   remotes: Set<string>;
+  /** origin's page on GitHub; null: not on GitHub. */
+  webUrl: string | null;
   hasMore: boolean;
   loadMore: () => Promise<void>;
   refresh: () => Promise<void>;
@@ -53,21 +55,15 @@ interface Props {
   showRefs?: GraphRefs;
 }
 
-export function HistoryPanel({ commits, status, remotes, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, ciTarget, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs }: Props) {
+export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, ciTarget, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs }: Props) {
   const [open, setOpen] = useState<string | null>(reveal?.sha ?? null);
   useEffect(() => {
     if (reveal) setOpen(reveal.sha);
   }, [reveal]);
   const scroller = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ el: HTMLElement; top: number } | null>(null);
-  const [webUrl, setWebUrl] = useState<string | null>(null);
   const [naming, setNaming] = useState<{ kind: "branch" | "tag"; commit: Commit } | null>(null);
   const [messaging, setMessaging] = useState<{ kind: "reword" | "squash"; commit: Commit } | null>(null);
-
-  // `remotes` is rebuilt on every git refresh, including the one `git remote set-url` causes.
-  useEffect(() => {
-    api.githubWebUrl().then(setWebUrl, () => setWebUrl(null));
-  }, [remotes]);
 
   // An action that stops on conflicts: Workspace then brings Changes into view.
   const { busy, run, runNet } = useGitAction({ refresh });
