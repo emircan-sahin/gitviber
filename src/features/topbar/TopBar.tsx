@@ -89,7 +89,9 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
 
   const activity = busy ?? net?.label;
   const progress = net?.progress ? `${net.progress.phase}${net.progress.percent !== null ? ` ${net.progress.percent}%` : ""}` : "";
-  const branchName = status?.branch ?? (status?.head ? `detached @ ${status.head}` : "…");
+  // Mid-rebase git has HEAD detached; the branch it's rebasing is what the user is on.
+  const rebasing = status?.operation?.kind === "rebase" && status.operation.subject !== "detached HEAD" ? status.operation.subject : null;
+  const branchName = status?.branch ?? (rebasing ? `Rebasing ${rebasing}` : status?.head ? `detached @ ${status.head}` : "…");
   const tracked = !!status?.upstream && !status.upstreamGone;
   // A fork's pull request checked out (github/checkout.rs) pulls from its refs/pull/<n>/head.
   const pullable = tracked || !!status?.follows;
