@@ -89,8 +89,6 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   // Right-clicked entry; null = the empty area below the tree (acts on the repo root).
   const [menuTarget, setMenuTarget] = useState<Entry | null>(null);
   const treeRef = useRef<HTMLDivElement>(null);
-  // Set when a menu item starts inline editing, so the closing menu doesn't steal the input's focus.
-  const keepFocus = useRef(false);
   // A revealed path's folders may still be loading; scroll to it once its row exists.
   const revealing = useRef<string | null>(null);
 
@@ -266,7 +264,6 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   const activate = (e: Entry, pin = false) => (!e.isDir ? onOpen({ kind: "file", path: e.path }, pin) : !matching && setOpen(e.path, !expanded.has(e.path)));
 
   const startEditing = (next: Editing) => {
-    keepFocus.current = true;
     if (next.mode === "new" && !expanded.has(next.parent)) setOpen(next.parent, true);
     setEditing(next);
   };
@@ -495,12 +492,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
           {matching?.capped && <div className="px-4 py-2 text-center text-[11px] text-subtle">Showing the first {MAX_MATCHES} matches</div>}
         </div>
       </ContextMenuTrigger>
-      <ContextMenuContent
-        onCloseAutoFocus={(ev) => {
-          if (keepFocus.current) ev.preventDefault();
-          keepFocus.current = false;
-        }}
-      >
+      <ContextMenuContent>
         {t && !t.isDir && !multi && (
           <>
             <ContextMenuItem onSelect={() => activate(t, true)}>
@@ -511,10 +503,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
         )}
         {menuDir !== null && (
           <>
-            <ContextMenuItem onSelect={() => startEditing({ mode: "new", parent: menuDir, isDir: false })}>
+            <ContextMenuItem keepFocus onSelect={() => startEditing({ mode: "new", parent: menuDir, isDir: false })}>
               <FilePlus /> New File…
             </ContextMenuItem>
-            <ContextMenuItem onSelect={() => startEditing({ mode: "new", parent: menuDir, isDir: true })}>
+            <ContextMenuItem keepFocus onSelect={() => startEditing({ mode: "new", parent: menuDir, isDir: true })}>
               <FolderPlus /> New Folder…
             </ContextMenuItem>
             <ContextMenuSeparator />
@@ -564,7 +556,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
             </ContextMenuItem>
             <ContextMenuSeparator />
             {!multi && (
-              <ContextMenuItem onSelect={() => startEditing({ mode: "rename", entry: t })}>
+              <ContextMenuItem keepFocus onSelect={() => startEditing({ mode: "rename", entry: t })}>
                 <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}
               </ContextMenuItem>
             )}

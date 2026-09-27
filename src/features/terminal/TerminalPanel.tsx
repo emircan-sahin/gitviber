@@ -239,8 +239,6 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
 
 function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGroup; active: boolean; here: boolean; branch: string | null; alone: boolean }) {
   const [renaming, setRenaming] = useState(false);
-  // Renaming from the menu: the menu mustn't hand focus back to the tab, which would end it.
-  const keepFocus = useRef(false);
   const cwd = g.panes[0].cwd;
   const title = g.panes.find((p) => p.id === g.focused)?.title;
   const where = title ? `${cwd} · ${title}` : cwd;
@@ -306,18 +304,9 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
       <Tip label={label}>
         <ContextMenuTrigger asChild>{tab}</ContextMenuTrigger>
       </Tip>
-      <ContextMenuContent
-        onCloseAutoFocus={(e) => {
-          if (keepFocus.current) e.preventDefault();
-          keepFocus.current = false;
-        }}
-      >
-        <ContextMenuItem
-          onSelect={() => {
-            keepFocus.current = true;
-            setRenaming(true);
-          }}
-        >
+      <ContextMenuContent>
+        {/* Focus going back to the tab would end the rename. */}
+        <ContextMenuItem keepFocus onSelect={() => setRenaming(true)}>
           <Pencil /> Rename…
         </ContextMenuItem>
         <ContextMenuSeparator />

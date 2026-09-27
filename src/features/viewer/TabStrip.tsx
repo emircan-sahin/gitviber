@@ -131,8 +131,6 @@ function TabItem({
   onRevealInExplorer: (path: string) => void;
 }) {
   const { props, dragging, guard } = useSortableItem(t.key);
-  // Set by "Reveal in Explorer View", so the closing menu doesn't pull focus back from the tree.
-  const keepFocus = useRef(false);
   // Unsaved edits: a dot where the close button goes, the button on hover (as VS Code).
   const unsaved = useEdited().has(selectionPath(t.sel)) && t.sel.kind === "file";
   const closeKey = useShortcut("tab.close");
@@ -206,12 +204,7 @@ function TabItem({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{tab}</ContextMenuTrigger>
-      <ContextMenuContent
-        onCloseAutoFocus={(e) => {
-          if (keepFocus.current) e.preventDefault();
-          keepFocus.current = false;
-        }}
-      >
+      <ContextMenuContent>
         <ContextMenuItem onSelect={() => onClose(t.key)}>
           Close
           {isActive && closeKey && <ContextMenuShortcut>{closeKey}</ContextMenuShortcut>}
@@ -232,13 +225,7 @@ function TabItem({
             <ContextMenuItem onSelect={() => onShowHistory(selectionPath(t.sel))}>
               <History /> Show History
             </ContextMenuItem>
-            <ContextMenuItem
-              disabled={!onDisk(t.sel)}
-              onSelect={() => {
-                keepFocus.current = true;
-                onRevealInExplorer(selectionPath(t.sel));
-              }}
-            >
+            <ContextMenuItem disabled={!onDisk(t.sel)} keepFocus onSelect={() => onRevealInExplorer(selectionPath(t.sel))}>
               <ListTree /> Reveal in Explorer View
             </ContextMenuItem>
           </>
