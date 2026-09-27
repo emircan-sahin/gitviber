@@ -6,35 +6,37 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useMemo, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import { errorMessage, pty, type PtyExit } from "../api";
 import { compileFind, type FindOptions } from "../ui/findQuery";
 import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
 import { terminalLinks } from "../links/linkHost";
 import { getSettings, subscribeSettings } from "../settings";
-import { folderName, isInside } from "../path";
-import { readJson } from "../storage";
+import { isInside } from "../path";
 import { focusedPanel, focusPanel, setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
 import { pastedLines, pathPastes } from "./paste";
 import { osc52Text } from "./osc52";
 import { CommandMarks } from "./commandMarks";
-import { dueForSave, SAVE_MS, type SaveState } from "./saveRound";
+import { type SaveState } from "./saveRound";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask } from "../app/ask";
 import { plural } from "../format";
 import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
 import { copyText } from "../app/clipboard";
-import { kittyNotes, type Note, osc777Note, osc9Note } from "./attention";
-import { notifyIfAway } from "../app/notify";
+import { loadSession, type SavedSession, scheduleSave } from "./session";
+import { lookedAt, watchAttention } from "./needsYou";
+
+export { dismissRestore, restoreSession } from "./session";
+export { useNeedsYou } from "./needsYou";
 
 /**
  * Terminals live here, not in React: switching worktrees remounts the whole workspace, and
  * a running shell (an agent, a dev server) must not notice. Panes mount by moving their
  * host element into whatever container shows them.
  */
-interface Pane extends SaveState {
+export interface Pane extends SaveState {
   id: number;
   /** Where it opened, which decides the worktree it belongs to; `dir` is where its shell went since. */
   cwd: string;
@@ -81,13 +83,6 @@ export interface TerminalGroup {
   focused: number;
 }
 
-/** The terminals of a previous run: where each shell was, and what it had printed. */
-interface SavedSession {
-  savedAt: number;
-  active: number;
-  groups: { name?: string; focused: number; panes: { cwd: string; dir?: string; history: string }[] }[];
-}
-
 interface State {
   open: boolean;
   groups: TerminalGroup[];
@@ -99,16 +94,7 @@ interface State {
 /** Keys the terminal panel runs while it has focus (TerminalPanel), rather than the shell. */
 export const TERMINAL_COMMANDS = ["terminal.split", "terminal.clear", "terminal.close", "terminal.prevPane", "terminal.nextPane"] as const satisfies readonly CommandId[];
 
-const SESSION_KEY = "gitviber.terminals";
-// Serialized with colors, 1000 lines is ~100 KB a pane; localStorage holds a few MB.
-const HISTORY_LINES = 1000;
-
-function loadSession(): SavedSession | null {
-  const s = readJson<SavedSession | null>(SESSION_KEY, null);
-  return s && Array.isArray(s.groups) && s.groups.length ? s : null;
-}
-
-const panes = new Map<number, Pane>();
+export const panes = new Map<number, Pane>();
 // The WebGL glyph atlas's page canvases. xterm shares one atlas between terminals with the same
 // font and colors, and drops it with the last of them. Weak: an atlas replaced by a theme, font or
 // scale change is xterm's to drop.
@@ -121,83 +107,20 @@ let atlasPages: WeakRef<HTMLCanvasElement>[] = [];
 function releaseCanvases(canvases: Iterable<HTMLCanvasElement>) {
   for (const c of canvases) c.width = c.height = 0;
 }
-let state: State = { open: false, groups: [], active: null, restorable: loadSession() };
+export let state: State = { open: false, groups: [], active: null, restorable: loadSession() };
 let nextId = 1;
+export const newId = () => nextId++;
 const listeners = new Set<() => void>();
 
-function subscribe(l: () => void) {
+export function subscribe(l: () => void) {
   listeners.add(l);
   return () => void listeners.delete(l);
 }
 
-function set(patch: Partial<State>) {
+export function set(patch: Partial<State>) {
   state = { ...state, ...patch };
   listeners.forEach((l) => l());
   scheduleSave();
-}
-
-let saveTimer: number | undefined;
-/** Throttled rather than debounced, so a shell that never stops printing still gets saved. */
-function scheduleSave() {
-  saveTimer ??= window.setTimeout(async () => {
-    const due = dueForSave(panes.values(), Date.now(), false);
-    // Where their shells are now, asked before they're saved (a reload's save keeps the last answer).
-    await Promise.all(due.map(shellDir));
-    saveTimer = undefined;
-    saveSession(false, due.filter((p) => panes.has(p.id)));
-  }, SAVE_MS);
-}
-
-// Out of sight (a reload, a quit (lib/app/quit), the window hidden) a stall goes unseen: every changed pane is saved.
-window.addEventListener("pagehide", () => saveSession(true));
-document.addEventListener("visibilitychange", () => document.hidden && saveSession(true));
-
-/** The layout last written, to skip a write that changes nothing (a title changing, a pane still printing). */
-let written = "";
-
-/** `due`: the panes whose history this round saves (dueForSave), when already picked. */
-function saveSession(all = false, due?: Pane[]) {
-  // Nothing opened yet: keep the last run's terminals for the restore offer.
-  if (!state.groups.length && state.restorable) return;
-  try {
-    if (!state.groups.length) {
-      written = "";
-      return localStorage.removeItem(SESSION_KEY);
-    }
-    const now = Date.now();
-    const saving = due ?? dueForSave(panes.values(), now, all);
-    for (const p of saving) {
-      // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
-      p.saved = p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true });
-      [p.dirty, p.serializedAt] = [false, now];
-    }
-    const snapshot = (history: boolean): SavedSession => ({
-      savedAt: now,
-      active: Math.max(0, state.groups.findIndex((g) => g.id === state.active)),
-      groups: state.groups.map((g) => ({
-        name: g.name,
-        focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
-        panes: g.panes.map(({ id, cwd }) => {
-          const dir = panes.get(id)?.dir;
-          return { cwd, dir: dir !== cwd ? dir : undefined, history: (history && panes.get(id)?.saved) || "" };
-        }),
-      })),
-    });
-    const layout = JSON.stringify({ ...snapshot(false), savedAt: 0 });
-    if (saving.length || layout !== written) {
-      try {
-        localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(true)));
-      } catch {
-        // Over quota: the layout alone is still worth keeping.
-        localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(false)));
-      }
-      written = layout;
-    }
-    // Another round for panes left for later, until each is saved.
-    if ([...panes.values()].some((p) => p.dirty)) scheduleSave();
-  } catch {
-    // Not critical.
-  }
 }
 
 export function useTerminals() {
@@ -241,7 +164,7 @@ function send(p: Pane, data: string) {
 }
 
 /** `dir`: where the shell starts, when that's not `cwd` (a split, a restore). */
-function createPane(cwd: string, restored?: { history: string; savedAt: number }, dir = cwd): PaneInfo {
+export function createPane(cwd: string, restored?: { history: string; savedAt: number }, dir = cwd): PaneInfo {
   const id = nextId++;
   // The proposed API is the decorations, which find marks its matches with. The kitty keyboard
   // protocol is for programs that turn it on (Claude Code, Codex, neovim, fish 4): Shift+Enter is its
@@ -474,7 +397,7 @@ function lineEditKey(e: KeyboardEvent): string | undefined {
   return LINE_EDIT[`${e.metaKey ? "cmd" : "alt"}+${e.key}`];
 }
 
-function update(id: number, fn: (p: PaneInfo) => PaneInfo) {
+export function update(id: number, fn: (p: PaneInfo) => PaneInfo) {
   set({ groups: state.groups.map((g) => (g.panes.some((p) => p.id === id) ? { ...g, panes: g.panes.map((p) => (p.id === id ? fn(p) : p)) } : g)) });
 }
 
@@ -609,7 +532,7 @@ export function openTerminal(cwd: string, run?: string) {
  * Where a pane's shell is now, asked of its process as VS Code's inherited split folder is (only
  * on a split or a save); else where it was last seen.
  */
-async function shellDir(p: Pane) {
+export async function shellDir(p: Pane) {
   if (p.pty !== null) p.dir = (await pty.cwd(p.pty).catch(() => null)) ?? p.dir;
   return p.dir;
 }
@@ -831,54 +754,6 @@ function focusPane(id: number) {
   set({ active: g.id, groups: state.groups.map((x) => (x === g ? { ...g, focused: id } : x)) });
 }
 
-/**
- * A bell, or a notification escape (OSC 9, 777, 99: Claude Code, Codex), from a pane not being
- * looked at marks it, its tab and its worktree, and tells the OS when the app is in the background
- * and the user turned that on. Once until it's looked at: a program ringing on and on is one mark.
- */
-function watchAttention(p: Pane) {
-  p.term.onBell(() => needsYou(p));
-  const readers: [number, (data: string) => Note | null][] = [[9, osc9Note], [777, osc777Note], [99, kittyNotes()]];
-  for (const [code, read] of readers)
-    p.term.parser.registerOscHandler(code, (data) => {
-      const note = read(data);
-      if (note) needsYou(p, note);
-      // Not a notification (OSC 9;4 is a progress bar): left to any other handler.
-      return !!note;
-    });
-}
-
-function needsYou(p: Pane, note?: Note) {
-  const g = state.groups.find((x) => x.panes.some((i) => i.id === p.id));
-  const info = g?.panes.find((i) => i.id === p.id);
-  if (!g || !info || info.needsYou || (document.hasFocus() && document.activeElement === p.term.textarea)) return;
-  update(p.id, (i) => ({ ...i, needsYou: true }));
-  const text = [note?.title, note?.body].filter(Boolean).join(": ");
-  notifyIfAway(g.name ?? (folderName(p.cwd) || p.cwd), text || info.title || "Needs you");
-}
-
-function lookedAt(id: number) {
-  if (state.groups.some((g) => g.panes.some((p) => p.id === id && p.needsYou))) update(id, (p) => ({ ...p, needsYou: false }));
-}
-
-// Back in the window, the pane that has the keys is looked at again.
-window.addEventListener("focus", () => {
-  for (const p of panes.values()) if (document.activeElement === p.term.textarea) lookedAt(p.id);
-});
-
-/** Folders of the panes that need the user, "\0"-joined: a string, so a hook re-renders only when it changes. */
-const needing = () =>
-  state.groups
-    .flatMap((g) => g.panes.filter((p) => p.needsYou).map((p) => p.cwd))
-    .sort()
-    .join("\0");
-
-/** The folders of panes that need the user (needsYou), for the worktree picker's marks. */
-export function useNeedsYou() {
-  const key = useSyncExternalStore(subscribe, needing);
-  return useMemo(() => (key ? key.split("\0") : []), [key]);
-}
-
 /** The next split pane of the open tab (⌥⌘←/→, as in VS Code), wrapping around. */
 export function stepPane(dir: 1 | -1) {
   const g = activeGroup();
@@ -894,22 +769,6 @@ export function togglePanel(cwd: string) {
   if (!state.groups.length) return openTerminal(cwd);
   set({ open: true });
   focusActive();
-}
-
-/** Reopens last run's terminals beside any opened since: same folders, their output, new shells. */
-export function restoreSession() {
-  const saved = state.restorable;
-  if (!saved) return;
-  const groups = saved.groups.map((g) => {
-    const infos = g.panes.map((p) => createPane(p.cwd, { history: p.history, savedAt: saved.savedAt }, typeof p.dir === "string" ? p.dir : undefined));
-    return { id: nextId++, name: typeof g.name === "string" ? g.name : undefined, panes: infos, focused: (infos[g.focused] ?? infos[0]).id };
-  });
-  set({ open: true, groups: [...state.groups, ...groups], active: (groups[saved.active] ?? groups[0]).id, restorable: null });
-  focusActive();
-}
-
-export function dismissRestore() {
-  set({ restorable: null });
 }
 
 const within = (cwd: string, dir: string) => cwd === dir || isInside(cwd, dir);
