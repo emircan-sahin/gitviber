@@ -79,10 +79,12 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
       return hasConflictMarkers(now.text) ? "markers" : null;
     };
     // One at a time: each read can be megabytes.
-    const found: Awaited<ReturnType<typeof check>>[] = [];
-    for (const r of rows) found.push(await check(r));
-    const pathsOf = (kind: "markers" | "unknown") => rows.filter((_, i) => found[i] === kind).map((r) => r.file.path);
-    const [markers, unknown] = [pathsOf("markers"), pathsOf("unknown")];
+    const found = { markers: [] as string[], unknown: [] as string[] };
+    for (const r of rows) {
+      const kind = await check(r);
+      if (kind) found[kind].push(r.file.path);
+    }
+    const { markers, unknown } = found;
     const flagged = markers.length + unknown.length;
     if (flagged) {
       const name = (list: string[]) => (list.length === 1 ? list[0] : files(list.length));
