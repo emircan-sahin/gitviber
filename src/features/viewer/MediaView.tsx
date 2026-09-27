@@ -105,21 +105,35 @@ function Side({ src, original, label, tone }: { src: MediaSource; original: bool
 /** Both versions are images, so they can be laid one over the other (ImageCompare). */
 export const isImageChange = (src: { path: string; oldPath: string | null }) => mediaKind(src.path) === "image" && mediaKind(src.oldPath ?? src.path) === "image";
 
-/** Right-click "Copy Image" on one side: the working tree's own file, or a stored version saved first. */
-function ImageMenu({ src, original, children }: { src: MediaSource; original: boolean; children: ReactNode }) {
+/**
+ * Right-click "Copy Image" on one side: the working tree's own file, or a stored version saved first.
+ * Both versions laid over each other (`original` "both") offer each.
+ */
+export function ImageMenu({ src, original, children }: { src: MediaSource; original: boolean | "both"; children: ReactNode }) {
   if (!IS_MAC) return children;
-  const copy = () =>
+  const copy = (before: boolean) => () =>
     api
-      .mediaFile(src.kind, src.path, src.oldPath, src.sha, src.base, original)
+      .mediaFile(src.kind, src.path, src.oldPath, src.sha, src.base, before)
       .then((path) => copyFiles([path]))
       .catch(failed("Could not copy"));
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
       <ContextMenuContent>
-        <ContextMenuItem onSelect={copy}>
-          <Copy /> Copy Image
-        </ContextMenuItem>
+        {original === "both" ? (
+          <>
+            <ContextMenuItem onSelect={copy(true)}>
+              <Copy /> Copy Before Image
+            </ContextMenuItem>
+            <ContextMenuItem onSelect={copy(false)}>
+              <Copy /> Copy After Image
+            </ContextMenuItem>
+          </>
+        ) : (
+          <ContextMenuItem onSelect={copy(original)}>
+            <Copy /> Copy Image
+          </ContextMenuItem>
+        )}
       </ContextMenuContent>
     </ContextMenu>
   );
@@ -179,7 +193,7 @@ export function SvgView({ before, after, stacked, ...props }: { before: string |
 }
 
 /** One of two SVGs laid over each other (ImageCompare): both are placed in `frame` (null until both sizes are known); `backdrop`: its own, frame-sized. */
-export interface SvgLayer {
+interface SvgLayer {
   frame: [number, number] | null;
   onSize: (n: [number, number]) => void;
   backdrop: boolean;

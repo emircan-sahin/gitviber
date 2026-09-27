@@ -13,6 +13,7 @@ import {
   isReserved,
   type KeyLike,
   menuAccelerator,
+  runsInEditor,
   runsWhileTyping,
   runsInTerminal,
   takenFromTerminal,
@@ -141,6 +142,15 @@ test("what still runs while typing in a text field or the terminal (macOS)", () 
   assert.equal(typing("f7", "diff.nextChange"), true);
   // Text fields keep ⌘Z whatever it's bound to.
   assert.equal(typing("cmd+z", "git.undo"), false);
+});
+
+test("a file being edited takes ⌥Z for word wrap, unless it types a letter there", () => {
+  const edit = (chord: string, id: string, typed?: string) => runsInEditor(chord, byId(id), typed);
+  assert.equal(edit("alt+z", "editor.toggleWrap", "Ω"), true, "US ⌥Z types a symbol");
+  assert.equal(edit("alt+z", "editor.toggleWrap", "ż"), false, "Polish ⌥Z types a letter");
+  assert.equal(edit("alt+z", "editor.toggleWrap"), true, "the shortcut overlay has no key");
+  assert.equal(edit("z", "editor.toggleWrap", "z"), false);
+  assert.equal(edit("alt+s", "diff.toggleSplit", "ß"), false, "only editor keys");
 });
 
 test("what still runs while typing (elsewhere: cmd is the physical Ctrl)", () => {

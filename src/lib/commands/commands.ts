@@ -84,7 +84,7 @@ export const COMMANDS = [
   { id: "diff.toggleSplit", title: "Toggle Unified / Split", category: "Diff", keys: ["alt+s"] },
   { id: "diff.toggleCollapse", title: "Toggle Collapse Unchanged", category: "Diff", keys: ["alt+c"] },
   { id: "diff.toggleWhitespace", title: "Toggle Ignore Whitespace", category: "Diff", keys: ["alt+w"] },
-  { id: "editor.toggleWrap", title: "Toggle Word Wrap", category: "Editor", keys: ["alt+z"] },
+  { id: "editor.toggleWrap", title: "Toggle Word Wrap", category: "Editor", keys: ["alt+z"], inEditor: true },
   { id: "editor.toggleBlame", title: "Toggle Blame", category: "Editor", keys: [] },
   // A permalink to the selected lines, else the file, at a commit GitHub has (lib/github/permalink).
   { id: "editor.copyGitHubLink", title: "Copy GitHub Link", category: "Editor", keys: [] },
@@ -156,6 +156,8 @@ export const COMMANDS = [
   /** Where it listens, for a command only one place handles. */
   local?: string;
   outsideText?: boolean;
+  /** Runs in a file being edited too, where its ⌥ key would type a symbol: VS Code's editor keys win there (runsInEditor). */
+  inEditor?: boolean;
   /** Held down, it runs once: each run changes what the next one would act on. */
   noRepeat?: boolean;
 }[];
@@ -328,6 +330,14 @@ export function runsWhileTyping(chord: string, command: Command, mac = IS_MAC): 
   if (mods.includes("cmd")) return !["left", "right", "up", "down"].includes(key);
   if (mods.includes("ctrl")) return !mac || !/^[a-z]$/.test(key);
   return /^f\d+$/.test(key) && !mods.includes("alt");
+}
+
+/**
+ * Whether a chord runs its `inEditor` command in a file being edited, where `typed` is what its key
+ * types. A letter of the user's alphabet stays typed (Polish ⌥Z is ż); a symbol (US ⌥Z is Ω) doesn't.
+ */
+export function runsInEditor(chord: string, command: Command, typed?: string): boolean {
+  return "inEditor" in command && /\b(alt|ctrl|cmd)\+/.test(chord) && !(typed && /^\p{Script=Latin}$/u.test(typed));
 }
 
 /**

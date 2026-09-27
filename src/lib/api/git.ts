@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LinesRequest, LogFilter, NetOp, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LinesRequest, LogFilter, NetOp, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -121,7 +121,11 @@ export const api = {
   removeWorktree: (path: string, force: boolean) => invoke<void>("remove_worktree", { path, force }),
   /** Nested repositories are refused unless `allowNested`: git would stage only a gitlink. */
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
-  unstage: (paths: string[]) => invoke<void>("unstage", { paths }),
+  /**
+   * A staged rename's old path goes too, or its deletion would stay staged. A copy's source
+   * (status.renames=copies) is a file of its own, whose staged edits stay.
+   */
+  unstage: (files: FileChange[]) => invoke<void>("unstage", { paths: files.flatMap((f) => (f.status === "R" && f.oldPath ? [f.path, f.oldPath] : [f.path])) }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
   /** Stages, unstages or discards some lines of a diff (lines.rs); a discard is undoable. */
   changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
@@ -138,7 +142,8 @@ export const api = {
   suggestMessage: (command: string, prompt: string, scope: "staged" | "all" | "amend") => invoke<string>("suggest_message", { command, prompt, scope }),
   /** The same for a pull request from HEAD into `base` (refs/remotes/…): its commits, PR template and diff. */
   suggestPull: (command: string, prompt: string, base: string) => invoke<string>("suggest_pull", { command, prompt, base }),
-  suggestCancel: () => invoke<void>("suggest_cancel"),
+  /** Stops the run of `kind`, leaving the other's. */
+  suggestCancel: (kind: SuggestKind) => invoke<void>("suggest_cancel", { kind }),
   /** Signature status and trailers of one commit (verifying runs gpg/ssh, so one at a time). */
   commitDetails: (sha: string) => invoke<CommitDetails>("commit_details", { sha }),
   /**
@@ -212,8 +217,6 @@ export const api = {
   deleteRemoteTag: (name: string, op?: NetOp) => network<string>("delete_remote_tag", { name }, op),
   /** The tags that remote has. A network call: use `remoteTags` in lib/repo/remoteTags.ts, which caches it. */
   remoteTags: (op?: NetOp) => network<RemoteTags>("remote_tags", {}, op),
-  /** https://github.com/owner/name, or null when origin isn't on GitHub. */
-  githubWebUrl: () => invoke<string | null>("github_web_url"),
   /** The commit to link the working tree's `path` (or its 1-based `lines`) to on GitHub, and where the lines are in it. Refused, saying why, when it isn't there yet. */
   githubPermalink: (path: string, lines: [number, number] | null) => invoke<{ sha: string; tree: boolean; lines: [number, number] | null }>("github_permalink", { path, lines }),
   journal: () => invoke<Journal>("journal"),

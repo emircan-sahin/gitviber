@@ -1,4 +1,3 @@
-import { LoaderCircle, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -7,6 +6,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, type Branch, errorMessage, fullName, type GitHubAccess, github, type Pull, type RepoStatus } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
 import { parseSuggestion, PULL_PROMPT } from "@/lib/git/suggest";
+import { SuggestButton } from "@/features/changes/SuggestButton";
 import { useSuggestion } from "@/features/changes/useCommitBox";
 import { cn } from "@/lib/utils";
 import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
@@ -84,7 +84,7 @@ export function CreatePullDialog({
     };
     // Recounted per base; typing doesn't recount.
   }, [base, head, upstream, target.repo.owner, target.repo.name]);
-  const suggestion = useSuggestion("description");
+  const suggestion = useSuggestion("pull");
   // A field typed into keeps its text; cleared, it's free for a suggestion again.
   const mine = { title: typed.title && !!title.trim(), body: typed.body && !!body.trim() };
   const mineNow = useRef(mine);
@@ -174,18 +174,14 @@ export function CreatePullDialog({
               className="flex-1"
             />
             {suggestion.enabled && (
-              <Tip label={suggestion.suggesting ? `Stop ${suggestion.program}` : `Suggest a title and description with ${suggestion.program}`}>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label={suggestion.suggesting ? "Stop suggesting" : "Suggest a title and description"}
-                  disabled={!suggestion.suggesting && (!baseRef || (mine.title && mine.body))}
-                  onClick={suggestion.suggesting ? suggestion.cancel : suggest}
-                >
-                  {suggestion.suggesting ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-                </Button>
-              </Tip>
+              <SuggestButton
+                what="a title and description"
+                program={suggestion.program}
+                suggesting={suggestion.suggesting}
+                disabled={!baseRef || (mine.title && mine.body)}
+                onSuggest={suggest}
+                onCancel={suggestion.cancel}
+              />
             )}
           </div>
           <MarkdownInput

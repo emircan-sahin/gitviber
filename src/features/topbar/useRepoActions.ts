@@ -70,14 +70,15 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     autostash
       ? `Resolve them in Changes. Your uncommitted changes were set aside for the ${what} and come back when it finishes (Continue or Abort, if it's waiting on you). If they conflict coming back, they're kept in Stashes too: drop that stash once resolved.`
       : undefined;
+  const retryStashed = (again: () => Promise<boolean>) => [{ label: "Retry with autostash", run: () => void again() }];
   const pull = (mode: PullMode, autostash = false): Promise<boolean> =>
     runNet("Pull", (op) => api.pull(mode, op, autostash), mode === "ff" ? "Pulled" : `Pulled (${mode})`, {
-      fixes: { diverged: pulls, autostash: [{ label: "Retry with autostash", run: () => void pull(mode, true) }] },
+      fixes: { diverged: pulls, autostash: retryStashed(() => pull(mode, true)) },
       conflicts: stashedFor(autostash),
     });
   const sync = (autostash = false): Promise<boolean> =>
     runNet("Sync", async (op) => (await api.pull("ff", op, autostash)) || api.push(false, undefined, op), "Synced", {
-      fixes: { diverged: pulls, "fetch-first": behind, autostash: [{ label: "Retry with autostash", run: () => void sync(true) }] },
+      fixes: { diverged: pulls, "fetch-first": behind, autostash: retryStashed(() => sync(true)) },
       conflicts: stashedFor(autostash),
     });
 
@@ -89,12 +90,12 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     how === "squash"
       ? run("Squash merge", () => api.merge(name, how), `Squashed ${name} into one commit`)
       : run("Merge", () => api.merge(name, how, autostash), `Merged ${name}`, undefined, {
-          fixes: { autostash: [{ label: "Retry with autostash", run: () => void merge(name, how, true) }] },
+          fixes: { autostash: retryStashed(() => merge(name, how, true)) },
           conflicts: stashedFor(autostash, "merge"),
         });
   const rebase = (onto: string, autostash = false): Promise<boolean> =>
     run("Rebase", () => api.rebase(onto, autostash), `Rebased onto ${onto}`, undefined, {
-      fixes: { autostash: [{ label: "Retry with autostash", run: () => void rebase(onto, true) }] },
+      fixes: { autostash: retryStashed(() => rebase(onto, true)) },
       conflicts: stashedFor(autostash, "rebase"),
     });
   // Rejected as non-fast-forward: when the remote's extra commits are this branch's own from
