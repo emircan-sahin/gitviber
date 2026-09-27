@@ -14,7 +14,7 @@ import { onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
-import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen } from "@/lib/terminal/terminals";
+import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen, useTerminalTabCount } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
 import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
@@ -111,6 +111,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const projects = recent.filter((p) => p !== main);
   const terminalOpen = useTerminalsOpen();
   const terminalMaximized = useTerminalsMaximized();
+  // goGroup and stepGroup are read as this renders: a tab opened since was out of ⌘1–⌘9's reach.
+  useTerminalTabCount();
   const fileTree = useRef<FileTreeHandle>(null);
   const findKey = useShortcut("editor.find");
   // The explorer panel shows the files or Search in Files; `searchAsk` brings the search box up.
