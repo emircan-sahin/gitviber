@@ -135,19 +135,20 @@ impl Ptys {
         }
     }
 
-    /// Sessions whose foreground job isn't the shell itself: a command is running there.
+    /// Sessions (of `ids`, or all) whose foreground job isn't the shell itself: a command is running there.
     #[cfg(unix)]
-    pub fn busy(&self) -> usize {
+    pub fn busy(&self, ids: Option<&[u32]>) -> usize {
         let sessions = self.sessions.lock().unwrap();
-        let running = |s: &&Session| {
+        let running = |(id, s): &(&u32, &Session)| {
             let leader = s.master.process_group_leader();
-            leader.is_some_and(|pid| Some(pid as u32) != s.shell)
+            ids.is_none_or(|ids| ids.contains(id))
+                && leader.is_some_and(|pid| Some(pid as u32) != s.shell)
         };
-        sessions.values().filter(running).count()
+        sessions.iter().filter(running).count()
     }
 
     #[cfg(not(unix))]
-    pub fn busy(&self) -> usize {
+    pub fn busy(&self, _ids: Option<&[u32]>) -> usize {
         0
     }
 

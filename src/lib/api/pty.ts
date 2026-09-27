@@ -11,8 +11,8 @@ export const pty = {
   write: (id: number, data: string) => invoke<void>("pty_write", { id, data }),
   resize: (id: number, cols: number, rows: number) => invoke<void>("pty_resize", { id, cols, rows }),
   kill: (id: number) => invoke<void>("pty_kill", { id }),
-  /** How many are running a command rather than sitting at the prompt. */
-  busy: () => invoke<number>("pty_busy"),
+  /** How many (of `ids`, or all) are running a command rather than sitting at the prompt. */
+  busy: (ids?: number[]) => invoke<number>("pty_busy", { ids: ids ?? null }),
   /** What ⌘V pastes into a terminal (clipboard.rs): copied files, text, or an image saved as a PNG. */
   paste: () => invoke<TerminalPaste>("terminal_paste"),
   /** Text a program in the terminal copies (OSC 52) onto the clipboard, natively (clipboard.rs). */

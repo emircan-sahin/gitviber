@@ -1,8 +1,9 @@
-import { ChevronDown, Columns2, FolderGit2, Plus, SquareTerminal, Trash2, X } from "lucide-react";
+import { ChevronDown, Columns2, Eraser, FolderGit2, ListX, Pencil, Plus, SquareTerminal, Trash2, X } from "lucide-react";
 import { FindBox, useFindBox } from "@/components/FindBox";
 import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
@@ -16,10 +17,12 @@ import {
   closeFocused,
   closeGroup,
   clearFind,
+  closeOtherGroups,
   dismissRestore,
   endFind,
   findInTerminal,
   openTerminal,
+  renameGroup,
   restoreSession,
   showWorktree,
   splitActive,
@@ -31,6 +34,7 @@ import {
 } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
 import { folderName } from "@/lib/path";
+import { NameInput } from "@/components/NameInput";
 import { plural } from "@/lib/format";
 
 /** What the workspace needs even while the panel is hidden: the panel shortcuts, and following the worktree that's open. */
@@ -94,7 +98,7 @@ export function TerminalPanel({ root, worktrees }: Props) {
       <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-panel">
         <div role="tablist" aria-label="Terminals" onKeyDown={onTabKey} data-scrollbar="none" className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
           {groups.map((g) => (
-            <GroupTab key={g.id} group={g} active={g.id === active} here={g.panes[0].cwd === root} branch={branchOf(g.panes[0].cwd)} />
+            <GroupTab key={g.id} group={g} active={g.id === active} here={g.panes[0].cwd === root} branch={branchOf(g.panes[0].cwd)} alone={groups.length === 1} />
           ))}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 px-1.5">
@@ -162,45 +166,104 @@ export function TerminalPanel({ root, worktrees }: Props) {
   );
 }
 
-function GroupTab({ group: g, active, here, branch }: { group: TerminalGroup; active: boolean; here: boolean; branch: string | null }) {
+function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGroup; active: boolean; here: boolean; branch: string | null; alone: boolean }) {
+  const [renaming, setRenaming] = useState(false);
+  // Renaming from the menu: the menu mustn't hand focus back to the tab, which would end it.
+  const keepFocus = useRef(false);
   const cwd = g.panes[0].cwd;
   const title = g.panes.find((p) => p.id === g.focused)?.title;
-  const label = title ? `${cwd} · ${title}` : cwd;
-  return (
-    // The tooltip opens on keyboard focus too; the label says the same for a screen reader.
-    <Tip label={label}>
-      <div
-        role="tab"
-        aria-selected={active}
-        aria-label={branch ? `${label} · ${branch}` : label}
-        tabIndex={active ? 0 : -1}
-        onClick={() => activateGroup(g.id)}
-        onAuxClick={(e) => e.button === 1 && closeGroup(g.id)}
-        className={cn(
-          "group relative flex max-w-64 shrink-0 cursor-pointer items-center gap-1.5 border-r border-border pr-1.5 pl-3 text-[12px] outline-none select-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-          active ? "bg-background text-foreground" : "bg-panel text-muted-foreground hover:bg-hover hover:text-foreground focus:bg-hover focus:text-foreground",
-        )}
-      >
-        {active && <span className="absolute inset-x-0 top-0 h-px bg-primary" />}
-        {active && <span className="absolute inset-x-0 -bottom-px h-px bg-background" />}
-        <SquareTerminal className={cn("size-3.5 shrink-0", here ? "text-primary" : "text-subtle")} />
-        <span className="truncate">{folderName(cwd)}</span>
-        {branch && <span className="min-w-0 truncate font-mono text-[10.5px] text-subtle">{branch}</span>}
-        {g.panes.length > 1 && <span className="rounded-sm bg-elevated px-1 font-mono text-[10px] leading-4 text-muted-foreground">{g.panes.length}</span>}
-        <button
-          aria-label="Kill terminal"
-          // Off the Tab order: ⌫ on the tab kills it.
-          tabIndex={-1}
-          onClick={(e) => {
-            e.stopPropagation();
-            closeGroup(g.id);
+  const where = title ? `${cwd} · ${title}` : cwd;
+  const label = g.name ? `${g.name} · ${where}` : where;
+  const shown = g.name ?? folderName(cwd);
+  const [splitKey, clearKey] = [useShortcut("terminal.split"), useShortcut("terminal.clear")];
+  // Split and Clear act on the open tab's focused pane.
+  const inTab = (run: () => void) => () => {
+    activateGroup(g.id);
+    run();
+  };
+  const tab = (
+    <div
+      role="tab"
+      aria-selected={active}
+      aria-label={branch ? `${label} · ${branch}` : label}
+      tabIndex={active ? 0 : -1}
+      // A double-click renames: its second click leaves focus for the name field.
+      onClick={(e) => activateGroup(g.id, e.detail < 2)}
+      onDoubleClick={() => setRenaming(true)}
+      onAuxClick={(e) => e.button === 1 && closeGroup(g.id)}
+      className={cn(
+        "group relative flex max-w-64 shrink-0 cursor-pointer items-center gap-1.5 border-r border-border pr-1.5 pl-3 text-[12px] outline-none select-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+        active ? "bg-background text-foreground" : "bg-panel text-muted-foreground hover:bg-hover hover:text-foreground focus:bg-hover focus:text-foreground",
+      )}
+    >
+      {active && <span className="absolute inset-x-0 top-0 h-px bg-primary" />}
+      {active && <span className="absolute inset-x-0 -bottom-px h-px bg-background" />}
+      <SquareTerminal className={cn("size-3.5 shrink-0", here ? "text-primary" : "text-subtle")} />
+      {renaming ? (
+        <NameInput
+          initial={shown}
+          onDone={(name, refocus) => {
+            setRenaming(false);
+            // Left as it was, the folder's name isn't a name the user gave.
+            if (name !== null && name.trim() !== shown) renameGroup(g.id, name);
+            if (refocus) activateGroup(g.id);
           }}
-          className={cn("flex size-5 items-center justify-center rounded-sm text-subtle hover:bg-active focus-visible:bg-active hover:text-foreground focus-visible:text-foreground", !active && "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100")}
+        />
+      ) : (
+        <span className="truncate">{shown}</span>
+      )}
+      {branch && <span className="min-w-0 truncate font-mono text-[10.5px] text-subtle">{branch}</span>}
+      {g.panes.length > 1 && <span className="rounded-sm bg-elevated px-1 font-mono text-[10px] leading-4 text-muted-foreground">{g.panes.length}</span>}
+      <button
+        aria-label="Kill terminal"
+        // Off the Tab order: ⌫ on the tab kills it.
+        tabIndex={-1}
+        onClick={(e) => {
+          e.stopPropagation();
+          closeGroup(g.id);
+        }}
+        className={cn("flex size-5 items-center justify-center rounded-sm text-subtle hover:bg-active focus-visible:bg-active hover:text-foreground focus-visible:text-foreground", !active && "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100")}
+      >
+        <X className="size-3" />
+      </button>
+    </div>
+  );
+  return (
+    <ContextMenu>
+      {/* The tooltip opens on keyboard focus too; the label says the same for a screen reader. */}
+      <Tip label={label}>
+        <ContextMenuTrigger asChild>{tab}</ContextMenuTrigger>
+      </Tip>
+      <ContextMenuContent
+        onCloseAutoFocus={(e) => {
+          if (keepFocus.current) e.preventDefault();
+          keepFocus.current = false;
+        }}
+      >
+        <ContextMenuItem
+          onSelect={() => {
+            keepFocus.current = true;
+            setRenaming(true);
+          }}
         >
-          <X className="size-3" />
-        </button>
-      </div>
-    </Tip>
+          <Pencil /> Rename…
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={inTab(splitActive)}>
+          <Columns2 /> Split{active && splitKey && <ContextMenuShortcut>{splitKey}</ContextMenuShortcut>}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={inTab(clearFocused)}>
+          <Eraser /> Clear{active && clearKey && <ContextMenuShortcut>{clearKey}</ContextMenuShortcut>}
+        </ContextMenuItem>
+        <ContextMenuSeparator />
+        <ContextMenuItem onSelect={() => closeGroup(g.id)}>
+          <Trash2 /> Kill Terminal
+        </ContextMenuItem>
+        <ContextMenuItem disabled={alone} onSelect={() => void closeOtherGroups(g.id)}>
+          <ListX /> Kill Others
+        </ContextMenuItem>
+      </ContextMenuContent>
+    </ContextMenu>
   );
 }
 

@@ -18,6 +18,8 @@ import { findColors, terminalOptions } from "./theme";
 import { pathPastes } from "./paste";
 import { osc52Text } from "./osc52";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { plural } from "../format";
 import { IS_LINUX, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
 
@@ -56,6 +58,8 @@ interface PaneInfo {
 /** A tab: one or more panes side by side. */
 export interface TerminalGroup {
   id: number;
+  /** The user's name for the tab, over the folder's and the program's title. */
+  name?: string;
   panes: PaneInfo[];
   focused: number;
 }
@@ -64,7 +68,7 @@ export interface TerminalGroup {
 interface SavedSession {
   savedAt: number;
   active: number;
-  groups: { focused: number; panes: { cwd: string; history: string }[] }[];
+  groups: { name?: string; focused: number; panes: { cwd: string; history: string }[] }[];
 }
 
 interface State {
@@ -131,6 +135,7 @@ function saveSession() {
       savedAt: Date.now(),
       active: Math.max(0, state.groups.findIndex((g) => g.id === state.active)),
       groups: state.groups.map((g) => ({
+        name: g.name,
         focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
         panes: g.panes.map(({ id, cwd }) => {
           const p = panes.get(id);
@@ -505,6 +510,21 @@ export function closeGroup(id: number) {
   state.groups.find((g) => g.id === id)?.panes.forEach((p) => closePane(p.id));
 }
 
+/** Kills every tab but `id`, asking first when one of them runs a command (an agent, a dev server). */
+export async function closeOtherGroups(id: number) {
+  const others = state.groups.filter((g) => g.id !== id);
+  const ptys = others.flatMap((g) => g.panes.flatMap((p) => panes.get(p.id)?.pty ?? []));
+  const busy = ptys.length ? await pty.busy(ptys).catch(() => 0) : 0;
+  if (busy && !(await ask(`Killing the other terminals stops ${plural(busy, "command")} still running.`, { title: "Kill other terminals", kind: "warning", okLabel: "Kill" }))) return;
+  for (const g of others) closeGroup(g.id);
+}
+
+/** Names a tab; an empty name gives it back the folder's. */
+export function renameGroup(id: number, name: string) {
+  const trimmed = name.trim();
+  set({ groups: state.groups.map((g) => (g.id === id ? { ...g, name: trimmed || undefined } : g)) });
+}
+
 /** The pane find searches, and where its count goes (index 0: past the addon's 1000 marked matches). */
 let searching: { pane: Pane; onResults: (at: { index: number; total: number }) => void } | null = null;
 
@@ -587,7 +607,7 @@ export function restoreSession() {
   if (!saved) return;
   const groups = saved.groups.map((g) => {
     const infos = g.panes.map((p) => createPane(p.cwd, { history: p.history, savedAt: saved.savedAt }));
-    return { id: nextId++, panes: infos, focused: (infos[g.focused] ?? infos[0]).id };
+    return { id: nextId++, name: typeof g.name === "string" ? g.name : undefined, panes: infos, focused: (infos[g.focused] ?? infos[0]).id };
   });
   set({ open: true, groups: [...state.groups, ...groups], active: (groups[saved.active] ?? groups[0]).id, restorable: null });
   focusActive();
