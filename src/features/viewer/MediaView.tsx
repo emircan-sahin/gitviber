@@ -9,7 +9,6 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { copyFiles } from "@/lib/app/clipboard";
 import { failed } from "@/lib/app/toast";
 import { IS_MAC } from "@/lib/platform";
-import type { ImageCompare } from "@/lib/settings";
 
 type MediaKind = "image" | "video" | "audio" | "pdf";
 
@@ -64,10 +63,9 @@ export interface MediaSource {
   key: string;
 }
 
-/** Previews a media file, side by side when both the before and after versions exist, or an image's one over the other. */
-export function MediaView({ src, before, after, compare }: { src: MediaSource; before: boolean; after: boolean; compare: ImageCompare }) {
+/** Previews a media file, side by side when both the before and after versions exist. */
+export function MediaView({ src, before, after }: { src: MediaSource; before: boolean; after: boolean }) {
   const both = before && after;
-  if (both && compare !== "side" && isImageChange(src)) return <ImageOverlay src={src} mode={compare} />;
   return (
     <Sides stacked={false}>
       {before && <Side src={src} original label={both ? "Before" : undefined} tone="removed" />}
@@ -104,126 +102,8 @@ function Side({ src, original, label, tone }: { src: MediaSource; original: bool
   );
 }
 
-/** Both versions are images, so they can be laid one over the other. */
+/** Both versions are images, so they can be laid one over the other (ImageCompare). */
 export const isImageChange = (src: { path: string; oldPath: string | null }) => mediaKind(src.path) === "image" && mediaKind(src.oldPath ?? src.path) === "image";
-
-type Size = [number, number];
-
-/** The box two images of `sizes` share, both drawn from its top left corner. */
-const frameOf = (sizes: (Size | null)[]): Size | null => (sizes.every(Boolean) ? [Math.max(...sizes.map((n) => n![0])), Math.max(...sizes.map((n) => n![1]))] : null);
-
-const dims = (n: Size | null) => n && `${n[0]}×${n[1]}`;
-
-/** The two versions of an image one over the other, shrunk together to fit like side by side (never enlarged). */
-function ImageOverlay({ src, mode }: { src: MediaSource; mode: Exclude<ImageCompare, "side"> }) {
-  const before = useMediaUrl(src, true);
-  const after = useMediaUrl(src, false);
-  const [sizes, setSizes] = useState<[Size | null, Size | null]>([null, null]);
-  const [stage, setStage] = useState<HTMLDivElement | null>(null);
-  const [roomW, roomH] = useSize(stage);
-  const frame = frameOf(sizes);
-  const scale = frame ? Math.max(0, Math.min(1, (roomW - 2 * PAD) / frame[0], (roomH - 2 * PAD) / frame[1])) : 1;
-  const [left, top] = frame ? [Math.round((roomW - frame[0] * scale) / 2), Math.round((roomH - frame[1] * scale) / 2)] : [0, 0];
-  const error = before.error ?? after.error;
-  const layer = (url: string | null, i: 0 | 1) =>
-    url && (
-      <img
-        src={url}
-        alt=""
-        draggable={false}
-        onLoad={(e) => {
-          const n: Size = [e.currentTarget.naturalWidth, e.currentTarget.naturalHeight];
-          setSizes((s) => (i === 0 ? [n, s[1]] : [s[0], n]));
-        }}
-        // Hidden until both sizes are known, or the first one to load shows by itself.
-        style={frame && sizes[i] ? { left, top, width: sizes[i]![0] * scale, height: sizes[i]![1] * scale } : { visibility: "hidden" }}
-        className="pointer-events-none absolute max-w-none"
-      />
-    );
-  return (
-    <Overlay
-      mode={mode}
-      details={[
-        [dims(sizes[0]), before.size !== null && formatBytes(before.size)],
-        [dims(sizes[1]), after.size !== null && formatBytes(after.size)],
-      ]}
-      stageRef={setStage}
-      under={
-        error ? (
-          <div className="flex h-full items-center justify-center text-[12.5px] text-muted-foreground">{error}</div>
-        ) : (
-          <>
-            {frame && <div className="checkerboard absolute" style={{ left, top, width: frame[0] * scale, height: frame[1] * scale }} />}
-            {layer(before.url, 0)}
-          </>
-        )
-      }
-      over={!error && layer(after.url, 1)}
-    />
-  );
-}
-
-/**
- * Before under after in one place. Swipe shows before left of a divider and after right of it;
- * onion skin fades after in over before. Only CSS on the two layers: nothing is decoded again.
- */
-function Overlay({ mode, details, stageRef, under, over }: { mode: Exclude<ImageCompare, "side">; details: [(string | false | null)[], (string | false | null)[]]; stageRef?: (el: HTMLDivElement | null) => void; under: ReactNode; over: ReactNode }) {
-  // Where the divider is, or how opaque after is: 0 is all before.
-  const [at, setAt] = useState(0.5);
-  const [b, a] = details.map((d) => d.filter(Boolean).join(" · "));
-  return (
-    <div className="flex h-full min-h-0 min-w-0 flex-col">
-      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border px-3 text-[11.5px] text-subtle">
-        <span className="font-medium text-removed">Before</span>
-        <span className="font-mono">{b}</span>
-        <div className="flex flex-1 justify-center">
-          {mode === "onion" && <input type="range" min={0} max={100} value={Math.round(at * 100)} onChange={(e) => setAt(Number(e.target.value) / 100)} aria-label="Opacity of After" className="w-40 accent-primary" />}
-        </div>
-        <span className="font-mono">{a}</span>
-        <span className="font-medium text-added">After</span>
-      </div>
-      <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden">
-        <div className="absolute inset-0">{under}</div>
-        <div className="absolute inset-0" style={mode === "swipe" ? { clipPath: `inset(0 0 0 ${at * 100}%)` } : { opacity: at }}>
-          {over}
-        </div>
-        {mode === "swipe" && <Divider at={at} onMove={setAt} />}
-      </div>
-    </div>
-  );
-}
-
-/** Swipe's divider: dragged, or moved with the arrow keys. */
-function Divider({ at, onMove }: { at: number; onMove: (at: number) => void }) {
-  const drag = (e: React.PointerEvent<HTMLDivElement>) => {
-    const box = e.currentTarget.parentElement!.getBoundingClientRect();
-    onMove(Math.min(1, Math.max(0, (e.clientX - box.left) / box.width)));
-  };
-  return (
-    <div
-      role="slider"
-      tabIndex={0}
-      aria-label="Divider between Before and After"
-      aria-valuenow={Math.round(at * 100)}
-      onPointerDown={(e) => {
-        e.currentTarget.setPointerCapture(e.pointerId);
-        drag(e);
-      }}
-      onPointerMove={(e) => e.currentTarget.hasPointerCapture(e.pointerId) && drag(e)}
-      onKeyDown={(e) => {
-        const step = e.key === "ArrowLeft" ? -0.05 : e.key === "ArrowRight" ? 0.05 : 0;
-        if (!step) return;
-        e.preventDefault();
-        onMove(Math.min(1, Math.max(0, at + step)));
-      }}
-      className="group absolute inset-y-0 -ml-2 w-4 cursor-ew-resize outline-none"
-      style={{ left: `${at * 100}%` }}
-    >
-      <div className="mx-auto h-full w-px bg-primary" />
-      <div className="absolute top-1/2 left-1/2 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-primary bg-background group-focus-visible:ring-2 group-focus-visible:ring-ring" />
-    </div>
-  );
-}
 
 /** Right-click "Copy Image" on one side: the working tree's own file, or a stored version saved first. */
 function ImageMenu({ src, original, children }: { src: MediaSource; original: boolean; children: ReactNode }) {
@@ -276,32 +156,20 @@ export type Backdrop = "theme" | "light" | "dark";
 // The fixed backdrops rescue art drawn in a color that vanishes on the theme's.
 const BACKDROPS: Record<Backdrop, string> = { theme: "checkerboard", light: "checkerboard-light", dark: "checkerboard-dark" };
 /** Margin around an image fitted to its panel. */
-const PAD = 16;
+export const PAD = 16;
 
-interface SvgProps {
+export interface SvgProps {
   zoom: Zoom;
   onZoom: Dispatch<SetStateAction<Zoom>>;
   backdrop: Backdrop;
 }
 
 /**
- * Renders SVG source as an image, before and after when both are given: stacked, side by side, or
- * one over the other. Both sides share one zoom, so they stay lined up while comparing.
+ * Renders SVG source as an image, before and after when both are given: stacked or side by side.
+ * Both sides share one zoom, so they stay lined up while comparing.
  */
-export function SvgView({ before, after, stacked, compare, ...props }: { before: string | null; after: string | null; stacked: boolean; compare: ImageCompare } & SvgProps) {
+export function SvgView({ before, after, stacked, ...props }: { before: string | null; after: string | null; stacked: boolean } & SvgProps) {
   const both = before !== null && after !== null;
-  const [sizes, setSizes] = useState<[Size | null, Size | null]>([null, null]);
-  if (both && compare !== "side") {
-    const frame = frameOf(sizes);
-    return (
-      <Overlay
-        mode={compare}
-        details={[[dims(sizes[0])], [dims(sizes[1])]]}
-        under={<SvgSide text={before} layer={{ frame, onSize: (n) => setSizes((s) => [n, s[1]]), backdrop: true }} {...props} />}
-        over={<SvgSide text={after} layer={{ frame, onSize: (n) => setSizes((s) => [s[0], n]), backdrop: false }} {...props} />}
-      />
-    );
-  }
   return (
     <Sides stacked={stacked}>
       {before !== null && <SvgSide text={before} label={both ? "Before" : undefined} tone="removed" {...props} />}
@@ -310,14 +178,14 @@ export function SvgView({ before, after, stacked, compare, ...props }: { before:
   );
 }
 
-/** One of two SVGs laid over each other: both are placed in `frame` (null until both sizes are known), backdrop only under the first. */
-interface SvgLayer {
-  frame: Size | null;
-  onSize: (n: Size) => void;
+/** One of two SVGs laid over each other (ImageCompare): both are placed in `frame` (null until both sizes are known); `backdrop`: its own, frame-sized. */
+export interface SvgLayer {
+  frame: [number, number] | null;
+  onSize: (n: [number, number]) => void;
   backdrop: boolean;
 }
 
-function SvgSide({ text, label, tone = "added", zoom, onZoom, backdrop, layer }: { text: string; label?: string; tone?: Tone; layer?: SvgLayer } & SvgProps) {
+export function SvgSide({ text, label, tone = "added", zoom, onZoom, backdrop, layer }: { text: string; label?: string; tone?: Tone; layer?: SvgLayer } & SvgProps) {
   // Through <img> from a blob, never inline: scripts, handlers and external references in the SVG don't run.
   const { url, size } = useSvgUrl(text);
   const [natural, setNatural] = useState<[number, number] | null>(null);
@@ -478,7 +346,7 @@ function useSvgUrl(text: string) {
   return state;
 }
 
-function useSize(el: HTMLElement | null): [number, number] {
+export function useSize(el: HTMLElement | null): [number, number] {
   const [size, setSize] = useState<[number, number]>([0, 0]);
   useEffect(() => {
     if (!el) return;
@@ -517,7 +385,7 @@ export function useMediaUrl(src: MediaSource, original: boolean) {
   return state;
 }
 
-function formatBytes(n: number) {
+export function formatBytes(n: number) {
   if (n < 1024) return `${n} B`;
   const units = ["KB", "MB", "GB"];
   let v = n / 1024;

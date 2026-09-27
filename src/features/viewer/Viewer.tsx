@@ -22,6 +22,7 @@ import { PullView } from "@/features/github/pulls/PullView";
 import { FileIcon } from "@/components/FileIcon";
 import { useReview } from "@/features/github/pulls/ReviewThreads";
 import { isImageChange, isSvg, MediaView, mediaKind, SvgView } from "./MediaView";
+import { ImageOverlay, type Overlaid, SvgOverlay } from "./ImageCompare";
 import { isMarkdown, MarkdownView } from "./MarkdownView";
 import { LineCounts, PathLabel, StatusPill } from "@/components/StatusBadge";
 import { type FileSelection, linkSides, pairArgs, useBlame, usePair } from "./diffPairs";
@@ -118,6 +119,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   const [contrast, setContrast] = useState(false);
   // Both versions of an image: they can also be laid one over the other.
   const twoImages = !isFile && !!pair?.original.exists && !!pair.modified.exists && (svg ? rendered : media && isImageChange({ path: selectionPath(sel), oldPath: file?.oldPath ?? null }));
+  const overlaid: Overlaid | null = twoImages && s.imageCompare !== "side" ? s.imageCompare : null;
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile));
 
   const diff = !isFile && !media && !rendered;
@@ -187,7 +189,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
           {twoImages && !svg && <Sep />}
           {rendered && svg && (
             <>
-              {!isFile && (!twoImages || s.imageCompare === "side") && <LayoutToggle />}
+              {!isFile && !overlaid && <LayoutToggle />}
               <Tip label="Scroll to zoom, drag to pan, double-click to fit">
                 <div>
                   <Segmented
@@ -267,21 +269,28 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
             action={pair && (pair.modified.lfsMissing || pair.original.lfsMissing) ? { label: "Download with Git LFS", run: () => downloadLfs(selectionPath(sel), refresh) } : undefined}
           />
         ) : rendered && svg ? (
-          pair && (
+          pair &&
+          (overlaid ? (
+            <SvgOverlay before={pair.original.text} after={pair.modified.text} mode={overlaid} zoom={zoom} onZoom={setZoom} backdrop={contrast ? (s.dark ? "light" : "dark") : "theme"} />
+          ) : (
             <SvgView
               before={!isFile && pair.original.exists ? pair.original.text : null}
               after={unsaved ?? (pair.modified.exists ? pair.modified.text : null)}
               stacked={!isFile && !s.sideBySide}
-              compare={s.imageCompare}
               zoom={zoom}
               onZoom={setZoom}
               backdrop={contrast ? (s.dark ? "light" : "dark") : "theme"}
             />
-          )
+          ))
         ) : rendered ? (
           pair && <MarkdownView text={unsaved ?? (pair.modified.exists ? pair.modified.text : pair.original.text)} src={pairArgs(sel, revision)} onOpen={onOpen} />
         ) : media ? (
-          pair && <MediaView src={pairArgs(sel, revision)} before={!isFile && pair.original.exists} after={pair.modified.exists} compare={s.imageCompare} />
+          pair &&
+          (overlaid ? (
+            <ImageOverlay key={pairArgs(sel, revision).key} src={pairArgs(sel, revision)} mode={overlaid} />
+          ) : (
+            <MediaView src={pairArgs(sel, revision)} before={!isFile && pair.original.exists} after={pair.modified.exists} />
+          ))
         ) : (
           pair && (
             <MonacoView
@@ -398,15 +407,19 @@ function LayoutToggle() {
 function CompareToggle() {
   const s = useSettings();
   return (
-    <Segmented
-      value={s.imageCompare}
-      onChange={(v) => updateSettings({ imageCompare: v })}
-      options={[
-        { value: "side", label: "2-up" },
-        { value: "swipe", label: "Swipe" },
-        { value: "onion", label: "Onion skin" },
-      ]}
-    />
+    <Tip label="2-up: side by side · Swipe: a divider between them · Onion skin: After faded in over Before">
+      <div>
+        <Segmented
+          value={s.imageCompare}
+          onChange={(v) => updateSettings({ imageCompare: v })}
+          options={[
+            { value: "side", label: "2-up" },
+            { value: "swipe", label: "Swipe" },
+            { value: "onion", label: "Onion skin" },
+          ]}
+        />
+      </div>
+    </Tip>
   );
 }
 
