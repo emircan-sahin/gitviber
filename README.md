@@ -63,7 +63,9 @@ the agent touches it again, the mark clears so you know to look again.
 ### Test it right there
 
 A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the tests, start the dev
-server or talk to the agent without leaving the change you're reading.
+server or talk to the agent without leaving the change you're reading. When an agent in another
+tab or worktree waits for you, its tab and its worktree get a dot, and a desktop notification if
+you turned those on. Claude Code sends one here once its Notifications setting (`/config`) is `iterm2`.
 
 ### Browse the code, not just the diff
 
