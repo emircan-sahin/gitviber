@@ -515,7 +515,7 @@ fn bisect_finds_the_first_bad_commit_and_stops() {
     let mut step = bisect_start(&r, &good).unwrap();
     assert!(operation(&r).is_some_and(|o| o.kind == "bisect"));
     assert!(
-        merge(&r, "main", MergeKind::Ff)
+        merge(&r, "main", MergeKind::Ff, false)
             .unwrap_err()
             .contains("bisect"),
         "nothing else starts meanwhile"

@@ -20,7 +20,7 @@ import { useEffect, useState } from "react";
 import { Wordmark } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Tip } from "@/components/ui/tooltip";
+import { DisabledTip, Tip } from "@/components/ui/tooltip";
 import { api, cancelNetwork } from "@/lib/api";
 import { IS_MAC } from "@/lib/platform";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
@@ -85,18 +85,24 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const terminalOpen = useTerminals().open;
   const fullscreen = useFullscreen();
 
-  const { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
+  const { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
 
   const activity = busy ?? net?.label;
   const progress = net?.progress ? `${net.progress.phase}${net.progress.percent !== null ? ` ${net.progress.percent}%` : ""}` : "";
-  const branchName = status?.branch ?? (status?.head ? `detached @ ${status.head}` : "…");
+  // Mid-rebase git has HEAD detached; the branch it's rebasing is what the user is on.
+  const rebasing = status?.operation?.kind === "rebase" ? status.operation.subject : null;
+  const branchName = status?.branch ?? (rebasing ? `rebasing ${rebasing}` : status?.head ? `detached @ ${status.head}` : "…");
+  const tracked = !!status?.upstream && !status.upstreamGone;
+  // A fork's pull request checked out (github/checkout.rs) pulls from its refs/pull/<n>/head.
+  const pullable = tracked || !!status?.follows;
+  const gone = status?.upstreamGone ? `${status.upstream} isn't on the remote (deleted, or never pushed)` : null;
 
   useCommands({
     "git.fetch": busy ? undefined : () => runNet("Fetch", api.fetch),
-    "git.pull": busy || !status?.upstream ? undefined : () => pull("ff"),
+    "git.pull": busy || !pullable ? undefined : () => pull("ff"),
     // With no upstream yet, pushing is publishing, where Publish would without asking.
-    "git.push": busy ? undefined : status?.upstream ? () => push() : publishTo ? () => publish(publishTo) : undefined,
-    "git.sync": busy || !status?.upstream ? undefined : () => sync(),
+    "git.push": busy || status?.follows ? undefined : tracked ? () => push() : publishTo ? () => publish(publishTo) : undefined,
+    "git.sync": busy || !tracked ? undefined : () => sync(),
     "git.newBranch": () => setBranchDialog({ kind: "new", base: status?.branch ? `refs/heads/${status.branch}` : "HEAD" }),
     "git.newWorktree": () => openWorktreeDialog({ kind: "new" }),
   });
@@ -118,7 +124,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onSwitchRemote={switchRemote}
         onCreate={(name) => run("Create branch", () => api.switchBranch(name, true), `Switched to new branch ${name}`)}
         onMerge={merge}
-        onRebase={(name) => run("Rebase", () => api.rebase(name), `Rebased onto ${name}`)}
+        onRebase={(name) => void rebase(name)}
         onTerminal={branchTerminal}
         onDelete={deleteBranch}
         onCleanUp={cleanUp}
@@ -141,7 +147,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onNew={() => openWorktreeDialog({ kind: "new" })}
       />
       <WorktreeDialogs branches={branches} main={main} run={run} runNet={runNet} onOpen={onOpenRepo} />
-      {status && !status.upstream && status.branch && (
+      {status && !tracked && !status.follows && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
           <CloudOff className="size-3" /> Not published
         </span>
@@ -179,15 +185,15 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         </Button>
       </Tip>
       <div className="flex">
-        <Tip label="Pull (fast-forward only)">
-          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !status?.upstream} onClick={() => pull("ff")}>
+        <DisabledTip label={gone ?? "Pull (fast-forward only)"} disabled={!!gone} className="flex rounded-l-md rounded-r-none">
+          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !pullable} onClick={() => pull("ff")}>
             <ArrowDownToLine /> Pull
             {!!status?.behind && <span className="font-mono text-[10.5px] text-primary">{status.behind}</span>}
           </Button>
-        </Tip>
+        </DisabledTip>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="secondary" className="w-5 rounded-l-none border-l-0 px-0" disabled={!!busy || !status?.upstream}>
+            <Button variant="secondary" className="w-5 rounded-l-none border-l-0 px-0" disabled={!!busy || !pullable}>
               <ChevronDown className="size-3" />
             </Button>
           </DropdownMenuTrigger>
@@ -202,7 +208,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      {status?.upstream ? (
+      {tracked && status ? (
         // Where the push lands, which a fork can set apart from where it pulls (upstream/dev
         // pulled, origin/dev pushed). Not there yet: the push creates it.
         <div className="flex">
@@ -221,6 +227,12 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
             }
           />
         </div>
+      ) : status?.follows ? (
+        <DisabledTip label={`Pull request ${status.follows}'s branch is on its author's fork; push there`} disabled>
+          <Button variant="secondary" disabled>
+            <ArrowUpFromLine /> Push
+          </Button>
+        </DisabledTip>
       ) : (
         <PublishButton
           remotes={status?.remotes ?? []}

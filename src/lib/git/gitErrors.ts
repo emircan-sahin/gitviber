@@ -22,8 +22,10 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
       fix: "diverged",
     },
   ],
+  // The last two refuse a force push (--force-with-lease --force-if-includes) over commits it
+  // hasn't seen or never had.
   [
-    /^ ?! \[rejected\] .*\((fetch first|non-fast-forward)\)$/m,
+    /^ ?! \[rejected\] .*\((fetch first|non-fast-forward|stale info|remote ref updated since checkout)\)$/m,
     {
       title: "The remote has commits you don't",
       explanation: "Someone pushed to this branch since you last pulled. Pull their commits in, then push again.",
@@ -31,7 +33,7 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
     },
   ],
   [
-    /^error: Your local changes to the following files would be overwritten by merge:|^error: cannot pull with rebase:/m,
+    /^error: Your local changes to the following files would be overwritten by merge:|^error: cannot (pull with rebase|rebase):/m,
     {
       title: "Uncommitted changes are in the way",
       explanation: "git won't overwrite files you've changed but not committed. Commit or stash them first.",

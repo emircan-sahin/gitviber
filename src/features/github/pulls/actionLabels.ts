@@ -1,6 +1,14 @@
-import type { MergeMethod, ReviewEvent } from "@/lib/api";
+import type { GitHubAccess, MergeMethod, ReviewEvent } from "@/lib/api";
 
 export const METHODS: Record<MergeMethod, string> = { merge: "Create a merge commit", squash: "Squash and merge", rebase: "Rebase and merge" };
+
+/** What the repository lets a PR merge with, in GitHub's order; the first is the Merge button's (as gh pr merge picks). */
+export function allowedMethods(access: GitHubAccess | null): MergeMethod[] {
+  const allowed = { merge: access?.allowMergeCommit, squash: access?.allowSquashMerge, rebase: access?.allowRebaseMerge };
+  const all = Object.keys(METHODS) as MergeMethod[];
+  const methods = all.filter((m) => allowed[m] !== false);
+  return methods.length ? methods : all;
+}
 
 export const REVIEWS: Record<ReviewEvent, { label: string; note: string; done: string }> = {
   COMMENT: { label: "Comment", note: "General feedback without explicit approval.", done: "Review submitted" },

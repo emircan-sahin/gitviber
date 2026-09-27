@@ -47,7 +47,11 @@ fn pr_checkout_fast_forwards_and_never_resets() {
         &Net::default(),
     )
     .unwrap();
-    assert_eq!(status(b).unwrap().branch.as_deref(), Some("pr/7"));
+    let st = status(b).unwrap();
+    assert_eq!(st.branch.as_deref(), Some("pr/7"));
+    // No upstream to git, yet it follows the PR: not offered to Publish into origin.
+    assert_eq!(st.follows.as_deref(), Some("#7"));
+    assert!(st.upstream.is_none() && st.publish.is_none());
     write_commit(a, "f.txt", "1\n2\n3\n4\n", "f4");
     run(a, &["push", "-q", "origin", "HEAD:refs/pull/7/head"]).unwrap();
     checkout(
@@ -76,6 +80,11 @@ fn pr_checkout_fast_forwards_and_never_resets() {
     )
     .unwrap();
     assert_eq!(fs::read_to_string(b.join("f.txt")).unwrap(), "5\n");
+    // The top bar's Pull follows it too.
+    write_commit(a, "f.txt", "6\n", "f6");
+    run(a, &["push", "-q", "origin", "HEAD:refs/pull/7/head"]).unwrap();
+    pull(b, PullMode::Ff, false, &Net::default()).unwrap();
+    assert_eq!(fs::read_to_string(b.join("f.txt")).unwrap(), "6\n");
 }
 
 /// Checking out a PR never goes through FETCH_HEAD, which another fetch (the background

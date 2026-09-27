@@ -286,6 +286,7 @@ pub(super) fn request(
                 .map(str::to_string)
         };
         let new_etag = header("etag");
+        let sso = header("x-github-sso");
         let limited = rate_limit_error(
             status,
             header("x-ratelimit-remaining").as_deref(),
@@ -309,6 +310,11 @@ pub(super) fn request(
                 .as_str()
                 .map(|d| format!(": {d}"))
                 .unwrap_or_default();
+            if let Some(url) = sso_url(status, sso.as_deref()) {
+                return Err(format!(
+                    "GitHub {status}: {msg} Authorize this token for the organization's single sign-on at {url}"
+                ));
+            }
             return Err(format!("GitHub {status}: {msg}{detail}"));
         }
         if cacheable {
@@ -378,6 +384,18 @@ fn rate_limit_error(
     (status == 429).then(|| "GitHub rate limit reached. Try again in a minute.".to_string())
 }
 
+/// Where to authorize the token for an organization that enforces SAML single sign-on, from a
+/// 403's `X-GitHub-SSO: required; url=…` (as gh reads it).
+fn sso_url(status: u16, header: Option<&str>) -> Option<&str> {
+    if status != 403 {
+        return None;
+    }
+    header?
+        .split(';')
+        .find_map(|p| p.trim().strip_prefix("url="))
+        .filter(|u| u.starts_with("https://"))
+}
+
 /// A GraphQL request; returns its `data`.
 pub(super) fn graphql(
     session: &Session,
@@ -430,6 +448,22 @@ mod tests {
             None
         );
         assert_eq!(rate_limit_error(200, Some("0"), None, None, now), None);
+    }
+
+    #[test]
+    fn sso_authorize_link() {
+        let h = "required; url=https://github.com/orgs/acme/sso?authorization_request=abc";
+        assert_eq!(
+            sso_url(403, Some(h)),
+            Some("https://github.com/orgs/acme/sso?authorization_request=abc")
+        );
+        // Partial results name organizations, with nowhere to go.
+        assert_eq!(
+            sso_url(403, Some("partial-results; organizations=1,2")),
+            None
+        );
+        assert_eq!(sso_url(404, Some(h)), None);
+        assert_eq!(sso_url(403, None), None);
     }
 
     #[test]

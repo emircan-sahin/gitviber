@@ -12,7 +12,7 @@ export interface RunExtras {
 }
 
 /** Runs one action; resolves true when it went through. `done`: the success toast, none without it. */
-export type GitRun = (label: string, fn: () => Promise<unknown>, done?: string, detail?: string) => Promise<boolean>;
+export type GitRun = (label: string, fn: () => Promise<unknown>, done?: string, detail?: string, extras?: RunExtras) => Promise<boolean>;
 export type NetRun = (label: string, fn: (op: NetOp) => Promise<unknown>, done?: string, extras?: RunExtras) => Promise<boolean>;
 
 interface Options {
@@ -74,10 +74,21 @@ export function useGitAction({ refresh, onDone, tracked: undoable = true, confli
     }
   };
 
-  const run: GitRun = (label, fn, done, detail) => attempt(label, fn, done, detail);
+  const run: GitRun = (label, fn, done, detail, extras) => attempt(label, fn, done, detail, extras);
 
   /** Fetch, pull and push: git's progress shows in the top bar, and Cancel stops it. */
   const runNet: NetRun = (label, fn, done, extras) => attempt(label, () => withNetActivity(label, fn), done, undefined, extras);
 
   return { busy, run, runNet };
+}
+
+/** A dialog's submit: it closes once the action went through, and keeps what was typed when it failed. */
+export function useSubmit(onClose: () => void) {
+  const [pending, setPending] = useState(false);
+  const send = async (action: () => Promise<boolean>) => {
+    setPending(true);
+    if (await action()) onClose();
+    else setPending(false);
+  };
+  return { pending, send };
 }

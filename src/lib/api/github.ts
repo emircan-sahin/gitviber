@@ -14,6 +14,10 @@ export interface GitHubAccess {
   admin: boolean;
   /** Issues are switched on (forks start with them off). */
   issues: boolean;
+  /** The merge methods a PR may use; null where GitHub doesn't say (it tells writers only). */
+  allowMergeCommit: boolean | null;
+  allowSquashMerge: boolean | null;
+  allowRebaseMerge: boolean | null;
 }
 
 export interface GitHubAccount {

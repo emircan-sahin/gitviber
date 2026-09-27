@@ -39,8 +39,9 @@ export function markdownOptions({ idPrefix, repo }: { idPrefix: string; repo?: s
   };
 }
 
-// @login (GitHub's username rules) or #123, not inside a word, path or email address.
-const REF = /(^|[^\w@/.-])(?:@([a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38})(?![\w/-])|#(\d+)\b)/gi;
+// @login (GitHub's username rules) or #123, not inside a word (in any script), path or email
+// address; #0 and #007 are no issue.
+const REF = /(^|[^\p{L}\p{N}_@/.-])(?:@([a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38})(?![\p{L}\p{N}_/-])|#([1-9]\d*)(?![\p{L}\p{N}_]))/giu;
 
 /** Links @mentions to profiles and #123 to the repo's issues (GitHub redirects PRs), as GitHub does. */
 function rehypeGithubRefs({ repo }: { repo: string }) {
@@ -60,16 +61,22 @@ function walk(node: HNode, repo: string) {
 }
 
 function split(value: string, repo: string): HNode[] {
-  const out: HNode[] = [];
+  return githubRefs(value, repo).map(({ text, href }) =>
+    href ? { type: "element", tagName: "a", properties: { href }, children: [{ type: "text", value: text }] } : { type: "text", value: text },
+  );
+}
+
+/** Plain text in pieces, @mentions and #123 with the `href` GitHub gives them (see REF); `repo` is https://github.com/owner/name. */
+export function githubRefs(value: string, repo: string): { text: string; href?: string }[] {
+  const out: { text: string; href?: string }[] = [];
   let last = 0;
   for (const m of value.matchAll(REF)) {
     const start = m.index + m[1].length;
-    if (start > last) out.push({ type: "text", value: value.slice(last, start) });
-    const href = m[2] ? `https://github.com/${m[2]}` : `${repo}/issues/${m[3]}`;
-    out.push({ type: "element", tagName: "a", properties: { href }, children: [{ type: "text", value: m[0].slice(m[1].length) }] });
+    if (start > last) out.push({ text: value.slice(last, start) });
+    out.push({ text: m[0].slice(m[1].length), href: m[2] ? `https://github.com/${m[2]}` : `${repo}/issues/${m[3]}` });
     last = m.index + m[0].length;
   }
-  if (last < value.length) out.push({ type: "text", value: value.slice(last) });
+  if (last < value.length) out.push({ text: value.slice(last) });
   return out;
 }
 

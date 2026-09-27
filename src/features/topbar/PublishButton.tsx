@@ -1,21 +1,18 @@
 import { Check, ChevronDown, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Tip } from "@/components/ui/tooltip";
+import { DisabledTip, Tip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 /** Publishes to `preferred` (see git/remote.rs `publish_remote`); with several remotes, any can be picked. */
 export function PublishButton({ remotes, preferred, disabled, onPublish }: { remotes: string[]; preferred: string | null; disabled: boolean; onPublish: (remote: string) => void }) {
   if (!remotes.length) {
     return (
-      <Tip label="This repository has no remote. Add one (git remote add origin <url>) to publish.">
-        {/* The disabled button can't take focus; this does, so the keyboard gets the reason too. */}
-        <span tabIndex={0} className="rounded-md outline-none focus-visible:ring-1 focus-visible:ring-ring">
-          <Button disabled>
-            <UploadCloud /> Publish
-          </Button>
-        </span>
-      </Tip>
+      <DisabledTip label="This repository has no remote. Add one (git remote add origin <url>) to publish." disabled>
+        <Button disabled>
+          <UploadCloud /> Publish
+        </Button>
+      </DisabledTip>
     );
   }
   const menu = (

@@ -9,6 +9,7 @@ import { pointerMoved } from "@/lib/ui/pointer";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
+import { sameRef, sanitizedRefName } from "@/lib/git/refs";
 import { RowAction } from "@/components/RowAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
@@ -71,7 +72,9 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const q = query.trim().toLowerCase();
   const groups = useMemo(() => {
-    const match = (b: Branch) => !elsewhere(b) && b.name.toLowerCase().includes(q);
+    // "fix login" finds fix-login, which is what it would be created as.
+    const typed = sanitizedRefName(q);
+    const match = (b: Branch) => !elsewhere(b) && (b.name.toLowerCase().includes(q) || (!!typed && b.name.toLowerCase().includes(typed)));
     const byGroup = new Map<string, Branch[]>([[LOCAL, []]]);
     // Current first among local, then backend order (recency).
     const found = branches.filter(match).sort((a, b) => Number(b.current) - Number(a.current));
@@ -92,8 +95,10 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
   const options = useMemo<Option[]>(() => {
     const found = groups.filter((g) => isOpen(g.name)).flatMap((g) => g.list.map((branch) => ({ kind: "branch" as const, branch })));
     // "feature" matches origin/feature too: switching to it creates the tracking branch.
-    const exact = branches.some((b) => b.name === query.trim() || localName(b) === query.trim());
-    return q && !exact ? [...found, { kind: "create", name: query.trim() }] : found;
+    // What's typed is created as git takes it ("fix login" → fix-login), never over a branch.
+    const name = sanitizedRefName(query.trim());
+    const exact = branches.some((b) => [query.trim(), name].includes(b.name) || localName(b) === name || (!b.remote && sameRef(b.name, name)));
+    return name && !exact ? [...found, { kind: "create", name }] : found;
   }, [groups, branches, query, q, collapsed]);
   const { index, setIndex, move } = usePickerIndex(options.length);
 

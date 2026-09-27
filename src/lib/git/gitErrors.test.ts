@@ -33,6 +33,19 @@ hint: Updates were rejected because the tip of your current branch is behind
 hint: its remote counterpart. If you want to integrate the remote changes,
 hint: use 'git pull' before pushing again.`;
 
+// A force push (with lease) refused: the remote moved past what was fetched, or was fetched but
+// never in the branch.
+const STALE_INFO = `To /tmp/gv64/remote.git
+ ! [rejected]        main -> main (stale info)
+error: failed to push some refs to '/tmp/gv64/remote.git'`;
+
+const UPDATED_SINCE_CHECKOUT = `To /tmp/gv64/remote.git
+ ! [rejected]        main -> main (remote ref updated since checkout)
+error: failed to push some refs to '/tmp/gv64/remote.git'
+hint: Updates were rejected because the tip of the remote-tracking branch has
+hint: been updated since the last checkout. If you want to integrate the
+hint: remote changes, use 'git pull' before pushing again.`;
+
 const OVERWRITTEN_BY_MERGE = `error: Your local changes to the following files would be overwritten by merge:
 	f
 Please commit your changes or stash them before you merge.
@@ -42,6 +55,13 @@ const REBASE_UNSTAGED = `error: cannot pull with rebase: You have unstaged chang
 error: Please commit or stash them.`;
 
 const REBASE_STAGED = `error: cannot pull with rebase: Your index contains uncommitted changes.
+error: Please commit or stash them.`;
+
+// Rebase from the branch picker, which refuses any uncommitted change.
+const REBASE_REFUSED = `error: cannot rebase: You have unstaged changes.
+error: Please commit or stash them.`;
+
+const REBASE_REFUSED_STAGED = `error: cannot rebase: Your index contains uncommitted changes.
 error: Please commit or stash them.`;
 
 const OVERWRITTEN_BY_CHECKOUT = `error: Your local changes to the following files would be overwritten by checkout:
@@ -92,8 +112,8 @@ test("a diverged pull and a push behind the remote are told apart", () => {
   assert.equal(fix(FETCH_FIRST), "fetch-first");
 });
 
-test("uncommitted changes in a pull's way offer autostash", () => {
-  for (const message of [OVERWRITTEN_BY_MERGE, REBASE_UNSTAGED, REBASE_STAGED]) assert.equal(fix(message), "autostash");
+test("uncommitted changes in a pull's, merge's or rebase's way offer autostash", () => {
+  for (const message of [OVERWRITTEN_BY_MERGE, REBASE_UNSTAGED, REBASE_STAGED, REBASE_REFUSED, REBASE_REFUSED_STAGED]) assert.equal(fix(message), "autostash");
 });
 
 test("a missing identity or a failed signature say what to set up", () => {
@@ -123,7 +143,7 @@ test("a hook quoting git's messages isn't taken for them", () => {
 
 test("a push refused over commits someone else pushed, fetched or not, wants a pull", () => {
   // useRepoActions asks to force push first when the remote's commits were the branch's own.
-  for (const refused of [FETCH_FIRST, NON_FAST_FORWARD]) assert.equal(explainGitError(refused)?.fix, "fetch-first");
+  for (const refused of [FETCH_FIRST, NON_FAST_FORWARD, STALE_INFO, UPDATED_SINCE_CHECKOUT]) assert.equal(explainGitError(refused)?.fix, "fetch-first");
 });
 
 test("what the app handles elsewhere, or doesn't know, stays git's own words", () => {
