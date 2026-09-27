@@ -41,6 +41,19 @@ export interface Worktree {
   main: boolean;
 }
 
+/** Paths opened from outside the window (opened.rs): what to open, and what named nothing. */
+export interface Opened {
+  open: {
+    /** The folder to open as a project. */
+    folder: string;
+    /** A file in it to show, from its repository's root. */
+    file: string | null;
+    line: number | null;
+    column: number | null;
+  }[];
+  missing: string[];
+}
+
 export interface OpenedRepo {
   root: string;
   /** The main worktree, which the projects list is keyed by. */

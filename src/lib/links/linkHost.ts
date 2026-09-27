@@ -30,8 +30,14 @@ interface LinkHost {
 }
 
 let host: LinkHost | null = null;
+let waiting: { root: string; target: Target } | null = null;
 export function setLinkHost(h: LinkHost | null) {
   host = h;
+  const w = waiting;
+  if (!h || w?.root !== h.root) return;
+  waiting = null;
+  // After the workspace's own first effects, which drop a line reveal for any other tab.
+  setTimeout(() => openTarget(w.target, true));
 }
 
 const indexes = new Map<string, Promise<FileIndex>>();
@@ -87,6 +93,13 @@ export function openTarget(target: Target, focus = false) {
   if (!host) return;
   if (target.line) revealInCode({ path: target.path, line: target.line, column: target.column ?? 1 });
   host.open(target.path, focus);
+}
+
+/** Opens a file in the workspace of `root` (a repo's absolute path), now or once it's up: `gitviber a.ts:12`. */
+export function openTargetIn(root: string, target: Target) {
+  waiting = null;
+  if (host?.root === root) openTarget(target, true);
+  else waiting = { root, target };
 }
 
 /**
