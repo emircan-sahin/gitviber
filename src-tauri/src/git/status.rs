@@ -1,7 +1,7 @@
 //! The working tree's status: changed files, line counts, nested repos, the operation under way.
 
 use super::{
-    command, config_value, is_binary, operation, publish_remote_among, push_target, read_regular,
+    command, is_binary, operation, publish_config, publish_remote_among, push_target, read_regular,
     remotes, run, worktrees, PushTarget, MAX_TEXT_BYTES,
 };
 use crate::process::exec;
@@ -305,21 +305,21 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     }
     if let Some(b) = &st.branch {
         st.push = push_target(repo, b);
+    }
+    st.remotes = remotes(repo);
+    if st.branch.is_some() && !st.remotes.is_empty() && (st.upstream.is_none() || st.upstream_gone)
+    {
+        let config = publish_config(repo, st.branch.as_deref());
         if st.upstream.is_none() {
-            let merge = config_value(repo, None, &format!("branch.{b}.merge"));
-            st.follows = merge
+            st.follows = config
+                .merge
                 .as_deref()
                 .and_then(|m| m.strip_prefix("refs/pull/")?.strip_suffix("/head"))
                 .map(|n| format!("#{n}"));
         }
-    }
-    st.remotes = remotes(repo);
-    if (st.upstream.is_none() || st.upstream_gone)
-        && st.follows.is_none()
-        && st.branch.is_some()
-        && !st.remotes.is_empty()
-    {
-        st.publish = publish_remote_among(repo, &st.remotes, st.branch.as_deref()).ok();
+        if st.follows.is_none() {
+            st.publish = publish_remote_among(&st.remotes, &config).ok();
+        }
     }
     if st.unstaged.iter().any(|f| f.nested.is_some()) {
         drop_worktrees(repo, &mut st.unstaged);

@@ -1,6 +1,6 @@
 //! Remotes: listing and editing them, their URLs, and the github.com token git stores.
 
-use super::{command, config_value, run, run_text, run_with, validate_remote_name, validate_url};
+use super::{command, run, run_text, run_with, validate_remote_name, validate_url};
 use crate::process::exec;
 use serde::Serialize;
 use std::path::Path;
@@ -145,20 +145,62 @@ pub fn remote_urls(repo: &Path) -> Vec<(String, Option<String>)> {
 /// the only remote, or origin among several. Anything else is the user's call.
 pub fn publish_remote(repo: &Path) -> Result<String, String> {
     let branch = run_text(repo, &["symbolic-ref", "--short", "-q", "HEAD"]).ok();
-    publish_remote_among(repo, &remotes(repo), branch.as_deref().map(str::trim))
+    let config = publish_config(repo, branch.as_deref().map(str::trim));
+    publish_remote_among(&remotes(repo), &config)
 }
 
-/// `publish_remote` for a caller that has the remotes and the branch at hand already.
+/// The config an unpublished branch goes by, read in one `git config`: status reads it on
+/// every refresh.
+#[derive(Default)]
+pub(super) struct PublishConfig {
+    /// `branch.<b>.merge`: a checked-out PR's refs/pull/<n>/head, for one.
+    pub merge: Option<String>,
+    push_remote: Option<String>,
+    push_default: Option<String>,
+}
+
+pub(super) fn publish_config(repo: &Path, branch: Option<&str>) -> PublishConfig {
+    // git prints keys with the section and name lowercased; the branch keeps its case.
+    let mut pattern = r"^remote\.pushdefault$".to_string();
+    if let Some(b) = branch {
+        let mut escaped = String::new();
+        for c in b.chars() {
+            if r"\.^$*+?()[]{}|".contains(c) {
+                escaped.push('\\');
+            }
+            escaped.push(c);
+        }
+        pattern.push_str(&format!(r"|^branch\.{escaped}\.(merge|pushremote)$"));
+    }
+    let out = run_text(repo, &["config", "--get-regexp", &pattern]).unwrap_or_default();
+    let mut config = PublishConfig::default();
+    for line in out.lines() {
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        let slot = if key == "remote.pushdefault" {
+            &mut config.push_default
+        } else if key.ends_with(".merge") {
+            &mut config.merge
+        } else {
+            &mut config.push_remote
+        };
+        // The last one wins, as with `git config --get`.
+        *slot = Some(value.to_string()).filter(|v| !v.is_empty());
+    }
+    config
+}
+
+/// `publish_remote` for a caller that has the remotes and the config at hand already.
 pub(super) fn publish_remote_among(
-    repo: &Path,
     all: &[String],
-    branch: Option<&str>,
+    config: &PublishConfig,
 ) -> Result<String, String> {
-    let exists = |r: &String| all.contains(r);
-    let configured = branch
-        .and_then(|b| config_value(repo, None, &format!("branch.{b}.pushRemote")))
+    let exists = |r: &&String| all.contains(r);
+    let configured = config
+        .push_remote
+        .as_ref()
         .filter(exists)
-        .or_else(|| config_value(repo, None, "remote.pushDefault").filter(exists));
+        .or_else(|| config.push_default.as_ref().filter(exists))
+        .cloned();
     if let Some(r) = configured {
         return Ok(r);
     }

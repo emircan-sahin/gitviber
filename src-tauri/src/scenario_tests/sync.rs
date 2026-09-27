@@ -316,6 +316,14 @@ fn publish_picks_the_remote_instead_of_assuming_origin() {
     set_push_default(a, "other").unwrap();
     switch_branch(a, "feat3", true).unwrap();
     assert_eq!(status(a).unwrap().publish.as_deref(), Some("other"));
+    // The branch's own pushRemote beats it, found by its literal name: fXx1 would match
+    // f.(x)+1 read as a regex.
+    switch_branch(a, "f.(x)+1", true).unwrap();
+    run(a, &["config", "branch.fXx1.pushRemote", "gh"]).unwrap();
+    assert_eq!(status(a).unwrap().publish.as_deref(), Some("other"));
+    run(a, &["config", "branch.f.(x)+1.pushRemote", "gh"]).unwrap();
+    assert_eq!(status(a).unwrap().publish.as_deref(), Some("gh"));
+    assert_eq!(publish_remote(a).unwrap(), "gh");
 
     // No remote at all: a clear message, not a raw git error.
     let lone = sb.path("lone");
