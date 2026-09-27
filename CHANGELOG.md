@@ -6,6 +6,8 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-09-27
+
 ### Changed
 
 - **⇧⌘↵ zooms the focused pane inside the terminal panel,** keeping the code view and side panels
@@ -278,7 +280,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/emircan-sahin/gitviber/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/emircan-sahin/gitviber/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/emircan-sahin/gitviber/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/emircan-sahin/gitviber/compare/v0.1.0...v0.1.1
