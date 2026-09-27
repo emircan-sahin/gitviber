@@ -21,7 +21,7 @@ import { IssueView } from "@/features/github/issues/IssueView";
 import { PullView } from "@/features/github/pulls/PullView";
 import { FileIcon } from "@/components/FileIcon";
 import { useReview } from "@/features/github/pulls/ReviewThreads";
-import { isSvg, MediaView, mediaKind, SvgView } from "./MediaView";
+import { isImageChange, isSvg, MediaView, mediaKind, SvgView } from "./MediaView";
 import { isMarkdown, MarkdownView } from "./MarkdownView";
 import { LineCounts, PathLabel, StatusPill } from "@/components/StatusBadge";
 import { type FileSelection, linkSides, pairArgs, useBlame, usePair } from "./diffPairs";
@@ -116,6 +116,8 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   }, [sel]);
   const [zoom, setZoom] = useState<Zoom>(FIT);
   const [contrast, setContrast] = useState(false);
+  // Both versions of an image: they can also be laid one over the other.
+  const twoImages = !isFile && !!pair?.original.exists && !!pair.modified.exists && (svg ? rendered : media && isImageChange({ path: selectionPath(sel), oldPath: file?.oldPath ?? null }));
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile));
 
   const diff = !isFile && !media && !rendered;
@@ -181,9 +183,11 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               <Sep />
             </>
           )}
+          {twoImages && <CompareToggle />}
+          {twoImages && !svg && <Sep />}
           {rendered && svg && (
             <>
-              {!isFile && <LayoutToggle />}
+              {!isFile && (!twoImages || s.imageCompare === "side") && <LayoutToggle />}
               <Tip label="Scroll to zoom, drag to pan, double-click to fit">
                 <div>
                   <Segmented
@@ -268,6 +272,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               before={!isFile && pair.original.exists ? pair.original.text : null}
               after={unsaved ?? (pair.modified.exists ? pair.modified.text : null)}
               stacked={!isFile && !s.sideBySide}
+              compare={s.imageCompare}
               zoom={zoom}
               onZoom={setZoom}
               backdrop={contrast ? (s.dark ? "light" : "dark") : "theme"}
@@ -276,7 +281,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
         ) : rendered ? (
           pair && <MarkdownView text={unsaved ?? (pair.modified.exists ? pair.modified.text : pair.original.text)} src={pairArgs(sel, revision)} onOpen={onOpen} />
         ) : media ? (
-          pair && <MediaView src={pairArgs(sel, revision)} before={!isFile && pair.original.exists} after={pair.modified.exists} />
+          pair && <MediaView src={pairArgs(sel, revision)} before={!isFile && pair.original.exists} after={pair.modified.exists} compare={s.imageCompare} />
         ) : (
           pair && (
             <MonacoView
@@ -386,6 +391,22 @@ function LayoutToggle() {
         />
       </div>
     </Tip>
+  );
+}
+
+/** How a changed image shows its two versions; the choice carries over to the next one. */
+function CompareToggle() {
+  const s = useSettings();
+  return (
+    <Segmented
+      value={s.imageCompare}
+      onChange={(v) => updateSettings({ imageCompare: v })}
+      options={[
+        { value: "side", label: "2-up" },
+        { value: "swipe", label: "Swipe" },
+        { value: "onion", label: "Onion skin" },
+      ]}
+    />
   );
 }
 

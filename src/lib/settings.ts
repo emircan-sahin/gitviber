@@ -95,6 +95,9 @@ export interface CustomApp {
 
 export type Appearance = "system" | "light" | "dark";
 
+/** How a changed image shows its two versions: next to each other, or one over the other. */
+export type ImageCompare = "side" | "swipe" | "onion";
+
 /** The palettes behind [data-theme] in index.css, each with the syntax theme picking it sets. */
 export const THEMES = {
   dark: { label: "Dark", dark: true, syntax: "dark-plus" },
@@ -145,6 +148,8 @@ export interface Settings {
   markdownPreview: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
   svgPreview: boolean;
+  /** The last mode picked on a changed image (an SVG preview's too). Set from the viewer, not the dialog. */
+  imageCompare: ImageCompare;
   /** The file view shows who last changed each line. Set from the viewer, not the dialog. */
   blame: boolean;
   /** Holding ⌘ by itself shows the shortcuts that apply (ShortcutOverlay); its key command works either way. */
@@ -201,6 +206,7 @@ const DEFAULTS: Settings = {
   uiScale: 1,
   markdownPreview: true,
   svgPreview: false,
+  imageCompare: "side",
   blame: false,
   shortcutOverlay: true,
   keybindings: {},
@@ -248,6 +254,7 @@ function load(): Settings {
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
+    if (!["side", "swipe", "onion"].includes(s.imageCompare)) s.imageCompare = DEFAULTS.imageCompare;
     if (typeof s.blame !== "boolean") s.blame = DEFAULTS.blame;
     if (typeof s.ignoreWhitespace !== "boolean") s.ignoreWhitespace = DEFAULTS.ignoreWhitespace;
     if (!["amount", "all"].includes(s.whitespaceMode)) s.whitespaceMode = DEFAULTS.whitespaceMode;

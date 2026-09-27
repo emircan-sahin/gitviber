@@ -9,6 +9,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { copyFiles } from "@/lib/app/clipboard";
 import { failed } from "@/lib/app/toast";
 import { IS_MAC } from "@/lib/platform";
+import type { ImageCompare } from "@/lib/settings";
 
 type MediaKind = "image" | "video" | "audio" | "pdf";
 
@@ -63,9 +64,10 @@ export interface MediaSource {
   key: string;
 }
 
-/** Previews a media file, side by side when both the before and after versions exist. */
-export function MediaView({ src, before, after }: { src: MediaSource; before: boolean; after: boolean }) {
+/** Previews a media file, side by side when both the before and after versions exist, or an image's one over the other. */
+export function MediaView({ src, before, after, compare }: { src: MediaSource; before: boolean; after: boolean; compare: ImageCompare }) {
   const both = before && after;
+  if (both && compare !== "side" && isImageChange(src)) return <ImageOverlay src={src} mode={compare} />;
   return (
     <Sides stacked={false}>
       {before && <Side src={src} original label={both ? "Before" : undefined} tone="removed" />}
@@ -99,6 +101,127 @@ function Side({ src, original, label, tone }: { src: MediaSource; original: bool
         <iframe src={url} className="absolute inset-0 size-full border-0" />
       )}
     </Panel>
+  );
+}
+
+/** Both versions are images, so they can be laid one over the other. */
+export const isImageChange = (src: { path: string; oldPath: string | null }) => mediaKind(src.path) === "image" && mediaKind(src.oldPath ?? src.path) === "image";
+
+type Size = [number, number];
+
+/** The box two images of `sizes` share, both drawn from its top left corner. */
+const frameOf = (sizes: (Size | null)[]): Size | null => (sizes.every(Boolean) ? [Math.max(...sizes.map((n) => n![0])), Math.max(...sizes.map((n) => n![1]))] : null);
+
+const dims = (n: Size | null) => n && `${n[0]}×${n[1]}`;
+
+/** The two versions of an image one over the other, shrunk together to fit like side by side (never enlarged). */
+function ImageOverlay({ src, mode }: { src: MediaSource; mode: Exclude<ImageCompare, "side"> }) {
+  const before = useMediaUrl(src, true);
+  const after = useMediaUrl(src, false);
+  const [sizes, setSizes] = useState<[Size | null, Size | null]>([null, null]);
+  const [stage, setStage] = useState<HTMLDivElement | null>(null);
+  const [roomW, roomH] = useSize(stage);
+  const frame = frameOf(sizes);
+  const scale = frame ? Math.max(0, Math.min(1, (roomW - 2 * PAD) / frame[0], (roomH - 2 * PAD) / frame[1])) : 1;
+  const [left, top] = frame ? [Math.round((roomW - frame[0] * scale) / 2), Math.round((roomH - frame[1] * scale) / 2)] : [0, 0];
+  const error = before.error ?? after.error;
+  const layer = (url: string | null, i: 0 | 1) =>
+    url && (
+      <img
+        src={url}
+        alt=""
+        draggable={false}
+        onLoad={(e) => {
+          const n: Size = [e.currentTarget.naturalWidth, e.currentTarget.naturalHeight];
+          setSizes((s) => (i === 0 ? [n, s[1]] : [s[0], n]));
+        }}
+        // Hidden until both sizes are known, or the first one to load shows by itself.
+        style={frame && sizes[i] ? { left, top, width: sizes[i]![0] * scale, height: sizes[i]![1] * scale } : { visibility: "hidden" }}
+        className="pointer-events-none absolute max-w-none"
+      />
+    );
+  return (
+    <Overlay
+      mode={mode}
+      details={[
+        [dims(sizes[0]), before.size !== null && formatBytes(before.size)],
+        [dims(sizes[1]), after.size !== null && formatBytes(after.size)],
+      ]}
+      stageRef={setStage}
+      under={
+        error ? (
+          <div className="flex h-full items-center justify-center text-[12.5px] text-muted-foreground">{error}</div>
+        ) : (
+          <>
+            {frame && <div className="checkerboard absolute" style={{ left, top, width: frame[0] * scale, height: frame[1] * scale }} />}
+            {layer(before.url, 0)}
+          </>
+        )
+      }
+      over={!error && layer(after.url, 1)}
+    />
+  );
+}
+
+/**
+ * Before under after in one place. Swipe shows before left of a divider and after right of it;
+ * onion skin fades after in over before. Only CSS on the two layers: nothing is decoded again.
+ */
+function Overlay({ mode, details, stageRef, under, over }: { mode: Exclude<ImageCompare, "side">; details: [(string | false | null)[], (string | false | null)[]]; stageRef?: (el: HTMLDivElement | null) => void; under: ReactNode; over: ReactNode }) {
+  // Where the divider is, or how opaque after is: 0 is all before.
+  const [at, setAt] = useState(0.5);
+  const [b, a] = details.map((d) => d.filter(Boolean).join(" · "));
+  return (
+    <div className="flex h-full min-h-0 min-w-0 flex-col">
+      <div className="flex h-7 shrink-0 items-center gap-2 border-b border-border px-3 text-[11.5px] text-subtle">
+        <span className="font-medium text-removed">Before</span>
+        <span className="font-mono">{b}</span>
+        <div className="flex flex-1 justify-center">
+          {mode === "onion" && <input type="range" min={0} max={100} value={Math.round(at * 100)} onChange={(e) => setAt(Number(e.target.value) / 100)} aria-label="Opacity of After" className="w-40 accent-primary" />}
+        </div>
+        <span className="font-mono">{a}</span>
+        <span className="font-medium text-added">After</span>
+      </div>
+      <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden">
+        <div className="absolute inset-0">{under}</div>
+        <div className="absolute inset-0" style={mode === "swipe" ? { clipPath: `inset(0 0 0 ${at * 100}%)` } : { opacity: at }}>
+          {over}
+        </div>
+        {mode === "swipe" && <Divider at={at} onMove={setAt} />}
+      </div>
+    </div>
+  );
+}
+
+/** Swipe's divider: dragged, or moved with the arrow keys. */
+function Divider({ at, onMove }: { at: number; onMove: (at: number) => void }) {
+  const drag = (e: React.PointerEvent<HTMLDivElement>) => {
+    const box = e.currentTarget.parentElement!.getBoundingClientRect();
+    onMove(Math.min(1, Math.max(0, (e.clientX - box.left) / box.width)));
+  };
+  return (
+    <div
+      role="slider"
+      tabIndex={0}
+      aria-label="Divider between Before and After"
+      aria-valuenow={Math.round(at * 100)}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag(e);
+      }}
+      onPointerMove={(e) => e.currentTarget.hasPointerCapture(e.pointerId) && drag(e)}
+      onKeyDown={(e) => {
+        const step = e.key === "ArrowLeft" ? -0.05 : e.key === "ArrowRight" ? 0.05 : 0;
+        if (!step) return;
+        e.preventDefault();
+        onMove(Math.min(1, Math.max(0, at + step)));
+      }}
+      className="group absolute inset-y-0 -ml-2 w-4 cursor-ew-resize outline-none"
+      style={{ left: `${at * 100}%` }}
+    >
+      <div className="mx-auto h-full w-px bg-primary" />
+      <div className="absolute top-1/2 left-1/2 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-primary bg-background group-focus-visible:ring-2 group-focus-visible:ring-ring" />
+    </div>
   );
 }
 
@@ -162,11 +285,23 @@ interface SvgProps {
 }
 
 /**
- * Renders SVG source as an image, before and after when both are given: stacked or side by side.
- * Both sides share one zoom, so they stay lined up while comparing.
+ * Renders SVG source as an image, before and after when both are given: stacked, side by side, or
+ * one over the other. Both sides share one zoom, so they stay lined up while comparing.
  */
-export function SvgView({ before, after, stacked, ...props }: { before: string | null; after: string | null; stacked: boolean } & SvgProps) {
+export function SvgView({ before, after, stacked, compare, ...props }: { before: string | null; after: string | null; stacked: boolean; compare: ImageCompare } & SvgProps) {
   const both = before !== null && after !== null;
+  const [sizes, setSizes] = useState<[Size | null, Size | null]>([null, null]);
+  if (both && compare !== "side") {
+    const frame = frameOf(sizes);
+    return (
+      <Overlay
+        mode={compare}
+        details={[[dims(sizes[0])], [dims(sizes[1])]]}
+        under={<SvgSide text={before} layer={{ frame, onSize: (n) => setSizes((s) => [n, s[1]]), backdrop: true }} {...props} />}
+        over={<SvgSide text={after} layer={{ frame, onSize: (n) => setSizes((s) => [s[0], n]), backdrop: false }} {...props} />}
+      />
+    );
+  }
   return (
     <Sides stacked={stacked}>
       {before !== null && <SvgSide text={before} label={both ? "Before" : undefined} tone="removed" {...props} />}
@@ -175,7 +310,14 @@ export function SvgView({ before, after, stacked, ...props }: { before: string |
   );
 }
 
-function SvgSide({ text, label, tone, zoom, onZoom, backdrop }: { text: string; label?: string; tone: Tone } & SvgProps) {
+/** One of two SVGs laid over each other: both are placed in `frame` (null until both sizes are known), backdrop only under the first. */
+interface SvgLayer {
+  frame: Size | null;
+  onSize: (n: Size) => void;
+  backdrop: boolean;
+}
+
+function SvgSide({ text, label, tone = "added", zoom, onZoom, backdrop, layer }: { text: string; label?: string; tone?: Tone; layer?: SvgLayer } & SvgProps) {
   // Through <img> from a blob, never inline: scripts, handlers and external references in the SVG don't run.
   const { url, size } = useSvgUrl(text);
   const [natural, setNatural] = useState<[number, number] | null>(null);
@@ -185,27 +327,29 @@ function SvgSide({ text, label, tone, zoom, onZoom, backdrop }: { text: string; 
   const problem = useMemo(() => (broken ? svgProblem(text) : null), [broken, text]);
   const [stage, setStage] = useState<HTMLDivElement | null>(null);
   const [roomW, roomH] = useSize(stage);
-  const fit = natural && roomW > 0 && roomH > 0 ? Math.max(0, Math.min((roomW - 2 * PAD) / natural[0], (roomH - 2 * PAD) / natural[1])) : 1;
+  // What's fitted, zoomed and moved: the drawing, or the frame it shares with the other layer.
+  const box = layer ? (natural && layer.frame) : natural;
+  const fit = box && roomW > 0 && roomH > 0 ? Math.max(0, Math.min((roomW - 2 * PAD) / box[0], (roomH - 2 * PAD) / box[1])) : 1;
   // Clamped here too: the file can change under a zoom chosen for a much smaller drawing.
-  const scale = natural ? Math.min(zoom.scale ?? fit, zoomLimits(natural, fit)[1]) : fit;
-  const [w, h] = natural ? [natural[0] * scale, natural[1] * scale] : [0, 0];
+  const scale = box ? Math.min(zoom.scale ?? fit, zoomLimits(box, fit)[1]) : fit;
+  const [w, h] = box ? [box[0] * scale, box[1] * scale] : [0, 0];
   const pannable = w > roomW || h > roomH;
 
   // Updates go through the updater form: several wheel or move events can land in one frame.
-  const layout = useRef({ roomW, roomH, fit, natural });
+  const layout = useRef({ roomW, roomH, fit, box });
   useLayoutEffect(() => {
-    layout.current = { roomW, roomH, fit, natural };
+    layout.current = { roomW, roomH, fit, box };
   });
   /** Zooms by `factor`, keeping the point (x, y) of the stage where it is. */
   const zoomAt = useCallback(
     (factor: number, x: number, y: number) => {
-      const { roomW, roomH, fit, natural } = layout.current;
-      if (!natural) return;
-      const [min, max] = zoomLimits(natural, fit);
+      const { roomW, roomH, fit, box } = layout.current;
+      if (!box) return;
+      const [min, max] = zoomLimits(box, fit);
       onZoom((z) => {
         const from = Math.min(z.scale ?? fit, max);
         const to = Math.min(max, Math.max(min, from * factor));
-        return { scale: to, u: zoomAxis(roomW, natural[0] * from, natural[0] * to, z.u, x), v: zoomAxis(roomH, natural[1] * from, natural[1] * to, z.v, y) };
+        return { scale: to, u: zoomAxis(roomW, box[0] * from, box[0] * to, z.u, x), v: zoomAxis(roomH, box[1] * from, box[1] * to, z.v, y) };
       });
     },
     [onZoom],
@@ -213,7 +357,7 @@ function SvgSide({ text, label, tone, zoom, onZoom, backdrop }: { text: string; 
   useEffect(() => {
     if (!stage) return;
     const wheel = (e: WheelEvent) => {
-      if (!layout.current.natural) return;
+      if (!layout.current.box) return;
       e.preventDefault();
       // Pinches arrive as ctrl+wheel with small deltas; line-mode wheels scroll ~3 lines a notch.
       const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
@@ -225,10 +369,10 @@ function SvgSide({ text, label, tone, zoom, onZoom, backdrop }: { text: string; 
   }, [stage, zoomAt]);
 
   const panBy = (dx: number, dy: number) => {
-    if (!natural) return;
+    if (!box) return;
     onZoom((z) => {
-      const s = Math.min(z.scale ?? fit, zoomLimits(natural, fit)[1]);
-      return { ...z, u: panAxis(roomW, natural[0] * s, z.u, dx), v: panAxis(roomH, natural[1] * s, z.v, dy) };
+      const s = Math.min(z.scale ?? fit, zoomLimits(box, fit)[1]);
+      return { ...z, u: panAxis(roomW, box[0] * s, z.u, dx), v: panAxis(roomH, box[1] * s, z.v, dy) };
     });
   };
   const drag = useRef<{ x: number; y: number } | null>(null);
@@ -240,7 +384,7 @@ function SvgSide({ text, label, tone, zoom, onZoom, backdrop }: { text: string; 
   };
   // The keyboard's wheel and drag: + / − / 0 zoom around the middle, arrows move the view.
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (!natural) return;
+    if (!box) return;
     const step = 48;
     if (matchesCommand("media.zoomIn", e.nativeEvent)) zoomAt(1.25, roomW / 2, roomH / 2);
     else if (matchesCommand("media.zoomOut", e.nativeEvent)) zoomAt(0.8, roomW / 2, roomH / 2);
@@ -254,50 +398,60 @@ function SvgSide({ text, label, tone, zoom, onZoom, backdrop }: { text: string; 
     e.preventDefault();
   };
 
-  return (
-    <Panel label={label} tone={tone} details={[!broken && natural && `${natural[0]}×${natural[1]}`, !broken && natural && `${Math.round(scale * 100)}%`, url && formatBytes(size)]}>
-      <div
-        ref={setStage}
-        // Where focusPanel("code") lands (see panels.ts), so the keys below work from F6 too.
-        data-code-scroll
-        tabIndex={0}
-        aria-label={`${label ? `${label}: ` : ""}SVG preview. + and − zoom, 0 fits, arrows move it`}
-        onKeyDown={onKeyDown}
-        onPointerDown={(e) => {
-          if (e.button !== 0 || !pannable) return;
-          e.currentTarget.setPointerCapture(e.pointerId);
-          drag.current = { x: e.clientX, y: e.clientY };
-        }}
-        onPointerMove={pan}
-        onPointerUp={() => (drag.current = null)}
-        onPointerCancel={() => (drag.current = null)}
-        onDoubleClick={() => onZoom(FIT)}
-        className={cn("absolute inset-0 overflow-hidden outline-none", pannable && "cursor-grab active:cursor-grabbing")}
-      >
-        {broken ? (
-          <div className="flex h-full flex-col items-center justify-center p-4 text-center">
-            <div className="text-[12.5px] text-muted-foreground">This SVG can't be rendered</div>
-            <div className="mt-1 max-w-xl text-[11.5px] text-subtle select-text">{problem ?? "Its markup is likely invalid. Switch to Code to see it."}</div>
-          </div>
-        ) : (
-          url && (
+  // The box's corner; a layer draws its drawing from there at its own size.
+  const [x, y] = [Math.round(place(roomW, w, zoom.u)), Math.round(place(roomH, h, zoom.v))];
+  const [drawnW, drawnH] = layer && natural ? [natural[0] * scale, natural[1] * scale] : [w, h];
+  const view = (
+    <div
+      ref={setStage}
+      // Where focusPanel("code") lands (see panels.ts), so the keys below work from F6 too.
+      data-code-scroll
+      tabIndex={0}
+      aria-label={`${label ? `${label}: ` : ""}SVG preview. + and − zoom, 0 fits, arrows move it`}
+      onKeyDown={onKeyDown}
+      onPointerDown={(e) => {
+        if (e.button !== 0 || !pannable) return;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { x: e.clientX, y: e.clientY };
+      }}
+      onPointerMove={pan}
+      onPointerUp={() => (drag.current = null)}
+      onPointerCancel={() => (drag.current = null)}
+      onDoubleClick={() => onZoom(FIT)}
+      className={cn("absolute inset-0 overflow-hidden outline-none", pannable && "cursor-grab active:cursor-grabbing")}
+    >
+      {broken ? (
+        <div className="flex h-full flex-col items-center justify-center p-4 text-center">
+          <div className="text-[12.5px] text-muted-foreground">This SVG can't be rendered</div>
+          <div className="mt-1 max-w-xl text-[11.5px] text-subtle select-text">{problem ?? "Its markup is likely invalid. Switch to Code to see it."}</div>
+        </div>
+      ) : (
+        url && (
+          <>
+            {layer?.backdrop && box && <div className={cn(BACKDROPS[backdrop], "pointer-events-none absolute")} style={{ left: x, top: y, width: Math.round(w), height: Math.round(h) }} />}
             <img
               src={url}
               alt=""
               draggable={false}
-              onLoad={(e) => setNatural(svgSize(text, [e.currentTarget.naturalWidth, e.currentTarget.naturalHeight]))}
+              onLoad={(e) => {
+                const n = svgSize(text, [e.currentTarget.naturalWidth, e.currentTarget.naturalHeight]);
+                setNatural(n);
+                layer?.onSize(n);
+              }}
               onError={() => setBrokenUrl(url)}
               // Hidden until its size is known, or it flashes at the webview's default size.
-              style={
-                natural
-                  ? { left: Math.round(place(roomW, w, zoom.u)), top: Math.round(place(roomH, h, zoom.v)), width: Math.round(w), height: Math.round(h) }
-                  : { visibility: "hidden" }
-              }
-              className={cn(BACKDROPS[backdrop], "pointer-events-none absolute max-w-none")}
+              style={box ? { left: x, top: y, width: Math.round(drawnW), height: Math.round(drawnH) } : { visibility: "hidden" }}
+              className={cn(!layer && BACKDROPS[backdrop], "pointer-events-none absolute max-w-none")}
             />
-          )
-        )}
-      </div>
+          </>
+        )
+      )}
+    </div>
+  );
+  if (layer) return view;
+  return (
+    <Panel label={label} tone={tone} details={[!broken && natural && `${natural[0]}×${natural[1]}`, !broken && natural && `${Math.round(scale * 100)}%`, url && formatBytes(size)]}>
+      {view}
     </Panel>
   );
 }
