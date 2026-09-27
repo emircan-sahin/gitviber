@@ -9,6 +9,7 @@ test("OSC 52 copies text, and never answers a read", () => {
   assert.equal(osc52Text("c;"), null);
   assert.equal(osc52Text("c"), null);
   assert.equal(osc52Text("c;not base64!"), null);
+  assert.equal(osc52Text(`c;${"A".repeat(1_400_004)}`), null);
   // Not UTF-8.
   assert.equal(osc52Text(`c;${btoa("\xff\xfe")}`), null);
 });

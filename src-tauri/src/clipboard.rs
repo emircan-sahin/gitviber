@@ -109,8 +109,7 @@ pub fn copy_files(_paths: Vec<String>) -> Result<(), String> {
 /// clipboard only during a key or a click, and the copy arrives in the program's output.
 #[cfg(target_os = "macos")]
 pub fn write_text(text: &str) -> Result<(), String> {
-    let text = std::ffi::CString::new(text).map_err(|e| e.to_string())?;
-    objc2::rc::autoreleasepool(|_| unsafe { pasteboard::write_text(&text) })
+    objc2::rc::autoreleasepool(|_| unsafe { pasteboard::write_text(text) })
 }
 
 #[cfg(target_os = "linux")]
@@ -376,13 +375,23 @@ mod pasteboard {
     }
 
     /// `text` as all the pasteboard holds.
-    pub unsafe fn write_text(text: &CStr) -> Result<(), String> {
-        let Some(pb_class) = AnyClass::get(c"NSPasteboard") else {
+    pub unsafe fn write_text(text: &str) -> Result<(), String> {
+        let (Some(pb_class), Some(string_class)) =
+            (AnyClass::get(c"NSPasteboard"), AnyClass::get(c"NSString"))
+        else {
             return Err("AppKit is unavailable".into());
         };
+        // By length (NSUTF8StringEncoding): as a C string, the text would end at its first NUL.
+        let string: *mut AnyObject = msg_send![string_class, alloc];
+        let string: *mut AnyObject = msg_send![string, initWithBytes: text.as_ptr().cast::<std::ffi::c_void>(), length: text.len(), encoding: 4usize];
+        if string.is_null() {
+            return Err("Could not write to the pasteboard".into());
+        }
         let pb: *mut AnyObject = msg_send![pb_class, generalPasteboard];
         let _: isize = msg_send![pb, clearContents];
-        let ok: bool = msg_send![pb, setString: ns_string(text), forType: ns_string(c"public.utf8-plain-text")];
+        let ok: bool =
+            msg_send![pb, setString: string, forType: ns_string(c"public.utf8-plain-text")];
+        let _: () = msg_send![string, release];
         ok.then_some(())
             .ok_or_else(|| "Could not write to the pasteboard".into())
     }
@@ -458,6 +467,8 @@ mod tests {
         write_text("héllo ✅").unwrap();
         let (_, text, _) = objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() });
         assert_eq!(text.as_deref(), Some("héllo ✅"));
+        // Through a C string, a NUL failed the copy.
+        write_text("a\0b").unwrap();
     }
 
     #[cfg(target_os = "macos")]
