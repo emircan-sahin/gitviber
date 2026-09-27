@@ -4,6 +4,7 @@
 
 mod attachments;
 mod checkout;
+mod checks;
 mod client;
 mod issues;
 #[cfg(test)]
@@ -13,6 +14,7 @@ mod repo;
 
 pub use attachments::*;
 pub use checkout::*;
+pub use checks::*;
 pub use client::*;
 pub use issues::*;
 pub use pulls::*;
