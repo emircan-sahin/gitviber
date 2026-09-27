@@ -44,4 +44,6 @@ test("the explorer sorts folders first, then numbers by value", () => {
   const entry = (name: string, isDir = false) => ({ name, isDir });
   const sorted = [entry("file10"), entry("b"), entry("File2"), entry("z", true), entry("a1", true)].sort(compareEntries);
   assert.deepEqual(sorted.map((e) => e.name), ["a1", "z", "b", "File2", "file10"]);
+  const ties = ["readme.md", "file2", "README.md", "file02"].map((n) => entry(n));
+  assert.deepEqual(ties.sort(compareEntries).map((e) => e.name), ["file02", "file2", "README.md", "readme.md"]);
 });
