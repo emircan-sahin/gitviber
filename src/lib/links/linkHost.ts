@@ -3,8 +3,8 @@
 // Definition (lib/editor/definitions) and the terminal (terminalLinks below).
 import type { IDisposable, ILink, Terminal } from "@xterm/xterm";
 import { api, github } from "../api";
-import { primaryKey } from "../platform";
-import { type Alias, cellText, type FileIndex, findTerminalLinks, hyperlinkTarget, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
+import { IS_MAC, primaryKey } from "../platform";
+import { type Alias, cellText, diskCandidates, diskTarget, type FileIndex, findTerminalLinks, hyperlinkTarget, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
 import { dirname, slashes } from "../path";
 import { failed } from "../app/toast";
 import { revealInCode } from "../editor/reveal";
@@ -22,11 +22,13 @@ export interface LinkSide {
   tree: LinkTree;
 }
 
-/** The open workspace: its repo's absolute path, its working tree's revision, and how it opens a file. */
+/** The open workspace: its repo's absolute path, its working tree's revision, and how it opens a file or shows one in the explorer. */
 interface LinkHost {
   root: string;
   revision: number;
   open(path: string, focus: boolean): void;
+  /** `show`: the explorer comes up and takes the keys, as for a folder; else it follows along if it's there. */
+  reveal(path: string, show: boolean): void;
 }
 
 let host: LinkHost | null = null;
@@ -89,25 +91,47 @@ export function openTarget(target: Target, focus = false) {
   host.open(target.path, focus);
 }
 
+const CLICK = `${IS_MAC ? "⌘" : "Ctrl"}-click`;
+
+/** What ⌘-click does, for the hover: as VS Code's terminal says it. */
+const hint = (target: Target) => `${"url" in target ? "Follow link" : target.dir ? "Show folder" : "Open file"} (${CLICK})`;
+
+/** A terminal link: a page in the browser, a file in the code view and shown in the explorer, a folder in the explorer. */
+function follow(target: Target) {
+  if ("url" in target || !host) return openTarget(target, true);
+  if (target.dir) return host.reveal(target.path, true);
+  openTarget(target, true);
+  host.reveal(target.path, false);
+}
+
+/** Asks the disk about paths the file list doesn't have: ignored files and folders. */
+const kindsOf = (paths: string[]) => (paths.length ? api.pathKinds(paths).catch(() => paths.map(() => null)) : Promise.resolve([]));
+
 /**
- * ⌘-click (Ctrl off macOS) in terminal output: URLs, and repo files by paths from the shell's starting folder
- * (it can't be told where a `cd` went) or the repo root, with a line when one follows.
+ * ⌘-click (Ctrl off macOS) in terminal output: URLs, and repo files and folders by paths from the
+ * shell's starting folder (it can't be told where a `cd` went) or the repo root, with a line when
+ * one follows. A plain click stays the terminal's: it selects, or goes to a program using the mouse.
  */
 export function terminalLinks(term: Terminal, cwd: string): IDisposable {
+  const title = (text: string | null) => (text ? term.element?.setAttribute("title", text) : term.element?.removeAttribute("title"));
   // OSC 8 hyperlinks, which xterm finds itself: by the same rule, but their text needn't be where
   // they go, so that shows on hover. Other schemes than http(s) come through for file://, and
   // hyperlinkTarget drops the rest (javascript:, custom ones).
   const hyperlink = (uri: string) => (host ? hyperlinkTarget(uri, host.root) : null);
   term.options.linkHandler = {
     allowNonHttpProtocols: true,
-    hover: (_, uri) => hyperlink(uri) && term.element?.setAttribute("title", uri),
-    leave: () => term.element?.removeAttribute("title"),
+    hover: (_, uri) => hyperlink(uri) && title(`${uri}\n${hint({ url: uri })}`),
+    leave: () => title(null),
     activate: (e, uri) => {
       const [h, target] = [host, hyperlink(uri)];
       if (!primaryKey(e) || !h || !target) return;
-      if ("url" in target) return openTarget(target, true);
-      // A file opens in the code view; a folder, or a file not listed (ignored), is revealed in the file manager.
-      void indexOf({ rev: null, revision: h.revision }).then((index) => (index.files.has(target.path) ? openTarget(target, true) : revealPath(target.path)));
+      if ("url" in target) return follow(target);
+      // The repo's own folder has no row in the explorer.
+      if (!target.path) return void revealPath("");
+      void indexOf({ rev: null, revision: h.revision }).then(async (index) => {
+        const kind = index.files.has(target.path) ? "file" : index.dirs.has(target.path) ? "dir" : (await kindsOf([target.path]))[0];
+        if (kind) follow(kind === "file" ? target : { path: target.path, dir: true });
+      });
     },
   };
   return term.registerLinkProvider({
@@ -138,11 +162,21 @@ export function terminalLinks(term: Terminal, cwd: string): IDisposable {
       const [root, from] = [slashes(h.root), slashes(cwd)];
       const dir = from === root ? "" : from.startsWith(`${root}/`) ? from.slice(root.length + 1) : null;
       const needsIndex = found.some((l) => l.kind !== "url");
-      void (needsIndex ? indexOf({ rev: null, revision: h.revision }) : Promise.resolve(NO_FILES)).then((index) => {
-        const links = found.flatMap((l): ILink[] => {
-          const target = resolveTerminalLink(l, dir, index, root);
+      void (needsIndex ? indexOf({ rev: null, revision: h.revision }) : Promise.resolve(NO_FILES)).then(async (index) => {
+        const targets = found.map((l) => resolveTerminalLink(l, dir, index, root));
+        // What the list lacks may be on disk, ignored: one call for the line's paths, only when hovered.
+        const asks = found.map((l, i) => (targets[i] ? [] : diskCandidates(l, dir, root)));
+        const kinds = await kindsOf(asks.flat());
+        let at = 0;
+        asks.forEach((paths, i) => {
+          const hit = paths.findIndex((_, j) => kinds[at + j]);
+          if (hit >= 0) targets[i] = diskTarget(found[i].spec, paths[hit], kinds[at + hit]!);
+          at += paths.length;
+        });
+        const links = found.flatMap((l, i): ILink[] => {
+          const target = targets[i];
           if (!target) return [];
-          return [{ range: range(l), text: l.spec, activate: (e) => primaryKey(e) && openTarget(target, true) }];
+          return [{ range: range(l), text: l.spec, hover: () => title(hint(target)), leave: () => title(null), activate: (e) => primaryKey(e) && follow(target) }];
         });
         callback(links.length ? links : undefined);
       });

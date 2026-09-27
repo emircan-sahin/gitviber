@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { IBufferLine } from "@xterm/xterm";
 import { test } from "node:test";
-import { cellText, findLinks, findTerminalLinks, hyperlinkTarget, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
+import { cellText, diskCandidates, diskTarget, findLinks, findTerminalLinks, hyperlinkTarget, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
 
 const specs = (line: string, lang: string) => findLinks(line, lang).map((l) => [line.slice(l.start, l.end), l.kind]);
 
@@ -244,6 +244,32 @@ test("terminal output: URLs, paths from the shell's folder, bare names", () => {
   assert.deepEqual(open("/repo/docs/guide.md", null), { path: "docs/guide.md", line: undefined, column: undefined });
   assert.equal(open("src/lib/api.ts", null), null, "a shell outside the repo: its relative paths aren't the repo's");
   assert.equal(open("package.json", ""), null);
+});
+
+test("terminal output: folders, shortened paths, and what the disk is asked about", () => {
+  const term = (line: string) => findTerminalLinks(line).map((l) => l.spec);
+  assert.deepEqual(term(`see src/features/ and …/lib/api.ts:4, .../editor/index.tsx`), ["src/features/", "…/lib/api.ts:4", ".../editor/index.tsx"]);
+  assert.deepEqual(term(`README.md  package.json  src`), ["README.md", "package.json"], "a bare word isn't a folder");
+  const link = (spec: string) => ({ start: 0, end: spec.length, spec, kind: "file" as const });
+  const open = (spec: string, cwd: string | null = "") => resolveTerminalLink(link(spec), cwd, index, "/repo");
+  assert.deepEqual(open("src/lib"), { path: "src/lib", dir: true });
+  assert.deepEqual(open("lib/editor", "src"), { path: "src/lib/editor", dir: true });
+  assert.deepEqual(open("/repo/src-tauri/src"), { path: "src-tauri/src", dir: true });
+  assert.equal(open("src/lib:12"), null, "a folder has no lines");
+  assert.deepEqual(open("…/lib/api.ts:4"), { path: "src/lib/api.ts", line: 4, column: undefined });
+  assert.deepEqual(open(".../editor/index.tsx", null), { path: "src/lib/editor/index.tsx", line: undefined, column: undefined });
+  const twice = indexFiles(["a/x/b.ts", "c/x/b.ts"]);
+  assert.equal(resolveTerminalLink(link("…/x/b.ts"), "", twice, "/repo"), null, "two files end that way");
+  assert.deepEqual(resolveTerminalLink(link("…/a/x/b.ts"), "", twice, "/repo"), { path: "a/x/b.ts", line: undefined, column: undefined });
+  assert.deepEqual(open("/repo/src/lib/"), { path: "src/lib", dir: true });
+  assert.equal(open("…/utils"), null);
+  assert.deepEqual(diskCandidates(link("dist/index.js:3"), "src", "/repo"), ["src/dist/index.js", "dist/index.js"]);
+  assert.deepEqual(diskCandidates(link("/repo/target/debug"), null, "/repo"), ["target/debug"]);
+  assert.deepEqual(diskCandidates(link("/tmp/x.png"), "", "/repo"), []);
+  assert.deepEqual(diskCandidates(link("…/a.ts"), "", "/repo"), []);
+  assert.deepEqual(diskTarget("dist/index.js:3", "dist/index.js", "file"), { path: "dist/index.js", line: 3, column: undefined });
+  assert.deepEqual(diskTarget("target/debug", "target/debug", "dir"), { path: "target/debug", dir: true });
+  assert.equal(diskTarget("target:3", "target", "dir"), null);
 });
 
 /** A terminal row as xterm lays it out: a wide character's second cell is empty, width 0. */

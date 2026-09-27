@@ -155,8 +155,13 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         open({ kind: "file", path }, true);
         if (focus) focusPanel("code");
       },
+      // A file opened from the terminal is picked in the explorer too; a closed explorer stays closed.
+      reveal: (path, show) => {
+        if (show) revealInExplorer(path);
+        else if (!filesPanel.current?.isCollapsed()) fileTree.current?.reveal(path, false);
+      },
     });
-  }, [root, repo.revision, open]);
+  }, [root, repo.revision, open, revealInExplorer]);
   useEffect(() => () => setLinkHost(null), []);
 
   const uncommitted = useMemo(() => (status ? changeList(status) : []), [status]);
