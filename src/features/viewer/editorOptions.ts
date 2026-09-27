@@ -26,6 +26,8 @@ function common(s: Settings, wrap: boolean): monaco.editor.IEditorOptions & mona
     glyphMargin: false,
     stickyScroll: { enabled: false },
     guides: { indentation: false },
+    // Brackets keep the theme's colors (lib/editor/languageConfig gives languages their brackets).
+    bracketPairColorization: { enabled: false },
     overviewRulerBorder: false,
     scrollbar: { useShadows: false, verticalScrollbarSize: 14, horizontalScrollbarSize: 10 },
     padding: { top: 4 },

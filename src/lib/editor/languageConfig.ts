@@ -1,0 +1,166 @@
+// What typing follows in a language (VS Code's language-configuration.json): its comments for ⌘/,
+// the brackets and quotes that close themselves, where Enter indents. Shiki colors the code but
+// carries none of it, so it comes from Monaco's own language definitions, loaded as files open.
+import * as monaco from "monaco-editor/editor/editor.api";
+
+type Definition = () => Promise<{ conf: monaco.languages.LanguageConfiguration }>;
+
+const typescript: Definition = () => import("monaco-editor/languages/definitions/typescript/typescript");
+const javascript: Definition = () => import("monaco-editor/languages/definitions/javascript/javascript");
+const cpp: Definition = () => import("monaco-editor/languages/definitions/cpp/cpp");
+const html: Definition = () => import("monaco-editor/languages/definitions/html/html");
+const shell: Definition = () => import("monaco-editor/languages/definitions/shell/shell");
+// `#` comments, brackets and quotes: config files Monaco has no language for.
+const ini: Definition = () => import("monaco-editor/languages/definitions/ini/ini");
+// Monaco's JSON mode keeps its configuration inside the mode, with the JSON worker.
+const json: Definition = async () => ({
+  conf: {
+    wordPattern: /(-?\d*\.\d\w*)|([^[{\]}:",\s]+)/g,
+    comments: { lineComment: "//", blockComment: ["/*", "*/"] },
+    brackets: [
+      ["{", "}"],
+      ["[", "]"],
+    ],
+    autoClosingPairs: [
+      { open: "{", close: "}", notIn: ["string"] },
+      { open: "[", close: "]", notIn: ["string"] },
+      { open: '"', close: '"', notIn: ["string"] },
+    ],
+  },
+});
+
+/**
+ * By Shiki's language id: Monaco's language of that name, or the nearest one. Written out, as the
+ * bundler splits each into a file of its own only from a literal path.
+ */
+const DEFINITIONS: Record<string, Definition> = {
+  typescript,
+  tsx: typescript,
+  "angular-ts": typescript,
+  "glimmer-ts": typescript,
+  javascript,
+  jsx: javascript,
+  "glimmer-js": javascript,
+  c: cpp,
+  glsl: cpp,
+  hlsl: cpp,
+  zig: cpp,
+  "objective-cpp": () => import("monaco-editor/languages/definitions/objective-c/objective-c"),
+  groovy: () => import("monaco-editor/languages/definitions/java/java"),
+  html,
+  vue: html,
+  "vue-html": html,
+  svelte: html,
+  astro: html,
+  "angular-html": html,
+  "html-derivative": html,
+  erb: html,
+  json,
+  jsonc: json,
+  json5: json,
+  jsonl: json,
+  shellscript: shell,
+  docker: shell,
+  make: shell,
+  just: shell,
+  fish: shell,
+  ini,
+  toml: ini,
+  dotenv: ini,
+  ignore: ini,
+  codeowners: ini,
+  "ssh-config": ini,
+  "git-commit": ini,
+  desktop: ini,
+  systemd: ini,
+  nginx: ini,
+  apache: ini,
+  cmake: ini,
+  nix: ini,
+  terraform: () => import("monaco-editor/languages/definitions/hcl/hcl"),
+  proto: () => import("monaco-editor/languages/definitions/protobuf/protobuf"),
+  rst: () => import("monaco-editor/languages/definitions/restructuredtext/restructuredtext"),
+  "system-verilog": () => import("monaco-editor/languages/definitions/systemverilog/systemverilog"),
+  verilog: () => import("monaco-editor/languages/definitions/systemverilog/systemverilog"),
+  mipsasm: () => import("monaco-editor/languages/definitions/mips/mips"),
+  dax: () => import("monaco-editor/languages/definitions/msdax/msdax"),
+  plsql: () => import("monaco-editor/languages/definitions/sql/sql"),
+  postcss: () => import("monaco-editor/languages/definitions/css/css"),
+  abap: () => import("monaco-editor/languages/definitions/abap/abap"),
+  apex: () => import("monaco-editor/languages/definitions/apex/apex"),
+  bat: () => import("monaco-editor/languages/definitions/bat/bat"),
+  bicep: () => import("monaco-editor/languages/definitions/bicep/bicep"),
+  clojure: () => import("monaco-editor/languages/definitions/clojure/clojure"),
+  coffee: () => import("monaco-editor/languages/definitions/coffee/coffee"),
+  cpp,
+  csharp: () => import("monaco-editor/languages/definitions/csharp/csharp"),
+  css: () => import("monaco-editor/languages/definitions/css/css"),
+  cypher: () => import("monaco-editor/languages/definitions/cypher/cypher"),
+  dart: () => import("monaco-editor/languages/definitions/dart/dart"),
+  elixir: () => import("monaco-editor/languages/definitions/elixir/elixir"),
+  fsharp: () => import("monaco-editor/languages/definitions/fsharp/fsharp"),
+  go: () => import("monaco-editor/languages/definitions/go/go"),
+  graphql: () => import("monaco-editor/languages/definitions/graphql/graphql"),
+  handlebars: () => import("monaco-editor/languages/definitions/handlebars/handlebars"),
+  hcl: () => import("monaco-editor/languages/definitions/hcl/hcl"),
+  java: () => import("monaco-editor/languages/definitions/java/java"),
+  julia: () => import("monaco-editor/languages/definitions/julia/julia"),
+  kotlin: () => import("monaco-editor/languages/definitions/kotlin/kotlin"),
+  less: () => import("monaco-editor/languages/definitions/less/less"),
+  liquid: () => import("monaco-editor/languages/definitions/liquid/liquid"),
+  lua: () => import("monaco-editor/languages/definitions/lua/lua"),
+  markdown: () => import("monaco-editor/languages/definitions/markdown/markdown"),
+  mdx: () => import("monaco-editor/languages/definitions/mdx/mdx"),
+  "objective-c": () => import("monaco-editor/languages/definitions/objective-c/objective-c"),
+  pascal: () => import("monaco-editor/languages/definitions/pascal/pascal"),
+  perl: () => import("monaco-editor/languages/definitions/perl/perl"),
+  php: () => import("monaco-editor/languages/definitions/php/php"),
+  powerquery: () => import("monaco-editor/languages/definitions/powerquery/powerquery"),
+  powershell: () => import("monaco-editor/languages/definitions/powershell/powershell"),
+  pug: () => import("monaco-editor/languages/definitions/pug/pug"),
+  python: () => import("monaco-editor/languages/definitions/python/python"),
+  r: () => import("monaco-editor/languages/definitions/r/r"),
+  razor: () => import("monaco-editor/languages/definitions/razor/razor"),
+  ruby: () => import("monaco-editor/languages/definitions/ruby/ruby"),
+  rust: () => import("monaco-editor/languages/definitions/rust/rust"),
+  scala: () => import("monaco-editor/languages/definitions/scala/scala"),
+  scheme: () => import("monaco-editor/languages/definitions/scheme/scheme"),
+  scss: () => import("monaco-editor/languages/definitions/scss/scss"),
+  solidity: () => import("monaco-editor/languages/definitions/solidity/solidity"),
+  sparql: () => import("monaco-editor/languages/definitions/sparql/sparql"),
+  sql: () => import("monaco-editor/languages/definitions/sql/sql"),
+  swift: () => import("monaco-editor/languages/definitions/swift/swift"),
+  tcl: () => import("monaco-editor/languages/definitions/tcl/tcl"),
+  twig: () => import("monaco-editor/languages/definitions/twig/twig"),
+  typespec: () => import("monaco-editor/languages/definitions/typespec/typespec"),
+  vb: () => import("monaco-editor/languages/definitions/vb/vb"),
+  wgsl: () => import("monaco-editor/languages/definitions/wgsl/wgsl"),
+  xml: () => import("monaco-editor/languages/definitions/xml/xml"),
+  yaml: () => import("monaco-editor/languages/definitions/yaml/yaml"),
+};
+
+// Monaco's plain text one: brackets close themselves, quotes only surround a selection.
+const PLAIN: monaco.languages.LanguageConfiguration = {
+  brackets: [
+    ["(", ")"],
+    ["[", "]"],
+    ["{", "}"],
+  ],
+  surroundingPairs: ["{}", "[]", "()", "<>", '""', "''", "``"].map(([open, close]) => ({ open, close })),
+};
+
+const configured = new Set<string>();
+
+/** Gives `lang` (registered with Monaco) its typing rules, once. */
+export async function configure(lang: string) {
+  if (configured.has(lang)) return;
+  configured.add(lang);
+  const definition = DEFINITIONS[lang];
+  let conf = PLAIN;
+  try {
+    if (definition) conf = (await definition()).conf;
+  } catch {
+    // Its file didn't load (an update replaced the build): typing as in plain text.
+  }
+  monaco.languages.setLanguageConfiguration(lang, conf);
+}

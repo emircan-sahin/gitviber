@@ -39,6 +39,7 @@ import type { DiffRow } from "../api";
 import { hunks, type Pos } from "../git/diffHunks";
 import { indentUnit, TAB, widen, widenColumn } from "./indent";
 import { IGNORE, ignoreGrammar } from "./language";
+import { configure } from "./languageConfig";
 import { codeFontFamily, getSettings, subscribeSettings } from "../settings";
 import { cssVar, toHex } from "../ui/color";
 
@@ -289,6 +290,8 @@ async function load(lang: string, theme: string) {
   // Even one Shiki couldn't load: there's nothing more to hand over for it.
   registered.add(lang);
   applyTheme(h, theme);
+  // Not waited for: it only matters once typing starts.
+  if (monaco.languages.getLanguages().some((l) => l.id === lang)) void configure(lang);
 }
 /** Languages whose tokenizer Monaco has. */
 const registered = new Set<string>(["text"]);

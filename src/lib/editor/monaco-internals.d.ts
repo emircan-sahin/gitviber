@@ -54,3 +54,8 @@ declare module "monaco-editor/editor/common/diff/defaultLinesDiffComputer/defaul
     ): { changes: readonly DetailedLineRangeMapping[]; hitTimeout: boolean };
   }
 }
+
+declare module "monaco-editor/languages/definitions/*" {
+  import type { languages } from "monaco-editor/editor/editor.api";
+  export const conf: languages.LanguageConfiguration;
+}
