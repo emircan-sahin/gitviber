@@ -53,12 +53,7 @@ export function RepoPanes({ id, panes }: { id: string; panes: Pane[] }) {
           <div key="open" className="min-h-0 flex-1">
             <ResizablePanelGroup orientation="vertical" defaultLayout={layout.defaultLayout} onLayoutChanged={layout.onLayoutChanged}>
               {open.map((p, i) => [
-                i > 0 && (
-                  <ResizableHandle
-                    key={`${p.id}:handle`}
-                    className="h-px w-full bg-border after:inset-x-0 after:inset-y-auto after:top-1/2 after:left-0 after:h-2 after:w-full after:translate-x-0 after:-translate-y-1/2"
-                  />
-                ),
+                i > 0 && <ResizableHandle key={`${p.id}:handle`} className="bg-border" />,
                 <ResizablePanel key={p.id} id={p.id} minSize={84}>
                   <div className="flex h-full flex-col">
                     {header(p)}
