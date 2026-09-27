@@ -60,8 +60,8 @@ pub struct RepoStatus {
     /// A checked-out pull request's number (`#7`) when the branch follows its
     /// `refs/pull/<n>/head`, which git names no upstream for.
     pub follows: Option<String>,
-    /// The upstream is configured but gone, as after its branch was deleted on the remote
-    /// and pruned: git prints no ahead/behind for it then.
+    /// The upstream is configured but isn't there: deleted on the remote and pruned, or never
+    /// pushed (a clone of an empty repo). git prints no ahead/behind for it then.
     pub upstream_gone: bool,
     pub ahead: u32,
     pub behind: u32,

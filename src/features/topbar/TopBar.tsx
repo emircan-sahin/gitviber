@@ -95,7 +95,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const tracked = !!status?.upstream && !status.upstreamGone;
   // A fork's pull request checked out (github/checkout.rs) pulls from its refs/pull/<n>/head.
   const pullable = tracked || !!status?.follows;
-  const gone = status?.upstreamGone ? `${status.upstream} was deleted on the remote` : null;
+  const gone = status?.upstreamGone ? `${status.upstream} isn't on the remote (deleted, or never pushed)` : null;
 
   useCommands({
     "git.fetch": busy ? undefined : () => runNet("Fetch", api.fetch),
