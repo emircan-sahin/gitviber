@@ -25,8 +25,8 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     if (ok) await run("Create worktree", async () => openTerminal(await api.addWorktree(name, null, dir)), `${name} checked out in ${where}`);
   };
 
-  // Merged is deleted outright: nothing is lost. Anything else needs a yes, then -D, as does
-  // one merged upstream, which git doesn't see as merged. A remote branch always asks: the
+  // Merged is deleted outright: nothing is lost; merged upstream too, once the backend checks it
+  // again as it is now. Anything else needs a yes, then -D. A remote branch always asks: the
   // push takes it away for everyone.
   const deleteBranch = async (b: Branch, upstream = false) => {
     if (b.remote) {
@@ -48,10 +48,9 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       });
       if (!ok) return;
     }
-    await run("Delete branch", () => api.deleteBranches([b.name], !b.merged), `Deleted ${b.name}`);
+    await run("Delete branch", () => (upstream ? api.deleteMerged([], [b.name]) : api.deleteBranches([b.name], !b.merged)), `Deleted ${b.name}`);
   };
 
-  // One -D for all when some are merged upstream, so a single undo brings them all back.
   const cleanUp = async (merged: string[], upstream: string[]) => {
     const names = [...merged, ...upstream];
     const label = (n: string) => (upstream.includes(n) ? `${n} (merged upstream)` : n);
@@ -62,7 +61,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       title: "Clean up merged branches",
       okLabel: "Delete",
     });
-    if (ok) await run("Clean up", () => api.deleteBranches(names, upstream.length > 0), `Deleted ${names.length} merged branches`);
+    if (ok) await run("Clean up", () => api.deleteMerged(merged, upstream), `Deleted ${names.length} merged branches`);
   };
 
   // A pull brings in the upstream, which can't help a push that goes elsewhere (a fork pulling
@@ -179,7 +178,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       if (ok) await run("Prune worktree", () => api.removeWorktree(w.path, false), `Pruned ${name}`);
       return;
     }
-    const changed = w.prunable ? 0 : await api.worktreeState(w.path).then((s) => s.uncommitted, () => 0);
+    const changed = w.prunable ? 0 : await api.worktreeState(w.path, false).then((s) => s.uncommitted, () => 0);
     const branch = w.branch ? ` The branch ${w.branch} stays.` : "";
     const lost = changed ? ` Its ${changed} uncommitted ${changed === 1 ? "change" : "changes"} will be lost.` : "";
     const lock = w.inUse

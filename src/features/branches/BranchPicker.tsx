@@ -122,9 +122,22 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     setQuery("");
   };
 
-  // Squash- or rebase-merged, then deleted on the remote. Asked on open: it reads their diffs.
-  const landed = useAsyncValue(open ? () => api.mergedUpstream().then((names) => new Set(names)) : null, [open], new Set<string>());
-  const upstream = (b: Branch) => !b.remote && !b.merged && landed.has(b.name);
+  // Squash- or rebase-merged, then deleted on the remote. Asked on each open, as it reads their
+  // diffs; null until known, so Clean up never counts from an older open, nor twice.
+  const [landed, setLanded] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    setLanded(null);
+    if (!open) return;
+    let live = true;
+    api.mergedUpstream().then(
+      (names) => live && setLanded(new Set(names)),
+      () => live && setLanded(new Set()),
+    );
+    return () => {
+      live = false;
+    };
+  }, [open]);
+  const upstream = (b: Branch) => !b.remote && !b.merged && !!landed?.has(b.name);
   // Merged and held by no worktree: deleting them loses nothing.
   const stale = branches.filter((b) => b.merged && !b.worktree).map((b) => b.name);
   const squashed = branches.filter((b) => upstream(b) && !b.worktree).map((b) => b.name);
@@ -369,7 +382,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
               New branch…
             </button>
           </Tip>
-          {cleanable > 0 && (
+          {landed && cleanable > 0 && (
             <Tip label={`Delete the ${cleanable} local branches ${squashed.length ? `merged into ${current ?? "HEAD"} or upstream` : `already merged into ${current ?? "HEAD"}`}`}>
               <button
                 onClick={() => {

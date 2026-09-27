@@ -161,6 +161,7 @@ pub fn run() {
             commands::history::blame,
             commands::branches::branches,
             commands::branches::merged_upstream,
+            commands::branches::delete_merged,
             commands::branches::switch_branch,
             commands::branches::delete_branches,
             commands::branches::delete_remote_branch,

@@ -276,7 +276,7 @@ export interface Entry {
 
 export interface WorktreeState {
   uncommitted: number;
-  /** Commits the default branch lacks; on the default branch itself, commits no remote has. None once squash- or rebase-merged upstream. */
+  /** Commits the default branch lacks; on the default branch itself, commits no remote has. 0 once squash- or rebase-merged upstream. */
   commits: number;
   /** Committed on, then fully taken into the default branch, or squash- or rebase-merged upstream. */
   merged: boolean;

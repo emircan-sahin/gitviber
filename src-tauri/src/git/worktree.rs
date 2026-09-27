@@ -318,7 +318,7 @@ pub struct WorktreeState {
     /// Files `git status` lists: gone for good if the folder is deleted.
     pub uncommitted: u32,
     /// Commits the default branch lacks; on the default branch itself, commits no remote has.
-    /// None for a branch squash- or rebase-merged upstream: their changes are all there.
+    /// 0 for a branch squash- or rebase-merged upstream: their changes are all there.
     pub commits: u32,
     /// Committed on, then fully taken into the default branch, or squash- or rebase-merged
     /// upstream. A branch that never moved is in it too, but has nothing to call merged.
@@ -326,7 +326,8 @@ pub struct WorktreeState {
 }
 
 /// Where one of this repo's worktrees stands: uncommitted files, and commits found nowhere else.
-pub fn worktree_state(repo: &Path, path: &str) -> Result<WorktreeState, String> {
+/// `upstream`: also whether a squash or rebase merge upstream took them, which reads diffs.
+pub fn worktree_state(repo: &Path, path: &str, upstream: bool) -> Result<WorktreeState, String> {
     let all = worktrees(repo)?;
     let w = all
         .iter()
@@ -404,7 +405,8 @@ pub fn worktree_state(repo: &Path, path: &str) -> Result<WorktreeState, String> 
     };
     // Squash- or rebase-merged on the remote, which deleted the branch: its commits aren't in
     // the default branch, but all they changed is.
-    let squashed = commits > 0
+    let squashed = upstream
+        && commits > 0
         && !bases.is_empty()
         && w.branch
             .as_deref()

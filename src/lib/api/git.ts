@@ -83,8 +83,10 @@ export const api = {
   /** `git blame` of the working-tree file. */
   blame: (path: string) => invoke<Blame>("blame", { path }),
   branches: () => invoke<Branch[]>("branches"),
-  /** Local branches squash- or rebase-merged on the remote, which then deleted them; held by no worktree. */
+  /** Local branches squash- or rebase-merged on the remote, which then deleted them. */
   mergedUpstream: () => invoke<string[]>("merged_upstream"),
+  /** Deletes `merged` branches (git branch -d) and `upstream` ones, checked again as they are now, with -D. One undo. */
+  deleteMerged: (merged: string[], upstream: string[]) => invoke<void>("delete_merged", { merged, upstream }),
   /** Switches to the local branch for a remote one ("upstream/dev" → dev), creating it to track exactly that. */
   /** What a PR from HEAD into `base` (refs/remotes/…) carries: its commit count, and the one commit's message. */
   pullDraft: (base: string) => invoke<{ commits: number; subject: string | null; body: string | null }>("pull_draft", { base }),
@@ -106,7 +108,8 @@ export const api = {
   tags: () => invoke<string[]>("tags"),
   worktrees: () => invoke<Worktree[]>("worktrees"),
   /** Uncommitted files in one of this repo's worktrees, and commits found nowhere else. */
-  worktreeState: (path: string) => invoke<WorktreeState>("worktree_state", { path }),
+  /** `upstream`: also whether a squash or rebase merge upstream took its commits, which reads diffs. */
+  worktreeState: (path: string, upstream = true) => invoke<WorktreeState>("worktree_state", { path, upstream }),
   /**
    * Checks a branch out in a new worktree in `dir` (default: beside the main one); returns its path.
    * With `base` (a full ref, or HEAD) the branch is new, made there.

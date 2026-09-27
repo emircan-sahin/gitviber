@@ -95,13 +95,24 @@ fn squash_and_rebase_merged_branches_whose_upstream_is_gone() {
     push("unmerged", &[("u.txt", "u\n")]);
     push("alive", &[("v.txt", "v\n")]);
     push("held", &[("h.txt", "h\n")]);
+    // Its only change differs from main's in whitespace alone: not merged.
+    push("spaces", &[("w.txt", "a  b\n")]);
+    // Landed, then a merge brought in more work: e.txt, which main has, and precious.txt.
+    push("stacked", &[("k.txt", "k\n")]);
+    run(a, &["switch", "-q", "-c", "extra", "main"]).unwrap();
+    write_commit(a, "e.txt", "e\n", "extra");
+    run(a, &["switch", "-q", "stacked"]).unwrap();
+    run(a, &["merge", "-q", "--no-ff", "--no-commit", "extra"]).unwrap();
+    fs::write(a.join("precious.txt"), "p\n").unwrap();
+    stage(a, &["precious.txt".into()]).unwrap();
+    commit(a, "merge extra", &CommitOptions::default()).unwrap();
     run(a, &["switch", "-q", "main"]).unwrap();
 
     // The host: main moves on, then each pull request lands its own way.
     run(host, &["fetch", "-q"]).unwrap();
     write_commit(host, "a.txt", "one\ntwo\nthree\nfour\n", "other work");
     let git = |args: &[&str]| run(host, args).unwrap();
-    for b in ["squashed", "later", "alive", "held"] {
+    for b in ["squashed", "later", "alive", "held", "stacked"] {
         git(&["merge", "-q", "--squash", &format!("origin/{b}")]);
         git(&["commit", "-q", "-m", &format!("{b} (#1)")]);
     }
@@ -109,9 +120,11 @@ fn squash_and_rebase_merged_branches_whose_upstream_is_gone() {
     git(&["cherry-pick", "origin/partial~1"]);
     // After the squash, main edits the same file: only the squash commit's patch still matches.
     write_commit(host, "l.txt", &format!("{nine}10\n"), "more");
+    write_commit(host, "w.txt", "a b\n", "w");
+    write_commit(host, "e.txt", "e\n", "e");
     git(&["push", "-q", "origin", "main"]);
     for b in [
-        "squashed", "rebased", "later", "partial", "unmerged", "held",
+        "squashed", "rebased", "later", "partial", "unmerged", "held", "spaces", "stacked",
     ] {
         git(&["push", "-q", "origin", "--delete", b]);
     }
@@ -131,7 +144,7 @@ fn squash_and_rebase_merged_branches_whose_upstream_is_gone() {
     .unwrap();
     let mut found = merged_upstream(a);
     found.sort();
-    assert_eq!(found, ["later", "rebased", "squashed"]);
+    assert_eq!(found, ["held", "later", "rebased", "squashed"]);
     // git itself doesn't see them as merged, so the plain rule leaves them be.
     assert!(!branches(a).unwrap().iter().any(|b| b.merged));
     // The worktree holding one is merged too, with nothing to merge back.
@@ -140,11 +153,18 @@ fn squash_and_rebase_merged_branches_whose_upstream_is_gone() {
         .into_iter()
         .find(|w| same_dir(&w.path, &sb.path("held")))
         .unwrap();
-    let s = worktree_state(a, &held.path).unwrap();
+    let s = worktree_state(a, &held.path, true).unwrap();
     assert!(s.commits == 0 && s.merged);
-    // Deleting takes -D: git's own check finds its commits nowhere.
+    // git's own -d refuses them; they're checked again, at the commit they're at now, then -D.
     assert!(delete_branches(a, &["squashed".into()], false).is_err());
-    delete_branches(a, &["squashed".into()], true).unwrap();
+    run(a, &["switch", "-q", "rebased"]).unwrap();
+    write_commit(a, "new.txt", "new\n", "new work");
+    run(a, &["switch", "-q", "main"]).unwrap();
+    let both = ["squashed".to_string(), "rebased".to_string()];
+    assert!(delete_merged(a, &[], &both).is_err());
+    assert!(exists(a, "squashed") && exists(a, "rebased"));
+    delete_merged(a, &[], &both[..1]).unwrap();
+    assert!(!exists(a, "squashed"));
 }
 
 #[test]

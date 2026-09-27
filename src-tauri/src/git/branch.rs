@@ -1,9 +1,14 @@
 //! Local and remote branches: listing, creating, switching, renaming, deleting, upstreams.
 
+use super::cmd::command;
 use super::{run, run_network, run_text, run_with, validate_base, validate_branch, worktrees};
 use crate::network::{self, Net};
+use crate::process::exec;
 use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::process::Stdio;
+use std::sync::{LazyLock, Mutex};
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -79,153 +84,239 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         .collect())
 }
 
-/// Local branches squash- or rebase-merged on the remote, which then deleted them, held by no
-/// worktree. Asked for when the branch picker opens, never on a refresh: it reads their diffs.
+/// Local branches squash- or rebase-merged on the remote, which then deleted them. Asked for
+/// when the branch picker opens, never on a refresh: it reads their diffs.
 pub fn merged_upstream(repo: &Path) -> Vec<String> {
     landed(repo, None)
-        .into_iter()
-        .filter(|(_, held)| !held)
-        .map(|(name, _)| name)
-        .collect()
+}
+
+/// Deletes branches merged here (`-d`, which git checks again) and ones merged upstream, which
+/// git sees as unmerged: `-D`, once each is checked again at the commit it's at now.
+pub fn delete_merged(repo: &Path, merged: &[String], upstream: &[String]) -> Result<(), String> {
+    if !upstream.is_empty() {
+        let landed = landed(repo, None);
+        if let Some(n) = upstream.iter().find(|n| !landed.contains(n)) {
+            return Err(format!(
+                "{n} changed since, and isn't known to be merged anymore"
+            ));
+        }
+        delete_branches(repo, upstream, true)?;
+    }
+    if merged.is_empty() {
+        return Ok(());
+    }
+    delete_branches(repo, merged, false)
 }
 
 /// Local branches (or just `only`) whose upstream is gone, as a host deletes a pull request's
-/// branch on merge, and whose changes are all in the default branch anyway; with whether
-/// a worktree holds them. Gone alone proves nothing: the branch may never have been pushed,
-/// or deleted unmerged, so it's the content that decides, as GitHub Desktop and git-trim do.
-pub(super) fn landed(repo: &Path, only: Option<&str>) -> Vec<(String, bool)> {
+/// branch on merge, and whose changes are all in the default branch anyway. Gone alone proves
+/// nothing: the branch may never have been pushed, or deleted unmerged, so it's the content
+/// that decides, as GitHub Desktop and git-trim do.
+pub(super) fn landed(repo: &Path, only: Option<&str>) -> Vec<String> {
     let pattern = only.map_or("refs/heads".into(), |b| format!("refs/heads/{b}"));
     let raw = run_text(
         repo,
         &[
             "for-each-ref",
-            "--format=%(refname:lstrip=2)%1f%(upstream:track,nobracket)%1f%(committerdate:unix)%1f%(worktreepath)",
+            "--format=%(refname:lstrip=2)%1f%(upstream:track,nobracket)%1f%(objectname)%1f%(committerdate:unix)",
             &pattern,
         ],
     )
     .unwrap_or_default();
-    let default = default_branch(repo);
     let gone: Vec<Vec<&str>> = raw
         .lines()
         .map(|l| l.split('\x1f').collect::<Vec<_>>())
-        .filter(|f| f.len() == 4 && f[1] == "gone" && f[0] != default)
+        .filter(|f| f.len() == 4 && f[1] == "gone")
         .filter(|f| only.is_none_or(|b| f[0] == b))
         .collect();
     if gone.is_empty() {
         return vec![];
     }
-    let tips = default_tips(repo, &default);
+    let (defaults, tips) = default_tips(repo);
     gone.into_iter()
+        .filter(|f| !defaults.iter().any(|d| d == f[0]))
         .filter(|f| {
-            let since = f[2].parse().unwrap_or(0);
-            tips.iter().any(|t| content_in(repo, t, f[0], since))
+            let since = f[3].parse().unwrap_or(0);
+            tips.iter().any(|t| content_in(repo, t, f[2], since))
         })
-        .map(|f| (f[0].to_string(), !f[3].is_empty()))
+        .map(|f| f[0].to_string())
         .collect()
 }
 
-/// Where the default branch is, here and on each remote (a fork's PRs land upstream), deduped.
-fn default_tips(repo: &Path, default: &str) -> Vec<String> {
-    let local = format!("refs/heads/{default}");
-    let remote = format!("refs/remotes/*/{default}");
+/// The default branch's names, and where it is here and on each remote (a fork's PRs land
+/// upstream), deduped. Each remote's HEAD names its own; with none set, main or master.
+fn default_tips(repo: &Path) -> (Vec<String>, Vec<String>) {
     let raw = run_text(
         repo,
         &[
             "for-each-ref",
-            "--format=%(refname)%1f%(objectname)",
-            &local,
-            &remote,
+            "--format=%(refname)%1f%(objectname)%1f%(symref)",
+            "refs/heads",
+            "refs/remotes",
         ],
     )
     .unwrap_or_default();
-    let mut tips: Vec<String> = vec![];
-    for (name, sha) in raw.lines().filter_map(|l| l.split_once('\x1f')) {
-        // The glob's * crosses slashes: origin/feat/main isn't a default branch.
-        let remote_default = name
-            .strip_prefix("refs/remotes/")
-            .and_then(|r| r.strip_suffix(&format!("/{default}")))
-            .is_some_and(|r| !r.contains('/'));
-        if (name == local || remote_default) && !tips.iter().any(|t| t == sha) {
-            tips.push(sha.to_string());
+    let refs: Vec<Vec<&str>> = raw
+        .lines()
+        .map(|l| l.split('\x1f').collect::<Vec<_>>())
+        .filter(|f| f.len() == 3)
+        .collect();
+    // refs/remotes/origin/HEAD → refs/remotes/origin/main
+    let mut names: Vec<String> = refs
+        .iter()
+        .filter_map(|f| {
+            let remote = f[0].strip_prefix("refs/remotes/")?.strip_suffix("/HEAD")?;
+            let target = f[2].strip_prefix("refs/remotes/")?.strip_prefix(remote)?;
+            target.strip_prefix('/').map(str::to_string)
+        })
+        .collect();
+    if names.is_empty() {
+        names = vec!["main".into(), "master".into()];
+        if let Ok(b) = run_text(repo, &["config", "init.defaultBranch"]) {
+            names.push(b.trim().to_string());
         }
     }
-    tips
+    let mut tips: Vec<String> = vec![];
+    for f in &refs {
+        let branch = f[0].strip_prefix("refs/heads/").or_else(|| {
+            let (_, b) = f[0].strip_prefix("refs/remotes/")?.split_once('/')?;
+            Some(b).filter(|b| *b != "HEAD")
+        });
+        if branch.is_some_and(|b| names.iter().any(|n| n == b)) && !tips.iter().any(|t| t == f[1]) {
+            tips.push(f[1].to_string());
+        }
+    }
+    (names, tips)
 }
 
-/// Whether everything `branch` changed is in `base`, whose history holds other commits:
-/// each of its commits rebased or cherry-picked there, or all of it squashed into one.
-fn content_in(repo: &Path, base: &str, branch: &str, since: i64) -> bool {
-    let tip = format!("refs/heads/{branch}");
-    let forked = format!("{base}...{tip}");
-    // Every commit's patch is in base, git cherry's rule (a rebase merge, or picked by hand).
-    let left = [
-        "rev-list",
-        "-n1",
-        "--cherry-pick",
-        "--right-only",
-        "--no-merges",
-        &forked,
-    ];
-    match run_text(repo, &left) {
-        Ok(l) if l.trim().is_empty() => return true,
-        Ok(_) => {}
-        Err(_) => return false,
+/// Answers by (branch commit, base commit), which never change: each picker open asks again.
+static CHECKED: LazyLock<Mutex<HashMap<(String, String), bool>>> = LazyLock::new(Default::default);
+
+/// Whether everything the commit `tip` changed is in `base`, whose history holds other commits.
+fn content_in(repo: &Path, base: &str, tip: &str, since: i64) -> bool {
+    let key = (tip.to_string(), base.to_string());
+    let checked = || CHECKED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&known) = checked().get(&key) {
+        return known;
+    }
+    let known = check_content(repo, base, tip, since);
+    let mut all = checked();
+    if all.len() > 1000 {
+        all.clear();
+    }
+    all.insert(key, known);
+    known
+}
+
+fn check_content(repo: &Path, base: &str, tip: &str, since: i64) -> bool {
+    let ahead = format!("{base}..{tip}");
+    let Ok(commits) = run_text(repo, &["rev-list", &ahead]) else {
+        return false;
+    };
+    let commits: Vec<&str> = commits.lines().collect();
+    // Reachable from base: merged the plain way.
+    if commits.is_empty() {
+        return true;
     }
     // Squashed, and base hasn't touched those files since: each one it changed reads the same.
+    let forked = format!("{base}...{tip}");
     let names = |range: &[&str]| {
         run_text(
             repo,
             &[&["diff", "--name-only", "--no-renames", "-z"][..], range].concat(),
         )
     };
-    let (Ok(changed), Ok(differ)) = (names(&[&forked]), names(&[base, &tip])) else {
+    let (Ok(changed), Ok(differ)) = (names(&[&forked]), names(&[base, tip])) else {
         return false;
     };
-    let differ: Vec<&str> = differ.split('\0').collect();
-    let mut changed = changed.split('\0').filter(|p| !p.is_empty()).peekable();
-    if changed.peek().is_none() {
+    let differ: HashSet<&str> = differ.split('\0').collect();
+    let changed: Vec<&str> = changed.split('\0').filter(|p| !p.is_empty()).collect();
+    if changed.is_empty() {
         return false;
     }
-    if changed.all(|p| !differ.contains(&p)) {
+    if changed.iter().all(|p| !differ.contains(p)) {
         return true;
     }
-    // Squashed, then base moved on over the same files: a commit since the branch's last one
-    // carries its whole change as one patch. git-trim writes a scratch commit to ask git
-    // cherry this; comparing patch ids leaves nothing in the repo.
+    // Base's log below names them on the command line.
+    if changed.len() > 1000 {
+        return false;
+    }
+    // Rebased or picked: each commit's patch is in base. Squashed, then base moved on over the
+    // same files: its whole change is one there (git-trim asks git cherry that of a scratch
+    // commit; this leaves nothing in the repo). Byte for byte, with --verbatim (git 2.39+):
+    // patch ids and git cherry ignore whitespace, so a fix that only reindents would pass.
     let flags = [
         "--no-color",
         "--no-ext-diff",
         "--no-textconv",
         "--no-renames",
         "--full-index",
+        "--format=commit %H",
     ];
-    let whole = run(repo, &[&["diff"][..], &flags, &[&forked]].concat());
-    // A day's slack for a clock that runs ahead of the host's.
+    // The whole diff has no commit line, so its id comes first, against the zero id. A merge
+    // on the branch counts by what it brought in.
+    let whole = run(repo, &[&["diff"][..], &flags[..5], &[&forked]].concat());
+    let own = [
+        &["log", "-p", "--diff-merges=first-parent"][..],
+        &flags,
+        &[&ahead],
+    ]
+    .concat();
+    let (Ok(whole), Ok(own)) = (whole, run(repo, &own)) else {
+        return false;
+    };
+    let Ok(ours) = run_with(
+        repo,
+        &["patch-id", "--verbatim"],
+        &[],
+        Some(&[whole, own].concat()),
+    ) else {
+        return false;
+    };
+    // Base's side since the branch's last commit (a day's slack for a clock ahead of the host's),
+    // and only on the files it changed.
     let after = format!("--since={}", since - 86_400);
     let since_fork = format!("{tip}..{base}");
     let log = [
-        &["log", "-p", "--no-merges", "--format=commit %H", &after][..],
+        &["log", "-p", "--no-merges", &after][..],
         &flags,
-        &[&since_fork],
+        &[&since_fork, "--"],
+        &changed,
     ]
     .concat();
-    let (Ok(whole), Ok(log)) = (whole, run(repo, &log)) else {
+    let Some(theirs) = patch_ids(repo, &log) else {
         return false;
     };
-    // The branch's diff has no commit line, so its id comes first, against the zero id.
-    let ids = run_with(
-        repo,
-        &["patch-id", "--stable"],
-        &[],
-        Some(&[whole, log].concat()),
+    let ours = String::from_utf8_lossy(&ours);
+    let ids: Vec<(&str, &str)> = ours.lines().filter_map(|l| l.split_once(' ')).collect();
+    let (whole, own) = match ids.split_first() {
+        Some(((id, zero), rest)) if zero.bytes().all(|b| b == b'0') => (Some(*id), rest),
+        _ => (None, &ids[..]),
+    };
+    whole.is_some_and(|id| theirs.contains(id))
+        // A commit with no id (binary only) never matches.
+        || commits
+            .iter()
+            .all(|c| own.iter().any(|(id, sha)| sha == c && theirs.contains(*id)))
+}
+
+/// `git log <log> | git patch-id --verbatim`, the ids: streamed, base's log can be long.
+fn patch_ids(repo: &Path, log: &[&str]) -> Option<HashSet<String>> {
+    let mut cmd = command(repo, log);
+    cmd.stderr(Stdio::null());
+    let mut log = cmd.spawn().ok()?;
+    let mut ids = command(repo, &["patch-id", "--verbatim"]);
+    ids.stdin(Stdio::from(log.stdout.take()?));
+    let out = exec(ids, "git patch-id", &[], None, None);
+    let logged = log.wait().is_ok_and(|s| s.success());
+    let out = out.ok().filter(|_| logged)?;
+    Some(
+        String::from_utf8_lossy(&out)
+            .lines()
+            .filter_map(|l| l.split_once(' '))
+            .map(|(id, _)| id.to_string())
+            .collect(),
     )
-    .map(|b| String::from_utf8_lossy(&b).into_owned())
-    .unwrap_or_default();
-    let mut ids = ids.lines().filter_map(|l| l.split_once(' '));
-    match ids.next() {
-        Some((id, zero)) if zero.bytes().all(|b| b == b'0') => ids.any(|(i, _)| i == id),
-        _ => false,
-    }
 }
 
 /// The branch checked out in the repo `dir` is in; None when detached or outside a repo.
