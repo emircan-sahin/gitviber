@@ -4,7 +4,7 @@
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::{Channel, Response};
@@ -35,6 +35,18 @@ fn size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
+/// `cwd`, or the nearest folder above it that's left, else home.
+fn start_dir(cwd: &Path) -> Option<PathBuf> {
+    cwd.ancestors()
+        .find(|dir| dir.is_dir())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|home| home.is_dir())
+        })
+}
+
 impl Ptys {
     /// Starts the user's login shell in `cwd`. `exit` gets the exit code once it's gone.
     pub fn spawn(
@@ -45,15 +57,22 @@ impl Ptys {
         output: Channel<Response>,
         exit: Channel<Option<u32>>,
     ) -> Result<u32, String> {
-        if !cwd.is_dir() {
-            return Err(format!("folder not found: {}", cwd.display()));
+        // A removed worktree's restored terminals, and their splits, still start, saying where.
+        let start = start_dir(cwd).ok_or_else(|| format!("folder not found: {}", cwd.display()))?;
+        if start != cwd {
+            let note = format!(
+                "\x1b[2mfolder {} is gone; started in {}\x1b[0m\r\n",
+                cwd.display(),
+                start.display()
+            );
+            let _ = output.send(Response::new(note.into_bytes()));
         }
         let pair = native_pty_system()
             .openpty(size(cols, rows))
             .map_err(|e| e.to_string())?;
         // The user's login shell, like Terminal.app: a Finder-launched app has a bare PATH.
         let mut cmd = CommandBuilder::new_default_prog();
-        cmd.cwd(cwd);
+        cmd.cwd(&start);
         // Not our environment: with npm_config_prefix from `pnpm tauri dev`, pnpm went missing.
         cmd.env_clear();
         for (key, value) in crate::shell::clean_env() {
@@ -172,5 +191,18 @@ impl Ptys {
         for mut s in sessions {
             let _ = s.killer.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start_dir;
+
+    #[test]
+    fn a_gone_folder_starts_in_the_nearest_one_left() {
+        let tmp = std::env::temp_dir();
+        assert_eq!(start_dir(&tmp), Some(tmp.clone()));
+        let gone = tmp.join("gitviber-gone-worktree").join("sub");
+        assert_eq!(start_dir(&gone), Some(tmp));
     }
 }
