@@ -20,7 +20,7 @@ import "monaco-editor/features/referenceSearch/register";
 import "monaco-editor/features/links/register";
 // Editing the file view as in VS Code: word and subword moves (⌥←, ⌃⌥←, ⌥⌫), line moves and copies
 // (⌥↑, ⇧⌥↓, ⇧⌘K, ⌘↵, ⌘]), multiple cursors (⌘D, ⌥⌘↓), ⌘L, ⌘U, ⌃T, expand selection, ⌃G, text dragging,
-// comments (⌘/, ⇧⌥A) and the matching bracket (⇧⌘\) by lib/editor/languageConfig's rules. Left out:
+// comments (⌘/) and the matching bracket (⇧⌘\) by lib/editor/languageConfig's rules. Left out:
 // what needs a language server.
 import "monaco-editor/features/wordOperations/register";
 import "monaco-editor/features/wordPartOperations/register";
@@ -52,8 +52,10 @@ export { monaco };
 monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, command: "-actions.find" });
 // Likewise Go to Definition, Peek and References (editor.goToDefinition, …); "to the side" has no side here.
 const { CtrlCmd, Alt, Shift } = monaco.KeyMod;
-const { F12, KeyK } = monaco.KeyCode;
+const { F12, KeyK, KeyA } = monaco.KeyCode;
 monaco.editor.addKeybindingRules([
+  // Block comments' ⇧⌥A types a letter on many layouts (Polish Ą, Nordic Å); ⌘/ comments without it.
+  { keybinding: Shift | Alt | KeyA, command: "-editor.action.blockComment" },
   { keybinding: F12, command: "-editor.action.revealDefinition" },
   { keybinding: CtrlCmd | F12, command: "-editor.action.revealDefinition" },
   { keybinding: Alt | F12, command: "-editor.action.peekDefinition" },
