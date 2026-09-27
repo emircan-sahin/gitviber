@@ -42,6 +42,8 @@ import { NeedsYouDot } from "@/components/NeedsYouDot";
 
 type Props = ProjectSwitcherProps & {
   onOpenPull: (p: Pull) => void;
+  /** Origin's GitHub page as last known: a failed remote read doesn't drop the PR badges. */
+  webUrl: string | null;
 };
 
 interface LayoutProps {
@@ -79,7 +81,7 @@ function useFullscreen() {
  * divided by --ui-scale to stay in points (the height only grows: at 150% a 40pt bar can't
  * fit its buttons).
  */
-export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, onOpenPull, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
+export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, onOpenPull, webUrl, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
   const { status, branches, worktrees } = repo;
   const [branchDialog, setBranchDialog] = useState<BranchDialog | null>(null);
   const net = useNetActivity();
@@ -149,7 +151,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onLock={(worktree) => openWorktreeDialog({ kind: "lock", worktree })}
         onUnlock={unlockWorktree}
         onNew={() => openWorktreeDialog({ kind: "new" })}
-        onGitHub={!!status?.webUrl}
+        onGitHub={!!webUrl}
         onOpenPull={onOpenPull}
       />
       <WorktreeDialogs branches={branches} main={main} run={run} runNet={runNet} onOpen={onOpenRepo} />

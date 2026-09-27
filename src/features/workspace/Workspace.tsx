@@ -331,6 +331,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   return (
     <div className="flex h-full flex-col">
       <TopBar
+        webUrl={webUrl}
         repo={repo}
         root={root}
         main={main}
