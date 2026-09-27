@@ -208,7 +208,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
 
         {d && p.state === "open" && <MergeBox detail={d} busy={!!busy} canMerge={!!access?.push} canResolve={canResolve} methods={allowedMethods(access)} onMerge={merge} onResolve={resolveLocally} />}
 
-        {d && <PullChecks pull={pull} detail={d} onOpen={onOpen} />}
+        {d && <PullChecks pull={pull} detail={d} />}
 
         <Section title="Files changed" aside={files.data ? `${files.data.files.length}` : d ? `${d.changedFiles}` : undefined}>
           {!files.data &&

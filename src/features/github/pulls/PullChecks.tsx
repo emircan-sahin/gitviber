@@ -1,19 +1,18 @@
-import { Check, CircleDashed, ClipboardCopy, Loader2, MinusCircle, X } from "lucide-react";
+import { Check, CircleDashed, ClipboardCopy, Loader2, MinusCircle, RefreshCw, X } from "lucide-react";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { errorMessage, github, type Pull, type PullCheck, type PullDetail, repoOf } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
-import { revealInCode } from "@/lib/editor/reveal";
 import { failureReport } from "@/lib/github/checkFailure";
 import { useGitHubData } from "@/lib/github/githubCache";
-import type { Selection } from "@/lib/repo/selection";
+import { openTarget } from "@/lib/links/linkHost";
 import { cn } from "@/lib/utils";
 import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
 import { Section } from "@/features/github/shared/Section";
 
 const FAILED = new Set(["failure", "cancelled", "timed_out", "action_required"]);
 
-export function PullChecks({ pull, detail: d, onOpen }: { pull: Pull; detail: PullDetail; onOpen: (s: Selection) => void }) {
+export function PullChecks({ pull, detail: d }: { pull: Pull; detail: PullDetail }) {
   // The check run whose failure shows: read only when asked, one at a time.
   const [shown, setShown] = useState<number | null>(null);
   if (!d.checks.length && !d.checksError) return null;
@@ -41,7 +40,7 @@ export function PullChecks({ pull, detail: d, onOpen }: { pull: Pull; detail: Pu
                 )}
               </span>
             </div>
-            {open && <Failure pull={pull} check={c} id={c.id!} onOpen={onOpen} />}
+            {open && <Failure pull={pull} check={c} id={c.id!} />}
           </Fragment>
         );
       })}
@@ -49,10 +48,10 @@ export function PullChecks({ pull, detail: d, onOpen }: { pull: Pull; detail: Pu
   );
 }
 
-/** A finished check run doesn't change (a re-run is a new one), so it's read once a session. */
+/** A finished check run doesn't change (a re-run is a new one), so it's read once a session; Retry reads a part that failed again. */
 const KEEP = 3_600_000;
 
-function Failure({ pull, check, id, onOpen }: { pull: Pull; check: PullCheck; id: number; onOpen: (s: Selection) => void }) {
+function Failure({ pull, check, id }: { pull: Pull; check: PullCheck; id: number }) {
   const target = repoOf(pull.url);
   const failure = useGitHubData(`check:${target}:${id}`, useCallback(() => github.checkFailure(target, id), [target, id]), KEEP);
   const f = failure.data;
@@ -61,16 +60,17 @@ function Failure({ pull, check, id, onOpen }: { pull: Pull; check: PullCheck; id
   useEffect(() => {
     if (log.current) log.current.scrollTop = log.current.scrollHeight;
   }, [f?.log]);
-  const reveal = (path: string, line: number) => {
-    revealInCode({ path, line: Math.max(line, 1), column: 1 });
-    onOpen({ kind: "file", path });
-  };
 
   return (
     <div className="border-y border-border bg-panel/50 px-3 py-2 text-[12px]">
       {!f ? (
         failure.error !== undefined && !failure.loading ? (
-          <div className="text-removed">Could not read why it failed: {errorMessage(failure.error)}</div>
+          <div className="flex items-center gap-2 text-removed">
+            <span className="min-w-0 flex-1">Could not read the check: {errorMessage(failure.error)}</span>
+            <Button variant="ghost" size="sm" onClick={() => void failure.refresh(true)}>
+              <RefreshCw /> Retry
+            </Button>
+          </div>
         ) : (
           <div className="flex items-center gap-2 text-subtle">
             <Loader2 className="size-3.5 animate-spin" /> Reading its output and log…
@@ -86,7 +86,7 @@ function Failure({ pull, check, id, onOpen }: { pull: Pull; check: PullCheck; id
               <div className="min-w-0">
                 {/* Actions puts its own errors ("exit code 1") on .github, a folder. */}
                 {a.path && a.path !== ".github" ? (
-                  <button onClick={() => reveal(a.path, a.line)} className="font-mono text-[11.5px] text-primary hover:underline">
+                  <button onClick={() => openTarget({ path: a.path, line: a.line || undefined, column: 1 })} className="font-mono text-[11.5px] text-primary hover:underline">
                     {a.path}
                     {a.line ? `:${a.line}` : ""}
                   </button>
@@ -101,12 +101,20 @@ function Failure({ pull, check, id, onOpen }: { pull: Pull; check: PullCheck; id
               {f.log}
             </pre>
           )}
-          {f.logError && <div className="mt-1 text-subtle">Couldn't read the job's log: {f.logError}</div>}
-          {!f.title && !f.summary && !f.annotations.length && !f.log && !f.logError && <div className="text-subtle">The check left no output; its Details page may say more.</div>}
-          <div className="mt-2 flex">
+          {f.annotationsError && <div className="mt-1 text-removed">Could not read the annotations: {f.annotationsError}</div>}
+          {f.logError && <div className="mt-1 text-removed">Could not read the job's log: {f.logError}</div>}
+          {!f.title && !f.summary && !f.annotations.length && !f.log && !f.logError && !f.annotationsError && (
+            <div className="text-subtle">The check left no output; its Details page may say more.</div>
+          )}
+          <div className="mt-2 flex gap-1.5">
             <Button variant="secondary" size="sm" onClick={() => void copyText(failureReport(check.name, pull.url, f), "Copied for the agent", "Paste it into the agent's terminal.")}>
               <ClipboardCopy /> Copy for agent
             </Button>
+            {(f.logError || f.annotationsError) && (
+              <Button variant="ghost" size="sm" disabled={failure.loading} onClick={() => void failure.refresh(true)}>
+                <RefreshCw className={cn(failure.loading && "animate-spin")} /> Retry
+              </Button>
+            )}
           </div>
         </>
       )}

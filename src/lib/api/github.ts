@@ -83,6 +83,7 @@ export interface CheckFailure {
   title: string;
   summary: string;
   annotations: CheckAnnotation[];
+  annotationsError: string | null;
   /** The job log's last lines, up to its last error; null for a check that isn't a GitHub Actions job. */
   log: string | null;
   logError: string | null;

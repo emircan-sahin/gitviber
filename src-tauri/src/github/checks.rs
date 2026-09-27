@@ -30,6 +30,8 @@ pub struct CheckFailure {
     pub title: String,
     pub summary: String,
     pub annotations: Vec<Annotation>,
+    /// Why the annotations couldn't be read: the output and log still show.
+    pub annotations_error: Option<String>,
     /// The job log's last lines, up to its last error; None for a check that isn't an Actions job.
     pub log: Option<String>,
     /// Why the log couldn't be read (expired, no access): the rest still shows.
@@ -50,20 +52,15 @@ pub fn check_failure(
         &r.api(&format!("/check-runs/{id}")),
     )?;
     let output = &run["output"];
-    let annotations = if output["annotations_count"].as_u64().unwrap_or(0) > 0 {
+    let (annotations, annotations_error) = if output["annotations_count"].as_u64().unwrap_or(0) > 0
+    {
         let path = r.api(&format!("/check-runs/{id}/annotations"));
-        pages(session, repo, &path, JSON, None, 1)?
-            .iter()
-            .map(|a| Annotation {
-                path: string(&a["path"]),
-                line: a["start_line"].as_u64().unwrap_or(0),
-                level: string(&a["annotation_level"]),
-                title: string(&a["title"]),
-                message: string(&a["message"]),
-            })
-            .collect()
+        match pages(session, repo, &path, JSON, None, 1) {
+            Ok(list) => (list.iter().map(annotation).collect(), None),
+            Err(e) => (vec![], Some(e)),
+        }
     } else {
-        vec![]
+        (vec![], None)
     };
     // An Actions check run is its job: the same id.
     let (log, log_error) = if run["app"]["slug"] == "github-actions" {
@@ -86,14 +83,25 @@ pub fn check_failure(
             .take(SUMMARY_CHARS)
             .collect(),
         annotations,
+        annotations_error,
         log,
         log_error,
     })
 }
 
+fn annotation(a: &serde_json::Value) -> Annotation {
+    Annotation {
+        path: string(&a["path"]),
+        line: a["start_line"].as_u64().unwrap_or(0),
+        level: string(&a["annotation_level"]),
+        title: string(&a["title"]),
+        message: string(&a["message"]),
+    }
+}
+
 /// The last `lines` lines up to the log's last `##[error]` (post-job cleanup comes after it),
 /// without the timestamps and colors. `cut`: the text starts mid-line, so its first goes.
-pub fn log_tail(text: &str, cut: bool, lines: usize) -> String {
+fn log_tail(text: &str, cut: bool, lines: usize) -> String {
     let all: Vec<String> = text
         .lines()
         .skip(usize::from(cut))
@@ -107,7 +115,8 @@ pub fn log_tail(text: &str, cut: bool, lines: usize) -> String {
 }
 
 fn clean_line(line: &str) -> String {
-    // Each line starts "2024-05-01T12:00:00.1234567Z ".
+    // Each line starts "2024-05-01T12:00:00.1234567Z ", the first after a BOM.
+    let line = line.trim_start_matches('\u{feff}');
     let line = match line.split_once(' ') {
         Some((ts, rest))
             if ts.len() >= 20
@@ -119,30 +128,49 @@ fn clean_line(line: &str) -> String {
         }
         _ => line,
     };
+    // A progress bar redraws its line after a bare \r: what showed last is what's after the last.
+    let line = line.trim_end_matches('\r');
+    let line = line.rsplit('\r').next().unwrap_or(line);
     let mut out = String::with_capacity(line.len());
     let mut kept = 0;
-    let mut chars = line.chars().peekable();
+    let mut chars = line.chars();
     while let Some(c) = chars.next() {
-        if kept >= LINE_CHARS {
-            out.push('…');
-            break;
-        }
-        // CSI sequences (colors, cursor moves): ESC [ params, then a final byte in @..~.
         if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('@'..='~').contains(&f) {
-                        break;
+            match chars.next() {
+                // CSI (colors, cursor moves): parameters, then a final byte in @..~.
+                Some('[') => {
+                    for f in chars.by_ref() {
+                        if ('@'..='~').contains(&f) {
+                            break;
+                        }
                     }
                 }
+                // OSC (an OSC 8 link, a title): up to BEL or ESC \; a link's text stays.
+                Some(']') => {
+                    while let Some(f) = chars.next() {
+                        if f == '\u{7}' {
+                            break;
+                        }
+                        if f == '\u{1b}' {
+                            chars.next();
+                            break;
+                        }
+                    }
+                }
+                // A character set pick, ESC ( B, takes one more.
+                Some('(' | ')' | '*' | '+') => {
+                    chars.next();
+                }
+                _ => {}
             }
             continue;
         }
-        if c != '\r' {
-            out.push(c);
-            kept += 1;
+        if kept == LINE_CHARS {
+            out.push('…');
+            break;
         }
+        out.push(c);
+        kept += 1;
     }
     out
 }
@@ -177,8 +205,17 @@ mod tests {
     }
 
     #[test]
-    fn a_long_line_is_cut() {
+    fn a_long_line_is_cut_and_one_just_fitting_is_not() {
         let line = "x".repeat(2000);
         assert_eq!(log_tail(&line, false, 1).chars().count(), LINE_CHARS + 1);
+        let fits = "x".repeat(LINE_CHARS);
+        assert_eq!(log_tail(&fits, false, 1), fits);
+    }
+
+    #[test]
+    fn a_bom_progress_redraws_and_other_escapes_go() {
+        let log = "\u{feff}2024-05-01T12:00:00.1234567Z 10%\r50%\r100%\r\n\
+                   \u{1b}(Bplain\u{1b}]8;;https://x.y\u{1b}\\link\u{1b}]8;;\u{7} end";
+        assert_eq!(log_tail(log, false, 200), "100%\nplainlink end");
     }
 }

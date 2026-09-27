@@ -12,6 +12,7 @@ test("a failure reads as one block: the check, its output, annotations and log",
       { path: "src/a.ts", line: 3, level: "failure", title: "", message: "'x' is unused" },
       { path: ".github", line: 0, level: "failure", title: "Lint", message: "Process completed with exit code 1." },
     ],
+    annotationsError: null,
     log: "pnpm lint\n##[error]Process completed with exit code 1.",
     logError: null,
   });
@@ -22,5 +23,5 @@ test("a failure reads as one block: the check, its output, annotations and log",
 });
 
 test("what a check doesn't have is left out", () => {
-  assert.equal(failureReport("vercel", URL, { title: "", summary: "", annotations: [], log: null, logError: "gone" }), `CI check "vercel" failed on ${URL}`);
+  assert.equal(failureReport("vercel", URL, { title: "", summary: "", annotations: [], annotationsError: null, log: null, logError: "gone" }), `CI check "vercel" failed on ${URL}`);
 });

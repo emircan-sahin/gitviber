@@ -279,44 +279,16 @@ pub(super) fn request(
             }
             return Err("GitHub sent no data (304).".into());
         }
-        let header = |name: &str| {
-            resp.headers()
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-        };
-        let new_etag = header("etag");
-        let sso = header("x-github-sso");
-        let limited = rate_limit_error(
-            status,
-            header("x-ratelimit-remaining").as_deref(),
-            header("x-ratelimit-reset").as_deref(),
-            header("retry-after").as_deref(),
-            now(),
-        );
+        if let Some(e) = response_error(session, &mut resp) {
+            return Err(e);
+        }
+        let new_etag = resp
+            .headers()
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
         let text = resp.body_mut().read_to_string().unwrap_or_default();
         let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        if status == 401 {
-            // Expired or revoked; look for a fresh one next time.
-            session.forget();
-            return Err(NOT_CONNECTED.to_string());
-        }
-        if let Some(msg) = limited {
-            return Err(msg);
-        }
-        if status >= 400 {
-            let msg = body["message"].as_str().unwrap_or("request failed");
-            let detail = body["errors"][0]["message"]
-                .as_str()
-                .map(|d| format!(": {d}"))
-                .unwrap_or_default();
-            if let Some(url) = sso_url(status, sso.as_deref()) {
-                return Err(format!(
-                    "GitHub {status}: {msg} Authorize this token for the organization's single sign-on at {url}"
-                ));
-            }
-            return Err(format!("GitHub {status}: {msg}{detail}"));
-        }
         if cacheable {
             session
                 .etags
@@ -345,31 +317,8 @@ pub(super) fn text_tail(
         .header("User-Agent", "GitViber")
         .call()
         .map_err(|e| format!("GitHub request failed: {e}"))?;
-    let status = resp.status().as_u16();
-    if status == 401 {
-        session.forget();
-        return Err(NOT_CONNECTED.to_string());
-    }
-    if status >= 400 {
-        let header = |name: &str| {
-            resp.headers()
-                .get(name)
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string)
-        };
-        if let Some(msg) = rate_limit_error(
-            status,
-            header("x-ratelimit-remaining").as_deref(),
-            header("x-ratelimit-reset").as_deref(),
-            header("retry-after").as_deref(),
-            now(),
-        ) {
-            return Err(msg);
-        }
-        let text = resp.body_mut().read_to_string().unwrap_or_default();
-        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
-        let msg = body["message"].as_str().unwrap_or("request failed");
-        return Err(format!("GitHub {status}: {msg}"));
+    if let Some(e) = response_error(session, &mut resp) {
+        return Err(e);
     }
     let mut reader = resp.body_mut().as_reader();
     let mut chunk = vec![0; 64 * 1024];
@@ -392,6 +341,53 @@ pub(super) fn text_tail(
         cut = true;
     }
     Ok((String::from_utf8_lossy(&tail).into_owned(), cut))
+}
+
+/// Why a response is an error, if it is: an expired or revoked token (forgotten, so the next call
+/// looks for a fresh one), a rate limit, single sign-on to authorize, or GitHub's own message. A
+/// 401 from where GitHub redirected (a log's storage) says nothing about the token.
+fn response_error(
+    session: &Session,
+    resp: &mut ureq::http::Response<ureq::Body>,
+) -> Option<String> {
+    use ureq::ResponseExt;
+    let status = resp.status().as_u16();
+    if status < 400 {
+        return None;
+    }
+    if status == 401 && resp.get_uri().host() == Some("api.github.com") {
+        session.forget();
+        return Some(NOT_CONNECTED.to_string());
+    }
+    let header = |name: &str| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let sso = header("x-github-sso");
+    if let Some(msg) = rate_limit_error(
+        status,
+        header("x-ratelimit-remaining").as_deref(),
+        header("x-ratelimit-reset").as_deref(),
+        header("retry-after").as_deref(),
+        now(),
+    ) {
+        return Some(msg);
+    }
+    let text = resp.body_mut().read_to_string().unwrap_or_default();
+    let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    let msg = body["message"].as_str().unwrap_or("request failed");
+    let detail = body["errors"][0]["message"]
+        .as_str()
+        .map(|d| format!(": {d}"))
+        .unwrap_or_default();
+    Some(match sso_url(status, sso.as_deref()) {
+        Some(url) => format!(
+            "GitHub {status}: {msg} Authorize this token for the organization's single sign-on at {url}"
+        ),
+        None => format!("GitHub {status}: {msg}{detail}"),
+    })
 }
 
 fn now() -> u64 {
