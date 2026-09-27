@@ -12,6 +12,12 @@ const html: Definition = () => import("monaco-editor/languages/definitions/html/
 const shell: Definition = () => import("monaco-editor/languages/definitions/shell/shell");
 // `#` comments, brackets and quotes: config files Monaco has no language for.
 const ini: Definition = () => import("monaco-editor/languages/definitions/ini/ini");
+const java: Definition = () => import("monaco-editor/languages/definitions/java/java");
+const objectiveC: Definition = () => import("monaco-editor/languages/definitions/objective-c/objective-c");
+const css: Definition = () => import("monaco-editor/languages/definitions/css/css");
+const sql: Definition = () => import("monaco-editor/languages/definitions/sql/sql");
+const hcl: Definition = () => import("monaco-editor/languages/definitions/hcl/hcl");
+const systemverilog: Definition = () => import("monaco-editor/languages/definitions/systemverilog/systemverilog");
 // Monaco's JSON mode keeps its configuration inside the mode, with the JSON worker.
 const json: Definition = async () => ({
   conf: {
@@ -44,9 +50,8 @@ const DEFINITIONS: Record<string, Definition> = {
   c: cpp,
   glsl: cpp,
   hlsl: cpp,
-  zig: cpp,
-  "objective-cpp": () => import("monaco-editor/languages/definitions/objective-c/objective-c"),
-  groovy: () => import("monaco-editor/languages/definitions/java/java"),
+  "objective-cpp": objectiveC,
+  groovy: java,
   html,
   vue: html,
   "vue-html": html,
@@ -77,15 +82,15 @@ const DEFINITIONS: Record<string, Definition> = {
   apache: ini,
   cmake: ini,
   nix: ini,
-  terraform: () => import("monaco-editor/languages/definitions/hcl/hcl"),
+  terraform: hcl,
   proto: () => import("monaco-editor/languages/definitions/protobuf/protobuf"),
   rst: () => import("monaco-editor/languages/definitions/restructuredtext/restructuredtext"),
-  "system-verilog": () => import("monaco-editor/languages/definitions/systemverilog/systemverilog"),
-  verilog: () => import("monaco-editor/languages/definitions/systemverilog/systemverilog"),
+  "system-verilog": systemverilog,
+  verilog: systemverilog,
   mipsasm: () => import("monaco-editor/languages/definitions/mips/mips"),
   dax: () => import("monaco-editor/languages/definitions/msdax/msdax"),
-  plsql: () => import("monaco-editor/languages/definitions/sql/sql"),
-  postcss: () => import("monaco-editor/languages/definitions/css/css"),
+  plsql: sql,
+  postcss: css,
   abap: () => import("monaco-editor/languages/definitions/abap/abap"),
   apex: () => import("monaco-editor/languages/definitions/apex/apex"),
   bat: () => import("monaco-editor/languages/definitions/bat/bat"),
@@ -94,7 +99,7 @@ const DEFINITIONS: Record<string, Definition> = {
   coffee: () => import("monaco-editor/languages/definitions/coffee/coffee"),
   cpp,
   csharp: () => import("monaco-editor/languages/definitions/csharp/csharp"),
-  css: () => import("monaco-editor/languages/definitions/css/css"),
+  css,
   cypher: () => import("monaco-editor/languages/definitions/cypher/cypher"),
   dart: () => import("monaco-editor/languages/definitions/dart/dart"),
   elixir: () => import("monaco-editor/languages/definitions/elixir/elixir"),
@@ -102,8 +107,8 @@ const DEFINITIONS: Record<string, Definition> = {
   go: () => import("monaco-editor/languages/definitions/go/go"),
   graphql: () => import("monaco-editor/languages/definitions/graphql/graphql"),
   handlebars: () => import("monaco-editor/languages/definitions/handlebars/handlebars"),
-  hcl: () => import("monaco-editor/languages/definitions/hcl/hcl"),
-  java: () => import("monaco-editor/languages/definitions/java/java"),
+  hcl,
+  java,
   julia: () => import("monaco-editor/languages/definitions/julia/julia"),
   kotlin: () => import("monaco-editor/languages/definitions/kotlin/kotlin"),
   less: () => import("monaco-editor/languages/definitions/less/less"),
@@ -111,7 +116,7 @@ const DEFINITIONS: Record<string, Definition> = {
   lua: () => import("monaco-editor/languages/definitions/lua/lua"),
   markdown: () => import("monaco-editor/languages/definitions/markdown/markdown"),
   mdx: () => import("monaco-editor/languages/definitions/mdx/mdx"),
-  "objective-c": () => import("monaco-editor/languages/definitions/objective-c/objective-c"),
+  "objective-c": objectiveC,
   pascal: () => import("monaco-editor/languages/definitions/pascal/pascal"),
   perl: () => import("monaco-editor/languages/definitions/perl/perl"),
   php: () => import("monaco-editor/languages/definitions/php/php"),
@@ -128,7 +133,7 @@ const DEFINITIONS: Record<string, Definition> = {
   scss: () => import("monaco-editor/languages/definitions/scss/scss"),
   solidity: () => import("monaco-editor/languages/definitions/solidity/solidity"),
   sparql: () => import("monaco-editor/languages/definitions/sparql/sparql"),
-  sql: () => import("monaco-editor/languages/definitions/sql/sql"),
+  sql,
   swift: () => import("monaco-editor/languages/definitions/swift/swift"),
   tcl: () => import("monaco-editor/languages/definitions/tcl/tcl"),
   twig: () => import("monaco-editor/languages/definitions/twig/twig"),
@@ -158,7 +163,7 @@ export async function configure(lang: string) {
   const definition = DEFINITIONS[lang];
   let conf = PLAIN;
   try {
-    if (definition) conf = (await definition()).conf;
+    if (definition) conf = (await definition()).conf ?? PLAIN;
   } catch {
     // Its file didn't load (an update replaced the build): typing as in plain text.
   }
