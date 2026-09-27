@@ -11,8 +11,8 @@ import { basename, dirname, slashes } from "../path.ts";
 /** How a link's text becomes a target: each kind has its own lookup rules. */
 type LinkKind = "module" | "style" | "doc" | "path" | "rust" | "python" | "url" | "file";
 
-/** What a link opens: a web page, or a repo file, at a line (1-based) when the link names one. */
-export type Target = { url: string } | { path: string; line?: number; column?: number };
+/** What a link opens: a web page, a repo file at a line (1-based) when the link names one, or a repo folder (terminal links only). */
+export type Target = { url: string } | { path: string; line?: number; column?: number; dir?: boolean };
 
 /** A link in a line: `[start, end)` are offsets in the line, `spec` the text between them. */
 export interface Link {
@@ -133,11 +133,14 @@ export function findLinks(line: string, lang: string, near?: Near): Link[] {
   });
 }
 
-/** The links in a line of terminal output: URLs, and paths with or without a line (`ls` prints bare names). */
+/**
+ * The links in a line of terminal output: URLs, and paths with or without a line (`ls` prints bare
+ * names), folders with a slash in them, and paths shortened to their end (`…/lib/a.ts`).
+ */
 export function findTerminalLinks(line: string, near?: Near): Link[] {
   return windowed(line, near, (text, _, add) => {
     urls(text, add);
-    filePaths(text, add, true);
+    filePaths(text, add, true, true);
   });
 }
 
@@ -191,10 +194,10 @@ function urls(line: string, add: Add) {
 
 // A path, then maybe where in it: `:12`, `:12:5`, `(12,5)` (tsc), `#L12`, `#L12C5`, `#L12-L20` (GitHub).
 // Windows too: a drive letter, and backslashes.
-const FILE = /(?<![\w./\\@~+-])(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])?[\w@+-][\w@.+-]*(?:[\\/][\w@.+-]+)*(?::\d+(?::\d+)?|\(\d+(?:,\s*\d+)?\)|#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?)?/g;
+const FILE = /(?<![\w./\\@~+-])(?:(?:…|\.{3})[\\/]|[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])?[\w@+-][\w@.+-]*(?:[\\/][\w@.+-]+)*[\\/]?(?::\d+(?::\d+)?|\(\d+(?:,\s*\d+)?\)|#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?)?/g;
 const POSITION = /(?::(\d+)(?::(\d+))?|\((\d+)(?:,\s*(\d+))?\)|#L(\d+)(?:C(\d+))?(?:-L?\d+(?:C\d+)?)?)$/;
 
-function filePaths(line: string, add: Add, bareNames: boolean) {
+function filePaths(line: string, add: Add, bareNames: boolean, folders = false) {
   for (const m of line.matchAll(FILE)) {
     const at = POSITION.exec(m[0]);
     let path = at ? m[0].slice(0, at.index) : m[0];
@@ -202,8 +205,10 @@ function filePaths(line: string, add: Add, bareNames: boolean) {
     let end = path.length;
     while (end > 0 && path[end - 1] === ".") end--;
     path = path.slice(0, end);
+    // A trailing separator is taken so a window cutting `src/lib/api.ts` after `lib/` drops the cut part.
+    if (/[\\/]$/.test(path) && !folders) continue;
     const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-    if (!/\.[A-Za-z][\w-]*$/.test(path.slice(slash + 1)) && !at) continue;
+    if (!/\.[A-Za-z][\w-]*$/.test(path.slice(slash + 1)) && !at && !(folders && slash >= 0)) continue;
     if (slash < 0 && !at && !bareNames) continue;
     add(m.index, at && path.length === at.index ? m[0] : path, "file");
   }
@@ -334,20 +339,88 @@ export function resolveLink(link: Link, from: string, index: FileIndex, aliases:
 
 /**
  * A link in terminal output: paths from the shell's folder `cwd` (repo-relative; null when it's
- * outside the repo, where only absolute paths into it resolve), or the repo root, as agents print them.
+ * outside the repo, where only absolute paths into it resolve), or the repo root, as agents print
+ * them; a folder when no line is named, and a shortened path when one file ends that way.
  */
-export function resolveTerminalLink(link: Link, cwd: string | null, index: FileIndex, root: string): Target | null {
-  return link.kind === "url" ? { url: link.spec } : resolveFile(link.spec, cwd, index, root);
+export function resolveTerminalLink(link: Link, cwd: string | null, index: FileIndex, root: string, rootToo = true): Target | null {
+  return link.kind === "url" ? { url: link.spec } : resolveFile(link.spec, cwd, index, root, true, rootToo);
 }
 
-function resolveFile(spec: string, dir: string | null, index: FileIndex, root: string): Target | null {
-  const { path: raw, line, column } = splitPosition(spec);
-  const path = slashes(raw);
+const SHORTENED = /^(?:…|\.{3})\//;
+
+/**
+ * The repo paths a path may be, from folder `dir` (null: outside the repo), then from the root
+ * unless `rootToo` is false (a shell in a worktree inside this one: the root is another checkout).
+ */
+function candidates(path: string, dir: string | null, root: string, rootToo = true): string[] {
   const base = slashes(root);
   const absolute = path.startsWith("/") || /^[A-Za-z]:\//.test(path);
-  const candidates = absolute ? [base && path.startsWith(`${base}/`) ? path.slice(base.length + 1) : null] : dir == null ? [] : [join(slashes(dir), path), join("", path)];
-  const found = firstIn(index.files, candidates.filter((c): c is string => !!c));
-  return found ? { path: found, line, column } : null;
+  const all = absolute ? [base && path.startsWith(`${base}/`) ? path.slice(base.length + 1).replace(/\/+$/, "") : null] : dir == null ? [] : [join(slashes(dir), path), rootToo && dir ? join("", path) : null];
+  return all.filter((c): c is string => !!c);
+}
+
+function resolveFile(spec: string, dir: string | null, index: FileIndex, root: string, dirs = false, rootToo = true): Target | null {
+  const { path: raw, line, column } = splitPosition(spec);
+  const path = slashes(raw);
+  if (dirs && SHORTENED.test(path)) {
+    const found = rootToo ? endingWith(index.files, path.replace(SHORTENED, "")) : null;
+    return found ? { path: found, line, column } : null;
+  }
+  const paths = candidates(path, dir, root, rootToo);
+  const found = firstIn(index.files, paths);
+  if (found) return { path: found, line, column };
+  const folder = dirs && !line ? firstIn(folders(index), paths) : null;
+  return folder ? { path: folder, dir: true } : null;
+}
+
+const folderSets = new WeakMap<FileIndex, Set<string>>();
+
+/** The folders the index's files are in, worked out on first use: only terminal links ask. */
+export function folders(index: FileIndex): ReadonlySet<string> {
+  let dirs = folderSets.get(index);
+  if (dirs) return dirs;
+  folderSets.set(index, (dirs = new Set()));
+  for (const f of index.files) for (let d = dirname(f); d && !dirs.has(d); d = dirname(d)) dirs.add(d);
+  return dirs;
+}
+
+/**
+ * `paths` found on disk in another case than the index has them (APFS doesn't mind, and the tabs
+ * would open the file twice), by their lowercase: the index's spelling. One pass over the index.
+ */
+export function indexCase(paths: string[], index: FileIndex): Map<string, string> {
+  const want = new Set(paths.map((p) => p.toLowerCase()));
+  const out = new Map<string, string>();
+  if (!want.size) return out;
+  for (const set of [index.files, folders(index)]) for (const f of set) if (want.has(f.toLowerCase())) out.set(f.toLowerCase(), f);
+  return out;
+}
+
+/** The one file whose path ends in `tail`; null for none, or more than one. */
+function endingWith(files: ReadonlySet<string>, tail: string): string | null {
+  let hit: string | null = null;
+  for (const f of files) {
+    if (f !== tail && !f.endsWith(`/${tail}`)) continue;
+    if (hit) return null;
+    hit = f;
+  }
+  return hit;
+}
+
+/**
+ * For a terminal link the index doesn't have (an ignored file or folder): the repo paths it may
+ * be, to ask the disk about, nearest first. None for a URL or a shortened path.
+ */
+export function diskCandidates(link: Link, cwd: string | null, root: string, rootToo = true): string[] {
+  const path = slashes(splitPosition(link.spec).path);
+  // Digits and slashes are a date or a fraction (2026/09/27, 3/4), not worth asking about.
+  return link.kind === "url" || SHORTENED.test(path) ? [] : candidates(path, cwd, root, rootToo).filter((c) => !/^[\d/]+$/.test(c));
+}
+
+/** A terminal link's target at `path`, found on disk as `kind`; a folder with a line isn't one. */
+export function diskTarget(spec: string, path: string, kind: "file" | "dir"): Target | null {
+  const { line, column } = splitPosition(spec);
+  return kind === "file" ? { path, line, column } : line ? null : { path, dir: true };
 }
 
 function resolvePath(link: Link, from: string, index: FileIndex, aliases: Alias[]): string | null {

@@ -311,13 +311,19 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useEffect(() => {
     setLinkHost({
       root,
+      worktrees: repo.worktrees.map((w) => w.path),
       revision: repo.revision,
       open: (path, focus) => {
         open({ kind: "file", path }, true);
         if (focus) focusPanel("code");
       },
+      // A file opened from the terminal is picked in the explorer too; a closed explorer stays closed.
+      reveal: (path, show) => {
+        if (show) revealInExplorer(path);
+        else if (!filesPanel.current?.isCollapsed()) fileTree.current?.reveal(path, false);
+      },
     });
-  }, [root, repo.revision, open]);
+  }, [root, repo.worktrees, repo.revision, open, revealInExplorer]);
   useEffect(() => () => setLinkHost(null), []);
 
   const changeCount = uncommitted.length;

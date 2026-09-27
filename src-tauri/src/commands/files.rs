@@ -106,6 +106,15 @@ pub async fn list_files(state: State<'_, AppState>) -> Res<Vec<String>> {
     in_repo(&state, fs::list_files).await
 }
 
+/// Whether each path (repo-relative) is a file, a folder, or neither: for terminal links.
+#[tauri::command]
+pub async fn path_kinds(
+    state: State<'_, AppState>,
+    paths: Vec<String>,
+) -> Res<Vec<Option<fs::Kind>>> {
+    in_repo(&state, move |r| Ok(fs::kinds(r, &paths))).await
+}
+
 /// Search in files; a newer search stops this one, which then fails with grep::CANCELLED.
 #[tauri::command]
 pub async fn search_files(state: State<'_, AppState>, query: grep::Query) -> Res<grep::Found> {
