@@ -211,6 +211,7 @@ pub fn run() {
             commands::files::open_in,
             commands::files::open_in_custom,
             commands::repo::project_info,
+            commands::repo::folder_branch,
             commands::repo::reveal_project,
             commands::history::undo_commit,
             commands::history::reset,

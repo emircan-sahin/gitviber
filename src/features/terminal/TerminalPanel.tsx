@@ -1,13 +1,14 @@
-import { ChevronDown, Columns2, Eraser, FolderGit2, ListX, Pencil, Plus, SquareTerminal, Trash2, X } from "lucide-react";
+import { open as pickFolder } from "@tauri-apps/plugin-dialog";
+import { ChevronDown, Columns2, Eraser, FolderGit2, FolderOpen, ListX, Pencil, Plus, SquareTerminal, Trash2, X } from "lucide-react";
 import { FindBox, useFindBox } from "@/components/FindBox";
 import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
-import type { Worktree } from "@/lib/api";
+import { api, type Worktree } from "@/lib/api";
 import { commandIn, matchesCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { focusedPanel, focusPanel } from "@/lib/ui/panels";
 import {
@@ -34,9 +35,10 @@ import {
   useTerminals,
 } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
-import { folderName } from "@/lib/path";
+import { folderName, parentFolder } from "@/lib/path";
 import { NameInput } from "@/components/NameInput";
 import { plural } from "@/lib/format";
+import { ProjectTile } from "@/features/projects/ProjectList";
 
 /** What the workspace needs even while the panel is hidden: the panel shortcuts, and following the worktree that's open. */
 export function useTerminalSetup(root: string) {
@@ -55,12 +57,46 @@ function toggle(root: string) {
 interface Props {
   root: string;
   worktrees: Worktree[];
+  /** The saved projects other than this one: a terminal there leaves the window on this one. */
+  projects: string[];
 }
 
-export function TerminalPanel({ root, worktrees }: Props) {
+/** Any folder: a terminal in it, the window staying on this project. */
+async function chooseFolder() {
+  const dir = await pickFolder({ directory: true, title: "New terminal in folder" });
+  if (typeof dir === "string") openTerminal(dir);
+}
+
+// Tabs outside this repo's worktrees: each one's branch, by tab id, read once as it first shows.
+// Nothing watches that repo, so a checkout there leaves it stale (a new tab reads it again).
+const outsideBranches = new Map<number, string | null>();
+
+export function TerminalPanel({ root, worktrees, projects }: Props) {
   const { groups, active } = useTerminals();
   const group = groups.find((g) => g.id === active) ?? null;
-  const branchOf = (cwd: string) => worktrees.find((w) => w.path === cwd)?.branch ?? null;
+  const [, branchRead] = useState(0);
+  const branchOf = (g: TerminalGroup) => {
+    const w = worktrees.find((x) => x.path === g.panes[0].cwd);
+    return w ? w.branch : (outsideBranches.get(g.id) ?? null);
+  };
+  // Worktrees not listed yet: every tab would look outside.
+  useEffect(() => {
+    if (!worktrees.length) return;
+    for (const id of outsideBranches.keys()) if (!groups.some((g) => g.id === id)) outsideBranches.delete(id);
+    for (const g of groups) {
+      const cwd = g.panes[0].cwd;
+      if (outsideBranches.has(g.id) || worktrees.some((w) => w.path === cwd)) continue;
+      outsideBranches.set(g.id, null);
+      api.folderBranch(cwd).then(
+        (b) => {
+          if (!b || !outsideBranches.has(g.id)) return;
+          outsideBranches.set(g.id, b);
+          branchRead((n) => n + 1);
+        },
+        () => {},
+      );
+    }
+  }, [groups, worktrees]);
 
   // Shortcuts while a terminal has focus. Stopping them here keeps ⌘W from closing a file tab.
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -113,7 +149,7 @@ export function TerminalPanel({ root, worktrees }: Props) {
       <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-panel">
         <div ref={tablist} role="tablist" aria-label="Terminals" onKeyDown={onTabKey} data-scrollbar="none" className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
           {groups.map((g) => (
-            <GroupTab key={g.id} group={g} active={g.id === active} here={g.panes[0].cwd === root} branch={branchOf(g.panes[0].cwd)} alone={groups.length === 1} />
+            <GroupTab key={g.id} group={g} active={g.id === active} here={g.panes[0].cwd === root} branch={branchOf(g)} alone={groups.length === 1} />
           ))}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 px-1.5">
@@ -122,27 +158,47 @@ export function TerminalPanel({ root, worktrees }: Props) {
               <Plus />
             </Button>
           </Tip>
-          {others.length > 0 && (
-            <DropdownMenu>
-              <Tip label="New terminal in another worktree">
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon-sm" className="w-4">
-                    <ChevronDown className="size-3" />
-                  </Button>
-                </DropdownMenuTrigger>
-              </Tip>
-              <DropdownMenuContent align="end" className="w-72">
-                <DropdownMenuLabel>New terminal in worktree</DropdownMenuLabel>
-                {others.map((w) => (
-                  <DropdownMenuItem key={w.path} onSelect={() => openTerminal(w.path)}>
-                    <FolderGit2 />
-                    <span className="truncate">{folderName(w.path)}</span>
-                    <span className="ml-auto truncate font-mono text-[11px] text-subtle">{w.branch ?? "detached"}</span>
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          )}
+          <DropdownMenu>
+            <Tip label="New terminal in another folder">
+              <DropdownMenuTrigger asChild>
+                <Button variant="ghost" size="icon-sm" className="w-4">
+                  <ChevronDown className="size-3" />
+                </Button>
+              </DropdownMenuTrigger>
+            </Tip>
+            <DropdownMenuContent align="end" className="w-72">
+              {others.length > 0 && (
+                <>
+                  <DropdownMenuLabel>New terminal in worktree</DropdownMenuLabel>
+                  {others.map((w) => (
+                    <DropdownMenuItem key={w.path} onSelect={() => openTerminal(w.path)}>
+                      <FolderGit2 />
+                      <span className="truncate">{folderName(w.path)}</span>
+                      <span className="ml-auto truncate font-mono text-[11px] text-subtle">{w.branch ?? "detached"}</span>
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              {projects.length > 0 && (
+                <>
+                  <DropdownMenuLabel>New terminal in project</DropdownMenuLabel>
+                  {projects.map((p) => (
+                    <DropdownMenuItem key={p} title={p} onSelect={() => openTerminal(p)}>
+                      <ProjectTile name={folderName(p)} />
+                      <span className="truncate">{folderName(p)}</span>
+                      {/* Where it is, as a worktree shows its branch: same-named projects tell apart. */}
+                      <span className="ml-auto truncate text-[11px] text-subtle">{folderName(parentFolder(p))}</span>
+                    </DropdownMenuItem>
+                  ))}
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              <DropdownMenuItem onSelect={() => void chooseFolder()}>
+                <FolderOpen /> Choose Folder…
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <Tip label="Split terminal" shortcut={useShortcut("terminal.split")}>
             <Button variant="ghost" size="icon-sm" onClick={splitActive} disabled={!group}>
               <Columns2 />
@@ -189,7 +245,8 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
   const title = g.panes.find((p) => p.id === g.focused)?.title;
   const where = title ? `${cwd} · ${title}` : cwd;
   const label = g.name ? `${g.name} · ${where}` : where;
-  const shown = g.name ?? folderName(cwd);
+  // "/" has no name of its own.
+  const shown = g.name ?? (folderName(cwd) || cwd);
   const [splitKey, clearKey] = [useShortcut("terminal.split"), useShortcut("terminal.clear")];
   // Split and Clear act on the open tab's focused pane.
   const inTab = (run: () => void) => () => {
@@ -337,7 +394,7 @@ export function TerminalRestoreOffer() {
   const { restorable } = useTerminals();
   if (!restorable) return null;
   const cwds = restorable.groups.flatMap((g) => g.panes.map((p) => p.cwd));
-  const folders = [...new Set(cwds.map(folderName))];
+  const folders = [...new Set(cwds.map((c) => folderName(c) || c))];
   return (
     <div className="pointer-events-auto fixed right-4 bottom-10 z-50 flex w-96 gap-3 rounded-md border border-border-strong bg-elevated p-3 shadow-lg shadow-black/50 animate-in fade-in-0 slide-in-from-bottom-2">
       <SquareTerminal className="mt-0.5 size-4 shrink-0 text-primary" />

@@ -39,9 +39,7 @@ import { openSettings } from "@/features/settings/SettingsDialog";
 import { openWorktreeDialog, WorktreeDialogs } from "@/features/worktrees/WorktreeDialogs";
 import { WorktreePicker } from "@/features/worktrees/WorktreePicker";
 
-interface Props extends ProjectSwitcherProps {
-  root: string;
-}
+type Props = ProjectSwitcherProps;
 
 interface LayoutProps {
   leftOpen: boolean;
@@ -114,7 +112,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
     >
       <Wordmark />
       <div className="mx-2 h-4 w-px bg-border-strong" />
-      <ProjectSwitcher repo={repo} main={main} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} onLocateRepo={onLocateRepo} />
+      <ProjectSwitcher repo={repo} root={root} main={main} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} onLocateRepo={onLocateRepo} />
       <span className="text-[13px] text-border-strong select-none">/</span>
       <BranchPicker
         label={branchName}

@@ -190,6 +190,12 @@ pub async fn project_info(paths: Vec<String>) -> Res<Vec<ProjectInfo>> {
     .await
 }
 
+/// The branch of a folder outside the open repo, for a terminal tab there.
+#[tauri::command]
+pub async fn folder_branch(path: String) -> Res<Option<String>> {
+    blocking(move || Ok(git::current_branch(Path::new(&path)))).await
+}
+
 /// Reveals a saved project, open or not. reveal_path is confined to the open repo; this only
 /// takes the top folder of a git worktree, so the page can't point Finder anywhere else.
 #[tauri::command]

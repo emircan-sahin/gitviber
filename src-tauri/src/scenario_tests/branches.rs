@@ -23,6 +23,23 @@ fn switching_to_a_remote_branch_tracks_that_remote() {
     assert!(switch_tracking(b, "main").is_err());
 }
 
+/// A terminal tab in another project names its branch; nothing when detached or outside a repo.
+#[test]
+fn current_branch_of_any_folder() {
+    let sb = Sandbox::new("curbr");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "d/a.txt", "a\n", "base");
+    run(&r, &["switch", "-q", "-c", "feat"]).unwrap();
+    assert_eq!(current_branch(&r).as_deref(), Some("feat"));
+    assert_eq!(current_branch(&r.join("d")).as_deref(), Some("feat"));
+    run(&r, &["switch", "-q", "--detach"]).unwrap();
+    assert_eq!(current_branch(&r), None);
+    let plain = sb.path("plain");
+    std::fs::create_dir_all(&plain).unwrap();
+    assert_eq!(current_branch(&plain), None);
+}
+
 #[test]
 fn merged_branches_and_deleting_them() {
     let sb = Sandbox::new("brdel");

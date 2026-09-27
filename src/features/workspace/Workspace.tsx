@@ -93,6 +93,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const listPanel = usePanelRef();
   const filesPanel = usePanelRef();
   useTerminalSetup(root);
+  // Where a terminal can start besides this repo's worktrees, without switching the window there.
+  const projects = recent.filter((p) => p !== main);
   const terminalOpen = useTerminals().open;
   const fileTree = useRef<FileTreeHandle>(null);
   const findKey = useShortcut("editor.find");
@@ -280,12 +282,14 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "repo.refresh": () => repo.refresh(),
     "workbench.quickOpen": () => showQuickOpen(),
     "workbench.openChange": uncommitted.length ? () => showQuickOpen("changes") : undefined,
+    "terminal.newInProject": projects.length ? () => showQuickOpen("projects") : undefined,
   });
 
   // Quick open's picks take the code view along, where a new tab then takes focus (MonacoView).
   useQuickOpenSource({
     root,
     changes: uncommitted,
+    projects,
     openFile: (path) => {
       focusPanel("code");
       open({ kind: "file", path }, true);
@@ -470,7 +474,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                   <ResizablePanel id="terminal" defaultSize="35" minSize={100}>
                     <div data-panel="terminal" className="group/panel relative h-full">
                       <FocusLine />
-                      <TerminalPanel root={root} worktrees={repo.worktrees} />
+                      <TerminalPanel root={root} worktrees={repo.worktrees} projects={projects} />
                     </div>
                   </ResizablePanel>
                 </>

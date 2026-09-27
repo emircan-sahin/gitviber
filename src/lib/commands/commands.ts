@@ -105,6 +105,7 @@ export const COMMANDS = [
   { id: "media.fit", title: "Fit Image", category: "Editor", keys: ["0"], local: "the image view" },
   // ⌃` as in VS Code, ⌘J as its panel toggle. Elsewhere Ctrl+`, as VS Code has it there too.
   { id: "terminal.toggle", title: "Toggle Terminal", category: "Terminal", keys: ["cmd+j", "ctrl+`"], keysOther: ["cmd+j", "cmd+`"] },
+  { id: "terminal.newInProject", title: "New Terminal in Project…", category: "Terminal", keys: [] },
   // Off macOS Ctrl+Shift, as in Linux terminals: Ctrl+letter is the shell's and desktops take Super
   // chords (KDE: Super+D, Super+W). The ones below it only run in the terminal.
   { id: "terminal.new", title: "New Terminal", category: "Terminal", keys: ["cmd+t"], keysOther: ["shift+cmd+t"] },
