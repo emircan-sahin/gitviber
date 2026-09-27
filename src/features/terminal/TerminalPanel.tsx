@@ -100,6 +100,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
   const group = groups.find((g) => g.id === active) ?? null;
   // Only a tab with panes to hide shows one alone.
   const zoomed = zoomOn && !!group && group.panes.length > 1;
+  const zoomKey = useShortcut("terminal.zoomPane");
   const [, branchRead] = useState(0);
   const { terminalInactiveDim } = useSettings();
   // The panel's keys (onKeyDown), in the palette too for whoever doesn't know them; maximize is useTerminalSetup's.
@@ -253,7 +254,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
           </Tip>
           <div className="mx-0.5 h-4 w-px bg-border-strong" />
           {group && group.panes.length > 1 && (
-            <Tip label={zoomed ? "Show all panes" : "Zoom pane"} shortcut={useShortcut("terminal.zoomPane")}>
+            <Tip label={zoomed ? "Show all panes" : "Zoom pane"} shortcut={zoomKey}>
               <Button variant="ghost" size="icon-sm" aria-pressed={zoomed} onClick={() => toggleZoom(root)}>
                 {zoomed ? <ZoomOut /> : <ZoomIn />}
               </Button>
