@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type DiffPair, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { api, type DiffPair, errorMessage, type FileChange, type FileText, type RepoStatus } from "@/lib/api";
 import { withNetActivity } from "@/lib/repo/netActivity";
 import { onReveal, revealWaits } from "@/lib/editor/reveal";
 import { editedText, saveEdit, useEdited } from "@/lib/editor/edits";
@@ -126,7 +126,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile));
 
   const diff = !isFile && !media && !rendered;
-  const note = diff && pair && !special ? (pair.eolOnly ? "Only line endings changed" : pair.whitespaceHidden ? "Whitespace changes hidden" : null) : null;
+  const note = diff && pair && !special ? (pair.eolOnly ? "Only line endings changed" : (newlineNote(pair) ?? (pair.whitespaceHidden ? "Whitespace changes hidden" : null))) : null;
   const code = !media && !rendered && !!pair && !special;
   const blame = useBlame(isFile && code && s.blame ? sel.path : null, pair, status?.head ?? null);
   // Text the file view can't turn back into the file's bytes stays read-only.
@@ -333,6 +333,19 @@ function placeholderFor(pair: DiffPair, isFile: boolean) {
   if (a.binary || b.binary) return "Binary file";
   if (a.tooLarge || b.tooLarge) return "File is too large to display";
   if (!isFile && !pair.rows.some((r) => r.k !== 0)) return pair.whitespaceHidden ? "Only whitespace changed (hidden)" : "No textual changes";
+  return null;
+}
+
+/** Why a last line shows removed and added unchanged: git's "\ No newline at end of file". */
+function newlineNote({ original: a, modified: b, rows }: DiffPair) {
+  const bare = (f: FileText, side: "o" | "n") => {
+    if (!f.exists || f.text === "" || f.text.endsWith("\n")) return false;
+    // Rows hold every line, so the last one naming this side is its last line.
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i][side]) return rows[i].k !== 0;
+    return false;
+  };
+  if (bare(b, "n")) return "No newline at end of file";
+  if (bare(a, "o")) return "Newline added at end of file";
   return null;
 }
 
