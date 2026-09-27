@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { api, type Branch, github, type Target, type Worktree } from "@/lib/api";
-import { loadWorktreeDir, moveRoot, saveWorktreeDir, sharedWorktreeDir } from "@/lib/repo/session";
+import { loadWorktreeDir, loadWorktreeRun, moveRoot, saveWorktreeDir, saveWorktreeRun, sharedWorktreeDir } from "@/lib/repo/session";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { shortPath } from "@/lib/git/worktrees";
 import { folderName, parentFolder } from "@/lib/path";
@@ -83,6 +83,7 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
   const [headOption] = useState(from === "HEAD");
   const [dir, setDir] = useState(() => loadWorktreeDir(main) ?? fallback);
   const [terminal, setTerminal] = useState(true);
+  const [command, setCommand] = useState(() => loadWorktreeRun(main));
   const [switchTo, setSwitchTo] = useState(false);
   const n = pull ? pull.branch : name.trim();
   const choose = async () => {
@@ -95,7 +96,10 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
     const then = (path: string) => {
       // Remembered for the project once it worked, so its next worktree goes there too.
       saveWorktreeDir(main, dir === fallback ? null : dir);
-      if (terminal) openTerminal(path);
+      if (terminal) {
+        saveWorktreeRun(main, command.trim());
+        openTerminal(path, command.trim());
+      }
       if (switchTo) onOpen(path);
     };
     if (pull) {
@@ -147,11 +151,22 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
           </Button>
         </div>
       </div>
-      <div className="mt-4 flex items-center gap-3">
-        <label className="flex items-center gap-1.5 text-[12px]">
+      <div className="mt-4 flex items-center gap-2">
+        <label className="flex shrink-0 items-center gap-1.5 text-[12px]">
           <input type="checkbox" checked={terminal} onChange={(e) => setTerminal(e.target.checked)} className="accent-primary" />
           Open a terminal in it
         </label>
+        <Input
+          className="font-mono disabled:opacity-50"
+          value={command}
+          onChange={(e) => setCommand(e.target.value)}
+          disabled={!terminal}
+          placeholder="and run… (e.g. claude)"
+          aria-label="Command to run in the terminal"
+          spellCheck={false}
+        />
+      </div>
+      <div className="mt-3 flex items-center gap-3">
         <label className="flex items-center gap-1.5 text-[12px]">
           <input type="checkbox" checked={switchTo} onChange={(e) => setSwitchTo(e.target.checked)} className="accent-primary" />
           Switch to it
