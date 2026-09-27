@@ -256,8 +256,8 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   // Unicode 6 widths, TUIs drew out of line and the cursor landed one cell off per emoji.
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = "11";
-  // Relative paths from where the shell starts (a split may start below the worktree).
-  terminalLinks(term, dir);
+  // Relative paths from the shell's folder, which a split may start below the worktree in.
+  terminalLinks(term, () => panes.get(id)?.dir ?? dir);
   const search = new SearchAddon();
   term.loadAddon(search);
   search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
