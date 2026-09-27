@@ -86,10 +86,9 @@ export const SUGGEST_LIMIT_KB = 100;
 export const programOf = (command: string) => command.trim().split(/\s+/)[0] ?? "";
 
 /**
- * A Markdown answer inside a fence that wraps it: first in the text, closed by the last fence
- * line, with at most a one-line preface ending in ":" before it ("Here's the pull request:") and
- * any words after it. A fence that follows the title, or is marked with a language, is the
- * description's own code.
+ * A Markdown answer inside a fence that wraps it: the first fence (after at most a "Here's the PR:"
+ * line) to the last, words after it allowed. One after the title, or marked with a language, is
+ * the description's own code.
  */
 function unwrapMarkdown(text: string) {
   const lines = text.split("\n");

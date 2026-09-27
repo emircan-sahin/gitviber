@@ -1,9 +1,9 @@
 // A changed image's two versions one over the other, as GitHub offers beside 2-up: Swipe (a
 // divider between them) and Onion skin (after faded in over before). Only CSS on the two layers
 // already shown side by side: nothing is decoded again.
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import type { ImageCompare } from "@/lib/settings";
-import { formatBytes, type MediaSource, PAD, SvgSide, type SvgProps, useMediaUrl, useSize } from "./MediaView";
+import { formatBytes, ImageMenu, type MediaSource, PAD, SvgSide, type SvgProps, useMediaUrl, useSize } from "./MediaView";
 
 export type Overlaid = Exclude<ImageCompare, "side">;
 
@@ -54,6 +54,7 @@ export function ImageOverlay({ src, mode }: { src: MediaSource; mode: Overlaid }
         [dims(sizes[1]), after.size !== null && formatBytes(after.size)],
       ]}
       stageRef={setStage}
+      wrapStage={error ? undefined : (stage) => <ImageMenu src={src} original="both">{stage}</ImageMenu>}
       under={error ? <div className="flex h-full items-center justify-center p-4 text-center text-[12.5px] text-muted-foreground">{error}</div> : layer(before.url, 0, true)}
       over={!error && layer(after.url, 1, mode === "swipe")}
     />
@@ -76,8 +77,25 @@ export function SvgOverlay({ before, after, mode, ...props }: { before: string; 
   );
 }
 
-/** Before under after in one place: swipe shows before left of a divider and after right of it; onion skin fades after in over before. */
-function Overlay({ mode, details, stageRef, under, over }: { mode: Overlaid; details: [(string | false | null)[], (string | false | null)[]]; stageRef?: (el: HTMLDivElement | null) => void; under: ReactNode; over: ReactNode }) {
+/**
+ * Before under after in one place: swipe shows before left of a divider and after right of it; onion skin fades after in over before.
+ * `wrapStage`: puts the stage in a context menu.
+ */
+function Overlay({
+  mode,
+  details,
+  stageRef,
+  wrapStage = (stage) => stage,
+  under,
+  over,
+}: {
+  mode: Overlaid;
+  details: [(string | false | null)[], (string | false | null)[]];
+  stageRef?: (el: HTMLDivElement | null) => void;
+  wrapStage?: (stage: ReactElement) => ReactNode;
+  under: ReactNode;
+  over: ReactNode;
+}) {
   // Kept apart: a divider near the edge isn't a faint onion skin.
   const [divider, setDivider] = useState(0.5);
   const [opacity, setOpacity] = useState(0.5);
@@ -94,15 +112,17 @@ function Overlay({ mode, details, stageRef, under, over }: { mode: Overlaid; det
         <span className="font-mono">{a}</span>
         <span className="font-medium text-added">After</span>
       </div>
-      <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden">
-        <div className="absolute inset-0" style={swipe ? { clipPath: `inset(0 ${(1 - divider) * 100}% 0 0)` } : undefined}>
-          {under}
-        </div>
-        <div className="absolute inset-0" style={swipe ? { clipPath: `inset(0 0 0 ${divider * 100}%)` } : { opacity }}>
-          {over}
-        </div>
-        {swipe && <Divider at={divider} onMove={setDivider} />}
-      </div>
+      {wrapStage(
+        <div ref={stageRef} className="relative min-h-0 flex-1 overflow-hidden">
+          <div className="absolute inset-0" style={swipe ? { clipPath: `inset(0 ${(1 - divider) * 100}% 0 0)` } : undefined}>
+            {under}
+          </div>
+          <div className="absolute inset-0" style={swipe ? { clipPath: `inset(0 0 0 ${divider * 100}%)` } : { opacity }}>
+            {over}
+          </div>
+          {swipe && <Divider at={divider} onMove={setDivider} />}
+        </div>,
+      )}
     </div>
   );
 }

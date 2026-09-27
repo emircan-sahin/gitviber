@@ -23,10 +23,7 @@ pub async fn add_worktree(
 /// How many ignored files `.worktreeinclude` would copy into a new worktree.
 #[tauri::command]
 pub async fn worktree_includes(state: State<'_, AppState>) -> Res<usize> {
-    in_repo(&state, move |r| {
-        git::worktree_includes(&git::include_source(r)).map(|f| f.len())
-    })
-    .await
+    in_repo(&state, git::include_count).await
 }
 
 #[tauri::command]

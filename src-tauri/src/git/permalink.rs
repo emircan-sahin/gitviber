@@ -86,10 +86,10 @@ fn pushed_head(repo: &Path) -> Result<String, String> {
 
 /// Lines `from..=to` of the new side of `diff` (`git diff -U0`) on its old side, if no change
 /// touches them or falls between them.
-pub(crate) fn lines_before(diff: &str, from: u32, to: u32) -> Option<(u32, u32)> {
+fn lines_before(diff: &str, from: u32, to: u32) -> Option<(u32, u32)> {
     let mut shift: i64 = 0;
     for h in diff.lines().filter_map(hunk) {
-        let (old_len, new_start, new_len) = (h.1 as i64, h.2 as i64, h.3 as i64);
+        let (old_len, new_start, new_len) = (h.0 as i64, h.1 as i64, h.2 as i64);
         // A deletion (no new lines) sits after new line `new_start`.
         let (first, last) = if new_len == 0 {
             (new_start + 1, new_start)
@@ -108,8 +108,8 @@ pub(crate) fn lines_before(diff: &str, from: u32, to: u32) -> Option<(u32, u32)>
     Some((at(from)?, at(to)?))
 }
 
-/// `@@ -a[,b] +c[,d] @@` as (a, b, c, d).
-fn hunk(line: &str) -> Option<(u32, u32, u32, u32)> {
+/// `@@ -a[,b] +c[,d] @@` as (b, c, d).
+fn hunk(line: &str) -> Option<(u32, u32, u32)> {
     let mut parts = line.strip_prefix("@@ -")?.split(' ');
     let range = |s: &str| -> Option<(u32, u32)> {
         match s.split_once(',') {
@@ -117,9 +117,9 @@ fn hunk(line: &str) -> Option<(u32, u32, u32, u32)> {
             None => Some((s.parse().ok()?, 1)),
         }
     };
-    let (a, b) = range(parts.next()?)?;
+    let (_, b) = range(parts.next()?)?;
     let (c, d) = range(parts.next()?.strip_prefix('+')?)?;
-    Some((a, b, c, d))
+    Some((b, c, d))
 }
 
 #[cfg(test)]

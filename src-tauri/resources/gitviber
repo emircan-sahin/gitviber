@@ -1,9 +1,19 @@
 #!/bin/sh
 # `gitviber [path ...]`: hands each path to GitViber, which opens the repository of the last
-# one; the current folder by default. GitViber → Install 'gitviber' Command links it onto PATH
-# (cli.rs). `open -b` finds the app by its bundle id wherever it's installed, and hands a running
-# app the folder; `--` keeps a path starting with "-" from reading as an option.
+# one; the current folder by default. A file opens in the code view, at `file:line[:column]`.
+# GitViber → Install 'gitviber' Command links it onto PATH (cli.rs). `open -b` finds the app by
+# its bundle id wherever it's installed, and hands a running app the path; `--` keeps a path
+# starting with "-" from reading as an option.
 [ $# -eq 0 ] && set -- .
 for path in "$@"; do
+  if [ ! -e "$path" ]; then
+    # `open` carries only paths that exist: one that doesn't (`a.ts:12`) goes in a request file,
+    # which GitViber reads and deletes (opened.rs). In /tmp, not $TMPDIR: a shell can set that
+    # to a folder the app doesn't look in.
+    case $path in /*) ;; *) path=$PWD/$path ;; esac
+    request=$(mktemp /tmp/gitviber-open.XXXXXX) || exit
+    printf '%s\n' "$path" >"$request"
+    path=$request
+  fi
   open -b app.gitviber.desktop -- "$path" || exit
 done

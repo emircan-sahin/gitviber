@@ -56,6 +56,16 @@ const topmost = (list: Entry[]) => list.filter((e) => !list.some((d) => d !== e 
 /** The filter lists this many files at most: the tree renders every row it has. */
 const MAX_MATCHES = 1000;
 
+/** A fresh, unsorted listing that says what `shown` already does. */
+function unchanged(shown: Entry[] | undefined, listed: Entry[]) {
+  if (shown?.length !== listed.length) return false;
+  const byName = new Map(shown.map((e) => [e.name, e]));
+  return listed.every((e) => {
+    const was = byName.get(e.name);
+    return was?.isDir === e.isDir && was.ignored === e.ignored;
+  });
+}
+
 /** The files that match and the folders down to them, all open, in the explorer's order. */
 function matchingTree(files: string[], matches: (path: string) => boolean) {
   const children: Record<string, Entry[]> = {};
@@ -89,8 +99,6 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   // Right-clicked entry; null = the empty area below the tree (acts on the repo root).
   const [menuTarget, setMenuTarget] = useState<Entry | null>(null);
   const treeRef = useRef<HTMLDivElement>(null);
-  // Set when a menu item starts inline editing, so the closing menu doesn't steal the input's focus.
-  const keepFocus = useRef(false);
   // A revealed path's folders may still be loading; scroll to it once its row exists.
   const revealing = useRef<string | null>(null);
 
@@ -119,8 +127,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     const id = (requests.current.get(path) ?? 0) + 1;
     requests.current.set(path, id);
     try {
-      const entries = (await api.listDir(path)).sort(compareEntries);
-      if (requests.current.get(path) === id) setChildren((c) => ({ ...c, [path]: entries }));
+      const listed = await api.listDir(path);
+      // Every refresh re-lists each open folder: an unchanged one skips the sort (13 ms at 10k
+      // entries) and the tree's re-render.
+      if (requests.current.get(path) === id) setChildren((c) => (unchanged(c[path], listed) ? c : { ...c, [path]: listed.sort(compareEntries) }));
     } catch (e) {
       if (requests.current.get(path) !== id) return;
       // The root must stay expanded, or the tree would stay empty after the error clears.
@@ -266,7 +276,6 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   const activate = (e: Entry, pin = false) => (!e.isDir ? onOpen({ kind: "file", path: e.path }, pin) : !matching && setOpen(e.path, !expanded.has(e.path)));
 
   const startEditing = (next: Editing) => {
-    keepFocus.current = true;
     if (next.mode === "new" && !expanded.has(next.parent)) setOpen(next.parent, true);
     setEditing(next);
   };
@@ -495,12 +504,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
           {matching?.capped && <div className="px-4 py-2 text-center text-[11px] text-subtle">Showing the first {MAX_MATCHES} matches</div>}
         </div>
       </ContextMenuTrigger>
-      <ContextMenuContent
-        onCloseAutoFocus={(ev) => {
-          if (keepFocus.current) ev.preventDefault();
-          keepFocus.current = false;
-        }}
-      >
+      <ContextMenuContent>
         {t && !t.isDir && !multi && (
           <>
             <ContextMenuItem onSelect={() => activate(t, true)}>
@@ -511,10 +515,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
         )}
         {menuDir !== null && (
           <>
-            <ContextMenuItem onSelect={() => startEditing({ mode: "new", parent: menuDir, isDir: false })}>
+            <ContextMenuItem keepFocus onSelect={() => startEditing({ mode: "new", parent: menuDir, isDir: false })}>
               <FilePlus /> New File…
             </ContextMenuItem>
-            <ContextMenuItem onSelect={() => startEditing({ mode: "new", parent: menuDir, isDir: true })}>
+            <ContextMenuItem keepFocus onSelect={() => startEditing({ mode: "new", parent: menuDir, isDir: true })}>
               <FolderPlus /> New Folder…
             </ContextMenuItem>
             <ContextMenuSeparator />
@@ -564,7 +568,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
             </ContextMenuItem>
             <ContextMenuSeparator />
             {!multi && (
-              <ContextMenuItem onSelect={() => startEditing({ mode: "rename", entry: t })}>
+              <ContextMenuItem keepFocus onSelect={() => startEditing({ mode: "rename", entry: t })}>
                 <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}
               </ContextMenuItem>
             )}

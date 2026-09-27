@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// Enough for a focused change; past it the model gets the file list and the start of the diff.
@@ -31,30 +31,48 @@ pub enum Scope {
     Amend,
 }
 
-/// The run in progress, so Cancel (or starting another) can stop it.
+/// Which suggestion a run is for: the commit box's and the pull request dialog's run side by side.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    Message,
+    Pull,
+}
+
+/// The run in progress of each kind, so Cancel (or starting another of that kind) can stop it.
 #[derive(Default)]
 pub struct Suggester {
-    current: Mutex<Option<Arc<AtomicBool>>>,
+    message: Mutex<Option<Arc<AtomicBool>>>,
+    pull: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl Suggester {
-    pub fn start(&self) -> Arc<AtomicBool> {
+    fn slot(&self, kind: Kind) -> MutexGuard<'_, Option<Arc<AtomicBool>>> {
+        match kind {
+            Kind::Message => &self.message,
+            Kind::Pull => &self.pull,
+        }
+        .lock()
+        .unwrap()
+    }
+
+    pub fn start(&self, kind: Kind) -> Arc<AtomicBool> {
         let flag = Arc::new(AtomicBool::new(false));
-        if let Some(old) = self.current.lock().unwrap().replace(flag.clone()) {
+        if let Some(old) = self.slot(kind).replace(flag.clone()) {
             old.store(true, Ordering::Relaxed);
         }
         flag
     }
 
-    pub fn finish(&self, flag: &Arc<AtomicBool>) {
-        let mut cur = self.current.lock().unwrap();
+    pub fn finish(&self, kind: Kind, flag: &Arc<AtomicBool>) {
+        let mut cur = self.slot(kind);
         if cur.as_ref().is_some_and(|c| Arc::ptr_eq(c, flag)) {
             *cur = None;
         }
     }
 
-    pub fn cancel(&self) {
-        if let Some(flag) = self.current.lock().unwrap().take() {
+    pub fn cancel(&self, kind: Kind) {
+        if let Some(flag) = self.slot(kind).take() {
             flag.store(true, Ordering::Relaxed);
         }
     }
@@ -346,6 +364,20 @@ fn ask(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_kind_starts_and_cancels_its_own_run() {
+        let s = Suggester::default();
+        let message = s.start(Kind::Message);
+        let pull = s.start(Kind::Pull);
+        assert!(!message.load(Ordering::Relaxed));
+        s.cancel(Kind::Pull);
+        assert!(pull.load(Ordering::Relaxed));
+        assert!(!message.load(Ordering::Relaxed));
+        // A second of the same kind stops the first.
+        s.start(Kind::Message);
+        assert!(message.load(Ordering::Relaxed));
+    }
 
     #[test]
     fn rejects_bad_templates() {

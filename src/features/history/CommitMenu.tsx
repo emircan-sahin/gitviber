@@ -112,20 +112,8 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
     remoteTags().then(show, (e) => show({ error: errorMessage(e) }));
   };
 
-  // Set by the naming items: focus going back to the row would steal it from the name dialog.
-  const naming = useRef(false);
-  const name = (kind: "branch" | "tag") => {
-    naming.current = true;
-    actions.name(kind, c);
-  };
-
   return (
-    <ContextMenuContent
-      onCloseAutoFocus={(e) => {
-        if (naming.current) e.preventDefault();
-        naming.current = false;
-      }}
-    >
+    <ContextMenuContent>
       <ContextMenuItem disabled={locked || !head || !c.parents.length} onSelect={undo}>
         <Undo2 /> Undo commit
       </ContextMenuItem>
@@ -201,14 +189,14 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
       <ContextMenuItem disabled={locked || head} onSelect={checkout}>
         <GitCommitHorizontal /> Checkout commit
       </ContextMenuItem>
-      <ContextMenuItem disabled={locked} onSelect={() => name("branch")}>
+      <ContextMenuItem disabled={locked} keepFocus onSelect={() => actions.name("branch", c)}>
         <GitBranchPlus /> Create branch from here…
       </ContextMenuItem>
       {/* Not held back by an operation here: it's another worktree's checkout. */}
       <ContextMenuItem onSelect={() => openWorktreeDialog({ kind: "new", base: c.sha })}>
         <FolderGit2 /> New worktree from here…
       </ContextMenuItem>
-      <ContextMenuItem disabled={locked} onSelect={() => name("tag")}>
+      <ContextMenuItem disabled={locked} keepFocus onSelect={() => actions.name("tag", c)}>
         <Tag /> Create tag here…
       </ContextMenuItem>
       {tags.map((t) => (
