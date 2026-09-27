@@ -123,11 +123,13 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   // Both versions of an image: they can also be laid one over the other.
   const twoImages = !isFile && !!pair?.original.exists && !!pair.modified.exists && (svg ? rendered : media && isImageChange({ path: selectionPath(sel), oldPath: file?.oldPath ?? null }));
   const overlaid: Overlaid | null = twoImages && s.imageCompare !== "side" ? s.imageCompare : null;
-  const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile, file?.mode ?? null));
+  // What a text diff can't show.
+  const fileNote = file?.mode ? `File mode changed: ${file.mode}` : /[MU]/.test(file?.submodule?.slice(2) ?? "") ? "This submodule has changes inside it; commit them in the submodule" : null;
+  const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile, fileNote));
 
   const diff = !isFile && !media && !rendered;
   const textNote = pair?.eolOnly ? "Only line endings changed" : pair?.whitespaceHidden ? "Whitespace changes hidden" : null;
-  const note = diff && pair && !special ? [file?.mode && `File mode changed: ${file.mode}`, textNote].filter(Boolean).join(" · ") || null : null;
+  const note = diff && pair && !special ? [fileNote, textNote].filter(Boolean).join(" · ") || null : null;
   const code = !media && !rendered && !!pair && !special;
   const blame = useBlame(isFile && code && s.blame ? sel.path : null, pair, status?.head ?? null);
   // Text the file view can't turn back into the file's bytes stays read-only.
@@ -327,13 +329,13 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   );
 }
 
-function placeholderFor(pair: DiffPair, isFile: boolean, mode: string | null) {
+function placeholderFor(pair: DiffPair, isFile: boolean, fileNote: string | null) {
   const { original: a, modified: b } = pair;
   if (isFile && !b.exists) return "This file no longer exists";
   if (b.lfsMissing || a.lfsMissing) return b.lfsMissing ?? a.lfsMissing;
   if (a.binary || b.binary) return "Binary file";
   if (a.tooLarge || b.tooLarge) return "File is too large to display";
-  if (!isFile && !pair.rows.some((r) => r.k !== 0)) return mode ? `Only the file mode changed: ${mode}` : pair.whitespaceHidden ? "Only whitespace changed (hidden)" : "No textual changes";
+  if (!isFile && !pair.rows.some((r) => r.k !== 0)) return fileNote ?? (pair.whitespaceHidden ? "Only whitespace changed (hidden)" : "No textual changes");
   return null;
 }
 

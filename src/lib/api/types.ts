@@ -12,6 +12,8 @@ export interface FileChange {
   conflict: string | null;
   /** "100644 → 100755" when the file mode changed (chmod +x); the text diff doesn't show it. */
   mode: string | null;
+  /** A submodule's unstaged entry: `S<c><m><u>`, C its commit moved, M tracked changes and U untracked files inside it (else `.`). */
+  submodule: string | null;
   /** Untracked entry that is another repository's root (never one of this repo's worktrees). */
   nested: Nested | null;
 }

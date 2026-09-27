@@ -27,6 +27,9 @@ pub struct FileChange {
     pub conflict: Option<String>,
     /// "100644 → 100755" when the mode changed (chmod +x), which the text diff doesn't show.
     pub mode: Option<String>,
+    /// A submodule's unstaged entry: porcelain v2's `S<c><m><u>` (its commit moved, tracked
+    /// changes, untracked files inside it, each a letter or `.`).
+    pub submodule: Option<String>,
     /// Untracked entries that are another repository's root. This repo's own linked
     /// worktrees are left out of status: the worktree picker reaches them.
     pub nested: Option<Nested>,
@@ -86,6 +89,7 @@ pub(super) fn change(path: &str, old_path: Option<&str>, status: char) -> FileCh
         oid: None,
         conflict: None,
         mode: None,
+        submodule: None,
         nested: None,
     }
 }
@@ -262,6 +266,10 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
                     // In the worktree the rename is already recorded in the index, so show it as M.
                     let mut f = change(path, None, y);
                     f.mode = mode_change(&fields, 4, 5);
+                    f.submodule = fields
+                        .get(2)
+                        .filter(|s| s.starts_with('S'))
+                        .map(|s| s.to_string());
                     if new_gitlink(&fields) {
                         f.nested = Some(nested(repo, path));
                     }

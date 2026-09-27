@@ -192,3 +192,18 @@ fn a_mode_change_is_reported() {
         .mode
         .is_none());
 }
+
+/// Changes inside a submodule show as the submodule's row, with nothing of its own to diff.
+#[test]
+fn a_submodule_with_changes_inside_says_so() {
+    let sb = Sandbox::new("subinside");
+    let r = repo_with_submodule(&sb);
+    fs::write(r.join("sub/l.txt"), "edited\n").unwrap();
+    fs::write(r.join("sub/new.txt"), "n\n").unwrap();
+    fs::write(r.join("a.txt"), "b\n").unwrap();
+    let st = status(&r).unwrap();
+    let sub = st.unstaged.iter().find(|f| f.path == "sub").unwrap();
+    assert_eq!(sub.submodule.as_deref(), Some("S.MU"));
+    let a = st.unstaged.iter().find(|f| f.path == "a.txt").unwrap();
+    assert!(a.submodule.is_none());
+}

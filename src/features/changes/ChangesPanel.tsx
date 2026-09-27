@@ -92,7 +92,11 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
 
   // Untracked files have nothing to restore; like VS Code, discarding one deletes it (to the Trash here).
   // Tracked ones keep a copy of what they were in the Trash, which Undo (and ⌘Z) writes back.
-  const discard = async (list: FileChange[]) => {
+  const discard = async (picked: FileChange[]) => {
+    // Restoring a submodule leaves every file inside it as it is: nothing to discard or keep in the Trash.
+    const submodules = picked.filter((f) => f.submodule);
+    if (submodules.length) toast("info", `Left out ${submodules.length === 1 ? submodules[0].path : `${submodules.length} submodules`}`, "Discard changes inside a submodule from the submodule itself.");
+    const list = picked.filter((f) => !f.submodule);
     const restorable = list.filter((f) => f.status !== "?");
     const untracked = list.filter((f) => f.status === "?");
     if (!list.length) return;
@@ -356,8 +360,8 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
               ) : (
                 <>
                   {/* Leaves untracked files alone; deleting one is a per-file choice. */}
-                  <SectionBtn onClick={() => discard(status.unstaged.filter((f) => f.status !== "?"))}>
-                    {filtering ? `Discard ${status.unstaged.filter((f) => f.status !== "?").length} shown…` : "Discard"}
+                  <SectionBtn onClick={() => discard(status.unstaged.filter((f) => f.status !== "?" && !f.submodule))}>
+                    {filtering ? `Discard ${status.unstaged.filter((f) => f.status !== "?" && !f.submodule).length} shown…` : "Discard"}
                   </SectionBtn>
                   {viewedPaths.length > 0 && (
                     <SectionBtn onClick={() => act("Stage failed", () => api.stage(viewedPaths))}>
@@ -375,7 +379,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
               ) : (
                 row({ kind: "unstaged", file }, (rows) => (
                   <>
-                    {file.status !== "?" && (
+                    {file.status !== "?" && !file.submodule && (
                       <RowAction label={rows.length > 1 ? `Discard ${files(rows.length)}` : "Discard changes"} onClick={() => discard(rows.map((r) => r.file))}>
                         <Undo2 />
                       </RowAction>
