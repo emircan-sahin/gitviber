@@ -6,6 +6,34 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-27
+
+### Added
+
+- **Split the terminal down as well as right** with ⇧⌘D or the new button beside Split right, to
+  build a grid of panes. Drag the dividers to size them; the layout comes back with the session.
+- **Move between terminal panes by side** with ⌥⌘ or ⇧⌘ and an arrow, as in cmux. The panes
+  other than the focused one dim; Settings → Terminal sets how much, or turns it off.
+- **Maximize the terminal** over the whole workspace with ⌘↵ or the toolbar button, or zoom the
+  focused pane alone with ⇧⌘↵, as in cmux. The same key or the button brings the workspace back,
+  and so do hiding the terminal and opening a file.
+
+### Changed
+
+- **Terminal rows take the font's own height,** as in Ghostty, iTerm2 and VS Code: a short pane
+  fits a sixth more rows, so Claude Code keeps its usage lines and its header.
+- **⌥⌘← and ⌥⌘→** focus the pane on that side rather than the previous or next one, which in a
+  single row is the same pane. Previous and Next Terminal Pane stay in the palette.
+
+### Fixed
+
+- **⌘1–⌘9 reach every terminal tab** while Claude Code or another program sits idle in the
+  terminal; a tab opened since the workspace last redrew was out of reach.
+- **A terminal pane you left no longer shows a typing cursor** after switching tabs, splitting
+  or zooming, and programs like Claude Code hear that focus left.
+- **Closing a dialog puts focus back where it was:** after ⌘, from the terminal you can type
+  straight away, and Esc in the palette returns to the file or list you were in.
+
 ## [0.1.2] - 2026-09-27
 
 ### Added
@@ -244,7 +272,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/emircan-sahin/gitviber/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/emircan-sahin/gitviber/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/emircan-sahin/gitviber/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/emircan-sahin/gitviber/releases/tag/v0.1.0
