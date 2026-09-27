@@ -143,6 +143,12 @@ export function appTakesFromTerminal(e: KeyboardEvent) {
   return !!found && takenFromTerminal(found.chord, found.command) && hasHandler(found.command.id);
 }
 
+/** A key that runs one of the app's commands with the terminal focused, which the terminal then leaves alone. */
+export function appRunsFromTerminal(e: KeyboardEvent) {
+  const found = commandOf(e);
+  return !!found && runsInTerminal(found.chord, found.command) && hasHandler(found.command.id);
+}
+
 /** Registers handlers for commands while the component is mounted; always calls the latest closures. A command left undefined is unavailable (greyed out in the menu). */
 export function useCommands(map: Partial<Record<Action, () => void>>) {
   const ref = useRef(map);

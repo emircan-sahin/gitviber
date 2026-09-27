@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pathPastes, shellPath } from "./paste.ts";
+import { pastedLines, pathPastes, shellPath } from "./paste.ts";
 
 test("paths are escaped as Ghostty does", () => {
   assert.equal(shellPath("/Users/me/Ekran Resmi (1).png"), "/Users/me/Ekran\\ Resmi\\ \\(1\\).png");
@@ -18,4 +18,12 @@ test("a name with a control character is left out", () => {
 test("each path is its own paste, space-led after the first", () => {
   assert.deepEqual(pathPastes(["/a.png", "/b.png", "/c.png"]), ["/a.png", " /b.png", " /c.png"]);
   assert.deepEqual(pathPastes([]), []);
+});
+
+test("a paste's lines, a trailing line break not counted", () => {
+  assert.equal(pastedLines("ls"), 1);
+  assert.equal(pastedLines("ls\n"), 1);
+  assert.equal(pastedLines("ls\r\n"), 1);
+  assert.equal(pastedLines("ls\npwd"), 2);
+  assert.equal(pastedLines("a\r\nb\rc\n\n"), 4);
 });

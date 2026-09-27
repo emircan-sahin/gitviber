@@ -6,21 +6,21 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useSyncExternalStore } from "react";
-import { errorMessage, pty } from "../api";
+import { errorMessage, pty, type PtyExit } from "../api";
 import { compileFind, type FindOptions } from "../ui/findQuery";
-import { appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
+import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
 import { terminalLinks } from "../links/linkHost";
 import { getSettings, subscribeSettings } from "../settings";
 import { isInside } from "../path";
 import { readJson } from "../storage";
-import { setTerminalFocus } from "../ui/panels";
+import { focusedPanel, focusPanel, setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
-import { pathPastes } from "./paste";
+import { pastedLines, pathPastes } from "./paste";
 import { osc52Text } from "./osc52";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { plural } from "../format";
-import { IS_LINUX, IS_WINDOWS } from "../platform";
+import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
 
 /**
@@ -46,6 +46,8 @@ interface Pane {
   /** Typed while a write is in flight (or before the shell is up); sent next, in order. */
   pending: string;
   writing: boolean;
+  /** A column change held back from a long history (fitPane). */
+  fitTimer?: number;
 }
 
 interface PaneInfo {
@@ -259,7 +261,8 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
     );
   // ⌘ keys are the app's shortcuts (copy and paste arrive as clipboard events, not keys),
   // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, ⌃Tab or ⌃1 run
-  // their commands, and the panel's own keys stay with it whatever they're rebound to.
+  // their commands, and the panel's own keys stay with it whatever they're rebound to. Unbound,
+  // ⌘Home/End/PgUp/PgDn (Ctrl+Home/End elsewhere) scroll the history.
   term.attachCustomKeyEventHandler((e) => {
     // xterm's Meta ⌥ can't tell left from right: for the left one only, it's set as a key is typed
     // with ⌥ (xterm reads it after this), and only when the side changed, as a change redraws.
@@ -276,6 +279,12 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
         if (letter === "v") void pasteInto(p);
         else if (selection) void navigator.clipboard.writeText(selection).catch(() => {});
       }
+      e.preventDefault();
+      return false;
+    }
+    const scroll = scrollKey(e);
+    if (scroll && term.buffer.active.type === "normal" && !appRunsFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e)) {
+      if (e.type === "keydown") scroll(term);
       e.preventDefault();
       return false;
     }
@@ -309,12 +318,24 @@ async function pasteInto(p: Pane, fallback = "") {
     return null;
   });
   if (!got || got.kind === "empty") {
-    if (fallback) p.term.paste(fallback);
+    if (fallback) await pasteText(p, fallback);
     return;
   }
-  if (got.kind === "text") p.term.paste(got.text);
+  if (got.kind === "text") await pasteText(p, got.text);
   else if (got.kind === "files") pastePaths(p, got.paths);
   else if (got.kind === "image") pastePaths(p, [got.path]);
+}
+
+/** Several lines into a program without bracketed paste run one by one as they arrive: asked first, as in VS Code. */
+async function pasteText(p: Pane, text: string) {
+  // Its shell is gone (exited).
+  if (p.term.options.disableStdin) return;
+  const lines = pastedLines(text);
+  if (lines > 1 && !p.term.modes.bracketedPasteMode) {
+    const ok = await ask(`The program in this terminal takes a paste as typed keys, so each of the ${lines} lines runs as it arrives.`, { title: `Paste ${lines} lines`, kind: "warning", okLabel: "Paste" });
+    if (!ok || !panes.has(p.id)) return;
+  }
+  p.term.paste(text);
 }
 
 /** Paths as the AI CLIs take them: each its own (bracketed) paste, never typed as keys. */
@@ -366,6 +387,23 @@ const LINE_EDIT: Record<string, string> = {
   "alt+Delete": "\x1bd", // delete next word
 };
 
+/** ⌘Home/End/PgUp/PgDn, as in Ghostty and VS Code; a full-screen program's keys stay its own. */
+const SCROLL_KEYS: Record<string, (term: Terminal) => void> = {
+  Home: (t) => t.scrollToTop(),
+  End: (t) => t.scrollToBottom(),
+  PageUp: (t) => t.scrollPages(-1),
+  PageDown: (t) => t.scrollPages(1),
+};
+
+/**
+ * Off macOS only Ctrl+Home/End: Ctrl+PgUp/PgDn switch tabs in other terminals, and xterm pages with
+ * Shift+PgUp/PgDn itself, as VS Code does.
+ */
+function scrollKey(e: KeyboardEvent) {
+  const alone = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey && (e.key === "Home" || e.key === "End");
+  return alone && !e.shiftKey && !e.altKey ? SCROLL_KEYS[e.key] : undefined;
+}
+
 function lineEditKey(e: KeyboardEvent): string | undefined {
   if (e.shiftKey || e.ctrlKey || e.metaKey === e.altKey) return undefined;
   return LINE_EDIT[`${e.metaKey ? "cmd" : "alt"}+${e.key}`];
@@ -375,11 +413,22 @@ function update(id: number, fn: (p: PaneInfo) => PaneInfo) {
   set({ groups: state.groups.map((g) => (g.panes.some((p) => p.id === id) ? { ...g, panes: g.panes.map((p) => (p.id === id ? fn(p) : p)) } : g)) });
 }
 
+/** History lines past which a column change waits for the resize to settle (VS Code's threshold). */
+const REWRAP_LINES = 200;
+
 /** A hidden or collapsed container would shrink the shell to one row and garble its output. */
-function fitPane(p: Pane) {
+function fitPane(p: Pane, now = false) {
   const box = p.host.parentElement;
   if (!p.term.element || !box || box.clientWidth === 0 || box.clientHeight === 0) return;
-  p.fit.fit();
+  const size = p.fit.proposeDimensions();
+  if (!size || isNaN(size.cols) || isNaN(size.rows)) return;
+  window.clearTimeout(p.fitTimer);
+  // New columns rewrap the whole history, so past REWRAP_LINES they wait 100 ms for a drag to
+  // settle, as in VS Code; rows follow at once.
+  if (!now && p.started && size.cols !== p.term.cols && p.term.buffer.normal.length > REWRAP_LINES) {
+    p.term.resize(p.term.cols, size.rows);
+    p.fitTimer = window.setTimeout(() => fitPane(p, true), 100);
+  } else p.term.resize(size.cols, size.rows);
   if (!p.started) void start(p);
 }
 
@@ -387,7 +436,8 @@ async function start(p: Pane) {
   p.started = true;
   try {
     const { cols, rows } = p.term;
-    const id = await pty.spawn(p.cwd, cols, rows, (bytes) => p.term.write(new Uint8Array(bytes)), () => closePane(p.id));
+    const began = performance.now();
+    const id = await pty.spawn(p.cwd, cols, rows, (bytes) => p.term.write(new Uint8Array(bytes)), (exit) => exited(p, exit, performance.now() - began));
     // Closed while it was starting.
     if (!panes.has(p.id)) return void pty.kill(id).catch(() => {});
     p.pty = id;
@@ -397,6 +447,16 @@ async function start(p: Pane) {
   } catch (e) {
     p.term.write(`\x1b[31m${errorMessage(e)}\x1b[0m\r\n`);
   }
+}
+
+/** A shell gone within a second (a broken rc file or login shell) leaves its pane up to be read, for ⌘W to close. */
+function exited(p: Pane, exit: PtyExit | null, lived: number) {
+  if (!panes.has(p.id)) return;
+  if (lived > 1000) return closePane(p.id);
+  p.pty = null;
+  p.term.options.disableStdin = true;
+  const how = exit?.signal ? `: ${exit.signal}` : exit?.code != null ? ` with code ${exit.code}` : "";
+  p.term.write(`\r\n\x1b[2m[shell exited${how}]\x1b[0m\r\n`);
 }
 
 /** Shows a pane in `container`; returns the detach. */
@@ -469,10 +529,13 @@ export function splitActive() {
   focusActive();
 }
 
-function closePane(id: number) {
+/** `byUser`: ⌘W, a tab's ✕ and the like, rather than the shell exiting. */
+function closePane(id: number, byUser = false) {
   const p = panes.get(id);
   if (!p) return;
+  const focused = document.activeElement;
   panes.delete(id);
+  window.clearTimeout(p.fitTimer);
   if (searching?.pane === p) searching = null;
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});
   const canvases = [...(p.term.element?.querySelectorAll("canvas") ?? [])];
@@ -498,25 +561,48 @@ function closePane(id: number) {
     active = groups[Math.min(i, groups.length - 1)]?.id ?? null;
   }
   set({ groups, active, open: state.open && groups.length > 0 });
-  focusActive();
+  // A shell exiting moves only focus it took away (the commit box keeps it); the user's close also
+  // moves it on from the panel's buttons, but ⌫ on a tab stays on the tabs.
+  requestAnimationFrame(() => {
+    const el = document.activeElement;
+    const move = !el || el === document.body ? byUser || (focused && focused !== document.body) : byUser && focusedPanel() === "terminal" && !el.closest('[role="tab"]');
+    if (!move) return;
+    if (groups.length) focusActive();
+    else focusPanel("code");
+  });
 }
 
-export function closeFocused() {
-  const g = activeGroup();
-  if (g) closePane(g.focused);
+let killing = false;
+/**
+ * Kills `ids` (`what` to the user), asking first when one of them runs a command (an agent, a dev
+ * server), never for a shell at its prompt. A second ⌘W while that's checked or asked does nothing.
+ */
+async function kill(ids: number[], what: string, title: string) {
+  if (killing || !ids.length) return false;
+  killing = true;
+  try {
+    const ptys = ids.flatMap((id) => panes.get(id)?.pty ?? []);
+    const busy = ptys.length ? await pty.busy(ptys).catch(() => 0) : 0;
+    if (busy && !(await ask(`Killing ${what} stops ${plural(busy, "command")} still running.`, { title, kind: "warning", okLabel: "Kill" }))) return false;
+  } finally {
+    killing = false;
+  }
+  for (const id of ids) closePane(id, true);
+  return true;
 }
 
+export async function closeFocused() {
+  const id = activeGroup()?.focused;
+  if (id !== undefined) await kill([id], "this terminal", "Kill terminal");
+}
+
+/** False when the user kept it. */
 export function closeGroup(id: number) {
-  state.groups.find((g) => g.id === id)?.panes.forEach((p) => closePane(p.id));
+  return kill(state.groups.find((g) => g.id === id)?.panes.map((p) => p.id) ?? [], "this terminal", "Kill terminal");
 }
 
-/** Kills every tab but `id`, asking first when one of them runs a command (an agent, a dev server). */
 export async function closeOtherGroups(id: number) {
-  const others = state.groups.filter((g) => g.id !== id);
-  const ptys = others.flatMap((g) => g.panes.flatMap((p) => panes.get(p.id)?.pty ?? []));
-  const busy = ptys.length ? await pty.busy(ptys).catch(() => 0) : 0;
-  if (busy && !(await ask(`Killing the other terminals stops ${plural(busy, "command")} still running.`, { title: "Kill other terminals", kind: "warning", okLabel: "Kill" }))) return;
-  for (const g of others) closeGroup(g.id);
+  await kill(state.groups.flatMap((g) => (g.id === id ? [] : g.panes.map((p) => p.id))), "the other terminals", "Kill other terminals");
 }
 
 /** Names a tab; an empty name gives it back the folder's. */
