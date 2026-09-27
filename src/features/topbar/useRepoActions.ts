@@ -57,11 +57,12 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     const shown = names.slice(0, 12).map(label).join("\n") + (names.length > 12 ? `\n…and ${names.length - 12} more` : "");
     const here = status?.branch ?? "HEAD";
     const where = !upstream.length ? `already merged into ${here}` : merged.length ? `merged into ${here} or upstream` : "squash- or rebase-merged upstream";
-    const ok = await ask(`Delete ${names.length} branches ${where}?\n\n${shown}`, {
+    const count = `${names.length} ${names.length === 1 ? "branch" : "branches"}`;
+    const ok = await ask(`Delete ${count} ${where}?\n\n${shown}`, {
       title: "Clean up merged branches",
       okLabel: "Delete",
     });
-    if (ok) await run("Clean up", () => api.deleteMerged(merged, upstream), `Deleted ${names.length} merged branches`);
+    if (ok) await run("Clean up", () => api.deleteMerged(merged, upstream), `Deleted ${count}`);
   };
 
   // A pull brings in the upstream, which can't help a push that goes elsewhere (a fork pulling
