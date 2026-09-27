@@ -109,3 +109,23 @@ fn staging_no_paths_stages_nothing() {
         "`git add -A --` would take everything, nested repos too"
     );
 }
+
+#[test]
+fn unstaging_a_rename_with_its_old_path_undoes_it() {
+    let sb = Sandbox::new("unrename");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["mv", "a.txt", "b.txt"]).unwrap();
+    let st = status(&r).unwrap();
+    assert_eq!(st.staged[0].old_path.as_deref(), Some("a.txt"));
+    unstage(&r, &["b.txt".into(), "a.txt".into()]).unwrap();
+    let st = status(&r).unwrap();
+    assert!(st.staged.is_empty(), "a.txt's deletion stayed staged");
+    let unstaged: Vec<_> = st
+        .unstaged
+        .iter()
+        .map(|f| (f.path.as_str(), f.status.as_str()))
+        .collect();
+    assert_eq!(unstaged, [("a.txt", "D"), ("b.txt", "?")]);
+}

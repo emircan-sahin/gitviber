@@ -15,7 +15,7 @@ import { NESTED_EXPLAINED, stageable } from "@/lib/git/worktrees";
 import { StashDialog, StashList, useStashes } from "./StashList";
 import { BisectBar } from "@/features/history/BisectBar";
 import { SubmoduleList, updateSubmodules, useSubmodules } from "./SubmoduleList";
-import { attempt, type Change, changeList, files, filtered, leftOut, paths, sumLines } from "./changeList";
+import { attempt, type Change, changeList, files, filtered, leftOut, paths, sumLines, unstagePaths } from "./changeList";
 import { ChangeRowMenu } from "./ChangeRowMenu";
 import { OperationBanner } from "./OperationBanner";
 import { AllCaughtUp, NestedRow, ReviewSummary, Row, Section, SectionBtn } from "./ChangeRows";
@@ -64,7 +64,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   };
 
   const stage = (rows: Change[]) => act("Stage failed", () => api.stage(paths(rows)));
-  const unstage = (rows: Change[]) => act("Unstage failed", () => api.unstage(paths(rows)));
+  const unstage = (rows: Change[]) => act("Unstage failed", () => api.unstage(unstagePaths(rows.map((r) => r.file))));
   const resolve = (rows: Change[], side: "ours" | "theirs") =>
     act("Resolve failed", async () => {
       for (const r of rows) await api.resolveSide(r.file.path, side);
@@ -311,7 +311,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
               pickedStaged ? (
                 <SectionBtn onClick={() => unstage(pickedStaged)}>Unstage {files(pickedStaged.length)}</SectionBtn>
               ) : (
-                <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged.map((f) => f.path)))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
+                <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(unstagePaths(status.staged)))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
               )
             }
           >
