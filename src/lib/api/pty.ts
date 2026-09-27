@@ -4,7 +4,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 export const pty = {
   /**
    * `onOutput` gets what the shell prints, `onExit` how it ended (null if unknown). `integration`
-   * loads the shell integration (zsh and bash only); `integrated` says whether it was.
+   * loads the shell integration (zsh, bash 4.4+); `integrated` says whether it was.
    */
   spawn: (cwd: string, cols: number, rows: number, integration: boolean, onOutput: (bytes: ArrayBuffer) => void, onExit: (exit: PtyExit | null) => void) => {
     const output = new Channel<ArrayBuffer>(onOutput);

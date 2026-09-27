@@ -63,7 +63,7 @@ the agent touches it again, the mark clears so you know to look again.
 ### Test it right there
 
 A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the tests, start the dev
-server or talk to the agent without leaving the change you're reading. In zsh and bash each command
+server or talk to the agent without leaving the change you're reading. In zsh and bash 4.4+ each command
 gets a mark, red when it failed, `⌘↑` / `⌘↓` jump between them, and the last one's output copies
 from the right-click menu; your dotfiles stay as they are.
 
