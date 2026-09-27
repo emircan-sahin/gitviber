@@ -152,19 +152,6 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const layout = useDefaultLayout({ id: "gitviber-main-v4", storage: localStorage });
   const viewerLayout = useDefaultLayout({ id: "gitviber-viewer-v1", storage: localStorage, panelIds: terminalOpen ? ["editor", "terminal"] : ["editor"] });
 
-  // ⌘-click in the code view and the terminal opens files here (lib/links/linkHost).
-  useEffect(() => {
-    setLinkHost({
-      root,
-      revision: repo.revision,
-      open: (path, focus) => {
-        open({ kind: "file", path }, true);
-        if (focus) focusPanel("code");
-      },
-    });
-  }, [root, repo.revision, open]);
-  useEffect(() => () => setLinkHost(null), []);
-
   const uncommitted = useMemo(() => (status ? changeList(status) : []), [status]);
   // What J/K walk: the list Changes shows.
   const changes: Selection[] = review === null ? uncommitted : branchReview.rows;
@@ -318,6 +305,21 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     // On a tab switch, not on every tab list change.
   }, [activeKey]);
 
+  // ⌘-click in the code view and the terminal opens files here (lib/links/linkHost). After the
+  // effect above: a file waiting for this workspace (`gitviber a.ts:12`) opens as it mounts, and
+  // the first run above would drop its line.
+  useEffect(() => {
+    setLinkHost({
+      root,
+      revision: repo.revision,
+      open: (path, focus) => {
+        open({ kind: "file", path }, true);
+        if (focus) focusPanel("code");
+      },
+    });
+  }, [root, repo.revision, open]);
+  useEffect(() => () => setLinkHost(null), []);
+
   const changeCount = uncommitted.length;
 
   return (
@@ -331,6 +333,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         onForgetRepo={onForgetRepo}
         onReorderRepos={onReorderRepos}
         onLocateRepo={onLocateRepo}
+        onOpenPull={(pull) => open({ kind: "pull", pull }, true)}
         leftOpen={leftOpen}
         rightOpen={rightOpen}
         onToggleLeft={() => toggle(listPanel, "git")}

@@ -142,6 +142,7 @@ pub fn run() {
             commands::stash::stash_branch,
             commands::history::rewrite,
             commands::github::ci_states,
+            commands::github::check_failure,
             commands::history::compare_files,
             commands::history::reflog,
             commands::history::bisect_start,

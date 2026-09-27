@@ -9,13 +9,12 @@ const LOOK: Record<CiState, [typeof CircleCheck, string, string]> = {
   pending: [CircleDot, "text-modified", "Checks running"],
 };
 
-/** CI's verdict on a commit, as a small icon; nothing when it has no checks. */
-export function CiBadge({ state, className }: { state?: CiState; className?: string }) {
+export const ciLabel = (state: CiState) => LOOK[state][2];
+
+/** CI's verdict on a commit, as a small icon; nothing when it has no checks. `bare`: inside a control whose own tooltip says it. */
+export function CiBadge({ state, className, bare }: { state?: CiState; className?: string; bare?: boolean }) {
   if (!state) return null;
   const [Icon, color, label] = LOOK[state];
-  return (
-    <Tip label={label}>
-      <Icon aria-label={label} className={cn("size-3 shrink-0", color, className)} />
-    </Tip>
-  );
+  const icon = <Icon aria-label={label} className={cn("size-3 shrink-0", color, className)} />;
+  return bare ? icon : <Tip label={label}>{icon}</Tip>;
 }

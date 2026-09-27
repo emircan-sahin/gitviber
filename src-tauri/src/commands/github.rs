@@ -164,6 +164,19 @@ pub async fn ci_states(
     .await
 }
 
+/// Why check run `id` failed: its output, annotations and job log's tail. Asked for from its row.
+#[tauri::command]
+pub async fn check_failure(
+    app: AppHandle,
+    target: Option<String>,
+    id: u64,
+) -> Res<github::CheckFailure> {
+    with_github(app, move |gh, r| {
+        github::check_failure(gh, r, target.as_deref(), id)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn pr_detail(
     app: AppHandle,

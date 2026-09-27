@@ -1,11 +1,11 @@
 import { ask } from "@/lib/app/ask";
-import { ChevronDown, CircleCheck, CircleDot, CircleSlash, ExternalLink, Loader2, Pencil, RefreshCw, Tag, Trash2 } from "lucide-react";
+import { ChevronDown, CircleCheck, CircleDot, CircleSlash, ExternalLink, FolderGit2, Loader2, Pencil, RefreshCw, Tag, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { accessFor, type CloseReason, errorMessage, type Issue, type IssueLabel, issues, repoOf } from "@/lib/api";
+import { accessFor, type CloseReason, errorMessage, fullName, type Issue, type IssueLabel, issues, repoOf } from "@/lib/api";
 import { listIsBehind, useGitHubData } from "@/lib/github/githubCache";
 import { matchesCommand } from "@/lib/commands/keybindings";
 import { toast } from "@/lib/app/toast";
@@ -22,6 +22,7 @@ import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
 import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
 import { useGitAction } from "@/hooks/useGitAction";
 import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
+import { openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
 
 const CLOSE: Record<CloseReason, { label: string; note: string }> = {
   completed: { label: "Close as completed", note: "Done, closed, fixed, resolved" },
@@ -197,6 +198,15 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
                 <CircleDot /> {text ? "Reopen with comment" : "Reopen"}
               </Button>
             ))}
+          {i.state === "open" && account?.origin && (
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => openWorktreeDialog({ kind: "new", issue: { number: i.number, title: i.title, url: i.url, origin: fullName(account.origin!.repo) } })}
+            >
+              <FolderGit2 /> Start in a worktree…
+            </Button>
+          )}
           <Button variant="secondary" size="sm" onClick={() => openOnGitHub(i.url)}>
             <ExternalLink /> Open on GitHub
           </Button>
