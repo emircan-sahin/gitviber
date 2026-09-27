@@ -39,8 +39,9 @@ export function markdownOptions({ idPrefix, repo }: { idPrefix: string; repo?: s
   };
 }
 
-// @login (GitHub's username rules) or #123, not inside a word, path or email address.
-const REF = /(^|[^\w@/.-])(?:@([a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38})(?![\w/-])|#(\d+)\b)/gi;
+// @login (GitHub's username rules) or #123, not inside a word (in any script), path or email
+// address; #0 and #007 are no issue.
+const REF = /(^|[^\p{L}\p{N}_@/.-])(?:@([a-z\d](?:[a-z\d]|-(?=[a-z\d])){0,38})(?![\p{L}\p{N}_/-])|#([1-9]\d*)(?![\p{L}\p{N}_]))/giu;
 
 /** Links @mentions to profiles and #123 to the repo's issues (GitHub redirects PRs), as GitHub does. */
 function rehypeGithubRefs({ repo }: { repo: string }) {

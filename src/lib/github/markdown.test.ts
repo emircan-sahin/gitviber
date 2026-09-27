@@ -27,6 +27,7 @@ test("plain text, as a commit message, links its refs the same way", () => {
     { text: "; not x#3" },
   ]);
   assert.deepEqual(githubRefs("no refs", "https://github.com/o/r"), [{ text: "no refs" }]);
+  for (const text of ["#0", "#007", "é#8", "#8é", "ü@octo"]) assert.deepEqual(githubRefs(text, "https://github.com/o/r"), [{ text }], text);
 });
 
 test("footnote anchors survive the custom link and stay unique per block", () => {
