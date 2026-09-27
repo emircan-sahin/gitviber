@@ -121,7 +121,11 @@ export const api = {
   removeWorktree: (path: string, force: boolean) => invoke<void>("remove_worktree", { path, force }),
   /** Nested repositories are refused unless `allowNested`: git would stage only a gitlink. */
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
-  unstage: (paths: string[]) => invoke<void>("unstage", { paths }),
+  /**
+   * A staged rename's old path goes too, or its deletion would stay staged. A copy's source
+   * (status.renames=copies) is a file of its own, whose staged edits stay.
+   */
+  unstage: (files: FileChange[]) => invoke<void>("unstage", { paths: files.flatMap((f) => (f.status === "R" && f.oldPath ? [f.path, f.oldPath] : [f.path])) }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
   /** Stages, unstages or discards some lines of a diff (lines.rs); a discard is undoable. */
   changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
