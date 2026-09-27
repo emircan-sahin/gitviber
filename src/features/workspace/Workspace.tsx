@@ -14,7 +14,7 @@ import { onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
-import { goGroup, stepGroup, useTerminalsOpen } from "@/lib/terminal/terminals";
+import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
 import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
@@ -92,7 +92,15 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const [review, setReview] = useState<string | null>(() => (typeof saved?.review === "string" ? saved.review : null));
   const reviewing = listTab === "changes" && review !== null;
   const branchReview = useBranchReview(review, repo.revision, reviewing);
-  const { tabs, activeKey, setActiveKey, open, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
+  const { tabs, activeKey, setActiveKey, open: openTab, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
+  // A file opened while the terminal covers the code view (⌘P, a path clicked in the terminal) comes into view.
+  const open = useCallback(
+    (sel: Selection, pin?: boolean) => {
+      unmaximize();
+      openTab(sel, pin);
+    },
+    [openTab],
+  );
   const { viewedMap, viewed, setViewed, toggleViewed } = useViewed(saved, status, repo.refresh, branchReview.review);
   useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap], review }), [root, tabs, activeKey, listTab, viewedMap, review]);
   // Git work on the left, files on the right; both collapse to give code the room.
@@ -102,6 +110,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // Where a terminal can start besides this repo's worktrees, without switching the window there.
   const projects = recent.filter((p) => p !== main);
   const terminalOpen = useTerminalsOpen();
+  const terminalMaximized = useTerminalsMaximized();
   const fileTree = useRef<FileTreeHandle>(null);
   const findKey = useShortcut("editor.find");
   // The explorer panel shows the files or Search in Files; `searchAsk` brings the search box up.
@@ -346,8 +355,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         onToggleLeft={() => toggle(listPanel, "git")}
         onToggleRight={() => toggle(filesPanel, "explorer")}
       />
-      <div className="min-h-0 flex-1">
-        <ResizablePanelGroup orientation="horizontal" defaultLayout={layout.defaultLayout} onLayoutChanged={layout.onLayoutChanged}>
+      <div className="relative min-h-0 flex-1">
+        {/* The library finds a divider by where the pointer is: under the maximized terminal, the hidden ones would still drag. */}
+        <ResizablePanelGroup orientation="horizontal" defaultLayout={layout.defaultLayout} onLayoutChanged={layout.onLayoutChanged} disabled={terminalMaximized}>
           <ResizablePanel
             id="list"
             panelRef={listPanel}
@@ -447,7 +457,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
           </ResizablePanel>
           <ResizableHandle className="bg-border" />
           <ResizablePanel id="viewer" minSize={360}>
-            <ResizablePanelGroup orientation="vertical" defaultLayout={viewerLayout.defaultLayout} onLayoutChanged={viewerLayout.onLayoutChanged}>
+            <ResizablePanelGroup orientation="vertical" defaultLayout={viewerLayout.defaultLayout} onLayoutChanged={viewerLayout.onLayoutChanged} disabled={terminalMaximized}>
               <ResizablePanel id="editor" minSize={120}>
                 {/* Esc from the view itself (a PR, an image) or the code, when Monaco had no use for it. */}
                 <div
@@ -484,9 +494,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
               {/* Rendered only while open, so the viewer keeps its state when the panel toggles. */}
               {terminalOpen && (
                 <>
-                  <ResizableHandle className="h-px w-full bg-border after:inset-x-0 after:inset-y-auto after:top-1/2 after:left-0 after:h-2 after:w-full after:translate-x-0 after:-translate-y-1/2" />
+                  <ResizableHandle className="bg-border" />
                   <ResizablePanel id="terminal" defaultSize="35" minSize={100}>
-                    <div data-panel="terminal" className="group/panel relative h-full">
+                    {/* Maximized, it covers the workspace, which stays mounted beneath: nothing reloads on the way back. */}
+                    <div data-panel="terminal" className={cn("group/panel h-full", terminalMaximized ? "absolute inset-0 z-40" : "relative")}>
                       <FocusLine />
                       <TerminalPanel root={root} worktrees={repo.worktrees} projects={projects} />
                     </div>

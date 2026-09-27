@@ -1,5 +1,6 @@
 import { readJson } from "../storage";
 import { dueForSave, SAVE_MS } from "./saveRound";
+import { type Layout, mapPanes, savedLayout } from "./layout";
 import { createPane, focusActive, newId, panes, type Pane, set, shellDir, state } from "./terminals";
 
 // The session save: where each shell was and what it printed, for the next run to restore.
@@ -9,7 +10,8 @@ import { createPane, focusActive, newId, panes, type Pane, set, shellDir, state 
 export interface SavedSession {
   savedAt: number;
   active: number;
-  groups: { name?: string; focused: number; panes: { cwd: string; dir?: string; history: string }[] }[];
+  /** `layout`'s leaves index `panes`; a save from before splits went down has none. */
+  groups: { name?: string; focused: number; layout?: Layout; panes: { cwd: string; dir?: string; history: string }[] }[];
 }
 
 const SESSION_KEY = "gitviber.terminals";
@@ -62,6 +64,7 @@ function saveSession(all = false, due?: Pane[]) {
       groups: state.groups.map((g) => ({
         name: g.name,
         focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
+        layout: mapPanes(g.layout, (id) => g.panes.findIndex((p) => p.id === id)),
         panes: g.panes.map(({ id, cwd }) => {
           const dir = panes.get(id)?.dir;
           return { cwd, dir: dir !== cwd ? dir : undefined, history: (history && panes.get(id)?.saved) || "" };
@@ -89,11 +92,16 @@ function saveSession(all = false, due?: Pane[]) {
 export function restoreSession() {
   const saved = state.restorable;
   if (!saved) return;
-  const groups = saved.groups.map((g) => {
+  // A tab saved with no panes (by hand, or a bug) has nothing to reopen, and left the restore with no tab to show.
+  const restored = saved.groups.map((g) => {
+    if (!g.panes?.length) return null;
     const infos = g.panes.map((p) => createPane(p.cwd, { history: p.history, savedAt: saved.savedAt }, typeof p.dir === "string" ? p.dir : undefined));
-    return { id: newId(), name: typeof g.name === "string" ? g.name : undefined, panes: infos, focused: (infos[g.focused] ?? infos[0]).id };
+    const layout = mapPanes(savedLayout(g.layout, infos.length), (i) => infos[i].id);
+    return { id: newId(), name: typeof g.name === "string" ? g.name : undefined, panes: infos, layout, focused: (infos[g.focused] ?? infos[0]).id };
   });
-  set({ open: true, groups: [...state.groups, ...groups], active: (groups[saved.active] ?? groups[0]).id, restorable: null });
+  const groups = restored.filter((g) => g !== null);
+  if (!groups.length) return set({ restorable: null });
+  set({ open: true, groups: [...state.groups, ...groups], active: (restored[saved.active] ?? groups[0]).id, restorable: null });
   focusActive();
 }
 
