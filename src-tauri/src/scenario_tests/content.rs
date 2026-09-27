@@ -280,7 +280,11 @@ fn symlinks_cannot_escape_the_repo() {
         vfs::write_file(&r, "link/new.txt", "pwned").is_err(),
         "create through a symlinked parent"
     );
-    assert!(!outside.join("new.txt").exists());
+    assert!(
+        vfs::create_file(&r, "link/new/x.txt").is_err(),
+        "create folders through a symlinked parent"
+    );
+    assert!(!outside.join("new.txt").exists() && !outside.join("new").exists());
     assert_eq!(
         fs::read_to_string(outside.join("secret.txt")).unwrap(),
         "secret"

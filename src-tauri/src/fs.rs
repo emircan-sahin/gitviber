@@ -221,17 +221,26 @@ fn io_error(rel: &str, e: std::io::Error) -> String {
     }
 }
 
+/// A new entry's path, with the folders typed before its name ("a/b.ts") made.
+fn new_entry(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let path = resolve_entry(root, rel)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    Ok(path)
+}
+
 pub fn create_file(root: &Path, rel: &str) -> Result<(), String> {
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(resolve_entry(root, rel)?)
+        .open(new_entry(root, rel)?)
         .map(|_| ())
         .map_err(|e| io_error(rel, e))
 }
 
 pub fn create_dir(root: &Path, rel: &str) -> Result<(), String> {
-    std::fs::create_dir(resolve_entry(root, rel)?).map_err(|e| io_error(rel, e))
+    std::fs::create_dir(new_entry(root, rel)?).map_err(|e| io_error(rel, e))
 }
 
 pub fn rename_entry(root: &Path, from: &str, to: &str) -> Result<(), String> {
@@ -608,7 +617,10 @@ mod tests {
             fs::read_to_string(root.join("src/main.rs")).unwrap(),
             "keep"
         );
-        assert!(create_file(root, "missing/x.txt").is_err());
+        create_file(root, "new/deeper/x.txt").unwrap();
+        assert!(root.join("new/deeper/x.txt").is_file());
+        create_dir(root, "more/dir").unwrap();
+        assert!(root.join("more/dir").is_dir());
     }
 
     #[test]

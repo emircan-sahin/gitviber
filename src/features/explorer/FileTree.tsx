@@ -277,7 +277,9 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     if (refocus) treeRef.current?.focus();
     name = name?.trim() ?? "";
     if (!ed || !name || (ed.mode === "rename" && name === ed.entry.name)) return;
-    if (name.includes("/") || name === "." || name === "..") return toast("error", "Invalid name", `"${name}" is not a valid file or folder name.`);
+    // A new entry's name may start with folders ("src/a.ts"), made along with it; a rename's may not.
+    const parts = ed.mode === "new" ? name.split("/") : [name];
+    if (parts.some((p) => !p || p === "." || p === ".." || p.includes("/"))) return toast("error", "Invalid name", `"${name}" is not a valid file or folder name.`);
     const dir = ed.mode === "rename" ? dirname(ed.entry.path) : ed.parent;
     const path = childPath(dir, name);
     try {
@@ -292,6 +294,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
         onPathMoved(from, path);
       } else {
         await (ed.isDir ? api.createDir(path) : api.createFile(path));
+        if (parts.length > 1) openTo(path);
         if (!ed.isDir) onOpen({ kind: "file", path }, true);
       }
       setSelected(path);
