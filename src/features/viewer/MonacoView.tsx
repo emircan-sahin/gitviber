@@ -14,7 +14,7 @@ import type { GitHubSide } from "@/lib/github/permalink";
 import { codeEditor, type Editor, hideEditor, hideFile, isDiff, showEditor, showFile } from "./activeEditor";
 import { followReviewThreads, type Review } from "@/features/github/pulls/ReviewThreads";
 import type { LinkSide } from "@/lib/links/linkHost";
-import { colorThrough, createModels, monaco, prepare, redrawWhenColored, releaseModels, unitOf } from "@/lib/editor/monaco";
+import { colorThrough, createModels, followComments, monaco, prepare, redrawWhenColored, releaseModels, unitOf } from "@/lib/editor/monaco";
 import { editModel, holdsEdit, track, useEdited } from "@/lib/editor/edits";
 import { useSettings } from "@/lib/settings";
 import { blameAt, changeBars, isNew, liveBars, markBars, markBlame, markFindMatches } from "./decorations";
@@ -134,7 +134,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     const box = reused?.box ?? document.createElement("div");
     box.style.cssText = "width:100%;height:100%";
     el.appendChild(box);
-    const e = reused?.e ?? (diff ? monaco.editor.createDiffEditor(box, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(box, fileOptions(s, wrap, blameColumn, editable)));
+    const e = reused?.e ?? (diff ? monaco.editor.createDiffEditor(box, diffOptions(s, mode, collapse, wrap)) : followComments(monaco.editor.create(box, fileOptions(s, wrap, blameColumn, editable))));
     // Detached, it was laid out at 0x0: measure now, before a file is scrolled into place.
     if (reused) e.layout();
     editor.current = e;

@@ -1,6 +1,7 @@
 // What typing follows in a language (VS Code's language-configuration.json): its comments for ⌘/,
 // the brackets and quotes that close themselves, where Enter indents. Shiki colors the code but
-// carries none of it, so it comes from Monaco's own language definitions, loaded as files open.
+// carries none of it, so it comes from Monaco's own language definitions, loaded as files open, and
+// a table of comment styles for the languages Monaco lacks.
 import * as monaco from "monaco-editor/editor/editor.api";
 
 type Definition = () => Promise<{ conf: monaco.languages.LanguageConfiguration }>;
@@ -18,6 +19,9 @@ const css: Definition = () => import("monaco-editor/languages/definitions/css/cs
 const sql: Definition = () => import("monaco-editor/languages/definitions/sql/sql");
 const hcl: Definition = () => import("monaco-editor/languages/definitions/hcl/hcl");
 const systemverilog: Definition = () => import("monaco-editor/languages/definitions/systemverilog/systemverilog");
+const xml: Definition = () => import("monaco-editor/languages/definitions/xml/xml");
+const markdown: Definition = () => import("monaco-editor/languages/definitions/markdown/markdown");
+const lua: Definition = () => import("monaco-editor/languages/definitions/lua/lua");
 // Monaco's JSON mode keeps its configuration inside the mode, with the JSON worker.
 const json: Definition = async () => ({
   conf: {
@@ -44,6 +48,8 @@ const DEFINITIONS: Record<string, Definition> = {
   tsx: typescript,
   "angular-ts": typescript,
   "glimmer-ts": typescript,
+  "ts-tags": typescript,
+  "vue-vine": typescript,
   javascript,
   jsx: javascript,
   "glimmer-js": javascript,
@@ -52,18 +58,21 @@ const DEFINITIONS: Record<string, Definition> = {
   hlsl: cpp,
   "objective-cpp": objectiveC,
   groovy: java,
+  "nextflow-groovy": java,
   html,
   vue: html,
   "vue-html": html,
   svelte: html,
   astro: html,
   "angular-html": html,
+  marko: html,
   "html-derivative": html,
   erb: html,
   json,
   jsonc: json,
   json5: json,
   jsonl: json,
+  hjson: json,
   shellscript: shell,
   docker: shell,
   make: shell,
@@ -113,8 +122,10 @@ const DEFINITIONS: Record<string, Definition> = {
   kotlin: () => import("monaco-editor/languages/definitions/kotlin/kotlin"),
   less: () => import("monaco-editor/languages/definitions/less/less"),
   liquid: () => import("monaco-editor/languages/definitions/liquid/liquid"),
-  lua: () => import("monaco-editor/languages/definitions/lua/lua"),
-  markdown: () => import("monaco-editor/languages/definitions/markdown/markdown"),
+  lua,
+  luau: lua,
+  markdown,
+  mdc: markdown,
   mdx: () => import("monaco-editor/languages/definitions/mdx/mdx"),
   "objective-c": objectiveC,
   pascal: () => import("monaco-editor/languages/definitions/pascal/pascal"),
@@ -140,9 +151,38 @@ const DEFINITIONS: Record<string, Definition> = {
   typespec: () => import("monaco-editor/languages/definitions/typespec/typespec"),
   vb: () => import("monaco-editor/languages/definitions/vb/vb"),
   wgsl: () => import("monaco-editor/languages/definitions/wgsl/wgsl"),
-  xml: () => import("monaco-editor/languages/definitions/xml/xml"),
+  xml,
+  xsl: xml,
   yaml: () => import("monaco-editor/languages/definitions/yaml/yaml"),
 };
+
+type Comments = monaco.languages.CommentRule;
+const byStyle = (comments: Comments, ids: string) => ids.split(" ").map((id) => [id, comments] as const);
+
+/** Comments for ⌘/ where the language above has none, or there's no language above. */
+const COMMENTS: Record<string, Comments> = Object.fromEntries([
+  ...byStyle(
+    { lineComment: "#" },
+    "awk berry bird2 crystal fluent gdscript gherkin git-rebase gn gnuplot http hurl hxml imba julia mojo nim nushell org po polar puppet raku rbs riscv rosmsg talonscript tasl tcl turtle vyper",
+  ),
+  ...byStyle(
+    { lineComment: "//", blockComment: ["/*", "*/"] },
+    "actionscript-3 c3 cadence chapel codeql d dream-maker gdshader genie hack haxe jison jsonnet kdl move nextflow odin openscad pkl qml ron sass shaderlab soy stata stylus templ typst v vala wit zenscript",
+  ),
+  ...byStyle({ lineComment: "//" }, "asciidoc ballerina bsl cairo cue gleam kusto moonbit prisma sdbl smithy zig"),
+  ...byStyle({ lineComment: "--" }, "ada applescript elm haskell lean purescript surrealql vhdl"),
+  ...byStyle({ lineComment: "%" }, "bibtex erlang latex matlab prolog tex"),
+  ...byStyle({ lineComment: ";" }, "ahk ahk2 asm beancount common-lisp emacs-lisp fennel gdresource hy llvm logo nsis racket reg"),
+  ...byStyle({ lineComment: ";;" }, "clarity wasm"),
+  ...byStyle({ blockComment: ["(*", "*)"] }, "coq ocaml wolfram"),
+  ...byStyle({ blockComment: ["{{--", "--}}"] }, "blade edge"),
+  ["viml", { lineComment: '"' }],
+  ["mermaid", { lineComment: "%%" }],
+  ["fortran-free-form", { lineComment: "!" }],
+  ["cobol", { lineComment: "*>" }],
+  ["jinja", { blockComment: ["{#", "#}"] }],
+  ["wikitext", { blockComment: ["<!--", "-->"] }],
+]);
 
 // Monaco's plain text one: brackets close themselves, quotes only surround a selection.
 const PLAIN: monaco.languages.LanguageConfiguration = {
@@ -155,6 +195,10 @@ const PLAIN: monaco.languages.LanguageConfiguration = {
 };
 
 const configured = new Set<string>();
+const commented = new Set<string>();
+
+/** Whether ⌘/ has comments to toggle in `lang` (configured); else the key stays the app's. */
+export const hasComments = (lang: string) => commented.has(lang);
 
 /** Gives `lang` (registered with Monaco) its typing rules, once. */
 export async function configure(lang: string) {
@@ -167,5 +211,7 @@ export async function configure(lang: string) {
   } catch {
     // Its file didn't load (an update replaced the build): typing as in plain text.
   }
-  monaco.languages.setLanguageConfiguration(lang, conf);
+  const comments = COMMENTS[lang] ?? conf.comments;
+  if (comments?.lineComment || comments?.blockComment) commented.add(lang);
+  monaco.languages.setLanguageConfiguration(lang, { ...conf, comments });
 }
