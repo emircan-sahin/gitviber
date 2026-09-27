@@ -121,8 +121,8 @@ pub fn remotes(repo: &Path) -> Vec<String> {
 
 /// Each remote with the URL it fetches from, as `remote_url` reads it (`insteadOf` applied),
 /// from one `git remote -v`. None without a URL, where get-url would echo the name back.
-pub fn remote_urls(repo: &Path) -> Vec<(String, Option<String>)> {
-    let out = run_text(repo, &["remote", "-v"]).unwrap_or_default();
+pub fn remote_urls(repo: &Path) -> Result<Vec<(String, Option<String>)>, String> {
+    let out = run_text(repo, &["remote", "-v"])?;
     let mut list: Vec<(String, Option<String>)> = vec![];
     for line in out.lines() {
         // `<name>\t<url> (fetch)`, a partial clone's with ` [<filter>]` after; `<name>\t` alone
@@ -138,7 +138,7 @@ pub fn remote_urls(repo: &Path) -> Vec<(String, Option<String>)> {
             None => list.push((name.to_string(), url)),
         }
     }
-    list
+    Ok(list)
 }
 
 /// Where a branch with no upstream is first pushed: its `pushRemote`, `remote.pushDefault`,

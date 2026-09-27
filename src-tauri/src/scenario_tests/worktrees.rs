@@ -277,6 +277,8 @@ fn a_new_worktree_gets_the_ignored_files_worktreeinclude_lists() {
         "sub/.env",
     ];
     assert_eq!(listed, want);
+    // The dialog's count leaves the link out, as the copy does.
+    assert_eq!(include_count(&r).unwrap(), want.len());
 
     // Made from the linked worktree: the files still come from the main one.
     let two = PathBuf::from(add_worktree(Path::new(&bare), "two", None, None).unwrap());

@@ -24,7 +24,7 @@ import { DisabledTip, Tip } from "@/components/ui/tooltip";
 import { api, cancelNetwork } from "@/lib/api";
 import { IS_MAC } from "@/lib/platform";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
-import { openTerminal, togglePanel, useTerminals } from "@/lib/terminal/terminals";
+import { openTerminal, togglePanel, useTerminalsOpen } from "@/lib/terminal/terminals";
 import { useNetActivity } from "@/lib/repo/netActivity";
 import { forgetRemoteTags } from "@/lib/repo/remoteTags";
 import { cn } from "@/lib/utils";
@@ -80,7 +80,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const { status, branches, worktrees } = repo;
   const [branchDialog, setBranchDialog] = useState<BranchDialog | null>(null);
   const net = useNetActivity();
-  const terminalOpen = useTerminals().open;
+  const terminalOpen = useTerminalsOpen();
   const fullscreen = useFullscreen();
 
   const { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);

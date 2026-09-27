@@ -236,7 +236,6 @@ pub fn run() {
             commands::journal::journal_last,
             commands::journal::undo,
             commands::journal::redo,
-            commands::github::github_web_url,
             commands::github::github_permalink,
             commands::github::gh_account,
             commands::github::gh_protected_branches,
