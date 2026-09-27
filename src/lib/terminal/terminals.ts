@@ -171,10 +171,16 @@ export function useTerminals() {
 const activeGroup = () => state.groups.find((g) => g.id === state.active);
 
 // settings.ts sets the theme attribute before notifying, so the CSS variables are current.
+// Every setting notifies (the viewer's image toggle too), and xterm takes even an equal new theme
+// object as a change: it rebuilt its glyph atlas and redrew each pane.
+let applied = "";
 subscribeSettings(() => {
   const next = terminalOptions();
+  const key = JSON.stringify(next);
+  const changed = key !== applied;
+  applied = key;
   for (const p of panes.values()) {
-    Object.assign(p.term.options, next);
+    if (changed) Object.assign(p.term.options, next);
     fitPane(p);
   }
 });
