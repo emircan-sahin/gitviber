@@ -34,12 +34,15 @@ export class CommandMarks {
   /** The last one that ended: the only one that keeps its output's markers. */
   private last: Command | null = null;
   private term: Terminal;
+  private onPrompt: () => void;
   private prompted = () => {};
   /** The shell's first prompt is up: it reads what's typed now. */
   readonly ready = new Promise<void>((resolve) => (this.prompted = resolve));
 
-  constructor(term: Terminal) {
+  /** `onPrompt`: each prompt, where a `cd` has settled. */
+  constructor(term: Terminal, onPrompt = () => {}) {
     this.term = term;
+    this.onPrompt = onPrompt;
     term.parser.registerOscHandler(133, (data) => {
       const mark = parseMark(data);
       if (mark) this.on(mark.kind, mark.exit);
@@ -58,6 +61,7 @@ export class CommandMarks {
       else if (c && !c.output) c.prompt.dispose();
       this.current = { prompt: this.term.registerMarker(0) };
       this.prompted();
+      this.onPrompt();
     } else if (kind === "C" && this.current && !this.current.output) {
       this.current.output = this.term.registerMarker(0);
       this.commands = this.commands.filter((x) => !x.prompt.isDisposed);

@@ -185,7 +185,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, marks: new CommandMarks(term) };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, marks: new CommandMarks(term, () => void shellDir(p)) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   term.onWriteParsed(() => {
@@ -529,8 +529,8 @@ export function openTerminal(cwd: string, run?: string) {
 }
 
 /**
- * Where a pane's shell is now, asked of its process as VS Code's inherited split folder is (only
- * on a split or a save); else where it was last seen.
+ * Where a pane's shell is now, asked of its process as VS Code's inherited split folder is (on a
+ * split, a save, or a prompt shell integration marks); else where it was last seen.
  */
 export async function shellDir(p: Pane) {
   if (p.pty !== null) p.dir = (await pty.cwd(p.pty).catch(() => null)) ?? p.dir;
