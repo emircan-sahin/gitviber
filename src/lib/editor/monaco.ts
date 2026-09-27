@@ -42,6 +42,7 @@ import type { DiffRow } from "../api";
 import { hunks, type Pos } from "../git/diffHunks";
 import { indentUnit, TAB, widen, widenColumn } from "./indent";
 import { IGNORE, ignoreGrammar } from "./language";
+import { eventChords } from "../commands/commands";
 import { configure, hasComments } from "./languageConfig";
 import { codeFontFamily, getSettings, subscribeSettings } from "../settings";
 import { cssVar, toHex } from "../ui/color";
@@ -57,9 +58,8 @@ monaco.editor.addKeybindingRules([
   // Read-only code draws no cursor, and matches no brackets (editorOptions): nothing to jump between.
   { keybinding: CtrlCmd | Shift | Backslash, command: "-editor.action.jumpToBracket" },
   { keybinding: CtrlCmd | Shift | Backslash, command: "editor.action.jumpToBracket", when: "editorTextFocus && !editorReadonly" },
-  // ⌘/ only where there are comments to toggle; elsewhere it stays the app's (the shortcut overlay).
+  // ⌘/ is read in followComments below.
   { keybinding: CtrlCmd | Slash, command: "-editor.action.commentLine" },
-  { keybinding: CtrlCmd | Slash, command: "editor.action.commentLine", when: "editorTextFocus && !editorReadonly && gvComments" },
   // Block comments' ⇧⌥A types a letter on many layouts (Polish Ą, Nordic Å); ⌘/ comments without it.
   { keybinding: Shift | Alt | KeyA, command: "-editor.action.blockComment" },
   { keybinding: F12, command: "-editor.action.revealDefinition" },
@@ -70,10 +70,20 @@ monaco.editor.addKeybindingRules([
   { keybinding: monaco.KeyMod.chord(CtrlCmd | KeyK, CtrlCmd | F12), command: "-editor.action.revealDefinitionAside" },
 ]);
 
-/** Keeps `editor` saying whether its file's language has comments, which ⌘/ goes by (above). */
+/**
+ * ⌘/ comments lines where the file's language has comments; elsewhere it stays the app's (the
+ * shortcut overlay). Read as the app reads its keys: Monaco goes by the key's US keyCode, which a
+ * Turkish Q layout's ⌘/ never sends (its / is ⇧7, and the / key types a dot).
+ */
 export function followComments(editor: monaco.editor.IStandaloneCodeEditor) {
-  const key = editor.createContextKey<boolean>("gvComments", false);
-  editor.onDidChangeModel(() => key.set(hasComments(editor.getModel()?.getLanguageId() ?? "")));
+  let comments = false;
+  editor.onDidChangeModel(() => (comments = hasComments(editor.getModel()?.getLanguageId() ?? "")));
+  editor.onKeyDown((e) => {
+    if (!comments || editor.getOption(monaco.editor.EditorOption.readOnly) || !eventChords(e.browserEvent).includes("cmd+/")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    editor.trigger("keyboard", "editor.action.commentLine", null);
+  });
   return editor;
 }
 
