@@ -172,15 +172,16 @@ const activeGroup = () => state.groups.find((g) => g.id === state.active);
 
 // settings.ts sets the theme attribute before notifying, so the CSS variables are current.
 // Every setting notifies (the viewer's image toggle too), and xterm takes even an equal new theme
-// object as a change: it rebuilt its glyph atlas and redrew each pane.
-let applied = "";
+// object as a change: it rebuilt its glyph atlas and redrew each pane. The rest is set each time:
+// a pane's macOptionIsMeta may differ from the settings' (left ⌥ held), and equal values are no-ops.
+let appliedTheme = "";
 subscribeSettings(() => {
-  const next = terminalOptions();
-  const key = JSON.stringify(next);
-  const changed = key !== applied;
-  applied = key;
+  const { theme, ...rest } = terminalOptions();
+  const key = JSON.stringify(theme);
+  const next = key === appliedTheme ? rest : { ...rest, theme };
+  appliedTheme = key;
   for (const p of panes.values()) {
-    if (changed) Object.assign(p.term.options, next);
+    Object.assign(p.term.options, next);
     fitPane(p);
   }
 });
