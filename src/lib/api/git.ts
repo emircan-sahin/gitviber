@@ -62,6 +62,8 @@ export const api = {
     invoke<string>("media_file", { kind, path, oldPath, sha, base, original }),
   /** Puts `gitviber` on PATH (cli.rs) and says where. */
   installCli: () => invoke<string>("install_cli"),
+  /** Ends the app, once the page saved what it keeps (lib/app/quit). */
+  quit: () => invoke<void>("quit"),
   /** Paths opened from outside the window (a CLI, the Dock, a second launch) since last asked. */
   takeOpened: () => invoke<Opened>("take_opened"),
   /** Absolute paths onto the pasteboard as Finder copies files; an image carries its picture too. macOS only. */

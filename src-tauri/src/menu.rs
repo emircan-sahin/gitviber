@@ -7,7 +7,21 @@ use std::sync::Mutex;
 use tauri::menu::{
     CheckMenuItem, IsMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
 };
-use tauri::{AppHandle, Manager, Wry};
+use tauri::{AppHandle, Emitter, Manager, Wry};
+
+pub const QUIT: &str = "app.quit";
+
+/// Quit from the menu. The page isn't unloaded on the way out, so what it saves on pagehide (the
+/// terminals' output, unsaved edits) was lost: it's told first, and ends the app itself once
+/// saved (commands::app::quit). A page that doesn't answer still lets the app go after a moment.
+pub fn quit(app: &AppHandle) {
+    let _ = app.emit("quit", ());
+    let app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        app.exit(0);
+    });
+}
 
 /// The items the page updates, by id.
 pub struct Handles {
@@ -119,7 +133,8 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &native(PredefinedMenuItem::hide_others)?,
             &native(PredefinedMenuItem::show_all)?,
             &sep()?,
-            &PredefinedMenuItem::quit(app, Some("Quit GitViber"))?,
+            // Not the predefined Quit, which ends the app at once: see quit().
+            &MenuItem::with_id(app, QUIT, "Quit GitViber", true, Some("CmdOrCtrl+Q"))?,
         ],
     )?;
 

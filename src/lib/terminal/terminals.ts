@@ -18,6 +18,7 @@ import { focusedPanel, focusPanel, setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
 import { pastedLines, pathPastes } from "./paste";
 import { osc52Text } from "./osc52";
+import { dueForSave, SAVE_MS, type SaveState } from "./saveRound";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask } from "../app/ask";
 import { plural } from "../format";
@@ -29,13 +30,13 @@ import { failed, toast } from "../app/toast";
  * a running shell (an agent, a dev server) must not notice. Panes mount by moving their
  * host element into whatever container shows them.
  */
-interface Pane {
+interface Pane extends SaveState {
   id: number;
   cwd: string;
   term: Terminal;
   fit: FitAddon;
   serialize: SerializeAddon;
-  /** The history last saved, until new output or a resize: a quiet pane isn't serialized again. */
+  /** The history last serialized for the session save (saveRound has when, and what's due). */
   saved: string | null;
   search: SearchAddon;
   /** The WebGL renderer, while the pane has one, and its context to lose on close. */
@@ -123,36 +124,52 @@ function scheduleSave() {
   saveTimer ??= window.setTimeout(() => {
     saveTimer = undefined;
     saveSession();
-  }, 2000);
+  }, SAVE_MS);
 }
 
-// The throttle would lose the last seconds of output to a reload (⌘R).
-window.addEventListener("pagehide", () => saveSession());
+// Out of sight (a reload, a quit (lib/app/quit), the window hidden) a stall goes unseen: every changed pane is saved.
+window.addEventListener("pagehide", () => saveSession(true));
+document.addEventListener("visibilitychange", () => document.hidden && saveSession(true));
 
-function saveSession() {
+/** The layout last written, to skip a write that changes nothing (a title changing, a pane still printing). */
+let written = "";
+
+function saveSession(all = false) {
   // Nothing opened yet: keep the last run's terminals for the restore offer.
   if (!state.groups.length && state.restorable) return;
   try {
-    if (!state.groups.length) return localStorage.removeItem(SESSION_KEY);
+    if (!state.groups.length) {
+      written = "";
+      return localStorage.removeItem(SESSION_KEY);
+    }
+    const now = Date.now();
+    const due = dueForSave(panes.values(), now, all);
+    for (const p of due) {
+      // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
+      p.saved = p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true });
+      [p.dirty, p.serializedAt] = [false, now];
+    }
     const snapshot = (history: boolean): SavedSession => ({
-      savedAt: Date.now(),
+      savedAt: now,
       active: Math.max(0, state.groups.findIndex((g) => g.id === state.active)),
       groups: state.groups.map((g) => ({
         name: g.name,
         focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
-        panes: g.panes.map(({ id, cwd }) => {
-          const p = panes.get(id);
-          // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
-          return { cwd, history: history && p ? (p.saved ??= p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true })) : "" };
-        }),
+        panes: g.panes.map(({ id, cwd }) => ({ cwd, history: (history && panes.get(id)?.saved) || "" })),
       })),
     });
-    try {
-      localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(true)));
-    } catch {
-      // Over quota: the layout alone is still worth keeping.
-      localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(false)));
+    const layout = JSON.stringify({ ...snapshot(false), savedAt: 0 });
+    if (due.length || layout !== written) {
+      try {
+        localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(true)));
+      } catch {
+        // Over quota: the layout alone is still worth keeping.
+        localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(false)));
+      }
+      written = layout;
     }
+    // Another round for panes left for later, until each is saved.
+    if ([...panes.values()].some((p) => p.dirty)) scheduleSave();
   } catch {
     // Not critical.
   }
@@ -224,17 +241,18 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, term, fit, serialize, saved: null, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false };
+  const p: Pane = { id, cwd, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   term.onWriteParsed(() => {
-    p.saved = null;
+    [p.dirty, p.wroteAt] = [true, Date.now()];
     scheduleSave();
   });
   term.onData((data) => send(p, data));
   term.onResize(({ cols, rows }) => {
     // Reflow rewraps the history.
-    p.saved = null;
+    p.dirty = true;
+    scheduleSave();
     if (p.pty !== null) void pty.resize(p.pty, cols, rows).catch(() => {});
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
@@ -673,8 +691,8 @@ export async function clearFocused() {
   const busy = p.pty !== null && (await pty.busy([p.pty]).catch(() => 0)) > 0;
   if (busy || !panes.has(p.id)) return;
   p.term.clear();
-  // clear() skips the parser, so onWriteParsed doesn't drop the saved copy.
-  p.saved = null;
+  // clear() skips the parser, so onWriteParsed doesn't mark the pane.
+  p.dirty = true;
   scheduleSave();
 }
 
