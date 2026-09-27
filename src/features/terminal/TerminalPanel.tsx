@@ -3,7 +3,7 @@ import { ChevronDown, Columns2, Eraser, FolderGit2, FolderOpen, ListX, Pencil, P
 import { FindBox, useFindBox } from "@/components/FindBox";
 import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -237,7 +237,8 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
   );
 }
 
-function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGroup; active: boolean; here: boolean; branch: string | null; alone: boolean }) {
+// Memoized: every title a program sets re-renders the panel, and the other tabs keep their group object.
+const GroupTab = memo(function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGroup; active: boolean; here: boolean; branch: string | null; alone: boolean }) {
   const [renaming, setRenaming] = useState(false);
   const cwd = g.panes[0].cwd;
   const title = g.panes.find((p) => p.id === g.focused)?.title;
@@ -326,7 +327,7 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
       </ContextMenuContent>
     </ContextMenu>
   );
-}
+});
 
 /** Find (⌘F with focus in the terminal): the focused pane's text, its scrollback included. */
 function TerminalFind() {
