@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
 import { copyFiles, copyLabel, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
 import { gitHubLink } from "@/lib/github/url";
-import { basename, childPath, dirname } from "@/lib/path";
+import { basename, childPath, compareEntries, dirname } from "@/lib/path";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import { NameInput } from "@/components/NameInput";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
@@ -56,7 +56,7 @@ const topmost = (list: Entry[]) => list.filter((e) => !list.some((d) => d !== e 
 /** The filter lists this many files at most: the tree renders every row it has. */
 const MAX_MATCHES = 1000;
 
-/** The files that match and the folders down to them, all open, in the order list_dir sorts a folder. */
+/** The files that match and the folders down to them, all open, in the explorer's order. */
 function matchingTree(files: string[], matches: (path: string) => boolean) {
   const children: Record<string, Entry[]> = {};
   const add = (path: string, isDir: boolean) => (children[dirname(path)] ??= []).push({ name: basename(path), path, isDir, ignored: false });
@@ -71,8 +71,7 @@ function matchingTree(files: string[], matches: (path: string) => boolean) {
       add(dir, true);
     }
   }
-  const key = (e: Entry) => e.name.toLowerCase();
-  for (const list of Object.values(children)) list.sort((a, b) => Number(b.isDir) - Number(a.isDir) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+  for (const list of Object.values(children)) list.sort(compareEntries);
   return { children, expanded, found: Math.min(found, MAX_MATCHES), capped: found > MAX_MATCHES };
 }
 
@@ -120,7 +119,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     const id = (requests.current.get(path) ?? 0) + 1;
     requests.current.set(path, id);
     try {
-      const entries = await api.listDir(path);
+      const entries = (await api.listDir(path)).sort(compareEntries);
       if (requests.current.get(path) === id) setChildren((c) => ({ ...c, [path]: entries }));
     } catch (e) {
       if (requests.current.get(path) !== id) return;
@@ -278,7 +277,9 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     if (refocus) treeRef.current?.focus();
     name = name?.trim() ?? "";
     if (!ed || !name || (ed.mode === "rename" && name === ed.entry.name)) return;
-    if (name.includes("/") || name === "." || name === "..") return toast("error", "Invalid name", `"${name}" is not a valid file or folder name.`);
+    // A new entry's name may start with folders ("src/a.ts"), made along with it; a rename's may not.
+    const parts = ed.mode === "new" ? name.split("/") : [name];
+    if (parts.some((p) => !p || p === "." || p === ".." || p.includes("/"))) return toast("error", "Invalid name", `"${name}" is not a valid file or folder name.`);
     const dir = ed.mode === "rename" ? dirname(ed.entry.path) : ed.parent;
     const path = childPath(dir, name);
     try {
@@ -293,6 +294,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
         onPathMoved(from, path);
       } else {
         await (ed.isDir ? api.createDir(path) : api.createFile(path));
+        if (parts.length > 1) openTo(path);
         if (!ed.isDir) onOpen({ kind: "file", path }, true);
       }
       setSelected(path);

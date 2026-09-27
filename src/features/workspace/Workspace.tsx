@@ -12,7 +12,7 @@ import { setLinkHost } from "@/lib/links/linkHost";
 import { prepare } from "@/lib/editor/monaco";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { dropReveal, revealWaits } from "@/lib/editor/reveal";
-import { type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
+import { onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
@@ -204,6 +204,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     setListTab("changes");
   };
 
+  const active = tabs.find((t) => t.key === activeKey) ?? null;
   useCommands({
     "review.nextFile": () => step(1),
     "review.prevFile": () => step(-1),
@@ -263,7 +264,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "tab.last": goTab(tabs.length - 1),
     "tab.next": stepTab(1),
     "tab.prev": stepTab(-1),
-    "file.reveal": () => revealInFinder(tabs.find((t) => t.key === activeKey)?.sel),
+    "file.reveal": () => revealInFinder(active?.sel),
+    "file.revealInExplorer": active && onDisk(active.sel) ? () => revealInExplorer(selectionPath(active.sel)) : undefined,
     "repo.refresh": () => repo.refresh(),
     "workbench.quickOpen": () => showQuickOpen(),
     "workbench.openChange": uncommitted.length ? () => showQuickOpen("changes") : undefined,
@@ -297,7 +299,6 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     // On a tab switch, not on every tab list change.
   }, [activeKey]);
 
-  const active = tabs.find((t) => t.key === activeKey) ?? null;
   const changeCount = uncommitted.length;
 
   return (
@@ -445,6 +446,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     onMoveTab={moveTab}
                     onOpen={(sel) => open(sel, true)}
                     onShowHistory={(path) => showHistory(path, true)}
+                    onRevealInExplorer={revealInExplorer}
                     onShowCommit={(sha, path) => showInHistory({ query: sha, scope: null, reveal: { sha, path, id: ++reveals.current } })}
                     webUrl={webUrl}
                   />

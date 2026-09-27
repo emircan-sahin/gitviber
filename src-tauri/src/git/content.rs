@@ -17,7 +17,8 @@ pub struct FileText {
     pub too_large: bool,
     /// False when the file does not exist on that side (added / deleted).
     pub exists: bool,
-    /// Not valid UTF-8 (e.g. Latin-1); text was decoded lossily, so never write it back.
+    /// Not the file's own UTF-8 text: invalid UTF-8 (e.g. Latin-1) decoded lossily, UTF-16, or
+    /// a symlink's target. Never write it back.
     pub lossy: bool,
     /// A Git LFS file whose object isn't downloaded: says so, with its size.
     pub lfs_missing: Option<String>,
@@ -52,6 +53,15 @@ pub fn to_file_text(bytes: Vec<u8>) -> FileText {
             ..Default::default()
         };
     }
+    // Its NULs would read as binary. Shown, never written back: that would be UTF-8.
+    if let Some(text) = utf16_with_bom(&bytes) {
+        return FileText {
+            text,
+            exists: true,
+            lossy: true,
+            ..Default::default()
+        };
+    }
     if is_binary(&bytes) {
         return FileText {
             binary: true,
@@ -72,6 +82,25 @@ pub fn to_file_text(bytes: Vec<u8>) -> FileText {
             ..Default::default()
         },
     }
+}
+
+/// UTF-16 text, known by its byte order mark as editors do (VS Code's detectEncodingByBOM).
+/// NULs left after decoding mean it wasn't: UTF-32LE (FF FE 00 00) or a binary file.
+fn utf16_with_bom(bytes: &[u8]) -> Option<String> {
+    let from: fn([u8; 2]) -> u16 = match bytes {
+        [0xFF, 0xFE, ..] => u16::from_le_bytes,
+        [0xFE, 0xFF, ..] => u16::from_be_bytes,
+        _ => return None,
+    };
+    let units = bytes[2..].chunks_exact(2);
+    let odd = !units.remainder().is_empty();
+    let mut text: String = char::decode_utf16(units.map(|c| from([c[0], c[1]])))
+        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect();
+    if odd {
+        text.push(char::REPLACEMENT_CHARACTER);
+    }
+    (!text.contains('\0')).then_some(text)
 }
 
 /// Reads `<rev>:<path>` (rev "" means the index). A missing blob is not an error. The size is

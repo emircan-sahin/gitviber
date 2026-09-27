@@ -21,7 +21,11 @@ pub async fn diff_pair(
             sha.as_deref(),
             base.as_deref(),
             whitespace.as_deref(),
-            |p| fs::read_file(r, p),
+            // The file view reads what a link points to, as editors do.
+            |p| match kind.as_str() {
+                "worktree" => fs::read_file(r, p),
+                _ => fs::read_diff_side(r, p),
+            },
         )
     })
     .await

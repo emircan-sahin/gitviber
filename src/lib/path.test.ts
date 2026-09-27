@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { basename, dirname, folderName, isInside, joinPath, parentFolder, splitPath } from "./path.ts";
+import { basename, compareEntries, dirname, folderName, isInside, joinPath, parentFolder, splitPath } from "./path.ts";
 
 test("repo paths", () => {
   assert.equal(basename("src/lib/a.ts"), "a.ts");
@@ -38,4 +38,12 @@ test("joined paths keep the folder's own separator", () => {
 test("a folder's parent keeps its separator", () => {
   assert.equal(parentFolder("/Users/me/app"), "/Users/me/");
   assert.equal(parentFolder("C:\\code\\app"), "C:\\code\\");
+});
+
+test("the explorer sorts folders first, then numbers by value", () => {
+  const entry = (name: string, isDir = false) => ({ name, isDir });
+  const sorted = [entry("file10"), entry("b"), entry("File2"), entry("z", true), entry("a1", true)].sort(compareEntries);
+  assert.deepEqual(sorted.map((e) => e.name), ["a1", "z", "b", "File2", "file10"]);
+  const ties = ["readme.md", "file2", "README.md", "file02"].map((n) => entry(n));
+  assert.deepEqual(ties.sort(compareEntries).map((e) => e.name), ["file02", "file2", "README.md", "readme.md"]);
 });

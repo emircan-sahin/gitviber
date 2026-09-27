@@ -68,7 +68,7 @@ pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
         _ => return Err(format!("can't {action} lines of a {} diff", req.kind)),
     }
     let now = git::diff_pair(repo, &req.kind, &req.path, None, None, None, None, |p| {
-        crate::fs::read_file(repo, p)
+        crate::fs::read_diff_side(repo, p)
     })?;
     for (shown, live) in [
         (&req.original, &now.original),

@@ -133,12 +133,7 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<Entry>, String> {
     for e in &mut entries {
         e.ignored = ignored.contains(&e.path);
     }
-
-    entries.sort_by(|a, b| {
-        b.is_dir
-            .cmp(&a.is_dir)
-            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
-    });
+    // Unsorted: the explorer orders them (compareEntries), filtered or not.
     Ok(entries)
 }
 
@@ -179,6 +174,21 @@ pub fn read_file(root: &Path, rel: &str) -> FileText {
     }
 }
 
+/// A diff's working-tree side. A symlink is its target path, as git stores and diffs it (the
+/// file it points to may be another one, or outside the repo). That text is never written back.
+pub fn read_diff_side(root: &Path, rel: &str) -> FileText {
+    let link = resolve_entry(root, rel)
+        .ok()
+        .filter(|p| p.symlink_metadata().is_ok_and(|m| m.is_symlink()));
+    match link.and_then(|p| std::fs::read_link(p).ok()) {
+        Some(target) => FileText {
+            lossy: true,
+            ..git::to_file_text(target.into_os_string().into_encoded_bytes())
+        },
+        None => read_file(root, rel),
+    }
+}
+
 pub fn read_media(root: &Path, rel: &str) -> Result<Vec<u8>, String> {
     let path = resolve(root, rel)?;
     let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
@@ -211,17 +221,31 @@ fn io_error(rel: &str, e: std::io::Error) -> String {
     }
 }
 
+/// A new entry's path, with the folders typed before its name ("a/b.ts") made.
+fn new_entry(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let path = resolve_entry(root, rel)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            let file = Path::new(rel).ancestors().find(|a| root.join(a).is_file());
+            file.map_or(e.to_string(), |f| {
+                format!("{} is a file, not a folder", f.display())
+            })
+        })?;
+    }
+    Ok(path)
+}
+
 pub fn create_file(root: &Path, rel: &str) -> Result<(), String> {
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(resolve_entry(root, rel)?)
+        .open(new_entry(root, rel)?)
         .map(|_| ())
         .map_err(|e| io_error(rel, e))
 }
 
 pub fn create_dir(root: &Path, rel: &str) -> Result<(), String> {
-    std::fs::create_dir(resolve_entry(root, rel)?).map_err(|e| io_error(rel, e))
+    std::fs::create_dir(new_entry(root, rel)?).map_err(|e| io_error(rel, e))
 }
 
 pub fn rename_entry(root: &Path, from: &str, to: &str) -> Result<(), String> {
@@ -598,7 +622,14 @@ mod tests {
             fs::read_to_string(root.join("src/main.rs")).unwrap(),
             "keep"
         );
-        assert!(create_file(root, "missing/x.txt").is_err());
+        create_file(root, "new/deeper/x.txt").unwrap();
+        assert!(root.join("new/deeper/x.txt").is_file());
+        create_dir(root, "more/dir").unwrap();
+        assert!(root.join("more/dir").is_dir());
+        assert_eq!(
+            create_file(root, "src/main.rs/deeper/x.txt").unwrap_err(),
+            "src/main.rs is a file, not a folder"
+        );
     }
 
     #[test]

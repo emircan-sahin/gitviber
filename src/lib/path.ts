@@ -9,6 +9,15 @@ export const dirname = (p: string) => p.slice(0, Math.max(0, p.lastIndexOf("/"))
 /** `name` in the repo folder `dir` ("" for the root). */
 export const childPath = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 
+const names = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+/**
+ * The explorer's order, as Finder and VS Code have it: folders first, then file2 before file10.
+ * Names the collator calls equal (README / readme, file2 / file02) by their code units, not by listing order.
+ */
+export const compareEntries = (a: { name: string; isDir: boolean }, b: { name: string; isDir: boolean }) =>
+  Number(b.isDir) - Number(a.isDir) || names.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+
 /** A repo path's folder, with its trailing "/" ("" at the root), and its name. */
 export function splitPath(path: string) {
   const i = path.lastIndexOf("/");
