@@ -52,8 +52,11 @@ export { monaco };
 monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, command: "-actions.find" });
 // Likewise Go to Definition, Peek and References (editor.goToDefinition, …); "to the side" has no side here.
 const { CtrlCmd, Alt, Shift } = monaco.KeyMod;
-const { F12, KeyK, KeyA, Slash } = monaco.KeyCode;
+const { F12, KeyK, KeyA, Slash, Backslash } = monaco.KeyCode;
 monaco.editor.addKeybindingRules([
+  // Read-only code draws no cursor, and matches no brackets (editorOptions): nothing to jump between.
+  { keybinding: CtrlCmd | Shift | Backslash, command: "-editor.action.jumpToBracket" },
+  { keybinding: CtrlCmd | Shift | Backslash, command: "editor.action.jumpToBracket", when: "editorTextFocus && !editorReadonly" },
   // ⌘/ only where there are comments to toggle; elsewhere it stays the app's (the shortcut overlay).
   { keybinding: CtrlCmd | Slash, command: "-editor.action.commentLine" },
   { keybinding: CtrlCmd | Slash, command: "editor.action.commentLine", when: "editorTextFocus && !editorReadonly && gvComments" },
