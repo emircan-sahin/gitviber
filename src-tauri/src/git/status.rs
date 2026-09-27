@@ -1,8 +1,8 @@
 //! The working tree's status: changed files, line counts, nested repos, the operation under way.
 
 use super::{
-    command, is_binary, operation, publish_remote_among, push_target, read_regular, remotes, run,
-    worktrees, PushTarget, MAX_TEXT_BYTES,
+    command, config_value, is_binary, operation, publish_remote_among, push_target, read_regular,
+    remotes, run, worktrees, PushTarget, MAX_TEXT_BYTES,
 };
 use crate::process::exec;
 use serde::Serialize;
@@ -57,6 +57,9 @@ pub struct RepoStatus {
     pub branch: Option<String>,
     pub head: Option<String>,
     pub upstream: Option<String>,
+    /// A checked-out pull request's number (`#7`) when the branch follows its
+    /// `refs/pull/<n>/head`, which git names no upstream for.
+    pub follows: Option<String>,
     pub ahead: u32,
     pub behind: u32,
     /// Where `git push` sends this branch, which a fork can set apart from where it pulls
@@ -199,6 +202,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         branch: None,
         head: None,
         upstream: None,
+        follows: None,
         push: None,
         remotes: vec![],
         publish: None,
@@ -292,9 +296,20 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     }
     if let Some(b) = &st.branch {
         st.push = push_target(repo, b);
+        if st.upstream.is_none() {
+            let merge = config_value(repo, None, &format!("branch.{b}.merge"));
+            st.follows = merge
+                .as_deref()
+                .and_then(|m| m.strip_prefix("refs/pull/")?.strip_suffix("/head"))
+                .map(|n| format!("#{n}"));
+        }
     }
     st.remotes = remotes(repo);
-    if st.upstream.is_none() && st.branch.is_some() && !st.remotes.is_empty() {
+    if st.upstream.is_none()
+        && st.follows.is_none()
+        && st.branch.is_some()
+        && !st.remotes.is_empty()
+    {
         st.publish = publish_remote_among(repo, &st.remotes, st.branch.as_deref()).ok();
     }
     if st.unstaged.iter().any(|f| f.nested.is_some()) {

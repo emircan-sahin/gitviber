@@ -90,12 +90,14 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const activity = busy ?? net?.label;
   const progress = net?.progress ? `${net.progress.phase}${net.progress.percent !== null ? ` ${net.progress.percent}%` : ""}` : "";
   const branchName = status?.branch ?? (status?.head ? `detached @ ${status.head}` : "…");
+  // A fork's pull request checked out (github/checkout.rs) pulls from its refs/pull/<n>/head.
+  const pullable = !!(status?.upstream || status?.follows);
 
   useCommands({
     "git.fetch": busy ? undefined : () => runNet("Fetch", api.fetch),
-    "git.pull": busy || !status?.upstream ? undefined : () => pull("ff"),
+    "git.pull": busy || !pullable ? undefined : () => pull("ff"),
     // With no upstream yet, pushing is publishing, where Publish would without asking.
-    "git.push": busy ? undefined : status?.upstream ? () => push() : publishTo ? () => publish(publishTo) : undefined,
+    "git.push": busy || status?.follows ? undefined : status?.upstream ? () => push() : publishTo ? () => publish(publishTo) : undefined,
     "git.sync": busy || !status?.upstream ? undefined : () => sync(),
     "git.newBranch": () => setBranchDialog({ kind: "new", base: status?.branch ? `refs/heads/${status.branch}` : "HEAD" }),
     "git.newWorktree": () => openWorktreeDialog({ kind: "new" }),
@@ -141,7 +143,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onNew={() => openWorktreeDialog({ kind: "new" })}
       />
       <WorktreeDialogs branches={branches} main={main} run={run} runNet={runNet} onOpen={onOpenRepo} />
-      {status && !status.upstream && status.branch && (
+      {status && !status.upstream && !status.follows && status.branch && (
         <span className="flex shrink-0 items-center gap-1 rounded-sm px-1.5 py-0.5 text-[11px] text-subtle select-none">
           <CloudOff className="size-3" /> Not published
         </span>
@@ -180,14 +182,14 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       </Tip>
       <div className="flex">
         <Tip label="Pull (fast-forward only)">
-          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !status?.upstream} onClick={() => pull("ff")}>
+          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !pullable} onClick={() => pull("ff")}>
             <ArrowDownToLine /> Pull
             {!!status?.behind && <span className="font-mono text-[10.5px] text-primary">{status.behind}</span>}
           </Button>
         </Tip>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="secondary" className="w-5 rounded-l-none border-l-0 px-0" disabled={!!busy || !status?.upstream}>
+            <Button variant="secondary" className="w-5 rounded-l-none border-l-0 px-0" disabled={!!busy || !pullable}>
               <ChevronDown className="size-3" />
             </Button>
           </DropdownMenuTrigger>
@@ -221,6 +223,15 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
             }
           />
         </div>
+      ) : status?.follows ? (
+        <Tip label={`Follows pull request ${status.follows}: pushes go to its author's fork, not ${status.push?.remote ?? "this remote"}`}>
+          {/* The disabled button can't take focus; this does, so the keyboard gets the reason too. */}
+          <span tabIndex={0} className="rounded-md outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <Button variant="secondary" disabled>
+              <ArrowUpFromLine /> Push
+            </Button>
+          </span>
+        </Tip>
       ) : (
         <PublishButton
           remotes={status?.remotes ?? []}
