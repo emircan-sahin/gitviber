@@ -49,10 +49,13 @@ GitViber is one window for all of it, and it's small:
 ### Many agents, one screen
 
 Give every agent its own worktree and switch between them from the top bar, each with its change
-count. Start one from any branch or commit, in the folder you choose, or check a pull request out
-into its own worktree without touching yours. Rename one along with its folder, lock it, and
-remove or prune it when the work is merged. Every worktree keeps its own terminals, so nothing
-gets lost when you hop between them.
+count, its pull request and how its checks are doing. Start one from any branch, commit or issue,
+in the folder you choose, or check a pull request out into its own worktree without touching
+yours. Rename one along with its folder, lock it, and remove or prune it when the work is merged.
+Every worktree keeps its own terminals, so nothing gets lost when you hop between them, and a
+terminal can open in another project or any folder too. When an agent in another tab or worktree
+waits for you, its tab and its worktree get a dot, and a desktop notification if you turned those
+on. Claude Code sends one here once its Notifications setting (`/config`) is `iterm2`.
 
 ### Watch the work land
 
@@ -63,11 +66,10 @@ the agent touches it again, the mark clears so you know to look again.
 ### Test it right there
 
 A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the tests, start the dev
-server or talk to the agent without leaving the change you're reading. In zsh and bash 4.4+ each
-command gets a mark, red when it failed, `⌘↑` / `⌘↓` jump between them, and the last one's output
-copies from the right-click menu; your dotfiles stay as they are. When an agent in another tab or
-worktree waits for you, its tab and its worktree get a dot, and a desktop notification if you
-turned those on. Claude Code sends one here once its Notifications setting (`/config`) is `iterm2`.
+server or talk to the agent without leaving the change you're reading. `⌘`-click a path it
+prints to open the file at that line, or a folder to show it in the explorer. In zsh and bash 4.4+
+each command gets a mark, red when it failed, `⌘↑` / `⌘↓` jump between them, and the last one's
+output copies from the right-click menu; your dotfiles stay as they are.
 
 ### Browse the code, not just the diff
 
@@ -99,10 +101,10 @@ has a shortcut, every shortcut can be rebound, and holding `⌘` shows them all.
 | | |
 | --- | --- |
 | **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu; anything that rewrites pushed commits asks first |
-| **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase |
+| **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Clean up the merged ones in one go, squash- and rebase-merged included |
 | **Conflicts** | Resolve block by block (current, incoming, both, or by hand), then continue, skip or abort |
-| **Pull requests** | List, read, review in the same diff viewer, create, merge and check out (GitHub) |
-| **Issues** | List, read, open, edit, comment, close and reopen (GitHub) |
+| **Pull requests** | List, read, review in the same diff viewer, create, merge and check out. See why a check failed and copy it for the agent (GitHub) |
+| **Issues** | List, read, open, edit, comment, close and reopen, or start one in its own worktree (GitHub) |
 
 ## Install
 
