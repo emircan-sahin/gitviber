@@ -230,11 +230,13 @@ export function terminalLinks(term: Terminal, cwd: () => string): IDisposable {
         const at = slashes(w);
         return at.startsWith(`${root}/`) && (from === at || from.startsWith(`${at}/`));
       });
+      // Only a shell in this checkout may fall back to its root (a …/ path, a root-relative one).
+      const rootToo = dir !== null && !nested;
       const needsIndex = found.some((l) => l.kind !== "url");
       void (needsIndex ? indexOf({ rev: null, revision: h.revision }) : Promise.resolve(NO_FILES)).then(async (index) => {
-        const targets = found.map((l) => resolveTerminalLink(l, dir, index, root, !nested));
+        const targets = found.map((l) => resolveTerminalLink(l, dir, index, root, rootToo));
         // What the list lacks may be on disk, ignored: one call for the line's paths, only when hovered.
-        const asks = found.map((l, i) => (targets[i] ? [] : diskCandidates(l, dir, root, !nested)));
+        const asks = found.map((l, i) => (targets[i] ? [] : diskCandidates(l, dir, root, rootToo)));
         const hits = await onDisk(asks.flat(), index, h.revision);
         if (ask !== asked) return;
         let at = 0;
