@@ -12,16 +12,16 @@ on GitHub are its section below.
 
 - **Split the terminal down as well as right** with ⇧⌘D or the new button beside Split right, to
   build a grid of panes. Drag the dividers to size them; the layout comes back with the session.
-- **Move between terminal panes by side** with ⌥⌘ or ⇧⌘ and an arrow, as in cmux. The panes
+- **Move between terminal panes by side** with ⌥⌘ or ⇧⌘ and an arrow. The panes
   other than the focused one dim; Settings → Terminal sets how much, or turns it off.
 - **Maximize the terminal** over the whole workspace with ⌘↵ or the toolbar button, or zoom the
-  focused pane alone with ⇧⌘↵, as in cmux. The same key or the button brings the workspace back,
+  focused pane alone with ⇧⌘↵. The same key or the button brings the workspace back,
   and so do hiding the terminal and opening a file.
 
 ### Changed
 
-- **Terminal rows take the font's own height,** as in Ghostty, iTerm2 and VS Code: a short pane
-  fits a sixth more rows, so Claude Code keeps its usage lines and its header.
+- **Terminal rows take the font's own height:** a short pane fits a sixth more rows, so Claude
+  Code keeps its usage lines and its header.
 - **⌥⌘← and ⌥⌘→** focus the pane on that side rather than the previous or next one, which in a
   single row is the same pane. Previous and Next Terminal Pane stay in the palette.
 
