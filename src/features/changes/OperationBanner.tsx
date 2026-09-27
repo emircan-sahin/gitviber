@@ -1,4 +1,4 @@
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { GitMerge } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";

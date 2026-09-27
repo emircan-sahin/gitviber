@@ -1,4 +1,5 @@
-import { ask, message } from "@tauri-apps/plugin-dialog";
+import { message } from "@tauri-apps/plugin-dialog";
+import { ask } from "../app/ask";
 import { useSyncExternalStore } from "react";
 import { api, errorMessage } from "../api";
 import { toast } from "../app/toast";
@@ -126,7 +127,6 @@ async function write(path: string) {
         title: "Save",
         kind: "warning",
         okLabel: "Overwrite",
-        cancelLabel: "Cancel",
       });
       if (!ok) return false;
     }

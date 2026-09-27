@@ -1,4 +1,4 @@
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { api, type Branch, CANCELLED, errorMessage, type PullMode, type Worktree } from "@/lib/api";
 import { openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { forgetRemoteTags } from "@/lib/repo/remoteTags";

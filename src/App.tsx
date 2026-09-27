@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
-import { ask, open } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { Splash } from "@/components/Splash";

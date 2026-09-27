@@ -1,4 +1,4 @@
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { ChevronRight, Copy, ExternalLink, File, FilePlus, FolderPlus, FolderSearch, History, Link, Pencil, Trash2, Undo2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";

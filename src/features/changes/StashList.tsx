@@ -1,4 +1,4 @@
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { Archive, ArchiveRestore, ChevronRight, GitBranchPlus, PackageOpen, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";

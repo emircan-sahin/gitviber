@@ -1,4 +1,4 @@
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { ArrowDown, ArrowUp, Cherry, SearchCode, Copy, ExternalLink, Eye, EyeOff, FolderGit2, GitBranchPlus, GitCommitHorizontal, History, Link, Pencil, RotateCcw, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { Fragment, useRef, useState } from "react";
 import {

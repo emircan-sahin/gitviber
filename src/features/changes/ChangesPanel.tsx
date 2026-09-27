@@ -1,4 +1,4 @@
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { ArrowLeftToLine, ArrowRightToLine, Check, Minus, Plus, Undo2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";

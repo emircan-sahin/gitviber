@@ -1,6 +1,6 @@
 // Where HEAD has been (git reflog): a way back to commits a reset, rebase or amend left behind,
 // by a branch made there, a reset of the current one to it, or a look at it (detached).
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { GitBranchPlus, GitCommitHorizontal, History } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";

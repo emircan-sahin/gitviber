@@ -1,6 +1,6 @@
 // A bisect under way, in Changes and History alike: mark the commit checked out good or bad (or
 // skip it) until git names the first bad one, then stop to go back where it started.
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { SearchCode } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";

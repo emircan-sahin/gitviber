@@ -1,4 +1,4 @@
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { Check, CircleDashed, ExternalLink, FolderGit2, GitBranch, GitPullRequest, GitPullRequestClosed, Loader2, MinusCircle, RefreshCw, X } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
 import { PageFind } from "@/components/FindBox";

@@ -1,4 +1,4 @@
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "@/lib/app/ask";
 import { ChevronDown, CircleCheck, CircleDot, CircleSlash, ExternalLink, Loader2, Pencil, RefreshCw, Tag, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { PageFind } from "@/components/FindBox";
