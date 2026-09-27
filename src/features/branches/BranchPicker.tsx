@@ -9,7 +9,7 @@ import { pointerMoved } from "@/lib/ui/pointer";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
-import { sanitizedRefName } from "@/lib/git/refs";
+import { sameRef, sanitizedRefName } from "@/lib/git/refs";
 import { RowAction } from "@/components/RowAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
@@ -97,7 +97,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     // "feature" matches origin/feature too: switching to it creates the tracking branch.
     // What's typed is created as git takes it ("fix login" → fix-login), never over a branch.
     const name = sanitizedRefName(query.trim());
-    const exact = branches.some((b) => [query.trim(), name].includes(b.name) || localName(b) === name);
+    const exact = branches.some((b) => [query.trim(), name].includes(b.name) || localName(b) === name || (!b.remote && sameRef(b.name, name)));
     return name && !exact ? [...found, { kind: "create", name }] : found;
   }, [groups, branches, query, q, collapsed]);
   const { index, setIndex, move } = usePickerIndex(options.length);

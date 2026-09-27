@@ -69,7 +69,7 @@ export function MessageDialog({ kind, commit, parent, onClose, onSubmit }: { kin
 export function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "tag"; commit: Commit; onClose: () => void; run: Actions["run"] }) {
   const [name, setName] = useState("");
   const [message, setMessage] = useState("");
-  const check = refNameCheck(name, [], "created as", kind);
+  const check = refNameCheck(name, []);
   const n = check.name;
   const { pending, submit: send } = useSubmit(onClose);
   const ready = !!n && !pending;
@@ -94,11 +94,7 @@ export function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "t
           <Button type="submit" disabled={!ready}>
             Create
           </Button>
-          {check.hint && (
-            <div className="-mt-1 w-full">
-              <NameHint {...check} />
-            </div>
-          )}
+          <NameHint {...check} className="-mt-0.5 w-full" />
           {kind === "tag" && (
             <Textarea
               value={message}

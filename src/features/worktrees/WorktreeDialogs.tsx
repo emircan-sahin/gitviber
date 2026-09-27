@@ -207,7 +207,7 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
         ? "It's locked; unlock it (the lock on its row) to move its folder."
         : null;
   const [move, setMove] = useState(!stays);
-  const check = refNameCheck(name, localNames(branches, old), "renamed to");
+  const check = refNameCheck(name, localNames(branches, old), true);
   const n = check.name;
   const { pending, submit: send } = useSubmit(onClose);
   const target = `${parentFolder(w.path)}${folderFor(n)}`;

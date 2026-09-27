@@ -36,7 +36,7 @@ export function BranchDialogs({ dialog, branches, onClose, run, runNet }: Props)
 function Rename({ branch, branches, onClose, run, runNet }: { branch: Branch } & Omit<Props, "dialog">) {
   const [name, setName] = useState(branch.name);
   const [remote, setRemote] = useState(false);
-  const check = refNameCheck(name, localNames(branches, branch.name), "renamed to");
+  const check = refNameCheck(name, localNames(branches, branch.name), true);
   const n = check.name;
   const { pending, submit: send } = useSubmit(onClose);
   const ready = !!n && n !== branch.name && !check.taken && !pending;
