@@ -23,7 +23,7 @@ const SUMMARY_LIMIT = 72;
 
 /** `shown`: what the list's filter leaves, while it has text; the button says how many files it takes that the list hides. */
 export function CommitBox({ status, shown, head, main, refresh }: { status: RepoStatus; shown: RepoStatus | null; head: Commit | null; main: string; refresh: () => Promise<void> }) {
-  const { draft, setDraft, amend, edited, template, toggleAmend, clear } = useCommitDraft(status.root, head);
+  const { draft, setDraft, amend, edited, template, toggleAmend, clear } = useCommitDraft(status.root, head, status.preparedMessage);
   const [busy, setBusy] = useState(false);
   const { signOffRepos, suggestEnabled } = useSettings();
   const signOff = signOffRepos.includes(main);

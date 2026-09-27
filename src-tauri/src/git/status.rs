@@ -1,8 +1,8 @@
 //! The working tree's status: changed files, line counts, nested repos, the operation under way.
 
 use super::{
-    command, is_binary, operation, publish_remote_among, push_target, read_regular, remotes, run,
-    worktrees, PushTarget, MAX_TEXT_BYTES,
+    command, git_dir, is_binary, operation_in, publish_remote_among, push_target, read_regular,
+    remotes, run, worktrees, PushTarget, MAX_TEXT_BYTES,
 };
 use crate::process::exec;
 use serde::Serialize;
@@ -70,6 +70,8 @@ pub struct RepoStatus {
     pub unstaged: Vec<FileChange>,
     pub conflicted: Vec<FileChange>,
     pub operation: Option<Operation>,
+    /// git left a message for the next commit (SQUASH_MSG, MERGE_MSG): `commit_template` reads it.
+    pub prepared_message: bool,
 }
 
 pub(super) fn change(path: &str, old_path: Option<&str>, status: char) -> FileChange {
@@ -194,6 +196,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
             "--untracked-files=all",
         ],
     )?;
+    let dir = git_dir(repo);
     let mut st = RepoStatus {
         root: repo.to_string_lossy().into_owned(),
         branch: None,
@@ -207,7 +210,9 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         staged: vec![],
         unstaged: vec![],
         conflicted: vec![],
-        operation: operation(repo),
+        operation: dir.as_deref().and_then(operation_in),
+        prepared_message: dir
+            .is_some_and(|d| d.join("SQUASH_MSG").exists() || d.join("MERGE_MSG").exists()),
     };
 
     let mut nested_roots = std::collections::HashSet::new();

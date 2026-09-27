@@ -9,29 +9,39 @@ import { openSettings } from "@/features/settings/SettingsDialog";
 const EMPTY_DRAFT: CommitDraft = { summary: "", body: "", coAuthors: [] };
 const messageOf = (c: Commit): CommitDraft => ({ summary: c.subject, body: c.body, coAuthors: [] });
 
-/** The message being written, kept per worktree, and the Amend toggle that swaps in HEAD's. */
-export function useCommitDraft(root: string, head: Commit | null) {
+/**
+ * The message being written, kept per worktree, and the Amend toggle that swaps in HEAD's.
+ * `prepared`: git left a message for the next commit (status.preparedMessage).
+ */
+export function useCommitDraft(root: string, head: Commit | null, prepared: boolean) {
   const [draft, setDraft] = useState<CommitDraft>(() => loadDraft(root) ?? EMPTY_DRAFT);
   // While amending, the fields hold the message being amended (`original`, HEAD's at `sha`)
   // and the user's own draft waits aside.
   const [amend, setAmend] = useState<{ aside: CommitDraft; sha: string; original: CommitDraft } | null>(null);
 
-  // An empty message starts from commit.template, as git's editor would.
-  const [template, setTemplate] = useState<string | null>(null);
+  // An empty message starts as git's editor would: with the message a squash merge or
+  // `cherry-pick -n` prepared, else commit.template in the description. An untouched one
+  // follows as git writes or clears a prepared message.
+  const [start, setStart] = useState<CommitDraft>(EMPTY_DRAFT);
+  const started = useRef(start);
   useEffect(() => {
     let alive = true;
     api.commitTemplate().then(
       (t) => {
-        if (!alive || !t) return;
-        setTemplate(t);
-        setDraft((d) => (d.summary || d.body ? d : { ...d, body: t }));
+        if (!alive) return;
+        const [summary = "", ...rest] = prepared && t ? t.split("\n") : [];
+        const next = prepared ? { ...EMPTY_DRAFT, summary, body: rest.join("\n").trim() } : { ...EMPTY_DRAFT, body: t ?? "" };
+        const old = started.current;
+        started.current = next;
+        setStart(next);
+        setDraft((d) => (d.summary === old.summary && d.body === old.body ? { ...d, summary: next.summary, body: next.body } : d));
       },
       () => {},
     );
     return () => {
       alive = false;
     };
-  }, []);
+  }, [prepared]);
 
   // The draft outlives the panel (⌘2 and back, another worktree, a restart); an amend message isn't one.
   const keep = amend?.aside ?? draft;
@@ -64,11 +74,12 @@ export function useCommitDraft(root: string, head: Commit | null) {
 
   // After an amend, the draft set aside for it comes back.
   const clear = () => {
-    setDraft(amend?.aside ?? { ...EMPTY_DRAFT, body: template ?? "" });
+    setDraft(amend?.aside ?? start);
     setAmend(null);
   };
 
-  return { draft, setDraft, amend, edited, template, toggleAmend, clear };
+  // What the description starts as, for telling an untouched one from the user's.
+  return { draft, setDraft, amend, edited, template: start.body, toggleAmend, clear };
 }
 
 /**

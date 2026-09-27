@@ -165,6 +165,35 @@ fn commit_template_is_read_without_comments() {
     assert_eq!(commit_template(&r).as_deref(), Some("Why:\n\nRefs:"));
 }
 
+/// A `merge --squash` or `cherry-pick -n` leaves the next commit's message, which git would
+/// start with over the template; committing clears it.
+#[test]
+fn a_prepared_message_comes_before_the_template() {
+    let sb = Sandbox::new("prepared");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    fs::write(r.join(".git/msg"), "Why:\n").unwrap();
+    run(&r, &["config", "commit.template", ".git/msg"]).unwrap();
+    run(&r, &["checkout", "-q", "-b", "feat"]).unwrap();
+    write_commit(&r, "b.txt", "b\n", "add b");
+    run(&r, &["checkout", "-q", "main"]).unwrap();
+    assert!(!status(&r).unwrap().prepared_message);
+
+    run(&r, &["cherry-pick", "-n", "feat"]).unwrap();
+    assert!(status(&r).unwrap().prepared_message);
+    assert_eq!(commit_template(&r).as_deref(), Some("add b"));
+    run(&r, &["reset", "-q", "--hard"]).unwrap();
+
+    run(&r, &["merge", "--squash", "feat"]).unwrap();
+    let message = commit_template(&r).unwrap();
+    assert!(message.starts_with("Squashed commit of the following:"));
+    assert!(message.contains("add b"));
+    commit(&r, &message, &CommitOptions::default()).unwrap();
+    assert!(!status(&r).unwrap().prepared_message);
+    assert_eq!(commit_template(&r).as_deref(), Some("Why:"));
+}
+
 /// A new repository has no commits yet: every view reads it as empty, and staging, unstaging
 /// and the first commit work before HEAD exists.
 #[test]
