@@ -12,14 +12,26 @@ import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import type { BranchChange } from "./BranchReview";
 import type { Change } from "./changeList";
 import { RowAction } from "@/components/RowAction";
+import { createStore } from "@/lib/store";
+import { readJson, stringList, writeJson } from "@/lib/storage";
+
+// Closed sections, by title: kept across tab switches and restarts, as a closed pane is (RepoPanes).
+const COLLAPSED_KEY = "gitviber.changes-sections.collapsed";
+export const collapsedSections = createStore(stringList(readJson<unknown>(COLLAPSED_KEY, [])));
+function toggleSection(title: string) {
+  const now = collapsedSections.get();
+  const next = now.includes(title) ? now.filter((t) => t !== title) : [...now, title];
+  collapsedSections.set(next);
+  writeJson(COLLAPSED_KEY, next);
+}
 
 /** `pinned`: the actions stay visible instead of showing on hover (they act on a selection the user just made). */
 export function Section({ title, count, tone, action, pinned, children }: { title: string; count: number; tone?: string; action?: React.ReactNode; pinned?: boolean; children: React.ReactNode }) {
-  const [open, setOpen] = useState(true);
+  const open = !collapsedSections.use().includes(title);
   return (
     <div>
       <div className="group sticky top-0 z-10 flex h-7 items-center gap-1 border-b border-border bg-panel pr-1.5 pl-2">
-        <button className="flex items-center gap-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase hover:text-foreground focus-visible:text-foreground" onClick={() => setOpen(!open)}>
+        <button className="flex items-center gap-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase hover:text-foreground focus-visible:text-foreground" aria-expanded={open} onClick={() => toggleSection(title)}>
           <ChevronDown className={cn("size-3 transition-transform", !open && "-rotate-90")} />
           <span className={tone}>{title}</span>
           <span className="ml-1 font-mono tracking-normal text-muted-foreground">{count}</span>

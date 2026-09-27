@@ -1,6 +1,6 @@
 import { ask } from "@/lib/app/ask";
 import { ArrowLeftToLine, ArrowRightToLine, Check, Minus, Plus, Undo2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Windowed } from "@/components/Windowed";
 import { api, type Commit, type FileChange, type RepoStatus } from "@/lib/api";
@@ -19,7 +19,7 @@ import { SubmoduleList, updateSubmodules, useSubmodules } from "./SubmoduleList"
 import { attempt, type Change, changeList, files, filtered, keptByRestore, leftOut, paths, sumLines } from "./changeList";
 import { ChangeRowMenu } from "./ChangeRowMenu";
 import { OperationBanner } from "./OperationBanner";
-import { AllCaughtUp, NestedRow, ReviewSummary, Row, Section, SectionBtn } from "./ChangeRows";
+import { AllCaughtUp, collapsedSections, NestedRow, ReviewSummary, Row, Section, SectionBtn } from "./ChangeRows";
 import { CommitBox } from "./CommitBox";
 import { RowAction } from "@/components/RowAction";
 import { primaryKey } from "@/lib/platform";
@@ -304,6 +304,118 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     return <Windowed count={list.length} height={ROW_HEIGHT} keep={keep} render={(i) => render(list[i])} />;
   };
 
+  const conflicts = status.conflicted.length > 0 && (
+    <Section
+      title="Conflicts"
+      count={status.conflicted.length}
+      tone="text-conflict"
+      pinned={!!pickedConflicts}
+      action={pickedConflicts && <SectionBtn onClick={() => markResolved(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
+    >
+      {rowsOf("conflict", status.conflicted, (file) =>
+        row({ kind: "conflict", file }, (rows) => (
+          <>
+            <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => markResolved(rows)}>
+              <Check />
+            </RowAction>
+            <RowAction label={rows.length > 1 ? `Take current version of ${files(rows.length)}` : "Take current version"} onClick={() => resolve(rows, "ours")}>
+              <ArrowLeftToLine />
+            </RowAction>
+            <RowAction label={rows.length > 1 ? `Take incoming version of ${files(rows.length)}` : "Take incoming version"} onClick={() => resolve(rows, "theirs")}>
+              <ArrowRightToLine />
+            </RowAction>
+          </>
+        )),
+      )}
+    </Section>
+  );
+  const staged = status.staged.length > 0 && (
+    <Section
+      title="Staged"
+      count={status.staged.length}
+      pinned={!!pickedStaged}
+      action={
+        pickedStaged ? (
+          <SectionBtn onClick={() => unstage(pickedStaged)}>Unstage {files(pickedStaged.length)}</SectionBtn>
+        ) : (
+          <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
+        )
+      }
+    >
+      {rowsOf("staged", status.staged, (file) =>
+        row({ kind: "staged", file }, (rows) => (
+          <RowAction label={rows.length > 1 ? `Unstage ${files(rows.length)}` : "Unstage"} onClick={() => unstage(rows)}>
+            <Minus />
+          </RowAction>
+        )),
+      )}
+    </Section>
+  );
+  const changes = status.unstaged.length > 0 && (
+    <Section
+      title="Changes"
+      count={status.unstaged.length}
+      pinned={!!pickedChanges}
+      action={
+        pickedChanges ? (
+          <>
+            <SectionBtn onClick={() => discard(pickedChanges.map((r) => r.file))}>Discard {files(pickedChanges.length)}…</SectionBtn>
+            <SectionBtn onClick={() => stage(pickedChanges)}>Stage {files(pickedChanges.length)}</SectionBtn>
+          </>
+        ) : (
+          <>
+            {/* Leaves untracked files alone; deleting one is a per-file choice. */}
+            <SectionBtn onClick={() => discard(discardable)}>{filtering ? `Discard ${discardable.length} shown…` : "Discard"}</SectionBtn>
+            {viewedPaths.length > 0 && (
+              <SectionBtn onClick={() => act("Stage failed", () => api.stage(viewedPaths))}>
+                Stage {viewedPaths.length} viewed{filtering && " shown"}
+              </SectionBtn>
+            )}
+            <SectionBtn onClick={stageAll}>{allOrShown("Stage", stageable(status.unstaged).paths.length)}</SectionBtn>
+          </>
+        )
+      }
+    >
+      {rowsOf("unstaged", status.unstaged, (file) =>
+        file.nested ? (
+          <NestedRow key={file.path} file={file} />
+        ) : (
+          row({ kind: "unstaged", file }, (rows) => (
+            <>
+              {file.status !== "?" && !keptByRestore(file) && (
+                <RowAction label={rows.length > 1 ? `Discard ${files(rows.length)}` : "Discard changes"} onClick={() => discard(rows.map((r) => r.file))}>
+                  <Undo2 />
+                </RowAction>
+              )}
+              <RowAction label={rows.length > 1 ? `Stage ${files(rows.length)}` : "Stage"} onClick={() => stage(rows)}>
+                <Plus />
+              </RowAction>
+            </>
+          ))
+        ),
+      )}
+    </Section>
+  );
+  const stashList = (stashes.length > 0 || total.length > 0) && (
+    <Section title="Stashes" count={stashes.length} action={total.length > 0 && !status.operation && <SectionBtn onClick={() => setStashing([])}>Stash…</SectionBtn>}>
+      <StashList stashes={stashes} activeKey={activeKey} onOpen={onOpen} onHover={onHover} refresh={refresh} />
+    </Section>
+  );
+  const submoduleList = submodules.length > 0 && (
+    <Section title="Submodules" count={submodules.length} action={<SectionBtn onClick={() => void updateSubmodules(refresh)}>Update</SectionBtn>}>
+      <SubmoduleList submodules={submodules} />
+    </Section>
+  );
+  // In the list or, closed, below it: RepoPanes' way, so a closed section stays out of the way.
+  const sections = ([
+    ["Conflicts", conflicts],
+    ["Staged", staged],
+    ["Changes", changes],
+    ["Stashes", stashList],
+    ["Submodules", submoduleList],
+  ] as const).filter(([, s]) => s);
+  const collapsed = collapsedSections.use();
+
   return (
     <div className="flex h-full flex-col">
       {filter.bar}
@@ -318,109 +430,14 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         onClick={(e) => e.target === e.currentTarget && setPicked(null)}
         className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
         {!all.length && !status.unstaged.length && (filter.needle ? <div className="px-4 py-6 text-center text-[12px] text-subtle">No changed files match.</div> : <AllCaughtUp />)}
-        {status.conflicted.length > 0 && (
-          <Section
-            title="Conflicts"
-            count={status.conflicted.length}
-            tone="text-conflict"
-            pinned={!!pickedConflicts}
-            action={pickedConflicts && <SectionBtn onClick={() => markResolved(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
-          >
-            {rowsOf("conflict", status.conflicted, (file) =>
-              row({ kind: "conflict", file }, (rows) => (
-                <>
-                  <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => markResolved(rows)}>
-                    <Check />
-                  </RowAction>
-                  <RowAction label={rows.length > 1 ? `Take current version of ${files(rows.length)}` : "Take current version"} onClick={() => resolve(rows, "ours")}>
-                    <ArrowLeftToLine />
-                  </RowAction>
-                  <RowAction label={rows.length > 1 ? `Take incoming version of ${files(rows.length)}` : "Take incoming version"} onClick={() => resolve(rows, "theirs")}>
-                    <ArrowRightToLine />
-                  </RowAction>
-                </>
-              )),
-            )}
-          </Section>
-        )}
-        {status.staged.length > 0 && (
-          <Section
-            title="Staged"
-            count={status.staged.length}
-            pinned={!!pickedStaged}
-            action={
-              pickedStaged ? (
-                <SectionBtn onClick={() => unstage(pickedStaged)}>Unstage {files(pickedStaged.length)}</SectionBtn>
-              ) : (
-                <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
-              )
-            }
-          >
-            {rowsOf("staged", status.staged, (file) =>
-              row({ kind: "staged", file }, (rows) => (
-                <RowAction label={rows.length > 1 ? `Unstage ${files(rows.length)}` : "Unstage"} onClick={() => unstage(rows)}>
-                  <Minus />
-                </RowAction>
-              )),
-            )}
-          </Section>
-        )}
-        {status.unstaged.length > 0 && (
-          <Section
-            title="Changes"
-            count={status.unstaged.length}
-            pinned={!!pickedChanges}
-            action={
-              pickedChanges ? (
-                <>
-                  <SectionBtn onClick={() => discard(pickedChanges.map((r) => r.file))}>Discard {files(pickedChanges.length)}…</SectionBtn>
-                  <SectionBtn onClick={() => stage(pickedChanges)}>Stage {files(pickedChanges.length)}</SectionBtn>
-                </>
-              ) : (
-                <>
-                  {/* Leaves untracked files alone; deleting one is a per-file choice. */}
-                  <SectionBtn onClick={() => discard(discardable)}>{filtering ? `Discard ${discardable.length} shown…` : "Discard"}</SectionBtn>
-                  {viewedPaths.length > 0 && (
-                    <SectionBtn onClick={() => act("Stage failed", () => api.stage(viewedPaths))}>
-                      Stage {viewedPaths.length} viewed{filtering && " shown"}
-                    </SectionBtn>
-                  )}
-                  <SectionBtn onClick={stageAll}>{allOrShown("Stage", stageable(status.unstaged).paths.length)}</SectionBtn>
-                </>
-              )
-            }
-          >
-            {rowsOf("unstaged", status.unstaged, (file) =>
-              file.nested ? (
-                <NestedRow key={file.path} file={file} />
-              ) : (
-                row({ kind: "unstaged", file }, (rows) => (
-                  <>
-                    {file.status !== "?" && !keptByRestore(file) && (
-                      <RowAction label={rows.length > 1 ? `Discard ${files(rows.length)}` : "Discard changes"} onClick={() => discard(rows.map((r) => r.file))}>
-                        <Undo2 />
-                      </RowAction>
-                    )}
-                    <RowAction label={rows.length > 1 ? `Stage ${files(rows.length)}` : "Stage"} onClick={() => stage(rows)}>
-                      <Plus />
-                    </RowAction>
-                  </>
-                ))
-              ),
-            )}
-          </Section>
-        )}
-        {(stashes.length > 0 || total.length > 0) && (
-          <Section title="Stashes" count={stashes.length} action={total.length > 0 && !status.operation && <SectionBtn onClick={() => setStashing([])}>Stash…</SectionBtn>}>
-            <StashList stashes={stashes} activeKey={activeKey} onOpen={onOpen} onHover={onHover} refresh={refresh} />
-          </Section>
-        )}
-        {submodules.length > 0 && (
-          <Section title="Submodules" count={submodules.length} action={<SectionBtn onClick={() => void updateSubmodules(refresh)}>Update</SectionBtn>}>
-            <SubmoduleList submodules={submodules} />
-          </Section>
-        )}
+        {sections.filter(([t]) => !collapsed.includes(t)).map(([t, s]) => <Fragment key={t}>{s}</Fragment>)}
       </div>
+      {sections.some(([t]) => collapsed.includes(t)) && (
+        // The commit box's top border is the last header's bottom one.
+        <div className="shrink-0 border-t border-border [&>:last-child>:first-child]:border-b-0">
+          {sections.filter(([t]) => collapsed.includes(t)).map(([t, s]) => <Fragment key={t}>{s}</Fragment>)}
+        </div>
+      )}
       {stashing && <StashDialog status={full} paths={stashing} onClose={() => setStashing(null)} refresh={refresh} />}
       {status.operation ? (
         // Committing by hand mid-rebase would splice an extra commit into the history.
