@@ -111,9 +111,9 @@ export const isImageChange = (src: { path: string; oldPath: string | null }) => 
  */
 export function ImageMenu({ src, original, children }: { src: MediaSource; original: boolean | "both"; children: ReactNode }) {
   if (!IS_MAC) return children;
-  const copy = (original: boolean) => () =>
+  const copy = (before: boolean) => () =>
     api
-      .mediaFile(src.kind, src.path, src.oldPath, src.sha, src.base, original)
+      .mediaFile(src.kind, src.path, src.oldPath, src.sha, src.base, before)
       .then((path) => copyFiles([path]))
       .catch(failed("Could not copy"));
   return (
