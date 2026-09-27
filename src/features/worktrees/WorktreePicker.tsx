@@ -12,10 +12,12 @@ import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { plural, relativeTime } from "@/lib/format";
 import { shortPath } from "@/lib/git/worktrees";
-import { folderName } from "@/lib/path";
+import { folderName, isInside } from "@/lib/path";
+import { useNeedsYou } from "@/lib/terminal/terminals";
 import { copyText } from "@/lib/app/clipboard";
 import { revealProject } from "@/lib/app/openIn";
 import { RowAction } from "@/components/RowAction";
+import { NeedsYouDot } from "@/components/NeedsYouDot";
 import { useWorktreeDialog } from "./WorktreeDialogs";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
 
@@ -44,8 +46,19 @@ interface Props {
  * Rows lead with the branch, the name people know a worktree by; the folder comes second.
  * In a linked worktree it names it and offers the way back to the main one.
  */
+/** The worktrees with a terminal that needs the user: each pane's deepest one, as agents' worktrees can sit inside the main one. */
+function needing(worktrees: Worktree[], cwds: string[]) {
+  const out = new Set<string>();
+  for (const cwd of cwds) {
+    const w = worktrees.filter((x) => cwd === x.path || isInside(cwd, x.path)).sort((a, b) => b.path.length - a.path.length)[0];
+    if (w) out.add(w.path);
+  }
+  return out;
+}
+
 export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew }: Props) {
   const [open, setOpen] = useState(false);
+  const calling = useNeedsYou();
   const [list, setList] = useState(worktrees);
   const { index, setIndex, move } = usePickerIndex(list.length);
   // A `git status` and two rev-lists per worktree: fetched when the menu opens, never before.
@@ -101,6 +114,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const current = list.find((w) => w.current);
   const main = list.find((w) => w.main && !w.bare);
   const linked = !!current && !current.main;
+  const needy = needing(list, calling);
+  const elsewhere = list.some((w) => !w.current && needy.has(w.path)) ? " · a terminal in another worktree needs you" : "";
   const usable = (w: Worktree) => !w.current && !w.prunable && !w.bare;
   const then = (fn: (w: Worktree) => void) => (w: Worktree) => {
     setOpen(false);
@@ -150,12 +165,12 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
     <>
       {/* Never over one of its own dialogs, whatever the order things closed in. */}
       <Popover open={open && !dialog} onOpenChange={setOpen}>
-        <Tip label={linked ? `In worktree ${folderName(current.path)} · switch worktree` : extra === 0 ? "Worktrees" : `${plural(extra, "worktree")} besides the main one · switch worktree`}>
+        <Tip label={(linked ? `In worktree ${folderName(current.path)} · switch worktree` : extra === 0 ? "Worktrees" : `${plural(extra, "worktree")} besides the main one · switch worktree`) + elsewhere}>
           <PopoverTrigger asChild>
             <button
-              aria-label={linked ? `Worktree ${folderName(current.path)}, switch worktree` : extra === 0 ? "Worktrees" : `Switch worktree (${extra} besides the main one)`}
+              aria-label={(linked ? `Worktree ${folderName(current.path)}, switch worktree` : extra === 0 ? "Worktrees" : `Switch worktree (${extra} besides the main one)`) + elsewhere}
               className={cn(
-                "flex h-7 max-w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2 hover:bg-hover focus-visible:bg-hover data-[state=open]:bg-active",
+                "relative flex h-7 max-w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2 hover:bg-hover focus-visible:bg-hover data-[state=open]:bg-active",
                 linked && "bg-primary/10",
               )}
             >
@@ -170,6 +185,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 </span>
               )}
               <ChevronsUpDown className="size-3 shrink-0 text-subtle" />
+              {elsewhere && <NeedsYouDot className="absolute top-1 right-1" />}
             </button>
           </PopoverTrigger>
         </Tip>
@@ -203,6 +219,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 main={main?.path ?? w.path}
                 time={branches.find((b) => !b.remote && b.name === w.branch)?.timestamp}
                 state={states[w.path]}
+                calling={needy.has(w.path)}
                 into={current?.branch ?? null}
                 renameKey={renameKey}
                 onHover={setIndex}
@@ -268,6 +285,7 @@ function WorktreeRow({
   main,
   time,
   state,
+  calling,
   into,
   renameKey,
   onHover,
@@ -281,6 +299,8 @@ function WorktreeRow({
   main: string;
   time: number | undefined;
   state: WorktreeState | undefined;
+  /** A terminal in it needs the user. */
+  calling: boolean;
   /** The current worktree's branch; null when detached. */
   into: string | null;
   renameKey: string | undefined;
@@ -322,6 +342,11 @@ function WorktreeRow({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={cn("truncate font-mono text-[11.5px]", !w.branch && "opacity-70")}>{branch}</span>
           {w.main && <Chip hot={hot}>main</Chip>}
+          {calling && (
+            <Tip label="A terminal here needs you">
+              <NeedsYouDot className={cn(hot && "bg-primary-foreground")} />
+            </Tip>
+          )}
           {w.inUse ? (
             <Tip label={w.lockReason ?? "Locked by a running process"}>
               <Chip hot={hot} tone="live">
