@@ -47,10 +47,10 @@ pub async fn install_cli() -> Res<String> {
     blocking(cli::install).await
 }
 
-/// Folders opened from outside the window since the page last asked (opened.rs). Off the main
+/// Paths opened from outside the window since the page last asked (opened.rs). Off the main
 /// thread: resolving a path on a stalled network volume can hang.
 #[tauri::command]
-pub async fn take_opened(app: AppHandle) -> Res<Vec<String>> {
+pub async fn take_opened(app: AppHandle) -> Res<crate::opened::Taken> {
     blocking(move || Ok(crate::opened::take(&app))).await
 }
 

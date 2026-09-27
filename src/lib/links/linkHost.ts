@@ -30,8 +30,15 @@ interface LinkHost {
 }
 
 let host: LinkHost | null = null;
+// A file for a workspace that's on its way; a few seconds, so a repo that never shows can't
+// have it open on a later visit.
+let waiting: { root: string; target: Target; until: number } | null = null;
 export function setLinkHost(h: LinkHost | null) {
   host = h;
+  const w = waiting;
+  if (!h || w?.root !== h.root) return;
+  waiting = null;
+  if (Date.now() < w.until) openTarget(w.target, true);
 }
 
 const indexes = new Map<string, Promise<FileIndex>>();
@@ -87,6 +94,13 @@ export function openTarget(target: Target, focus = false) {
   if (!host) return;
   if (target.line) revealInCode({ path: target.path, line: target.line, column: target.column ?? 1 });
   host.open(target.path, focus);
+}
+
+/** Opens a file in the workspace of `root` (a repo's absolute path), now or once it's up: `gitviber a.ts:12`. */
+export function openTargetIn(root: string, target: Target) {
+  waiting = null;
+  if (host?.root === root) openTarget(target, true);
+  else waiting = { root, target, until: Date.now() + 10_000 };
 }
 
 /**
