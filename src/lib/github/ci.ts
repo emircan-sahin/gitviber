@@ -3,7 +3,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { type CiState, github, type Target } from "../api";
 import { createStore } from "../store";
-import { onGitHubWake } from "./githubCache";
+import { onGitHubReset, onGitHubWake } from "./githubCache";
 
 const RUNNING = 30_000;
 const SETTLED = 10 * 60_000;
@@ -14,6 +14,11 @@ const known = new Map<string, { state: CiState | null; at: number }>();
 const failedAt = new Map<Target, number>();
 // Bumped when answers land, to re-render what shows them.
 const version = createStore(0);
+// Another repo, or origin moved: the old one's answers and failures don't hold for it.
+onGitHubReset(() => {
+  known.clear();
+  failedAt.clear();
+});
 
 const key = (target: Target, sha: string) => `${target ?? ""}\0${sha}`;
 const stale = (target: Target, sha: string, now: number) => {
