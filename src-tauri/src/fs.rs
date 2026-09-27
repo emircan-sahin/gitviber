@@ -383,16 +383,22 @@ pub(crate) fn copy_entry(src: &Path, dst: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// `rel` in `from`, if `copy_into` would copy it from there: a file, not a link, inside the worktree.
+pub fn copyable(from: &Path, rel: &str) -> Option<PathBuf> {
+    resolve_entry(from, rel)
+        .ok()
+        .filter(|src| src.symlink_metadata().is_ok_and(|m| m.is_file()))
+}
+
 /// Copies the files at `rels` in `from` to the same paths in `to`, making folders as needed:
 /// `.worktreeinclude`'s into a new worktree. Nothing is overwritten, and a link or a path leading
 /// out of either worktree is skipped: a relative link would point elsewhere from the new one.
 pub fn copy_into(from: &Path, to: &Path, rels: &[String]) {
     for rel in rels {
-        let (Ok(src), Ok(dst)) = (resolve_entry(from, rel), resolve_entry(to, rel)) else {
+        let (Some(src), Ok(dst)) = (copyable(from, rel), resolve_entry(to, rel)) else {
             continue;
         };
-        let file = src.symlink_metadata().is_ok_and(|m| m.is_file());
-        if !file || dst.symlink_metadata().is_ok() {
+        if dst.symlink_metadata().is_ok() {
             continue;
         }
         if dst
