@@ -247,6 +247,7 @@ pub struct Remote {
 /// This repo's remotes and the GitHub repositories behind them. Local config only.
 pub fn remotes(repo: &Path) -> Vec<Remote> {
     git::remote_urls(repo)
+        .unwrap_or_default()
         .into_iter()
         .map(|(name, url)| Remote {
             name,

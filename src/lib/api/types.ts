@@ -75,6 +75,8 @@ export interface RepoStatus {
   /** Where `git push` sends this branch; a fork can pull from upstream and push to origin. */
   push: { remote: string; branch: string | null; ahead: number } | null;
   remotes: string[];
+  /** Origin's URL (null: none): after a `git remote set-url` the GitHub views read another repository. Undefined when git couldn't say. */
+  origin?: string | null;
   /** Where Publish sends a branch with no upstream; null when the user has to pick a remote. */
   publish: string | null;
   staged: FileChange[];
@@ -410,3 +412,6 @@ export interface AskPrompt {
 }
 
 export type ResetMode = "soft" | "mixed" | "hard";
+
+/** Which suggestion a run is for: the commit box's message, or the pull request dialog's; each runs and cancels apart. */
+export type SuggestKind = "message" | "pull";

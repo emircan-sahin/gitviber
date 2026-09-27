@@ -84,7 +84,7 @@ export function CreatePullDialog({
     };
     // Recounted per base; typing doesn't recount.
   }, [base, head, upstream, target.repo.owner, target.repo.name]);
-  const suggestion = useSuggestion("description");
+  const suggestion = useSuggestion("pull");
   // A field typed into keeps its text; cleared, it's free for a suggestion again.
   const mine = { title: typed.title && !!title.trim(), body: typed.body && !!body.trim() };
   const mineNow = useRef(mine);
