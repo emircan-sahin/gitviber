@@ -6,6 +6,18 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-09-28
+
+### Changed
+
+- **Closed sections in Changes stay closed** across tab switches and restarts, and move below the
+  open ones, just above the commit box, as the panes in Pull Requests and Issues do.
+
+### Fixed
+
+- **Splitting a terminal or closing one of two panes no longer breaks the window,** which 0.1.4
+  did as the new zoom button appeared or went away.
+
 ## [0.1.4] - 2026-09-27
 
 ### Changed
@@ -280,7 +292,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/emircan-sahin/gitviber/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/emircan-sahin/gitviber/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/emircan-sahin/gitviber/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/emircan-sahin/gitviber/compare/v0.1.1...v0.1.2
