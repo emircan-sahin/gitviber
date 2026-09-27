@@ -36,7 +36,7 @@ fn multi_commit_rebase_with_skip() {
     write_commit(&r, "a.txt", "main\n", "main edit");
     switch_branch(&r, "feature", false).unwrap();
 
-    assert!(rebase(&r, "main").unwrap());
+    assert!(rebase(&r, "main", false).unwrap());
     let op = operation(&r).unwrap();
     assert_eq!((op.step, op.total), (Some(1), Some(2)));
     assert!(!rebase_skip(&r).unwrap(), "second commit applies cleanly");
@@ -55,7 +55,7 @@ fn resolve_side_never_deletes_a_file_that_exists_on_that_side() {
     write_commit(&r, "a.txt", "feature\n", "f");
     switch_branch(&r, "main", false).unwrap();
     write_commit(&r, "a.txt", "main\n", "m");
-    assert!(merge(&r, "feature", MergeKind::Ff).unwrap());
+    assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
     resolve_side(&r, "a.txt", Side::Ours).unwrap();
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "main\n");
     // Not a conflicted path: must error, not `git rm` it.
@@ -75,7 +75,7 @@ fn continue_reports_hook_failures_instead_of_conflicts() {
     write_commit(&r, "a.txt", "feature\n", "f");
     switch_branch(&r, "main", false).unwrap();
     write_commit(&r, "a.txt", "main\n", "m");
-    assert!(merge(&r, "feature", MergeKind::Ff).unwrap());
+    assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
     resolve_side(&r, "a.txt", Side::Ours).unwrap();
 
     let hook = r.join(".git/hooks/commit-msg");
@@ -362,12 +362,12 @@ fn merge_kinds_fast_forward_no_ff_and_squash() {
     };
 
     // No fast-forward: a merge commit although main could just move.
-    assert!(!merge(&r, "feature", MergeKind::NoFf).unwrap());
+    assert!(!merge(&r, "feature", MergeKind::NoFf, false).unwrap());
     assert_eq!(parents("HEAD"), 2);
     run(&r, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
 
     // Squash: one ordinary commit with everything, listing what it took.
-    assert!(!merge(&r, "feature", MergeKind::Squash).unwrap());
+    assert!(!merge(&r, "feature", MergeKind::Squash, false).unwrap());
     assert_eq!(parents("HEAD"), 1);
     assert_eq!(
         run_text(&r, &["log", "-1", "--format=%B"]).unwrap().trim(),
@@ -376,14 +376,53 @@ fn merge_kinds_fast_forward_no_ff_and_squash() {
     assert!(r.join("b.txt").exists() && r.join("c.txt").exists());
     // Again: nothing new, no empty commit.
     let head = run_text(&r, &["rev-parse", "HEAD"]).unwrap();
-    assert!(!merge(&r, "feature", MergeKind::Squash).unwrap());
+    assert!(!merge(&r, "feature", MergeKind::Squash, false).unwrap());
     assert_eq!(run_text(&r, &["rev-parse", "HEAD"]).unwrap(), head);
 
     // Plain: fast-forwards.
     run(&r, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
-    assert!(!merge(&r, "feature", MergeKind::Ff).unwrap());
+    assert!(!merge(&r, "feature", MergeKind::Ff, false).unwrap());
     assert_eq!(
         run_text(&r, &["rev-parse", "HEAD"]).unwrap(),
         run_text(&r, &["rev-parse", "feature"]).unwrap()
     );
+}
+
+/// Changes in the way of a merge or rebase from the branch picker: refused as git says, then
+/// set aside and brought back with `autostash`, as Pull's retry does.
+#[test]
+fn merge_and_rebase_autostash_uncommitted_changes() {
+    let sb = Sandbox::new("op-autostash");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "1\n2\n3\n4\n5\n", "base");
+    switch_branch(&r, "feature", true).unwrap();
+    write_commit(&r, "a.txt", "1\n2\n3\n4\nfive\n", "feature edit");
+    switch_branch(&r, "main", false).unwrap();
+    fs::write(r.join("a.txt"), "one\n2\n3\n4\n5\n").unwrap();
+
+    let e = merge(&r, "feature", MergeKind::Ff, false).unwrap_err();
+    assert!(e.contains("would be overwritten by merge"), "{e}");
+    assert!(!merge(&r, "feature", MergeKind::Ff, true).unwrap());
+    assert_eq!(
+        fs::read_to_string(r.join("a.txt")).unwrap(),
+        "one\n2\n3\n4\nfive\n"
+    );
+
+    run(&r, &["reset", "-q", "--hard", "HEAD~1"]).unwrap();
+    write_commit(&r, "b.txt", "b\n", "main moves on");
+    switch_branch(&r, "feature", false).unwrap();
+    fs::write(r.join("a.txt"), "one\n2\n3\n4\nfive\n").unwrap();
+    let e = rebase(&r, "main", false).unwrap_err();
+    assert!(
+        e.contains("error: cannot rebase: You have unstaged changes."),
+        "{e}"
+    );
+    assert!(!rebase(&r, "main", true).unwrap());
+    assert!(r.join("b.txt").exists());
+    assert_eq!(
+        fs::read_to_string(r.join("a.txt")).unwrap(),
+        "one\n2\n3\n4\nfive\n"
+    );
+    assert!(run_text(&r, &["stash", "list"]).unwrap().is_empty());
 }

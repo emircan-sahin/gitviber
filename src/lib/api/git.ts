@@ -152,8 +152,8 @@ export const api = {
   /** `autostash`: uncommitted changes in the way are stashed first and reapplied after. */
   pull: (mode: PullMode, op?: NetOp, autostash = false) => network<boolean>("pull", { mode, autostash }, op),
   /** `how`: fast-forward when possible, always a merge commit, or the branch's changes as one commit. */
-  merge: (name: string, how: "ff" | "no-ff" | "squash" = "ff") => invoke<boolean>("merge", { name, how }),
-  rebase: (onto: string) => invoke<boolean>("rebase", { onto }),
+  merge: (name: string, how: "ff" | "no-ff" | "squash" = "ff", autostash = false) => invoke<boolean>("merge", { name, how, autostash }),
+  rebase: (onto: string, autostash = false) => invoke<boolean>("rebase", { onto, autostash }),
   opContinue: () => invoke<boolean>("op_continue"),
   opAbort: () => invoke<void>("op_abort"),
   rebaseSkip: () => invoke<boolean>("rebase_skip"),

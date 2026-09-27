@@ -66,9 +66,9 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
   const behind = pushesUpstream ? pulls : undefined;
   // Autostashed changes wait out a stopped merge or rebase (MERGE_AUTOSTASH), and git keeps them
   // in the stash as well when they conflict coming back.
-  const stashedFor = (autostash: boolean) =>
+  const stashedFor = (autostash: boolean, what = "pull") =>
     autostash
-      ? "Resolve them in Changes. Your uncommitted changes were set aside for the pull and come back when it finishes (Continue or Abort, if it's waiting on you). If they conflict coming back, they're kept in Stashes too: drop that stash once resolved."
+      ? `Resolve them in Changes. Your uncommitted changes were set aside for the ${what} and come back when it finishes (Continue or Abort, if it's waiting on you). If they conflict coming back, they're kept in Stashes too: drop that stash once resolved.`
       : undefined;
   const pull = (mode: PullMode, autostash = false): Promise<boolean> =>
     runNet("Pull", (op) => api.pull(mode, op, autostash), mode === "ff" ? "Pulled" : `Pulled (${mode})`, {
@@ -84,8 +84,19 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
   const publish = (remote: string) => runNet("Publish", (op) => api.push(false, remote, op), `Branch published to ${remote}`);
   // Where Publish goes without asking: the preferred remote, or the only one.
   const publishTo = status?.branch && status.head ? (status.publish ?? (status.remotes.length === 1 ? status.remotes[0] : null)) : null;
-  const merge = (name: string, how: "ff" | "no-ff" | "squash" = "ff") =>
-    run(how === "squash" ? "Squash merge" : "Merge", () => api.merge(name, how), how === "squash" ? `Squashed ${name} into one commit` : `Merged ${name}`);
+  // A squash's changes would get the stash back before they're committed: no autostash for it.
+  const merge = (name: string, how: "ff" | "no-ff" | "squash" = "ff", autostash = false): Promise<boolean> =>
+    how === "squash"
+      ? run("Squash merge", () => api.merge(name, how), `Squashed ${name} into one commit`)
+      : run("Merge", () => api.merge(name, how, autostash), `Merged ${name}`, undefined, {
+          fixes: { autostash: [{ label: "Retry with autostash", run: () => void merge(name, how, true) }] },
+          conflicts: stashedFor(autostash, "merge"),
+        });
+  const rebase = (onto: string, autostash = false): Promise<boolean> =>
+    run("Rebase", () => api.rebase(onto, autostash), `Rebased onto ${onto}`, undefined, {
+      fixes: { autostash: [{ label: "Retry with autostash", run: () => void rebase(onto, true) }] },
+      conflicts: stashedFor(autostash, "rebase"),
+    });
   // Rejected as non-fast-forward: when the remote's extra commits are this branch's own from
   // before a rebase or amend, replacing them is a force push, so it asks first. Anyone else's
   // (already fetched in the background, so not "fetch first") want a pull, which the error
@@ -175,7 +186,23 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       w.prunable ? `${name}'s folder is gone, but it's locked${w.lockReason ? ` (${w.lockReason})` : ""}: its drive may only be unplugged. Prune it anyway?${branch}` : `Delete worktree ${name} and its folder?${lost}${lock}${terminals}${branch}`,
       { title: w.prunable ? "Prune worktree" : "Remove worktree", kind: "warning", okLabel: w.prunable ? "Prune" : "Delete worktree" },
     );
-    if (ok) await run("Remove worktree", () => api.removeWorktree(w.path, changed > 0 || w.locked), `Worktree ${name} removed`);
+    if (!ok) return;
+    const force = changed > 0 || w.locked;
+    await run(
+      "Remove worktree",
+      async () => {
+        try {
+          await api.removeWorktree(w.path, force);
+        } catch (e) {
+          // git refuses any worktree with submodules checked out, clean or not, unless forced.
+          if (force || !errorMessage(e).includes("working trees containing submodules cannot be moved or removed")) throw e;
+          const again = await ask(`${name} has submodules, which git only removes with force: everything in it goes, including commits made only inside its submodules. Delete anyway?`, { title: "Remove worktree", kind: "warning", okLabel: "Delete worktree" });
+          if (!again) throw CANCELLED;
+          await api.removeWorktree(w.path, true);
+        }
+      },
+      `Worktree ${name} removed`,
+    );
   };
 
   const unlockWorktree = async (w: Worktree) => {
@@ -186,5 +213,5 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     await run("Unlock worktree", () => api.unlockWorktree(w.path), `Unlocked ${name}`);
   };
 
-  return { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree };
+  return { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree };
 }

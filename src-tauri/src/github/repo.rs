@@ -109,6 +109,10 @@ pub struct Access {
     pub admin: bool,
     /// Issues are switched on (forks start with them off)
     pub issues: bool,
+    /// The merge methods a PR may use; None where GitHub doesn't say (it tells writers only)
+    pub allow_merge_commit: Option<bool>,
+    pub allow_squash_merge: Option<bool>,
+    pub allow_rebase_merge: Option<bool>,
 }
 
 fn access(r: RepoRef, info: &Value) -> Access {
@@ -120,6 +124,9 @@ fn access(r: RepoRef, info: &Value) -> Access {
         triage: can("triage"),
         admin: can("admin"),
         issues: info["has_issues"].as_bool().unwrap_or(true),
+        allow_merge_commit: info["allow_merge_commit"].as_bool(),
+        allow_squash_merge: info["allow_squash_merge"].as_bool(),
+        allow_rebase_merge: info["allow_rebase_merge"].as_bool(),
     }
 }
 

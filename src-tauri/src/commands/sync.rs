@@ -57,6 +57,7 @@ pub async fn merge(
     state: State<'_, AppState>,
     name: String,
     how: Option<git::MergeKind>,
+    autostash: Option<bool>,
 ) -> Res<bool> {
     let how = how.unwrap_or(git::MergeKind::Ff);
     let label = match how {
@@ -64,16 +65,20 @@ pub async fn merge(
         git::MergeKind::Ff | git::MergeKind::NoFf => format!("Merge {name}"),
     };
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::merge(r, &name, how)
+        git::merge(r, &name, how, autostash.unwrap_or(false))
     })
     .await
 }
 
 #[tauri::command]
-pub async fn rebase(state: State<'_, AppState>, onto: String) -> Res<bool> {
+pub async fn rebase(
+    state: State<'_, AppState>,
+    onto: String,
+    autostash: Option<bool>,
+) -> Res<bool> {
     let label = format!("Rebase onto {onto}");
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::rebase(r, &onto)
+        git::rebase(r, &onto, autostash.unwrap_or(false))
     })
     .await
 }

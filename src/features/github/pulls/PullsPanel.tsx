@@ -70,8 +70,9 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
         (p) => p.headRef === status.branch && p.state === "open" && (!originName || p.headRepo?.toLowerCase() === originName),
       )
     : undefined;
-  const newLabel = currentPull ? `#${currentPull.number} already open for this branch` : "New pull request";
-  const canCreate = !!status?.branch && !currentPull;
+  // A checked-out fork PR (pr/7) is someone else's: a new PR would publish it into origin.
+  const newLabel = status?.follows ? `This branch is pull request ${status.follows}` : currentPull ? `#${currentPull.number} already open for this branch` : "New pull request";
+  const canCreate = !!status?.branch && !status.follows && !currentPull;
 
   const ownRows = <PullRows pulls={own.data ?? null} match={find.needle ? match : null} error={error} filter={filter} activeKey={activeKey} onOpen={onOpen} account={account} roomy={!upstream} target={null} {...more("origin", own)} />;
 
