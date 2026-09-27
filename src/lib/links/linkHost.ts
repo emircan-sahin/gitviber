@@ -4,10 +4,11 @@
 import type { IDisposable, ILink, Terminal } from "@xterm/xterm";
 import { api, github } from "../api";
 import { primaryKey } from "../platform";
-import { type Alias, type FileIndex, findTerminalLinks, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
+import { type Alias, type FileIndex, findTerminalLinks, hyperlinkTarget, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
 import { dirname, slashes } from "../path";
 import { failed } from "../app/toast";
 import { revealInCode } from "../editor/reveal";
+import { revealPath } from "../app/openIn";
 
 /** Where a file's paths resolve: a commit's tree (`<sha>`, `<sha>^`), or the working tree (null) as of `revision`. */
 export interface LinkTree {
@@ -93,6 +94,22 @@ export function openTarget(target: Target, focus = false) {
  * (it can't be told where a `cd` went) or the repo root, with a line when one follows.
  */
 export function terminalLinks(term: Terminal, cwd: string): IDisposable {
+  // OSC 8 hyperlinks, which xterm finds itself: by the same rule, but their text needn't be where
+  // they go, so that shows on hover. Other schemes than http(s) come through for file://, and
+  // hyperlinkTarget drops the rest (javascript:, custom ones).
+  const hyperlink = (uri: string) => (host ? hyperlinkTarget(uri, host.root) : null);
+  term.options.linkHandler = {
+    allowNonHttpProtocols: true,
+    hover: (_, uri) => hyperlink(uri) && term.element?.setAttribute("title", uri),
+    leave: () => term.element?.removeAttribute("title"),
+    activate: (e, uri) => {
+      const [h, target] = [host, hyperlink(uri)];
+      if (!primaryKey(e) || !h || !target) return;
+      if ("url" in target) return openTarget(target, true);
+      // A file opens in the code view; a folder, or a file not listed (ignored), is revealed in the file manager.
+      void indexOf({ rev: null, revision: h.revision }).then((index) => (index.files.has(target.path) ? openTarget(target, true) : revealPath(target.path)));
+    },
+  };
   return term.registerLinkProvider({
     provideLinks(y, callback) {
       const h = host;

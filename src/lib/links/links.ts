@@ -188,6 +188,28 @@ export function splitPosition(spec: string): { path: string; line?: number; colu
   return { path: spec.slice(0, at.index), line, column };
 }
 
+/**
+ * Where an OSC 8 hyperlink (`ls --hyperlink`, delta) goes: an http(s) page, or a file:// path in
+ * `root` by its repo-relative path ("" for `root` itself), at `:12` or `#L12` when it names a line.
+ * Other schemes, and files outside the repo, go nowhere.
+ */
+export function hyperlinkTarget(uri: string, root: string): Target | null {
+  let url: URL;
+  let spec: string;
+  try {
+    url = new URL(uri);
+    spec = decodeURIComponent(url.pathname) + url.hash;
+  } catch {
+    return null;
+  }
+  if (url.protocol === "http:" || url.protocol === "https:") return { url: uri };
+  if (url.protocol !== "file:" || !root) return null;
+  const { path, line, column } = splitPosition(spec);
+  const [file, base] = [path.replace(/(.)\/$/, "$1"), slashes(root)];
+  if (file === base) return { path: "" };
+  return file.startsWith(`${base}/`) ? { path: file.slice(base.length + 1), line, column } : null;
+}
+
 /** `import a.b, c as d`: one link per module. */
 function pythonImports(line: string, add: (start: number, spec: string, kind: LinkKind) => void) {
   const head = /^\s*import\s+/.exec(line);

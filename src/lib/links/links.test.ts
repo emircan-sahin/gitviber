@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { findLinks, findTerminalLinks, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
+import { findLinks, findTerminalLinks, hyperlinkTarget, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
 
 const specs = (line: string, lang: string) => findLinks(line, lang).map((l) => [line.slice(l.start, l.end), l.kind]);
 
@@ -243,4 +243,20 @@ test("terminal output: URLs, paths from the shell's folder, bare names", () => {
   assert.deepEqual(open("/repo/docs/guide.md", null), { path: "docs/guide.md", line: undefined, column: undefined });
   assert.equal(open("src/lib/api.ts", null), null, "a shell outside the repo: its relative paths aren't the repo's");
   assert.equal(open("package.json", ""), null);
+});
+
+test("resolves OSC 8 hyperlinks: pages, and files in the repo", () => {
+  const root = "/Users/me/repo";
+  assert.deepEqual(hyperlinkTarget("https://github.com/a/b", root), { url: "https://github.com/a/b" });
+  assert.deepEqual(hyperlinkTarget("file://mac.local/Users/me/repo/src/a%20b.ts", root), { path: "src/a b.ts", line: undefined, column: undefined });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo/src/a.ts#L12", root), { path: "src/a.ts", line: 12, column: undefined });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo/src/a.ts:3:4", root), { path: "src/a.ts", line: 3, column: 4 });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo/src/", root), { path: "src", line: undefined, column: undefined });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo", root), { path: "" });
+  assert.equal(hyperlinkTarget("file:///Users/me/repo-other/a.ts", root), null);
+  assert.equal(hyperlinkTarget("file:///Users/me/repo/../secret", root), null);
+  assert.equal(hyperlinkTarget("file:///etc/passwd", root), null);
+  assert.equal(hyperlinkTarget("javascript:alert(1)", root), null);
+  assert.equal(hyperlinkTarget("vscode://file/Users/me/repo/a.ts", root), null);
+  assert.equal(hyperlinkTarget("not a url", root), null);
 });
