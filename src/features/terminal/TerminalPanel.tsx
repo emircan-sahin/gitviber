@@ -10,7 +10,7 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Worktree } from "@/lib/api";
 import { commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
-import { focusTab, tabMove } from "@/lib/ui/useListNav";
+import { focusMovedTab, focusTab, tabMove } from "@/lib/ui/useListNav";
 import { focusedPanel, focusPanel } from "@/lib/ui/panels";
 import {
   activateGroup,
@@ -122,7 +122,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
     if (shift) {
       if (!groups[i + shift]) return;
       moveGroup(groups[i].id, shift);
-      focusTab(el, true);
+      focusMovedTab(el);
     } else if (to !== undefined) {
       const at = Math.max(0, Math.min(els.length - 1, to));
       activateGroup(groups[at].id, false);

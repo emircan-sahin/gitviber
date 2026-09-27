@@ -3,7 +3,7 @@ import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
 import { useShortcut } from "@/lib/commands/keybindings";
-import { focusTab, isMenuKey, openRowMenu, tabMove } from "@/lib/ui/useListNav";
+import { focusMovedTab, focusTab, isMenuKey, openRowMenu, tabMove } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { useEdited } from "@/lib/editor/edits";
 import { basename } from "@/lib/path";
@@ -54,7 +54,7 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
     if (shift) {
       if (!tabs[i + shift]) return;
       onMoveTab(i, i + shift);
-      focusTab(el, true);
+      focusMovedTab(el);
     } else if (isMenuKey(e)) openRowMenu(el);
     else if (e.shiftKey || e.altKey) return;
     else if (step || e.key === "Home" || e.key === "End") {
