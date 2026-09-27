@@ -184,7 +184,23 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       w.prunable ? `${name}'s folder is gone, but it's locked${w.lockReason ? ` (${w.lockReason})` : ""}: its drive may only be unplugged. Prune it anyway?${branch}` : `Delete worktree ${name} and its folder?${lost}${lock}${branch}`,
       { title: w.prunable ? "Prune worktree" : "Remove worktree", kind: "warning", okLabel: w.prunable ? "Prune" : "Delete worktree" },
     );
-    if (ok) await run("Remove worktree", () => api.removeWorktree(w.path, changed > 0 || w.locked), `Worktree ${name} removed`);
+    if (!ok) return;
+    const force = changed > 0 || w.locked;
+    await run(
+      "Remove worktree",
+      async () => {
+        try {
+          await api.removeWorktree(w.path, force);
+        } catch (e) {
+          // git refuses any worktree with submodules checked out, clean or not, unless forced.
+          if (force || !errorMessage(e).includes("working trees containing submodules cannot be moved or removed")) throw e;
+          const again = await ask(`${name} has submodules, which git only removes with force. Delete anyway?`, { title: "Remove worktree", kind: "warning", okLabel: "Delete worktree" });
+          if (!again) throw CANCELLED;
+          await api.removeWorktree(w.path, true);
+        }
+      },
+      `Worktree ${name} removed`,
+    );
   };
 
   const unlockWorktree = async (w: Worktree) => {
