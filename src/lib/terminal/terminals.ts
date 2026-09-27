@@ -664,6 +664,19 @@ export function activateGroup(id: number, focus = true) {
   if (focus) focusActive();
 }
 
+/** ⌘1–⌘9 with focus in the panel, as in VS Code: the tab at `i`, -1 the last. */
+export function goGroup(i: number) {
+  const g = state.groups.at(i);
+  if (g) activateGroup(g.id);
+}
+
+/** Next / previous tab with focus in the panel, wrapping. */
+export function stepGroup(dir: 1 | -1) {
+  const n = state.groups.length;
+  const at = state.groups.findIndex((g) => g.id === state.active);
+  if (n > 1) activateGroup(state.groups[(at + dir + n) % n].id);
+}
+
 function focusPane(id: number) {
   const g = state.groups.find((x) => x.panes.some((p) => p.id === id));
   if (!g || (g.focused === id && state.active === g.id)) return;
