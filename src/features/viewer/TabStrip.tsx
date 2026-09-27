@@ -1,7 +1,7 @@
 import { History, ListTree, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { type Selection, selectionPath } from "@/lib/repo/selection";
+import { onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
 import { matchesCommand, useShortcut } from "@/lib/commands/keybindings";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
@@ -233,6 +233,7 @@ function TabItem({
               <History /> Show History
             </ContextMenuItem>
             <ContextMenuItem
+              disabled={!onDisk(t.sel)}
               onSelect={() => {
                 keepFocus.current = true;
                 onRevealInExplorer(selectionPath(t.sel));

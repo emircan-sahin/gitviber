@@ -12,7 +12,7 @@ import { setLinkHost } from "@/lib/links/linkHost";
 import { prepare } from "@/lib/editor/monaco";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { dropReveal, revealWaits } from "@/lib/editor/reveal";
-import { type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
+import { onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
@@ -265,7 +265,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "tab.next": stepTab(1),
     "tab.prev": stepTab(-1),
     "file.reveal": () => revealInFinder(active?.sel),
-    "file.revealInExplorer": active && active.sel.kind !== "pull" && active.sel.kind !== "issue" ? () => revealInExplorer(selectionPath(active.sel)) : undefined,
+    "file.revealInExplorer": active && onDisk(active.sel) ? () => revealInExplorer(selectionPath(active.sel)) : undefined,
     "repo.refresh": () => repo.refresh(),
     "workbench.quickOpen": () => showQuickOpen(),
     "workbench.openChange": uncommitted.length ? () => showQuickOpen("changes") : undefined,

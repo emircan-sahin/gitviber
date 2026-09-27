@@ -29,6 +29,12 @@ export function selectionPath(s: Selection) {
   return s.file.path;
 }
 
+/** The tab's file is in the working tree: not a commit's or a pull request's version, nor deleted. */
+export function onDisk(s: Selection) {
+  if (s.kind === "file") return true;
+  return (s.kind === "unstaged" || s.kind === "staged" || s.kind === "conflict" || s.kind === "branch") && s.file.status !== "D";
+}
+
 /** Identity of what a tab shows; also used to match list rows to the open tab. */
 export function selectionKey(s: Selection) {
   // By url: a fork's #3 and its original's #3 are different threads.
