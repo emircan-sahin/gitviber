@@ -163,3 +163,32 @@ fn staging_unstaging_and_discarding_more_paths_than_argv_holds() {
     assert!(status(&r).unwrap().unstaged.is_empty());
     assert_eq!(fs::read_to_string(r.join(&files[499])).unwrap(), "a\n");
 }
+
+/// chmod +x alone has no text diff; status says what changed.
+#[cfg(unix)]
+#[test]
+fn a_mode_change_is_reported() {
+    use std::os::unix::fs::PermissionsExt;
+    let sb = Sandbox::new("mode");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "run.sh", "echo\n", "base");
+    fs::set_permissions(r.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    let st = status(&r).unwrap();
+    assert_eq!(st.unstaged[0].mode.as_deref(), Some("100644 → 100755"));
+    stage(&r, &["run.sh".into()]).unwrap();
+    let st = status(&r).unwrap();
+    assert_eq!(st.staged[0].mode.as_deref(), Some("100644 → 100755"));
+    assert!(st.unstaged.is_empty());
+    // A new file has no old mode to compare.
+    fs::write(r.join("new.sh"), "x\n").unwrap();
+    stage(&r, &["new.sh".into()]).unwrap();
+    let st = status(&r).unwrap();
+    assert!(st
+        .staged
+        .iter()
+        .find(|f| f.path == "new.sh")
+        .unwrap()
+        .mode
+        .is_none());
+}

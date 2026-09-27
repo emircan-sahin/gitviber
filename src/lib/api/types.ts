@@ -10,6 +10,8 @@ export interface FileChange {
   oid: string | null;
   /** Conflicts only: UU both modified, AA both added, UD/DU deleted by them/us, AU/UA, DD. */
   conflict: string | null;
+  /** "100644 → 100755" when the file mode changed (chmod +x); the text diff doesn't show it. */
+  mode: string | null;
   /** Untracked entry that is another repository's root (never one of this repo's worktrees). */
   nested: Nested | null;
 }
