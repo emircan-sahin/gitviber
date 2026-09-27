@@ -4,7 +4,6 @@ import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { resetSettings } from "@/lib/settings";
-import { IS_MAC } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 import { createStore } from "@/lib/store";
 import { AppearanceSection } from "./sections/Appearance";
@@ -29,8 +28,6 @@ const SECTIONS = [
   { id: "updates", label: "Updates", icon: CircleArrowUp },
 ] as const;
 type Section = (typeof SECTIONS)[number]["id"];
-// Its one setting, the ⌥ key, is macOS's.
-const SHOWN = SECTIONS.filter((s) => IS_MAC || s.id !== "terminal");
 
 // Open state lives outside React so the top bar and ⌘, can open it from anywhere.
 const openSection = createStore<Section | null>(null);
@@ -73,7 +70,7 @@ export function SettingsDialog() {
         <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar p-2">
           <DialogTitle className="px-2 pt-1.5 pb-2.5">Settings</DialogTitle>
           <DialogDescription className="sr-only">Appearance, editor, diff, terminal, git, commit message, Open in, keyboard shortcut and update preferences.</DialogDescription>
-          {SHOWN.map(({ id, label, icon: Icon }) => (
+          {SECTIONS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setOpen(id)}

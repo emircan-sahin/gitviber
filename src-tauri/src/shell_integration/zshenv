@@ -1,0 +1,15 @@
+# GitViber's zsh startup, found through ZDOTDIR (the injection kitty's and Ghostty's zsh integrations
+# use). It unsets ZDOTDIR again, runs the user's own .zshenv, then loads the hooks. zsh reads
+# .zprofile, .zshrc and .zlogin from the user's folder itself, so each of their files runs once.
+'builtin' 'unset' ZDOTDIR
+{
+  'builtin' 'typeset' _gitviber_file=$HOME/.zshenv
+  [[ ! -r $_gitviber_file ]] || 'builtin' 'source' -- $_gitviber_file
+} always {
+  if [[ -o interactive ]]; then
+    # %x: this file, wherever the app keeps it.
+    _gitviber_file=${${(%):-%x}:A:h}/gitviber.zsh
+    [[ ! -r $_gitviber_file ]] || 'builtin' 'source' -- $_gitviber_file
+  fi
+  'builtin' 'unset' _gitviber_file
+}

@@ -1,0 +1,139 @@
+import type { IMarker, Terminal } from "@xterm/xterm";
+
+/**
+ * An OSC 133 mark (shell integration; VS Code's OSC 633 uses the same letters): A a prompt starts,
+ * B the typed command does, C its output does, D it ended, with its exit code when the shell gives one.
+ */
+export function parseMark(data: string): { kind: "A" | "B" | "C" | "D"; exit?: number } | null {
+  const [kind, arg] = data.split(";");
+  if (kind !== "A" && kind !== "B" && kind !== "C" && kind !== "D") return null;
+  return kind === "D" && arg !== undefined && /^\d+$/.test(arg) ? { kind, exit: Number(arg) } : { kind };
+}
+
+interface Command {
+  prompt: IMarker;
+  /** Where its output starts (C), and where it ended (D) with the cursor's column there. */
+  output?: IMarker;
+  end?: IMarker;
+  endX?: number;
+}
+
+/**
+ * The commands the shell marks with OSC 133, as VS Code's and Ghostty's terminals read them: a
+ * marker per prompt, a mark beside it once the command ends (red for a non-zero exit), and the
+ * last command's output. Nothing is done per byte: xterm calls in only for the marks.
+ */
+export class CommandMarks {
+  /** Commands that ran, oldest first. A prompt trimmed off the history or cleared has a disposed marker. */
+  private commands: Command[] = [];
+  /** The one at the prompt now, or running. */
+  private current: Command | null = null;
+  /** The last one that ended: the only one that keeps its output's markers. */
+  private last: Command | null = null;
+  private term: Terminal;
+  private prompted = () => {};
+  /** The shell's first prompt is up: it reads what's typed now. */
+  readonly ready = new Promise<void>((resolve) => (this.prompted = resolve));
+
+  constructor(term: Terminal) {
+    this.term = term;
+    for (const code of [133, 633])
+      term.parser.registerOscHandler(code, (data) => {
+        const mark = parseMark(data);
+        if (mark) this.on(mark.kind, mark.exit);
+        // 633's other kinds (E, P) aren't read here; nothing else would.
+        return true;
+      });
+  }
+
+  private on(kind: string, exit?: number) {
+    // A shell under a full-screen program (tmux) marks lines that aren't the history's.
+    if (this.term.buffer.active.type !== "normal") return;
+    if (kind === "A") {
+      const c = this.current;
+      // No D (the shell was interrupted, or doesn't send one): it ended here, how isn't known.
+      if (c?.output && !c.end) this.ended(c);
+      // A prompt nothing ran from (an empty line, ^C) isn't kept.
+      else if (c && !c.output) c.prompt.dispose();
+      this.current = { prompt: this.term.registerMarker(0) };
+      this.prompted();
+    } else if (kind === "C" && this.current && !this.current.output) {
+      this.current.output = this.term.registerMarker(0);
+      this.commands = this.commands.filter((x) => !x.prompt.isDisposed);
+      this.commands.push(this.current);
+    } else if (kind === "D" && this.current?.output && !this.current.end) {
+      this.ended(this.current, exit);
+      this.current = null;
+    }
+  }
+
+  private ended(c: Command, exit?: number) {
+    c.end = this.term.registerMarker(0);
+    c.endX = this.term.buffer.active.cursorX;
+    if (this.last) {
+      this.last.output?.dispose();
+      this.last.end?.dispose();
+    }
+    this.last = c;
+    const failed = exit !== undefined && exit !== 0;
+    const mark = this.term.registerDecoration({ marker: c.prompt });
+    mark?.onRender((el) => {
+      if (el.firstChild) return;
+      // The dot sits in the pane's left padding; the cell under the decoration stays clickable.
+      el.style.pointerEvents = "none";
+      const dot = document.createElement("div");
+      dot.className = "gv-command-mark";
+      if (failed) dot.dataset.failed = "";
+      dot.title = exit === undefined ? "Command ended" : `Exit code ${exit}`;
+      el.appendChild(dot);
+    });
+  }
+
+  /**
+   * The prompt of the command above (-1) or below (1) the top of the view scrolled to the top, as
+   * Ghostty's jump_to_prompt; below the last one, the bottom.
+   */
+  jump(dir: 1 | -1) {
+    const top = this.term.buffer.active.viewportY;
+    const lines = this.commands.flatMap((c) => (c.prompt.isDisposed ? [] : [c.prompt.line]));
+    const to = dir < 0 ? lines.filter((l) => l < top).pop() : lines.find((l) => l > top);
+    if (to !== undefined) this.term.scrollToLine(to);
+    else if (dir > 0) this.term.scrollToBottom();
+  }
+
+  /** The rows of the last ended command's output, the last one up to `endX`; null without one. */
+  private lastRows() {
+    const c = this.last;
+    if (!c?.output || !c.end || c.end.isDisposed) return null;
+    // Its start scrolled off the history: what's left of it.
+    return { start: Math.max(0, c.output.line), end: c.end.line, endX: c.endX ?? 0 };
+  }
+
+  hasOutput() {
+    return this.lastRows() !== null;
+  }
+
+  lastOutput(): string | null {
+    const rows = this.lastRows();
+    if (!rows) return null;
+    const buffer = this.term.buffer.normal;
+    let text = "";
+    for (let y = rows.start; y <= rows.end; y++) {
+      const line = buffer.getLine(y);
+      if (!line) break;
+      // A wrapped row continues the line above it.
+      if (y > rows.start && !line.isWrapped) text += "\n";
+      text += y === rows.end ? line.translateToString(true, 0, rows.endX) : line.translateToString(true);
+    }
+    return text.replace(/\n+$/, "");
+  }
+
+  selectLastOutput() {
+    const rows = this.lastRows();
+    if (!rows) return;
+    const end = rows.endX > 0 ? rows.end : rows.end - 1;
+    if (end < rows.start) return;
+    this.term.selectLines(rows.start, end);
+    if (rows.start < this.term.buffer.active.viewportY) this.term.scrollToLine(rows.start);
+  }
+}

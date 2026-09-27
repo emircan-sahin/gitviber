@@ -27,6 +27,7 @@ mod rewrite;
 #[cfg(test)]
 mod scenario_tests;
 mod shell;
+mod shell_integration;
 mod state;
 mod suggest;
 mod titlebar;
