@@ -242,6 +242,7 @@ export type HistoryEdit =
 
 export interface LinesRequest {
   path: string;
+  oldPath: string | null;
   kind: "unstaged" | "staged";
   action: "stage" | "unstage" | "discard";
   /** The texts the diff showed (null: no such file), so a file changed since isn't touched. */

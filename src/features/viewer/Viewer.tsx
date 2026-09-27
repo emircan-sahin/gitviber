@@ -314,7 +314,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               blameColumn={!!s.blame && isFile && !blame?.unavailable}
               onBlameClick={(c) => onShowCommit(c.sha, c.path)}
               links={linkSides(sel, revision)}
-              staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, refresh } : null}
+              staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, oldPath: sel.file.oldPath, refresh } : null}
               review={review}
               editable={editable}
               github={github}

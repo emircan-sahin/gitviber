@@ -13,6 +13,8 @@ use std::time::Duration;
 #[serde(rename_all = "camelCase")]
 pub struct Request {
     pub path: String,
+    /// A staged rename's old path, where HEAD's side is read.
+    pub old_path: Option<String>,
     /// The diff shown: "unstaged" (index → worktree) or "staged" (HEAD → index).
     pub kind: String,
     /// "stage" or "discard" an unstaged change, "unstage" a staged one.
@@ -67,9 +69,16 @@ pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
         ("unstaged", "stage" | "discard") | ("staged", "unstage") => {}
         _ => return Err(format!("can't {action} lines of a {} diff", req.kind)),
     }
-    let now = git::diff_pair(repo, &req.kind, &req.path, None, None, None, None, |p| {
-        crate::fs::read_file(repo, p)
-    })?;
+    let now = git::diff_pair(
+        repo,
+        &req.kind,
+        &req.path,
+        req.old_path.as_deref(),
+        None,
+        None,
+        None,
+        |p| crate::fs::read_file(repo, p),
+    )?;
     for (shown, live) in [
         (&req.original, &now.original),
         (&req.modified, &now.modified),
