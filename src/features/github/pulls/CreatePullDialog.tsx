@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Branch, errorMessage, fullName, type GitHubAccess, github, type Pull, type RepoStatus } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
-import { closingLine, withClosing } from "@/lib/github/issueWork";
+import { withClosing } from "@/lib/github/issueWork";
 import { loadBranchIssue } from "@/lib/repo/session";
 import { parseSuggestion, PULL_PROMPT } from "@/lib/git/suggest";
 import { SuggestButton } from "@/features/changes/SuggestButton";
@@ -56,11 +56,9 @@ export function CreatePullDialog({
   const bases = [...new Set([target.defaultBranch, ...remote])].filter((b): b is string => !!b && (upstream || b !== head) && b !== "HEAD");
   const [title, setTitle] = useState(defaultTitle);
   // A branch started from an issue (its Start in a worktree) closes it, as the body says where it can be seen.
-  const [closes] = useState(() => {
-    const url = loadBranchIssue(fullName(origin.repo), head);
-    return url && closingLine(url, fullName(target.repo));
-  });
-  const [body, setBody] = useState(closes ?? "");
+  const [issueUrl] = useState(() => loadBranchIssue(fullName(origin.repo), head));
+  const closing = (text: string) => withClosing(text, issueUrl, fullName(target.repo));
+  const [body, setBody] = useState(() => closing(""));
   // Once typed in, the fields are the user's; the draft below stops filling them.
   const [typed, setTyped] = useState({ title: false, body: false });
   const [base, setBase] = useState(bases[0] ?? "main");
@@ -84,7 +82,7 @@ export function CreatePullDialog({
       if (!live) return;
       const one = d.commits === 1 && d.subject;
       if (!typed.title) setTitle(one ? d.subject! : branchTitle(head));
-      if (!typed.body) setBody(withClosing(one ? (d.body ?? "") : "", closes));
+      if (!typed.body) setBody(closing(one ? (d.body ?? "") : ""));
     })().catch(() => {});
     return () => {
       live = false;
@@ -107,7 +105,7 @@ export function CreatePullDialog({
         if (!s) return false;
         // What was typed while it ran stays too.
         if (!mineNow.current.title) setTitle(s.summary);
-        if (!mineNow.current.body) setBody(withClosing(s.body, closes));
+        if (!mineNow.current.body) setBody(closing(s.body));
         return true;
       },
     );

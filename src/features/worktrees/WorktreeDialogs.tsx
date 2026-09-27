@@ -97,7 +97,7 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
   const [headOption] = useState(from === "HEAD");
   const [dir, setDir] = useState(() => loadWorktreeDir(main) ?? fallback);
   const [terminal, setTerminal] = useState(true);
-  const [command, setCommand] = useState(() => loadWorktreeRun(main));
+  const [command, setCommand] = useState(() => loadWorktreeRun(main, !!issue));
   const [switchTo, setSwitchTo] = useState(false);
   const includes = useAsyncValue(api.worktreeIncludes, [], 0);
   const check = refNameCheck(name, localNames(branches));
@@ -115,7 +115,7 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
       saveWorktreeDir(main, dir === fallback ? null : dir);
       if (issue) saveBranchIssue(issue.origin, n, issue.url);
       if (terminal) {
-        saveWorktreeRun(main, command.trim());
+        saveWorktreeRun(main, command.trim(), !!issue);
         openTerminal(path, issue ? withIssue(command.trim(), issue.number) : command.trim());
       }
       if (switchTo) onOpen(path);

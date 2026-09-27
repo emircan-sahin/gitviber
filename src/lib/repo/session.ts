@@ -30,6 +30,7 @@ const EDITS_KEY = "gitviber.fileEdits";
 const WORKTREE_DIRS_KEY = "gitviber.worktreeDirs";
 const WORKTREE_RUN_KEY = "gitviber.worktreeRun";
 const ISSUE_BRANCHES_KEY = "gitviber.issueBranches";
+const ISSUE_RUN_KEY = "gitviber.issueRun";
 // Agent worktrees come and go; keep only the most recently used.
 const MAX = 30;
 
@@ -120,15 +121,18 @@ export function saveWorktreeDir(main: string, dir: string | null) {
   put(WORKTREE_DIRS_KEY, main, dir);
 }
 
-/** The command the project `main` last ran in a new worktree's terminal. */
-export function loadWorktreeRun(main: string): string {
-  const r = all(WORKTREE_RUN_KEY)[main];
+/**
+ * The command the project `main` last ran in a new worktree's terminal. `forIssue`: one started
+ * from an issue, kept apart as its {issue} means nothing elsewhere; the plain one until there is one.
+ */
+export function loadWorktreeRun(main: string, forIssue = false): string {
+  const r = forIssue ? (all(ISSUE_RUN_KEY)[main] ?? all(WORKTREE_RUN_KEY)[main]) : all(WORKTREE_RUN_KEY)[main];
   return typeof r === "string" ? r : "";
 }
 
 /** "" forgets it. */
-export function saveWorktreeRun(main: string, run: string) {
-  put(WORKTREE_RUN_KEY, main, run || null);
+export function saveWorktreeRun(main: string, run: string, forIssue = false) {
+  put(forIssue ? ISSUE_RUN_KEY : WORKTREE_RUN_KEY, main, run || null);
 }
 
 /**

@@ -3,6 +3,9 @@
 import { sanitizedRefName } from "../git/refs.ts";
 
 const SLUG = 40;
+// Letters NFKD leaves whole: Turkish's dotless ı among them, which would otherwise stay while its
+// neighbors lose their marks.
+const PLAIN: Record<string, string> = { ı: "i", ł: "l", ø: "o", đ: "d", ð: "d", þ: "th", ß: "ss", æ: "ae", œ: "oe" };
 
 /** `12-short-title`, as GitHub's own "Create a branch" names one: lowercase, cut at a word. */
 export function issueBranchName(number: number, title: string) {
@@ -10,12 +13,15 @@ export function issueBranchName(number: number, title: string) {
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
     .toLowerCase()
+    .replace(/[ıłøđðþßæœ]/g, (c) => PLAIN[c])
     .replace(/['’]/g, "")
     .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "");
-  if (slug.length > SLUG) {
-    const cut = slug.slice(0, SLUG + 1);
-    slug = cut.includes("-") ? cut.slice(0, cut.lastIndexOf("-")) : cut.slice(0, SLUG);
+  // By code point: cutting UTF-16 units could leave half an emoji, which no ref name may hold.
+  const chars = Array.from(slug);
+  if (chars.length > SLUG) {
+    const cut = chars.slice(0, SLUG + 1).join("");
+    slug = cut.includes("-") ? cut.slice(0, cut.lastIndexOf("-")) : chars.slice(0, SLUG).join("");
   }
   return sanitizedRefName(slug ? `${number}-${slug}` : `issue-${number}`);
 }
@@ -33,10 +39,19 @@ export function closingLine(issueUrl: string, pullRepo: string) {
   return `Closes ${repo.toLowerCase() === pullRepo.toLowerCase() ? "" : repo}#${number}`;
 }
 
-/** `body` with `line` after it, unless it already closes that issue (any of GitHub's keywords). */
-export function withClosing(body: string, line: string | null) {
+const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
+
+/**
+ * `body` with the closing line for `issueUrl` after it, unless it already closes that issue: any of
+ * GitHub's keywords, before `#12` (in the PR's own repository), `owner/name#12` or the issue's url.
+ */
+export function withClosing(body: string, issueUrl: string | null, pullRepo: string) {
+  const line = issueUrl && closingLine(issueUrl, pullRepo);
   if (!line) return body;
-  const ref = line.slice("Closes ".length).replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
-  if (new RegExp(`\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s*:?\\s+${ref}\\b`, "i").test(body)) return body;
+  const [, repo, number] = ISSUE_URL.exec(issueUrl)!;
+  const refs = [`${escape(repo)}#${number}`, escape(issueUrl)];
+  if (repo.toLowerCase() === pullRepo.toLowerCase()) refs.push(`#${number}`);
+  const closes = new RegExp(`\\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\\s*:?\\s+(${refs.join("|")})(?![\\w/])`, "i");
+  if (closes.test(body)) return body;
   return body.trim() ? `${body.trimEnd()}\n\n${line}` : line;
 }
