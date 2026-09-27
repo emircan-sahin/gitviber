@@ -20,7 +20,7 @@ import { useEffect, useState } from "react";
 import { Wordmark } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { Tip } from "@/components/ui/tooltip";
+import { DisabledTip, Tip } from "@/components/ui/tooltip";
 import { api, cancelNetwork } from "@/lib/api";
 import { IS_MAC } from "@/lib/platform";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
@@ -90,8 +90,8 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const activity = busy ?? net?.label;
   const progress = net?.progress ? `${net.progress.phase}${net.progress.percent !== null ? ` ${net.progress.percent}%` : ""}` : "";
   // Mid-rebase git has HEAD detached; the branch it's rebasing is what the user is on.
-  const rebasing = status?.operation?.kind === "rebase" && status.operation.subject !== "detached HEAD" ? status.operation.subject : null;
-  const branchName = status?.branch ?? (rebasing ? `Rebasing ${rebasing}` : status?.head ? `detached @ ${status.head}` : "…");
+  const rebasing = status?.operation?.kind === "rebase" ? status.operation.subject : null;
+  const branchName = status?.branch ?? (rebasing ? `rebasing ${rebasing}` : status?.head ? `detached @ ${status.head}` : "…");
   const tracked = !!status?.upstream && !status.upstreamGone;
   // A fork's pull request checked out (github/checkout.rs) pulls from its refs/pull/<n>/head.
   const pullable = tracked || !!status?.follows;
@@ -185,15 +185,12 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         </Button>
       </Tip>
       <div className="flex">
-        <Tip label={gone ?? "Pull (fast-forward only)"}>
-          {/* Disabled, the button can't show why; this span can, and takes focus for the keyboard. */}
-          <span tabIndex={gone ? 0 : undefined} className="flex rounded-l-md outline-none focus-visible:ring-1 focus-visible:ring-ring">
-            <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !pullable} onClick={() => pull("ff")}>
-              <ArrowDownToLine /> Pull
-              {!!status?.behind && <span className="font-mono text-[10.5px] text-primary">{status.behind}</span>}
-            </Button>
-          </span>
-        </Tip>
+        <DisabledTip label={gone ?? "Pull (fast-forward only)"} disabled={!!gone} className="flex rounded-l-md rounded-r-none">
+          <Button variant="secondary" className="rounded-r-none" disabled={!!busy || !pullable} onClick={() => pull("ff")}>
+            <ArrowDownToLine /> Pull
+            {!!status?.behind && <span className="font-mono text-[10.5px] text-primary">{status.behind}</span>}
+          </Button>
+        </DisabledTip>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="secondary" className="w-5 rounded-l-none border-l-0 px-0" disabled={!!busy || !pullable}>
@@ -231,14 +228,11 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
           />
         </div>
       ) : status?.follows ? (
-        <Tip label={`Follows pull request ${status.follows}: pushes go to its author's fork, not ${status.push?.remote ?? "this remote"}`}>
-          {/* The disabled button can't take focus; this does, so the keyboard gets the reason too. */}
-          <span tabIndex={0} className="rounded-md outline-none focus-visible:ring-1 focus-visible:ring-ring">
-            <Button variant="secondary" disabled>
-              <ArrowUpFromLine /> Push
-            </Button>
-          </span>
-        </Tip>
+        <DisabledTip label={`Pull request ${status.follows}'s branch is on its author's fork; push there`} disabled>
+          <Button variant="secondary" disabled>
+            <ArrowUpFromLine /> Push
+          </Button>
+        </DisabledTip>
       ) : (
         <PublishButton
           remotes={status?.remotes ?? []}

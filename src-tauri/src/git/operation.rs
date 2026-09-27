@@ -37,8 +37,9 @@ pub fn operation(repo: &Path) -> Option<Operation> {
             };
             return Some(Operation {
                 kind: "rebase".into(),
+                // "detached HEAD" when the rebase didn't start on a branch.
                 subject: read_trim(d.join("head-name"))
-                    .map(|h| h.trim_start_matches("refs/heads/").to_string()),
+                    .and_then(|h| h.strip_prefix("refs/heads/").map(str::to_string)),
                 step: read_trim(d.join(step)).and_then(|v| v.parse().ok()),
                 total: read_trim(d.join(total)).and_then(|v| v.parse().ok()),
             });
