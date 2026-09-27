@@ -18,6 +18,11 @@ export interface Staging {
 
 export type LineAction = "stage" | "unstage" | "discard";
 
+/** The lines a selection takes, first and last. One that ends at the start of a line doesn't take that line. */
+export function selectedLines(sel: monaco.Selection): [number, number] {
+  return [sel.startLineNumber, sel.endColumn === 1 && sel.endLineNumber > sel.startLineNumber ? sel.endLineNumber - 1 : sel.endLineNumber];
+}
+
 const LABELS: Record<LineAction, [change: string, lines: string, failed: string]> = {
   stage: ["Stage Change", "Stage Selected Lines", "Stage failed"],
   unstage: ["Unstage Change", "Unstage Selected Lines", "Unstage failed"],
@@ -83,11 +88,7 @@ export function followLineActions(diff: monaco.editor.IStandaloneDiffEditor, sta
     const chosen = (): Picked | null => {
       const sel = code.getSelection();
       if (!sel) return null;
-      if (!sel.isEmpty()) {
-        // A selection that ends at the start of a line doesn't take that line.
-        const to = sel.endColumn === 1 && sel.endLineNumber > sel.startLineNumber ? sel.endLineNumber - 1 : sel.endLineNumber;
-        return pick(list(), side, sel.startLineNumber, to);
-      }
+      if (!sel.isEmpty()) return pick(list(), side, ...selectedLines(sel));
       const c = changeAt(list(), side, sel.startLineNumber);
       return c && whole(c);
     };

@@ -1,5 +1,5 @@
 import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, Eye, FileCode2, FoldVertical, GitCompareArrows, Rows2, Space, UserSearch } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { Tip } from "@/components/ui/tooltip";
@@ -15,6 +15,7 @@ import { FIT, type Zoom } from "@/lib/ui/svg";
 import { toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { copyText } from "@/lib/app/clipboard";
+import { gitHubLink } from "@/lib/github/url";
 import { type CodeViewHandle, MonacoView } from "./MonacoView";
 import { ConflictView } from "./ConflictView";
 import { IssueView } from "@/features/github/issues/IssueView";
@@ -24,7 +25,7 @@ import { useReview } from "@/features/github/pulls/ReviewThreads";
 import { isSvg, MediaView, mediaKind, SvgView } from "./MediaView";
 import { isMarkdown, MarkdownView } from "./MarkdownView";
 import { LineCounts, PathLabel, StatusPill } from "@/components/StatusBadge";
-import { type FileSelection, linkSides, pairArgs, useBlame, usePair } from "./diffPairs";
+import { type FileSelection, githubSides, linkSides, pairArgs, useBlame, usePair } from "./diffPairs";
 import type { Tab } from "./tabs";
 import { TabStrip } from "./TabStrip";
 import { CommitBar } from "./CommitBar";
@@ -49,6 +50,8 @@ interface ViewerProps {
   onShowCommit: (sha: string, path: string) => void;
   /** Reads the repo's status again, after staging lines here. */
   refresh: () => unknown;
+  /** origin's page on GitHub; null: not on GitHub. */
+  webUrl: string | null;
 }
 
 export function Viewer(props: ViewerProps) {
@@ -86,7 +89,7 @@ function findChange(status: RepoStatus | null, path: string): Selection | null {
   return staged ? { kind: "staged", file: staged } : null;
 }
 
-function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShowCommit, refresh }: ViewerProps & { tab: Tab; sel: FileSelection }) {
+function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShowCommit, refresh, webUrl }: ViewerProps & { tab: Tab; sel: FileSelection }) {
   const s = useSettings();
   const { pair, error } = usePair(sel, revision, diffWhitespace(s));
   const range = sel.kind === "pr-file" ? sel.range : null;
@@ -125,6 +128,9 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   // Text the file view can't turn back into the file's bytes stays read-only.
   const editable = isFile && !!pair && !pair.modified.lossy && keepsLineEndings(pair.modified.text);
   const dirty = useEdited().has(selectionPath(sel)) && isFile;
+  const github = useMemo(() => githubSides(sel, webUrl), [sel, webUrl]);
+  // An image or a preview has no lines to pick: the whole file.
+  const onGitHub = (open: boolean) => () => (view.current ? view.current.gitHubLink(open) : github?.modified && void gitHubLink(github.modified, null, open));
   // A preview shows the file as edited.
   const unsaved = dirty && rendered ? editedText(selectionPath(sel)) : undefined;
   useCommands({
@@ -134,6 +140,8 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
     "diff.stageChange": code && sel.kind === "unstaged" ? () => view.current?.lineAction("stage") : undefined,
     "diff.unstageChange": code && sel.kind === "staged" ? () => view.current?.lineAction("unstage") : undefined,
     "diff.discardChange": code && sel.kind === "unstaged" ? () => view.current?.lineAction("discard") : undefined,
+    "editor.copyGitHubLink": github ? onGitHub(false) : undefined,
+    "editor.openOnGitHub": github ? onGitHub(true) : undefined,
   });
 
   return (
@@ -295,6 +303,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, refresh } : null}
               review={review}
               editable={editable}
+              github={github}
             />
           )
         )}

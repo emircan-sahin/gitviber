@@ -4,6 +4,8 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { find } from "@/lib/ui/find";
+import { api } from "@/lib/api";
+import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { resetGitHubCache } from "@/lib/github/githubCache";
 import { warmHighlighter } from "@/lib/editor/highlight";
 import { setLinkHost } from "@/lib/links/linkHost";
@@ -164,6 +166,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   };
   const reviewLabel = shortRef(review || reviewBase(repo.branches) || "") || "a base branch";
   const remoteNames = useMemo(() => new Set(repo.branches.filter((b) => b.remote).map((b) => b.name)), [repo.branches]);
+  // origin's page on GitHub, for links. `remoteNames` is rebuilt on every git refresh, including the one `git remote set-url` causes.
+  const webUrl = useAsyncValue(() => api.githubWebUrl().catch(() => null), [remoteNames], null);
 
   // A merge/rebase that stopped on conflicts: bring the conflicts into view.
   const conflictCount = status?.conflicted.length ?? 0;
@@ -397,6 +401,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     branches={repo.branches}
                     status={status}
                     remotes={remoteNames}
+                    webUrl={webUrl}
                     hasMore={repo.hasMore}
                     loadMore={repo.loadMore}
                     refresh={() => repo.refresh()}
@@ -441,6 +446,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     onOpen={(sel) => open(sel, true)}
                     onShowHistory={(path) => showHistory(path, true)}
                     onShowCommit={(sha, path) => showInHistory({ query: sha, scope: null, reveal: { sha, path, id: ++reveals.current } })}
+                    webUrl={webUrl}
                   />
                 </div>
               </ResizablePanel>
@@ -517,6 +523,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                   onHover={prefetch}
                   onPathMoved={onPathMoved}
                   onShowHistory={showHistory}
+                  webUrl={webUrl}
                 />
               </div>
             </div>

@@ -85,6 +85,9 @@ export const COMMANDS = [
   { id: "diff.toggleWhitespace", title: "Toggle Ignore Whitespace", category: "Diff", keys: ["alt+w"] },
   { id: "editor.toggleWrap", title: "Toggle Word Wrap", category: "Editor", keys: ["alt+z"] },
   { id: "editor.toggleBlame", title: "Toggle Blame", category: "Editor", keys: [] },
+  // A permalink to the selected lines, else the file, at a commit GitHub has (lib/github/permalink).
+  { id: "editor.copyGitHubLink", title: "Copy GitHub Link", category: "Editor", keys: [] },
+  { id: "editor.openOnGitHub", title: "Open on GitHub", category: "Editor", keys: [] },
   { id: "editor.fontZoomIn", title: "Increase Code Font Size", category: "Editor", keys: ["alt+cmd+="] },
   { id: "editor.fontZoomOut", title: "Decrease Code Font Size", category: "Editor", keys: ["alt+cmd+-"] },
   { id: "editor.fontZoomReset", title: "Reset Code Font Size", category: "Editor", keys: ["alt+cmd+0"] },
