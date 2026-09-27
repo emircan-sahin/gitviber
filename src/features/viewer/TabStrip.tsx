@@ -2,8 +2,8 @@ import { History, ListTree, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
-import { matchesCommand, useShortcut } from "@/lib/commands/keybindings";
-import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
+import { useShortcut } from "@/lib/commands/keybindings";
+import { focusTab, isMenuKey, openRowMenu, tabMove } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { useEdited } from "@/lib/editor/edits";
 import { basename } from "@/lib/path";
@@ -49,23 +49,18 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
     const els = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
     const i = els.indexOf(el);
     const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
-    const shift = matchesCommand("tab.moveRight", e.nativeEvent) ? 1 : matchesCommand("tab.moveLeft", e.nativeEvent) ? -1 : 0;
+    const shift = tabMove(e);
     if (!shift && (e.metaKey || e.ctrlKey)) return;
     if (shift) {
       if (!tabs[i + shift]) return;
       onMoveTab(i, i + shift);
-      // React may move this very node, and a node taken out of the page loses focus.
-      requestAnimationFrame(() => {
-        el.focus();
-        el.scrollIntoView({ block: "nearest", inline: "nearest" });
-      });
+      focusTab(el, true);
     } else if (isMenuKey(e)) openRowMenu(el);
     else if (e.shiftKey || e.altKey) return;
     else if (step || e.key === "Home" || e.key === "End") {
       const to = e.key === "Home" ? 0 : e.key === "End" ? els.length - 1 : Math.max(0, Math.min(els.length - 1, i + step));
       onActivate(tabs[to].key);
-      els[to].focus();
-      els[to].scrollIntoView({ block: "nearest", inline: "nearest" });
+      focusTab(els[to]);
     } else if (e.key === "Enter" || e.key === " ") onPin(tabs[i].key);
     else if (e.key === "Backspace" || e.key === "Delete") onClose(tabs[i].key);
     else return;

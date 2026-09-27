@@ -9,7 +9,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Worktree } from "@/lib/api";
-import { commandIn, matchesCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { focusTab, tabMove } from "@/lib/ui/useListNav";
 import { focusedPanel, focusPanel } from "@/lib/ui/panels";
 import {
   activateGroup,
@@ -113,7 +114,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
   // (tab.moveLeft / tab.moveRight), ↵ or Space goes into the terminal, ⌫ kills it.
   const onTabKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const el = e.target instanceof HTMLElement && e.target.getAttribute("role") === "tab" ? e.target : null;
-    const shift = matchesCommand("tab.moveRight", e.nativeEvent) ? 1 : matchesCommand("tab.moveLeft", e.nativeEvent) ? -1 : 0;
+    const shift = tabMove(e);
     if (!el || (!shift && (e.altKey || e.metaKey || e.ctrlKey || e.shiftKey))) return;
     const els = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
     const i = els.indexOf(el);
@@ -121,16 +122,11 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
     if (shift) {
       if (!groups[i + shift]) return;
       moveGroup(groups[i].id, shift);
-      // React may move this very node, and a node taken out of the page loses focus.
-      requestAnimationFrame(() => {
-        el.focus();
-        el.scrollIntoView({ block: "nearest", inline: "nearest" });
-      });
+      focusTab(el, true);
     } else if (to !== undefined) {
       const at = Math.max(0, Math.min(els.length - 1, to));
       activateGroup(groups[at].id, false);
-      els[at].focus();
-      els[at].scrollIntoView({ block: "nearest", inline: "nearest" });
+      focusTab(els[at]);
     } else if (e.key === "Enter" || e.key === " ") activateGroup(groups[i].id);
     else if (e.key === "Backspace" || e.key === "Delete") {
       const next = els[i + 1] ?? els[i - 1];
