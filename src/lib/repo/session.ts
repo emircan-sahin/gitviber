@@ -29,6 +29,7 @@ const DRAFTS_KEY = "gitviber.drafts";
 const EDITS_KEY = "gitviber.fileEdits";
 const WORKTREE_DIRS_KEY = "gitviber.worktreeDirs";
 const WORKTREE_RUN_KEY = "gitviber.worktreeRun";
+const ISSUE_BRANCHES_KEY = "gitviber.issueBranches";
 // Agent worktrees come and go; keep only the most recently used.
 const MAX = 30;
 
@@ -128,6 +129,22 @@ export function loadWorktreeRun(main: string): string {
 /** "" forgets it. */
 export function saveWorktreeRun(main: string, run: string) {
   put(WORKTREE_RUN_KEY, main, run || null);
+}
+
+/**
+ * The issue (its url) `branch` was started for from the issue view, by origin's owner/name: a PR
+ * from it closes that issue. Kept here, never in the repo's config.
+ */
+export function loadBranchIssue(repo: string, branch: string): string | null {
+  const r = all(ISSUE_BRANCHES_KEY)[repo.toLowerCase()];
+  const url = isRecord(r) ? r[branch] : null;
+  return typeof url === "string" ? url : null;
+}
+
+export function saveBranchIssue(repo: string, branch: string, url: string) {
+  const r = all(ISSUE_BRANCHES_KEY)[repo.toLowerCase()];
+  const { [branch]: _, ...rest } = isRecord(r) ? r : {};
+  put(ISSUE_BRANCHES_KEY, repo.toLowerCase(), Object.fromEntries([...Object.entries(rest), [branch, url]].slice(-MAX)));
 }
 
 /** The project's own subfolder of the worktree folder set in Settings, or null while that's off. */
