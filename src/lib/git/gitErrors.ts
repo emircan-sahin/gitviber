@@ -22,8 +22,10 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
       fix: "diverged",
     },
   ],
+  // The last two refuse a force push (--force-with-lease --force-if-includes) over commits it
+  // hasn't seen or never had.
   [
-    /^ ?! \[rejected\] .*\((fetch first|non-fast-forward)\)$/m,
+    /^ ?! \[rejected\] .*\((fetch first|non-fast-forward|stale info|remote ref updated since checkout)\)$/m,
     {
       title: "The remote has commits you don't",
       explanation: "Someone pushed to this branch since you last pulled. Pull their commits in, then push again.",

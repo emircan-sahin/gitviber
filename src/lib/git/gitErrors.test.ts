@@ -33,6 +33,19 @@ hint: Updates were rejected because the tip of your current branch is behind
 hint: its remote counterpart. If you want to integrate the remote changes,
 hint: use 'git pull' before pushing again.`;
 
+// A force push (with lease) refused: the remote moved past what was fetched, or was fetched but
+// never in the branch.
+const STALE_INFO = `To /tmp/gv64/remote.git
+ ! [rejected]        main -> main (stale info)
+error: failed to push some refs to '/tmp/gv64/remote.git'`;
+
+const UPDATED_SINCE_CHECKOUT = `To /tmp/gv64/remote.git
+ ! [rejected]        main -> main (remote ref updated since checkout)
+error: failed to push some refs to '/tmp/gv64/remote.git'
+hint: Updates were rejected because the tip of the remote-tracking branch has
+hint: been updated since the last checkout. If you want to integrate the
+hint: remote changes, use 'git pull' before pushing again.`;
+
 const OVERWRITTEN_BY_MERGE = `error: Your local changes to the following files would be overwritten by merge:
 	f
 Please commit your changes or stash them before you merge.
@@ -130,7 +143,7 @@ test("a hook quoting git's messages isn't taken for them", () => {
 
 test("a push refused over commits someone else pushed, fetched or not, wants a pull", () => {
   // useRepoActions asks to force push first when the remote's commits were the branch's own.
-  for (const refused of [FETCH_FIRST, NON_FAST_FORWARD]) assert.equal(explainGitError(refused)?.fix, "fetch-first");
+  for (const refused of [FETCH_FIRST, NON_FAST_FORWARD, STALE_INFO, UPDATED_SINCE_CHECKOUT]) assert.equal(explainGitError(refused)?.fix, "fetch-first");
 });
 
 test("what the app handles elsewhere, or doesn't know, stays git's own words", () => {
