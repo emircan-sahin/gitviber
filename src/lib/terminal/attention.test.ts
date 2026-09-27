@@ -5,6 +5,7 @@ import { kittyNotes, osc777Note, osc9Note } from "./attention.ts";
 test("OSC 9 and 777 notifications, not ConEmu's commands or rxvt's others", () => {
   assert.deepEqual(osc9Note("Claude is waiting for your input"), { body: "Claude is waiting for your input" });
   assert.deepEqual(osc9Note("hello; world"), { body: "hello; world" });
+  assert.deepEqual(osc9Note("\n\nClaude needs your permission to use Bash"), { body: "Claude needs your permission to use Bash" });
   assert.equal(osc9Note("4;1;50"), null, "the progress bar");
   assert.equal(osc9Note("4;0"), null);
   assert.equal(osc9Note("12"), null);
@@ -18,10 +19,12 @@ test("OSC 9 and 777 notifications, not ConEmu's commands or rxvt's others", () =
 test("OSC 99 comes in chunks, and a query isn't a notification", () => {
   const read = kittyNotes();
   assert.deepEqual(read(";Hello"), { title: "Hello", body: "" });
-  assert.equal(read("i=7:d=0;Claude Code"), null);
+  assert.equal(read("i=7:d=0;Claude "), null);
+  assert.equal(read("i=7:d=0;Code"), null);
   assert.deepEqual(read(`i=7:p=body:e=1;${Buffer.from("Waiting ✅").toString("base64")}`), { title: "Claude Code", body: "Waiting ✅" });
   assert.equal(read("i=1:p=?;"), null);
   assert.equal(read("i=1:p=close;"), null);
   assert.equal(read("i=2:e=1;not base64!"), null);
   assert.equal(read("no payload"), null);
+  assert.deepEqual(read("i=3:p;Hi"), { title: "Hi", body: "" }, "a key without a value is empty, not its own name");
 });

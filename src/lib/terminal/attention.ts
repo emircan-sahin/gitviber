@@ -8,7 +8,8 @@ export interface Note {
 
 // A notification is a line or two; a program printing megabytes into one mustn't reach the OS.
 const MAX_TEXT = 1000;
-const cut = (s: string) => s.slice(0, MAX_TEXT);
+// Claude Code's iterm2 channel starts its message with blank lines.
+const cut = (s: string) => s.trim().slice(0, MAX_TEXT);
 
 /** OSC 9: iTerm2's notification, its text the body. ConEmu's `9;<1-12>` commands aren't one (`9;4` is the progress bar), as in Ghostty. */
 export function osc9Note(data: string): Note | null {
@@ -31,7 +32,15 @@ export function kittyNotes() {
   return (data: string): Note | null => {
     const at = data.indexOf(";");
     if (at < 0) return null;
-    const meta = new Map(data.slice(0, at).split(":").map((kv): [string, string] => [kv.split("=")[0], kv.slice(kv.indexOf("=") + 1)]));
+    const meta = new Map(
+      data
+        .slice(0, at)
+        .split(":")
+        .map((kv): [string, string] => {
+          const eq = kv.indexOf("=");
+          return eq < 0 ? [kv, ""] : [kv.slice(0, eq), kv.slice(eq + 1)];
+        }),
+    );
     const kind = meta.get("p") || "title";
     if (kind !== "title" && kind !== "body") return null;
     let text = data.slice(at + 1, at + 1 + MAX_TEXT * 2);
@@ -45,10 +54,11 @@ export function kittyNotes() {
     }
     const of = meta.get("i") ?? "";
     if (of !== id) [id, title, body] = [of, "", ""];
-    if (kind === "title") title = cut(title + text);
-    else body = cut(body + text);
+    // Trimmed once whole: a chunk may end or start with the space between two words.
+    if (kind === "title") title = (title + text).slice(0, MAX_TEXT * 2);
+    else body = (body + text).slice(0, MAX_TEXT * 2);
     if (meta.get("d") === "0") return null;
-    const note = { title, body };
+    const note = { title: cut(title), body: cut(body) };
     [id, title, body] = ["", "", ""];
     return note;
   };
