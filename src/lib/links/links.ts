@@ -5,6 +5,7 @@
  * runs under node:test.
  */
 
+import type { IBufferCell, IBufferLine } from "@xterm/xterm";
 import { basename, dirname, slashes } from "../path.ts";
 
 /** How a link's text becomes a target: each kind has its own lookup rules. */
@@ -140,22 +141,12 @@ export function findTerminalLinks(line: string, near?: Near): Link[] {
   });
 }
 
-/** A cell of terminal output, and a row of them: xterm's buffer lines and cells. */
-interface Cell {
-  getChars(): string;
-  getWidth(): number;
-}
-interface CellRow<C extends Cell> {
-  getCell(x: number, cell?: C): C | undefined;
-}
-
 /**
- * Rows of terminal cells as one line: `cells[i]` is the cell (counted along the rows, `cols` to a
- * row) that `text[i]` is drawn in, then the one past the last character; `starts[r]` is where row `r` starts in
- * `text`, then its length. Offsets and cells part ways at wide characters (two cells) and at
- * characters past U+FFFF (two UTF-16 units). `cell` is reused for each read.
+ * Rows of terminal cells as one line, and each character's cell (along the rows, `cols` to a row)
+ * then the one past the last; `starts[r]` is where row `r` starts in the text. Offsets and cells
+ * part at wide characters (two cells) and past U+FFFF (two UTF-16 units).
  */
-export function cellText<C extends Cell>(rows: (CellRow<C> | undefined)[], cols: number, cell?: C) {
+export function cellText(rows: (IBufferLine | undefined)[], cols: number, cell?: IBufferCell) {
   let text = "";
   const cells: number[] = [];
   const starts: number[] = [];

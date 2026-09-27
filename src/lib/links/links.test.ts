@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { IBufferLine } from "@xterm/xterm";
 import { test } from "node:test";
 import { cellText, findLinks, findTerminalLinks, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
 
@@ -249,7 +250,7 @@ test("terminal output: URLs, paths from the shell's folder, bare names", () => {
 const row = (cells: [string, number][], cols: number) => {
   const all = [...cells];
   while (all.length < cols) all.push(["", 1]);
-  return { getCell: (x: number) => (x < all.length ? { getChars: () => all[x][0], getWidth: () => all[x][1] } : undefined) };
+  return { getCell: (x: number) => (x < all.length ? { getChars: () => all[x][0], getWidth: () => all[x][1] } : undefined) } as unknown as IBufferLine;
 };
 
 test("maps terminal text back to cells past wide characters", () => {
