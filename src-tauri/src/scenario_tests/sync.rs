@@ -334,9 +334,15 @@ fn gone_upstream_is_unknown_not_pushed() {
     switch_branch(a, "feat", true).unwrap();
     write_commit(a, "f.txt", "f\n", "feature");
     push(a, false, None, &Net::default()).unwrap();
+    assert!(!status(a).unwrap().upstream_gone);
     run(a, &["push", "-q", "origin", "--delete", "feat"]).unwrap();
     fetch(a, &Net::default()).unwrap();
     write_commit(a, "g.txt", "g\n", "after the branch was deleted");
+    // Still configured, so the top bar says it's gone and offers Publish, not Pull.
+    let st = status(a).unwrap();
+    assert_eq!(st.upstream.as_deref(), Some("origin/feat"));
+    assert!(st.upstream_gone);
+    assert_eq!(st.publish.as_deref(), Some("origin"));
 
     let commits = log(a, None, 0, 10).unwrap();
     assert!(commits.iter().all(|x| !x.unpushed));
@@ -344,6 +350,9 @@ fn gone_upstream_is_unknown_not_pushed() {
     // "feature" was only ever on the deleted branch; base is still on origin/main.
     let on: Vec<bool> = commits.iter().map(|x| x.on_origin).collect();
     assert_eq!(on, [false, false, true]);
+    // Publish puts it back and tracks it again.
+    push(a, false, Some("origin"), &Net::default()).unwrap();
+    assert!(!status(a).unwrap().upstream_gone);
 
     let local = sb.path("local");
     init(&local);

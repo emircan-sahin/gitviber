@@ -64,6 +64,8 @@ export interface RepoStatus {
   upstream: string | null;
   /** A checked-out pull request's number (`#7`) when the branch follows its refs/pull/<n>/head instead of an upstream. */
   follows: string | null;
+  /** `upstream` is configured but was deleted on the remote (and pruned): nothing to pull, Publish puts it back. */
+  upstreamGone: boolean;
   ahead: number;
   behind: number;
   /** Where `git push` sends this branch; a fork can pull from upstream and push to origin. */

@@ -60,6 +60,9 @@ pub struct RepoStatus {
     /// A checked-out pull request's number (`#7`) when the branch follows its
     /// `refs/pull/<n>/head`, which git names no upstream for.
     pub follows: Option<String>,
+    /// The upstream is configured but gone, as after its branch was deleted on the remote
+    /// and pruned: git prints no ahead/behind for it then.
+    pub upstream_gone: bool,
     pub ahead: u32,
     pub behind: u32,
     /// Where `git push` sends this branch, which a fork can set apart from where it pulls
@@ -203,6 +206,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         head: None,
         upstream: None,
         follows: None,
+        upstream_gone: false,
         push: None,
         remotes: vec![],
         publish: None,
@@ -225,8 +229,13 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
             match key {
                 "branch.oid" if val != "(initial)" => st.head = Some(val.chars().take(7).collect()),
                 "branch.head" if val != "(detached)" => st.branch = Some(val.to_string()),
-                "branch.upstream" => st.upstream = Some(val.to_string()),
+                "branch.upstream" => {
+                    st.upstream = Some(val.to_string());
+                    // Until branch.ab follows, which git leaves out for a gone upstream.
+                    st.upstream_gone = true;
+                }
                 "branch.ab" => {
+                    st.upstream_gone = false;
                     for part in val.split(' ') {
                         if let Some(n) = part.strip_prefix('+') {
                             st.ahead = n.parse().unwrap_or(0);
@@ -305,7 +314,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         }
     }
     st.remotes = remotes(repo);
-    if st.upstream.is_none()
+    if (st.upstream.is_none() || st.upstream_gone)
         && st.follows.is_none()
         && st.branch.is_some()
         && !st.remotes.is_empty()
