@@ -129,3 +129,37 @@ fn unstaging_a_rename_with_its_old_path_undoes_it() {
         .collect();
     assert_eq!(unstaged, [("a.txt", "D"), ("b.txt", "?")]);
 }
+
+/// Past the OS's argv limit (an agent's unignored node_modules) git couldn't be started at all.
+#[test]
+fn staging_unstaging_and_discarding_more_paths_than_argv_holds() {
+    let sb = Sandbox::new("manypaths");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "seed", "s\n", "seed");
+    // 3000 paths of ~890 bytes: 2.6 MB, past macOS's 1 MB and Linux's usual 2 MB. Each file
+    // is named 6 times over, as git matches every path against every pathspec.
+    let dir = ["d", "e", "f", "g"].map(|c| c.repeat(220)).join("/");
+    fs::create_dir_all(r.join(&dir)).unwrap();
+    let files: Vec<String> = (0..500).map(|i| format!("{dir}/f{i}")).collect();
+    for f in &files {
+        fs::write(r.join(f), "a\n").unwrap();
+    }
+    let many: Vec<String> = (0..6).flat_map(|_| files.clone()).collect();
+    // A folder among them takes stage's check for nested repositories.
+    let mut with_dir = many.clone();
+    with_dir.push(dir.clone());
+    stage(&r, &with_dir).unwrap();
+    assert_eq!(status(&r).unwrap().staged.len(), 500);
+    unstage(&r, &many).unwrap();
+    assert!(status(&r).unwrap().staged.is_empty());
+
+    stage(&r, &files).unwrap();
+    commit(&r, "many", &CommitOptions::default()).unwrap();
+    for f in &files {
+        fs::write(r.join(f), "b\n").unwrap();
+    }
+    discard(&r, &many).unwrap();
+    assert!(status(&r).unwrap().unstaged.is_empty());
+    assert_eq!(fs::read_to_string(r.join(&files[499])).unwrap(), "a\n");
+}
