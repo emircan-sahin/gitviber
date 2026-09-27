@@ -1,10 +1,14 @@
-import { useEffect, useState } from "react";
+import { LoaderCircle, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, errorMessage, fullName, type GitHubAccess, github, type Pull, type RepoStatus } from "@/lib/api";
+import { api, type Branch, errorMessage, fullName, type GitHubAccess, github, type Pull, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
+import { useSettings } from "@/lib/settings";
+import { commandLine, parseSuggestion, programOf, PULL_PROMPT } from "@/lib/git/suggest";
+import { openSettings } from "@/features/settings/SettingsDialog";
 import { cn } from "@/lib/utils";
 import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
 import { notifyPullsChanged } from "@/features/github/shared/changed";
@@ -57,14 +61,18 @@ export function CreatePullDialog({
   const [draft, setDraft] = useState(false);
   const [maintainerEdits, setMaintainerEdits] = useState(true);
   const [busy, setBusy] = useState(false);
+  // The base as a remote-tracking branch, once its remote is known: what the draft and a suggestion compare with.
+  const [baseRef, setBaseRef] = useState<string | null>(null);
 
   // GitHub's defaults: one commit titles the PR with its subject and fills the body; more
   // take the branch name. Counted against the chosen base in the repository the PR goes to.
   useEffect(() => {
     let live = true;
+    setBaseRef(null);
     (async () => {
       const remote = upstream ? await github.originalRemote(fullName(target.repo), false) : "origin";
-      if (!remote) return;
+      if (!remote || !live) return;
+      setBaseRef(`refs/remotes/${remote}/${base}`);
       const d = await api.pullDraft(`refs/remotes/${remote}/${base}`);
       if (!live) return;
       const one = d.commits === 1 && d.subject;
@@ -76,6 +84,41 @@ export function CreatePullDialog({
     };
     // Recounted per base; typing doesn't recount.
   }, [base, head, upstream, target.repo.owner, target.repo.name]);
+  const { suggestEnabled, suggestCommand, suggestModels } = useSettings();
+  const [suggesting, setSuggesting] = useState(false);
+  const program = programOf(suggestCommand);
+  // A field typed into keeps its text; cleared, it's free for a suggestion again.
+  const mine = { title: typed.title && !!title.trim(), body: typed.body && !!body.trim() };
+  const mineNow = useRef(mine);
+  mineNow.current = mine;
+  const running = useRef(false);
+  // Closing the dialog stops the command rather than orphan it.
+  useEffect(
+    () => () => {
+      if (running.current) api.suggestCancel().catch(() => {});
+    },
+    [],
+  );
+  const suggest = async () => {
+    if (!baseRef) return;
+    running.current = true;
+    setSuggesting(true);
+    // A missing CLI or a stale model id is fixed there.
+    const toSettings = { label: "Open Settings", run: () => openSettings("commit") };
+    try {
+      const output = await api.suggestPull(commandLine(suggestCommand, suggestModels), PULL_PROMPT, baseRef);
+      const s = parseSuggestion(output, true);
+      if (!s) return toast("error", "No description suggested", `${program} printed nothing.`, toSettings);
+      // What was typed while it ran stays too.
+      if (!mineNow.current.title) setTitle(s.summary);
+      if (!mineNow.current.body) setBody(s.body);
+    } catch (e) {
+      if (e !== SUGGEST_CANCELLED) toast("error", "Couldn't suggest a description", errorMessage(e), toSettings);
+    } finally {
+      running.current = false;
+      setSuggesting(false);
+    }
+  };
   const elsewhere = pushesElsewhere(status);
   // Pushed already, and nothing new since: GitHub has the branch as it is.
   const needsPush = !status.push?.branch || status.push.ahead > 0;
@@ -134,13 +177,32 @@ export function CreatePullDialog({
               </Button>
             </div>
           )}
-          <Input
-            autoFocus
-            value={title}
-            onChange={(e) => {
-              setTitle(e.target.value);
-              setTyped((t) => ({ ...t, title: true }));
-            }} placeholder="Title" />
+          <div className="flex items-center gap-1">
+            <Input
+              autoFocus
+              value={title}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                setTyped((t) => ({ ...t, title: true }));
+              }}
+              placeholder="Title"
+              className="flex-1"
+            />
+            {suggestEnabled && (
+              <Tip label={suggesting ? `Stop ${program}` : `Write the title and description with ${program}`}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={suggesting ? "Stop suggesting" : "Suggest a title and description"}
+                  disabled={!suggesting && (!baseRef || (mine.title && mine.body))}
+                  onClick={suggesting ? () => api.suggestCancel().catch(() => {}) : suggest}
+                >
+                  {suggesting ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+                </Button>
+              </Tip>
+            )}
+          </div>
           <MarkdownInput
             pull={{ url: `https://github.com/${fullName(target.repo)}`, number: null }}
             value={body}

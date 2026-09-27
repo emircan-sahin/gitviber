@@ -1,4 +1,4 @@
-//! Commit message suggestions from the user's own agent CLI (`claude -p`, `codex exec`, …).
+//! Commit messages and pull request descriptions from the user's own agent CLI (`claude -p`, `codex exec`, …).
 //! GitViber itself sends nothing anywhere: it runs the command the user picked, in the repo,
 //! with the prompt and the diff on stdin. Where that goes is up to the command.
 
@@ -60,7 +60,7 @@ impl Suggester {
 fn diff(repo: &Path, scope: Scope) -> Result<(String, bool), String> {
     let opts = ["--patch-with-stat", "--no-color", "--no-ext-diff", "-M"];
     let run = |args: &[&str]| git::run_text(repo, &[&["diff"], args, &opts].concat());
-    let mut text = match scope {
+    let text = match scope {
         Scope::Staged => run(&["--cached"])?,
         Scope::Amend => {
             // A root commit has no parent: diff from the empty tree.
@@ -98,8 +98,13 @@ fn diff(repo: &Path, scope: Scope) -> Result<(String, bool), String> {
     if text.trim().is_empty() {
         return Err("There are no changes to describe.".into());
     }
+    Ok(cut(text))
+}
+
+/// `text` cut to MAX_DIFF at a line end; true when it was cut.
+fn cut(mut text: String) -> (String, bool) {
     if text.len() <= MAX_DIFF {
-        return Ok((text, false));
+        return (text, false);
     }
     let mut end = MAX_DIFF;
     while !text.is_char_boundary(end) {
@@ -107,7 +112,63 @@ fn diff(repo: &Path, scope: Scope) -> Result<(String, bool), String> {
     }
     end = text[..end].rfind('\n').map_or(end, |i| i + 1);
     text.truncate(end);
-    Ok((text, true))
+    (text, true)
+}
+
+/// What a pull request from HEAD into `base` (a remote-tracking branch) brings: its commits'
+/// subjects, the repository's PR template if it has one, then the diff from where the branch
+/// left `base`. Cut to MAX_DIFF like a commit's diff; true when it was.
+fn pull_input(repo: &Path, base: &str) -> Result<(String, bool), String> {
+    git::check_pull_base(repo, base)?;
+    let range = format!("{base}..HEAD");
+    let subjects = git::run_text(repo, &["log", "--reverse", "--format=- %s", &range, "--"])?;
+    if subjects.trim().is_empty() {
+        return Err("This branch has no commits the base doesn't have.".into());
+    }
+    let mut text = format!("Commits, oldest first:\n{subjects}\n");
+    if let Some(t) = pull_template(repo, base) {
+        text.push_str(&format!(
+            "The repository's pull request template; follow its sections:\n{}\n\n",
+            t.trim_end()
+        ));
+    }
+    let merged = format!("{base}...HEAD");
+    text.push_str(&git::run_text(
+        repo,
+        &[
+            "diff",
+            "--patch-with-stat",
+            "--no-color",
+            "--no-ext-diff",
+            "-M",
+            &merged,
+            "--",
+        ],
+    )?);
+    Ok(cut(text))
+}
+
+/// The PR template GitHub would use from `base`: in .github/, the root or docs/, any case.
+fn pull_template(repo: &Path, base: &str) -> Option<String> {
+    let names = git::run_text(
+        repo,
+        &[
+            "ls-tree",
+            "--name-only",
+            base,
+            "--",
+            ".",
+            ".github/",
+            "docs/",
+        ],
+    )
+    .ok()?;
+    let name = [".github/", "", "docs/"].iter().find_map(|dir| {
+        names
+            .lines()
+            .find(|n| n.eq_ignore_ascii_case(&format!("{dir}pull_request_template.md")))
+    })?;
+    git::run_text(repo, &["cat-file", "blob", &format!("{base}:{name}")]).ok()
 }
 
 /// What goes to the command: the prompt as `{prompt}` in its arguments, or ahead of the diff
@@ -135,8 +196,7 @@ fn expand_home(program: &str) -> String {
     }
 }
 
-/// Runs the template with the prompt and the diff, returning what it printed. Stops on
-/// `cancel` or after TIMEOUT, killing the command and anything it started.
+/// A commit message for what `scope` would commit: see `ask`.
 pub fn run(
     repo: &Path,
     template: &str,
@@ -145,6 +205,31 @@ pub fn run(
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let (diff, cut) = diff(repo, scope)?;
+    ask(repo, template, prompt, &diff, cut, cancel)
+}
+
+/// A pull request's title and description, for HEAD into `base`: see `ask`.
+pub fn run_pull(
+    repo: &Path,
+    template: &str,
+    prompt: &str,
+    base: &str,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
+    let (input, cut) = pull_input(repo, base)?;
+    ask(repo, template, prompt, &input, cut, cancel)
+}
+
+/// Runs the template with the prompt and the diff, returning what it printed. Stops on
+/// `cancel` or after TIMEOUT, killing the command and anything it started.
+fn ask(
+    repo: &Path,
+    template: &str,
+    prompt: &str,
+    diff: &str,
+    cut: bool,
+    cancel: &AtomicBool,
+) -> Result<String, String> {
     let prompt = if cut {
         format!(
             "{prompt}\n\nThe diff was cut off at {} KB; the file list at its top is complete.",
@@ -153,7 +238,7 @@ pub fn run(
     } else {
         prompt.to_string()
     };
-    let (argv, input) = prepare(template, &prompt, &diff)?;
+    let (argv, input) = prepare(template, &prompt, diff)?;
     let program = expand_home(&argv[0]);
     let mut cmd = Command::new(&program);
     cmd.args(&argv[1..])

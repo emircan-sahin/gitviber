@@ -43,3 +43,10 @@ test("a preset runs with its model", () => {
   assert.equal(commandLine("pi -p --no-tools --no-session", {}), "pi -p --no-tools --no-session --model anthropic/claude-sonnet-5");
   assert.equal(commandLine("opencode run --agent plan", { opencode: "zai/glm-5.3" }), "opencode run --agent plan -m zai/glm-5.3");
 });
+
+test("a markdown description keeps its code blocks", () => {
+  const answer = "Add x\n\n## Why\nBecause.\n\n```ts\nx();\n```";
+  assert.deepEqual(parseSuggestion(answer, true), { summary: "Add x", body: "## Why\nBecause.\n\n```ts\nx();\n```" });
+  assert.deepEqual(parseSuggestion("```markdown\n" + answer + "\n```", true), parseSuggestion(answer, true));
+  assert.deepEqual(parseSuggestion("Title: Add x\n\nDescription: Because.", true), { summary: "Add x", body: "Because." });
+});
