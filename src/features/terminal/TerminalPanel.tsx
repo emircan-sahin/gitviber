@@ -134,7 +134,7 @@ export function TerminalPanel({ root, worktrees }: Props) {
             </Button>
           </Tip>
           <Tip label="Kill terminal" shortcut={useShortcut("terminal.close")}>
-            <Button variant="ghost" size="icon-sm" onClick={closeFocused} disabled={!group}>
+            <Button variant="ghost" size="icon-sm" onClick={() => void closeFocused()} disabled={!group}>
               <Trash2 />
             </Button>
           </Tip>

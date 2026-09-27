@@ -13,7 +13,7 @@ import { terminalLinks } from "../links/linkHost";
 import { getSettings, subscribeSettings } from "../settings";
 import { isInside } from "../path";
 import { readJson } from "../storage";
-import { focusPanel, setTerminalFocus } from "../ui/panels";
+import { focusedPanel, focusPanel, setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
 import { pastedLines, pathPastes } from "./paste";
 import { osc52Text } from "./osc52";
@@ -328,6 +328,8 @@ async function pasteInto(p: Pane, fallback = "") {
 
 /** Several lines into a program without bracketed paste run one by one as they arrive: asked first, as in VS Code. */
 async function pasteText(p: Pane, text: string) {
+  // Its shell is gone (exited).
+  if (p.term.options.disableStdin) return;
   const lines = pastedLines(text);
   if (lines > 1 && !p.term.modes.bracketedPasteMode) {
     const ok = await ask(`The program in this terminal takes a paste as typed keys, so each of the ${lines} lines runs as it arrives.`, { title: `Paste ${lines} lines`, kind: "warning", okLabel: "Paste" });
@@ -526,7 +528,8 @@ export function splitActive() {
   focusActive();
 }
 
-function closePane(id: number) {
+/** `byUser`: ⌘W, a tab's ✕ and the like, rather than the shell exiting. */
+function closePane(id: number, byUser = false) {
   const p = panes.get(id);
   if (!p) return;
   const focused = document.activeElement;
@@ -557,40 +560,48 @@ function closePane(id: number) {
     active = groups[Math.min(i, groups.length - 1)]?.id ?? null;
   }
   set({ groups, active, open: state.open && groups.length > 0 });
-  // Only focus the close took away (the pane's, its tab's) moves on: a shell exiting in the
-  // background leaves the commit box alone, and ⌫ on a tab stays on the tabs.
+  // A shell exiting moves only focus it took away (the commit box keeps it); the user's close also
+  // moves it on from the panel's buttons, but ⌫ on a tab stays on the tabs.
   requestAnimationFrame(() => {
-    if (!focused || focused === document.body || (document.activeElement && document.activeElement !== document.body)) return;
+    const el = document.activeElement;
+    const move = !el || el === document.body ? byUser || (focused && focused !== document.body) : byUser && focusedPanel() === "terminal" && !el.closest('[role="tab"]');
+    if (!move) return;
     if (groups.length) focusActive();
     else focusPanel("code");
   });
 }
 
-/** Whether to kill `ids`: asked first when one of them runs a command (an agent, a dev server), never for a shell at its prompt. */
-async function mayKill(ids: number[], title: string, message: (busy: number) => string) {
-  const ptys = ids.flatMap((id) => panes.get(id)?.pty ?? []);
-  const busy = ptys.length ? await pty.busy(ptys).catch(() => 0) : 0;
-  return !busy || ask(message(busy), { title, kind: "warning", okLabel: "Kill" });
-}
-
-const stopsHere = (busy: number) => `Killing this terminal stops ${busy === 1 ? "the command" : `the ${busy} commands`} running in it.`;
-
-export async function closeFocused() {
-  const id = activeGroup()?.focused;
-  if (id !== undefined && (await mayKill([id], "Kill terminal", stopsHere))) closePane(id);
-}
-
-/** False when the user kept it. */
-export async function closeGroup(id: number) {
-  const ids = state.groups.find((g) => g.id === id)?.panes.map((p) => p.id) ?? [];
-  if (!ids.length || !(await mayKill(ids, "Kill terminal", stopsHere))) return false;
-  ids.forEach(closePane);
+let killing = false;
+/**
+ * Kills `ids` (`what` to the user), asking first when one of them runs a command (an agent, a dev
+ * server), never for a shell at its prompt. A second ⌘W while that's checked or asked does nothing.
+ */
+async function kill(ids: number[], what: string, title: string) {
+  if (killing || !ids.length) return false;
+  killing = true;
+  try {
+    const ptys = ids.flatMap((id) => panes.get(id)?.pty ?? []);
+    const busy = ptys.length ? await pty.busy(ptys).catch(() => 0) : 0;
+    if (busy && !(await ask(`Killing ${what} stops ${plural(busy, "command")} still running.`, { title, kind: "warning", okLabel: "Kill" }))) return false;
+  } finally {
+    killing = false;
+  }
+  for (const id of ids) closePane(id, true);
   return true;
 }
 
+export async function closeFocused() {
+  const id = activeGroup()?.focused;
+  if (id !== undefined) await kill([id], "this terminal", "Kill terminal");
+}
+
+/** False when the user kept it. */
+export function closeGroup(id: number) {
+  return kill(state.groups.find((g) => g.id === id)?.panes.map((p) => p.id) ?? [], "this terminal", "Kill terminal");
+}
+
 export async function closeOtherGroups(id: number) {
-  const ids = state.groups.flatMap((g) => (g.id === id ? [] : g.panes.map((p) => p.id)));
-  if (await mayKill(ids, "Kill other terminals", (busy) => `Killing the other terminals stops ${plural(busy, "command")} still running.`)) ids.forEach(closePane);
+  await kill(state.groups.flatMap((g) => (g.id === id ? [] : g.panes.map((p) => p.id))), "the other terminals", "Kill other terminals");
 }
 
 /** Names a tab; an empty name gives it back the folder's. */
