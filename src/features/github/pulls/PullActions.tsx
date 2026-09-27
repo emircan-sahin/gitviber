@@ -14,6 +14,7 @@ export function MergeBox({
   busy,
   canMerge,
   canResolve,
+  methods,
   onMerge,
   onResolve,
 }: {
@@ -23,6 +24,8 @@ export function MergeBox({
   canMerge: boolean;
   /** The PR's branch is on origin, where a pushed fix updates it. */
   canResolve: boolean;
+  /** The ones the repository allows; the first is the button's. */
+  methods: MergeMethod[];
   onMerge: (m: MergeMethod) => void;
   onResolve: () => void;
 }) {
@@ -61,8 +64,8 @@ export function MergeBox({
         <span className="max-w-56 text-right text-[11.5px] text-muted-foreground">Only people with write access can merge.</span>
       ) : (
         <div className="flex">
-          <Button size="sm" className="rounded-r-none" disabled={busy || detail.mergeable === null || detail.draft} onClick={() => onMerge("merge")}>
-            <GitMerge /> Merge
+          <Button size="sm" className="rounded-r-none" disabled={busy || detail.mergeable === null || detail.draft} onClick={() => onMerge(methods[0])}>
+            <GitMerge /> {methods[0] === "merge" ? "Merge" : METHODS[methods[0]]}
           </Button>
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -72,7 +75,7 @@ export function MergeBox({
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="w-56">
               <DropdownMenuLabel>Merge method</DropdownMenuLabel>
-              {(Object.keys(METHODS) as MergeMethod[]).map((m) => (
+              {methods.map((m) => (
                 <DropdownMenuItem key={m} onSelect={() => onMerge(m)}>
                   {METHODS[m]}
                 </DropdownMenuItem>

@@ -21,7 +21,7 @@ import { Section } from "@/features/github/shared/Section";
 import { useGitAction } from "@/hooks/useGitAction";
 import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
 import { MergeBox, ReviewButton } from "./PullActions";
-import { METHODS, REVIEWS } from "./actionLabels";
+import { allowedMethods, METHODS, REVIEWS } from "./actionLabels";
 
 export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) => void }) {
   // The repository the PR is in: origin, or a fork's parent.
@@ -205,7 +205,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
           )}
         </div>
 
-        {d && p.state === "open" && <MergeBox detail={d} busy={!!busy} canMerge={!!access?.push} canResolve={canResolve} onMerge={merge} onResolve={resolveLocally} />}
+        {d && p.state === "open" && <MergeBox detail={d} busy={!!busy} canMerge={!!access?.push} canResolve={canResolve} methods={allowedMethods(access)} onMerge={merge} onResolve={resolveLocally} />}
 
         {d && (d.checks.length > 0 || d.checksError) && (
           <Section title="Checks" aside={d.checks.length > 0 ? checkSummary(d.checks) : undefined}>
