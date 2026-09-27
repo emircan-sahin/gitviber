@@ -7,9 +7,11 @@ import { api, type Branch, github, type Target, type Worktree } from "@/lib/api"
 import { loadWorktreeDir, loadWorktreeRun, moveRoot, saveWorktreeDir, saveWorktreeRun, sharedWorktreeDir } from "@/lib/repo/session";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { shortPath } from "@/lib/git/worktrees";
+import { plural } from "@/lib/format";
 import { folderName, parentFolder } from "@/lib/path";
 import { createStore } from "@/lib/store";
 import { BaseSelect } from "@/features/branches/BaseSelect";
+import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { type GitRun, type NetRun } from "@/hooks/useGitAction";
 
 /** A pull request to check out, as PullView's Checkout would. */
@@ -85,6 +87,7 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
   const [terminal, setTerminal] = useState(true);
   const [command, setCommand] = useState(() => loadWorktreeRun(main));
   const [switchTo, setSwitchTo] = useState(false);
+  const includes = useAsyncValue(api.worktreeIncludes, [], 0);
   const n = pull ? pull.branch : name.trim();
   const choose = async () => {
     const picked = await open({ directory: true, defaultPath: dir, title: "Folder for new worktrees" });
@@ -150,6 +153,11 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
             Change…
           </Button>
         </div>
+        {includes > 0 && (
+          <div className="mt-1.5">
+            Copies {plural(includes, "ignored file")} listed in <span className="font-mono">.worktreeinclude</span>
+          </div>
+        )}
       </div>
       <div className="mt-4 flex items-center gap-2">
         <label className="flex shrink-0 items-center gap-1.5 text-[12px]">

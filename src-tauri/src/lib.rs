@@ -170,6 +170,7 @@ pub fn run() {
             commands::worktrees::worktrees,
             commands::worktrees::worktree_state,
             commands::worktrees::add_worktree,
+            commands::worktrees::worktree_includes,
             commands::worktrees::rename_worktree,
             commands::worktrees::lock_worktree,
             commands::worktrees::unlock_worktree,

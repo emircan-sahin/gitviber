@@ -225,3 +225,78 @@ fn worktree_locks_by_a_live_process_mean_in_use() {
     assert!(d.locked && !d.in_use);
     assert!(!find(&r).locked && !find(&r).in_use);
 }
+
+/// `.worktreeinclude` copies what it matches and git ignores, from the main worktree whichever
+/// one makes the new one, also out of folders holding nothing else; tracked, unlisted and
+/// unignored files and links stay behind, and node_modules isn't walked for a bare `.env`.
+#[test]
+fn a_new_worktree_gets_the_ignored_files_worktreeinclude_lists() {
+    let sb = Sandbox::new("wtinclude");
+    let r = sb.path("r");
+    init(&r);
+    let ignore = ".env\n*.pem\nnode_modules/\nconfig/local/\nscratch.txt\n";
+    write_commit(&r, ".gitignore", ignore, "ignore");
+    write_commit(&r, ".env.example", "tracked\n", "example");
+    write_commit(&r, "sub/a.txt", "a\n", "sub");
+    run(&r, &["branch", "one"]).unwrap();
+    run(&r, &["branch", "two"]).unwrap();
+    let bare = add_worktree(&r, "one", None, None).unwrap();
+    assert!(
+        !Path::new(&bare).join(".env").exists(),
+        "no .worktreeinclude yet"
+    );
+
+    // `local/` is unanchored, and apps/, certs/ and config/ hold only ignored files.
+    let include = ".env\n*.pem\n.env.example\nlocal/\nnotes.txt\n# scratch.txt\n";
+    fs::write(r.join(".worktreeinclude"), include).unwrap();
+    for (path, text) in [
+        (".env", "SECRET=1\n"),
+        ("sub/.env", "SUB=1\n"),
+        ("apps/web/.env", "WEB=1\n"),
+        ("certs/dev.pem", "pem\n"),
+        ("node_modules/pkg/.env", "dep\n"),
+        ("config/local/secrets.json", "{}\n"),
+        ("scratch.txt", "ignored, unlisted\n"),
+        ("notes.txt", "listed, not ignored\n"),
+        (".env.example", "tracked, edited\n"),
+    ] {
+        fs::create_dir_all(r.join(path).parent().unwrap()).unwrap();
+        fs::write(r.join(path), text).unwrap();
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("../../../outside", r.join("config/local/link")).unwrap();
+
+    let mut listed = worktree_includes(&r).unwrap();
+    listed.retain(|p| p != "config/local/link");
+    listed.sort();
+    let want = [
+        ".env",
+        "apps/web/.env",
+        "certs/dev.pem",
+        "config/local/secrets.json",
+        "sub/.env",
+    ];
+    assert_eq!(listed, want);
+
+    // Made from the linked worktree: the files still come from the main one.
+    let two = PathBuf::from(add_worktree(Path::new(&bare), "two", None, None).unwrap());
+    for path in want {
+        assert_eq!(
+            fs::read(two.join(path)).unwrap(),
+            fs::read(r.join(path)).unwrap(),
+            "{path}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(two.join(".env.example")).unwrap(),
+        "tracked\n"
+    );
+    for gone in [
+        "node_modules",
+        "scratch.txt",
+        "notes.txt",
+        "config/local/link",
+    ] {
+        assert!(two.join(gone).symlink_metadata().is_err(), "{gone} copied");
+    }
+}

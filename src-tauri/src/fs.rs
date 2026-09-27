@@ -359,6 +359,27 @@ pub(crate) fn copy_entry(src: &Path, dst: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Copies the files at `rels` in `from` to the same paths in `to`, making folders as needed:
+/// `.worktreeinclude`'s into a new worktree. Nothing is overwritten, and a link or a path leading
+/// out of either worktree is skipped: a relative link would point elsewhere from the new one.
+pub fn copy_into(from: &Path, to: &Path, rels: &[String]) {
+    for rel in rels {
+        let (Ok(src), Ok(dst)) = (resolve_entry(from, rel), resolve_entry(to, rel)) else {
+            continue;
+        };
+        let file = src.symlink_metadata().is_ok_and(|m| m.is_file());
+        if !file || dst.symlink_metadata().is_ok() {
+            continue;
+        }
+        if dst
+            .parent()
+            .is_some_and(|p| std::fs::create_dir_all(p).is_ok())
+        {
+            let _ = std::fs::copy(&src, &dst);
+        }
+    }
+}
+
 /// NSFileManager rather than `osascript` + Finder: no Automation permission prompt, no
 /// Finder sound, and "Put Back" still works. Foundation is already loaded by the webview.
 /// Returns where the item ended up in the Trash.
