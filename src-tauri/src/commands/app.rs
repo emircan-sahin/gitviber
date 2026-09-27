@@ -76,6 +76,12 @@ pub fn pty_busy(state: State<'_, AppState>, ids: Option<Vec<u32>>) -> usize {
     state.ptys.busy(ids.as_deref())
 }
 
+/// The page saved what it keeps on the way out (menu::quit).
+#[tauri::command]
+pub fn quit(app: AppHandle) {
+    app.exit(0);
+}
+
 /// See updates.rs.
 #[tauri::command]
 pub fn update_mode(app: AppHandle) -> Option<&'static str> {
