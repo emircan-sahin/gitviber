@@ -20,10 +20,20 @@ _gitviber_precmd() {
     PS1=$_gitviber_mark$PS1
     _gitviber_marked=$PS1
   else
-    # The first prompt, before the hook moves to the end for the next one (or no % in PS1).
-    builtin print -n '\e]133;A\a'
+    # The first prompt, before the hook moves to the end for the next one (or no % in PS1): marked
+    # once zle reads the line, so a command waiting for it (a worktree's Run) isn't echoed above it.
+    if (( ${+functions[add-zle-hook-widget]} )); then
+      add-zle-hook-widget line-init _gitviber_first
+    else
+      builtin print -n '\e]133;A\a'
+    fi
     [[ -o prompt_percent ]] && precmd_functions=(${precmd_functions:#_gitviber_precmd} _gitviber_precmd)
   fi
+}
+
+_gitviber_first() {
+  builtin print -n '\e]133;A\a'
+  add-zle-hook-widget -d line-init _gitviber_first
 }
 
 # PS1 as the theme left it, unless something set a new one since.
@@ -38,6 +48,6 @@ _gitviber_preexec() {
   builtin print -n '\e]133;C\a'
 }
 
-builtin autoload -Uz add-zsh-hook
+builtin autoload -Uz add-zsh-hook add-zle-hook-widget
 add-zsh-hook precmd _gitviber_precmd
 add-zsh-hook preexec _gitviber_preexec
