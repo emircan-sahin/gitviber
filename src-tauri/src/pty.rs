@@ -13,6 +13,21 @@ use tauri::ipc::{Channel, Response};
 /// the other panes' input, resizes and kills must not wait behind it.
 pub type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
 
+/// Blocks until the program reads the input; once its shell is gone, the pty fails the write.
+pub fn write(writer: &Writer, data: &str) -> Result<(), String> {
+    let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
+    w.write_all(data.as_bytes())
+        .and_then(|_| w.flush())
+        .map_err(|e| e.to_string())
+}
+
+/// How a shell ended: its exit code, or the signal that ended it ("Segmentation fault: 11").
+#[derive(serde::Serialize)]
+pub struct Exit {
+    code: Option<u32>,
+    signal: Option<String>,
+}
+
 struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Writer,
@@ -41,27 +56,29 @@ fn start_dir(cwd: &Path) -> Option<PathBuf> {
         .find(|dir| dir.is_dir())
         .map(Path::to_path_buf)
         .or_else(|| {
-            std::env::var_os("HOME")
+            ["HOME", "USERPROFILE"]
+                .into_iter()
+                .filter_map(std::env::var_os)
                 .map(PathBuf::from)
-                .filter(|home| home.is_dir())
+                .find(|home| home.is_dir())
         })
 }
 
 impl Ptys {
-    /// Starts the user's login shell in `cwd`. `exit` gets the exit code once it's gone.
+    /// Starts the user's login shell in `cwd`. `exit` gets how it ended once it's gone.
     pub fn spawn(
         &self,
         cwd: &Path,
         cols: u16,
         rows: u16,
         output: Channel<Response>,
-        exit: Channel<Option<u32>>,
+        exit: Channel<Option<Exit>>,
     ) -> Result<u32, String> {
         // A removed worktree's restored terminals, and their splits, still start, saying where.
         let start = start_dir(cwd).ok_or_else(|| format!("folder not found: {}", cwd.display()))?;
         if start != cwd {
             let note = format!(
-                "\x1b[2mfolder {} is gone; started in {}\x1b[0m\r\n",
+                "\x1b[2mno folder at {}; started in {}\x1b[0m\r\n",
                 cwd.display(),
                 start.display()
             );
@@ -117,9 +134,18 @@ impl Ptys {
                     }
                 }
             }
-            let code = child.wait().ok().map(|s| s.exit_code());
+            let status = child.wait().ok().map(|s| match s.signal() {
+                Some(signal) => Exit {
+                    code: None,
+                    signal: Some(signal.to_string()),
+                },
+                None => Exit {
+                    code: Some(s.exit_code()),
+                    signal: None,
+                },
+            });
             sessions.lock().unwrap().remove(&id);
-            let _ = exit.send(code);
+            let _ = exit.send(status);
         });
         Ok(id)
     }
@@ -138,14 +164,6 @@ impl Ptys {
     /// Where `write` sends a session's input, taken out so the write happens outside the sessions lock.
     pub fn writer(&self, id: u32) -> Result<Writer, String> {
         self.with(id, |s| Ok(s.writer.clone()))
-    }
-
-    /// Blocks until the program reads the input; once its shell is gone, the pty fails the write.
-    pub fn write(writer: &Writer, data: &str) -> Result<(), String> {
-        let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
-        w.write_all(data.as_bytes())
-            .and_then(|_| w.flush())
-            .map_err(|e| e.to_string())
     }
 
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {

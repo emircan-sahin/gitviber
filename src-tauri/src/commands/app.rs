@@ -11,7 +11,7 @@ pub fn pty_spawn(
     cols: u16,
     rows: u16,
     output: tauri::ipc::Channel<tauri::ipc::Response>,
-    exit: tauri::ipc::Channel<Option<u32>>,
+    exit: tauri::ipc::Channel<Option<pty::Exit>>,
 ) -> Res<u32> {
     state.ptys.spawn(Path::new(&cwd), cols, rows, output, exit)
 }
@@ -20,7 +20,7 @@ pub fn pty_spawn(
 #[tauri::command]
 pub async fn pty_write(state: State<'_, AppState>, id: u32, data: String) -> Res<()> {
     let writer = state.ptys.writer(id)?;
-    blocking(move || pty::Ptys::write(&writer, &data)).await
+    blocking(move || pty::write(&writer, &data)).await
 }
 
 /// Sync, so it runs on the main thread, where AppKit's pasteboard and GTK's clipboard belong.

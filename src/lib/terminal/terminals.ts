@@ -6,7 +6,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useSyncExternalStore } from "react";
-import { errorMessage, pty } from "../api";
+import { errorMessage, pty, type PtyExit } from "../api";
 import { compileFind, type FindOptions } from "../ui/findQuery";
 import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
 import { terminalLinks } from "../links/linkHost";
@@ -437,7 +437,7 @@ async function start(p: Pane) {
   try {
     const { cols, rows } = p.term;
     const began = performance.now();
-    const id = await pty.spawn(p.cwd, cols, rows, (bytes) => p.term.write(new Uint8Array(bytes)), (code) => exited(p, code, performance.now() - began));
+    const id = await pty.spawn(p.cwd, cols, rows, (bytes) => p.term.write(new Uint8Array(bytes)), (exit) => exited(p, exit, performance.now() - began));
     // Closed while it was starting.
     if (!panes.has(p.id)) return void pty.kill(id).catch(() => {});
     p.pty = id;
@@ -450,12 +450,13 @@ async function start(p: Pane) {
 }
 
 /** A shell gone within a second (a broken rc file or login shell) leaves its pane up to be read, for ⌘W to close. */
-function exited(p: Pane, code: number | null, lived: number) {
+function exited(p: Pane, exit: PtyExit | null, lived: number) {
   if (!panes.has(p.id)) return;
   if (lived > 1000) return closePane(p.id);
   p.pty = null;
   p.term.options.disableStdin = true;
-  p.term.write(`\r\n\x1b[2m[shell exited${code === null ? "" : ` with code ${code}`}]\x1b[0m\r\n`);
+  const how = exit?.signal ? `: ${exit.signal}` : exit?.code != null ? ` with code ${exit.code}` : "";
+  p.term.write(`\r\n\x1b[2m[shell exited${how}]\x1b[0m\r\n`);
 }
 
 /** Shows a pane in `container`; returns the detach. */
