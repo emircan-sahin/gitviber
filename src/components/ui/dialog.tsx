@@ -1,26 +1,44 @@
 import { Dialog as DialogPrimitive } from "radix-ui";
 import type * as React from "react";
+import { useState } from "react";
 import { cn } from "@/lib/utils";
 
 const Dialog = DialogPrimitive.Root;
 const DialogClose = DialogPrimitive.Close;
 
-function DialogContent({ className, children, ...props }: React.ComponentProps<typeof DialogPrimitive.Content>) {
+function DialogContent(props: React.ComponentProps<typeof DialogPrimitive.Content>) {
   return (
     <DialogPrimitive.Portal>
       <DialogPrimitive.Overlay className="fixed inset-0 z-50 bg-black/55 animate-in fade-in-0" />
-      {/* Global shortcuts stand down while this is open (see keybindings.ts). */}
-      <DialogPrimitive.Content
-        data-modal=""
-        className={cn(
-          "fixed top-[22%] left-1/2 z-50 w-full max-w-md -translate-x-1/2 rounded-md border border-border-strong bg-elevated p-5 shadow-lg shadow-black/60 animate-in fade-in-0 zoom-in-95",
-          className,
-        )}
-        {...props}
-      >
-        {children}
-      </DialogPrimitive.Content>
+      <ModalContent {...props} />
     </DialogPrimitive.Portal>
+  );
+}
+
+/** Mounted as the dialog opens. */
+function ModalContent({ className, children, onCloseAutoFocus, ...props }: React.ComponentProps<typeof DialogPrimitive.Content>) {
+  // Radix gives focus back to a Dialog.Trigger only, and these open from keys and stores: it fell to
+  // the page (⌘, from the terminal left nothing focused once Settings closed). Read as it renders,
+  // before an autoFocus field takes focus.
+  const [before] = useState(() => document.activeElement);
+  // Global shortcuts stand down while this is open (see keybindings.ts).
+  return (
+    <DialogPrimitive.Content
+      data-modal=""
+      className={cn(
+        "fixed top-[22%] left-1/2 z-50 w-full max-w-md -translate-x-1/2 rounded-md border border-border-strong bg-elevated p-5 shadow-lg shadow-black/60 animate-in fade-in-0 zoom-in-95",
+        className,
+      )}
+      {...props}
+      onCloseAutoFocus={(e) => {
+        onCloseAutoFocus?.(e);
+        if (e.defaultPrevented || !(before instanceof HTMLElement) || !before.isConnected) return;
+        e.preventDefault();
+        before.focus({ preventScroll: true });
+      }}
+    >
+      {children}
+    </DialogPrimitive.Content>
   );
 }
 
