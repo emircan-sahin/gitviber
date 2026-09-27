@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
+import { matchesCommand } from "../commands/keybindings";
 import { focusPanel } from "./panels";
 
 /**
@@ -118,6 +119,18 @@ export function pageOf(row: HTMLElement) {
 
 /** ⇧F10, or the menu key some keyboards have. */
 export const isMenuKey = (e: React.KeyboardEvent) => e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey && !e.altKey && !e.metaKey && !e.ctrlKey);
+
+/** A tab's ⌥←/⌥→ (tab.moveLeft / tab.moveRight): the way it moves along, else 0. */
+export const tabMove = (e: React.KeyboardEvent) => (matchesCommand("tab.moveRight", e.nativeEvent) ? 1 : matchesCommand("tab.moveLeft", e.nativeEvent) ? -1 : 0);
+
+/** Focuses a tab and scrolls it into view. */
+export function focusTab(tab: HTMLElement) {
+  tab.focus();
+  tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+/** The same for a tab just reordered: React may move its very node, and a node taken out of the page loses focus. */
+export const focusMovedTab = (tab: HTMLElement) => requestAnimationFrame(() => focusTab(tab));
 
 /** Opens a row's right-click menu from the keyboard, just under the row. */
 export function openRowMenu(row: HTMLElement) {

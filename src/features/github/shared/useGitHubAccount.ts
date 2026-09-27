@@ -5,8 +5,9 @@ import { useGitHubData } from "@/lib/github/githubCache";
 /**
  * The signed-in account, one cache entry for every GitHub view, and the repositories it reaches:
  * origin and, for a fork, the original (`parent`, owner/name as `upstream`). It only changes with
- * a new sign-in: rechecked every 10 minutes and on every manual refresh or retry (a 304 when
- * nothing changed, so free). `enabled` false: not asked for until it's true.
+ * a new sign-in, or a new origin (read again at once, setGitHubOrigin): rechecked every 10 minutes
+ * and on every manual refresh or retry (a 304 when nothing changed, so free). `enabled` false: not
+ * asked for until it's true.
  */
 export function useGitHubAccount(enabled = true) {
   const acct = useGitHubData(enabled ? "account" : null, github.account, 600_000);

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { bindingsFor, type Command, type CommandId, commandFor, eventChords, formatChord, runsInTerminal, runsWhileTyping, takenFromTerminal } from "./commands";
+import { bindingsFor, type Command, type CommandId, commandFor, eventChords, formatChord, runsInEditor, runsInTerminal, runsWhileTyping, takenFromTerminal } from "./commands";
 import { getSettings, useSettings } from "../settings";
 
 export { bindingsFor, COMMANDS, type Command, type CommandId, eventChord, formatChord, isReserved } from "./commands";
@@ -36,10 +36,13 @@ function commandOf(e: KeyboardEvent) {
 }
 
 /** Where a key lands: a key event, or `{ target: document.activeElement }` for the next one. */
-type At = { target: EventTarget | null };
+type At = { target: EventTarget | null; key?: string };
 
 /** Focus is in the code view: Monaco's text area, read-only, so not typing (its find box is, and so is a file open for editing). */
 const inCodeView = (e: At) => e.target instanceof HTMLElement && e.target.matches(".monaco-editor textarea.inputarea") && !e.target.closest("[data-editable]");
+
+/** Focus is in a file open for editing (see inCodeView). */
+const inEditedFile = (e: At) => e.target instanceof HTMLElement && e.target.matches("[data-editable] .monaco-editor textarea.inputarea");
 
 /** Focus is somewhere that owns its keystrokes: text fields, menus, dialogs, pickers (not the sidebar lists, see useListNav). */
 export function isTyping(e: At) {
@@ -114,7 +117,7 @@ export function runCommand(id: Action) {
  */
 export function runsAt(e: At, chord: string, command: Command) {
   const inTerminal = e.target instanceof HTMLElement && !!e.target.closest(".xterm");
-  return inTerminal ? runsInTerminal(chord, command) : !isTyping(e) || runsWhileTyping(chord, command);
+  return inTerminal ? runsInTerminal(chord, command) : !isTyping(e) || runsWhileTyping(chord, command) || (inEditedFile(e) && runsInEditor(chord, command, e.key));
 }
 
 function dispatch(e: KeyboardEvent) {
