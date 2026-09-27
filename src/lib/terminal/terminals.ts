@@ -189,8 +189,10 @@ function send(p: Pane, data: string) {
 
 function createPane(cwd: string, restored?: { history: string; savedAt: number }): PaneInfo {
   const id = nextId++;
-  // The proposed API is the decorations, which find marks its matches with.
-  const term = new Terminal({ ...terminalOptions(), cursorBlink: true, scrollback: 10_000, allowProposedApi: true });
+  // The proposed API is the decorations, which find marks its matches with. The kitty keyboard
+  // protocol is for programs that turn it on (Claude Code, Codex, neovim): Shift+Enter is its own
+  // key there, where the legacy encoding sends Enter. Shells never do, so they get the keys as before.
+  const term = new Terminal({ ...terminalOptions(), cursorBlink: true, scrollback: 10_000, allowProposedApi: true, vtExtensions: { kittyKeyboard: true } });
   const fit = new FitAddon();
   term.loadAddon(fit);
   const serialize = new SerializeAddon();
