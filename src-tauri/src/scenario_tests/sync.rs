@@ -525,11 +525,11 @@ fn remotes_read_at_once_match_one_by_one() {
         .iter()
         .map(|n| (n.clone(), remote_url(r, n).filter(|_| n != "bare")))
         .collect();
-    assert_eq!(remote_urls(r), one_by_one);
+    assert_eq!(remote_urls(r).unwrap(), one_by_one);
     // Status reads the same list, and origin's URL anew after a set-url.
     let st = status(r).unwrap();
     assert_eq!(st.remotes, listed);
-    assert_eq!(st.origin, remote_url(r, "origin"));
+    assert_eq!(st.origin, Some(remote_url(r, "origin")));
     run(
         r,
         &[
@@ -541,8 +541,8 @@ fn remotes_read_at_once_match_one_by_one() {
     )
     .unwrap();
     assert_eq!(
-        status(r).unwrap().origin.as_deref(),
-        Some("https://github.com/me/moved.git")
+        status(r).unwrap().origin,
+        Some(Some("https://github.com/me/moved.git".into()))
     );
     let on_github: Vec<_> = crate::github::remotes(r)
         .into_iter()

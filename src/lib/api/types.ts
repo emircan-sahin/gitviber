@@ -75,8 +75,8 @@ export interface RepoStatus {
   /** Where `git push` sends this branch; a fork can pull from upstream and push to origin. */
   push: { remote: string; branch: string | null; ahead: number } | null;
   remotes: string[];
-  /** Origin's URL: after a `git remote set-url` the GitHub views read another repository. */
-  origin: string | null;
+  /** Origin's URL (null: none): after a `git remote set-url` the GitHub views read another repository. Undefined when git couldn't say. */
+  origin?: string | null;
   /** Where Publish sends a branch with no upstream; null when the user has to pick a remote. */
   publish: string | null;
   staged: FileChange[];

@@ -75,8 +75,10 @@ pub struct RepoStatus {
     pub push: Option<PushTarget>,
     /// Configured remotes, to pick where an unpublished branch goes.
     pub remotes: Vec<String>,
-    /// Origin's URL: after a `git remote set-url` the GitHub views read another repository.
-    pub origin: Option<String>,
+    /// Origin's URL (null: no origin, or none with a URL): after a `git remote set-url` the GitHub
+    /// views read another repository. Left out when git couldn't say, which isn't "no origin".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Option<String>>,
     /// Where Publish sends a branch with no upstream; None when that's the user's choice.
     pub publish: Option<String>,
     pub staged: Vec<FileChange>,
@@ -327,11 +329,10 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     if let Some(b) = &st.branch {
         st.push = push_target(repo, b);
     }
-    for (name, url) in remote_urls(repo) {
-        if name == "origin" {
-            st.origin = url;
-        }
-        st.remotes.push(name);
+    if let Ok(remotes) = remote_urls(repo) {
+        let origin = remotes.iter().find(|(name, _)| name == "origin");
+        st.origin = Some(origin.and_then(|(_, url)| url.clone()));
+        st.remotes = remotes.into_iter().map(|(name, _)| name).collect();
     }
     if st.branch.is_some() && !st.remotes.is_empty() && (st.upstream.is_none() || st.upstream_gone)
     {
