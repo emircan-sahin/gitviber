@@ -140,6 +140,44 @@ export function findTerminalLinks(line: string, near?: Near): Link[] {
   });
 }
 
+/** A cell of terminal output, and a row of them: xterm's buffer lines and cells. */
+interface Cell {
+  getChars(): string;
+  getWidth(): number;
+}
+interface CellRow<C extends Cell> {
+  getCell(x: number, cell?: C): C | undefined;
+}
+
+/**
+ * Rows of terminal cells as one line: `cells[i]` is the cell (counted along the rows, `cols` to a
+ * row) that `text[i]` is drawn in, then the one past the last character; `starts[r]` is where row `r` starts in
+ * `text`, then its length. Offsets and cells part ways at wide characters (two cells) and at
+ * characters past U+FFFF (two UTF-16 units). `cell` is reused for each read.
+ */
+export function cellText<C extends Cell>(rows: (CellRow<C> | undefined)[], cols: number, cell?: C) {
+  let text = "";
+  const cells: number[] = [];
+  const starts: number[] = [];
+  let end = 0;
+  rows.forEach((row, r) => {
+    starts.push(text.length);
+    for (let x = 0; x < cols; x++) {
+      const c = row?.getCell(x, cell);
+      if (!c) break;
+      // The second half of a wide character.
+      if (!c.getWidth()) continue;
+      const chars = c.getChars() || " ";
+      text += chars;
+      for (let i = 0; i < chars.length; i++) cells.push(r * cols + x);
+      end = r * cols + x + c.getWidth();
+    }
+  });
+  starts.push(text.length);
+  cells.push(end);
+  return { text, cells, starts };
+}
+
 // Left off a URL's end: the sentence around it.
 const TRAILING = new Set([".", ",", ";", ":", "!", "?", "*", "'", '"']);
 

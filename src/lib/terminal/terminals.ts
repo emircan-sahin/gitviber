@@ -1,6 +1,7 @@
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
@@ -195,6 +196,10 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   term.loadAddon(fit);
   const serialize = new SerializeAddon();
   term.loadAddon(serialize);
+  // Emoji and newer symbols take two cells, as in wcwidth and other terminals: at xterm's own
+  // Unicode 6 widths, TUIs drew out of line and the cursor landed one cell off per emoji.
+  term.loadAddon(new Unicode11Addon());
+  term.unicode.activeVersion = "11";
   terminalLinks(term, cwd);
   const search = new SearchAddon();
   term.loadAddon(search);
