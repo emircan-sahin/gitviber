@@ -1,8 +1,8 @@
 //! Linked worktrees: listing, adding, renaming, locking and removing them.
 
 use super::{
-    default_branch, include_source, is_nested_repo, run, run_text, validate_base, validate_branch,
-    worktree_includes,
+    default_branch, include_source, is_nested_repo, landed, run, run_text, validate_base,
+    validate_branch, worktree_includes,
 };
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -318,14 +318,16 @@ pub struct WorktreeState {
     /// Files `git status` lists: gone for good if the folder is deleted.
     pub uncommitted: u32,
     /// Commits the default branch lacks; on the default branch itself, commits no remote has.
+    /// 0 for a branch squash- or rebase-merged upstream: their changes are all there.
     pub commits: u32,
-    /// Committed on, then fully taken into the default branch. A branch that never moved
-    /// is in it too, but has nothing to call merged.
+    /// Committed on, then fully taken into the default branch, or squash- or rebase-merged
+    /// upstream. A branch that never moved is in it too, but has nothing to call merged.
     pub merged: bool,
 }
 
 /// Where one of this repo's worktrees stands: uncommitted files, and commits found nowhere else.
-pub fn worktree_state(repo: &Path, path: &str) -> Result<WorktreeState, String> {
+/// `upstream`: also whether a squash or rebase merge upstream took them, which reads diffs.
+pub fn worktree_state(repo: &Path, path: &str, upstream: bool) -> Result<WorktreeState, String> {
     let all = worktrees(repo)?;
     let w = all
         .iter()
@@ -401,10 +403,19 @@ pub fn worktree_state(repo: &Path, path: &str) -> Result<WorktreeState, String> 
         )
         .is_ok_and(|log| log.lines().count() > 1)
     };
+    // Squash- or rebase-merged on the remote, which deleted the branch: its commits aren't in
+    // the default branch, but all they changed is.
+    let squashed = upstream
+        && commits > 0
+        && !bases.is_empty()
+        && w.branch
+            .as_deref()
+            .is_some_and(|b| !landed(repo, Some(b)).is_empty());
     Ok(WorktreeState {
         uncommitted,
-        commits,
-        merged: !bases.is_empty() && commits == 0 && w.branch.as_deref().is_some_and(moved),
+        commits: if squashed { 0 } else { commits },
+        merged: squashed
+            || !bases.is_empty() && commits == 0 && w.branch.as_deref().is_some_and(moved),
     })
 }
 

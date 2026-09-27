@@ -57,8 +57,12 @@ pub async fn unlock_worktree(state: State<'_, AppState>, path: String) -> Res<()
 }
 
 #[tauri::command]
-pub async fn worktree_state(state: State<'_, AppState>, path: String) -> Res<git::WorktreeState> {
-    in_repo(&state, move |r| git::worktree_state(r, &path)).await
+pub async fn worktree_state(
+    state: State<'_, AppState>,
+    path: String,
+    upstream: bool,
+) -> Res<git::WorktreeState> {
+    in_repo(&state, move |r| git::worktree_state(r, &path, upstream)).await
 }
 
 #[tauri::command]

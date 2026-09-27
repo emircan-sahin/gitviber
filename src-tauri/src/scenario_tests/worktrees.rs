@@ -43,28 +43,28 @@ fn worktree_list_detached_prunable_and_counts() {
     let gone = list.iter().find(|w| w.path.ends_with("/gone")).unwrap();
     assert!(gone.prunable);
 
-    assert_eq!(worktree_state(&r, &a.path).unwrap().uncommitted, 2);
-    let d = worktree_state(&r, &det.path).unwrap();
+    assert_eq!(worktree_state(&r, &a.path, true).unwrap().uncommitted, 2);
+    let d = worktree_state(&r, &det.path, true).unwrap();
     assert!(d.uncommitted == 0 && d.commits == 0 && !d.merged);
-    assert!(worktree_state(&r, &gone.path).is_err());
+    assert!(worktree_state(&r, &gone.path, true).is_err());
     // Only listed worktrees: never an arbitrary folder.
-    assert!(worktree_state(&r, sb.path("det/..").to_str().unwrap()).is_err());
+    assert!(worktree_state(&r, sb.path("det/..").to_str().unwrap(), true).is_err());
 
     // Untouched is not merged; committed then merged into a local, unpushed main is.
-    assert!(!worktree_state(&r, &a.path).unwrap().merged);
+    assert!(!worktree_state(&r, &a.path, true).unwrap().merged);
     write_commit(&agent, "b.txt", "b\n", "agent work");
-    let s = worktree_state(&r, &a.path).unwrap();
+    let s = worktree_state(&r, &a.path, true).unwrap();
     assert!(s.commits == 1 && !s.merged);
     // Merged upstream only (a fork's PR landed in the original) is merged too.
     run(&r, &["update-ref", "refs/remotes/upstream/main", "agent"]).unwrap();
-    let s = worktree_state(&r, &a.path).unwrap();
+    let s = worktree_state(&r, &a.path, true).unwrap();
     assert!(s.commits == 0 && s.merged);
     run(&r, &["update-ref", "-d", "refs/remotes/upstream/main"]).unwrap();
     run(&r, &["merge", "-q", "agent"]).unwrap();
-    let s = worktree_state(&r, &a.path).unwrap();
+    let s = worktree_state(&r, &a.path, true).unwrap();
     assert!(s.commits == 0 && s.merged);
     // The agent worktree lives inside the main one: it's not an untracked file there.
-    let m = worktree_state(&r, &main.path).unwrap();
+    let m = worktree_state(&r, &main.path, true).unwrap();
     assert!(m.uncommitted == 0 && !m.merged);
 
     // From inside a linked worktree the main one is still the project.

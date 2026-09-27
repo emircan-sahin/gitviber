@@ -25,9 +25,10 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     if (ok) await run("Create worktree", async () => openTerminal(await api.addWorktree(name, null, dir)), `${name} checked out in ${where}`);
   };
 
-  // Merged is deleted outright: nothing is lost. Anything else needs a yes, then -D.
-  // A remote branch always asks: the push takes it away for everyone.
-  const deleteBranch = async (b: Branch) => {
+  // Merged is deleted outright: nothing is lost; merged upstream too, once the backend checks it
+  // again as it is now. Anything else needs a yes, then -D. A remote branch always asks: the
+  // push takes it away for everyone.
+  const deleteBranch = async (b: Branch, upstream = false) => {
     if (b.remote) {
       const [remote, ...rest] = b.name.split("/");
       const ok = await ask(`Delete ${rest.join("/")} from ${remote}? It goes for everyone who uses ${remote}; local branches stay.`, {
@@ -39,7 +40,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       return;
     }
     const here = status?.branch ?? "HEAD";
-    if (!b.merged) {
+    if (!b.merged && !upstream) {
       const ok = await ask(`${b.name} isn't known to be merged into ${here}. Deleting it loses any commits that exist only on it.`, {
         title: "Delete branch",
         kind: "warning",
@@ -47,16 +48,20 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       });
       if (!ok) return;
     }
-    await run("Delete branch", () => api.deleteBranches([b.name], !b.merged), `Deleted ${b.name}`);
+    await run("Delete branch", () => (upstream ? api.deleteMerged([], [b.name]) : api.deleteBranches([b.name], !b.merged)), `Deleted ${b.name}`);
   };
 
-  const cleanUp = async (names: string[]) => {
-    const shown = names.slice(0, 12).join("\n") + (names.length > 12 ? `\n…and ${names.length - 12} more` : "");
-    const ok = await ask(`Delete ${names.length} branches already merged into ${status?.branch ?? "HEAD"}?\n\n${shown}`, {
+  const cleanUp = async (merged: string[], upstream: string[]) => {
+    const names = [...merged, ...upstream];
+    const label = (n: string) => (upstream.includes(n) ? `${n} (merged upstream)` : n);
+    const shown = names.slice(0, 12).map(label).join("\n") + (names.length > 12 ? `\n…and ${names.length - 12} more` : "");
+    const here = status?.branch ?? "HEAD";
+    const where = !upstream.length ? `already merged into ${here}` : merged.length ? `merged into ${here} or upstream` : "squash- or rebase-merged upstream";
+    const ok = await ask(`Delete ${names.length} branches ${where}?\n\n${shown}`, {
       title: "Clean up merged branches",
       okLabel: "Delete",
     });
-    if (ok) await run("Clean up", () => api.deleteBranches(names, false), `Deleted ${names.length} merged branches`);
+    if (ok) await run("Clean up", () => api.deleteMerged(merged, upstream), `Deleted ${names.length} merged branches`);
   };
 
   // A pull brings in the upstream, which can't help a push that goes elsewhere (a fork pulling
@@ -173,7 +178,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       if (ok) await run("Prune worktree", () => api.removeWorktree(w.path, false), `Pruned ${name}`);
       return;
     }
-    const changed = w.prunable ? 0 : await api.worktreeState(w.path).then((s) => s.uncommitted, () => 0);
+    const changed = w.prunable ? 0 : await api.worktreeState(w.path, false).then((s) => s.uncommitted, () => 0);
     const branch = w.branch ? ` The branch ${w.branch} stays.` : "";
     const lost = changed ? ` Its ${changed} uncommitted ${changed === 1 ? "change" : "changes"} will be lost.` : "";
     const lock = w.inUse

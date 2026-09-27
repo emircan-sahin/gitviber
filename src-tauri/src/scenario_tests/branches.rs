@@ -73,6 +73,217 @@ fn merged_branches_and_deleting_them() {
     assert_eq!(left.len(), 2, "{left:?}");
 }
 
+/// A host squash- or rebase-merges a pull request and deletes its branch: after a pruning
+/// fetch the local branch counts as merged upstream. A gone upstream alone doesn't.
+#[test]
+fn squash_and_rebase_merged_branches_whose_upstream_is_gone() {
+    let sb = Sandbox::new("landed");
+    let c = sb.remote_with_clones(2);
+    let (a, host) = (&c[0], &c[1]);
+    let push = |name: &str, commits: &[(&str, &str)]| {
+        run(a, &["switch", "-q", "-c", name, "main"]).unwrap();
+        for (path, content) in commits {
+            write_commit(a, path, content, &format!("{name}: {path}"));
+        }
+        run(a, &["push", "-q", "-u", "origin", name]).unwrap();
+    };
+    push("squashed", &[("s.txt", "s1\n"), ("s.txt", "s2\n")]);
+    push("rebased", &[("r1.txt", "r1\n"), ("r2.txt", "r2\n")]);
+    let nine = "1\n2\n3\n4\n5\n6\n7\n8\n9\n";
+    push("later", &[("l.txt", "1\n"), ("l.txt", nine)]);
+    push("partial", &[("p1.txt", "p1\n"), ("p2.txt", "p2\n")]);
+    push("unmerged", &[("u.txt", "u\n")]);
+    push("alive", &[("v.txt", "v\n")]);
+    push("held", &[("h.txt", "h\n")]);
+    // Its only change differs from main's in whitespace alone: not merged.
+    push("spaces", &[("w.txt", "a  b\n")]);
+    // Landed, then a merge brought in more work: e.txt, which main has, and precious.txt.
+    push("stacked", &[("k.txt", "k\n")]);
+    run(a, &["switch", "-q", "-c", "extra", "main"]).unwrap();
+    write_commit(a, "e.txt", "e\n", "extra");
+    run(a, &["switch", "-q", "stacked"]).unwrap();
+    run(a, &["merge", "-q", "--no-ff", "--no-commit", "extra"]).unwrap();
+    fs::write(a.join("precious.txt"), "p\n").unwrap();
+    stage(a, &["precious.txt".into()]).unwrap();
+    commit(a, "merge extra", &CommitOptions::default()).unwrap();
+    run(a, &["switch", "-q", "main"]).unwrap();
+
+    // The host: main moves on, then each pull request lands its own way.
+    run(host, &["fetch", "-q"]).unwrap();
+    write_commit(host, "a.txt", "one\ntwo\nthree\nfour\n", "other work");
+    let git = |args: &[&str]| run(host, args).unwrap();
+    for b in ["squashed", "later", "alive", "held", "stacked"] {
+        git(&["merge", "-q", "--squash", &format!("origin/{b}")]);
+        git(&["commit", "-q", "-m", &format!("{b} (#1)")]);
+    }
+    git(&["cherry-pick", "main..origin/rebased"]);
+    git(&["cherry-pick", "origin/partial~1"]);
+    // After the squash, main edits the same file: only the squash commit's patch still matches.
+    write_commit(host, "l.txt", &format!("{nine}10\n"), "more");
+    write_commit(host, "w.txt", "a b\n", "w");
+    write_commit(host, "e.txt", "e\n", "e");
+    git(&["push", "-q", "origin", "main"]);
+    for b in [
+        "squashed", "rebased", "later", "partial", "unmerged", "held", "spaces", "stacked",
+    ] {
+        git(&["push", "-q", "origin", "--delete", b]);
+    }
+
+    run(a, &["fetch", "-q", "--prune"]).unwrap();
+    run(a, &["merge", "-q", "--ff-only", "origin/main"]).unwrap();
+    run(
+        a,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            sb.path("held").to_str().unwrap(),
+            "held",
+        ],
+    )
+    .unwrap();
+    let mut found = merged_upstream(a);
+    found.sort();
+    assert_eq!(found, ["held", "later", "rebased", "squashed"]);
+    // git itself doesn't see them as merged, so the plain rule leaves them be.
+    assert!(!branches(a).unwrap().iter().any(|b| b.merged));
+    // The worktree holding one is merged too, with nothing to merge back.
+    let held = worktrees(a)
+        .unwrap()
+        .into_iter()
+        .find(|w| same_dir(&w.path, &sb.path("held")))
+        .unwrap();
+    let s = worktree_state(a, &held.path, true).unwrap();
+    assert!(s.commits == 0 && s.merged);
+    // git's own -d refuses them; they're checked again, at the commit they're at now, then -D.
+    assert!(delete_branches(a, &["squashed".into()], false).is_err());
+    run(a, &["switch", "-q", "rebased"]).unwrap();
+    write_commit(a, "new.txt", "new\n", "new work");
+    run(a, &["switch", "-q", "main"]).unwrap();
+    let both = ["squashed".to_string(), "rebased".to_string()];
+    assert!(delete_merged(a, &[], &both).is_err());
+    assert!(exists(a, "squashed") && exists(a, "rebased"));
+    delete_merged(a, &[], &both[..1]).unwrap();
+    assert!(!exists(a, "squashed"));
+    // Its settings go with it, as with git branch -D.
+    assert!(run(a, &["config", "--get", "branch.squashed.remote"]).is_err());
+}
+
+/// The user's diff settings shape the patches patch-id reads; none may make an unmerged
+/// branch look merged, and a real squash still counts under all of them.
+#[test]
+fn diff_settings_dont_make_a_branch_look_merged_upstream() {
+    let sb = Sandbox::new("landedcfg");
+    let r = repo_with_submodule(&sb);
+    let sub = r.join("sub");
+    let ten: String = (1..=10).map(|n| format!("{n}\n")).collect();
+    let blank = "a\nb\n\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\n";
+    for (f, text) in [
+        ("g.txt", ten.as_str()),
+        ("h.txt", blank),
+        ("f4.txt", &ten),
+        ("f6.txt", &ten),
+        ("r.txt", &ten),
+    ] {
+        write_commit(&r, f, text, f);
+    }
+    run(
+        &r,
+        &["remote", "add", "origin", sb.path("none").to_str().unwrap()],
+    )
+    .unwrap();
+    let git = |args: &[&str]| run(&r, args).unwrap();
+    let branch = |name: &str| git(&["switch", "-q", "-c", name, "main"]);
+    // A commit in the submodule, for a branch to move its pointer to.
+    let bump = |msg: &str| {
+        write_commit(&sub, "l.txt", &format!("{msg}\n"), msg);
+        stage(&r, &["sub".into()]).unwrap();
+    };
+    let edit = |f: &str, from: &str, to: &str| {
+        let text = fs::read_to_string(r.join(f)).unwrap().replacen(from, to, 1);
+        fs::write(r.join(f), text).unwrap();
+        stage(&r, &[f.into()]).unwrap();
+    };
+    let done = |msg: &str| commit(&r, msg, &CommitOptions::default()).unwrap();
+
+    // Each branch's own work, and on main something that matches only part of it or only
+    // under the setting.
+    branch("ctx");
+    edit("g.txt", "3\n", "3\nfoo\n");
+    done("foo after 3");
+    branch("blank");
+    edit("h.txt", "b\n", "B\n");
+    edit("h.txt", "m\n", "M\n");
+    write_commit(&r, "x.txt", "extra\n", "B, M and x");
+    branch("hidden");
+    edit("f4.txt", "5\n", "five\n");
+    bump("hidden");
+    done("f4 and sub");
+    branch("sublog");
+    edit("f6.txt", "5\n", "five\n");
+    bump("sublog");
+    fs::write(r.join("z.txt"), "important\n").unwrap();
+    stage(&r, &["z.txt".into()]).unwrap();
+    done("f6, sub and z");
+    branch("real");
+    edit("r.txt", "2\n", "two\n");
+    done("r1");
+    edit("r.txt", "4\n", "four\n");
+    done("r2");
+
+    git(&["switch", "-q", "main"]);
+    git(&["submodule", "update", "-q"]);
+    edit("g.txt", "7\n", "7\nfoo\n");
+    done("foo after 7");
+    edit("h.txt", "b\n", "B\n");
+    edit("h.txt", "m\n", "DIFFERENT\n");
+    done("B and different");
+    edit("f4.txt", "5\n", "five\n");
+    done("f4 without sub");
+    edit("f6.txt", "5\n", "five\n");
+    done("f6 only");
+    git(&["merge", "-q", "--squash", "real"]);
+    done("real (#1)");
+    // Base moves on over each file, so their contents differ from the branches'.
+    for f in ["g.txt", "h.txt", "f6.txt", "r.txt"] {
+        edit(f, "10\n", "ten\n");
+        edit(f, "l\n", "L\n");
+        done(&format!("later {f}"));
+    }
+
+    // One at a time: only a branch whose upstream is gone is asked about.
+    let gone = |b: &str, config: &[(&str, &str)]| -> bool {
+        for (k, v) in config {
+            git(&["config", k, v]);
+        }
+        git(&["config", &format!("branch.{b}.remote"), "origin"]);
+        git(&[
+            "config",
+            &format!("branch.{b}.merge"),
+            &format!("refs/heads/{b}"),
+        ]);
+        let found = merged_upstream(&r).contains(&b.to_string());
+        git(&["config", "--remove-section", &format!("branch.{b}")]);
+        for (k, _) in config {
+            git(&["config", "--unset", k]);
+        }
+        found
+    };
+    assert!(!gone("ctx", &[("diff.context", "0")]));
+    assert!(!gone("blank", &[("diff.suppressBlankEmpty", "true")]));
+    assert!(!gone("hidden", &[("diff.ignoreSubmodules", "all")]));
+    assert!(!gone("sublog", &[("diff.submodule", "log")]));
+    let all = [
+        ("diff.context", "0"),
+        ("diff.suppressBlankEmpty", "true"),
+        ("diff.ignoreSubmodules", "all"),
+        ("diff.submodule", "log"),
+        ("diff.noprefix", "true"),
+        ("color.diff", "always"),
+    ];
+    assert!(gone("real", &all));
+}
+
 #[test]
 fn deleting_a_remote_branch() {
     let sb = Sandbox::new("rbdel");

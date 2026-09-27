@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
-import { type Branch, fullName, github } from "@/lib/api";
+import { api, type Branch, fullName, github } from "@/lib/api";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { pointerMoved } from "@/lib/ui/pointer";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
@@ -27,10 +27,10 @@ interface Props {
   onRebase: (name: string) => void;
   /** Opens a terminal on the branch. */
   onTerminal: (name: string) => void;
-  /** Deletes a branch; asks first unless it's a merged local one. */
-  onDelete: (branch: Branch) => void;
-  /** Deletes these merged branches together (asks first). */
-  onCleanUp: (names: string[]) => void;
+  /** Deletes a branch; asks first unless it's a merged local one, here or `upstream`. */
+  onDelete: (branch: Branch, upstream: boolean) => void;
+  /** Deletes these merged branches together (asks first); `upstream` ones git sees as unmerged. */
+  onCleanUp: (merged: string[], upstream: string[]) => void;
   onRename: (branch: Branch) => void;
   /** A new branch at `base`: a full ref (refs/heads/…, refs/remotes/…), or HEAD. */
   onNewBranch: (base: string) => void;
@@ -122,8 +122,26 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     setQuery("");
   };
 
-  // Merged into HEAD and held by no worktree: deleting them loses nothing.
+  // Squash- or rebase-merged, then deleted on the remote. Asked on each open, as it reads their
+  // diffs; null until known, so Clean up never counts from an older open, nor twice.
+  const [landed, setLanded] = useState<Set<string> | null>(null);
+  useEffect(() => {
+    setLanded(null);
+    if (!open) return;
+    let live = true;
+    api.mergedUpstream().then(
+      (names) => live && setLanded(new Set(names)),
+      () => live && setLanded(new Set()),
+    );
+    return () => {
+      live = false;
+    };
+  }, [open]);
+  const upstream = (b: Branch) => !b.remote && !b.merged && !!landed?.has(b.name);
+  // Merged and held by no worktree: deleting them loses nothing.
   const stale = branches.filter((b) => b.merged && !b.worktree).map((b) => b.name);
+  const squashed = branches.filter((b) => upstream(b) && !b.worktree).map((b) => b.name);
+  const cleanable = stale.length + squashed.length;
 
   const choose = (o: Option | undefined) => {
     if (!o) return;
@@ -269,14 +287,20 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
               )}
               {/* Where you can't push, GitHub would refuse the delete anyway. */}
               {!o.branch.current && !o.branch.remoteDefault && !guarded.has(o.branch.name) && !(o.branch.remote && accessOf(remoteOf(o.branch))?.push === false) && (
-                <RowAction variant="picker" hot={hot} label={o.branch.remote ? "Delete from the remote…" : o.branch.merged ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch), o.branch.name)}>
+                <RowAction variant="picker" hot={hot} label={o.branch.remote ? "Delete from the remote…" : o.branch.merged || upstream(o.branch) ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch, upstream(o.branch)), o.branch.name)}>
                   <Trash2 />
                 </RowAction>
               )}
             </span>
             {!hot && (
               <span className="ml-auto max-w-40 shrink-0 truncate text-[10.5px] text-subtle">
-                {o.branch.current ? "current" : o.branch.merged ? `merged · ${relativeTime(o.branch.timestamp)}` : relativeTime(o.branch.timestamp)}
+                {o.branch.current
+                  ? "current"
+                  : o.branch.merged
+                    ? `merged · ${relativeTime(o.branch.timestamp)}`
+                    : upstream(o.branch)
+                      ? `merged upstream · ${relativeTime(o.branch.timestamp)}`
+                      : relativeTime(o.branch.timestamp)}
               </span>
             )}
           </>
@@ -358,16 +382,16 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
               New branch…
             </button>
           </Tip>
-          {stale.length > 0 && (
-            <Tip label={`Delete the ${stale.length} local branches already merged into ${current ?? "HEAD"}`}>
+          {landed && cleanable > 0 && (
+            <Tip label={`Delete the ${cleanable} local branches ${squashed.length ? `merged into ${current ?? "HEAD"} or upstream` : `already merged into ${current ?? "HEAD"}`}`}>
               <button
                 onClick={() => {
-                  onCleanUp(stale);
+                  onCleanUp(stale, squashed);
                   close();
                 }}
                 className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
               >
-                Clean up {stale.length} merged
+                Clean up {cleanable} merged
               </button>
             </Tip>
           )}

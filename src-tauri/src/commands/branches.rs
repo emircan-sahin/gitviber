@@ -10,6 +10,28 @@ pub async fn branches(state: State<'_, AppState>) -> Res<Vec<git::Branch>> {
 }
 
 #[tauri::command]
+pub async fn merged_upstream(state: State<'_, AppState>) -> Res<Vec<String>> {
+    in_repo(&state, |r| Ok(git::merged_upstream(r))).await
+}
+
+/// Deletes merged branches: `merged` ones into HEAD, and `upstream` ones git sees as unmerged.
+#[tauri::command]
+pub async fn delete_merged(
+    state: State<'_, AppState>,
+    merged: Vec<String>,
+    upstream: Vec<String>,
+) -> Res<()> {
+    let label = match (merged.as_slice(), upstream.as_slice()) {
+        ([one], []) | ([], [one]) => format!("Delete branch {one}"),
+        _ => format!("Delete {} branches", merged.len() + upstream.len()),
+    };
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::delete_merged(r, &merged, &upstream)
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn switch_branch(state: State<'_, AppState>, name: String, create: bool) -> Res<()> {
     let label = if create {
         format!("Create branch {name}")
