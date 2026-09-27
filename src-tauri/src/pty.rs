@@ -221,6 +221,13 @@ impl Ptys {
         0
     }
 
+    /// The folder a session's shell is in now, asked of the process as VS Code does for a split
+    /// (its own, not the foreground job's): once, on a split or a save, never polled.
+    pub fn cwd(&self, id: u32) -> Option<PathBuf> {
+        let pid = self.with(id, |s| Ok(s.shell)).ok()??;
+        process_cwd(pid)
+    }
+
     /// A reloaded page has lost every terminal it had; without this their shells run on unseen.
     pub fn kill_all(&self) {
         let sessions: Vec<Session> = self
@@ -236,9 +243,49 @@ impl Ptys {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    let got = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            (&mut info as *mut libc::proc_vnodepathinfo).cast(),
+            size,
+        )
+    };
+    if got != size {
+        return None;
+    }
+    let path = unsafe { std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
+    let path = Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()));
+    path.is_absolute().then(|| path.to_path_buf())
+}
+
+#[cfg(target_os = "linux")]
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn process_cwd(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::start_dir;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_process_folder_is_read() {
+        let here = std::env::current_dir().unwrap().canonicalize().unwrap();
+        let read = super::process_cwd(std::process::id()).unwrap();
+        assert_eq!(read.canonicalize().unwrap(), here);
+    }
 
     #[test]
     fn a_gone_folder_starts_in_the_nearest_one_left() {

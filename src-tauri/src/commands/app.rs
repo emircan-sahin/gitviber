@@ -5,6 +5,7 @@ use tauri::{AppHandle, Manager, State};
 
 /// Any folder, unlike the repo commands: the shell can `cd` anywhere the user can anyway.
 /// `integration`: load the shell integration, whose scripts live in the app's cache folder.
+/// `folder`: where the shell it continues was last (a split, a restore), if that's still there.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn pty_spawn(
@@ -14,9 +15,11 @@ pub fn pty_spawn(
     cols: u16,
     rows: u16,
     integration: bool,
+    folder: Option<String>,
     output: tauri::ipc::Channel<tauri::ipc::Response>,
     exit: tauri::ipc::Channel<Option<pty::Exit>>,
 ) -> Res<pty::Spawned> {
+    let cwd = folder.filter(|f| Path::new(f).is_dir()).unwrap_or(cwd);
     let scripts = integration
         .then(|| app.path().app_cache_dir().ok())
         .flatten()
@@ -77,6 +80,11 @@ pub fn keep_dropped(paths: Vec<String>) -> Vec<String> {
 #[tauri::command]
 pub fn pty_resize(state: State<'_, AppState>, id: u32, cols: u16, rows: u16) -> Res<()> {
     state.ptys.resize(id, cols, rows)
+}
+
+#[tauri::command]
+pub fn pty_cwd(state: State<'_, AppState>, id: u32) -> Option<String> {
+    state.ptys.cwd(id).map(|p| p.to_string_lossy().into_owned())
 }
 
 #[tauri::command]

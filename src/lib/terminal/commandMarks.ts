@@ -10,6 +10,26 @@ export function parseMark(data: string): { kind: "A" | "B" | "C" | "D"; exit?: n
   return kind === "D" && arg !== undefined && /^\d+$/.test(arg) ? { kind, exit: Number(arg) } : { kind };
 }
 
+/**
+ * The folder an OSC 7 reports: `file://host/path` percent-encoded (fish, and most shells' own), or
+ * kitty's `kitty-shell-cwd://host/path` as it is (GitViber's scripts).
+ */
+export function cwdFromOsc7(data: string): string | null {
+  const m = /^(file|kitty-shell-cwd):\/\/[^/]*(\/.*)$/.exec(data);
+  if (!m) return null;
+  if (m[1] === "kitty-shell-cwd") return m[2];
+  try {
+    return decodeURIComponent(m[2]);
+  } catch {
+    return m[2];
+  }
+}
+
+/** A value in VS Code's OSC 633 (its `P;Cwd=`): `\\` and `\xNN` escapes, as its deserializeVSCodeOscMessage reads them. */
+export function unescape633(value: string): string {
+  return value.replace(/\\(\\|x([0-9a-f]{2}))/gi, (_, op: string, hex?: string) => (hex ? String.fromCharCode(parseInt(hex, 16)) : op));
+}
+
 interface Command {
   prompt: IMarker;
   /** Where its output starts (C), and where it ended (D) with the cursor's column there. */
@@ -30,6 +50,8 @@ export class CommandMarks {
   private current: Command | null = null;
   /** The last one that ended: the only one that keeps its output's markers. */
   private last: Command | null = null;
+  /** The folder the shell last reported (OSC 7, or 633's Cwd), null until it does. */
+  cwd: string | null = null;
   private term: Terminal;
   private prompted = () => {};
   /** The shell's first prompt is up: it reads what's typed now. */
@@ -41,9 +63,14 @@ export class CommandMarks {
       term.parser.registerOscHandler(code, (data) => {
         const mark = parseMark(data);
         if (mark) this.on(mark.kind, mark.exit);
-        // 633's other kinds (E, P) aren't read here; nothing else would.
+        else if (code === 633 && data.startsWith("P;Cwd=")) this.cwd = unescape633(data.slice(6));
+        // 633's other kinds (E, the other P's) aren't read here; nothing else would.
         return true;
       });
+    term.parser.registerOscHandler(7, (data) => {
+      this.cwd = cwdFromOsc7(data) ?? this.cwd;
+      return true;
+    });
   }
 
   private on(kind: string, exit?: number) {
