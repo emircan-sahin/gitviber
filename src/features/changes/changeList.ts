@@ -70,6 +70,9 @@ export const changedInside = (f: FileChange | null) => !!f?.submodule && /[MU]/.
 
 export const leftOut = (n: number) => `Left out ${n} nested ${n === 1 ? "repository" : "repositories"}`;
 export const paths = (rows: Change[]) => rows.map((r) => r.file.path);
-/** What to unstage: a staged rename's old path too, or its deletion would stay staged. */
-export const unstagePaths = (files: FileChange[]) => files.flatMap((f) => (f.oldPath ? [f.path, f.oldPath] : [f.path]));
+/**
+ * What to unstage: a staged rename's old path too, or its deletion would stay staged. A copy's
+ * source (status.renames=copies) is a file of its own, whose staged edits stay.
+ */
+export const unstagePaths = (files: FileChange[]) => files.flatMap((f) => (f.status === "R" && f.oldPath ? [f.path, f.oldPath] : [f.path]));
 export const files = (n: number) => `${n} ${n === 1 ? "file" : "files"}`;
