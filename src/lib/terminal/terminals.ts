@@ -411,6 +411,9 @@ function update(id: number, fn: (p: PaneInfo) => PaneInfo) {
   set({ groups: state.groups.map((g) => (g.panes.some((p) => p.id === id) ? { ...g, panes: g.panes.map((p) => (p.id === id ? fn(p) : p)) } : g)) });
 }
 
+/** History lines past which a column change waits for the resize to settle (VS Code's threshold). */
+const REWRAP_LINES = 200;
+
 /** A hidden or collapsed container would shrink the shell to one row and garble its output. */
 function fitPane(p: Pane, now = false) {
   const box = p.host.parentElement;
@@ -418,9 +421,9 @@ function fitPane(p: Pane, now = false) {
   const size = p.fit.proposeDimensions();
   if (!size || isNaN(size.cols) || isNaN(size.rows)) return;
   window.clearTimeout(p.fitTimer);
-  // New columns rewrap the whole history: past a screenful or so they wait for a drag to settle,
-  // as in VS Code, while rows follow at once.
-  if (!now && p.started && size.cols !== p.term.cols && p.term.buffer.normal.length > 200) {
+  // New columns rewrap the whole history, so past REWRAP_LINES they wait 100 ms for a drag to
+  // settle, as in VS Code; rows follow at once.
+  if (!now && p.started && size.cols !== p.term.cols && p.term.buffer.normal.length > REWRAP_LINES) {
     p.term.resize(p.term.cols, size.rows);
     p.fitTimer = window.setTimeout(() => fitPane(p, true), 100);
   } else p.term.resize(size.cols, size.rows);
