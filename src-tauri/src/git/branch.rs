@@ -233,7 +233,10 @@ fn content_in(repo: &Path, base: &str, tip: &str, since: i64) -> bool {
     if let Some(&known) = checked().get(&key) {
         return known;
     }
-    let known = check_content(repo, base, tip, since);
+    // A git call that failed isn't an answer: asked again next time.
+    let Some(known) = check_content(repo, base, tip, since) else {
+        return false;
+    };
     let mut all = checked();
     if all.len() > 1000 {
         all.clear();
@@ -242,15 +245,15 @@ fn content_in(repo: &Path, base: &str, tip: &str, since: i64) -> bool {
     known
 }
 
-fn check_content(repo: &Path, base: &str, tip: &str, since: i64) -> bool {
+fn check_content(repo: &Path, base: &str, tip: &str, since: i64) -> Option<bool> {
     let ahead = format!("{base}..{tip}");
     let Ok(commits) = run_text(repo, &["rev-list", &ahead]) else {
-        return false;
+        return None;
     };
     let commits: Vec<&str> = commits.lines().collect();
     // Reachable from base: merged the plain way.
     if commits.is_empty() {
-        return true;
+        return Some(true);
     }
     // Squashed, and base hasn't touched those files since: each one it changed reads the same.
     let forked = format!("{base}...{tip}");
@@ -272,19 +275,19 @@ fn check_content(repo: &Path, base: &str, tip: &str, since: i64) -> bool {
         )
     };
     let (Ok(changed), Ok(differ)) = (names(&[&forked]), names(&[base, tip])) else {
-        return false;
+        return None;
     };
     let differ: HashSet<&str> = differ.split('\0').collect();
     let changed: Vec<&str> = changed.split('\0').filter(|p| !p.is_empty()).collect();
     if changed.is_empty() {
-        return false;
+        return Some(false);
     }
     if changed.iter().all(|p| !differ.contains(p)) {
-        return true;
+        return Some(true);
     }
     // Base's log below names them on the command line.
     if changed.len() > 1000 {
-        return false;
+        return Some(false);
     }
     // Rebased or picked: each commit's patch is in base. Squashed, then base moved on over the
     // same files: its whole change is one there (git-trim asks git cherry that of a scratch
@@ -314,20 +317,22 @@ fn check_content(repo: &Path, base: &str, tip: &str, since: i64) -> bool {
     .concat();
     let (Some(ours), Some(theirs)) = (patch_ids(repo, &[whole, own]), patch_ids(repo, &[log]))
     else {
-        return false;
+        return None;
     };
     // A zero id past the whole diff's is a patch patch-id split apart: part of it went unread.
     let zero = |(_, sha): &&(String, String)| sha.bytes().all(|b| b == b'0');
     let (wholes, own): (Vec<_>, Vec<_>) = ours.iter().partition(zero);
     if wholes.len() > 1 || theirs.iter().any(|t| zero(&t)) {
-        return false;
+        return Some(false);
     }
     let theirs: HashSet<&str> = theirs.iter().map(|(id, _)| id.as_str()).collect();
-    wholes.first().is_some_and(|(id, _)| theirs.contains(id.as_str()))
+    Some(
+        wholes.first().is_some_and(|(id, _)| theirs.contains(id.as_str()))
         // A commit with no id (binary only) never matches.
         || commits
             .iter()
-            .all(|c| own.iter().any(|(id, sha)| sha == c && theirs.contains(id.as_str())))
+            .all(|c| own.iter().any(|(id, sha)| sha == c && theirs.contains(id.as_str()))),
+    )
 }
 
 /// patch-id reads the patches as text, so none of the user's diff settings may shape them: a
