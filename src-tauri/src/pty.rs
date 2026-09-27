@@ -134,15 +134,9 @@ impl Ptys {
                     }
                 }
             }
-            let status = child.wait().ok().map(|s| match s.signal() {
-                Some(signal) => Exit {
-                    code: None,
-                    signal: Some(signal.to_string()),
-                },
-                None => Exit {
-                    code: Some(s.exit_code()),
-                    signal: None,
-                },
+            let status = child.wait().ok().map(|s| Exit {
+                code: s.signal().is_none().then(|| s.exit_code()),
+                signal: s.signal().map(str::to_string),
             });
             sessions.lock().unwrap().remove(&id);
             let _ = exit.send(status);

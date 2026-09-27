@@ -1,4 +1,4 @@
-import { ArrowUpFromLine, Ellipsis, LoaderCircle, RefreshCw, ShieldOff, Signature, Sparkles, TriangleAlert, UserPlus } from "lucide-react";
+import { ArrowUpFromLine, Ellipsis, LoaderCircle, RefreshCw, ShieldOff, Signature, TriangleAlert, UserPlus } from "lucide-react";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -16,6 +16,7 @@ import { pasteMessage } from "@/lib/git/pasteMessage";
 import { attempt, files, leftOut } from "./changeList";
 import { SectionBtn } from "./ChangeRows";
 import { CoAuthorChip, CoAuthorPicker, OptionChip } from "./CoAuthorPicker";
+import { SuggestButton } from "./SuggestButton";
 import { useCommitDraft, useSuggestMessage } from "./useCommitBox";
 
 /** Past this, `git log --oneline` and GitHub cut the summary off. */
@@ -138,13 +139,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
           <input type="checkbox" checked={!!amend} disabled={!head} onChange={(e) => onAmend(e.target.checked)} className="accent-primary" />
           Amend
         </label>
-        {suggestEnabled && (
-          <Tip label={suggesting ? `Stop ${program}` : `Suggest a message with ${program}`} shortcut={suggesting ? undefined : suggestKey}>
-            <Button variant="ghost" size="icon" aria-label={suggesting ? "Stop suggesting" : "Suggest a message"} disabled={!suggesting && !canSuggest} onClick={suggesting ? cancelSuggest : suggest}>
-              {suggesting ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-            </Button>
-          </Tip>
-        )}
+        {suggestEnabled && <SuggestButton what="a message" program={program} suggesting={suggesting} disabled={!canSuggest} shortcut={suggestKey} onSuggest={suggest} onCancel={cancelSuggest} />}
         <CoAuthorPicker open={addingCoAuthor} onOpenChange={setAddingCoAuthor} taken={draft.coAuthors} onAdd={(a) => setDraft((d) => ({ ...d, coAuthors: [...d.coAuthors, a] }))}>
           <DropdownMenu>
             <Tip label="Commit options">

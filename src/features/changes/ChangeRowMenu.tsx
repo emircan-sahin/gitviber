@@ -1,5 +1,4 @@
 import { Archive, ArrowLeftToLine, ArrowRightToLine, Check, Copy, Diff, EyeOff, File, FolderSearch, GitMerge, History, ListTree, Minus, Plus, SquareCheck, Undo2 } from "lucide-react";
-import { useRef } from "react";
 import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import type { FileChange } from "@/lib/api";
 import { IS_MAC, REVEAL_LABEL } from "@/lib/platform";
@@ -45,9 +44,6 @@ export function ChangeRowMenu({
   resolve: (rows: Change[], side: "ours" | "theirs") => void;
   stash: (paths: string[]) => void;
 }) {
-  // Set by "Reveal in Explorer", so the closing menu doesn't pull focus back from the tree.
-  const keepFocus = useRef(false);
-
   const { file } = sel;
   const onDisk = file.status !== "D";
   const n = rows.length;
@@ -57,12 +53,7 @@ export function ChangeRowMenu({
   // submodule is a folder, not a file.
   const onDiskPaths = [...new Set(rows.filter((r) => r.file.status !== "D" && !r.file.nested).map((r) => r.file.path))];
   return (
-    <ContextMenuContent
-      onCloseAutoFocus={(e) => {
-        if (keepFocus.current) e.preventDefault();
-        keepFocus.current = false;
-      }}
-    >
+    <ContextMenuContent>
       <ContextMenuItem onSelect={() => onOpen(sel, true)}>
         {sel.kind === "conflict" ? <GitMerge /> : <Diff />} {sel.kind === "conflict" ? "Open Conflict" : "Open Changes"}
       </ContextMenuItem>
@@ -117,13 +108,7 @@ export function ChangeRowMenu({
         </ContextMenuItem>
       )}
       <ContextMenuSeparator />
-      <ContextMenuItem
-        disabled={!onDisk}
-        onSelect={() => {
-          keepFocus.current = true;
-          onRevealInExplorer(file.path);
-        }}
-      >
+      <ContextMenuItem disabled={!onDisk} keepFocus onSelect={() => onRevealInExplorer(file.path)}>
         <ListTree /> Reveal in Explorer View
       </ContextMenuItem>
       <ContextMenuItem disabled={!onDisk} onSelect={() => revealPath(file.path)}>

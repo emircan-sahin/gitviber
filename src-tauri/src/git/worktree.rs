@@ -140,6 +140,14 @@ pub fn add_worktree(
     Ok(target)
 }
 
+/// How many files `add_worktree` copies in: links and paths out of the worktree aren't copied, so
+/// they aren't counted either.
+pub fn include_count(repo: &Path) -> Result<usize, String> {
+    let from = include_source(repo);
+    let files = worktree_includes(&from)?;
+    Ok(crate::fs::copyable(&from, &files).count())
+}
+
 /// The folder `add_worktree` would make for `branch`, refused if it's taken; callers with
 /// work to do first (a fetch) ask before it, so a refusal changes nothing.
 pub(crate) fn worktree_target(
