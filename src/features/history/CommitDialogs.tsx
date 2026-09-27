@@ -71,7 +71,7 @@ export function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "t
   const [message, setMessage] = useState("");
   const check = refNameCheck(name, []);
   const n = check.name;
-  const { pending, submit: send } = useSubmit(onClose);
+  const { pending, send } = useSubmit(onClose);
   const ready = !!n && !pending;
   const submit = () =>
     void send(() => (kind === "branch" ? run("Create branch", () => api.createBranchAt(n, commit.sha), `Switched to new branch ${n}`) : run("Create tag", () => api.createTag(n, commit.sha, message), `Tagged ${commit.shortSha} as ${n}`)));

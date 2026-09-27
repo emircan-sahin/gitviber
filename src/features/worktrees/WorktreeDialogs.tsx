@@ -92,7 +92,7 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
   const includes = useAsyncValue(api.worktreeIncludes, [], 0);
   const check = refNameCheck(name, localNames(branches));
   const n = pull ? pull.branch : check.name;
-  const { pending, submit: send } = useSubmit(onClose);
+  const { pending, send } = useSubmit(onClose);
   const ready = !!n && (!!pull || !check.taken) && !pending;
   const choose = async () => {
     const picked = await open({ directory: true, defaultPath: dir, title: "Folder for new worktrees" });
@@ -209,7 +209,7 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
   const [move, setMove] = useState(!stays);
   const check = refNameCheck(name, localNames(branches, old), true);
   const n = check.name;
-  const { pending, submit: send } = useSubmit(onClose);
+  const { pending, send } = useSubmit(onClose);
   const target = `${parentFolder(w.path)}${folderFor(n)}`;
   const moving = move && !stays && !!n && target !== w.path;
   const terminals = moving ? terminalsIn(w.path) : 0;
@@ -274,15 +274,13 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
 function LockWorktree({ worktree: w, main, onClose, run }: { worktree: Worktree } & Inner) {
   const [reason, setReason] = useState("");
   const r = reason.trim();
-  const submit = () => {
-    onClose();
-    void run("Lock worktree", () => api.lockWorktree(w.path, r || null), `Locked ${folderName(w.path)}`);
-  };
+  const { pending, send } = useSubmit(onClose);
+  const submit = () => void send(() => run("Lock worktree", () => api.lockWorktree(w.path, r || null), `Locked ${folderName(w.path)}`));
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        submit();
+        if (!pending) submit();
       }}
     >
       <DialogTitle>Lock worktree</DialogTitle>
@@ -291,7 +289,9 @@ function LockWorktree({ worktree: w, main, onClose, run }: { worktree: Worktree 
       </DialogDescription>
       <Input autoFocus className="mt-4" value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Reason (optional)" />
       <div className="mt-4 flex justify-end">
-        <Button type="submit">Lock</Button>
+        <Button type="submit" disabled={pending}>
+          Lock
+        </Button>
       </div>
     </form>
   );

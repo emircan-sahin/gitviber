@@ -38,14 +38,18 @@ function Rename({ branch, branches, onClose, run, runNet }: { branch: Branch } &
   const [remote, setRemote] = useState(false);
   const check = refNameCheck(name, localNames(branches, branch.name), true);
   const n = check.name;
-  const { pending, submit: send } = useSubmit(onClose);
+  const { pending, send } = useSubmit(onClose);
   const ready = !!n && n !== branch.name && !check.taken && !pending;
   // Only an upstream that is still there can be renamed; a local one (remote ".") never.
   const upstream = branches.find((b) => b.remote && b.name === branch.upstream)?.name ?? null;
   const remoteName = upstream?.slice(0, upstream.indexOf("/"));
   const submit = () => {
     const done = `Renamed ${branch.name} to ${n}${remote ? ` here and on ${remoteName}` : ""}`;
-    void send(() => (remote ? runNet("Rename branch", (op) => api.renameBranch(branch.name, n, true, op), done) : run("Rename branch", () => api.renameBranch(branch.name, n, false), done)));
+    if (remote) {
+      // Its Cancel is in the top bar, behind this dialog.
+      onClose();
+      void runNet("Rename branch", (op) => api.renameBranch(branch.name, n, true, op), done);
+    } else void send(() => run("Rename branch", () => api.renameBranch(branch.name, n, false), done));
   };
   return (
     <form
@@ -92,7 +96,7 @@ function NewBranch({ base, branches, onClose, run }: { base: string } & Pick<Pro
   const [switchTo, setSwitchTo] = useState(true);
   const check = refNameCheck(name, localNames(branches));
   const n = check.name;
-  const { pending, submit: send } = useSubmit(onClose);
+  const { pending, send } = useSubmit(onClose);
   const ready = !!n && !check.taken && !pending;
   const label = from === "HEAD" ? "HEAD" : shortRef(from);
   const submit = () => void send(() => run("Create branch", () => api.createBranch(n, from, switchTo), switchTo ? `Switched to new branch ${n}` : `Created ${n} from ${label}`));
@@ -125,15 +129,13 @@ function Upstream({ branch, branches, onClose, run }: { branch: Branch } & Pick<
   const remotes = branches.filter((b) => b.remote).map((b) => b.name);
   const guess = [branch.upstream, `origin/${branch.name}`].find((u) => u && remotes.includes(u)) ?? remotes.find((r) => r.endsWith(`/${branch.name}`)) ?? remotes[0] ?? "";
   const [upstream, setUpstream] = useState(guess);
-  const submit = () => {
-    onClose();
-    void run("Set upstream", () => api.setUpstream(branch.name, upstream), `${branch.name} now tracks ${upstream}`);
-  };
+  const { pending, send } = useSubmit(onClose);
+  const submit = () => void send(() => run("Set upstream", () => api.setUpstream(branch.name, upstream), `${branch.name} now tracks ${upstream}`));
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (upstream) submit();
+        if (upstream && !pending) submit();
       }}
     >
       <DialogTitle>Set upstream</DialogTitle>
@@ -158,7 +160,7 @@ function Upstream({ branch, branches, onClose, run }: { branch: Branch } & Pick<
         <div className="mt-4 text-[12px] text-muted-foreground">No remote branches. Fetch, or publish the branch first.</div>
       )}
       <div className="mt-4 flex justify-end">
-        <Button type="submit" disabled={!upstream}>
+        <Button type="submit" disabled={!upstream || pending}>
           Set upstream
         </Button>
       </div>
