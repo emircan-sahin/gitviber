@@ -1,11 +1,20 @@
 use crate::journal::{Action, Mode};
 use crate::state::{in_repo, indexed, journaled, with_index_lock, AppState, Res};
-use crate::{git, lines, suggest};
+use crate::{git, github, lines, suggest};
 use tauri::State;
 
 #[tauri::command]
 pub async fn status(state: State<'_, AppState>) -> Res<git::RepoStatus> {
-    in_repo(&state, git::status).await
+    in_repo(&state, |r| {
+        let mut st = git::status(r)?;
+        st.web_url = st.origin.as_ref().map(|url| {
+            url.as_deref()
+                .and_then(github::parse_remote)
+                .map(|g| format!("https://github.com/{}/{}", g.owner, g.name))
+        });
+        Ok(st)
+    })
+    .await
 }
 
 #[tauri::command]

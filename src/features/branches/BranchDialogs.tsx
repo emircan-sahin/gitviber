@@ -6,7 +6,7 @@ import { api, type Branch } from "@/lib/api";
 import { localNames, refNameCheck, shortRef } from "@/lib/git/refs";
 import { Select } from "@/components/ui/select";
 import { BaseSelect } from "./BaseSelect";
-import { NameHint } from "./NameHint";
+import { NameHint } from "@/components/NameHint";
 import { type GitRun, type NetRun, useSubmit } from "@/hooks/useGitAction";
 
 /** The branch picker's actions that need more than a click. `base`: a full ref, or HEAD. */

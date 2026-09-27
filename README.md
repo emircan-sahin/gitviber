@@ -123,7 +123,8 @@ sudo dnf install ./GitViber-*.x86_64.rpm         # Fedora
 chmod +x GitViber_*.AppImage && ./GitViber_*.AppImage
 ```
 
-To open a repository from a terminal, run `gitviber .` (or any path inside one). Homebrew and
+To open a repository from a terminal, run `gitviber .` (or any path inside one); a file opens in
+the code view, at a line with `gitviber src/app.ts:42` or `:42:7`. Homebrew and
 the Linux packages put the command on your `PATH`; otherwise use **Install 'gitviber' Command**
 in the app menu (File on Linux). A folder dropped on the Dock icon opens too.
 

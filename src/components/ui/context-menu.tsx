@@ -1,20 +1,26 @@
 import { ChevronRightIcon } from "lucide-react";
 import { ContextMenu as ContextMenuPrimitive } from "radix-ui";
 import type * as React from "react";
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { WINDOW_SAFE_AREA } from "./dropdown-menu";
 
 // Distance from the cursor down to the bottom of the right-clicked row. Radix opens the menu at
 // the cursor, which puts it over the row's own label; this drops it just below the row instead.
 const RowOffset = createContext<[number, (offset: number) => void]>([0, () => {}]);
+// Set by a `keepFocus` item whose action moves focus on (a tree row, a name field): the closing
+// menu would otherwise hand it back to the trigger.
+const KeepFocus = createContext<{ current: boolean }>({ current: false });
 
 // Non-modal: see DropdownMenu.
 function ContextMenu({ modal = false, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Root>) {
   const offset = useState(0);
+  const keepFocus = useRef(false);
   return (
     <RowOffset.Provider value={offset}>
-      <ContextMenuPrimitive.Root modal={modal} {...props} />
+      <KeepFocus.Provider value={keepFocus}>
+        <ContextMenuPrimitive.Root modal={modal} {...props} />
+      </KeepFocus.Provider>
     </RowOffset.Provider>
   );
 }
@@ -37,13 +43,19 @@ function ContextMenuTrigger({ onContextMenu, ...props }: React.ComponentProps<ty
 const ContextMenuGroup = ContextMenuPrimitive.Group;
 const ContextMenuSub = ContextMenuPrimitive.Sub;
 
-function ContextMenuContent({ className, collisionPadding = WINDOW_SAFE_AREA, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
+function ContextMenuContent({ className, collisionPadding = WINDOW_SAFE_AREA, onCloseAutoFocus, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Content>) {
   const [offset] = useContext(RowOffset);
+  const keepFocus = useContext(KeepFocus);
   return (
     <ContextMenuPrimitive.Portal>
       <ContextMenuPrimitive.Content
         alignOffset={offset}
         collisionPadding={collisionPadding}
+        onCloseAutoFocus={(e) => {
+          if (keepFocus.current) e.preventDefault();
+          keepFocus.current = false;
+          onCloseAutoFocus?.(e);
+        }}
         className={cn(
           "z-50 max-h-(--radix-context-menu-content-available-height) min-w-48 overflow-y-auto rounded-md border border-border-strong bg-elevated p-1 text-foreground shadow-lg shadow-black/50 animate-in fade-in-0 zoom-in-95",
           className,
@@ -54,9 +66,14 @@ function ContextMenuContent({ className, collisionPadding = WINDOW_SAFE_AREA, ..
   );
 }
 
-function ContextMenuItem({ className, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Item>) {
+function ContextMenuItem({ className, keepFocus, onSelect, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Item> & { keepFocus?: boolean }) {
+  const kept = useContext(KeepFocus);
   return (
     <ContextMenuPrimitive.Item
+      onSelect={(e) => {
+        if (keepFocus) kept.current = true;
+        onSelect?.(e);
+      }}
       className={cn(
         "relative flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1 text-[12px] outline-none select-none data-[disabled]:pointer-events-none data-[disabled]:opacity-40 data-[highlighted]:bg-primary data-[highlighted]:text-primary-foreground data-[highlighted]:[&_svg]:text-primary-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground",
         className,

@@ -189,8 +189,15 @@ export function useTerminals() {
 const activeGroup = () => state.groups.find((g) => g.id === state.active);
 
 // settings.ts sets the theme attribute before notifying, so the CSS variables are current.
+// Every setting notifies (the viewer's image toggle too), and xterm takes even an equal new theme
+// object as a change: it rebuilt its glyph atlas and redrew each pane. The rest is set each time:
+// a pane's macOptionIsMeta may differ from the settings' (left ⌥ held), and equal values are no-ops.
+let appliedTheme = "";
 subscribeSettings(() => {
-  const next = terminalOptions();
+  const { theme, ...rest } = terminalOptions();
+  const key = JSON.stringify(theme);
+  const next = key === appliedTheme ? rest : { ...rest, theme };
+  appliedTheme = key;
   for (const p of panes.values()) {
     Object.assign(p.term.options, next);
     fitPane(p);
@@ -779,4 +786,15 @@ export function showWorktree(cwd: string) {
   if (activeGroup()?.panes.some((p) => p.cwd === cwd)) return;
   const g = state.groups.find((x) => x.panes.some((p) => p.cwd === cwd));
   if (g) set({ active: g.id });
+}
+
+/** Whether the panel is open, alone: useTerminals re-renders on every title a program sets. */
+export function useTerminalsOpen() {
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    () => state.open,
+  );
 }
