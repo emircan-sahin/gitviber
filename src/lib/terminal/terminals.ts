@@ -19,7 +19,7 @@ import { findColors, terminalOptions } from "./theme";
 import { pastedLines, pathPastes } from "./paste";
 import { osc52Text } from "./osc52";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { ask } from "@tauri-apps/plugin-dialog";
+import { ask } from "../app/ask";
 import { plural } from "../format";
 import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
@@ -657,9 +657,14 @@ export function endFind() {
   focusActive();
 }
 
-export function clearFocused() {
+export async function clearFocused() {
   const p = panes.get(activeGroup()?.focused ?? -1);
   if (!p) return;
+  // A running program (Claude Code, vim) is left alone, as in cmux: it redraws relative to the rows
+  // it drew, and clear() pulls the cursor's row to the top under it, so half its screen went missing.
+  if (p.term.buffer.active.type === "alternate") return;
+  const busy = p.pty !== null && (await pty.busy([p.pty]).catch(() => 0)) > 0;
+  if (busy || !panes.has(p.id)) return;
   p.term.clear();
   // clear() skips the parser, so onWriteParsed doesn't drop the saved copy.
   p.saved = null;
