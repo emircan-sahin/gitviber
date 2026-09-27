@@ -123,7 +123,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   // Both versions of an image: they can also be laid one over the other.
   const twoImages = !isFile && !!pair?.original.exists && !!pair.modified.exists && (svg ? rendered : media && isImageChange({ path: selectionPath(sel), oldPath: file?.oldPath ?? null }));
   const overlaid: Overlaid | null = twoImages && s.imageCompare !== "side" ? s.imageCompare : null;
-  const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile));
+  const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile, file));
 
   const diff = !isFile && !media && !rendered;
   const note = diff && pair && !special ? (pair.eolOnly ? "Only line endings changed" : (newlineNote(pair) ?? (pair.whitespaceHidden ? "Whitespace changes hidden" : null))) : null;
@@ -326,13 +326,19 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   );
 }
 
-function placeholderFor(pair: DiffPair, isFile: boolean) {
+function placeholderFor(pair: DiffPair, isFile: boolean, file: FileChange | null) {
   const { original: a, modified: b } = pair;
   if (isFile && !b.exists) return "This file no longer exists";
   if (b.lfsMissing || a.lfsMissing) return b.lfsMissing ?? a.lfsMissing;
   if (a.binary || b.binary) return "Binary file";
   if (a.tooLarge || b.tooLarge) return "File is too large to display";
-  if (!isFile && !pair.rows.some((r) => r.k !== 0)) return pair.whitespaceHidden ? "Only whitespace changed (hidden)" : "No textual changes";
+  if (!isFile && !pair.rows.some((r) => r.k !== 0)) {
+    if (pair.whitespaceHidden) return "Only whitespace changed (hidden)";
+    // Added or deleted with no line changed: there were none.
+    if (a.exists !== b.exists) return "Empty file";
+    if (file?.status === "R") return "Renamed without changes";
+    return "No textual changes";
+  }
   return null;
 }
 
