@@ -138,7 +138,8 @@ export const api = {
   suggestMessage: (command: string, prompt: string, scope: "staged" | "all" | "amend") => invoke<string>("suggest_message", { command, prompt, scope }),
   /** The same for a pull request from HEAD into `base` (refs/remotes/…): its commits, PR template and diff. */
   suggestPull: (command: string, prompt: string, base: string) => invoke<string>("suggest_pull", { command, prompt, base }),
-  suggestCancel: () => invoke<void>("suggest_cancel"),
+  /** Stops the commit box's run (`message`) or the pull request dialog's (`pull`); each has its own. */
+  suggestCancel: (kind: "message" | "pull") => invoke<void>("suggest_cancel", { kind }),
   /** Signature status and trailers of one commit (verifying runs gpg/ssh, so one at a time). */
   commitDetails: (sha: string) => invoke<CommitDetails>("commit_details", { sha }),
   /**

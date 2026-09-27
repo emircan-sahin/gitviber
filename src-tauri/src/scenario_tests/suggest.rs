@@ -117,17 +117,17 @@ fn pull_suggestion_gets_the_branch_commits_template_and_diff() {
 
 #[test]
 fn cancelling_a_suggestion_stops_the_command_and_its_children() {
-    use crate::suggest::{self, Scope, Suggester};
+    use crate::suggest::{self, Kind, Scope, Suggester};
     let sb = Sandbox::new("suggest-cancel");
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "one\n", "first");
     let s = Suggester::default();
-    let flag = s.start();
+    let flag = s.start(Kind::Message);
     let started = std::time::Instant::now();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(200));
-        s.cancel();
+        s.cancel(Kind::Message);
     });
     // The grandchild `sleep` keeps stdout open; only killing the group ends it.
     let err =

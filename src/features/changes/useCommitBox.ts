@@ -98,20 +98,21 @@ export function useCommitDraft(root: string, head: Commit | null, prepared: stri
 /**
  * The configured agent CLI, run for a suggestion: `suggest(ask, land)` hands `ask` the command
  * line and `land` what it printed (false: nothing usable), unless `drop` came in between. Leaving
- * stops the command rather than orphan it. `what` names the suggestion in messages.
+ * stops the command rather than orphan it. `kind`: the commit box's, or the pull request dialog's.
  */
-export function useSuggestion(what: string) {
+export function useSuggestion(kind: "message" | "pull") {
+  const what = kind === "pull" ? "description" : "message";
   const { suggestEnabled, suggestCommand, suggestModels } = useSettings();
   const [suggesting, setSuggesting] = useState(false);
   const running = useRef(false);
   useEffect(
     () => () => {
-      if (running.current) api.suggestCancel().catch(() => {});
+      if (running.current) api.suggestCancel(kind).catch(() => {});
     },
     [],
   );
   const program = programOf(suggestCommand);
-  const cancel = () => api.suggestCancel().catch(() => {});
+  const cancel = () => api.suggestCancel(kind).catch(() => {});
   // A missing CLI or a stale model id is fixed there.
   const toSettings = { label: "Open Settings", run: () => openSettings("commit") };
   // Bumped by `drop`: a suggestion still on its way describes what was there before.
