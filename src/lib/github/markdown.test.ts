@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import Markdown from "react-markdown";
-import { isGitHubHosted, markdownLink, markdownOptions } from "./markdown.ts";
+import { githubRefs, isGitHubHosted, markdownLink, markdownOptions } from "./markdown.ts";
 
 const render = (text: string, idPrefix = "d-") =>
   renderToStaticMarkup(createElement(Markdown, { ...markdownOptions({ idPrefix, repo: "https://github.com/o/r" }), components: { a: markdownLink(() => {}) } }, text));
@@ -16,6 +16,17 @@ test("mentions and issue refs link, but not inside links, code or words", () => 
   assert.match(html, /<code>@b #5<\/code>/);
   assert.match(html, /<code>@a #4<\/code>/);
   assert.doesNotMatch(html, /github.com\/b"|issues\/3"|issues\/5"|issues\/6"/);
+});
+
+test("plain text, as a commit message, links its refs the same way", () => {
+  assert.deepEqual(githubRefs("Fix login (#12), thanks @octo; not x#3", "https://github.com/o/r"), [
+    { text: "Fix login (" },
+    { text: "#12", href: "https://github.com/o/r/issues/12" },
+    { text: "), thanks " },
+    { text: "@octo", href: "https://github.com/octo" },
+    { text: "; not x#3" },
+  ]);
+  assert.deepEqual(githubRefs("no refs", "https://github.com/o/r"), [{ text: "no refs" }]);
 });
 
 test("footnote anchors survive the custom link and stay unique per block", () => {

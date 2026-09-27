@@ -150,7 +150,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
 
   return (
     <>
-      {sel.kind === "commit" && <CommitBar commit={sel.commit} url={sel.url} />}
+      {sel.kind === "commit" && <CommitBar commit={sel.commit} url={sel.url} web={webUrl} />}
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border pr-2 pl-3">
         <FileIcon path={selectionPath(sel)} />
         <PathLabel path={selectionPath(sel)} className="min-w-0 text-[12px]" />
