@@ -677,6 +677,14 @@ export function goGroup(i: number) {
   if (g) activateGroup(g.id);
 }
 
+/** Moves a tab one place along (⌥←/⌥→ on the tabs, as on the code view's). */
+export function moveGroup(id: number, dir: 1 | -1) {
+  const i = state.groups.findIndex((g) => g.id === id);
+  const other = state.groups[i + dir];
+  if (i < 0 || !other) return;
+  set({ groups: state.groups.map((g, j) => (j === i ? other : j === i + dir ? state.groups[i] : g)) });
+}
+
 /** Next / previous tab with focus in the panel, wrapping. */
 export function stepGroup(dir: 1 | -1) {
   const n = state.groups.length;

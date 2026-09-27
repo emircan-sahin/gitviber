@@ -8,7 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import type { Worktree } from "@/lib/api";
-import { commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { commandIn, matchesCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { focusedPanel, focusPanel } from "@/lib/ui/panels";
 import {
   activateGroup,
@@ -21,6 +21,7 @@ import {
   dismissRestore,
   endFind,
   findInTerminal,
+  moveGroup,
   openTerminal,
   renameGroup,
   restoreSession,
@@ -72,15 +73,23 @@ export function TerminalPanel({ root, worktrees }: Props) {
 
   const others = worktrees.filter((w) => w.path !== root && !w.bare && !w.prunable);
 
-  // The tabs: ←/→ (Home/End) switch terminals and stay on the tabs, ↵ or Space goes into the
-  // terminal, ⌫ kills it.
+  // The tabs: ←/→ (Home/End) switch terminals and stay on the tabs, ⌥←/⌥→ reorder them
+  // (tab.moveLeft / tab.moveRight), ↵ or Space goes into the terminal, ⌫ kills it.
   const onTabKey = (e: React.KeyboardEvent<HTMLDivElement>) => {
     const el = e.target instanceof HTMLElement && e.target.getAttribute("role") === "tab" ? e.target : null;
-    if (!el || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+    const shift = matchesCommand("tab.moveRight", e.nativeEvent) ? 1 : matchesCommand("tab.moveLeft", e.nativeEvent) ? -1 : 0;
+    if (!el || (!shift && (e.altKey || e.metaKey || e.ctrlKey || e.shiftKey))) return;
     const els = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="tab"]')];
     const i = els.indexOf(el);
     const to = ({ ArrowLeft: i - 1, ArrowRight: i + 1, Home: 0, End: els.length - 1 } as Record<string, number>)[e.key];
-    if (to !== undefined) {
+    if (shift) {
+      moveGroup(groups[i].id, shift);
+      // React moves this very node, and a node taken out of the page loses focus.
+      requestAnimationFrame(() => {
+        el.focus();
+        el.scrollIntoView({ block: "nearest", inline: "nearest" });
+      });
+    } else if (to !== undefined) {
       const at = Math.max(0, Math.min(els.length - 1, to));
       activateGroup(groups[at].id, false);
       els[at].focus();
