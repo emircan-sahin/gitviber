@@ -1,4 +1,4 @@
-import { History, X } from "lucide-react";
+import { History, ListTree, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { type Selection, selectionPath } from "@/lib/repo/selection";
@@ -21,6 +21,7 @@ interface Props {
   onPin: (key: string) => void;
   onMoveTab: (from: number, to: number) => void;
   onShowHistory: (path: string) => void;
+  onRevealInExplorer: (path: string) => void;
 }
 
 function tabLabel(sel: Selection) {
@@ -32,7 +33,7 @@ function tabLabel(sel: Selection) {
  * A tablist: the open tab is its one tab stop; ←/→ (Home/End) switch tabs, ↵ or Space keeps a
  * preview tab, ⌫ closes, ⌥←/⌥→ reorder (tab.moveLeft / tab.moveRight), ⇧F10 opens the tab's menu.
  */
-export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin, onMoveTab, onShowHistory }: Props) {
+export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin, onMoveTab, onShowHistory, onRevealInExplorer }: Props) {
   const strip = useRef<HTMLDivElement>(null);
   // Set when a tab holding focus closes: focus goes on to the tab that opens in its place.
   const lostFocus = useRef(false);
@@ -95,6 +96,7 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
             onCloseGroup={(which) => onCloseTabs(tabGroup(tabs, i, which))}
             onPin={onPin}
             onShowHistory={onShowHistory}
+            onRevealInExplorer={onRevealInExplorer}
           />
         ))}
       </SortableList>
@@ -113,6 +115,7 @@ function TabItem({
   onCloseGroup,
   onPin,
   onShowHistory,
+  onRevealInExplorer,
 }: {
   tab: Tab;
   active: boolean;
@@ -125,8 +128,11 @@ function TabItem({
   onCloseGroup: (which: TabGroup) => void;
   onPin: (key: string) => void;
   onShowHistory: (path: string) => void;
+  onRevealInExplorer: (path: string) => void;
 }) {
   const { props, dragging, guard } = useSortableItem(t.key);
+  // Set by "Reveal in Explorer View", so the closing menu doesn't pull focus back from the tree.
+  const keepFocus = useRef(false);
   // Unsaved edits: a dot where the close button goes, the button on hover (as VS Code).
   const unsaved = useEdited().has(selectionPath(t.sel)) && t.sel.kind === "file";
   const closeKey = useShortcut("tab.close");
@@ -200,7 +206,12 @@ function TabItem({
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>{tab}</ContextMenuTrigger>
-      <ContextMenuContent>
+      <ContextMenuContent
+        onCloseAutoFocus={(e) => {
+          if (keepFocus.current) e.preventDefault();
+          keepFocus.current = false;
+        }}
+      >
         <ContextMenuItem onSelect={() => onClose(t.key)}>
           Close
           {isActive && closeKey && <ContextMenuShortcut>{closeKey}</ContextMenuShortcut>}
@@ -220,6 +231,14 @@ function TabItem({
             <ContextMenuSeparator />
             <ContextMenuItem onSelect={() => onShowHistory(selectionPath(t.sel))}>
               <History /> Show History
+            </ContextMenuItem>
+            <ContextMenuItem
+              onSelect={() => {
+                keepFocus.current = true;
+                onRevealInExplorer(selectionPath(t.sel));
+              }}
+            >
+              <ListTree /> Reveal in Explorer View
             </ContextMenuItem>
           </>
         )}

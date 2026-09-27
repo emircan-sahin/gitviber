@@ -47,6 +47,7 @@ interface ViewerProps {
   onOpen: (s: Selection) => void;
   /** History, filtered to a file's commits. */
   onShowHistory: (path: string) => void;
+  onRevealInExplorer: (path: string) => void;
   /** Blame's link: a commit in History, with `path` (its name in that commit) open. */
   onShowCommit: (sha: string, path: string) => void;
   /** Reads the repo's status again, after staging lines here. */
