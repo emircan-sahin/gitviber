@@ -69,17 +69,18 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   // Both sides edited (UU) or added (AA) the file, so git wrote markers into it; staging them
   // as they are would commit them.
   const markResolved = async (rows: Change[]) => {
-    const found = await Promise.all(
-      rows.map(async ({ file }): Promise<"markers" | "unknown" | null> => {
-        if (file.conflict !== "UU" && file.conflict !== "AA") return null;
-        const now = await api.readFile(file.path).catch(() => null);
-        if (!now) return "unknown";
-        // Deleted, or binary: git writes no markers into those.
-        if (!now.exists || now.binary) return null;
-        if (now.tooLarge || now.lfsMissing) return "unknown";
-        return hasConflictMarkers(now.text) ? "markers" : null;
-      }),
-    );
+    const check = async ({ file }: Change): Promise<"markers" | "unknown" | null> => {
+      if (file.conflict !== "UU" && file.conflict !== "AA") return null;
+      const now = await api.readFile(file.path).catch(() => null);
+      if (!now) return "unknown";
+      // Deleted, or binary: git writes no markers into those.
+      if (!now.exists || now.binary) return null;
+      if (now.tooLarge || now.lfsMissing) return "unknown";
+      return hasConflictMarkers(now.text) ? "markers" : null;
+    };
+    // One at a time: each read can be megabytes.
+    const found: Awaited<ReturnType<typeof check>>[] = [];
+    for (const r of rows) found.push(await check(r));
     const pathsOf = (kind: "markers" | "unknown") => rows.filter((_, i) => found[i] === kind).map((r) => r.file.path);
     const [markers, unknown] = [pathsOf("markers"), pathsOf("unknown")];
     const flagged = markers.length + unknown.length;
