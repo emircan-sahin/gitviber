@@ -1,4 +1,3 @@
-import { LoaderCircle, Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -6,7 +5,10 @@ import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Branch, errorMessage, fullName, type GitHubAccess, github, type Pull, type RepoStatus } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
+import { withClosing } from "@/lib/github/issueWork";
+import { loadBranchIssue } from "@/lib/repo/session";
 import { parseSuggestion, PULL_PROMPT } from "@/lib/git/suggest";
+import { SuggestButton } from "@/features/changes/SuggestButton";
 import { useSuggestion } from "@/features/changes/useCommitBox";
 import { cn } from "@/lib/utils";
 import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
@@ -53,7 +55,10 @@ export function CreatePullDialog({
   const remote = upstream ? [] : branches.filter((b) => b.remote && b.name.startsWith("origin/")).map((b) => b.name.slice(7));
   const bases = [...new Set([target.defaultBranch, ...remote])].filter((b): b is string => !!b && (upstream || b !== head) && b !== "HEAD");
   const [title, setTitle] = useState(defaultTitle);
-  const [body, setBody] = useState("");
+  // A branch started from an issue (its Start in a worktree) closes it, as the body says where it can be seen.
+  const [issueUrl] = useState(() => loadBranchIssue(fullName(origin.repo), head));
+  const closing = (text: string) => withClosing(text, issueUrl, fullName(target.repo));
+  const [body, setBody] = useState(() => closing(""));
   // Once typed in, the fields are the user's; the draft below stops filling them.
   const [typed, setTyped] = useState({ title: false, body: false });
   const [base, setBase] = useState(bases[0] ?? "main");
@@ -77,7 +82,7 @@ export function CreatePullDialog({
       if (!live) return;
       const one = d.commits === 1 && d.subject;
       if (!typed.title) setTitle(one ? d.subject! : branchTitle(head));
-      if (!typed.body) setBody(one ? (d.body ?? "") : "");
+      if (!typed.body) setBody(closing(one ? (d.body ?? "") : ""));
     })().catch(() => {});
     return () => {
       live = false;
@@ -100,7 +105,7 @@ export function CreatePullDialog({
         if (!s) return false;
         // What was typed while it ran stays too.
         if (!mineNow.current.title) setTitle(s.summary);
-        if (!mineNow.current.body) setBody(s.body);
+        if (!mineNow.current.body) setBody(closing(s.body));
         return true;
       },
     );
@@ -174,18 +179,14 @@ export function CreatePullDialog({
               className="flex-1"
             />
             {suggestion.enabled && (
-              <Tip label={suggestion.suggesting ? `Stop ${suggestion.program}` : `Suggest a title and description with ${suggestion.program}`}>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  aria-label={suggestion.suggesting ? "Stop suggesting" : "Suggest a title and description"}
-                  disabled={!suggestion.suggesting && (!baseRef || (mine.title && mine.body))}
-                  onClick={suggestion.suggesting ? suggestion.cancel : suggest}
-                >
-                  {suggestion.suggesting ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
-                </Button>
-              </Tip>
+              <SuggestButton
+                what="a title and description"
+                program={suggestion.program}
+                suggesting={suggestion.suggesting}
+                disabled={!baseRef || (mine.title && mine.body)}
+                onSuggest={suggest}
+                onCancel={suggestion.cancel}
+              />
             )}
           </div>
           <MarkdownInput

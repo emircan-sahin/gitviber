@@ -4,7 +4,7 @@ import type { Selection } from "@/lib/repo/selection";
 import type { loadWorkspace } from "@/lib/repo/session";
 import type { RepoData } from "@/lib/repo/useRepo";
 import { failed } from "@/lib/app/toast";
-import { currentFile, unstagePaths } from "@/features/changes/changeList";
+import { currentFile } from "@/features/changes/changeList";
 import type { ReviewFiles } from "@/features/changes/BranchReview";
 
 const fileSig = (f: FileChange) => `${f.status}:${f.oid ?? `${f.additions}:${f.deletions}`}`;
@@ -58,7 +58,7 @@ export function useViewed(saved: ReturnType<typeof loadWorkspace>, status: RepoS
         return m ? [{ kind: sel.kind, ...m }] : [];
       });
       // Unchecking a staged file takes it back out of the commit; the tab follows it to Changes.
-      const unstage = on ? [] : unstagePaths(files.filter((x) => x.kind === "staged").map((x) => x.f));
+      const unstage = on ? [] : files.filter((x) => x.kind === "staged").map((x) => x.f);
       setViewedMap((m) => {
         const next = new Map(m);
         for (const { kind, f, key } of files) {

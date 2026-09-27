@@ -16,7 +16,7 @@ import { NESTED_EXPLAINED, stageable } from "@/lib/git/worktrees";
 import { StashDialog, StashList, useStashes } from "./StashList";
 import { BisectBar } from "@/features/history/BisectBar";
 import { SubmoduleList, updateSubmodules, useSubmodules } from "./SubmoduleList";
-import { attempt, type Change, changeList, files, filtered, keptByRestore, leftOut, paths, sumLines, unstagePaths } from "./changeList";
+import { attempt, type Change, changeList, files, filtered, keptByRestore, leftOut, paths, sumLines } from "./changeList";
 import { ChangeRowMenu } from "./ChangeRowMenu";
 import { OperationBanner } from "./OperationBanner";
 import { AllCaughtUp, NestedRow, ReviewSummary, Row, Section, SectionBtn } from "./ChangeRows";
@@ -65,7 +65,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   };
 
   const stage = (rows: Change[]) => act("Stage failed", () => api.stage(paths(rows)));
-  const unstage = (rows: Change[]) => act("Unstage failed", () => api.unstage(unstagePaths(rows.map((r) => r.file))));
+  const unstage = (rows: Change[]) => act("Unstage failed", () => api.unstage(rows.map((r) => r.file)));
   // Both sides edited (UU) or added (AA) the file, so git wrote markers into it; staging them
   // as they are would commit them.
   const markResolved = async (rows: Change[]) => {
@@ -79,10 +79,12 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
       return hasConflictMarkers(now.text) ? "markers" : null;
     };
     // One at a time: each read can be megabytes.
-    const found: Awaited<ReturnType<typeof check>>[] = [];
-    for (const r of rows) found.push(await check(r));
-    const pathsOf = (kind: "markers" | "unknown") => rows.filter((_, i) => found[i] === kind).map((r) => r.file.path);
-    const [markers, unknown] = [pathsOf("markers"), pathsOf("unknown")];
+    const found = { markers: [] as string[], unknown: [] as string[] };
+    for (const r of rows) {
+      const kind = await check(r);
+      if (kind) found[kind].push(r.file.path);
+    }
+    const { markers, unknown } = found;
     const flagged = markers.length + unknown.length;
     if (flagged) {
       const name = (list: string[]) => (list.length === 1 ? list[0] : files(list.length));
@@ -350,7 +352,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
               pickedStaged ? (
                 <SectionBtn onClick={() => unstage(pickedStaged)}>Unstage {files(pickedStaged.length)}</SectionBtn>
               ) : (
-                <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(unstagePaths(status.staged)))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
+                <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
               )
             }
           >

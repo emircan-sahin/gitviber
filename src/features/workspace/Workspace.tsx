@@ -4,8 +4,6 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { find } from "@/lib/ui/find";
-import { api } from "@/lib/api";
-import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { resetGitHubCache, setGitHubOrigin } from "@/lib/github/githubCache";
 import { warmHighlighter } from "@/lib/editor/highlight";
 import { setLinkHost } from "@/lib/links/linkHost";
@@ -16,7 +14,7 @@ import { onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
-import { goGroup, stepGroup, useTerminals } from "@/lib/terminal/terminals";
+import { goGroup, stepGroup, useTerminalsOpen } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
 import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
@@ -73,9 +71,13 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const repo = useRepo(root);
   const { status } = repo;
   const origin = status?.origin;
+  // origin's page on GitHub, for links; kept while git couldn't read the remotes, as the origin is.
+  const [webUrl, setWebUrl] = useState<string | null>(null);
+  const web = status?.webUrl;
   useEffect(() => {
     if (origin !== undefined) setGitHubOrigin(origin);
-  }, [origin]);
+    if (web !== undefined) setWebUrl(web);
+  }, [origin, web]);
   const s = useSettings();
   const [saved] = useState(() => loadWorkspace(root));
   const [listTab, setListTab] = useState<ListTab>(() => LIST_TABS.find((t) => t === saved?.listTab) ?? "changes");
@@ -99,7 +101,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useTerminalSetup(root);
   // Where a terminal can start besides this repo's worktrees, without switching the window there.
   const projects = recent.filter((p) => p !== main);
-  const terminalOpen = useTerminals().open;
+  const terminalOpen = useTerminalsOpen();
   const fileTree = useRef<FileTreeHandle>(null);
   const findKey = useShortcut("editor.find");
   // The explorer panel shows the files or Search in Files; `searchAsk` brings the search box up.
@@ -172,8 +174,6 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   };
   const reviewLabel = shortRef(review || reviewBase(repo.branches) || "") || "a base branch";
   const remoteNames = useMemo(() => new Set(repo.branches.filter((b) => b.remote).map((b) => b.name)), [repo.branches]);
-  // origin's page on GitHub, for links. `remoteNames` is rebuilt on every git refresh, including the one `git remote set-url` causes.
-  const webUrl = useAsyncValue(() => api.githubWebUrl().catch(() => null), [remoteNames], null);
 
   // A merge/rebase that stopped on conflicts: bring the conflicts into view.
   const conflictCount = status?.conflicted.length ?? 0;
@@ -331,6 +331,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         onForgetRepo={onForgetRepo}
         onReorderRepos={onReorderRepos}
         onLocateRepo={onLocateRepo}
+        onOpenPull={(pull) => open({ kind: "pull", pull }, true)}
         leftOpen={leftOpen}
         rightOpen={rightOpen}
         onToggleLeft={() => toggle(listPanel, "git")}

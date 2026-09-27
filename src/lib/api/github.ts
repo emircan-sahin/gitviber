@@ -66,6 +66,27 @@ export interface PullCheck {
   name: string;
   state: string;
   url: string | null;
+  /** A check run's id, for checkFailure; a commit status has none. */
+  id: number | null;
+}
+
+export interface CheckAnnotation {
+  path: string;
+  line: number;
+  level: "notice" | "warning" | "failure";
+  title: string;
+  message: string;
+}
+
+/** Why a check failed (github/checks.rs). */
+export interface CheckFailure {
+  title: string;
+  summary: string;
+  annotations: CheckAnnotation[];
+  annotationsError: string | null;
+  /** The job log's last lines, up to its last error; null for a check that isn't a GitHub Actions job. */
+  log: string | null;
+  logError: string | null;
 }
 
 export interface PullComment {
@@ -143,6 +164,8 @@ export const github = {
   ownRepos: () => invoke<{ fullName: string; description: string; private: boolean; cloneUrl: string; updatedAt: string }[]>("gh_own_repos"),
   /** CI's rollup per commit, for those GitHub has checks on (up to 100 at once). */
   ciStates: (target: Target, shas: string[]) => invoke<Record<string, CiState>>("ci_states", { target, shas }),
+  /** A check run's output, annotations and job log tail. */
+  checkFailure: (target: Target, id: number) => invoke<CheckFailure>("check_failure", { target, id }),
   /** Signed image links for a private repo's attachments, by attachment id. */
   attachments: (target: Target, number: number) => invoke<Record<string, string>>("pr_attachments", { target, number }),
   /** Fetches the PR's commits first when they're missing. */

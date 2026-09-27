@@ -1,9 +1,9 @@
 import { ask } from "@/lib/app/ask";
-import { Check, CircleDashed, ExternalLink, FolderGit2, GitBranch, GitPullRequest, GitPullRequestClosed, Loader2, MinusCircle, RefreshCw, X } from "lucide-react";
+import { ExternalLink, FolderGit2, GitBranch, GitPullRequest, GitPullRequestClosed, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
 import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
-import { accessFor, api, errorMessage, fullName, github, type MergeMethod, type Pull, type PullCheck, repoOf } from "@/lib/api";
+import { accessFor, api, errorMessage, fullName, github, type MergeMethod, type Pull, repoOf } from "@/lib/api";
 import { listIsBehind, useGitHubData } from "@/lib/github/githubCache";
 import type { Selection } from "@/lib/repo/selection";
 import { cn } from "@/lib/utils";
@@ -21,6 +21,7 @@ import { Section } from "@/features/github/shared/Section";
 import { useGitAction } from "@/hooks/useGitAction";
 import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
 import { MergeBox, ReviewButton } from "./PullActions";
+import { PullChecks } from "./PullChecks";
 import { allowedMethods, METHODS, REVIEWS } from "./actionLabels";
 
 export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) => void }) {
@@ -207,22 +208,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
 
         {d && p.state === "open" && <MergeBox detail={d} busy={!!busy} canMerge={!!access?.push} canResolve={canResolve} methods={allowedMethods(access)} onMerge={merge} onResolve={resolveLocally} />}
 
-        {d && (d.checks.length > 0 || d.checksError) && (
-          <Section title="Checks" aside={d.checks.length > 0 ? checkSummary(d.checks) : undefined}>
-            {d.checksError && <div className="px-3 py-2 text-[12px] text-removed">Could not load all checks: {d.checksError}</div>}
-            {d.checks.map((c, i) => (
-              <div key={`${c.name}${i}`} className="flex h-7 items-center gap-2 px-3 text-[12px]">
-                <CheckIcon state={c.state} />
-                <span className="truncate">{c.name}</span>
-                {c.url?.startsWith("https://github.com/") && (
-                  <button onClick={() => github.openUrl(c.url!)} className="ml-auto text-[11px] text-subtle hover:text-foreground focus-visible:text-foreground">
-                    Details
-                  </button>
-                )}
-              </div>
-            ))}
-          </Section>
-        )}
+        {d && <PullChecks pull={pull} detail={d} />}
 
         <Section title="Files changed" aside={files.data ? `${files.data.files.length}` : d ? `${d.changedFiles}` : undefined}>
           {!files.data &&
@@ -268,19 +254,6 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
       </div>
     </div>
   );
-}
-
-function checkSummary(checks: PullCheck[]) {
-  const failed = checks.filter((c) => c.state === "failure" || c.state === "cancelled" || c.state === "timed_out").length;
-  const pending = checks.filter((c) => c.state === "pending").length;
-  return failed ? `${failed} failing` : pending ? `${pending} pending` : "all passed";
-}
-
-function CheckIcon({ state }: { state: string }) {
-  if (state === "success") return <Check className="size-3.5 shrink-0 text-added" />;
-  if (state === "pending") return <CircleDashed className="size-3.5 shrink-0 animate-spin text-modified [animation-duration:3s]" />;
-  if (state === "failure" || state === "cancelled" || state === "timed_out" || state === "action_required") return <X className="size-3.5 shrink-0 text-removed" />;
-  return <MinusCircle className="size-3.5 shrink-0 text-subtle" />;
 }
 
 function ReviewBadge({ state }: { state: string }) {

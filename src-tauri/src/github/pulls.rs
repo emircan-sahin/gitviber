@@ -151,6 +151,8 @@ pub struct Check {
     /// "success" | "failure" | "pending" | "neutral" | "skipped" | "cancelled"
     pub state: String,
     pub url: Option<String>,
+    /// A check run's id, for why it failed (check_failure); a commit status has none.
+    pub id: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -237,6 +239,7 @@ pub fn detail(
                     name: string(&c["name"]),
                     state,
                     url: c["html_url"].as_str().map(str::to_string),
+                    id: c["id"].as_u64(),
                 });
             }
         }
@@ -260,6 +263,7 @@ pub fn detail(
                     name: string(&c["context"]),
                     state,
                     url: c["target_url"].as_str().map(str::to_string),
+                    id: None,
                 });
             }
         }

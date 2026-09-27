@@ -4,7 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { api, type Branch, github, type Target, type Worktree } from "@/lib/api";
-import { loadWorktreeDir, loadWorktreeRun, moveRoot, saveWorktreeDir, saveWorktreeRun, sharedWorktreeDir } from "@/lib/repo/session";
+import { loadWorktreeDir, loadWorktreeRun, moveRoot, saveBranchIssue, saveWorktreeDir, saveWorktreeRun, sharedWorktreeDir } from "@/lib/repo/session";
+import { issueBranchName, withIssue } from "@/lib/github/issueWork";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { localNames, refNameCheck } from "@/lib/git/refs";
 import { shortPath } from "@/lib/git/worktrees";
@@ -12,7 +13,7 @@ import { plural } from "@/lib/format";
 import { folderName, parentFolder } from "@/lib/path";
 import { createStore } from "@/lib/store";
 import { BaseSelect } from "@/features/branches/BaseSelect";
-import { NameHint } from "@/features/branches/NameHint";
+import { NameHint } from "@/components/NameHint";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { type GitRun, type NetRun, useSubmit } from "@/hooks/useGitAction";
 
@@ -26,8 +27,17 @@ export interface PullSource {
   branch: string;
 }
 
+/** An issue to start work on: the branch is named after it, and a PR from it closes it. */
+export interface IssueSource {
+  number: number;
+  title: string;
+  url: string;
+  /** Origin's owner/name, which the branch's issue is remembered under. */
+  origin: string;
+}
+
 /** `base`: a full ref or a commit's full id; `pull`: the new worktree takes a PR's branch instead. */
-export type WorktreeDialog = { kind: "new"; base?: string; pull?: PullSource } | { kind: "rename"; worktree: Worktree } | { kind: "lock"; worktree: Worktree };
+export type WorktreeDialog = { kind: "new"; base?: string; pull?: PullSource; issue?: IssueSource } | { kind: "rename"; worktree: Worktree } | { kind: "lock"; worktree: Worktree };
 
 // Opened from the top bar, History and pull requests alike; the top bar shows it.
 const shown = createStore<WorktreeDialog | null>(null);
@@ -70,7 +80,7 @@ export function WorktreeDialogs(props: Props) {
   return (
     <Dialog open onOpenChange={(o) => !o && inner.onClose()}>
       <DialogContent>
-        {dialog.kind === "new" && <NewWorktree base={dialog.base} pull={dialog.pull} {...inner} />}
+        {dialog.kind === "new" && <NewWorktree base={dialog.base} pull={dialog.pull} issue={dialog.issue} {...inner} />}
         {dialog.kind === "rename" && <RenameWorktree worktree={dialog.worktree} {...inner} />}
         {dialog.kind === "lock" && <LockWorktree worktree={dialog.worktree} {...inner} />}
       </DialogContent>
@@ -78,16 +88,16 @@ export function WorktreeDialogs(props: Props) {
   );
 }
 
-function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen }: { base?: string; pull?: PullSource } & Inner) {
+function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, onOpen }: { base?: string; pull?: PullSource; issue?: IssueSource } & Inner) {
   const beside = `${parentFolder(main)}${folderName(main)}.worktrees`;
   const fallback = sharedWorktreeDir(main) ?? beside;
-  const [name, setName] = useState("");
+  const [name, setName] = useState(() => (issue ? issueBranchName(issue.number, issue.title) : ""));
   const [from, setFrom] = useState(() => base ?? defaultBase(branches));
   // No branch to default to (an unborn or detached repo): HEAD is listed, not silently used.
   const [headOption] = useState(from === "HEAD");
   const [dir, setDir] = useState(() => loadWorktreeDir(main) ?? fallback);
   const [terminal, setTerminal] = useState(true);
-  const [command, setCommand] = useState(() => loadWorktreeRun(main));
+  const [command, setCommand] = useState(() => loadWorktreeRun(main, !!issue));
   const [switchTo, setSwitchTo] = useState(false);
   const includes = useAsyncValue(api.worktreeIncludes, [], 0);
   const check = refNameCheck(name, localNames(branches));
@@ -103,9 +113,10 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
     const then = (path: string) => {
       // Remembered for the project once it worked, so its next worktree goes there too.
       saveWorktreeDir(main, dir === fallback ? null : dir);
+      if (issue) saveBranchIssue(issue.origin, n, issue.url);
       if (terminal) {
-        saveWorktreeRun(main, command.trim());
-        openTerminal(path, command.trim());
+        saveWorktreeRun(main, command.trim(), !!issue);
+        openTerminal(path, issue ? withIssue(command.trim(), issue.number) : command.trim());
       }
       if (switchTo) onOpen(path);
     };
@@ -123,12 +134,14 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
         if (ready) submit();
       }}
     >
-      <DialogTitle>{pull ? `Check out #${pull.number} in a new worktree` : "New worktree"}</DialogTitle>
+      <DialogTitle>{pull ? `Check out #${pull.number} in a new worktree` : issue ? `Start #${issue.number} in a new worktree` : "New worktree"}</DialogTitle>
       <DialogDescription>
         {pull ? (
           <>
             The pull request's branch, <span className="font-mono">{pull.branch}</span>, in its own folder; this one stays as it is.
           </>
+        ) : issue ? (
+          `A new branch for “${issue.title}”, in its own folder; its pull request will close #${issue.number}.`
         ) : (
           "A new branch, checked out in its own folder, side by side with this one."
         )}
@@ -176,11 +189,24 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
           value={command}
           onChange={(e) => setCommand(e.target.value)}
           disabled={!terminal}
-          placeholder="and run… (e.g. claude)"
+          placeholder={issue ? 'and run… (e.g. claude "Fix #{issue}")' : "and run… (e.g. claude)"}
           aria-label="Command to run in the terminal"
           spellCheck={false}
         />
       </div>
+      {terminal && (issue || command.includes("{issue}")) && (
+        <div className="mt-1.5 text-[11.5px] text-muted-foreground">
+          {issue ? (
+            <>
+              <span className="font-mono">{"{issue}"}</span> in the command becomes {issue.number}, the issue's number.
+            </>
+          ) : (
+            <>
+              <span className="font-mono">{"{issue}"}</span> is filled in only when starting from an issue.
+            </>
+          )}
+        </div>
+      )}
       <div className="mt-3 flex items-center gap-3">
         <label className="flex items-center gap-1.5 text-[12px]">
           <input type="checkbox" checked={switchTo} onChange={(e) => setSwitchTo(e.target.checked)} className="accent-primary" />
