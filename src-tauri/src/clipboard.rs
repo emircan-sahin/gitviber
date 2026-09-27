@@ -105,6 +105,29 @@ pub fn copy_files(_paths: Vec<String>) -> Result<(), String> {
     Err("Copying files is only supported on macOS".into())
 }
 
+/// Text a program in the terminal copies with OSC 52 (terminals.ts). The webview writes the
+/// clipboard only during a key or a click, and the copy arrives in the program's output.
+#[cfg(target_os = "macos")]
+pub fn write_text(text: &str) -> Result<(), String> {
+    let text = std::ffi::CString::new(text).map_err(|e| e.to_string())?;
+    objc2::rc::autoreleasepool(|_| unsafe { pasteboard::write_text(&text) })
+}
+
+#[cfg(target_os = "linux")]
+pub fn write_text(text: &str) -> Result<(), String> {
+    // GTK panics off its thread (see `contents`).
+    if !gtk::is_initialized_main_thread() {
+        return Err("The clipboard is unavailable".into());
+    }
+    gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD).set_text(text);
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn write_text(_text: &str) -> Result<(), String> {
+    Err("Copying from the terminal is only supported on macOS and Linux".into())
+}
+
 /// Dropped files, with the ones macOS takes back once the drag ends (a screenshot's floating
 /// thumbnail hands over a file in TemporaryItems) copied to the paste folder first.
 pub fn keep_dropped(paths: Vec<String>) -> Vec<String> {
@@ -352,6 +375,18 @@ mod pasteboard {
             .ok_or_else(|| "Could not write to the pasteboard".into())
     }
 
+    /// `text` as all the pasteboard holds.
+    pub unsafe fn write_text(text: &CStr) -> Result<(), String> {
+        let Some(pb_class) = AnyClass::get(c"NSPasteboard") else {
+            return Err("AppKit is unavailable".into());
+        };
+        let pb: *mut AnyObject = msg_send![pb_class, generalPasteboard];
+        let _: isize = msg_send![pb, clearContents];
+        let ok: bool = msg_send![pb, setString: ns_string(text), forType: ns_string(c"public.utf8-plain-text")];
+        ok.then_some(())
+            .ok_or_else(|| "Could not write to the pasteboard".into())
+    }
+
     unsafe fn ns_data(bytes: &[u8]) -> *mut AnyObject {
         let Some(cls) = AnyClass::get(c"NSData") else {
             return std::ptr::null_mut();
@@ -414,6 +449,15 @@ mod tests {
         assert!(path.ends_with("-copy/logo.png"));
         assert_eq!(std::fs::read(&path).unwrap(), b"png");
         let _ = std::fs::remove_dir_all(Path::new(&path).parent().unwrap());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "replaces the clipboard"]
+    fn copied_text_pastes_back() {
+        write_text("héllo ✅").unwrap();
+        let (_, text, _) = objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read() });
+        assert_eq!(text.as_deref(), Some("héllo ✅"));
     }
 
     #[cfg(target_os = "macos")]

@@ -15,9 +15,10 @@ import { readJson } from "../storage";
 import { setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
 import { pathPastes } from "./paste";
+import { osc52Text } from "./osc52";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { IS_LINUX, IS_WINDOWS } from "../platform";
-import { toast } from "../app/toast";
+import { failed, toast } from "../app/toast";
 
 /**
  * Terminals live here, not in React: switching worktrees remounts the whole workspace, and
@@ -215,6 +216,11 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
     if (p.pty !== null) void pty.resize(p.pty, cols, rows).catch(() => {});
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
+  term.parser.registerOscHandler(52, (data) => {
+    const text = osc52Text(data);
+    if (text !== null) copyFromProgram(text);
+    return true;
+  });
   // ⌘V reads the pasteboard natively (clipboard.rs): the webview's paste carries only text, so a
   // copied image or Finder file pasted nothing. Ahead of xterm's own handler on its text area.
   // Linux reads GTK's clipboard the same way (Shift+Insert, Ctrl+Shift+V below); Windows is untried.
@@ -260,6 +266,15 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
     return !e.metaKey && !appTakesFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e);
   });
   return { id, cwd, title: "" };
+}
+
+let copiedFromProgram = false;
+/** OSC 52. Said once a run: a program over SSH, or a file being `cat`, can write the clipboard too. */
+function copyFromProgram(text: string) {
+  pty.copy(text).then(() => {
+    if (!copiedFromProgram) toast("info", "Copied from the terminal", "A program in the terminal put text on the clipboard.");
+    copiedFromProgram = true;
+  }, failed("Could not copy"));
 }
 
 /** `fallback`: the webview's own text, pasted if the native read fails or finds nothing. */
