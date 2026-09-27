@@ -11,6 +11,8 @@ import { openTerminal } from "@/lib/terminal/terminals";
 
 export interface ProjectSwitcherProps {
   repo: RepoData;
+  /** The worktree open in the window. */
+  root: string;
   /** The main worktree: the project this window belongs to, even inside a linked worktree. */
   main: string;
   recent: string[];
@@ -20,7 +22,7 @@ export interface ProjectSwitcherProps {
   onLocateRepo: (path: string) => void;
 }
 
-export function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: ProjectSwitcherProps) {
+export function ProjectSwitcher({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: ProjectSwitcherProps) {
   const [open, setOpen] = useState(false);
   useCommands({ "file.switchProject": () => setOpen(true) });
   const totals = changeTotals(repo);
@@ -34,9 +36,10 @@ export function ProjectSwitcher({ repo, main, recent, onOpenRepo, onForgetRepo, 
     setOpen(false);
     onLocateRepo(p);
   };
+  // This project's row opens where + does: the worktree the window is in.
   const terminal = (p: string) => {
     setOpen(false);
-    openTerminal(p);
+    openTerminal(p === main ? root : p);
   };
   return (
     <Popover open={open} onOpenChange={setOpen}>

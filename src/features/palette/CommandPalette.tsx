@@ -21,7 +21,7 @@ import { ProjectTile } from "@/features/projects/ProjectList";
 /**
  * ⇧⌘P runs any command, ⌘P opens a file, as in VS Code: one box, and a leading ">" in it means
  * commands. "Open Changed File" lists the changes instead, and opens their diffs; "New Terminal in
- * Project" the other saved projects, to start a terminal in without switching to them.
+ * Project…" the other saved projects, to start a terminal in without switching to them.
  */
 
 type Mode = "files" | "changes" | "projects";
@@ -237,10 +237,10 @@ export function CommandPalette() {
         : mode === "projects"
           ? "No matching projects"
           : error
-          ? `Could not list files: ${error}`
-          : list === null
-            ? "Listing files…"
-            : "No matching files";
+            ? `Could not list files: ${error}`
+            : list === null
+              ? "Listing files…"
+              : "No matching files";
 
   return (
     <Dialog open={!!state} onOpenChange={(o) => !o && set(null)}>
