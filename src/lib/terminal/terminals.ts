@@ -8,7 +8,7 @@ import "@xterm/xterm/css/xterm.css";
 import { useSyncExternalStore } from "react";
 import { errorMessage, pty } from "../api";
 import { compileFind, type FindOptions } from "../ui/findQuery";
-import { appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
+import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
 import { terminalLinks } from "../links/linkHost";
 import { getSettings, subscribeSettings } from "../settings";
 import { isInside } from "../path";
@@ -20,7 +20,7 @@ import { osc52Text } from "./osc52";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { plural } from "../format";
-import { IS_LINUX, IS_WINDOWS, primaryKey } from "../platform";
+import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
 
 /**
@@ -261,7 +261,8 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
     );
   // ⌘ keys are the app's shortcuts (copy and paste arrive as clipboard events, not keys),
   // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, ⌃Tab or ⌃1 run
-  // their commands, and the panel's own keys stay with it whatever they're rebound to.
+  // their commands, and the panel's own keys stay with it whatever they're rebound to. Unbound,
+  // ⌘Home/End/PgUp/PgDn (Ctrl+Home/End elsewhere) scroll the history.
   term.attachCustomKeyEventHandler((e) => {
     // xterm's Meta ⌥ can't tell left from right: for the left one only, it's set as a key is typed
     // with ⌥ (xterm reads it after this), and only when the side changed, as a change redraws.
@@ -281,8 +282,8 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
       e.preventDefault();
       return false;
     }
-    const scroll = SCROLL_KEYS[e.key];
-    if (scroll && primaryKey(e) && !e.shiftKey && !e.altKey && e.metaKey !== e.ctrlKey && term.buffer.active.type === "normal") {
+    const scroll = scrollKey(e);
+    if (scroll && term.buffer.active.type === "normal" && !appRunsFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e)) {
       if (e.type === "keydown") scroll(term);
       e.preventDefault();
       return false;
@@ -384,13 +385,22 @@ const LINE_EDIT: Record<string, string> = {
   "alt+Delete": "\x1bd", // delete next word
 };
 
-/** ⌘Home/End/PgUp/PgDn (Ctrl off macOS), as in Ghostty and VS Code; a full-screen program's keys stay its own. */
+/** ⌘Home/End/PgUp/PgDn, as in Ghostty and VS Code; a full-screen program's keys stay its own. */
 const SCROLL_KEYS: Record<string, (term: Terminal) => void> = {
   Home: (t) => t.scrollToTop(),
   End: (t) => t.scrollToBottom(),
   PageUp: (t) => t.scrollPages(-1),
   PageDown: (t) => t.scrollPages(1),
 };
+
+/**
+ * Off macOS only Ctrl+Home/End: Ctrl+PgUp/PgDn switch tabs in other terminals, and xterm pages with
+ * Shift+PgUp/PgDn itself, as VS Code does.
+ */
+function scrollKey(e: KeyboardEvent) {
+  const alone = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey && (e.key === "Home" || e.key === "End");
+  return alone && !e.shiftKey && !e.altKey ? SCROLL_KEYS[e.key] : undefined;
+}
 
 function lineEditKey(e: KeyboardEvent): string | undefined {
   if (e.shiftKey || e.ctrlKey || e.metaKey === e.altKey) return undefined;
