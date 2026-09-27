@@ -79,6 +79,13 @@ export function revalidate<T>(key: string, fetch: () => Promise<T>, maxAge = MIN
 /** What `key` holds now, without asking for it: a list shows its shorter copy while a longer one loads. */
 export const cached = <T>(key: string) => entries.get(key)?.data as T | undefined;
 
+/** The rows of every list cached under `prefix`, for a view that reads what other views loaded. */
+export function cachedRows<T>(prefix: string): T[] {
+  const rows: T[] = [];
+  for (const [key, e] of entries) if (key.startsWith(prefix) && Array.isArray(e.data)) rows.push(...(e.data as T[]));
+  return rows;
+}
+
 type Item = { url: string; updatedAt: string };
 
 /**
@@ -130,7 +137,8 @@ const subscribe = (l: () => void) => {
   return () => void listeners.delete(l);
 };
 
-export const useGitHubCacheVersion = () => useSyncExternalStore(subscribe, () => version);
+/** `enabled` false: no re-render on writes, for a view that only reads the cache at times. */
+export const useGitHubCacheVersion = (enabled = true) => useSyncExternalStore(subscribe, () => (enabled ? version : -1));
 
 /**
  * The cached value for `key` (null = nothing to load), revalidated on mount, when the key

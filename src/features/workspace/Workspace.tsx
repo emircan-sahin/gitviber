@@ -327,6 +327,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         onForgetRepo={onForgetRepo}
         onReorderRepos={onReorderRepos}
         onLocateRepo={onLocateRepo}
+        onOpenPull={(pull) => open({ kind: "pull", pull }, true)}
         leftOpen={leftOpen}
         rightOpen={rightOpen}
         onToggleLeft={() => toggle(listPanel, "git")}

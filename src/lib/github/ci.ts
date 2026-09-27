@@ -38,16 +38,17 @@ async function ask(target: Target, shas: string[]) {
   }
 }
 
-/** CI's state for each of `shas` that has one, kept current while shown. */
-export function useCi(target: Target, shas: string[]): Record<string, CiState> {
+/** CI's state for each of `shas` that has one, kept current while shown; `live` false asks once. */
+export function useCi(target: Target, shas: string[], live = true): Record<string, CiState> {
   version.use();
   const list = shas.join(",");
   useEffect(() => {
     const all = list ? list.split(",") : [];
     void ask(target, all);
+    if (!live) return;
     const timer = window.setInterval(() => void ask(target, all), RUNNING);
     return () => window.clearInterval(timer);
-  }, [target, list]);
+  }, [target, list, live]);
   const out: Record<string, CiState> = {};
   for (const s of shas) {
     const state = known.get(key(target, s))?.state;

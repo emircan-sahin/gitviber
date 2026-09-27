@@ -21,7 +21,7 @@ import { Wordmark } from "@/components/Logo";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { DisabledTip, Tip } from "@/components/ui/tooltip";
-import { api, cancelNetwork } from "@/lib/api";
+import { api, cancelNetwork, type Pull } from "@/lib/api";
 import { IS_MAC } from "@/lib/platform";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { openTerminal, togglePanel, useTerminals } from "@/lib/terminal/terminals";
@@ -39,7 +39,9 @@ import { openSettings } from "@/features/settings/SettingsDialog";
 import { openWorktreeDialog, WorktreeDialogs } from "@/features/worktrees/WorktreeDialogs";
 import { WorktreePicker } from "@/features/worktrees/WorktreePicker";
 
-type Props = ProjectSwitcherProps;
+type Props = ProjectSwitcherProps & {
+  onOpenPull: (p: Pull) => void;
+};
 
 interface LayoutProps {
   leftOpen: boolean;
@@ -76,7 +78,7 @@ function useFullscreen() {
  * divided by --ui-scale to stay in points (the height only grows: at 150% a 40pt bar can't
  * fit its buttons).
  */
-export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
+export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, onOpenPull, leftOpen, rightOpen, onToggleLeft, onToggleRight }: Props & LayoutProps) {
   const { status, branches, worktrees } = repo;
   const [branchDialog, setBranchDialog] = useState<BranchDialog | null>(null);
   const net = useNetActivity();
@@ -143,6 +145,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onLock={(worktree) => openWorktreeDialog({ kind: "lock", worktree })}
         onUnlock={unlockWorktree}
         onNew={() => openWorktreeDialog({ kind: "new" })}
+        onOpenPull={onOpenPull}
       />
       <WorktreeDialogs branches={branches} main={main} run={run} runNet={runNet} onOpen={onOpenRepo} />
       {status && !tracked && !status.follows && status.branch && (
