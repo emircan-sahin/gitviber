@@ -134,7 +134,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
     const box = reused?.box ?? document.createElement("div");
     box.style.cssText = "width:100%;height:100%";
     el.appendChild(box);
-    const e = reused?.e ?? (diff ? monaco.editor.createDiffEditor(box, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(box, fileOptions(s, wrap, blameColumn, editable)));
+    const e = reused?.e ?? (diff ? monaco.editor.createDiffEditor(box, diffOptions(s, mode, collapse, wrap)) : monaco.editor.create(box, fileOptions(s, wrap, blameColumn, editable, lang)));
     // Detached, it was laid out at 0x0: measure now, before a file is scrolled into place.
     if (reused) e.layout();
     editor.current = e;
@@ -231,8 +231,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   useEffect(() => {
     const e = editor.current!;
     if (isDiff(e)) e.updateOptions(diffOptions(s, mode, collapse, wrap));
-    else e.updateOptions(fileOptions(s, wrap, blameColumn, editable));
-  }, [s, mode, collapse, wrap, diff, blameColumn, editable]);
+    else e.updateOptions(fileOptions(s, wrap, blameColumn, editable, lang));
+  }, [s, mode, collapse, wrap, diff, blameColumn, editable, lang]);
 
   useEffect(() => githubLinks.current?.update(), [github]);
 

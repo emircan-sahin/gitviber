@@ -59,3 +59,5 @@ declare module "monaco-editor/languages/definitions/*" {
   import type { languages } from "monaco-editor/editor/editor.api";
   export const conf: languages.LanguageConfiguration;
 }
+
+declare module "monaco-editor/editor/contrib/suggest/browser/suggestController" {}

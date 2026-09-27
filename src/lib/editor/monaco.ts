@@ -20,8 +20,8 @@ import "monaco-editor/features/referenceSearch/register";
 import "monaco-editor/features/links/register";
 // Editing the file view as in VS Code: word and subword moves (⌥←, ⌃⌥←, ⌥⌫), line moves and copies
 // (⌥↑, ⇧⌥↓, ⇧⌘K, ⌘↵, ⌘]), multiple cursors (⌘D, ⌥⌘↓), ⌘L, ⌘U, ⌃T, expand selection, ⌃G, text dragging,
-// comments (⌘/, ⇧⌥A) and the matching bracket (⇧⌘\) by lib/editor/languageConfig's rules. Left out:
-// what needs a language server.
+// comments (⌘/, ⇧⌥A) and the matching bracket (⇧⌘\) by lib/editor/languageConfig's rules, the file's
+// words as suggestions (⌃Space). Left out: what needs a language server.
 import "monaco-editor/features/wordOperations/register";
 import "monaco-editor/features/wordPartOperations/register";
 import "monaco-editor/features/linesOperations/register";
@@ -34,6 +34,7 @@ import "monaco-editor/features/gotoLine/register";
 import "monaco-editor/features/dnd/register";
 import "monaco-editor/features/comment/register";
 import "monaco-editor/features/bracketMatching/register";
+import "monaco-editor/editor/contrib/suggest/browser/suggestController";
 import { createHighlighterCore, type HighlighterCore } from "shiki/core";
 import { createOnigurumaEngine } from "shiki/engine/oniguruma";
 import { bundledLanguages } from "shiki/langs";
@@ -357,6 +358,14 @@ const APP_COLORS: Record<string, string> = {
   "badge.background": "--elevated",
   "badge.foreground": "--muted-foreground",
   "focusBorder": "--ring",
+  // Word suggestions, as the app's menus.
+  "editorSuggestWidget.background": "--elevated",
+  "editorSuggestWidget.border": "--border-strong",
+  "editorSuggestWidget.foreground": "--foreground",
+  "editorSuggestWidget.selectedBackground": "--active",
+  "editorSuggestWidget.selectedForeground": "--foreground",
+  "editorSuggestWidget.highlightForeground": "--primary",
+  "editorSuggestWidget.focusHighlightForeground": "--primary",
   // Its context menu, as the app's own.
   "menu.background": "--elevated",
   "menu.foreground": "--foreground",

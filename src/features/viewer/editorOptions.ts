@@ -57,7 +57,7 @@ export function diffOptions(s: Settings, mode: CodeMode, collapse: boolean, wrap
   };
 }
 
-export function fileOptions(s: Settings, wrap: boolean, blame: boolean, editable: boolean): monaco.editor.IStandaloneEditorConstructionOptions {
+export function fileOptions(s: Settings, wrap: boolean, blame: boolean, editable: boolean, lang: string): monaco.editor.IStandaloneEditorConstructionOptions {
   // Blame's label goes after the change bars (index.css), in the code font's widths.
   return {
     ...common(s, wrap),
@@ -66,6 +66,10 @@ export function fileOptions(s: Settings, wrap: boolean, blame: boolean, editable
     // Where typing goes, as VS Code shows it; only while typing can go there.
     renderLineHighlight: editable ? "line" : "none",
     renderLineHighlightOnlyWhenFocus: true,
+    // The file's own words as you type, as VS Code offers them (worked out in Monaco's editor worker);
+    // not in prose, as in Zed.
+    quickSuggestions: editable && lang !== "markdown" && lang !== "mdx",
+    wordBasedSuggestions: "currentDocument",
     lineDecorationsWidth: blame ? `${BLAME_CHARS + 3}ch` : 12,
   };
 }
