@@ -234,6 +234,7 @@ fn live_resolve_locally() {
         repo,
         &format!("origin/{}", d.pull.base_ref),
         git::MergeKind::Ff,
+        false,
     )
     .unwrap();
     let st = git::status(repo).unwrap();

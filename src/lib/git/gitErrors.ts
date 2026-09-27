@@ -31,7 +31,7 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
     },
   ],
   [
-    /^error: Your local changes to the following files would be overwritten by merge:|^error: cannot pull with rebase:/m,
+    /^error: Your local changes to the following files would be overwritten by merge:|^error: cannot (pull with rebase|rebase):/m,
     {
       title: "Uncommitted changes are in the way",
       explanation: "git won't overwrite files you've changed but not committed. Commit or stash them first.",

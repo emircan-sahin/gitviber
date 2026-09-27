@@ -66,7 +66,8 @@ fn undo_merge_keeps_local_edits_and_stops_after_outside_changes() {
         .record(&r, Action::new("Merge feat", Mode::Keep), |r| merge(
             r,
             "feat",
-            MergeKind::Ff
+            MergeKind::Ff,
+            false
         ))
         .unwrap());
     let merged = rev(&r, "HEAD");
@@ -180,7 +181,9 @@ fn undo_a_rebase_continued_after_conflicts() {
     let before = rev(&r, "HEAD");
     let j = Journal::default();
     let action = || Action::new("Rebase onto main", Mode::Keep);
-    assert!(j.record(&r, action(), |r| rebase(r, "main")).unwrap());
+    assert!(j
+        .record(&r, action(), |r| rebase(r, "main", false))
+        .unwrap());
     assert!(j.view(&r).undo.is_empty());
     fs::write(r.join("a.txt"), "both\n").unwrap();
     stage(&r, &["a.txt".into()]).unwrap();

@@ -85,7 +85,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const terminalOpen = useTerminals().open;
   const fullscreen = useFullscreen();
 
-  const { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
+  const { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
 
   const activity = busy ?? net?.label;
   const progress = net?.progress ? `${net.progress.phase}${net.progress.percent !== null ? ` ${net.progress.percent}%` : ""}` : "";
@@ -122,7 +122,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onSwitchRemote={switchRemote}
         onCreate={(name) => run("Create branch", () => api.switchBranch(name, true), `Switched to new branch ${name}`)}
         onMerge={merge}
-        onRebase={(name) => run("Rebase", () => api.rebase(name), `Rebased onto ${name}`)}
+        onRebase={(name) => void rebase(name)}
         onTerminal={branchTerminal}
         onDelete={deleteBranch}
         onCleanUp={cleanUp}

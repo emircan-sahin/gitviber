@@ -127,12 +127,21 @@ pub enum MergeKind {
 
 /// `how`: "ff" (git's default, fast-forward when it can), "no-ff" (always a merge commit), or
 /// "squash": the branch's changes as one new commit, its subjects listed in the message.
-pub fn merge(repo: &Path, name: &str, how: MergeKind) -> Result<bool, String> {
+/// `autostash`, as for `pull`; not for a squash, whose changes the stash would come back onto
+/// before they're committed.
+pub fn merge(repo: &Path, name: &str, how: MergeKind, autostash: bool) -> Result<bool, String> {
     ensure_idle(repo)?;
     validate_ref(repo, name)?;
+    // Only ever added: a merge.autoStash the user set applies either way.
+    let stash = autostash.then_some("--autostash");
     match how {
-        MergeKind::Ff => run_stoppable(repo, &["merge", "--no-edit", name]),
-        MergeKind::NoFf => run_stoppable(repo, &["merge", "--no-ff", "--no-edit", name]),
+        MergeKind::Ff | MergeKind::NoFf => {
+            let mut args = vec!["merge", "--no-edit"];
+            args.extend((how == MergeKind::NoFf).then_some("--no-ff"));
+            args.extend(stash);
+            args.push(name);
+            run_stoppable(repo, &args)
+        }
         MergeKind::Squash => {
             let range = format!("HEAD..{name}");
             let subjects = run_text(repo, &["log", "--reverse", "--format=- %s", &range])?;
@@ -151,10 +160,13 @@ pub fn merge(repo: &Path, name: &str, how: MergeKind) -> Result<bool, String> {
     }
 }
 
-pub fn rebase(repo: &Path, onto: &str) -> Result<bool, String> {
+pub fn rebase(repo: &Path, onto: &str, autostash: bool) -> Result<bool, String> {
     ensure_idle(repo)?;
     validate_ref(repo, onto)?;
-    run_stoppable(repo, &["rebase", onto])
+    let mut args = vec!["rebase"];
+    args.extend(autostash.then_some("--autostash"));
+    args.push(onto);
+    run_stoppable(repo, &args)
 }
 
 pub fn op_continue(repo: &Path) -> Result<bool, String> {

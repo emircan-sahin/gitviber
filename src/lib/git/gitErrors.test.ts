@@ -44,6 +44,13 @@ error: Please commit or stash them.`;
 const REBASE_STAGED = `error: cannot pull with rebase: Your index contains uncommitted changes.
 error: Please commit or stash them.`;
 
+// Rebase from the branch picker, which refuses any uncommitted change.
+const REBASE_REFUSED = `error: cannot rebase: You have unstaged changes.
+error: Please commit or stash them.`;
+
+const REBASE_REFUSED_STAGED = `error: cannot rebase: Your index contains uncommitted changes.
+error: Please commit or stash them.`;
+
 const OVERWRITTEN_BY_CHECKOUT = `error: Your local changes to the following files would be overwritten by checkout:
 	f
 Please commit your changes or stash them before you switch branches.
@@ -92,8 +99,8 @@ test("a diverged pull and a push behind the remote are told apart", () => {
   assert.equal(fix(FETCH_FIRST), "fetch-first");
 });
 
-test("uncommitted changes in a pull's way offer autostash", () => {
-  for (const message of [OVERWRITTEN_BY_MERGE, REBASE_UNSTAGED, REBASE_STAGED]) assert.equal(fix(message), "autostash");
+test("uncommitted changes in a pull's, merge's or rebase's way offer autostash", () => {
+  for (const message of [OVERWRITTEN_BY_MERGE, REBASE_UNSTAGED, REBASE_STAGED, REBASE_REFUSED, REBASE_REFUSED_STAGED]) assert.equal(fix(message), "autostash");
 });
 
 test("a missing identity or a failed signature say what to set up", () => {

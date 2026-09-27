@@ -241,7 +241,7 @@ fn merge_conflict_resolve_and_continue() {
     commit_file(&repo, "gone.txt", "edited on main\n", "main edits gone");
 
     assert!(
-        merge(&repo, "feature", MergeKind::Ff).unwrap(),
+        merge(&repo, "feature", MergeKind::Ff, false).unwrap(),
         "merge should stop on conflicts"
     );
     let st = status(&repo).unwrap();
@@ -262,7 +262,7 @@ fn merge_conflict_resolve_and_continue() {
         .contains("<<<<<<<"));
 
     // Starting another operation now must be refused, not reported as conflicts.
-    assert!(rebase(&repo, "feature").is_err());
+    assert!(rebase(&repo, "feature", false).is_err());
 
     resolve_side(&repo, "a.txt", Side::Theirs).unwrap();
     resolve_side(&repo, "gone.txt", Side::Theirs).unwrap(); // theirs deleted it
@@ -284,7 +284,7 @@ fn rebase_conflict_abort() {
     commit_file(&repo, "a.txt", "main\n", "main edit");
     switch_branch(&repo, "feature", false).unwrap();
 
-    assert!(rebase(&repo, "main").unwrap());
+    assert!(rebase(&repo, "main", false).unwrap());
     let op = operation(&repo).unwrap();
     assert_eq!(
         (op.kind.as_str(), op.subject.as_deref(), op.step, op.total),
