@@ -194,7 +194,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
         } catch (e) {
           // git refuses any worktree with submodules checked out, clean or not, unless forced.
           if (force || !errorMessage(e).includes("working trees containing submodules cannot be moved or removed")) throw e;
-          const again = await ask(`${name} has submodules, which git only removes with force. Delete anyway?`, { title: "Remove worktree", kind: "warning", okLabel: "Delete worktree" });
+          const again = await ask(`${name} has submodules, which git only removes with force: everything in it goes, including commits made only inside its submodules. Delete anyway?`, { title: "Remove worktree", kind: "warning", okLabel: "Delete worktree" });
           if (!again) throw CANCELLED;
           await api.removeWorktree(w.path, true);
         }
