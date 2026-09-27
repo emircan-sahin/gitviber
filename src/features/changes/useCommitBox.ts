@@ -10,8 +10,9 @@ const EMPTY_DRAFT: CommitDraft = { summary: "", body: "", coAuthors: [] };
 const messageOf = (c: Commit): CommitDraft => ({ summary: c.subject, body: c.body, coAuthors: [] });
 type Message = { summary: string; body: string };
 const NO_MESSAGE: Message = { summary: "", body: "" };
+const same = (d: CommitDraft, m: Message) => d.summary === m.summary && d.body === m.body;
 /** A draft nobody wrote in: blank, or still the message it started from. */
-const untouched = (d: CommitDraft) => (!d.summary.trim() && !d.body.trim()) || (d.summary === (d.from?.summary ?? "") && d.body === (d.from?.body ?? ""));
+const untouched = (d: CommitDraft) => (!d.summary.trim() && !d.body.trim()) || same(d, d.from ?? NO_MESSAGE);
 const startingFrom = (d: CommitDraft, from: Message): CommitDraft => ({ ...d, ...from, from });
 
 /**
@@ -30,6 +31,8 @@ export function useCommitDraft(root: string, head: Commit | null, prepared: stri
   // started (kept with it, across remounts) follows each new prepared message and its clearing.
   const [start, setStart] = useState<Message>(NO_MESSAGE);
   const started = useRef(start);
+  const amending = useRef(amend);
+  amending.current = amend;
   useEffect(() => {
     let alive = true;
     api.commitTemplate().then(
@@ -37,11 +40,14 @@ export function useCommitDraft(root: string, head: Commit | null, prepared: stri
         if (!alive) return;
         const [summary = "", ...rest] = prepared && t ? t.split("\n") : [];
         const next = prepared ? { summary, body: rest.join("\n").trim() } : { summary: "", body: t ?? "" };
+        const old = started.current;
         started.current = next;
         setStart(next);
-        const follow = (d: CommitDraft) => (untouched(d) ? startingFrom(d, next) : d);
-        setDraft(follow);
-        setAmend((a) => (a && untouched(a.aside) ? { ...a, aside: follow(a.aside) } : a));
+        // A draft saved before drafts kept their start is untouched while it equals one.
+        const follow = (d: CommitDraft) => (untouched(d) || (!d.from && (same(d, old) || same(d, next))) ? startingFrom(d, next) : d);
+        // The fields hold HEAD's message while amending; the draft set aside follows instead.
+        if (!amending.current) setDraft(follow);
+        setAmend((a) => (a && follow(a.aside) !== a.aside ? { ...a, aside: follow(a.aside) } : a));
       },
       () => {},
     );
