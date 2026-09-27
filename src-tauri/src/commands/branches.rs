@@ -10,6 +10,11 @@ pub async fn branches(state: State<'_, AppState>) -> Res<Vec<git::Branch>> {
 }
 
 #[tauri::command]
+pub async fn merged_upstream(state: State<'_, AppState>) -> Res<Vec<String>> {
+    in_repo(&state, |r| Ok(git::merged_upstream(r))).await
+}
+
+#[tauri::command]
 pub async fn switch_branch(state: State<'_, AppState>, name: String, create: bool) -> Res<()> {
     let label = if create {
         format!("Create branch {name}")

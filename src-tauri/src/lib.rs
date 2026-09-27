@@ -160,6 +160,7 @@ pub fn run() {
             commands::files::text_at,
             commands::history::blame,
             commands::branches::branches,
+            commands::branches::merged_upstream,
             commands::branches::switch_branch,
             commands::branches::delete_branches,
             commands::branches::delete_remote_branch,

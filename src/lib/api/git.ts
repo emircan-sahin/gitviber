@@ -83,6 +83,8 @@ export const api = {
   /** `git blame` of the working-tree file. */
   blame: (path: string) => invoke<Blame>("blame", { path }),
   branches: () => invoke<Branch[]>("branches"),
+  /** Local branches squash- or rebase-merged on the remote, which then deleted them; held by no worktree. */
+  mergedUpstream: () => invoke<string[]>("merged_upstream"),
   /** Switches to the local branch for a remote one ("upstream/dev" → dev), creating it to track exactly that. */
   /** What a PR from HEAD into `base` (refs/remotes/…) carries: its commit count, and the one commit's message. */
   pullDraft: (base: string) => invoke<{ commits: number; subject: string | null; body: string | null }>("pull_draft", { base }),

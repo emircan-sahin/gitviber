@@ -73,6 +73,80 @@ fn merged_branches_and_deleting_them() {
     assert_eq!(left.len(), 2, "{left:?}");
 }
 
+/// A host squash- or rebase-merges a pull request and deletes its branch: after a pruning
+/// fetch the local branch counts as merged upstream. A gone upstream alone doesn't.
+#[test]
+fn squash_and_rebase_merged_branches_whose_upstream_is_gone() {
+    let sb = Sandbox::new("landed");
+    let c = sb.remote_with_clones(2);
+    let (a, host) = (&c[0], &c[1]);
+    let push = |name: &str, commits: &[(&str, &str)]| {
+        run(a, &["switch", "-q", "-c", name, "main"]).unwrap();
+        for (path, content) in commits {
+            write_commit(a, path, content, &format!("{name}: {path}"));
+        }
+        run(a, &["push", "-q", "-u", "origin", name]).unwrap();
+    };
+    push("squashed", &[("s.txt", "s1\n"), ("s.txt", "s2\n")]);
+    push("rebased", &[("r1.txt", "r1\n"), ("r2.txt", "r2\n")]);
+    let nine = "1\n2\n3\n4\n5\n6\n7\n8\n9\n";
+    push("later", &[("l.txt", "1\n"), ("l.txt", nine)]);
+    push("partial", &[("p1.txt", "p1\n"), ("p2.txt", "p2\n")]);
+    push("unmerged", &[("u.txt", "u\n")]);
+    push("alive", &[("v.txt", "v\n")]);
+    push("held", &[("h.txt", "h\n")]);
+    run(a, &["switch", "-q", "main"]).unwrap();
+
+    // The host: main moves on, then each pull request lands its own way.
+    run(host, &["fetch", "-q"]).unwrap();
+    write_commit(host, "a.txt", "one\ntwo\nthree\nfour\n", "other work");
+    let git = |args: &[&str]| run(host, args).unwrap();
+    for b in ["squashed", "later", "alive", "held"] {
+        git(&["merge", "-q", "--squash", &format!("origin/{b}")]);
+        git(&["commit", "-q", "-m", &format!("{b} (#1)")]);
+    }
+    git(&["cherry-pick", "main..origin/rebased"]);
+    git(&["cherry-pick", "origin/partial~1"]);
+    // After the squash, main edits the same file: only the squash commit's patch still matches.
+    write_commit(host, "l.txt", &format!("{nine}10\n"), "more");
+    git(&["push", "-q", "origin", "main"]);
+    for b in [
+        "squashed", "rebased", "later", "partial", "unmerged", "held",
+    ] {
+        git(&["push", "-q", "origin", "--delete", b]);
+    }
+
+    run(a, &["fetch", "-q", "--prune"]).unwrap();
+    run(a, &["merge", "-q", "--ff-only", "origin/main"]).unwrap();
+    run(
+        a,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            sb.path("held").to_str().unwrap(),
+            "held",
+        ],
+    )
+    .unwrap();
+    let mut found = merged_upstream(a);
+    found.sort();
+    assert_eq!(found, ["later", "rebased", "squashed"]);
+    // git itself doesn't see them as merged, so the plain rule leaves them be.
+    assert!(!branches(a).unwrap().iter().any(|b| b.merged));
+    // The worktree holding one is merged too, with nothing to merge back.
+    let held = worktrees(a)
+        .unwrap()
+        .into_iter()
+        .find(|w| same_dir(&w.path, &sb.path("held")))
+        .unwrap();
+    let s = worktree_state(a, &held.path).unwrap();
+    assert!(s.commits == 0 && s.merged);
+    // Deleting takes -D: git's own check finds its commits nowhere.
+    assert!(delete_branches(a, &["squashed".into()], false).is_err());
+    delete_branches(a, &["squashed".into()], true).unwrap();
+}
+
 #[test]
 fn deleting_a_remote_branch() {
     let sb = Sandbox::new("rbdel");
