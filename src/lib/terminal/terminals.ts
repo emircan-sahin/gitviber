@@ -125,6 +125,11 @@ let state: State = { open: false, groups: [], active: null, restorable: loadSess
 let nextId = 1;
 const listeners = new Set<() => void>();
 
+function subscribe(l: () => void) {
+  listeners.add(l);
+  return () => void listeners.delete(l);
+}
+
 function set(patch: Partial<State>) {
   state = { ...state, ...patch };
   listeners.forEach((l) => l());
@@ -196,13 +201,7 @@ function saveSession(all = false, due?: Pane[]) {
 }
 
 export function useTerminals() {
-  return useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => state,
-  );
+  return useSyncExternalStore(subscribe, () => state);
 }
 
 const activeGroup = () => state.groups.find((g) => g.id === state.active);
@@ -876,13 +875,7 @@ const needing = () =>
 
 /** The folders of panes that need the user (needsYou), for the worktree picker's marks. */
 export function useNeedsYou() {
-  const key = useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    needing,
-  );
+  const key = useSyncExternalStore(subscribe, needing);
   return useMemo(() => (key ? key.split("\0") : []), [key]);
 }
 
@@ -943,11 +936,5 @@ export function showWorktree(cwd: string) {
 
 /** Whether the panel is open, alone: useTerminals re-renders on every title a program sets. */
 export function useTerminalsOpen() {
-  return useSyncExternalStore(
-    (l) => {
-      listeners.add(l);
-      return () => listeners.delete(l);
-    },
-    () => state.open,
-  );
+  return useSyncExternalStore(subscribe, () => state.open);
 }
