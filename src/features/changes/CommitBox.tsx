@@ -23,7 +23,7 @@ const SUMMARY_LIMIT = 72;
 
 /** `shown`: what the list's filter leaves, while it has text; the button says how many files it takes that the list hides. */
 export function CommitBox({ status, shown, head, main, refresh }: { status: RepoStatus; shown: RepoStatus | null; head: Commit | null; main: string; refresh: () => Promise<void> }) {
-  const { draft, setDraft, amend, edited, template, toggleAmend, clear } = useCommitDraft(status.root, head, status.preparedMessage);
+  const { draft, setDraft, amend, edited, startBody, toggleAmend, clear } = useCommitDraft(status.root, head, status.preparedMessage);
   const [busy, setBusy] = useState(false);
   const { signOffRepos, suggestEnabled } = useSettings();
   const signOff = signOffRepos.includes(main);
@@ -82,7 +82,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     if (ok && then) runCommand(then);
   };
 
-  const { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest } = useSuggestMessage({ draft, setDraft, template, amend: !!amend, hasStaged, hasAny, busy });
+  const { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest } = useSuggestMessage({ draft, setDraft, startBody, amend: !!amend, hasStaged, hasAny, busy });
 
   useCommands({ "git.commit": canCommit ? commit : undefined, "git.suggestMessage": canSuggest ? suggest : undefined });
   const commitKey = useShortcut("git.commit");
@@ -97,7 +97,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
   const onSummaryPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
     const el = e.currentTarget;
     const end = draft.summary.length;
-    const pasted = pasteMessage(draft, template, e.clipboardData.getData("text/plain"), el.selectionStart ?? end, el.selectionEnd ?? end);
+    const pasted = pasteMessage(draft, startBody, e.clipboardData.getData("text/plain"), el.selectionStart ?? end, el.selectionEnd ?? end);
     if (!pasted) return;
     e.preventDefault();
     setDraft({ ...draft, summary: pasted.summary, body: pasted.body });

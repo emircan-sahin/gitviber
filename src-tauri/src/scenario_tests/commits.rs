@@ -178,19 +178,21 @@ fn a_prepared_message_comes_before_the_template() {
     run(&r, &["checkout", "-q", "-b", "feat"]).unwrap();
     write_commit(&r, "b.txt", "b\n", "add b");
     run(&r, &["checkout", "-q", "main"]).unwrap();
-    assert!(!status(&r).unwrap().prepared_message);
+    assert!(status(&r).unwrap().prepared_message.is_none());
 
     run(&r, &["cherry-pick", "-n", "feat"]).unwrap();
-    assert!(status(&r).unwrap().prepared_message);
+    let picked = status(&r).unwrap().prepared_message.unwrap();
     assert_eq!(commit_template(&r).as_deref(), Some("add b"));
     run(&r, &["reset", "-q", "--hard"]).unwrap();
 
     run(&r, &["merge", "--squash", "feat"]).unwrap();
+    // Another message: the commit box reads it again.
+    assert_ne!(status(&r).unwrap().prepared_message, Some(picked));
     let message = commit_template(&r).unwrap();
     assert!(message.starts_with("Squashed commit of the following:"));
     assert!(message.contains("add b"));
     commit(&r, &message, &CommitOptions::default()).unwrap();
-    assert!(!status(&r).unwrap().prepared_message);
+    assert!(status(&r).unwrap().prepared_message.is_none());
     assert_eq!(commit_template(&r).as_deref(), Some("Why:"));
 }
 

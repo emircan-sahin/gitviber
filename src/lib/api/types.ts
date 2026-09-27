@@ -77,8 +77,8 @@ export interface RepoStatus {
   unstaged: FileChange[];
   conflicted: FileChange[];
   operation: Operation | null;
-  /** git left a message for the next commit (a squash merge, `cherry-pick -n`); commitTemplate returns it. */
-  preparedMessage: boolean;
+  /** Set while git has left a message for the next commit (a squash merge, `cherry-pick -n`), which commitTemplate returns; changes with it. */
+  preparedMessage: string | null;
 }
 
 export interface Commit {

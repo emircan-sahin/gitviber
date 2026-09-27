@@ -8,21 +8,27 @@ import { openSettings } from "@/features/settings/SettingsDialog";
 
 const EMPTY_DRAFT: CommitDraft = { summary: "", body: "", coAuthors: [] };
 const messageOf = (c: Commit): CommitDraft => ({ summary: c.subject, body: c.body, coAuthors: [] });
+type Message = { summary: string; body: string };
+const NO_MESSAGE: Message = { summary: "", body: "" };
+/** A draft nobody wrote in: blank, or still the message it started from. */
+const untouched = (d: CommitDraft) => (!d.summary.trim() && !d.body.trim()) || (d.summary === (d.from?.summary ?? "") && d.body === (d.from?.body ?? ""));
+const startingFrom = (d: CommitDraft, from: Message): CommitDraft => ({ ...d, ...from, from });
 
 /**
  * The message being written, kept per worktree, and the Amend toggle that swaps in HEAD's.
- * `prepared`: git left a message for the next commit (status.preparedMessage).
+ * `prepared`: status.preparedMessage, set while git has left a message for the next commit and
+ * changing with it.
  */
-export function useCommitDraft(root: string, head: Commit | null, prepared: boolean) {
+export function useCommitDraft(root: string, head: Commit | null, prepared: string | null) {
   const [draft, setDraft] = useState<CommitDraft>(() => loadDraft(root) ?? EMPTY_DRAFT);
   // While amending, the fields hold the message being amended (`original`, HEAD's at `sha`)
   // and the user's own draft waits aside.
   const [amend, setAmend] = useState<{ aside: CommitDraft; sha: string; original: CommitDraft } | null>(null);
 
   // An empty message starts as git's editor would: with the message a squash merge or
-  // `cherry-pick -n` prepared, else commit.template in the description. An untouched one
-  // follows as git writes or clears a prepared message.
-  const [start, setStart] = useState<CommitDraft>(EMPTY_DRAFT);
+  // `cherry-pick -n` prepared, else commit.template in the description. A draft still as it
+  // started (kept with it, across remounts) follows each new prepared message and its clearing.
+  const [start, setStart] = useState<Message>(NO_MESSAGE);
   const started = useRef(start);
   useEffect(() => {
     let alive = true;
@@ -30,11 +36,12 @@ export function useCommitDraft(root: string, head: Commit | null, prepared: bool
       (t) => {
         if (!alive) return;
         const [summary = "", ...rest] = prepared && t ? t.split("\n") : [];
-        const next = prepared ? { ...EMPTY_DRAFT, summary, body: rest.join("\n").trim() } : { ...EMPTY_DRAFT, body: t ?? "" };
-        const old = started.current;
+        const next = prepared ? { summary, body: rest.join("\n").trim() } : { summary: "", body: t ?? "" };
         started.current = next;
         setStart(next);
-        setDraft((d) => (d.summary === old.summary && d.body === old.body ? { ...d, summary: next.summary, body: next.body } : d));
+        const follow = (d: CommitDraft) => (untouched(d) ? startingFrom(d, next) : d);
+        setDraft(follow);
+        setAmend((a) => (a && untouched(a.aside) ? { ...a, aside: follow(a.aside) } : a));
       },
       () => {},
     );
@@ -74,12 +81,12 @@ export function useCommitDraft(root: string, head: Commit | null, prepared: bool
 
   // After an amend, the draft set aside for it comes back.
   const clear = () => {
-    setDraft(amend?.aside ?? start);
+    setDraft(amend?.aside ?? startingFrom(EMPTY_DRAFT, started.current));
     setAmend(null);
   };
 
-  // What the description starts as, for telling an untouched one from the user's.
-  return { draft, setDraft, amend, edited, template: start.body, toggleAmend, clear };
+  // What a new draft's description starts as, for telling an untouched one from the user's.
+  return { draft, setDraft, amend, edited, startBody: start.body, toggleAmend, clear };
 }
 
 /**
@@ -128,7 +135,7 @@ export function useSuggestion(what: string) {
 export function useSuggestMessage({
   draft,
   setDraft,
-  template,
+  startBody,
   amend,
   hasStaged,
   hasAny,
@@ -136,7 +143,7 @@ export function useSuggestMessage({
 }: {
   draft: CommitDraft;
   setDraft: (d: CommitDraft) => void;
-  template: string | null;
+  startBody: string;
   amend: boolean;
   hasStaged: boolean;
   hasAny: boolean;
@@ -158,7 +165,7 @@ export function useSuggestMessage({
         const before = latest.current;
         setDraft({ ...before, ...message });
         // Never lost: what the user had comes back with one click.
-        const blank = !before.summary.trim() && (!before.body.trim() || before.body === template);
+        const blank = !before.summary.trim() && (!before.body.trim() || before.body === startBody);
         if (!blank) toast("info", "Message replaced with the suggestion", undefined, { label: "Restore", run: () => setDraft(before) });
         return true;
       },

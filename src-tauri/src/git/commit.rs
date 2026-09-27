@@ -51,12 +51,15 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions) -> Result<(), St
     run_with(repo, &args, &[], Some(message.as_bytes())).map(|_| ())
 }
 
+/// Where git leaves a message for the next commit, in the order `git commit` joins them.
+pub(super) const PREPARED: [&str; 2] = ["SQUASH_MSG", "MERGE_MSG"];
+
 /// The message as git would start it, comment lines stripped: the one a `merge --squash` or
 /// `cherry-pick -n` prepared (SQUASH_MSG then MERGE_MSG, joined as `git commit` does), else
 /// `commit.template`'s. None when there's neither, or it can't be read (git reports that itself).
 pub fn commit_template(repo: &Path) -> Option<String> {
     let prepared: Vec<u8> = git_dir(repo)
-        .map(|d| ["SQUASH_MSG", "MERGE_MSG"].map(|f| std::fs::read(d.join(f)).unwrap_or_default()))
+        .map(|d| PREPARED.map(|f| std::fs::read(d.join(f)).unwrap_or_default()))
         .unwrap_or_default()
         .concat();
     let bytes = if prepared.is_empty() {

@@ -2,7 +2,7 @@
 
 use super::{
     command, git_dir, is_binary, operation_in, publish_remote_among, push_target, read_regular,
-    remotes, run, worktrees, PushTarget, MAX_TEXT_BYTES,
+    remotes, run, worktrees, PushTarget, MAX_TEXT_BYTES, PREPARED,
 };
 use crate::process::exec;
 use serde::Serialize;
@@ -75,8 +75,9 @@ pub struct RepoStatus {
     pub unstaged: Vec<FileChange>,
     pub conflicted: Vec<FileChange>,
     pub operation: Option<Operation>,
-    /// git left a message for the next commit (SQUASH_MSG, MERGE_MSG): `commit_template` reads it.
-    pub prepared_message: bool,
+    /// Set while git has left a message for the next commit, which `commit_template` reads, and
+    /// changes with it: the message files' sizes and mtimes.
+    pub prepared_message: Option<String>,
 }
 
 pub(super) fn change(path: &str, old_path: Option<&str>, status: char) -> FileChange {
@@ -218,8 +219,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         unstaged: vec![],
         conflicted: vec![],
         operation: dir.as_deref().and_then(operation_in),
-        prepared_message: dir
-            .is_some_and(|d| d.join("SQUASH_MSG").exists() || d.join("MERGE_MSG").exists()),
+        prepared_message: dir.as_deref().and_then(prepared_stamp),
     };
 
     let mut nested_roots = std::collections::HashSet::new();
@@ -334,6 +334,16 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
 fn mode_change(fields: &[&str], from: usize, to: usize) -> Option<String> {
     let (a, b) = (*fields.get(from)?, *fields.get(to)?);
     (a != b && a != "000000" && b != "000000").then(|| format!("{a} → {b}"))
+}
+
+/// `prepared_message` for git dir `dir`: an empty message file counts as none, as in `commit_template`.
+fn prepared_stamp(dir: &Path) -> Option<String> {
+    let stamps: Vec<String> = PREPARED
+        .iter()
+        .filter_map(|f| disk_oid(dir, f))
+        .filter(|s| !s.starts_with("0:"))
+        .collect();
+    (!stamps.is_empty()).then(|| stamps.join(" "))
 }
 
 /// A working-tree file's `oid`: its size and mtime, None once it's gone.
