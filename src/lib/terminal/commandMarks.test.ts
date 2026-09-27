@@ -10,11 +10,10 @@ test("OSC 133 marks, with their exit code and the extensions other shells add", 
   assert.deepEqual(parseMark("D;0"), { kind: "D", exit: 0 });
   assert.deepEqual(parseMark("D;130"), { kind: "D", exit: 130 });
   assert.deepEqual(parseMark("D;1;aid=12"), { kind: "D", exit: 1 });
-  // bash with nothing run, and VS Code's: no status.
+  // No status given.
   assert.deepEqual(parseMark("D"), { kind: "D" });
   assert.deepEqual(parseMark("D;"), { kind: "D" });
-  // VS Code's 633 kinds GitViber doesn't read.
-  assert.equal(parseMark("P;Cwd=/tmp"), null);
-  assert.equal(parseMark("E;ls"), null);
+  // Ghostty's continuation-line mark isn't read.
+  assert.equal(parseMark("P;k=s"), null);
   assert.equal(parseMark(""), null);
 });

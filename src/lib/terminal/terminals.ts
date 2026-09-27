@@ -303,10 +303,10 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
       e.preventDefault();
       return false;
     }
-    // ⌘↑ / ⌘↓ between the marked prompts; in a full-screen program the keys stay its own. Plain
-    // typing isn't looked up.
+    // ⌘↑ / ⌘↓ between the marked prompts. A full-screen program keeps the keys, and so does a
+    // shell with no marks (Ctrl+↑/↓ off macOS). Plain typing isn't looked up.
     const jump = (e.metaKey || e.ctrlKey || e.altKey) && commandIn(JUMP_COMMANDS, e);
-    if (jump && term.buffer.active.type === "normal") {
+    if (jump && term.buffer.active.type === "normal" && p.marks.hasCommands()) {
       if (e.type === "keydown") p.marks.jump(jump === "terminal.prevCommand" ? -1 : 1);
       e.preventDefault();
       return false;
@@ -492,7 +492,9 @@ function runAtPrompt(p: Pane, command: string, integrated: boolean) {
   const type = () => {
     if (sent || !panes.has(p.id)) return;
     sent = true;
-    send(p, command);
+    // Whatever was typed before the prompt is on its line: ⌃U clears it first. VS Code sends ⌃C
+    // before a command when the line may hold text; ⌃U does it without a new prompt.
+    send(p, `\x15${command}`);
   };
   void p.marks.ready.then(type);
   window.setTimeout(type, RUN_WAIT);
