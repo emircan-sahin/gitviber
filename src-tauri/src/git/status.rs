@@ -2,7 +2,7 @@
 
 use super::{
     command, git_dir, is_binary, operation_in, publish_config, publish_remote_among, push_target,
-    read_regular, remotes, run, worktrees, PushTarget, MAX_TEXT_BYTES, PREPARED,
+    read_regular, remote_urls, run, worktrees, PushTarget, MAX_TEXT_BYTES, PREPARED,
 };
 use crate::process::exec;
 use serde::Serialize;
@@ -75,6 +75,8 @@ pub struct RepoStatus {
     pub push: Option<PushTarget>,
     /// Configured remotes, to pick where an unpublished branch goes.
     pub remotes: Vec<String>,
+    /// Origin's URL: after a `git remote set-url` the GitHub views read another repository.
+    pub origin: Option<String>,
     /// Where Publish sends a branch with no upstream; None when that's the user's choice.
     pub publish: Option<String>,
     pub staged: Vec<FileChange>,
@@ -220,6 +222,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         upstream_gone: false,
         push: None,
         remotes: vec![],
+        origin: None,
         publish: None,
         ahead: 0,
         behind: 0,
@@ -324,7 +327,12 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     if let Some(b) = &st.branch {
         st.push = push_target(repo, b);
     }
-    st.remotes = remotes(repo);
+    for (name, url) in remote_urls(repo) {
+        if name == "origin" {
+            st.origin = url;
+        }
+        st.remotes.push(name);
+    }
     if st.branch.is_some() && !st.remotes.is_empty() && (st.upstream.is_none() || st.upstream_gone)
     {
         let config = publish_config(repo, st.branch.as_deref());

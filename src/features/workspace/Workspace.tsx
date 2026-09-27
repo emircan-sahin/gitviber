@@ -6,7 +6,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { find } from "@/lib/ui/find";
 import { api } from "@/lib/api";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
-import { resetGitHubCache } from "@/lib/github/githubCache";
+import { resetGitHubCache, setGitHubOrigin } from "@/lib/github/githubCache";
 import { warmHighlighter } from "@/lib/editor/highlight";
 import { setLinkHost } from "@/lib/links/linkHost";
 import { prepare } from "@/lib/editor/monaco";
@@ -72,6 +72,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useFreshCaches(root);
   const repo = useRepo(root);
   const { status } = repo;
+  const origin = status?.origin;
+  useEffect(() => {
+    if (origin !== undefined) setGitHubOrigin(origin);
+  }, [origin]);
   const s = useSettings();
   const [saved] = useState(() => loadWorkspace(root));
   const [listTab, setListTab] = useState<ListTab>(() => LIST_TABS.find((t) => t === saved?.listTab) ?? "changes");
