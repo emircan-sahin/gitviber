@@ -2,6 +2,7 @@ import { OPTION_KEYS, type OptionKey, updateSettings, useSettings } from "@/lib/
 import { Segmented } from "@/components/ui/segmented";
 import { Field } from "@/features/settings/controls";
 
+/** Shown on macOS only (SettingsDialog): its one setting is macOS's ⌥ key. */
 export function TerminalSection() {
   const s = useSettings();
   return (
