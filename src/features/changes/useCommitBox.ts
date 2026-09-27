@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { api, type Commit, errorMessage, SUGGEST_CANCELLED } from "@/lib/api";
+import { api, type Commit, errorMessage, SUGGEST_CANCELLED, type SuggestKind } from "@/lib/api";
 import { type CommitDraft, loadDraft, saveDraft } from "@/lib/repo/session";
 import { useSettings } from "@/lib/settings";
 import { commandLine, parseSuggestion, programOf, SUGGEST_PROMPT } from "@/lib/git/suggest";
@@ -100,7 +100,7 @@ export function useCommitDraft(root: string, head: Commit | null, prepared: stri
  * line and `land` what it printed (false: nothing usable), unless `drop` came in between. Leaving
  * stops the command rather than orphan it. `kind`: the commit box's, or the pull request dialog's.
  */
-export function useSuggestion(kind: "message" | "pull") {
+export function useSuggestion(kind: SuggestKind) {
   const what = kind === "pull" ? "description" : "message";
   const { suggestEnabled, suggestCommand, suggestModels } = useSettings();
   const [suggesting, setSuggesting] = useState(false);

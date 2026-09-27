@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 /// Enough for a focused change; past it the model gets the file list and the start of the diff.
@@ -42,27 +42,37 @@ pub enum Kind {
 /// The run in progress of each kind, so Cancel (or starting another of that kind) can stop it.
 #[derive(Default)]
 pub struct Suggester {
-    current: Mutex<[Option<Arc<AtomicBool>>; 2]>,
+    message: Mutex<Option<Arc<AtomicBool>>>,
+    pull: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl Suggester {
+    fn slot(&self, kind: Kind) -> MutexGuard<'_, Option<Arc<AtomicBool>>> {
+        match kind {
+            Kind::Message => &self.message,
+            Kind::Pull => &self.pull,
+        }
+        .lock()
+        .unwrap()
+    }
+
     pub fn start(&self, kind: Kind) -> Arc<AtomicBool> {
         let flag = Arc::new(AtomicBool::new(false));
-        if let Some(old) = self.current.lock().unwrap()[kind as usize].replace(flag.clone()) {
+        if let Some(old) = self.slot(kind).replace(flag.clone()) {
             old.store(true, Ordering::Relaxed);
         }
         flag
     }
 
     pub fn finish(&self, kind: Kind, flag: &Arc<AtomicBool>) {
-        let cur = &mut self.current.lock().unwrap()[kind as usize];
+        let mut cur = self.slot(kind);
         if cur.as_ref().is_some_and(|c| Arc::ptr_eq(c, flag)) {
             *cur = None;
         }
     }
 
     pub fn cancel(&self, kind: Kind) {
-        if let Some(flag) = self.current.lock().unwrap()[kind as usize].take() {
+        if let Some(flag) = self.slot(kind).take() {
             flag.store(true, Ordering::Relaxed);
         }
     }

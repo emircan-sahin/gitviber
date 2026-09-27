@@ -412,3 +412,6 @@ export interface AskPrompt {
 }
 
 export type ResetMode = "soft" | "mixed" | "hard";
+
+/** Which suggestion a run is for: the commit box's message, or the pull request dialog's; each runs and cancels apart. */
+export type SuggestKind = "message" | "pull";
