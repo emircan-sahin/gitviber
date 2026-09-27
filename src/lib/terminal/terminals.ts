@@ -20,7 +20,7 @@ import { osc52Text } from "./osc52";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { plural } from "../format";
-import { IS_LINUX, IS_WINDOWS } from "../platform";
+import { IS_LINUX, IS_WINDOWS, primaryKey } from "../platform";
 import { failed, toast } from "../app/toast";
 
 /**
@@ -279,6 +279,12 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
       e.preventDefault();
       return false;
     }
+    const scroll = SCROLL_KEYS[e.key];
+    if (scroll && primaryKey(e) && !e.shiftKey && !e.altKey && e.metaKey !== e.ctrlKey && term.buffer.active.type === "normal") {
+      if (e.type === "keydown") scroll(term);
+      e.preventDefault();
+      return false;
+    }
     const seq = lineEditKey(e);
     if (seq !== undefined) {
       if (e.type === "keydown") term.input(seq);
@@ -364,6 +370,14 @@ const LINE_EDIT: Record<string, string> = {
   "alt+ArrowLeft": "\x1bb", // previous word
   "alt+ArrowRight": "\x1bf", // next word
   "alt+Delete": "\x1bd", // delete next word
+};
+
+/** ⌘Home/End/PgUp/PgDn (Ctrl off macOS), as in Ghostty and VS Code; a full-screen program's keys stay its own. */
+const SCROLL_KEYS: Record<string, (term: Terminal) => void> = {
+  Home: (t) => t.scrollToTop(),
+  End: (t) => t.scrollToBottom(),
+  PageUp: (t) => t.scrollPages(-1),
+  PageDown: (t) => t.scrollPages(1),
 };
 
 function lineEditKey(e: KeyboardEvent): string | undefined {
