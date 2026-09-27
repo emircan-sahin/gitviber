@@ -282,6 +282,13 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
       e.preventDefault();
       return false;
     }
+    // ⌘A selects the terminal's text, as in VS Code, iTerm2 and Ghostty; the webview's own select
+    // all only reached xterm's hidden text area.
+    if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && letter === "a" && !appRunsFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e)) {
+      if (e.type === "keydown") term.selectAll();
+      e.preventDefault();
+      return false;
+    }
     const scroll = scrollKey(e);
     if (scroll && term.buffer.active.type === "normal" && !appRunsFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e)) {
       if (e.type === "keydown") scroll(term);
