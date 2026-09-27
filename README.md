@@ -220,7 +220,7 @@ Every shortcut below except moving around a list or view (arrows, `↵`, `⎋`, 
 While you type, only shortcuts with `⌘`, `⌃` or an F-key apply, except `⌘←` `⌘→` and `⌃` with a letter, which edit the text.
 On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+Shift+Tab switch tabs, and the terminal's
 `⌘T` `⌘D` `⌘K` `⌘W` are Ctrl+Shift+T, D, K and W, since Ctrl+letter stays the shell's (split down is Ctrl+Alt+Shift+D,
-maximize Ctrl+Shift+Enter; focusing a pane by side has no default there, the shell and the desktop use those keys).
+zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter; focusing a pane by side has no default there, the shell and the desktop use those keys).
 
 | Keys | |
 | --- | --- |
@@ -246,9 +246,10 @@ maximize Ctrl+Shift+Enter; focusing a pane by side has no default there, the she
 | `↑` `↓` `PgUp` `PgDn` `Space` `Home` `End` | Scroll the focused code view, `←` `→` sideways |
 | `⌘J` or `⌃` `` ` `` | Toggle the terminal |
 | `⌘T` | New terminal |
-| `⌘D` `⇧⌘D` `⌘K`, `⌥⌘←` `⌥⌘→` | Split right, split down, clear, previous / next pane (in the terminal) |
-| `⇧⌘←` `⇧⌘→` `⇧⌘↑` `⇧⌘↓` | Focus the terminal pane on that side |
+| `⌘D` `⇧⌘D` `⌘K` | Split right, split down, clear (in the terminal) |
+| `⌥⌘←` `⌥⌘→` `⌥⌘↑` `⌥⌘↓` or `⇧⌘` arrows | Focus the terminal pane on that side |
 | `⌘↵` | Maximize the terminal over the workspace, and back (in the terminal) |
+| `⇧⌘↵` | Zoom the focused terminal pane over the workspace, and back (in the terminal) |
 | `⌘↑` `⌘↓` | Scroll to the previous / next command's prompt (in the terminal, with shell integration) |
 | `⌘=` `⌘−` `⌘0` | Zoom the interface |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |

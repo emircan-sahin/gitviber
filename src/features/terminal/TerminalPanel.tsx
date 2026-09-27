@@ -61,8 +61,13 @@ export function useTerminalSetup(root: string) {
   // Another worktree's workspace starts with its code in view.
   useEffect(() => unmaximize, [root]);
 
-  // Maximize from the palette too, where it opens the panel first.
-  useCommands({ "terminal.toggle": () => toggle(root), "terminal.new": () => openTerminal(root), "terminal.toggleMaximize": () => toggleMaximize(root) });
+  // Maximize and zoom from the palette too, where they open the panel first.
+  useCommands({
+    "terminal.toggle": () => toggle(root),
+    "terminal.new": () => openTerminal(root),
+    "terminal.toggleMaximize": () => toggleMaximize(root, "panel"),
+    "terminal.zoomPane": () => toggleMaximize(root, "pane"),
+  });
 }
 
 /** Opening focuses the terminal (togglePanel does); hiding it while it has focus leaves focus to the code view. */
@@ -92,6 +97,7 @@ const outsideBranches = new Map<number, string | null>();
 export function TerminalPanel({ root, worktrees, projects }: Props) {
   const { groups, active, maximized } = useTerminals();
   const group = groups.find((g) => g.id === active) ?? null;
+  const zoomed = maximized === "pane";
   const [, branchRead] = useState(0);
   const { terminalInactiveDim } = useSettings();
   // The panel's keys (onKeyDown), in the palette too for whoever doesn't know them; maximize is useTerminalSetup's.
@@ -244,8 +250,8 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
             </Button>
           </Tip>
           <div className="mx-0.5 h-4 w-px bg-border-strong" />
-          <Tip label={maximized ? "Exit maximized terminal" : "Maximize terminal"} shortcut={useShortcut("terminal.toggleMaximize")}>
-            <Button variant="ghost" size="icon-sm" aria-pressed={maximized} onClick={() => toggleMaximize(root)}>
+          <Tip label={zoomed ? "Exit zoomed pane" : maximized ? "Exit maximized terminal" : "Maximize terminal"} shortcut={useShortcut(zoomed ? "terminal.zoomPane" : "terminal.toggleMaximize")}>
+            <Button variant="ghost" size="icon-sm" aria-pressed={!!maximized} onClick={() => toggleMaximize(root, maximized || "panel")}>
               {maximized ? <Minimize2 /> : <Maximize2 />}
             </Button>
           </Tip>
@@ -258,7 +264,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
       </div>
       <div className="relative min-h-0 flex-1">
         <TerminalFind />
-        {group && <LayoutView key={shape(group.layout)} group={group.id} node={group.layout} focused={group.focused} dim={group.panes.length > 1 ? terminalInactiveDim / 100 : 0} />}
+        {group && <LayoutView key={shape(zoomed ? group.focused : group.layout)} group={group.id} node={zoomed ? group.focused : group.layout} focused={group.focused} dim={group.panes.length > 1 ? terminalInactiveDim / 100 : 0} />}
       </div>
     </div>
   );
