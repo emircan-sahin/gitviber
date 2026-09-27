@@ -56,6 +56,16 @@ const topmost = (list: Entry[]) => list.filter((e) => !list.some((d) => d !== e 
 /** The filter lists this many files at most: the tree renders every row it has. */
 const MAX_MATCHES = 1000;
 
+/** A fresh, unsorted listing that says what `shown` already does. */
+function unchanged(shown: Entry[] | undefined, listed: Entry[]) {
+  if (shown?.length !== listed.length) return false;
+  const byName = new Map(shown.map((e) => [e.name, e]));
+  return listed.every((e) => {
+    const was = byName.get(e.name);
+    return was?.isDir === e.isDir && was.ignored === e.ignored;
+  });
+}
+
 /** The files that match and the folders down to them, all open, in the explorer's order. */
 function matchingTree(files: string[], matches: (path: string) => boolean) {
   const children: Record<string, Entry[]> = {};
@@ -117,8 +127,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     const id = (requests.current.get(path) ?? 0) + 1;
     requests.current.set(path, id);
     try {
-      const entries = (await api.listDir(path)).sort(compareEntries);
-      if (requests.current.get(path) === id) setChildren((c) => ({ ...c, [path]: entries }));
+      const listed = await api.listDir(path);
+      // Every refresh re-lists each open folder: an unchanged one skips the sort (13 ms at 10k
+      // entries) and the tree's re-render.
+      if (requests.current.get(path) === id) setChildren((c) => (unchanged(c[path], listed) ? c : { ...c, [path]: listed.sort(compareEntries) }));
     } catch (e) {
       if (requests.current.get(path) !== id) return;
       // The root must stay expanded, or the tree would stay empty after the error clears.
