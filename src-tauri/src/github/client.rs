@@ -328,6 +328,72 @@ pub(super) fn request(
     }
 }
 
+/// A text response's last `keep` bytes, and whether its start was cut: a job's log, which GitHub
+/// redirects to its storage (ureq follows, without the token). Read through rather than held
+/// whole, as a long job's log runs to megabytes.
+pub(super) fn text_tail(
+    session: &Session,
+    repo: &Path,
+    path: &str,
+    keep: usize,
+) -> Result<(String, bool), String> {
+    let token = session.token(repo)?;
+    let mut resp = agent(session)
+        .get(&format!("{API}{path}"))
+        .header("Authorization", &format!("Bearer {}", token.value))
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("User-Agent", "GitViber")
+        .call()
+        .map_err(|e| format!("GitHub request failed: {e}"))?;
+    let status = resp.status().as_u16();
+    if status == 401 {
+        session.forget();
+        return Err(NOT_CONNECTED.to_string());
+    }
+    if status >= 400 {
+        let header = |name: &str| {
+            resp.headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string)
+        };
+        if let Some(msg) = rate_limit_error(
+            status,
+            header("x-ratelimit-remaining").as_deref(),
+            header("x-ratelimit-reset").as_deref(),
+            header("retry-after").as_deref(),
+            now(),
+        ) {
+            return Err(msg);
+        }
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+        let msg = body["message"].as_str().unwrap_or("request failed");
+        return Err(format!("GitHub {status}: {msg}"));
+    }
+    let mut reader = resp.body_mut().as_reader();
+    let mut chunk = vec![0; 64 * 1024];
+    let mut tail = Vec::new();
+    let mut cut = false;
+    loop {
+        let n = std::io::Read::read(&mut reader, &mut chunk)
+            .map_err(|e| format!("Reading from GitHub failed: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        tail.extend_from_slice(&chunk[..n]);
+        if tail.len() > 2 * keep {
+            tail.drain(..tail.len() - keep);
+            cut = true;
+        }
+    }
+    if tail.len() > keep {
+        tail.drain(..tail.len() - keep);
+        cut = true;
+    }
+    Ok((String::from_utf8_lossy(&tail).into_owned(), cut))
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
