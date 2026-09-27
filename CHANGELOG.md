@@ -6,6 +6,12 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+### Changed
+
+- **⇧⌘↵ zooms the focused pane inside the terminal panel,** keeping the code view and side panels
+  in sight, with a button beside Maximize while a tab has more than one pane. ⌘↵ still covers the
+  workspace, and the two combine.
+
 ## [0.1.3] - 2026-09-27
 
 ### Added

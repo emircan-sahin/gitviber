@@ -1,5 +1,5 @@
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, ClipboardPaste, Columns2, Copy, Eraser, FolderGit2, FolderOpen, ListX, Maximize2, Minimize2, Pencil, Plus, Rows2, SquareTerminal, TextSelect, Trash2, X } from "lucide-react";
+import { ChevronDown, ClipboardPaste, Columns2, Copy, Eraser, FolderGit2, FolderOpen, ListX, Maximize2, Minimize2, Pencil, Plus, Rows2, SquareTerminal, TextSelect, Trash2, X, ZoomIn, ZoomOut } from "lucide-react";
 import { FindBox, useFindBox } from "@/components/FindBox";
 import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
@@ -44,6 +44,7 @@ import {
   TERMINAL_COMMANDS,
   type TerminalGroup,
   toggleMaximize,
+  toggleZoom,
   togglePanel,
   unmaximize,
   useTerminals,
@@ -65,8 +66,8 @@ export function useTerminalSetup(root: string) {
   useCommands({
     "terminal.toggle": () => toggle(root),
     "terminal.new": () => openTerminal(root),
-    "terminal.toggleMaximize": () => toggleMaximize(root, "panel"),
-    "terminal.zoomPane": () => toggleMaximize(root, "pane"),
+    "terminal.toggleMaximize": () => toggleMaximize(root),
+    "terminal.zoomPane": () => toggleZoom(root),
   });
 }
 
@@ -95,9 +96,10 @@ async function chooseFolder() {
 const outsideBranches = new Map<number, string | null>();
 
 export function TerminalPanel({ root, worktrees, projects }: Props) {
-  const { groups, active, maximized } = useTerminals();
+  const { groups, active, maximized, zoomed: zoomOn } = useTerminals();
   const group = groups.find((g) => g.id === active) ?? null;
-  const zoomed = maximized === "pane";
+  // Only a tab with panes to hide shows one alone.
+  const zoomed = zoomOn && !!group && group.panes.length > 1;
   const [, branchRead] = useState(0);
   const { terminalInactiveDim } = useSettings();
   // The panel's keys (onKeyDown), in the palette too for whoever doesn't know them; maximize is useTerminalSetup's.
@@ -250,8 +252,15 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
             </Button>
           </Tip>
           <div className="mx-0.5 h-4 w-px bg-border-strong" />
-          <Tip label={zoomed ? "Exit zoomed pane" : maximized ? "Exit maximized terminal" : "Maximize terminal"} shortcut={useShortcut(zoomed ? "terminal.zoomPane" : "terminal.toggleMaximize")}>
-            <Button variant="ghost" size="icon-sm" aria-pressed={!!maximized} onClick={() => toggleMaximize(root, maximized || "panel")}>
+          {group && group.panes.length > 1 && (
+            <Tip label={zoomed ? "Show all panes" : "Zoom pane"} shortcut={useShortcut("terminal.zoomPane")}>
+              <Button variant="ghost" size="icon-sm" aria-pressed={zoomed} onClick={() => toggleZoom(root)}>
+                {zoomed ? <ZoomOut /> : <ZoomIn />}
+              </Button>
+            </Tip>
+          )}
+          <Tip label={maximized ? "Exit maximized terminal" : "Maximize terminal"} shortcut={useShortcut("terminal.toggleMaximize")}>
+            <Button variant="ghost" size="icon-sm" aria-pressed={maximized} onClick={() => toggleMaximize(root)}>
               {maximized ? <Minimize2 /> : <Maximize2 />}
             </Button>
           </Tip>

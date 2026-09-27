@@ -92,8 +92,10 @@ interface State {
   active: number | null;
   /** Last run's terminals, until the user restores or dismisses them. */
   restorable: SavedSession | null;
-  /** Over the whole workspace, its code view and side panels hidden behind: the panel, or its focused pane alone (as cmux zooms one). */
-  maximized: false | "panel" | "pane";
+  /** The panel covers the whole workspace, its code view and side panels hidden behind it. */
+  maximized: boolean;
+  /** The open tab shows its focused pane alone, the others running on behind it. */
+  zoomed: boolean;
 }
 
 /** Keys the terminal panel runs while it has focus (TerminalPanel), rather than the shell. */
@@ -125,7 +127,7 @@ let atlasPages: WeakRef<HTMLCanvasElement>[] = [];
 function releaseCanvases(canvases: Iterable<HTMLCanvasElement>) {
   for (const c of canvases) c.width = c.height = 0;
 }
-export let state: State = { open: false, groups: [], active: null, restorable: loadSession(), maximized: false };
+export let state: State = { open: false, groups: [], active: null, restorable: loadSession(), maximized: false, zoomed: false };
 let nextId = 1;
 export const newId = () => nextId++;
 const listeners = new Set<() => void>();
@@ -571,7 +573,7 @@ export async function splitActive(way: Split["dir"]) {
   // Right after `from` in reading order too (splitPane).
   const next = { ...g, panes: [...g.panes.slice(0, at + 1), pane, ...g.panes.slice(at + 1)], layout: splitPane(g.layout, from.id, pane.id, way), focused: pane.id };
   // A zoomed pane's split shows the two side by side.
-  set({ groups: state.groups.map((x) => (x.id === g.id ? next : x)), maximized: state.maximized && "panel" });
+  set({ groups: state.groups.map((x) => (x.id === g.id ? next : x)), zoomed: false });
   focusActive();
 }
 
@@ -607,7 +609,7 @@ function closePane(id: number, byUser = false) {
     const i = state.groups.findIndex((g) => g.id === active);
     active = groups[Math.min(i, groups.length - 1)]?.id ?? null;
   }
-  set({ groups, active, open: state.open && groups.length > 0, maximized: groups.length > 0 && state.maximized });
+  set({ groups, active, open: state.open && groups.length > 0, maximized: state.maximized && groups.length > 0 });
   // A shell exiting moves only focus it took away (the commit box keeps it); the user's close also
   // moves it on from the panel's buttons, but ⌫ on a tab stays on the tabs.
   requestAnimationFrame(() => {
@@ -809,10 +811,17 @@ export function resizeSplit(group: number, path: number[], sizes: number[]) {
   set({ groups: state.groups.map((g) => (g.id === group ? { ...g, layout: resize(g.layout, path, sizes) } : g)) });
 }
 
-/** The panel, or its focused pane, over the whole workspace, or back in its place; the panel opened first (with a terminal in `cwd`) when hidden. */
-export function toggleMaximize(cwd: string, what: "panel" | "pane") {
+/** The panel over the whole workspace, or back in its place; opened first (with a terminal in `cwd`) when hidden. */
+export function toggleMaximize(cwd: string) {
   if (!state.maximized && !state.open) togglePanel(cwd);
-  set({ maximized: state.maximized === what ? false : what });
+  set({ maximized: !state.maximized });
+  focusActive();
+}
+
+/** The open tab's focused pane alone in the panel, or all of them again; the panel opened first as above. */
+export function toggleZoom(cwd: string) {
+  if (!state.zoomed && !state.open) togglePanel(cwd);
+  set({ zoomed: !state.zoomed });
   focusActive();
 }
 
