@@ -19,8 +19,8 @@ import "monaco-editor/features/gotoSymbol/register";
 import "monaco-editor/features/referenceSearch/register";
 import "monaco-editor/features/links/register";
 // Editing the file view as in VS Code: word and subword moves (⌥←, ⌃⌥←, ⌥⌫), line moves and copies
-// (⌥↑, ⇧⌥↓, ⇧⌘K, ⌘↵, ⌘]), multiple cursors (⌘D, ⌥⌘↓), ⌘L, ⌘U, ⌃T, expand selection, ⌃G, text dragging.
-// Left out: what needs a language's rules or a language server (comments, brackets, suggestions).
+// (⌥↑, ⇧⌥↓, ⇧⌘K, ⌘↵, ⌘]), multiple cursors (⌘D, ⌥⌘↓), ⌘L, ⌘U, ⌃T, expand selection, ⌃G, text dragging,
+// comments (⌘/, ⇧⌥A) by lib/editor/languageConfig's rules. Left out: what needs a language server.
 import "monaco-editor/features/wordOperations/register";
 import "monaco-editor/features/wordPartOperations/register";
 import "monaco-editor/features/linesOperations/register";
@@ -31,6 +31,7 @@ import "monaco-editor/features/caretOperations/register";
 import "monaco-editor/features/smartSelect/register";
 import "monaco-editor/features/gotoLine/register";
 import "monaco-editor/features/dnd/register";
+import "monaco-editor/features/comment/register";
 import { createHighlighterCore, type HighlighterCore } from "shiki/core";
 import { createOnigurumaEngine } from "shiki/engine/oniguruma";
 import { bundledLanguages } from "shiki/langs";
