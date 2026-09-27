@@ -81,3 +81,14 @@ export function useGitAction({ refresh, onDone, tracked: undoable = true, confli
 
   return { busy, run, runNet };
 }
+
+/** A dialog's submit: it closes once the action went through, and keeps what was typed when it failed. */
+export function useSubmit(onClose: () => void) {
+  const [pending, setPending] = useState(false);
+  const submit = async (action: () => Promise<boolean>) => {
+    setPending(true);
+    if (await action()) onClose();
+    else setPending(false);
+  };
+  return { pending, submit };
+}

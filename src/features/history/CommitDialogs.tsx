@@ -5,6 +5,9 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { api, type Commit } from "@/lib/api";
 import { matchesCommand } from "@/lib/commands/keybindings";
+import { refNameCheck } from "@/lib/git/refs";
+import { NameHint } from "@/features/branches/NameHint";
+import { useSubmit } from "@/hooks/useGitAction";
 import type { Actions } from "./commitActions";
 
 const fullMessage = (c: Commit) => (c.body.trim() ? `${c.subject}\n\n${c.body.trim()}` : c.subject);
@@ -66,12 +69,12 @@ export function MessageDialog({ kind, commit, parent, onClose, onSubmit }: { kin
 export function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "tag"; commit: Commit; onClose: () => void; run: Actions["run"] }) {
   const [name, setName] = useState("");
   const [message, setMessage] = useState("");
-  const submit = () => {
-    const n = name.trim();
-    onClose();
-    if (kind === "branch") run("Create branch", () => api.createBranchAt(n, commit.sha), `Switched to new branch ${n}`);
-    else run("Create tag", () => api.createTag(n, commit.sha, message), `Tagged ${commit.shortSha} as ${n}`);
-  };
+  const check = refNameCheck(name, [], "created as", kind);
+  const n = check.name;
+  const { pending, submit: send } = useSubmit(onClose);
+  const ready = !!n && !pending;
+  const submit = () =>
+    void send(() => (kind === "branch" ? run("Create branch", () => api.createBranchAt(n, commit.sha), `Switched to new branch ${n}`) : run("Create tag", () => api.createTag(n, commit.sha, message), `Tagged ${commit.shortSha} as ${n}`)));
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
@@ -84,20 +87,25 @@ export function NameDialog({ kind, commit, onClose, run }: { kind: "branch" | "t
           className="mt-4 flex flex-wrap gap-2"
           onSubmit={(e) => {
             e.preventDefault();
-            if (name.trim()) submit();
+            if (ready) submit();
           }}
         >
           <Input autoFocus className="min-w-0 flex-1" value={name} onChange={(e) => setName(e.target.value)} placeholder={kind === "branch" ? "Branch name" : "Tag name, e.g. v1.2.0"} spellCheck={false} />
-          <Button type="submit" disabled={!name.trim()}>
+          <Button type="submit" disabled={!ready}>
             Create
           </Button>
+          {check.hint && (
+            <div className="-mt-1 w-full">
+              <NameHint {...check} />
+            </div>
+          )}
           {kind === "tag" && (
             <Textarea
               value={message}
               onChange={(e) => setMessage(e.target.value)}
               // ⌘↵ submits from here too; a plain ↵ is a new line.
               onKeyDown={(e) => {
-                if (matchesCommand("git.createTag", e.nativeEvent) && name.trim()) {
+                if (matchesCommand("git.createTag", e.nativeEvent) && ready) {
                   e.preventDefault();
                   submit();
                 }

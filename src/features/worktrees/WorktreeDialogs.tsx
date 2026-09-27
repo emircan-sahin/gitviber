@@ -6,13 +6,15 @@ import { Input } from "@/components/ui/input";
 import { api, type Branch, github, type Target, type Worktree } from "@/lib/api";
 import { loadWorktreeDir, loadWorktreeRun, moveRoot, saveWorktreeDir, saveWorktreeRun, sharedWorktreeDir } from "@/lib/repo/session";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminal/terminals";
+import { localNames, refNameCheck } from "@/lib/git/refs";
 import { shortPath } from "@/lib/git/worktrees";
 import { plural } from "@/lib/format";
 import { folderName, parentFolder } from "@/lib/path";
 import { createStore } from "@/lib/store";
 import { BaseSelect } from "@/features/branches/BaseSelect";
+import { NameHint } from "@/features/branches/NameHint";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
-import { type GitRun, type NetRun } from "@/hooks/useGitAction";
+import { type GitRun, type NetRun, useSubmit } from "@/hooks/useGitAction";
 
 /** A pull request to check out, as PullView's Checkout would. */
 export interface PullSource {
@@ -88,13 +90,15 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
   const [command, setCommand] = useState(() => loadWorktreeRun(main));
   const [switchTo, setSwitchTo] = useState(false);
   const includes = useAsyncValue(api.worktreeIncludes, [], 0);
-  const n = pull ? pull.branch : name.trim();
+  const check = refNameCheck(name, localNames(branches));
+  const n = pull ? pull.branch : check.name;
+  const { pending, submit: send } = useSubmit(onClose);
+  const ready = !!n && (!!pull || !check.taken) && !pending;
   const choose = async () => {
     const picked = await open({ directory: true, defaultPath: dir, title: "Folder for new worktrees" });
     if (typeof picked === "string") setDir(picked);
   };
   const submit = () => {
-    onClose();
     const where = dir === beside ? null : dir;
     const then = (path: string) => {
       // Remembered for the project once it worked, so its next worktree goes there too.
@@ -106,15 +110,17 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
       if (switchTo) onOpen(path);
     };
     if (pull) {
+      // Nothing typed to keep, and the fetch's Cancel is in the top bar behind this dialog.
+      onClose();
       const p = pull;
       void runNet("Check out PR", (op) => github.checkoutWorktree(p.target, p.number, p.headRef, p.sameRepo, where, op).then(then), `Checked out #${p.number} in worktree ${folderFor(n)}`);
-    } else void run("Create worktree", () => api.addWorktree(n, from, where).then(then), `Created worktree ${n}`);
+    } else void send(() => run("Create worktree", () => api.addWorktree(n, from, where).then(then), `Created worktree ${n}`));
   };
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (n) submit();
+        if (ready) submit();
       }}
     >
       <DialogTitle>{pull ? `Check out #${pull.number} in a new worktree` : "New worktree"}</DialogTitle>
@@ -128,6 +134,7 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
         )}
       </DialogDescription>
       {!pull && <Input autoFocus className="mt-4 font-mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="Branch name" spellCheck={false} />}
+      {!pull && <NameHint {...check} />}
       {!pull &&
         (isCommit(from) ? (
           <div className="mt-3 text-[11.5px] text-muted-foreground">
@@ -180,7 +187,7 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
           Switch to it
         </label>
         {/* A pull request has nothing to type, so the button takes the focus. */}
-        <Button type="submit" className="ml-auto" disabled={!n} autoFocus={!!pull}>
+        <Button type="submit" className="ml-auto" disabled={!ready} autoFocus={!!pull}>
           {pull ? "Check out" : "Create"}
         </Button>
       </div>
@@ -200,30 +207,34 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
         ? "It's locked; unlock it (the lock on its row) to move its folder."
         : null;
   const [move, setMove] = useState(!stays);
-  const n = name.trim();
+  const check = refNameCheck(name, localNames(branches, old), "renamed to");
+  const n = check.name;
+  const { pending, submit: send } = useSubmit(onClose);
   const target = `${parentFolder(w.path)}${folderFor(n)}`;
   const moving = move && !stays && !!n && target !== w.path;
   const terminals = moving ? terminalsIn(w.path) : 0;
   const upstream = branches.find((b) => !b.remote && b.name === old)?.upstream;
+  const ready = !!n && (n !== old || moving) && !check.taken && !pending;
   const submit = () => {
-    onClose();
     const done = n === old ? `Moved ${folderName(w.path)} to ${folderFor(n)}` : `Renamed ${old} to ${n}${moving ? ", folder too" : ""}`;
-    void run(
-      "Rename worktree",
-      async () => {
-        const to = await api.renameWorktree(w.path, n, moving);
-        if (to === w.path) return;
-        folderMoved(w.path, to);
-        moveRoot(w.path, to);
-      },
-      done,
+    void send(() =>
+      run(
+        "Rename worktree",
+        async () => {
+          const to = await api.renameWorktree(w.path, n, moving);
+          if (to === w.path) return;
+          folderMoved(w.path, to);
+          moveRoot(w.path, to);
+        },
+        done,
+      ),
     );
   };
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (n && (n !== old || moving)) submit();
+        if (ready) submit();
       }}
     >
       <DialogTitle>Rename worktree</DialogTitle>
@@ -237,6 +248,7 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
         )}
       </DialogDescription>
       <Input autoFocus className="mt-4 font-mono" value={name} onChange={(e) => setName(e.target.value)} onFocus={(e) => e.currentTarget.select()} placeholder="New name" spellCheck={false} />
+      <NameHint {...check} />
       <label className="mt-3 flex items-start gap-2 text-[12px]">
         <input type="checkbox" checked={move && !stays} disabled={!!stays} onChange={(e) => setMove(e.target.checked)} className="mt-0.5 accent-primary" />
         <span>
@@ -251,7 +263,7 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
         </div>
       )}
       <div className="mt-4 flex justify-end">
-        <Button type="submit" disabled={!n || (n === old && !moving)}>
+        <Button type="submit" disabled={!ready}>
           {terminals > 0 ? "Rename and move" : "Rename"}
         </Button>
       </div>

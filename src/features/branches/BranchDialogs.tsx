@@ -3,10 +3,11 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { api, type Branch } from "@/lib/api";
-import { shortRef } from "@/lib/git/refs";
+import { localNames, refNameCheck, shortRef } from "@/lib/git/refs";
 import { Select } from "@/components/ui/select";
 import { BaseSelect } from "./BaseSelect";
-import { type GitRun, type NetRun } from "@/hooks/useGitAction";
+import { NameHint } from "./NameHint";
+import { type GitRun, type NetRun, useSubmit } from "@/hooks/useGitAction";
 
 /** The branch picker's actions that need more than a click. `base`: a full ref, or HEAD. */
 export type BranchDialog = { kind: "rename"; branch: Branch } | { kind: "new"; base: string } | { kind: "upstream"; branch: Branch };
@@ -35,20 +36,22 @@ export function BranchDialogs({ dialog, branches, onClose, run, runNet }: Props)
 function Rename({ branch, branches, onClose, run, runNet }: { branch: Branch } & Omit<Props, "dialog">) {
   const [name, setName] = useState(branch.name);
   const [remote, setRemote] = useState(false);
-  const n = name.trim();
+  const check = refNameCheck(name, localNames(branches, branch.name), "renamed to");
+  const n = check.name;
+  const { pending, submit: send } = useSubmit(onClose);
+  const ready = !!n && n !== branch.name && !check.taken && !pending;
   // Only an upstream that is still there can be renamed; a local one (remote ".") never.
   const upstream = branches.find((b) => b.remote && b.name === branch.upstream)?.name ?? null;
   const remoteName = upstream?.slice(0, upstream.indexOf("/"));
   const submit = () => {
-    onClose();
     const done = `Renamed ${branch.name} to ${n}${remote ? ` here and on ${remoteName}` : ""}`;
-    void (remote ? runNet("Rename branch", (op) => api.renameBranch(branch.name, n, true, op), done) : run("Rename branch", () => api.renameBranch(branch.name, n, false), done));
+    void send(() => (remote ? runNet("Rename branch", (op) => api.renameBranch(branch.name, n, true, op), done) : run("Rename branch", () => api.renameBranch(branch.name, n, false), done)));
   };
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (n && n !== branch.name) submit();
+        if (ready) submit();
       }}
     >
       <DialogTitle>Rename branch</DialogTitle>
@@ -62,6 +65,7 @@ function Rename({ branch, branches, onClose, run, runNet }: { branch: Branch } &
         )}
       </DialogDescription>
       <Input autoFocus className="mt-4 font-mono" value={name} onChange={(e) => setName(e.target.value)} onFocus={(e) => e.currentTarget.select()} placeholder="New name" spellCheck={false} />
+      <NameHint {...check} />
       {upstream && (
         <label className="mt-3 flex items-start gap-2 text-[12px]">
           <input type="checkbox" checked={remote} onChange={(e) => setRemote(e.target.checked)} className="mt-0.5 accent-primary" />
@@ -74,7 +78,7 @@ function Rename({ branch, branches, onClose, run, runNet }: { branch: Branch } &
         </label>
       )}
       <div className="mt-4 flex justify-end">
-        <Button type="submit" disabled={!n || n === branch.name}>
+        <Button type="submit" disabled={!ready}>
           Rename
         </Button>
       </div>
@@ -86,29 +90,30 @@ function NewBranch({ base, branches, onClose, run }: { base: string } & Pick<Pro
   const [name, setName] = useState("");
   const [from, setFrom] = useState(base);
   const [switchTo, setSwitchTo] = useState(true);
-  const n = name.trim();
+  const check = refNameCheck(name, localNames(branches));
+  const n = check.name;
+  const { pending, submit: send } = useSubmit(onClose);
+  const ready = !!n && !check.taken && !pending;
   const label = from === "HEAD" ? "HEAD" : shortRef(from);
-  const submit = () => {
-    onClose();
-    void run("Create branch", () => api.createBranch(n, from, switchTo), switchTo ? `Switched to new branch ${n}` : `Created ${n} from ${label}`);
-  };
+  const submit = () => void send(() => run("Create branch", () => api.createBranch(n, from, switchTo), switchTo ? `Switched to new branch ${n}` : `Created ${n} from ${label}`));
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (n) submit();
+        if (ready) submit();
       }}
     >
       <DialogTitle>New branch</DialogTitle>
       <DialogDescription>It starts where the base is and tracks nothing until you publish it.</DialogDescription>
       <Input autoFocus className="mt-4 font-mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="Branch name" spellCheck={false} />
+      <NameHint {...check} />
       <BaseSelect value={from} onChange={setFrom} branches={branches} head={base === "HEAD"} />
       <div className="mt-4 flex items-center gap-2">
         <label className="flex items-center gap-1.5 text-[12px]">
           <input type="checkbox" checked={switchTo} onChange={(e) => setSwitchTo(e.target.checked)} className="accent-primary" />
           Switch to it
         </label>
-        <Button type="submit" className="ml-auto" disabled={!n}>
+        <Button type="submit" className="ml-auto" disabled={!ready}>
           Create
         </Button>
       </div>
