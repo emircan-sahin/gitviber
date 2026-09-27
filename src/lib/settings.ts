@@ -115,6 +115,10 @@ export type LightTheme = Exclude<Theme, DarkTheme>;
 export const DARK_THEMES = Object.fromEntries(Object.entries(THEMES).filter(([, t]) => t.dark).map(([id, t]) => [id, t.label])) as Record<DarkTheme, string>;
 export const LIGHT_THEMES = Object.fromEntries(Object.entries(THEMES).filter(([, t]) => !t.dark).map(([id, t]) => [id, t.label])) as Record<LightTheme, string>;
 
+/** What ⌥ does in the terminal on macOS: type characters, or send Meta (ESC + the key) from the left ⌥ or either. */
+export const OPTION_KEYS = { off: "Types characters", left: "Left ⌥ is Meta", both: "Both ⌥ are Meta" } as const;
+export type OptionKey = keyof typeof OPTION_KEYS;
+
 /** Minutes between background fetches; 0 is off. */
 export const FETCH_INTERVALS = [0, 5, 15, 30];
 
@@ -141,6 +145,8 @@ export interface Settings {
   ligatures: boolean;
   /** Whole-app zoom, one of UI_SCALES. Separate from the code font size. */
   uiScale: number;
+  /** macOS: whether the terminal's ⌥ is Meta (OPTION_KEYS). */
+  optionAsMeta: OptionKey;
   /** Markdown files open rendered rather than as source (diffs always start on the diff). */
   markdownPreview: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
@@ -199,6 +205,7 @@ const DEFAULTS: Settings = {
   wordWrap: false,
   ligatures: false,
   uiScale: 1,
+  optionAsMeta: "off",
   markdownPreview: true,
   svgPreview: false,
   blame: false,
@@ -246,6 +253,7 @@ function load(): Settings {
     if (!(s.darkTheme in DARK_THEMES)) s.darkTheme = DEFAULTS.darkTheme;
     if (!(s.lightTheme in LIGHT_THEMES)) s.lightTheme = DEFAULTS.lightTheme;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
+    if (!(s.optionAsMeta in OPTION_KEYS)) s.optionAsMeta = DEFAULTS.optionAsMeta;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     if (typeof s.blame !== "boolean") s.blame = DEFAULTS.blame;

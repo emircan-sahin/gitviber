@@ -76,6 +76,8 @@ export function terminalOptions(): ITerminalOptions {
     // As VS Code's terminal does: a theme's own dim colors (Solarized Dark's bright black is its
     // background) are lifted until they read, so autosuggestions and dimmed output show.
     minimumContrastRatio: 4.5,
+    // Left-only is switched on and off as that ⌥ goes down and up (terminals.ts).
+    macOptionIsMeta: s.optionAsMeta === "both",
     theme: {
       ...(ANSI[s.theme] ?? (s.dark ? ANSI_DARK : ANSI_LIGHT)),
       background: cssVar("--background"),
