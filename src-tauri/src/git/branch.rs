@@ -79,6 +79,13 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         .collect())
 }
 
+/// The branch checked out in the repo `dir` is in; None when detached or outside a repo.
+pub fn current_branch(dir: &Path) -> Option<String> {
+    run_text(dir, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .ok()
+        .map(|b| b.trim().to_string())
+}
+
 /// What origin/HEAD points at, else "main".
 pub(super) fn default_branch(repo: &Path) -> String {
     run_text(

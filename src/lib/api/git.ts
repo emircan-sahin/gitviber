@@ -174,6 +174,7 @@ export const api = {
   /** Any saved project's folder, not just the open repo's. */
   revealProject: (path: string) => invoke<void>("reveal_project", { path }),
   projectInfo: (paths: string[]) => invoke<ProjectInfo[]>("project_info", { paths }),
+  folderBranch: (path: string) => invoke<string | null>("folder_branch", { path }),
   fetch: (op?: NetOp) => network<void>("fetch", {}, op),
   /** When the repo last fetched (FETCH_HEAD's mtime, Unix seconds); null if never. */
   lastFetch: () => invoke<number | null>("last_fetch"),
