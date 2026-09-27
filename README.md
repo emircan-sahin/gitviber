@@ -249,7 +249,7 @@ zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter; focusing a pan
 | `⌘D` `⇧⌘D` `⌘K` | Split right, split down, clear (in the terminal) |
 | `⌥⌘←` `⌥⌘→` `⌥⌘↑` `⌥⌘↓` or `⇧⌘` arrows | Focus the terminal pane on that side |
 | `⌘↵` | Maximize the terminal over the workspace, and back (in the terminal) |
-| `⇧⌘↵` | Zoom the focused terminal pane over the workspace, and back (in the terminal) |
+| `⇧⌘↵` | Show only the focused terminal pane in the panel, and all of them again (in the terminal) |
 | `⌘↑` `⌘↓` | Scroll to the previous / next command's prompt (in the terminal, with shell integration) |
 | `⌘=` `⌘−` `⌘0` | Zoom the interface |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
