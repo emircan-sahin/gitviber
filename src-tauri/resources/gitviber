@@ -15,5 +15,6 @@ for path in "$@"; do
     printf '%s\n' "$path" >"$request"
     path=$request
   fi
-  open -b app.gitviber.desktop -- "$path" || exit
+  open -b app.gitviber.desktop -- "$path" || { [ -n "$request" ] && rm -f "$request"; exit 1; }
+  request=
 done
