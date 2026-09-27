@@ -311,6 +311,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useEffect(() => {
     setLinkHost({
       root,
+      worktrees: repo.worktrees.map((w) => w.path),
       revision: repo.revision,
       open: (path, focus) => {
         open({ kind: "file", path }, true);
@@ -322,7 +323,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         else if (!filesPanel.current?.isCollapsed()) fileTree.current?.reveal(path, false);
       },
     });
-  }, [root, repo.revision, open, revealInExplorer]);
+  }, [root, repo.worktrees, repo.revision, open, revealInExplorer]);
   useEffect(() => () => setLinkHost(null), []);
 
   const changeCount = uncommitted.length;

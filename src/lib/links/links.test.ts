@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { IBufferLine } from "@xterm/xterm";
 import { test } from "node:test";
-import { cellText, diskCandidates, diskTarget, findLinks, findTerminalLinks, hyperlinkTarget, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
+import { cellText, diskCandidates, diskTarget, findLinks, findTerminalLinks, hyperlinkTarget, indexCase, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
 
 const specs = (line: string, lang: string) => findLinks(line, lang).map((l) => [line.slice(l.start, l.end), l.kind]);
 
@@ -267,6 +267,15 @@ test("terminal output: folders, shortened paths, and what the disk is asked abou
   assert.deepEqual(diskCandidates(link("/repo/target/debug"), null, "/repo"), ["target/debug"]);
   assert.deepEqual(diskCandidates(link("/tmp/x.png"), "", "/repo"), []);
   assert.deepEqual(diskCandidates(link("…/a.ts"), "", "/repo"), []);
+  assert.deepEqual(diskCandidates(link("dist/index.js"), "", "/repo"), ["dist/index.js"], "the root once");
+  assert.deepEqual(diskCandidates(link("2026/09/27"), "", "/repo"), [], "a date");
+  // A shell in a worktree inside the repo (.claude/worktrees/x): only its own files, never the root's namesakes.
+  const wt = ".claude/worktrees/x";
+  assert.equal(resolveTerminalLink(link("src/lib/api.ts"), wt, index, "/repo", false), null);
+  assert.equal(resolveTerminalLink(link("…/lib/api.ts"), wt, index, "/repo", false), null);
+  assert.deepEqual(diskCandidates(link("src/lib/api.ts"), wt, "/repo", false), [`${wt}/src/lib/api.ts`]);
+  assert.deepEqual(resolveTerminalLink(link("/repo/src/lib/api.ts"), wt, index, "/repo", false), { path: "src/lib/api.ts", line: undefined, column: undefined }, "an absolute path is what it says");
+  assert.deepEqual([...indexCase(["SRC/lib/API.ts", "src/LIB", "nope.ts"], index)], [["src/lib/api.ts", "src/lib/api.ts"], ["src/lib", "src/lib"]]);
   assert.deepEqual(diskTarget("dist/index.js:3", "dist/index.js", "file"), { path: "dist/index.js", line: 3, column: undefined });
   assert.deepEqual(diskTarget("target/debug", "target/debug", "dir"), { path: "target/debug", dir: true });
   assert.equal(diskTarget("target:3", "target", "dir"), null);

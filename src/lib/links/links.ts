@@ -28,10 +28,9 @@ export interface Alias {
   targets: string[];
 }
 
-/** The files links may point to, the folders they're in, and the folders' tsconfig / jsconfig files. */
+/** The files links may point to, and the folders' tsconfig / jsconfig files. */
 export interface FileIndex {
   files: ReadonlySet<string>;
-  dirs: ReadonlySet<string>;
   configs: ReadonlyMap<string, string[]>;
 }
 
@@ -343,32 +342,58 @@ export function resolveLink(link: Link, from: string, index: FileIndex, aliases:
  * outside the repo, where only absolute paths into it resolve), or the repo root, as agents print
  * them; a folder when no line is named, and a shortened path when one file ends that way.
  */
-export function resolveTerminalLink(link: Link, cwd: string | null, index: FileIndex, root: string): Target | null {
-  return link.kind === "url" ? { url: link.spec } : resolveFile(link.spec, cwd, index, root, true);
+export function resolveTerminalLink(link: Link, cwd: string | null, index: FileIndex, root: string, rootToo = true): Target | null {
+  return link.kind === "url" ? { url: link.spec } : resolveFile(link.spec, cwd, index, root, true, rootToo);
 }
 
 const SHORTENED = /^(?:…|\.{3})\//;
 
-/** The repo paths a path may be, from folder `dir` (null: outside the repo) or the root, in that order. */
-function candidates(path: string, dir: string | null, root: string): string[] {
+/**
+ * The repo paths a path may be, from folder `dir` (null: outside the repo), then from the root
+ * unless `rootToo` is false (a shell in a worktree inside this one: the root is another checkout).
+ */
+function candidates(path: string, dir: string | null, root: string, rootToo = true): string[] {
   const base = slashes(root);
   const absolute = path.startsWith("/") || /^[A-Za-z]:\//.test(path);
-  const all = absolute ? [base && path.startsWith(`${base}/`) ? path.slice(base.length + 1).replace(/\/+$/, "") : null] : dir == null ? [] : [join(slashes(dir), path), join("", path)];
+  const all = absolute ? [base && path.startsWith(`${base}/`) ? path.slice(base.length + 1).replace(/\/+$/, "") : null] : dir == null ? [] : [join(slashes(dir), path), rootToo && dir ? join("", path) : null];
   return all.filter((c): c is string => !!c);
 }
 
-function resolveFile(spec: string, dir: string | null, index: FileIndex, root: string, folders = false): Target | null {
+function resolveFile(spec: string, dir: string | null, index: FileIndex, root: string, dirs = false, rootToo = true): Target | null {
   const { path: raw, line, column } = splitPosition(spec);
   const path = slashes(raw);
-  if (folders && SHORTENED.test(path)) {
-    const found = endingWith(index.files, path.replace(SHORTENED, ""));
+  if (dirs && SHORTENED.test(path)) {
+    const found = rootToo ? endingWith(index.files, path.replace(SHORTENED, "")) : null;
     return found ? { path: found, line, column } : null;
   }
-  const paths = candidates(path, dir, root);
+  const paths = candidates(path, dir, root, rootToo);
   const found = firstIn(index.files, paths);
   if (found) return { path: found, line, column };
-  const folder = folders && !line ? firstIn(index.dirs, paths) : null;
+  const folder = dirs && !line ? firstIn(folders(index), paths) : null;
   return folder ? { path: folder, dir: true } : null;
+}
+
+const folderSets = new WeakMap<FileIndex, Set<string>>();
+
+/** The folders the index's files are in, worked out on first use: only terminal links ask. */
+export function folders(index: FileIndex): ReadonlySet<string> {
+  let dirs = folderSets.get(index);
+  if (dirs) return dirs;
+  folderSets.set(index, (dirs = new Set()));
+  for (const f of index.files) for (let d = dirname(f); d && !dirs.has(d); d = dirname(d)) dirs.add(d);
+  return dirs;
+}
+
+/**
+ * `paths` found on disk in another case than the index has them (APFS doesn't mind, and the tabs
+ * would open the file twice), by their lowercase: the index's spelling. One pass over the index.
+ */
+export function indexCase(paths: string[], index: FileIndex): Map<string, string> {
+  const want = new Set(paths.map((p) => p.toLowerCase()));
+  const out = new Map<string, string>();
+  if (!want.size) return out;
+  for (const set of [index.files, folders(index)]) for (const f of set) if (want.has(f.toLowerCase())) out.set(f.toLowerCase(), f);
+  return out;
 }
 
 /** The one file whose path ends in `tail`; null for none, or more than one. */
@@ -386,9 +411,10 @@ function endingWith(files: ReadonlySet<string>, tail: string): string | null {
  * For a terminal link the index doesn't have (an ignored file or folder): the repo paths it may
  * be, to ask the disk about, nearest first. None for a URL or a shortened path.
  */
-export function diskCandidates(link: Link, cwd: string | null, root: string): string[] {
+export function diskCandidates(link: Link, cwd: string | null, root: string, rootToo = true): string[] {
   const path = slashes(splitPosition(link.spec).path);
-  return link.kind === "url" || SHORTENED.test(path) ? [] : candidates(path, cwd, root);
+  // Digits and slashes are a date or a fraction (2026/09/27, 3/4), not worth asking about.
+  return link.kind === "url" || SHORTENED.test(path) ? [] : candidates(path, cwd, root, rootToo).filter((c) => !/^[\d/]+$/.test(c));
 }
 
 /** A terminal link's target at `path`, found on disk as `kind`; a folder with a line isn't one. */
@@ -464,14 +490,12 @@ const CONFIG = /^(tsconfig(\.[^/]+)?|jsconfig)\.json$/;
 /** An index over `files`, repo-relative paths. */
 export function indexFiles(files: string[]): FileIndex {
   const configs = new Map<string, string[]>();
-  const dirs = new Set<string>();
   for (const f of files) {
-    for (let d = dirname(f); d && !dirs.has(d); d = dirname(d)) dirs.add(d);
     if (!CONFIG.test(basename(f))) continue;
     const dir = dirname(f);
     configs.set(dir, [...(configs.get(dir) ?? []), f]);
   }
-  return { files: new Set(files), dirs, configs };
+  return { files: new Set(files), configs };
 }
 
 /**

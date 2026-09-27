@@ -4,7 +4,7 @@
 import type { IDisposable, ILink, Terminal } from "@xterm/xterm";
 import { api, github } from "../api";
 import { IS_MAC, primaryKey } from "../platform";
-import { type Alias, cellText, diskCandidates, diskTarget, type FileIndex, findTerminalLinks, hyperlinkTarget, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
+import { type Alias, cellText, diskCandidates, diskTarget, type FileIndex, findTerminalLinks, folders, hyperlinkTarget, indexCase, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
 import { dirname, slashes } from "../path";
 import { failed } from "../app/toast";
 import { revealInCode } from "../editor/reveal";
@@ -25,6 +25,8 @@ export interface LinkSide {
 /** The open workspace: its repo's absolute path, its working tree's revision, and how it opens a file or shows one in the explorer. */
 interface LinkHost {
   root: string;
+  /** The repo's worktrees, by absolute path: a shell in one inside `root` isn't in `root`'s checkout. */
+  worktrees: string[];
   revision: number;
   open(path: string, focus: boolean): void;
   /** `show`: the explorer comes up and takes the keys, as for a folder; else it follows along if it's there. */
@@ -118,8 +120,37 @@ function follow(target: Target) {
   host.reveal(target.path, false);
 }
 
-/** Asks the disk about paths the file list doesn't have: ignored files and folders. */
-const kindsOf = (paths: string[]) => (paths.length ? api.pathKinds(paths).catch(() => paths.map(() => null)) : Promise.resolve([]));
+type OnDisk = { path: string; kind: "file" | "dir" } | null;
+// What the disk said about paths the file list lacks, until the working tree changes: a line
+// hovered again, or redrawn under the pointer while output streams, asks nothing.
+let disk = { revision: -1, known: new Map<string, OnDisk>() };
+
+/**
+ * What's at `paths` on disk (ignored files and folders), spelled as the index has them when it has
+ * them in another case (APFS finds either).
+ */
+async function onDisk(paths: string[], index: FileIndex, revision: number): Promise<OnDisk[]> {
+  if (disk.revision !== revision || disk.known.size > 2000) disk = { revision, known: new Map() };
+  const { known } = disk;
+  const ask = [...new Set(paths.filter((p) => !known.has(p)))];
+  if (ask.length) {
+    const kinds = await api.pathKinds(ask).catch(() => ask.map(() => null));
+    const cased = indexCase(ask.filter((_, i) => kinds[i]), index);
+    ask.forEach((p, i) => {
+      const kind = kinds[i];
+      known.set(p, kind ? { path: cased.get(p.toLowerCase()) ?? p, kind } : null);
+    });
+  }
+  return paths.map((p) => known.get(p) ?? null);
+}
+
+/** What a repo path is: from the file list, else the disk. */
+async function kindOf(path: string, revision: number): Promise<OnDisk> {
+  const index = await indexOf({ rev: null, revision });
+  if (index.files.has(path)) return { path, kind: "file" };
+  if (folders(index).has(path)) return { path, kind: "dir" };
+  return (await onDisk([path], index, revision))[0];
+}
 
 /**
  * ⌘-click (Ctrl off macOS) in terminal output: URLs, and repo files and folders by paths from the
@@ -132,24 +163,41 @@ export function terminalLinks(term: Terminal, cwd: string): IDisposable {
   // they go, so that shows on hover. Other schemes than http(s) come through for file://, and
   // hyperlinkTarget drops the rest (javascript:, custom ones).
   const hyperlink = (uri: string) => (host ? hyperlinkTarget(uri, host.root) : null);
+  /** A file:// link's file or folder; the repo's own folder has no row in the explorer, so it's none. */
+  const hyperlinkFile = async (target: Target): Promise<Target | null> => {
+    if ("url" in target || !target.path || !host) return null;
+    const found = await kindOf(target.path, host.revision);
+    return found && (found.kind === "file" ? { ...target, path: found.path } : { path: found.path, dir: true });
+  };
+  let hovered: string | null = null;
   term.options.linkHandler = {
     allowNonHttpProtocols: true,
-    hover: (_, uri) => hyperlink(uri) && title(`${uri}\n${hint({ url: uri })}`),
-    leave: () => title(null),
+    hover: (_, uri) => {
+      const target = hyperlink(uri);
+      if (!target) return;
+      hovered = uri;
+      title(`${uri}\n${hint(target)}`);
+      // A file's or a folder's wording once the list or the disk says which.
+      void hyperlinkFile(target).then((t) => t && hovered === uri && title(`${uri}\n${hint(t)}`));
+    },
+    leave: () => {
+      hovered = null;
+      title(null);
+    },
     activate: (e, uri) => {
-      const [h, target] = [host, hyperlink(uri)];
-      if (!primaryKey(e) || !h || !target) return;
+      const target = hyperlink(uri);
+      if (!primaryKey(e) || !target) return;
       if ("url" in target) return follow(target);
-      // The repo's own folder has no row in the explorer.
       if (!target.path) return void revealPath("");
-      void indexOf({ rev: null, revision: h.revision }).then(async (index) => {
-        const kind = index.files.has(target.path) ? "file" : index.dirs.has(target.path) ? "dir" : (await kindsOf([target.path]))[0];
-        if (kind) follow(kind === "file" ? target : { path: target.path, dir: true });
-      });
+      void hyperlinkFile(target).then((t) => t && follow(t));
     },
   };
+  // xterm keeps one line's links at a time and files a late answer under the line asked last:
+  // only the newest ask answers.
+  let asked = 0;
   return term.registerLinkProvider({
     provideLinks(y, callback) {
+      const ask = ++asked;
       const h = host;
       const buf = term.buffer.active;
       // A long line wraps over several rows: read the rows of it around this one, as far as links
@@ -175,16 +223,23 @@ export function terminalLinks(term: Terminal, cwd: string): IDisposable {
       // Windows paths come with backslashes; the index and the links have forward ones.
       const [root, from] = [slashes(h.root), slashes(cwd)];
       const dir = from === root ? "" : from.startsWith(`${root}/`) ? from.slice(root.length + 1) : null;
+      // A shell in a worktree inside this one (an agent's): its paths are that checkout's files,
+      // never the same names in this one's.
+      const nested = dir !== null && h.worktrees.some((w) => {
+        const at = slashes(w);
+        return at.startsWith(`${root}/`) && (from === at || from.startsWith(`${at}/`));
+      });
       const needsIndex = found.some((l) => l.kind !== "url");
       void (needsIndex ? indexOf({ rev: null, revision: h.revision }) : Promise.resolve(NO_FILES)).then(async (index) => {
-        const targets = found.map((l) => resolveTerminalLink(l, dir, index, root));
+        const targets = found.map((l) => resolveTerminalLink(l, dir, index, root, !nested));
         // What the list lacks may be on disk, ignored: one call for the line's paths, only when hovered.
-        const asks = found.map((l, i) => (targets[i] ? [] : diskCandidates(l, dir, root)));
-        const kinds = await kindsOf(asks.flat());
+        const asks = found.map((l, i) => (targets[i] ? [] : diskCandidates(l, dir, root, !nested)));
+        const hits = await onDisk(asks.flat(), index, h.revision);
+        if (ask !== asked) return;
         let at = 0;
         asks.forEach((paths, i) => {
-          const hit = paths.findIndex((_, j) => kinds[at + j]);
-          if (hit >= 0) targets[i] = diskTarget(found[i].spec, paths[hit], kinds[at + hit]!);
+          const hit = hits.slice(at, at + paths.length).find(Boolean);
+          if (hit) targets[i] = diskTarget(found[i].spec, hit.path, hit.kind);
           at += paths.length;
         });
         const links = found.flatMap((l, i): ILink[] => {
