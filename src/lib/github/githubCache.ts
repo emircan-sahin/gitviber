@@ -37,10 +37,29 @@ function put(map: Map<string, Entry>, key: string, e: Entry) {
   listeners.forEach((l) => l());
 }
 
+/** Origin's URL the entries were read for; undefined until the repo's status says. */
+let origin: string | null | undefined;
+
 /** One repo's results never show in another's workspace. */
 export const resetGitHubCache = () => {
   entries = new Map();
+  origin = undefined;
 };
+
+/**
+ * Origin's URL, from each status read. A new one (`git remote set-url`) is another repository on
+ * GitHub: what was read for the old one goes, and the mounted views read it again.
+ */
+export function setGitHubOrigin(url: string | null) {
+  if (url === origin) return;
+  const known = origin !== undefined;
+  origin = url;
+  if (!known) return;
+  entries = new Map();
+  version++;
+  listeners.forEach((l) => l());
+  wakers.forEach((w) => w());
+}
 
 /** Marks every key starting with `prefix` stale, so the next read refetches. */
 export function invalidate(prefix: string) {
@@ -78,6 +97,13 @@ export function revalidate<T>(key: string, fetch: () => Promise<T>, maxAge = MIN
 
 /** What `key` holds now, without asking for it: a list shows its shorter copy while a longer one loads. */
 export const cached = <T>(key: string) => entries.get(key)?.data as T | undefined;
+
+/** The rows of every list cached under `prefix`, for a view that reads what other views loaded. */
+export function cachedRows<T>(prefix: string): T[] {
+  const rows: T[] = [];
+  for (const [key, e] of entries) if (key.startsWith(prefix) && Array.isArray(e.data)) rows.push(...(e.data as T[]));
+  return rows;
+}
 
 type Item = { url: string; updatedAt: string };
 
@@ -125,12 +151,19 @@ if (typeof window !== "undefined") {
   setInterval(wake, POLL);
 }
 
+/** Calls `w` on those same wakes, and when origin changes; returns the unsubscribe. */
+export function onGitHubWake(w: () => void) {
+  wakers.add(w);
+  return () => void wakers.delete(w);
+}
+
 const subscribe = (l: () => void) => {
   listeners.add(l);
   return () => void listeners.delete(l);
 };
 
-export const useGitHubCacheVersion = () => useSyncExternalStore(subscribe, () => version);
+/** `enabled` false: no re-render on writes, for a view that only reads the cache at times. */
+export const useGitHubCacheVersion = (enabled = true) => useSyncExternalStore(subscribe, () => (enabled ? version : -1));
 
 /**
  * The cached value for `key` (null = nothing to load), revalidated on mount, when the key

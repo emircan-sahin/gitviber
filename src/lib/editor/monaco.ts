@@ -19,8 +19,9 @@ import "monaco-editor/features/gotoSymbol/register";
 import "monaco-editor/features/referenceSearch/register";
 import "monaco-editor/features/links/register";
 // Editing the file view as in VS Code: word and subword moves (⌥←, ⌃⌥←, ⌥⌫), line moves and copies
-// (⌥↑, ⇧⌥↓, ⇧⌘K, ⌘↵, ⌘]), multiple cursors (⌘D, ⌥⌘↓), ⌘L, ⌘U, ⌃T, expand selection, ⌃G, text dragging.
-// Left out: what needs a language's rules or a language server (comments, brackets, suggestions).
+// (⌥↑, ⇧⌥↓, ⇧⌘K, ⌘↵, ⌘]), multiple cursors (⌘D, ⌥⌘↓), ⌘L, ⌘U, ⌃T, expand selection, ⌃G, text dragging,
+// comments (⌘/) and the matching bracket (⇧⌘\) by lib/editor/languageConfig's rules. Left out:
+// what needs a language server.
 import "monaco-editor/features/wordOperations/register";
 import "monaco-editor/features/wordPartOperations/register";
 import "monaco-editor/features/linesOperations/register";
@@ -31,6 +32,8 @@ import "monaco-editor/features/caretOperations/register";
 import "monaco-editor/features/smartSelect/register";
 import "monaco-editor/features/gotoLine/register";
 import "monaco-editor/features/dnd/register";
+import "monaco-editor/features/comment/register";
+import "monaco-editor/features/bracketMatching/register";
 import { createHighlighterCore, type HighlighterCore } from "shiki/core";
 import { createOnigurumaEngine } from "shiki/engine/oniguruma";
 import { bundledLanguages } from "shiki/langs";
@@ -39,6 +42,7 @@ import type { DiffRow } from "../api";
 import { hunks, type Pos } from "../git/diffHunks";
 import { indentUnit, TAB, widen, widenColumn } from "./indent";
 import { IGNORE, ignoreGrammar } from "./language";
+import { configure, hasComments } from "./languageConfig";
 import { codeFontFamily, getSettings, subscribeSettings } from "../settings";
 import { cssVar, toHex } from "../ui/color";
 
@@ -48,8 +52,16 @@ export { monaco };
 monaco.editor.addKeybindingRule({ keybinding: monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyF, command: "-actions.find" });
 // Likewise Go to Definition, Peek and References (editor.goToDefinition, …); "to the side" has no side here.
 const { CtrlCmd, Alt, Shift } = monaco.KeyMod;
-const { F12, KeyK } = monaco.KeyCode;
+const { F12, KeyK, KeyA, Slash, Backslash } = monaco.KeyCode;
 monaco.editor.addKeybindingRules([
+  // Read-only code draws no cursor, and matches no brackets (editorOptions): nothing to jump between.
+  { keybinding: CtrlCmd | Shift | Backslash, command: "-editor.action.jumpToBracket" },
+  { keybinding: CtrlCmd | Shift | Backslash, command: "editor.action.jumpToBracket", when: "editorTextFocus && !editorReadonly" },
+  // ⌘/ only where there are comments to toggle; elsewhere it stays the app's (the shortcut overlay).
+  { keybinding: CtrlCmd | Slash, command: "-editor.action.commentLine" },
+  { keybinding: CtrlCmd | Slash, command: "editor.action.commentLine", when: "editorTextFocus && !editorReadonly && gvComments" },
+  // Block comments' ⇧⌥A types a letter on many layouts (Polish Ą, Nordic Å); ⌘/ comments without it.
+  { keybinding: Shift | Alt | KeyA, command: "-editor.action.blockComment" },
   { keybinding: F12, command: "-editor.action.revealDefinition" },
   { keybinding: CtrlCmd | F12, command: "-editor.action.revealDefinition" },
   { keybinding: Alt | F12, command: "-editor.action.peekDefinition" },
@@ -57,6 +69,13 @@ monaco.editor.addKeybindingRules([
   { keybinding: monaco.KeyMod.chord(CtrlCmd | KeyK, F12), command: "-editor.action.revealDefinitionAside" },
   { keybinding: monaco.KeyMod.chord(CtrlCmd | KeyK, CtrlCmd | F12), command: "-editor.action.revealDefinitionAside" },
 ]);
+
+/** Keeps `editor` saying whether its file's language has comments, which ⌘/ goes by (above). */
+export function followComments(editor: monaco.editor.IStandaloneCodeEditor) {
+  const key = editor.createContextKey<boolean>("gvComments", false);
+  editor.onDidChangeModel(() => key.set(hasComments(editor.getModel()?.getLanguageId() ?? "")));
+  return editor;
+}
 
 // Code fonts load lazily (Geist Mono, JetBrains Mono), and Monaco keeps the widths it measured: the
 // fallback font's, when it measured first. Every column then drifts (Geist Mono at 13.5px: 8.35px
@@ -289,6 +308,8 @@ async function load(lang: string, theme: string) {
   // Even one Shiki couldn't load: there's nothing more to hand over for it.
   registered.add(lang);
   applyTheme(h, theme);
+  // Before the file shows, which is when its editor asks whether ⌘/ has comments to toggle (followComments).
+  if (monaco.languages.getLanguages().some((l) => l.id === lang)) await configure(lang);
 }
 /** Languages whose tokenizer Monaco has. */
 const registered = new Set<string>(["text"]);

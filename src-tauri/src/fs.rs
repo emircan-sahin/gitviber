@@ -8,6 +8,11 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    resolve_under(root, &root.canonicalize().map_err(|e| e.to_string())?, rel)
+}
+
+/// `resolve` with the root's real path read once, for many paths under it.
+fn resolve_under(root: &Path, real_root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel_path = Path::new(rel);
     let escape = || format!("path outside repository: {rel}");
     if rel_path
@@ -25,7 +30,6 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
         return Err(format!("refusing to touch git internals: {rel}"));
     }
     let full = root.join(rel_path);
-    let real_root = root.canonicalize().map_err(|e| e.to_string())?;
     // Symlinks can point anywhere, and a path that doesn't exist yet can't be canonicalized:
     // check the deepest existing ancestor, and refuse dangling links (writing would follow them).
     let mut probe = full.as_path();
@@ -36,11 +40,11 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
             Err(_) => probe = probe.parent().ok_or_else(escape)?,
         }
     };
-    if !real.starts_with(&real_root) {
+    if !real.starts_with(real_root) {
         return Err(escape());
     }
     // The name check above misses a link like `docs -> .git`, which survives a clone.
-    if in_git_dir(root, &real_root, &real) {
+    if in_git_dir(root, real_root, &real) {
         return Err(format!("refusing to touch git internals: {rel}"));
     }
     Ok(full)
@@ -177,9 +181,7 @@ pub fn read_file(root: &Path, rel: &str) -> FileText {
 /// A diff's working-tree side. A symlink is its target path, as git stores and diffs it (the
 /// file it points to may be another one, or outside the repo). That text is never written back.
 pub fn read_diff_side(root: &Path, rel: &str) -> FileText {
-    let link = resolve_entry(root, rel)
-        .ok()
-        .filter(|p| p.symlink_metadata().is_ok_and(|m| m.is_symlink()));
+    let link = resolve_entry(root, rel).ok().filter(|p| is_link(p));
     match link.and_then(|p| std::fs::read_link(p).ok()) {
         Some(target) => FileText {
             lossy: true,
@@ -204,13 +206,18 @@ pub fn read_media(root: &Path, rel: &str) -> Result<Vec<u8>, String> {
 /// For operations on an entry itself (create, rename, trash): only the parent is resolved,
 /// so a symlink is renamed or trashed as a link instead of being followed.
 fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    entry_under(root, &root.canonicalize().map_err(|e| e.to_string())?, rel)
+}
+
+/// `resolve_entry` with the root's real path read once, for many entries under it.
+fn entry_under(root: &Path, real_root: &Path, rel: &str) -> Result<PathBuf, String> {
     let rel_path = Path::new(rel);
     let name = match rel_path.components().next_back() {
         Some(Component::Normal(n)) if !n.eq_ignore_ascii_case(".git") => n,
         _ => return Err(format!("not a file or folder in the repository: {rel}")),
     };
     let parent = rel_path.parent().unwrap_or(Path::new(""));
-    Ok(resolve(root, &parent.to_string_lossy())?.join(name))
+    Ok(resolve_under(root, real_root, &parent.to_string_lossy())?.join(name))
 }
 
 fn io_error(rel: &str, e: std::io::Error) -> String {
@@ -383,16 +390,33 @@ pub(crate) fn copy_entry(src: &Path, dst: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Those of `rels` in `from` that `copy_into` copies, with their paths there: files, not links,
+/// inside the worktree.
+pub fn copyable<'a>(
+    from: &'a Path,
+    rels: &'a [String],
+) -> impl Iterator<Item = (&'a str, PathBuf)> + 'a {
+    let real = from.canonicalize().ok();
+    rels.iter().filter_map(move |rel| {
+        let src = entry_under(from, real.as_deref()?, rel).ok()?;
+        src.symlink_metadata()
+            .is_ok_and(|m| m.is_file())
+            .then_some((rel.as_str(), src))
+    })
+}
+
 /// Copies the files at `rels` in `from` to the same paths in `to`, making folders as needed:
 /// `.worktreeinclude`'s into a new worktree. Nothing is overwritten, and a link or a path leading
 /// out of either worktree is skipped: a relative link would point elsewhere from the new one.
 pub fn copy_into(from: &Path, to: &Path, rels: &[String]) {
-    for rel in rels {
-        let (Ok(src), Ok(dst)) = (resolve_entry(from, rel), resolve_entry(to, rel)) else {
+    let Ok(real_to) = to.canonicalize() else {
+        return;
+    };
+    for (rel, src) in copyable(from, rels) {
+        let Ok(dst) = entry_under(to, &real_to, rel) else {
             continue;
         };
-        let file = src.symlink_metadata().is_ok_and(|m| m.is_file());
-        if !file || dst.symlink_metadata().is_ok() {
+        if dst.symlink_metadata().is_ok() {
             continue;
         }
         if dst
