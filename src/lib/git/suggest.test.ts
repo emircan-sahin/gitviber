@@ -43,3 +43,16 @@ test("a preset runs with its model", () => {
   assert.equal(commandLine("pi -p --no-tools --no-session", {}), "pi -p --no-tools --no-session --model anthropic/claude-sonnet-5");
   assert.equal(commandLine("opencode run --agent plan", { opencode: "zai/glm-5.3" }), "opencode run --agent plan -m zai/glm-5.3");
 });
+
+test("a markdown description keeps its code blocks", () => {
+  const answer = "Add x\n\n## Why\nBecause.\n\n```ts\nx();\n```";
+  assert.deepEqual(parseSuggestion(answer, true), { summary: "Add x", body: "## Why\nBecause.\n\n```ts\nx();\n```" });
+  assert.deepEqual(parseSuggestion("```markdown\n" + answer + "\n```", true), parseSuggestion(answer, true));
+  assert.deepEqual(parseSuggestion("Title: Add x\n\nDescription: Because.", true), { summary: "Add x", body: "Because." });
+  // Words around the fence, or code right under the title.
+  const inner = "```markdown\n" + answer + "\n```";
+  assert.deepEqual(parseSuggestion("Here's the pull request:\n\n" + inner, true), parseSuggestion(answer, true));
+  assert.deepEqual(parseSuggestion(inner + "\n\nLet me know if you want changes.", true), parseSuggestion(answer, true));
+  assert.deepEqual(parseSuggestion("Here it is:\n" + inner + "\nAnything else?", true), parseSuggestion(answer, true));
+  assert.deepEqual(parseSuggestion("Add x\n\n```\nx();\n```", true), { summary: "Add x", body: "```\nx();\n```" });
+});

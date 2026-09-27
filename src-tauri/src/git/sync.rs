@@ -62,12 +62,7 @@ pub struct PullDraft {
 /// What a PR from HEAD into `base` (a remote-tracking branch) would carry, to fill its title
 /// and description the way GitHub does.
 pub fn pull_draft(repo: &Path, base: &str) -> Result<PullDraft, String> {
-    let r = base
-        .strip_prefix("refs/remotes/")
-        .filter(|r| !r.starts_with('-') && r.contains('/'))
-        .ok_or_else(|| format!("not a remote-tracking branch: {base}"))?;
-    run(repo, &["rev-parse", "--verify", "-q", base])
-        .map_err(|_| format!("unknown branch: {r}"))?;
+    check_pull_base(repo, base)?;
     let range = format!("{base}..HEAD");
     let commits = run_text(repo, &["rev-list", "--count", &range, "--"])?
         .trim()
@@ -80,6 +75,17 @@ pub fn pull_draft(repo: &Path, base: &str) -> Result<PullDraft, String> {
         body: (commits == 1).then(|| one("--format=%b")).transpose()?,
         commits,
     })
+}
+
+/// A pull request's `base`: a remote-tracking branch (refs/remotes/…) that exists, never an option.
+pub fn check_pull_base(repo: &Path, base: &str) -> Result<(), String> {
+    let r = base
+        .strip_prefix("refs/remotes/")
+        .filter(|r| !r.starts_with('-') && r.contains('/'))
+        .ok_or_else(|| format!("not a remote-tracking branch: {base}"))?;
+    run(repo, &["rev-parse", "--verify", "-q", base])
+        .map(|_| ())
+        .map_err(|_| format!("unknown branch: {r}"))
 }
 
 /// What counts as pushed for HEAD: the branch `git push` lands on (a fork pushes to origin

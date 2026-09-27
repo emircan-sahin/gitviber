@@ -1,10 +1,13 @@
-import { useEffect, useState } from "react";
+import { LoaderCircle, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Branch, errorMessage, fullName, type GitHubAccess, github, type Pull, type RepoStatus } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
+import { parseSuggestion, PULL_PROMPT } from "@/lib/git/suggest";
+import { useSuggestion } from "@/features/changes/useCommitBox";
 import { cn } from "@/lib/utils";
 import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
 import { notifyPullsChanged } from "@/features/github/shared/changed";
@@ -57,15 +60,20 @@ export function CreatePullDialog({
   const [draft, setDraft] = useState(false);
   const [maintainerEdits, setMaintainerEdits] = useState(true);
   const [busy, setBusy] = useState(false);
+  // The base as a remote-tracking branch, once its remote is known: what the draft and a suggestion compare with.
+  const [baseRef, setBaseRef] = useState<string | null>(null);
 
   // GitHub's defaults: one commit titles the PR with its subject and fills the body; more
   // take the branch name. Counted against the chosen base in the repository the PR goes to.
   useEffect(() => {
     let live = true;
+    setBaseRef(null);
     (async () => {
       const remote = upstream ? await github.originalRemote(fullName(target.repo), false) : "origin";
-      if (!remote) return;
-      const d = await api.pullDraft(`refs/remotes/${remote}/${base}`);
+      if (!remote || !live) return;
+      const ref = `refs/remotes/${remote}/${base}`;
+      setBaseRef(ref);
+      const d = await api.pullDraft(ref);
       if (!live) return;
       const one = d.commits === 1 && d.subject;
       if (!typed.title) setTitle(one ? d.subject! : branchTitle(head));
@@ -76,6 +84,26 @@ export function CreatePullDialog({
     };
     // Recounted per base; typing doesn't recount.
   }, [base, head, upstream, target.repo.owner, target.repo.name]);
+  const suggestion = useSuggestion("description");
+  // A field typed into keeps its text; cleared, it's free for a suggestion again.
+  const mine = { title: typed.title && !!title.trim(), body: typed.body && !!body.trim() };
+  const mineNow = useRef(mine);
+  mineNow.current = mine;
+  // One on its way was asked against the old base.
+  useEffect(() => suggestion.drop(), [baseRef]);
+  const suggest = () =>
+    baseRef &&
+    suggestion.suggest(
+      (command) => api.suggestPull(command, PULL_PROMPT, baseRef),
+      (output) => {
+        const s = parseSuggestion(output, true);
+        if (!s) return false;
+        // What was typed while it ran stays too.
+        if (!mineNow.current.title) setTitle(s.summary);
+        if (!mineNow.current.body) setBody(s.body);
+        return true;
+      },
+    );
   const elsewhere = pushesElsewhere(status);
   // Pushed already, and nothing new since: GitHub has the branch as it is.
   const needsPush = !status.push?.branch || status.push.ahead > 0;
@@ -134,13 +162,32 @@ export function CreatePullDialog({
               </Button>
             </div>
           )}
-          <Input
-            autoFocus
-            value={title}
-            onChange={(e) => {
-              setTitle(e.target.value);
-              setTyped((t) => ({ ...t, title: true }));
-            }} placeholder="Title" />
+          <div className="flex items-center gap-1">
+            <Input
+              autoFocus
+              value={title}
+              onChange={(e) => {
+                setTitle(e.target.value);
+                setTyped((t) => ({ ...t, title: true }));
+              }}
+              placeholder="Title"
+              className="flex-1"
+            />
+            {suggestion.enabled && (
+              <Tip label={suggestion.suggesting ? `Stop ${suggestion.program}` : `Suggest a title and description with ${suggestion.program}`}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  aria-label={suggestion.suggesting ? "Stop suggesting" : "Suggest a title and description"}
+                  disabled={!suggestion.suggesting && (!baseRef || (mine.title && mine.body))}
+                  onClick={suggestion.suggesting ? suggestion.cancel : suggest}
+                >
+                  {suggestion.suggesting ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+                </Button>
+              </Tip>
+            )}
+          </div>
           <MarkdownInput
             pull={{ url: `https://github.com/${fullName(target.repo)}`, number: null }}
             value={body}

@@ -1,6 +1,6 @@
 /**
- * Commit message suggestions from the user's own agent CLI (suggest.rs runs it). Pure, so
- * the parser runs under node:test.
+ * Commit messages and pull request descriptions from the user's own agent CLI (suggest.rs runs
+ * it). Pure, so the parser runs under node:test.
  */
 
 /**
@@ -75,6 +75,10 @@ export function commandLine(command: string, models: Partial<Record<SuggestPrese
 export const SUGGEST_PROMPT =
   "Write a git commit message for this diff: a summary line under 72 characters, a blank line, then a short body saying what changed and why. Output only the commit message, with no quotes or code fences.";
 
+/** Sent ahead of the branch's commits, its PR template if any, and its diff; Settings shows it. */
+export const PULL_PROMPT =
+  "Write a GitHub pull request title and description for this branch: a title under 72 characters on the first line, a blank line, then a description in Markdown of what changed and why. Output only the title and the description, with no quotes or code fences around them.";
+
 /** suggest.rs MAX_DIFF. */
 export const SUGGEST_LIMIT_KB = 100;
 
@@ -82,14 +86,35 @@ export const SUGGEST_LIMIT_KB = 100;
 export const programOf = (command: string) => command.trim().split(/\s+/)[0] ?? "";
 
 /**
+ * A Markdown answer inside a fence that wraps it: first in the text, closed by the last fence
+ * line, with at most a one-line preface ending in ":" before it ("Here's the pull request:") and
+ * any words after it. A fence that follows the title, or is marked with a language, is the
+ * description's own code.
+ */
+function unwrapMarkdown(text: string) {
+  const lines = text.split("\n");
+  const open = lines.findIndex((l) => /^(`{3,}|~{3,})/.test(l));
+  if (open < 0) return text;
+  const [, fence, info] = /^(`{3,}|~{3,})\s*(\S*)/.exec(lines[open])!;
+  const preface = lines.slice(0, open).join("\n").trim();
+  if (!["", "markdown", "md", "text"].includes(info.toLowerCase()) || (preface && (preface.includes("\n") || !preface.endsWith(":")))) return text;
+  const close = lines.map((l) => l.trim()).lastIndexOf(fence);
+  return close > open ? lines.slice(open + 1, close).join("\n").trim() : text;
+}
+
+/**
  * A model's answer as summary and description. Models wrap it anyway at times: a code fence,
  * quotes, a "Subject:" label or Markdown emphasis on the first line. Null when it's empty.
+ * A `markdown` description has code blocks of its own, which stay.
  */
-export function parseSuggestion(output: string): { summary: string; body: string } | null {
+export function parseSuggestion(output: string, markdown = false): { summary: string; body: string } | null {
   let text = output.replace(/\r\n?/g, "\n").trim();
-  // A fenced block anywhere ("Here's a message:\n```\n…\n```") is the message.
-  const fence = /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1\s*$/m.exec(text);
-  if (fence) text = fence[2].trim();
+  if (markdown) text = unwrapMarkdown(text);
+  else {
+    // A fenced block anywhere ("Here's a message:\n```\n…\n```") is the message.
+    const fence = /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1\s*$/m.exec(text);
+    if (fence) text = fence[2].trim();
+  }
   const quoted = /^(["'`])([\s\S]*)\1$/.exec(text);
   if (quoted && !quoted[2].includes(quoted[1])) text = quoted[2].trim();
   const [first = "", ...rest] = text.split("\n");

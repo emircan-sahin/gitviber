@@ -182,6 +182,7 @@ pub fn run() {
             commands::changes::commit_template,
             commands::changes::recent_authors,
             commands::changes::suggest_message,
+            commands::changes::suggest_pull,
             commands::changes::suggest_cancel,
             commands::history::commit_details,
             commands::sync::push,

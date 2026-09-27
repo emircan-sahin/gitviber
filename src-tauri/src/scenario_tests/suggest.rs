@@ -59,6 +59,63 @@ fn suggestion_input_follows_what_the_commit_takes() {
 }
 
 #[test]
+fn pull_suggestion_gets_the_branch_commits_template_and_diff() {
+    use crate::suggest;
+    use std::sync::atomic::AtomicBool;
+    let sb = Sandbox::new("suggest-pull");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    let base = "refs/remotes/origin/main";
+    let go = || suggest::run_pull(a, "cat", "PROMPT", base, &AtomicBool::new(false));
+    assert!(go().unwrap_err().contains("no commits"));
+    run(a, &["switch", "-q", "-c", "feat"]).unwrap();
+    write_commit(a, "b.txt", "bee\n", "Add b");
+    write_commit(a, "c.txt", "sea\n", "Add c");
+    // Uncommitted work isn't part of the pull request.
+    fs::write(a.join("b.txt"), "local\n").unwrap();
+    let sent = go().unwrap();
+    assert!(
+        sent.starts_with("PROMPT\n\nCommits, oldest first:\n- Add b\n- Add c\n"),
+        "{sent}"
+    );
+    assert!(
+        sent.contains("+bee") && sent.contains("+sea") && !sent.contains("local"),
+        "{sent}"
+    );
+    assert!(!sent.contains("template"), "{sent}");
+
+    // The template comes from the base, whatever its case.
+    let seed = sb.path("seed");
+    write_commit(
+        &seed,
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        "## Why\n",
+        "template",
+    );
+    run(&seed, &["push", "-q"]).unwrap();
+    run(a, &["fetch", "-q"]).unwrap();
+    let sent = go().unwrap();
+    assert!(sent.contains("follow its sections:\n## Why\n"), "{sent}");
+    assert!(!sent.contains("- template"), "{sent}");
+    assert!(suggest::run_pull(a, "cat", "P", "main", &AtomicBool::new(false)).is_err());
+
+    // A long branch keeps its newest subjects, leaving room for the diff.
+    for i in 0..200 {
+        run(
+            a,
+            &["commit", "-q", "--allow-empty", "-m", &format!("empty {i}")],
+        )
+        .unwrap();
+    }
+    let sent = go().unwrap();
+    assert!(
+        sent.contains("The newest 200 commits, oldest first:\n- empty 0\n"),
+        "{sent}"
+    );
+    assert!(!sent.contains("- Add c") && sent.contains("+sea"), "{sent}");
+}
+
+#[test]
 fn cancelling_a_suggestion_stops_the_command_and_its_children() {
     use crate::suggest::{self, Scope, Suggester};
     let sb = Sandbox::new("suggest-cancel");

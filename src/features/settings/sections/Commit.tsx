@@ -4,7 +4,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenu
 import { Input } from "@/components/ui/input";
 import { github } from "@/lib/api";
 import { updateSettings, useSettings } from "@/lib/settings";
-import { ALL_MODELS, modelOf, presetOf, SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT, type SuggestPreset as Preset } from "@/lib/git/suggest";
+import { ALL_MODELS, modelOf, presetOf, PULL_PROMPT, SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT, type SuggestPreset as Preset } from "@/lib/git/suggest";
 import { failed } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { segmentClass } from "@/components/ui/segmented";
@@ -68,7 +68,7 @@ export function CommitSection() {
     <>
       <Field
         label="Suggest commit messages"
-        hint="Adds a ✦ button to the commit box that asks your own agent CLI to write the message. GitViber sends nothing itself and keeps no keys: the command runs on this Mac, and it decides where the diff goes."
+        hint="Adds a ✦ button to the commit box that asks your own agent CLI to write the message, and one to New pull request for its title and description. GitViber sends nothing itself and keeps no keys: the command runs on this Mac, and it decides where the diff goes."
       >
         <Switch checked={s.suggestEnabled} onChange={(v) => updateSettings({ suggestEnabled: v })} />
       </Field>
@@ -127,6 +127,14 @@ export function CommitSection() {
           <span className="text-subtle">
             [the diff: the staged changes, or every change when nothing is staged (Commit all), or the whole commit when amending; up to {SUGGEST_LIMIT_KB} KB, with a note in the
             prompt when it's cut]
+          </span>
+        </pre>
+        <div className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">For a pull request:</div>
+        <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
+          {PULL_PROMPT}
+          {"\n\n"}
+          <span className="text-subtle">
+            [the subjects of the branch's commits, the repository's pull request template if it has one, and the branch's diff since it left the base; up to {SUGGEST_LIMIT_KB} KB in all]
           </span>
         </pre>
       </div>

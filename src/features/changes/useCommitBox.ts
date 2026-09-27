@@ -71,6 +71,48 @@ export function useCommitDraft(root: string, head: Commit | null) {
   return { draft, setDraft, amend, edited, template, toggleAmend, clear };
 }
 
+/**
+ * The configured agent CLI, run for a suggestion: `suggest(ask, land)` hands `ask` the command
+ * line and `land` what it printed (false: nothing usable), unless `drop` came in between. Leaving
+ * stops the command rather than orphan it. `what` names the suggestion in messages.
+ */
+export function useSuggestion(what: string) {
+  const { suggestEnabled, suggestCommand, suggestModels } = useSettings();
+  const [suggesting, setSuggesting] = useState(false);
+  const running = useRef(false);
+  useEffect(
+    () => () => {
+      if (running.current) api.suggestCancel().catch(() => {});
+    },
+    [],
+  );
+  const program = programOf(suggestCommand);
+  const cancel = () => api.suggestCancel().catch(() => {});
+  // A missing CLI or a stale model id is fixed there.
+  const toSettings = { label: "Open Settings", run: () => openSettings("commit") };
+  // Bumped by `drop`: a suggestion still on its way describes what was there before.
+  const generation = useRef(0);
+  const drop = () => {
+    generation.current++;
+    if (running.current) cancel();
+  };
+  const suggest = async (ask: (command: string) => Promise<string>, land: (output: string) => boolean) => {
+    const gen = generation.current;
+    running.current = true;
+    setSuggesting(true);
+    try {
+      const output = await ask(commandLine(suggestCommand, suggestModels));
+      if (gen === generation.current && !land(output)) toast("error", `No ${what} suggested`, `${program} printed nothing.`, toSettings);
+    } catch (e) {
+      if (e !== SUGGEST_CANCELLED && gen === generation.current) toast("error", `Couldn't suggest a ${what}`, errorMessage(e), toSettings);
+    } finally {
+      running.current = false;
+      setSuggesting(false);
+    }
+  };
+  return { enabled: suggestEnabled, suggesting, program, suggest, cancel, drop };
+}
+
 /** Asks the configured CLI for a commit message; `amend`/`hasStaged` pick which diff it describes. */
 export function useSuggestMessage({
   draft,
@@ -89,57 +131,29 @@ export function useSuggestMessage({
   hasAny: boolean;
   busy: boolean;
 }) {
-  const { suggestEnabled, suggestCommand, suggestModels } = useSettings();
-  const [suggesting, setSuggesting] = useState(false);
-  const running = useRef(false);
+  const { enabled, suggesting, program, suggest: run, cancel, drop } = useSuggestion("message");
   const latest = useRef(draft);
   useEffect(() => {
     latest.current = draft;
   });
-  // Leaving the box (the History tab, another worktree) stops the command rather than orphan it.
-  useEffect(
-    () => () => {
-      if (running.current) api.suggestCancel().catch(() => {});
-    },
-    [],
-  );
-  const program = programOf(suggestCommand);
-  const canSuggest = suggestEnabled && !suggesting && !busy && (amend || hasAny);
-  const cancelSuggest = () => api.suggestCancel().catch(() => {});
-  // A missing CLI or a stale model id is fixed there.
-  const toSettings = { label: "Open Settings", run: () => openSettings("commit") };
-  // Bumped by a commit or an Amend toggle: a suggestion still on its way describes the diff
-  // before them, and would land in a fresh draft or the one set aside.
-  const generation = useRef(0);
-  const dropSuggestion = () => {
-    generation.current++;
-    if (running.current) cancelSuggest();
-  };
+  const canSuggest = enabled && !suggesting && !busy && (amend || hasAny);
   const suggest = async () => {
     if (!canSuggest) return;
-    const gen = generation.current;
-    running.current = true;
-    setSuggesting(true);
-    try {
-      const output = await api.suggestMessage(commandLine(suggestCommand, suggestModels), SUGGEST_PROMPT, amend ? "amend" : hasStaged ? "staged" : "all");
-      if (gen !== generation.current) return;
-      const message = parseSuggestion(output);
-      if (!message) {
-        toast("error", "No message suggested", `${program} printed nothing.`, toSettings);
-        return;
-      }
-      const before = latest.current;
-      setDraft({ ...before, ...message });
-      // Never lost: what the user had comes back with one click.
-      const blank = !before.summary.trim() && (!before.body.trim() || before.body === template);
-      if (!blank) toast("info", "Message replaced with the suggestion", undefined, { label: "Restore", run: () => setDraft(before) });
-    } catch (e) {
-      if (e !== SUGGEST_CANCELLED && gen === generation.current) toast("error", "Couldn't suggest a message", errorMessage(e), toSettings);
-    } finally {
-      running.current = false;
-      setSuggesting(false);
-    }
+    await run(
+      (command) => api.suggestMessage(command, SUGGEST_PROMPT, amend ? "amend" : hasStaged ? "staged" : "all"),
+      (output) => {
+        const message = parseSuggestion(output);
+        if (!message) return false;
+        const before = latest.current;
+        setDraft({ ...before, ...message });
+        // Never lost: what the user had comes back with one click.
+        const blank = !before.summary.trim() && (!before.body.trim() || before.body === template);
+        if (!blank) toast("info", "Message replaced with the suggestion", undefined, { label: "Restore", run: () => setDraft(before) });
+        return true;
+      },
+    );
   };
 
-  return { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest };
+  // A commit or an Amend toggle drops a suggestion still on its way: it would land in a fresh draft or the one set aside.
+  return { suggesting, program, canSuggest, cancelSuggest: cancel, dropSuggestion: drop, suggest };
 }

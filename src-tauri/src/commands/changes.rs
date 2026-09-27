@@ -96,6 +96,24 @@ pub async fn suggest_message(
     out
 }
 
+/// The same, for a pull request's title and description from HEAD into `base`.
+#[tauri::command]
+pub async fn suggest_pull(
+    state: State<'_, AppState>,
+    command: String,
+    prompt: String,
+    base: String,
+) -> Res<String> {
+    let cancel = state.suggest.start();
+    let flag = cancel.clone();
+    let out = in_repo(&state, move |r| {
+        suggest::run_pull(r, &command, &prompt, &base, &flag)
+    })
+    .await;
+    state.suggest.finish(&cancel);
+    out
+}
+
 #[tauri::command]
 pub fn suggest_cancel(state: State<'_, AppState>) {
     state.suggest.cancel()
