@@ -127,9 +127,8 @@ function scheduleSave() {
   }, SAVE_MS);
 }
 
-// Out of sight (a reload, another app, the window hidden) a stall goes unseen: every changed pane is saved.
+// Out of sight (a reload, a quit (lib/app/quit), the window hidden) a stall goes unseen: every changed pane is saved.
 window.addEventListener("pagehide", () => saveSession(true));
-window.addEventListener("blur", () => saveSession(true));
 document.addEventListener("visibilitychange", () => document.hidden && saveSession(true));
 
 /** The layout last written, to skip a write that changes nothing (a title changing, a pane still printing). */
@@ -242,7 +241,7 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, term, fit, serialize, saved: null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false };
+  const p: Pane = { id, cwd, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   term.onWriteParsed(() => {
@@ -253,6 +252,7 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   term.onResize(({ cols, rows }) => {
     // Reflow rewraps the history.
     p.dirty = true;
+    scheduleSave();
     if (p.pty !== null) void pty.resize(p.pty, cols, rows).catch(() => {});
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
