@@ -75,13 +75,16 @@ pub struct RepoStatus {
     pub push: Option<PushTarget>,
     /// Configured remotes, to pick where an unpublished branch goes.
     pub remotes: Vec<String>,
+    /// Origin's URL (null: no origin, or none with a URL): after a `git remote set-url` the GitHub
+    /// views read another repository. Left out when git couldn't say, which isn't "no origin".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Option<String>>,
     /// Where Publish sends a branch with no upstream; None when that's the user's choice.
     pub publish: Option<String>,
-    /// origin's URL, which commands::changes::status turns into `web_url`.
-    #[serde(skip)]
-    pub origin_url: Option<String>,
-    /// origin's page on GitHub; None off github.com.
-    pub web_url: Option<String>,
+    /// origin's page on GitHub, from `origin` (commands::changes::status); None off github.com.
+    /// Left out with `origin`, when git couldn't say.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub web_url: Option<Option<String>>,
     pub staged: Vec<FileChange>,
     pub unstaged: Vec<FileChange>,
     pub conflicted: Vec<FileChange>,
@@ -225,8 +228,8 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         upstream_gone: false,
         push: None,
         remotes: vec![],
+        origin: None,
         publish: None,
-        origin_url: None,
         web_url: None,
         ahead: 0,
         behind: 0,
@@ -331,13 +334,11 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     if let Some(b) = &st.branch {
         st.push = push_target(repo, b);
     }
-    // One git call for the names and origin's URL: the links to GitHub follow a `set-url`.
-    let urls = remote_urls(repo);
-    st.origin_url = urls
-        .iter()
-        .find(|(name, _)| name == "origin")
-        .and_then(|(_, url)| url.clone());
-    st.remotes = urls.into_iter().map(|(name, _)| name).collect();
+    if let Ok(remotes) = remote_urls(repo) {
+        let origin = remotes.iter().find(|(name, _)| name == "origin");
+        st.origin = Some(origin.and_then(|(_, url)| url.clone()));
+        st.remotes = remotes.into_iter().map(|(name, _)| name).collect();
+    }
     if st.branch.is_some() && !st.remotes.is_empty() && (st.upstream.is_none() || st.upstream_gone)
     {
         let config = publish_config(repo, st.branch.as_deref());

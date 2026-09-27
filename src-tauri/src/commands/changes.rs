@@ -7,11 +7,11 @@ use tauri::State;
 pub async fn status(state: State<'_, AppState>) -> Res<git::RepoStatus> {
     in_repo(&state, |r| {
         let mut st = git::status(r)?;
-        st.web_url = st
-            .origin_url
-            .as_deref()
-            .and_then(github::parse_remote)
-            .map(|g| format!("https://github.com/{}/{}", g.owner, g.name));
+        st.web_url = st.origin.as_ref().map(|url| {
+            url.as_deref()
+                .and_then(github::parse_remote)
+                .map(|g| format!("https://github.com/{}/{}", g.owner, g.name))
+        });
         Ok(st)
     })
     .await
@@ -95,13 +95,13 @@ pub async fn suggest_message(
     prompt: String,
     scope: suggest::Scope,
 ) -> Res<String> {
-    let cancel = state.suggest.start();
+    let cancel = state.suggest.start(suggest::Kind::Message);
     let flag = cancel.clone();
     let out = in_repo(&state, move |r| {
         suggest::run(r, &command, &prompt, scope, &flag)
     })
     .await;
-    state.suggest.finish(&cancel);
+    state.suggest.finish(suggest::Kind::Message, &cancel);
     out
 }
 
@@ -113,19 +113,19 @@ pub async fn suggest_pull(
     prompt: String,
     base: String,
 ) -> Res<String> {
-    let cancel = state.suggest.start();
+    let cancel = state.suggest.start(suggest::Kind::Pull);
     let flag = cancel.clone();
     let out = in_repo(&state, move |r| {
         suggest::run_pull(r, &command, &prompt, &base, &flag)
     })
     .await;
-    state.suggest.finish(&cancel);
+    state.suggest.finish(suggest::Kind::Pull, &cancel);
     out
 }
 
 #[tauri::command]
-pub fn suggest_cancel(state: State<'_, AppState>) {
-    state.suggest.cancel()
+pub fn suggest_cancel(state: State<'_, AppState>, kind: suggest::Kind) {
+    state.suggest.cancel(kind)
 }
 
 #[tauri::command]

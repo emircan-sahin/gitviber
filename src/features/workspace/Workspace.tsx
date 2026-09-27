@@ -4,7 +4,7 @@ import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { find } from "@/lib/ui/find";
-import { resetGitHubCache } from "@/lib/github/githubCache";
+import { resetGitHubCache, setGitHubOrigin } from "@/lib/github/githubCache";
 import { warmHighlighter } from "@/lib/editor/highlight";
 import { setLinkHost } from "@/lib/links/linkHost";
 import { prepare } from "@/lib/editor/monaco";
@@ -70,6 +70,14 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useFreshCaches(root);
   const repo = useRepo(root);
   const { status } = repo;
+  const origin = status?.origin;
+  // origin's page on GitHub, for links; kept while git couldn't read the remotes, as the origin is.
+  const [webUrl, setWebUrl] = useState<string | null>(null);
+  const web = status?.webUrl;
+  useEffect(() => {
+    if (origin !== undefined) setGitHubOrigin(origin);
+    if (web !== undefined) setWebUrl(web);
+  }, [origin, web]);
   const s = useSettings();
   const [saved] = useState(() => loadWorkspace(root));
   const [listTab, setListTab] = useState<ListTab>(() => LIST_TABS.find((t) => t === saved?.listTab) ?? "changes");
@@ -166,7 +174,6 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   };
   const reviewLabel = shortRef(review || reviewBase(repo.branches) || "") || "a base branch";
   const remoteNames = useMemo(() => new Set(repo.branches.filter((b) => b.remote).map((b) => b.name)), [repo.branches]);
-  const webUrl = status?.webUrl ?? null;
 
   // A merge/rebase that stopped on conflicts: bring the conflicts into view.
   const conflictCount = status?.conflicted.length ?? 0;

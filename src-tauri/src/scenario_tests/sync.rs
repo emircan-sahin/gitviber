@@ -476,7 +476,7 @@ fn remotes_added_renamed_repointed_and_removed() {
     .is_err());
 }
 
-/// remote_list reads every remote from one config read, and remote_urls from one
+/// remote_list reads every remote from one config read, and remote_urls (and status) from one
 /// `git remote -v`; both must say what `git remote`, `config --get` and `get-url` say.
 #[test]
 fn remotes_read_at_once_match_one_by_one() {
@@ -525,12 +525,25 @@ fn remotes_read_at_once_match_one_by_one() {
         .iter()
         .map(|n| (n.clone(), remote_url(r, n).filter(|_| n != "bare")))
         .collect();
-    assert_eq!(remote_urls(r), one_by_one);
-    // status takes the names and origin's URL (for its GitHub page) from that same call.
+    assert_eq!(remote_urls(r).unwrap(), one_by_one);
+    // Status reads the same list, and origin's URL anew after a set-url.
     let st = status(r).unwrap();
     assert_eq!(st.remotes, listed);
-    assert!(st.origin_url.is_some());
-    assert_eq!(st.origin_url, remote_url(r, "origin"));
+    assert_eq!(st.origin, Some(remote_url(r, "origin")));
+    run(
+        r,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/me/moved.git",
+        ],
+    )
+    .unwrap();
+    assert_eq!(
+        status(r).unwrap().origin,
+        Some(Some("https://github.com/me/moved.git".into()))
+    );
     let on_github: Vec<_> = crate::github::remotes(r)
         .into_iter()
         .map(|x| (x.name, x.repo))

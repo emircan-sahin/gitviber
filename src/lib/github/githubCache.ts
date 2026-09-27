@@ -37,10 +37,29 @@ function put(map: Map<string, Entry>, key: string, e: Entry) {
   listeners.forEach((l) => l());
 }
 
+/** Origin's URL the entries were read for; undefined until the repo's status says. */
+let origin: string | null | undefined;
+
 /** One repo's results never show in another's workspace. */
 export const resetGitHubCache = () => {
   entries = new Map();
+  origin = undefined;
 };
+
+/**
+ * Origin's URL, from each status read. A new one (`git remote set-url`) is another repository on
+ * GitHub: what was read for the old one goes, and the mounted views read it again.
+ */
+export function setGitHubOrigin(url: string | null) {
+  if (url === origin) return;
+  const known = origin !== undefined;
+  origin = url;
+  if (!known) return;
+  entries = new Map();
+  version++;
+  listeners.forEach((l) => l());
+  wakers.forEach((w) => w());
+}
 
 /** Marks every key starting with `prefix` stale, so the next read refetches. */
 export function invalidate(prefix: string) {
