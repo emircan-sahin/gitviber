@@ -2,8 +2,8 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 /** The shells behind the terminal's panes (pty.rs), by the id `spawn` gives. */
 export const pty = {
-  /** `onOutput` gets what the shell prints, `onExit` runs when it ends. */
-  spawn: (cwd: string, cols: number, rows: number, onOutput: (bytes: ArrayBuffer) => void, onExit: () => void) => {
+  /** `onOutput` gets what the shell prints, `onExit` its exit code when it ends (null if unknown). */
+  spawn: (cwd: string, cols: number, rows: number, onOutput: (bytes: ArrayBuffer) => void, onExit: (code: number | null) => void) => {
     const output = new Channel<ArrayBuffer>(onOutput);
     const exit = new Channel<number | null>(onExit);
     return invoke<number>("pty_spawn", { cwd, cols, rows, output, exit });

@@ -421,7 +421,8 @@ async function start(p: Pane) {
   p.started = true;
   try {
     const { cols, rows } = p.term;
-    const id = await pty.spawn(p.cwd, cols, rows, (bytes) => p.term.write(new Uint8Array(bytes)), () => closePane(p.id));
+    const began = performance.now();
+    const id = await pty.spawn(p.cwd, cols, rows, (bytes) => p.term.write(new Uint8Array(bytes)), (code) => exited(p, code, performance.now() - began));
     // Closed while it was starting.
     if (!panes.has(p.id)) return void pty.kill(id).catch(() => {});
     p.pty = id;
@@ -431,6 +432,15 @@ async function start(p: Pane) {
   } catch (e) {
     p.term.write(`\x1b[31m${errorMessage(e)}\x1b[0m\r\n`);
   }
+}
+
+/** A shell gone within a second (a broken rc file or login shell) leaves its pane up to be read, for ⌘W to close. */
+function exited(p: Pane, code: number | null, lived: number) {
+  if (!panes.has(p.id)) return;
+  if (lived > 1000) return closePane(p.id);
+  p.pty = null;
+  p.term.options.disableStdin = true;
+  p.term.write(`\r\n\x1b[2m[shell exited${code === null ? "" : ` with code ${code}`}]\x1b[0m\r\n`);
 }
 
 /** Shows a pane in `container`; returns the detach. */
