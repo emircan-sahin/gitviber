@@ -7,7 +7,7 @@ import { fuzzyMatch, type Match, matchPath, prepareQuery } from "@/lib/ui/fuzzy"
 import { type Action, hasHandler, MENU_ACTION_INFO, MENU_ACTIONS, matchesCommand, runCommand } from "@/lib/commands/keybindings";
 import { pointerMoved } from "@/lib/ui/pointer";
 import { useSettings } from "@/lib/settings";
-import { openTerminal, useTerminals } from "@/lib/terminal/terminals";
+import { openTerminal, useTerminalsOpen } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
 import { folderName, splitPath } from "@/lib/path";
 import { readJson, stringList, writeJson } from "@/lib/storage";
@@ -98,7 +98,7 @@ export function CommandPalette() {
   const listRef = useRef<HTMLDivElement>(null);
   const listId = useId();
   const { keybindings } = useSettings();
-  const terminalOpen = useTerminals().open;
+  const terminalOpen = useTerminalsOpen();
 
   const commands = query.startsWith(">");
   const root = source?.root ?? null;

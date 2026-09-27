@@ -769,3 +769,14 @@ export function showWorktree(cwd: string) {
   const g = state.groups.find((x) => x.panes.some((p) => p.cwd === cwd));
   if (g) set({ active: g.id });
 }
+
+/** Whether the panel is open, alone: useTerminals re-renders on every title a program sets. */
+export function useTerminalsOpen() {
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    () => state.open,
+  );
+}

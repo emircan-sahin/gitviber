@@ -14,7 +14,7 @@ import { onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
-import { goGroup, stepGroup, useTerminals } from "@/lib/terminal/terminals";
+import { goGroup, stepGroup, useTerminalsOpen } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
 import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
@@ -101,7 +101,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useTerminalSetup(root);
   // Where a terminal can start besides this repo's worktrees, without switching the window there.
   const projects = recent.filter((p) => p !== main);
-  const terminalOpen = useTerminals().open;
+  const terminalOpen = useTerminalsOpen();
   const fileTree = useRef<FileTreeHandle>(null);
   const findKey = useShortcut("editor.find");
   // The explorer panel shows the files or Search in Files; `searchAsk` brings the search box up.
