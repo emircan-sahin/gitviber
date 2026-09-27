@@ -9,9 +9,13 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::{Channel, Response};
 
+/// Its own lock: a program that isn't reading blocks the write once the pty's buffer fills, and
+/// the other panes' input, resizes and kills must not wait behind it.
+pub type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
+
 struct Session {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: Writer,
     killer: Box<dyn ChildKiller + Send + Sync>,
     shell: Option<u32>,
 }
@@ -75,7 +79,7 @@ impl Ptys {
             id,
             Session {
                 master: pair.master,
-                writer,
+                writer: Arc::new(Mutex::new(writer)),
                 killer: child.clone_killer(),
                 shell: child.process_id(),
             },
@@ -112,13 +116,17 @@ impl Ptys {
         }
     }
 
-    pub fn write(&self, id: u32, data: &str) -> Result<(), String> {
-        self.with(id, |s| {
-            s.writer
-                .write_all(data.as_bytes())
-                .and_then(|_| s.writer.flush())
-                .map_err(|e| e.to_string())
-        })
+    /// Where `write` sends a session's input, taken out so the write happens outside the sessions lock.
+    pub fn writer(&self, id: u32) -> Result<Writer, String> {
+        self.with(id, |s| Ok(s.writer.clone()))
+    }
+
+    /// Blocks until the program reads the input; once its shell is gone, the pty fails the write.
+    pub fn write(writer: &Writer, data: &str) -> Result<(), String> {
+        let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
+        w.write_all(data.as_bytes())
+            .and_then(|_| w.flush())
+            .map_err(|e| e.to_string())
     }
 
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {

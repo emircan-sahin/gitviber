@@ -1,5 +1,5 @@
 use crate::state::{blocking, AppState, Res};
-use crate::{cli, clipboard, errors, git, launch, menu, process, updates};
+use crate::{cli, clipboard, errors, git, launch, menu, process, pty, updates};
 use std::path::Path;
 use tauri::{AppHandle, Manager, State};
 
@@ -16,9 +16,11 @@ pub fn pty_spawn(
     state.ptys.spawn(Path::new(&cwd), cols, rows, output, exit)
 }
 
+/// Off the main thread: a paste into a program that isn't reading blocks until it reads.
 #[tauri::command]
-pub fn pty_write(state: State<'_, AppState>, id: u32, data: String) -> Res<()> {
-    state.ptys.write(id, &data)
+pub async fn pty_write(state: State<'_, AppState>, id: u32, data: String) -> Res<()> {
+    let writer = state.ptys.writer(id)?;
+    blocking(move || pty::Ptys::write(&writer, &data)).await
 }
 
 /// Sync, so it runs on the main thread, where AppKit's pasteboard and GTK's clipboard belong.
