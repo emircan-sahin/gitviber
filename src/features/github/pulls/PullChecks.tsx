@@ -123,7 +123,7 @@ function Failure({ pull, check, id }: { pull: Pull; check: PullCheck; id: number
 }
 
 function checkSummary(checks: PullCheck[]) {
-  const failed = checks.filter((c) => c.state === "failure" || c.state === "cancelled" || c.state === "timed_out").length;
+  const failed = checks.filter((c) => FAILED.has(c.state)).length;
   const pending = checks.filter((c) => c.state === "pending").length;
   return failed ? `${failed} failing` : pending ? `${pending} pending` : "all passed";
 }
