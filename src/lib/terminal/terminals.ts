@@ -129,7 +129,9 @@ function set(patch: Partial<State>) {
 let saveTimer: number | undefined;
 /** Throttled rather than debounced, so a shell that never stops printing still gets saved. */
 function scheduleSave() {
-  saveTimer ??= window.setTimeout(() => {
+  saveTimer ??= window.setTimeout(async () => {
+    // Where the shells with new output are now, asked as they're saved (a reload's save keeps the last answer).
+    await Promise.all([...panes.values()].filter((p) => p.saved === null).map(shellDir));
     saveTimer = undefined;
     saveSession();
   }, 2000);
@@ -143,8 +145,6 @@ function saveSession() {
   if (!state.groups.length && state.restorable) return;
   try {
     if (!state.groups.length) return localStorage.removeItem(SESSION_KEY);
-    // A shell that doesn't report its folder is asked as its new output is saved, for the next save.
-    for (const p of panes.values()) if (p.saved === null) void shellDir(p);
     const snapshot = (history: boolean): SavedSession => ({
       savedAt: Date.now(),
       active: Math.max(0, state.groups.findIndex((g) => g.id === state.active)),
@@ -231,7 +231,8 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   // Unicode 6 widths, TUIs drew out of line and the cursor landed one cell off per emoji.
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = "11";
-  terminalLinks(term, cwd);
+  // Relative paths from where the shell starts (a split may start below the worktree).
+  terminalLinks(term, dir);
   const search = new SearchAddon();
   term.loadAddon(search);
   search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
@@ -579,8 +580,8 @@ export function openTerminal(cwd: string, run?: string) {
 }
 
 /**
- * Where a pane's shell is now: as shell integration last reported it, else asked of its process
- * (VS Code's inherited split folder), else where it was last seen.
+ * Where a pane's shell is now, asked of its process as VS Code's inherited split folder is (only
+ * on a split or a save); else where it was last seen.
  */
 async function shellDir(p: Pane) {
   if (p.pty !== null) p.dir = (await pty.cwd(p.pty).catch(() => null)) ?? p.dir;

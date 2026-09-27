@@ -254,7 +254,11 @@ fn process_cwd(pid: u32) -> Option<PathBuf> {
     if got != size {
         return None;
     }
-    let path = unsafe { std::ffi::CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
+    // libc declares the path as 32 rows of 32 chars; it's one MAXPATHLEN buffer.
+    let raw = &info.pvi_cdir.vip_path;
+    let bytes: &[u8] =
+        unsafe { std::slice::from_raw_parts(raw.as_ptr().cast(), std::mem::size_of_val(raw)) };
+    let path = std::ffi::CStr::from_bytes_until_nul(bytes).ok()?;
     let path = Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()));
     path.is_absolute().then(|| path.to_path_buf())
 }
