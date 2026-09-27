@@ -803,3 +803,8 @@ export function showWorktree(cwd: string) {
 export function useTerminalsOpen() {
   return useSyncExternalStore(subscribe, () => state.open);
 }
+
+/** How many tabs the panel shows, 0 while it's hidden: what decides which of goGroup and stepGroup apply. */
+export function useTerminalTabCount() {
+  return useSyncExternalStore(subscribe, () => (state.open ? state.groups.length : 0));
+}
