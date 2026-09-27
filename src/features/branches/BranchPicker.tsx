@@ -138,9 +138,9 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     };
   }, [open]);
   const upstream = (b: Branch) => !b.remote && !b.merged && !!landed?.has(b.name);
-  // Merged and held by no worktree: deleting them loses nothing.
+  // Merged and held by no worktree, this one included: deleting them loses nothing.
   const stale = branches.filter((b) => b.merged && !b.worktree).map((b) => b.name);
-  const squashed = branches.filter((b) => upstream(b) && !b.worktree).map((b) => b.name);
+  const squashed = branches.filter((b) => upstream(b) && !b.current && !b.worktree).map((b) => b.name);
   const cleanable = stale.length + squashed.length;
 
   const choose = (o: Option | undefined) => {

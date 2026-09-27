@@ -95,7 +95,8 @@ pub fn merged_upstream(repo: &Path) -> Vec<String> {
 
 /// Deletes branches merged here (`-d`, which git checks again) and ones merged upstream, which
 /// git sees as unmerged: each checked again, then deleted only at the commit that was checked,
-/// so one that moves meanwhile stays. Its settings go with it, as `git branch -D` does.
+/// so one that moves meanwhile stays, and none checked out anywhere. Its settings go with it,
+/// as `git branch -D` does.
 pub fn delete_merged(repo: &Path, merged: &[String], upstream: &[String]) -> Result<(), String> {
     if !upstream.is_empty() {
         for n in upstream {
@@ -111,6 +112,22 @@ pub fn delete_merged(repo: &Path, merged: &[String], upstream: &[String]) -> Res
                 })
             })
             .collect::<Result<_, _>>()?;
+        // update-ref has no checked-out guard: taking a worktree's branch leaves its HEAD unborn.
+        let held = run_text(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(refname:lstrip=2)%1f%(worktreepath)",
+                "refs/heads",
+            ],
+        )?;
+        let held = held
+            .lines()
+            .filter_map(|l| l.split_once('\x1f'))
+            .find(|(n, path)| !path.is_empty() && upstream.iter().any(|u| u == n));
+        if let Some((n, path)) = held {
+            return Err(format!("{n} is checked out in {path}"));
+        }
         for (n, sha) in checked {
             run(repo, &["update-ref", "-d", &format!("refs/heads/{n}"), sha])?;
             let _ = run(
