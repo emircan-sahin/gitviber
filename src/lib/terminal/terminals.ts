@@ -1,3 +1,4 @@
+import { arrayMove } from "@dnd-kit/sortable";
 import { FitAddon } from "@xterm/addon-fit";
 import { SearchAddon } from "@xterm/addon-search";
 import { SerializeAddon } from "@xterm/addon-serialize";
@@ -671,25 +672,32 @@ export function activateGroup(id: number, focus = true) {
   if (focus) focusActive();
 }
 
-/** ⌘1–⌘9 with focus in the panel, as in VS Code: the tab at `i`, -1 the last. */
+// From a tab, focus stays on the tabs (the panel moves it to the one opened), as ←/→ keep it.
+const pick = (id: number) => activateGroup(id, !document.activeElement?.closest('[role="tab"]'));
+
+/** ⌘1–⌘9 with focus in the panel: the tab at `i`, -1 the last; undefined while the panel shows none. */
 export function goGroup(i: number) {
-  const g = state.groups.at(i);
-  if (g) activateGroup(g.id);
+  if (!state.open || !state.groups.at(i)) return undefined;
+  return () => {
+    const g = state.groups.at(i);
+    if (g) pick(g.id);
+  };
+}
+
+/** Next / previous tab with focus in the panel, wrapping; undefined while the panel shows fewer than two. */
+export function stepGroup(dir: 1 | -1) {
+  if (!state.open || state.groups.length < 2) return undefined;
+  return () => {
+    const n = state.groups.length;
+    const at = state.groups.findIndex((g) => g.id === state.active);
+    pick(state.groups[(at + dir + n) % n].id);
+  };
 }
 
 /** Moves a tab one place along (⌥←/⌥→ on the tabs, as on the code view's). */
 export function moveGroup(id: number, dir: 1 | -1) {
   const i = state.groups.findIndex((g) => g.id === id);
-  const other = state.groups[i + dir];
-  if (i < 0 || !other) return;
-  set({ groups: state.groups.map((g, j) => (j === i ? other : j === i + dir ? state.groups[i] : g)) });
-}
-
-/** Next / previous tab with focus in the panel, wrapping. */
-export function stepGroup(dir: 1 | -1) {
-  const n = state.groups.length;
-  const at = state.groups.findIndex((g) => g.id === state.active);
-  if (n > 1) activateGroup(state.groups[(at + dir + n) % n].id);
+  if (i >= 0 && state.groups[i + dir]) set({ groups: arrayMove(state.groups, i, i + dir) });
 }
 
 function focusPane(id: number) {

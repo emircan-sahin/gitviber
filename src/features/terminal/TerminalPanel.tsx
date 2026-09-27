@@ -83,8 +83,9 @@ export function TerminalPanel({ root, worktrees }: Props) {
     const i = els.indexOf(el);
     const to = ({ ArrowLeft: i - 1, ArrowRight: i + 1, Home: 0, End: els.length - 1 } as Record<string, number>)[e.key];
     if (shift) {
+      if (!groups[i + shift]) return;
       moveGroup(groups[i].id, shift);
-      // React moves this very node, and a node taken out of the page loses focus.
+      // React may move this very node, and a node taken out of the page loses focus.
       requestAnimationFrame(() => {
         el.focus();
         el.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -101,11 +102,16 @@ export function TerminalPanel({ root, worktrees }: Props) {
     } else return;
     e.preventDefault();
   };
+  // ⌘1–⌘9 or the next tab, pressed on the tabs: focus goes to the tab they opened.
+  const tablist = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (tablist.current?.contains(document.activeElement)) tablist.current.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
+  }, [active]);
 
   return (
     <div className="flex h-full flex-col bg-background" onKeyDown={onKeyDown}>
       <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-panel">
-        <div role="tablist" aria-label="Terminals" onKeyDown={onTabKey} data-scrollbar="none" className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
+        <div ref={tablist} role="tablist" aria-label="Terminals" onKeyDown={onTabKey} data-scrollbar="none" className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
           {groups.map((g) => (
             <GroupTab key={g.id} group={g} active={g.id === active} here={g.panes[0].cwd === root} branch={branchOf(g.panes[0].cwd)} alone={groups.length === 1} />
           ))}

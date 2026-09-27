@@ -221,7 +221,8 @@ On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+
 | `⇧⌘P` `⌘P` | Command palette, quick open |
 | `⌃1` `⌃2` `⌃3` `⌃4` | Changes, History, PRs, Issues |
 | `⌘1` … `⌘8`, `⌘9` | Go to tab 1 to 8, the last tab; the terminal's while it has focus |
-| `⇧⌘]` `⇧⌘[`, `⌘→` `⌘←`, `⌃⇥` `⌃⇧⇥` | Next / previous tab; the terminal's while it has focus |
+| `⇧⌘]` `⇧⌘[`, `⌘→` `⌘←`, `⌃⇥` `⌃⇧⇥` | Next / previous tab; the terminal's while it has focus, though in a terminal pane `⌘←` `⌘→` go to the line's start and end |
+| `⌥←` `⌥→` | Move the focused tab left / right, in the code view's tabs or the terminal's |
 | `J` `K` | Next / previous changed file |
 | `↓` `↑` `↵` | Move through the focused list (Changes, History, PRs, Issues), `↵` keeps the tab open; `Home` `End` `PgUp` `PgDn` too |
 | `⇧F10` | The focused row's right-click menu |
