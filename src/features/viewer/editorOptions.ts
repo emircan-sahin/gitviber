@@ -59,5 +59,13 @@ export function diffOptions(s: Settings, mode: CodeMode, collapse: boolean, wrap
 
 export function fileOptions(s: Settings, wrap: boolean, blame: boolean, editable: boolean): monaco.editor.IStandaloneEditorConstructionOptions {
   // Blame's label goes after the change bars (index.css), in the code font's widths.
-  return { ...common(s, wrap), readOnly: !editable, matchBrackets: editable ? "always" : "never", lineDecorationsWidth: blame ? `${BLAME_CHARS + 3}ch` : 12 };
+  return {
+    ...common(s, wrap),
+    readOnly: !editable,
+    matchBrackets: editable ? "always" : "never",
+    // Where typing goes, as VS Code shows it; only while typing can go there.
+    renderLineHighlight: editable ? "line" : "none",
+    renderLineHighlightOnlyWhenFocus: true,
+    lineDecorationsWidth: blame ? `${BLAME_CHARS + 3}ch` : 12,
+  };
 }
