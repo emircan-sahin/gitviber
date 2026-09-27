@@ -217,6 +217,39 @@ export function splitPosition(spec: string): { path: string; line?: number; colu
   return { path: spec.slice(0, at.index), line, column };
 }
 
+/**
+ * Where an OSC 8 hyperlink (`ls --hyperlink`, delta) goes: an http(s) page, or a file:// path in
+ * `root` by its repo-relative path ("" for `root` itself), at `:12` or `#L12` when it names a line.
+ * Other schemes, other machines' files, and files outside the repo or in .git go nowhere.
+ */
+export function hyperlinkTarget(uri: string, root: string): Target | null {
+  let url: URL;
+  try {
+    url = new URL(uri);
+  } catch {
+    return null;
+  }
+  if (url.protocol === "http:" || url.protocol === "https:") return { url: uri };
+  // A host is `ls --hyperlink` over ssh: that machine's file, not this repo's.
+  if (url.protocol !== "file:" || !root || (url.hostname && url.hostname !== "localhost")) return null;
+  let parts: string[];
+  try {
+    parts = url.pathname.split("/").map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+  // The URL resolved its dots before decoding: an encoded `a%2F..` would climb out once decoded.
+  if (parts.some((p) => p === "." || p === ".." || /[/\\]/.test(p))) return null;
+  // Of a fragment, only a line counts; Windows' /C:/repo is C:/repo.
+  const fragment = /^#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?$/.test(url.hash) ? url.hash : "";
+  const { path, line, column } = splitPosition(parts.join("/").replace(/^\/([A-Za-z]:)/, "$1") + fragment);
+  const [file, base] = [path.replace(/(.)\/$/, "$1"), slashes(root)];
+  if (file === base) return { path: "" };
+  if (!file.startsWith(`${base}/`)) return null;
+  const rel = file.slice(base.length + 1);
+  return rel.split("/").some((p) => p.toLowerCase() === ".git") ? null : { path: rel, line, column };
+}
+
 /** `import a.b, c as d`: one link per module. */
 function pythonImports(line: string, add: (start: number, spec: string, kind: LinkKind) => void) {
   const head = /^\s*import\s+/.exec(line);

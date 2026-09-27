@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { IBufferLine } from "@xterm/xterm";
 import { test } from "node:test";
-import { cellText, findLinks, findTerminalLinks, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
+import { cellText, findLinks, findTerminalLinks, hyperlinkTarget, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
 
 const specs = (line: string, lang: string) => findLinks(line, lang).map((l) => [line.slice(l.start, l.end), l.kind]);
 
@@ -270,4 +270,30 @@ test("maps terminal text back to cells past wide characters", () => {
   // The emoji's two units share its first cell; the next character starts past its second.
   assert.deepEqual(cells.slice(7, 10), [8, 8, 10]);
   assert.equal(cells.at(-1), 16);
+});
+
+test("resolves OSC 8 hyperlinks: pages, and files in the repo", () => {
+  const root = "/Users/me/repo";
+  assert.deepEqual(hyperlinkTarget("https://github.com/a/b", root), { url: "https://github.com/a/b" });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo/src/a%20b.ts", root), { path: "src/a b.ts", line: undefined, column: undefined });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo/src/a.ts#L12", root), { path: "src/a.ts", line: 12, column: undefined });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo/src/a.ts:3:4", root), { path: "src/a.ts", line: 3, column: 4 });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo/src/", root), { path: "src", line: undefined, column: undefined });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo", root), { path: "" });
+  assert.equal(hyperlinkTarget("file:///Users/me/repo-other/a.ts", root), null);
+  assert.equal(hyperlinkTarget("file:///Users/me/repo/../secret", root), null);
+  assert.equal(hyperlinkTarget("file:///Users/me/repo/a%2F..%2F..%2Fsecret", root), null);
+  assert.equal(hyperlinkTarget("file:///Users/me/repo/a%E0.ts", root), null);
+  assert.equal(hyperlinkTarget("file://otherhost/Users/me/repo/a.ts", root), null);
+  assert.deepEqual(hyperlinkTarget("file://localhost/Users/me/repo/a.ts", root), { path: "a.ts", line: undefined, column: undefined });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo/a.ts#top", root), { path: "a.ts", line: undefined, column: undefined });
+  assert.deepEqual(hyperlinkTarget("file:///Users/me/repo/a.ts#L3-L9", root), { path: "a.ts", line: 3, column: undefined });
+  assert.equal(hyperlinkTarget("file:///Users/me/repo/.git/config", root), null);
+  assert.equal(hyperlinkTarget("file:///Users/me/repo/sub/.GIT/HEAD", root), null);
+  assert.deepEqual(hyperlinkTarget("file:///C:/repo/src/a.ts:4", "C:\\repo"), { path: "src/a.ts", line: 4, column: undefined });
+  assert.deepEqual(hyperlinkTarget("https://example.com/%E0", root), { url: "https://example.com/%E0" });
+  assert.equal(hyperlinkTarget("file:///etc/passwd", root), null);
+  assert.equal(hyperlinkTarget("javascript:alert(1)", root), null);
+  assert.equal(hyperlinkTarget("vscode://file/Users/me/repo/a.ts", root), null);
+  assert.equal(hyperlinkTarget("not a url", root), null);
 });
