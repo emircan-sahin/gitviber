@@ -30,14 +30,15 @@ interface LinkHost {
 }
 
 let host: LinkHost | null = null;
-let waiting: { root: string; target: Target } | null = null;
+// A file for a workspace that's on its way; a few seconds, so a repo that never shows can't
+// have it open on a later visit.
+let waiting: { root: string; target: Target; until: number } | null = null;
 export function setLinkHost(h: LinkHost | null) {
   host = h;
   const w = waiting;
   if (!h || w?.root !== h.root) return;
   waiting = null;
-  // After the workspace's own first effects, which drop a line reveal for any other tab.
-  setTimeout(() => openTarget(w.target, true));
+  if (Date.now() < w.until) openTarget(w.target, true);
 }
 
 const indexes = new Map<string, Promise<FileIndex>>();
@@ -99,7 +100,7 @@ export function openTarget(target: Target, focus = false) {
 export function openTargetIn(root: string, target: Target) {
   waiting = null;
   if (host?.root === root) openTarget(target, true);
-  else waiting = { root, target };
+  else waiting = { root, target, until: Date.now() + 10_000 };
 }
 
 /**

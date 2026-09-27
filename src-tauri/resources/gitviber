@@ -8,9 +8,10 @@
 for path in "$@"; do
   if [ ! -e "$path" ]; then
     # `open` carries only paths that exist: one that doesn't (`a.ts:12`) goes in a request file,
-    # which GitViber reads and deletes (opened.rs).
+    # which GitViber reads and deletes (opened.rs). In /tmp, not $TMPDIR: a shell can set that
+    # to a folder the app doesn't look in.
     case $path in /*) ;; *) path=$PWD/$path ;; esac
-    request=$(mktemp "${TMPDIR:-/tmp}/gitviber-open.XXXXXX") || exit
+    request=$(mktemp /tmp/gitviber-open.XXXXXX) || exit
     printf '%s\n' "$path" >"$request"
     path=$request
   fi

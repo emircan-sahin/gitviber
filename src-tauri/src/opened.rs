@@ -82,15 +82,17 @@ pub fn take(app: &AppHandle) -> Taken {
 /// (`a.ts:12`) into a request file named so, and opens that. Read once: the file goes.
 fn requested(path: &Path) -> Option<Vec<PathBuf>> {
     let name = path.file_name()?.to_str()?;
-    if !name.starts_with("gitviber-open.") {
+    let dir = path.parent()?.canonicalize().ok()?;
+    let temp = [std::env::temp_dir(), "/tmp".into()].map(|t| t.canonicalize().ok());
+    // A plain file in a temp folder: not a FIFO to hang on, nor a link to somewhere else.
+    if !name.starts_with("gitviber-open.")
+        || !temp.contains(&Some(dir))
+        || !std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_file())
+    {
         return None;
     }
     let text = std::fs::read_to_string(path).ok()?;
-    let dir = path.parent().and_then(|d| d.canonicalize().ok());
-    let temp = [std::env::temp_dir(), "/tmp".into()].map(|t| t.canonicalize().ok());
-    if dir.is_some() && temp.contains(&dir) {
-        let _ = std::fs::remove_file(path);
-    }
+    let _ = std::fs::remove_file(path);
     Some(
         text.lines()
             .filter(|l| !l.is_empty())
@@ -130,12 +132,21 @@ fn position(spec: &Path) -> Option<(PathBuf, Option<u32>, Option<u32>)> {
     if spec.exists() {
         return Some((spec.to_path_buf(), None, None));
     }
+    // grep -n and compilers end it with one more colon: `a.ts:12:`.
+    let text = spec.to_str()?;
+    let text = text.strip_suffix(':').unwrap_or(text);
+    if Path::new(text).exists() {
+        return Some((text.into(), None, None));
+    }
+    // Past what an editor can show, the last line will do.
     let number = |t: &str| {
-        (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| t.parse::<u32>().ok().map(|n| n.max(1)))
-            .flatten()
+        (!t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())).then(|| {
+            t.parse::<u64>()
+                .unwrap_or(u64::MAX)
+                .clamp(1, i32::MAX as u64) as u32
+        })
     };
-    let (rest, last) = spec.to_str()?.rsplit_once(':')?;
+    let (rest, last) = text.rsplit_once(':')?;
     let last = number(last)?;
     if let Some((path, line)) = rest.rsplit_once(':') {
         if let Some(line) = number(line).filter(|_| Path::new(path).exists()) {
@@ -176,6 +187,9 @@ mod tests {
             "sub/b:2",
             "sub/b:2:7",
             "sub:3",
+            "sub/a.txt:12:",
+            "sub/a.txt:",
+            "sub/a.txt:99999999999999999999",
             "sub/a.txt:x",
             "missing:1",
         ]
@@ -196,6 +210,9 @@ mod tests {
                 file("b:2", None, None),
                 file("b:2", Some(7), None),
                 Some((None, None, None)),
+                file("a.txt", Some(12), None),
+                file("a.txt", None, None),
+                file("a.txt", Some(i32::MAX as u32), None),
                 None,
                 None,
             ]
@@ -217,5 +234,18 @@ mod tests {
         assert_eq!(paths, [PathBuf::from("/a/b.ts:3"), PathBuf::from("/c")]);
         assert!(!request.exists());
         assert!(requested(Path::new("/tmp/other.txt")).is_none());
+        // Only a plain file in a temp folder: not one elsewhere, nor a link.
+        let dir = std::env::temp_dir().join(format!("gitviber-req-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let elsewhere = dir.join("gitviber-open.x");
+        std::fs::write(&elsewhere, "/c\n").unwrap();
+        assert!(requested(&elsewhere).is_none());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&elsewhere, &request).unwrap();
+            assert!(requested(&request).is_none());
+            std::fs::remove_file(&request).unwrap();
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
