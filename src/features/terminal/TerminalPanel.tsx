@@ -29,6 +29,7 @@ import {
   moveGroup,
   openTerminal,
   paneMenuState,
+  paneTakesMouse,
   pasteIntoPane,
   renameGroup,
   restoreSession,
@@ -421,7 +422,7 @@ function PaneView({ id }: { id: number }) {
     <ContextMenu onOpenChange={(open) => open && setCan(paneMenuState(id))}>
       <ContextMenuTrigger asChild>
         {/* Inset from the edges like the code view's text; the scrollbar keeps the right edge, command marks the left. */}
-        <div ref={ref} className="h-full w-full pt-2 pb-1 pl-3" />
+        <div ref={ref} className="h-full w-full pt-2 pb-1 pl-3" onContextMenu={(e) => paneTakesMouse(id) && e.preventDefault()} />
       </ContextMenuTrigger>
       <ContextMenuContent
         onCloseAutoFocus={(e) => {

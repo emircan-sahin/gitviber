@@ -260,8 +260,8 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
       e.preventDefault();
       return false;
     }
-    // ⌘↑ / ⌘↓ between the marked prompts. A full-screen program keeps the keys, and so does a
-    // shell with no marks (Ctrl+↑/↓ off macOS). Plain typing isn't looked up.
+    // ⌘↑ / ⌘↓ between the marked prompts. Off macOS, Ctrl+↑/↓ stay a full-screen program's, or a
+    // shell's with no marks (⌘ keys never reach one anyway). Plain typing isn't looked up.
     const jump = (e.metaKey || e.ctrlKey || e.altKey) && commandIn(JUMP_COMMANDS, e);
     if (jump && term.buffer.active.type === "normal" && p.marks.hasCommands()) {
       if (e.type === "keydown") p.marks.jump(jump === "terminal.prevCommand" ? -1 : 1);
@@ -690,6 +690,12 @@ export async function clearFocused() {
 export function paneMenuState(id: number) {
   const p = panes.get(id);
   return { selection: !!p?.term.hasSelection(), paste: !!p && !p.term.options.disableStdin, output: !!p?.marks.hasOutput() };
+}
+
+/** A program reading the mouse (tmux, vim `mouse=a`) gets the right-click, and shows its own menu. */
+export function paneTakesMouse(id: number) {
+  const mode = panes.get(id)?.term.modes.mouseTrackingMode;
+  return !!mode && mode !== "none";
 }
 
 export function copyPaneSelection(id: number) {
