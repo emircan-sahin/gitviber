@@ -15,7 +15,7 @@ import { isInside } from "../path";
 import { readJson } from "../storage";
 import { focusPanel, setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
-import { pathPastes } from "./paste";
+import { pastedLines, pathPastes } from "./paste";
 import { osc52Text } from "./osc52";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask } from "@tauri-apps/plugin-dialog";
@@ -317,12 +317,22 @@ async function pasteInto(p: Pane, fallback = "") {
     return null;
   });
   if (!got || got.kind === "empty") {
-    if (fallback) p.term.paste(fallback);
+    if (fallback) await pasteText(p, fallback);
     return;
   }
-  if (got.kind === "text") p.term.paste(got.text);
+  if (got.kind === "text") await pasteText(p, got.text);
   else if (got.kind === "files") pastePaths(p, got.paths);
   else if (got.kind === "image") pastePaths(p, [got.path]);
+}
+
+/** Several lines into a program without bracketed paste run one by one as they arrive: asked first, as in VS Code. */
+async function pasteText(p: Pane, text: string) {
+  const lines = pastedLines(text);
+  if (lines > 1 && !p.term.modes.bracketedPasteMode) {
+    const ok = await ask(`The program in this terminal takes a paste as typed keys, so each of the ${lines} lines runs as it arrives.`, { title: `Paste ${lines} lines`, kind: "warning", okLabel: "Paste" });
+    if (!ok || !panes.has(p.id)) return;
+  }
+  p.term.paste(text);
 }
 
 /** Paths as the AI CLIs take them: each its own (bracketed) paste, never typed as keys. */
