@@ -12,7 +12,7 @@ import { plural } from "@/lib/format";
 import { folderName, parentFolder } from "@/lib/path";
 import { createStore } from "@/lib/store";
 import { BaseSelect } from "@/features/branches/BaseSelect";
-import { NameHint } from "@/features/branches/NameHint";
+import { NameHint } from "@/components/NameHint";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { type GitRun, type NetRun, useSubmit } from "@/hooks/useGitAction";
 

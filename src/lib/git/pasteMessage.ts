@@ -1,8 +1,7 @@
 /**
- * A multi-line paste into the one-line Summary field (which WebKit would flatten into spaces),
- * split as git reads a message: blank lines before it dropped, its first line in at the caret
- * (`from`–`to`), the rest starting the description. Null for a one-line paste, which the field
- * takes as usual. `startBody`: the description as it started, which the rest replaces.
+ * A multi-line paste into Summary, which WebKit would flatten into spaces, split as git reads a
+ * message: its first line in at the caret (`from`–`to`), the rest starting the description, which
+ * it replaces while that's empty or still `startBody`. Null for one line.
  */
 export function pasteMessage(draft: { summary: string; body: string }, startBody: string, text: string, from: number, to: number) {
   const normalized = text.replace(/\r\n?/g, "\n");

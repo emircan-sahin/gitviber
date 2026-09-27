@@ -6,7 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { api, type Commit } from "@/lib/api";
 import { matchesCommand } from "@/lib/commands/keybindings";
 import { refNameCheck } from "@/lib/git/refs";
-import { NameHint } from "@/features/branches/NameHint";
+import { NameHint } from "@/components/NameHint";
 import { useSubmit } from "@/hooks/useGitAction";
 import type { Actions } from "./commitActions";
 

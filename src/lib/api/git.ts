@@ -121,7 +121,11 @@ export const api = {
   removeWorktree: (path: string, force: boolean) => invoke<void>("remove_worktree", { path, force }),
   /** Nested repositories are refused unless `allowNested`: git would stage only a gitlink. */
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
-  unstage: (paths: string[]) => invoke<void>("unstage", { paths }),
+  /**
+   * A staged rename's old path goes too, or its deletion would stay staged. A copy's source
+   * (status.renames=copies) is a file of its own, whose staged edits stay.
+   */
+  unstage: (files: FileChange[]) => invoke<void>("unstage", { paths: files.flatMap((f) => (f.status === "R" && f.oldPath ? [f.path, f.oldPath] : [f.path])) }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
   /** Stages, unstages or discards some lines of a diff (lines.rs); a discard is undoable. */
   changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
@@ -213,8 +217,6 @@ export const api = {
   deleteRemoteTag: (name: string, op?: NetOp) => network<string>("delete_remote_tag", { name }, op),
   /** The tags that remote has. A network call: use `remoteTags` in lib/repo/remoteTags.ts, which caches it. */
   remoteTags: (op?: NetOp) => network<RemoteTags>("remote_tags", {}, op),
-  /** https://github.com/owner/name, or null when origin isn't on GitHub. */
-  githubWebUrl: () => invoke<string | null>("github_web_url"),
   /** The commit to link the working tree's `path` (or its 1-based `lines`) to on GitHub, and where the lines are in it. Refused, saying why, when it isn't there yet. */
   githubPermalink: (path: string, lines: [number, number] | null) => invoke<{ sha: string; tree: boolean; lines: [number, number] | null }>("github_permalink", { path, lines }),
   journal: () => invoke<Journal>("journal"),
