@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Windowed } from "@/components/Windowed";
 import { api, type Commit, type FileChange, type RepoStatus } from "@/lib/api";
+import { hasConflictMarkers } from "@/lib/git/conflicts";
 import { ignorePattern } from "@/lib/git/gitignore";
 import { focusPanel } from "@/lib/ui/panels";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/ui/useListNav";
@@ -65,6 +66,22 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
 
   const stage = (rows: Change[]) => act("Stage failed", () => api.stage(paths(rows)));
   const unstage = (rows: Change[]) => act("Unstage failed", () => api.unstage(unstagePaths(rows.map((r) => r.file))));
+  // Both sides edited (UU) or added (AA) the file, so git wrote markers into it; staging them
+  // as they are would commit them.
+  const markResolved = async (rows: Change[]) => {
+    const marked: string[] = [];
+    for (const { file } of rows) {
+      if (file.conflict !== "UU" && file.conflict !== "AA") continue;
+      const now = await api.readFile(file.path).catch(() => null);
+      if (now?.exists && !now.binary && hasConflictMarkers(now.text)) marked.push(file.path);
+    }
+    if (marked.length) {
+      const which = marked.length === 1 ? `${marked[0]} still has` : `${files(marked.length)} still have`;
+      const ok = await ask(`${which} conflict markers. Mark ${marked.length === 1 ? "it" : "them"} resolved anyway?`, { title: "Mark resolved", kind: "warning", okLabel: "Mark Resolved" });
+      if (!ok) return;
+    }
+    await stage(rows);
+  };
   const resolve = (rows: Change[], side: "ours" | "theirs") =>
     act("Resolve failed", async () => {
       for (const r of rows) await api.resolveSide(r.file.path, side);
@@ -245,6 +262,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
             onRevealInExplorer={onRevealInExplorer}
             stage={stage}
             unstage={unstage}
+            markResolved={markResolved}
             discard={discard}
             ignore={ignore}
             resolve={resolve}
@@ -283,12 +301,12 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
             count={status.conflicted.length}
             tone="text-conflict"
             pinned={!!pickedConflicts}
-            action={pickedConflicts && <SectionBtn onClick={() => stage(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
+            action={pickedConflicts && <SectionBtn onClick={() => markResolved(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
           >
             {rowsOf("conflict", status.conflicted, (file) =>
               row({ kind: "conflict", file }, (rows) => (
                 <>
-                  <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => stage(rows)}>
+                  <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => markResolved(rows)}>
                     <Check />
                   </RowAction>
                   <RowAction label={rows.length > 1 ? `Take current version of ${files(rows.length)}` : "Take current version"} onClick={() => resolve(rows, "ours")}>

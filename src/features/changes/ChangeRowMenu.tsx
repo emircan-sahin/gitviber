@@ -22,6 +22,7 @@ export function ChangeRowMenu({
   onRevealInExplorer,
   stage,
   unstage,
+  markResolved,
   discard,
   ignore,
   resolve,
@@ -38,6 +39,7 @@ export function ChangeRowMenu({
   onRevealInExplorer: (path: string) => void;
   stage: (rows: Change[]) => void;
   unstage: (rows: Change[]) => void;
+  markResolved: (rows: Change[]) => void;
   discard: (list: FileChange[]) => void;
   ignore: (list: FileChange[]) => void;
   resolve: (rows: Change[], side: "ours" | "theirs") => void;
@@ -98,7 +100,7 @@ export function ChangeRowMenu({
       )}
       {sel.kind === "conflict" && (
         <>
-          <ContextMenuItem onSelect={() => stage(rows)}>
+          <ContextMenuItem onSelect={() => markResolved(rows)}>
             <Check /> {n > 1 ? `Mark ${n} as Resolved` : "Mark as Resolved"}
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => resolve(rows, "ours")}>
