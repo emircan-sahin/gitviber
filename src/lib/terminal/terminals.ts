@@ -16,6 +16,8 @@ import { setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
 import { pathPastes } from "./paste";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { ask } from "@tauri-apps/plugin-dialog";
+import { plural } from "../format";
 import { IS_LINUX, IS_WINDOWS } from "../platform";
 import { toast } from "../app/toast";
 
@@ -471,8 +473,13 @@ export function closeGroup(id: number) {
   state.groups.find((g) => g.id === id)?.panes.forEach((p) => closePane(p.id));
 }
 
-export function closeOtherGroups(id: number) {
-  for (const g of state.groups) if (g.id !== id) closeGroup(g.id);
+/** Kills every tab but `id`, asking first when one of them runs a command (an agent, a dev server). */
+export async function closeOtherGroups(id: number) {
+  const others = state.groups.filter((g) => g.id !== id);
+  const ptys = others.flatMap((g) => g.panes.flatMap((p) => panes.get(p.id)?.pty ?? []));
+  const busy = ptys.length ? await pty.busy(ptys).catch(() => 0) : 0;
+  if (busy && !(await ask(`Killing the other terminals stops ${plural(busy, "command")} still running.`, { title: "Kill other terminals", kind: "warning", okLabel: "Kill" }))) return;
+  for (const g of others) closeGroup(g.id);
 }
 
 /** Names a tab; an empty name gives it back the folder's. */

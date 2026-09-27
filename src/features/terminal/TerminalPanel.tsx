@@ -1,4 +1,4 @@
-import { ChevronDown, Columns2, Eraser, FolderGit2, Pencil, Plus, SquareTerminal, Trash2, X } from "lucide-react";
+import { ChevronDown, Columns2, Eraser, FolderGit2, ListX, Pencil, Plus, SquareTerminal, Trash2, X } from "lucide-react";
 import { FindBox, useFindBox } from "@/components/FindBox";
 import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
@@ -34,7 +34,7 @@ import {
 } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
 import { folderName } from "@/lib/path";
-import { NameInput } from "@/features/explorer/FileTree";
+import { NameInput } from "@/components/NameInput";
 import { plural } from "@/lib/format";
 
 /** What the workspace needs even while the panel is hidden: the panel shortcuts, and following the worktree that's open. */
@@ -174,6 +174,7 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
   const title = g.panes.find((p) => p.id === g.focused)?.title;
   const where = title ? `${cwd} · ${title}` : cwd;
   const label = g.name ? `${g.name} · ${where}` : where;
+  const shown = g.name ?? folderName(cwd);
   const [splitKey, clearKey] = [useShortcut("terminal.split"), useShortcut("terminal.clear")];
   // Split and Clear act on the open tab's focused pane.
   const inTab = (run: () => void) => () => {
@@ -200,15 +201,16 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
       <SquareTerminal className={cn("size-3.5 shrink-0", here ? "text-primary" : "text-subtle")} />
       {renaming ? (
         <NameInput
-          initial={g.name ?? ""}
+          initial={shown}
           onDone={(name, refocus) => {
             setRenaming(false);
-            if (name !== null) renameGroup(g.id, name);
+            // Left as it was, the folder's name isn't a name the user gave.
+            if (name !== null && name.trim() !== shown) renameGroup(g.id, name);
             if (refocus) activateGroup(g.id);
           }}
         />
       ) : (
-        <span className="truncate">{g.name ?? folderName(cwd)}</span>
+        <span className="truncate">{shown}</span>
       )}
       {branch && <span className="min-w-0 truncate font-mono text-[10.5px] text-subtle">{branch}</span>}
       {g.panes.length > 1 && <span className="rounded-sm bg-elevated px-1 font-mono text-[10px] leading-4 text-muted-foreground">{g.panes.length}</span>}
@@ -257,8 +259,8 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
         <ContextMenuItem onSelect={() => closeGroup(g.id)}>
           <Trash2 /> Kill Terminal
         </ContextMenuItem>
-        <ContextMenuItem disabled={alone} onSelect={() => closeOtherGroups(g.id)}>
-          Kill Others
+        <ContextMenuItem disabled={alone} onSelect={() => void closeOtherGroups(g.id)}>
+          <ListX /> Kill Others
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

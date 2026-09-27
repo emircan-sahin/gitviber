@@ -61,10 +61,11 @@ pub fn pty_kill(state: State<'_, AppState>, id: u32) {
     state.ptys.kill(id)
 }
 
-/// How many terminals are running a command, which restarting the app would stop.
+/// How many terminals (of `ids`, or all) are running a command, which restarting the app or
+/// killing them would stop.
 #[tauri::command]
-pub fn pty_busy(state: State<'_, AppState>) -> usize {
-    state.ptys.busy()
+pub fn pty_busy(state: State<'_, AppState>, ids: Option<Vec<u32>>) -> usize {
+    state.ptys.busy(ids.as_deref())
 }
 
 /// See updates.rs.
