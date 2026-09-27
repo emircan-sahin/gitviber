@@ -26,7 +26,7 @@ export function GitSection() {
           variant="field"
         />
       </Field>
-      <Field label="Notify when done in the background" hint="A desktop notification when a push, pull, fetch or clone ends while GitViber isn't the app in front. Turning it on asks your OS for permission.">
+      <Field label="Notify in the background" hint="A desktop notification when a push, pull, fetch or clone ends, or a terminal rings or its agent asks for you, while GitViber isn't the app in front. Turning it on asks your OS for permission.">
         <Switch checked={s.notify} onChange={(v) => void enableNotifications(v)} />
       </Field>
       <WorktreeRootField />

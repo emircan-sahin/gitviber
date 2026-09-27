@@ -23,8 +23,8 @@ import { statusInfo } from "@/components/StatusBadge";
 
 export interface FileTreeHandle {
   collapseAll: () => void;
-  /** Opens the folders down to `path`, selects it and focuses the tree. */
-  reveal: (path: string) => void;
+  /** Opens the folders down to `path`, selects it and focuses the tree; `focus` false leaves focus and the filter be. */
+  reveal: (path: string, focus?: boolean) => void;
   /** Opens the filter, as Find does with focus in the tree. */
   filter: () => void;
 }
@@ -166,12 +166,13 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       setPicked(null);
       setSelected((s) => s && s.split("/")[0]);
     },
-    reveal: (path) => {
-      filter.close();
+    reveal: (path, focus = true) => {
+      // Picked along with a file opened elsewhere, the user's filter stays: leaving it shows the pick.
+      if (focus) filter.close();
       openTo(path);
       setSelected(path);
       setPicked(null);
-      treeRef.current?.focus();
+      if (focus) treeRef.current?.focus();
     },
     filter: filter.open,
   }));

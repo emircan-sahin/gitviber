@@ -6,32 +6,35 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { errorMessage, pty, type PtyExit } from "../api";
 import { compileFind, type FindOptions } from "../ui/findQuery";
 import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
 import { terminalLinks } from "../links/linkHost";
 import { getSettings, subscribeSettings } from "../settings";
-import { isInside } from "../path";
+import { folderName, isInside } from "../path";
 import { readJson } from "../storage";
 import { focusedPanel, focusPanel, setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
 import { pastedLines, pathPastes } from "./paste";
 import { osc52Text } from "./osc52";
 import { CommandMarks } from "./commandMarks";
+import { dueForSave, SAVE_MS, type SaveState } from "./saveRound";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask } from "../app/ask";
 import { plural } from "../format";
 import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
 import { copyText } from "../app/clipboard";
+import { kittyNotes, type Note, osc777Note, osc9Note } from "./attention";
+import { notifyIfAway } from "../app/notify";
 
 /**
  * Terminals live here, not in React: switching worktrees remounts the whole workspace, and
  * a running shell (an agent, a dev server) must not notice. Panes mount by moving their
  * host element into whatever container shows them.
  */
-interface Pane {
+interface Pane extends SaveState {
   id: number;
   /** Where it opened, which decides the worktree it belongs to; `dir` is where its shell went since. */
   cwd: string;
@@ -40,7 +43,7 @@ interface Pane {
   term: Terminal;
   fit: FitAddon;
   serialize: SerializeAddon;
-  /** The history last saved, until new output or a resize: a quiet pane isn't serialized again. */
+  /** The history last serialized for the session save (saveRound has when, and what's due). */
   saved: string | null;
   search: SearchAddon;
   /** The WebGL renderer, while the pane has one, and its context to lose on close. */
@@ -65,6 +68,8 @@ interface PaneInfo {
   cwd: string;
   /** What the shell set as the window title (OSC 0/2), if anything. */
   title: string;
+  /** It rang or sent a notification while not looked at, and hasn't been since. */
+  needsYou?: boolean;
 }
 
 /** A tab: one or more panes side by side. */
@@ -130,41 +135,61 @@ let saveTimer: number | undefined;
 /** Throttled rather than debounced, so a shell that never stops printing still gets saved. */
 function scheduleSave() {
   saveTimer ??= window.setTimeout(async () => {
-    // Where the shells with new output are now, asked as they're saved (a reload's save keeps the last answer).
-    await Promise.all([...panes.values()].filter((p) => p.saved === null).map(shellDir));
+    const due = dueForSave(panes.values(), Date.now(), false);
+    // Where their shells are now, asked before they're saved (a reload's save keeps the last answer).
+    await Promise.all(due.map(shellDir));
     saveTimer = undefined;
-    saveSession();
-  }, 2000);
+    saveSession(false, due.filter((p) => panes.has(p.id)));
+  }, SAVE_MS);
 }
 
-// The throttle would lose the last seconds of output to a reload (⌘R).
-window.addEventListener("pagehide", () => saveSession());
+// Out of sight (a reload, a quit (lib/app/quit), the window hidden) a stall goes unseen: every changed pane is saved.
+window.addEventListener("pagehide", () => saveSession(true));
+document.addEventListener("visibilitychange", () => document.hidden && saveSession(true));
 
-function saveSession() {
+/** The layout last written, to skip a write that changes nothing (a title changing, a pane still printing). */
+let written = "";
+
+/** `due`: the panes whose history this round saves (dueForSave), when already picked. */
+function saveSession(all = false, due?: Pane[]) {
   // Nothing opened yet: keep the last run's terminals for the restore offer.
   if (!state.groups.length && state.restorable) return;
   try {
-    if (!state.groups.length) return localStorage.removeItem(SESSION_KEY);
+    if (!state.groups.length) {
+      written = "";
+      return localStorage.removeItem(SESSION_KEY);
+    }
+    const now = Date.now();
+    const saving = due ?? dueForSave(panes.values(), now, all);
+    for (const p of saving) {
+      // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
+      p.saved = p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true });
+      [p.dirty, p.serializedAt] = [false, now];
+    }
     const snapshot = (history: boolean): SavedSession => ({
-      savedAt: Date.now(),
+      savedAt: now,
       active: Math.max(0, state.groups.findIndex((g) => g.id === state.active)),
       groups: state.groups.map((g) => ({
         name: g.name,
         focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
         panes: g.panes.map(({ id, cwd }) => {
-          const p = panes.get(id);
-          const dir = p?.dir;
-          // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
-          return { cwd, dir: dir !== cwd ? dir : undefined, history: history && p ? (p.saved ??= p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true })) : "" };
+          const dir = panes.get(id)?.dir;
+          return { cwd, dir: dir !== cwd ? dir : undefined, history: (history && panes.get(id)?.saved) || "" };
         }),
       })),
     });
-    try {
-      localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(true)));
-    } catch {
-      // Over quota: the layout alone is still worth keeping.
-      localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(false)));
+    const layout = JSON.stringify({ ...snapshot(false), savedAt: 0 });
+    if (saving.length || layout !== written) {
+      try {
+        localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(true)));
+      } catch {
+        // Over quota: the layout alone is still worth keeping.
+        localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(false)));
+      }
+      written = layout;
     }
+    // Another round for panes left for later, until each is saved.
+    if ([...panes.values()].some((p) => p.dirty)) scheduleSave();
   } catch {
     // Not critical.
   }
@@ -238,20 +263,22 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: null, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, marks: new CommandMarks(term) };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, marks: new CommandMarks(term) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   term.onWriteParsed(() => {
-    p.saved = null;
+    [p.dirty, p.wroteAt] = [true, Date.now()];
     scheduleSave();
   });
   term.onData((data) => send(p, data));
   term.onResize(({ cols, rows }) => {
     // Reflow rewraps the history.
-    p.saved = null;
+    p.dirty = true;
+    scheduleSave();
     if (p.pty !== null) void pty.resize(p.pty, cols, rows).catch(() => {});
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
+  watchAttention(p);
   // OSC 52 copies (clipboard.rs writes macOS's and Linux's only). Taken from the pane in use alone,
   // where a yank or a tmux copy happens: output in the background can't replace the clipboard.
   if (!IS_WINDOWS)
@@ -732,8 +759,8 @@ export async function clearFocused() {
   const busy = p.pty !== null && (await pty.busy([p.pty]).catch(() => 0)) > 0;
   if (busy || !panes.has(p.id)) return;
   p.term.clear();
-  // clear() skips the parser, so onWriteParsed doesn't drop the saved copy.
-  p.saved = null;
+  // clear() skips the parser, so onWriteParsed doesn't mark the pane.
+  p.dirty = true;
   scheduleSave();
 }
 
@@ -799,9 +826,64 @@ export function moveGroup(id: number, dir: 1 | -1) {
 }
 
 function focusPane(id: number) {
+  lookedAt(id);
   const g = state.groups.find((x) => x.panes.some((p) => p.id === id));
   if (!g || (g.focused === id && state.active === g.id)) return;
   set({ active: g.id, groups: state.groups.map((x) => (x === g ? { ...g, focused: id } : x)) });
+}
+
+/**
+ * A bell, or a notification escape (OSC 9, 777, 99: Claude Code, Codex), from a pane not being
+ * looked at marks it, its tab and its worktree, and tells the OS when the app is in the background
+ * and the user turned that on. Once until it's looked at: a program ringing on and on is one mark.
+ */
+function watchAttention(p: Pane) {
+  p.term.onBell(() => needsYou(p));
+  const readers: [number, (data: string) => Note | null][] = [[9, osc9Note], [777, osc777Note], [99, kittyNotes()]];
+  for (const [code, read] of readers)
+    p.term.parser.registerOscHandler(code, (data) => {
+      const note = read(data);
+      if (note) needsYou(p, note);
+      // Not a notification (OSC 9;4 is a progress bar): left to any other handler.
+      return !!note;
+    });
+}
+
+function needsYou(p: Pane, note?: Note) {
+  const g = state.groups.find((x) => x.panes.some((i) => i.id === p.id));
+  const info = g?.panes.find((i) => i.id === p.id);
+  if (!g || !info || info.needsYou || (document.hasFocus() && document.activeElement === p.term.textarea)) return;
+  update(p.id, (i) => ({ ...i, needsYou: true }));
+  const text = [note?.title, note?.body].filter(Boolean).join(": ");
+  notifyIfAway(g.name ?? (folderName(p.cwd) || p.cwd), text || info.title || "Needs you");
+}
+
+function lookedAt(id: number) {
+  if (state.groups.some((g) => g.panes.some((p) => p.id === id && p.needsYou))) update(id, (p) => ({ ...p, needsYou: false }));
+}
+
+// Back in the window, the pane that has the keys is looked at again.
+window.addEventListener("focus", () => {
+  for (const p of panes.values()) if (document.activeElement === p.term.textarea) lookedAt(p.id);
+});
+
+/** Folders of the panes that need the user, "\0"-joined: a string, so a hook re-renders only when it changes. */
+const needing = () =>
+  state.groups
+    .flatMap((g) => g.panes.filter((p) => p.needsYou).map((p) => p.cwd))
+    .sort()
+    .join("\0");
+
+/** The folders of panes that need the user (needsYou), for the worktree picker's marks. */
+export function useNeedsYou() {
+  const key = useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+    needing,
+  );
+  return useMemo(() => (key ? key.split("\0") : []), [key]);
 }
 
 /** The next split pane of the open tab (⌥⌘←/→, as in VS Code), wrapping around. */

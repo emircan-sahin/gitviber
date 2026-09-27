@@ -72,6 +72,9 @@ pub fn run() {
     builder
         .menu(menu::build)
         .on_menu_event(|app, event| {
+            if event.id() == menu::QUIT {
+                return menu::quit(app);
+            }
             let _ = app.emit("menu", event.id().as_ref());
         })
         .on_page_load(|webview, payload| {
@@ -138,6 +141,7 @@ pub fn run() {
             commands::files::media_file,
             commands::files::list_dir,
             commands::files::list_files,
+            commands::files::path_kinds,
             commands::files::search_files,
             commands::changes::change_lines,
             commands::stash::stash_branch,
@@ -281,6 +285,7 @@ pub fn run() {
             commands::app::keep_dropped,
             commands::app::copy_files,
             commands::app::pty_busy,
+            commands::app::quit,
             commands::app::update_mode,
             commands::app::take_opened,
             commands::app::install_cli

@@ -1,5 +1,6 @@
 // Desktop notifications, when the user turned them on (Settings → Git): a network command that
-// ends while the app is in the background says so, as GitHub Desktop does.
+// ends while the app is in the background says so, as GitHub Desktop does, and so does a terminal
+// that rings or sends a notification (lib/terminal/terminals), as Ghostty and iTerm2 do.
 import { isPermissionGranted, requestPermission, sendNotification } from "@tauri-apps/plugin-notification";
 import { getSettings, updateSettings } from "../settings";
 import { toast } from "./toast";

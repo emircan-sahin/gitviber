@@ -65,10 +65,10 @@ pub async fn install_cli() -> Res<String> {
     blocking(cli::install).await
 }
 
-/// Folders opened from outside the window since the page last asked (opened.rs). Off the main
+/// Paths opened from outside the window since the page last asked (opened.rs). Off the main
 /// thread: resolving a path on a stalled network volume can hang.
 #[tauri::command]
-pub async fn take_opened(app: AppHandle) -> Res<Vec<String>> {
+pub async fn take_opened(app: AppHandle) -> Res<crate::opened::Taken> {
     blocking(move || Ok(crate::opened::take(&app))).await
 }
 
@@ -97,6 +97,12 @@ pub fn pty_kill(state: State<'_, AppState>, id: u32) {
 #[tauri::command]
 pub fn pty_busy(state: State<'_, AppState>, ids: Option<Vec<u32>>) -> usize {
     state.ptys.busy(ids.as_deref())
+}
+
+/// The page saved what it keeps on the way out (menu::quit).
+#[tauri::command]
+pub fn quit(app: AppHandle) {
+    app.exit(0);
 }
 
 /// See updates.rs.
