@@ -145,10 +145,7 @@ pub fn add_worktree(
 pub fn include_count(repo: &Path) -> Result<usize, String> {
     let from = include_source(repo);
     let files = worktree_includes(&from)?;
-    Ok(files
-        .iter()
-        .filter(|f| crate::fs::copyable(&from, f).is_some())
-        .count())
+    Ok(crate::fs::copyable(&from, &files).count())
 }
 
 /// The folder `add_worktree` would make for `branch`, refused if it's taken; callers with
