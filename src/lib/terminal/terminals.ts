@@ -13,7 +13,7 @@ import { terminalLinks } from "../links/linkHost";
 import { getSettings, subscribeSettings } from "../settings";
 import { isInside } from "../path";
 import { readJson } from "../storage";
-import { setTerminalFocus } from "../ui/panels";
+import { focusPanel, setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
 import { pathPastes } from "./paste";
 import { osc52Text } from "./osc52";
@@ -472,6 +472,7 @@ export function splitActive() {
 function closePane(id: number) {
   const p = panes.get(id);
   if (!p) return;
+  const focused = document.activeElement;
   panes.delete(id);
   if (searching?.pane === p) searching = null;
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});
@@ -498,7 +499,13 @@ function closePane(id: number) {
     active = groups[Math.min(i, groups.length - 1)]?.id ?? null;
   }
   set({ groups, active, open: state.open && groups.length > 0 });
-  focusActive();
+  // Only focus the close took away (the pane's, its tab's) moves on: a shell exiting in the
+  // background leaves the commit box alone, and ⌫ on a tab stays on the tabs.
+  requestAnimationFrame(() => {
+    if (!focused || focused === document.body || (document.activeElement && document.activeElement !== document.body)) return;
+    if (groups.length) focusActive();
+    else focusPanel("code");
+  });
 }
 
 /** Whether to kill `ids`: asked first when one of them runs a command (an agent, a dev server), never for a shell at its prompt. */
