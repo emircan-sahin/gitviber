@@ -501,22 +501,31 @@ function closePane(id: number) {
   focusActive();
 }
 
-export function closeFocused() {
-  const g = activeGroup();
-  if (g) closePane(g.focused);
-}
-
-export function closeGroup(id: number) {
-  state.groups.find((g) => g.id === id)?.panes.forEach((p) => closePane(p.id));
-}
-
-/** Kills every tab but `id`, asking first when one of them runs a command (an agent, a dev server). */
-export async function closeOtherGroups(id: number) {
-  const others = state.groups.filter((g) => g.id !== id);
-  const ptys = others.flatMap((g) => g.panes.flatMap((p) => panes.get(p.id)?.pty ?? []));
+/** Whether to kill `ids`: asked first when one of them runs a command (an agent, a dev server), never for a shell at its prompt. */
+async function mayKill(ids: number[], title: string, message: (busy: number) => string) {
+  const ptys = ids.flatMap((id) => panes.get(id)?.pty ?? []);
   const busy = ptys.length ? await pty.busy(ptys).catch(() => 0) : 0;
-  if (busy && !(await ask(`Killing the other terminals stops ${plural(busy, "command")} still running.`, { title: "Kill other terminals", kind: "warning", okLabel: "Kill" }))) return;
-  for (const g of others) closeGroup(g.id);
+  return !busy || ask(message(busy), { title, kind: "warning", okLabel: "Kill" });
+}
+
+const stopsHere = (busy: number) => `Killing this terminal stops ${busy === 1 ? "the command" : `the ${busy} commands`} running in it.`;
+
+export async function closeFocused() {
+  const id = activeGroup()?.focused;
+  if (id !== undefined && (await mayKill([id], "Kill terminal", stopsHere))) closePane(id);
+}
+
+/** False when the user kept it. */
+export async function closeGroup(id: number) {
+  const ids = state.groups.find((g) => g.id === id)?.panes.map((p) => p.id) ?? [];
+  if (!ids.length || !(await mayKill(ids, "Kill terminal", stopsHere))) return false;
+  ids.forEach(closePane);
+  return true;
+}
+
+export async function closeOtherGroups(id: number) {
+  const ids = state.groups.flatMap((g) => (g.id === id ? [] : g.panes.map((p) => p.id)));
+  if (await mayKill(ids, "Kill other terminals", (busy) => `Killing the other terminals stops ${plural(busy, "command")} still running.`)) ids.forEach(closePane);
 }
 
 /** Names a tab; an empty name gives it back the folder's. */
