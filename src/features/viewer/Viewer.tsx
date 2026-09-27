@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type DiffPair, errorMessage, type FileChange, type FileText, type RepoStatus } from "@/lib/api";
+import { api, type DiffPair, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { withNetActivity } from "@/lib/repo/netActivity";
 import { onReveal, revealWaits } from "@/lib/editor/reveal";
 import { editedText, saveEdit, useEdited } from "@/lib/editor/edits";
@@ -338,22 +338,21 @@ function placeholderFor(pair: DiffPair, isFile: boolean, file: FileChange | null
     // Added or deleted with no line changed: there were none.
     if (a.exists !== b.exists) return "Empty file";
     if (file?.status === "R") return "Renamed without changes";
+    if (file?.status === "C") return "Copied without changes";
     return "No textual changes";
   }
   return null;
 }
 
-/** Why a last line shows removed and added unchanged: git's "\ No newline at end of file". */
+/** Why a last line shows removed and added unchanged: the newline after it came or went. */
 function newlineNote({ original: a, modified: b, rows }: DiffPair) {
-  const bare = (f: FileText, side: "o" | "n") => {
-    if (!f.exists || f.text === "" || f.text.endsWith("\n")) return false;
-    // Rows hold every line, so the last one naming this side is its last line.
-    for (let i = rows.length - 1; i >= 0; i--) if (rows[i][side]) return rows[i].k !== 0;
-    return false;
-  };
-  if (bare(b, "n")) return "No newline at end of file";
-  if (bare(a, "o")) return "Newline added at end of file";
-  return null;
+  if (!a.text || !b.text || a.text.endsWith("\n") === b.text.endsWith("\n")) return null;
+  // Rows hold every line, so the last one naming the new side is its last line; ignoring
+  // whitespace can leave it unchanged.
+  let last = rows.length - 1;
+  while (last >= 0 && !rows[last].n) last--;
+  if (last < 0 || rows[last].k === 0) return null;
+  return b.text.endsWith("\n") ? "Newline added at end of file" : "No newline at end of file";
 }
 
 function EmptyViewer({ hasTabs }: { hasTabs: boolean }) {
