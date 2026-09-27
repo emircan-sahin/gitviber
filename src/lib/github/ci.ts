@@ -41,7 +41,7 @@ async function ask(target: Target, shas: string[]) {
 
 /**
  * CI's state for each of `shas` that has one, kept current while shown. `live` false: asked again
- * only on the GitHub views' wakes (focus), for a badge that's always on screen.
+ * only on focus and the GitHub views' 5-minute recheck, for a badge that's always on screen.
  */
 export function useCi(target: Target, shas: string[], live = true): Record<string, CiState> {
   // With nothing to show, no re-render on every answer app-wide.
