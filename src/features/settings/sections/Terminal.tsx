@@ -1,4 +1,4 @@
-import { OPTION_KEYS, type OptionKey, updateSettings, useSettings } from "@/lib/settings";
+import { DIM_LEVELS, OPTION_KEYS, type OptionKey, updateSettings, useSettings } from "@/lib/settings";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
 import { Field } from "@/features/settings/controls";
@@ -14,6 +14,18 @@ export function TerminalSection() {
         commands={["terminal.prevCommand", "terminal.nextCommand"]}
       >
         <Switch checked={s.shellIntegration} onChange={(v) => updateSettings({ shellIntegration: v })} />
+      </Field>
+      <Field
+        label="Dim unfocused panes"
+        hint="In a split terminal, the panes other than the one you type into fade, so it's clear where the keys go."
+        commands={["terminal.split", "terminal.splitDown"]}
+      >
+        <Segmented<string>
+          value={String(s.terminalInactiveDim)}
+          onChange={(v) => updateSettings({ terminalInactiveDim: Number(v) })}
+          options={DIM_LEVELS.map((d) => ({ value: String(d), label: d ? `${d}%` : "Off" }))}
+          variant="field"
+        />
       </Field>
       {IS_MAC && (
         <Field

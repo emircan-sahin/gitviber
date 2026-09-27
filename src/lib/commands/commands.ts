@@ -109,11 +109,21 @@ export const COMMANDS = [
   // Off macOS Ctrl+Shift, as in Linux terminals: Ctrl+letter is the shell's and desktops take Super
   // chords (KDE: Super+D, Super+W). The ones below it only run in the terminal.
   { id: "terminal.new", title: "New Terminal", category: "Terminal", keys: ["cmd+t"], keysOther: ["shift+cmd+t"] },
-  { id: "terminal.split", title: "Split Terminal", category: "Terminal", keys: ["cmd+d"], keysOther: ["shift+cmd+d"], local: "the terminal" },
+  // The id is from when it only split right; kept so a user's binding for it still applies.
+  { id: "terminal.split", title: "Split Terminal Right", category: "Terminal", keys: ["cmd+d"], keysOther: ["shift+cmd+d"], local: "the terminal", noRepeat: true },
+  // ⇧⌘D as in iTerm2, Ghostty and cmux. Elsewhere Ctrl+Shift+D is split right, so down adds Alt.
+  { id: "terminal.splitDown", title: "Split Terminal Down", category: "Terminal", keys: ["shift+cmd+d"], keysOther: ["alt+shift+cmd+d"], local: "the terminal", noRepeat: true },
   { id: "terminal.clear", title: "Clear Terminal", category: "Terminal", keys: ["cmd+k"], keysOther: ["shift+cmd+k"], local: "the terminal" },
   { id: "terminal.close", title: "Close Terminal Pane", category: "Terminal", keys: ["cmd+w"], keysOther: ["shift+cmd+w"], local: "the terminal" },
   { id: "terminal.prevPane", title: "Previous Terminal Pane", category: "Terminal", keys: ["alt+cmd+left"], keysOther: ["ctrl+alt+left"], local: "the terminal" },
   { id: "terminal.nextPane", title: "Next Terminal Pane", category: "Terminal", keys: ["alt+cmd+right"], keysOther: ["ctrl+alt+right"], local: "the terminal" },
+  // Unbound elsewhere: Ctrl+Shift+arrows select by word in shells (PSReadLine), GNOME takes Ctrl+Alt+Shift+arrows, and Alt+arrows move by word.
+  { id: "terminal.focusLeft", title: "Focus Terminal Pane Left", category: "Terminal", keys: ["shift+cmd+left"], keysOther: [], local: "the terminal" },
+  { id: "terminal.focusRight", title: "Focus Terminal Pane Right", category: "Terminal", keys: ["shift+cmd+right"], keysOther: [], local: "the terminal" },
+  { id: "terminal.focusUp", title: "Focus Terminal Pane Above", category: "Terminal", keys: ["shift+cmd+up"], keysOther: [], local: "the terminal" },
+  { id: "terminal.focusDown", title: "Focus Terminal Pane Below", category: "Terminal", keys: ["shift+cmd+down"], keysOther: [], local: "the terminal" },
+  // Esc stays the program's (Claude Code, vim). Elsewhere Ctrl+Enter is a program's (kitty keyboard protocol).
+  { id: "terminal.toggleMaximize", title: "Maximize Terminal", category: "Terminal", keys: ["cmd+enter"], keysOther: ["shift+cmd+enter"], local: "the terminal", noRepeat: true },
   // The prompts shell integration marks, as in VS Code (Ctrl+↑/↓ elsewhere, "cmd" there); a full-screen program keeps the keys.
   { id: "terminal.prevCommand", title: "Scroll to Previous Command", category: "Terminal", keys: ["cmd+up"], local: "the terminal" },
   { id: "terminal.nextCommand", title: "Scroll to Next Command", category: "Terminal", keys: ["cmd+down"], local: "the terminal" },

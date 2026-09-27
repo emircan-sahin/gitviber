@@ -1,5 +1,5 @@
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, ClipboardPaste, Columns2, Copy, Eraser, FolderGit2, FolderOpen, ListX, Pencil, Plus, SquareTerminal, TextSelect, Trash2, X } from "lucide-react";
+import { ChevronDown, ClipboardPaste, Columns2, Copy, Eraser, FolderGit2, FolderOpen, ListX, Maximize2, Minimize2, Pencil, Plus, Rows2, SquareTerminal, TextSelect, Trash2, X } from "lucide-react";
 import { FindBox, useFindBox } from "@/components/FindBox";
 import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Worktree } from "@/lib/api";
-import { commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { COMMANDS, commandIn, runCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { type Layout } from "@/lib/terminal/layout";
+import { useSettings } from "@/lib/settings";
 import { focusMovedTab, focusTab, tabMove } from "@/lib/ui/useListNav";
 import { focusedPanel, focusPanel } from "@/lib/ui/panels";
 import {
@@ -26,12 +28,14 @@ import {
   endFind,
   findInTerminal,
   focusActive,
+  focusToward,
   moveGroup,
   openTerminal,
   paneMenuState,
   paneTakesMouse,
   pasteIntoPane,
   renameGroup,
+  resizeSplit,
   restoreSession,
   selectLastOutput,
   showWorktree,
@@ -39,7 +43,9 @@ import {
   stepPane,
   TERMINAL_COMMANDS,
   type TerminalGroup,
+  toggleMaximize,
   togglePanel,
+  unmaximize,
   useTerminals,
 } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
@@ -52,8 +58,11 @@ import { ProjectTile } from "@/features/projects/ProjectList";
 /** What the workspace needs even while the panel is hidden: the panel shortcuts, and following the worktree that's open. */
 export function useTerminalSetup(root: string) {
   useEffect(() => showWorktree(root), [root]);
+  // Another worktree's workspace starts with its code in view.
+  useEffect(() => unmaximize, [root]);
 
-  useCommands({ "terminal.toggle": () => toggle(root), "terminal.new": () => openTerminal(root) });
+  // Maximize from the palette too, where it opens the panel first.
+  useCommands({ "terminal.toggle": () => toggle(root), "terminal.new": () => openTerminal(root), "terminal.toggleMaximize": () => toggleMaximize(root) });
 }
 
 /** Opening focuses the terminal (togglePanel does); hiding it while it has focus leaves focus to the code view. */
@@ -81,9 +90,23 @@ async function chooseFolder() {
 const outsideBranches = new Map<number, string | null>();
 
 export function TerminalPanel({ root, worktrees, projects }: Props) {
-  const { groups, active } = useTerminals();
+  const { groups, active, maximized } = useTerminals();
   const group = groups.find((g) => g.id === active) ?? null;
   const [, branchRead] = useState(0);
+  const { terminalInactiveDim } = useSettings();
+  // The panel's keys (onKeyDown), in the palette too for whoever doesn't know them; maximize is useTerminalSetup's.
+  useCommands({
+    "terminal.split": () => void splitActive("row"),
+    "terminal.splitDown": () => void splitActive("col"),
+    "terminal.clear": () => void clearFocused(),
+    "terminal.close": () => void closeFocused(),
+    "terminal.prevPane": () => stepPane(-1),
+    "terminal.nextPane": () => stepPane(1),
+    "terminal.focusLeft": () => focusToward("left"),
+    "terminal.focusRight": () => focusToward("right"),
+    "terminal.focusUp": () => focusToward("up"),
+    "terminal.focusDown": () => focusToward("down"),
+  });
   const branchOf = (g: TerminalGroup) => {
     const w = worktrees.find((x) => x.path === g.panes[0].cwd);
     return w ? w.branch : (outsideBranches.get(g.id) ?? null);
@@ -110,10 +133,12 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
   // Shortcuts while a terminal has focus. Stopping them here keeps ⌘W from closing a file tab.
   const onKeyDown = (e: React.KeyboardEvent) => {
     const id = commandIn(TERMINAL_COMMANDS, e.nativeEvent);
-    if (!id) return;
+    // Find's box keeps ↵ (it took it: next match) and ⇧⌘← / ⇧⌘→ (select to the line's ends).
+    if (!id || e.defaultPrevented || (e.target instanceof HTMLInputElement && e.shiftKey && e.key.startsWith("Arrow"))) return;
     e.preventDefault();
     e.stopPropagation();
-    ({ "terminal.split": splitActive, "terminal.clear": clearFocused, "terminal.close": closeFocused, "terminal.prevPane": () => stepPane(-1), "terminal.nextPane": () => stepPane(1) })[id]();
+    // Held down, ⌘↵ would flicker and ⌘D open a shell per repeat.
+    if (!(e.repeat && COMMANDS.some((c) => c.id === id && "noRepeat" in c))) runCommand(id);
   };
 
   const others = worktrees.filter((w) => w.path !== root && !w.bare && !w.prunable);
@@ -203,9 +228,14 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Tip label="Split terminal" shortcut={useShortcut("terminal.split")}>
-            <Button variant="ghost" size="icon-sm" onClick={splitActive} disabled={!group}>
+          <Tip label="Split right" shortcut={useShortcut("terminal.split")}>
+            <Button variant="ghost" size="icon-sm" onClick={() => void splitActive("row")} disabled={!group}>
               <Columns2 />
+            </Button>
+          </Tip>
+          <Tip label="Split down" shortcut={useShortcut("terminal.splitDown")}>
+            <Button variant="ghost" size="icon-sm" onClick={() => void splitActive("col")} disabled={!group}>
+              <Rows2 />
             </Button>
           </Tip>
           <Tip label="Kill terminal" shortcut={useShortcut("terminal.close")}>
@@ -214,6 +244,11 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
             </Button>
           </Tip>
           <div className="mx-0.5 h-4 w-px bg-border-strong" />
+          <Tip label={maximized ? "Exit maximized terminal" : "Maximize terminal"} shortcut={useShortcut("terminal.toggleMaximize")}>
+            <Button variant="ghost" size="icon-sm" aria-pressed={maximized} onClick={() => toggleMaximize(root)}>
+              {maximized ? <Minimize2 /> : <Maximize2 />}
+            </Button>
+          </Tip>
           <Tip label="Hide terminal" shortcut={useShortcut("terminal.toggle")}>
             <Button variant="ghost" size="icon-sm" onClick={() => toggle(root)}>
               <ChevronDown />
@@ -223,19 +258,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
       </div>
       <div className="relative min-h-0 flex-1">
         <TerminalFind />
-        {group && (
-          // Re-keyed on the pane list so a split or close lays the panes out evenly again.
-          <ResizablePanelGroup key={group.panes.map((p) => p.id).join()} orientation="horizontal">
-            {group.panes.map((p, i) => (
-              <Fragment key={p.id}>
-                {i > 0 && <ResizableHandle className="bg-border" />}
-                <ResizablePanel id={`pane-${p.id}`} minSize={160}>
-                  <PaneView id={p.id} />
-                </ResizablePanel>
-              </Fragment>
-            ))}
-          </ResizablePanelGroup>
-        )}
+        {group && <LayoutView key={shape(group.layout)} group={group.id} node={group.layout} focused={group.focused} dim={group.panes.length > 1 ? terminalInactiveDim / 100 : 0} />}
       </div>
     </div>
   );
@@ -251,7 +274,7 @@ const GroupTab = memo(function GroupTab({ group: g, active, here, branch, alone 
   const label = (g.name ? `${g.name} · ${where}` : where) + (calling ? " · needs you" : "");
   // "/" has no name of its own.
   const shown = g.name ?? (folderName(cwd) || cwd);
-  const [splitKey, clearKey] = [useShortcut("terminal.split"), useShortcut("terminal.clear")];
+  const [splitKey, splitDownKey, clearKey] = [useShortcut("terminal.split"), useShortcut("terminal.splitDown"), useShortcut("terminal.clear")];
   // Split and Clear act on the open tab's focused pane.
   const inTab = (run: () => void) => () => {
     activateGroup(g.id);
@@ -317,8 +340,11 @@ const GroupTab = memo(function GroupTab({ group: g, active, here, branch, alone 
           <Pencil /> Rename…
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={inTab(splitActive)}>
-          <Columns2 /> Split{active && splitKey && <ContextMenuShortcut>{splitKey}</ContextMenuShortcut>}
+        <ContextMenuItem onSelect={inTab(() => void splitActive("row"))}>
+          <Columns2 /> Split Right{active && splitKey && <ContextMenuShortcut>{splitKey}</ContextMenuShortcut>}
+        </ContextMenuItem>
+        <ContextMenuItem onSelect={inTab(() => void splitActive("col"))}>
+          <Rows2 /> Split Down{active && splitDownKey && <ContextMenuShortcut>{splitDownKey}</ContextMenuShortcut>}
         </ContextMenuItem>
         <ContextMenuItem onSelect={inTab(clearFocused)}>
           <Eraser /> Clear{active && clearKey && <ContextMenuShortcut>{clearKey}</ContextMenuShortcut>}
@@ -412,7 +438,39 @@ export function TerminalRestoreOffer() {
   );
 }
 
-function PaneView({ id }: { id: number }) {
+/** A split's structure without its sizes: what a tab re-lays out on (a split or close), not a drag. */
+const shape = (l: Layout): string => (typeof l === "number" ? String(l) : `${l.dir}(${l.children.map(shape).join()})`);
+
+/**
+ * A tab's panes as split; a dragged divider's sizes are kept in the tab's layout, by the split's
+ * `path` from the top. `dim`: how far the panes other than the focused one fade.
+ */
+function LayoutView({ group, node, focused, dim, path = [] }: { group: number; node: Layout; focused: number; dim: number; path?: number[] }) {
+  if (typeof node === "number") return <PaneView id={node} dim={node === focused ? 0 : dim} />;
+  const id = (i: number) => `pane-${[...path, i].join("-")}`;
+  const row = node.dir === "row";
+  return (
+    <ResizablePanelGroup
+      orientation={row ? "horizontal" : "vertical"}
+      defaultLayout={Object.fromEntries(node.sizes.map((size, i) => [id(i), size]))}
+      onLayoutChanged={(layout, { isUserInteraction }) => isUserInteraction && resizeSplit(group, path, node.children.map((_, i) => layout[id(i)]))}
+    >
+      {node.children.map((c, i) => (
+        <Fragment key={id(i)}>
+          {/* The library focuses a divider as it's grabbed, from a few px either side of it too, where the
+              pointer's release lands on the pane: the keys go back to the pane on any release. */}
+          {i > 0 && <ResizableHandle className="bg-border" onFocus={() => window.addEventListener("pointerup", focusActive, { capture: true, once: true })} />}
+          <ResizablePanel id={id(i)} minSize={row ? 160 : 80}>
+            <LayoutView group={group} node={c} focused={focused} dim={dim} path={[...path, i]} />
+          </ResizablePanel>
+        </Fragment>
+      ))}
+    </ResizablePanelGroup>
+  );
+}
+
+/** `dim`: how far it fades into the panel's background, while another pane of its tab has focus. */
+function PaneView({ id, dim }: { id: number; dim: number }) {
   const ref = useRef<HTMLDivElement>(null);
   // Layout effect: the pane is in place before paint, so focusing it next frame works.
   useLayoutEffect(() => attachPane(id, ref.current!), [id]);
@@ -422,7 +480,7 @@ function PaneView({ id }: { id: number }) {
     <ContextMenu onOpenChange={(open) => open && setCan(paneMenuState(id))}>
       <ContextMenuTrigger asChild>
         {/* Inset from the edges like the code view's text; the scrollbar keeps the right edge, command marks the left. */}
-        <div ref={ref} className="h-full w-full pt-2 pb-1 pl-3" onContextMenu={(e) => paneTakesMouse(id) && e.preventDefault()} />
+        <div ref={ref} className="h-full w-full pt-2 pb-1 pl-3 transition-opacity duration-150" style={{ opacity: 1 - dim }} onContextMenu={(e) => paneTakesMouse(id) && e.preventDefault()} />
       </ContextMenuTrigger>
       <ContextMenuContent
         onCloseAutoFocus={(e) => {

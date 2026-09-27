@@ -27,6 +27,7 @@ import { failed, toast } from "../app/toast";
 import { copyText } from "../app/clipboard";
 import { loadSession, type SavedSession, scheduleSave } from "./session";
 import { lookedAt, watchAttention } from "./needsYou";
+import { type Direction, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
 
 export { dismissRestore, restoreSession } from "./session";
 export { useNeedsYou } from "./needsYou";
@@ -74,12 +75,14 @@ interface PaneInfo {
   needsYou?: boolean;
 }
 
-/** A tab: one or more panes side by side. */
+/** A tab: one or more panes, split right and down. */
 export interface TerminalGroup {
   id: number;
   /** The user's name for the tab, over the folder's and the program's title. */
   name?: string;
+  /** In the layout's reading order. */
   panes: PaneInfo[];
+  layout: Layout;
   focused: number;
 }
 
@@ -89,10 +92,24 @@ interface State {
   active: number | null;
   /** Last run's terminals, until the user restores or dismisses them. */
   restorable: SavedSession | null;
+  /** The panel covers the whole workspace, its code view and side panels hidden behind it. */
+  maximized: boolean;
 }
 
 /** Keys the terminal panel runs while it has focus (TerminalPanel), rather than the shell. */
-export const TERMINAL_COMMANDS = ["terminal.split", "terminal.clear", "terminal.close", "terminal.prevPane", "terminal.nextPane"] as const satisfies readonly CommandId[];
+export const TERMINAL_COMMANDS = [
+  "terminal.split",
+  "terminal.splitDown",
+  "terminal.clear",
+  "terminal.close",
+  "terminal.prevPane",
+  "terminal.nextPane",
+  "terminal.focusLeft",
+  "terminal.focusRight",
+  "terminal.focusUp",
+  "terminal.focusDown",
+  "terminal.toggleMaximize",
+] as const satisfies readonly CommandId[];
 
 export const panes = new Map<number, Pane>();
 // The WebGL glyph atlas's page canvases. xterm shares one atlas between terminals with the same
@@ -107,7 +124,7 @@ let atlasPages: WeakRef<HTMLCanvasElement>[] = [];
 function releaseCanvases(canvases: Iterable<HTMLCanvasElement>) {
   for (const c of canvases) c.width = c.height = 0;
 }
-export let state: State = { open: false, groups: [], active: null, restorable: loadSession() };
+export let state: State = { open: false, groups: [], active: null, restorable: loadSession(), maximized: false };
 let nextId = 1;
 export const newId = () => nextId++;
 const listeners = new Set<() => void>();
@@ -523,7 +540,7 @@ setTerminalFocus(focusActive);
 export function openTerminal(cwd: string, run?: string) {
   const pane = createPane(cwd);
   if (run) panes.get(pane.id)!.run = run;
-  const group = { id: nextId++, panes: [pane], focused: pane.id };
+  const group = { id: nextId++, panes: [pane], layout: pane.id, focused: pane.id };
   set({ open: true, groups: [...state.groups, group], active: group.id });
   focusActive();
 }
@@ -537,8 +554,8 @@ export async function shellDir(p: Pane) {
   return p.dir;
 }
 
-/** Adds a pane beside the focused one, where its shell is now, in the same worktree. */
-export async function splitActive() {
+/** Adds a pane right of or below the focused one, where its shell is now, in the same worktree. */
+export async function splitActive(way: Split["dir"]) {
   const from = panes.get(activeGroup()?.focused ?? -1);
   if (!from) return;
   const dir = await shellDir(from);
@@ -547,7 +564,8 @@ export async function splitActive() {
   if (!g) return;
   const at = g.panes.findIndex((p) => p.id === from.id);
   const pane = createPane(g.panes[at].cwd, undefined, dir);
-  const next = { ...g, panes: [...g.panes.slice(0, at + 1), pane, ...g.panes.slice(at + 1)], focused: pane.id };
+  // Right after `from` in reading order too (splitPane).
+  const next = { ...g, panes: [...g.panes.slice(0, at + 1), pane, ...g.panes.slice(at + 1)], layout: splitPane(g.layout, from.id, pane.id, way), focused: pane.id };
   set({ groups: state.groups.map((x) => (x.id === g.id ? next : x)) });
   focusActive();
 }
@@ -575,15 +593,16 @@ function closePane(id: number, byUser = false) {
     const i = g.panes.findIndex((x) => x.id === id);
     if (i < 0) return [g];
     const rest = g.panes.filter((x) => x.id !== id);
-    if (!rest.length) return [];
-    return [{ ...g, panes: rest, focused: g.focused === id ? rest[Math.min(i, rest.length - 1)].id : g.focused }];
+    const layout = removePane(g.layout, id);
+    if (layout === null) return [];
+    return [{ ...g, panes: rest, layout, focused: g.focused === id ? rest[Math.min(i, rest.length - 1)].id : g.focused }];
   });
   let active = state.active;
   if (!groups.some((g) => g.id === active)) {
     const i = state.groups.findIndex((g) => g.id === active);
     active = groups[Math.min(i, groups.length - 1)]?.id ?? null;
   }
-  set({ groups, active, open: state.open && groups.length > 0 });
+  set({ groups, active, open: state.open && groups.length > 0, maximized: state.maximized && groups.length > 0 });
   // A shell exiting moves only focus it took away (the commit box keeps it); the user's close also
   // moves it on from the panel's buttons, but ⌫ on a tab stays on the tabs.
   requestAnimationFrame(() => {
@@ -769,9 +788,44 @@ export function stepPane(dir: 1 | -1) {
   focusActive();
 }
 
+/** The open tab's pane on that side of the focused one (⇧⌘←/→/↑/↓), as drawn: a pane's minimum size can outweigh its saved share. */
+export function focusToward(dir: Direction) {
+  const g = activeGroup();
+  if (!g) return;
+  const rects = new Map(g.panes.flatMap(({ id }) => (panes.has(id) ? [[id, panes.get(id)!.host.getBoundingClientRect()] as const] : [])));
+  const id = neighbor(rects, g.focused, dir);
+  if (id === undefined) return;
+  focusPane(id);
+  focusActive();
+}
+
+/** A divider dragged: the new sizes of the split at `path` (layout.ts resize), kept for the session save. */
+export function resizeSplit(group: number, path: number[], sizes: number[]) {
+  set({ groups: state.groups.map((g) => (g.id === group ? { ...g, layout: resize(g.layout, path, sizes) } : g)) });
+}
+
+/** The panel over the whole workspace, or back in its place; opened first (with a terminal in `cwd`) when hidden. */
+export function toggleMaximize(cwd: string) {
+  if (!state.maximized && !state.open) togglePanel(cwd);
+  set({ maximized: !state.maximized });
+  focusActive();
+}
+
+/** Back in its place: another worktree, or a file opened in the code view it covers. */
+export function unmaximize() {
+  if (state.maximized) set({ maximized: false });
+}
+
+// Focus moving to a panel hidden behind the maximized one (F6, ⌘E) brings it back into view.
+document.addEventListener("focusin", () => {
+  if (!state.maximized) return;
+  const panel = focusedPanel();
+  if (panel && panel !== "terminal") unmaximize();
+});
+
 /** Opens the panel (with a first terminal in `cwd` if there is none), or hides it. */
 export function togglePanel(cwd: string) {
-  if (state.open) return set({ open: false });
+  if (state.open) return set({ open: false, maximized: false });
   if (!state.groups.length) return openTerminal(cwd);
   set({ open: true });
   focusActive();
@@ -802,4 +856,8 @@ export function showWorktree(cwd: string) {
 /** Whether the panel is open, alone: useTerminals re-renders on every title a program sets. */
 export function useTerminalsOpen() {
   return useSyncExternalStore(subscribe, () => state.open);
+}
+
+export function useTerminalsMaximized() {
+  return useSyncExternalStore(subscribe, () => state.maximized);
 }

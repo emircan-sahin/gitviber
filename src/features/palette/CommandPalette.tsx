@@ -7,7 +7,7 @@ import { fuzzyMatch, type Match, matchPath, prepareQuery } from "@/lib/ui/fuzzy"
 import { type Action, hasHandler, MENU_ACTION_INFO, MENU_ACTIONS, matchesCommand, runCommand } from "@/lib/commands/keybindings";
 import { pointerMoved } from "@/lib/ui/pointer";
 import { useSettings } from "@/lib/settings";
-import { openTerminal, useTerminalsOpen } from "@/lib/terminal/terminals";
+import { openTerminal, useTerminalsMaximized, useTerminalsOpen } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
 import { folderName, splitPath } from "@/lib/path";
 import { readJson, stringList, writeJson } from "@/lib/storage";
@@ -99,6 +99,7 @@ export function CommandPalette() {
   const listId = useId();
   const { keybindings } = useSettings();
   const terminalOpen = useTerminalsOpen();
+  const terminalMaximized = useTerminalsMaximized();
 
   const commands = query.startsWith(">");
   const root = source?.root ?? null;
@@ -144,7 +145,9 @@ export function CommandPalette() {
         query.slice(1),
         entries,
         (c) => {
-          const title = c.id === "terminal.toggle" ? (terminalOpen ? "Hide Terminal" : "Show Terminal") : c.title;
+          let title: string = c.title;
+          if (c.id === "terminal.toggle") title = terminalOpen ? "Hide Terminal" : "Show Terminal";
+          else if (c.id === "terminal.toggleMaximize" && terminalMaximized) title = "Exit Maximized Terminal";
           return c.category === "General" ? title : `${c.category}: ${title}`;
         },
         fuzzyMatch,
@@ -203,7 +206,7 @@ export function CommandPalette() {
         </>
       ),
     }));
-  }, [state, query, mode, list, keybindings, terminalOpen]);
+  }, [state, query, mode, list, keybindings, terminalOpen, terminalMaximized]);
   const { index, setIndex, move } = usePickerIndex(items.length, { wrap: true });
 
   useEffect(() => setIndex(0), [query, mode, state, list]);
