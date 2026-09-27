@@ -261,3 +261,24 @@ fn undo_and_redo_a_discard() {
     assert!(step(&j, &r, false).is_err());
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "newer\n");
 }
+
+/// A deleted submodule comes back as a folder; undo leaves it and puts back the rest.
+#[test]
+fn undoing_a_discard_that_brought_back_a_submodule() {
+    let sb = Sandbox::new("j-discard-sub");
+    let r = repo_with_submodule(&sb);
+    fs::write(r.join("a.txt"), "agent's work\n").unwrap();
+    fs::remove_dir_all(r.join("sub")).unwrap();
+    let j = Journal::default();
+    let paths: Vec<String> = vec!["sub".into(), "a.txt".into()];
+    j.discard(&r, &paths, || discard(&r, &paths)).unwrap();
+    assert!(r.join("sub").is_dir());
+    assert_eq!(j.view(&r).undo[0].label, "Discard 2 files");
+
+    step(&j, &r, false).unwrap();
+    assert_eq!(
+        fs::read_to_string(r.join("a.txt")).unwrap(),
+        "agent's work\n"
+    );
+    assert!(r.join("sub").is_dir());
+}

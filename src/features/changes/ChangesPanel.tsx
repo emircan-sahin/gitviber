@@ -116,11 +116,13 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     if (!list.length) return;
     const one = list.length === 1 ? list[0].path : null;
     const trashOnly = !restorable.length;
+    // A deleted file or submodule comes back, with no current version to keep.
+    const copied = restorable.filter((f) => f.status !== "D").length;
     const message = trashOnly
       ? one
         ? `Move ${one} to the Trash? It is untracked, so git has no copy of it.`
         : `Move ${untracked.length} untracked files to the Trash? Git has no copy of them.`
-      : `Discard changes to ${one ?? files(restorable.length)}? ${restorable.length === 1 ? "Its current version is" : "Their current versions are"} moved to the Trash.${untracked.length ? ` ${files(untracked.length)} git doesn't track will be moved to the Trash too.` : ""}`;
+      : `Discard changes to ${one ?? files(restorable.length)}?${copied ? ` ${restorable.length === 1 ? "Its current version is" : "Their current versions are"} moved to the Trash.` : ""}${untracked.length ? ` ${files(untracked.length)} git doesn't track will be moved to the Trash too.` : ""}`;
     const ok = await ask(message, trashOnly ? { title: one ? "Delete file" : "Delete files", kind: "warning", okLabel: "Move to Trash" } : { title: "Discard changes", kind: "warning", okLabel: "Discard" });
     if (!ok) return;
     let entry: number | null = null;
@@ -130,7 +132,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     });
     if (done && restorable.length) {
       const single = restorable.length === 1;
-      toast("success", `Discarded ${single ? restorable[0].path : files(restorable.length)}`, `The old ${single ? "version is" : "versions are"} in the Trash.`, undoAction(entry, refresh));
+      toast("success", `Discarded ${single ? restorable[0].path : files(restorable.length)}`, copied ? `The old ${copied === 1 ? "version is" : "versions are"} in the Trash.` : undefined, undoAction(entry, refresh));
     }
     await refresh();
   };
