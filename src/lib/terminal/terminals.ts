@@ -46,6 +46,8 @@ interface Pane {
   /** Typed while a write is in flight (or before the shell is up); sent next, in order. */
   pending: string;
   writing: boolean;
+  /** A column change held back from a long history (fitPane). */
+  fitTimer?: number;
 }
 
 interface PaneInfo {
@@ -390,10 +392,18 @@ function update(id: number, fn: (p: PaneInfo) => PaneInfo) {
 }
 
 /** A hidden or collapsed container would shrink the shell to one row and garble its output. */
-function fitPane(p: Pane) {
+function fitPane(p: Pane, now = false) {
   const box = p.host.parentElement;
   if (!p.term.element || !box || box.clientWidth === 0 || box.clientHeight === 0) return;
-  p.fit.fit();
+  const size = p.fit.proposeDimensions();
+  if (!size || isNaN(size.cols) || isNaN(size.rows)) return;
+  window.clearTimeout(p.fitTimer);
+  // New columns rewrap the whole history: past a screenful or so they wait for a drag to settle,
+  // as in VS Code, while rows follow at once.
+  if (!now && p.started && size.cols !== p.term.cols && p.term.buffer.normal.length > 200) {
+    p.term.resize(p.term.cols, size.rows);
+    p.fitTimer = window.setTimeout(() => fitPane(p, true), 100);
+  } else p.term.resize(size.cols, size.rows);
   if (!p.started) void start(p);
 }
 
@@ -488,6 +498,7 @@ function closePane(id: number) {
   if (!p) return;
   const focused = document.activeElement;
   panes.delete(id);
+  window.clearTimeout(p.fitTimer);
   if (searching?.pane === p) searching = null;
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});
   const canvases = [...(p.term.element?.querySelectorAll("canvas") ?? [])];
