@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import type { IBufferLine } from "@xterm/xterm";
 import { test } from "node:test";
-import { findLinks, findTerminalLinks, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
+import { cellText, findLinks, findTerminalLinks, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
 
 const specs = (line: string, lang: string) => findLinks(line, lang).map((l) => [line.slice(l.start, l.end), l.kind]);
 
@@ -243,4 +244,30 @@ test("terminal output: URLs, paths from the shell's folder, bare names", () => {
   assert.deepEqual(open("/repo/docs/guide.md", null), { path: "docs/guide.md", line: undefined, column: undefined });
   assert.equal(open("src/lib/api.ts", null), null, "a shell outside the repo: its relative paths aren't the repo's");
   assert.equal(open("package.json", ""), null);
+});
+
+/** A terminal row as xterm lays it out: a wide character's second cell is empty, width 0. */
+const row = (cells: [string, number][], cols: number) => {
+  const all = [...cells];
+  while (all.length < cols) all.push(["", 1]);
+  return { getCell: (x: number) => (x < all.length ? { getChars: () => all[x][0], getWidth: () => all[x][1] } : undefined) } as unknown as IBufferLine;
+};
+
+test("maps terminal text back to cells past wide characters", () => {
+  // "✅ a.ts" then "🔥b" on the next row, 8 columns: ✅ and 🔥 take two cells, 🔥 is two UTF-16 units.
+  const { text, cells, starts } = cellText(
+    [
+      row([["✅", 2], ["", 0], [" ", 1], ["a", 1], [".", 1], ["t", 1], ["s", 1]], 8),
+      row([["🔥", 2], ["", 0], ["b", 1]], 8),
+    ],
+    8,
+  );
+  assert.equal(text, "✅ a.ts \u{1F525}b     ");
+  assert.equal(starts[1], 7);
+  const [link] = findTerminalLinks(text.slice(0, starts[1]));
+  assert.equal(link.spec, "a.ts");
+  assert.deepEqual([cells[link.start], cells[link.end] - 1], [3, 6]);
+  // The emoji's two units share its first cell; the next character starts past its second.
+  assert.deepEqual(cells.slice(7, 10), [8, 8, 10]);
+  assert.equal(cells.at(-1), 16);
 });

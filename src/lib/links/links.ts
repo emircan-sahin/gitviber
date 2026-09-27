@@ -5,6 +5,7 @@
  * runs under node:test.
  */
 
+import type { IBufferCell, IBufferLine } from "@xterm/xterm";
 import { basename, dirname, slashes } from "../path.ts";
 
 /** How a link's text becomes a target: each kind has its own lookup rules. */
@@ -138,6 +139,34 @@ export function findTerminalLinks(line: string, near?: Near): Link[] {
     urls(text, add);
     filePaths(text, add, true);
   });
+}
+
+/**
+ * Rows of terminal cells as one line, and each character's cell (along the rows, `cols` to a row)
+ * then the one past the last; `starts[r]` is where row `r` starts in the text. Offsets and cells
+ * part at wide characters (two cells) and past U+FFFF (two UTF-16 units).
+ */
+export function cellText(rows: (IBufferLine | undefined)[], cols: number, cell?: IBufferCell) {
+  let text = "";
+  const cells: number[] = [];
+  const starts: number[] = [];
+  let end = 0;
+  rows.forEach((row, r) => {
+    starts.push(text.length);
+    for (let x = 0; x < cols; x++) {
+      const c = row?.getCell(x, cell);
+      if (!c) break;
+      // The second half of a wide character.
+      if (!c.getWidth()) continue;
+      const chars = c.getChars() || " ";
+      text += chars;
+      for (let i = 0; i < chars.length; i++) cells.push(r * cols + x);
+      end = r * cols + x + c.getWidth();
+    }
+  });
+  starts.push(text.length);
+  cells.push(end);
+  return { text, cells, starts };
 }
 
 // Left off a URL's end: the sentence around it.

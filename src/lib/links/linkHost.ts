@@ -4,7 +4,7 @@
 import type { IDisposable, ILink, Terminal } from "@xterm/xterm";
 import { api, github } from "../api";
 import { primaryKey } from "../platform";
-import { type Alias, type FileIndex, findTerminalLinks, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
+import { type Alias, cellText, type FileIndex, findTerminalLinks, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
 import { dirname, slashes } from "../path";
 import { failed } from "../app/toast";
 import { revealInCode } from "../editor/reveal";
@@ -98,8 +98,7 @@ export function terminalLinks(term: Terminal, cwd: string): IDisposable {
       const h = host;
       const buf = term.buffer.active;
       // A long line wraps over several rows: read the rows of it around this one, as far as links
-      // are looked for (LINK_WINDOW). Rows are full, so offsets map back by the width (wide
-      // characters take two cells and would shift what follows them).
+      // are looked for (LINK_WINDOW).
       const reach = Math.ceil(LINK_WINDOW / term.cols) + 1;
       let first = y - 1;
       while (first > y - 1 - reach && first > 0 && buf.getLine(first)?.isWrapped) first--;
@@ -107,13 +106,16 @@ export function terminalLinks(term: Terminal, cwd: string): IDisposable {
       while (last < y - 1 + reach && buf.getLine(last + 1)?.isWrapped) last++;
       // Rows cut off either side: a link at that edge may go on past it.
       const [cutBefore, cutAfter] = [!!buf.getLine(first)?.isWrapped, !!buf.getLine(last + 1)?.isWrapped];
-      let text = "";
-      for (let r = first; r <= last; r++) text += buf.getLine(r)?.translateToString(r === last) ?? "";
-      const at = (i: number) => ({ x: (i % term.cols) + 1, y: first + Math.floor(i / term.cols) + 1 });
-      const row = (y - 1 - first) * term.cols;
-      const found = findTerminalLinks(text, { start: row, end: row + term.cols }).filter(
-        (l) => at(l.start).y <= y && at(l.end - 1).y >= y && (!cutBefore || l.start > 0) && (!cutAfter || l.end < text.length),
-      );
+      const rows = Array.from({ length: last - first + 1 }, (_, i) => buf.getLine(first + i));
+      const { text, cells, starts } = cellText(rows, term.cols, buf.getNullCell());
+      const cellAt = (c: number) => ({ x: (c % term.cols) + 1, y: first + Math.floor(c / term.cols) + 1 });
+      // From a link's first cell to its last, the second half of a wide character included.
+      const range = (l: Link) => ({ start: cellAt(cells[l.start]), end: cellAt(cells[l.end] - 1) });
+      const row = y - 1 - first;
+      const found = findTerminalLinks(text, { start: starts[row], end: starts[row + 1] }).filter((l) => {
+        const { start, end } = range(l);
+        return start.y <= y && end.y >= y && (!cutBefore || l.start > 0) && (!cutAfter || l.end < text.length);
+      });
       if (!found.length || !h) return callback(undefined);
       // Windows paths come with backslashes; the index and the links have forward ones.
       const [root, from] = [slashes(h.root), slashes(cwd)];
@@ -123,7 +125,7 @@ export function terminalLinks(term: Terminal, cwd: string): IDisposable {
         const links = found.flatMap((l): ILink[] => {
           const target = resolveTerminalLink(l, dir, index, root);
           if (!target) return [];
-          return [{ range: { start: at(l.start), end: at(l.end - 1) }, text: l.spec, activate: (e) => primaryKey(e) && openTarget(target, true) }];
+          return [{ range: range(l), text: l.spec, activate: (e) => primaryKey(e) && openTarget(target, true) }];
         });
         callback(links.length ? links : undefined);
       });
