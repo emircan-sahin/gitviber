@@ -18,6 +18,16 @@ pub async fn github_web_url(state: State<'_, AppState>) -> Res<Option<String>> {
     .await
 }
 
+/// The commit to link `path` (or its `lines`) to on GitHub, so the link keeps showing that code.
+#[tauri::command]
+pub async fn github_permalink(
+    state: State<'_, AppState>,
+    path: String,
+    lines: Option<(u32, u32)>,
+) -> Res<git::Permalink> {
+    in_repo(&state, move |r| git::permalink(r, &path, lines)).await
+}
+
 #[tauri::command]
 pub async fn gh_account(app: AppHandle) -> Res<github::Account> {
     with_github(app, github::account).await

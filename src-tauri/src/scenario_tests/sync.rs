@@ -166,6 +166,32 @@ fn pull_draft_counts_commits_against_the_base() {
     assert!(pull_draft(a, "refs/remotes/--all").is_err());
 }
 
+#[test]
+fn permalink_points_at_the_last_pushed_commit() {
+    let sb = Sandbox::new("permalink");
+    let c = sb.remote_with_clones(1);
+    let a = &c[0];
+    let pushed = rev(a, "HEAD");
+    assert_eq!(
+        permalink(a, "a.txt", Some((2, 3))).unwrap(),
+        Permalink {
+            sha: pushed.clone(),
+            tree: false,
+            lines: Some((2, 3))
+        }
+    );
+    // Unpushed: a line added above moves the old ones down; the new line and new files aren't there.
+    write_commit(a, "a.txt", "zero\none\ntwo\nthree\n", "prepend");
+    write_commit(a, "d/b.txt", "b\n", "add b");
+    let p = permalink(a, "a.txt", Some((3, 4))).unwrap();
+    assert_eq!((p.sha.as_str(), p.lines), (pushed.as_str(), Some((2, 3))));
+    assert!(permalink(a, "a.txt", Some((1, 2))).is_err());
+    assert!(permalink(a, "d/b.txt", None).is_err());
+    assert!(permalink(a, "", None).unwrap().tree);
+    run(a, &["push", "-q"]).unwrap();
+    assert_eq!(permalink(a, "d", None).unwrap().sha, rev(a, "HEAD"));
+}
+
 /// The fork workflow git documents: pull from upstream, push to origin (remote.pushDefault).
 #[test]
 fn push_target_follows_push_default_not_the_upstream() {

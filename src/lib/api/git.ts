@@ -209,6 +209,8 @@ export const api = {
   remoteTags: (op?: NetOp) => network<RemoteTags>("remote_tags", {}, op),
   /** https://github.com/owner/name, or null when origin isn't on GitHub. */
   githubWebUrl: () => invoke<string | null>("github_web_url"),
+  /** The commit to link the working tree's `path` (or its 1-based `lines`) to on GitHub, and where the lines are in it. Refused, saying why, when it isn't there yet. */
+  githubPermalink: (path: string, lines: [number, number] | null) => invoke<{ sha: string; tree: boolean; lines: [number, number] | null }>("github_permalink", { path, lines }),
   journal: () => invoke<Journal>("journal"),
   /** The newest entry's id; a change across an action means it was recorded. */
   journalLast: () => invoke<number | null>("journal_last"),

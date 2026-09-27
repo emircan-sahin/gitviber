@@ -4,6 +4,7 @@ import { toast } from "@/lib/app/toast";
 import { resetDefinitions } from "@/lib/editor/definitions";
 import { resetModels } from "@/lib/editor/monaco";
 import { type LinkSide, resetLinks } from "@/lib/links/linkHost";
+import { type GitHubSide, repoOfCommitUrl } from "@/lib/github/permalink";
 import { type Selection, selectionPath } from "@/lib/repo/selection";
 import { diffWhitespace, getSettings } from "@/lib/settings";
 
@@ -35,6 +36,26 @@ export function linkSides(sel: FileSelection, revision: number): { original: Lin
   const [before, after] =
     sel.kind === "commit" ? [`${sel.commit.sha}^`, sel.commit.sha] : sel.kind === "pr-file" ? [sel.range.base, sel.range.head] : sel.kind === "branch" ? [sel.base, null] : [null, null];
   return { original: { path: sel.file.oldPath ?? path, tree: { rev: before, revision } }, modified: { path, tree: { rev: after, revision } } };
+}
+
+/**
+ * Where each side is on GitHub, for its permalinks (`web`: origin's page): a commit's sides when
+ * GitHub has it, else the file on disk, linked to a pushed commit when clicked. The index and PR
+ * heads aren't linked.
+ */
+export function githubSides(sel: FileSelection, web: string | null): { original: GitHubSide | null; modified: GitHubSide | null } | null {
+  const path = selectionPath(sel);
+  if (sel.kind === "commit") {
+    if (!sel.url) return null;
+    const repo = repoOfCommitUrl(sel.url);
+    const parent = sel.commit.parents[0];
+    return {
+      original: parent && sel.file.status !== "A" ? { web: repo, path: sel.file.oldPath ?? path, sha: parent } : null,
+      modified: sel.file.status === "D" ? null : { web: repo, path, sha: sel.commit.sha },
+    };
+  }
+  const onDisk = sel.kind === "file" || ((sel.kind === "unstaged" || sel.kind === "branch") && sel.file.status !== "D");
+  return web && onDisk ? { original: null, modified: { web, path, sha: null } } : null;
 }
 
 // Recent diffs, one per view of a file (`id`) at the revision it was read at: keyed by revision,

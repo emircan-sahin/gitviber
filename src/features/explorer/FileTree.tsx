@@ -1,5 +1,5 @@
 import { ask } from "@tauri-apps/plugin-dialog";
-import { ChevronRight, Copy, File, FilePlus, FolderPlus, FolderSearch, History, Pencil, Trash2, Undo2 } from "lucide-react";
+import { ChevronRight, Copy, ExternalLink, File, FilePlus, FolderPlus, FolderSearch, History, Link, Pencil, Trash2, Undo2 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -14,6 +14,7 @@ import { tracked, undoAction } from "@/lib/repo/undo";
 import { cn } from "@/lib/utils";
 import { copyFiles, copyLabel, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
+import { gitHubLink } from "@/lib/github/url";
 import { basename, childPath, dirname } from "@/lib/path";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
@@ -37,6 +38,8 @@ interface Props {
   onPathMoved: (from: string, to: string | null) => void;
   /** History, filtered to a file's commits (followed through renames) or a folder's. */
   onShowHistory: (path: string, file: boolean) => void;
+  /** origin's page on GitHub, for links to a file or folder there; null: not on GitHub. */
+  webUrl: string | null;
   ref?: React.Ref<FileTreeHandle>;
 }
 
@@ -73,7 +76,7 @@ function matchingTree(files: string[], matches: (path: string) => boolean) {
 }
 
 /** Lazy tree of the working directory, like VS Code's explorer, annotated with git status. */
-export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathMoved, onShowHistory, ref }: Props) {
+export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathMoved, onShowHistory, webUrl, ref }: Props) {
   const [children, setChildren] = useState<Record<string, Entry[]>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
   // Keyboard cursor, separate from the open tab (activeKey) like VS Code's focused item.
@@ -525,6 +528,16 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
               <FolderSearch /> {REVEAL_LABEL}
             </ContextMenuItem>
             <OpenInMenuItem path={t?.path ?? ""} />
+            {webUrl && !t?.ignored && (
+              <>
+                <ContextMenuItem onSelect={() => void gitHubLink({ web: webUrl, path: t?.path ?? "", sha: null }, null, true)}>
+                  <ExternalLink /> Open on GitHub
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={() => void gitHubLink({ web: webUrl, path: t?.path ?? "", sha: null }, null, false)}>
+                  <Link /> Copy GitHub Link
+                </ContextMenuItem>
+              </>
+            )}
           </>
         )}
         {IS_MAC && targetFiles.length > 0 && status && (
