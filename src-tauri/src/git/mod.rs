@@ -27,6 +27,7 @@ mod tests;
 mod tree;
 mod validate;
 mod worktree;
+mod worktree_include;
 
 pub use blame::*;
 pub use branch::*;
@@ -51,3 +52,4 @@ pub use tag::*;
 pub use tree::*;
 pub(crate) use validate::*;
 pub use worktree::*;
+pub use worktree_include::*;

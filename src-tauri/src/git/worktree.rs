@@ -1,6 +1,9 @@
 //! Linked worktrees: listing, adding, renaming, locking and removing them.
 
-use super::{default_branch, is_nested_repo, run, run_text, validate_base, validate_branch};
+use super::{
+    default_branch, include_source, is_nested_repo, run, run_text, validate_base, validate_branch,
+    worktree_includes,
+};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -112,7 +115,8 @@ pub fn main_worktree(repo: &Path) -> Option<String> {
 /// Checks `branch` out in a new worktree and returns its path, `<dir>/<branch>`; `dir` is
 /// `<parent>/<project>.worktrees` unless given. With `base`, `branch` is a new branch made
 /// there, tracking nothing like `create_branch`'s. Without, a branch only on a remote gets a
-/// local tracking branch (git's own DWIM for `worktree add`).
+/// local tracking branch (git's own DWIM for `worktree add`). The ignored files the main
+/// worktree's `.worktreeinclude` lists are copied in.
 pub fn add_worktree(
     repo: &Path,
     branch: &str,
@@ -128,6 +132,11 @@ pub fn add_worktree(
         }
         None => run(repo, &["worktree", "add", &target, branch])?,
     };
+    // The worktree is made either way; a file that didn't copy is left for the user.
+    let from = include_source(repo);
+    if let Ok(files) = worktree_includes(&from) {
+        crate::fs::copy_into(&from, Path::new(&target), &files);
+    }
     Ok(target)
 }
 

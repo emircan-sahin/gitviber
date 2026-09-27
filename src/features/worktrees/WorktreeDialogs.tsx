@@ -10,6 +10,7 @@ import { shortPath } from "@/lib/git/worktrees";
 import { folderName, parentFolder } from "@/lib/path";
 import { createStore } from "@/lib/store";
 import { BaseSelect } from "@/features/branches/BaseSelect";
+import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { type GitRun, type NetRun } from "@/hooks/useGitAction";
 
 /** A pull request to check out, as PullView's Checkout would. */
@@ -84,6 +85,7 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
   const [dir, setDir] = useState(() => loadWorktreeDir(main) ?? fallback);
   const [terminal, setTerminal] = useState(true);
   const [switchTo, setSwitchTo] = useState(false);
+  const includes = useAsyncValue(api.worktreeIncludes, [], 0);
   const n = pull ? pull.branch : name.trim();
   const choose = async () => {
     const picked = await open({ directory: true, defaultPath: dir, title: "Folder for new worktrees" });
@@ -146,6 +148,11 @@ function NewWorktree({ base, pull, branches, main, onClose, run, runNet, onOpen 
             Change…
           </Button>
         </div>
+        {includes > 0 && (
+          <div className="mt-1.5">
+            Copies {includes === 1 ? "1 ignored file" : `${includes.toLocaleString()} ignored files`} listed in <span className="font-mono">.worktreeinclude</span>
+          </div>
+        )}
       </div>
       <div className="mt-4 flex items-center gap-3">
         <label className="flex items-center gap-1.5 text-[12px]">

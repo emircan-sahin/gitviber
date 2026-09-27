@@ -110,6 +110,8 @@ export const api = {
    * With `base` (a full ref, or HEAD) the branch is new, made there.
    */
   addWorktree: (branch: string, base: string | null = null, dir: string | null = null) => invoke<string>("add_worktree", { branch, base, dir }),
+  /** How many gitignored files the main worktree's .worktreeinclude has addWorktree copy in. */
+  worktreeIncludes: () => invoke<number>("worktree_includes"),
   /** Renames a worktree's branch and, with `moveFolder`, its folder to match; returns its path afterwards. */
   renameWorktree: (path: string, branch: string, moveFolder: boolean) => invoke<string>("rename_worktree", { path, branch, moveFolder }),
   /** Keeps a worktree from being pruned, moved or removed; `reason` shows on its row. */
