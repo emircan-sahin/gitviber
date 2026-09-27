@@ -4,13 +4,16 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 export const pty = {
   /**
    * `onOutput` gets what the shell prints, `onExit` how it ended (null if unknown). `integration`
-   * loads the shell integration (zsh, bash 4.4+); `integrated` says whether it was.
+   * loads the shell integration (zsh, bash 4.4+); `integrated` says whether it was. `folder`
+   * starts it there instead of `cwd`, if that folder is still there.
    */
-  spawn: (cwd: string, cols: number, rows: number, integration: boolean, onOutput: (bytes: ArrayBuffer) => void, onExit: (exit: PtyExit | null) => void) => {
+  spawn: (cwd: string, folder: string | null, cols: number, rows: number, integration: boolean, onOutput: (bytes: ArrayBuffer) => void, onExit: (exit: PtyExit | null) => void) => {
     const output = new Channel<ArrayBuffer>(onOutput);
     const exit = new Channel<PtyExit | null>(onExit);
-    return invoke<{ id: number; integrated: boolean }>("pty_spawn", { cwd, cols, rows, integration, output, exit });
+    return invoke<{ id: number; integrated: boolean }>("pty_spawn", { cwd, folder, cols, rows, integration, output, exit });
   },
+  /** The folder a shell is in now, asked of its process; null if that can't be read. */
+  cwd: (id: number) => invoke<string | null>("pty_cwd", { id }),
   write: (id: number, data: string) => invoke<void>("pty_write", { id, data }),
   resize: (id: number, cols: number, rows: number) => invoke<void>("pty_resize", { id, cols, rows }),
   kill: (id: number) => invoke<void>("pty_kill", { id }),

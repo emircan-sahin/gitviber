@@ -36,7 +36,10 @@ import { notifyIfAway } from "../app/notify";
  */
 interface Pane extends SaveState {
   id: number;
+  /** Where it opened, which decides the worktree it belongs to; `dir` is where its shell went since. */
   cwd: string;
+  /** Where the shell was last seen: where it started, else as looked up for a split or a save (shellDir). */
+  dir: string;
   term: Terminal;
   fit: FitAddon;
   serialize: SerializeAddon;
@@ -82,7 +85,7 @@ export interface TerminalGroup {
 interface SavedSession {
   savedAt: number;
   active: number;
-  groups: { name?: string; focused: number; panes: { cwd: string; history: string }[] }[];
+  groups: { name?: string; focused: number; panes: { cwd: string; dir?: string; history: string }[] }[];
 }
 
 interface State {
@@ -131,9 +134,12 @@ function set(patch: Partial<State>) {
 let saveTimer: number | undefined;
 /** Throttled rather than debounced, so a shell that never stops printing still gets saved. */
 function scheduleSave() {
-  saveTimer ??= window.setTimeout(() => {
+  saveTimer ??= window.setTimeout(async () => {
+    const due = dueForSave(panes.values(), Date.now(), false);
+    // Where their shells are now, asked before they're saved (a reload's save keeps the last answer).
+    await Promise.all(due.map(shellDir));
     saveTimer = undefined;
-    saveSession();
+    saveSession(false, due.filter((p) => panes.has(p.id)));
   }, SAVE_MS);
 }
 
@@ -144,7 +150,8 @@ document.addEventListener("visibilitychange", () => document.hidden && saveSessi
 /** The layout last written, to skip a write that changes nothing (a title changing, a pane still printing). */
 let written = "";
 
-function saveSession(all = false) {
+/** `due`: the panes whose history this round saves (dueForSave), when already picked. */
+function saveSession(all = false, due?: Pane[]) {
   // Nothing opened yet: keep the last run's terminals for the restore offer.
   if (!state.groups.length && state.restorable) return;
   try {
@@ -153,8 +160,8 @@ function saveSession(all = false) {
       return localStorage.removeItem(SESSION_KEY);
     }
     const now = Date.now();
-    const due = dueForSave(panes.values(), now, all);
-    for (const p of due) {
+    const saving = due ?? dueForSave(panes.values(), now, all);
+    for (const p of saving) {
       // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
       p.saved = p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true });
       [p.dirty, p.serializedAt] = [false, now];
@@ -165,11 +172,14 @@ function saveSession(all = false) {
       groups: state.groups.map((g) => ({
         name: g.name,
         focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
-        panes: g.panes.map(({ id, cwd }) => ({ cwd, history: (history && panes.get(id)?.saved) || "" })),
+        panes: g.panes.map(({ id, cwd }) => {
+          const dir = panes.get(id)?.dir;
+          return { cwd, dir: dir !== cwd ? dir : undefined, history: (history && panes.get(id)?.saved) || "" };
+        }),
       })),
     });
     const layout = JSON.stringify({ ...snapshot(false), savedAt: 0 });
-    if (due.length || layout !== written) {
+    if (saving.length || layout !== written) {
       try {
         localStorage.setItem(SESSION_KEY, JSON.stringify(snapshot(true)));
       } catch {
@@ -231,7 +241,8 @@ function send(p: Pane, data: string) {
   flush();
 }
 
-function createPane(cwd: string, restored?: { history: string; savedAt: number }): PaneInfo {
+/** `dir`: where the shell starts, when that's not `cwd` (a split, a restore). */
+function createPane(cwd: string, restored?: { history: string; savedAt: number }, dir = cwd): PaneInfo {
   const id = nextId++;
   // The proposed API is the decorations, which find marks its matches with. The kitty keyboard
   // protocol is for programs that turn it on (Claude Code, Codex, neovim, fish 4): Shift+Enter is its
@@ -245,13 +256,14 @@ function createPane(cwd: string, restored?: { history: string; savedAt: number }
   // Unicode 6 widths, TUIs drew out of line and the cursor landed one cell off per emoji.
   term.loadAddon(new Unicode11Addon());
   term.unicode.activeVersion = "11";
-  terminalLinks(term, cwd);
+  // Relative paths from the shell's folder, which a split may start below the worktree in.
+  terminalLinks(term, () => panes.get(id)?.dir ?? dir);
   const search = new SearchAddon();
   term.loadAddon(search);
   search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, marks: new CommandMarks(term) };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, marks: new CommandMarks(term) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   term.onWriteParsed(() => {
@@ -491,7 +503,7 @@ async function start(p: Pane) {
   try {
     const { cols, rows } = p.term;
     const began = performance.now();
-    const { id, integrated } = await pty.spawn(p.cwd, cols, rows, getSettings().shellIntegration, (bytes) => p.term.write(new Uint8Array(bytes)), (exit) => exited(p, exit, performance.now() - began));
+    const { id, integrated } = await pty.spawn(p.cwd, p.dir !== p.cwd ? p.dir : null, cols, rows, getSettings().shellIntegration, (bytes) => p.term.write(new Uint8Array(bytes)), (exit) => exited(p, exit, performance.now() - began));
     // Closed while it was starting.
     if (!panes.has(p.id)) return void pty.kill(id).catch(() => {});
     p.pty = id;
@@ -594,12 +606,25 @@ export function openTerminal(cwd: string, run?: string) {
   focusActive();
 }
 
-/** Adds a pane beside the focused one, in the same folder. */
-export function splitActive() {
-  const g = activeGroup();
+/**
+ * Where a pane's shell is now, asked of its process as VS Code's inherited split folder is (only
+ * on a split or a save); else where it was last seen.
+ */
+async function shellDir(p: Pane) {
+  if (p.pty !== null) p.dir = (await pty.cwd(p.pty).catch(() => null)) ?? p.dir;
+  return p.dir;
+}
+
+/** Adds a pane beside the focused one, where its shell is now, in the same worktree. */
+export async function splitActive() {
+  const from = panes.get(activeGroup()?.focused ?? -1);
+  if (!from) return;
+  const dir = await shellDir(from);
+  // Read again after the lookup, which the tabs may have moved on from.
+  const g = state.groups.find((x) => x.panes.some((p) => p.id === from.id));
   if (!g) return;
-  const at = g.panes.findIndex((p) => p.id === g.focused);
-  const pane = createPane(g.panes[at].cwd);
+  const at = g.panes.findIndex((p) => p.id === from.id);
+  const pane = createPane(g.panes[at].cwd, undefined, dir);
   const next = { ...g, panes: [...g.panes.slice(0, at + 1), pane, ...g.panes.slice(at + 1)], focused: pane.id };
   set({ groups: state.groups.map((x) => (x.id === g.id ? next : x)) });
   focusActive();
@@ -883,7 +908,7 @@ export function restoreSession() {
   const saved = state.restorable;
   if (!saved) return;
   const groups = saved.groups.map((g) => {
-    const infos = g.panes.map((p) => createPane(p.cwd, { history: p.history, savedAt: saved.savedAt }));
+    const infos = g.panes.map((p) => createPane(p.cwd, { history: p.history, savedAt: saved.savedAt }, typeof p.dir === "string" ? p.dir : undefined));
     return { id: nextId++, name: typeof g.name === "string" ? g.name : undefined, panes: infos, focused: (infos[g.focused] ?? infos[0]).id };
   });
   set({ open: true, groups: [...state.groups, ...groups], active: (groups[saved.active] ?? groups[0]).id, restorable: null });
@@ -902,7 +927,10 @@ export const terminalsIn = (dir: string) => state.groups.reduce((n, g) => n + g.
 /** A folder was moved. Its shells went along (a cwd is the folder, not its path), so splits and restores follow. */
 export function folderMoved(from: string, to: string) {
   const moved = (cwd: string) => (within(cwd, from) ? to + cwd.slice(from.length) : cwd);
-  for (const p of panes.values()) p.cwd = moved(p.cwd);
+  for (const p of panes.values()) {
+    p.cwd = moved(p.cwd);
+    p.dir = moved(p.dir);
+  }
   set({ groups: state.groups.map((g) => ({ ...g, panes: g.panes.map((p) => ({ ...p, cwd: moved(p.cwd) })) })) });
 }
 

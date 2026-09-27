@@ -278,6 +278,7 @@ pub fn run() {
             commands::app::about,
             commands::app::set_menu,
             commands::app::pty_spawn,
+            commands::app::pty_cwd,
             commands::app::pty_write,
             commands::app::pty_resize,
             commands::app::pty_kill,

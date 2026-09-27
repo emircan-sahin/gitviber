@@ -154,10 +154,11 @@ async function kindOf(path: string, revision: number): Promise<OnDisk> {
 
 /**
  * ⌘-click (Ctrl off macOS) in terminal output: URLs, and repo files and folders by paths from the
- * shell's starting folder (it can't be told where a `cd` went) or the repo root, with a line when
- * one follows. A plain click stays the terminal's: it selects, or goes to a program using the mouse.
+ * shell's folder as last known (`cwd()`: where it started, or where a split or a save found it)
+ * or the repo root, with a line when one follows. A plain click stays the terminal's: it selects,
+ * or goes to a program using the mouse.
  */
-export function terminalLinks(term: Terminal, cwd: string): IDisposable {
+export function terminalLinks(term: Terminal, cwd: () => string): IDisposable {
   const title = (text: string | null) => (text ? term.element?.setAttribute("title", text) : term.element?.removeAttribute("title"));
   // OSC 8 hyperlinks, which xterm finds itself: by the same rule, but their text needn't be where
   // they go, so that shows on hover. Other schemes than http(s) come through for file://, and
@@ -221,7 +222,7 @@ export function terminalLinks(term: Terminal, cwd: string): IDisposable {
       });
       if (!found.length || !h) return callback(undefined);
       // Windows paths come with backslashes; the index and the links have forward ones.
-      const [root, from] = [slashes(h.root), slashes(cwd)];
+      const [root, from] = [slashes(h.root), slashes(cwd())];
       const dir = from === root ? "" : from.startsWith(`${root}/`) ? from.slice(root.length + 1) : null;
       // A shell in a worktree inside this one (an agent's): its paths are that checkout's files,
       // never the same names in this one's.
