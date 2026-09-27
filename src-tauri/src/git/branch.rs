@@ -1,7 +1,7 @@
 //! Local and remote branches: listing, creating, switching, renaming, deleting, upstreams.
 
 use super::cmd::command;
-use super::{run, run_network, run_text, run_with, validate_base, validate_branch, worktrees};
+use super::{run, run_network, run_text, validate_base, validate_branch, worktrees};
 use crate::network::{self, Net};
 use crate::process::exec;
 use serde::Serialize;
@@ -88,19 +88,36 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
 /// when the branch picker opens, never on a refresh: it reads their diffs.
 pub fn merged_upstream(repo: &Path) -> Vec<String> {
     landed(repo, None)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// Deletes branches merged here (`-d`, which git checks again) and ones merged upstream, which
-/// git sees as unmerged: `-D`, once each is checked again at the commit it's at now.
+/// git sees as unmerged: each checked again, then deleted only at the commit that was checked,
+/// so one that moves meanwhile stays. Its settings go with it, as `git branch -D` does.
 pub fn delete_merged(repo: &Path, merged: &[String], upstream: &[String]) -> Result<(), String> {
     if !upstream.is_empty() {
-        let landed = landed(repo, None);
-        if let Some(n) = upstream.iter().find(|n| !landed.contains(n)) {
-            return Err(format!(
-                "{n} changed since, and isn't known to be merged anymore"
-            ));
+        for n in upstream {
+            validate_branch(repo, n)?;
         }
-        delete_branches(repo, upstream, true)?;
+        let landed = landed(repo, None);
+        let checked: Vec<(&String, &String)> = upstream
+            .iter()
+            .map(|n| {
+                let at = landed.iter().find(|(l, _)| l == n).map(|(_, sha)| sha);
+                at.map(|sha| (n, sha)).ok_or_else(|| {
+                    format!("{n} changed since, and isn't known to be merged anymore")
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        for (n, sha) in checked {
+            run(repo, &["update-ref", "-d", &format!("refs/heads/{n}"), sha])?;
+            let _ = run(
+                repo,
+                &["config", "--remove-section", &format!("branch.{n}")],
+            );
+        }
     }
     if merged.is_empty() {
         return Ok(());
@@ -112,7 +129,7 @@ pub fn delete_merged(repo: &Path, merged: &[String], upstream: &[String]) -> Res
 /// branch on merge, and whose changes are all in the default branch anyway. Gone alone proves
 /// nothing: the branch may never have been pushed, or deleted unmerged, so it's the content
 /// that decides, as GitHub Desktop and git-trim do.
-pub(super) fn landed(repo: &Path, only: Option<&str>) -> Vec<String> {
+pub(super) fn landed(repo: &Path, only: Option<&str>) -> Vec<(String, String)> {
     let pattern = only.map_or("refs/heads".into(), |b| format!("refs/heads/{b}"));
     let raw = run_text(
         repo,
@@ -139,7 +156,7 @@ pub(super) fn landed(repo: &Path, only: Option<&str>) -> Vec<String> {
             let since = f[3].parse().unwrap_or(0);
             tips.iter().any(|t| content_in(repo, t, f[2], since))
         })
-        .map(|f| f[0].to_string())
+        .map(|f| (f[0].to_string(), f[2].to_string()))
         .collect()
 }
 
@@ -223,7 +240,18 @@ fn check_content(repo: &Path, base: &str, tip: &str, since: i64) -> bool {
     let names = |range: &[&str]| {
         run_text(
             repo,
-            &[&["diff", "--name-only", "--no-renames", "-z"][..], range].concat(),
+            &[
+                &PINS[..],
+                &[
+                    "diff",
+                    "--name-only",
+                    "--no-renames",
+                    "-z",
+                    "--ignore-submodules=none",
+                ],
+                range,
+            ]
+            .concat(),
         )
     };
     let (Ok(changed), Ok(differ)) = (names(&[&forked]), names(&[base, tip])) else {
@@ -245,78 +273,100 @@ fn check_content(repo: &Path, base: &str, tip: &str, since: i64) -> bool {
     // same files: its whole change is one there (git-trim asks git cherry that of a scratch
     // commit; this leaves nothing in the repo). Byte for byte, with --verbatim (git 2.39+):
     // patch ids and git cherry ignore whitespace, so a fix that only reindents would pass.
-    let flags = [
-        "--no-color",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--no-renames",
-        "--full-index",
-        "--format=commit %H",
-    ];
     // The whole diff has no commit line, so its id comes first, against the zero id. A merge
     // on the branch counts by what it brought in.
-    let whole = run(repo, &[&["diff"][..], &flags[..5], &[&forked]].concat());
+    let whole = [&PINS[..], &["diff"], &PATCH, &[&forked]].concat();
     let own = [
-        &["log", "-p", "--diff-merges=first-parent"][..],
-        &flags,
+        &PINS[..],
+        &["log", "-p", "--diff-merges=first-parent", FORMAT],
+        &PATCH,
         &[&ahead],
     ]
     .concat();
-    let (Ok(whole), Ok(own)) = (whole, run(repo, &own)) else {
-        return false;
-    };
-    let Ok(ours) = run_with(
-        repo,
-        &["patch-id", "--verbatim"],
-        &[],
-        Some(&[whole, own].concat()),
-    ) else {
-        return false;
-    };
     // Base's side since the branch's last commit (a day's slack for a clock ahead of the host's),
     // and only on the files it changed.
     let after = format!("--since={}", since - 86_400);
     let since_fork = format!("{tip}..{base}");
     let log = [
-        &["log", "-p", "--no-merges", &after][..],
-        &flags,
+        &PINS[..],
+        &["log", "-p", "--no-merges", FORMAT, &after],
+        &PATCH,
         &[&since_fork, "--"],
         &changed,
     ]
     .concat();
-    let Some(theirs) = patch_ids(repo, &log) else {
+    let (Some(ours), Some(theirs)) = (patch_ids(repo, &[whole, own]), patch_ids(repo, &[log]))
+    else {
         return false;
     };
-    let ours = String::from_utf8_lossy(&ours);
-    let ids: Vec<(&str, &str)> = ours.lines().filter_map(|l| l.split_once(' ')).collect();
-    let (whole, own) = match ids.split_first() {
-        Some(((id, zero), rest)) if zero.bytes().all(|b| b == b'0') => (Some(*id), rest),
-        _ => (None, &ids[..]),
-    };
-    whole.is_some_and(|id| theirs.contains(id))
+    // A zero id past the whole diff's is a patch patch-id split apart: part of it went unread.
+    let zero = |(_, sha): &&(String, String)| sha.bytes().all(|b| b == b'0');
+    let (wholes, own): (Vec<_>, Vec<_>) = ours.iter().partition(zero);
+    if wholes.len() > 1 || theirs.iter().any(|t| zero(&t)) {
+        return false;
+    }
+    let theirs: HashSet<&str> = theirs.iter().map(|(id, _)| id.as_str()).collect();
+    wholes.first().is_some_and(|(id, _)| theirs.contains(id.as_str()))
         // A commit with no id (binary only) never matches.
         || commits
             .iter()
-            .all(|c| own.iter().any(|(id, sha)| sha == c && theirs.contains(*id)))
+            .all(|c| own.iter().any(|(id, sha)| sha == c && theirs.contains(id.as_str())))
 }
 
-/// `git log <log> | git patch-id --verbatim`, the ids: streamed, base's log can be long.
-fn patch_ids(repo: &Path, log: &[&str]) -> Option<HashSet<String>> {
-    let mut cmd = command(repo, log);
-    cmd.stderr(Stdio::null());
-    let mut log = cmd.spawn().ok()?;
+/// patch-id reads the patches as text, so none of the user's diff settings may shape them: a
+/// submodule's log or hidden pointer, fewer context lines, blank ones cut, other prefixes.
+const PINS: [&str; 12] = [
+    "-c",
+    "diff.suppressBlankEmpty=false",
+    "-c",
+    "diff.noprefix=false",
+    "-c",
+    "diff.mnemonicPrefix=false",
+    "-c",
+    "diff.relative=false",
+    "-c",
+    "color.diff=false",
+    "-c",
+    "log.showSignature=false",
+];
+const PATCH: [&str; 8] = [
+    "--ignore-submodules=none",
+    "--submodule=short",
+    "-U3",
+    "--no-color",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-renames",
+    "--full-index",
+];
+const FORMAT: &str = "--format=commit %H";
+
+/// `git <source>; …| git patch-id --verbatim`: (id, commit) pairs, each source streamed through
+/// one pipe in turn, as a branch's and its base's history can be long.
+fn patch_ids(repo: &Path, sources: &[Vec<&str>]) -> Option<Vec<(String, String)>> {
+    let (reader, writer) = std::io::pipe().ok()?;
     let mut ids = command(repo, &["patch-id", "--verbatim"]);
-    ids.stdin(Stdio::from(log.stdout.take()?));
-    let out = exec(ids, "git patch-id", &[], None, None);
-    let logged = log.wait().is_ok_and(|s| s.success());
-    let out = out.ok().filter(|_| logged)?;
-    Some(
-        String::from_utf8_lossy(&out)
-            .lines()
-            .filter_map(|l| l.split_once(' '))
-            .map(|(id, _)| id.to_string())
-            .collect(),
-    )
+    ids.stdin(reader);
+    std::thread::scope(|s| {
+        let out = s.spawn(move || exec(ids, "git patch-id", &[], None, None));
+        let mut written = true;
+        for args in sources {
+            let mut cmd = command(repo, args);
+            cmd.stderr(Stdio::null());
+            written &= writer
+                .try_clone()
+                .is_ok_and(|w| cmd.stdout(w).status().is_ok_and(|s| s.success()));
+        }
+        drop(writer);
+        let out = out.join().ok()?.ok().filter(|_| written)?;
+        Some(
+            String::from_utf8_lossy(&out)
+                .lines()
+                .filter_map(|l| l.split_once(' '))
+                .map(|(id, sha)| (id.to_string(), sha.to_string()))
+                .collect(),
+        )
+    })
 }
 
 /// The branch checked out in the repo `dir` is in; None when detached or outside a repo.

@@ -165,6 +165,123 @@ fn squash_and_rebase_merged_branches_whose_upstream_is_gone() {
     assert!(exists(a, "squashed") && exists(a, "rebased"));
     delete_merged(a, &[], &both[..1]).unwrap();
     assert!(!exists(a, "squashed"));
+    // Its settings go with it, as with git branch -D.
+    assert!(run(a, &["config", "--get", "branch.squashed.remote"]).is_err());
+}
+
+/// The user's diff settings shape the patches patch-id reads; none may make an unmerged
+/// branch look merged, and a real squash still counts under all of them.
+#[test]
+fn diff_settings_dont_make_a_branch_look_merged_upstream() {
+    let sb = Sandbox::new("landedcfg");
+    let r = repo_with_submodule(&sb);
+    let sub = r.join("sub");
+    let ten: String = (1..=10).map(|n| format!("{n}\n")).collect();
+    let blank = "a\nb\n\nc\nd\ne\nf\ng\nh\ni\nj\nk\nl\nm\n";
+    for (f, text) in [
+        ("g.txt", ten.as_str()),
+        ("h.txt", blank),
+        ("f4.txt", &ten),
+        ("f6.txt", &ten),
+        ("r.txt", &ten),
+    ] {
+        write_commit(&r, f, text, f);
+    }
+    run(
+        &r,
+        &["remote", "add", "origin", sb.path("none").to_str().unwrap()],
+    )
+    .unwrap();
+    let git = |args: &[&str]| run(&r, args).unwrap();
+    let branch = |name: &str| git(&["switch", "-q", "-c", name, "main"]);
+    // A commit in the submodule, for a branch to move its pointer to.
+    let bump = |msg: &str| {
+        write_commit(&sub, "l.txt", &format!("{msg}\n"), msg);
+        stage(&r, &["sub".into()]).unwrap();
+    };
+    let edit = |f: &str, from: &str, to: &str| {
+        let text = fs::read_to_string(r.join(f)).unwrap().replacen(from, to, 1);
+        fs::write(r.join(f), text).unwrap();
+        stage(&r, &[f.into()]).unwrap();
+    };
+    let done = |msg: &str| commit(&r, msg, &CommitOptions::default()).unwrap();
+
+    // Each branch's own work, and on main something that matches only part of it or only
+    // under the setting.
+    branch("ctx");
+    edit("g.txt", "3\n", "3\nfoo\n");
+    done("foo after 3");
+    branch("blank");
+    edit("h.txt", "b\n", "B\n");
+    edit("h.txt", "m\n", "M\n");
+    write_commit(&r, "x.txt", "extra\n", "B, M and x");
+    branch("hidden");
+    edit("f4.txt", "5\n", "five\n");
+    bump("hidden");
+    done("f4 and sub");
+    branch("sublog");
+    edit("f6.txt", "5\n", "five\n");
+    bump("sublog");
+    fs::write(r.join("z.txt"), "important\n").unwrap();
+    stage(&r, &["z.txt".into()]).unwrap();
+    done("f6, sub and z");
+    branch("real");
+    edit("r.txt", "2\n", "two\n");
+    done("r1");
+    edit("r.txt", "4\n", "four\n");
+    done("r2");
+
+    git(&["switch", "-q", "main"]);
+    git(&["submodule", "update", "-q"]);
+    edit("g.txt", "7\n", "7\nfoo\n");
+    done("foo after 7");
+    edit("h.txt", "b\n", "B\n");
+    edit("h.txt", "m\n", "DIFFERENT\n");
+    done("B and different");
+    edit("f4.txt", "5\n", "five\n");
+    done("f4 without sub");
+    edit("f6.txt", "5\n", "five\n");
+    done("f6 only");
+    git(&["merge", "-q", "--squash", "real"]);
+    done("real (#1)");
+    // Base moves on over each file, so their contents differ from the branches'.
+    for f in ["g.txt", "h.txt", "f6.txt", "r.txt"] {
+        edit(f, "10\n", "ten\n");
+        edit(f, "l\n", "L\n");
+        done(&format!("later {f}"));
+    }
+
+    // One at a time: only a branch whose upstream is gone is asked about.
+    let gone = |b: &str, config: &[(&str, &str)]| -> bool {
+        for (k, v) in config {
+            git(&["config", k, v]);
+        }
+        git(&["config", &format!("branch.{b}.remote"), "origin"]);
+        git(&[
+            "config",
+            &format!("branch.{b}.merge"),
+            &format!("refs/heads/{b}"),
+        ]);
+        let found = merged_upstream(&r).contains(&b.to_string());
+        git(&["config", "--remove-section", &format!("branch.{b}")]);
+        for (k, _) in config {
+            git(&["config", "--unset", k]);
+        }
+        found
+    };
+    assert!(!gone("ctx", &[("diff.context", "0")]));
+    assert!(!gone("blank", &[("diff.suppressBlankEmpty", "true")]));
+    assert!(!gone("hidden", &[("diff.ignoreSubmodules", "all")]));
+    assert!(!gone("sublog", &[("diff.submodule", "log")]));
+    let all = [
+        ("diff.context", "0"),
+        ("diff.suppressBlankEmpty", "true"),
+        ("diff.ignoreSubmodules", "all"),
+        ("diff.submodule", "log"),
+        ("diff.noprefix", "true"),
+        ("color.diff", "always"),
+    ];
+    assert!(gone("real", &all));
 }
 
 #[test]
