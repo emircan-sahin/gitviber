@@ -54,6 +54,8 @@ interface PaneInfo {
 /** A tab: one or more panes side by side. */
 export interface TerminalGroup {
   id: number;
+  /** The user's name for the tab, over the folder's and the program's title. */
+  name?: string;
   panes: PaneInfo[];
   focused: number;
 }
@@ -62,7 +64,7 @@ export interface TerminalGroup {
 interface SavedSession {
   savedAt: number;
   active: number;
-  groups: { focused: number; panes: { cwd: string; history: string }[] }[];
+  groups: { name?: string; focused: number; panes: { cwd: string; history: string }[] }[];
 }
 
 interface State {
@@ -129,6 +131,7 @@ function saveSession() {
       savedAt: Date.now(),
       active: Math.max(0, state.groups.findIndex((g) => g.id === state.active)),
       groups: state.groups.map((g) => ({
+        name: g.name,
         focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
         panes: g.panes.map(({ id, cwd }) => {
           const p = panes.get(id);
@@ -468,6 +471,16 @@ export function closeGroup(id: number) {
   state.groups.find((g) => g.id === id)?.panes.forEach((p) => closePane(p.id));
 }
 
+export function closeOtherGroups(id: number) {
+  for (const g of state.groups) if (g.id !== id) closeGroup(g.id);
+}
+
+/** Names a tab; an empty name gives it back the folder's. */
+export function renameGroup(id: number, name: string) {
+  const trimmed = name.trim();
+  set({ groups: state.groups.map((g) => (g.id === id ? { ...g, name: trimmed || undefined } : g)) });
+}
+
 /** The pane find searches, and where its count goes (index 0: past the addon's 1000 marked matches). */
 let searching: { pane: Pane; onResults: (at: { index: number; total: number }) => void } | null = null;
 
@@ -550,7 +563,7 @@ export function restoreSession() {
   if (!saved) return;
   const groups = saved.groups.map((g) => {
     const infos = g.panes.map((p) => createPane(p.cwd, { history: p.history, savedAt: saved.savedAt }));
-    return { id: nextId++, panes: infos, focused: (infos[g.focused] ?? infos[0]).id };
+    return { id: nextId++, name: typeof g.name === "string" ? g.name : undefined, panes: infos, focused: (infos[g.focused] ?? infos[0]).id };
   });
   set({ open: true, groups: [...state.groups, ...groups], active: (groups[saved.active] ?? groups[0]).id, restorable: null });
   focusActive();

@@ -585,7 +585,7 @@ function Row({ depth, path, className, children, ...props }: { depth: number; pa
 }
 
 /** Inline name editor: Enter or blur commits, Escape cancels (VS Code behavior). */
-function NameInput({ initial, selectStem, onDone }: { initial: string; selectStem?: boolean; onDone: (name: string | null, refocus: boolean) => void }) {
+export function NameInput({ initial, selectStem, onDone }: { initial: string; selectStem?: boolean; onDone: (name: string | null, refocus: boolean) => void }) {
   const done = useRef(false);
   // Unmounted by the tree (entry vanished): a blur fired during removal must not commit.
   // Reset on mount too: StrictMode's mount/unmount/mount would otherwise leave it true, and the
