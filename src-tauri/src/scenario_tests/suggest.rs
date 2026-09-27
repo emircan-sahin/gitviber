@@ -98,6 +98,21 @@ fn pull_suggestion_gets_the_branch_commits_template_and_diff() {
     assert!(sent.contains("follow its sections:\n## Why\n"), "{sent}");
     assert!(!sent.contains("- template"), "{sent}");
     assert!(suggest::run_pull(a, "cat", "P", "main", &AtomicBool::new(false)).is_err());
+
+    // A long branch keeps its newest subjects, leaving room for the diff.
+    for i in 0..200 {
+        run(
+            a,
+            &["commit", "-q", "--allow-empty", "-m", &format!("empty {i}")],
+        )
+        .unwrap();
+    }
+    let sent = go().unwrap();
+    assert!(
+        sent.contains("The newest 200 commits, oldest first:\n- empty 0\n"),
+        "{sent}"
+    );
+    assert!(!sent.contains("- Add c") && sent.contains("+sea"), "{sent}");
 }
 
 #[test]

@@ -14,6 +14,10 @@ use std::time::{Duration, Instant};
 /// Enough for a focused change; past it the model gets the file list and the start of the diff.
 pub const MAX_DIFF: usize = 100 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(90);
+/// A pull request's commit subjects past this many go: the newest are kept, and room for the diff.
+const MAX_SUBJECTS: usize = 200;
+/// How every diff sent is written: a file list first, then the patch.
+const DIFF_OPTS: [&str; 4] = ["--patch-with-stat", "--no-color", "--no-ext-diff", "-M"];
 pub const CANCELLED: &str = "cancelled";
 
 /// What the commit would contain, as the commit button decides it.
@@ -58,8 +62,7 @@ impl Suggester {
 
 /// The diff to describe, cut to MAX_DIFF at a line end; true when it was cut.
 fn diff(repo: &Path, scope: Scope) -> Result<(String, bool), String> {
-    let opts = ["--patch-with-stat", "--no-color", "--no-ext-diff", "-M"];
-    let run = |args: &[&str]| git::run_text(repo, &[&["diff"], args, &opts].concat());
+    let run = |args: &[&str]| git::run_text(repo, &[&["diff"], args, &DIFF_OPTS].concat());
     let text = match scope {
         Scope::Staged => run(&["--cached"])?,
         Scope::Amend => {
@@ -85,7 +88,7 @@ fn diff(repo: &Path, scope: Scope) -> Result<(String, bool), String> {
                 }
                 let args = [
                     &["diff", "--no-index"],
-                    &opts[1..],
+                    &DIFF_OPTS[1..],
                     &["--", "/dev/null", path],
                 ]
                 .concat();
@@ -121,11 +124,23 @@ fn cut(mut text: String) -> (String, bool) {
 fn pull_input(repo: &Path, base: &str) -> Result<(String, bool), String> {
     git::check_pull_base(repo, base)?;
     let range = format!("{base}..HEAD");
-    let subjects = git::run_text(repo, &["log", "--reverse", "--format=- %s", &range, "--"])?;
-    if subjects.trim().is_empty() {
+    // One past the cap, to tell a branch of exactly MAX_SUBJECTS from a longer one.
+    let n = format!("-n{}", MAX_SUBJECTS + 1);
+    let subjects = git::run_text(
+        repo,
+        &["log", "--reverse", &n, "--format=- %s", &range, "--"],
+    )?;
+    let mut subjects: Vec<&str> = subjects.lines().collect();
+    if subjects.is_empty() {
         return Err("This branch has no commits the base doesn't have.".into());
     }
-    let mut text = format!("Commits, oldest first:\n{subjects}\n");
+    let heading = if subjects.len() > MAX_SUBJECTS {
+        subjects.remove(0);
+        format!("The newest {MAX_SUBJECTS} commits, oldest first:")
+    } else {
+        "Commits, oldest first:".to_string()
+    };
+    let mut text = format!("{heading}\n{}\n\n", subjects.join("\n"));
     if let Some(t) = pull_template(repo, base) {
         text.push_str(&format!(
             "The repository's pull request template; follow its sections:\n{}\n\n",
@@ -135,15 +150,7 @@ fn pull_input(repo: &Path, base: &str) -> Result<(String, bool), String> {
     let merged = format!("{base}...HEAD");
     text.push_str(&git::run_text(
         repo,
-        &[
-            "diff",
-            "--patch-with-stat",
-            "--no-color",
-            "--no-ext-diff",
-            "-M",
-            &merged,
-            "--",
-        ],
+        &[&["diff"], &DIFF_OPTS[..], &[&merged, "--"]].concat(),
     )?);
     Ok(cut(text))
 }
@@ -205,7 +212,8 @@ pub fn run(
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let (diff, cut) = diff(repo, scope)?;
-    ask(repo, template, prompt, &diff, cut, cancel)
+    let note = cut.then_some("the file list at its top is complete");
+    ask(repo, template, prompt, &diff, note, cancel)
 }
 
 /// A pull request's title and description, for HEAD into `base`: see `ask`.
@@ -217,26 +225,27 @@ pub fn run_pull(
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let (input, cut) = pull_input(repo, base)?;
-    ask(repo, template, prompt, &input, cut, cancel)
+    let note = cut.then_some("the commits and the diff's file list come before it, in full");
+    ask(repo, template, prompt, &input, note, cancel)
 }
 
-/// Runs the template with the prompt and the diff, returning what it printed. Stops on
-/// `cancel` or after TIMEOUT, killing the command and anything it started.
+/// Runs the template with the prompt and the diff, returning what it printed; `cut`: the diff
+/// was cut, and what of it is whole. Stops on `cancel` or after TIMEOUT, killing the command
+/// and anything it started.
 fn ask(
     repo: &Path,
     template: &str,
     prompt: &str,
     diff: &str,
-    cut: bool,
+    cut: Option<&str>,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
-    let prompt = if cut {
-        format!(
-            "{prompt}\n\nThe diff was cut off at {} KB; the file list at its top is complete.",
+    let prompt = match cut {
+        Some(whole) => format!(
+            "{prompt}\n\nThe diff was cut off at {} KB; {whole}.",
             MAX_DIFF / 1024
-        )
-    } else {
-        prompt.to_string()
+        ),
+        None => prompt.to_string(),
     };
     let (argv, input) = prepare(template, &prompt, diff)?;
     let program = expand_home(&argv[0]);

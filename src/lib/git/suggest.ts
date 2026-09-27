@@ -86,15 +86,35 @@ export const SUGGEST_LIMIT_KB = 100;
 export const programOf = (command: string) => command.trim().split(/\s+/)[0] ?? "";
 
 /**
+ * A Markdown answer inside a fence that wraps it: first in the text, closed by the last fence
+ * line, with at most a one-line preface ending in ":" before it ("Here's the pull request:") and
+ * any words after it. A fence that follows the title, or is marked with a language, is the
+ * description's own code.
+ */
+function unwrapMarkdown(text: string) {
+  const lines = text.split("\n");
+  const open = lines.findIndex((l) => /^(`{3,}|~{3,})/.test(l));
+  if (open < 0) return text;
+  const [, fence, info] = /^(`{3,}|~{3,})\s*(\S*)/.exec(lines[open])!;
+  const preface = lines.slice(0, open).join("\n").trim();
+  if (!["", "markdown", "md", "text"].includes(info.toLowerCase()) || (preface && (preface.includes("\n") || !preface.endsWith(":")))) return text;
+  const close = lines.map((l) => l.trim()).lastIndexOf(fence);
+  return close > open ? lines.slice(open + 1, close).join("\n").trim() : text;
+}
+
+/**
  * A model's answer as summary and description. Models wrap it anyway at times: a code fence,
  * quotes, a "Subject:" label or Markdown emphasis on the first line. Null when it's empty.
  * A `markdown` description has code blocks of its own, which stay.
  */
 export function parseSuggestion(output: string, markdown = false): { summary: string; body: string } | null {
   let text = output.replace(/\r\n?/g, "\n").trim();
-  // A fenced block anywhere ("Here's a message:\n```\n…\n```") is the message; in Markdown, one around it all.
-  const fence = (markdown ? /^(`{3,}|~{3,})[^\n]*\n([\s\S]*)\n\1$/ : /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1\s*$/m).exec(text);
-  if (fence) text = fence[2].trim();
+  if (markdown) text = unwrapMarkdown(text);
+  else {
+    // A fenced block anywhere ("Here's a message:\n```\n…\n```") is the message.
+    const fence = /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1\s*$/m.exec(text);
+    if (fence) text = fence[2].trim();
+  }
   const quoted = /^(["'`])([\s\S]*)\1$/.exec(text);
   if (quoted && !quoted[2].includes(quoted[1])) text = quoted[2].trim();
   const [first = "", ...rest] = text.split("\n");

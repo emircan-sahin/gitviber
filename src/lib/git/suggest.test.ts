@@ -49,4 +49,10 @@ test("a markdown description keeps its code blocks", () => {
   assert.deepEqual(parseSuggestion(answer, true), { summary: "Add x", body: "## Why\nBecause.\n\n```ts\nx();\n```" });
   assert.deepEqual(parseSuggestion("```markdown\n" + answer + "\n```", true), parseSuggestion(answer, true));
   assert.deepEqual(parseSuggestion("Title: Add x\n\nDescription: Because.", true), { summary: "Add x", body: "Because." });
+  // Words around the fence, or code right under the title.
+  const inner = "```markdown\n" + answer + "\n```";
+  assert.deepEqual(parseSuggestion("Here's the pull request:\n\n" + inner, true), parseSuggestion(answer, true));
+  assert.deepEqual(parseSuggestion(inner + "\n\nLet me know if you want changes.", true), parseSuggestion(answer, true));
+  assert.deepEqual(parseSuggestion("Here it is:\n" + inner + "\nAnything else?", true), parseSuggestion(answer, true));
+  assert.deepEqual(parseSuggestion("Add x\n\n```\nx();\n```", true), { summary: "Add x", body: "```\nx();\n```" });
 });

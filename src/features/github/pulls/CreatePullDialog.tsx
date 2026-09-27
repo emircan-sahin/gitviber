@@ -4,11 +4,10 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, errorMessage, fullName, type GitHubAccess, github, type Pull, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
+import { api, type Branch, errorMessage, fullName, type GitHubAccess, github, type Pull, type RepoStatus } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
-import { useSettings } from "@/lib/settings";
-import { commandLine, parseSuggestion, programOf, PULL_PROMPT } from "@/lib/git/suggest";
-import { openSettings } from "@/features/settings/SettingsDialog";
+import { parseSuggestion, PULL_PROMPT } from "@/lib/git/suggest";
+import { useSuggestion } from "@/features/changes/useCommitBox";
 import { cn } from "@/lib/utils";
 import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
 import { notifyPullsChanged } from "@/features/github/shared/changed";
@@ -72,8 +71,9 @@ export function CreatePullDialog({
     (async () => {
       const remote = upstream ? await github.originalRemote(fullName(target.repo), false) : "origin";
       if (!remote || !live) return;
-      setBaseRef(`refs/remotes/${remote}/${base}`);
-      const d = await api.pullDraft(`refs/remotes/${remote}/${base}`);
+      const ref = `refs/remotes/${remote}/${base}`;
+      setBaseRef(ref);
+      const d = await api.pullDraft(ref);
       if (!live) return;
       const one = d.commits === 1 && d.subject;
       if (!typed.title) setTitle(one ? d.subject! : branchTitle(head));
@@ -84,41 +84,26 @@ export function CreatePullDialog({
     };
     // Recounted per base; typing doesn't recount.
   }, [base, head, upstream, target.repo.owner, target.repo.name]);
-  const { suggestEnabled, suggestCommand, suggestModels } = useSettings();
-  const [suggesting, setSuggesting] = useState(false);
-  const program = programOf(suggestCommand);
+  const suggestion = useSuggestion("description");
   // A field typed into keeps its text; cleared, it's free for a suggestion again.
   const mine = { title: typed.title && !!title.trim(), body: typed.body && !!body.trim() };
   const mineNow = useRef(mine);
   mineNow.current = mine;
-  const running = useRef(false);
-  // Closing the dialog stops the command rather than orphan it.
-  useEffect(
-    () => () => {
-      if (running.current) api.suggestCancel().catch(() => {});
-    },
-    [],
-  );
-  const suggest = async () => {
-    if (!baseRef) return;
-    running.current = true;
-    setSuggesting(true);
-    // A missing CLI or a stale model id is fixed there.
-    const toSettings = { label: "Open Settings", run: () => openSettings("commit") };
-    try {
-      const output = await api.suggestPull(commandLine(suggestCommand, suggestModels), PULL_PROMPT, baseRef);
-      const s = parseSuggestion(output, true);
-      if (!s) return toast("error", "No description suggested", `${program} printed nothing.`, toSettings);
-      // What was typed while it ran stays too.
-      if (!mineNow.current.title) setTitle(s.summary);
-      if (!mineNow.current.body) setBody(s.body);
-    } catch (e) {
-      if (e !== SUGGEST_CANCELLED) toast("error", "Couldn't suggest a description", errorMessage(e), toSettings);
-    } finally {
-      running.current = false;
-      setSuggesting(false);
-    }
-  };
+  // One on its way was asked against the old base.
+  useEffect(() => suggestion.drop(), [baseRef]);
+  const suggest = () =>
+    baseRef &&
+    suggestion.suggest(
+      (command) => api.suggestPull(command, PULL_PROMPT, baseRef),
+      (output) => {
+        const s = parseSuggestion(output, true);
+        if (!s) return false;
+        // What was typed while it ran stays too.
+        if (!mineNow.current.title) setTitle(s.summary);
+        if (!mineNow.current.body) setBody(s.body);
+        return true;
+      },
+    );
   const elsewhere = pushesElsewhere(status);
   // Pushed already, and nothing new since: GitHub has the branch as it is.
   const needsPush = !status.push?.branch || status.push.ahead > 0;
@@ -188,17 +173,17 @@ export function CreatePullDialog({
               placeholder="Title"
               className="flex-1"
             />
-            {suggestEnabled && (
-              <Tip label={suggesting ? `Stop ${program}` : `Write the title and description with ${program}`}>
+            {suggestion.enabled && (
+              <Tip label={suggestion.suggesting ? `Stop ${suggestion.program}` : `Suggest a title and description with ${suggestion.program}`}>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
-                  aria-label={suggesting ? "Stop suggesting" : "Suggest a title and description"}
-                  disabled={!suggesting && (!baseRef || (mine.title && mine.body))}
-                  onClick={suggesting ? () => api.suggestCancel().catch(() => {}) : suggest}
+                  aria-label={suggestion.suggesting ? "Stop suggesting" : "Suggest a title and description"}
+                  disabled={!suggestion.suggesting && (!baseRef || (mine.title && mine.body))}
+                  onClick={suggestion.suggesting ? suggestion.cancel : suggest}
                 >
-                  {suggesting ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
+                  {suggestion.suggesting ? <LoaderCircle className="animate-spin" /> : <Sparkles />}
                 </Button>
               </Tip>
             )}
