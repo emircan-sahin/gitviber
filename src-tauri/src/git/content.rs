@@ -92,12 +92,11 @@ fn utf16_with_bom(bytes: &[u8]) -> Option<String> {
         [0xFE, 0xFF, ..] => u16::from_be_bytes,
         _ => return None,
     };
-    let units = bytes[2..].chunks_exact(2);
-    let odd = !units.remainder().is_empty();
-    let mut text: String = char::decode_utf16(units.map(|c| from([c[0], c[1]])))
+    let (units, rest) = bytes[2..].as_chunks::<2>();
+    let mut text: String = char::decode_utf16(units.iter().map(|&c| from(c)))
         .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
         .collect();
-    if odd {
+    if !rest.is_empty() {
         text.push(char::REPLACEMENT_CHARACTER);
     }
     (!text.contains('\0')).then_some(text)
