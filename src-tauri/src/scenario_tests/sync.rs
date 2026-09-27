@@ -526,6 +526,11 @@ fn remotes_read_at_once_match_one_by_one() {
         .map(|n| (n.clone(), remote_url(r, n).filter(|_| n != "bare")))
         .collect();
     assert_eq!(remote_urls(r), one_by_one);
+    // status takes the names and origin's URL (for its GitHub page) from that same call.
+    let st = status(r).unwrap();
+    assert_eq!(st.remotes, listed);
+    assert!(st.origin_url.is_some());
+    assert_eq!(st.origin_url, remote_url(r, "origin"));
     let on_github: Vec<_> = crate::github::remotes(r)
         .into_iter()
         .map(|x| (x.name, x.repo))

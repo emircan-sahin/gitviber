@@ -216,8 +216,6 @@ export const api = {
   deleteRemoteTag: (name: string, op?: NetOp) => network<string>("delete_remote_tag", { name }, op),
   /** The tags that remote has. A network call: use `remoteTags` in lib/repo/remoteTags.ts, which caches it. */
   remoteTags: (op?: NetOp) => network<RemoteTags>("remote_tags", {}, op),
-  /** https://github.com/owner/name, or null when origin isn't on GitHub. */
-  githubWebUrl: () => invoke<string | null>("github_web_url"),
   /** The commit to link the working tree's `path` (or its 1-based `lines`) to on GitHub, and where the lines are in it. Refused, saying why, when it isn't there yet. */
   githubPermalink: (path: string, lines: [number, number] | null) => invoke<{ sha: string; tree: boolean; lines: [number, number] | null }>("github_permalink", { path, lines }),
   journal: () => invoke<Journal>("journal"),

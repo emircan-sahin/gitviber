@@ -83,6 +83,8 @@ export interface RepoStatus {
   operation: Operation | null;
   /** Set while git has left a message for the next commit (a squash merge, `cherry-pick -n`), which commitTemplate returns; changes with it. */
   preparedMessage: string | null;
+  /** origin's page on GitHub; null off github.com. */
+  webUrl: string | null;
 }
 
 export interface Commit {

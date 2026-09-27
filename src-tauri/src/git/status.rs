@@ -2,7 +2,7 @@
 
 use super::{
     command, git_dir, is_binary, operation_in, publish_config, publish_remote_among, push_target,
-    read_regular, remotes, run, worktrees, PushTarget, MAX_TEXT_BYTES, PREPARED,
+    read_regular, remote_urls, run, worktrees, PushTarget, MAX_TEXT_BYTES, PREPARED,
 };
 use crate::process::exec;
 use serde::Serialize;
@@ -77,6 +77,11 @@ pub struct RepoStatus {
     pub remotes: Vec<String>,
     /// Where Publish sends a branch with no upstream; None when that's the user's choice.
     pub publish: Option<String>,
+    /// origin's URL, which commands::changes::status turns into `web_url`.
+    #[serde(skip)]
+    pub origin_url: Option<String>,
+    /// origin's page on GitHub; None off github.com.
+    pub web_url: Option<String>,
     pub staged: Vec<FileChange>,
     pub unstaged: Vec<FileChange>,
     pub conflicted: Vec<FileChange>,
@@ -221,6 +226,8 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         push: None,
         remotes: vec![],
         publish: None,
+        origin_url: None,
+        web_url: None,
         ahead: 0,
         behind: 0,
         staged: vec![],
@@ -324,7 +331,13 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     if let Some(b) = &st.branch {
         st.push = push_target(repo, b);
     }
-    st.remotes = remotes(repo);
+    // One git call for the names and origin's URL: the links to GitHub follow a `set-url`.
+    let urls = remote_urls(repo);
+    st.origin_url = urls
+        .iter()
+        .find(|(name, _)| name == "origin")
+        .and_then(|(_, url)| url.clone());
+    st.remotes = urls.into_iter().map(|(name, _)| name).collect();
     if st.branch.is_some() && !st.remotes.is_empty() && (st.upstream.is_none() || st.upstream_gone)
     {
         let config = publish_config(repo, st.branch.as_deref());
