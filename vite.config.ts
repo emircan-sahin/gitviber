@@ -13,7 +13,8 @@ export default defineConfig({
     port: Number(process.env.GITVIBER_DEV_PORT) || 1420,
     strictPort: true,
     host: "127.0.0.1",
-    watch: { ignored: ["**/src-tauri/**"] },
+    // Agent worktrees live in .claude/worktrees: their writes reloaded this app's page over and over.
+    watch: { ignored: ["**/src-tauri/**", "**/.claude/**"] },
   },
   // ES workers can code-split, so each Shiki grammar/theme loads only when first used.
   worker: { format: "es" },
