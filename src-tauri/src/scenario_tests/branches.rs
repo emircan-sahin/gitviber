@@ -169,6 +169,43 @@ fn squash_and_rebase_merged_branches_whose_upstream_is_gone() {
     assert!(run(a, &["config", "--get", "branch.squashed.remote"]).is_err());
 }
 
+/// A branch merged upstream that's checked out here or in another worktree stays: deleting
+/// its ref would leave that HEAD unborn, every file staged as added.
+#[test]
+fn merged_upstream_branches_checked_out_anywhere_are_never_deleted() {
+    let sb = Sandbox::new("landedheld");
+    let c = sb.remote_with_clones(2);
+    let (a, host) = (&c[0], &c[1]);
+    for b in ["here", "there"] {
+        run(a, &["switch", "-q", "-c", b, "main"]).unwrap();
+        write_commit(a, &format!("{b}.txt"), "x\n", b);
+        run(a, &["push", "-q", "-u", "origin", b]).unwrap();
+    }
+    run(host, &["fetch", "-q"]).unwrap();
+    for b in ["here", "there"] {
+        run(host, &["merge", "-q", "--squash", &format!("origin/{b}")]).unwrap();
+        run(host, &["commit", "-q", "-m", b]).unwrap();
+    }
+    run(host, &["push", "-q", "origin", "main", ":here", ":there"]).unwrap();
+    run(a, &["switch", "-q", "here"]).unwrap();
+    run(a, &["fetch", "-q", "--prune"]).unwrap();
+    let wt = sb.path("there");
+    run(a, &["worktree", "add", "-q", wt.to_str().unwrap(), "there"]).unwrap();
+    let mut found = merged_upstream(a);
+    found.sort();
+    assert_eq!(found, ["here", "there"]);
+
+    for b in ["here", "there"] {
+        assert!(delete_merged(a, &[], &[b.to_string()]).is_err());
+        assert!(exists(a, b));
+    }
+    assert_eq!(on_branch(a), "here");
+    // Once nothing holds it, it goes.
+    run(a, &["switch", "-q", "main"]).unwrap();
+    delete_merged(a, &[], &["here".to_string()]).unwrap();
+    assert!(!exists(a, "here"));
+}
+
 /// The user's diff settings shape the patches patch-id reads; none may make an unmerged
 /// branch look merged, and a real squash still counts under all of them.
 #[test]

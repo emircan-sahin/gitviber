@@ -40,10 +40,17 @@ function put(map: Map<string, Entry>, key: string, e: Entry) {
 /** Origin's URL the entries were read for; undefined until the repo's status says. */
 let origin: string | null | undefined;
 
+const resets = new Set<() => void>();
+/** What keeps its own GitHub answers (ci.ts) drops them with this cache. */
+export function onGitHubReset(r: () => void) {
+  resets.add(r);
+}
+
 /** One repo's results never show in another's workspace. */
 export const resetGitHubCache = () => {
   entries = new Map();
   origin = undefined;
+  resets.forEach((r) => r());
 };
 
 /**
@@ -56,6 +63,7 @@ export function setGitHubOrigin(url: string | null) {
   origin = url;
   if (!known) return;
   entries = new Map();
+  resets.forEach((r) => r());
   version++;
   listeners.forEach((l) => l());
   wakers.forEach((w) => w());

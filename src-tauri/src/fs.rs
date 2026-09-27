@@ -172,9 +172,13 @@ pub enum Kind {
 /// Each path's kind, None when it's missing or outside the repo: a terminal link to an ignored
 /// file or folder, which the file list doesn't have, is one stat.
 pub fn kinds(root: &Path, rels: &[String]) -> Vec<Option<Kind>> {
+    let Ok(real) = root.canonicalize() else {
+        return rels.iter().map(|_| None).collect();
+    };
     rels.iter()
         .map(|rel| {
-            let meta = resolve(root, rel).and_then(|p| p.metadata().map_err(|e| e.to_string()));
+            let meta = resolve_under(root, &real, rel)
+                .and_then(|p| p.metadata().map_err(|e| e.to_string()));
             match meta {
                 Ok(m) if m.is_dir() => Some(Kind::Dir),
                 Ok(m) if m.is_file() => Some(Kind::File),

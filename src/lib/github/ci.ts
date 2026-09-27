@@ -3,7 +3,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { type CiState, github, type Target } from "../api";
 import { createStore } from "../store";
-import { onGitHubWake } from "./githubCache";
+import { onGitHubReset, onGitHubWake } from "./githubCache";
 
 const RUNNING = 30_000;
 const SETTLED = 10 * 60_000;
@@ -14,6 +14,11 @@ const known = new Map<string, { state: CiState | null; at: number }>();
 const failedAt = new Map<Target, number>();
 // Bumped when answers land, to re-render what shows them.
 const version = createStore(0);
+// Another repo, or origin moved: the old one's answers and failures don't hold for it.
+onGitHubReset(() => {
+  known.clear();
+  failedAt.clear();
+});
 
 const key = (target: Target, sha: string) => `${target ?? ""}\0${sha}`;
 const stale = (target: Target, sha: string, now: number) => {
@@ -41,7 +46,7 @@ async function ask(target: Target, shas: string[]) {
 
 /**
  * CI's state for each of `shas` that has one, kept current while shown. `live` false: asked again
- * only on the GitHub views' wakes (focus), for a badge that's always on screen.
+ * only on focus and the GitHub views' 5-minute recheck, for a badge that's always on screen.
  */
 export function useCi(target: Target, shas: string[], live = true): Record<string, CiState> {
   // With nothing to show, no re-render on every answer app-wide.

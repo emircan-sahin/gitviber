@@ -8,6 +8,7 @@ import { netActivity } from "../repo/netActivity";
 import { getSettings } from "../settings";
 import { createStore } from "../store";
 import { logError } from "./errorLog";
+import { saveNow } from "./quit";
 import { toast } from "./toast";
 import { checked, downloaded, due, INITIAL, isExpectedFailure, percent, type UpdateState } from "./updateState";
 
@@ -116,6 +117,8 @@ export async function restartToUpdate() {
       }
       installed = true;
     }
+    // A relaunch doesn't unload the page: what saves on the way out runs first.
+    saveNow();
     await relaunch().catch((e) => toast("error", "Could not restart GitViber", `The update is installed: quit and reopen GitViber to start it.\n${errorMessage(e)}`));
   } finally {
     set({ restarting: false });

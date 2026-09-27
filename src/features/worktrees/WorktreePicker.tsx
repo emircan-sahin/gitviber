@@ -47,12 +47,6 @@ interface Props {
   onOpenPull: (p: Pull) => void;
 }
 
-/**
- * `git worktree list` as a switcher. Always shown, even with only the main worktree, so
- * the feature is found at all; then it says how to make one.
- * Rows lead with the branch, the name people know a worktree by; the folder comes second.
- * In a linked worktree it names it and offers the way back to the main one.
- */
 /** The worktrees with a terminal that needs the user: each pane's deepest one, as agents' worktrees can sit inside the main one. */
 function needing(worktrees: Worktree[], cwds: string[]) {
   const out = new Set<string>();
@@ -63,6 +57,12 @@ function needing(worktrees: Worktree[], cwds: string[]) {
   return out;
 }
 
+/**
+ * `git worktree list` as a switcher. Always shown, even with only the main worktree, so
+ * the feature is found at all; then it says how to make one.
+ * Rows lead with the branch, the name people know a worktree by; the folder comes second.
+ * In a linked worktree it names it and offers the way back to the main one.
+ */
 export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew, onGitHub, onOpenPull }: Props) {
   const [open, setOpen] = useState(false);
   const calling = useNeedsYou();

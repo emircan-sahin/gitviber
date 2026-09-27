@@ -28,9 +28,9 @@ export interface BranchPull {
 
 /**
  * Each worktree's pull request, from whatever PR lists are cached, and its head's checks. `open`
- * (the picker) loads the lists, again on a wake or a new origin, never on a timer; the top bar's
- * linked worktree only reads what's cached, since opening a worktree shouldn't reach GitHub on
- * its own. Checks are asked only for a PR a list had: a token is in hand then, so nothing runs
+ * (the picker) loads the lists, again on focus, the GitHub views' 5-minute recheck or a new
+ * origin; the top bar's linked worktree only reads what's cached, since opening a worktree
+ * shouldn't reach GitHub on its own. Checks are asked only for a PR a list had: a token is in hand then, so nothing runs
  * gh or the keychain unasked. `onGitHub` false (origin isn't on GitHub): nothing at all.
  */
 export function useWorktreePulls(list: Worktree[], open: boolean, onGitHub: boolean) {

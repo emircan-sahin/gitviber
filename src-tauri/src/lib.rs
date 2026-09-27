@@ -77,6 +77,15 @@ pub fn run() {
             }
             let _ = app.emit("menu", event.id().as_ref());
         })
+        // Closing the only window ends the app: the page saves first, as on ⌘Q.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if !menu::quitting() {
+                    api.prevent_close();
+                    menu::quit(tauri::Manager::app_handle(window));
+                }
+            }
+        })
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
                 webview.state::<AppState>().ptys.kill_all();

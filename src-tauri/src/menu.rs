@@ -3,6 +3,7 @@
 //! applies right now (src/lib/commands/menu.ts), so the menu follows the user's key bindings.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{
     CheckMenuItem, IsMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
@@ -11,10 +12,20 @@ use tauri::{AppHandle, Emitter, Manager, Wry};
 
 pub const QUIT: &str = "app.quit";
 
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// Whether `quit` already asked the page to save: the window may close then.
+pub fn quitting() -> bool {
+    QUITTING.load(Ordering::SeqCst)
+}
+
 /// Quit from the menu. The page isn't unloaded on the way out, so what it saves on pagehide (the
 /// terminals' output, unsaved edits) was lost: it's told first, and ends the app itself once
 /// saved (commands::app::quit). A page that doesn't answer still lets the app go after a moment.
 pub fn quit(app: &AppHandle) {
+    if QUITTING.swap(true, Ordering::SeqCst) {
+        return;
+    }
     let _ = app.emit("quit", ());
     let app = app.clone();
     std::thread::spawn(move || {
