@@ -4,14 +4,33 @@
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::{Channel, Response};
 
+/// Its own lock: a program that isn't reading blocks the write once the pty's buffer fills, and
+/// the other panes' input, resizes and kills must not wait behind it.
+pub type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
+
+/// Blocks until the program reads the input; once its shell is gone, the pty fails the write.
+pub fn write(writer: &Writer, data: &str) -> Result<(), String> {
+    let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
+    w.write_all(data.as_bytes())
+        .and_then(|_| w.flush())
+        .map_err(|e| e.to_string())
+}
+
+/// How a shell ended: its exit code, or the signal that ended it ("Segmentation fault: 11").
+#[derive(serde::Serialize)]
+pub struct Exit {
+    code: Option<u32>,
+    signal: Option<String>,
+}
+
 struct Session {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    writer: Writer,
     killer: Box<dyn ChildKiller + Send + Sync>,
     shell: Option<u32>,
 }
@@ -31,25 +50,46 @@ fn size(cols: u16, rows: u16) -> PtySize {
     }
 }
 
+/// `cwd`, or the nearest folder above it that's left, else home.
+fn start_dir(cwd: &Path) -> Option<PathBuf> {
+    cwd.ancestors()
+        .find(|dir| dir.is_dir())
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            ["HOME", "USERPROFILE"]
+                .into_iter()
+                .filter_map(std::env::var_os)
+                .map(PathBuf::from)
+                .find(|home| home.is_dir())
+        })
+}
+
 impl Ptys {
-    /// Starts the user's login shell in `cwd`. `exit` gets the exit code once it's gone.
+    /// Starts the user's login shell in `cwd`. `exit` gets how it ended once it's gone.
     pub fn spawn(
         &self,
         cwd: &Path,
         cols: u16,
         rows: u16,
         output: Channel<Response>,
-        exit: Channel<Option<u32>>,
+        exit: Channel<Option<Exit>>,
     ) -> Result<u32, String> {
-        if !cwd.is_dir() {
-            return Err(format!("folder not found: {}", cwd.display()));
+        // A removed worktree's restored terminals, and their splits, still start, saying where.
+        let start = start_dir(cwd).ok_or_else(|| format!("folder not found: {}", cwd.display()))?;
+        if start != cwd {
+            let note = format!(
+                "\x1b[2mno folder at {}; started in {}\x1b[0m\r\n",
+                cwd.display(),
+                start.display()
+            );
+            let _ = output.send(Response::new(note.into_bytes()));
         }
         let pair = native_pty_system()
             .openpty(size(cols, rows))
             .map_err(|e| e.to_string())?;
         // The user's login shell, like Terminal.app: a Finder-launched app has a bare PATH.
         let mut cmd = CommandBuilder::new_default_prog();
-        cmd.cwd(cwd);
+        cmd.cwd(&start);
         // Not our environment: with npm_config_prefix from `pnpm tauri dev`, pnpm went missing.
         cmd.env_clear();
         for (key, value) in crate::shell::clean_env() {
@@ -75,7 +115,7 @@ impl Ptys {
             id,
             Session {
                 master: pair.master,
-                writer,
+                writer: Arc::new(Mutex::new(writer)),
                 killer: child.clone_killer(),
                 shell: child.process_id(),
             },
@@ -94,9 +134,18 @@ impl Ptys {
                     }
                 }
             }
-            let code = child.wait().ok().map(|s| s.exit_code());
+            let status = child.wait().ok().map(|s| match s.signal() {
+                Some(signal) => Exit {
+                    code: None,
+                    signal: Some(signal.to_string()),
+                },
+                None => Exit {
+                    code: Some(s.exit_code()),
+                    signal: None,
+                },
+            });
             sessions.lock().unwrap().remove(&id);
-            let _ = exit.send(code);
+            let _ = exit.send(status);
         });
         Ok(id)
     }
@@ -112,13 +161,9 @@ impl Ptys {
         }
     }
 
-    pub fn write(&self, id: u32, data: &str) -> Result<(), String> {
-        self.with(id, |s| {
-            s.writer
-                .write_all(data.as_bytes())
-                .and_then(|_| s.writer.flush())
-                .map_err(|e| e.to_string())
-        })
+    /// Where `write` sends a session's input, taken out so the write happens outside the sessions lock.
+    pub fn writer(&self, id: u32) -> Result<Writer, String> {
+        self.with(id, |s| Ok(s.writer.clone()))
     }
 
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
@@ -164,5 +209,18 @@ impl Ptys {
         for mut s in sessions {
             let _ = s.killer.kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start_dir;
+
+    #[test]
+    fn a_gone_folder_starts_in_the_nearest_one_left() {
+        let tmp = std::env::temp_dir();
+        assert_eq!(start_dir(&tmp), Some(tmp.clone()));
+        let gone = tmp.join("gitviber-gone-worktree").join("sub");
+        assert_eq!(start_dir(&gone), Some(tmp));
     }
 }

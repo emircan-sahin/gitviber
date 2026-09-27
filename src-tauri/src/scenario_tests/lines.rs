@@ -12,6 +12,7 @@ fn request(
 ) -> Request {
     request_renamed(repo, kind, action, (path, None), removed, added)
 }
+
 /// The same for a file that may have been renamed from `path.1`.
 fn request_renamed(
     repo: &Path,
@@ -22,7 +23,7 @@ fn request_renamed(
     added: &[u32],
 ) -> Request {
     let pair = diff_pair(repo, kind, path, old_path, None, None, None, |p| {
-        vfs::read_file(repo, p)
+        vfs::read_diff_side(repo, p)
     })
     .unwrap();
     let shown = |f: &FileText| f.exists.then(|| f.text.clone());
@@ -214,4 +215,16 @@ fn a_file_changed_since_it_was_shown_is_left_alone() {
     assert_eq!(index(&r, "a.txt"), "a\n");
     let wrong = request(&r, "staged", "stage", "a.txt", &[], &[]);
     assert!(change(&r, &wrong).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_is_not_staged_or_discarded_by_line() {
+    let (_sb, r) = repo("lines-link");
+    write_commit(&r, "a.txt", "a\n", "base");
+    std::os::unix::fs::symlink("a.txt", r.join("link")).unwrap();
+    // Discarding would write the old target path into a.txt, through the link.
+    let req = request(&r, "unstaged", "discard", "link", &[], &[1]);
+    assert!(change(&r, &req).unwrap_err().contains("Only text files"));
+    assert_eq!(disk(&r, "a.txt"), "a\n");
 }

@@ -23,3 +23,8 @@ export function pathPastes(paths: string[]): string[] {
     .filter((p) => p !== null)
     .map((p, i) => (i ? ` ${p}` : p));
 }
+
+/** The lines a paste would run one by one where the program hasn't turned on bracketed paste; a trailing line break doesn't start another. */
+export function pastedLines(text: string): number {
+  return text.replace(/(\r\n|\r|\n)$/, "").split(/\r\n|\r|\n/).length;
+}

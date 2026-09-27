@@ -31,6 +31,7 @@ import type { Tab } from "./tabs";
 import { TabStrip } from "./TabStrip";
 import { CommitBar } from "./CommitBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { changedInside } from "@/features/changes/changeList";
 
 interface ViewerProps {
   tabs: Tab[];
@@ -47,6 +48,7 @@ interface ViewerProps {
   onOpen: (s: Selection) => void;
   /** History, filtered to a file's commits. */
   onShowHistory: (path: string) => void;
+  onRevealInExplorer: (path: string) => void;
   /** Blame's link: a commit in History, with `path` (its name in that commit) open. */
   onShowCommit: (sha: string, path: string) => void;
   /** Reads the repo's status again, after staging lines here. */
@@ -123,13 +125,11 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   // Both versions of an image: they can also be laid one over the other.
   const twoImages = !isFile && !!pair?.original.exists && !!pair.modified.exists && (svg ? rendered : media && isImageChange({ path: selectionPath(sel), oldPath: file?.oldPath ?? null }));
   const overlaid: Overlaid | null = twoImages && s.imageCompare !== "side" ? s.imageCompare : null;
-  // What a text diff can't show.
-  const fileNote = file?.mode ? `File mode changed: ${file.mode}` : /[MU]/.test(file?.submodule?.slice(2) ?? "") ? "This submodule has changes inside it; commit them in the submodule" : null;
-  const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile, fileNote));
+  const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile, file));
 
   const diff = !isFile && !media && !rendered;
-  const textNote = pair?.eolOnly ? "Only line endings changed" : pair?.whitespaceHidden ? "Whitespace changes hidden" : null;
-  const note = diff && pair && !special ? [fileNote, textNote].filter(Boolean).join(" · ") || null : null;
+  const textNote = pair?.eolOnly ? "Only line endings changed" : pair && (newlineNote(pair) ?? (pair.whitespaceHidden ? "Whitespace changes hidden" : null));
+  const note = diff && pair && !special ? [fileNote(file), textNote].filter(Boolean).join(" · ") || null : null;
   const code = !media && !rendered && !!pair && !special;
   const blame = useBlame(isFile && code && s.blame ? sel.path : null, pair, status?.head ?? null);
   // Text the file view can't turn back into the file's bytes stays read-only.
@@ -329,14 +329,46 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   );
 }
 
-function placeholderFor(pair: DiffPair, isFile: boolean, fileNote: string | null) {
+const KINDS: Record<string, string> = { "100644": "file", "100755": "file", "120000": "symlink", "160000": "submodule" };
+
+/** What a text diff can't show about a change: its mode or type, or a submodule's own changes. */
+function fileNote(file: FileChange | null) {
+  if (file?.mode) {
+    const [from, to] = file.mode.split(" → ").map((m) => KINDS[m]);
+    return from && to && from !== to ? `Changed from a ${from} to a ${to} (${file.mode})` : `File mode changed: ${file.mode}`;
+  }
+  return changedInside(file) ? "This submodule has changes inside it; commit them in the submodule" : null;
+}
+
+function placeholderFor(pair: DiffPair, isFile: boolean, file: FileChange | null) {
   const { original: a, modified: b } = pair;
   if (isFile && !b.exists) return "This file no longer exists";
   if (b.lfsMissing || a.lfsMissing) return b.lfsMissing ?? a.lfsMissing;
   if (a.binary || b.binary) return "Binary file";
   if (a.tooLarge || b.tooLarge) return "File is too large to display";
-  if (!isFile && !pair.rows.some((r) => r.k !== 0)) return fileNote ?? (pair.whitespaceHidden ? "Only whitespace changed (hidden)" : "No textual changes");
+  if (!isFile && !pair.rows.some((r) => r.k !== 0)) {
+    // First: an added or renamed file whose mode changed isn't only that.
+    const note = fileNote(file);
+    if (note) return note;
+    if (pair.whitespaceHidden) return "Only whitespace changed (hidden)";
+    // Added or deleted with no line changed: there were none.
+    if (a.exists !== b.exists) return "Empty file";
+    if (file?.status === "R") return "Renamed without changes";
+    if (file?.status === "C") return "Copied without changes";
+    return "No textual changes";
+  }
   return null;
+}
+
+/** Why a last line shows removed and added unchanged: the newline after it came or went. */
+function newlineNote({ original: a, modified: b, rows }: DiffPair) {
+  if (!a.text || !b.text || a.text.endsWith("\n") === b.text.endsWith("\n")) return null;
+  // Rows hold every line, so the last one naming the new side is its last line; ignoring
+  // whitespace can leave it unchanged.
+  let last = rows.length - 1;
+  while (last >= 0 && !rows[last].n) last--;
+  if (last < 0 || rows[last].k === 0) return null;
+  return b.text.endsWith("\n") ? "Newline added at end of file" : "No newline at end of file";
 }
 
 function EmptyViewer({ hasTabs }: { hasTabs: boolean }) {

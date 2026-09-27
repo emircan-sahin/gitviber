@@ -2,10 +2,10 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 
 /** The shells behind the terminal's panes (pty.rs), by the id `spawn` gives. */
 export const pty = {
-  /** `onOutput` gets what the shell prints, `onExit` runs when it ends. */
-  spawn: (cwd: string, cols: number, rows: number, onOutput: (bytes: ArrayBuffer) => void, onExit: () => void) => {
+  /** `onOutput` gets what the shell prints, `onExit` how it ended (null if unknown). */
+  spawn: (cwd: string, cols: number, rows: number, onOutput: (bytes: ArrayBuffer) => void, onExit: (exit: PtyExit | null) => void) => {
     const output = new Channel<ArrayBuffer>(onOutput);
-    const exit = new Channel<number | null>(onExit);
+    const exit = new Channel<PtyExit | null>(onExit);
     return invoke<number>("pty_spawn", { cwd, cols, rows, output, exit });
   },
   write: (id: number, data: string) => invoke<void>("pty_write", { id, data }),
@@ -22,3 +22,6 @@ export const pty = {
 };
 
 export type TerminalPaste = { kind: "files"; paths: string[] } | { kind: "text"; text: string } | { kind: "image"; path: string } | { kind: "empty" };
+
+/** A shell's exit code, or the signal that ended it ("Segmentation fault: 11"). */
+export type PtyExit = { code: number | null; signal: string | null };

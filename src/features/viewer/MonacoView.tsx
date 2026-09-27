@@ -389,12 +389,13 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   useImperativeHandle(
     ref,
     () => {
-      // From the line CONTEXT below the top, where a jump puts a change, to the next one; no wrapping.
+      // From the cursor, where a jump leaves it (the scroll clamps near the end, so the top can't
+      // tell), or CONTEXT below the top once it's scrolled away; no wrapping.
       const go = (dir: 1 | -1) => {
         const e = editor.current;
         if (!e) return;
         const code = codeEditor(e);
-        const at = (code.getVisibleRanges()[0]?.startLineNumber ?? 1) + CONTEXT;
+        const at = cursorShown(code) ?? (code.getVisibleRanges()[0]?.startLineNumber ?? 1) + CONTEXT;
         const starts = changeStarts(e, shownBars.current);
         const to = dir === 1 ? starts.find((l) => l > at) : [...starts].reverse().find((l) => l < at);
         if (to != null) goToLine(code, to);
@@ -433,10 +434,12 @@ function originalLineAt(rows: DiffRow[], n?: number) {
 }
 
 function readingLine(e: monaco.editor.ICodeEditor) {
-  const visible = e.getVisibleRanges();
+  return cursorShown(e) ?? e.getVisibleRanges()[0]?.startLineNumber ?? 1;
+}
+
+function cursorShown(e: monaco.editor.ICodeEditor) {
   const cursor = e.getPosition()?.lineNumber;
-  if (cursor && visible.some((r) => cursor >= r.startLineNumber && cursor <= r.endLineNumber)) return cursor;
-  return visible[0]?.startLineNumber ?? 1;
+  return cursor && e.getVisibleRanges().some((r) => cursor >= r.startLineNumber && cursor <= r.endLineNumber) ? cursor : undefined;
 }
 
 /** A link's line at its column, or a search result's with its match selected. */

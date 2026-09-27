@@ -65,6 +65,9 @@ export async function attempt(title: string, fn: () => Promise<unknown>) {
   }
 }
 
+/** A submodule with edits or untracked files inside it, which only it can commit or discard. */
+export const changedInside = (f: FileChange | null) => !!f?.submodule && /[MU]/.test(f.submodule.slice(2));
+
 export const leftOut = (n: number) => `Left out ${n} nested ${n === 1 ? "repository" : "repositories"}`;
 export const paths = (rows: Change[]) => rows.map((r) => r.file.path);
 /** What to unstage: a staged rename's old path too, or its deletion would stay staged. */

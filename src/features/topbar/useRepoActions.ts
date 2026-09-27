@@ -1,6 +1,6 @@
 import { ask } from "@tauri-apps/plugin-dialog";
 import { api, type Branch, CANCELLED, errorMessage, type PullMode, type Worktree } from "@/lib/api";
-import { openTerminal } from "@/lib/terminal/terminals";
+import { openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { forgetRemoteTags } from "@/lib/repo/remoteTags";
 import { worktreeDir } from "@/lib/repo/session";
 import type { RepoData } from "@/lib/repo/useRepo";
@@ -169,8 +169,10 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       : w.locked
         ? ` It's locked${w.lockReason ? ` (${w.lockReason})` : ""}; this overrides the lock. The lock on its row unlocks it instead.`
         : "";
+    const open = terminalsIn(w.path);
+    const terminals = open ? ` ${open === 1 ? "A terminal runs" : `${open} terminals run`} in it; whatever runs there, like an agent or a dev server, loses its folder.` : "";
     const ok = await ask(
-      w.prunable ? `${name}'s folder is gone, but it's locked${w.lockReason ? ` (${w.lockReason})` : ""}: its drive may only be unplugged. Prune it anyway?${branch}` : `Delete worktree ${name} and its folder?${lost}${lock}${branch}`,
+      w.prunable ? `${name}'s folder is gone, but it's locked${w.lockReason ? ` (${w.lockReason})` : ""}: its drive may only be unplugged. Prune it anyway?${branch}` : `Delete worktree ${name} and its folder?${lost}${lock}${terminals}${branch}`,
       { title: w.prunable ? "Prune worktree" : "Remove worktree", kind: "warning", okLabel: w.prunable ? "Prune" : "Delete worktree" },
     );
     if (ok) await run("Remove worktree", () => api.removeWorktree(w.path, changed > 0 || w.locked), `Worktree ${name} removed`);

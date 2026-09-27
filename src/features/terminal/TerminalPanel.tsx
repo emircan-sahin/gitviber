@@ -87,8 +87,8 @@ export function TerminalPanel({ root, worktrees }: Props) {
       els[at].scrollIntoView({ block: "nearest", inline: "nearest" });
     } else if (e.key === "Enter" || e.key === " ") activateGroup(groups[i].id);
     else if (e.key === "Backspace" || e.key === "Delete") {
-      (els[i + 1] ?? els[i - 1])?.focus();
-      closeGroup(groups[i].id);
+      const next = els[i + 1] ?? els[i - 1];
+      void closeGroup(groups[i].id).then((killed) => killed && next?.focus());
     } else return;
     e.preventDefault();
   };
@@ -134,7 +134,7 @@ export function TerminalPanel({ root, worktrees }: Props) {
             </Button>
           </Tip>
           <Tip label="Kill terminal" shortcut={useShortcut("terminal.close")}>
-            <Button variant="ghost" size="icon-sm" onClick={closeFocused} disabled={!group}>
+            <Button variant="ghost" size="icon-sm" onClick={() => void closeFocused()} disabled={!group}>
               <Trash2 />
             </Button>
           </Tip>
@@ -190,7 +190,7 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
       // A double-click renames: its second click leaves focus for the name field.
       onClick={(e) => activateGroup(g.id, e.detail < 2)}
       onDoubleClick={() => setRenaming(true)}
-      onAuxClick={(e) => e.button === 1 && closeGroup(g.id)}
+      onAuxClick={(e) => e.button === 1 && void closeGroup(g.id)}
       className={cn(
         "group relative flex max-w-64 shrink-0 cursor-pointer items-center gap-1.5 border-r border-border pr-1.5 pl-3 text-[12px] outline-none select-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
         active ? "bg-background text-foreground" : "bg-panel text-muted-foreground hover:bg-hover hover:text-foreground focus:bg-hover focus:text-foreground",
@@ -220,7 +220,7 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
         tabIndex={-1}
         onClick={(e) => {
           e.stopPropagation();
-          closeGroup(g.id);
+          void closeGroup(g.id);
         }}
         className={cn("flex size-5 items-center justify-center rounded-sm text-subtle hover:bg-active focus-visible:bg-active hover:text-foreground focus-visible:text-foreground", !active && "opacity-0 group-focus-within:opacity-100 group-hover:opacity-100")}
       >
@@ -256,7 +256,7 @@ function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGr
           <Eraser /> Clear{active && clearKey && <ContextMenuShortcut>{clearKey}</ContextMenuShortcut>}
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => closeGroup(g.id)}>
+        <ContextMenuItem onSelect={() => void closeGroup(g.id)}>
           <Trash2 /> Kill Terminal
         </ContextMenuItem>
         <ContextMenuItem disabled={alone} onSelect={() => void closeOtherGroups(g.id)}>

@@ -280,13 +280,48 @@ fn symlinks_cannot_escape_the_repo() {
         vfs::write_file(&r, "link/new.txt", "pwned").is_err(),
         "create through a symlinked parent"
     );
-    assert!(!outside.join("new.txt").exists());
+    assert!(
+        vfs::create_file(&r, "link/new/x.txt").is_err(),
+        "create folders through a symlinked parent"
+    );
+    assert!(!outside.join("new.txt").exists() && !outside.join("new").exists());
     assert_eq!(
         fs::read_to_string(outside.join("secret.txt")).unwrap(),
         "secret"
     );
     // Normal writes, including new files in new-ish places, still work.
     vfs::write_file(&r, "ok.txt", "fine").unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_symlink_diffs_as_its_target_path() {
+    let sb = Sandbox::new("linkdiff");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "a");
+    write_commit(&r, "b.txt", "b\n", "b");
+    std::os::unix::fs::symlink("a.txt", r.join("link")).unwrap();
+    stage(&r, &["link".into()]).unwrap();
+    commit(&r, "link", &CommitOptions::default()).unwrap();
+
+    fs::remove_file(r.join("link")).unwrap();
+    std::os::unix::fs::symlink("b.txt", r.join("link")).unwrap();
+    let wt = |p: &str| vfs::read_diff_side(&r, p);
+    let pair = diff_pair(&r, "unstaged", "link", None, None, None, None, wt).unwrap();
+    assert_eq!(
+        (pair.original.text.as_str(), pair.modified.text.as_str()),
+        ("a.txt", "b.txt")
+    );
+    // The file view still opens what it points to.
+    assert_eq!(vfs::read_file(&r, "link").text, "b\n");
+
+    // One pointing out of the repo is a path like any other, not a deleted file.
+    let outside = sb.path("outside.txt");
+    fs::write(&outside, "secret").unwrap();
+    std::os::unix::fs::symlink(&outside, r.join("out")).unwrap();
+    let out = vfs::read_diff_side(&r, "out");
+    assert!(out.exists && out.text == outside.to_string_lossy());
 }
 
 #[test]
@@ -326,6 +361,24 @@ fn special_and_non_utf8_files_are_safe() {
     let f = vfs::read_file(&r, "latin1.txt");
     assert!(f.exists && f.lossy);
     assert!(!vfs::read_file(&r, "x.txt").lossy);
+
+    // UTF-16 with its byte order mark, either way round: text, read-only.
+    let le: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain("hé\n".encode_utf16().flat_map(u16::to_le_bytes))
+        .collect();
+    let be: Vec<u8> = [0xFE, 0xFF]
+        .into_iter()
+        .chain("hé\n".encode_utf16().flat_map(u16::to_be_bytes))
+        .collect();
+    for bytes in [le, be] {
+        fs::write(r.join("utf16.txt"), bytes).unwrap();
+        let f = vfs::read_file(&r, "utf16.txt");
+        assert!(!f.binary && f.lossy && f.text == "hé\n");
+    }
+    // UTF-32LE starts the same way; so can any binary file.
+    fs::write(r.join("utf32.txt"), [0xFF, 0xFE, 0, 0, b'h', 0, 0, 0]).unwrap();
+    assert!(vfs::read_file(&r, "utf32.txt").binary);
 }
 
 #[test]

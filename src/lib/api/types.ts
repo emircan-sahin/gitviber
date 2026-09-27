@@ -172,7 +172,7 @@ export interface FileText {
   binary: boolean;
   tooLarge: boolean;
   exists: boolean;
-  /** Not valid UTF-8; shown lossily and must never be written back. */
+  /** Not the file's own UTF-8 text (invalid UTF-8 shown lossily, UTF-16, or a symlink's target); must never be written back. */
   lossy: boolean;
   /** A Git LFS file whose object isn't downloaded: the message to show, with its size. */
   lfsMissing: string | null;

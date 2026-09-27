@@ -25,6 +25,7 @@ export const COMMANDS = [
   // The file open in the file view, typed into (lib/editor/edits).
   { id: "file.save", title: "Save", category: "General", keys: ["cmd+s"] },
   { id: "file.reveal", title: REVEAL_LABEL, category: "General", keys: [] },
+  { id: "file.revealInExplorer", title: "Reveal in Explorer View", category: "General", keys: [] },
   // The app last picked under "Open in"; the list of apps until there is one.
   { id: "file.openIn", title: "Open in External App", category: "General", keys: ["shift+cmd+o"] },
   // ⌘1–⌘9 pick tabs, as in browsers. Listed before the tabs, so a user who bound ⌘1 here keeps it.

@@ -77,7 +77,7 @@ pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
         None,
         None,
         None,
-        |p| crate::fs::read_file(repo, p),
+        |p| crate::fs::read_diff_side(repo, p),
     )?;
     for (shown, live) in [
         (&req.original, &now.original),
