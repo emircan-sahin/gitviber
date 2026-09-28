@@ -6,6 +6,8 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-09-28
+
 ### Added
 
 - **A pull request's commits, by day,** in a Commits section on its page, with CI, a copyable SHA
@@ -25,6 +27,9 @@ on GitHub are its section below.
 
 - **Reload Window moves to ⇧⌘R,** so ⌘R pressed by habit in a terminal no longer ends the
   programs running there.
+- **A branch checked out in another worktree stays in the branch list,** marked with that
+  worktree's name, and picking it opens that worktree. From a linked worktree, main no longer
+  disappears from the list.
 - **Settings are grouped under General, Workspace and Git,** with their fields in titled cards,
   and keyboard shortcuts sit under category tabs.
 - **New installs start with a 13.5 editor font and unchanged lines collapsed** in diffs. The
@@ -324,7 +329,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/emircan-sahin/gitviber/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/emircan-sahin/gitviber/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/emircan-sahin/gitviber/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/emircan-sahin/gitviber/compare/v0.1.2...v0.1.3
