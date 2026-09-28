@@ -4,7 +4,7 @@ import { relativeTime } from "@/lib/format";
 import { updateSettings, useSettings } from "@/lib/settings";
 import { checkForUpdates, showUpdate, useUpdateMode, useUpdates } from "@/lib/app/updates";
 import { useAbout } from "@/features/app/AboutDialog";
-import { Field } from "@/features/settings/controls";
+import { Field, Group } from "@/features/settings/controls";
 
 export function UpdatesSection() {
   const s = useSettings();
@@ -21,7 +21,7 @@ export function UpdatesSection() {
           ? `Up to date, checked ${relativeTime(checkedAt / 1000)}.`
           : "Not checked yet.";
   return (
-    <>
+    <Group>
       <Field label="Check for updates automatically" hint="At launch and every few hours GitViber asks GitHub Releases whether a newer version is out. Nothing downloads until you choose to update.">
         <Switch checked={s.autoUpdate} onChange={(v) => updateSettings({ autoUpdate: v })} />
       </Field>
@@ -36,6 +36,6 @@ export function UpdatesSection() {
           </Button>
         )}
       </Field>
-    </>
+    </Group>
   );
 }

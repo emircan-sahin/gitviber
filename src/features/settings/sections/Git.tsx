@@ -12,26 +12,32 @@ import { enableNotifications } from "@/lib/app/notify";
 import { failed, toast } from "@/lib/app/toast";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
-import { Field } from "@/features/settings/controls";
+import { Field, Group } from "@/features/settings/controls";
 
 export function GitSection() {
   const s = useSettings();
   return (
     <>
-      <Field label="Fetch in the background" hint="Keeps ahead / behind and the remote branches current for the open repository. A fetch that fails, say while offline, stays quiet.">
-        <Segmented<string>
-          value={String(s.backgroundFetch)}
-          onChange={(v) => updateSettings({ backgroundFetch: Number(v) })}
-          options={FETCH_INTERVALS.map((m) => ({ value: String(m), label: m ? `${m} min` : "Off" }))}
-          variant="field"
-        />
-      </Field>
-      <Field label="Notify in the background" hint="A desktop notification when a push, pull, fetch or clone ends, or a terminal rings or its agent asks for you, while GitViber isn't the app in front. Turning it on asks your OS for permission.">
-        <Switch checked={s.notify} onChange={(v) => void enableNotifications(v)} />
-      </Field>
-      <WorktreeRootField />
-      <RepoIdentityField />
-      <RemotesField />
+      <Group title="Background">
+        <Field label="Fetch in the background" hint="Keeps ahead / behind and the remote branches current for the open repository. A fetch that fails, say while offline, stays quiet.">
+          <Segmented<string>
+            value={String(s.backgroundFetch)}
+            onChange={(v) => updateSettings({ backgroundFetch: Number(v) })}
+            options={FETCH_INTERVALS.map((m) => ({ value: String(m), label: m ? `${m} min` : "Off" }))}
+            variant="field"
+          />
+        </Field>
+        <Field label="Notify in the background" hint="A desktop notification when a push, pull, fetch or clone ends, or a terminal rings or its agent asks for you, while GitViber isn't the app in front. Turning it on asks your OS for permission.">
+          <Switch checked={s.notify} onChange={(v) => void enableNotifications(v)} />
+        </Field>
+      </Group>
+      <Group title="Worktrees">
+        <WorktreeRootField />
+      </Group>
+      <Group title="This repository">
+        <RepoIdentityField />
+        <RemotesField />
+      </Group>
     </>
   );
 }

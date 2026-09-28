@@ -17,17 +17,18 @@ import { UpdatesSection } from "./sections/Updates";
 import { TerminalSection } from "./sections/Terminal";
 
 const SECTIONS = [
-  { id: "appearance", label: "Appearance", icon: Palette },
-  { id: "editor", label: "Editor", icon: Code2 },
-  { id: "diff", label: "Diff", icon: GitCompareArrows },
-  { id: "terminal", label: "Terminal", icon: SquareTerminal },
-  { id: "git", label: "Git", icon: GitBranch },
-  { id: "commit", label: "Commit Messages", icon: Sparkles },
-  { id: "openIn", label: "Open In", icon: SquareArrowOutUpRight },
-  { id: "shortcuts", label: "Keyboard Shortcuts", icon: Keyboard },
-  { id: "updates", label: "Updates", icon: CircleArrowUp },
+  { id: "appearance", label: "Appearance", icon: Palette, group: "General" },
+  { id: "shortcuts", label: "Keyboard Shortcuts", icon: Keyboard, group: "General" },
+  { id: "openIn", label: "Open In", icon: SquareArrowOutUpRight, group: "General" },
+  { id: "updates", label: "Updates", icon: CircleArrowUp, group: "General" },
+  { id: "editor", label: "Editor", icon: Code2, group: "Workspace" },
+  { id: "diff", label: "Diff", icon: GitCompareArrows, group: "Workspace" },
+  { id: "terminal", label: "Terminal", icon: SquareTerminal, group: "Workspace" },
+  { id: "git", label: "Git", icon: GitBranch, group: "Git" },
+  { id: "commit", label: "Commit Messages", icon: Sparkles, group: "Git" },
 ] as const;
 type Section = (typeof SECTIONS)[number]["id"];
+const GROUPS = [...new Set(SECTIONS.map((s) => s.group))];
 
 // Open state lives outside React so the top bar and ⌘, can open it from anywhere.
 const openSection = createStore<Section | null>(null);
@@ -69,18 +70,23 @@ export function SettingsDialog() {
       >
         <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar p-2">
           <DialogTitle className="px-2 pt-1.5 pb-2.5">Settings</DialogTitle>
-          <DialogDescription className="sr-only">Appearance, editor, diff, terminal, git, commit message, Open in, keyboard shortcut and update preferences.</DialogDescription>
-          {SECTIONS.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              onClick={() => setOpen(id)}
-              className={cn(
-                "flex h-7 items-center gap-2 rounded-md px-2 text-left text-[12.5px]",
-                section === id ? "bg-active text-foreground" : "text-muted-foreground hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
-              )}
-            >
-              <Icon className="size-3.5 shrink-0" /> {label}
-            </button>
+          <DialogDescription className="sr-only">Appearance, keyboard shortcut, Open in, update, editor, diff, terminal, git and commit message preferences.</DialogDescription>
+          {GROUPS.map((group) => (
+            <div key={group} className="flex flex-col gap-0.5 not-first-of-type:mt-3">
+              <div className="px-2 pb-1 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">{group}</div>
+              {SECTIONS.filter((s) => s.group === group).map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  onClick={() => setOpen(id)}
+                  className={cn(
+                    "flex h-7 items-center gap-2 rounded-md px-2 text-left text-[12.5px]",
+                    section === id ? "bg-active text-foreground" : "text-muted-foreground hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
+                  )}
+                >
+                  <Icon className="size-3.5 shrink-0" /> {label}
+                </button>
+              ))}
+            </div>
           ))}
           <button onClick={resetAll} className="mt-auto flex h-7 items-center gap-2 rounded-md px-2 text-left text-[12px] text-muted-foreground hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
             <RotateCcw className="size-3.5 shrink-0" /> Reset all settings

@@ -2,12 +2,12 @@ import type { Whitespace } from "@/lib/api";
 import { updateSettings, useSettings } from "@/lib/settings";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
-import { Field } from "@/features/settings/controls";
+import { Field, Group } from "@/features/settings/controls";
 
 export function DiffSection() {
   const s = useSettings();
   return (
-    <>
+    <Group>
       <Field label="Layout" hint="Unified shows one column, split shows before and after side by side." commands={["diff.toggleSplit"]}>
         <Segmented<string>
           value={s.sideBySide ? "split" : "unified"}
@@ -38,6 +38,6 @@ export function DiffSection() {
           variant="field"
         />
       </Field>
-    </>
+    </Group>
   );
 }

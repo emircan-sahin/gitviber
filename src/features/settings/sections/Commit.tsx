@@ -9,7 +9,7 @@ import { failed } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { segmentClass } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
-import { Field } from "@/features/settings/controls";
+import { Field, Group } from "@/features/settings/controls";
 
 function ModelsLink({ label, url }: { label: string; url: string }) {
   return (
@@ -66,78 +66,81 @@ export function CommitSection() {
   const input = useRef<HTMLInputElement>(null);
   return (
     <>
-      <Field
-        label="Suggest commit messages"
-        hint="Adds a ✦ button to the commit box that asks your own agent CLI to write the message, and one to New pull request for its title and description. GitViber sends nothing itself and keeps no keys: the command runs on this Mac, and it decides where the diff goes."
-      >
-        <Switch checked={s.suggestEnabled} onChange={(v) => updateSettings({ suggestEnabled: v })} />
-      </Field>
-      <Field
-        label="Command"
-        hint="Runs in the repository's folder, directly, not through a shell. The prompt and the diff arrive on stdin; put {prompt} in the command to pass the prompt as an argument instead. If it isn't found, give its full path (`which claude` in Terminal prints it)."
-        commands={["git.suggestMessage"]}
-      >
-        <div className="flex w-80 flex-col gap-2">
-          <AgentPicker
-            value={custom || !preset ? "custom" : preset}
-            onChange={(v) => {
-              setCustom(v === "custom");
-              if (v === "custom") input.current?.focus();
-              else updateSettings({ suggestCommand: SUGGEST_PRESETS[v].command });
-            }}
-          />
-          <Input ref={input} value={s.suggestCommand} onChange={(e) => updateSettings({ suggestCommand: e.target.value })} placeholder="claude -p" spellCheck={false} className="font-mono" />
+      <Group title="Suggestions">
+        <Field
+          label="Suggest commit messages"
+          hint="Adds a ✦ button to the commit box that asks your own agent CLI to write the message, and one to New pull request for its title and description. GitViber sends nothing itself and keeps no keys: the command runs on this Mac, and it decides where the diff goes."
+        >
+          <Switch checked={s.suggestEnabled} onChange={(v) => updateSettings({ suggestEnabled: v })} />
+        </Field>
+        <Field
+          label="Command"
+          hint="Runs in the repository's folder, directly, not through a shell. The prompt and the diff arrive on stdin; put {prompt} in the command to pass the prompt as an argument instead. If it isn't found, give its full path (`which claude` in Terminal prints it)."
+          commands={["git.suggestMessage"]}
+        >
+          <div className="flex w-80 flex-col gap-2">
+            <AgentPicker
+              value={custom || !preset ? "custom" : preset}
+              onChange={(v) => {
+                setCustom(v === "custom");
+                if (v === "custom") input.current?.focus();
+                else updateSettings({ suggestCommand: SUGGEST_PRESETS[v].command });
+              }}
+            />
+            <Input ref={input} value={s.suggestCommand} onChange={(e) => updateSettings({ suggestCommand: e.target.value })} placeholder="claude -p" spellCheck={false} className="font-mono" />
+          </div>
+        </Field>
+        {preset ? (
+          <Field
+            label="Model"
+            hint={
+              <>
+                Passed as <code className="font-mono text-foreground">{`${SUGGEST_PRESETS[preset].modelFlag} ${SUGGEST_PRESETS[preset].model}`}</code>; empty uses the CLI's own default. New models come out often, and <ModelsLink {...SUGGEST_PRESETS[preset].models} /> has the current IDs.
+              </>
+            }
+          >
+            <Input
+              value={modelOf(preset, s.suggestModels)}
+              onChange={(e) => updateSettings({ suggestModels: { ...s.suggestModels, [preset]: e.target.value.replace(/\s/g, "") } })}
+              placeholder="CLI default"
+              spellCheck={false}
+              className="w-80 font-mono"
+            />
+          </Field>
+        ) : (
+          <Field
+            label="Model"
+            hint={
+              <>
+                Goes in the command itself. <ModelsLink {...ALL_MODELS} /> lists every provider's current model IDs.
+              </>
+            }
+          >
+            {null}
+          </Field>
+        )}
+      </Group>
+      <Group title="What the command gets">
+        <div className="py-3.5">
+          <div className="text-[11.5px] leading-relaxed text-muted-foreground">Only when you click ✦, and nothing else from the app:</div>
+          <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
+            {SUGGEST_PROMPT}
+            {"\n\n"}
+            <span className="text-subtle">
+              [the diff: the staged changes, or every change when nothing is staged (Commit all), or the whole commit when amending; up to {SUGGEST_LIMIT_KB} KB, with a note in the
+              prompt when it's cut]
+            </span>
+          </pre>
+          <div className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">For a pull request:</div>
+          <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
+            {PULL_PROMPT}
+            {"\n\n"}
+            <span className="text-subtle">
+              [the subjects of the branch's commits, the repository's pull request template if it has one, and the branch's diff since it left the base; up to {SUGGEST_LIMIT_KB} KB in all]
+            </span>
+          </pre>
         </div>
-      </Field>
-      {preset ? (
-        <Field
-          label="Model"
-          hint={
-            <>
-              Passed as <code className="font-mono text-foreground">{`${SUGGEST_PRESETS[preset].modelFlag} ${SUGGEST_PRESETS[preset].model}`}</code>; empty uses the CLI's own default. New models come out often, and <ModelsLink {...SUGGEST_PRESETS[preset].models} /> has the current IDs.
-            </>
-          }
-        >
-          <Input
-            value={modelOf(preset, s.suggestModels)}
-            onChange={(e) => updateSettings({ suggestModels: { ...s.suggestModels, [preset]: e.target.value.replace(/\s/g, "") } })}
-            placeholder="CLI default"
-            spellCheck={false}
-            className="w-80 font-mono"
-          />
-        </Field>
-      ) : (
-        <Field
-          label="Model"
-          hint={
-            <>
-              Goes in the command itself. <ModelsLink {...ALL_MODELS} /> lists every provider's current model IDs.
-            </>
-          }
-        >
-          {null}
-        </Field>
-      )}
-      <div className="py-3.5">
-        <div className="text-[12.5px] font-medium">What the command gets</div>
-        <div className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">Only when you click ✦, and nothing else from the app:</div>
-        <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
-          {SUGGEST_PROMPT}
-          {"\n\n"}
-          <span className="text-subtle">
-            [the diff: the staged changes, or every change when nothing is staged (Commit all), or the whole commit when amending; up to {SUGGEST_LIMIT_KB} KB, with a note in the
-            prompt when it's cut]
-          </span>
-        </pre>
-        <div className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">For a pull request:</div>
-        <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
-          {PULL_PROMPT}
-          {"\n\n"}
-          <span className="text-subtle">
-            [the subjects of the branch's commits, the repository's pull request template if it has one, and the branch's diff since it left the base; up to {SUGGEST_LIMIT_KB} KB in all]
-          </span>
-        </pre>
-      </div>
+      </Group>
     </>
   );
 }

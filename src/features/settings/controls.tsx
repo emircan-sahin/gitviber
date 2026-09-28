@@ -1,9 +1,42 @@
+import { RotateCcw } from "lucide-react";
 import { useMemo, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Tip } from "@/components/ui/tooltip";
 import { bindingsFor, type CommandId } from "@/lib/commands/commands";
 import { cleanFontName, useSettings } from "@/lib/settings";
 import { Select } from "@/components/ui/select";
 import { Keycaps } from "@/components/ui/kbd";
+
+/** A titled card of fields, as the shortcut list's categories look. Hidden when every field in it renders nothing. */
+export function Group({ title, children }: { title?: string; children: React.ReactNode }) {
+  return (
+    <section className="mt-5 first:mt-4 has-[>div:empty]:hidden">
+      {title && <div className="mb-1.5 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">{title}</div>}
+      <div className="rounded-md border border-border px-3.5">{children}</div>
+    </section>
+  );
+}
+
+/** − size + and a reset, for a font size. */
+export function SizeStepper({ value, step, fallback, onChange }: { value: number; step: number; fallback: number; onChange: (v: number) => void }) {
+  return (
+    <div className="flex items-center gap-1">
+      <Button variant="secondary" size="icon-sm" onClick={() => onChange(value - step)}>
+        −
+      </Button>
+      <span className="w-10 text-center font-mono text-[12px]">{value}</span>
+      <Button variant="secondary" size="icon-sm" onClick={() => onChange(value + step)}>
+        +
+      </Button>
+      <Tip label="Reset">
+        <Button variant="ghost" size="icon-sm" disabled={value === fallback} onClick={() => onChange(fallback)}>
+          <RotateCcw />
+        </Button>
+      </Tip>
+    </div>
+  );
+}
 
 export function Field({ label, hint, commands, children }: { label: string; hint?: React.ReactNode; commands?: CommandId[]; children: React.ReactNode }) {
   const { keybindings } = useSettings();
@@ -39,7 +72,19 @@ export function OptionSelect({ value, options, onChange }: { value: string; opti
 }
 
 /** A preset font, or Custom with a field for any installed font's name. */
-export function FontPicker({ fonts, value, custom, onChange }: { fonts: string[]; value: string; custom: string; onChange: (font: string, custom: string) => void }) {
+export function FontPicker({
+  fonts,
+  labels,
+  value,
+  custom,
+  onChange,
+}: {
+  fonts: string[];
+  labels?: Record<string, string>;
+  value: string;
+  custom: string;
+  onChange: (font: string, custom: string) => void;
+}) {
   const [draft, setDraft] = useState(custom);
   const name = cleanFontName(draft);
   const missing = useMemo(() => !!name && !fontInstalled(name), [name]);
@@ -47,7 +92,7 @@ export function FontPicker({ fonts, value, custom, onChange }: { fonts: string[]
   const commit = () => name !== custom && onChange("Custom", name);
   return (
     <div className="flex w-52 flex-col gap-1.5">
-      <OptionSelect value={value} options={Object.fromEntries([...fonts, "Custom"].map((f) => [f, f]))} onChange={(v) => onChange(v, custom)} />
+      <OptionSelect value={value} options={Object.fromEntries([...fonts, "Custom"].map((f) => [f, labels?.[f] ?? f]))} onChange={(v) => onChange(v, custom)} />
       {value === "Custom" && (
         <>
           <Input value={draft} placeholder="Installed font name" onChange={(e) => setDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === "Enter" && commit()} />
