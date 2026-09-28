@@ -17,7 +17,7 @@ import { copyLink, openOnGitHub } from "@/lib/github/url";
 import { copyText } from "@/lib/app/clipboard";
 import { openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
 import { startBisect } from "./BisectBar";
-import { type Actions, commitUrl, dropsPushed, MERGE_WARNING, PUSHED_WARNING } from "./commitActions";
+import { type Actions, checkoutDetached, commitUrl, dropsPushed, MERGE_WARNING, PUSHED_WARNING } from "./commitActions";
 import { groupRefs } from "./groupRefs";
 
 /** The remote tags are pushed to and the ones it has, while asking it, or why that failed. */
@@ -89,15 +89,6 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
     if (drops) lines.push(PUSHED_WARNING);
     if ((mode === "hard" || drops) && !(await ask(lines.join("\n\n"), { title: `${mode[0].toUpperCase()}${mode.slice(1)} reset`, kind: "warning", okLabel: "Reset" }))) return;
     await run("Reset", () => api.reset(c.sha, mode, headSha), `${target} reset to ${short}`);
-  };
-
-  const checkout = async () => {
-    const ok = await ask(`Check out ${short} without a branch (detached HEAD)? New commits made there belong to no branch until you create one.`, {
-      title: "Checkout commit",
-      kind: "warning",
-      okLabel: "Checkout",
-    });
-    if (ok) await run("Checkout", () => api.checkoutCommit(c.sha), `Checked out ${short}`);
   };
 
   // Which tags the remote has, asked when a tag's submenu opens (reused for a few seconds).
@@ -186,7 +177,7 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
       <ContextMenuItem disabled={locked || head || c.notInHead} onSelect={() => void startBisect(c.sha, actions.refresh)}>
         <SearchCode /> Find the Bad Commit Since Here…
       </ContextMenuItem>
-      <ContextMenuItem disabled={locked || head} onSelect={checkout}>
+      <ContextMenuItem disabled={locked || head} onSelect={() => checkoutDetached(c, run)}>
         <GitCommitHorizontal /> Checkout commit
       </ContextMenuItem>
       <ContextMenuItem disabled={locked} keepFocus onSelect={() => actions.name("branch", c)}>

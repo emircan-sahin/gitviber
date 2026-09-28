@@ -1,6 +1,5 @@
 // A PR's commits, as GitHub's Commits tab lists them: by day, oldest first. Picking one (or a run
 // of them with ⇧) narrows Files changed to what they changed.
-import { ask } from "@/lib/app/ask";
 import { ChevronLeft, ChevronRight, Cherry, Copy, ExternalLink, GitCommitHorizontal } from "lucide-react";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -17,6 +16,7 @@ import { plural } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { GitRun } from "@/hooks/useGitAction";
 import { CommitTime } from "@/features/history/CommitRow";
+import { checkoutDetached } from "@/features/history/commitActions";
 import { Section } from "@/features/github/shared/Section";
 import type { CommitPick } from "./useCommitPick";
 
@@ -187,14 +187,6 @@ export function PickBar({ pick }: { pick: CommitPick }) {
 }
 
 function PullCommitMenu({ pull, commit: c, busy, act }: { pull: Pull; commit: Commit; busy: boolean; act: GitRun }) {
-  const checkout = async () => {
-    const ok = await ask(`Check out ${c.shortSha} without a branch (detached HEAD)? New commits made there belong to no branch until you create one.`, {
-      title: "Checkout commit",
-      kind: "warning",
-      okLabel: "Checkout",
-    });
-    if (ok) await act("Checkout", () => api.checkoutCommit(c.sha), `Checked out ${c.shortSha}`);
-  };
   return (
     <ContextMenuContent>
       <ContextMenuItem onSelect={() => copyText(c.sha, "SHA copied")}>
@@ -204,7 +196,7 @@ function PullCommitMenu({ pull, commit: c, busy, act }: { pull: Pull; commit: Co
         <ExternalLink /> Open on GitHub
       </ContextMenuItem>
       <ContextMenuSeparator />
-      <ContextMenuItem disabled={busy} onSelect={checkout}>
+      <ContextMenuItem disabled={busy} onSelect={() => checkoutDetached(c, act)}>
         <GitCommitHorizontal /> Checkout commit
       </ContextMenuItem>
       {/* Your branch has it already (the PR's own, checked out): picking it would change nothing. */}

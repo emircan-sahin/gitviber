@@ -1,4 +1,5 @@
 import { api, type Commit, errorMessage, type GraphRefs, type HistoryEdit, type RepoStatus, type Worktree } from "@/lib/api";
+import { ask } from "@/lib/app/ask";
 import { toast } from "@/lib/app/toast";
 import type { GitRun, NetRun } from "@/hooks/useGitAction";
 
@@ -48,4 +49,14 @@ export async function dropsPushed(sha: string) {
     toast("error", "Could not compare with the upstream", errorMessage(e));
     return null;
   }
+}
+
+/** Checks out `c` with no branch, after saying what that means. */
+export async function checkoutDetached(c: Commit, run: GitRun) {
+  const ok = await ask(`Check out ${c.shortSha} without a branch (detached HEAD)? New commits made there belong to no branch until you create one.`, {
+    title: "Checkout commit",
+    kind: "warning",
+    okLabel: "Checkout",
+  });
+  if (ok) await run("Checkout", () => api.checkoutCommit(c.sha), `Checked out ${c.shortSha}`);
 }
