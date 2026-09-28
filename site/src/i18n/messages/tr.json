@@ -4,7 +4,7 @@
     "description": "Vibe coding için ~14 MB'lık bir git istemcisi. Claude Code ya da Codex'i paralel worktree'lerde çalıştır, diff'leri canlı izle, terminalde test et, commit'le.",
     "keywords": "git istemcisi, git arayüzü, kodlama ajanları, yapay zeka ajanları, Claude Code, Codex, git worktree, paralel ajanlar, vibe coding, kod inceleme, diff görüntüleyici, GitHub Desktop alternatifi, ücretsiz git istemcisi, macOS, Linux, açık kaynak",
     "ogTitle": "GitViber: vibe coding, tek uygulamada",
-    "ogDescription": "Ajanlarını kendi worktree'lerinde yan yana çalıştır, yazdıklarını inceleme için yapılmış bir arayüzde oku, test et ve commit'le. macOS ve Linux için ~14 MB.",
+    "ogDescription": "Ajanlarını kendi worktree'lerinde yan yana çalıştır, yazdıklarını inceleme için yapılmış bir arayüzde oku, gerekirse düzelt, test et ve commit'le. macOS ve Linux için ~14 MB.",
     "ogImageAlt": "GitViber: vibe coding, tek uygulamada. Canlı bir diff, değişen dosyalar ve terminalle uygulama penceresi."
   },
   "og": {
@@ -37,13 +37,13 @@
   "hero": {
     "release": "macOS ve Linux için GitViber {version}",
     "title": "Vibe coding, tek uygulamada.",
-    "lead": "Ajanlarını kendi worktree'lerinde yan yana çalıştır, yazdıklarını inceleme için yapılmış bir arayüzde oku, test et ve commit'le. Gigabaytlarca RAM yiyen bir editöre gerek kalmadan.",
+    "lead": "Ajanlarını kendi worktree'lerinde yan yana çalıştır, yazdıklarını inceleme için yapılmış bir arayüzde oku, gerekirse düzelt, test et ve commit'le. Gigabaytlarca RAM yiyen bir editöre gerek kalmadan.",
     "screenshotAlt": "GitViber'da açık bir diff: solda değişiklik listesi, altta terminal, sağda dosya gezgini"
   },
   "story": {
     "label": "Tek pencere",
     "title": "Tek pencere. Dört değil.",
-    "text": "Dosyaları okumak için editöre, diff'ler için GitHub Desktop'a, üst üste açılmış terminallere gerek yok.",
+    "text": "Dosyaları okuyup düzeltmek için editöre, diff'ler için GitHub Desktop'a, üst üste açılmış terminallere gerek yok.",
     "previous": "Önceki bölüm",
     "next": "Sonraki bölüm",
     "labels": [
@@ -79,8 +79,8 @@
     ]
   },
   "review": {
-    "title": "Kod yazmak için değil, okumak için yapıldı.",
-    "text": "Ajanlar yüzünden gün artık kod okumakla geçiyor. Değişen dosyaları klavyeyle gez, incelendi diye işaretle. Ajan birine tekrar dokunursa işaret kalkar, yeniden bakman gerektiğini bilirsin."
+    "title": "Önce oku. Gerekirse yerinde düzelt.",
+    "text": "Ajanlar yüzünden gün artık kod okumakla geçiyor. Değişen dosyaları klavyeyle gez, incelendi diye işaretle. Ajan birine tekrar dokunursa işaret kalkar, yeniden bakman gerektiğini bilirsin. Gözüne bir şey çarparsa satırı orada düzeltip kaydet."
   },
   "terminal": {
     "title": "Diff'ten ayrılmadan test et.",
@@ -88,7 +88,7 @@
   },
   "explorer": {
     "title": "Sadece diff'i değil, kodun tamamını gez.",
-    "text": "Satır kenarında değişiklik çubukları olan tam bir dosya gezgini ve istediğin dosyaya atlamak için {keys}. Bir satırı doğrudan dosya görünümünde düzelt ve kaydet. Çoğu gün editörü açık tutmana artık gerek kalmıyor."
+    "text": "Satır kenarında değişiklik çubukları olan tam bir dosya gezgini ve istediğin dosyaya atlamak için {keys}. Dosyayı aç, satırı düzelt ve kaydet. Çoğu gün editörü açık tutmana artık gerek kalmıyor."
   },
   "commit": {
     "title": "Mesajı ajanın yazsın.",

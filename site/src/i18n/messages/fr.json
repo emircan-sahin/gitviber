@@ -4,7 +4,7 @@
     "description": "Client git de ~14 Mo pour le vibe coding. Lancez Claude Code ou Codex en worktrees parallèles, suivez les diffs en direct, testez et committez. macOS et Linux.",
     "keywords": "client git, interface graphique git, agents IA, agents de code, Claude Code, Codex, git worktree, agents en parallèle, vibe coding, revue de code, visualiseur de diff, alternative à GitHub Desktop, macOS, Linux, open source",
     "ogTitle": "GitViber : tout le vibe coding dans une app",
-    "ogDescription": "Faites tourner vos agents dans leurs propres worktrees, relisez leur code dans une interface pensée pour la revue, testez et committez. ~14 Mo, macOS et Linux.",
+    "ogDescription": "Faites tourner vos agents dans leurs propres worktrees, relisez leur code dans une interface pensée pour la revue, corrigez, testez et committez. ~14 Mo, macOS et Linux.",
     "ogImageAlt": "GitViber : tout le vibe coding dans une app. La fenêtre de l'app avec un diff en direct, les fichiers modifiés et un terminal."
   },
   "og": {
@@ -37,13 +37,13 @@
   "hero": {
     "release": "GitViber {version} pour macOS et Linux",
     "title": "Tout le vibe coding dans une app.",
-    "lead": "Faites tourner vos agents côte à côte dans leurs propres worktrees, relisez ce qu'ils ont écrit dans une interface pensée pour la revue, testez et committez. Sans éditeur qui dévore des gigaoctets de RAM.",
+    "lead": "Faites tourner vos agents côte à côte dans leurs propres worktrees, relisez ce qu'ils ont écrit dans une interface pensée pour la revue, corrigez, testez et committez. Sans éditeur qui dévore des gigaoctets de RAM.",
     "screenshotAlt": "GitViber avec un diff ouvert, la liste des modifications à gauche, un terminal en bas et l'explorateur de fichiers à droite"
   },
   "story": {
     "label": "Une fenêtre",
     "title": "Une fenêtre. Pas quatre.",
-    "text": "Pas d'éditeur pour lire les fichiers, pas de GitHub Desktop pour les diffs, pas de pile de terminaux.",
+    "text": "Pas d'éditeur pour lire et corriger les fichiers, pas de GitHub Desktop pour les diffs, pas de pile de terminaux.",
     "previous": "Chapitre précédent",
     "next": "Chapitre suivant",
     "labels": [
@@ -79,8 +79,8 @@
     ]
   },
   "review": {
-    "title": "Fait pour lire du code, pas pour en taper.",
-    "text": "Avec les agents, la journée se passe à lire du code. Parcourez les fichiers modifiés au clavier, marquez-les comme vus, et quand un agent retouche l'un d'eux, la marque disparaît pour que vous sachiez qu'il faut y rejeter un œil."
+    "title": "Lisez d'abord. Corrigez sur place.",
+    "text": "Avec les agents, la journée se passe à lire du code. Parcourez les fichiers modifiés au clavier, marquez-les comme vus, et quand un agent retouche l'un d'eux, la marque disparaît pour que vous sachiez qu'il faut y rejeter un œil. Quelque chose cloche ? Corrigez la ligne sur place et enregistrez."
   },
   "terminal": {
     "title": "Testez sans quitter le diff.",
@@ -88,7 +88,7 @@
   },
   "explorer": {
     "title": "Parcourez le code, pas seulement le diff.",
-    "text": "Un vrai explorateur de fichiers avec des barres de modification dans la marge, et {keys} pour sauter à n'importe quel fichier. Corrigez une ligne directement dans la vue du fichier et enregistrez. La plupart du temps, plus besoin de garder l'éditeur ouvert."
+    "text": "Un vrai explorateur de fichiers avec des barres de modification dans la marge, et {keys} pour sauter à n'importe quel fichier. Ouvrez un fichier, corrigez la ligne et enregistrez. La plupart du temps, plus besoin de garder l'éditeur ouvert."
   },
   "commit": {
     "title": "Votre agent écrit le message.",

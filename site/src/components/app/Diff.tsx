@@ -1,16 +1,16 @@
 import { cx } from "../ui.tsx";
 import { tokenize, type DiffLine, type Token } from "../demo-data.ts";
 
-// Shiki's Nord, the app's default dark syntax theme, on the app's background instead of Nord's.
-const NORD: Record<NonNullable<Token["tone"]>, string> = {
-  kw: "text-[#81a1c1]",
-  op: "text-[#81a1c1]",
-  str: "text-[#a3be8c]",
-  num: "text-[#b48ead]",
-  fn: "text-[#88c0d0]",
-  type: "text-[#8fbcbb]",
-  com: "text-[#616e88]",
-  punct: "text-[#eceff4]",
+// Shiki's VS Code Dark+, the app's default dark syntax theme, on the app's background instead of its own.
+const DARK_PLUS: Record<NonNullable<Token["tone"]>, string> = {
+  kw: "text-[#569cd6]",
+  flow: "text-[#c586c0]",
+  str: "text-[#ce9178]",
+  num: "text-[#b5cea8]",
+  fn: "text-[#dcdcaa]",
+  type: "text-[#4ec9b0]",
+  com: "text-[#6a9955]",
+  var: "text-[#9cdcfe]",
 };
 
 export interface NumberedLine extends DiffLine {
@@ -35,7 +35,7 @@ export function numbered(lines: DiffLine[], [oldStart, newStart]: [number, numbe
  */
 function Code({ text }: { text: string }) {
   return tokenize(text).map((t, j) => (
-    <span key={j} className={t.tone && NORD[t.tone]}>
+    <span key={j} className={t.tone && DARK_PLUS[t.tone]}>
       {t.text}
     </span>
   ));
@@ -50,7 +50,7 @@ export interface FileLine {
 /** The file itself, the diff's new side: one number column, a 3px change bar, a caret while editing. */
 export function FileRows({ lines, caret }: { lines: FileLine[]; caret?: number }) {
   return (
-    <div className="bg-bg pt-1 font-mono text-[12.5px] leading-5 whitespace-pre text-[#d8dee9]">
+    <div className="bg-bg pt-1 font-mono text-[12.5px] leading-5 whitespace-pre text-[#d4d4d4]">
       {lines.map((line, i) => (
         <div key={i} className="flex h-5">
           <span className="w-[42px] shrink-0 pr-2 text-right text-subtle">{i + 1}</span>
@@ -69,7 +69,7 @@ export function FileRows({ lines, caret }: { lines: FileLine[]; caret?: number }
 
 export function DiffRows({ lines, fresh }: { lines: NumberedLine[]; fresh?: number }) {
   return (
-    <div className="bg-bg pt-1 font-mono text-[12.5px] leading-5 whitespace-pre text-[#d8dee9]">
+    <div className="bg-bg pt-1 font-mono text-[12.5px] leading-5 whitespace-pre text-[#d4d4d4]">
       {lines.map((line, i) => {
         const add = line.kind === "+";
         const del = line.kind === "-";

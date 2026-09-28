@@ -41,8 +41,16 @@ export const WIN_W = 1340;
 export const WIN_H = 780;
 
 export const WORKTREES: WorktreeRow[] = [
-  { branch: "main", path: "~/code/acme-web", main: true, time: "2h ago" },
-  ...SCENES.map((s) => ({ branch: s.branch, path: `~/code/${s.folder}`, working: true, time: "now", changes: s.files.length })),
+  { branch: "main", path: "acme-web", main: true, time: "2h ago" },
+  ...SCENES.map((s) => ({
+    branch: s.branch,
+    path: `../${s.folder}`,
+    time: s.time,
+    changes: s.files.length,
+    commits: s.commits,
+    pull: s.pull,
+    calling: s.calling,
+  })),
 ];
 
 /** The app's empty Changes list (src/features/changes/ChangeRows.tsx AllCaughtUp). */
@@ -74,6 +82,8 @@ export function AppWindow({ chapter, t }: { chapter: number; t: number }) {
   let key: string | undefined;
   let overlay: ReactNode = null;
   let dimDiff = false;
+  // The commit in the last chapter is one more to push.
+  let ahead = scene.ahead;
   // Close in on the commit box, the way a screencast zooms to where the click happens.
   let zoom = false;
   let tree = { paths: treeOf(scene), ...revealed(scene.file) };
@@ -128,7 +138,7 @@ export function AppWindow({ chapter, t }: { chapter: number; t: number }) {
   } else if (chapter === 5) {
     const state = terminalAt(t);
     terminal = <TerminalPanel state={state} />;
-    terminalHeight = 250;
+    terminalHeight = 270;
     key = state.key;
   } else if (chapter === 6) {
     const state = explorerAt(t);
@@ -146,6 +156,7 @@ export function AppWindow({ chapter, t }: { chapter: number; t: number }) {
     terminalHeight = 0;
     zoom = state.zoom;
     dimDiff = state.committed;
+    if (state.committed) ahead++;
     key = state.key;
     overlay = <CommitToast show={state.committed} summary={SUMMARY} />;
   }
@@ -173,6 +184,12 @@ export function AppWindow({ chapter, t }: { chapter: number; t: number }) {
           added={add}
           removed={del}
           menuOpen={chapter === 0}
+          pull={scene.pull}
+          ahead={ahead}
+          behind={scene.behind}
+          elsewhere={SCENES.some((s) => s.calling && s !== scene)}
+          terminalOpen={terminalHeight > 0}
+          terminalCalling={terminalHeight === 0 && SCENES.some((s) => s.calling)}
         />
         <div className="relative flex min-h-0 flex-1">
           <div className={lit("changes")}>
@@ -211,7 +228,7 @@ export function AppWindow({ chapter, t }: { chapter: number; t: number }) {
           {overlay}
           <KeyHud label={key} className="right-5 bottom-5" />
         </div>
-        <StatusBar files={files.length} add={add} del={del} reviewed={files.filter((f) => f.viewed).length} />
+        <StatusBar files={files.length} add={add} del={del} reviewed={files.filter((f) => f.viewed).length} ahead={ahead} behind={scene.behind} />
       </Window>
     </div>
   );

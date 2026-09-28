@@ -1,6 +1,6 @@
 import { CheckCircle2, FolderGit2, FolderOpen } from "lucide-react";
 import { Fragment } from "react";
-import { ansi, ChangeRow, Cursor, Prompt, TerminalBody, TerminalPaneHeader, TerminalTabs, type ChangeFile } from "../app/parts.tsx";
+import { ansi, ChangeRow, Cursor, ProjectTile, Prompt, TerminalBody, TerminalPaneHeader, TerminalTabs, type ChangeFile } from "../app/parts.tsx";
 import { SCENES, type Scene } from "../demo-data.ts";
 import { cx, Keys } from "../ui.tsx";
 import { OUTPUT_LINES, type Pane, type reviewAt, type terminalAt } from "./timeline.ts";
@@ -112,6 +112,8 @@ export function PaneText({ pane }: { pane: Pane }) {
 
 // The + menu's worktrees: every one but the terminal's own (src/features/terminal/TerminalPanel.tsx).
 const OTHER_WORKTREES = [{ folder: "acme-web", branch: "main" }, ...SCENES.slice(1)];
+// ...and the saved projects besides this one, with the folder each lives in.
+const OTHER_PROJECTS = [{ name: "acme-api", parent: "code" }];
 
 /** A pane's title: the command while it runs (the shell names it), else the folder. */
 const paneTitle = (pane: Pane) =>
@@ -129,7 +131,7 @@ export function TerminalPanel({ state, wrap }: { state: ReturnType<typeof termin
       <div className={cx("grid min-h-0 flex-1", split ? "grid-cols-2" : "grid-cols-1")}>
         {state.panes.map((pane, i) => (
           <div key={pane.output} className={cx("flex min-h-0 flex-col", i > 0 && "pane-in border-l border-fg/20")}>
-            {split && <TerminalPaneHeader title={paneTitle(pane)} focused={i === state.panes.length - 1} />}
+            {split && <TerminalPaneHeader title={paneTitle(pane)} focused={i === state.panes.length - 1} calling={i < state.panes.length - 1} />}
             <TerminalBody wrap={wrap} className="min-h-0 flex-1 overflow-hidden">
               <PaneText pane={pane} />
             </TerminalBody>
@@ -147,6 +149,15 @@ export function TerminalPanel({ state, wrap }: { state: ReturnType<typeof termin
               <FolderGit2 className="size-3.5 opacity-70" />
               <span className="truncate">{w.folder}</span>
               <span className={cx("ml-auto truncate font-mono text-[11px]", i === state.menu ? "text-white/80" : "text-subtle")}>{w.branch}</span>
+            </div>
+          ))}
+          <div className="-mx-1 my-1 h-px bg-border" />
+          <p className="px-2 pt-2 pb-1 text-[11px] font-medium tracking-wide text-subtle uppercase">New terminal in project</p>
+          {OTHER_PROJECTS.map((p) => (
+            <div key={p.name} className="flex h-7 items-center gap-2 rounded-sm px-2">
+              <ProjectTile name={p.name} />
+              <span className="truncate">{p.name}</span>
+              <span className="ml-auto truncate text-[11px] text-subtle">{p.parent}</span>
             </div>
           ))}
           <div className="-mx-1 my-1 h-px bg-border" />

@@ -4,7 +4,7 @@
     "description": "Git-Client mit ~14 MB fürs Vibe Coding. Lass Claude Code oder Codex in parallelen Worktrees laufen, sieh die Diffs live, teste im Terminal. macOS und Linux.",
     "keywords": "Git-Client, Git GUI, KI-Agenten, Coding-Agents, Claude Code, Codex, Git Worktrees, parallele Agenten, Vibe Coding, Code-Review, Diff-Viewer, GitHub Desktop Alternative, macOS, Linux, Open Source",
     "ogTitle": "GitViber: Vibe Coding in einer App",
-    "ogDescription": "Lass deine Agenten nebeneinander in eigenen Worktrees arbeiten, lies ihren Code in einer UI fürs Review, teste und committe. ~14 MB, für macOS und Linux.",
+    "ogDescription": "Lass deine Agenten nebeneinander in eigenen Worktrees arbeiten, lies ihren Code in einer UI fürs Review, korrigier, teste und committe. ~14 MB, für macOS und Linux.",
     "ogImageAlt": "GitViber: Vibe Coding in einer App. Das App-Fenster mit einem Live-Diff, den geänderten Dateien und einem Terminal."
   },
   "og": {
@@ -37,13 +37,13 @@
   "hero": {
     "release": "GitViber {version} für macOS und Linux",
     "title": "Vibe Coding in einer App.",
-    "lead": "Lass deine Agenten nebeneinander in eigenen Worktrees arbeiten, lies ihren Code in einer UI, die fürs Review gebaut ist, teste ihn und committe. Ohne einen Editor, der Gigabytes an RAM frisst.",
+    "lead": "Lass deine Agenten nebeneinander in eigenen Worktrees arbeiten, lies ihren Code in einer UI, die fürs Review gebaut ist, korrigier ihn, teste ihn und committe. Ohne einen Editor, der Gigabytes an RAM frisst.",
     "screenshotAlt": "GitViber mit geöffnetem Diff, links die Liste der Änderungen, unten ein Terminal und rechts der Datei-Explorer"
   },
   "story": {
     "label": "Ein Fenster",
     "title": "Ein Fenster. Nicht vier.",
-    "text": "Kein Editor zum Lesen der Dateien, kein GitHub Desktop für die Diffs, kein Stapel Terminals.",
+    "text": "Kein Editor zum Lesen und Korrigieren der Dateien, kein GitHub Desktop für die Diffs, kein Stapel Terminals.",
     "previous": "Vorheriges Kapitel",
     "next": "Nächstes Kapitel",
     "labels": [
@@ -79,8 +79,8 @@
     ]
   },
   "review": {
-    "title": "Gebaut zum Code-Lesen, nicht zum Tippen.",
-    "text": "Mit Agenten besteht der Tag vor allem aus Code-Lesen. Geh die geänderten Dateien mit der Tastatur durch, markier sie als angesehen, und sobald ein Agent eine davon wieder anfasst, verschwindet die Markierung. So weißt du, dass du nochmal hinschauen musst."
+    "title": "Erst lesen. Direkt korrigieren.",
+    "text": "Mit Agenten besteht der Tag vor allem aus Code-Lesen. Geh die geänderten Dateien mit der Tastatur durch, markier sie als angesehen, und sobald ein Agent eine davon wieder anfasst, verschwindet die Markierung. So weißt du, dass du nochmal hinschauen musst. Fällt dir was auf? Korrigier die Zeile direkt dort und speicher."
   },
   "terminal": {
     "title": "Testen, ohne den Diff zu verlassen.",
@@ -88,7 +88,7 @@
   },
   "explorer": {
     "title": "Stöber im Code, nicht nur im Diff.",
-    "text": "Ein vollwertiger Datei-Explorer mit Änderungsbalken am Rand, und mit {keys} springst du zu jeder Datei. Korrigier eine Zeile direkt in der Dateiansicht und speicher. An den meisten Tagen brauchst du deinen Editor damit gar nicht mehr offen."
+    "text": "Ein vollwertiger Datei-Explorer mit Änderungsbalken am Rand, und mit {keys} springst du zu jeder Datei. Öffne eine Datei, korrigier die Zeile und speicher. An den meisten Tagen brauchst du deinen Editor damit gar nicht mehr offen."
   },
   "commit": {
     "title": "Die Nachricht schreibt dein Agent.",
