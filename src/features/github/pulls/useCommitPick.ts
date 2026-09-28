@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { Commit } from "@/lib/api";
-import { type CommitRun, pickedCommits } from "@/lib/github/pullCommits";
+import { type CommitRun, pickedCommits, runTo } from "@/lib/github/pullCommits";
 
 // A PR's page remounts on every tab switch, opening one of its files included: its pick stays here.
 const picks = new Map<string, CommitRun>();
@@ -22,8 +22,8 @@ export function useCommitPick(url: string, commits: Commit[]) {
     picked,
     /** Where a ⇧-click's run starts. */
     anchor,
-    pick: (sha: string, extend: boolean) => set({ anchor: extend && anchor ? anchor : sha, to: sha }),
-    run: (from: string, to: string) => set({ anchor: from, to }),
+    pick: (sha: string, extend: boolean) => set(runTo(commits, extend ? anchor : null, sha)),
+    run: (from: string, to: string) => set(runTo(commits, from, to)),
     next,
     step: (dir: -1 | 1) => {
       const c = next(dir);

@@ -8,11 +8,23 @@ export interface CommitRun {
   to: string;
 }
 
-/** The commits `run` covers (oldest first); null when a force-push took either end away. */
+/**
+ * The commits `run` covers (oldest first); null when a force-push took either end away, or when
+ * they aren't one line of first parents: a merged-in branch's commits sit next to the branch's own
+ * in the list, and a diff from the first one's parent to the last would show only some of them.
+ */
 export function pickedCommits(commits: Commit[], run: CommitRun | null): Commit[] | null {
   const a = run ? commits.findIndex((c) => c.sha === run.anchor) : -1;
   const b = run ? commits.findIndex((c) => c.sha === run.to) : -1;
-  return a < 0 || b < 0 ? null : commits.slice(Math.min(a, b), Math.max(a, b) + 1);
+  if (a < 0 || b < 0) return null;
+  const list = commits.slice(Math.min(a, b), Math.max(a, b) + 1);
+  return list.every((c, i) => i === 0 || c.parents[0] === list[i - 1].sha) ? list : null;
+}
+
+/** The run from `anchor` to `to`, or `to` alone when that run couldn't be picked. */
+export function runTo(commits: Commit[], anchor: string | null, to: string): CommitRun {
+  const run = { anchor: anchor ?? to, to };
+  return pickedCommits(commits, run) ? run : { anchor: to, to };
 }
 
 /** What a picked run of commits is called: its short id, or its first and last. */
