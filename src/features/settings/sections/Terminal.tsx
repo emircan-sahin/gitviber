@@ -89,7 +89,7 @@ export function TerminalSection() {
             variant="field"
           />
         </Field>
-        <Field label="Scrollback" hint="Lines of history each terminal keeps.">
+        <Field label="Scrollback" hint="Lines of history each terminal keeps. After a restart, a terminal comes back with its last 1,000.">
           <OptionSelect
             value={String(s.terminalScrollback)}
             options={Object.fromEntries(SCROLLBACK_LINES.map((n) => [n, `${n.toLocaleString("en-US")} lines`]))}
