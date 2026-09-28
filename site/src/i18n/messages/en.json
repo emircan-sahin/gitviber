@@ -4,7 +4,7 @@
     "description": "A ~14 MB git client for vibe coding. Run Claude Code or Codex in parallel worktrees, watch the diffs land live, test in a terminal and commit. macOS and Linux.",
     "keywords": "git client, coding agents, Claude Code, Codex, git worktrees, parallel agents, vibe coding, code review, diff viewer, GitHub Desktop alternative, macOS, Linux, open source",
     "ogTitle": "GitViber: vibe code from one app",
-    "ogDescription": "Run your agents side by side in their own worktrees, read what they wrote in a UI made for reviewing, test it and commit. A ~14 MB app for macOS and Linux.",
+    "ogDescription": "Run your agents side by side in their own worktrees, read what they wrote in a UI made for reviewing, fix it, test it and commit. A ~14 MB app for macOS and Linux.",
     "ogImageAlt": "GitViber: vibe code from one app. The app window with a live diff, the changed files and a terminal."
   },
   "og": {
@@ -37,13 +37,13 @@
   "hero": {
     "release": "GitViber {version} for macOS and Linux",
     "title": "Vibe code from one app.",
-    "lead": "Run your agents side by side in their own worktrees, read what they wrote in a UI made for reviewing, test it and commit. Without an editor eating gigabytes of RAM.",
+    "lead": "Run your agents side by side in their own worktrees, read what they wrote in a UI made for reviewing, fix it, test it and commit. Without an editor eating gigabytes of RAM.",
     "screenshotAlt": "GitViber with a diff open, the changes list on the left, a terminal below and the file explorer on the right"
   },
   "story": {
     "label": "One window",
     "title": "One window. Not four.",
-    "text": "No editor to read the files, no GitHub Desktop for the diffs, no pile of terminals.",
+    "text": "No editor to read and fix the files, no GitHub Desktop for the diffs, no pile of terminals.",
     "previous": "Previous chapter",
     "next": "Next chapter",
     "labels": [
@@ -79,8 +79,8 @@
     ]
   },
   "review": {
-    "title": "Built for reading code, not typing it.",
-    "text": "Agents turned the day into reading code. Walk the changed files with the keyboard, mark them viewed, and when an agent touches one again, the mark clears so you know to look again."
+    "title": "Read first. Fix on the spot.",
+    "text": "Agents turned the day into reading code. Walk the changed files with the keyboard, mark them viewed, and when an agent touches one again, the mark clears so you know to look again. Spot something off? Fix the line right there and save it."
   },
   "terminal": {
     "title": "Test it without leaving the diff.",
@@ -88,7 +88,7 @@
   },
   "explorer": {
     "title": "Browse the code, not just the diff.",
-    "text": "A full file explorer with change bars in the gutter, and {keys} to jump to any file. Fix a line right in the file view and save it. For most days, that's the editor you no longer need open."
+    "text": "A full file explorer with change bars in the gutter, and {keys} to jump to any file. Open a file, fix the line and save it. For most days, that's the editor you no longer need open."
   },
   "commit": {
     "title": "Your agent writes the message.",

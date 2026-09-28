@@ -4,7 +4,7 @@
     "description": "Un cliente git de ~14 MB para vibe coding. Ejecuta Claude Code o Codex en worktrees paralelos, mira los diffs en vivo, prueba en una terminal y haz commit.",
     "keywords": "cliente git, agentes de código, agentes de IA, Claude Code, Codex, git worktrees, agentes en paralelo, vibe coding, revisión de código, visor de diffs, alternativa a GitHub Desktop, macOS, Linux, código abierto",
     "ogTitle": "GitViber: todo tu vibe coding en una app",
-    "ogDescription": "Pon a tus agentes a trabajar lado a lado, cada uno en su worktree, lee lo que escribieron en una interfaz hecha para revisar, pruébalo y haz commit. Una app de ~14 MB para macOS y Linux.",
+    "ogDescription": "Pon a tus agentes a trabajar lado a lado, cada uno en su worktree, lee lo que escribieron en una interfaz hecha para revisar, corrígelo, pruébalo y haz commit. Una app de ~14 MB para macOS y Linux.",
     "ogImageAlt": "GitViber: todo tu vibe coding en una app. La ventana de la app con un diff en vivo, los archivos cambiados y una terminal."
   },
   "og": {
@@ -37,13 +37,13 @@
   "hero": {
     "release": "GitViber {version} para macOS y Linux",
     "title": "Todo tu vibe coding, en una app.",
-    "lead": "Pon a tus agentes a trabajar lado a lado, cada uno en su worktree, lee lo que escribieron en una interfaz hecha para revisar, pruébalo y haz commit. Sin un editor que se coma gigas de RAM.",
+    "lead": "Pon a tus agentes a trabajar lado a lado, cada uno en su worktree, lee lo que escribieron en una interfaz hecha para revisar, corrígelo, pruébalo y haz commit. Sin un editor que se coma gigas de RAM.",
     "screenshotAlt": "GitViber con un diff abierto, la lista de cambios a la izquierda, una terminal abajo y el explorador de archivos a la derecha"
   },
   "story": {
     "label": "Una ventana",
     "title": "Una ventana. No cuatro.",
-    "text": "Sin editor para leer los archivos, sin GitHub Desktop para los diffs, sin un montón de terminales.",
+    "text": "Sin editor para leer y corregir los archivos, sin GitHub Desktop para los diffs, sin un montón de terminales.",
     "previous": "Capítulo anterior",
     "next": "Capítulo siguiente",
     "labels": [
@@ -79,8 +79,8 @@
     ]
   },
   "review": {
-    "title": "Hecho para leer código, no para escribirlo.",
-    "text": "Con los agentes, el día se volvió leer código. Recorre los archivos cambiados con el teclado, márcalos como vistos, y si un agente vuelve a tocar uno, la marca se quita para que sepas que toca mirarlo otra vez."
+    "title": "Primero lee. Corrige al instante.",
+    "text": "Con los agentes, el día se volvió leer código. Recorre los archivos cambiados con el teclado, márcalos como vistos, y si un agente vuelve a tocar uno, la marca se quita para que sepas que toca mirarlo otra vez. ¿Ves algo raro? Corrige la línea ahí mismo y guárdala."
   },
   "terminal": {
     "title": "Pruébalo sin salir del diff.",
@@ -88,7 +88,7 @@
   },
   "explorer": {
     "title": "Recorre el código, no solo el diff.",
-    "text": "Un explorador de archivos completo, con barras de cambios en el margen, y {keys} para saltar a cualquier archivo. Corrige una línea directamente en la vista de archivo y guárdala. En el día a día, ya no te hace falta tener el editor abierto."
+    "text": "Un explorador de archivos completo, con barras de cambios en el margen, y {keys} para saltar a cualquier archivo. Abre un archivo, corrige la línea y guárdalo. En el día a día, ya no te hace falta tener el editor abierto."
   },
   "commit": {
     "title": "Tu agente escribe el mensaje.",
