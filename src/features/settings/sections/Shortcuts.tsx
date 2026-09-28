@@ -9,9 +9,14 @@ import { updateSettings, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import { Keycaps } from "@/components/ui/kbd";
+import { Segmented } from "@/components/ui/segmented";
 import { Field } from "@/features/settings/controls";
 
 export type Recording = { id: CommandId; index: number } | null;
+
+/** In the order they first appear in COMMANDS, which puts General first. */
+const CATEGORIES = [...new Set(COMMANDS.map((c) => c.category))];
+const ALL = "All";
 
 function setBinding(id: CommandId, keys: string[] | null, overrides: Record<string, string[]>) {
   const next = { ...overrides };
@@ -41,13 +46,17 @@ function clashNote(c: Command, chord: string, overrides: Record<string, string[]
 export function ShortcutsSection({ recording, setRecording }: { recording: Recording; setRecording: (r: Recording) => void }) {
   const { keybindings, shortcutOverlay } = useSettings();
   const [query, setQuery] = useState("");
+  const [category, setCategory] = useState(ALL);
 
   const q = query.trim().toLowerCase();
-  const rows = COMMANDS.filter((c) => {
+  const matches = (c: Command) => {
     if (!q) return true;
     const keys = bindingsFor(c.id, keybindings);
     return [c.title, c.category, c.id, ...keys, ...keys.map(formatChord)].some((t) => t.toLowerCase().includes(q));
-  });
+  };
+  const groups = CATEGORIES.filter((g) => category === ALL || g === category)
+    .map((g) => ({ category: g, rows: COMMANDS.filter((c) => c.category === g && matches(c)) }))
+    .filter((g) => g.rows.length);
 
   return (
     <>
@@ -58,74 +67,82 @@ export function ShortcutsSection({ recording, setRecording }: { recording: Recor
       >
         <Switch checked={shortcutOverlay} onChange={(v) => updateSettings({ shortcutOverlay: v })} />
       </Field>
-      <div className="sticky top-0 z-10 -mx-5 flex items-center gap-2 bg-elevated px-5 pt-4 pb-3">
-        <div className="relative flex-1">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle" />
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search commands or keys (e.g. ${formatChord("cmd+b")})`} className="pl-8" />
+      <div className="sticky top-0 z-10 -mx-5 flex flex-col gap-2.5 bg-elevated px-5 pt-4 pb-3">
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle" />
+            <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`Search commands or keys (e.g. ${formatChord("cmd+b")})`} className="pl-8" />
+          </div>
+          <Button variant="secondary" disabled={!Object.keys(keybindings).length} onClick={() => updateSettings({ keybindings: {} })}>
+            <RotateCcw /> Reset all
+          </Button>
         </div>
-        <Button variant="secondary" disabled={!Object.keys(keybindings).length} onClick={() => updateSettings({ keybindings: {} })}>
-          <RotateCcw /> Reset all
-        </Button>
+        {/* Scrolls sideways rather than wrapping when the dialog is narrow. */}
+        <div className="overflow-x-auto">
+          <Segmented value={category} onChange={setCategory} options={[ALL, ...CATEGORIES].map((g) => ({ value: g, label: g }))} />
+        </div>
       </div>
-      <div className="overflow-hidden rounded-md border border-border">
-        {rows.map((c) => {
-          const keys = bindingsFor(c.id, keybindings);
-          const clashes = keys.map((k) => clashNote(c, k, keybindings)).filter(Boolean);
-          const record = (index: number) => ({
-            active: recording?.id === c.id && recording.index === index,
-            onStart: () => setRecording({ id: c.id, index }),
-            onStop: () => setRecording(null),
-            // Replaces the clicked key only (or adds one); duplicates collapse.
-            onRecord: (chord: string) => setBinding(c.id, [...new Set([...keys.slice(0, index), chord, ...keys.slice(index + 1)])], keybindings),
-          });
-          const adding = record(keys.length);
-          return (
-            <div key={c.id} className="group flex min-h-9 items-center gap-3 border-b border-border px-3 py-1 last:border-0 hover:bg-hover/50 focus-visible:bg-hover/50">
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[12.5px]">{c.title}</div>
-                <div className="truncate text-[11px] text-subtle">{c.category}</div>
-              </div>
-              {clashes.length > 0 && (
-                <Tip label={clashes.join(". ")}>
-                  <span tabIndex={0} aria-label={clashes.join(". ")} className="shrink-0 rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring">
-                    <TriangleAlert className="size-3.5 text-modified" />
-                  </span>
-                </Tip>
-              )}
-              <div className="flex shrink-0 items-center gap-1">
-                {keys.map((k, i) => (
-                  <Recorder key={k} label={<Keycaps chord={k} />} title="Change this key" {...record(i)} />
-                ))}
-                <Recorder
-                  label={keys.length ? <Plus className="size-3.5" /> : <span className="text-[11.5px] text-subtle">Unbound</span>}
-                  title="Add a key"
-                  className={cn(keys.length > 0 && !adding.active && "text-subtle opacity-0 group-hover:opacity-100 focus-visible:opacity-100")}
-                  {...adding}
-                />
-              </div>
-              <div className="flex w-12 shrink-0 justify-end gap-0.5">
-                {c.id in keybindings && (
-                  <Tip label="Reset to default">
-                    <Button variant="ghost" size="icon-sm" onClick={() => setBinding(c.id, null, keybindings)}>
-                      <RotateCcw />
-                    </Button>
-                  </Tip>
-                )}
-                {keys.length > 0 && (
-                  <Tip label="Remove all keys">
-                    <Button variant="ghost" size="icon-sm" className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100" onClick={() => setBinding(c.id, [], keybindings)}>
-                      <X />
-                    </Button>
-                  </Tip>
-                )}
-              </div>
-            </div>
-          );
-        })}
-        {!rows.length && <div className="px-3 py-6 text-center text-[12px] text-subtle">No matching commands</div>}
-      </div>
+      {groups.map((g) => (
+        <section key={g.category} className="mb-4">
+          {category === ALL && <div className="mb-1.5 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">{g.category}</div>}
+          <div className="overflow-hidden rounded-md border border-border">
+            {g.rows.map((c) => {
+              const keys = bindingsFor(c.id, keybindings);
+              const clashes = keys.map((k) => clashNote(c, k, keybindings)).filter(Boolean);
+              const record = (index: number) => ({
+                active: recording?.id === c.id && recording.index === index,
+                onStart: () => setRecording({ id: c.id, index }),
+                onStop: () => setRecording(null),
+                // Replaces the clicked key only (or adds one); duplicates collapse.
+                onRecord: (chord: string) => setBinding(c.id, [...new Set([...keys.slice(0, index), chord, ...keys.slice(index + 1)])], keybindings),
+              });
+              const adding = record(keys.length);
+              return (
+                <div key={c.id} className="group flex min-h-9 items-center gap-3 border-b border-border px-3 py-1 last:border-0 hover:bg-hover/50 focus-visible:bg-hover/50">
+                  <div className="min-w-0 flex-1 truncate text-[12.5px]">{c.title}</div>
+                  {clashes.length > 0 && (
+                    <Tip label={clashes.join(". ")}>
+                      <span tabIndex={0} aria-label={clashes.join(". ")} className="shrink-0 rounded-sm outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                        <TriangleAlert className="size-3.5 text-modified" />
+                      </span>
+                    </Tip>
+                  )}
+                  <div className="flex shrink-0 items-center gap-1">
+                    {keys.map((k, i) => (
+                      <Recorder key={k} label={<Keycaps chord={k} />} title="Change this key" {...record(i)} />
+                    ))}
+                    <Recorder
+                      label={keys.length ? <Plus className="size-3.5" /> : <span className="text-[11.5px] text-subtle">Unbound</span>}
+                      title="Add a key"
+                      className={cn(keys.length > 0 && !adding.active && "text-subtle opacity-0 group-hover:opacity-100 focus-visible:opacity-100")}
+                      {...adding}
+                    />
+                  </div>
+                  <div className="flex w-12 shrink-0 justify-end gap-0.5">
+                    {c.id in keybindings && (
+                      <Tip label="Reset to default">
+                        <Button variant="ghost" size="icon-sm" onClick={() => setBinding(c.id, null, keybindings)}>
+                          <RotateCcw />
+                        </Button>
+                      </Tip>
+                    )}
+                    {keys.length > 0 && (
+                      <Tip label="Remove all keys">
+                        <Button variant="ghost" size="icon-sm" className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100" onClick={() => setBinding(c.id, [], keybindings)}>
+                          <X />
+                        </Button>
+                      </Tip>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+      {!groups.length && <div className="rounded-md border border-border px-3 py-6 text-center text-[12px] text-subtle">{category === ALL ? "No matching commands" : `No matching commands in ${category}`}</div>}
       <p className="mt-3 text-[11.5px] leading-relaxed text-subtle">
-        Click a key to change it, or + to add one; Esc cancels. When two commands share a key, the one higher in this list runs. While you type in a text field, only
+        Click a key to change it, or + to add one; Esc cancels. When two commands share a key, the warning next to them names the one that runs. While you type in a text field, only
         shortcuts with {IS_MAC ? "⌘, ⌃ or an F-key apply (not ⌘-arrows or ⌃ with a letter, which edit text)" : "Ctrl or an F-key apply (not Ctrl+arrows, which move by word)"}, and Commit only applies in
         the commit message.
       </p>
