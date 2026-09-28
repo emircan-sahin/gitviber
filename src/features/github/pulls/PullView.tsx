@@ -66,7 +66,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
     600_000,
   );
   const commits = files.data?.commits ?? NO_COMMITS;
-  const pick = useCommitPick(pull.url, commits);
+  const pick = useCommitPick(pull.url, commits, files.data?.base);
   const { picked } = pick;
   // What the picked commits changed together, from the first one's parent to the last.
   const pickBase = picked?.[0].parents[0];

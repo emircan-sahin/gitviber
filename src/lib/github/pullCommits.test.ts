@@ -68,3 +68,11 @@ test("a run across a merged-in branch isn't picked, and extending into one picks
   assert.deepEqual(runTo(merged, a.sha, b.sha), { anchor: a.sha, to: b.sha });
   assert.deepEqual(runTo(merged, null, m.sha), { anchor: m.sha, to: m.sha });
 });
+
+test("picking every commit from the merge base is the whole PR, not a pick", () => {
+  assert.equal(pickedCommits(list, { anchor: a.sha, to: c.sha }, "base0000"), null);
+  assert.equal(pickedCommits(list, { anchor: c.sha, to: a.sha }, "base0000"), null);
+  assert.deepEqual(pickedCommits(list, { anchor: a.sha, to: b.sha }, "base0000"), [a, b]);
+  // The list capped to the newest: its first commit's parent isn't the merge base.
+  assert.deepEqual(pickedCommits(list, { anchor: a.sha, to: c.sha }, "older00"), [a, b, c]);
+});

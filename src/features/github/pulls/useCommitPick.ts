@@ -5,8 +5,11 @@ import { type CommitRun, pickedCommits, runTo } from "@/lib/github/pullCommits";
 // A PR's page remounts on every tab switch, opening one of its files included: its pick stays here.
 const picks = new Map<string, CommitRun>();
 
-/** The commits Files changed is narrowed to (oldest first), null for all of them, and ways to change that. */
-export function useCommitPick(url: string, commits: Commit[]) {
+/**
+ * The commits Files changed is narrowed to (oldest first), null for all of them, and ways to change
+ * that. `base` is the PR's merge base: picking every commit from it is the whole PR, not a pick.
+ */
+export function useCommitPick(url: string, commits: Commit[], base: string | undefined) {
   const [pick, setPick] = useState(() => picks.get(url) ?? null);
   const set = (p: CommitRun | null) => {
     if (p) picks.set(url, p);
@@ -14,7 +17,7 @@ export function useCommitPick(url: string, commits: Commit[]) {
     setPick(p);
   };
   // A force-push took them away: the whole PR again.
-  const picked = useMemo(() => pickedCommits(commits, pick), [commits, pick]);
+  const picked = useMemo(() => pickedCommits(commits, pick, base), [commits, pick, base]);
   // The one before or after what's picked.
   const next = (dir: -1 | 1) => (picked ? commits[commits.indexOf(dir < 0 ? picked[0] : picked[picked.length - 1]) + dir] : undefined);
   const anchor = picked && pick ? pick.anchor : null;
