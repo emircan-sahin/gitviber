@@ -15,6 +15,7 @@ import {
   FolderGit2,
   GitBranch,
   GitCompareArrows,
+  Maximize2,
   PanelLeft,
   PanelLeftClose,
   PanelRight,
@@ -32,6 +33,7 @@ import {
   UploadCloud,
   UserSearch,
   X,
+  ZoomIn,
 } from "lucide-react";
 import { useEffect, useRef, type ReactNode } from "react";
 import folderApi from "material-icon-theme/icons/folder-api.svg?url";
@@ -53,6 +55,7 @@ import testIcon from "material-icon-theme/icons/test-ts.svg?url";
 import tsIcon from "material-icon-theme/icons/typescript.svg?url";
 import { Logo } from "../icons.tsx";
 import { cx } from "../ui.tsx";
+import { version } from "../../release.ts";
 
 export function fileIcon(path: string) {
   const name = path.split("/").pop()!;
@@ -583,54 +586,100 @@ export interface TerminalTab {
   panes?: number;
 }
 
-/** The terminal's tab bar; `fresh` slides a just-opened tab in. */
-export function TerminalTabs({ tabs, active = 0, fresh }: { tabs: TerminalTab[]; active?: number; fresh?: number }) {
+/**
+ * The terminal's tab bar (src/features/terminal/TerminalPanel.tsx); `fresh` slides a just-opened
+ * tab in. `compact` leaves out the buttons, for a phone-wide panel.
+ */
+export function TerminalTabs({ tabs, active = 0, fresh, compact }: { tabs: TerminalTab[]; active?: number; fresh?: number; compact?: boolean }) {
   return (
     <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-panel">
-      {tabs.map((tab, i) => (
-        <div
-          key={tab.folder}
-          className={cx(
-            "relative flex shrink-0 items-center gap-1.5 border-r border-border pr-1.5 pl-3 text-[12px] whitespace-nowrap",
-            i === active ? "bg-bg text-fg" : "text-muted",
-            i === fresh && "tab-in",
-          )}
-        >
-          {i === active && (
-            <>
-              <span className="absolute inset-x-0 top-0 h-px bg-primary" />
-              <span className="absolute inset-x-0 -bottom-px h-px bg-bg" />
-            </>
-          )}
-          <SquareTerminal className={cx("size-3.5", i === active ? "text-primary" : "text-subtle")} />
-          {tab.folder}
-          <span className="font-mono text-[10.5px] text-subtle">{tab.branch}</span>
-          {tab.panes && (
-            <span className="rounded-sm bg-elevated px-1 font-mono text-[10px] leading-4 text-muted">{tab.panes}</span>
-          )}
-          <span className="grid size-5 place-items-center text-subtle">
-            <X className="size-3" />
+      <div className="flex min-w-0 flex-1 items-stretch overflow-hidden">
+        {tabs.map((tab, i) => (
+          <div
+            key={tab.folder}
+            className={cx(
+              "relative flex max-w-64 shrink-0 items-center gap-1.5 border-r border-border pr-1.5 pl-3 text-[12px] whitespace-nowrap",
+              i === active ? "bg-bg text-fg" : "text-muted",
+              i === fresh && "tab-in",
+            )}
+          >
+            {i === active && (
+              <>
+                <span className="absolute inset-x-0 top-0 h-0.5 bg-primary" />
+                <span className="absolute inset-x-0 -bottom-px h-px bg-bg" />
+              </>
+            )}
+            <SquareTerminal className={cx("size-3.5 shrink-0", i === active ? "text-primary" : "text-subtle")} />
+            <span className="truncate">{tab.folder}</span>
+            <span className="min-w-0 truncate font-mono text-[10.5px] text-subtle">{tab.branch}</span>
+            {tab.panes && (
+              <span className="rounded-sm bg-elevated px-1 font-mono text-[10px] leading-4 text-muted">{tab.panes}</span>
+            )}
+            <span className="grid size-5 shrink-0 place-items-center text-subtle">
+              <X className="size-3" />
+            </span>
+          </div>
+        ))}
+      </div>
+      {!compact && (
+        <span className="flex shrink-0 items-center gap-0.5 px-1.5 text-muted [&>span]:grid [&>span]:size-6 [&>span]:place-items-center [&_svg]:size-3.5">
+          <span>
+            <Plus />
           </span>
-        </div>
-      ))}
-      <span className="ml-auto flex items-center gap-0.5 px-1.5 text-muted [&>span]:grid [&>span]:size-6 [&>span]:place-items-center [&_svg]:size-3.5">
-        <span>
-          <Plus />
+          <span className="!w-4">
+            <ChevronDown className="!size-3" />
+          </span>
+          <span>
+            <Columns2 />
+          </span>
+          <span>
+            <Rows2 />
+          </span>
+          <span>
+            <Trash2 />
+          </span>
+          <i className="mx-0.5 h-4 w-px bg-border-strong" />
+          {/* Zoom pane, only while the open tab has more than one. */}
+          {(tabs[active]?.panes ?? 1) > 1 && (
+            <span>
+              <ZoomIn />
+            </span>
+          )}
+          <span>
+            <Maximize2 />
+          </span>
+          <span>
+            <ChevronDown />
+          </span>
         </span>
-        <span className="!w-4">
-          <ChevronDown className="!size-3" />
+      )}
+    </div>
+  );
+}
+
+/**
+ * A split pane's title bar: the program's title, else its folder. The focused one carries the
+ * accent and its split and kill buttons; the others show them on hover.
+ */
+export function TerminalPaneHeader({ title, focused }: { title: string; focused: boolean }) {
+  return (
+    <div className="relative flex h-6 shrink-0 items-center gap-1.5 border-b border-border bg-panel pr-1 pl-2.5 text-[11.5px]">
+      {focused && <span className="absolute inset-x-0 top-0 h-0.5 bg-primary" />}
+      <SquareTerminal className={cx("size-3 shrink-0", focused ? "text-primary" : "text-subtle")} />
+      <span className={cx("min-w-0 truncate", focused ? "text-fg" : "text-muted")}>{title}</span>
+      {focused && (
+        <span className="ml-auto flex shrink-0 items-center text-subtle [&>span]:grid [&>span]:size-5 [&>span]:place-items-center [&_svg]:size-3">
+          <span>
+            <Columns2 />
+          </span>
+          <span>
+            <Rows2 />
+          </span>
+          <span>
+            <X />
+          </span>
         </span>
-        <span>
-          <Columns2 />
-        </span>
-        <span>
-          <Trash2 />
-        </span>
-        <i className="mx-0.5 h-4 w-px bg-border-strong" />
-        <span>
-          <ChevronDown />
-        </span>
-      </span>
+      )}
     </div>
   );
 }
@@ -681,11 +730,11 @@ export function StatusBar({ files, add, del, reviewed }: { files: number; add: n
         <span className="font-mono text-removed">-{del}</span> · {reviewed}/{files} reviewed
       </span>
       <span className="ml-auto">Nord</span>
-      <span>SF Mono 12.5</span>
+      <span>SF Mono 13.5</span>
       <span>Unified</span>
       <span>Wrap</span>
       <span>TypeScript</span>
-      <span>v0.1.0 · macOS</span>
+      <span>v{version} · macOS</span>
     </div>
   );
 }
