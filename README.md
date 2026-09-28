@@ -251,7 +251,7 @@ zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter; focusing a pan
 | `⌘↵` | Maximize the terminal over the workspace, and back (in the terminal) |
 | `⇧⌘↵` | Show only the focused terminal pane in the panel, and all of them again (in the terminal) |
 | `⌘↑` `⌘↓` | Scroll to the previous / next command's prompt (in the terminal, with shell integration) |
-| `⌘=` `⌘−` `⌘0` | Zoom the interface |
+| `⌘=` `⌘−` `⌘0` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too) |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |
 | `⌘↵` | Commit (in the commit message) |

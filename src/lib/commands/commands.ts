@@ -127,6 +127,10 @@ export const COMMANDS = [
   { id: "terminal.toggleMaximize", title: "Maximize Terminal", category: "Terminal", keys: ["cmd+enter"], keysOther: ["alt+shift+cmd+enter"], local: "the terminal", noRepeat: true },
   // ⇧⌘↵ as in cmux and Ghostty (Ctrl+Shift+Enter on Linux there).
   { id: "terminal.zoomPane", title: "Zoom Terminal Pane", category: "Terminal", keys: ["shift+cmd+enter"], keysOther: ["shift+cmd+enter"], local: "the terminal", noRepeat: true },
+  // The window's zoom keys size the terminal's font while it has focus, as in terminal apps.
+  { id: "terminal.fontZoomIn", title: "Increase Terminal Font Size", category: "Terminal", keys: ["cmd+=", "shift+cmd+="], local: "the terminal" },
+  { id: "terminal.fontZoomOut", title: "Decrease Terminal Font Size", category: "Terminal", keys: ["cmd+-"], local: "the terminal" },
+  { id: "terminal.fontZoomReset", title: "Reset Terminal Font Size", category: "Terminal", keys: ["cmd+0"], local: "the terminal" },
   // The prompts shell integration marks, as in VS Code (Ctrl+↑/↓ elsewhere, "cmd" there); a full-screen program keeps the keys.
   { id: "terminal.prevCommand", title: "Scroll to Previous Command", category: "Terminal", keys: ["cmd+up"], local: "the terminal" },
   { id: "terminal.nextCommand", title: "Scroll to Next Command", category: "Terminal", keys: ["cmd+down"], local: "the terminal" },

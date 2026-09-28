@@ -1,7 +1,7 @@
-// The terminal's look: the code view's font, the app's colors (index.css), ANSI colors per theme.
+// The terminal's look: its own font settings, the app's colors (index.css), ANSI colors per theme.
 import type { ISearchDecorationOptions } from "@xterm/addon-search";
 import type { ITerminalOptions } from "@xterm/xterm";
-import { codeFontFamily, getSettings, type Theme } from "../settings";
+import { getSettings, terminalFontFamily, type Theme } from "../settings";
 import { cssVar, toHex } from "../ui/color";
 
 const ANSI_DARK = {
@@ -62,18 +62,21 @@ const ANSI: Partial<Record<Theme, Record<string, string>>> = {
   "solarized-light": SOLARIZED,
 };
 
-/** Styled like the code view: its font and size, the app's own background and accents. */
+/** The terminal's own font, size and cursor, the code view's weight, the app's own background and accents. */
 export function terminalOptions(): ITerminalOptions {
   const s = getSettings();
   return {
-    fontFamily: codeFontFamily(s),
-    fontSize: s.codeFontSize,
+    fontFamily: terminalFontFamily(s),
+    fontSize: s.terminalFontSize,
     fontWeight: s.codeFontWeight,
     // Bold stays two steps above whatever the text is, so it still stands out at Semibold.
     fontWeightBold: s.codeFontWeight + 200,
-    // The font's own, as Ghostty (cmux), iTerm2 and VS Code: at 1.2 a pane had a sixth fewer rows,
+    // 1 by default, as Ghostty (cmux), iTerm2 and VS Code: at 1.2 a pane had a sixth fewer rows,
     // and Claude Code drops its usage lines, then its header, below ~16 rows.
-    lineHeight: 1,
+    lineHeight: s.terminalLineHeight,
+    cursorStyle: s.terminalCursor,
+    cursorBlink: s.terminalCursorBlink,
+    scrollback: s.terminalScrollback,
     // As VS Code's terminal does: a theme's own dim colors (Solarized Dark's bright black is its
     // background) are lifted until they read, so autosuggestions and dimmed output show.
     minimumContrastRatio: 4.5,

@@ -51,6 +51,8 @@ const withCustom = (name: string, preset: string) => (name ? `"${name}", ${prese
 
 export const codeFontFamily = (s: Settings) => (s.codeFont === "Custom" ? withCustom(s.customCodeFont, CODE_FONTS[DEFAULT_CODE_FONT]) : CODE_FONTS[s.codeFont]);
 export const codeFontName = (s: Settings) => (s.codeFont === "Custom" && s.customCodeFont) || s.codeFont;
+export const terminalFontFamily = (s: Settings) =>
+  s.terminalFont === "Editor" ? codeFontFamily(s) : s.terminalFont === "Custom" ? withCustom(s.customTerminalFont, codeFontFamily(s)) : CODE_FONTS[s.terminalFont];
 const uiFontFamily = (s: Settings) => (s.uiFont === "Custom" ? withCustom(s.customUiFont, UI_FONTS.System) : UI_FONTS[s.uiFont]);
 
 export const SYNTAX_THEMES = {
@@ -128,6 +130,15 @@ export const FETCH_INTERVALS = [0, 5, 15, 30];
 /** Percent a split terminal's other panes fade; 0 is off. */
 export const DIM_LEVELS = [0, 10, 20, 35, 50];
 
+/** "Editor" follows the code font; the rest are the code font presets, or Custom by name. */
+export type TerminalFont = "Editor" | CodeFont;
+export const terminalFontChoices: TerminalFont[] = ["Editor", ...codeFontChoices];
+export const TERMINAL_CURSORS = { block: "Block", bar: "Bar", underline: "Underline" } as const;
+export type TerminalCursor = keyof typeof TERMINAL_CURSORS;
+/** Lines of history each terminal keeps. */
+export const SCROLLBACK_LINES = [1_000, 10_000, 50_000, 100_000];
+export const TERMINAL_LINE_HEIGHTS = [1, 1.1, 1.2, 1.3];
+
 export interface Settings {
   codeFont: CodeFont;
   customCodeFont: string;
@@ -157,6 +168,16 @@ export interface Settings {
   shellIntegration: boolean;
   /** How far a split tab's panes other than the focused one fade (one of DIM_LEVELS). */
   terminalInactiveDim: number;
+  terminalFont: TerminalFont;
+  customTerminalFont: string;
+  /** Its own, as in terminal apps: the terminal wants a bigger size than the code view's dense diffs. */
+  terminalFontSize: number;
+  /** One of TERMINAL_LINE_HEIGHTS. */
+  terminalLineHeight: number;
+  terminalCursor: TerminalCursor;
+  terminalCursorBlink: boolean;
+  /** One of SCROLLBACK_LINES. */
+  terminalScrollback: number;
   /** Markdown files open rendered rather than as source (diffs always start on the diff). */
   markdownPreview: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
@@ -195,6 +216,7 @@ export interface Settings {
 }
 
 export const DEFAULT_FONT_SIZE = 12.5;
+export const DEFAULT_TERMINAL_FONT_SIZE = 13;
 export const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
 
 const DEFAULTS: Settings = {
@@ -220,6 +242,13 @@ const DEFAULTS: Settings = {
   optionAsMeta: "off",
   shellIntegration: true,
   terminalInactiveDim: 20,
+  terminalFont: "Editor",
+  customTerminalFont: "",
+  terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
+  terminalLineHeight: 1,
+  terminalCursor: "block",
+  terminalCursorBlink: true,
+  terminalScrollback: 10_000,
   markdownPreview: true,
   svgPreview: false,
   imageCompare: "side",
@@ -271,6 +300,13 @@ function load(): Settings {
     if (!(s.optionAsMeta in OPTION_KEYS)) s.optionAsMeta = DEFAULTS.optionAsMeta;
     if (typeof s.shellIntegration !== "boolean") s.shellIntegration = DEFAULTS.shellIntegration;
     if (!DIM_LEVELS.includes(s.terminalInactiveDim)) s.terminalInactiveDim = DEFAULTS.terminalInactiveDim;
+    if (!terminalFontChoices.includes(s.terminalFont) && s.terminalFont !== "Custom") s.terminalFont = DEFAULTS.terminalFont;
+    s.customTerminalFont = typeof s.customTerminalFont === "string" ? cleanFontName(s.customTerminalFont) : "";
+    if (typeof s.terminalFontSize !== "number" || !Number.isFinite(s.terminalFontSize)) s.terminalFontSize = DEFAULTS.terminalFontSize;
+    if (!TERMINAL_LINE_HEIGHTS.includes(s.terminalLineHeight)) s.terminalLineHeight = DEFAULTS.terminalLineHeight;
+    if (!(s.terminalCursor in TERMINAL_CURSORS)) s.terminalCursor = DEFAULTS.terminalCursor;
+    if (typeof s.terminalCursorBlink !== "boolean") s.terminalCursorBlink = DEFAULTS.terminalCursorBlink;
+    if (!SCROLLBACK_LINES.includes(s.terminalScrollback)) s.terminalScrollback = DEFAULTS.terminalScrollback;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     if (!["side", "swipe", "onion"].includes(s.imageCompare)) s.imageCompare = DEFAULTS.imageCompare;
@@ -394,7 +430,9 @@ systemDark.addEventListener("change", () => current.appearance === "system" && e
 export function updateSettings(patch: Partial<Settings>) {
   current = { ...current, ...patch };
   current.codeFontSize = Math.min(24, Math.max(10, Math.round(current.codeFontSize * 2) / 2));
+  current.terminalFontSize = Math.min(32, Math.max(8, Math.round(current.terminalFontSize)));
   current.customCodeFont = cleanFontName(current.customCodeFont);
+  current.customTerminalFont = cleanFontName(current.customTerminalFont);
   current.customUiFont = cleanFontName(current.customUiFont);
   // Settings still apply for this session when they can't be stored.
   writeJson(KEY, current);
@@ -422,6 +460,11 @@ export function stepUiScale(dir: -1 | 0 | 1) {
   const i = UI_SCALES.indexOf(current.uiScale);
   const next = dir === 0 ? 1 : UI_SCALES[Math.min(UI_SCALES.length - 1, Math.max(0, i + dir))];
   updateSettings({ uiScale: next });
+}
+
+/** Moves the terminal font size a point; 0 resets it. */
+export function stepTerminalFont(dir: -1 | 0 | 1) {
+  updateSettings({ terminalFontSize: dir ? current.terminalFontSize + dir : DEFAULT_TERMINAL_FONT_SIZE });
 }
 
 /** The whitespace diffs ignore now, or null. */
