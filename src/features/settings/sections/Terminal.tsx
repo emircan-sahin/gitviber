@@ -5,6 +5,8 @@ import {
   type OptionKey,
   SCROLLBACK_LINES,
   TERMINAL_CURSORS,
+  TERMINAL_FONT_MAX,
+  TERMINAL_FONT_MIN,
   TERMINAL_LINE_HEIGHTS,
   type TerminalCursor,
   type TerminalFont,
@@ -43,7 +45,14 @@ export function TerminalSection() {
           hint="Separate from the code font size. With the terminal focused, the zoom keys, a pinch or Ctrl+scroll change it too."
           commands={["terminal.fontZoomIn", "terminal.fontZoomOut", "terminal.fontZoomReset"]}
         >
-          <SizeStepper value={s.terminalFontSize} step={1} fallback={DEFAULT_TERMINAL_FONT_SIZE} onChange={(v) => updateSettings({ terminalFontSize: v })} />
+          <SizeStepper
+            value={s.terminalFontSize}
+            step={1}
+            fallback={DEFAULT_TERMINAL_FONT_SIZE}
+            min={TERMINAL_FONT_MIN}
+            max={TERMINAL_FONT_MAX}
+            onChange={(v) => updateSettings({ terminalFontSize: v })}
+          />
         </Field>
         <Field label="Line height" hint="Taller lines fit fewer rows in a pane.">
           <Segmented<string>
@@ -80,7 +89,7 @@ export function TerminalSection() {
             variant="field"
           />
         </Field>
-        <Field label="Scrollback" hint="Lines of history each terminal keeps.">
+        <Field label="Scrollback" hint="Lines of history each terminal keeps. After a restart, a terminal comes back with its last 1,000.">
           <OptionSelect
             value={String(s.terminalScrollback)}
             options={Object.fromEntries(SCROLLBACK_LINES.map((n) => [n, `${n.toLocaleString("en-US")} lines`]))}
