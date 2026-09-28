@@ -76,6 +76,16 @@ pub async fn commit_files(state: State<'_, AppState>, sha: String) -> Res<Vec<gi
     in_repo(&state, move |r| git::commit_files(r, &sha)).await
 }
 
+/// What a run of a PR's commits changed together: from the first one's parent to the last.
+#[tauri::command]
+pub async fn range_files(
+    state: State<'_, AppState>,
+    from: String,
+    to: String,
+) -> Res<Vec<git::FileChange>> {
+    in_repo(&state, move |r| git::range_files(r, &from, &to)).await
+}
+
 #[tauri::command]
 pub async fn blame(state: State<'_, AppState>, path: String) -> Res<git::Blame> {
     in_repo(&state, move |r| {

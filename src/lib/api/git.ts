@@ -52,6 +52,8 @@ export const api = {
   /** The commit a SHA or SHA prefix names, if exactly one, or a full ref's tip (refs/heads/…). */
   findCommit: (sha: string) => invoke<Commit | null>("find_commit", { sha }),
   commitFiles: (sha: string) => invoke<FileChange[]>("commit_files", { sha }),
+  /** Files changed from `from` to `to`, both commit ids: a run of a PR's commits, from the first one's parent. */
+  rangeFiles: (from: string, to: string) => invoke<FileChange[]>("range_files", { from, to }),
   diffPair: (kind: DiffKind, path: string, oldPath: string | null, sha: string | null, base: string | null = null, whitespace: Whitespace | null = null) =>
     invoke<DiffPair>("diff_pair", { kind, path, oldPath, sha, base, whitespace }),
   /** Raw bytes of one side of a diff (`original` = the before side), for media previews. */

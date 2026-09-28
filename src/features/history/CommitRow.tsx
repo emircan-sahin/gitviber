@@ -231,7 +231,7 @@ function GraphLines({ row }: { row: GraphRow }) {
  * When the commit landed on the branch, which is the order the list is in. A rebase or cherry-pick
  * keeps the date it was written, which then reads out of order: that one is in the tooltip.
  */
-function CommitTime({ commit: c }: { commit: Commit }) {
+export function CommitTime({ commit: c }: { commit: Commit }) {
   const moved = relativeTime(c.timestamp) !== relativeTime(c.committedAt);
   const title = moved
     ? `Committed ${relativeTime(c.committedAt)} by ${c.committerName} (${fullDate(c.committedAt)})\nAuthored ${relativeTime(c.timestamp)} by ${c.authorName} (${fullDate(c.timestamp)})`

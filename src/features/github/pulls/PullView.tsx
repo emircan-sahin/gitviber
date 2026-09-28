@@ -3,7 +3,7 @@ import { ExternalLink, FolderGit2, GitBranch, GitPullRequest, GitPullRequestClos
 import { useCallback, useEffect, useRef } from "react";
 import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
-import { accessFor, api, errorMessage, fullName, github, type MergeMethod, type Pull, repoOf } from "@/lib/api";
+import { accessFor, api, errorMessage, type Commit, fullName, github, type MergeMethod, type Pull, repoOf } from "@/lib/api";
 import { listIsBehind, useGitHubData } from "@/lib/github/githubCache";
 import type { Selection } from "@/lib/repo/selection";
 import { cn } from "@/lib/utils";
@@ -22,6 +22,7 @@ import { useGitAction } from "@/hooks/useGitAction";
 import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
 import { MergeBox, ReviewButton } from "./PullActions";
 import { PullChecks } from "./PullChecks";
+import { PickBar, pickLabel, PullCommits, useCommitPick } from "./PullCommits";
 import { allowedMethods, METHODS, REVIEWS } from "./actionLabels";
 
 export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) => void }) {
@@ -61,6 +62,18 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
     d && `files:${pull.url}:${d.baseSha}:${d.headSha}`,
     useCallback(() => (d ? github.files(target, d) : Promise.reject(new Error("no pull request"))), [target, d]),
     600_000,
+  );
+  const commits = files.data?.commits ?? NO_COMMITS;
+  const pick = useCommitPick(pull.url, commits);
+  const { picked } = pick;
+  // What the picked commits changed together, from the first one's parent to the last.
+  const pickBase = picked?.[0].parents[0];
+  const pickHead = picked?.[picked.length - 1].sha;
+  const pickedFiles = useGitHubData(
+    pickBase && pickHead ? `range-files:${pickBase}..${pickHead}` : null,
+    useCallback(() => api.rangeFiles(pickBase!, pickHead!), [pickBase, pickHead]),
+    // Commit ids: what's between them never changes.
+    3_600_000,
   );
   // Normally already loaded, by the PRs panel.
   const { account } = useGitHubAccount();
@@ -127,13 +140,32 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
     );
   };
 
+  // The whole PR, or the picked commits: their lines aren't the head's, so they take no line comments.
+  const shown = picked
+    ? pickedFiles.data && pickBase && pickHead ? { files: pickedFiles.data, range: { number: p.number, label: pickLabel(picked), base: pickBase, head: pickHead } } : null
+    : files.data ? { files: files.data.files, range: { number: p.number, pullUrl: p.url, base: files.data.base, head: files.data.head } } : null;
+  // A root commit (merged in from an unrelated history) has nothing before it.
+  const shownError = picked ? (pickBase ? pickedFiles.error : `${picked[0].shortSha} has no parent to compare with.`) : files.error;
+  const shownLoading = picked ? pickedFiles.loading : files.loading;
+
   if (error && !d) {
     return <div className="p-8 text-center text-[12.5px] text-muted-foreground">{error}</div>;
   }
 
   return (
     // Focusable so the keyboard can scroll it (focusPanel("code") lands here).
-    <div data-code-scroll tabIndex={0} className="min-h-0 flex-1 overflow-y-auto outline-none">
+    // ←/→ on the page itself step through the commits while Files changed shows one.
+    <div
+      data-code-scroll
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget || !picked || e.altKey || e.metaKey || e.ctrlKey || e.shiftKey) return;
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+        pick.step(e.key === "ArrowLeft" ? -1 : 1);
+        e.preventDefault();
+      }}
+      className="min-h-0 flex-1 overflow-y-auto outline-none"
+    >
       <PageFind />
       <div className="mx-auto max-w-4xl px-6 py-5">
         <div className="flex items-start gap-3">
@@ -210,19 +242,25 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
 
         {d && <PullChecks pull={pull} detail={d} />}
 
-        <Section title="Files changed" aside={files.data ? `${files.data.files.length}` : d ? `${d.changedFiles}` : undefined}>
-          {!files.data &&
-            (files.error !== undefined && !files.loading ? (
-              <div className="px-3 py-2 text-[12px] text-removed">Could not load the PR's files: {errorMessage(files.error)}</div>
+        {files.data && commits.length > 0 && <PullCommits pull={p} commits={commits} total={d?.commits ?? commits.length} pick={pick} busy={!!busy} act={act} />}
+
+        <Section title="Files changed" aside={shown ? `${shown.files.length}` : d && !picked ? `${d.changedFiles}` : undefined}>
+          <PickBar pick={pick} />
+          {!shown &&
+            (shownError !== undefined && !shownLoading ? (
+              <div className="px-3 py-2 text-[12px] text-removed">
+                Could not load {picked ? "the commits'" : "the PR's"} files: {errorMessage(shownError)}
+              </div>
             ) : (
               <div className="flex items-center gap-2 px-3 py-2 text-[12px] text-subtle">
-                <Loader2 className="size-3.5 animate-spin" /> Fetching the PR's commits…
+                <Loader2 className="size-3.5 animate-spin" /> {picked ? "Loading…" : "Fetching the PR's commits…"}
               </div>
             ))}
-          {files.data?.files.map((f) => (
+          {shown && !shown.files.length && <div className="px-3 py-2 text-[12px] text-subtle">No files changed.</div>}
+          {shown?.files.map((f) => (
             <button
               key={f.path}
-              onClick={() => onOpen({ kind: "pr-file", range: { number: p.number, pullUrl: p.url, base: files.data!.base, head: files.data!.head }, file: f })}
+              onClick={() => onOpen({ kind: "pr-file", range: shown.range, file: f })}
               className="flex h-7 w-full cursor-pointer items-center gap-2 px-3 text-left text-[12px] outline-none hover:bg-hover focus-visible:bg-hover"
             >
               <FileIcon path={f.path} />
@@ -255,6 +293,8 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
     </div>
   );
 }
+
+const NO_COMMITS: Commit[] = [];
 
 function ReviewBadge({ state }: { state: string }) {
   const map: Record<string, [string, string]> = {

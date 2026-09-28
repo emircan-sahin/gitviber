@@ -145,6 +145,7 @@ pub fn run() {
             commands::history::compare_counts,
             commands::history::find_commit,
             commands::history::commit_files,
+            commands::history::range_files,
             commands::files::diff_pair,
             commands::files::media,
             commands::files::media_file,

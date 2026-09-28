@@ -233,6 +233,6 @@ function TabItem({
 function TabKind({ sel }: { sel: Selection }) {
   const labels: Partial<Record<Selection["kind"], string>> = { staged: "staged", unstaged: "diff", conflict: "conflict" };
   const label =
-    sel.kind === "commit" ? sel.commit.shortSha : sel.kind === "pr-file" ? (sel.range.number ? `#${sel.range.number}` : (sel.range.label ?? "compare")) : sel.kind === "branch" ? `vs ${sel.label}` : labels[sel.kind];
+    sel.kind === "commit" ? sel.commit.shortSha : sel.kind === "pr-file" ? [sel.range.number && `#${sel.range.number}`, sel.range.label].filter(Boolean).join(" ") || "compare" : sel.kind === "branch" ? `vs ${sel.label}` : labels[sel.kind];
   return label ? <span className="shrink-0 font-mono text-[10px] text-subtle">{label}</span> : null;
 }

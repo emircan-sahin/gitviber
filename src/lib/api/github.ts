@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { netOp, network } from "./network";
-import type { FileChange, NetOp } from "./types";
+import type { Commit, FileChange, NetOp } from "./types";
 
 /** What the signed-in account may do in one repository. */
 export interface GitHubAccess {
@@ -118,6 +118,8 @@ export interface PullFiles {
   base: string;
   head: string;
   files: FileChange[];
+  /** Oldest first; the newest 250 when there are more, as GitHub lists them. */
+  commits: Commit[];
 }
 
 export type MergeMethod = "merge" | "squash" | "rebase";

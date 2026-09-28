@@ -330,7 +330,11 @@ pub struct PullFiles {
     pub base: String,
     pub head: String,
     pub files: Vec<git::FileChange>,
+    /// Oldest first; the newest `COMMITS` when there are more (GitHub's own list stops at 250).
+    pub commits: Vec<git::Commit>,
 }
+
+const COMMITS: u32 = 250;
 
 /// Fetches the PR's commits (no refs are created) and diffs them locally, so PR files
 /// open in the same full-file viewer as everything else.
@@ -362,6 +366,7 @@ pub fn files(
     let base = git::merge_base(repo, base_sha, head_sha)?;
     Ok(PullFiles {
         files: git::range_files(repo, &base, head_sha)?,
+        commits: git::log_range(repo, &base, head_sha, COMMITS)?,
         base,
         head: head_sha.to_string(),
     })

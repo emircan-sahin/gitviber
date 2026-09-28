@@ -230,6 +230,25 @@ pub fn log_compare(
     )
 }
 
+/// The commits `head` has that `base` doesn't, oldest first as GitHub lists a pull request's:
+/// the newest `limit` of them.
+pub fn log_range(repo: &Path, base: &str, head: &str, limit: u32) -> Result<Vec<Commit>, String> {
+    validate_rev(base)?;
+    validate_rev(head)?;
+    let range = format!("{base}..{head}");
+    let mut list = commits(
+        repo,
+        &[&range],
+        false,
+        true,
+        0,
+        limit,
+        &LogFilter::default(),
+    )?;
+    list.reverse();
+    Ok(list)
+}
+
 /// How many commits HEAD has that `with` doesn't, and `with` has that HEAD doesn't.
 /// What `with` changed since it and HEAD parted, as a pull request of it would show: the
 /// merge base, `with`'s commit, and the files between them.

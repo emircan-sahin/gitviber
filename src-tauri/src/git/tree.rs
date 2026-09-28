@@ -32,7 +32,7 @@ pub fn commit_files(repo: &Path, sha: &str) -> Result<Vec<FileChange>, String> {
     let parent = format!("{sha}^");
     let has_parent = run(repo, &["rev-parse", "--verify", "-q", &parent]).is_ok();
     if has_parent {
-        range_files(repo, &parent, sha)
+        tree_files(repo, &[&parent, sha])
     } else {
         tree_files(repo, &["--root", sha])
     }
@@ -40,6 +40,8 @@ pub fn commit_files(repo: &Path, sha: &str) -> Result<Vec<FileChange>, String> {
 
 /// Files changed between two commits (e.g. a PR's merge base and its head).
 pub fn range_files(repo: &Path, from: &str, to: &str) -> Result<Vec<FileChange>, String> {
+    validate_rev(from)?;
+    validate_rev(to)?;
     tree_files(repo, &[from, to])
 }
 

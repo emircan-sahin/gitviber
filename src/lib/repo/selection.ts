@@ -1,9 +1,12 @@
 import type { Commit, FileChange, Issue, Pull } from "../api";
 
-/** A PR's diff range, as computed locally (merge base → head), or a branch's in a comparison (no `number`, its name as `label`). */
+/**
+ * A PR's diff range, as computed locally (merge base → head), or a branch's in a comparison (no
+ * `number`, its name as `label`). Some of a PR's commits have `number` and `label` (their short ids).
+ */
 interface PullRange {
   number?: number;
-  /** The PR's page, for its line comments. */
+  /** The PR's page, for its line comments; none for some of its commits, whose lines aren't the head's. */
   pullUrl?: string;
   label?: string;
   base: string;
@@ -40,7 +43,7 @@ export function selectionKey(s: Selection) {
   // By url: a fork's #3 and its original's #3 are different threads.
   if (s.kind === "pull") return `pull:${s.pull.url}`;
   if (s.kind === "issue") return `issue:${s.issue.url}`;
-  // A PR file by its head commit too: a fork's #3 and its original's #3 differ.
-  const scope = s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number ?? `${s.range.base}..`}@${s.range.head}` : s.kind === "branch" ? s.base : "";
+  // A PR file by its commits too: a fork's #3 and its original's #3 differ, and so do the PR and one of its commits.
+  const scope = s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number ?? ""}@${s.range.base}..${s.range.head}` : s.kind === "branch" ? s.base : "";
   return `${s.kind}:${scope}:${selectionPath(s)}`;
 }

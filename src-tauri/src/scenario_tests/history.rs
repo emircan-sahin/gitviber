@@ -468,6 +468,40 @@ fn compare_files_are_what_the_other_branch_changed_since_they_parted() {
     assert!(compare_files(&r, "feature").is_err(), "a full ref only");
 }
 
+/// A PR's commits: what head has since the merge base, oldest first, the newest kept when capped;
+/// a run of them diffs from the first one's parent.
+#[test]
+fn log_range_lists_a_pull_requests_commits_oldest_first() {
+    let sb = Sandbox::new("log-range");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let base = rev(&r, "HEAD");
+    run(&r, &["switch", "-q", "-c", "feature"]).unwrap();
+    write_commit(&r, "b.txt", "b\n", "one");
+    write_commit(&r, "c.txt", "c\n", "two");
+    write_commit(&r, "b.txt", "b2\n", "three");
+    let head = rev(&r, "HEAD");
+    run(&r, &["switch", "-q", "main"]).unwrap();
+
+    let all = log_range(&r, &base, &head, 10).unwrap();
+    let subjects = |l: &[Commit]| l.iter().map(|c| c.subject.clone()).collect::<Vec<_>>();
+    assert_eq!(subjects(&all), ["one", "two", "three"]);
+    assert!(all.iter().all(|c| c.not_in_head), "main has none of them");
+    assert_eq!(
+        subjects(&log_range(&r, &base, &head, 2).unwrap()),
+        ["two", "three"]
+    );
+
+    let run_of = range_files(&r, &all[1].parents[0], &all[2].sha).unwrap();
+    assert_eq!(
+        run_of.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+        ["b.txt", "c.txt"]
+    );
+    assert!(log_range(&r, "main", &head, 10).is_err(), "commit ids only");
+    assert!(range_files(&r, "--output=x", &head).is_err());
+}
+
 #[test]
 fn the_reflog_keeps_what_a_reset_left_behind() {
     let sb = Sandbox::new("reflog");
