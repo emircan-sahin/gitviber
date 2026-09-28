@@ -228,7 +228,9 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   watchAttention(p);
-  reportWheelByRow(term);
+  // A mouse wheel's notch arrives as ~53-100 px off macOS, so a row per row would scroll vim or
+  // htop 3-5 rows a notch where it scrolled one; the replay is for the Mac trackpad it was made on.
+  if (IS_MAC) reportWheelByRow(term);
   // XTVERSION names this app, as Ghostty and iTerm2 name themselves. Answered as xterm.js, Claude
   // Code took the pane for VS Code's terminal: 3 rows a report once the wheel slowed, and its
   // workarounds for VS Code's glyph atlas.
