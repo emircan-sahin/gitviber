@@ -502,6 +502,74 @@ fn log_range_lists_a_pull_requests_commits_oldest_first() {
     assert!(range_files(&r, "--output=x", &head).is_err());
 }
 
+/// One picked commit of a PR shows what History shows for it: its range from its parent.
+#[test]
+fn range_of_one_commit_is_what_it_changed() {
+    let sb = Sandbox::new("range-one");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    write_commit(&r, "b.txt", "b\n", "two");
+    run(&r, &["rm", "-q", "b.txt"]).unwrap();
+    write_commit(&r, "a.txt", "a2\n", "three");
+    write_commit(&r, "c.txt", "c\n", "four");
+    let sha = rev(&r, "HEAD~1");
+
+    let files = |l: Vec<FileChange>| {
+        l.into_iter()
+            .map(|f| (f.path, f.status))
+            .collect::<Vec<_>>()
+    };
+    let one = files(range_files(&r, &rev(&r, "HEAD~2"), &sha).unwrap());
+    assert_eq!(one, files(commit_files(&r, &sha).unwrap()));
+    assert_eq!(
+        one,
+        [("a.txt".into(), "M".into()), ("b.txt".into(), "D".into())]
+    );
+}
+
+/// A PR whose head merged in an unrelated history: its root commit is listed, with no parent,
+/// and a merge picked on its own diffs against its first parent.
+#[test]
+fn log_range_lists_a_root_commit_and_a_merge_diffs_against_its_first_parent() {
+    let sb = Sandbox::new("log-range-merge");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let base = rev(&r, "HEAD");
+    run(&r, &["switch", "-q", "--orphan", "other"]).unwrap();
+    write_commit(&r, "o.txt", "o\n", "root");
+    run(&r, &["switch", "-q", "-c", "feature", "main"]).unwrap();
+    write_commit(&r, "b.txt", "b\n", "own");
+    run(
+        &r,
+        &[
+            "merge",
+            "-q",
+            "--no-ff",
+            "--allow-unrelated-histories",
+            "-m",
+            "merge",
+            "other",
+        ],
+    )
+    .unwrap();
+    let head = rev(&r, "HEAD");
+
+    let all = log_range(&r, &base, &head, 10).unwrap();
+    let root = all.iter().find(|c| c.subject == "root").unwrap();
+    assert!(root.parents.is_empty());
+    let merge = all.last().unwrap();
+    assert_eq!(merge.subject, "merge");
+    let own = all.iter().find(|c| c.subject == "own").unwrap();
+    assert_eq!(merge.parents[0], own.sha);
+    let picked = range_files(&r, &merge.parents[0], &merge.sha).unwrap();
+    assert_eq!(
+        picked.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(),
+        ["o.txt"]
+    );
+}
+
 #[test]
 fn the_reflog_keeps_what_a_reset_left_behind() {
     let sb = Sandbox::new("reflog");
