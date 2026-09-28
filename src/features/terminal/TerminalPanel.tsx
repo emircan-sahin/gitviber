@@ -556,7 +556,8 @@ function PaneHeader({ id, focused }: { id: number; focused: boolean }) {
         tabIndex={-1}
         onClick={(e) => {
           e.stopPropagation();
-          run();
+          // A double-click's second click would split again (splitActive is async, the first not done yet).
+          if (e.detail < 2) run();
         }}
         className="flex size-5 items-center justify-center rounded-sm text-subtle hover:bg-active hover:text-foreground"
       >
@@ -569,7 +570,8 @@ function PaneHeader({ id, focused }: { id: number; focused: boolean }) {
       // The keys stay with the terminal: a click here gives them to this pane.
       onMouseDown={(e) => !(e.target instanceof HTMLInputElement) && e.preventDefault()}
       onClick={() => focusTerminalPane(id)}
-      onDoubleClick={() => renamingPane.set(id)}
+      // Not on its buttons: a double-click on Split is still a split, not a rename.
+      onDoubleClick={(e) => !(e.target as Element).closest("button") && renamingPane.set(id)}
       className="group/pane relative flex h-6 shrink-0 cursor-default items-center gap-1.5 border-b border-border bg-panel pr-1 pl-2.5 text-[11.5px] select-none"
     >
       {focused && <span className="absolute inset-x-0 top-0 h-0.5 bg-primary" />}
