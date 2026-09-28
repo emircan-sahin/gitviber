@@ -282,15 +282,15 @@ function load(): Settings {
     const raw = localStorage.getItem(KEY);
     const stored = raw ? JSON.parse(raw) : null;
     const s = stored ? { ...DEFAULTS, ...stored } : DEFAULTS;
-    if (!(s.codeFont in CODE_FONTS) && s.codeFont !== "Custom") s.codeFont = DEFAULTS.codeFont;
-    if (!(s.codeFontWeight in CODE_FONT_WEIGHTS)) s.codeFontWeight = DEFAULTS.codeFontWeight;
+    if (!Object.hasOwn(CODE_FONTS, s.codeFont) && s.codeFont !== "Custom") s.codeFont = DEFAULTS.codeFont;
+    if (!Object.hasOwn(CODE_FONT_WEIGHTS, s.codeFontWeight)) s.codeFontWeight = DEFAULTS.codeFontWeight;
     if (!IS_MAC && MAC_ONLY_FONTS.includes(s.codeFont)) s.codeFont = DEFAULTS.codeFont;
-    if (!(s.uiFont in UI_FONTS) && s.uiFont !== "Custom") s.uiFont = DEFAULTS.uiFont;
+    if (!Object.hasOwn(UI_FONTS, s.uiFont) && s.uiFont !== "Custom") s.uiFont = DEFAULTS.uiFont;
     if (!IS_MAC && MAC_ONLY_UI_FONTS.includes(s.uiFont)) s.uiFont = DEFAULTS.uiFont;
     s.customCodeFont = typeof s.customCodeFont === "string" ? cleanFontName(s.customCodeFont) : "";
     s.customUiFont = typeof s.customUiFont === "string" ? cleanFontName(s.customUiFont) : "";
-    if (!(s.syntaxTheme in SYNTAX_THEMES)) s.syntaxTheme = DEFAULTS.syntaxTheme;
-    if (!(s.lightSyntaxTheme in LIGHT_SYNTAX_THEMES)) s.lightSyntaxTheme = DEFAULTS.lightSyntaxTheme;
+    if (!Object.hasOwn(SYNTAX_THEMES, s.syntaxTheme)) s.syntaxTheme = DEFAULTS.syntaxTheme;
+    if (!Object.hasOwn(LIGHT_SYNTAX_THEMES, s.lightSyntaxTheme)) s.lightSyntaxTheme = DEFAULTS.lightSyntaxTheme;
     // Before the named themes, Dimmed was an appearance of its own and System's dark a darkVariant.
     const old = s as { appearance: string; darkVariant?: string };
     // Dark always meant the graphite dark; Light switched to System later took the variant.
@@ -298,10 +298,10 @@ function load(): Settings {
     if (old.appearance === "dim") s.appearance = "dark";
     delete old.darkVariant;
     if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
-    if (!(s.darkTheme in DARK_THEMES)) s.darkTheme = DEFAULTS.darkTheme;
-    if (!(s.lightTheme in LIGHT_THEMES)) s.lightTheme = DEFAULTS.lightTheme;
+    if (!Object.hasOwn(DARK_THEMES, s.darkTheme)) s.darkTheme = DEFAULTS.darkTheme;
+    if (!Object.hasOwn(LIGHT_THEMES, s.lightTheme)) s.lightTheme = DEFAULTS.lightTheme;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
-    if (!(s.optionAsMeta in OPTION_KEYS)) s.optionAsMeta = DEFAULTS.optionAsMeta;
+    if (!Object.hasOwn(OPTION_KEYS, s.optionAsMeta)) s.optionAsMeta = DEFAULTS.optionAsMeta;
     if (typeof s.shellIntegration !== "boolean") s.shellIntegration = DEFAULTS.shellIntegration;
     if (!DIM_LEVELS.includes(s.terminalInactiveDim)) s.terminalInactiveDim = DEFAULTS.terminalInactiveDim;
     if (!terminalFontChoices.includes(s.terminalFont) && s.terminalFont !== "Custom") s.terminalFont = DEFAULTS.terminalFont;
@@ -311,7 +311,7 @@ function load(): Settings {
     if (typeof s.terminalFontSize !== "number" || !Number.isFinite(s.terminalFontSize)) s.terminalFontSize = DEFAULTS.terminalFontSize;
     s.terminalFontSize = clampTerminalFont(s.terminalFontSize);
     if (!TERMINAL_LINE_HEIGHTS.includes(s.terminalLineHeight)) s.terminalLineHeight = DEFAULTS.terminalLineHeight;
-    if (!(s.terminalCursor in TERMINAL_CURSORS)) s.terminalCursor = DEFAULTS.terminalCursor;
+    if (!Object.hasOwn(TERMINAL_CURSORS, s.terminalCursor)) s.terminalCursor = DEFAULTS.terminalCursor;
     if (typeof s.terminalCursorBlink !== "boolean") s.terminalCursorBlink = DEFAULTS.terminalCursorBlink;
     if (!SCROLLBACK_LINES.includes(s.terminalScrollback)) s.terminalScrollback = DEFAULTS.terminalScrollback;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
