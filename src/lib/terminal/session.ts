@@ -11,7 +11,7 @@ export interface SavedSession {
   savedAt: number;
   active: number;
   /** `layout`'s leaves index `panes`; a save from before splits went down has none. */
-  groups: { name?: string; focused: number; layout?: Layout; panes: { cwd: string; dir?: string; history: string }[] }[];
+  groups: { name?: string; focused: number; layout?: Layout; panes: { cwd: string; dir?: string; name?: string; history: string }[] }[];
 }
 
 const SESSION_KEY = "gitviber.terminals";
@@ -65,9 +65,9 @@ function saveSession(all = false, due?: Pane[]) {
         name: g.name,
         focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
         layout: mapPanes(g.layout, (id) => g.panes.findIndex((p) => p.id === id)),
-        panes: g.panes.map(({ id, cwd }) => {
+        panes: g.panes.map(({ id, cwd, name }) => {
           const dir = panes.get(id)?.dir;
-          return { cwd, dir: dir !== cwd ? dir : undefined, history: (history && panes.get(id)?.saved) || "" };
+          return { cwd, dir: dir !== cwd ? dir : undefined, name, history: (history && panes.get(id)?.saved) || "" };
         }),
       })),
     });
@@ -95,7 +95,10 @@ export function restoreSession() {
   // A tab saved with no panes (by hand, or a bug) has nothing to reopen, and left the restore with no tab to show.
   const restored = saved.groups.map((g) => {
     if (!g.panes?.length) return null;
-    const infos = g.panes.map((p) => createPane(p.cwd, { history: p.history, savedAt: saved.savedAt }, typeof p.dir === "string" ? p.dir : undefined));
+    const infos = g.panes.map((p) => ({
+      ...createPane(p.cwd, { history: p.history, savedAt: saved.savedAt }, typeof p.dir === "string" ? p.dir : undefined),
+      name: typeof p.name === "string" ? p.name : undefined,
+    }));
     const layout = mapPanes(savedLayout(g.layout, infos.length), (i) => infos[i].id);
     return { id: newId(), name: typeof g.name === "string" ? g.name : undefined, panes: infos, layout, focused: (infos[g.focused] ?? infos[0]).id };
   });

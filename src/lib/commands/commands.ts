@@ -18,7 +18,8 @@ export const COMMANDS = [
   { id: "file.openRepo", title: "Open Repository", category: "General", keys: ["cmd+o"] },
   { id: "file.cloneRepo", title: "Clone Repository", category: "General", keys: [] },
   { id: "file.switchProject", title: "Switch Project", category: "General", keys: [] },
-  { id: "window.reload", title: "Reload Window", category: "General", keys: ["cmd+r"] },
+  // Not ⌘R: a reload ends every terminal (pty.rs kill_all), and in the terminal ⌘R names a pane.
+  { id: "window.reload", title: "Reload Window", category: "General", keys: ["shift+cmd+r"] },
   // The file watcher refreshes on its own; this is for changes it can't see.
   { id: "repo.refresh", title: "Refresh", category: "General", keys: [] },
   { id: "tab.close", title: "Close Tab", category: "General", keys: ["cmd+w"] },
@@ -127,6 +128,9 @@ export const COMMANDS = [
   { id: "terminal.toggleMaximize", title: "Maximize Terminal", category: "Terminal", keys: ["cmd+enter"], keysOther: ["alt+shift+cmd+enter"], local: "the terminal", noRepeat: true },
   // ⇧⌘↵ as in cmux and Ghostty (Ctrl+Shift+Enter on Linux there).
   { id: "terminal.zoomPane", title: "Zoom Terminal Pane", category: "Terminal", keys: ["shift+cmd+enter"], keysOther: ["shift+cmd+enter"], local: "the terminal", noRepeat: true },
+  // Only a split's panes show a name; the tab shows the repo and branch. Unbound elsewhere: Ctrl+R is
+  // the shell's history search, and Ctrl+Shift+R reloads.
+  { id: "terminal.renamePane", title: "Rename Terminal Pane", category: "Terminal", keys: ["cmd+r"], keysOther: [], local: "the terminal" },
   // The window's zoom keys size the terminal's font while it has focus, as in terminal apps.
   { id: "terminal.fontZoomIn", title: "Increase Terminal Font Size", category: "Terminal", keys: ["cmd+=", "shift+cmd+="], local: "the terminal" },
   { id: "terminal.fontZoomOut", title: "Decrease Terminal Font Size", category: "Terminal", keys: ["cmd+-"], local: "the terminal" },

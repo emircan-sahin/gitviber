@@ -38,6 +38,7 @@ import {
   paneTakesMouse,
   pasteIntoPane,
   renameGroup,
+  renamePane,
   resizeSplit,
   restoreSession,
   selectLastOutput,
@@ -53,6 +54,7 @@ import {
   useTerminals,
 } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
+import { createStore } from "@/lib/store";
 import { folderName, parentFolder } from "@/lib/path";
 import { NameInput } from "@/components/NameInput";
 import { NeedsYouDot } from "@/components/NeedsYouDot";
@@ -121,6 +123,8 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
     "terminal.focusRight": () => focusToward("right"),
     "terminal.focusUp": () => focusToward("up"),
     "terminal.focusDown": () => focusToward("down"),
+    // Only a pane with a header on screen: a split, not zoomed.
+    "terminal.renamePane": () => group && group.panes.length > 1 && !zoomed && renamingPane.set(group.focused),
   });
   const branchOf = (g: TerminalGroup) => {
     const w = worktrees.find((x) => x.path === g.panes[0].cwd);
@@ -534,13 +538,17 @@ function PaneView({ id, dim, header }: { id: number; dim: number; header?: { foc
   );
 }
 
-/** A split pane's title bar: the program's title (else its folder), and its own split and kill. */
+/** The split pane whose header shows its name field (⌘R, or a double-click on the header). */
+const renamingPane = createStore<number | null>(null);
+
+/** A split pane's title bar: the user's name for it, else the program's title, else its folder; and its own split and kill. */
 function PaneHeader({ id, focused }: { id: number; focused: boolean }) {
   const pane = useTerminals()
     .groups.flatMap((g) => g.panes)
     .find((p) => p.id === id);
+  const renaming = renamingPane.use() === id;
   if (!pane) return null;
-  const title = pane.title || folderName(paneDir(id) ?? pane.cwd);
+  const title = pane.name ?? (pane.title || folderName(paneDir(id) ?? pane.cwd));
   const action = (label: string, Icon: typeof X, run: () => void) => (
     <Tip label={label}>
       <button
@@ -559,13 +567,26 @@ function PaneHeader({ id, focused }: { id: number; focused: boolean }) {
   return (
     <div
       // The keys stay with the terminal: a click here gives them to this pane.
-      onMouseDown={(e) => e.preventDefault()}
+      onMouseDown={(e) => !(e.target instanceof HTMLInputElement) && e.preventDefault()}
       onClick={() => focusTerminalPane(id)}
+      onDoubleClick={() => renamingPane.set(id)}
       className="group/pane relative flex h-6 shrink-0 cursor-default items-center gap-1.5 border-b border-border bg-panel pr-1 pl-2.5 text-[11.5px] select-none"
     >
       {focused && <span className="absolute inset-x-0 top-0 h-0.5 bg-primary" />}
       <SquareTerminal className={cn("size-3 shrink-0", focused ? "text-primary" : "text-subtle")} />
-      <span className={cn("min-w-0 truncate", focused ? "text-foreground" : "text-muted-foreground")}>{title}</span>
+      {renaming ? (
+        <NameInput
+          initial={title}
+          onDone={(name, refocus) => {
+            renamingPane.set(null);
+            // Left as it was, the title isn't a name the user gave.
+            if (name !== null && name.trim() !== title) renamePane(id, name);
+            if (refocus) focusTerminalPane(id);
+          }}
+        />
+      ) : (
+        <span className={cn("min-w-0 truncate", focused ? "text-foreground" : "text-muted-foreground")}>{title}</span>
+      )}
       {pane.needsYou && <NeedsYouDot />}
       <div className={cn("ml-auto flex shrink-0 items-center", !focused && "opacity-0 group-hover/pane:opacity-100")}>
         {action("Split right", Columns2, () => void splitActive("row", id))}

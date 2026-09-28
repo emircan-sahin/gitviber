@@ -220,7 +220,7 @@ Every shortcut below except moving around a list or view (arrows, `↵`, `⎋`, 
 While you type, only shortcuts with `⌘`, `⌃` or an F-key apply, except `⌘←` `⌘→` and `⌃` with a letter, which edit the text.
 On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+Shift+Tab switch tabs, and the terminal's
 `⌘T` `⌘D` `⌘K` `⌘W` are Ctrl+Shift+T, D, K and W, since Ctrl+letter stays the shell's (split down is Ctrl+Alt+Shift+D,
-zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter; focusing a pane by side has no default there, the shell and the desktop use those keys).
+zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter; focusing a pane by side has no default there, the shell and the desktop use those keys, and neither has renaming a pane, since Ctrl+R is the shell's history search).
 
 | Keys | |
 | --- | --- |
@@ -250,12 +250,13 @@ zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter; focusing a pan
 | `⌥⌘←` `⌥⌘→` `⌥⌘↑` `⌥⌘↓` or `⇧⌘` arrows | Focus the terminal pane on that side |
 | `⌘↵` | Maximize the terminal over the workspace, and back (in the terminal) |
 | `⇧⌘↵` | Show only the focused terminal pane in the panel, and all of them again (in the terminal) |
+| `⌘R` | Rename the focused pane of a split terminal (in the terminal; a double-click on its header too) |
 | `⌘↑` `⌘↓` | Scroll to the previous / next command's prompt (in the terminal, with shell integration) |
 | `⌘=` `⌘−` `⌘0` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too) |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |
 | `⌘↵` | Commit (in the commit message) |
-| `⌘R` | Refresh |
+| `⇧⌘R` | Reload the window, which ends every terminal |
 | `⌘O` | Open repository |
 
 </details>

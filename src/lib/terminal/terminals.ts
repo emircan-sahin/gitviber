@@ -73,6 +73,8 @@ interface PaneInfo {
   title: string;
   /** It rang or sent a notification while not looked at, and hasn't been since. */
   needsYou?: boolean;
+  /** The user's name for it, over the title in its split header. */
+  name?: string;
 }
 
 /** A tab: one or more panes, split right and down. */
@@ -112,6 +114,7 @@ export const TERMINAL_COMMANDS = [
   "terminal.focusDown",
   "terminal.toggleMaximize",
   "terminal.zoomPane",
+  "terminal.renamePane",
   "terminal.fontZoomIn",
   "terminal.fontZoomOut",
   "terminal.fontZoomReset",
@@ -684,6 +687,11 @@ export function closeGroup(id: number) {
 
 export async function closeOtherGroups(id: number) {
   await kill(state.groups.flatMap((g) => (g.id === id ? [] : g.panes.map((p) => p.id))), "the other terminals", "Kill other terminals");
+}
+
+/** Names a split pane; an empty name gives it back the program's title. */
+export function renamePane(id: number, name: string) {
+  update(id, (p) => ({ ...p, name: name.trim() || undefined }));
 }
 
 /** Names a tab; an empty name gives it back the folder's. */

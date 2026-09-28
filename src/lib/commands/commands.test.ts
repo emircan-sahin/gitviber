@@ -289,7 +289,7 @@ test("stage, unstage and discard the change at the cursor leave Monaco's keys an
       }
     }
   }
-  assert.equal(commandFor("cmd+r", {}, true)?.id, "window.reload");
+  assert.equal(commandFor("shift+cmd+r", {}, true)?.id, "window.reload");
   // ⌥ turns S into ß and N into a dead key; the physical key counts.
   assert.equal(press("ß", "KeyS", { altKey: true, metaKey: true }), "alt+cmd+s");
   assert.equal(press("Dead", "KeyN", { altKey: true, metaKey: true }), "alt+cmd+n");
