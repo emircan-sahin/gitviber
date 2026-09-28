@@ -11,7 +11,7 @@ import { errorMessage, pty, type PtyExit } from "../api";
 import { compileFind, type FindOptions } from "../ui/findQuery";
 import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
 import { terminalLinks } from "../links/linkHost";
-import { getSettings, subscribeSettings } from "../settings";
+import { getSettings, stepTerminalFont, subscribeSettings } from "../settings";
 import { isInside } from "../path";
 import { focusedPanel, focusPanel, setTerminalFocus } from "../ui/panels";
 import { findColors, terminalOptions } from "./theme";
@@ -112,6 +112,9 @@ export const TERMINAL_COMMANDS = [
   "terminal.focusDown",
   "terminal.toggleMaximize",
   "terminal.zoomPane",
+  "terminal.fontZoomIn",
+  "terminal.fontZoomOut",
+  "terminal.fontZoomReset",
 ] as const satisfies readonly CommandId[];
 
 export const panes = new Map<number, Pane>();
@@ -189,7 +192,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   // The proposed API is the decorations, which find marks its matches with. The kitty keyboard
   // protocol is for programs that turn it on (Claude Code, Codex, neovim, fish 4): Shift+Enter is its
   // own key there, where the legacy encoding sends Enter. zsh and bash don't, so they get the keys as before.
-  const term = new Terminal({ ...terminalOptions(), cursorBlink: true, scrollback: 10_000, allowProposedApi: true, vtExtensions: { kittyKeyboard: true } });
+  const term = new Terminal({ ...terminalOptions(), allowProposedApi: true, vtExtensions: { kittyKeyboard: true } });
   const fit = new FitAddon();
   term.loadAddon(fit);
   const serialize = new SerializeAddon();
@@ -250,6 +253,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
       },
       true,
     );
+  host.addEventListener("wheel", pinchFont, { capture: true, passive: false });
   // ⌘ keys are the app's shortcuts (copy and paste arrive as clipboard events, not keys),
   // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, ⌃Tab or ⌃1 run
   // their commands, and the panel's own keys stay with it whatever they're rebound to. Unbound,
@@ -303,6 +307,22 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
     return !e.metaKey && !appTakesFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e);
   });
   return { id, cwd, title: "" };
+}
+
+/**
+ * A pinch (a trackpad's arrives as ctrl+wheel) or Ctrl+wheel sizes the font, as in iTerm2 and
+ * Windows Terminal, rather than scrolling or zooming the page. A pinch sends many small deltas, a
+ * mouse notch one big one: either way about a point per notch.
+ */
+let pinched = 0;
+function pinchFont(e: WheelEvent) {
+  if (!e.ctrlKey) return;
+  e.preventDefault();
+  e.stopPropagation();
+  pinched += e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 16 : e.deltaY;
+  if (Math.abs(pinched) < 24) return;
+  stepTerminalFont(pinched < 0 ? 1 : -1);
+  pinched = 0;
 }
 
 let copiedFromProgram = false;
@@ -560,18 +580,18 @@ export async function shellDir(p: Pane) {
   return p.dir;
 }
 
-/** Adds a pane right of or below the focused one, where its shell is now, in the same worktree. */
-export async function splitActive(way: Split["dir"]) {
-  const from = panes.get(activeGroup()?.focused ?? -1);
+/** Adds a pane right of or below the focused one (or `at`), where its shell is now, in the same worktree. */
+export async function splitActive(way: Split["dir"], at = activeGroup()?.focused) {
+  const from = panes.get(at ?? -1);
   if (!from) return;
   const dir = await shellDir(from);
   // Read again after the lookup, which the tabs may have moved on from.
   const g = state.groups.find((x) => x.panes.some((p) => p.id === from.id));
   if (!g) return;
-  const at = g.panes.findIndex((p) => p.id === from.id);
-  const pane = createPane(g.panes[at].cwd, undefined, dir);
+  const i = g.panes.findIndex((p) => p.id === from.id);
+  const pane = createPane(g.panes[i].cwd, undefined, dir);
   // Right after `from` in reading order too (splitPane).
-  const next = { ...g, panes: [...g.panes.slice(0, at + 1), pane, ...g.panes.slice(at + 1)], layout: splitPane(g.layout, from.id, pane.id, way), focused: pane.id };
+  const next = { ...g, panes: [...g.panes.slice(0, i + 1), pane, ...g.panes.slice(i + 1)], layout: splitPane(g.layout, from.id, pane.id, way), focused: pane.id };
   // A zoomed pane's split shows the two side by side.
   set({ groups: state.groups.map((x) => (x.id === g.id ? next : x)), zoomed: false });
   focusActive();
@@ -642,8 +662,20 @@ async function kill(ids: number[], what: string, title: string) {
 
 export async function closeFocused() {
   const id = activeGroup()?.focused;
-  if (id !== undefined) await kill([id], "this terminal", "Kill terminal");
+  if (id !== undefined) await killPane(id);
 }
+
+export function killPane(id: number) {
+  return kill([id], "this terminal", "Kill terminal");
+}
+
+/** Keys to a pane, as a click into it gives them. */
+export function focusTerminalPane(id: number) {
+  panes.get(id)?.term.focus();
+}
+
+/** Where a pane's shell was last seen (shellDir). */
+export const paneDir = (id: number) => panes.get(id)?.dir;
 
 /** False when the user kept it. */
 export function closeGroup(id: number) {
