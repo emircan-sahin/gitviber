@@ -216,6 +216,8 @@ export interface Settings {
 }
 
 export const DEFAULT_FONT_SIZE = 13.5;
+export const CODE_FONT_MIN = 10;
+export const CODE_FONT_MAX = 24;
 export const DEFAULT_TERMINAL_FONT_SIZE = 13;
 export const TERMINAL_FONT_MIN = 8;
 export const TERMINAL_FONT_MAX = 32;
@@ -436,7 +438,7 @@ systemDark.addEventListener("change", () => current.appearance === "system" && e
 
 export function updateSettings(patch: Partial<Settings>) {
   current = { ...current, ...patch };
-  current.codeFontSize = Math.min(24, Math.max(10, Math.round(current.codeFontSize * 2) / 2));
+  current.codeFontSize = Math.min(CODE_FONT_MAX, Math.max(CODE_FONT_MIN, Math.round(current.codeFontSize * 2) / 2));
   current.terminalFontSize = clampTerminalFont(current.terminalFontSize);
   current.customCodeFont = cleanFontName(current.customCodeFont);
   current.customTerminalFont = cleanFontName(current.customTerminalFont);

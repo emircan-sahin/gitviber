@@ -19,14 +19,28 @@ export function Group({ title, children }: { title?: string; children: React.Rea
 }
 
 /** − size + and a reset, for a font size. */
-export function SizeStepper({ value, step, fallback, onChange }: { value: number; step: number; fallback: number; onChange: (v: number) => void }) {
+export function SizeStepper({
+  value,
+  step,
+  fallback,
+  min = -Infinity,
+  max = Infinity,
+  onChange,
+}: {
+  value: number;
+  step: number;
+  fallback: number;
+  min?: number;
+  max?: number;
+  onChange: (v: number) => void;
+}) {
   return (
     <div className="flex items-center gap-1">
-      <Button variant="secondary" size="icon-sm" onClick={() => onChange(value - step)}>
+      <Button variant="secondary" size="icon-sm" disabled={value <= min} onClick={() => onChange(value - step)}>
         −
       </Button>
       <span className="w-10 text-center font-mono text-[12px]">{value}</span>
-      <Button variant="secondary" size="icon-sm" onClick={() => onChange(value + step)}>
+      <Button variant="secondary" size="icon-sm" disabled={value >= max} onClick={() => onChange(value + step)}>
         +
       </Button>
       <Tip label="Reset">
