@@ -8,18 +8,15 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useSyncExternalStore } from "react";
 import { errorMessage, pty, type PtyExit } from "../api";
-import { compileFind, type FindOptions } from "../ui/findQuery";
-import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
+import { type CommandId } from "../commands/keybindings";
 import { terminalLinks } from "../links/linkHost";
 import { getSettings, stepTerminalFont, subscribeSettings } from "../settings";
 import { isInside } from "../path";
 import { focusedPanel, focusPanel, setTerminalFocus } from "../ui/panels";
-import { findColors, terminalOptions } from "./theme";
-import { pastedLines, pathPastes } from "./paste";
+import { terminalOptions } from "./theme";
 import { osc52Text } from "./osc52";
 import { CommandMarks } from "./commandMarks";
 import { type SaveState } from "./saveRound";
-import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask } from "../app/ask";
 import { plural } from "../format";
 import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
@@ -28,10 +25,14 @@ import { copyText } from "../app/clipboard";
 import { loadSession, type SavedSession, scheduleSave } from "./session";
 import { lookedAt, watchAttention } from "./needsYou";
 import { reportWheelByRow } from "./wheel";
+import { paneKeys } from "./keys";
+import { forgetFind, watchFind } from "./find";
+import { copyFromProgram, pasteInto } from "./pasteInput";
 import { type Direction, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
 
 export { dismissRestore, restoreSession } from "./session";
 export { useNeedsYou } from "./needsYou";
+export { clearFind, endFind, findInTerminal } from "./find";
 
 /**
  * Terminals live here, not in React: switching worktrees remounts the whole workspace, and
@@ -154,7 +155,7 @@ export function useTerminals() {
   return useSyncExternalStore(subscribe, () => state);
 }
 
-const activeGroup = () => state.groups.find((g) => g.id === state.active);
+export const activeGroup = () => state.groups.find((g) => g.id === state.active);
 
 // settings.ts sets the theme attribute before notifying, so the CSS variables are current.
 // Every setting notifies (the viewer's image toggle too), and xterm takes even an equal new theme
@@ -209,7 +210,6 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   terminalLinks(term, () => panes.get(id)?.dir ?? dir);
   const search = new SearchAddon();
   term.loadAddon(search);
-  search.onDidChangeResults(({ resultIndex, resultCount }) => searching?.pane === p && searching.onResults({ index: resultIndex + 1, total: resultCount }));
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
   const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, marks: new CommandMarks(term, () => void shellDir(p)) };
@@ -228,6 +228,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   watchAttention(p);
+  watchFind(p);
   // A mouse wheel's notch arrives as ~53-100 px off macOS, so a row per row would scroll vim or
   // htop 3-5 rows a notch where it scrolled one; the replay is for the Mac trackpad it was made on.
   if (IS_MAC) reportWheelByRow(term);
@@ -269,58 +270,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
       true,
     );
   host.addEventListener("wheel", pinchFont, { capture: true, passive: false });
-  // ⌘ keys are the app's shortcuts (copy and paste arrive as clipboard events, not keys),
-  // except the line-editing ones; ⌃` toggles the panel instead of sending NUL, ⌃Tab or ⌃1 run
-  // their commands, and the panel's own keys stay with it whatever they're rebound to. Unbound,
-  // ⌘Home/End/PgUp/PgDn (Ctrl+Home/End elsewhere) scroll the history.
-  term.attachCustomKeyEventHandler((e) => {
-    // xterm's Meta ⌥ can't tell left from right: for the left one only, it's set as a key is typed
-    // with ⌥ (xterm reads it after this), and only when the side changed, as a change redraws.
-    if (getSettings().optionAsMeta === "left") {
-      if (e.code === "AltLeft") leftOptionDown = e.type === "keydown";
-      else if (e.altKey && e.key !== "Alt" && term.options.macOptionIsMeta !== leftOptionDown) term.options.macOptionIsMeta = leftOptionDown;
-    }
-    // Linux terminals copy and paste with Ctrl+Shift+C/V: Ctrl+C and Ctrl+V belong to the shell.
-    // The letter as typed (Dvorak's C isn't on the C key), or the key's place on a non-Latin layout.
-    const letter = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase() : e.code.replace(/^Key/, "").toLowerCase();
-    if (IS_LINUX && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && (letter === "c" || letter === "v")) {
-      if (e.type === "keydown") {
-        const selection = term.getSelection();
-        if (letter === "v") void pasteInto(p);
-        else if (selection) void navigator.clipboard.writeText(selection).catch(() => {});
-      }
-      e.preventDefault();
-      return false;
-    }
-    // ⌘A selects the terminal's text, as in VS Code, iTerm2 and Ghostty; the webview's own select
-    // all only reached xterm's hidden text area.
-    if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && letter === "a" && !appRunsFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e)) {
-      if (e.type === "keydown") term.selectAll();
-      e.preventDefault();
-      return false;
-    }
-    // ⌘↑ / ⌘↓ between the marked prompts. Off macOS, Ctrl+↑/↓ stay a full-screen program's, or a
-    // shell's with no marks (⌘ keys never reach one anyway). Plain typing isn't looked up.
-    const jump = (e.metaKey || e.ctrlKey || e.altKey) && commandIn(JUMP_COMMANDS, e);
-    if (jump && term.buffer.active.type === "normal" && p.marks.hasCommands()) {
-      if (e.type === "keydown") p.marks.jump(jump === "terminal.prevCommand" ? -1 : 1);
-      e.preventDefault();
-      return false;
-    }
-    const scroll = scrollKey(e);
-    if (scroll && term.buffer.active.type === "normal" && !appRunsFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e)) {
-      if (e.type === "keydown") scroll(term);
-      e.preventDefault();
-      return false;
-    }
-    const seq = lineEditKey(e);
-    if (seq !== undefined) {
-      if (e.type === "keydown") term.input(seq);
-      e.preventDefault();
-      return false;
-    }
-    return !e.metaKey && !appTakesFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e);
-  });
+  term.attachCustomKeyEventHandler(paneKeys(p));
   return { id, cwd, title: "" };
 }
 
@@ -342,118 +292,6 @@ function pinchFont(e: WheelEvent) {
   if (Math.abs(pinched) < PINCH_STEP_PX) return;
   stepTerminalFont(pinched < 0 ? 1 : -1);
   pinched = 0;
-}
-
-let copiedFromProgram = false;
-/** OSC 52. Said once a run: a program over SSH, or a file being `cat`, can write the clipboard too. */
-function copyFromProgram(text: string) {
-  const first = !copiedFromProgram;
-  copiedFromProgram = true;
-  pty.copy(text).then(() => first && toast("info", "Copied from the terminal", "A program in the terminal put text on the clipboard."), failed("Could not copy"));
-}
-
-/** Whether the left ⌥ is held, for the left-only Meta setting. Its release may go to another window. */
-let leftOptionDown = false;
-window.addEventListener("blur", () => (leftOptionDown = false));
-
-/** `fallback`: the webview's own text, pasted if the native read fails or finds nothing. */
-async function pasteInto(p: Pane, fallback = "") {
-  const got = await pty.paste().catch((e) => {
-    if (!fallback) toast("error", "Could not paste", errorMessage(e));
-    return null;
-  });
-  if (!got || got.kind === "empty") {
-    if (fallback) await pasteText(p, fallback);
-    return;
-  }
-  if (got.kind === "text") await pasteText(p, got.text);
-  else if (got.kind === "files") pastePaths(p, got.paths);
-  else if (got.kind === "image") pastePaths(p, [got.path]);
-}
-
-/** Several lines into a program without bracketed paste run one by one as they arrive: asked first, as in VS Code. */
-async function pasteText(p: Pane, text: string) {
-  // Its shell is gone (exited).
-  if (p.term.options.disableStdin) return;
-  const lines = pastedLines(text);
-  if (lines > 1 && !p.term.modes.bracketedPasteMode) {
-    const ok = await ask(`The program in this terminal takes a paste as typed keys, so each of the ${lines} lines runs as it arrives.`, { title: `Paste ${lines} lines`, kind: "warning", okLabel: "Paste" });
-    if (!ok || !panes.has(p.id)) return;
-  }
-  p.term.paste(text);
-}
-
-/** Paths as the AI CLIs take them: each its own (bracketed) paste, never typed as keys. */
-function pastePaths(p: Pane, paths: string[]) {
-  for (const text of pathPastes(paths)) p.term.paste(text);
-}
-
-// Files dropped on a pane paste their paths into it (Tauri hands over the paths, the page only
-// their names). The pane under the pointer is outlined while they're dragged.
-let dropTarget: Pane | null = null;
-function paneAt(pos: { x: number; y: number }) {
-  // Typed physical, but on macOS and Linux wry hands over window points unscaled (drag_drop.rs):
-  // halved on Retina, the point landed in the sidebar. Page zoom (the UI scale) makes a CSS pixel
-  // bigger than a point. Windows' pixels are physical, and Chromium's ratio includes the zoom.
-  const scale = IS_WINDOWS ? devicePixelRatio : getSettings().uiScale;
-  const el = document.elementFromPoint(pos.x / scale, pos.y / scale);
-  return el ? ([...panes.values()].find((p) => p.host.contains(el)) ?? null) : null;
-}
-function markDropTarget(p: Pane | null) {
-  if (p === dropTarget) return;
-  dropTarget?.host.classList.remove("gv-drop-target");
-  p?.host.classList.add("gv-drop-target");
-  dropTarget = p;
-}
-const dropListener = getCurrentWebview().onDragDropEvent(async ({ payload }) => {
-  if (payload.type === "leave") return markDropTarget(null);
-  const p = paneAt(payload.position);
-  if (payload.type !== "drop") return markDropTarget(p);
-  markDropTarget(null);
-  if (!p) return;
-  pastePaths(p, await pty.keepDropped(payload.paths).catch(() => payload.paths));
-  p.term.focus();
-});
-dropListener.catch(() => {});
-// A hot reload re-runs this module: the old listener goes, or each drop would paste twice.
-import.meta.hot?.dispose(() => void dropListener.then((stop) => stop()).catch(() => {}));
-
-/**
- * macOS line editing, as in VS Code's terminal. xterm.js sends ⌥← / ⌥→ / ⌥⌦ as
- * `ESC[1;3D`-style sequences that neither zsh nor bash binds by default; the readline
- * sequences below work in both. ⌥⌫ is already ESC DEL (delete word).
- */
-const LINE_EDIT: Record<string, string> = {
-  "cmd+ArrowLeft": "\x01", // start of line (⌃A)
-  "cmd+ArrowRight": "\x05", // end of line (⌃E)
-  "cmd+Backspace": "\x15", // delete to start of line (⌃U)
-  "alt+ArrowLeft": "\x1bb", // previous word
-  "alt+ArrowRight": "\x1bf", // next word
-  "alt+Delete": "\x1bd", // delete next word
-};
-
-const JUMP_COMMANDS = ["terminal.prevCommand", "terminal.nextCommand"] as const satisfies readonly CommandId[];
-
-/** ⌘Home/End/PgUp/PgDn, as in Ghostty and VS Code; a full-screen program's keys stay its own. */
-const SCROLL_KEYS: Record<string, (term: Terminal) => void> = {
-  Home: (t) => t.scrollToTop(),
-  End: (t) => t.scrollToBottom(),
-  PageUp: (t) => t.scrollPages(-1),
-  PageDown: (t) => t.scrollPages(1),
-};
-
-/**
- * Off macOS only Ctrl+Home/End: Ctrl+PgUp/PgDn switch tabs in other terminals, and xterm pages with
- * Shift+PgUp/PgDn itself, as VS Code does.
- */
-function scrollKey(e: KeyboardEvent) {
-  const alone = IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey && (e.key === "Home" || e.key === "End");
-  return alone && !e.shiftKey && !e.altKey ? SCROLL_KEYS[e.key] : undefined;
-}
-
-function lineEditKey(e: KeyboardEvent): string | undefined {
-  if (e.shiftKey || e.ctrlKey || e.metaKey === e.altKey) return undefined;
-  return LINE_EDIT[`${e.metaKey ? "cmd" : "alt"}+${e.key}`];
 }
 
 export function update(id: number, fn: (p: PaneInfo) => PaneInfo) {
@@ -623,7 +461,7 @@ function closePane(id: number, byUser = false) {
   const focused = document.activeElement;
   panes.delete(id);
   window.clearTimeout(p.fitTimer);
-  if (searching?.pane === p) searching = null;
+  forgetFind(p);
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});
   const canvases = [...(p.term.element?.querySelectorAll("canvas") ?? [])];
   p.term.dispose();
@@ -714,44 +552,6 @@ export function renamePane(id: number, name: string) {
 export function renameGroup(id: number, name: string) {
   const trimmed = name.trim();
   set({ groups: state.groups.map((g) => (g.id === id ? { ...g, name: trimmed || undefined } : g)) });
-}
-
-/** The pane find searches, and where its count goes (index 0: past the addon's 1000 marked matches). */
-let searching: { pane: Pane; onResults: (at: { index: number; total: number }) => void } | null = null;
-
-/**
- * Find in the active tab's focused pane: `step` 0 as the query is typed (staying on the match
- * on show while it still matches), 1 or -1 for the next or previous. An empty query clears it;
- * a regex that doesn't parse is returned as the error, nothing searched.
- */
-export function findInTerminal(query: string, find: FindOptions, step: 0 | 1 | -1, onResults: (at: { index: number; total: number }) => void): string | null {
-  const g = activeGroup();
-  const p = g && panes.get(g.focused);
-  if (searching && searching.pane !== p) searching.pane.search.clearDecorations();
-  searching = p ? { pane: p, onResults } : null;
-  if (!p) return null;
-  const re = compileFind(query, find);
-  if (!query || re instanceof Error) {
-    p.search.clearDecorations();
-    onResults({ index: 0, total: 0 });
-    return re instanceof Error ? re.message : null;
-  }
-  const options = { caseSensitive: find.matchCase, wholeWord: find.wholeWord, regex: find.regex, decorations: findColors(), incremental: step === 0 };
-  if (step === -1) p.search.findPrevious(query, options);
-  else p.search.findNext(query, options);
-  return null;
-}
-
-/** Find's marks go, and its count stops being reported (the box went, or searches elsewhere now). */
-export function clearFind() {
-  searching?.pane.search.clearDecorations();
-  searching = null;
-}
-
-/** Closes find: its marks go, and the pane gets the keys back. */
-export function endFind() {
-  clearFind();
-  focusActive();
 }
 
 export async function clearFocused() {
