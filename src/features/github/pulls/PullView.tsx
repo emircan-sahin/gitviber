@@ -5,6 +5,7 @@ import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import { accessFor, api, errorMessage, type Commit, fullName, github, type MergeMethod, type Pull, repoOf } from "@/lib/api";
 import { listIsBehind, useGitHubData } from "@/lib/github/githubCache";
+import { pickLabel } from "@/lib/github/pullCommits";
 import type { Selection } from "@/lib/repo/selection";
 import { cn } from "@/lib/utils";
 import { isoToUnix, plural, relativeTime } from "@/lib/format";
@@ -22,7 +23,8 @@ import { useGitAction } from "@/hooks/useGitAction";
 import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
 import { MergeBox, ReviewButton } from "./PullActions";
 import { PullChecks } from "./PullChecks";
-import { PickBar, pickLabel, PullCommits, useCommitPick } from "./PullCommits";
+import { PickBar, PullCommits } from "./PullCommits";
+import { useCommitPick } from "./useCommitPick";
 import { allowedMethods, METHODS, REVIEWS } from "./actionLabels";
 
 export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) => void }) {

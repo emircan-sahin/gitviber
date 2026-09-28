@@ -9,6 +9,7 @@ import { CiBadge } from "@/components/CiBadge";
 import { api, type Commit, type Pull, repoOf } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
 import { useCi } from "@/lib/github/ci";
+import { byDay, pickLabel } from "@/lib/github/pullCommits";
 import { saveSeenCommits, seenCommits } from "@/lib/github/seenCommits";
 import { openOnGitHub } from "@/lib/github/url";
 import { useListNav } from "@/lib/ui/useListNav";
@@ -17,53 +18,7 @@ import { cn } from "@/lib/utils";
 import type { GitRun } from "@/hooks/useGitAction";
 import { CommitTime } from "@/features/history/CommitRow";
 import { Section } from "@/features/github/shared/Section";
-
-/** Picked commits: from `anchor` (the last plain click) to `to`, either way round. */
-interface Pick {
-  anchor: string;
-  to: string;
-}
-
-// A PR's page remounts on every tab switch, opening one of its files included: its pick stays here.
-const picks = new Map<string, Pick>();
-
-/** The commits Files changed is narrowed to (oldest first), null for all of them, and ways to change that. */
-export function useCommitPick(url: string, commits: Commit[]) {
-  const [pick, setPick] = useState(() => picks.get(url) ?? null);
-  const set = (p: Pick | null) => {
-    if (p) picks.set(url, p);
-    else picks.delete(url);
-    setPick(p);
-  };
-  const picked = useMemo(() => {
-    const a = pick ? commits.findIndex((c) => c.sha === pick.anchor) : -1;
-    const b = pick ? commits.findIndex((c) => c.sha === pick.to) : -1;
-    // A force-push took them away: the whole PR again.
-    return a < 0 || b < 0 ? null : commits.slice(Math.min(a, b), Math.max(a, b) + 1);
-  }, [commits, pick]);
-  // The one before or after what's picked.
-  const next = (dir: -1 | 1) => (picked ? commits[commits.indexOf(dir < 0 ? picked[0] : picked[picked.length - 1]) + dir] : undefined);
-  const anchor = picked && pick ? pick.anchor : null;
-  return {
-    picked,
-    /** Where a ⇧-click's run starts. */
-    anchor,
-    pick: (sha: string, extend: boolean) => set({ anchor: extend && anchor ? anchor : sha, to: sha }),
-    run: (from: string, to: string) => set({ anchor: from, to }),
-    next,
-    step: (dir: -1 | 1) => {
-      const c = next(dir);
-      if (c) set({ anchor: c.sha, to: c.sha });
-    },
-    clear: () => set(null),
-  };
-}
-
-export type CommitPick = ReturnType<typeof useCommitPick>;
-
-/** What a picked run of commits is called: its short id, or its first and last. */
-export const pickLabel = (picked: Commit[]) =>
-  picked.length === 1 ? picked[0].shortSha : `${picked[0].shortSha}–${picked[picked.length - 1].shortSha}`;
+import type { CommitPick } from "./useCommitPick";
 
 /**
  * Which commits are new: pushed since you last looked. A PR opened for the first time has none; a
@@ -260,15 +215,4 @@ function PullCommitMenu({ pull, commit: c, busy, act }: { pull: Pull; commit: Co
       </ContextMenuItem>
     </ContextMenuContent>
   );
-}
-
-/** Runs of commits that landed on the branch the same day (CommitTime's time), in the list's order. */
-function byDay(commits: Commit[]) {
-  const days: { day: string; list: Commit[] }[] = [];
-  for (const c of commits) {
-    const day = new Date(c.committedAt * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
-    if (days[days.length - 1]?.day === day) days[days.length - 1].list.push(c);
-    else days.push({ day, list: [c] });
-  }
-  return days;
 }
