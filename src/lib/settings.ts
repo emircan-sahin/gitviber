@@ -217,6 +217,9 @@ export interface Settings {
 
 export const DEFAULT_FONT_SIZE = 13.5;
 export const DEFAULT_TERMINAL_FONT_SIZE = 13;
+export const TERMINAL_FONT_MIN = 8;
+export const TERMINAL_FONT_MAX = 32;
+const clampTerminalFont = (size: number) => Math.min(TERMINAL_FONT_MAX, Math.max(TERMINAL_FONT_MIN, Math.round(size)));
 export const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
 
 const DEFAULTS: Settings = {
@@ -277,7 +280,8 @@ const KEY = "gitviber.settings.v2";
 function load(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
-    const s = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS;
+    const stored = raw ? JSON.parse(raw) : null;
+    const s = stored ? { ...DEFAULTS, ...stored } : DEFAULTS;
     if (!(s.codeFont in CODE_FONTS) && s.codeFont !== "Custom") s.codeFont = DEFAULTS.codeFont;
     if (!(s.codeFontWeight in CODE_FONT_WEIGHTS)) s.codeFontWeight = DEFAULTS.codeFontWeight;
     if (!IS_MAC && MAC_ONLY_FONTS.includes(s.codeFont)) s.codeFont = DEFAULTS.codeFont;
@@ -302,7 +306,10 @@ function load(): Settings {
     if (!DIM_LEVELS.includes(s.terminalInactiveDim)) s.terminalInactiveDim = DEFAULTS.terminalInactiveDim;
     if (!terminalFontChoices.includes(s.terminalFont) && s.terminalFont !== "Custom") s.terminalFont = DEFAULTS.terminalFont;
     s.customTerminalFont = typeof s.customTerminalFont === "string" ? cleanFontName(s.customTerminalFont) : "";
+    // Up to 0.1.5 the terminal took the code font's size: keep one a user enlarged.
+    if (stored && !Object.hasOwn(stored, "terminalFontSize")) s.terminalFontSize = Math.max(DEFAULT_TERMINAL_FONT_SIZE, Math.round(s.codeFontSize));
     if (typeof s.terminalFontSize !== "number" || !Number.isFinite(s.terminalFontSize)) s.terminalFontSize = DEFAULTS.terminalFontSize;
+    s.terminalFontSize = clampTerminalFont(s.terminalFontSize);
     if (!TERMINAL_LINE_HEIGHTS.includes(s.terminalLineHeight)) s.terminalLineHeight = DEFAULTS.terminalLineHeight;
     if (!(s.terminalCursor in TERMINAL_CURSORS)) s.terminalCursor = DEFAULTS.terminalCursor;
     if (typeof s.terminalCursorBlink !== "boolean") s.terminalCursorBlink = DEFAULTS.terminalCursorBlink;
@@ -430,7 +437,7 @@ systemDark.addEventListener("change", () => current.appearance === "system" && e
 export function updateSettings(patch: Partial<Settings>) {
   current = { ...current, ...patch };
   current.codeFontSize = Math.min(24, Math.max(10, Math.round(current.codeFontSize * 2) / 2));
-  current.terminalFontSize = Math.min(32, Math.max(8, Math.round(current.terminalFontSize)));
+  current.terminalFontSize = clampTerminalFont(current.terminalFontSize);
   current.customCodeFont = cleanFontName(current.customCodeFont);
   current.customTerminalFont = cleanFontName(current.customTerminalFont);
   current.customUiFont = cleanFontName(current.customUiFont);
