@@ -284,7 +284,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
       </div>
       <div className="relative min-h-0 flex-1">
         <TerminalFind />
-        {group && <LayoutView key={shape(zoomed ? group.focused : group.layout)} group={group.id} node={zoomed ? group.focused : group.layout} focused={group.focused} dim={group.panes.length > 1 ? terminalInactiveDim / 100 : 0} />}
+        {group && <LayoutView key={shape(zoomed ? group.focused : group.layout)} group={group} node={zoomed ? group.focused : group.layout} focused={group.focused} dim={group.panes.length > 1 ? terminalInactiveDim / 100 : 0} />}
       </div>
     </div>
   );
@@ -467,20 +467,25 @@ export function TerminalRestoreOffer() {
 /** A split's structure without its sizes: what a tab re-lays out on (a split or close), not a drag. */
 const shape = (l: Layout): string => (typeof l === "number" ? String(l) : `${l.dir}(${l.children.map(shape).join()})`);
 
+type PaneInfo = TerminalGroup["panes"][number];
+
 /**
  * A tab's panes as split; a dragged divider's sizes are kept in the tab's layout, by the split's
  * `path` from the top. `dim`: how far the panes other than the focused one fade.
  */
-function LayoutView({ group, node, focused, dim, path = [] }: { group: number; node: Layout; focused: number; dim: number; path?: number[] }) {
-  // A pane in a split gets a header, as in cmux: what runs in each, and which one has the keys.
-  if (typeof node === "number") return <PaneView id={node} dim={node === focused ? 0 : dim} header={path.length ? { focused: node === focused } : undefined} />;
+function LayoutView({ group, node, focused, dim, path = [] }: { group: TerminalGroup; node: Layout; focused: number; dim: number; path?: number[] }) {
+  if (typeof node === "number") {
+    // A pane in a split gets a header, as in cmux: what runs in each, and which one has the keys.
+    const pane = path.length ? group.panes.find((p) => p.id === node) : undefined;
+    return <PaneView id={node} dim={node === focused ? 0 : dim} header={pane && { pane, focused: node === focused }} />;
+  }
   const id = (i: number) => `pane-${[...path, i].join("-")}`;
   const row = node.dir === "row";
   return (
     <ResizablePanelGroup
       orientation={row ? "horizontal" : "vertical"}
       defaultLayout={Object.fromEntries(node.sizes.map((size, i) => [id(i), size]))}
-      onLayoutChanged={(layout, { isUserInteraction }) => isUserInteraction && resizeSplit(group, path, node.children.map((_, i) => layout[id(i)]))}
+      onLayoutChanged={(layout, { isUserInteraction }) => isUserInteraction && resizeSplit(group.id, path, node.children.map((_, i) => layout[id(i)]))}
     >
       {node.children.map((c, i) => (
         <Fragment key={id(i)}>
@@ -498,7 +503,7 @@ function LayoutView({ group, node, focused, dim, path = [] }: { group: number; n
 }
 
 /** `dim`: how far it fades into the panel's background, while another pane of its tab has focus. */
-function PaneView({ id, dim, header }: { id: number; dim: number; header?: { focused: boolean } }) {
+function PaneView({ id, dim, header }: { id: number; dim: number; header?: { pane: PaneInfo; focused: boolean } }) {
   const ref = useRef<HTMLDivElement>(null);
   // Layout effect: the pane is in place before paint, so focusing it next frame works.
   useLayoutEffect(() => attachPane(id, ref.current!), [id]);
@@ -506,7 +511,7 @@ function PaneView({ id, dim, header }: { id: number; dim: number; header?: { foc
   const [can, setCan] = useState(() => paneMenuState(id));
   return (
     <div className="flex h-full flex-col">
-      {header && <PaneHeader id={id} focused={header.focused} />}
+      {header && <PaneHeader pane={header.pane} focused={header.focused} />}
       <ContextMenu onOpenChange={(open) => open && setCan(paneMenuState(id))}>
         <ContextMenuTrigger asChild>
           {/* Inset from the edges like the code view's text; the scrollbar keeps the right edge, command marks the left. */}
@@ -542,12 +547,9 @@ function PaneView({ id, dim, header }: { id: number; dim: number; header?: { foc
 const renamingPane = createStore<number | null>(null);
 
 /** A split pane's title bar: the user's name for it, else the program's title, else its folder; and its own split and kill. */
-function PaneHeader({ id, focused }: { id: number; focused: boolean }) {
-  const pane = useTerminals()
-    .groups.flatMap((g) => g.panes)
-    .find((p) => p.id === id);
+function PaneHeader({ pane, focused }: { pane: PaneInfo; focused: boolean }) {
+  const id = pane.id;
   const renaming = renamingPane.use() === id;
-  if (!pane) return null;
   const title = pane.name ?? (pane.title || folderName(paneDir(id) ?? pane.cwd));
   const action = (label: string, Icon: typeof X, run: () => void) => (
     <Tip label={label}>
