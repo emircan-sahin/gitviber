@@ -62,7 +62,7 @@
     "steps": [
       {
         "title": "多个 Agent，一块屏幕。",
-        "text": "给每个 Agent 一个独立的 worktree。它们并行工作、互不干扰，你在顶栏随时切换。"
+        "text": "给每个 Agent 一个独立的 worktree。它们并行工作、互不干扰，你在顶栏随时切换，每个 worktree 的改动、PR 和检查状态都一目了然。"
       },
       {
         "title": "看着代码落地。",
@@ -70,11 +70,11 @@
       },
       {
         "title": "随时来回切换。",
-        "text": "每个 worktree 都有自己的终端和审查进度，切过去再切回来，什么都不会丢。"
+        "text": "每个 worktree 都有自己的终端和审查进度，切过去再切回来，什么都不会丢。Agent 在等你的时候，它的 worktree 旁会亮起一个圆点。"
       },
       {
         "title": "从任意起点开始。",
-        "text": "可以从任意分支或提交创建，也可以把 PR 检出到独立的 worktree，不影响你自己的工作区。"
+        "text": "可以从任意分支、提交或 Issue 创建，也可以把 PR 检出到独立的 worktree，不影响你自己的工作区。新建的 worktree 还能直接在终端里启动你的 Agent。"
       }
     ]
   },
@@ -84,7 +84,7 @@
   },
   "terminal": {
     "title": "不离开 diff 就能测试。",
-    "text": "diff 下方就是真正的终端，支持标签页和分屏。跑测试、启动 dev server、和 Agent 对话，都在你正在读的改动旁边完成。按 {keys} 显示或隐藏。"
+    "text": "diff 下方就是真正的终端，支持标签页和分屏，每个窗格的标题都会显示里面正在运行什么。跑测试、启动 dev server、和 Agent 对话，都在你正在读的改动旁边完成。按 {keys} 显示或隐藏。"
   },
   "explorer": {
     "title": "不只看 diff，整个项目随手翻。",
@@ -92,7 +92,7 @@
   },
   "commit": {
     "title": "提交信息，交给 Agent 写。",
-    "text": "点一下提交框旁边的闪光按钮，你本地的 `claude -p` 或 `codex exec` 就会根据 diff 写好提交信息。不需要 API key，也不用额外注册账号。"
+    "text": "点一下提交框旁边的闪光按钮，你本地的 `claude -p` 或 `codex exec` 就会根据 diff 写好提交信息。PR 的标题和描述也可以交给它。不需要 API key，也不用额外注册账号。"
   },
   "numbers": {
     "title": "别再让编辑器吃光你的内存。",
@@ -128,7 +128,7 @@
       },
       {
         "title": "Pull Request",
-        "text": "查看，在同一个 diff 查看器里审查，创建、合并和检出。"
+        "text": "查看，在同一个 diff 查看器里审查（也可以逐个提交看），创建、合并和检出。"
       },
       {
         "title": "Issue",
@@ -155,11 +155,11 @@
       },
       {
         "q": "怎样并行运行多个 Claude Code 或 Codex Agent？",
-        "a": "给每个 Agent 分配一个独立的 git worktree：它是一个单独的文件夹，有自己的分支，所以 Agent 之间互不干扰。在 GitViber 里，你可以从任意分支、提交或 PR 创建 worktree，在其中打开终端并启动 Agent。顶栏用来在 worktree 之间切换，并显示每个 worktree 的改动数量。"
+        "a": "给每个 Agent 分配一个独立的 git worktree：它是一个单独的文件夹，有自己的分支，所以 Agent 之间互不干扰。在 GitViber 里，你可以从任意分支、提交、Issue 或 PR 创建 worktree，它的终端还能替你启动 Agent。顶栏用来在 worktree 之间切换，并显示每个 worktree 的改动数量、PR 和检查状态，Agent 在等你时还会亮起一个圆点。"
       },
       {
         "q": "支持 Claude Code 和 Codex 吗？",
-        "a": "任何在文件夹里编辑文件的 Agent 都能用：GitViber 监视的是 worktree，而不是 Agent。生成提交信息时，它可以替你运行 `claude -p` 或 `codex exec`，不需要 API key。"
+        "a": "任何在文件夹里编辑文件的 Agent 都能用：GitViber 监视的是 worktree，而不是 Agent。生成提交信息时，它可以替你运行 `claude -p` 或 `codex exec`，不需要 API key。终端也是为它们打造的：粘贴的截图会以文件路径的形式送达，Shift+Enter 能正常传进去，Claude Code 的全屏视图也能用触控板滚动。"
       },
       {
         "q": "和 GitHub Desktop 有什么不同？",
@@ -167,7 +167,7 @@
       },
       {
         "q": "还需要 Cursor 或 VS Code 这类编辑器吗？",
-        "a": "如果只是审查 Agent 写的代码，就不需要。GitViber 提供带词级高亮的完整文件 diff、支持快速打开的文件浏览器，还有终端。像 Cursor 这样的编辑器，光是用来看代码就能轻松占掉好几 GB 内存。"
+        "a": "如果只是审查 Agent 写的代码，就不需要。GitViber 提供带词级高亮的 diff、支持快速打开的文件浏览器、能直接改一行并保存的文件视图，还有终端。像 Cursor 这样的编辑器，光是用来看代码就能轻松占掉好几 GB 内存。"
       },
       {
         "q": "会占用很多内存或 CPU 吗？",

@@ -62,7 +62,7 @@
     "steps": [
       {
         "title": "Plusieurs agents. Un seul écran.",
-        "text": "Donnez à chaque agent son propre worktree. Ils travaillent côte à côte sans se marcher dessus, et vous passez de l'un à l'autre depuis la barre du haut."
+        "text": "Donnez à chaque agent son propre worktree. Ils travaillent côte à côte sans se marcher dessus, et vous passez de l'un à l'autre depuis la barre du haut, chacun avec ses modifications, sa pull request et ses checks."
       },
       {
         "title": "Regardez le travail arriver.",
@@ -70,11 +70,11 @@
       },
       {
         "title": "Passez de l'un à l'autre.",
-        "text": "Chaque worktree garde ses propres terminaux et sa propre progression de revue, donc rien ne se perd quand vous changez."
+        "text": "Chaque worktree garde ses propres terminaux et sa propre progression de revue, donc rien ne se perd quand vous changez. Quand un agent vous attend, un point apparaît sur son worktree."
       },
       {
         "title": "Partez de n'importe où.",
-        "text": "D'une branche ou d'un commit, ou récupérez une pull request dans son propre worktree sans toucher au vôtre."
+        "text": "D'une branche, d'un commit ou d'une issue, ou récupérez une pull request dans son propre worktree sans toucher au vôtre. Le nouveau worktree peut lancer votre agent dans son terminal tout de suite."
       }
     ]
   },
@@ -84,7 +84,7 @@
   },
   "terminal": {
     "title": "Testez sans quitter le diff.",
-    "text": "Un vrai terminal se trouve sous le diff, avec onglets et panneaux. Lancez les tests, démarrez le serveur de dev ou parlez à l'agent, juste à côté du changement que vous lisez. {keys} l'affiche ou le masque."
+    "text": "Un vrai terminal se trouve sous le diff, avec onglets et panneaux, chacun titré d'après ce qui y tourne. Lancez les tests, démarrez le serveur de dev ou parlez à l'agent, juste à côté du changement que vous lisez. {keys} l'affiche ou le masque."
   },
   "explorer": {
     "title": "Parcourez le code, pas seulement le diff.",
@@ -92,7 +92,7 @@
   },
   "commit": {
     "title": "Votre agent écrit le message.",
-    "text": "Cliquez sur l'étincelle à côté du champ de commit et votre propre `claude -p` ou `codex exec` le rédige à partir du diff. Pas de clé API, pas de compte en plus."
+    "text": "Cliquez sur l'étincelle à côté du champ de commit et votre propre `claude -p` ou `codex exec` le rédige à partir du diff. Il s'occupe aussi du titre et de la description d'une pull request. Pas de clé API, pas de compte en plus."
   },
   "numbers": {
     "title": "Pas un éditeur de plus qui dévore votre RAM.",
@@ -128,7 +128,7 @@
       },
       {
         "title": "Pull requests",
-        "text": "Lecture, revue dans le même visualiseur de diff, création, merge et checkout."
+        "text": "Lecture, revue dans le même visualiseur de diff, commit par commit si vous voulez, création, merge et checkout."
       },
       {
         "title": "Issues",
@@ -155,11 +155,11 @@
       },
       {
         "q": "Comment faire tourner plusieurs agents Claude Code ou Codex en parallèle ?",
-        "a": "Donnez à chaque agent son propre git worktree : un dossier séparé sur sa propre branche, pour qu'ils ne se marchent pas dessus. Dans GitViber, vous en créez un depuis n'importe quelle branche, commit ou pull request, vous y ouvrez un terminal et vous y lancez l'agent. La barre du haut passe d'un worktree à l'autre et affiche le nombre de modifications de chacun."
+        "a": "Donnez à chaque agent son propre git worktree : un dossier séparé sur sa propre branche, pour qu'ils ne se marchent pas dessus. Dans GitViber, vous en créez un depuis n'importe quelle branche, commit, issue ou pull request, et son terminal peut lancer l'agent pour vous. La barre du haut passe d'un worktree à l'autre et affiche pour chacun le nombre de modifications, la pull request et les checks, avec un point quand un agent vous attend."
       },
       {
         "q": "Est-ce que ça marche avec Claude Code et Codex ?",
-        "a": "Ça marche avec n'importe quel agent qui modifie des fichiers dans un dossier : GitViber surveille le worktree, pas l'agent. Pour les messages de commit, il peut lancer `claude -p` ou `codex exec` pour vous, sans clé API."
+        "a": "Ça marche avec n'importe quel agent qui modifie des fichiers dans un dossier : GitViber surveille le worktree, pas l'agent. Pour les messages de commit, il peut lancer `claude -p` ou `codex exec` pour vous, sans clé API. Le terminal est aussi pensé pour eux : une capture d'écran collée arrive sous forme de chemin, Shift+Enter passe bien, et la vue plein écran de Claude Code défile au trackpad."
       },
       {
         "q": "Quelle différence avec GitHub Desktop ?",
@@ -167,7 +167,7 @@
       },
       {
         "q": "Ai-je encore besoin d'un éditeur comme Cursor ou VS Code ?",
-        "a": "Pas pour relire ce qu'un agent a écrit. GitViber propose des diffs sur fichiers entiers avec surlignage mot par mot, un explorateur de fichiers avec ouverture rapide et un terminal. Les éditeurs comme Cursor prennent facilement des gigaoctets de RAM rien que pour vous laisser lire."
+        "a": "Pas pour relire ce qu'un agent a écrit. GitViber propose des diffs avec surlignage mot par mot, un explorateur de fichiers avec ouverture rapide, une vue de fichier où corriger une ligne et l'enregistrer, et un terminal. Les éditeurs comme Cursor prennent facilement des gigaoctets de RAM rien que pour vous laisser lire."
       },
       {
         "q": "Est-ce qu'il consomme beaucoup de RAM ou de CPU ?",
