@@ -221,6 +221,7 @@ export const CODE_FONT_MAX = 24;
 export const DEFAULT_TERMINAL_FONT_SIZE = 13;
 export const TERMINAL_FONT_MIN = 8;
 export const TERMINAL_FONT_MAX = 32;
+const clampCodeFont = (size: number) => Math.min(CODE_FONT_MAX, Math.max(CODE_FONT_MIN, Math.round(size * 2) / 2));
 const clampTerminalFont = (size: number) => Math.min(TERMINAL_FONT_MAX, Math.max(TERMINAL_FONT_MIN, Math.round(size)));
 export const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
 
@@ -250,6 +251,8 @@ const DEFAULTS: Settings = {
   terminalFont: "Editor",
   customTerminalFont: "",
   terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
+  // As Ghostty, iTerm2 and VS Code: at 1.2 a pane had a sixth fewer rows, and Claude Code drops its
+  // usage lines, then its header, below ~16 rows.
   terminalLineHeight: 1,
   terminalCursor: "block",
   terminalCursorBlink: true,
@@ -289,6 +292,8 @@ function load(): Settings {
     if (!IS_MAC && MAC_ONLY_FONTS.includes(s.codeFont)) s.codeFont = DEFAULTS.codeFont;
     if (!Object.hasOwn(UI_FONTS, s.uiFont) && s.uiFont !== "Custom") s.uiFont = DEFAULTS.uiFont;
     if (!IS_MAC && MAC_ONLY_UI_FONTS.includes(s.uiFont)) s.uiFont = DEFAULTS.uiFont;
+    if (typeof s.codeFontSize !== "number" || !Number.isFinite(s.codeFontSize)) s.codeFontSize = DEFAULTS.codeFontSize;
+    s.codeFontSize = clampCodeFont(s.codeFontSize);
     s.customCodeFont = typeof s.customCodeFont === "string" ? cleanFontName(s.customCodeFont) : "";
     s.customUiFont = typeof s.customUiFont === "string" ? cleanFontName(s.customUiFont) : "";
     if (!Object.hasOwn(SYNTAX_THEMES, s.syntaxTheme)) s.syntaxTheme = DEFAULTS.syntaxTheme;
@@ -438,7 +443,7 @@ systemDark.addEventListener("change", () => current.appearance === "system" && e
 
 export function updateSettings(patch: Partial<Settings>) {
   current = { ...current, ...patch };
-  current.codeFontSize = Math.min(CODE_FONT_MAX, Math.max(CODE_FONT_MIN, Math.round(current.codeFontSize * 2) / 2));
+  current.codeFontSize = clampCodeFont(current.codeFontSize);
   current.terminalFontSize = clampTerminalFont(current.terminalFontSize);
   current.customCodeFont = cleanFontName(current.customCodeFont);
   current.customTerminalFont = cleanFontName(current.customTerminalFont);
