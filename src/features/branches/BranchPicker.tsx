@@ -1,4 +1,4 @@
-import { Check, ChevronRight, ChevronsUpDown, Cloud, GitBranch, GitBranchPlus, GitMerge, GitPullRequestArrow, Link, Pencil, Plus, Search, SquareTerminal, Trash2, Unlink } from "lucide-react";
+import { Check, ChevronRight, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitBranchPlus, GitMerge, GitPullRequestArrow, Link, Pencil, Plus, Search, SquareTerminal, Trash2, Unlink } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -10,6 +10,7 @@ import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
 import { sameRef, sanitizedRefName } from "@/lib/git/refs";
+import { folderName } from "@/lib/path";
 import { RowAction } from "@/components/RowAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
@@ -27,6 +28,8 @@ interface Props {
   onRebase: (name: string) => void;
   /** Opens a terminal on the branch. */
   onTerminal: (name: string) => void;
+  /** Opens the worktree at `path`, for a branch checked out there. */
+  onOpenWorktree: (path: string) => void;
   /** Deletes a branch; asks first unless it's a merged local one, here or `upstream`. */
   onDelete: (branch: Branch, upstream: boolean) => void;
   /** Deletes these merged branches together (asks first); `upstream` ones git sees as unmerged. */
@@ -50,9 +53,9 @@ const LOCAL = "Local";
 /**
  * Searchable branch switcher: type to filter, ↑/↓ + Enter to switch, or create what you
  * typed. The highlighted row also offers merging it into, or rebasing onto it.
- * Branches checked out in another worktree live in the worktree picker instead.
+ * A branch checked out in another worktree, which git won't switch to here, opens that worktree.
  */
-export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemote, onCreate, onMerge, onRebase, onTerminal, onDelete, onCleanUp, onRename, onNewBranch, onSetUpstream, onUnsetUpstream, side = "bottom" }: Props) {
+export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemote, onCreate, onMerge, onRebase, onTerminal, onOpenWorktree, onDelete, onCleanUp, onRename, onNewBranch, onSetUpstream, onUnsetUpstream, side = "bottom" }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -62,10 +65,11 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
   const guarded = useAsyncValue(open ? () => github.protectedBranches().then((names) => new Set(names.map((n) => `origin/${n}`))) : null, [open], new Set<string>());
   useCommands({ "git.switchBranch": () => setOpen(true) });
 
-  // Switching to origin/x means switching to x, so a remote row goes with its local branch.
-  const elsewhere = useMemo(() => {
-    const held = new Set(branches.filter((b) => !b.remote && b.worktree).map((b) => b.name));
-    return (b: Branch) => !b.current && (!!b.worktree || (b.remote && held.has(localName(b))));
+  // The worktree a branch is checked out in, other than this one. Switching to origin/x means
+  // switching to x, so a remote row goes with its local branch.
+  const heldIn = useMemo(() => {
+    const held = new Map(branches.filter((b) => !b.remote && !b.current && b.worktree).map((b) => [b.name, b.worktree!]));
+    return (b: Branch) => (b.current ? null : (b.remote ? held.get(localName(b)) : b.worktree) ?? null);
   }, [branches]);
 
   // Local, then one group per remote (origin first), each by recency. All open until closed.
@@ -74,7 +78,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
   const groups = useMemo(() => {
     // "fix login" finds fix-login, which is what it would be created as.
     const typed = sanitizedRefName(q);
-    const match = (b: Branch) => !elsewhere(b) && (b.name.toLowerCase().includes(q) || (!!typed && b.name.toLowerCase().includes(typed)));
+    const match = (b: Branch) => (b.name.toLowerCase().includes(q) || (!!typed && b.name.toLowerCase().includes(typed)));
     const byGroup = new Map<string, Branch[]>([[LOCAL, []]]);
     // Current first among local, then backend order (recency).
     const found = branches.filter(match).sort((a, b) => Number(b.current) - Number(a.current));
@@ -82,7 +86,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     for (const r of remotes) byGroup.set(r, []);
     for (const b of found) byGroup.get(b.remote ? remoteOf(b) : LOCAL)!.push(b);
     return [...byGroup].filter(([, list]) => list.length).map(([name, list]) => ({ name, list }));
-  }, [branches, elsewhere, q]);
+  }, [branches, q]);
   // Searching shows every match, whatever is collapsed.
   const isOpen = (group: string) => !!q || !collapsed.has(group);
   const toggleGroup = (group: string) =>
@@ -146,6 +150,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
   const choose = (o: Option | undefined) => {
     if (!o) return;
     if (o.kind === "create") onCreate(o.name);
+    else if (heldIn(o.branch)) onOpenWorktree(heldIn(o.branch)!);
     else if (o.branch.remote) onSwitchRemote(o.branch);
     else if (!o.branch.current) onSwitch(o.branch.name);
     else return;
@@ -263,6 +268,8 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
           <>
             {o.branch.current ? (
               <Check className="size-3.5 shrink-0" />
+            ) : heldIn(o.branch) ? (
+              <FolderGit2 className="size-3.5 shrink-0 opacity-60" />
             ) : o.branch.remote ? (
               <Cloud className="size-3.5 shrink-0 opacity-60" />
             ) : (
@@ -272,9 +279,11 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
             {/* Mounted on every row, shown on the hot one: a tooltip whose button unmounts
                 as the highlight moves gets stuck open or shows the previous label. */}
             <span className={cn("ml-auto shrink-0 gap-0.5", hot ? "flex" : "hidden")}>
-              <RowAction variant="picker" hot={hot} label={o.branch.current ? "Open a terminal here" : "Open a terminal in a new worktree"} onClick={act(onTerminal, localName(o.branch))}>
-                <SquareTerminal />
-              </RowAction>
+              {!heldIn(o.branch) && (
+                <RowAction variant="picker" hot={hot} label={o.branch.current ? "Open a terminal here" : "Open a terminal in a new worktree"} onClick={act(onTerminal, localName(o.branch))}>
+                  <SquareTerminal />
+                </RowAction>
+              )}
               {!o.branch.current && current && (
                 <>
                   <RowAction variant="picker" hot={hot} label={`Merge into ${current}`} onClick={act(onMerge, o.branch.name)}>
@@ -286,7 +295,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
                 </>
               )}
               {/* Where you can't push, GitHub would refuse the delete anyway. */}
-              {!o.branch.current && !o.branch.remoteDefault && !guarded.has(o.branch.name) && !(o.branch.remote && accessOf(remoteOf(o.branch))?.push === false) && (
+              {!o.branch.current && !heldIn(o.branch) && !o.branch.remoteDefault && !guarded.has(o.branch.name) && !(o.branch.remote && accessOf(remoteOf(o.branch))?.push === false) && (
                 <RowAction variant="picker" hot={hot} label={o.branch.remote ? "Delete from the remote…" : o.branch.merged || upstream(o.branch) ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch, upstream(o.branch)), o.branch.name)}>
                   <Trash2 />
                 </RowAction>
@@ -296,7 +305,9 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
               <span className="ml-auto max-w-40 shrink-0 truncate text-[10.5px] text-subtle">
                 {o.branch.current
                   ? "current"
-                  : o.branch.merged
+                  : heldIn(o.branch)
+                    ? `in worktree ${folderName(heldIn(o.branch)!)}`
+                    : o.branch.merged
                     ? `merged · ${relativeTime(o.branch.timestamp)}`
                     : upstream(o.branch)
                       ? `merged upstream · ${relativeTime(o.branch.timestamp)}`
@@ -347,7 +358,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
         <div ref={listRef} onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
           {groups.length === 0 && options.length === 0 && (
             <div className="px-2 py-3 text-center text-[12px] text-subtle">
-              {branches.some(elsewhere) ? "No branches here · ones checked out in other worktrees are in the worktree menu" : "No branches"}
+              No branches
             </div>
           )}
           {groups.map((g) => (
