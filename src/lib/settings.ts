@@ -215,7 +215,7 @@ export interface Settings {
   openInHideBuiltins: boolean;
 }
 
-export const DEFAULT_FONT_SIZE = 12.5;
+export const DEFAULT_FONT_SIZE = 13.5;
 export const DEFAULT_TERMINAL_FONT_SIZE = 13;
 export const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
 
@@ -233,7 +233,7 @@ const DEFAULTS: Settings = {
   syntaxTheme: "dark-plus",
   lightSyntaxTheme: "github-light-default",
   sideBySide: false,
-  hideUnchanged: false,
+  hideUnchanged: true,
   ignoreWhitespace: false,
   whitespaceMode: "amount",
   wordWrap: false,
