@@ -42,9 +42,10 @@ function useSeen(url: string, commits: Commit[], picked: Commit[] | null) {
 export function PullCommits({ pull, commits, total, pick, busy, act }: { pull: Pull; commits: Commit[]; total: number; pick: CommitPick; busy: boolean; act: GitRun }) {
   const { picked } = pick;
   const isNew = useSeen(pull.url, commits, picked);
+  // Newest first: CI is asked 100 commits at a time, and the rest wait for the next 30 s round.
   const ci = useCi(
     repoOf(pull.url),
-    commits.map((c) => c.sha),
+    commits.map((c) => c.sha).reverse(),
   );
   const [open, setOpen] = useState<Set<string>>(() => new Set());
   // The pick scrolls into view by the keys that make it, not the page with it: activeKey stays unset.
