@@ -272,10 +272,33 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Tauri saves the AppRun it downloads as 0770 and copies that mode into the AppImage, so
+      # when root mounts it and another user runs it (firejail, the AppImage catalog's test),
+      # AppRun.wrapped is "Permission denied" (tauri-apps/tauri#16155, still so in CLI 2.12.0).
+      # A copy already in Tauri's cache isn't downloaded again, so it keeps this mode.
+      - name: Seed Tauri's AppRun as 0755
+        run: |
+          mkdir -p ~/.cache/tauri
+          curl -fsSL -o ~/.cache/tauri/AppRun-x86_64 \
+            https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64
+          chmod 755 ~/.cache/tauri/AppRun-x86_64
+
       # No secrets here: the bundles (.deb, .rpm, AppImage) are built without the updater key,
       # and only the Tauri CLI sees it, in the next step.
       - name: Build
         run: pnpm tauri build
+
+      # The seed above leans on Tauri's cache path; if that moves, fail here, not in users' hands.
+      - name: Check the AppImage runs for any user
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$GITHUB_WORKSPACE"/src-tauri/target/release/bundle/appimage/*.AppImage --appimage-extract > /dev/null
+          bad=$(find squashfs-root -type f -perm -u=x ! -perm -o=x)
+          rm -rf squashfs-root
+          if [ -n "$bad" ]; then
+            echo "::error::Executable only for its owner inside the AppImage:"$'\n'"$bad"
+            exit 1
+          fi
 
       - name: Sign for the updater
         env:
