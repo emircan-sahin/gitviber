@@ -77,8 +77,8 @@ In zsh and bash 4.4+ each command gets a mark, red when it failed, `⌘↑` / `�
 and the last one's output copies from the right-click menu; your dotfiles stay as they are.
 
 It's made for agents too: paste a screenshot or drop files and Claude Code or Codex gets their
-paths, Shift+Enter reaches them as its own key, and a trackpad swipe scrolls Claude Code's
-fullscreen view row by row, as it does vim and htop.
+paths, Shift+Enter reaches them as its own key, and on a Mac a trackpad swipe scrolls Claude
+Code's fullscreen view row by row, as it does vim and htop.
 
 ### Browse the code, not just the diff
 
