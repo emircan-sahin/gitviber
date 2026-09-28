@@ -163,7 +163,7 @@ export function ProjectTile({ name }: { name: string }) {
 }
 
 /** A terminal rang and hasn't been looked at since: on its tab, its pane and its worktree. */
-export const NeedsYouDot = ({ className }: { className?: string }) => (
+const NeedsYouDot = ({ className }: { className?: string }) => (
   <span aria-hidden className={cx("size-1.5 shrink-0 rounded-full bg-primary", className)} />
 );
 
@@ -263,9 +263,9 @@ export function TopBar({
       </span>
       {worktree && pull && <PullChip pull={pull} className="h-7 rounded-md px-1.5 text-[11px]" />}
       {worktree && (
-        <span className="grid size-6 place-items-center rounded-md text-muted [&_svg]:size-3.5">
+        <IconBtn>
           <CornerUpLeft />
-        </span>
+        </IconBtn>
       )}
       <span className="!shrink flex-1" />
       <span className="flex items-center">
@@ -418,9 +418,15 @@ export function WorktreeMenu({ rows, current, highlighted }: { rows: WorktreeRow
         })}
       </div>
       <div className="flex shrink-0 items-start gap-2 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
-        <span className="min-w-0 flex-1">
-          ↑↓ navigate · ↵ open here
-          {hot && ` · T terminal${canMerge ? " · M merge" : ""} · F2 rename${canRemove ? " · ⌫ remove" : ""} · ⇧F10 or right-click for more`}
+        {/* The longest hint sits invisible in the same cell, so the footer keeps its height as the highlight moves. */}
+        <span className="grid min-w-0 flex-1">
+          <span className="col-start-1 row-start-1">
+            ↑↓ navigate · ↵ open here
+            {hot && ` · T terminal${canMerge ? " · M merge" : ""} · F2 rename${canRemove ? " · ⌫ remove" : ""} · ⇧F10 or right-click for more`}
+          </span>
+          <span aria-hidden className="invisible col-start-1 row-start-1">
+            ↑↓ navigate · ↵ open here · T terminal · M merge · F2 rename · ⌫ remove · ⇧F10 or right-click for more
+          </span>
         </span>
         <span className="shrink-0 rounded-sm px-1.5 py-0.5">New worktree…</span>
       </div>
@@ -685,7 +691,7 @@ export function FileHeader({
       <span className="min-w-0 text-[12px]">
         <PathLabel path={path} />
       </span>
-      <Copy className="size-3 text-subtle" />
+      <Copy className="size-3 shrink-0 text-subtle" />
       <Counts add={add} del={del} />
       <span className={cx("shrink-0 rounded-sm px-1.5 py-px text-[10.5px] font-semibold text-black/85", fill)}>{label}</span>
       {!compact && file && (
