@@ -7,26 +7,46 @@ import { bindingsFor, type CommandId } from "@/lib/commands/commands";
 import { cleanFontName, useSettings } from "@/lib/settings";
 import { Select } from "@/components/ui/select";
 import { Keycaps } from "@/components/ui/kbd";
+import { cn } from "@/lib/utils";
+
+/** The small uppercase heading over a group of settings or shortcuts. */
+export function GroupLabel({ className, children }: { className?: string; children: React.ReactNode }) {
+  return <div className={cn("text-[10.5px] font-semibold tracking-wide text-subtle uppercase", className)}>{children}</div>;
+}
 
 /** A titled card of fields, as the shortcut list's categories look. Hidden when every field in it renders nothing. */
 export function Group({ title, children }: { title?: string; children: React.ReactNode }) {
   return (
     <section className="mt-5 first:mt-4 has-[>div:empty]:hidden">
-      {title && <div className="mb-1.5 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">{title}</div>}
+      {title && <GroupLabel className="mb-1.5">{title}</GroupLabel>}
       <div className="rounded-md border border-border px-3.5">{children}</div>
     </section>
   );
 }
 
 /** − size + and a reset, for a font size. */
-export function SizeStepper({ value, step, fallback, onChange }: { value: number; step: number; fallback: number; onChange: (v: number) => void }) {
+export function SizeStepper({
+  value,
+  step,
+  fallback,
+  min = -Infinity,
+  max = Infinity,
+  onChange,
+}: {
+  value: number;
+  step: number;
+  fallback: number;
+  min?: number;
+  max?: number;
+  onChange: (v: number) => void;
+}) {
   return (
     <div className="flex items-center gap-1">
-      <Button variant="secondary" size="icon-sm" onClick={() => onChange(value - step)}>
+      <Button variant="secondary" size="icon-sm" disabled={value <= min} onClick={() => onChange(value - step)}>
         −
       </Button>
       <span className="w-10 text-center font-mono text-[12px]">{value}</span>
-      <Button variant="secondary" size="icon-sm" onClick={() => onChange(value + step)}>
+      <Button variant="secondary" size="icon-sm" disabled={value >= max} onClick={() => onChange(value + step)}>
         +
       </Button>
       <Tip label="Reset">

@@ -1,6 +1,6 @@
-import { CheckCircle2, GitBranch } from "lucide-react";
+import { CheckCircle2, FolderGit2, FolderOpen } from "lucide-react";
 import { Fragment } from "react";
-import { ansi, ChangeRow, Cursor, Prompt, TerminalBody, TerminalTabs, type ChangeFile } from "../app/parts.tsx";
+import { ansi, ChangeRow, Cursor, Prompt, TerminalBody, TerminalPaneHeader, TerminalTabs, type ChangeFile } from "../app/parts.tsx";
 import { SCENES, type Scene } from "../demo-data.ts";
 import { cx, Keys } from "../ui.tsx";
 import { OUTPUT_LINES, type Pane, type reviewAt, type terminalAt } from "./timeline.ts";
@@ -110,32 +110,50 @@ export function PaneText({ pane }: { pane: Pane }) {
   );
 }
 
-const WORKTREE_CHOICES = ["main", ...SCENES.map((s) => s.branch)];
+// The + menu's worktrees: every one but the terminal's own (src/features/terminal/TerminalPanel.tsx).
+const OTHER_WORKTREES = [{ folder: "acme-web", branch: "main" }, ...SCENES.slice(1)];
 
-/** The terminal panel: its tabs, the open tab's panes side by side, and the + menu when open. */
+/** A pane's title: the command while it runs (the shell names it), else the folder. */
+const paneTitle = (pane: Pane) =>
+  pane.typed === pane.command.length && pane.printed < OUTPUT_LINES[pane.output] ? pane.command : pane.tab.folder;
+
+/**
+ * The terminal panel: its tabs, the open tab's panes side by side (each with its title bar once
+ * there are two, the last one focused), and the + menu when open.
+ */
 export function TerminalPanel({ state, wrap }: { state: ReturnType<typeof terminalAt>; wrap?: boolean }) {
+  const split = state.panes.length > 1;
   return (
     <div className="relative flex h-full min-h-0 flex-col bg-bg">
-      <TerminalTabs tabs={state.tabs} active={state.active} fresh={state.fresh} />
-      <div className={cx("grid min-h-0 flex-1", state.panes.length > 1 ? "grid-cols-2" : "grid-cols-1")}>
+      <TerminalTabs tabs={state.tabs} active={state.active} fresh={state.fresh} compact={wrap} />
+      <div className={cx("grid min-h-0 flex-1", split ? "grid-cols-2" : "grid-cols-1")}>
         {state.panes.map((pane, i) => (
-          <TerminalBody key={pane.output} wrap={wrap} className={cx("h-full overflow-hidden", i > 0 && "pane-in border-l border-border")}>
-            <PaneText pane={pane} />
-          </TerminalBody>
+          <div key={pane.output} className={cx("flex min-h-0 flex-col", i > 0 && "pane-in border-l border-fg/20")}>
+            {split && <TerminalPaneHeader title={paneTitle(pane)} focused={i === state.panes.length - 1} />}
+            <TerminalBody wrap={wrap} className="min-h-0 flex-1 overflow-hidden">
+              <PaneText pane={pane} />
+            </TerminalBody>
+          </div>
         ))}
       </div>
       {state.menu !== undefined && (
-        <div className="menu-in absolute top-9 right-[118px] z-20 w-60 rounded-md border border-border-strong bg-elevated p-1 text-[12px] shadow-lg shadow-black/50">
-          <p className="px-2 pt-1.5 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Worktrees</p>
-          {WORKTREE_CHOICES.map((branch, i) => (
+        <div className="menu-in absolute top-9 right-[170px] z-20 w-72 rounded-md border border-border-strong bg-elevated p-1 text-[12px] shadow-lg shadow-black/50">
+          <p className="px-2 pt-2 pb-1 text-[11px] font-medium tracking-wide text-subtle uppercase">New terminal in worktree</p>
+          {OTHER_WORKTREES.map((w, i) => (
             <div
-              key={branch}
+              key={w.folder}
               className={cx("flex h-7 items-center gap-2 rounded-sm px-2", i === state.menu && "bg-primary text-white")}
             >
-              <GitBranch className="size-3.5 opacity-70" />
-              <span className="font-mono text-[11.5px]">{branch}</span>
+              <FolderGit2 className="size-3.5 opacity-70" />
+              <span className="truncate">{w.folder}</span>
+              <span className={cx("ml-auto truncate font-mono text-[11px]", i === state.menu ? "text-white/80" : "text-subtle")}>{w.branch}</span>
             </div>
           ))}
+          <div className="-mx-1 my-1 h-px bg-border" />
+          <div className="flex h-7 items-center gap-2 rounded-sm px-2">
+            <FolderOpen className="size-3.5 opacity-70" />
+            Choose Folder…
+          </div>
         </div>
       )}
     </div>

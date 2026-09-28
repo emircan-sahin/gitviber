@@ -5,10 +5,14 @@ import type { Terminal } from "@xterm/xterm";
  * height of pixels is a row, the rest waits for the next event. Ghostty counts a trackpad this way
  * (Surface.zig scrollCallback), where xterm.js scales its pixels by 0.3.
  */
-export function wheelRows(pending: number, pixels: number, rowHeight: number) {
+export function wheelRows(pending: number, pixels: number, rowHeight: number, maxRows = Infinity) {
   const total = pending + pixels;
-  const rows = Math.trunc(total / rowHeight) || 0;
-  return { rows, pending: total - rows * rowHeight };
+  // A pane not laid out yet has no row height: counting by it would give Infinity or NaN rows.
+  if (!(rowHeight > 0) || !Number.isFinite(total)) return { rows: 0, pending: Number.isFinite(pending) ? pending : 0 };
+  const whole = Math.trunc(total / rowHeight);
+  // Past `maxRows` the rows are dropped, not owed to the next event.
+  const rows = Math.max(-maxRows, Math.min(maxRows, whole)) || 0;
+  return { rows, pending: total - whole * rowHeight };
 }
 
 /**
@@ -25,7 +29,8 @@ export function reportWheelByRow(term: Terminal) {
     if (replaying || term.modes.mouseTrackingMode === "none" || e.shiftKey || e.deltaMode !== WheelEvent.DOM_DELTA_PIXEL || !term.element) return true;
     const screen = term.element.querySelector(".xterm-screen");
     if (!screen || !screen.clientHeight) return true;
-    const step = wheelRows(pending, e.deltaY, screen.clientHeight / term.rows);
+    // A screenful at most: a flung wheel's huge delta would otherwise dispatch thousands of events at once.
+    const step = wheelRows(pending, e.deltaY, screen.clientHeight / term.rows, term.rows);
     pending = step.pending;
     const row = { deltaY: Math.sign(step.rows), deltaMode: WheelEvent.DOM_DELTA_LINE, clientX: e.clientX, clientY: e.clientY, ctrlKey: e.ctrlKey, altKey: e.altKey, metaKey: e.metaKey, cancelable: true };
     replaying = true;

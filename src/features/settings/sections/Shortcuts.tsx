@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui/switch";
 import { Keycaps } from "@/components/ui/kbd";
 import { Segmented } from "@/components/ui/segmented";
-import { Field } from "@/features/settings/controls";
+import { Field, GroupLabel } from "@/features/settings/controls";
 
 export type Recording = { id: CommandId; index: number } | null;
 
@@ -84,7 +84,7 @@ export function ShortcutsSection({ recording, setRecording }: { recording: Recor
       </div>
       {groups.map((g) => (
         <section key={g.category} className="mb-4">
-          {category === ALL && <div className="mb-1.5 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">{g.category}</div>}
+          {category === ALL && <GroupLabel className="mb-1.5">{g.category}</GroupLabel>}
           <div className="overflow-hidden rounded-md border border-border">
             {g.rows.map((c) => {
               const keys = bindingsFor(c.id, keybindings);

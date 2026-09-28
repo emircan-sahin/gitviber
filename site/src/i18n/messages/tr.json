@@ -62,7 +62,7 @@
     "steps": [
       {
         "title": "Çok ajan. Tek ekran.",
-        "text": "Her ajana kendi worktree'sini ver. Birbirlerinin ayağına basmadan yan yana çalışırlar, sen de aralarında üst çubuktan geçersin."
+        "text": "Her ajana kendi worktree'sini ver. Birbirlerinin ayağına basmadan yan yana çalışırlar, sen de üst çubuktan aralarında geçersin. Her biri kendi değişiklikleri, pull request'i ve kontrolleriyle gelir."
       },
       {
         "title": "Kod geldikçe izle.",
@@ -70,11 +70,11 @@
       },
       {
         "title": "Birinden diğerine atla.",
-        "text": "Her worktree'nin kendi terminalleri ve kendi inceleme ilerlemesi var. Geçiş yaptığında hiçbir şey kaybolmaz."
+        "text": "Her worktree'nin kendi terminalleri ve kendi inceleme ilerlemesi var, geçiş yaptığında hiçbir şey kaybolmaz. Bir ajan seni beklediğinde worktree'sinin yanında bir nokta belirir."
       },
       {
         "title": "İstediğin yerden başla.",
-        "text": "Herhangi bir branch'ten ya da commit'ten başla. İstersen bir pull request'i, seninkine dokunmadan kendi worktree'sine checkout et."
+        "text": "Herhangi bir branch'ten, commit'ten ya da issue'dan başla. İstersen bir pull request'i, seninkine dokunmadan kendi worktree'sine checkout et. Yeni worktree, ajanını kendi terminalinde hemen başlatabilir."
       }
     ]
   },
@@ -84,7 +84,7 @@
   },
   "terminal": {
     "title": "Diff'ten ayrılmadan test et.",
-    "text": "Diff'in altında sekmeli ve bölünebilir gerçek bir terminal var. Testleri çalıştır, dev server'ı başlat ya da ajanla konuş, hepsi okuduğun değişikliğin hemen yanında. {keys} ile açıp kapatırsın."
+    "text": "Diff'in altında sekmeli ve bölünebilir gerçek bir terminal var, her panelin başlığında içinde ne çalıştığı yazar. Testleri çalıştır, dev server'ı başlat ya da ajanla konuş, hepsi okuduğun değişikliğin hemen yanında. {keys} ile açıp kapatırsın."
   },
   "explorer": {
     "title": "Sadece diff'i değil, kodun tamamını gez.",
@@ -92,7 +92,7 @@
   },
   "commit": {
     "title": "Mesajı ajanın yazsın.",
-    "text": "Commit kutusunun yanındaki parıltı simgesine bas, kendi `claude -p` ya da `codex exec` komutun mesajı diff'e bakıp yazsın. API anahtarı yok, ekstra hesap yok."
+    "text": "Commit kutusunun yanındaki parıltı simgesine bas, kendi `claude -p` ya da `codex exec` komutun mesajı diff'e bakıp yazsın. Pull request başlığını ve açıklamasını da o yazar. API anahtarı yok, ekstra hesap yok."
   },
   "numbers": {
     "title": "RAM'ini yiyen bir editör daha değil.",
@@ -128,7 +128,7 @@
       },
       {
         "title": "Pull request'ler",
-        "text": "Oku, aynı diff görüntüleyicide incele, oluştur, merge et ve checkout et."
+        "text": "Oku, aynı diff görüntüleyicide incele, istersen commit commit. Oluştur, merge et ve checkout et."
       },
       {
         "title": "Issue'lar",
@@ -155,11 +155,11 @@
       },
       {
         "q": "Birden fazla Claude Code ya da Codex ajanını paralel nasıl çalıştırırım?",
-        "a": "Her ajana kendi git worktree'sini ver. Worktree, kendi branch'inde duran ayrı bir klasör, böylece ajanlar birbirinin ayağına basmaz. GitViber'da herhangi bir branch, commit ya da pull request'ten bir worktree başlatırsın, içinde bir terminal açıp ajanı orada çalıştırırsın. Üst çubuk worktree'ler arasında geçiş yapar ve her birinin değişiklik sayısını gösterir."
+        "a": "Her ajana kendi git worktree'sini ver. Worktree, kendi branch'inde duran ayrı bir klasör, böylece ajanlar birbirinin ayağına basmaz. GitViber'da herhangi bir branch, commit, issue ya da pull request'ten bir worktree başlatırsın, terminali de ajanı senin için çalıştırabilir. Üst çubuk worktree'ler arasında geçiş yapar, her birinin değişiklik sayısını, pull request'ini ve kontrollerini gösterir. Bir ajan seni beklediğinde yanında bir nokta çıkar."
       },
       {
         "q": "Claude Code ve Codex ile çalışır mı?",
-        "a": "Bir klasördeki dosyaları düzenleyen her ajanla çalışır, çünkü GitViber ajanı değil worktree'yi izler. Commit mesajları için senin yerine `claude -p` ya da `codex exec` çalıştırabilir, API anahtarı gerekmez."
+        "a": "Bir klasördeki dosyaları düzenleyen her ajanla çalışır, çünkü GitViber ajanı değil worktree'yi izler. Commit mesajları için senin yerine `claude -p` ya da `codex exec` çalıştırabilir, API anahtarı gerekmez. Terminal de onlara göre yapıldı. Yapıştırdığın ekran görüntüsü dosya yolu olarak gelir, Shift+Enter yerine ulaşır, Claude Code'un tam ekran görünümü de trackpad'le kayar."
       },
       {
         "q": "GitHub Desktop'tan farkı ne?",
@@ -167,7 +167,7 @@
       },
       {
         "q": "Cursor ya da VS Code gibi bir editöre hâlâ ihtiyacım var mı?",
-        "a": "Ajanın yazdığını incelemek için yok. GitViber'da kelime düzeyinde vurgulu tam dosya diff'leri, hızlı açmalı bir dosya gezgini ve bir terminal var. Cursor gibi editörler sırf kod okuyabilmen için bile gigabaytlarca RAM harcıyor."
+        "a": "Ajanın yazdığını incelemek için gerekmez. GitViber'da kelime düzeyinde vurgulu diff'ler, hızlı açmalı bir dosya gezgini, bir satırı düzeltip kaydedebileceğin bir dosya görünümü ve bir terminal var. Cursor gibi editörler sırf kod okuyabilmen için bile kolayca gigabaytlarca RAM harcıyor."
       },
       {
         "q": "Çok RAM ya da CPU kullanıyor mu?",

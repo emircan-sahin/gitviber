@@ -1,6 +1,6 @@
 import { type Selection, selectionKey } from "./selection";
 import { getSettings } from "../settings";
-import { readJson, writeJson } from "../storage";
+import { isRecord, putRecent, readJson } from "../storage";
 import { folderName, joinPath } from "../path";
 
 /** What a worktree's window looked like, so reopening the app picks up where it was. */
@@ -34,16 +34,9 @@ const ISSUE_RUN_KEY = "gitviber.issueRun";
 // Agent worktrees come and go; keep only the most recently used.
 const MAX = 30;
 
-const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const all = (key: string) => readJson(key, {}, isRecord);
-
 /** Stores `value` under `root` (null removes it), keeping the MAX most recently saved roots. */
-function put(key: string, root: string, value: unknown) {
-  const { [root]: _, ...rest } = all(key);
-  // Insertion order is recency: the one saved now goes last, the oldest drop off the front.
-  const entries = [...Object.entries(rest), ...(value === null ? [] : [[root, value] as const])].slice(-MAX);
-  return writeJson(key, Object.fromEntries(entries));
-}
+const put = (key: string, root: string, value: unknown) => putRecent(key, root, value, MAX);
 
 export function loadWorkspace(root: string): WorkspaceSnapshot | null {
   const s = all(KEY)[root] as WorkspaceSnapshot | undefined;

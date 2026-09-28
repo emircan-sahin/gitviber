@@ -1,4 +1,4 @@
-import { CODE_FONT_WEIGHTS, type CodeFont, type CodeFontWeight, codeFontChoices, codeFontFamily, DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
+import { CODE_FONT_MAX, CODE_FONT_MIN, CODE_FONT_WEIGHTS, type CodeFont, type CodeFontWeight, codeFontChoices, codeFontFamily, DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
 import { Field, FontPicker, Group, SizeStepper } from "@/features/settings/controls";
@@ -32,7 +32,7 @@ export function EditorSection() {
           />
         </Field>
         <Field label="Font size" commands={["editor.fontZoomIn", "editor.fontZoomOut", "editor.fontZoomReset"]}>
-          <SizeStepper value={s.codeFontSize} step={0.5} fallback={DEFAULT_FONT_SIZE} onChange={(v) => updateSettings({ codeFontSize: v })} />
+          <SizeStepper value={s.codeFontSize} step={0.5} fallback={DEFAULT_FONT_SIZE} min={CODE_FONT_MIN} max={CODE_FONT_MAX} onChange={(v) => updateSettings({ codeFontSize: v })} />
         </Field>
         <Field label="Font weight" hint="The code view, diffs and the terminal. Bold text stays bolder.">
           <Segmented<string>

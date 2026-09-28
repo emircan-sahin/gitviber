@@ -249,7 +249,6 @@ pub fn log_range(repo: &Path, base: &str, head: &str, limit: u32) -> Result<Vec<
     Ok(list)
 }
 
-/// How many commits HEAD has that `with` doesn't, and `with` has that HEAD doesn't.
 /// What `with` changed since it and HEAD parted, as a pull request of it would show: the
 /// merge base, `with`'s commit, and the files between them.
 #[derive(Serialize)]
@@ -336,6 +335,7 @@ pub fn reflog(repo: &Path, limit: u32) -> Result<Vec<ReflogEntry>, String> {
         .collect())
 }
 
+/// How many commits HEAD has that `with` doesn't, and `with` has that HEAD doesn't.
 pub fn compare_counts(repo: &Path, with: &str) -> Result<(u32, u32), String> {
     validate_full_ref(repo, with)?;
     let out = run_text(

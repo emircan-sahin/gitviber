@@ -62,7 +62,7 @@
     "steps": [
       {
         "title": "Many agents. One screen.",
-        "text": "Give every agent its own worktree. They work side by side without stepping on each other, and you switch between them from the top bar."
+        "text": "Give every agent its own worktree. They work side by side without stepping on each other, and you switch between them from the top bar, each with its changes, its pull request and its checks."
       },
       {
         "title": "Watch the work land.",
@@ -70,11 +70,11 @@
       },
       {
         "title": "Hop between them.",
-        "text": "Each worktree keeps its own terminals and its own review progress, so nothing gets lost when you switch."
+        "text": "Each worktree keeps its own terminals and its own review progress, so nothing gets lost when you switch. When an agent waits for you, its worktree gets a dot."
       },
       {
         "title": "Start from anything.",
-        "text": "Any branch or commit, or check a pull request out into its own worktree without touching yours."
+        "text": "Any branch, commit or issue, or check a pull request out into its own worktree without touching yours. The new worktree can start your agent in its terminal right away."
       }
     ]
   },
@@ -84,7 +84,7 @@
   },
   "terminal": {
     "title": "Test it without leaving the diff.",
-    "text": "A real terminal sits under the diff, with tabs and splits. Run the tests, start the dev server or talk to the agent, right next to the change you're reading. {keys} toggles it."
+    "text": "A real terminal sits under the diff, with tabs and splits, each pane titled with what runs in it. Run the tests, start the dev server or talk to the agent, right next to the change you're reading. {keys} toggles it."
   },
   "explorer": {
     "title": "Browse the code, not just the diff.",
@@ -92,7 +92,7 @@
   },
   "commit": {
     "title": "Your agent writes the message.",
-    "text": "Hit the sparkle next to the commit box and your own `claude -p` or `codex exec` writes it from the diff. No API key, no extra account."
+    "text": "Hit the sparkle next to the commit box and your own `claude -p` or `codex exec` writes it from the diff. It does a pull request's title and description too. No API key, no extra account."
   },
   "numbers": {
     "title": "Not another editor eating your RAM.",
@@ -128,7 +128,7 @@
       },
       {
         "title": "Pull requests",
-        "text": "Read, review in the same diff viewer, create, merge and check out."
+        "text": "Read, review in the same diff viewer, commit by commit if you like, create, merge and check out."
       },
       {
         "title": "Issues",
@@ -155,11 +155,11 @@
       },
       {
         "q": "How do I run several Claude Code or Codex agents in parallel?",
-        "a": "Give each agent its own git worktree: a separate folder on its own branch, so they don't step on each other. In GitViber you start one from any branch, commit or pull request, open a terminal in it and start the agent there. The top bar switches between worktrees and shows each one's change count."
+        "a": "Give each agent its own git worktree: a separate folder on its own branch, so they don't step on each other. In GitViber you start one from any branch, commit, issue or pull request, and its terminal can start the agent for you. The top bar switches between worktrees and shows each one's change count, pull request and checks, with a dot when an agent waits for you."
       },
       {
         "q": "Does it work with Claude Code and Codex?",
-        "a": "It works with any agent that edits files in a folder: GitViber watches the worktree, not the agent. For commit messages it can run `claude -p` or `codex exec` for you, with no API key."
+        "a": "It works with any agent that edits files in a folder: GitViber watches the worktree, not the agent. For commit messages it can run `claude -p` or `codex exec` for you, with no API key. The terminal is made for them too: a pasted screenshot arrives as a path, Shift+Enter gets through, and Claude Code's fullscreen view scrolls with the trackpad."
       },
       {
         "q": "How is it different from GitHub Desktop?",
@@ -167,7 +167,7 @@
       },
       {
         "q": "Do I still need an editor like Cursor or VS Code?",
-        "a": "Not to review what an agent wrote. GitViber has whole-file diffs with word-level highlights, a file explorer with quick open and a terminal. Editors like Cursor easily take gigabytes of RAM just to let you read."
+        "a": "Not to review what an agent wrote. GitViber has diffs with word-level highlights, a file explorer with quick open, a file view where you can fix a line and save it, and a terminal. Editors like Cursor easily take gigabytes of RAM just to let you read."
       },
       {
         "q": "Does it use a lot of RAM or CPU?",

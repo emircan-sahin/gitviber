@@ -6,6 +6,7 @@ import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } fr
 import { resetSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { createStore } from "@/lib/store";
+import { GroupLabel } from "./controls";
 import { AppearanceSection } from "./sections/Appearance";
 import { EditorSection } from "./sections/Editor";
 import { DiffSection } from "./sections/Diff";
@@ -73,7 +74,7 @@ export function SettingsDialog() {
           <DialogDescription className="sr-only">Appearance, keyboard shortcut, Open in, update, editor, diff, terminal, git and commit message preferences.</DialogDescription>
           {GROUPS.map((group) => (
             <div key={group} className="flex flex-col gap-0.5 not-first-of-type:mt-3">
-              <div className="px-2 pb-1 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">{group}</div>
+              <GroupLabel className="px-2 pb-1">{group}</GroupLabel>
               {SECTIONS.filter((s) => s.group === group).map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}

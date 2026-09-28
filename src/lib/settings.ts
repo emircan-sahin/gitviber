@@ -215,8 +215,14 @@ export interface Settings {
   openInHideBuiltins: boolean;
 }
 
-export const DEFAULT_FONT_SIZE = 12.5;
+export const DEFAULT_FONT_SIZE = 13.5;
+export const CODE_FONT_MIN = 10;
+export const CODE_FONT_MAX = 24;
 export const DEFAULT_TERMINAL_FONT_SIZE = 13;
+export const TERMINAL_FONT_MIN = 8;
+export const TERMINAL_FONT_MAX = 32;
+const clampCodeFont = (size: number) => Math.min(CODE_FONT_MAX, Math.max(CODE_FONT_MIN, Math.round(size * 2) / 2));
+const clampTerminalFont = (size: number) => Math.min(TERMINAL_FONT_MAX, Math.max(TERMINAL_FONT_MIN, Math.round(size)));
 export const UI_SCALES = [0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4, 1.5];
 
 const DEFAULTS: Settings = {
@@ -233,7 +239,7 @@ const DEFAULTS: Settings = {
   syntaxTheme: "dark-plus",
   lightSyntaxTheme: "github-light-default",
   sideBySide: false,
-  hideUnchanged: false,
+  hideUnchanged: true,
   ignoreWhitespace: false,
   whitespaceMode: "amount",
   wordWrap: false,
@@ -245,6 +251,8 @@ const DEFAULTS: Settings = {
   terminalFont: "Editor",
   customTerminalFont: "",
   terminalFontSize: DEFAULT_TERMINAL_FONT_SIZE,
+  // As Ghostty, iTerm2 and VS Code: at 1.2 a pane had a sixth fewer rows, and Claude Code drops its
+  // usage lines, then its header, below ~16 rows.
   terminalLineHeight: 1,
   terminalCursor: "block",
   terminalCursorBlink: true,
@@ -277,16 +285,19 @@ const KEY = "gitviber.settings.v2";
 function load(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
-    const s = raw ? { ...DEFAULTS, ...JSON.parse(raw) } : DEFAULTS;
-    if (!(s.codeFont in CODE_FONTS) && s.codeFont !== "Custom") s.codeFont = DEFAULTS.codeFont;
-    if (!(s.codeFontWeight in CODE_FONT_WEIGHTS)) s.codeFontWeight = DEFAULTS.codeFontWeight;
+    const stored = raw ? JSON.parse(raw) : null;
+    const s = stored ? { ...DEFAULTS, ...stored } : DEFAULTS;
+    if (!Object.hasOwn(CODE_FONTS, s.codeFont) && s.codeFont !== "Custom") s.codeFont = DEFAULTS.codeFont;
+    if (!Object.hasOwn(CODE_FONT_WEIGHTS, s.codeFontWeight)) s.codeFontWeight = DEFAULTS.codeFontWeight;
     if (!IS_MAC && MAC_ONLY_FONTS.includes(s.codeFont)) s.codeFont = DEFAULTS.codeFont;
-    if (!(s.uiFont in UI_FONTS) && s.uiFont !== "Custom") s.uiFont = DEFAULTS.uiFont;
+    if (!Object.hasOwn(UI_FONTS, s.uiFont) && s.uiFont !== "Custom") s.uiFont = DEFAULTS.uiFont;
     if (!IS_MAC && MAC_ONLY_UI_FONTS.includes(s.uiFont)) s.uiFont = DEFAULTS.uiFont;
+    if (typeof s.codeFontSize !== "number" || !Number.isFinite(s.codeFontSize)) s.codeFontSize = DEFAULTS.codeFontSize;
+    s.codeFontSize = clampCodeFont(s.codeFontSize);
     s.customCodeFont = typeof s.customCodeFont === "string" ? cleanFontName(s.customCodeFont) : "";
     s.customUiFont = typeof s.customUiFont === "string" ? cleanFontName(s.customUiFont) : "";
-    if (!(s.syntaxTheme in SYNTAX_THEMES)) s.syntaxTheme = DEFAULTS.syntaxTheme;
-    if (!(s.lightSyntaxTheme in LIGHT_SYNTAX_THEMES)) s.lightSyntaxTheme = DEFAULTS.lightSyntaxTheme;
+    if (!Object.hasOwn(SYNTAX_THEMES, s.syntaxTheme)) s.syntaxTheme = DEFAULTS.syntaxTheme;
+    if (!Object.hasOwn(LIGHT_SYNTAX_THEMES, s.lightSyntaxTheme)) s.lightSyntaxTheme = DEFAULTS.lightSyntaxTheme;
     // Before the named themes, Dimmed was an appearance of its own and System's dark a darkVariant.
     const old = s as { appearance: string; darkVariant?: string };
     // Dark always meant the graphite dark; Light switched to System later took the variant.
@@ -294,17 +305,20 @@ function load(): Settings {
     if (old.appearance === "dim") s.appearance = "dark";
     delete old.darkVariant;
     if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
-    if (!(s.darkTheme in DARK_THEMES)) s.darkTheme = DEFAULTS.darkTheme;
-    if (!(s.lightTheme in LIGHT_THEMES)) s.lightTheme = DEFAULTS.lightTheme;
+    if (!Object.hasOwn(DARK_THEMES, s.darkTheme)) s.darkTheme = DEFAULTS.darkTheme;
+    if (!Object.hasOwn(LIGHT_THEMES, s.lightTheme)) s.lightTheme = DEFAULTS.lightTheme;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
-    if (!(s.optionAsMeta in OPTION_KEYS)) s.optionAsMeta = DEFAULTS.optionAsMeta;
+    if (!Object.hasOwn(OPTION_KEYS, s.optionAsMeta)) s.optionAsMeta = DEFAULTS.optionAsMeta;
     if (typeof s.shellIntegration !== "boolean") s.shellIntegration = DEFAULTS.shellIntegration;
     if (!DIM_LEVELS.includes(s.terminalInactiveDim)) s.terminalInactiveDim = DEFAULTS.terminalInactiveDim;
     if (!terminalFontChoices.includes(s.terminalFont) && s.terminalFont !== "Custom") s.terminalFont = DEFAULTS.terminalFont;
     s.customTerminalFont = typeof s.customTerminalFont === "string" ? cleanFontName(s.customTerminalFont) : "";
+    // Up to 0.1.5 the terminal took the code font's size: keep one a user enlarged.
+    if (stored && !Object.hasOwn(stored, "terminalFontSize")) s.terminalFontSize = Math.max(DEFAULT_TERMINAL_FONT_SIZE, Math.round(s.codeFontSize));
     if (typeof s.terminalFontSize !== "number" || !Number.isFinite(s.terminalFontSize)) s.terminalFontSize = DEFAULTS.terminalFontSize;
+    s.terminalFontSize = clampTerminalFont(s.terminalFontSize);
     if (!TERMINAL_LINE_HEIGHTS.includes(s.terminalLineHeight)) s.terminalLineHeight = DEFAULTS.terminalLineHeight;
-    if (!(s.terminalCursor in TERMINAL_CURSORS)) s.terminalCursor = DEFAULTS.terminalCursor;
+    if (!Object.hasOwn(TERMINAL_CURSORS, s.terminalCursor)) s.terminalCursor = DEFAULTS.terminalCursor;
     if (typeof s.terminalCursorBlink !== "boolean") s.terminalCursorBlink = DEFAULTS.terminalCursorBlink;
     if (!SCROLLBACK_LINES.includes(s.terminalScrollback)) s.terminalScrollback = DEFAULTS.terminalScrollback;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
@@ -429,8 +443,8 @@ systemDark.addEventListener("change", () => current.appearance === "system" && e
 
 export function updateSettings(patch: Partial<Settings>) {
   current = { ...current, ...patch };
-  current.codeFontSize = Math.min(24, Math.max(10, Math.round(current.codeFontSize * 2) / 2));
-  current.terminalFontSize = Math.min(32, Math.max(8, Math.round(current.terminalFontSize)));
+  current.codeFontSize = clampCodeFont(current.codeFontSize);
+  current.terminalFontSize = clampTerminalFont(current.terminalFontSize);
   current.customCodeFont = cleanFontName(current.customCodeFont);
   current.customTerminalFont = cleanFontName(current.customTerminalFont);
   current.customUiFont = cleanFontName(current.customUiFont);

@@ -132,6 +132,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onMerge={merge}
         onRebase={(name) => void rebase(name)}
         onTerminal={branchTerminal}
+        onOpenWorktree={onOpenRepo}
         onDelete={deleteBranch}
         onCleanUp={cleanUp}
         onRename={(branch) => setBranchDialog({ kind: "rename", branch })}

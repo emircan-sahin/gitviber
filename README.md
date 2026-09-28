@@ -51,7 +51,9 @@ GitViber is one window for all of it, and it's small:
 Give every agent its own worktree and switch between them from the top bar, each with its change
 count, its pull request and how its checks are doing. Start one from any branch, commit or issue,
 in the folder you choose, or check a pull request out into its own worktree without touching
-yours. Rename one along with its folder, lock it, and remove or prune it when the work is merged.
+yours. A new worktree can run a command such as `claude` in its terminal right away, and gets copies
+of the ignored files `.worktreeinclude` lists, like your `.env`. Rename one along with its folder,
+lock it, and remove or prune it when the work is merged.
 Every worktree keeps its own terminals, so nothing gets lost when you hop between them, and a
 terminal can open in another project or any folder too. When an agent in another tab or worktree
 waits for you, its tab and its worktree get a dot, and a desktop notification if you turned those
@@ -59,35 +61,44 @@ on. Claude Code sends one here once its Notifications setting (`/config`) is `it
 
 ### Watch the work land
 
-Diffs refresh the moment an agent saves, without losing your scroll position. Whole files, unified
-or split, word-level highlights. `J` / `K` walk the changed files and `V` marks one viewed; when
-the agent touches it again, the mark clears so you know to look again.
+Diffs refresh the moment an agent saves, without losing your scroll position. Unified or split,
+word-level highlights, unchanged lines folded away until you want the whole file (`⌥C`). A changed
+image shows side by side, as a swipe or as an onion skin. `J` / `K` walk the changed files and `V`
+marks one viewed; when the agent touches it again, the mark clears so you know to look again.
 
 ### Test it right there
 
 A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the tests, start the dev
-server or talk to the agent without leaving the change you're reading. `⌘`-click a path it
-prints to open the file at that line, or a folder to show it in the explorer. In zsh and bash 4.4+
-each command gets a mark, red when it failed, `⌘↑` / `⌘↓` jump between them, and the last one's
-output copies from the right-click menu; your dotfiles stay as they are.
+server or talk to the agent without leaving the change you're reading. Each pane of a split has a
+title bar with what runs there, and `⌘R` names it. The terminal has its own font, size, cursor and
+scrollback in Settings, and `⌘=` / `⌘−` in the terminal or a pinch over it size its text.
+`⌘`-click a path it prints to open the file at that line, or a folder to show it in the explorer.
+In zsh and bash 4.4+ each command gets a mark, red when it failed, `⌘↑` / `⌘↓` jump between them,
+and the last one's output copies from the right-click menu; your dotfiles stay as they are.
+
+It's made for agents too: paste a screenshot or drop files and Claude Code or Codex gets their
+paths, Shift+Enter reaches them as its own key, and on a Mac a trackpad swipe scrolls Claude
+Code's fullscreen view row by row, as it does vim and htop.
 
 ### Browse the code, not just the diff
 
 A full file explorer with change bars in the gutter, quick open (`⌘P`) and rename, create and
-delete from the right-click menu. For most days that's the editor you no longer need open.
+delete from the right-click menu. Fix a line right in the file view and save it with `⌘S`. For most
+days that's the editor you no longer need open.
 
 ### Commit messages from your agent
 
 Turn it on in Settings, hit the sparkle next to the commit box, and your own `claude -p` or
-`codex exec` writes the message from the diff. No API key, no extra account: it uses the CLI
-you're already signed in to.
+`codex exec` writes the message from the diff. New pull request has the same button for the title
+and description. No API key, no extra account: it uses the CLI you're already signed in to.
 
 ![Claude Code writing a commit message in GitViber](assets/commit-message.gif)
 
 ### Good-looking, and yours
 
-Light and dark themes, eight syntax themes, your own code font and interface scale. Every action
-has a shortcut, every shortcut can be rebound, and holding `⌘` shows them all.
+Eleven color themes for the whole app, from Nord and Catppuccin to Solarized, 24 syntax themes,
+your own code font, terminal font and interface scale. Every action has a shortcut, every shortcut
+can be rebound in Settings, and holding `⌘` shows them all.
 
 <table>
   <tr>
@@ -103,7 +114,7 @@ has a shortcut, every shortcut can be rebound, and holding `⌘` shows them all.
 | **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu; anything that rewrites pushed commits asks first |
 | **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Clean up the merged ones in one go, squash- and rebase-merged included |
 | **Conflicts** | Resolve block by block (current, incoming, both, or by hand), then continue, skip or abort |
-| **Pull requests** | List, read, review in the same diff viewer, create, merge and check out. See why a check failed and copy it for the agent (GitHub) |
+| **Pull requests** | List, read, review in the same diff viewer, create, merge and check out. Read one commit by commit: pick a commit, or a run of them, to see only what they changed. See why a check failed and copy it for the agent (GitHub) |
 | **Issues** | List, read, open, edit, comment, close and reopen, or start one in its own worktree (GitHub) |
 
 ## Install
@@ -220,25 +231,37 @@ Every shortcut below except moving around a list or view (arrows, `↵`, `⎋`, 
 While you type, only shortcuts with `⌘`, `⌃` or an F-key apply, except `⌘←` `⌘→` and `⌃` with a letter, which edit the text.
 On Linux and Windows `⌘` is Ctrl, the views are on Alt+1–4, Ctrl+Tab / Ctrl+Shift+Tab switch tabs, and the terminal's
 `⌘T` `⌘D` `⌘K` `⌘W` are Ctrl+Shift+T, D, K and W, since Ctrl+letter stays the shell's (split down is Ctrl+Alt+Shift+D,
-zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter; focusing a pane by side has no default there, the shell and the desktop use those keys, and neither has renaming a pane, since Ctrl+R is the shell's history search).
+zooming a pane Ctrl+Shift+Enter, maximizing Ctrl+Alt+Shift+Enter, the previous / next pane Ctrl+Alt+← / →; focusing a pane by side has no default there, the shell and the desktop use those keys, and neither has renaming a pane, since Ctrl+R is the shell's history search).
+Reopening a closed tab and closing the other tabs have no default there either, as Ctrl+Shift+T opens a terminal.
 
 | Keys | |
 | --- | --- |
 | `⌘,` | Settings |
 | Hold `⌘`, or `⌘/` | Show every shortcut, the ones that don't work where you are dimmed (the hold can be turned off in Settings) |
 | `⇧⌘P` `⌘P` | Command palette, quick open |
+| `⌘F` `⇧⌘F` | Find where focus is, find in files |
+| `⌥⌘F`, or `/` in the list | Search the history |
 | `⌃1` `⌃2` `⌃3` `⌃4` | Changes, History, PRs, Issues |
 | `⌘1` … `⌘8`, `⌘9` | Go to tab 1 to 8, the last tab; the terminal's while it has focus |
 | `⇧⌘]` `⇧⌘[`, `⌘→` `⌘←`, `⌃⇥` `⌃⇧⇥` | Next / previous tab; the terminal's while it has focus, though in a terminal pane `⌘←` `⌘→` go to the line's start and end |
 | `⌥←` `⌥→` | Move the focused tab left / right, in the code view's tabs or the terminal's |
+| `⇧⌘T` `⌥⌘T` | Reopen the closed tab, close the other tabs |
 | `J` `K` | Next / previous changed file |
 | `↓` `↑` `↵` | Move through the focused list (Changes, History, PRs, Issues), `↵` keeps the tab open; `Home` `End` `PgUp` `PgDn` too |
 | `⇧F10` | The focused row's right-click menu |
 | `V` | Mark file viewed |
-| `S` `⌘⌫` | Stage or unstage, discard the open file |
+| `S` `⌘⌫` | Stage or unstage, discard the open file; in the explorer `⌘⌫` deletes the file |
+| `⌘A` | Select every change (in the Changes list) |
+| `⌘Z` `⇧⌘Z` | Undo, redo the last git action (outside text fields) |
 | `F7` `⇧F7`, `⌥↓` `⌥↑` | Next / previous change |
 | `⌥⌘S` `⌥⌘N` `⇧⌘⌫` | Stage, unstage, discard the selected lines, else the change at the cursor (next / previous change puts it there) |
-| `⌥S` `⌥C` `⌥Z` | Split view, collapse unchanged, word wrap |
+| `⌥S` `⌥C` `⌥W` `⌥Z` | Split view, collapse unchanged, ignore whitespace, word wrap |
+| `F12` or `⌘↵`, `⌥F12`, `⇧F12` | Go to definition (`⌘`-click too), peek it, find references (in the code view) |
+| `=` `−` `0` | Zoom an image in, out, to fit (in the image view) |
+| `⌘S` | Save the file you're editing |
+| `F2` | Rename the file, branch or worktree (in the explorer, branch picker or worktree picker) |
+| `T` `M` `⌫` | Open a terminal in the worktree, merge its branch, remove it (in the worktree picker) |
+| `⇧⌘O` | Open in the external app you last picked |
 | `⌘B` `⌥⌘B` | Toggle the git panel, the file explorer |
 | `⇧⌘G` `⌘E` `⇧⌘E` | Focus the git panel, the code view, the file explorer |
 | `F6` `⇧F6` | Focus the next / previous panel (not from the terminal, which keeps F-keys for its programs) |

@@ -386,7 +386,7 @@ function PhoneScene({ index, t }: { index: number; t: number }) {
         <DiffRows lines={visible} fresh={shown < lines.length ? shown - 1 : undefined} />
       </div>
       <div className="border-t border-border">
-        <TerminalTabs tabs={[{ folder: scene.folder, branch: scene.branch }]} />
+        <TerminalTabs tabs={[{ folder: scene.folder, branch: scene.branch }]} compact />
         <TerminalBody wrap className="pb-3">
           <AgentRun scene={scene} typing={shown < lines.length} />
         </TerminalBody>

@@ -6,6 +6,38 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+### Added
+
+- **A pull request's commits, by day,** in a Commits section on its page, with CI, a copyable SHA
+  and the full message. Pick one, or ⇧-click for a run, to narrow Files changed to what they
+  changed; ↑/↓ and ←/→ step through them. Commits pushed since you last looked are marked New.
+  In #33.
+- **The terminal has its own font, size, line height, cursor and scrollback** in Settings →
+  Terminal, with a live sample. With the terminal focused, ⌘= ⌘− ⌘0 size its font, and so do a
+  pinch or Ctrl+scroll over it.
+- **Split terminal panes have a title bar** with the program's title (else its folder), the
+  needs-you dot and their own split and close buttons, and the divider between panes is easier
+  to see.
+- **⌘R names the focused pane of a split,** and so does a double-click on its title bar. The name
+  is kept with the session.
+
+### Changed
+
+- **Reload Window moves to ⇧⌘R,** so ⌘R pressed by habit in a terminal no longer ends the
+  programs running there.
+- **Settings are grouped under General, Workspace and Git,** with their fields in titled cards,
+  and keyboard shortcuts sit under category tabs.
+- **New installs start with a 13.5 editor font and unchanged lines collapsed** in diffs. The
+  terminal's font starts at 13, or at your editor's size if you had made that larger.
+
+### Fixed
+
+- **A trackpad swipe in a program that reads the wheel,** such as Claude Code's fullscreen view,
+  vim or htop, scrolls a row for every row swiped on macOS, where a long swipe used to get
+  nowhere. In #97.
+- **The Linux AppImage starts when another user runs it,** as under firejail, instead of failing
+  with "Permission denied".
+
 ## [0.1.5] - 2026-09-28
 
 ### Changed

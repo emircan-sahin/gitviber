@@ -281,6 +281,8 @@ jobs:
           mkdir -p ~/.cache/tauri
           curl -fsSL -o ~/.cache/tauri/AppRun-x86_64 \
             https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64
+          # apprun-old is a tag that can move; this binary goes into every AppImage.
+          echo "f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f  $HOME/.cache/tauri/AppRun-x86_64" | sha256sum -c -
           chmod 755 ~/.cache/tauri/AppRun-x86_64
 
       # No secrets here: the bundles (.deb, .rpm, AppImage) are built without the updater key,
@@ -293,10 +295,11 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: |
           "$GITHUB_WORKSPACE"/src-tauri/target/release/bundle/appimage/*.AppImage --appimage-extract > /dev/null
-          bad=$(find squashfs-root -type f -perm -u=x ! -perm -o=x)
+          bad=$(find squashfs-root \( -type f -o -type d \) -perm -u=x ! -perm -o=x)
           rm -rf squashfs-root
           if [ -n "$bad" ]; then
-            echo "::error::Executable only for its owner inside the AppImage:"$'\n'"$bad"
+            # Workflow commands end at a newline; %0A keeps the list inside the annotation.
+            echo "::error::Executable only for its owner inside the AppImage:%0A${bad//$'\n'/%0A}"
             exit 1
           fi
 

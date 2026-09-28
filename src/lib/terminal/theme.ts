@@ -71,8 +71,6 @@ export function terminalOptions(): ITerminalOptions {
     fontWeight: s.codeFontWeight,
     // Bold stays two steps above whatever the text is, so it still stands out at Semibold.
     fontWeightBold: s.codeFontWeight + 200,
-    // 1 by default, as Ghostty (cmux), iTerm2 and VS Code: at 1.2 a pane had a sixth fewer rows,
-    // and Claude Code drops its usage lines, then its header, below ~16 rows.
     lineHeight: s.terminalLineHeight,
     cursorStyle: s.terminalCursor,
     cursorBlink: s.terminalCursorBlink,

@@ -78,7 +78,8 @@ export const COMMANDS = [
   { id: "diff.prevChange", title: "Previous Change", category: "Diff", keys: ["shift+f7", "alt+up"] },
   // The selected lines, else the change at the cursor (which Next / Previous Change put there). VS Code
   // has ⌘K ⌘⌥S and ⌘K ⌘N: with no two-key chords here, their second key. Its ⌘K ⌘R is Monaco's ⌥⌘R
-  // (Toggle Regex in Find) and ⌘R reloads, so discard is ⌘⌫ (the file's) with ⇧. Not from text fields.
+  // (Toggle Regex in Find) and ⌘R, Reload Window's until it moved to ⇧⌘R, names a terminal pane, so
+  // discard is ⌘⌫ (the file's) with ⇧. Not from text fields.
   { id: "diff.stageChange", title: "Stage Change or Selected Lines", category: "Diff", keys: ["alt+cmd+s"], outsideText: true, noRepeat: true },
   { id: "diff.unstageChange", title: "Unstage Change or Selected Lines", category: "Diff", keys: ["alt+cmd+n"], outsideText: true, noRepeat: true },
   { id: "diff.discardChange", title: "Discard Change or Selected Lines", category: "Diff", keys: ["shift+cmd+backspace"], outsideText: true, noRepeat: true },
