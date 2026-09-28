@@ -27,6 +27,7 @@ import { failed, toast } from "../app/toast";
 import { copyText } from "../app/clipboard";
 import { loadSession, type SavedSession, scheduleSave } from "./session";
 import { lookedAt, watchAttention } from "./needsYou";
+import { reportWheelByRow } from "./wheel";
 import { type Direction, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
 
 export { dismissRestore, restoreSession } from "./session";
@@ -227,6 +228,15 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   watchAttention(p);
+  reportWheelByRow(term);
+  // XTVERSION names this app, as Ghostty and iTerm2 name themselves. Answered as xterm.js, Claude
+  // Code took the pane for VS Code's terminal: 3 rows a report once the wheel slowed, and its
+  // workarounds for VS Code's glyph atlas.
+  term.parser.registerCsiHandler({ prefix: ">", final: "q" }, (params) => {
+    if (params[0]) return false;
+    term.input("\x1bP>|GitViber\x1b\\", false);
+    return true;
+  });
   // OSC 52 copies (clipboard.rs writes macOS's and Linux's only). Taken from the pane in use alone,
   // where a yank or a tmux copy happens: output in the background can't replace the clipboard.
   if (!IS_WINDOWS)
