@@ -330,12 +330,16 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
  * mouse notch one big one: either way about a point per notch.
  */
 let pinched = 0;
+/** Pixels a line-mode wheel's line counts as. */
+const PX_PER_LINE = 16;
+/** Pixels of pinch (or wheel) a font step takes. */
+const PINCH_STEP_PX = 24;
 function pinchFont(e: WheelEvent) {
   if (!e.ctrlKey) return;
   e.preventDefault();
   e.stopPropagation();
-  pinched += e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * 16 : e.deltaY;
-  if (Math.abs(pinched) < 24) return;
+  pinched += e.deltaMode === WheelEvent.DOM_DELTA_LINE ? e.deltaY * PX_PER_LINE : e.deltaY;
+  if (Math.abs(pinched) < PINCH_STEP_PX) return;
   stepTerminalFont(pinched < 0 ? 1 : -1);
   pinched = 0;
 }
