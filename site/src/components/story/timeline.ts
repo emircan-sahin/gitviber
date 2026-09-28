@@ -131,7 +131,8 @@ export function terminalAt(t: number) {
     secondTab ? pane(AUTH_TAB, "pnpm test src/auth", "auth", t, 3500) : pane(FUZZY_TAB, "pnpm test", "test", t, 500),
     split ? pane(AUTH_TAB, "pnpm dev", "dev", t, 5600) : undefined,
   ].filter((p): p is Pane => !!p);
-  const tabs: TerminalTab[] = secondTab ? [FUZZY_TAB, { ...AUTH_TAB, panes: split ? 2 : undefined }] : [FUZZY_TAB];
+  // The tab the user left has a terminal that waits; so does the split's first pane, its tests done.
+  const tabs: TerminalTab[] = secondTab ? [{ ...FUZZY_TAB, calling: true }, { ...AUTH_TAB, panes: split ? 2 : undefined, calling: split }] : [FUZZY_TAB];
   return {
     tabs,
     active: secondTab ? 1 : 0,
@@ -147,9 +148,10 @@ export const SUMMARY = "feat(search): add fuzzy matching to quick open";
 const DESCRIPTION = "Scores consecutive hits and word starts higher, so the file you meant comes first.";
 
 // The pointer glides to the sparkle and clicks it while the view zooms in on the commit box; the
+// agent is asked for a moment (the app lands its message at once, the story types it out), and the
 // view zooms back out once the message is written, for the commit itself.
 const CLICK_AT = 1000;
-const SUMMARY_FROM = CLICK_AT + 600;
+const SUMMARY_FROM = CLICK_AT + 1500;
 const DESCRIPTION_FROM = SUMMARY_FROM + SUMMARY.length * 28 + 200;
 const WRITTEN = DESCRIPTION_FROM + DESCRIPTION.length * 16;
 const ZOOM_OUT = WRITTEN + 500;
@@ -163,7 +165,7 @@ export function commitAt(t: number): { box: CommitState; committed: boolean; zoo
       summary: committed ? "" : typed(SUMMARY, t, SUMMARY_FROM, 28),
       description: committed ? "" : typed(DESCRIPTION, t, DESCRIPTION_FROM, 16),
       caret: committed || t < SUMMARY_FROM ? undefined : t < DESCRIPTION_FROM ? "summary" : t < WRITTEN ? "description" : undefined,
-      asking: t >= CLICK_AT && t < WRITTEN,
+      asking: t >= CLICK_AT && t < SUMMARY_FROM,
       pressed: t >= COMMIT_AT && t < COMMIT_AT + 250,
       pointer: t < CLICK_AT ? "move" : t < CLICK_AT + 700 ? "click" : undefined,
     },

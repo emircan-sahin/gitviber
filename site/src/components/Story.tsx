@@ -339,8 +339,8 @@ function PhonePanel({ chapter }: { chapter: number }) {
     panel = (
       <Frame>
         <GitPanel files={state.files} width={320} footer={<CommitBox {...state.box} />}>
-          {/* Fixed height, so emptying the list doesn't move the page. */}
-          <div className="h-[132px]">
+          {/* Fixed height, so emptying the list doesn't move the page; nor does the asking row, which takes its room. */}
+          <div className={state.box.asking ? "h-[106px]" : "h-[132px]"}>
             {state.files.length ? <CommitRows files={state.files} /> : <AllCaughtUp className="pt-5" />}
           </div>
         </GitPanel>
