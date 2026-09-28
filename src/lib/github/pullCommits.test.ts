@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Commit } from "../api/types.ts";
-import { byDay, commitDay, pickedCommits, pickLabel, runTo } from "./pullCommits.ts";
+import { byDay, commitDay, isWholePr, pickedCommits, pickLabel, runTo } from "./pullCommits.ts";
 
 const commit = (sha: string, parent: string | null, at = new Date(2026, 8, 28, 12)): Commit => ({
   sha,
@@ -69,10 +69,10 @@ test("a run across a merged-in branch isn't picked, and extending into one picks
   assert.deepEqual(runTo(merged, null, m.sha), { anchor: m.sha, to: m.sha });
 });
 
-test("picking every commit from the merge base is the whole PR, not a pick", () => {
-  assert.equal(pickedCommits(list, { anchor: a.sha, to: c.sha }, "base0000"), null);
-  assert.equal(pickedCommits(list, { anchor: c.sha, to: a.sha }, "base0000"), null);
-  assert.deepEqual(pickedCommits(list, { anchor: a.sha, to: b.sha }, "base0000"), [a, b]);
+test("picking every commit from the merge base is the whole PR, not a narrowing", () => {
+  assert.equal(isWholePr(list, [a, b, c], "base0000"), true);
+  assert.equal(isWholePr(list, [a, b], "base0000"), false);
+  assert.equal(isWholePr(list, [b, c], "base0000"), false);
   // The list capped to the newest: its first commit's parent isn't the merge base.
-  assert.deepEqual(pickedCommits(list, { anchor: a.sha, to: c.sha }, "older00"), [a, b, c]);
+  assert.equal(isWholePr(list, [a, b, c], "older00"), false);
 });

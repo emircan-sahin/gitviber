@@ -12,16 +12,18 @@ export interface CommitRun {
  * The commits `run` covers (oldest first); null when a force-push took either end away, or when
  * they aren't one line of first parents: a merged-in branch's commits sit next to the branch's own
  * in the list, and a diff from the first one's parent to the last would show only some of them.
- * Null too when they're the whole PR, from its merge base `base` to its head: that's no pick.
  */
-export function pickedCommits(commits: Commit[], run: CommitRun | null, base?: string): Commit[] | null {
+export function pickedCommits(commits: Commit[], run: CommitRun | null): Commit[] | null {
   const a = run ? commits.findIndex((c) => c.sha === run.anchor) : -1;
   const b = run ? commits.findIndex((c) => c.sha === run.to) : -1;
   if (a < 0 || b < 0) return null;
   const list = commits.slice(Math.min(a, b), Math.max(a, b) + 1);
-  if (list[0].parents[0] === base && list[list.length - 1] === commits[commits.length - 1]) return null;
   return list.every((c, i) => i === 0 || c.parents[0] === list[i - 1].sha) ? list : null;
 }
+
+/** Whether `picked` is every commit from the PR's merge base `base` to its head: the whole PR, not a narrowing of it. */
+export const isWholePr = (commits: Commit[], picked: Commit[], base?: string) =>
+  picked[0].parents[0] === base && picked[picked.length - 1] === commits[commits.length - 1];
 
 /** The run from `anchor` to `to`, or `to` alone when that run couldn't be picked. */
 export function runTo(commits: Commit[], anchor: string | null, to: string): CommitRun {

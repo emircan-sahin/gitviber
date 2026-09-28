@@ -67,10 +67,10 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   );
   const commits = files.data?.commits ?? NO_COMMITS;
   const pick = useCommitPick(pull.url, commits, files.data?.base);
-  const { picked } = pick;
+  const { picked, narrowed } = pick;
   // What the picked commits changed together, from the first one's parent to the last.
-  const pickBase = picked?.[0].parents[0];
-  const pickHead = picked?.[picked.length - 1].sha;
+  const pickBase = narrowed?.[0].parents[0];
+  const pickHead = narrowed?.[narrowed.length - 1].sha;
   const pickedFiles = useGitHubData(
     pickBase && pickHead ? `range-files:${pickBase}..${pickHead}` : null,
     useCallback(() => api.rangeFiles(pickBase!, pickHead!), [pickBase, pickHead]),
@@ -143,12 +143,12 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
   };
 
   // The whole PR, or the picked commits: their lines aren't the head's, so they take no line comments.
-  const shown = picked
-    ? pickedFiles.data && pickBase && pickHead ? { files: pickedFiles.data, range: { number: p.number, label: pickLabel(picked), base: pickBase, head: pickHead } } : null
+  const shown = narrowed
+    ? pickedFiles.data && pickBase && pickHead ? { files: pickedFiles.data, range: { number: p.number, label: pickLabel(narrowed), base: pickBase, head: pickHead } } : null
     : files.data ? { files: files.data.files, range: { number: p.number, pullUrl: p.url, base: files.data.base, head: files.data.head } } : null;
   // A root commit (merged in from an unrelated history) has nothing before it.
-  const shownError = picked ? (pickBase ? pickedFiles.error : `${picked[0].shortSha} has no parent to compare with.`) : files.error;
-  const shownLoading = picked ? pickedFiles.loading : files.loading;
+  const shownError = narrowed ? (pickBase ? pickedFiles.error : `${narrowed[0].shortSha} has no parent to compare with.`) : files.error;
+  const shownLoading = narrowed ? pickedFiles.loading : files.loading;
 
   if (error && !d) {
     return <div className="p-8 text-center text-[12.5px] text-muted-foreground">{error}</div>;
@@ -246,16 +246,16 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
 
         {files.data && commits.length > 0 && <PullCommits pull={p} commits={commits} total={d?.commits ?? commits.length} pick={pick} busy={!!busy} act={act} />}
 
-        <Section title="Files changed" aside={shown ? `${shown.files.length}` : d && !picked ? `${d.changedFiles}` : undefined}>
+        <Section title="Files changed" aside={shown ? `${shown.files.length}` : d && !narrowed ? `${d.changedFiles}` : undefined}>
           <PickBar pick={pick} />
           {!shown &&
             (shownError !== undefined && !shownLoading ? (
               <div className="px-3 py-2 text-[12px] text-removed">
-                Could not load {picked ? "the commits'" : "the PR's"} files: {errorMessage(shownError)}
+                Could not load {narrowed ? "the commits'" : "the PR's"} files: {errorMessage(shownError)}
               </div>
             ) : (
               <div className="flex items-center gap-2 px-3 py-2 text-[12px] text-subtle">
-                <Loader2 className="size-3.5 animate-spin" /> {picked ? "Loading…" : "Fetching the PR's commits…"}
+                <Loader2 className="size-3.5 animate-spin" /> {narrowed ? "Loading…" : "Fetching the PR's commits…"}
               </div>
             ))}
           {shown && !shown.files.length && <div className="px-3 py-2 text-[12px] text-subtle">No files changed.</div>}
