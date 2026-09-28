@@ -137,7 +137,7 @@ export function terminalAt(t: number) {
     active: secondTab ? 1 : 0,
     fresh: secondTab ? 1 : undefined,
     // The + menu, open while choosing the other worktree.
-    menu: t >= 2500 && t < 3300 ? (t >= 2900 ? 2 : 1) : undefined,
+    menu: t >= 2500 && t < 3300 ? (t >= 2900 ? 1 : 0) : undefined,
     panes,
     key: keyAt(events, t),
   };
