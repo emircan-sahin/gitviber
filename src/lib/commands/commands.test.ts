@@ -274,6 +274,25 @@ test("no two global commands share a default, and macOS takes none of them", () 
   }
 });
 
+test("Reload Window is ⇧⌘R, leaving ⌘R to name a terminal pane", () => {
+  assert.deepEqual(bindingsFor("window.reload", {}, true), ["shift+cmd+r"]);
+  assert.deepEqual(bindingsFor("terminal.renamePane", {}, true), ["cmd+r"]);
+});
+
+test("no two commands of one place share a default", () => {
+  for (const mac of [true, false]) {
+    const owner = new Map<string, string>();
+    for (const c of COMMANDS) {
+      if (!("local" in c)) continue;
+      for (const chord of bindingsFor(c.id, {}, mac)) {
+        const key: string = `${c.local} ${chord}`;
+        assert.equal(owner.get(key), undefined, `${chord} is ${owner.get(key)}'s and ${c.id}'s in ${c.local} (mac: ${mac})`);
+        owner.set(key, c.id);
+      }
+    }
+  }
+});
+
 // Monaco's own ⌥⌘ keys (Ctrl+Alt elsewhere), from its default keybindings: the code view's capture
 // listener would take them from it. Find's toggles (⌥⌘C W R L P), replace (⌥⌘F), remove brackets (⌥⌘⌫).
 const MONACO_ALT_CMD = ["c", "w", "r", "l", "p", "f", "backspace", "space", "[", "]", "up", "down", ".", "enter"].map((k) => `alt+cmd+${k}`);
