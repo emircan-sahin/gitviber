@@ -25,7 +25,7 @@ import { cn } from "@/lib/utils";
 import { createStore } from "@/lib/store";
 import { folderName } from "@/lib/path";
 import { NameInput } from "@/components/NameInput";
-import { NeedsYouDot } from "@/components/NeedsYouDot";
+import { NeedsYouDot, WorkingDot } from "@/components/NeedsYouDot";
 
 /** A split's structure without its sizes: what a tab re-lays out on (a split or close), not a drag. */
 export const shape = (l: Layout): string => (typeof l === "number" ? String(l) : `${l.dir}(${l.children.map(shape).join()})`);
@@ -154,7 +154,7 @@ function PaneHeader({ pane, focused }: { pane: PaneInfo; focused: boolean }) {
       ) : (
         <span className={cn("min-w-0 truncate", focused ? "text-foreground" : "text-muted-foreground")}>{title}</span>
       )}
-      {pane.needsYou && <NeedsYouDot />}
+      {pane.needsYou ? <NeedsYouDot /> : pane.agent?.state === "working" && <WorkingDot />}
       <div className={cn("ml-auto flex shrink-0 items-center", !focused && "opacity-0 group-hover/pane:opacity-100")}>
         {action("Split right", Columns2, () => void splitActive("row", id))}
         {action("Split down", Rows2, () => void splitActive("col", id))}

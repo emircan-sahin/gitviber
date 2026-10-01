@@ -13,11 +13,11 @@ import { cn } from "@/lib/utils";
 import { plural, relativeTime } from "@/lib/format";
 import { shortPath } from "@/lib/git/worktrees";
 import { folderName, isInside } from "@/lib/path";
-import { useNeedsYou } from "@/lib/terminal/terminals";
+import { useAgentsWorking, useNeedsYou } from "@/lib/terminal/terminals";
 import { copyText } from "@/lib/app/clipboard";
 import { revealProject } from "@/lib/app/openIn";
 import { RowAction } from "@/components/RowAction";
-import { NeedsYouDot } from "@/components/NeedsYouDot";
+import { NeedsYouDot, WorkingDot } from "@/components/NeedsYouDot";
 import { CiBadge, ciLabel } from "@/components/CiBadge";
 import { PullStateIcon } from "@/features/github/shared/StateBadges";
 import { type BranchPull, useWorktreePulls } from "./useWorktreePulls";
@@ -47,7 +47,7 @@ interface Props {
   onOpenPull: (p: Pull) => void;
 }
 
-/** The worktrees with a terminal that needs the user: each pane's deepest one, as agents' worktrees can sit inside the main one. */
+/** The worktrees of the terminals in `cwds` (ones that need the user, or whose agent works): each pane's deepest one, as agents' worktrees can sit inside the main one. */
 function needing(worktrees: Worktree[], cwds: string[]) {
   const out = new Set<string>();
   for (const cwd of cwds) {
@@ -66,6 +66,7 @@ function needing(worktrees: Worktree[], cwds: string[]) {
 export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew, onGitHub, onOpenPull }: Props) {
   const [open, setOpen] = useState(false);
   const calling = useNeedsYou();
+  const agentsWorking = useAgentsWorking();
   const [list, setList] = useState(worktrees);
   const { index, setIndex, move } = usePickerIndex(list.length);
   const listId = useId();
@@ -126,6 +127,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const main = list.find((w) => w.main && !w.bare);
   const here = linked ? pullOf(current.branch) : undefined;
   const needy = needing(list, calling);
+  const busy = needing(list, agentsWorking);
   const elsewhere = list.some((w) => !w.current && needy.has(w.path)) ? " · a terminal in another worktree needs you" : "";
   const usable = (w: Worktree) => !w.current && !w.prunable && !w.bare;
   const then = (fn: (w: Worktree) => void) => (w: Worktree) => {
@@ -244,6 +246,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 time={branches.find((b) => !b.remote && b.name === w.branch)?.timestamp}
                 state={states[w.path]}
                 calling={needy.has(w.path)}
+                agentWorking={busy.has(w.path)}
                 pull={pullOf(w.branch)}
                 onOpenPull={openPull}
                 into={current?.branch ?? null}
@@ -314,6 +317,7 @@ function WorktreeRow({
   time,
   state,
   calling,
+  agentWorking,
   pull,
   onOpenPull,
   into,
@@ -332,6 +336,8 @@ function WorktreeRow({
   state: WorktreeState | undefined;
   /** A terminal in it needs the user. */
   calling: boolean;
+  /** An agent in a terminal in it is working. */
+  agentWorking: boolean;
   /** Its branch's pull request, when a cached PR list has one. */
   pull: BranchPull | undefined;
   onOpenPull: (p: Pull) => void;
@@ -377,10 +383,16 @@ function WorktreeRow({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={cn("truncate font-mono text-[11.5px]", !w.branch && "opacity-70")}>{branch}</span>
           {w.main && <Chip hot={hot}>main</Chip>}
-          {calling && (
+          {calling ? (
             <Tip label="A terminal here needs you">
               <NeedsYouDot className={cn(hot && "bg-primary-foreground")} />
             </Tip>
+          ) : (
+            agentWorking && (
+              <Tip label="An agent in a terminal here is working">
+                <WorkingDot className={cn(hot && "border-primary-foreground")} />
+              </Tip>
+            )
           )}
           {w.inUse ? (
             <Tip label={w.lockReason ?? "Locked by a running process"}>
