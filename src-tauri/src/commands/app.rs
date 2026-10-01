@@ -36,9 +36,9 @@ pub fn pty_spawn(
 
 /// Off the main thread: a paste into a program that isn't reading blocks until it reads.
 #[tauri::command]
-pub async fn pty_write(state: State<'_, AppState>, id: u32, data: String) -> Res<()> {
+pub async fn pty_write(state: State<'_, AppState>, id: u32, data: String, binary: bool) -> Res<()> {
     let writer = state.ptys.writer(id)?;
-    blocking(move || pty::write(&writer, &data)).await
+    blocking(move || pty::write(&writer, &pty::input_bytes(&data, binary))).await
 }
 
 /// Sync, so it runs on the main thread, where AppKit's pasteboard and GTK's clipboard belong.
@@ -80,6 +80,11 @@ pub fn keep_dropped(paths: Vec<String>) -> Vec<String> {
 #[tauri::command]
 pub fn pty_resize(state: State<'_, AppState>, id: u32, cols: u16, rows: u16) -> Res<()> {
     state.ptys.resize(id, cols, rows)
+}
+
+#[tauri::command]
+pub fn pty_ack(state: State<'_, AppState>, id: u32, bytes: usize) {
+    state.ptys.ack(id, bytes)
 }
 
 #[tauri::command]

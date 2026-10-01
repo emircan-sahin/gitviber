@@ -76,7 +76,7 @@ jobs:
           toolchain: stable
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      # Also applies the xterm patch in patches/.
+      # Also applies the xterm.js patches in patches/.
       - run: pnpm install --frozen-lockfile
 
       # Everything that runs code from dependencies (install scripts, Vite, build.rs) happens

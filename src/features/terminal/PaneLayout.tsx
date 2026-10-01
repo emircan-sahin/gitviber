@@ -78,7 +78,7 @@ function PaneView({ id, dim, header }: { id: number; dim: number; header?: { pan
       <ContextMenu onOpenChange={(open) => open && setCan(paneMenuState(id))}>
         <ContextMenuTrigger asChild>
           {/* Inset from the edges like the code view's text; the scrollbar keeps the right edge, command marks the left. */}
-          <div ref={ref} className="min-h-0 w-full flex-1 pt-2 pb-1 pl-3 transition-opacity duration-150" style={{ opacity: 1 - dim }} onContextMenu={(e) => paneTakesMouse(id) && e.preventDefault()} />
+          <div ref={ref} className="min-h-0 w-full flex-1 pt-2 pb-1 pl-3 transition-opacity duration-150" style={{ opacity: 1 - dim }} onContextMenu={(e) => paneTakesMouse(id, e.nativeEvent) && e.preventDefault()} />
         </ContextMenuTrigger>
         <ContextMenuContent
           onCloseAutoFocus={(e) => {

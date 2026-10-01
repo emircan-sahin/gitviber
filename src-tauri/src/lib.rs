@@ -291,6 +291,7 @@ pub fn run() {
             commands::app::pty_spawn,
             commands::app::pty_cwd,
             commands::app::pty_write,
+            commands::app::pty_ack,
             commands::app::pty_resize,
             commands::app::pty_kill,
             commands::app::terminal_paste,

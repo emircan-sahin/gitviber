@@ -58,10 +58,14 @@ export interface Pane extends SaveState {
   pty: number | null;
   started: boolean;
   /** Typed while a write is in flight (or before the shell is up); sent next, in order. */
-  pending: string;
+  pending: Input[];
   writing: boolean;
+  /** Output parsed and not yet acked to pty.rs (parsed). */
+  unacked: number;
   /** A column change held back from a long history (fitPane). */
   fitTimer?: number;
+  /** The size the pty is sent once a resize settles. */
+  ptyResizeTimer?: number;
   /** The commands shell integration marks. */
   marks: CommandMarks;
   /** A command to type into the shell once it's up (openTerminal). */
@@ -173,23 +177,33 @@ subscribeSettings(() => {
   }
 });
 
-function send(p: Pane, data: string) {
-  p.pending += data;
+/** `binary`: xterm's onBinary bytes, a char each, which aren't text to encode as UTF-8. */
+interface Input {
+  data: string;
+  binary: boolean;
+}
+
+function send(p: Pane, data: string, binary = false) {
+  const last = p.pending.at(-1);
+  if (last?.binary === binary) last.data += data;
+  else if (data) p.pending.push({ data, binary });
   if (p.writing) return;
   const flush = () => {
-    if (!p.pending || p.pty === null) {
+    if (!p.pending.length || p.pty === null) {
       p.writing = false;
       return;
     }
-    const data = p.pending;
-    p.pending = "";
+    const { data, binary } = p.pending.shift()!;
     p.writing = true;
-    pty.write(p.pty, data)
+    pty.write(p.pty, data, binary)
       .catch(() => {})
       .finally(flush);
   };
   flush();
 }
+
+/** How long a pane's size holds still before its program hears of it. */
+const PTY_RESIZE_WAIT = 50;
 
 /** `dir`: where the shell starts, when that's not `cwd` (a split, a restore). */
 export function createPane(cwd: string, restored?: { history: string; savedAt: number }, dir = cwd): PaneInfo {
@@ -212,7 +226,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   term.loadAddon(search);
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, marks: new CommandMarks(term, () => void shellDir(p)) };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, marks: new CommandMarks(term, () => void shellDir(p)) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   term.onWriteParsed(() => {
@@ -220,11 +234,16 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
     scheduleSave();
   });
   term.onData((data) => send(p, data));
+  // Mouse reports in the default encoding: a byte a coordinate, past 127 beyond column 95, not UTF-8.
+  term.onBinary((data) => send(p, data, true));
   term.onResize(({ cols, rows }) => {
     // Reflow rewraps the history.
     p.dirty = true;
     scheduleSave();
-    if (p.pty !== null) void pty.resize(p.pty, cols, rows).catch(() => {});
+    // A divider drag changes the rows each frame, and Claude Code redrew on each SIGWINCH, leaving
+    // copies of its screen in the history: the program gets the size the drag settles on.
+    window.clearTimeout(p.ptyResizeTimer);
+    p.ptyResizeTimer = window.setTimeout(() => p.pty !== null && void pty.resize(p.pty, cols, rows).catch(() => {}), PTY_RESIZE_WAIT);
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   watchAttention(p);
@@ -232,6 +251,9 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   // A mouse wheel's notch arrives as ~53-100 px off macOS, so a row per row would scroll vim or
   // htop 3-5 rows a notch where it scrolled one; the replay is for the Mac trackpad it was made on.
   if (IS_MAC) reportWheelByRow(term);
+  // ⌥-drag selects past a program that reads the mouse, which Claude Code's "option+click to native
+  // select" counts on. Forcing it always would cost ⌥-drag's block selection where none reads it.
+  if (IS_MAC) host.addEventListener("mousedown", () => (term.options.macOptionClickForcesSelection = term.modes.mouseTrackingMode !== "none"), true);
   // XTVERSION names this app, as Ghostty and iTerm2 name themselves. Answered as xterm.js, Claude
   // Code took the pane for VS Code's terminal: 3 rows a report once the wheel slowed, and its
   // workarounds for VS Code's glyph atlas.
@@ -322,10 +344,12 @@ async function start(p: Pane) {
   try {
     const { cols, rows } = p.term;
     const began = performance.now();
-    const { id, integrated } = await pty.spawn(p.cwd, p.dir !== p.cwd ? p.dir : null, cols, rows, getSettings().shellIntegration, (bytes) => p.term.write(new Uint8Array(bytes)), (exit) => exited(p, exit, performance.now() - began));
+    const { id, integrated } = await pty.spawn(p.cwd, p.dir !== p.cwd ? p.dir : null, cols, rows, getSettings().shellIntegration, (bytes) => p.term.write(new Uint8Array(bytes), () => parsed(p, bytes.byteLength)), (exit) => exited(p, exit, performance.now() - began));
     // Closed while it was starting.
     if (!panes.has(p.id)) return void pty.kill(id).catch(() => {});
     p.pty = id;
+    // What was parsed before the id came back.
+    parsed(p, 0);
     // A resize while it was starting had no shell to reach.
     if (p.term.cols !== cols || p.term.rows !== rows) void pty.resize(id, p.term.cols, p.term.rows).catch(() => {});
     send(p, "");
@@ -333,6 +357,16 @@ async function start(p: Pane) {
   } catch (e) {
     p.term.write(`\x1b[31m${errorMessage(e)}\x1b[0m\r\n`);
   }
+}
+
+/** Acks go to pty.rs in steps of this, not an IPC a chunk; well under its 512 KiB high water. */
+const ACK_STEP = 64 * 1024;
+
+function parsed(p: Pane, bytes: number) {
+  p.unacked += bytes;
+  if (p.unacked < ACK_STEP || p.pty === null) return;
+  void pty.ack(p.pty, p.unacked).catch(() => {});
+  p.unacked = 0;
 }
 
 /**
@@ -461,6 +495,7 @@ function closePane(id: number, byUser = false) {
   const focused = document.activeElement;
   panes.delete(id);
   window.clearTimeout(p.fitTimer);
+  window.clearTimeout(p.ptyResizeTimer);
   forgetFind(p);
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});
   const canvases = [...(p.term.element?.querySelectorAll("canvas") ?? [])];
@@ -574,10 +609,13 @@ export function paneMenuState(id: number) {
   return { selection: !!p?.term.hasSelection(), paste: !!p && !p.term.options.disableStdin, output: !!p?.marks.hasOutput() };
 }
 
-/** A program reading the mouse (tmux, vim `mouse=a`) gets the right-click, and shows its own menu. */
-export function paneTakesMouse(id: number) {
+/**
+ * A program reading the mouse (tmux, vim `mouse=a`) gets the right-click, and shows its own menu;
+ * with the key that forces a selection past it (⌥, ⇧ off macOS) the click is the pane's.
+ */
+export function paneTakesMouse(id: number, e: MouseEvent) {
   const mode = panes.get(id)?.term.modes.mouseTrackingMode;
-  return !!mode && mode !== "none";
+  return !!mode && mode !== "none" && !(IS_MAC ? e.altKey : e.shiftKey);
 }
 
 export function copyPaneSelection(id: number) {
