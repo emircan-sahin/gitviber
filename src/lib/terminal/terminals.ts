@@ -27,7 +27,7 @@ import { lookedAt, watchAttention } from "./needsYou";
 import { reportWheelByRow } from "./wheel";
 import { paneKeys } from "./keys";
 import { forgetFind, watchFind } from "./find";
-import { copyFromProgram, pasteInto } from "./pasteInput";
+import { copyFromProgram, pasteInto, pasteText } from "./pasteInput";
 import { type Direction, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
 
 export { dismissRestore, restoreSession } from "./session";
@@ -626,6 +626,20 @@ export function copyPaneSelection(id: number) {
 export function pasteIntoPane(id: number) {
   const p = panes.get(id);
   if (p) void pasteInto(p);
+}
+
+/**
+ * Pastes `text` into the terminal `cwd`'s worktree last had focus in (the open tab's pane, else its
+ * first tab's), shown and focused, without pressing Enter. False when the worktree has no terminal.
+ */
+export function pasteToWorktree(cwd: string, text: string) {
+  const here = (g: TerminalGroup | undefined) => !!g && g.panes.some((p) => p.id === g.focused && p.cwd === cwd);
+  const g = [activeGroup(), ...state.groups].find(here);
+  const p = g && panes.get(g.focused);
+  if (!g || !p) return false;
+  set({ open: true, active: g.id });
+  void pasteText(p, text).then(focusActive);
+  return true;
 }
 
 /** The last command's output, from shell integration's marks (commandMarks.ts). */

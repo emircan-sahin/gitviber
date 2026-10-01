@@ -1,4 +1,4 @@
-import { Archive, ArrowLeftToLine, ArrowRightToLine, Check, Copy, Diff, EyeOff, File, FolderSearch, GitMerge, History, ListTree, Minus, Plus, SquareCheck, Undo2 } from "lucide-react";
+import { Archive, ArrowLeftToLine, ArrowRightToLine, Check, Copy, Diff, EyeOff, File, Files, FolderSearch, GitMerge, History, ListTree, Minus, Plus, SquareCheck, Undo2 } from "lucide-react";
 import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import type { FileChange } from "@/lib/api";
 import { IS_MAC, REVEAL_LABEL } from "@/lib/platform";
@@ -49,6 +49,7 @@ export function ChangeRowMenu({
   const n = rows.length;
   const untracked = rows.filter((r) => r.file.status === "?").map((r) => r.file);
   const isViewed = viewed(sel);
+  const list = sel.kind === "conflict" ? null : sel.kind;
   // A deleted file has nothing on disk to copy (its old version copies from the diff view), and a
   // submodule is a folder, not a file.
   const onDiskPaths = [...new Set(rows.filter((r) => r.file.status !== "D" && !r.file.nested).map((r) => r.file.path))];
@@ -60,6 +61,11 @@ export function ChangeRowMenu({
       <ContextMenuItem disabled={!onDisk} onSelect={() => onOpen({ kind: "file", path: file.path }, true)}>
         <File /> Open File
       </ContextMenuItem>
+      {list && (
+        <ContextMenuItem onSelect={() => onOpen({ kind: "changes", list }, true)}>
+          <Files /> {list === "staged" ? "Open All Staged Changes" : "Open All Changes"}
+        </ContextMenuItem>
+      )}
       <ContextMenuItem disabled={file.status === "?"} onSelect={() => onShowHistory(file.path)}>
         <History /> Show History
       </ContextMenuItem>

@@ -34,7 +34,7 @@ export async function pasteInto(p: Pane, fallback = "") {
 }
 
 /** Several lines into a program without bracketed paste run one by one as they arrive: asked first, as in VS Code. */
-async function pasteText(p: Pane, text: string) {
+export async function pasteText(p: Pane, text: string) {
   // Its shell is gone (exited).
   if (p.term.options.disableStdin) return;
   const lines = pastedLines(text);

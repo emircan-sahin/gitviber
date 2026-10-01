@@ -6,8 +6,10 @@ export interface FileChange {
   status: ChangeStatus;
   additions: number | null;
   deletions: number | null;
-  /** Content identity (index blob, or size+mtime in the worktree); changes on every edit. */
+  /** Content identity (index blob, size+mtime in the worktree, or a moved submodule's commit); changes on every edit. */
   oid: string | null;
+  /** Unstaged entries: the index blob the change is against, which a mixed reset moves with nothing else changing. */
+  indexOid: string | null;
   /** Conflicts only: UU both modified, AA both added, UD/DU deleted by them/us, AU/UA, DD. */
   conflict: string | null;
   /** "100644 → 100755" when the file mode changed (chmod +x); the text diff doesn't show it. */

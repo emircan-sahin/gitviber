@@ -2,7 +2,7 @@
 
 use super::{
     command, git_dir, is_binary, operation_in, publish_config, publish_remote_among, push_target,
-    read_regular, remote_urls, run, worktrees, PushTarget, MAX_TEXT_BYTES, PREPARED,
+    read_regular, remote_urls, run, run_text, worktrees, PushTarget, MAX_TEXT_BYTES, PREPARED,
 };
 use crate::process::exec;
 use serde::Serialize;
@@ -20,8 +20,12 @@ pub struct FileChange {
     pub additions: Option<u32>,
     pub deletions: Option<u32>,
     /// Content identity for "viewed" marks: the index blob for staged entries, size+mtime
-    /// for the working tree (cheap, and changes on every write).
+    /// for the working tree (cheap, and changes on every write), the checked-out commit for a
+    /// submodule whose commit moved.
     pub oid: Option<String>,
+    /// An unstaged entry's index blob, what its change is against: a mixed reset moves it
+    /// with neither the status letter nor the file changing.
+    pub index_oid: Option<String>,
     /// For conflicts, git's two-letter code: UU both modified, AA both added,
     /// UD deleted by them, DU deleted by us, AU/UA added by one side, DD both deleted.
     pub conflict: Option<String>,
@@ -102,6 +106,7 @@ pub(super) fn change(path: &str, old_path: Option<&str>, status: char) -> FileCh
         additions: None,
         deletions: None,
         oid: None,
+        index_oid: None,
         conflict: None,
         mode: None,
         submodule: None,
@@ -288,6 +293,7 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
                 if y != '.' {
                     // In the worktree the rename is already recorded in the index, so show it as M.
                     let mut f = change(path, None, y);
+                    f.index_oid = fields.get(7).map(|h| h.to_string());
                     f.mode = mode_change(&fields, 4, 5);
                     f.submodule = fields
                         .get(2)
@@ -329,7 +335,13 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
     }
 
     for f in &mut st.unstaged {
-        f.oid = disk_oid(repo, &f.path);
+        // A submodule's folder keeps its size and mtime while its checkout moves between commits.
+        let moved = f.submodule.as_deref().is_some_and(|s| s.starts_with("SC"));
+        f.oid = moved
+            .then(|| run_text(&repo.join(&f.path), &["rev-parse", "HEAD"]).ok())
+            .flatten()
+            .map(|h| h.trim().to_string())
+            .or_else(|| disk_oid(repo, &f.path));
     }
     if let Some(b) = &st.branch {
         st.push = push_target(repo, b);

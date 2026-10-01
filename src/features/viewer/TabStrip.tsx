@@ -1,4 +1,4 @@
-import { History, ListTree, X } from "lucide-react";
+import { Files, History, ListTree, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
@@ -25,7 +25,7 @@ interface Props {
 }
 
 function tabLabel(sel: Selection) {
-  if (sel.kind === "pull" || sel.kind === "issue") return selectionPath(sel);
+  if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes") return selectionPath(sel);
   return basename(selectionPath(sel));
 }
 
@@ -171,6 +171,8 @@ function TabItem({
         <PullStateIcon pull={t.sel.pull} />
       ) : t.sel.kind === "issue" ? (
         <IssueStateIcon issue={t.sel.issue} />
+      ) : t.sel.kind === "changes" ? (
+        <Files className="size-4 shrink-0 text-subtle" />
       ) : (
         <FileIcon path={selectionPath(t.sel)} />
       )}
@@ -197,7 +199,7 @@ function TabItem({
       </button>
     </div>
   );
-  const file = t.sel.kind !== "pull" && t.sel.kind !== "issue";
+  const file = t.sel.kind !== "pull" && t.sel.kind !== "issue" && t.sel.kind !== "changes";
   // As VS Code's tab menu, plus to the left.
   const group = (which: TabGroup, label: string, shortcut?: string) => (
     <ContextMenuItem disabled={!closes(which)} onSelect={() => onCloseGroup(which)}>
