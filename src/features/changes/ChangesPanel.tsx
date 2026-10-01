@@ -315,9 +315,13 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   };
 
   /** A section's rows; with thousands, only those near the screen (and the open and tab-stop rows). */
-  const rowsOf = (kind: Change["kind"], list: FileChange[], render: (file: FileChange) => React.ReactNode) => {
+  const rowsOf = (kind: Change["kind"], title: string, list: FileChange[], render: (file: FileChange) => React.ReactNode) => {
     const keep = [activeKey, tabStop].map((k) => list.findIndex((file) => selectionKey({ kind, file }) === k));
-    return <Windowed count={list.length} height={ROW_HEIGHT} keep={keep} render={(i) => render(list[i])} />;
+    return (
+      <div role="tree" aria-label={title} aria-multiselectable>
+        <Windowed count={list.length} height={ROW_HEIGHT} keep={keep} render={(i) => render(list[i])} />
+      </div>
+    );
   };
 
   const conflicts = status.conflicted.length > 0 && (
@@ -328,7 +332,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
       pinned={!!pickedConflicts}
       action={pickedConflicts && <SectionBtn onClick={() => markResolved(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
     >
-      {rowsOf("conflict", status.conflicted, (file) =>
+      {rowsOf("conflict", "Conflicts", status.conflicted, (file) =>
         row({ kind: "conflict", file }, (rows) => (
           <>
             <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => markResolved(rows)}>
@@ -358,7 +362,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         )
       }
     >
-      {rowsOf("staged", status.staged, (file) =>
+      {rowsOf("staged", "Staged", status.staged, (file) =>
         row({ kind: "staged", file }, (rows) => (
           <RowAction label={rows.length > 1 ? `Unstage ${files(rows.length)}` : "Unstage"} onClick={() => unstage(rows)}>
             <Minus />
@@ -392,7 +396,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         )
       }
     >
-      {rowsOf("unstaged", status.unstaged, (file) =>
+      {rowsOf("unstaged", "Changes", status.unstaged, (file) =>
         file.nested ? (
           <NestedRow key={file.path} file={file} />
         ) : (

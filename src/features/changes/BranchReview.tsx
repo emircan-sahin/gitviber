@@ -102,7 +102,7 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
         </button>
       </div>
       {rows.length > 0 && <ReviewSummary files={rows.length} add={add} del={del} reviewed={reviewed} />}
-      <div ref={nav.ref} onKeyDown={nav.onKeyDown} onFocus={nav.onFocus} data-list-nav="" className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
+      <div ref={nav.ref} onKeyDown={nav.onKeyDown} onFocus={nav.onFocus} data-list-nav="" role="tree" aria-label="Branch changes" className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
         {empty ? (
           <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{empty}</div>
         ) : (
