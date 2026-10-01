@@ -107,15 +107,26 @@ export function App() {
   // fall back to the project it was under, else the first project.
   useEffect(() => {
     const last = lastRepo();
-    const projects = recentRepos();
-    const fallback = projects.find((p) => last && isInside(last, p)) ?? projects[0];
+    const fallback = fallbackFor(last);
     booted.current = (async () => {
       if (await openAsked()) return;
       // Not false: it opened, or something opened meanwhile took over.
       if (last && (await openRepo(last, true)) !== false) return;
-      if (fallback && fallback !== last) await openRepo(fallback, true);
+      if (fallback) await openRepo(fallback, true);
     })().finally(() => setBooting(false));
   }, [openRepo, openAsked]);
+
+  // The open worktree was deleted from outside (an agent done with it, `git worktree remove`):
+  // its project takes its place, as at launch.
+  const onRepoGone = useCallback(
+    async (gone: OpenedRepo) => {
+      const next = fallbackFor(gone.root, gone.main);
+      const root = next ? await openRepo(next, true) : false;
+      if (root === false) setOpened(null);
+      toast("info", `${folderName(gone.root)} no longer exists`, root ? `Opened ${folderName(root)} in its place.` : undefined);
+    },
+    [openRepo],
+  );
 
   // Paths opened from outside while the app runs (opened.rs): the last one wins. One that comes
   // during the launch's own reopen waits for it (`booted`), so the last repository can't replace it.
@@ -177,7 +188,7 @@ export function App() {
     <TooltipProvider>
       {opened ? (
         <WorkspaceBoundary key={opened.root} onOpenRepo={onOpen}>
-          <Workspace root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} />
+          <Workspace root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} onRepoGone={onRepoGone} />
         </WorkspaceBoundary>
       ) : (
         !booting &&
@@ -195,6 +206,12 @@ export function App() {
       <Splash ready={!booting} />
     </TooltipProvider>
   );
+}
+
+/** What to open in place of `gone`: its main worktree if that's another, else the project it was inside, else the first. */
+function fallbackFor(gone: string | null, main?: string) {
+  const projects = recentRepos().filter((p) => p !== gone);
+  return (main !== gone ? main : undefined) ?? projects.find((p) => gone && isInside(gone, p)) ?? projects[0];
 }
 
 /** A folder outside any repository: offer to make it one. True once it is. */

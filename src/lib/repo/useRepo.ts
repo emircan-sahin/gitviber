@@ -14,8 +14,8 @@ interface RepoChanged {
   git: boolean;
 }
 
-/** Loads and live-refreshes everything the workspace shows for the open repo. */
-export function useRepo(root: string) {
+/** Loads and live-refreshes everything the workspace shows for the open repo. `onGone`: its folder was deleted. */
+export function useRepo(root: string, onGone: () => void) {
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [commits, setCommits] = useState<Commit[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -29,6 +29,9 @@ export function useRepo(root: string) {
   // Commits shown so far: a refresh reloads all of them, or "Load more" pages would be lost.
   const loaded = useRef(0);
   const loadedAt = useRef(0);
+  const reportGone = useRef(onGone);
+  reportGone.current = onGone;
+  const reportedGone = useRef(false);
 
   const load = useCallback(async (history: boolean) => {
     const limit = Math.max(LOG_PAGE, loaded.current);
@@ -63,7 +66,13 @@ export function useRepo(root: string) {
         try {
           await load(h);
         } catch (e) {
-          toast("error", "Could not read repository", errorMessage(e));
+          // A worktree removed from outside fails every read; that's for the app to handle, once.
+          const missing = await api.projectInfo([root]).then(([info]) => info?.exists === false, () => false);
+          if (!missing) toast("error", "Could not read repository", errorMessage(e));
+          else if (!reportedGone.current) {
+            reportedGone.current = true;
+            reportGone.current();
+          }
         }
         const next = queued.current;
         queued.current = null;
@@ -74,7 +83,7 @@ export function useRepo(root: string) {
       });
       return inFlight.current;
     },
-    [load],
+    [root, load],
   );
 
   const loadingMore = useRef(false);
