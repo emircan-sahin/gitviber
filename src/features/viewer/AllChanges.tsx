@@ -2,7 +2,7 @@
 // Monaco is one editor per view (MonacoView), so these are drawn as HTML: only the files near the
 // screen load, highlight and render, and a file scrolled far away keeps just its height.
 import { Check, ChevronDown, ChevronsDownUp, ChevronsUpDown, Files } from "lucide-react";
-import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
 import { FileIcon } from "@/components/FileIcon";
@@ -20,6 +20,7 @@ import { usePair } from "./diffPairs";
 import { mediaKind } from "./MediaView";
 import { placeholderFor } from "./placeholders";
 import { UnifiedDiff } from "./UnifiedDiff";
+import { type FileMemo, fileMemo, scrolls } from "./stackedMemo";
 
 type ListFile = Selection & { kind: "unstaged" | "staged" | "branch" };
 
@@ -27,9 +28,6 @@ type ListFile = Selection & { kind: "unstaged" | "staged" | "branch" };
 const LARGE = 1500;
 /** How far off screen a file starts loading, so it's drawn by the time it scrolls in. */
 const AHEAD = "1200px 0px";
-
-// Where each list was left, for the life of the app (tab switches remount the view).
-const scrolls = new Map<ChangeList, number>();
 
 interface Props {
   list: ChangeList;
@@ -49,46 +47,76 @@ function filesOf(list: ChangeList, status: RepoStatus | null, branchRows: Branch
   return list === "staged" ? status.staged.map((file) => ({ kind: "staged", file })) : status.unstaged.filter((f) => !f.nested).map((file) => ({ kind: "unstaged", file }));
 }
 
+/** The files' sections in `el`, the stacked view's scroller. */
+const blocksIn = (el: HTMLElement | null) => [...(el?.querySelectorAll<HTMLElement>("[data-file]") ?? [])];
+
+/** The index of the file whose header is at the top of `el`'s view; -1: none. */
+function topBlock(el: HTMLElement | null) {
+  const all = blocksIn(el);
+  const top = (el?.scrollTop ?? 0) + 1;
+  let i = 0;
+  while (i + 1 < all.length && all[i + 1].offsetTop <= top) i++;
+  return all.length ? i : -1;
+}
+
 export function AllChanges({ list, status, branchRows, revision, viewed, toggleViewed, onOpen }: Props) {
   const files = useMemo(() => filesOf(list, status, branchRows), [list, status, branchRows]);
-  // Files opened or closed by hand; the rest are closed once viewed (staged ones always count as viewed, and stay open).
-  const [shut, setShut] = useState<Map<string, boolean>>(() => new Map());
-  const isOpen = (sel: ListFile) => !(shut.get(selectionKey(sel)) ?? (sel.kind !== "staged" && viewed(sel)));
+  const root = status?.root ?? "";
+  const memo = (sel: ListFile) => fileMemo(`${root}\0${selectionKey(sel)}`);
+  // Memos change outside React: this draws what they now say.
+  const [, redraw] = useReducer((n: number) => n + 1, 0);
+  // Opened or closed by hand, else closed once viewed (staged ones always count as viewed, and stay open).
+  const isOpen = (sel: ListFile) => !(memo(sel).shut ?? (sel.kind !== "staged" && viewed(sel)));
   const scroller = useRef<HTMLDivElement>(null);
 
+  // What a file's diff depends on: its own content, and the index under unstaged changes or HEAD
+  // under staged ones. Each file is read again only when that changes, not on every change on disk.
+  const stagedOids = useMemo(() => new Map(status?.staged.map((f) => [f.path, f.oid])), [status]);
+  const revisionOf = (sel: ListFile) => {
+    const { file } = sel;
+    const sig = [file.status, file.oid ?? `${file.additions}:${file.deletions}`, sel.kind === "unstaged" ? stagedOids.get(file.path) : sel.kind === "staged" ? status?.head : ""].join(":");
+    const m = memo(sel);
+    if (m.sig !== sig) Object.assign(m, { sig, rev: revision });
+    return m.rev!;
+  };
+
+  // Back at the file that was at the top, as far into it, once the files are there; each keeps its
+  // height from before, so it's the same place.
+  const scrollKey = `${root}\0${list}`;
+  const restored = useRef(false);
   useLayoutEffect(() => {
     const el = scroller.current;
-    if (!el) return;
-    el.scrollTop = scrolls.get(list) ?? 0;
-    return () => void scrolls.set(list, el.scrollTop);
-  }, [list]);
+    if (restored.current || !el || !files?.length) return;
+    restored.current = true;
+    const at = scrolls.get(scrollKey);
+    const block = at && blocksIn(el).find((b) => b.dataset.file === at.file);
+    if (block) el.scrollTop = block.offsetTop + at.offset;
+  });
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    return () => {
+      const block = blocksIn(el)[topBlock(el)];
+      if (el && block && restored.current) scrolls.set(scrollKey, { file: block.dataset.file!, offset: el.scrollTop - block.offsetTop });
+    };
+  }, [scrollKey]);
 
-  const blocks = () => [...(scroller.current?.querySelectorAll<HTMLElement>("[data-file]") ?? [])];
-  /** The file whose header is at the top of the view. */
-  const current = () => {
-    const top = (scroller.current?.scrollTop ?? 0) + 1;
-    const all = blocks();
-    let i = 0;
-    while (i + 1 < all.length && all[i + 1].offsetTop <= top) i++;
-    return all.length ? i : -1;
-  };
+  const blocks = () => blocksIn(scroller.current);
+  const current = () => topBlock(scroller.current);
   const scrollTo = (el: HTMLElement | undefined) => {
     if (el && scroller.current) scroller.current.scrollTop = el.offsetTop;
   };
   const markViewed = (sel: ListFile) => {
     const key = selectionKey(sel);
-    setShut((m) => {
-      if (!m.has(key)) return m;
-      const next = new Map(m);
-      next.delete(key);
-      return next;
-    });
+    delete memo(sel).shut;
     toggleViewed(sel);
     // Closing the file being read would leave the view somewhere in the next one: keep its header in view.
     const el = blocks().find((b) => b.dataset.file === key);
     requestAnimationFrame(() => el && scroller.current && el.offsetTop < scroller.current.scrollTop && scrollTo(el));
   };
-  const setAll = (open: boolean) => setShut(new Map(files?.map((f) => [selectionKey(f), !open])));
+  const setAll = (open: boolean) => {
+    for (const f of files ?? []) memo(f).shut = !open;
+    redraw();
+  };
 
   // J/K walk the files here and V marks the one on top, while this view has the keys.
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -140,16 +168,19 @@ export function AllChanges({ list, status, branchRows, revision, viewed, toggleV
           <div className="flex h-full items-center justify-center p-6 text-[12.5px] text-muted-foreground">{empty}</div>
         ) : (
           files!.map((sel) => {
-            const key = selectionKey(sel);
             const open = isOpen(sel);
             return (
               <FileBlock
-                key={key}
+                key={selectionKey(sel)}
                 sel={sel}
-                revision={revision}
+                memo={memo(sel)}
+                revision={revisionOf(sel)}
                 open={open}
                 viewed={viewed(sel)}
-                onToggleOpen={() => setShut((m) => new Map(m).set(key, open))}
+                onToggleOpen={() => {
+                  memo(sel).shut = open;
+                  redraw();
+                }}
                 onToggleViewed={() => markViewed(sel)}
                 onOpen={() => onOpen(sel)}
               />
@@ -174,12 +205,28 @@ function useNear(el: RefObject<HTMLElement | null>) {
   return near;
 }
 
-function FileBlock({ sel, revision, open, viewed, onToggleOpen, onToggleViewed, onOpen }: { sel: ListFile; revision: number; open: boolean; viewed: boolean; onToggleOpen: () => void; onToggleViewed: () => void; onOpen: () => void }) {
+function FileBlock({
+  sel,
+  memo,
+  revision,
+  open,
+  viewed,
+  onToggleOpen,
+  onToggleViewed,
+  onOpen,
+}: {
+  sel: ListFile;
+  memo: FileMemo;
+  revision: number;
+  open: boolean;
+  viewed: boolean;
+  onToggleOpen: () => void;
+  onToggleViewed: () => void;
+  onOpen: () => void;
+}) {
   const { file } = sel;
   const box = useRef<HTMLElement>(null);
   const body = useRef<HTMLDivElement>(null);
-  // The diff's height when it was last drawn: it keeps its room while it's off screen, so nothing above the view moves.
-  const height = useRef<number | null>(null);
   const near = useNear(box);
   const s = useSettings();
   const line = Math.round(s.codeFontSize * s.lineHeight);
@@ -187,10 +234,10 @@ function FileBlock({ sel, revision, open, viewed, onToggleOpen, onToggleViewed, 
   useEffect(() => {
     const el = body.current;
     if (!shown || !el) return;
-    const ro = new ResizeObserver(() => (height.current = el.offsetHeight));
+    const ro = new ResizeObserver(() => (memo.height = el.offsetHeight));
     ro.observe(el);
     return () => ro.disconnect();
-  }, [shown]);
+  }, [shown, memo]);
   const estimate = (Math.min(LARGE, (file.additions ?? 0) + (file.deletions ?? 0)) + 2 * CONTEXT + 1) * line;
   return (
     <section ref={box} data-file={selectionKey(sel)} aria-label={file.path} className="border-b border-border">
@@ -219,23 +266,30 @@ function FileBlock({ sel, revision, open, viewed, onToggleOpen, onToggleViewed, 
           </Button>
         </Tip>
       </div>
-      {open && (shown ? <div ref={body}><FileDiff sel={sel} revision={revision} estimate={estimate} onOpen={onOpen} /></div> : <div style={{ height: height.current ?? estimate }} />)}
+      {open &&
+        (shown ? (
+          <div ref={body}>
+            <FileDiff sel={sel} memo={memo} revision={revision} estimate={memo.height ?? estimate} onOpen={onOpen} />
+          </div>
+        ) : (
+          <div style={{ height: memo.height ?? estimate }} />
+        ))}
     </section>
   );
 }
 
-function FileDiff({ sel, revision, estimate, onOpen }: { sel: ListFile; revision: number; estimate: number; onOpen: () => void }) {
+function FileDiff({ sel, memo, revision, estimate, onOpen }: { sel: ListFile; memo: FileMemo; revision: number; estimate: number; onOpen: () => void }) {
   const s = useSettings();
-  const { pair, error } = usePair(sel, revision, diffWhitespace(s));
-  const [large, setLarge] = useState(false);
+  const { pair, error } = usePair(sel, revision, diffWhitespace(s), false);
+  const [large, setLarge] = useState(!!memo.large);
   const rows = useMemo(() => (pair ? shownRows(pair.rows, CONTEXT) : []), [pair]);
   if (error) return <Message text={`Could not load: ${error}`} />;
   if (!pair) return <div style={{ height: estimate }} />;
   if (mediaKind(sel.file.path)) return <Message text="Open the file to compare its versions" action={{ label: "Open", run: onOpen }} />;
   const special = placeholderFor(pair, false, sel.file);
   if (special) return <Message text={special} />;
-  if (rows.length > LARGE && !large) return <Message text={`A large diff, ${rows.length} lines`} action={{ label: "Show", run: () => setLarge(true) }} />;
-  return <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} />;
+  if (rows.length > LARGE && !large) return <Message text={`A large diff, ${rows.length} lines`} action={{ label: "Show", run: () => setLarge((memo.large = true)) }} />;
+  return <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} />;
 }
 
 function Message({ text, action }: { text: string; action?: { label: string; run: () => void } }) {

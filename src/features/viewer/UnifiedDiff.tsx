@@ -5,16 +5,17 @@ import { type TokenLine, tokenLookup, useHighlight } from "@/lib/editor/highligh
 import { copyNarrowed, indentUnit, widen, widenColumn } from "@/lib/editor/indent";
 import { languageFor } from "@/lib/editor/language";
 import { type Gap, usefulEmphasis } from "@/lib/git/diffHunks";
-import { type Anchor, anchorAt, findNote, noteLines, placeNotes, type ReviewNote } from "@/lib/review/notes";
+import { anchorAt, findNote, noteLines, placeNotes, type ReviewNote } from "@/lib/review/notes";
 import { addNote, useNotes } from "@/lib/review/noteStore";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { Composer } from "@/features/review/Composer";
 import { NoteCard } from "@/features/review/NoteThreads";
 import { Tokens, useCodeStyle } from "./codeLines";
+import type { FileMemo } from "./stackedMemo";
 
 /** A file's changes in unified form: old and new line numbers, then the line, colored as the code view colors it. */
-export function UnifiedDiff({ pair, rows, path, oldPath }: { pair: DiffPair; rows: (DiffRow | Gap)[]; path: string; oldPath: string }) {
+export function UnifiedDiff({ pair, rows, path, oldPath, memo }: { pair: DiffPair; rows: (DiffRow | Gap)[]; path: string; oldPath: string; memo: FileMemo }) {
   const s = useSettings();
   const style = useCodeStyle();
   const { original: a, modified: b } = pair;
@@ -42,27 +43,32 @@ export function UnifiedDiff({ pair, rows, path, oldPath }: { pair: DiffPair; row
     }
     return at;
   }, [notes, path, oldPath, oldLines, newLines, a.exists, b.exists]);
-  // A note being written: its lines as picked, followed as the file changes.
-  const [draft, setDraft] = useState<{ old: boolean; anchor: Anchor } | null>(null);
+  // A note being written: its lines as picked, followed as the file changes. Kept in the file's
+  // memo, so scrolling far away or switching tabs doesn't lose it.
+  const [draft, setDraftState] = useState(memo.draft ?? null);
+  const setDraft = (d: FileMemo["draft"] | null) => {
+    memo.draft = d ?? undefined;
+    setDraftState(d ?? null);
+  };
   const drafted = useMemo(() => {
     if (!draft) return null;
     const start = findNote(draft.old ? oldLines : newLines, draft.anchor) ?? draft.anchor.start;
     const end = start + draft.anchor.end - draft.anchor.start;
-    return { old: draft.old, anchor: { ...draft.anchor, start, end }, key: `${draft.old ? "o" : "n"}:${end}` };
+    return { ...draft, anchor: { ...draft.anchor, start, end }, key: `${draft.old ? "o" : "n"}:${end}` };
   }, [draft, oldLines, newLines]);
   // ⇧-click stretches the note being written to the line clicked.
   const note = (old: boolean, line: number, stretch: boolean) => {
     const lines = linesOf(old);
     if (!lines) return;
     const [from, to] = stretch && drafted?.old === old ? [drafted.anchor.start, drafted.anchor.end] : [line, line];
-    setDraft({ old, anchor: anchorAt(lines, Math.min(from, line), Math.max(to, line)) });
+    setDraft({ old, anchor: anchorAt(lines, Math.min(from, line), Math.max(to, line)), body: memo.draft?.body ?? "" });
   };
 
   return (
     <div className={cn("py-1 select-text", s.wordWrap ? "[overflow-wrap:anywhere]" : "overflow-x-auto")} style={{ ...style, color: (newHl ?? oldHl)?.data.fg }} onCopy={copyNarrowed(unit)}>
       <div className={cn(!s.wordWrap && "min-w-max")}>
-        {rows.map((r, i) => {
-          if ("gap" in r) return <GapRow key={i} count={r.gap} />;
+        {rows.map((r) => {
+          if ("gap" in r) return <GapRow key={`g${r.o}:${r.n}`} count={r.gap} />;
           const raw = r.k === 2 ? (oldLines[r.o - 1] ?? "") : (newLines[r.n - 1] ?? "");
           const text = r.k === 2 ? (oldShown[r.o - 1] ?? "") : (newShown[r.n - 1] ?? "");
           const tokens = r.k === 2 ? oldTok(r.o - 1, text) : newTok(r.n - 1, text);
@@ -71,7 +77,7 @@ export function UnifiedDiff({ pair, rows, path, oldPath }: { pair: DiffPair; row
           const keys = [r.k !== 1 && `o:${r.o}`, r.k !== 2 && `n:${r.n}`].filter((k): k is string => !!k);
           const old = r.k === 2;
           return (
-            <div key={i}>
+            <div key={`${r.o}:${r.n}`}>
               <LineRow row={r} text={text} tokens={tokens} ranges={ranges} digits={digits} wrap={s.wordWrap} onNote={(stretch) => note(old, old ? r.o : r.n, stretch)} />
               {keys.flatMap((k) => placed.get(k) ?? []).map((n) => (
                 <div key={n.id} className="sticky left-0 max-w-3xl py-0.5">
@@ -82,6 +88,8 @@ export function UnifiedDiff({ pair, rows, path, oldPath }: { pair: DiffPair; row
                 <div className="sticky left-0 max-w-3xl py-0.5">
                   <Composer
                     label={`Note on ${noteLines(drafted.anchor)}${drafted.old ? " (old)" : ""}`}
+                    initial={memo.draft?.body}
+                    onDraft={(body) => memo.draft && (memo.draft.body = body)}
                     onCancel={() => setDraft(null)}
                     onSubmit={async (body) => {
                       addNote({ ...drafted.anchor, path: drafted.old ? oldPath : path, body: body.trim(), old: drafted.old || undefined });

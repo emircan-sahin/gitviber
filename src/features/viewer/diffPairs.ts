@@ -109,7 +109,8 @@ const sameText = (a: DiffPair["original"], b: DiffPair["original"]) =>
 const sameRows = (a: DiffRow[], b: DiffRow[]) =>
   a.length === b.length && a.every((r, i) => r.k === b[i].k && r.o === b[i].o && r.n === b[i].n && String(r.e) === String(b[i].e));
 
-export function usePair(sel: FileSelection, revision: number, ws: Whitespace | null) {
+/** `keep: false`: one of many on show (the stacked diff), which reads the recent diffs but doesn't push the open tab's out. */
+export function usePair(sel: FileSelection, revision: number, ws: Whitespace | null, keep = true) {
   const { kind, path, oldPath, sha, base, whitespace, id, rev, key } = pairArgs(sel, revision, ws);
   const [pair, setPair] = useState<DiffPair | null>(() => cachedPair(id, rev) ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -133,7 +134,7 @@ export function usePair(sel: FileSelection, revision: number, ws: Whitespace | n
     api
       .diffPair(kind, path, oldPath, sha, base, whitespace)
       .then((p) => {
-        const q = remember(id, rev, p, gen);
+        const q = keep ? remember(id, rev, p, gen) : p;
         if (seq > applied.current) {
           applied.current = seq;
           setPair((prev) => (samePair(prev, q) ? prev : q));
