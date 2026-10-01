@@ -1,6 +1,6 @@
 import { ask } from "@/lib/app/ask";
 import { ArrowLeftToLine, ArrowRightToLine, Check, Minus, Plus, Undo2 } from "lucide-react";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Windowed } from "@/components/Windowed";
 import { api, type Commit, type FileChange, type RepoStatus } from "@/lib/api";
@@ -212,6 +212,21 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     "review.toggleViewed": active && active.kind !== "staged" && targets(active).length > 1 ? () => setViewed(targets(active), !viewed(active)) : undefined,
   });
 
+  // A focused row that left the list (staged, discarded) hands focus to the row now in its place, as
+  // in VS Code; when the open tab follows the file into the other list, its row takes focus from there.
+  const list = useRef<HTMLDivElement>(null);
+  const lostFocus = useRef<string | null>(null);
+  const shown = useRef(all);
+  useLayoutEffect(() => {
+    const lost = lostFocus.current;
+    const before = shown.current;
+    lostFocus.current = null;
+    shown.current = all;
+    if (lost === null || index.has(lost) || !all.length) return;
+    const to = all[Math.min(Math.max(before.findIndex((c) => selectionKey(c) === lost), 0), all.length - 1)];
+    list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(selectionKey(to))}"]`)?.focus();
+  });
+
   // One tab stop for the whole list (the active row), so Tab reaches its actions, not every row.
   const tabStop = active ? activeKey : all[0] && selectionKey(all[0]);
 
@@ -272,6 +287,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         onOpen={onOpen}
         onHover={onHover}
         onToggleViewed={() => setViewed(rows, !isViewed)}
+        lostFocus={lostFocus}
         menu={() => (
           <ChangeRowMenu
             sel={sel}
@@ -422,6 +438,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
       {status.operation?.kind === "bisect" ? <BisectBar refresh={refresh} /> : status.operation && <OperationBanner status={full} refresh={refresh} />}
       {total.length > 0 && <ReviewSummary files={total.length} add={add} del={del} reviewed={reviewed} />}
       <div
+        ref={list}
         onKeyDown={onListKey}
         // React focus events bubble out of portals too, so a row's open context menu still counts as the list.
         onFocus={() => setListFocused(true)}

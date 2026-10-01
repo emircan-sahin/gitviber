@@ -1,5 +1,5 @@
 import { Check, ChevronDown, FolderGit2, GitMerge, Plus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
 import type { FileChange } from "@/lib/api";
@@ -85,6 +85,7 @@ export function Row({
   onOpen,
   onHover,
   onToggleViewed,
+  lostFocus,
   menu,
   children,
 }: {
@@ -100,6 +101,8 @@ export function Row({
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
   onToggleViewed: () => void;
+  /** Set to this row's key when it leaves the page holding focus, for the list to pass focus on. */
+  lostFocus?: RefObject<string | null>;
   /** Built only once the menu is first opened: thousands of rows each building theirs made the list slow. None: no menu. */
   menu?: () => React.ReactNode;
   children?: React.ReactNode;
@@ -114,12 +117,20 @@ export function Row({
     ref.current?.scrollIntoView({ block: "nearest" });
     if (document.activeElement instanceof HTMLElement && document.activeElement.dataset.row !== undefined) ref.current?.focus();
   }, [active]);
+  // Runs before the node leaves the page, while it can still say whether it had focus.
+  const key = selectionKey(sel);
+  useLayoutEffect(
+    () => () => {
+      if (lostFocus && ref.current?.contains(document.activeElement)) lostFocus.current = key;
+    },
+    [lostFocus, key],
+  );
   const row = (
     <div
       ref={ref}
       role="button"
       tabIndex={tabStop ? 0 : -1}
-      data-row={selectionKey(sel)}
+      data-row={key}
       aria-current={active || undefined}
       onClick={onClick}
       onDoubleClick={() => onOpen(sel, true)}
