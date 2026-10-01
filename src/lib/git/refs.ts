@@ -55,6 +55,7 @@ type BranchRow = Pick<Branch, "name" | "remote" | "current" | "worktree">;
  */
 export function worktreeBranch(typed: string, branches: BranchRow[], fold = FOLD_CASE) {
   const check = refNameCheck(typed, localNames(branches), false, fold);
+  // A remote's name ends at the first "/", as everywhere in the app: "my/fork" remotes aren't told apart.
   const remotes = branches.filter((b) => b.remote);
   // "upstream/feat" is feat from upstream: a local branch by that name would be ambiguous.
   const localOf = (n: string) => branches.find((b) => !b.remote && sameRef(b.name, n, fold));
