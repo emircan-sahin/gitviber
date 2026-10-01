@@ -43,7 +43,7 @@ export function useWorktreePulls(list: Worktree[], open: boolean, onGitHub: bool
     if (!fetch) return;
     const load = () => void loadLists().catch(() => {});
     load();
-    return onGitHubWake(load);
+    return onGitHubWake(load, "pulls:");
   }, [fetch]);
 
   const account = read ? cached<GitHubAccount>("account") : undefined;

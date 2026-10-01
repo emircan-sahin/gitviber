@@ -66,7 +66,7 @@ export function setGitHubOrigin(url: string | null) {
   resets.forEach((r) => r());
   version++;
   listeners.forEach((l) => l());
-  wakers.forEach((w) => w());
+  for (const w of wakers.keys()) w();
 }
 
 /** Marks every key starting with `prefix` stale, so the next read refetches. */
@@ -149,19 +149,24 @@ export function newerCopy<T extends Item>(item: T): T | null {
 // teammate's review), so mounted views recheck on focus and every 5 minutes while visible.
 // Each still honors its maxAge, and an unchanged list is a 304 that costs no rate limit.
 const POLL = 300_000;
-const wakers = new Set<() => void>();
-const wake = () => {
-  if (document.visibilityState === "visible") wakers.forEach((w) => w());
+/** Each waker, and the cache keys it reads (a prefix), for a wake that concerns only those. */
+const wakers = new Map<() => void, string | null>();
+const wake = (only?: string) => {
+  if (document.visibilityState !== "visible") return;
+  for (const [w, reads] of wakers) if (only === undefined || reads?.startsWith(only)) w();
 };
 if (typeof window !== "undefined") {
-  window.addEventListener("focus", wake);
-  document.addEventListener("visibilitychange", wake);
-  setInterval(wake, POLL);
+  window.addEventListener("focus", () => wake());
+  document.addEventListener("visibilitychange", () => wake());
+  setInterval(() => wake(), POLL);
 }
 
-/** Calls `w` on those same wakes, and when origin changes; returns the unsubscribe. */
-export function onGitHubWake(w: () => void) {
-  wakers.add(w);
+/**
+ * Calls `w` on those same wakes, and when origin changes; returns the unsubscribe. `reads`: the
+ * keys it loads, so a wake for just those (recheckPullsSoon) reaches it too.
+ */
+export function onGitHubWake(w: () => void, reads: string | null = null) {
+  wakers.set(w, reads);
   return () => void wakers.delete(w);
 }
 
@@ -181,7 +186,8 @@ export function recheckPullsSoon() {
     pullsTimer = undefined;
     pullsAt = Date.now();
     invalidate("pulls:");
-    wake();
+    // The PR lists only: issues, a PR's page and checks don't follow from a push.
+    wake("pulls:");
   }, wait);
 }
 
@@ -207,7 +213,7 @@ export function useGitHubData<T>(key: string | null, fetch: () => Promise<T>, ma
   useEffect(() => {
     refresh();
     const w = () => void refresh();
-    wakers.add(w);
+    wakers.set(w, key);
     return () => void wakers.delete(w);
   }, [refresh]);
   return { data: e.data as T | undefined, error: e.error, loading: !!e.pending, refresh };
