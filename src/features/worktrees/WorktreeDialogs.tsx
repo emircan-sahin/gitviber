@@ -54,7 +54,7 @@ interface Props {
   /** For a pull request's fetch: its progress shows in the top bar, with Cancel. */
   runNet: NetRun;
   /** Opens a worktree in this window. */
-  onOpen: (path: string) => void;
+  onOpen: (path: string) => Promise<void>;
 }
 
 type Inner = Props & { onClose: () => void };
@@ -102,7 +102,9 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
   };
   const submit = () => {
     const where = dir === beside ? null : dir;
+    let made: string | null = null;
     const then = (path: string) => {
+      made = path;
       // Remembered for the project once it worked, so its next worktree goes there too.
       saveWorktreeDir(main, dir === fallback ? null : dir);
       if (issue) saveBranchIssue(issue.origin, n, issue.url);
@@ -110,14 +112,21 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
         saveWorktreeRun(main, command.trim(), !!issue);
         openTerminal(path, issue ? withIssue(command.trim(), issue.number) : command.trim());
       }
-      if (switchTo) onOpen(path);
+    };
+    // Only once the action is through: its toast's Undo and the refresh read the repo open now,
+    // and the switch changes which one that is. The dialog goes first, not into the new window.
+    const switched = async (ok: boolean) => {
+      if (!ok || !switchTo || !made) return ok;
+      onClose();
+      await onOpen(made);
+      return ok;
     };
     if (pull) {
       // Nothing typed to keep, and the fetch's Cancel is in the top bar behind this dialog.
       onClose();
       const p = pull;
-      void runNet("Check out PR", (op) => github.checkoutWorktree(p.target, p.number, p.headRef, p.sameRepo, where, op).then(then), `Checked out #${p.number} in worktree ${folderFor(n)}`);
-    } else void send(() => run("Create worktree", () => api.addWorktree(n, picked.base === undefined ? from : picked.base, where, picked.track).then(then), existing ? `Checked out ${n} in a new worktree` : `Created worktree ${n}`));
+      void runNet("Check out PR", (op) => github.checkoutWorktree(p.target, p.number, p.headRef, p.sameRepo, where, op).then(then), `Checked out #${p.number} in worktree ${folderFor(n)}`).then(switched);
+    } else void send(() => run("Create worktree", () => api.addWorktree(n, picked.base === undefined ? from : picked.base, where, picked.track).then(then), existing ? `Checked out ${n} in a new worktree` : `Created worktree ${n}`).then(switched));
   };
   return (
     <form

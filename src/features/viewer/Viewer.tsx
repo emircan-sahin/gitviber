@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type DiffPair, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { withNetActivity } from "@/lib/repo/netActivity";
 import { onReveal, revealWaits } from "@/lib/editor/reveal";
 import { editedText, saveEdit, useEdited } from "@/lib/editor/edits";
@@ -31,12 +31,16 @@ import type { Tab } from "./tabs";
 import { TabStrip } from "./TabStrip";
 import { CommitBar } from "./CommitBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { changedInside } from "@/features/changes/changeList";
+import type { BranchChange } from "@/features/changes/BranchReview";
+import { AllChanges } from "./AllChanges";
+import { diffNote, placeholderFor } from "./placeholders";
 
 interface ViewerProps {
   tabs: Tab[];
   active: Tab | null;
   status: RepoStatus | null;
+  /** The branch review's files as last loaded, for its stacked view; null while there's none. */
+  branchRows: BranchChange[] | null;
   revision: number;
   viewed: (sel: Selection) => boolean;
   toggleViewed: (sel: Selection) => void;
@@ -71,6 +75,8 @@ export function Viewer(props: ViewerProps) {
             <PullView pull={active.sel.pull} onOpen={props.onOpen} />
           ) : active.sel.kind === "issue" ? (
             <IssueView issue={active.sel.issue} onDeleted={() => props.onClose(active.key)} />
+          ) : active.sel.kind === "changes" ? (
+            <AllChanges list={active.sel.list} {...props} />
           ) : (
             <Pane tab={active} sel={active.sel} {...props} />
           )}
@@ -128,14 +134,19 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile, file));
 
   const diff = !isFile && !media && !rendered;
-  const textNote = pair?.eolOnly ? "Only line endings changed" : pair && (newlineNote(pair) ?? (pair.whitespaceHidden ? "Whitespace changes hidden" : null));
-  const note = diff && pair && !special ? [fileNote(file), textNote].filter(Boolean).join(" · ") || null : null;
+  const note = diff && pair && !special ? diffNote(pair, file) : null;
   const code = !media && !rendered && !!pair && !special;
   const blame = useBlame(isFile && code && s.blame ? sel.path : null, pair, status?.head ?? null);
   // Text the file view can't turn back into the file's bytes stays read-only.
   const editable = isFile && !!pair && !pair.modified.lossy && keepsLineEndings(pair.modified.text);
   const dirty = useEdited().has(selectionPath(sel)) && isFile;
   const github = useMemo(() => githubSides(sel, webUrl), [sel, webUrl]);
+  // Review notes go on local diffs and the file view (a PR has its own comments); not on a file
+  // being typed into, whose lines are no longer the ones on disk.
+  const notes = useMemo(
+    () => (sel.kind === "pr-file" || (isFile && dirty) ? null : { oldPath: file?.oldPath ?? selectionPath(sel), at: sel.kind === "commit" ? `commit ${sel.commit.shortSha}` : undefined }),
+    [sel, isFile, dirty, file],
+  );
   // An image or a preview has no lines to pick: the whole file.
   const onGitHub = (open: boolean) => () => (view.current ? view.current.gitHubLink(open) : github?.modified && void gitHubLink(github.modified, null, open));
   // A preview shows the file as edited.
@@ -149,6 +160,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
     "diff.discardChange": code && sel.kind === "unstaged" ? () => view.current?.lineAction("discard") : undefined,
     "editor.copyGitHubLink": github ? onGitHub(false) : undefined,
     "editor.openOnGitHub": github ? onGitHub(true) : undefined,
+    "review.addNote": code && notes ? () => view.current?.addNote() : undefined,
   });
 
   return (
@@ -319,6 +331,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               links={linkSides(sel, revision)}
               staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, oldPath: sel.file.oldPath, refresh } : null}
               review={review}
+              notes={notes}
               editable={editable}
               github={github}
             />
@@ -327,48 +340,6 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
       </div>
     </>
   );
-}
-
-const KINDS: Record<string, string> = { "100644": "file", "100755": "file", "120000": "symlink", "160000": "submodule" };
-
-/** What a text diff can't show about a change: its mode or type, or a submodule's own changes. */
-function fileNote(file: FileChange | null) {
-  if (file?.mode) {
-    const [from, to] = file.mode.split(" → ").map((m) => KINDS[m]);
-    return from && to && from !== to ? `Changed from a ${from} to a ${to} (${file.mode})` : `File mode changed: ${file.mode}`;
-  }
-  return changedInside(file) ? "This submodule has changes inside it; commit them in the submodule" : null;
-}
-
-function placeholderFor(pair: DiffPair, isFile: boolean, file: FileChange | null) {
-  const { original: a, modified: b } = pair;
-  if (isFile && !b.exists) return "This file no longer exists";
-  if (b.lfsMissing || a.lfsMissing) return b.lfsMissing ?? a.lfsMissing;
-  if (a.binary || b.binary) return "Binary file";
-  if (a.tooLarge || b.tooLarge) return "File is too large to display";
-  if (!isFile && !pair.rows.some((r) => r.k !== 0)) {
-    // First: an added or renamed file whose mode changed isn't only that.
-    const note = fileNote(file);
-    if (note) return note;
-    if (pair.whitespaceHidden) return "Only whitespace changed (hidden)";
-    // Added or deleted with no line changed: there were none.
-    if (a.exists !== b.exists) return "Empty file";
-    if (file?.status === "R") return "Renamed without changes";
-    if (file?.status === "C") return "Copied without changes";
-    return "No textual changes";
-  }
-  return null;
-}
-
-/** Why a last line shows removed and added unchanged: the newline after it came or went. */
-function newlineNote({ original: a, modified: b, rows }: DiffPair) {
-  if (!a.text || !b.text || a.text.endsWith("\n") === b.text.endsWith("\n")) return null;
-  // Rows hold every line, so the last one naming the new side is its last line; ignoring
-  // whitespace can leave it unchanged.
-  let last = rows.length - 1;
-  while (last >= 0 && !rows[last].n) last--;
-  if (last < 0 || rows[last].k === 0) return null;
-  return b.text.endsWith("\n") ? "Newline added at end of file" : "No newline at end of file";
 }
 
 function EmptyViewer({ hasTabs }: { hasTabs: boolean }) {

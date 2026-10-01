@@ -155,7 +155,7 @@ fn staging_unstaging_and_discarding_more_paths_than_argv_holds() {
     assert!(status(&r).unwrap().staged.is_empty());
 
     stage(&r, &files).unwrap();
-    commit(&r, "many", &CommitOptions::default()).unwrap();
+    commit(&r, "many", &CommitOptions::default(), &Net::default()).unwrap();
     for f in &files {
         fs::write(r.join(f), "b\n").unwrap();
     }
@@ -206,4 +206,137 @@ fn a_submodule_with_changes_inside_says_so() {
     assert_eq!(sub.submodule.as_deref(), Some("S.MU"));
     let a = st.unstaged.iter().find(|f| f.path == "a.txt").unwrap();
     assert!(a.submodule.is_none());
+}
+
+/// A killed git leaves index.lock behind and every staging fails on it. The lock git names is
+/// removed once it's stale, and only when it is this repository's.
+#[test]
+fn a_stale_index_lock_can_be_removed() {
+    let sb = Sandbox::new("stale-lock");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let other = sb.path("other");
+    init(&other);
+    let lock = r.join(".git/index.lock");
+    let other_lock = other.join(".git/index.lock");
+    for l in [&lock, &other_lock] {
+        fs::write(l, "").unwrap();
+    }
+    fs::write(r.join("a.txt"), "b\n").unwrap();
+    let err = stage(&r, &["a.txt".into()]).unwrap_err();
+    let named = err
+        .split_once("Unable to create '")
+        .and_then(|(_, rest)| rest.split_once("': File exists"))
+        .map(|(path, _)| path.to_string())
+        .unwrap();
+
+    let err = remove_index_lock(&r, &named).unwrap_err();
+    assert!(err.contains("a moment ago"), "{err}");
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    for l in [&lock, &other_lock] {
+        fs::File::options()
+            .write(true)
+            .open(l)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+    assert!(remove_index_lock(&r, other_lock.to_str().unwrap()).is_err());
+    assert!(remove_index_lock(&r, r.join("a.txt").to_str().unwrap()).is_err());
+    assert!(other_lock.exists() && r.join("a.txt").exists());
+
+    remove_index_lock(&r, &named).unwrap();
+    assert!(!lock.exists());
+    // Gone already (git finished after all): nothing to do.
+    remove_index_lock(&r, &named).unwrap();
+    stage(&r, &["a.txt".into()]).unwrap();
+}
+
+/// `git commit -a` holds index.lock while its hooks run, without keeping the file open: however
+/// old, the lock is left alone while that git still works in the repository.
+#[cfg(target_os = "macos")]
+#[test]
+fn a_running_commits_index_lock_is_left_alone() {
+    use std::time::{Duration, SystemTime};
+    let sb = Sandbox::new("live-lock");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let (ready, go) = (sb.path("ready"), sb.path("go"));
+    let hook = r.join(".git/hooks/pre-commit");
+    fs::write(
+        &hook,
+        format!(
+            "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\n",
+            ready.display(),
+            go.display()
+        ),
+    )
+    .unwrap();
+    std::process::Command::new("chmod")
+        .args(["+x", hook.to_str().unwrap()])
+        .status()
+        .unwrap();
+    fs::write(r.join("a.txt"), "b\n").unwrap();
+    let mut agent = std::process::Command::new("git")
+        .args(["commit", "-qam", "agent's commit"])
+        .current_dir(&r)
+        .spawn()
+        .unwrap();
+    for _ in 0..500 {
+        if ready.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let lock = r.join(".git/index.lock");
+    fs::File::options()
+        .write(true)
+        .open(&lock)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
+    let err = remove_index_lock(&r, lock.to_str().unwrap()).unwrap_err();
+    assert!(err.contains("still running"), "{err}");
+    assert!(lock.exists());
+
+    fs::write(&go, "").unwrap();
+    assert!(agent.wait().unwrap().success());
+    assert_eq!(log(&r, None, 0, 1).unwrap()[0].subject, "agent's commit");
+}
+
+/// A mixed reset moves the index under an unstaged change while its letter and its file stay
+/// the same: the stacked diff reads the file again by the index blob it's against.
+#[test]
+fn an_unstaged_change_names_the_index_blob_it_is_against() {
+    let sb = Sandbox::new("indexoid");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "1\n", "one");
+    write_commit(&r, "a.txt", "2\n", "two");
+    fs::write(r.join("a.txt"), "3\n").unwrap();
+    let before = status(&r).unwrap().unstaged[0].clone();
+    assert_eq!(before.index_oid, Some(rev(&r, ":a.txt")));
+    let head = rev(&r, "HEAD");
+    reset(&r, &rev(&r, "HEAD~1"), ResetMode::Mixed, &head).unwrap();
+    let st = status(&r).unwrap();
+    assert!(st.staged.is_empty());
+    let after = &st.unstaged[0];
+    assert_eq!((&after.status, &after.oid), (&before.status, &before.oid));
+    assert_eq!(after.index_oid, Some(rev(&r, ":a.txt")));
+    assert_ne!(after.index_oid, before.index_oid);
+}
+
+/// A submodule's folder doesn't change as its checkout moves from one new commit to another.
+#[test]
+fn a_moved_submodule_names_its_commit() {
+    let sb = Sandbox::new("submoved");
+    let r = repo_with_submodule(&sb);
+    let sub = r.join("sub");
+    write_commit(&sub, "l.txt", "2\n", "two");
+    let oid = |r: &Path| status(r).unwrap().unstaged[0].oid.clone();
+    assert_eq!(oid(&r), Some(rev(&sub, "HEAD")));
+    write_commit(&sub, "l.txt", "3\n", "three");
+    assert_eq!(oid(&r), Some(rev(&sub, "HEAD")));
 }

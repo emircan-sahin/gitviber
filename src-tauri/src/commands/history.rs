@@ -1,6 +1,7 @@
 use crate::journal::{Action, Mode};
-use crate::state::{in_repo, journaled, short, AppState, Res};
+use crate::state::{in_repo, journaled, read_repo, short, AppState, Res};
 use crate::{fs, git, rewrite};
+use std::path::Path;
 use tauri::State;
 
 #[tauri::command]
@@ -13,7 +14,10 @@ pub async fn log(
     all: Option<git::GraphRefs>,
 ) -> Res<Vec<git::Commit>> {
     let filter = filter.unwrap_or_default();
-    in_repo(&state, move |r| {
+    // Searching every diff for code, or one path's history (followed through renames), can
+    // rightly take minutes on a long history.
+    let slow = filter.code.as_deref().is_some_and(|c| !c.is_empty()) || !filter.paths.is_empty();
+    let read = move |r: &Path| {
         // Only pathspecs, but the rule holds: no path from the frontend reaches outside the repo.
         for p in &filter.paths {
             fs::resolve(r, p)?;
@@ -23,8 +27,12 @@ pub async fn log(
             (Some(refs), None) => git::log_all(r, &refs, skip, limit, &filter),
             (None, rev) => git::log_filtered(r, rev.as_deref(), skip, limit, &filter),
         }
-    })
-    .await
+    };
+    if slow {
+        in_repo(&state, read).await
+    } else {
+        read_repo(&state, read).await
+    }
 }
 
 #[tauri::command]

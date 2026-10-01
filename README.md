@@ -252,6 +252,7 @@ Reopening a closed tab and closing the other tabs have no default there either, 
 | `↓` `↑` `↵` | Move through the focused list (Changes, History, PRs, Issues), `↵` keeps the tab open; `Home` `End` `PgUp` `PgDn` too |
 | `⇧F10` | The focused row's right-click menu |
 | `V` | Mark file viewed |
+| `C` | Add a review note on the selected lines, else the cursor's |
 | `S` `⌘⌫` | Stage or unstage, discard the open file; in the explorer `⌘⌫` deletes the file |
 | `⌘A` | Select every change (in the Changes list) |
 | `⌘Z` `⇧⌘Z` | Undo, redo the last git action (outside text fields) |

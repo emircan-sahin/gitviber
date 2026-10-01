@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LinesRequest, LogFilter, NetOp, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -140,10 +140,14 @@ export const api = {
    */
   unstage: (files: FileChange[]) => invoke<void>("unstage", { paths: files.flatMap((f) => (f.status === "R" && f.oldPath ? [f.path, f.oldPath] : [f.path])) }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
+  /** Removes the index.lock at `path`, as git's error named it: only this repository's, and only once it's a few seconds old. */
+  removeIndexLock: (path: string) => invoke<void>("remove_index_lock", { path }),
   /** Stages, unstages or discards some lines of a diff (lines.rs); a discard is undoable. */
   changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
-  /** An empty `message` with `amend` keeps the old one (--no-edit). */
-  commit: (message: string, options: CommitOptions) => invoke<void>("commit", { message, options }),
+  /** An empty `message` with `amend` keeps the old one (--no-edit). Watched as a network command: hook output is its progress, and Cancel stops it (once git has moved HEAD, the commit stands). */
+  commit: (message: string, options: CommitOptions, op?: NetOp) => network<void>("commit", { message, options }, op),
+  /** Staged files GitHub would refuse a push of (over 100 MiB), by their staged blobs; LFS files are staged as pointers, so they don't count. */
+  largeStaged: () => invoke<LargeFile[]>("large_staged"),
   /** The message git would start with, comment lines stripped: a squash merge's or `cherry-pick -n`'s, else `commit.template`; null for neither. */
   commitTemplate: () => invoke<string | null>("commit_template"),
   /** "Name <email>" of recent authors and co-authors, newest first, not the user. */
@@ -200,6 +204,8 @@ export const api = {
   cloneRepo: (url: string, parent: string, name: string, op?: NetOp) => network<string>("clone_repo", { url, parent, name }, op),
   /** `git init` in a folder that isn't in a repository yet. */
   initRepo: (path: string) => invoke<void>("init_repo", { path }),
+  /** Adds the repository git refuses at `path` for its owner to the global safe.directory: the folder git's error names, only while git refuses it. */
+  trustFolder: (path: string) => invoke<void>("trust_folder", { path }),
   // History actions. `sha` on undo and `head` on reset are the HEAD the user saw (refused if it moved).
   undoCommit: (sha: string) => invoke<void>("undo_commit", { sha }),
   reset: (sha: string, mode: ResetMode, head: string) => invoke<void>("reset", { sha, mode, head }),

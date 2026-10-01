@@ -3,7 +3,7 @@
 use super::cmd::command;
 use super::{run, run_network, run_text, validate_base, validate_branch, worktrees};
 use crate::network::{self, Net};
-use crate::process::exec;
+use crate::process::{exec, spawn, spawning};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -18,6 +18,8 @@ pub struct Branch {
     pub remote: bool,
     pub current: bool,
     pub upstream: Option<String>,
+    /// The tip's commit id.
+    pub sha: String,
     pub timestamp: i64,
     /// Checked out in another worktree (its path), where git refuses to switch to it.
     pub worktree: Option<String>,
@@ -34,7 +36,7 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         &[
             "for-each-ref",
             "--sort=-committerdate",
-            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)%1f%(symref)",
+            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)%1f%(symref)%1f%(objectname)",
             "refs/heads",
             "refs/remotes",
         ],
@@ -69,12 +71,13 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\x1f').collect();
             let elsewhere =
-                f.len() == 7 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
-            (f.len() == 7 && !f[0].ends_with("/HEAD")).then(|| Branch {
+                f.len() == 8 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
+            (f.len() == 8 && !f[0].ends_with("/HEAD")).then(|| Branch {
                 name: f[1].to_string(),
                 remote: f[0].starts_with("refs/remotes/"),
                 current: f[2] == "*",
                 upstream: (!f[3].is_empty()).then(|| f[3].to_string()),
+                sha: f[7].to_string(),
                 timestamp: f[4].parse().unwrap_or(0),
                 worktree: elsewhere.then(|| f[5].to_string()),
                 merged: f[2] != "*" && f[1] != default && merged.contains(&f[0]),
@@ -366,7 +369,7 @@ const FORMAT: &str = "--format=commit %H";
 /// `git <source>; …| git patch-id --verbatim`: (id, commit) pairs, each source streamed through
 /// one pipe in turn, as a branch's and its base's history can be long.
 fn patch_ids(repo: &Path, sources: &[Vec<&str>]) -> Option<Vec<(String, String)>> {
-    let (reader, writer) = std::io::pipe().ok()?;
+    let (reader, writer) = spawning(std::io::pipe).ok()?;
     let mut ids = command(repo, &["patch-id", "--verbatim"]);
     ids.stdin(reader);
     std::thread::scope(|s| {
@@ -377,7 +380,8 @@ fn patch_ids(repo: &Path, sources: &[Vec<&str>]) -> Option<Vec<(String, String)>
             cmd.stderr(Stdio::null());
             written &= writer
                 .try_clone()
-                .is_ok_and(|w| cmd.stdout(w).status().is_ok_and(|s| s.success()));
+                .and_then(|w| spawn(cmd.stdout(w))?.wait())
+                .is_ok_and(|s| s.success());
         }
         drop(writer);
         let out = out.join().ok()?.ok().filter(|_| written)?;

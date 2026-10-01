@@ -1,8 +1,8 @@
-import { CANCELLED, errorMessage, type NetOp, netOp, type Progress } from "../api";
+import { CANCELLED, CANCELLED_STASHED, errorMessage, type NetOp, netOp, type Progress } from "../api";
 import { notifyIfAway } from "../app/notify";
 import { createStore } from "../store";
 
-/** The network command the top bar shows with its progress and Cancel, whichever panel started it. */
+/** The command the top bar shows with its progress and Cancel, whichever panel started it: a network one, or a commit while its hooks run. */
 interface NetActivity {
   label: string;
   op: NetOp;
@@ -18,7 +18,7 @@ const update = (next: NetActivity[]) => {
   current.set(active.at(-1) ?? null);
 };
 
-/** Runs a network command as one the top bar shows. */
+/** Runs a network command, or a commit, as one the top bar shows. */
 export async function withNetActivity<T>(label: string, fn: (op: NetOp) => Promise<T>): Promise<T> {
   const op = netOp((progress) => update(active.map((a) => (a.op === op ? { ...a, progress } : a))));
   update([...active, { label, op, progress: null }]);
@@ -27,7 +27,7 @@ export async function withNetActivity<T>(label: string, fn: (op: NetOp) => Promi
     notifyIfAway(`${label} finished`);
     return value;
   } catch (e) {
-    if (e !== CANCELLED) notifyIfAway(`${label} failed`, errorMessage(e));
+    if (e !== CANCELLED && e !== CANCELLED_STASHED) notifyIfAway(`${label} failed`, errorMessage(e));
     throw e;
   } finally {
     update(active.filter((a) => a.op !== op));

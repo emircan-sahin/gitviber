@@ -6,8 +6,10 @@ export interface FileChange {
   status: ChangeStatus;
   additions: number | null;
   deletions: number | null;
-  /** Content identity (index blob, or size+mtime in the worktree); changes on every edit. */
+  /** Content identity (index blob, size+mtime in the worktree, or a moved submodule's commit); changes on every edit. */
   oid: string | null;
+  /** Unstaged entries: the index blob the change is against, which a mixed reset moves with nothing else changing. */
+  indexOid: string | null;
   /** Conflicts only: UU both modified, AA both added, UD/DU deleted by them/us, AU/UA, DD. */
   conflict: string | null;
   /** "100644 → 100755" when the file mode changed (chmod +x); the text diff doesn't show it. */
@@ -179,6 +181,12 @@ export interface CommitOptions {
   coAuthors?: string[];
 }
 
+/** A staged file over GitHub's 100 MiB limit; `size` reads "123.4 MB". */
+export interface LargeFile {
+  path: string;
+  size: string;
+}
+
 export interface CommitDetails {
   /** git's %G?: G good, U good but unknown validity, X/Y expired signature/key, R revoked key, B bad, E can't check, N none. */
   signature: string;
@@ -300,6 +308,8 @@ export interface Branch {
   remote: boolean;
   current: boolean;
   upstream: string | null;
+  /** The tip's commit id. */
+  sha: string;
   timestamp: number;
   /** Checked out in another worktree (its path); git won't switch to it here. */
   worktree: string | null;
@@ -403,7 +413,7 @@ export interface Progress {
   cancellable: boolean;
 }
 
-/** One watched network command (fetch, pull, push, clone): its progress, and its id for Cancel. */
+/** One watched command (fetch, pull, push, clone, or a commit and its hooks): its progress, and its id for Cancel. */
 export interface NetOp {
   id: string;
   onProgress?: (p: Progress) => void;

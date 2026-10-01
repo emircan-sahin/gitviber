@@ -21,6 +21,7 @@ test("stage all leaves nested repositories out", () => {
     additions: null,
     deletions: null,
     oid: null,
+    indexOid: null,
     conflict: null,
     mode: null,
     submodule: null,

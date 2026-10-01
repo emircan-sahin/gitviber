@@ -6,6 +6,8 @@ import { worktreeDir } from "@/lib/repo/session";
 import type { RepoData } from "@/lib/repo/useRepo";
 import { folderName } from "@/lib/path";
 import { useGitAction } from "@/hooks/useGitAction";
+import { undoCommit } from "@/features/history/commitActions";
+import { secretCommits } from "@/lib/git/gitErrors";
 
 /** The top bar's git actions: switching, merging, deleting branches, worktrees, pull, push and publish. */
 export function useRepoActions(repo: RepoData, root: string, main: string) {
@@ -77,6 +79,16 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       ? `Resolve them in Changes. Your uncommitted changes were set aside for the ${what} and come back when it finishes (Continue or Abort, if it's waiting on you). If they conflict coming back, they're kept in Stashes too: drop that stash once resolved.`
       : undefined;
   const retryStashed = (again: () => Promise<boolean>) => [{ label: "Retry with autostash", run: () => void again() }];
+  // A push GitHub refused over a secret: when only the last commit has it, undoing that brings
+  // the file back staged to fix. Only a plain commit not yet pushed, as History's Undo commit.
+  const head = repo.commits[0];
+  const undoLast = (message: string) => {
+    const listed = secretCommits(message);
+    const onlyHead = !!head && listed.length > 0 && listed.every((sha) => head.sha.startsWith(sha));
+    return onlyHead && head.unpushed && head.parents.length === 1 && status?.head && head.sha.startsWith(status.head)
+      ? [{ label: "Undo last commit", run: () => void undoCommit(head.sha, run) }]
+      : undefined;
+  };
   const pull = (mode: PullMode, autostash = false): Promise<boolean> =>
     runNet("Pull", (op) => api.pull(mode, op, autostash), mode === "ff" ? "Pulled" : `Pulled (${mode})`, {
       fixes: { diverged: pulls, autostash: retryStashed(() => pull(mode, true)) },
@@ -84,11 +96,11 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     });
   const sync = (autostash = false): Promise<boolean> =>
     runNet("Sync", async (op) => (await api.pull("ff", op, autostash)) || api.push(false, undefined, op), "Synced", {
-      fixes: { diverged: pulls, "fetch-first": behind, autostash: retryStashed(() => sync(true)) },
+      fixes: { diverged: pulls, "fetch-first": behind, autostash: retryStashed(() => sync(true)), secret: undoLast },
       conflicts: stashedFor(autostash),
     });
 
-  const publish = (remote: string) => runNet("Publish", (op) => api.push(false, remote, op), `Branch published to ${remote}`);
+  const publish = (remote: string) => runNet("Publish", (op) => api.push(false, remote, op), `Branch published to ${remote}`, { fixes: { secret: undoLast } });
   // Where Publish goes without asking: the preferred remote, or the only one.
   const publishTo = status?.branch && status.head ? (status.publish ?? (status.remotes.length === 1 ? status.remotes[0] : null)) : null;
   // A squash's changes would get the stash back before they're committed: no autostash for it.
@@ -127,7 +139,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
         if (tags) forgetRemoteTags();
       },
       tags ? "Pushed with tags" : "Pushed",
-      { fixes: { "fetch-first": behind } },
+      { fixes: { "fetch-first": behind, secret: undoLast } },
     );
   // Unknown until the push target has the branch; then a push is due.
   const pushAhead = status?.push ? (status.push.branch ? status.push.ahead : null) : (status?.ahead ?? 0);

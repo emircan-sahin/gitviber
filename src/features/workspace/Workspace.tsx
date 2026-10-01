@@ -10,12 +10,13 @@ import { setLinkHost } from "@/lib/links/linkHost";
 import { prepare } from "@/lib/editor/monaco";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { dropReveal, revealWaits } from "@/lib/editor/reveal";
-import { onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
+import { type ChangeList, onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen, useTerminalTabCount } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
+import { type OpenedRepo } from "@/lib/api";
 import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
 import { revealPath } from "@/lib/app/openIn";
@@ -37,7 +38,10 @@ import { TerminalRestoreOffer } from "@/features/terminal/TerminalFind";
 import { TopBar } from "@/features/topbar/TopBar";
 import { Viewer } from "@/features/viewer/Viewer";
 import { prefetchSelection, resetPairCache } from "@/features/viewer/diffPairs";
+import { stackedView } from "@/features/viewer/AllChanges";
 import { openEdits } from "@/lib/editor/edits";
+import { openNotes, useNoteCheck } from "@/lib/review/noteStore";
+import { copyNotes, pendingNotes, sendNotes } from "@/features/review/ReviewNotes";
 import { CountBadge } from "@/components/CountBadge";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
@@ -48,15 +52,18 @@ interface Props {
   /** The main worktree; differs from root when a linked worktree is open. */
   main: string;
   recent: string[];
-  onOpenRepo: (path?: string) => void;
+  onOpenRepo: (path?: string) => Promise<void>;
   onForgetRepo: (path: string) => void;
   onReorderRepos: (list: string[]) => void;
   onLocateRepo: (path: string) => void;
+  /** The repo's folder was deleted while open. */
+  onRepoGone: (repo: OpenedRepo) => void;
 }
 
 /**
- * Diffs are cached by revision, which restarts per repo, and GitHub data and unsaved file edits are
- * per repo: they start over with each repo, during its first render, before anything in it reads them.
+ * Diffs are cached by revision, which restarts per repo, and GitHub data, unsaved file edits and
+ * review notes are per repo: they start over with each repo, during its first render, before
+ * anything in it reads them.
  */
 function useFreshCaches(root: string) {
   const cleared = useRef<string | null>(null);
@@ -65,11 +72,12 @@ function useFreshCaches(root: string) {
   resetPairCache();
   resetGitHubCache();
   openEdits(root);
+  openNotes(root);
 }
 
-export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: Props) {
+export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, onRepoGone }: Props) {
   useFreshCaches(root);
-  const repo = useRepo(root);
+  const repo = useRepo(root, () => onRepoGone({ root, main }));
   const { status } = repo;
   const origin = status?.origin;
   // origin's page on GitHub, for links; kept while git couldn't read the remotes, as the origin is.
@@ -92,8 +100,13 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // The full ref Changes reviews the branch against, in place of the uncommitted list; null: not reviewing.
   const [review, setReview] = useState<string | null>(() => (typeof saved?.review === "string" ? saved.review : null));
   const reviewing = listTab === "changes" && review !== null;
-  const branchReview = useBranchReview(review, repo.revision, reviewing);
+  // All Branch Changes on show reads the review too, with the list on another tab. It's known once
+  // the tabs are, below: a change there renders this again before anything is drawn.
+  const [branchOnShow, setBranchOnShow] = useState(false);
+  const branchReview = useBranchReview(review, repo.revision, reviewing || branchOnShow);
   const { tabs, activeKey, setActiveKey, open: openTab, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
+  const branchTab = activeKey === selectionKey({ kind: "changes", list: "branch" });
+  if (branchTab !== branchOnShow) setBranchOnShow(branchTab);
   // A file opened while the terminal covers the code view (⌘P, a path clicked in the terminal) comes into view.
   const open = useCallback(
     (sel: Selection, pin?: boolean) => {
@@ -103,6 +116,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     [openTab],
   );
   const { viewedMap, viewed, setViewed, toggleViewed } = useViewed(saved, status, repo.refresh, branchReview.review);
+  useNoteCheck(repo.revision);
   useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap], review }), [root, tabs, activeKey, listTab, viewedMap, review]);
   // Git work on the left, files on the right; both collapse to give code the room.
   const listPanel = usePanelRef();
@@ -201,8 +215,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     for (const n of [changes[i + 1], changes[i - 1]]) if (n) prefetchSelection(n, repo.revision);
   }, [changes, activeKey, repo.revision]);
 
-  // J/K walk the changed files, the core loop of reviewing an agent's work.
+  // J/K walk the changed files, the core loop of reviewing an agent's work; in a stacked view of
+  // them, its files.
   const step = (dir: 1 | -1) => {
+    if (active?.sel.kind === "changes") return stackedView()?.step(dir);
     if (!changes.length) return;
     const i = changes.findIndex((c) => selectionKey(c) === activeKey);
     open(changes[i < 0 ? 0 : Math.min(changes.length - 1, Math.max(0, i + dir))]);
@@ -221,12 +237,23 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       : undefined;
 
   const active = tabs.find((t) => t.key === activeKey) ?? null;
+  // From the palette, as quick open: the code view takes the keys, and the stacked view them as it opens.
+  const openAll = (list: ChangeList) => {
+    focusPanel("code");
+    open({ kind: "changes", list }, true);
+  };
   useCommands({
     "review.nextFile": () => step(1),
     "review.prevFile": () => step(-1),
     "review.branch": startReview,
+    "review.openAll": status?.unstaged.length ? () => openAll("unstaged") : undefined,
+    "review.openAllStaged": status?.staged.length ? () => openAll("staged") : undefined,
+    "review.openAllBranch": reviewing && branchReview.rows.length ? () => openAll("branch") : undefined,
+    "review.copyNotes": () => copyNotes(pendingNotes()),
+    "review.sendNotes": () => sendNotes(pendingNotes()),
     "review.toggleViewed": () => {
       const t = tabs.find((x) => x.key === activeKey);
+      if (t?.sel.kind === "changes") return stackedView()?.toggleViewed();
       // On a staged file this would unstage it; too much for a stray single key.
       if (t && t.sel.kind !== "staged") toggleViewed(t.sel);
     },
@@ -477,6 +504,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     tabs={tabs}
                     active={active}
                     status={status}
+                    branchRows={branchReview.review && branchReview.rows}
                     revision={repo.revision}
                     viewed={viewed}
                     toggleViewed={toggleViewed}

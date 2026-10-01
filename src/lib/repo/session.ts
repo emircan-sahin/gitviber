@@ -2,6 +2,7 @@ import { type Selection, selectionKey } from "./selection";
 import { getSettings } from "../settings";
 import { isRecord, putRecent, readJson } from "../storage";
 import { folderName, joinPath } from "../path";
+import { isNote, type ReviewNote } from "../review/notes";
 
 /** What a worktree's window looked like, so reopening the app picks up where it was. */
 interface WorkspaceSnapshot {
@@ -27,6 +28,7 @@ export interface CommitDraft {
 const KEY = "gitviber.workspaces";
 const DRAFTS_KEY = "gitviber.drafts";
 const EDITS_KEY = "gitviber.fileEdits";
+const NOTES_KEY = "gitviber.reviewNotes";
 const WORKTREE_DIRS_KEY = "gitviber.worktreeDirs";
 const WORKTREE_RUN_KEY = "gitviber.worktreeRun";
 const ISSUE_BRANCHES_KEY = "gitviber.issueBranches";
@@ -93,9 +95,19 @@ export function saveEdits(root: string, edits: Record<string, FileEdit>) {
   return put(EDITS_KEY, root, Object.keys(edits).length ? edits : null);
 }
 
-/** A worktree's folder moved: its layout, unsent commit message and unsaved files, kept by path, go along. */
+export function loadNotes(root: string): ReviewNote[] {
+  const saved = all(NOTES_KEY)[root];
+  return Array.isArray(saved) ? saved.filter(isNote) : [];
+}
+
+/** False when storage is full: the notes then live only until the app quits. */
+export function saveNotes(root: string, notes: ReviewNote[]) {
+  return put(NOTES_KEY, root, notes.length ? notes : null);
+}
+
+/** A worktree's folder moved: its layout, unsent commit message, unsaved files and review notes, kept by path, go along. */
 export function moveRoot(from: string, to: string) {
-  for (const key of [KEY, DRAFTS_KEY, EDITS_KEY]) {
+  for (const key of [KEY, DRAFTS_KEY, EDITS_KEY, NOTES_KEY]) {
     const saved = all(key)[from];
     if (saved === undefined) continue;
     put(key, from, null);

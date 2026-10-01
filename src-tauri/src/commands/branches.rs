@@ -1,12 +1,12 @@
 use crate::journal::{Action, Mode};
-use crate::state::{in_repo, journaled, watch_network, AppState, Res};
+use crate::state::{in_repo, journaled, read_repo, watch_network, AppState, Res};
 use crate::{git, network};
 use tauri::ipc::Channel;
 use tauri::State;
 
 #[tauri::command]
 pub async fn branches(state: State<'_, AppState>) -> Res<Vec<git::Branch>> {
-    in_repo(&state, git::branches).await
+    read_repo(&state, git::branches).await
 }
 
 #[tauri::command]

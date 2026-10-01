@@ -188,11 +188,15 @@ pub async fn about(app: AppHandle) -> Res<About> {
     blocking(move || {
         let state = app.state::<AppState>();
         let checked = state.git.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let text = |cmd: &str, args: &[&str]| {
-            std::process::Command::new(cmd)
-                .args(args)
+        let text = |program: &str, args: &[&str]| {
+            let mut cmd = std::process::Command::new(program);
+            cmd.args(args)
                 .env("PATH", process::search_path())
-                .output()
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            process::spawn(&mut cmd)
+                .and_then(|c| c.wait_with_output())
                 .ok()
                 .filter(|o| o.status.success())
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())

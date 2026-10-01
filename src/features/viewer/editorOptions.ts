@@ -5,6 +5,9 @@ import { BLAME_CHARS } from "./decorations";
 export type CodeMode = "unified" | "split" | "file";
 
 export const CONTEXT = 3;
+/** Unchanged runs shorter than this stay shown when the rest fold; a folded one opens this many lines a click. */
+export const FOLD_MIN = 3;
+export const FOLD_REVEAL = 20;
 
 function common(s: Settings, wrap: boolean): monaco.editor.IEditorOptions & monaco.editor.IGlobalEditorOptions {
   return {
@@ -42,7 +45,7 @@ export function diffOptions(s: Settings, mode: CodeMode, collapse: boolean, wrap
     renderSideBySide: mode === "split",
     // The layout is the user's choice, not the window width's.
     useInlineViewWhenSpaceIsLimited: false,
-    hideUnchangedRegions: { enabled: collapse, contextLineCount: CONTEXT, minimumLineCount: 3, revealLineCount: 20 },
+    hideUnchangedRegions: { enabled: collapse, contextLineCount: CONTEXT, minimumLineCount: FOLD_MIN, revealLineCount: FOLD_REVEAL },
     // Whitespace changes are changes, as git counts them.
     ignoreTrimWhitespace: false,
     originalEditable: false,

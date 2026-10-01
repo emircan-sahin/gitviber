@@ -1,4 +1,5 @@
 use super::*;
+use crate::network::Net;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +24,13 @@ fn status_history_and_diffs() {
     fs::write(repo.join("a.txt"), "one\ntwo\n").unwrap();
     fs::write(repo.join("old name.txt"), "rename me\n").unwrap();
     stage(&repo, &["a.txt".into(), "old name.txt".into()]).unwrap();
-    commit(&repo, "first\n\nbody line", &CommitOptions::default()).unwrap();
+    commit(
+        &repo,
+        "first\n\nbody line",
+        &CommitOptions::default(),
+        &Net::default(),
+    )
+    .unwrap();
 
     fs::write(repo.join("a.txt"), "one\nTWO\nthree\n").unwrap();
     fs::rename(repo.join("old name.txt"), repo.join("new name.txt")).unwrap();
@@ -73,7 +80,7 @@ fn status_history_and_diffs() {
         ("rename me\n", "rename me\n")
     );
 
-    commit(&repo, "second", &CommitOptions::default()).unwrap();
+    commit(&repo, "second", &CommitOptions::default(), &Net::default()).unwrap();
     let commits = log(&repo, None, 0, 10).unwrap();
     assert_eq!(commits.len(), 2);
     assert_eq!(commits[1].body, "body line");
@@ -224,7 +231,7 @@ fn worktree_new_branch_rename_and_prune() {
 fn commit_file(repo: &Path, path: &str, content: &str, msg: &str) {
     fs::write(repo.join(path), content).unwrap();
     stage(repo, &[path.into()]).unwrap();
-    commit(repo, msg, &CommitOptions::default()).unwrap();
+    commit(repo, msg, &CommitOptions::default(), &Net::default()).unwrap();
 }
 
 #[test]
@@ -235,7 +242,13 @@ fn merge_conflict_resolve_and_continue() {
     switch_branch(&repo, "feature", true).unwrap();
     commit_file(&repo, "a.txt", "feature\n", "feature edit");
     run(&repo, &["rm", "-q", "gone.txt"]).unwrap();
-    commit(&repo, "feature deletes gone", &CommitOptions::default()).unwrap();
+    commit(
+        &repo,
+        "feature deletes gone",
+        &CommitOptions::default(),
+        &Net::default(),
+    )
+    .unwrap();
     switch_branch(&repo, "main", false).unwrap();
     commit_file(&repo, "a.txt", "main\n", "main edit");
     commit_file(&repo, "gone.txt", "edited on main\n", "main edits gone");

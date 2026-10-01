@@ -182,8 +182,8 @@ impl Ptys {
             );
             let _ = output.send(Response::new(note.into_bytes()));
         }
-        let pair = native_pty_system()
-            .openpty(size(cols, rows))
+        // Like a pipe's, the pty's fds are marked close-on-exec a step after they're made.
+        let pair = crate::process::spawning(|| native_pty_system().openpty(size(cols, rows)))
             .map_err(|e| e.to_string())?;
         #[cfg(unix)]
         let inject = integration.and_then(|dir| {
@@ -215,7 +215,8 @@ impl Ptys {
         for (key, value) in inject.iter().flat_map(|i| &i.env) {
             cmd.env(key, value);
         }
-        let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        let mut child = crate::process::spawning(|| pair.slave.spawn_command(cmd))
+            .map_err(|e| e.to_string())?;
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;

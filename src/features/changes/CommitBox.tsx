@@ -1,19 +1,22 @@
 import { ArrowUpFromLine, Ellipsis, LoaderCircle, RefreshCw, ShieldOff, Signature, TriangleAlert, UserPlus } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { DisabledTip, Tip } from "@/components/ui/tooltip";
-import { api, type Commit, type RepoStatus } from "@/lib/api";
+import { api, CANCELLED, CANCELLED_STASHED, type Commit, type RepoStatus } from "@/lib/api";
 import { matchesCommand, runCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { updateSettings, useSettings } from "@/lib/settings";
+import { ask } from "@/lib/app/ask";
+import { gitFailed } from "@/lib/app/gitFailed";
 import { toast } from "@/lib/app/toast";
+import { withNetActivity } from "@/lib/repo/netActivity";
 import { tracked, undoAction } from "@/lib/repo/undo";
 import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED, stageable } from "@/lib/git/worktrees";
 import { pasteMessage } from "@/lib/git/pasteMessage";
-import { attempt, files, leftOut } from "./changeList";
+import { files, leftOut } from "./changeList";
 import { SectionBtn } from "./ChangeRows";
 import { CoAuthorChip, CoAuthorPicker, OptionChip } from "./CoAuthorPicker";
 import { SuggestButton } from "./SuggestButton";
@@ -21,6 +24,23 @@ import { useCommitDraft, useSuggestMessage } from "./useCommitBox";
 
 /** Past this, `git log --oneline` and GitHub cut the summary off. */
 const SUMMARY_LIMIT = 72;
+
+/**
+ * Asks before committing a file GitHub won't take: the push fails, and an agent's dump or build
+ * output committed by mistake then has to be cut out of history. `autoStaged`: Commit all staged
+ * them, and Cancel unstages them again.
+ */
+async function largeFilesConfirmed(autoStaged: boolean) {
+  const large = await api.largeStaged();
+  if (!large.length) return true;
+  const shown = large.slice(0, 10).map((f) => `${f.path} (${f.size})`).join("\n") + (large.length > 10 ? `\n…and ${large.length - 10} more` : "");
+  const [it, these] = large.length === 1 ? ["it", "This file is"] : ["them", "These files are"];
+  const out = autoStaged ? `Cancel unstages what Commit all staged, so you can add ${it} to .gitignore` : `Unstage ${it} and add ${it} to .gitignore`;
+  return ask(
+    `${these} over GitHub's 100 MB limit:\n\n${shown}\n\nA push with ${it} is refused, and taking ${it} out later means rewriting history. ${out}, or track ${it} with Git LFS (git lfs track), before you commit.`,
+    { title: "Large files", kind: "warning", okLabel: "Commit anyway" },
+  );
+}
 
 /** `shown`: what the list's filter leaves, while it has text; the button says how many files it takes that the list hides. */
 export function CommitBox({ status, shown, head, main, refresh }: { status: RepoStatus; shown: RepoStatus | null; head: Commit | null; main: string; refresh: () => Promise<void> }) {
@@ -68,7 +88,8 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
   const length = [...draft.summary].length;
 
   // `then`: push or sync right after, as VS Code's Commit & Push (the top bar's commands do it).
-  const commit = async (then?: "git.push" | "git.sync") => {
+  // `skipHooks`: this once, from the failed commit's toast.
+  const commit = async (then?: "git.push" | "git.sync", skipHooks = false) => {
     if (!canCommit) return;
     dropSuggestion();
     setBusy(true);
@@ -76,11 +97,26 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     // An untouched amend message goes as none, so git keeps the original exactly.
     const message = amend && !edited ? "" : body ? `${summary}\n\n${body}` : summary;
     let entry: number | null = null;
-    const ok = await attempt("Commit failed", async () => {
+    let ok = false;
+    try {
       // Nothing staged means "commit everything", the common case after an agent run.
-      if (!hasStaged && !amend) await api.stage(all.paths);
-      [, entry] = await tracked(() => api.commit(message, { amend: !!amend, signOff, noVerify, coAuthors: draft.coAuthors }));
-    });
+      const autoStaged = !hasStaged && !amend;
+      if (autoStaged) await api.stage(all.paths);
+      if (!(await largeFilesConfirmed(autoStaged))) {
+        // Nothing was staged before, so unstaging what this commit staged puts the index back.
+        const staged = new Set(all.paths);
+        if (autoStaged) await api.unstage(status.unstaged.filter((f) => staged.has(f.path)));
+        throw CANCELLED;
+      }
+      // Hooks can lint or test for minutes: the top bar shows their output, and Cancel.
+      const options = { amend: !!amend, signOff, noVerify: noVerify || skipHooks, coAuthors: draft.coAuthors };
+      [, entry] = await tracked(() => withNetActivity("Commit", (op) => api.commit(message, options, op)));
+      ok = true;
+    } catch (e) {
+      if (e === CANCELLED) toast("info", "Commit cancelled");
+      else if (e === CANCELLED_STASHED) toast("info", "Commit cancelled", "Hooks may have left changes in a stash: check Stashes before you commit again.");
+      else gitFailed("Commit failed", e, { hooks: [{ label: "Commit without hooks", run: () => withoutHooks(status.root, then) }] });
+    }
     setBusy(false);
     if (ok) {
       clear();
@@ -91,6 +127,16 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     }
     await refresh();
     if (ok && then) runCommand(then);
+  };
+
+  // The error toast outlives this render: its button commits what the box holds when pressed.
+  const latest = useRef({ root: status.root, commit });
+  useEffect(() => {
+    latest.current = { root: status.root, commit };
+  });
+  const withoutHooks = (root: string, then?: "git.push" | "git.sync") => {
+    if (latest.current.root !== root) toast("info", "Commit without hooks not run", "It was for the repository open before this one.");
+    else void latest.current.commit(then, true);
   };
 
   const { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest } = useSuggestMessage({ draft, setDraft, startBody, amend: !!amend, hasStaged, hasAny, busy });

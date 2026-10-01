@@ -469,6 +469,7 @@
   }
   body {
     @apply bg-sidebar text-foreground font-sans antialiased select-none;
+    font-weight: var(--font-weight-normal);
     font-size: 12px;
     line-height: 1.4;
   }

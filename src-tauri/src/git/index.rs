@@ -2,7 +2,8 @@
 
 use super::{has_head, new_gitlink, run_text, run_with, untracked_nested_root};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub(super) fn with_paths<'a>(mut args: Vec<&'a str>, paths: &'a [String]) -> Vec<&'a str> {
     args.push("--");
@@ -108,4 +109,77 @@ pub fn unstage(repo: &Path, paths: &[String]) -> Result<(), String> {
 /// Reverts tracked files in the worktree to their index version. Untracked files are left alone.
 pub fn discard(repo: &Path, paths: &[String]) -> Result<(), String> {
     run_on(repo, &["restore", "--worktree"], paths)
+}
+
+/// git holds index.lock for as long as it writes the index, well under this; an older one is
+/// a killed git's (an agent stopped mid-command), or one that waits on an editor or a hook.
+const STALE_LOCK: Duration = Duration::from_secs(5);
+
+/// Removes the index.lock git named in an error, the user having said no git command is
+/// running. Only this repository's own (git's path for it: a linked worktree has its own),
+/// only once it's too old to be a command's that is still writing, and on macOS only while no
+/// git process works in the repository.
+pub fn remove_index_lock(repo: &Path, named: &str) -> Result<(), String> {
+    let lock = repo.join(run_text(repo, &["rev-parse", "--git-path", "index.lock"])?.trim());
+    // The folders may be spelled differently (/tmp and /private/tmp on macOS).
+    let real = |p: &Path| -> Option<PathBuf> {
+        Some(p.parent()?.canonicalize().ok()?.join(p.file_name()?))
+    };
+    if real(&lock).is_none() || real(&lock) != real(Path::new(named)) {
+        return Err(format!(
+            "{named} isn't this repository's index lock. Open its repository to remove it."
+        ));
+    }
+    let modified = match std::fs::metadata(&lock).and_then(|m| m.modified()) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        m => m.map_err(|e| e.to_string())?,
+    };
+    if modified.elapsed().unwrap_or_default() < STALE_LOCK {
+        return Err("The lock was taken a moment ago: a git command is still using it. Let it finish, then try again.".into());
+    }
+    if let Some(pid) = git_working_in(repo) {
+        return Err(format!("git is still running in this repository (process {pid}), maybe a commit waiting on its hooks or an editor, or a `git log`/`git diff` open in a pager. Let it finish or quit it, then try again."));
+    }
+    match std::fs::remove_file(&lock) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
+/// A git process working in `dir`, by its current folder: git moves to the worktree's top
+/// before it takes index.lock and stays there while a hook or an editor runs. `git commit -a`
+/// holds the lock that long without keeping it open, so the lock file itself can't tell. The
+/// app's own reads there take no lock; one running now only makes the user try again.
+#[cfg(target_os = "macos")]
+fn git_working_in(dir: &Path) -> Option<libc::pid_t> {
+    use std::ffi::{CStr, OsStr};
+    use std::os::unix::ffi::OsStrExt;
+    let dir = dir.canonicalize().ok()?;
+    // With no buffer it says how many there are; a few more may start before the second call.
+    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
+    let mut pids = vec![0 as libc::pid_t; count.max(0) as usize + 64];
+    let bytes = std::mem::size_of_val(pids.as_slice()) as libc::c_int;
+    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
+    pids.truncate(count.max(0) as usize);
+    pids.into_iter().find(|&pid| {
+        let mut name = [0u8; 64];
+        let len = unsafe { libc::proc_name(pid, name.as_mut_ptr().cast(), name.len() as u32) };
+        if name.get(..len.max(0) as usize) != Some(&b"git"[..]) {
+            return false;
+        }
+        let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+        let size = std::mem::size_of_val(&info) as libc::c_int;
+        let ptr = (&mut info as *mut libc::proc_vnodepathinfo).cast();
+        if unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDVNODEPATHINFO, 0, ptr, size) } != size {
+            return false;
+        }
+        let cwd = unsafe { CStr::from_ptr(info.pvi_cdir.vip_path.as_ptr().cast()) };
+        Path::new(OsStr::from_bytes(cwd.to_bytes())).starts_with(&dir)
+    })
+}
+
+/// Elsewhere only the lock's age and the user's word guard it.
+#[cfg(not(target_os = "macos"))]
+fn git_working_in(_dir: &Path) -> Option<i32> {
+    None
 }

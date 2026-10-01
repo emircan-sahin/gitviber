@@ -284,8 +284,7 @@ pub fn probe_path(shell: &Path, timeout: Duration) -> Result<OsString, String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     detach(&mut cmd);
-    let mut child = cmd
-        .spawn()
+    let mut child = crate::process::spawn(&mut cmd)
         .map_err(|e| format!("could not run {}: {e}", shell.display()))?;
     let mut out = child.stdout.take().ok_or("no stdout")?;
     let (tx, rx) = mpsc::channel();

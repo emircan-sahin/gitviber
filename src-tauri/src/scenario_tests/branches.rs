@@ -62,6 +62,9 @@ fn merged_branches_and_deleting_them() {
     };
     // main is the default branch: merged into the feature, but never offered for cleanup.
     assert_eq!(merged(&r), ["done", "wip"]);
+    // Each tip's id, for History to tell when a branch moved.
+    let wip = branches(&r).unwrap().into_iter().find(|b| b.name == "wip");
+    assert_eq!(wip.map(|b| b.sha), Some(rev(&r, "wip")));
 
     run(&r, &["switch", "-q", "main"]).unwrap();
     assert_eq!(merged(&r), ["done"]);
@@ -105,7 +108,7 @@ fn squash_and_rebase_merged_branches_whose_upstream_is_gone() {
     run(a, &["merge", "-q", "--no-ff", "--no-commit", "extra"]).unwrap();
     fs::write(a.join("precious.txt"), "p\n").unwrap();
     stage(a, &["precious.txt".into()]).unwrap();
-    commit(a, "merge extra", &CommitOptions::default()).unwrap();
+    commit(a, "merge extra", &CommitOptions::default(), &Net::default()).unwrap();
     run(a, &["switch", "-q", "main"]).unwrap();
 
     // The host: main moves on, then each pull request lands its own way.
@@ -241,7 +244,7 @@ fn diff_settings_dont_make_a_branch_look_merged_upstream() {
         fs::write(r.join(f), text).unwrap();
         stage(&r, &[f.into()]).unwrap();
     };
-    let done = |msg: &str| commit(&r, msg, &CommitOptions::default()).unwrap();
+    let done = |msg: &str| commit(&r, msg, &CommitOptions::default(), &Net::default()).unwrap();
 
     // Each branch's own work, and on main something that matches only part of it or only
     // under the setting.
