@@ -302,3 +302,29 @@ fn a_new_worktree_gets_the_ignored_files_worktreeinclude_lists() {
         assert!(two.join(gone).symlink_metadata().is_err(), "{gone} copied");
     }
 }
+
+/// A branch that exists checks out in a new worktree as it is, with no base to start from;
+/// one checked out already, here or in another worktree, is refused and leaves no folder.
+#[test]
+fn a_new_worktree_checks_out_an_existing_branch() {
+    let sb = Sandbox::new("wtexisting");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["switch", "-q", "-c", "feat"]).unwrap();
+    write_commit(&r, "b.txt", "b\n", "feat adds b");
+    let tip = rev(&r, "feat");
+    run(&r, &["switch", "-q", "main"]).unwrap();
+
+    let wt = PathBuf::from(add_worktree(&r, "feat", None, None).unwrap());
+    assert_eq!(on_branch(&wt), "feat");
+    assert_eq!(rev(&wt, "HEAD"), tip);
+    assert!(wt.join("b.txt").is_file());
+    assert_eq!(rev(&r, "feat"), tip, "the branch itself didn't move");
+
+    let elsewhere = sb.path("elsewhere");
+    for held in ["main", "feat"] {
+        assert!(add_worktree(&r, held, None, Some(elsewhere.to_str().unwrap())).is_err());
+        assert!(!elsewhere.join(held).exists());
+    }
+}
