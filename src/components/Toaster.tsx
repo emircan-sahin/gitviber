@@ -54,7 +54,12 @@ export function Toaster() {
                 ))}
             </div>
             {!t.note && t.actions.length > 0 && <div className="flex shrink-0 flex-col items-end gap-0.5">{buttons(t.id, t.actions)}</div>}
-            <button onClick={() => dismissToast(t.id)} aria-label="Dismiss notification" className="h-fit text-subtle hover:text-foreground focus-visible:text-foreground">
+            {/* 20px to hit, in the 14px the icon takes. */}
+            <button
+              onClick={() => dismissToast(t.id)}
+              aria-label="Dismiss notification"
+              className="-m-[3px] flex size-5 shrink-0 items-center justify-center rounded-sm text-subtle outline-none hover:text-foreground focus-visible:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+            >
               <X className="size-3.5" />
             </button>
           </div>
