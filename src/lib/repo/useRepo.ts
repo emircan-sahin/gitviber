@@ -4,6 +4,9 @@ import { api, type Branch, type Commit, errorMessage, type Journal, LOG_PAGE, ty
 import { useBackgroundFetch } from "./backgroundFetch";
 import { toast } from "../app/toast";
 
+// Focus flickers (a dialog, a click on the Dock) shouldn't reload what was just read.
+const WAKE_GAP_MS = 2_000;
+
 interface RepoChanged {
   root: string;
   worktree: boolean;
@@ -24,6 +27,7 @@ export function useRepo(root: string) {
   const queued = useRef<{ history: boolean } | null>(null);
   // Commits shown so far: a refresh reloads all of them, or "Load more" pages would be lost.
   const loaded = useRef(0);
+  const loadedAt = useRef(0);
 
   const load = useCallback(async (history: boolean) => {
     const limit = Math.max(LOG_PAGE, loaded.current);
@@ -44,6 +48,7 @@ export function useRepo(root: string) {
       setHasMore(log.length === limit);
     }
     setRevision((r) => r + 1);
+    loadedAt.current = Date.now();
   }, []);
 
   // Coalesce: if a refresh is running, remember one more and run it after.
@@ -105,6 +110,22 @@ export function useRepo(root: string) {
       unlisten.then((f) => f()).catch(() => {});
     };
   }, [root, refresh]);
+
+  // The watcher can miss a change (dropped events, a git dir it can't watch), so coming back
+  // to the window rereads the repo; a miss doesn't last until a restart.
+  useEffect(() => {
+    // focus and visibilitychange come together: one reload, not one queued behind the other.
+    const wake = () => {
+      if (document.visibilityState !== "visible" || inFlight.current || Date.now() - loadedAt.current < WAKE_GAP_MS) return;
+      refresh(true);
+    };
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
+  }, [refresh]);
 
   useBackgroundFetch(root, !!status?.remotes.length, refresh);
 
