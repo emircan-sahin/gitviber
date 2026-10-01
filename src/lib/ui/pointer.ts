@@ -10,3 +10,13 @@ window.addEventListener("mousemove", (e) => (last = { x: e.screenX, y: e.screenY
 
 /** For a list's mousemove / mouseleave: whether the pointer really moved, not the page under it. */
 export const pointerMoved = (e: { screenX: number; screenY: number }) => !last || last.x !== e.screenX || last.y !== e.screenY;
+
+let keyed = false;
+window.addEventListener("keydown", () => (keyed = true), { capture: true, passive: true });
+window.addEventListener("pointerdown", () => (keyed = false), { capture: true, passive: true });
+
+/**
+ * Whether the last input was a key, not the pointer. Script-moved focus never matches :focus-visible
+ * in WebKit (useListNav.ts), so this is how to tell whose focus it was.
+ */
+export const lastInputWasKey = () => keyed;

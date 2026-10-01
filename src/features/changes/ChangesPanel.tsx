@@ -212,7 +212,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     "review.toggleViewed": active && active.kind !== "staged" && targets(active).length > 1 ? () => setViewed(targets(active), !viewed(active)) : undefined,
   });
 
-  // A focused row that left the list (staged, discarded) hands focus to the row now in its place, as
+  // A row the keyboard was on that left the list (staged, discarded) hands focus to the row now in its place, as
   // in VS Code; when the open tab follows the file into the other list, its row takes focus from there.
   const list = useRef<HTMLDivElement>(null);
   const lostFocus = useRef<string | null>(null);
