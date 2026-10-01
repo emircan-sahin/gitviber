@@ -2,6 +2,7 @@
 //! output streams to the UI as raw bytes (xterm.js decodes UTF-8 split across chunks).
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -14,11 +15,21 @@ use tauri::ipc::{Channel, Response};
 pub type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// Blocks until the program reads the input; once its shell is gone, the pty fails the write.
-pub fn write(writer: &Writer, data: &str) -> Result<(), String> {
+pub fn write(writer: &Writer, data: &[u8]) -> Result<(), String> {
     let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
-    w.write_all(data.as_bytes())
+    w.write_all(data)
         .and_then(|_| w.flush())
         .map_err(|e| e.to_string())
+}
+
+/// The bytes typed: text as UTF-8, or `binary`, xterm.js's char-per-byte string (mouse reports in
+/// the default encoding, where a coordinate past 95 is a byte past 127).
+pub fn input_bytes(data: &str, binary: bool) -> Cow<'_, [u8]> {
+    if binary {
+        Cow::Owned(data.chars().map(|c| c as u8).collect())
+    } else {
+        Cow::Borrowed(data.as_bytes())
+    }
 }
 
 /// How a shell ended: its exit code, or the signal that ended it ("Segmentation fault: 11").
@@ -343,7 +354,7 @@ fn process_cwd(_pid: u32) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{start_dir, Flow, HIGH_WATER, LOW_WATER};
+    use super::{input_bytes, start_dir, Flow, HIGH_WATER, LOW_WATER};
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
 
@@ -391,6 +402,13 @@ mod tests {
         let here = std::env::current_dir().unwrap().canonicalize().unwrap();
         let read = super::process_cwd(std::process::id()).unwrap();
         assert_eq!(read.canonicalize().unwrap(), here);
+    }
+
+    #[test]
+    fn binary_input_is_a_byte_a_char_and_text_is_utf8() {
+        // A click at column 200, row 1, in X10's encoding: 32 + 200 is past 127.
+        assert_eq!(&*input_bytes("\x1b[M \u{e8}!", true), b"\x1b[M \xe8!");
+        assert_eq!(&*input_bytes("é", false), "é".as_bytes());
     }
 
     #[test]

@@ -58,7 +58,7 @@ export interface Pane extends SaveState {
   pty: number | null;
   started: boolean;
   /** Typed while a write is in flight (or before the shell is up); sent next, in order. */
-  pending: string;
+  pending: Input[];
   writing: boolean;
   /** Output parsed and not yet acked to pty.rs (parsed). */
   unacked: number;
@@ -177,18 +177,25 @@ subscribeSettings(() => {
   }
 });
 
-function send(p: Pane, data: string) {
-  p.pending += data;
+/** `binary`: xterm's onBinary bytes, a char each, which aren't text to encode as UTF-8. */
+interface Input {
+  data: string;
+  binary: boolean;
+}
+
+function send(p: Pane, data: string, binary = false) {
+  const last = p.pending.at(-1);
+  if (last?.binary === binary) last.data += data;
+  else if (data) p.pending.push({ data, binary });
   if (p.writing) return;
   const flush = () => {
-    if (!p.pending || p.pty === null) {
+    if (!p.pending.length || p.pty === null) {
       p.writing = false;
       return;
     }
-    const data = p.pending;
-    p.pending = "";
+    const { data, binary } = p.pending.shift()!;
     p.writing = true;
-    pty.write(p.pty, data)
+    pty.write(p.pty, data, binary)
       .catch(() => {})
       .finally(flush);
   };
@@ -219,7 +226,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   term.loadAddon(search);
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, unacked: 0, marks: new CommandMarks(term, () => void shellDir(p)) };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, marks: new CommandMarks(term, () => void shellDir(p)) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   term.onWriteParsed(() => {
@@ -227,6 +234,8 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
     scheduleSave();
   });
   term.onData((data) => send(p, data));
+  // Mouse reports in the default encoding: a byte a coordinate, past 127 beyond column 95, not UTF-8.
+  term.onBinary((data) => send(p, data, true));
   term.onResize(({ cols, rows }) => {
     // Reflow rewraps the history.
     p.dirty = true;
