@@ -162,7 +162,8 @@ export const COMMANDS = [
   { id: "git.undo", title: "Undo Git Action", category: "Git", keys: ["cmd+z"], outsideText: true },
   { id: "git.redo", title: "Redo Git Action", category: "Git", keys: ["shift+cmd+z"], outsideText: true },
   // These act on the file open in the viewer. Discard asks first; ⌘⌫ stays line delete in text.
-  { id: "git.toggleStage", title: "Stage / Unstage Changes", category: "Git", keys: ["s"] },
+  // A held S would stage file after file as the open one moves on.
+  { id: "git.toggleStage", title: "Stage / Unstage Changes", category: "Git", keys: ["s"], noRepeat: true },
   { id: "git.discard", title: "Discard Changes", category: "Git", keys: ["cmd+backspace"], outsideText: true },
   // Local: only `local` listens for it.
   { id: "git.commit", title: "Commit", category: "Git", keys: ["cmd+enter", "ctrl+enter"], local: "the commit message" },
