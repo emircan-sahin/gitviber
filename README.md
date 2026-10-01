@@ -55,9 +55,11 @@ yours. A new worktree can run a command such as `claude` in its terminal right a
 of the ignored files `.worktreeinclude` lists, like your `.env`. Rename one along with its folder,
 lock it, and remove or prune it when the work is merged.
 Every worktree keeps its own terminals, so nothing gets lost when you hop between them, and a
-terminal can open in another project or any folder too. When an agent in another tab or worktree
-waits for you, its tab and its worktree get a dot, and a desktop notification if you turned those
-on. Claude Code sends one here once its Notifications setting (`/config`) is `iterm2`.
+terminal can open in another project or any folder too. A tab and its worktree show a ring while
+Claude Code works there, and a dot once it finishes or asks for you, with a desktop notification if
+you turned those on; other agents get the dot when they ring or send a notification. Quit with an
+agent still running and the restored terminal has the command that resumes its conversation typed
+at the prompt (Claude Code, Gemini CLI, opencode and Codex).
 
 ### Watch the work land
 
