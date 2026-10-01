@@ -342,6 +342,8 @@ export interface JournalEntry {
   label: string;
   /** Unix seconds. */
   time: number;
+  /** The branch (or short commit) undoing it checks out, in the undo list; redoing it, in the redo list. */
+  switchTo: string | null;
 }
 
 export interface Journal {

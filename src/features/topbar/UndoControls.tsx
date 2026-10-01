@@ -1,5 +1,6 @@
 import { ChevronDown, Redo2, TriangleAlert, Undo2 } from "lucide-react";
 import { useState } from "react";
+import { ask } from "@/lib/app/ask";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -21,6 +22,10 @@ import { relativeTime } from "@/lib/format";
 /** What the undo history covers; the empty history and the "Nothing to undo" toast both say it. */
 const UNDOABLE = "Commits, merges, pulls, discards, and branch and tag changes made in GitViber";
 
+/** The branch undoing (or redoing) `entries` in order leaves checked out, if one of them switches. */
+const landing = (entries: JournalEntry[]) => entries.reduce<string | null>((at, e) => e.switchTo ?? at, null);
+const switchNote = (forward: boolean, to: string | null) => (to ? `: switches ${forward ? "" : "back "}to ${to}` : "");
+
 /**
  * Undo and redo for the git actions taken in the app, with ⌘Z / ⇧⌘Z, and their history:
  * picking an entry undoes it and everything after it (or redoes up to it).
@@ -34,10 +39,21 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
   const redos = journal?.redo ?? [];
   const off = disabled || moving;
 
-  const go = async (forward: boolean, ids: number[]) => {
+  const go = async (forward: boolean, entries: JournalEntry[]) => {
+    const to = landing(entries);
+    const dirty = !!repo.status && repo.status.staged.length + repo.status.unstaged.length > 0;
+    // Switching carries uncommitted changes along, which ⌘Z pressed in passing shouldn't do unasked.
+    if (to && dirty) {
+      const verb = forward ? "Redo" : "Undo";
+      const ok = await ask(`This ${verb.toLowerCase()} switches ${forward ? "" : "back "}to ${to}, and your uncommitted changes go along to it.`, {
+        title: `${verb} Git Action`,
+        okLabel: `${verb} and Switch`,
+      });
+      if (!ok) return;
+    }
     setMoving(true);
     try {
-      await travel(forward, ids, repo.refresh);
+      await travel(forward, entries.map((e) => e.id), repo.refresh);
     } finally {
       setMoving(false);
     }
@@ -50,7 +66,7 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
     if (off) return;
     if (!e) toast("info", `Nothing to ${verb}`, `${UNDOABLE} can be undone.`);
     else if (blocked) toast("error", `Can't ${verb} ${e.label}`, blocked);
-    else void go(forward, [e.id]);
+    else void go(forward, [e]);
   };
   useCommands({ "git.undo": () => next(false), "git.redo": () => next(true) });
 
@@ -62,25 +78,26 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
       <Tooltip>
         <TooltipTrigger asChild>
           <span>
-            <Button variant="ghost" size="icon" aria-label={verb} disabled={off || !e || !!blocked} onClick={() => e && go(forward, [e.id])}>
+            <Button variant="ghost" size="icon" aria-label={verb} disabled={off || !e || !!blocked} onClick={() => e && go(forward, [e])}>
               {forward ? <Redo2 /> : <Undo2 />}
             </Button>
           </span>
         </TooltipTrigger>
         <TooltipContent className="max-w-80">
-          {!e ? `Nothing to ${verb.toLowerCase()}` : blocked ? `Can't ${verb.toLowerCase()} ${e.label}. ${blocked}` : `${verb} ${e.label}`}
+          {!e ? `Nothing to ${verb.toLowerCase()}` : blocked ? `Can't ${verb.toLowerCase()} ${e.label}. ${blocked}` : `${verb} ${e.label}${switchNote(forward, e.switchTo)}`}
           <span className="ml-2 font-mono text-[11px] text-subtle">{forward ? redoKey : undoKey}</span>
         </TooltipContent>
       </Tooltip>
     );
   };
 
-  const row = (e: JournalEntry, forward: boolean, ids: number[], blocked: boolean) => (
+  // `steps`: this entry and the ones before it in its list, which picking it goes through.
+  const row = (e: JournalEntry, forward: boolean, steps: JournalEntry[], blocked: boolean) => (
     <DropdownMenuItem
       key={e.id}
       disabled={blocked}
-      onSelect={() => go(forward, ids)}
-      title={forward ? `Redo up to ${e.label}` : `Undo back to before ${e.label}`}
+      onSelect={() => go(forward, steps)}
+      title={`${forward ? `Redo up to ${e.label}` : `Undo back to before ${e.label}`}${switchNote(forward, landing(steps))}`}
       className={cn(forward && "text-subtle")}
     >
       {forward ? <Redo2 /> : <Undo2 />}
@@ -109,7 +126,7 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
           )}
           {/* Furthest redo on top, so the list reads newest to oldest. */}
           {redos
-            .map((e, i) => row(e, true, redos.slice(0, i + 1).map((x) => x.id), !!journal?.redoBlocked))
+            .map((e, i) => row(e, true, redos.slice(0, i + 1), !!journal?.redoBlocked))
             .reverse()}
           {redos.length > 0 && undos.length > 0 && (
             <div className="flex items-center gap-2 px-2 py-0.5 text-[10.5px] tracking-wide text-subtle uppercase select-none">
@@ -120,7 +137,7 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
             row(
               e,
               false,
-              undos.slice(0, i + 1).map((x) => x.id),
+              undos.slice(0, i + 1),
               !!journal?.undoBlocked,
             ),
           )}

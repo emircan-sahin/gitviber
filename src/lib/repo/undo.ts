@@ -23,9 +23,13 @@ export async function travel(forward: boolean, ids: number[], refresh: Refresh) 
   const verb = forward ? "Redone" : "Undone";
   const done: number[] = [];
   let label = "";
+  // Where HEAD ends up, when a step switched branches: ⌘Z must not switch without saying so.
+  let switched: string | null = null;
   try {
     for (const id of ids) {
-      label = (await (forward ? api.redo(id) : api.undo(id))).label;
+      const step = await (forward ? api.redo(id) : api.undo(id));
+      label = step.label;
+      switched = step.switchTo ?? switched;
       done.push(id);
     }
   } catch (e) {
@@ -37,6 +41,7 @@ export async function travel(forward: boolean, ids: number[], refresh: Refresh) 
   if (done.length === ids.length) {
     // The way back is the same entries in reverse.
     const back = { label: forward ? "Undo" : "Redo", run: () => void travel(!forward, [...done].reverse(), refresh) };
-    toast("success", done.length === 1 ? `${verb}: ${label}` : `${verb} ${done.length} actions`, undefined, back);
+    const detail = switched ? `Switched ${forward ? "" : "back "}to ${switched}.` : undefined;
+    toast("success", done.length === 1 ? `${verb}: ${label}` : `${verb} ${done.length} actions`, detail, back);
   }
 }

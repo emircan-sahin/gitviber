@@ -125,6 +125,9 @@ pub struct EntryView {
     pub label: String,
     /// Unix seconds.
     pub time: u64,
+    /// The branch (or the short commit, detached) undoing this, in the undo list, or redoing
+    /// it, in the redo list, checks out; None when HEAD stays on its branch.
+    pub switch_to: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -144,11 +147,17 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 impl Entry {
-    fn view(&self) -> EntryView {
+    /// Seen from the side that moves it to state `to` (0 before, 1 after).
+    fn view(&self, to: usize) -> EntryView {
+        let switch_to = (self.head[0] != self.head[1]).then(|| match &self.head[to] {
+            Head::Branch(b) => b.clone(),
+            Head::Detached(sha) => sha.chars().take(7).collect(),
+        });
         EntryView {
             id: self.id,
             label: self.label.clone(),
             time: self.time,
+            switch_to,
         }
     }
 }
@@ -276,7 +285,7 @@ impl Journal {
         let (from, to) = if forward { (0, 1) } else { (1, 0) };
         apply(repo, &mut e, from, to)?;
         e.pushed = git::pushed_tip(repo);
-        let view = e.view();
+        let view = e.view(to);
         let mut stacks = lock(&self.stacks);
         let s = stacks.entry(repo.to_path_buf()).or_default();
         let (src, dst) = if forward {
@@ -312,8 +321,8 @@ impl Journal {
             (
                 s.done.last().cloned(),
                 s.undone.last().cloned(),
-                s.done.iter().rev().map(Entry::view).collect(),
-                s.undone.iter().rev().map(Entry::view).collect(),
+                s.done.iter().rev().map(|e| e.view(0)).collect(),
+                s.undone.iter().rev().map(|e| e.view(1)).collect(),
             )
         };
         View {
