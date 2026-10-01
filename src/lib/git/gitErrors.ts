@@ -105,7 +105,7 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
     {
       title: "Another git command holds the index lock",
       explanation:
-        "git takes index.lock while it changes what's staged, and a git that was killed (an agent stopped mid-command) leaves it behind. If no git command is running in this repository, in a terminal, an agent or a commit message editor left open, remove the lock and try again.",
+        "git takes index.lock while it changes what's staged, and a git that was killed (an agent stopped mid-command) leaves it behind. Remove it only if no git command is running in this repository: a `git commit` in a terminal or an agent that waits on its hooks or editor holds it too, and would break.",
       fix: "index-lock",
     },
   ],
