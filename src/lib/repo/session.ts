@@ -2,7 +2,7 @@ import { type Selection, selectionKey } from "./selection";
 import { getSettings } from "../settings";
 import { isRecord, putRecent, readJson } from "../storage";
 import { folderName, joinPath } from "../path";
-import type { ReviewNote } from "../review/notes";
+import { isNote, type ReviewNote } from "../review/notes";
 
 /** What a worktree's window looked like, so reopening the app picks up where it was. */
 interface WorkspaceSnapshot {
@@ -97,9 +97,7 @@ export function saveEdits(root: string, edits: Record<string, FileEdit>) {
 
 export function loadNotes(root: string): ReviewNote[] {
   const saved = all(NOTES_KEY)[root];
-  const ok = (n: unknown): n is ReviewNote =>
-    isRecord(n) && typeof n.id === "string" && typeof n.path === "string" && typeof n.start === "number" && typeof n.end === "number" && typeof n.body === "string" && Array.isArray(n.code) && n.code.every((l) => typeof l === "string");
-  return Array.isArray(saved) ? saved.filter(ok) : [];
+  return Array.isArray(saved) ? saved.filter(isNote) : [];
 }
 
 /** False when storage is full: the notes then live only until the app quits. */

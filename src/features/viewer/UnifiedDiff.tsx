@@ -5,7 +5,7 @@ import { type TokenLine, tokenLookup, useHighlight } from "@/lib/editor/highligh
 import { copyNarrowed, indentUnit, widen, widenColumn } from "@/lib/editor/indent";
 import { languageFor } from "@/lib/editor/language";
 import { type Gap, usefulEmphasis } from "@/lib/git/diffHunks";
-import { findLines, noteLines, type ReviewNote } from "@/lib/review/notes";
+import { type Anchor, anchorAt, findNote, noteLines, placeNotes, type ReviewNote } from "@/lib/review/notes";
 import { addNote, useNotes } from "@/lib/review/noteStore";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
@@ -36,30 +36,26 @@ export function UnifiedDiff({ pair, rows, path, oldPath }: { pair: DiffPair; row
   const linesOf = (old: boolean) => (old ? (a.exists ? oldLines : null) : b.exists ? newLines : null);
   const placed = useMemo(() => {
     const at = new Map<string, ReviewNote[]>();
-    for (const n of notes) {
-      const lines = linesOf(!!n.old);
-      const start = !n.resolved && n.path === (n.old ? oldPath : path) && lines ? findLines(lines, n.code, n.start) : null;
-      if (start === null) continue;
-      const key = `${n.old ? "o" : "n"}:${start + n.code.length - 1}`;
-      at.set(key, [...(at.get(key) ?? []), n]);
+    for (const p of placeNotes(notes, { path, oldPath, oldLines: a.exists ? oldLines : null, newLines: b.exists ? newLines : null })) {
+      const key = `${p.old ? "o" : "n"}:${p.end}`;
+      at.set(key, [...(at.get(key) ?? []), p.note]);
     }
     return at;
   }, [notes, path, oldPath, oldLines, newLines, a.exists, b.exists]);
   // A note being written: its lines as picked, followed as the file changes.
-  const [draft, setDraft] = useState<{ old: boolean; start: number; code: string[] } | null>(null);
+  const [draft, setDraft] = useState<{ old: boolean; anchor: Anchor } | null>(null);
   const drafted = useMemo(() => {
     if (!draft) return null;
-    const start = findLines(draft.old ? oldLines : newLines, draft.code, draft.start) ?? draft.start;
-    const end = start + draft.code.length - 1;
-    return { ...draft, start, end, key: `${draft.old ? "o" : "n"}:${end}` };
+    const start = findNote(draft.old ? oldLines : newLines, draft.anchor) ?? draft.anchor.start;
+    const end = start + draft.anchor.end - draft.anchor.start;
+    return { old: draft.old, anchor: { ...draft.anchor, start, end }, key: `${draft.old ? "o" : "n"}:${end}` };
   }, [draft, oldLines, newLines]);
   // ⇧-click stretches the note being written to the line clicked.
   const note = (old: boolean, line: number, stretch: boolean) => {
     const lines = linesOf(old);
     if (!lines) return;
-    const [from, to] = stretch && drafted?.old === old ? [drafted.start, drafted.end] : [line, line];
-    const [start, end] = [Math.min(from, line), Math.max(to, line)];
-    setDraft({ old, start, code: lines.slice(start - 1, end) });
+    const [from, to] = stretch && drafted?.old === old ? [drafted.anchor.start, drafted.anchor.end] : [line, line];
+    setDraft({ old, anchor: anchorAt(lines, Math.min(from, line), Math.max(to, line)) });
   };
 
   return (
@@ -85,10 +81,10 @@ export function UnifiedDiff({ pair, rows, path, oldPath }: { pair: DiffPair; row
               {drafted && keys.includes(drafted.key) && (
                 <div className="sticky left-0 max-w-3xl py-0.5">
                   <Composer
-                    label={`Note on ${noteLines(drafted)}${drafted.old ? " (old)" : ""}`}
+                    label={`Note on ${noteLines(drafted.anchor)}${drafted.old ? " (old)" : ""}`}
                     onCancel={() => setDraft(null)}
                     onSubmit={async (body) => {
-                      addNote({ path: drafted.old ? oldPath : path, start: drafted.start, end: drafted.end, code: drafted.code, body: body.trim(), old: drafted.old || undefined });
+                      addNote({ ...drafted.anchor, path: drafted.old ? oldPath : path, body: body.trim(), old: drafted.old || undefined });
                       setDraft(null);
                     }}
                   />

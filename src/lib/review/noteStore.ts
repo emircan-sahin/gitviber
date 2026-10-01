@@ -6,12 +6,15 @@ import { checkNotes, isLive, type ReviewNote } from "./notes";
 // The open worktree's review notes, outside React: the code view's Monaco zones read them too.
 let root: string | null = null;
 let notes: ReviewNote[] = [];
+// Each noted file's lines as last read, to tell how far edits above a note moved it.
+const seen = new Map<string, string[]>();
 const listeners = new Set<() => void>();
 
 /** The notes of `worktree`, the one the window shows from now on. */
 export function openNotes(worktree: string) {
   if (worktree === root) return;
   root = worktree;
+  seen.clear();
   // Called while the new workspace renders, before anything in it subscribes: no one to tell.
   notes = loadNotes(worktree);
 }
@@ -60,7 +63,13 @@ export function useNoteCheck(revision: number) {
     for (const path of paths.split("\0"))
       api
         .readFile(path)
-        .then((f) => alive && set(checkNotes(notes, path, f.exists && !f.binary && !f.tooLarge ? f.text.split(/\r?\n/) : null)))
+        .then((f) => {
+          if (!alive) return;
+          const lines = f.exists && !f.binary && !f.tooLarge ? f.text.split(/\r?\n/) : null;
+          set(checkNotes(notes, path, lines, seen.get(path)));
+          if (lines) seen.set(path, lines);
+          else seen.delete(path);
+        })
         .catch(() => {});
     return () => {
       alive = false;

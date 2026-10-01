@@ -5,7 +5,7 @@ import { Check, MessageSquareText, Trash2 } from "lucide-react";
 import type { DiffPair } from "@/lib/api";
 import type { monaco } from "@/lib/editor/monaco";
 import { selectedLines } from "@/lib/editor/lineActions";
-import { findLines, noteLines, type ReviewNote } from "@/lib/review/notes";
+import { type Anchor, anchorAt, findNote, noteLines, placeNotes, type ReviewNote } from "@/lib/review/notes";
 import { addNote, getNotes, removeNote, subscribeNotes, updateNote } from "@/lib/review/noteStore";
 import { Composer } from "./Composer";
 import { newLineBefore, zoneWidget } from "./zones";
@@ -35,7 +35,7 @@ export function followReviewNotes(e: Editor, get: () => NotesShown | null) {
   let zones: (() => void)[] = [];
   // A new note being written: its lines as they were picked (it follows them as the file changes),
   // and what's typed so far.
-  let draft: { path: string; side: Side; start: number; code: string[]; body: string } | null = null;
+  let draft: { path: string; side: Side; anchor: Anchor; body: string } | null = null;
   // Its box, kept while notes come and go (an agent's edits recheck them) so typing goes on undisturbed;
   // drawn again only when its file's text or its place changes. `where`: the model and line it's under.
   let draftZone: { where: string; model: monaco.editor.ITextModel | null; dispose: () => void } | null = null;
@@ -58,18 +58,15 @@ export function followReviewNotes(e: Editor, get: () => NotesShown | null) {
     const s = get();
     if (!s) return dropDraftZone();
     const lines = { original: isDiff(e) ? linesOf(s, "original") : null, modified: linesOf(s, "modified") };
-    for (const n of getNotes()) {
-      const side: Side = n.old ? "original" : "modified";
-      const text = lines[side];
-      if (n.resolved || !text || n.path !== (n.old ? s.oldPath : s.path)) continue;
-      const start = findLines(text, n.code, n.start);
-      if (start !== null) zones.push(place(s, side, start + n.code.length - 1, <NoteCard note={n} />));
-    }
+    for (const p of placeNotes(getNotes(), { path: s.path, oldPath: s.oldPath, oldLines: lines.original, newLines: lines.modified }))
+      zones.push(place(s, p.old ? "original" : "modified", p.end, <NoteCard note={p.note} />));
     if (draft?.path !== s.path) draft = null;
     if (!draft) return dropDraftZone();
     const d = draft;
-    d.start = findLines(lines[d.side] ?? [], d.code, d.start) ?? d.start;
-    const end = d.start + d.code.length - 1;
+    // Its lines where the file has them now; where they were, if they're gone.
+    const start = findNote(lines[d.side] ?? [], d.anchor) ?? d.anchor.start;
+    d.anchor = { ...d.anchor, start, end: start + d.anchor.end - d.anchor.start };
+    const { end } = d.anchor;
     const model = editor(d.side).getModel();
     const where = `${d.side}:${end}:${s.unified}`;
     if (draftZone?.where === where && draftZone.model === model) return;
@@ -83,13 +80,13 @@ export function followReviewNotes(e: Editor, get: () => NotesShown | null) {
       d.side,
       end,
       <Composer
-        label={`Note on ${noteLines({ start: d.start, end })}${d.side === "original" ? " (old)" : ""}`}
+        label={`Note on ${noteLines(d.anchor)}${d.side === "original" ? " (old)" : ""}`}
         initial={d.body}
         onDraft={(body) => (d.body = body)}
         onCancel={cancel}
         onSubmit={async (body) => {
           draft = null;
-          addNote({ path: d.side === "original" ? s.oldPath : s.path, start: d.start, end, code: d.code, body: body.trim(), old: d.side === "original" || undefined, at: s.at });
+          addNote({ ...d.anchor, path: d.side === "original" ? s.oldPath : s.path, body: body.trim(), old: d.side === "original" || undefined, at: s.at });
         }}
       />,
     );
@@ -103,7 +100,7 @@ export function followReviewNotes(e: Editor, get: () => NotesShown | null) {
     const sel = editor(side).getSelection();
     if (!s || !text || !sel) return;
     const [start, end] = selectedLines(sel).map((l) => Math.min(l, text.length));
-    draft = { path: s.path, side, start, code: text.slice(start - 1, end), body: "" };
+    draft = { path: s.path, side, anchor: anchorAt(text, start, end), body: "" };
     dropDraftZone();
     update();
   };
