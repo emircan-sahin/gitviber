@@ -84,15 +84,18 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
     )
     .unwrap_or_default();
     let paths: Vec<_> = paths.lines().map(|p| repo.join(p)).collect();
-    let (head, stash) = (tip(repo, "HEAD"), tip(repo, "refs/stash"));
     let mut cmd = command(repo, &args);
     // It has no paths, and hooks inherit its environment: lint-staged's `git stash --keep-index`
     // restores the index with `:/`, which literal pathspecs turn into a file of that name.
     cmd.env_remove("GIT_LITERAL_PATHSPECS");
+    let stash = tip(repo, "refs/stash");
+    let head = tip(repo, "HEAD");
     match network::run_local(cmd, "git commit", net, input) {
         Ok(_) => Ok(()),
         // Not a file's change: a hook's own git (lint-staged's stash) writes the reflogs too.
-        Err(f) if f.message == CANCELLED && tip(repo, "HEAD") != head => Ok(()),
+        Err(f) if f.message == CANCELLED && made(repo, head.as_deref(), message, opts.amend) => {
+            Ok(())
+        }
         Err(f) if f.message == CANCELLED && tip(repo, "refs/stash") != stash => {
             Err(CANCELLED_STASHED.into())
         }
@@ -118,6 +121,59 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
             )
         }
     }
+}
+
+/// Whether a cancelled commit was made first (a post-commit hook was left). An agent committing
+/// in a terminal while our hooks run moves HEAD too, so ours is told by its parent (the old head,
+/// or its parent for an amend) and subject. A hook that rewrites the subject makes a made commit
+/// read as cancelled, the side that never takes an agent's commit for ours.
+fn made(repo: &Path, head: Option<&str>, message: &str, amend: bool) -> bool {
+    let now = tip(repo, "HEAD");
+    if now.as_deref() == head {
+        return false;
+    }
+    let first = |m: &str| {
+        m.lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("")
+            .to_string()
+    };
+    let (parent, subject) = match (amend, head) {
+        (false, head) => (head.map(str::trim).map(String::from), first(message)),
+        (true, Some(head)) => {
+            let Some((parent, old)) = parent_and_message(repo, head.trim()) else {
+                return false;
+            };
+            let msg = if message.trim().is_empty() {
+                &old
+            } else {
+                message
+            };
+            (parent, first(msg))
+        }
+        (true, None) => return false,
+    };
+    parent_and_message(repo, "HEAD").is_some_and(|(p, m)| p == parent && first(&m) == subject)
+}
+
+/// `rev`'s first parent (None for a root commit) and its message.
+fn parent_and_message(repo: &Path, rev: &str) -> Option<(Option<String>, String)> {
+    let out = run_text(
+        repo,
+        &[
+            "log",
+            "-1",
+            "--no-show-signature",
+            "--format=%P%n%B",
+            rev,
+            "--",
+        ],
+    )
+    .ok()?;
+    let (parents, message) = out.split_once('\n')?;
+    let parent = parents.split(' ').next().filter(|p| !p.is_empty());
+    Some((parent.map(String::from), message.to_string()))
 }
 
 /// The commit `rev` names now; None for an unborn branch or a ref that isn't there.

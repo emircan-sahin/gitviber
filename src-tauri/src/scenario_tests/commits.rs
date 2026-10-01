@@ -258,15 +258,16 @@ fn a_repository_of_its_own_identity_and_back_to_global() {
     set_repo_identity(&r, None).unwrap();
 }
 
-/// Commits b.txt in `r` while its `hook` runs `script`, then a 30 s child it waits on, and
-/// cancels once that child runs. Returns the result, the progress reported, and whether the
-/// child was stopped with it.
+/// Stages b.txt in `r` and runs `commit` while its `hook` runs `script`, then a 30 s child it
+/// waits on, and cancels once that child runs. Returns the result, the progress reported, and
+/// whether the child was stopped with it.
 #[cfg(unix)]
 fn cancel_in_hook(
     sb: &Sandbox,
     r: &Path,
     hook: &str,
     script: &str,
+    commit: impl FnOnce(&Net) -> Result<(), String>,
 ) -> (Result<(), String>, Vec<crate::network::Progress>, bool) {
     use crate::network::Running;
     use std::time::{Duration, Instant};
@@ -296,7 +297,7 @@ fn cancel_in_hook(
             }
             running.cancel("commit");
         });
-        commit(r, "Add b", &CommitOptions::default(), &net)
+        commit(&net)
     });
     assert!(started.elapsed() < Duration::from_secs(10));
     let pid: libc::pid_t = fs::read_to_string(&pidfile)
@@ -322,7 +323,10 @@ fn a_commit_hook_shows_progress_and_can_be_cancelled() {
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "a\n", "base");
-    let (result, seen, gone) = cancel_in_hook(&sb, &r, "pre-commit", "echo 'linting 1 file'");
+    let (result, seen, gone) =
+        cancel_in_hook(&sb, &r, "pre-commit", "echo 'linting 1 file'", |net| {
+            commit(&r, "Add b", &CommitOptions::default(), net)
+        });
     assert_eq!(result.unwrap_err(), CANCELLED);
     assert!(gone, "the hook's child still runs");
     assert!(seen.iter().any(|p| p.phase == "linting 1 file"));
@@ -371,6 +375,7 @@ fn a_hook_that_stashes_can_still_be_cancelled() {
         &r,
         "pre-commit",
         "git stash push -q --keep-index || exit 1",
+        |net| commit(&r, "Add b", &CommitOptions::default(), net),
     );
     // Stopped mid-hook, the stash may hold the unstaged edit: the page says so.
     assert_eq!(result.unwrap_err(), CANCELLED_STASHED);
@@ -381,7 +386,7 @@ fn a_hook_that_stashes_can_still_be_cancelled() {
 }
 
 /// Stopped in a post-commit hook, the commit was already made: it stands, and isn't reported
-/// as cancelled.
+/// as cancelled. An amend's too, which sits where the commit it replaced did.
 #[cfg(unix)]
 #[test]
 fn a_cancel_after_the_commit_was_made_keeps_it() {
@@ -389,10 +394,69 @@ fn a_cancel_after_the_commit_was_made_keeps_it() {
     let r = sb.path("r");
     init(&r);
     write_commit(&r, "a.txt", "a\n", "base");
-    let (result, _, gone) = cancel_in_hook(&sb, &r, "post-commit", "");
+    let j = Journal::default();
+    let action = || Action::new("Commit", Mode::Soft).ok_only();
+    let (result, _, gone) = cancel_in_hook(&sb, &r, "post-commit", "", |net| {
+        j.record(&r, action(), |r| {
+            commit(r, "Add b", &CommitOptions::default(), net)
+        })
+    });
     result.unwrap();
     assert!(gone);
     assert_eq!(log(&r, None, 0, 1).unwrap()[0].subject, "Add b");
+    assert_eq!(j.view(&r).undo.len(), 1);
+
+    fs::remove_file(r.join(".git/hooks/post-commit")).unwrap();
+    fs::remove_file(sb.path("post-commit.pid")).unwrap();
+    // The amend stages b.txt back as it was: amending nothing could rewrite the same commit.
+    fs::write(r.join("b.txt"), "c\n").unwrap();
+    stage(&r, &["b.txt".into()]).unwrap();
+    write_commit(&r, "c.txt", "c\n", "Add c");
+    let amend = CommitOptions {
+        amend: true,
+        ..Default::default()
+    };
+    let (result, _, _) = cancel_in_hook(&sb, &r, "post-commit", "", |net| {
+        commit(&r, "", &amend, net)
+    });
+    result.unwrap();
+    let log = log(&r, None, 0, 5).unwrap();
+    assert_eq!(
+        log.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(),
+        ["Add c", "Add b", "base"]
+    );
+}
+
+/// An agent committing in a terminal while our hooks run moves HEAD too: that isn't our commit
+/// made, so Cancel still says cancelled, and the agent's commit isn't journaled as ours to undo.
+#[cfg(unix)]
+#[test]
+fn a_cancel_while_an_agent_commits_is_still_cancelled() {
+    use crate::network::CANCELLED;
+    let sb = Sandbox::new("hook-agent");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let j = Journal::default();
+    let (result, _, gone) = cancel_in_hook(
+        &sb,
+        &r,
+        "pre-commit",
+        "git commit -q --no-verify --allow-empty -m 'agent commit' || exit 1",
+        |net| {
+            j.record(&r, Action::new("Commit", Mode::Soft).ok_only(), |r| {
+                commit(r, "Add b", &CommitOptions::default(), net)
+            })
+        },
+    );
+    assert_eq!(result.unwrap_err(), CANCELLED);
+    assert!(gone);
+    let log = log(&r, None, 0, 5).unwrap();
+    assert_eq!(
+        log.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(),
+        ["agent commit", "base"]
+    );
+    assert!(j.view(&r).undo.is_empty());
 }
 
 /// git prints nothing of its own when a hook fails, so the error says which hooks are set up,

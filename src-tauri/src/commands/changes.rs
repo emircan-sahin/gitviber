@@ -84,7 +84,7 @@ pub async fn commit(
     };
     let lock = state.index.clone();
     let net = watch_network(&state, op, progress);
-    journaled(&state, Action::new(label, Mode::Soft), move |r| {
+    journaled(&state, Action::new(label, Mode::Soft).ok_only(), move |r| {
         with_index_lock(&lock, r, |r| git::commit(r, &message, &options, &net))
     })
     .await

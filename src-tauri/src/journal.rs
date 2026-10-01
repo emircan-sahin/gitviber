@@ -31,6 +31,8 @@ pub struct Action {
     /// Records the tags it moves. Only tag actions: a fetch landing meanwhile (the background
     /// one, or a pull's) brings tags that undoing some other action must not delete.
     tags: bool,
+    /// Records nothing when it fails.
+    ok_only: bool,
 }
 
 impl Action {
@@ -39,12 +41,20 @@ impl Action {
             label: label.into(),
             mode,
             tags: false,
+            ok_only: false,
         }
     }
 
     /// An action that creates, moves or deletes tags.
     pub fn with_tags(mut self) -> Self {
         self.tags = true;
+        self
+    }
+
+    /// An action that moves nothing when it fails, like a commit: what moved meanwhile (an agent
+    /// committing in a terminal) isn't its to undo.
+    pub fn ok_only(mut self) -> Self {
+        self.ok_only = true;
         self
     }
 }
@@ -191,6 +201,7 @@ impl Journal {
         };
         match start {
             Some(start) if stopped => s.pending = Some(start),
+            Some((action, _)) if action.ok_only && result.is_err() => {}
             Some((action, before)) => {
                 if let Some(e) = diff(s.next, action, &before, &after, pushed) {
                     s.next += 1;
