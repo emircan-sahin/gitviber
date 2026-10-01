@@ -64,6 +64,8 @@ export interface Pane extends SaveState {
   unacked: number;
   /** A column change held back from a long history (fitPane). */
   fitTimer?: number;
+  /** The size the pty is sent once a resize settles. */
+  ptyResizeTimer?: number;
   /** The commands shell integration marks. */
   marks: CommandMarks;
   /** A command to type into the shell once it's up (openTerminal). */
@@ -193,6 +195,9 @@ function send(p: Pane, data: string) {
   flush();
 }
 
+/** How long a pane's size holds still before its program hears of it. */
+const PTY_RESIZE_WAIT = 50;
+
 /** `dir`: where the shell starts, when that's not `cwd` (a split, a restore). */
 export function createPane(cwd: string, restored?: { history: string; savedAt: number }, dir = cwd): PaneInfo {
   const id = nextId++;
@@ -226,7 +231,10 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
     // Reflow rewraps the history.
     p.dirty = true;
     scheduleSave();
-    if (p.pty !== null) void pty.resize(p.pty, cols, rows).catch(() => {});
+    // A divider drag changes the rows each frame, and Claude Code redrew on each SIGWINCH, leaving
+    // copies of its screen in the history: the program gets the size the drag settles on.
+    window.clearTimeout(p.ptyResizeTimer);
+    p.ptyResizeTimer = window.setTimeout(() => p.pty !== null && void pty.resize(p.pty, cols, rows).catch(() => {}), PTY_RESIZE_WAIT);
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   watchAttention(p);
