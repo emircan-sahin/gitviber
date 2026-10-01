@@ -361,7 +361,6 @@ fn a_commit_hook_shows_progress_and_can_be_cancelled() {
 #[cfg(unix)]
 #[test]
 fn a_hook_that_stashes_can_still_be_cancelled() {
-    use crate::network::CANCELLED;
     let sb = Sandbox::new("hook-stash");
     let r = sb.path("r");
     init(&r);
@@ -373,7 +372,9 @@ fn a_hook_that_stashes_can_still_be_cancelled() {
         "pre-commit",
         "git stash push -q --keep-index || exit 1",
     );
-    assert!(result.unwrap_err().starts_with(CANCELLED));
+    // Stopped mid-hook, the stash may hold the unstaged edit: the page says so.
+    assert_eq!(result.unwrap_err(), CANCELLED_STASHED);
+    assert_eq!(stashes(&r).unwrap().len(), 1);
     assert!(gone);
     assert!(seen.iter().all(|p| p.cancellable));
     assert_eq!(log(&r, None, 0, 5).unwrap().len(), 1);

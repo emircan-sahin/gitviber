@@ -25,6 +25,10 @@ pub struct CommitOptions {
 /// without them.
 pub const HOOKS_HINT: &str = "hint: Commit hooks set up here: ";
 
+/// A commit cancelled after its hooks stashed something (lint-staged's backup), which they may
+/// not have put back.
+pub const CANCELLED_STASHED: &str = "git:cancelled-stashed";
+
 /// How git starts the lines it ends a commit with, exit code 1, before or after the hooks ran.
 const OWN_REFUSALS: [&str; 4] = [
     "nothing to commit",
@@ -80,7 +84,7 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
     )
     .unwrap_or_default();
     let paths: Vec<_> = paths.lines().map(|p| repo.join(p)).collect();
-    let head = tip(repo, "HEAD");
+    let (head, stash) = (tip(repo, "HEAD"), tip(repo, "refs/stash"));
     let mut cmd = command(repo, &args);
     // It has no paths, and hooks inherit its environment: lint-staged's `git stash --keep-index`
     // restores the index with `:/`, which literal pathspecs turn into a file of that name.
@@ -89,6 +93,9 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
         Ok(_) => Ok(()),
         // Not a file's change: a hook's own git (lint-staged's stash) writes the reflogs too.
         Err(f) if f.message == CANCELLED && tip(repo, "HEAD") != head => Ok(()),
+        Err(f) if f.message == CANCELLED && tip(repo, "refs/stash") != stash => {
+            Err(CANCELLED_STASHED.into())
+        }
         Err(f) => {
             let hooks: Vec<_> = ["pre-commit", "commit-msg"]
                 .into_iter()

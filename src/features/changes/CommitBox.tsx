@@ -5,7 +5,7 @@ import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMe
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, CANCELLED, type Commit, type RepoStatus } from "@/lib/api";
+import { api, CANCELLED, CANCELLED_STASHED, type Commit, type RepoStatus } from "@/lib/api";
 import { matchesCommand, runCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { updateSettings, useSettings } from "@/lib/settings";
 import { ask } from "@/lib/app/ask";
@@ -96,6 +96,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
       ok = true;
     } catch (e) {
       if (e === CANCELLED) toast("info", "Commit cancelled");
+      else if (e === CANCELLED_STASHED) toast("info", "Commit cancelled", "Hooks may have left changes in a stash: check Stashes before you commit again.");
       else gitFailed("Commit failed", e, { hooks: [{ label: "Commit without hooks", run: () => withoutHooks(status.root, then) }] });
     }
     setBusy(false);

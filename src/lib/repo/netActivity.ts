@@ -1,4 +1,4 @@
-import { CANCELLED, errorMessage, type NetOp, netOp, type Progress } from "../api";
+import { CANCELLED, CANCELLED_STASHED, errorMessage, type NetOp, netOp, type Progress } from "../api";
 import { notifyIfAway } from "../app/notify";
 import { createStore } from "../store";
 
@@ -27,7 +27,7 @@ export async function withNetActivity<T>(label: string, fn: (op: NetOp) => Promi
     notifyIfAway(`${label} finished`);
     return value;
   } catch (e) {
-    if (e !== CANCELLED) notifyIfAway(`${label} failed`, errorMessage(e));
+    if (e !== CANCELLED && e !== CANCELLED_STASHED) notifyIfAway(`${label} failed`, errorMessage(e));
     throw e;
   } finally {
     update(active.filter((a) => a.op !== op));
