@@ -61,8 +61,9 @@ thread_local! {
     static READING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Runs `f` with each git call in it given up after READ_TIMEOUT, on this thread. Only for
-/// reads: a commit's hooks or a rebase can rightly take longer.
+/// Runs `f` with each git call in it given up after READ_TIMEOUT. Only for reads: a commit's
+/// hooks or a rebase can rightly take longer. It covers `run_with` (and so `run`, `run_text`) on
+/// this thread; a thread `f` spawns, or a direct `exec`, isn't covered.
 pub(crate) fn reading<T>(f: impl FnOnce() -> T) -> T {
     // Reset even if `f` panics: the blocking pool reuses its threads.
     struct Restore(bool);
@@ -73,6 +74,10 @@ pub(crate) fn reading<T>(f: impl FnOnce() -> T) -> T {
     }
     let _restore = Restore(READING.with(|r| r.replace(true)));
     f()
+}
+
+fn read_timeout() -> Option<Duration> {
+    READING.with(Cell::get).then_some(READ_TIMEOUT)
 }
 
 /// Runs git and returns stdout. `ok_codes` lists exit codes that are not errors.
@@ -87,7 +92,7 @@ pub(crate) fn run_with(
         &format!("git {}", args.first().unwrap_or(&"")),
         ok_codes,
         input,
-        READING.with(Cell::get).then_some(READ_TIMEOUT),
+        read_timeout(),
     )
 }
 
@@ -148,17 +153,16 @@ mod tests {
 
     #[test]
     fn only_reads_time_out() {
-        let timeout = || READING.with(Cell::get).then_some(READ_TIMEOUT);
-        assert_eq!(timeout(), None);
-        assert_eq!(reading(timeout), Some(READ_TIMEOUT));
+        assert_eq!(read_timeout(), None);
+        assert_eq!(reading(read_timeout), Some(READ_TIMEOUT));
         // A nested scope ending doesn't end the outer one.
         let outer = reading(|| {
             reading(|| ());
-            timeout()
+            read_timeout()
         });
         assert_eq!(outer, Some(READ_TIMEOUT));
         let _ = std::panic::catch_unwind(|| reading(|| panic!("a read failed")));
-        assert_eq!(timeout(), None, "reset after a panic");
+        assert_eq!(read_timeout(), None, "reset after a panic");
     }
 
     #[test]
