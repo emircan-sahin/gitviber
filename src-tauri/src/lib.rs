@@ -23,6 +23,7 @@ mod network;
 mod open_in;
 mod opened;
 mod process;
+mod procinfo;
 mod pty;
 mod rewrite;
 #[cfg(test)]

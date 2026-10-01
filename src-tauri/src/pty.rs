@@ -125,6 +125,16 @@ struct Session {
 }
 
 impl Session {
+    #[cfg(unix)]
+    fn job_leader(&self) -> Option<u32> {
+        crate::procinfo::job_leader(self.master.process_group_leader(), self.shell)
+    }
+
+    #[cfg(not(unix))]
+    fn job_leader(&self) -> Option<u32> {
+        None
+    }
+
     fn kill(mut self) {
         let _ = self.killer.kill();
         self.flow.close();
@@ -304,9 +314,7 @@ impl Ptys {
     pub fn busy(&self, ids: Option<&[u32]>) -> usize {
         let sessions = self.sessions.lock().unwrap();
         let running = |(id, s): &(&u32, &Session)| {
-            let leader = s.master.process_group_leader();
-            ids.is_none_or(|ids| ids.contains(id))
-                && leader.is_some_and(|pid| Some(pid as u32) != s.shell)
+            ids.is_none_or(|ids| ids.contains(id)) && s.job_leader().is_some()
         };
         sessions.iter().filter(running).count()
     }
@@ -316,29 +324,17 @@ impl Ptys {
         0
     }
 
-    /// The program a session runs in the foreground (its job's leader), when that isn't the shell.
-    #[cfg(unix)]
-    pub fn foreground(&self, id: u32) -> Option<Process> {
-        let (leader, shell) = self
-            .with(id, |s| Ok((s.master.process_group_leader(), s.shell)))
-            .ok()?;
-        let pid = u32::try_from(leader?).ok()?;
-        if Some(pid) == shell {
-            return None;
-        }
-        process(pid)
-    }
-
-    #[cfg(not(unix))]
-    pub fn foreground(&self, _id: u32) -> Option<Process> {
-        None
+    /// The pid of the program a session runs in the foreground (its job's leader), when that
+    /// isn't the shell.
+    pub fn foreground(&self, id: u32) -> Option<u32> {
+        self.with(id, |s| Ok(s.job_leader())).ok()?
     }
 
     /// The folder a session's shell is in now, asked of the process as VS Code does for a split
     /// (its own, not the foreground job's): once, on a split or a save, never polled.
     pub fn cwd(&self, id: u32) -> Option<PathBuf> {
         let pid = self.with(id, |s| Ok(s.shell)).ok()??;
-        process_cwd(pid)
+        crate::procinfo::cwd(pid)
     }
 
     /// A reloaded page has lost every terminal it had; without this their shells run on unseen.
@@ -356,208 +352,10 @@ impl Ptys {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn process_cwd(pid: u32) -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
-    let got = unsafe {
-        libc::proc_pidinfo(
-            pid as libc::c_int,
-            libc::PROC_PIDVNODEPATHINFO,
-            0,
-            (&mut info as *mut libc::proc_vnodepathinfo).cast(),
-            size,
-        )
-    };
-    if got != size {
-        return None;
-    }
-    // libc declares the path as 32 rows of 32 chars; it's one MAXPATHLEN buffer.
-    let raw = &info.pvi_cdir.vip_path;
-    let bytes: &[u8] =
-        unsafe { std::slice::from_raw_parts(raw.as_ptr().cast(), std::mem::size_of_val(raw)) };
-    let path = std::ffi::CStr::from_bytes_until_nul(bytes).ok()?;
-    let path = Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()));
-    path.is_absolute().then(|| path.to_path_buf())
-}
-
-#[cfg(target_os = "linux")]
-fn process_cwd(pid: u32) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_cwd(_pid: u32) -> Option<PathBuf> {
-    None
-}
-
-/// A running program, as agents.rs tells an agent from its command line.
-#[derive(Debug, Clone)]
-pub struct Process {
-    pub pid: u32,
-    pub argv: Vec<String>,
-    pub cwd: Option<PathBuf>,
-    /// When it started, in seconds since the epoch; 0 when that can't be read.
-    pub started: u64,
-}
-
-/// Read of the kernel, no `ps`: a save round asks for every pane.
-#[cfg(target_os = "macos")]
-pub fn process(pid: u32) -> Option<Process> {
-    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    let got = unsafe {
-        libc::proc_pidinfo(
-            pid as libc::c_int,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            (&mut info as *mut libc::proc_bsdinfo).cast(),
-            size,
-        )
-    };
-    if got != size {
-        return None;
-    }
-    Some(Process {
-        pid,
-        argv: process_args(pid)?,
-        cwd: process_cwd(pid),
-        started: info.pbi_start_tvsec,
-    })
-}
-
-/// KERN_PROCARGS2: argc, the executable's path, padding, then argv, each NUL-ended.
-#[cfg(target_os = "macos")]
-fn process_args(pid: u32) -> Option<Vec<String>> {
-    let mut max: libc::c_int = 0;
-    let mut len = std::mem::size_of::<libc::c_int>();
-    let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
-    let ok = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            2,
-            (&mut max as *mut libc::c_int).cast(),
-            &mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if ok != 0 || max <= 0 {
-        return None;
-    }
-    let mut buf = vec![0u8; max as usize];
-    let mut len = buf.len();
-    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
-    let ok = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            3,
-            buf.as_mut_ptr().cast(),
-            &mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    let argc_size = std::mem::size_of::<libc::c_int>();
-    if ok != 0 || len < argc_size {
-        return None;
-    }
-    let argc = libc::c_int::from_ne_bytes(buf[..argc_size].try_into().ok()?);
-    let rest = buf[argc_size..len].splitn(2, |&b| b == 0).nth(1)?;
-    let args = &rest[rest.iter().position(|&b| b != 0)?..];
-    Some(
-        args.split(|&b| b == 0)
-            .take(usize::try_from(argc).ok()?)
-            .map(|a| String::from_utf8_lossy(a).into_owned())
-            .collect(),
-    )
-}
-
-/// The other processes in a process group: what a launcher (npx) started under it.
-#[cfg(target_os = "macos")]
-pub fn job(pgid: u32) -> Vec<u32> {
-    /// sys/proc_info.h; libc doesn't name it.
-    const PROC_PGRP_ONLY: u32 = 2;
-    let mut pids = vec![0 as libc::c_int; 64];
-    let size = std::mem::size_of_val(pids.as_slice()) as libc::c_int;
-    let got = unsafe { libc::proc_listpids(PROC_PGRP_ONLY, pgid, pids.as_mut_ptr().cast(), size) };
-    let n = usize::try_from(got).unwrap_or(0) / std::mem::size_of::<libc::c_int>();
-    pids[..n.min(pids.len())]
-        .iter()
-        .filter_map(|&p| u32::try_from(p).ok().filter(|&p| p > 0))
-        .collect()
-}
-
-#[cfg(target_os = "linux")]
-pub fn process(pid: u32) -> Option<Process> {
-    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let argv = cmdline
-        .strip_suffix(b"\0")
-        .unwrap_or(&cmdline[..])
-        .split(|&b| b == 0)
-        .map(|a| String::from_utf8_lossy(a).into_owned())
-        .collect();
-    Some(Process {
-        pid,
-        argv,
-        cwd: process_cwd(pid),
-        started: linux_started(pid).unwrap_or(0),
-    })
-}
-
-/// /proc/<pid>/stat's fields after the command's ")": its 20th is the start, in clock ticks
-/// since boot; /proc/stat's btime is the boot.
-#[cfg(target_os = "linux")]
-fn linux_started(pid: u32) -> Option<u64> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let ticks: u64 = stat
-        .rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(19)?
-        .parse()
-        .ok()?;
-    let boot: u64 = std::fs::read_to_string("/proc/stat")
-        .ok()?
-        .lines()
-        .find_map(|l| l.strip_prefix("btime "))?
-        .trim()
-        .parse()
-        .ok()?;
-    let hz = u64::try_from(unsafe { libc::sysconf(libc::_SC_CLK_TCK) }).ok()?;
-    Some(boot + ticks / hz.max(1))
-}
-
-#[cfg(target_os = "linux")]
-pub fn job(pgid: u32) -> Vec<u32> {
-    let Ok(dir) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    dir.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
-        .filter(|pid| {
-            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
-                s.rsplit_once(')')
-                    .and_then(|(_, rest)| rest.split_whitespace().nth(2)?.parse().ok())
-                    == Some(pgid)
-            })
-        })
-        .collect()
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub fn process(_pid: u32) -> Option<Process> {
-    None
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-pub fn job(_pgid: u32) -> Vec<u32> {
-    Vec::new()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{input_bytes, start_dir, Flow, ACK_WAIT, HIGH_WATER, LOW_WATER};
+    use std::io::Write;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
 
@@ -611,71 +409,44 @@ mod tests {
         reader(&flow, 1).recv_timeout(WAIT).unwrap();
     }
 
+    /// On a pty as the panes' shells are, but `sh -i` with no rc files: a login shell's took
+    /// over 15 s under load.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn a_process_folder_is_read() {
-        let here = std::env::current_dir().unwrap().canonicalize().unwrap();
-        let read = super::process_cwd(std::process::id()).unwrap();
-        assert_eq!(read.canonicalize().unwrap(), here);
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn a_program_in_its_own_process_group_is_read_with_its_job() {
-        use std::os::unix::process::CommandExt;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        let mut child = std::process::Command::new("sleep")
-            .args(["30", ""])
-            .process_group(0)
-            .spawn()
-            .unwrap();
-        let read = super::process(child.id());
-        let job = super::job(child.id());
-        let _ = child.kill();
-        let _ = child.wait();
-        let read = read.unwrap();
-        // The empty argument stays one: what follows argv (the environment) isn't read as it.
-        assert_eq!(read.argv, ["sleep", "30", ""]);
-        assert!(read.started.abs_diff(now) <= 5, "{} vs {now}", read.started);
-        let here = std::env::current_dir().unwrap().canonicalize().unwrap();
-        assert_eq!(read.cwd.unwrap().canonicalize().unwrap(), here);
-        assert_eq!(job, [child.id()]);
-    }
-
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    #[test]
-    fn the_foreground_is_the_command_running_and_none_at_the_prompt() {
-        use tauri::ipc::Channel;
-        let ptys = super::Ptys::default();
-        let id = ptys
-            .spawn(
-                &std::env::temp_dir(),
-                80,
-                24,
-                None,
-                Channel::new(|_| Ok(())),
-                Channel::new(|_| Ok(())),
-            )
-            .unwrap()
-            .id;
-        let argv = || ptys.foreground(id).map(|p| p.argv);
+    fn the_job_leader_is_the_command_running_and_none_at_the_prompt() {
+        use portable_pty::{native_pty_system, CommandBuilder};
+        let pair =
+            crate::process::spawning(|| native_pty_system().openpty(super::size(80, 24))).unwrap();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-i");
+        cmd.env_clear();
+        cmd.env("PATH", "/usr/bin:/bin");
+        cmd.env("PS1", "$ ");
+        let mut child = crate::process::spawning(|| pair.slave.spawn_command(cmd)).unwrap();
+        drop(pair.slave);
+        let shell = child.process_id();
+        let mut writer = pair.master.take_writer().unwrap();
+        // Read, so the shell's writes never block on a full pty.
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        std::thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
+        let argv = || {
+            let pid = crate::procinfo::job_leader(pair.master.process_group_leader(), shell)?;
+            Some(crate::procinfo::process(pid)?.argv)
+        };
         let wait = |want: Option<Vec<String>>| {
-            let until = std::time::Instant::now() + Duration::from_secs(15);
+            let until = std::time::Instant::now() + Duration::from_secs(60);
             while argv() != want && std::time::Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(50));
             }
             argv()
         };
-        let writer = ptys.writer(id).unwrap();
-        super::write(&writer, b"sleep 30\r").unwrap();
+        writer.write_all(b"sleep 30\n").unwrap();
         let sleeping = Some(vec!["sleep".to_string(), "30".to_string()]);
         assert_eq!(wait(sleeping.clone()), sleeping);
-        super::write(&writer, b"\x03").unwrap();
+        writer.write_all(b"\x03").unwrap();
         assert_eq!(wait(None), None);
-        ptys.kill(id);
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]
