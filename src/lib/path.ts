@@ -18,11 +18,25 @@ const names = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" 
 export const compareEntries = (a: { name: string; isDir: boolean }, b: { name: string; isDir: boolean }) =>
   Number(b.isDir) - Number(a.isDir) || names.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
-/** Of `paths`, those whose name a different path shares: shown with their folder, they're told apart. */
-export function sharedNames(paths: string[]) {
+/**
+ * For each of `paths` whose name a different path shares, the fewest of its last folders that
+ * tell it apart from those ("x", else "a/x"), as VS Code's tabs show them; "" at the root.
+ */
+export function distinctFolders(paths: string[]) {
   const byName = new Map<string, Set<string>>();
   for (const p of paths) byName.set(basename(p), (byName.get(basename(p)) ?? new Set()).add(p));
-  return new Set(paths.filter((p) => byName.get(basename(p))!.size > 1));
+  const folders = new Map<string, string>();
+  for (const group of byName.values()) {
+    if (group.size < 2) continue;
+    const dirs = [...group].map((p) => ({ p, segs: dirname(p) ? dirname(p).split("/") : [] }));
+    const tail = (segs: string[], k: number) => segs.slice(-k).join("/");
+    for (const { p, segs } of dirs) {
+      let k = 1;
+      while (k < segs.length && dirs.some((o) => o.p !== p && tail(o.segs, k) === tail(segs, k))) k++;
+      folders.set(p, tail(segs, k));
+    }
+  }
+  return folders;
 }
 
 /** A repo path's folder, with its trailing "/" ("" at the root), and its name. */

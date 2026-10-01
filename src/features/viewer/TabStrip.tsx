@@ -6,7 +6,7 @@ import { useShortcut } from "@/lib/commands/keybindings";
 import { focusMovedTab, focusTab, isMenuKey, openRowMenu, tabMove } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { useEdited } from "@/lib/editor/edits";
-import { basename, dirname, sharedNames } from "@/lib/path";
+import { basename, distinctFolders } from "@/lib/path";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { IssueStateIcon, PullStateIcon } from "@/features/github/shared/StateBadges";
 import { FileIcon } from "@/components/FileIcon";
@@ -68,7 +68,7 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
   };
 
   // As VS Code: two open files of one name show their folders too.
-  const shared = sharedNames(tabs.filter((t) => t.sel.kind !== "pull" && t.sel.kind !== "issue").map((t) => selectionPath(t.sel)));
+  const folders = distinctFolders(tabs.filter((t) => t.sel.kind !== "pull" && t.sel.kind !== "issue").map((t) => selectionPath(t.sel)));
 
   return (
     <div
@@ -87,7 +87,7 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
             tab={t}
             active={t.key === active?.key}
             tabStop={active ? t.key === active.key : i === 0}
-            folder={shared.has(selectionPath(t.sel)) ? basename(dirname(selectionPath(t.sel))) : undefined}
+            folder={folders.get(selectionPath(t.sel))}
             lostFocus={lostFocus}
             onActivate={onActivate}
             onClose={onClose}
@@ -120,7 +120,7 @@ function TabItem({
   tab: Tab;
   active: boolean;
   tabStop: boolean;
-  /** Its parent folder, shown when another open tab has the same name. */
+  /** Its last folders, shown when another open tab has the same name. */
   folder?: string;
   lostFocus: RefObject<boolean>;
   onActivate: (key: string) => void;
