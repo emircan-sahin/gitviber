@@ -51,6 +51,9 @@ export async function dropsPushed(sha: string) {
   }
 }
 
+/** Undoes HEAD's commit `sha`, its changes staged again; refused if HEAD has moved since. */
+export const undoCommit = (sha: string, run: GitRun) => run("Undo", () => api.undoCommit(sha), "Commit undone; its changes are staged");
+
 /** Checks out `c` with no branch, after saying what that means. */
 export async function checkoutDetached(c: Commit, run: GitRun) {
   const ok = await ask(`Check out ${c.shortSha} without a branch (detached HEAD)? New commits made there belong to no branch until you create one.`, {

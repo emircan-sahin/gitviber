@@ -24,7 +24,8 @@ import { useRecentMenu } from "@/lib/commands/menu";
 import { stepUiScale } from "@/lib/settings";
 import { fallbackFor, latestOnly } from "@/lib/repo/opening";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder } from "@/lib/repo/recent";
-import { toast } from "@/lib/app/toast";
+import { gitFailed } from "@/lib/app/gitFailed";
+import { failed, toast } from "@/lib/app/toast";
 import { openTargetIn } from "@/lib/links/linkHost";
 import { folderName } from "@/lib/path";
 import { IS_MAC } from "@/lib/platform";
@@ -86,7 +87,7 @@ export function App() {
       if (!latest()) return;
       if (quiet) return false;
       if (e === NOT_A_REPO && (await initAsked(target))) return openRepo(target, quiet, replacing);
-      toast("error", "Could not open repository", errorMessage(e));
+      gitFailed("Could not open repository", e, { "safe-directory": [{ label: "Trust this folder", run: () => void api.trustFolder(target).then(() => openRepo(target, quiet, replacing), failed("Could not trust the folder")) }] });
       return false;
     }
   }, [opens]);

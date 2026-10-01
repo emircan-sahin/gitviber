@@ -224,6 +224,12 @@ pub async fn clone_repo(
     blocking(move || git::clone(Path::new(&parent), &url, &name, &net)).await
 }
 
+/// After the user said to trust a repository git refused for its owner; see git::trust_folder.
+#[tauri::command]
+pub async fn trust_folder(path: String) -> Res<()> {
+    blocking(move || git::trust_folder(Path::new(&path))).await
+}
+
 #[tauri::command]
 pub async fn init_repo(path: String) -> Res<()> {
     blocking(move || git::init(Path::new(&path))).await

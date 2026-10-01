@@ -181,6 +181,12 @@ export interface CommitOptions {
   coAuthors?: string[];
 }
 
+/** A staged file over GitHub's 100 MiB limit; `size` reads "123.4 MB". */
+export interface LargeFile {
+  path: string;
+  size: string;
+}
+
 export interface CommitDetails {
   /** git's %G?: G good, U good but unknown validity, X/Y expired signature/key, R revoked key, B bad, E can't check, N none. */
   signature: string;
@@ -407,7 +413,7 @@ export interface Progress {
   cancellable: boolean;
 }
 
-/** One watched network command (fetch, pull, push, clone): its progress, and its id for Cancel. */
+/** One watched command (fetch, pull, push, clone, or a commit and its hooks): its progress, and its id for Cancel. */
 export interface NetOp {
   id: string;
   onProgress?: (p: Progress) => void;

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { CANCELLED, type NetOp } from "@/lib/api";
 import { gitFailed, type GitFixes } from "@/lib/app/gitFailed";
-import { toast } from "@/lib/app/toast";
+import { toast, type ToastAction } from "@/lib/app/toast";
 import { withNetActivity } from "@/lib/repo/netActivity";
 import { tracked, undoAction } from "@/lib/repo/undo";
 
@@ -41,20 +41,17 @@ export function useGitAction({ refresh, onDone, tracked: undoable = true, confli
 
   // An error toast stays until dismissed, so its buttons can be pressed while another action
   // runs, or after another repo opened (this view is gone with its repo).
+  const guard = (actions?: ToastAction[]) =>
+    actions?.map((a) => ({
+      ...a,
+      run: () => {
+        if (!mounted.current) toast("info", `${a.label} not run`, "It was for the repository open before this one.");
+        else if (running.current) toast("info", `${a.label} not run`, `Wait for ${running.current} to finish.`);
+        else a.run();
+      },
+    }));
   const guarded = (fixes: GitFixes = {}): GitFixes =>
-    Object.fromEntries(
-      Object.entries(fixes).map(([fix, actions]) => [
-        fix,
-        actions?.map((a) => ({
-          ...a,
-          run: () => {
-            if (!mounted.current) toast("info", `${a.label} not run`, "It was for the repository open before this one.");
-            else if (running.current) toast("info", `${a.label} not run`, `Wait for ${running.current} to finish.`);
-            else a.run();
-          },
-        })),
-      ]),
-    );
+    Object.fromEntries(Object.entries(fixes).map(([fix, actions]) => [fix, typeof actions === "function" ? (message: string) => guard(actions(message)) : guard(actions)]));
 
   const attempt = async (label: string, fn: () => Promise<unknown>, done?: string, detail?: string, extras: RunExtras = {}) => {
     setBusy((running.current = label));

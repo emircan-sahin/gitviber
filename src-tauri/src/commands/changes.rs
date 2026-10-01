@@ -1,6 +1,10 @@
 use crate::journal::{Action, Mode};
-use crate::state::{in_repo, indexed, journaled, read_repo, with_index_lock, AppState, Res};
-use crate::{git, github, lines, suggest};
+use crate::state::{
+    in_repo, indexed, indexed_once, journaled, read_repo, watch_network, with_index_lock, AppState,
+    Res,
+};
+use crate::{git, github, lines, network, suggest};
+use tauri::ipc::Channel;
 use tauri::State;
 
 #[tauri::command]
@@ -30,6 +34,13 @@ pub async fn stage(state: State<'_, AppState>, paths: Vec<String>, allow_nested:
 #[tauri::command]
 pub async fn unstage(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
     indexed(&state, move |r| git::unstage(r, &paths)).await
+}
+
+/// Removes a stale index.lock that `path`, from git's error, names; see git::remove_index_lock.
+/// Not while one of ours writes the index.
+#[tauri::command]
+pub async fn remove_index_lock(state: State<'_, AppState>, path: String) -> Res<()> {
+    indexed_once(&state, move |r| git::remove_index_lock(r, &path)).await
 }
 
 #[tauri::command]
@@ -63,6 +74,8 @@ pub async fn commit(
     state: State<'_, AppState>,
     message: String,
     options: git::CommitOptions,
+    op: String,
+    progress: Channel<network::Progress>,
 ) -> Res<()> {
     let subject = message.lines().next().unwrap_or("").trim();
     let label = match (options.amend, subject) {
@@ -71,10 +84,17 @@ pub async fn commit(
         (false, s) => format!("Commit \"{s}\""),
     };
     let lock = state.index.clone();
-    journaled(&state, Action::new(label, Mode::Soft), move |r| {
-        with_index_lock(&lock, r, |r| git::commit(r, &message, &options))
+    let net = watch_network(&state, op, progress);
+    journaled(&state, Action::new(label, Mode::Soft).ok_only(), move |r| {
+        with_index_lock(&lock, r, |r| git::commit(r, &message, &options, &net))
     })
     .await
+}
+
+/// Staged files GitHub would refuse, asked about before they're committed.
+#[tauri::command]
+pub async fn large_staged(state: State<'_, AppState>) -> Res<Vec<git::LargeFile>> {
+    in_repo(&state, git::large_staged).await
 }
 
 #[tauri::command]

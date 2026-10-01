@@ -1,6 +1,8 @@
 //! Committing, and what the commit form reads: template, recent authors, details.
 
 use super::{command, git_dir, has_head, run, run_text, run_with, validate_rev};
+use crate::lfs;
+use crate::network::{self, Net, CANCELLED};
 use crate::process::exec;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -18,7 +20,27 @@ pub struct CommitOptions {
     pub co_authors: Vec<String>,
 }
 
-pub fn commit(repo: &Path, message: &str, opts: &CommitOptions) -> Result<(), String> {
+/// Ends a failed commit's message with the hooks set up that could have stopped it. git says
+/// nothing of its own when one fails, so this is how the page knows to offer committing without
+/// them (never for prepare-commit-msg alone, which `--no-verify` still runs).
+pub const HOOKS_HINT: &str = "hint: Commit hooks set up here: ";
+
+/// A commit cancelled after its hooks stashed something (lint-staged's backup), which they may
+/// not have put back.
+pub const CANCELLED_STASHED: &str = "git:cancelled-stashed";
+
+/// How git starts the lines it ends a commit with, exit code 1, before or after the hooks ran.
+const OWN_REFUSALS: [&str; 4] = [
+    "nothing to commit",
+    "nothing added to commit",
+    "no changes added to commit",
+    "Aborting commit due to empty commit message",
+];
+
+/// Watched like a network command: the hooks' output is its progress, and Cancel stops git with
+/// the hooks it runs. Stopped after git moved HEAD (a post-commit hook was left), the commit
+/// stands and this succeeds.
+pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Result<(), String> {
     // git formats and places the trailers, next to any the message already has.
     let trailers = opts
         .co_authors
@@ -41,14 +63,199 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions) -> Result<(), St
         }
     }
     args.extend(trailers.iter().map(String::as_str));
-    if opts.amend && message.trim().is_empty() {
+    let input = if opts.amend && message.trim().is_empty() {
         // Amending with no new message keeps the old one.
         args.push("--no-edit");
-        return run(repo, &args).map(|_| ());
+        None
+    } else {
+        // Message goes through stdin so it is never parsed as arguments.
+        args.extend(["-F", "-"]);
+        Some(message.as_bytes())
+    };
+    let paths = run_text(
+        repo,
+        &[
+            "rev-parse",
+            "--git-path",
+            "hooks/pre-commit",
+            "--git-path",
+            "hooks/prepare-commit-msg",
+            "--git-path",
+            "hooks/commit-msg",
+        ],
+    )
+    .unwrap_or_default();
+    let paths: Vec<_> = paths.lines().map(|p| repo.join(p)).collect();
+    let mut cmd = command(repo, &args);
+    // It has no paths, and hooks inherit its environment: lint-staged's `git stash --keep-index`
+    // restores the index with `:/`, which literal pathspecs turn into a file of that name.
+    cmd.env_remove("GIT_LITERAL_PATHSPECS");
+    let stash = tip(repo, "refs/stash");
+    let head = tip(repo, "HEAD");
+    match network::run_local(cmd, "git commit", net, input) {
+        Ok(_) => Ok(()),
+        // Not a file's change: a hook's own git (lint-staged's stash) writes the reflogs too.
+        Err(f) if f.message == CANCELLED && made(repo, head.as_deref(), message, opts.amend) => {
+            Ok(())
+        }
+        Err(f) if f.message == CANCELLED && tip(repo, "refs/stash") != stash => {
+            Err(CANCELLED_STASHED.into())
+        }
+        Err(f) => {
+            let hooks: Vec<_> = ["pre-commit", "prepare-commit-msg", "commit-msg"]
+                .into_iter()
+                .zip(&paths)
+                // `--no-verify` skips all but prepare-commit-msg.
+                .filter(|(name, p)| {
+                    (*name == "prepare-commit-msg" || !opts.no_verify) && is_hook(p)
+                })
+                .map(|(name, _)| name)
+                .collect();
+            // A failing hook makes git exit 1 without a word; its own failures are 128 (a
+            // signature that failed, a merge in the way) or 1 with one of these. A cancel is None.
+            let own = f
+                .message
+                .lines()
+                .any(|l| OWN_REFUSALS.iter().any(|r| l.starts_with(r)));
+            Err(if f.code != Some(1) || own || hooks.is_empty() {
+                f.message
+            } else {
+                format!("{}\n{HOOKS_HINT}{}.", f.message, hooks.join(", "))
+            })
+        }
     }
-    // Message goes through stdin so it is never parsed as arguments.
-    args.extend(["-F", "-"]);
-    run_with(repo, &args, &[], Some(message.as_bytes())).map(|_| ())
+}
+
+/// Whether a cancelled commit was made first (a post-commit hook was left). An agent committing
+/// in a terminal while our hooks run moves HEAD too, so ours is told by its parent (the old head,
+/// or its parent for an amend) and subject. A hook that rewrites the subject makes a made commit
+/// read as cancelled, the side that never takes an agent's commit for ours.
+fn made(repo: &Path, head: Option<&str>, message: &str, amend: bool) -> bool {
+    let now = tip(repo, "HEAD");
+    if now.as_deref() == head {
+        return false;
+    }
+    let first = |m: &str| {
+        m.lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("")
+            .to_string()
+    };
+    let (parent, subject) = match (amend, head) {
+        (false, head) => (head.map(str::trim).map(String::from), first(message)),
+        (true, Some(head)) => {
+            let Some((parent, old)) = parent_and_message(repo, head.trim()) else {
+                return false;
+            };
+            let msg = if message.trim().is_empty() {
+                &old
+            } else {
+                message
+            };
+            (parent, first(msg))
+        }
+        (true, None) => return false,
+    };
+    parent_and_message(repo, "HEAD").is_some_and(|(p, m)| p == parent && first(&m) == subject)
+}
+
+/// `rev`'s first parent (None for a root commit) and its message.
+fn parent_and_message(repo: &Path, rev: &str) -> Option<(Option<String>, String)> {
+    let out = run_text(
+        repo,
+        &[
+            "log",
+            "-1",
+            "--no-show-signature",
+            "--format=%P%n%B",
+            rev,
+            "--",
+        ],
+    )
+    .ok()?;
+    let (parents, message) = out.split_once('\n')?;
+    let parent = parents.split(' ').next().filter(|p| !p.is_empty());
+    Some((parent.map(String::from), message.to_string()))
+}
+
+/// The commit `rev` names now; None for an unborn branch or a ref that isn't there.
+fn tip(repo: &Path, rev: &str) -> Option<String> {
+    run_text(repo, &["rev-parse", "-q", "--verify", rev]).ok()
+}
+
+/// What git runs as a hook: a file it can execute (it skips one that isn't, with a hint).
+fn is_hook(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    return meta.is_file()
+        && std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+    #[cfg(not(unix))]
+    meta.is_file()
+}
+
+/// GitHub refuses a push with a file over 100 MiB, and by then the commit has to come out of
+/// history.
+const LARGE_FILE_BYTES: u64 = 100 * 1024 * 1024;
+
+#[derive(Serialize)]
+pub struct LargeFile {
+    pub path: String,
+    /// "123.4 MB"
+    pub size: String,
+}
+
+/// Staged files over GitHub's limit, by the blob the commit will hold: a file Git LFS tracks is
+/// staged as its small pointer, so it never counts, while one LFS should have taken but didn't
+/// (git-lfs not installed) does.
+pub fn large_staged(repo: &Path) -> Result<Vec<LargeFile>, String> {
+    let raw = run(
+        repo,
+        &[
+            "diff",
+            "--cached",
+            "--raw",
+            "-z",
+            "--no-abbrev",
+            "--no-renames",
+            "--diff-filter=AMT",
+        ],
+    )?;
+    let raw = String::from_utf8_lossy(&raw);
+    let mut fields = raw.split('\0');
+    let mut staged = vec![];
+    while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
+        // ":<old mode> <new mode> <old id> <new id> <status>"; a submodule (160000) is a commit.
+        if let [_, mode, _, id, _] = meta.split(' ').collect::<Vec<_>>()[..] {
+            if mode != "160000" {
+                staged.push((id, path));
+            }
+        }
+    }
+    if staged.is_empty() {
+        return Ok(vec![]);
+    }
+    let ids: String = staged.iter().map(|(id, _)| format!("{id}\n")).collect();
+    let sizes = run_with(
+        repo,
+        &["cat-file", "--batch-check=%(objectsize)"],
+        &[],
+        Some(ids.as_bytes()),
+    )?;
+    // One line per id, in order; a missing object's doesn't parse and is skipped.
+    Ok(staged
+        .iter()
+        .zip(String::from_utf8_lossy(&sizes).lines())
+        .filter_map(|((_, path), size)| {
+            let n: u64 = size.parse().ok()?;
+            (n > LARGE_FILE_BYTES).then(|| LargeFile {
+                path: path.to_string(),
+                size: lfs::size_label(n),
+            })
+        })
+        .collect())
 }
 
 /// Where git leaves a message for the next commit, in the order `git commit` joins them.

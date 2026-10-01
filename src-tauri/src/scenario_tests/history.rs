@@ -102,7 +102,13 @@ fn log_search_narrows_and_pages() {
         "Add logout",
     );
     run(a, &["mv", "src/auth.rs", "src/session.rs"]).unwrap();
-    commit(a, "Rename auth to session", &CommitOptions::default()).unwrap();
+    commit(
+        a,
+        "Rename auth to session",
+        &CommitOptions::default(),
+        &Net::default(),
+    )
+    .unwrap();
     run(
         a,
         &[

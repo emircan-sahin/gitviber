@@ -103,7 +103,7 @@ fn force_push_with_lease_after_amend() {
     let (a, b) = (&c[0], &c[1]);
     write_commit(a, "a.txt", "mine\n", "mine");
     push(a, false, None, &Net::default()).unwrap();
-    commit(a, "mine, reworded", &AMEND).unwrap();
+    commit(a, "mine, reworded", &AMEND, &Net::default()).unwrap();
     let err = push(a, false, None, &Net::default()).unwrap_err();
     assert!(err.contains("non-fast-forward"), "{err}");
     assert!(remote_was_ours(a), "the remote only has the amended commit");
@@ -113,7 +113,7 @@ fn force_push_with_lease_after_amend() {
     run(b, &["merge", "-q", "--ff-only", "origin/main"]).unwrap();
     write_commit(b, "b.txt", "b\n", "theirs");
     push(b, false, None, &Net::default()).unwrap();
-    commit(a, "mine, again", &AMEND).unwrap();
+    commit(a, "mine, again", &AMEND, &Net::default()).unwrap();
     assert!(push(a, true, None, &Net::default()).is_err());
 }
 
@@ -126,7 +126,7 @@ fn force_push_after_a_background_fetch_keeps_their_commit() {
     let (a, b) = (&c[0], &c[1]);
     write_commit(a, "a.txt", "mine\n", "mine");
     push(a, false, None, &Net::default()).unwrap();
-    commit(a, "mine, reworded", &AMEND).unwrap();
+    commit(a, "mine, reworded", &AMEND, &Net::default()).unwrap();
     let err = push(a, false, None, &Net::default()).unwrap_err();
     assert!(err.contains("non-fast-forward"), "{err}");
 
@@ -153,7 +153,13 @@ fn pull_draft_counts_commits_against_the_base() {
     run(a, &["switch", "-q", "-c", "feat"]).unwrap();
     fs::write(a.join("f.txt"), "f\n").unwrap();
     stage(a, &["f.txt".into()]).unwrap();
-    commit(a, "Add f\n\nWhy it matters.", &CommitOptions::default()).unwrap();
+    commit(
+        a,
+        "Add f\n\nWhy it matters.",
+        &CommitOptions::default(),
+        &Net::default(),
+    )
+    .unwrap();
     let d = pull_draft(a, "refs/remotes/origin/main").unwrap();
     assert_eq!(
         (d.commits, d.subject.as_deref(), d.body.as_deref()),
@@ -578,7 +584,7 @@ fn submodules_listed_and_set_up() {
     )
     .unwrap();
     identity(&r.join("vendor/lib"));
-    commit(&r, "add lib", &CommitOptions::default()).unwrap();
+    commit(&r, "add lib", &CommitOptions::default(), &Net::default()).unwrap();
     let subs = submodules(&r).unwrap();
     assert_eq!(
         (subs[0].path.as_str(), subs[0].state.as_str()),

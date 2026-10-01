@@ -46,3 +46,54 @@ pub fn init(dir: &Path) -> Result<(), String> {
     };
     run(dir, args).map(|_| ())
 }
+
+/// How git starts refusing a repository another user owns: a disk from another Mac, a folder
+/// made with sudo.
+const DUBIOUS: &str = "fatal: detected dubious ownership in repository at '";
+
+/// The folder git's refusal names, which is what safe.directory has to list.
+fn refused_folder(error: &str) -> Option<&str> {
+    error
+        .lines()
+        .find_map(|l| l.strip_prefix(DUBIOUS)?.strip_suffix('\''))
+}
+
+/// Adds the repository git refuses to open at `path` to the global safe.directory, as git's own
+/// error says to: only while git refuses it, and exactly the folder it names.
+pub fn trust_folder(path: &Path) -> Result<(), String> {
+    let Err(refused) = toplevel(path) else {
+        return Ok(());
+    };
+    let folder = refused_folder(&refused).ok_or(refused.clone())?;
+    // Not run inside the folder: git would refuse it there too.
+    run(
+        Path::new("/"),
+        &["config", "--global", "--add", "safe.directory", folder],
+    )
+    .map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trusts_the_folder_git_names_and_nothing_else() {
+        let refused = "fatal: detected dubious ownership in repository at '/Volumes/Disk/my app'
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory '/Volumes/Disk/my app'";
+        assert_eq!(refused_folder(refused), Some("/Volumes/Disk/my app"));
+        assert_eq!(
+            refused_folder("fatal: not a git repository (or any of the parent directories): .git"),
+            None
+        );
+        // A folder git doesn't refuse is left alone; a missing one isn't trusted.
+        let dir = std::env::temp_dir().join(format!("gitviber-trust-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        run(&dir, &["init", "-q"]).unwrap();
+        trust_folder(&dir).unwrap();
+        assert!(trust_folder(&dir.join("gone")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

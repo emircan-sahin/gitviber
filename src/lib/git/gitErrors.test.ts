@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { explainGitError } from "./gitErrors.ts";
+import { explainGitError, secretCommits } from "./gitErrors.ts";
 
 // What git 2.51 printed in scratch repos, as the app gets it (stderr, trimmed). Git 2.15 and
 // Apple Git 2.50 print the matched lines the same; only the hints around them differ.
@@ -136,6 +136,100 @@ const HOOK_OUTPUT = `husky - pre-commit script failed (code 1)
   expected: "fatal: Not possible to fast-forward, aborting."
   log: error: gpg failed to sign the data (fixture)
   ! [rejected]  main -> main (fetch first)  (fixture)`;
+
+const INDEX_LOCK = `fatal: Unable to create '/Users/me/my repo/.git/worktrees/fix/index.lock': File exists.
+
+Another git process seems to be running in this repository, e.g.
+an editor opened by 'git commit'. Please make sure all processes
+are terminated then try again. If it still fails, a git process
+may have crashed in this repository earlier:
+remove the file manually to continue.`;
+
+test("a lock git can't take offers removing that exact file", () => {
+  const help = explainGitError(INDEX_LOCK);
+  assert.equal(help?.fix, "index-lock");
+  assert.equal(help?.target, "/Users/me/my repo/.git/worktrees/fix/index.lock");
+  // Some other file's lock isn't the index's.
+  assert.equal(explainGitError("fatal: Unable to create '/r/.git/refs/heads/main.lock': File exists."), null);
+});
+
+test("a repository another user owns offers trusting it", () => {
+  const refused = `fatal: detected dubious ownership in repository at '/Volumes/Disk/app'
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory /Volumes/Disk/app`;
+  assert.equal(fix(refused), "safe-directory");
+});
+
+// GitHub's push protection, as git prints it (GitHub's docs, "Resolving a blocked push").
+const PUSH_PROTECTION = `remote: error: GH013: Repository rule violations found for refs/heads/main.
+remote:
+remote: - GITHUB PUSH PROTECTION
+remote:   —————————————————————————————————————————
+remote:     Resolve the following violations before pushing again
+remote:
+remote:     - Push cannot contain secrets
+remote:
+remote:
+remote:      (?) Learn how to resolve a blocked push
+remote:      https://docs.github.com/code-security/secret-scanning/working-with-secret-scanning-and-push-protection/working-with-push-protection-from-the-command-line#resolving-a-blocked-push
+remote:
+remote:
+remote:       —— GitHub Personal Access Token ——————————————————————
+remote:        locations:
+remote:          - commit: 8728dbe67d1a1c4b3a0b1a2c3d4e5f6a7b8c9d0e
+remote:            path: config/env.ts:4
+remote:
+remote:        (?) To push, remove secret from commit(s) or follow this URL to allow the secret.
+remote:        https://github.com/owner/repo/security/secret-scanning/unblock-secret/2abcDEF
+remote:
+remote:       —— Slack API Token ——————————————————————
+remote:        (?) To push, remove secret from commit(s) or follow this URL to allow the secret.
+remote:        https://github.com/owner/repo/security/secret-scanning/unblock-secret/3ghiJKL
+remote:
+To github.com:owner/repo.git
+ ! [remote rejected] main -> main (push declined due to repository rule violations)
+error: failed to push some refs to 'github.com:owner/repo.git'`;
+
+test("a secret GitHub's push protection found is explained, with the page it links", () => {
+  const help = explainGitError(PUSH_PROTECTION);
+  assert.equal(help?.fix, "secret");
+  assert.equal(help?.target, "https://github.com/owner/repo/security/secret-scanning/unblock-secret/2abcDEF");
+  assert.deepEqual(secretCommits(PUSH_PROTECTION), ["8728dbe67d1a1c4b3a0b1a2c3d4e5f6a7b8c9d0e"]);
+  const old = `remote: error: GH009: Secrets detected! This push failed.
+remote:
+remote:     GITHUB PUSH PROTECTION
+remote:       —— GitHub Personal Access Token ——————————————————————
+remote:        locations:
+remote:          - commit: 1111111111111111111111111111111111111111
+remote:            path: a.txt:1
+remote:          - commit: 2222222222222222222222222222222222222222
+remote:            path: b.txt:1
+remote:
+remote:        (?) To push, remove secret from commit(s) or follow this URL to allow the secret.
+remote:        https://github.com/owner/repo/security/secret-scanning/unblock-secret/9xyz`;
+  assert.deepEqual([fix(old), explainGitError(old)?.target], ["secret", "https://github.com/owner/repo/security/secret-scanning/unblock-secret/9xyz"]);
+  assert.deepEqual(secretCommits(old), ["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"]);
+  assert.equal(fix("remote: error: GH009: Secrets detected! This push failed."), "secret");
+  // Other repository rules (signed commits, say) aren't about secrets.
+  assert.equal(explainGitError("remote: error: GH013: Repository rule violations found for refs/heads/main.\nremote: - Commits must have verified signatures."), null);
+});
+
+// commit.rs names the hooks set up when a commit fails; git prints nothing of its own then.
+const HOOK_FAILED = `${HOOK_OUTPUT}
+hint: Commit hooks set up here: pre-commit, commit-msg.`;
+
+test("a failed commit with hooks set up offers committing without them, unless git said why", () => {
+  assert.equal(fix(HOOK_FAILED), "hooks");
+  assert.equal(fix(`${GPG}\nhint: Commit hooks set up here: pre-commit.`), "signing");
+  assert.equal(fix(`${HOOK_OUTPUT}\nhint: Commit hooks set up here: pre-commit, prepare-commit-msg.`), "hooks");
+});
+
+test("a commit only prepare-commit-msg could have stopped isn't offered without hooks, which still run it", () => {
+  const help = explainGitError(`${HOOK_OUTPUT}\nhint: Commit hooks set up here: prepare-commit-msg.`);
+  assert.equal(help?.title, "The prepare-commit-msg hook stopped the commit");
+  assert.equal(help?.fix, undefined);
+});
 
 test("a hook quoting git's messages isn't taken for them", () => {
   assert.equal(explainGitError(HOOK_OUTPUT), null);

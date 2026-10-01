@@ -11,7 +11,7 @@ fn binary_crlf_and_missing_trailing_newline() {
     write_commit(&r, "crlf.txt", "a\r\nb\r\nc\r\n", "crlf");
     write_commit(&r, "nonl.txt", "x\ny", "no newline");
     stage(&r, &["bin.dat".into()]).unwrap();
-    commit(&r, "bin", &CommitOptions::default()).unwrap();
+    commit(&r, "bin", &CommitOptions::default(), &Net::default()).unwrap();
 
     fs::write(r.join("bin.dat"), [0u8, 9, 9]).unwrap();
     fs::write(r.join("crlf.txt"), "a\r\nB\r\nc\r\n").unwrap();
@@ -55,7 +55,7 @@ fn autocrlf_diffs_like_git() {
         assert!(!pair.eol_only);
     }
     stage(&r, &["a.txt".into()]).unwrap();
-    commit(&r, "B", &CommitOptions::default()).unwrap();
+    commit(&r, "B", &CommitOptions::default(), &Net::default()).unwrap();
     let head = rev(&r, "HEAD");
     let pair = diff_pair(&r, "commit", "a.txt", None, Some(&head), None, None, wt).unwrap();
     assert_eq!(pair.modified.text, "a\r\nB\r\nc\r\n");
@@ -303,7 +303,7 @@ fn a_symlink_diffs_as_its_target_path() {
     write_commit(&r, "b.txt", "b\n", "b");
     std::os::unix::fs::symlink("a.txt", r.join("link")).unwrap();
     stage(&r, &["link".into()]).unwrap();
-    commit(&r, "link", &CommitOptions::default()).unwrap();
+    commit(&r, "link", &CommitOptions::default(), &Net::default()).unwrap();
 
     fs::remove_file(r.join("link")).unwrap();
     std::os::unix::fs::symlink("b.txt", r.join("link")).unwrap();
@@ -407,7 +407,7 @@ fn submodule_bump_diffs_as_subproject_commits() {
     );
 
     stage(&r, &["sub".into()]).unwrap();
-    commit(&r, "bump sub", &CommitOptions::default()).unwrap();
+    commit(&r, "bump sub", &CommitOptions::default(), &Net::default()).unwrap();
     let head = log(&r, None, 0, 1).unwrap().remove(0).sha;
     let pair = diff_pair(&r, "commit", "sub", None, Some(&head), None, None, read).unwrap();
     assert_eq!(pair.original.text, format!("Subproject commit {old}\n"));
