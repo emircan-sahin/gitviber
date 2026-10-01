@@ -8,6 +8,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, Response};
 
 /// Its own lock: a program that isn't reading blocks the write once the pty's buffer fills, and
@@ -25,7 +26,8 @@ pub fn write(writer: &Writer, data: &[u8]) -> Result<(), String> {
 /// The bytes typed: text as UTF-8, or `binary`, xterm.js's char-per-byte string (mouse reports in
 /// the default encoding, where a coordinate past 95 is a byte past 127).
 pub fn input_bytes(data: &str, binary: bool) -> Cow<'_, [u8]> {
-    if binary {
+    // ConPTY reads its input as UTF-8: a lone byte past 127 isn't one.
+    if binary && !cfg!(windows) {
         Cow::Owned(data.chars().map(|c| c as u8).collect())
     } else {
         Cow::Borrowed(data.as_bytes())
@@ -54,6 +56,11 @@ pub struct Spawned {
 const HIGH_WATER: usize = 512 * 1024;
 /// Reading resumes below this, not at the first ack, so a flood moves in large steps.
 const LOW_WATER: usize = HIGH_WATER / 2;
+/// How long the reader waits for acks before it reads on regardless, until the page catches up.
+/// A hidden window's WebKit throttles xterm.js's parsing: waiting on it froze an agent working in
+/// the background (Node writes to a tty synchronously). A page in view parses the 512 KiB it holds
+/// in far less, so only a page that isn't running gets past it.
+const ACK_WAIT: Duration = Duration::from_secs(1);
 
 #[derive(Default)]
 struct Flow {
@@ -65,17 +72,30 @@ struct Flow {
 struct FlowState {
     unacked: usize,
     closed: bool,
+    /// The page let ACK_WAIT pass without catching up: output flows unchecked until it does.
+    unheard: bool,
 }
 
 impl Flow {
-    /// Counts `n` bytes sent; past the high water, waits for the page's acks (or the session's end).
+    /// Counts `n` bytes sent; past the high water, waits for the page's acks (or the session's
+    /// end) for ACK_WAIT at most.
     fn sent(&self, n: usize) {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.unacked += n;
-        if s.unacked >= HIGH_WATER {
-            while s.unacked > LOW_WATER && !s.closed {
-                s = self.resumed.wait(s).unwrap_or_else(|e| e.into_inner());
+        if s.unacked < HIGH_WATER || s.unheard {
+            return;
+        }
+        let until = Instant::now() + ACK_WAIT;
+        while s.unacked > LOW_WATER && !s.closed {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                s.unheard = true;
+                return;
             }
+            s = match self.resumed.wait_timeout(s, left) {
+                Ok((s, _)) => s,
+                Err(e) => e.into_inner().0,
+            };
         }
     }
 
@@ -84,6 +104,7 @@ impl Flow {
         let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
         s.unacked = s.unacked.saturating_sub(n);
         if s.unacked <= LOW_WATER {
+            s.unheard = false;
             self.resumed.notify_all();
         }
     }
@@ -354,7 +375,7 @@ fn process_cwd(_pid: u32) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{input_bytes, start_dir, Flow, HIGH_WATER, LOW_WATER};
+    use super::{input_bytes, start_dir, Flow, ACK_WAIT, HIGH_WATER, LOW_WATER};
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
 
@@ -385,6 +406,18 @@ mod tests {
     }
 
     #[test]
+    fn a_page_that_stops_acking_holds_the_reader_up_a_second_at_most() {
+        let flow = Arc::new(Flow::default());
+        let paused = reader(&flow, HIGH_WATER);
+        assert!(paused.recv_timeout(WAIT).is_err());
+        paused.recv_timeout(ACK_WAIT * 2).unwrap();
+        // Then reads on without waiting, until the page catches up.
+        reader(&flow, HIGH_WATER).recv_timeout(WAIT).unwrap();
+        flow.ack(2 * HIGH_WATER - LOW_WATER);
+        assert!(reader(&flow, HIGH_WATER).recv_timeout(WAIT).is_err());
+    }
+
+    #[test]
     fn a_closed_session_lets_its_waiting_reader_go() {
         let flow = Arc::new(Flow::default());
         let paused = reader(&flow, HIGH_WATER);
@@ -407,6 +440,7 @@ mod tests {
     #[test]
     fn binary_input_is_a_byte_a_char_and_text_is_utf8() {
         // A click at column 200, row 1, in X10's encoding: 32 + 200 is past 127.
+        #[cfg(not(windows))]
         assert_eq!(&*input_bytes("\x1b[M \u{e8}!", true), b"\x1b[M \xe8!");
         assert_eq!(&*input_bytes("é", false), "é".as_bytes());
     }
