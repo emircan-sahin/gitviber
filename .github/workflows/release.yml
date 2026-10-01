@@ -287,8 +287,13 @@ jobs:
 
       # No secrets here: the bundles (.deb, .rpm, AppImage) are built without the updater key,
       # and only the Tauri CLI sees it, in the next step.
+      # The AppDir's folders are made under the runner's umask, and an image whose folders only
+      # their owner can enter fails the check below (the 2026-09-27 runner image did that).
       - name: Build
-        run: pnpm tauri build
+        run: |
+          echo "runner umask: $(umask)"
+          umask 022
+          pnpm tauri build
 
       # The seed above leans on Tauri's cache path; if that moves, fail here, not in users' hands.
       - name: Check the AppImage runs for any user
