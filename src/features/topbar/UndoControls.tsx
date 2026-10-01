@@ -62,7 +62,8 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
       <DisabledTip
         label={!e ? `Nothing to ${verb.toLowerCase()}` : blocked ? `Can't ${verb.toLowerCase()} ${e.label}. ${blocked}` : `${verb} ${e.label}`}
         shortcut={forward ? redoKey : undoKey}
-        disabled={off || !e || !!blocked}
+        // A Tab stop only for a reason worth reading, not for an empty history.
+        disabled={!!e && !!blocked}
       >
         <Button variant="ghost" size="icon" aria-label={verb} disabled={off || !e || !!blocked} onClick={() => e && go(forward, [e.id])}>
           {forward ? <Redo2 /> : <Undo2 />}
