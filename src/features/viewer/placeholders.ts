@@ -6,7 +6,7 @@ import { changedInside } from "@/features/changes/changeList";
 const KINDS: Record<string, string> = { "100644": "file", "100755": "file", "120000": "symlink", "160000": "submodule" };
 
 /** What a text diff can't show about a change: its mode or type, or a submodule's own changes. */
-export function fileNote(file: FileChange | null) {
+function fileNote(file: FileChange | null) {
   if (file?.mode) {
     const [from, to] = file.mode.split(" → ").map((m) => KINDS[m]);
     return from && to && from !== to ? `Changed from a ${from} to a ${to} (${file.mode})` : `File mode changed: ${file.mode}`;
@@ -35,7 +35,7 @@ export function placeholderFor(pair: DiffPair, isFile: boolean, file: FileChange
 }
 
 /** Why a last line shows removed and added unchanged: the newline after it came or went. */
-export function newlineNote({ original: a, modified: b, rows }: DiffPair) {
+function newlineNote({ original: a, modified: b, rows }: DiffPair) {
   if (!a.text || !b.text || a.text.endsWith("\n") === b.text.endsWith("\n")) return null;
   // Rows hold every line, so the last one naming the new side is its last line; ignoring
   // whitespace can leave it unchanged.
@@ -43,4 +43,10 @@ export function newlineNote({ original: a, modified: b, rows }: DiffPair) {
   while (last >= 0 && !rows[last].n) last--;
   if (last < 0 || rows[last].k === 0) return null;
   return b.text.endsWith("\n") ? "Newline added at end of file" : "No newline at end of file";
+}
+
+/** What the diff's header says about a change shown as text: a mode or submodule change, line endings, a newline at the end, hidden whitespace. */
+export function diffNote(pair: DiffPair, file: FileChange | null) {
+  const text = pair.eolOnly ? "Only line endings changed" : (newlineNote(pair) ?? (pair.whitespaceHidden ? "Whitespace changes hidden" : null));
+  return [fileNote(file), text].filter(Boolean).join(" · ") || null;
 }

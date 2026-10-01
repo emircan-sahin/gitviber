@@ -19,7 +19,7 @@ import type { BranchChange } from "@/features/changes/BranchReview";
 import { CONTEXT } from "./editorOptions";
 import { usePair } from "./diffPairs";
 import { mediaKind } from "./MediaView";
-import { placeholderFor } from "./placeholders";
+import { diffNote, placeholderFor } from "./placeholders";
 import { UnifiedDiff } from "./UnifiedDiff";
 import { type FileMemo, fileMemo, scrolls } from "./stackedMemo";
 
@@ -320,7 +320,13 @@ function FileDiff({ sel, memo, revision, estimate, onOpen }: { sel: ListFile; me
   const special = placeholderFor(pair, false, sel.file);
   if (special) return <Message text={special} />;
   if (rows.length > LARGE && !large) return <Message text={`A large diff, ${rows.length} lines`} action={{ label: "Show", run: () => setLarge((memo.large = true)) }} />;
-  return <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} />;
+  const note = diffNote(pair, sel.file);
+  return (
+    <>
+      {note && <div className="px-4 pt-1.5 text-[11.5px] text-subtle">{note}</div>}
+      <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} />
+    </>
+  );
 }
 
 function Message({ text, action }: { text: string; action?: { label: string; run: () => void } }) {

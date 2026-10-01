@@ -33,7 +33,7 @@ import { CommitBar } from "./CommitBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { BranchChange } from "@/features/changes/BranchReview";
 import { AllChanges } from "./AllChanges";
-import { fileNote, newlineNote, placeholderFor } from "./placeholders";
+import { diffNote, placeholderFor } from "./placeholders";
 
 interface ViewerProps {
   tabs: Tab[];
@@ -134,8 +134,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   const special = pair && (media ? (isFile && !pair.modified.exists ? "This file no longer exists" : null) : placeholderFor(pair, isFile, file));
 
   const diff = !isFile && !media && !rendered;
-  const textNote = pair?.eolOnly ? "Only line endings changed" : pair && (newlineNote(pair) ?? (pair.whitespaceHidden ? "Whitespace changes hidden" : null));
-  const note = diff && pair && !special ? [fileNote(file), textNote].filter(Boolean).join(" · ") || null : null;
+  const note = diff && pair && !special ? diffNote(pair, file) : null;
   const code = !media && !rendered && !!pair && !special;
   const blame = useBlame(isFile && code && s.blame ? sel.path : null, pair, status?.head ?? null);
   // Text the file view can't turn back into the file's bytes stays read-only.
