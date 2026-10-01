@@ -25,6 +25,17 @@ test("a long run keeps its start and end only, and the prompt says how much is l
   assert.match(notesPrompt([n]), /\nl20\n⋯ 60 more lines ⋯\nl81\n/);
 });
 
+test("a long run rewritten in its middle turns outdated; a note saved before the hash was kept still follows its ends", () => {
+  const lines = Array.from({ length: 100 }, (_, i) => `l${i + 1}`);
+  const n = on(lines, 1, 100);
+  const edited = lines.map((l) => (l === "l50" ? "x" : l));
+  assert.equal(findNote(edited, n), null);
+  assert.equal(checkNotes([n], "src/a.ts", edited)[0].outdated, true);
+  const { hash, ...older } = n;
+  assert.equal(typeof hash, "string");
+  assert.equal(findNote(edited, older), 1);
+});
+
 test("lines inserted between two same-looking lines: the note stays on its own", () => {
   const n = on(FILE, 9);
   const edited = [...FILE.slice(0, 6), ...Array.from({ length: 30 }, (_, i) => `// ${i}`), ...FILE.slice(6)];
@@ -139,6 +150,6 @@ test("text for the terminal loses control characters and the line break that wou
 test("stored notes that aren't notes are dropped", () => {
   assert.equal(isNote(note()), true);
   assert.equal(isNote({ ...anchorAt(["a"], 1, 1), id: "1", path: "p", body: "" }), true);
-  for (const bad of [null, [], "x", { ...note(), code: "b" }, { ...note(), start: "2" }, { ...note(), end: 1 }, { ...note(), before: [1] }, { ...note(), id: undefined }])
+  for (const bad of [null, [], "x", { ...note(), code: "b" }, { ...note(), start: "2" }, { ...note(), end: 1 }, { ...note(), before: [1] }, { ...note(), hash: 1 }, { ...note(), id: undefined }])
     assert.equal(isNote(bad), false, JSON.stringify(bad));
 });

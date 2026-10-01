@@ -3,6 +3,7 @@
 // around them, not only their number, so it follows them as the agent edits around them, tells
 // them from a same-looking line elsewhere (`}`, `return null;`), and turns outdated once they change.
 // Pure, so it runs under `node --test`.
+import { hash } from "../hash.ts";
 import { basename } from "../path.ts";
 
 /** Where a note is: its lines, and what was around them when it was written. */
@@ -13,6 +14,8 @@ export interface Anchor {
   /** The lines as they were: all of them, or the first KEEP of a longer run (its last KEEP in `tail`). */
   code: string[];
   tail?: string[];
+  /** A longer run's lines all hashed: a rewrite between `code` and `tail` changes it. None: a short run, or a note from before this was kept. */
+  hash?: string;
   /** Up to CONTEXT lines above and below as they were (fewer at the file's start and end); none: a note from before these were kept. */
   before?: string[];
   after?: string[];
@@ -44,7 +47,8 @@ export function isNote(v: unknown): v is ReviewNote {
     Number.isInteger(n.end) &&
     (n.end as number) >= (n.start as number) &&
     lines(n.code) &&
-    [n.tail, n.before, n.after].every((x) => x === undefined || lines(x))
+    [n.tail, n.before, n.after].every((x) => x === undefined || lines(x)) &&
+    (n.hash === undefined || typeof n.hash === "string")
   );
 }
 
@@ -60,7 +64,7 @@ export function anchorAt(lines: string[], start: number, end: number): Anchor {
     start,
     end,
     code: long ? all.slice(0, KEEP) : all,
-    ...(long && { tail: all.slice(-KEEP) }),
+    ...(long && { tail: all.slice(-KEEP), hash: hash(all.join("\n")) }),
     before: lines.slice(Math.max(0, start - 1 - CONTEXT), start - 1),
     after: lines.slice(end, end + CONTEXT),
   };
@@ -89,7 +93,8 @@ export function findNote(lines: string[], a: Anchor, near?: Near): number | null
   const tail = a.tail ?? [];
   const expect = near?.expect ?? a.start;
   const same = (at: number, want: string[]) => at >= 1 && want.every((w, i) => lines[at - 1 + i] === w);
-  const own = (s: number) => s >= 1 && s + size - 1 <= lines.length && same(s, a.code) && same(s + size - tail.length, tail);
+  const own = (s: number) =>
+    s >= 1 && s + size - 1 <= lines.length && same(s, a.code) && same(s + size - tail.length, tail) && (!a.hash || hash(lines.slice(s - 1, s - 1 + size).join("\n")) === a.hash);
   const around = (s: number) => (!a.before || same(s - a.before.length, a.before)) && (!a.after || same(s + size, a.after));
   const closer = (best: number | null, s: number) => (best === null || Math.abs(s - expect) < Math.abs(best - expect) ? s : best);
   let full: number | null = null;

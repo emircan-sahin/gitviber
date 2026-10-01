@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type Whitespace } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
+import { hash } from "@/lib/hash";
 import { resetDefinitions } from "@/lib/editor/definitions";
 import { resetModels } from "@/lib/editor/monaco";
 import { type LinkSide, resetLinks } from "@/lib/links/linkHost";
@@ -176,9 +177,3 @@ export function useBlame(path: string | null, pair: DiffPair | null, head: strin
   return result && result.key === key ? result.blame : null;
 }
 
-/** FNV-1a: tells file versions apart for the blame cache. */
-function hash(text: string) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
-  return (h >>> 0).toString(36);
-}
