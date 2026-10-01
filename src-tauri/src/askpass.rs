@@ -404,7 +404,7 @@ mod unix {
             let _ = stream.set_nonblocking(false);
             let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
             if let Ok(reply) = serde_json::to_string(&Reply { answer }) {
-                let _ = (&stream).write_all(reply.as_bytes());
+                let _ = (&stream).write_all((reply + "\n").as_bytes());
             }
         }
 
@@ -466,13 +466,17 @@ mod unix {
         }
     }
 
-    /// The helper's side: one request, one reply, then the app closes the connection.
+    /// The helper's side: one request line, one reply line. Not until the connection closes:
+    /// on macOS an accepted socket is marked close-on-exec a step after accept(), and a child
+    /// spawned in between keeps it open after the app has answered.
     pub(super) fn ask(socket: &Path, request: &Request) -> Option<String> {
         let mut stream = UnixStream::connect(socket).ok()?;
         let mut line = serde_json::to_string(request).ok()?;
         line.push('\n');
         stream.write_all(line.as_bytes()).ok()?;
-        serde_json::from_reader::<_, Reply>(&stream).ok()?.answer
+        let mut reply = String::new();
+        BufReader::new(&stream).read_line(&mut reply).ok()?;
+        serde_json::from_str::<Reply>(&reply).ok()?.answer
     }
 
     #[cfg(test)]
@@ -571,6 +575,32 @@ mod unix {
         }
 
         #[test]
+        fn the_answer_does_not_wait_for_the_connection_to_close() {
+            let dir = std::env::temp_dir().join(format!("gitviber-reply-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let socket = dir.join("askpass");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let (tx, rx) = channel();
+            let at = socket.clone();
+            std::thread::spawn(move || tx.send(ask(&at, &req("t", "Password: "))));
+            let (stream, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(&stream).read_line(&mut line).unwrap();
+            let reply = serde_json::to_string(&Reply {
+                answer: Some("pw".into()),
+            })
+            .unwrap();
+            (&stream).write_all((reply + "\n").as_bytes()).unwrap();
+            // `stream` stays open, as in a child that inherited it.
+            assert_eq!(
+                rx.recv_timeout(Duration::from_secs(5)),
+                Ok(Some("pw".into()))
+            );
+            drop(stream);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        #[test]
         fn refuses_unknown_tokens_and_junk() {
             let (server, done) = server(Duration::from_secs(10), |_| Some(Some("x".into())));
             session(&server, "good");
@@ -580,7 +610,7 @@ mod unix {
             junk.write_all(b"not json\n").unwrap();
             let mut reply = String::new();
             junk.read_to_string(&mut reply).unwrap();
-            assert_eq!(reply, r#"{"answer":null}"#);
+            assert_eq!(reply, "{\"answer\":null}\n");
             assert!(
                 done.lock().unwrap().is_empty(),
                 "no prompt reached the page"

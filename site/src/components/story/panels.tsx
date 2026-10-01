@@ -144,11 +144,11 @@ export function TerminalPanel({ state, wrap }: { state: ReturnType<typeof termin
           {OTHER_WORKTREES.map((w, i) => (
             <div
               key={w.folder}
-              className={cx("flex h-7 items-center gap-2 rounded-sm px-2", i === state.menu && "bg-primary text-white")}
+              className={cx("flex h-7 items-center gap-2 rounded-sm px-2", i === state.menu && "bg-primary text-primary-fg")}
             >
               <FolderGit2 className="size-3.5 opacity-70" />
               <span className="truncate">{w.folder}</span>
-              <span className={cx("ml-auto truncate font-mono text-[11px]", i === state.menu ? "text-white/80" : "text-subtle")}>{w.branch}</span>
+              <span className={cx("ml-auto truncate font-mono text-[11px]", i === state.menu ? "text-primary-fg/90" : "text-subtle")}>{w.branch}</span>
             </div>
           ))}
           <div className="-mx-1 my-1 h-px bg-border" />

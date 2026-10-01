@@ -112,22 +112,24 @@ pub fn main_worktree(repo: &Path) -> Option<String> {
         .map(|w| w.path)
 }
 
-/// Checks `branch` out in a new worktree and returns its path, `<dir>/<branch>`; `dir` is
-/// `<parent>/<project>.worktrees` unless given. With `base`, `branch` is a new branch made
-/// there, tracking nothing like `create_branch`'s. Without, a branch only on a remote gets a
+/// Checks `branch` out in a new worktree and returns its path as listed, `<dir>/<branch>`;
+/// `dir` is `<parent>/<project>.worktrees` unless given. With `base`, `branch` is a new branch
+/// made there, tracking nothing like `create_branch`'s, or with `track` tracking `base`. Without, a branch only on a remote gets a
 /// local tracking branch (git's own DWIM for `worktree add`). The ignored files the main
 /// worktree's `.worktreeinclude` lists are copied in.
 pub fn add_worktree(
     repo: &Path,
     branch: &str,
     base: Option<&str>,
+    track: bool,
     dir: Option<&str>,
 ) -> Result<String, String> {
     let target = worktree_target(repo, branch, dir)?;
     match base {
         Some(base) => {
             validate_base(repo, base)?;
-            let args = ["worktree", "add", "--no-track", "-b", branch, &target, base];
+            let track = if track { "--track" } else { "--no-track" };
+            let args = ["worktree", "add", track, "-b", branch, &target, base];
             run(repo, &args)?
         }
         None => run(repo, &["worktree", "add", &target, branch])?,
@@ -137,7 +139,15 @@ pub fn add_worktree(
     if let Ok(files) = worktree_includes(&from) {
         crate::fs::copy_into(&from, Path::new(&target), &files);
     }
-    Ok(target)
+    // As `worktree list` spells it, which callers compare with: git resolves a folder picked
+    // through a symlink, yet keeps the letter case typed (canonicalize would take the disk's).
+    let listed = worktrees(repo)
+        .ok()
+        .into_iter()
+        .flatten()
+        .map(|w| w.path)
+        .find(|p| same_folder(Path::new(p), Path::new(&target)));
+    Ok(listed.unwrap_or(target))
 }
 
 /// How many files `add_worktree` copies in: links and paths out of the worktree aren't copied, so

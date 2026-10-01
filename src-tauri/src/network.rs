@@ -218,16 +218,16 @@ fn supervise(
         Kind::Network => (askpass::attach(&mut cmd, label, net.op()), None),
         Kind::Local { input } => (None, input),
     };
-    let mut child = cmd
-        .stdin(if input.is_some() {
+    let mut child = process::spawn(
+        cmd.stdin(if input.is_some() {
             Stdio::piped()
         } else {
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| Failed::from(format!("could not run {label}: {e}")))?;
+        .stderr(Stdio::piped()),
+    )
+    .map_err(|e| Failed::from(format!("could not run {label}: {e}")))?;
     let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
     let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let marker = settle_on.map(|p| (p, modified(p)));

@@ -137,7 +137,7 @@ fn pr_checkout_worktree_leaves_head_and_fast_forwards() {
 
     // Same repo: the real branch, tracking origin's.
     let wt = checkout_worktree(b, "origin", None, 1, "feat", true, Some(d), &net).unwrap();
-    assert_eq!(Path::new(&wt), dir.join("feat"));
+    assert_eq!(Path::new(&wt), dir.canonicalize().unwrap().join("feat"));
     assert_eq!(fs::read_to_string(dir.join("feat/f.txt")).unwrap(), "1\n");
     assert_eq!(status(b).unwrap().branch.as_deref(), Some("main"));
     let upstream = run_text(b, &["rev-parse", "--abbrev-ref", "feat@{upstream}"]).unwrap();
@@ -164,7 +164,7 @@ fn pr_checkout_worktree_leaves_head_and_fast_forwards() {
     assert!(run(b, &["config", "branch.pr/7.merge"]).is_err());
     fs::remove_dir(dir.join("pr-7")).unwrap();
     let wt = checkout_worktree(b, "origin", None, 7, "theirs", false, Some(d), &net).unwrap();
-    assert_eq!(Path::new(&wt), dir.join("pr-7"));
+    assert_eq!(Path::new(&wt), dir.canonicalize().unwrap().join("pr-7"));
     let merge = run_text(b, &["config", "branch.pr/7.merge"]).unwrap();
     assert_eq!(merge.trim(), "refs/pull/7/head");
     // A local commit that diverges from the PR is reported, not reset.

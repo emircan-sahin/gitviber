@@ -1,4 +1,4 @@
-import { GitCompareArrows, X } from "lucide-react";
+import { Files, GitCompareArrows, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Select } from "@/components/ui/select";
 import { Windowed } from "@/components/Windowed";
@@ -9,6 +9,8 @@ import { useListNav } from "@/lib/ui/useListNav";
 import { RefOptions } from "@/features/branches/BaseSelect";
 import { sumLines } from "./changeList";
 import { ReviewSummary, Row } from "./ChangeRows";
+import { useNotes } from "@/lib/review/noteStore";
+import { ReviewNotes } from "@/features/review/ReviewNotes";
 
 export type BranchChange = Selection & { kind: "branch" };
 
@@ -76,6 +78,7 @@ interface Props {
 /** Changes in place of the uncommitted list: what the branch changed since it left `base`, committed or not. */
 export function BranchReview({ base, data, branches, activeKey, onOpen, onHover, viewed, setViewed, onBase, onClose }: Props) {
   const nav = useListNav({ activeKey });
+  const hasNotes = useNotes().length > 0;
   const { rows, error, loading } = data;
   const { add, del } = sumLines(rows.map((r) => r.file));
   const reviewed = rows.filter(viewed).length;
@@ -92,6 +95,16 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
           {!listed && <option value={base}>{base ? shortRef(base) : "Pick a branch…"}</option>}
           <RefOptions branches={branches} />
         </Select>
+        {rows.length > 0 && (
+          <button
+            aria-label="Open all branch changes"
+            title="Open all branch changes"
+            onClick={() => onOpen({ kind: "changes", list: "branch" }, true)}
+            className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground"
+          >
+            <Files className="size-3" />
+          </button>
+        )}
         <button
           aria-label="Back to uncommitted changes"
           title="Back to uncommitted changes"
@@ -102,7 +115,7 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
         </button>
       </div>
       {rows.length > 0 && <ReviewSummary files={rows.length} add={add} del={del} reviewed={reviewed} />}
-      <div ref={nav.ref} onKeyDown={nav.onKeyDown} onFocus={nav.onFocus} data-list-nav="" className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
+      <div ref={nav.ref} onKeyDown={nav.onKeyDown} onFocus={nav.onFocus} data-list-nav="" role="tree" aria-label="Branch changes" className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto pb-2 outline-none">
         {empty ? (
           <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{empty}</div>
         ) : (
@@ -133,6 +146,7 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
             }}
           />
         )}
+        {hasNotes && <ReviewNotes changes={rows} onOpen={onOpen} />}
       </div>
     </div>
   );

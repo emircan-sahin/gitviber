@@ -12,6 +12,8 @@ import {
   THEMES,
   UI_SCALES,
   type UiFont,
+  UI_FONT_WEIGHTS,
+  type UiFontWeight,
   uiFontChoices,
   updateSettings,
   useSettings,
@@ -71,6 +73,14 @@ export function AppearanceSection() {
             value={s.uiFont}
             custom={s.customUiFont}
             onChange={(uiFont, customUiFont) => updateSettings({ uiFont: uiFont as UiFont, customUiFont })}
+          />
+        </Field>
+        <Field label="Interface font weight" hint="Labels set in medium or semibold stay a step bolder.">
+          <Segmented<string>
+            value={String(s.uiFontWeight)}
+            onChange={(v) => updateSettings({ uiFontWeight: Number(v) as UiFontWeight })}
+            options={Object.entries(UI_FONT_WEIGHTS).map(([value, label]) => ({ value, label }))}
+            variant="field"
           />
         </Field>
         <Field label="Interface scale" hint="Zooms the whole window. The code and terminal font sizes stay their own settings." commands={["view.zoomIn", "view.zoomOut", "view.zoomReset"]}>

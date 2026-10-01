@@ -2,11 +2,13 @@
 //! output streams to the UI as raw bytes (xterm.js decodes UTF-8 split across chunks).
 
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Duration, Instant};
 use tauri::ipc::{Channel, Response};
 
 /// Its own lock: a program that isn't reading blocks the write once the pty's buffer fills, and
@@ -14,11 +16,22 @@ use tauri::ipc::{Channel, Response};
 pub type Writer = Arc<Mutex<Box<dyn Write + Send>>>;
 
 /// Blocks until the program reads the input; once its shell is gone, the pty fails the write.
-pub fn write(writer: &Writer, data: &str) -> Result<(), String> {
+pub fn write(writer: &Writer, data: &[u8]) -> Result<(), String> {
     let mut w = writer.lock().unwrap_or_else(|e| e.into_inner());
-    w.write_all(data.as_bytes())
+    w.write_all(data)
         .and_then(|_| w.flush())
         .map_err(|e| e.to_string())
+}
+
+/// The bytes typed: text as UTF-8, or `binary`, xterm.js's char-per-byte string (mouse reports in
+/// the default encoding, where a coordinate past 95 is a byte past 127).
+pub fn input_bytes(data: &str, binary: bool) -> Cow<'_, [u8]> {
+    // ConPTY reads its input as UTF-8: a lone byte past 127 isn't one.
+    if binary && !cfg!(windows) {
+        Cow::Owned(data.chars().map(|c| c as u8).collect())
+    } else {
+        Cow::Borrowed(data.as_bytes())
+    }
 }
 
 /// How a shell ended: its exit code, or the signal that ended it ("Segmentation fault: 11").
@@ -35,11 +48,87 @@ pub struct Spawned {
     integrated: bool,
 }
 
+/// Output sent to the page that xterm.js hasn't parsed yet, past which the reader stops reading.
+/// The page parses on its one thread for every pane: unthrottled, a flood (`cat` of a huge file,
+/// `yes`) queued tens of MB, stalled every pane, and past 50 MB xterm.js drops data. Stopped, the
+/// pty's own buffer fills and the program waits on its write. At 512 KiB no more than that is
+/// drawn ahead of a ⌃C's effect, and eight 64 KiB reads fit before the reader waits.
+const HIGH_WATER: usize = 512 * 1024;
+/// Reading resumes below this, not at the first ack, so a flood moves in large steps.
+const LOW_WATER: usize = HIGH_WATER / 2;
+/// How long the reader waits for acks before it reads on regardless, until the page catches up.
+/// A hidden window's WebKit throttles xterm.js's parsing: waiting on it froze an agent working in
+/// the background (Node writes to a tty synchronously). A page in view parses the 512 KiB it holds
+/// in far less, so only a page that isn't running gets past it.
+const ACK_WAIT: Duration = Duration::from_secs(1);
+
+#[derive(Default)]
+struct Flow {
+    state: Mutex<FlowState>,
+    resumed: Condvar,
+}
+
+#[derive(Default)]
+struct FlowState {
+    unacked: usize,
+    closed: bool,
+    /// The page let ACK_WAIT pass without catching up: output flows unchecked until it does.
+    unheard: bool,
+}
+
+impl Flow {
+    /// Counts `n` bytes sent; past the high water, waits for the page's acks (or the session's
+    /// end) for ACK_WAIT at most.
+    fn sent(&self, n: usize) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.unacked += n;
+        if s.unacked < HIGH_WATER || s.unheard {
+            return;
+        }
+        let until = Instant::now() + ACK_WAIT;
+        while s.unacked > LOW_WATER && !s.closed {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                s.unheard = true;
+                return;
+            }
+            s = match self.resumed.wait_timeout(s, left) {
+                Ok((s, _)) => s,
+                Err(e) => e.into_inner().0,
+            };
+        }
+    }
+
+    /// `n` bytes the page has parsed.
+    fn ack(&self, n: usize) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.unacked = s.unacked.saturating_sub(n);
+        if s.unacked <= LOW_WATER {
+            s.unheard = false;
+            self.resumed.notify_all();
+        }
+    }
+
+    /// Lets a waiting reader go, to see the pty close.
+    fn close(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
+        self.resumed.notify_all();
+    }
+}
+
 struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Writer,
     killer: Box<dyn ChildKiller + Send + Sync>,
     shell: Option<u32>,
+    flow: Arc<Flow>,
+}
+
+impl Session {
+    fn kill(mut self) {
+        let _ = self.killer.kill();
+        self.flow.close();
+    }
 }
 
 #[derive(Default)]
@@ -93,8 +182,8 @@ impl Ptys {
             );
             let _ = output.send(Response::new(note.into_bytes()));
         }
-        let pair = native_pty_system()
-            .openpty(size(cols, rows))
+        // Like a pipe's, the pty's fds are marked close-on-exec a step after they're made.
+        let pair = crate::process::spawning(|| native_pty_system().openpty(size(cols, rows)))
             .map_err(|e| e.to_string())?;
         #[cfg(unix)]
         let inject = integration.and_then(|dir| {
@@ -126,12 +215,14 @@ impl Ptys {
         for (key, value) in inject.iter().flat_map(|i| &i.env) {
             cmd.env(key, value);
         }
-        let mut child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        let mut child = crate::process::spawning(|| pair.slave.spawn_command(cmd))
+            .map_err(|e| e.to_string())?;
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
         let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let flow = Arc::new(Flow::default());
         self.sessions.lock().unwrap().insert(
             id,
             Session {
@@ -139,6 +230,7 @@ impl Ptys {
                 writer: Arc::new(Mutex::new(writer)),
                 killer: child.clone_killer(),
                 shell: child.process_id(),
+                flow: flow.clone(),
             },
         );
 
@@ -152,6 +244,7 @@ impl Ptys {
                         if output.send(Response::new(buf[..n].to_vec())).is_err() {
                             break;
                         }
+                        flow.sent(n);
                     }
                 }
             }
@@ -184,6 +277,14 @@ impl Ptys {
         self.with(id, |s| Ok(s.writer.clone()))
     }
 
+    /// `bytes` of a session's output that xterm.js has parsed.
+    pub fn ack(&self, id: u32, bytes: usize) {
+        let _ = self.with(id, |s| {
+            s.flow.ack(bytes);
+            Ok(())
+        });
+    }
+
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
         self.with(id, |s| {
             s.master.resize(size(cols, rows)).map_err(|e| e.to_string())
@@ -193,8 +294,8 @@ impl Ptys {
     /// Hangs up the shell. Its reader thread then sees EOF and reports the exit.
     pub fn kill(&self, id: u32) {
         let session = self.sessions.lock().unwrap().remove(&id);
-        if let Some(mut s) = session {
-            let _ = s.killer.kill();
+        if let Some(s) = session {
+            s.kill();
         }
     }
 
@@ -231,8 +332,8 @@ impl Ptys {
             .drain()
             .map(|(_, s)| s)
             .collect();
-        for mut s in sessions {
-            let _ = s.killer.kill();
+        for s in sessions {
+            s.kill();
         }
     }
 }
@@ -275,7 +376,59 @@ fn process_cwd(_pid: u32) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::start_dir;
+    use super::{input_bytes, start_dir, Flow, ACK_WAIT, HIGH_WATER, LOW_WATER};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    /// Runs `sent(n)` on a reader thread; the receiver hears when it returns.
+    fn reader(flow: &Arc<Flow>, n: usize) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel();
+        let flow = flow.clone();
+        std::thread::spawn(move || {
+            flow.sent(n);
+            let _ = tx.send(());
+        });
+        rx
+    }
+
+    const WAIT: Duration = Duration::from_millis(100);
+
+    #[test]
+    fn the_reader_waits_past_the_high_water_until_acks_bring_it_below_the_low() {
+        let flow = Arc::new(Flow::default());
+        reader(&flow, HIGH_WATER - 1).recv_timeout(WAIT).unwrap();
+        let paused = reader(&flow, 1);
+        assert!(paused.recv_timeout(WAIT).is_err());
+        // Acked, but still above the low water.
+        flow.ack(HIGH_WATER - LOW_WATER - 1);
+        assert!(paused.recv_timeout(WAIT).is_err());
+        flow.ack(1);
+        paused.recv_timeout(WAIT).unwrap();
+    }
+
+    #[test]
+    fn a_page_that_stops_acking_holds_the_reader_up_a_second_at_most() {
+        let flow = Arc::new(Flow::default());
+        let paused = reader(&flow, HIGH_WATER);
+        assert!(paused.recv_timeout(WAIT).is_err());
+        paused.recv_timeout(ACK_WAIT * 2).unwrap();
+        // Then reads on without waiting, until the page catches up.
+        reader(&flow, HIGH_WATER).recv_timeout(WAIT).unwrap();
+        flow.ack(2 * HIGH_WATER - LOW_WATER);
+        assert!(reader(&flow, HIGH_WATER).recv_timeout(WAIT).is_err());
+    }
+
+    #[test]
+    fn a_closed_session_lets_its_waiting_reader_go() {
+        let flow = Arc::new(Flow::default());
+        let paused = reader(&flow, HIGH_WATER);
+        assert!(paused.recv_timeout(WAIT).is_err());
+        flow.close();
+        paused.recv_timeout(WAIT).unwrap();
+        // An ack for more than was counted (output sent before the count began) doesn't wrap.
+        flow.ack(usize::MAX);
+        reader(&flow, 1).recv_timeout(WAIT).unwrap();
+    }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
@@ -283,6 +436,14 @@ mod tests {
         let here = std::env::current_dir().unwrap().canonicalize().unwrap();
         let read = super::process_cwd(std::process::id()).unwrap();
         assert_eq!(read.canonicalize().unwrap(), here);
+    }
+
+    #[test]
+    fn binary_input_is_a_byte_a_char_and_text_is_utf8() {
+        // A click at column 200, row 1, in X10's encoding: 32 + 200 is past 127.
+        #[cfg(not(windows))]
+        assert_eq!(&*input_bytes("\x1b[M \u{e8}!", true), b"\x1b[M \xe8!");
+        assert_eq!(&*input_bytes("é", false), "é".as_bytes());
     }
 
     #[test]

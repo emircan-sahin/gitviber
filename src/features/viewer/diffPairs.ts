@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, type Blame, type DiffKind, type DiffPair, type DiffRow, errorMessage, type Whitespace } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
+import { hash } from "@/lib/hash";
 import { resetDefinitions } from "@/lib/editor/definitions";
 import { resetModels } from "@/lib/editor/monaco";
 import { type LinkSide, resetLinks } from "@/lib/links/linkHost";
@@ -8,8 +9,8 @@ import { type GitHubSide, repoOfCommitUrl } from "@/lib/github/permalink";
 import { type Selection, selectionPath } from "@/lib/repo/selection";
 import { diffWhitespace, getSettings } from "@/lib/settings";
 
-/** Tabs whose content is a diff of one file (everything except PR and issue overviews). */
-export type FileSelection = Exclude<Selection, { kind: "pull" | "issue" }>;
+/** Tabs whose content is a diff of one file (everything except PR and issue overviews, and whole lists). */
+export type FileSelection = Exclude<Selection, { kind: "pull" | "issue" | "changes" }>;
 
 export function pairArgs(sel: FileSelection, revision: number, whitespace: Whitespace | null = null) {
   const kind: DiffKind =
@@ -89,7 +90,7 @@ function remember(id: string, rev: number, pair: DiffPair, gen: number) {
 
 /** Loads a diff in the background, so opening it next is instant. */
 export function prefetchSelection(sel: Selection, revision: number) {
-  if (sel.kind === "pull" || sel.kind === "issue") return;
+  if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes") return;
   const { kind, path, oldPath, sha, base, whitespace, id, rev } = pairArgs(sel, revision, diffWhitespace(getSettings()));
   if (cachedPair(id, rev)) return;
   const gen = generation;
@@ -109,7 +110,8 @@ const sameText = (a: DiffPair["original"], b: DiffPair["original"]) =>
 const sameRows = (a: DiffRow[], b: DiffRow[]) =>
   a.length === b.length && a.every((r, i) => r.k === b[i].k && r.o === b[i].o && r.n === b[i].n && String(r.e) === String(b[i].e));
 
-export function usePair(sel: FileSelection, revision: number, ws: Whitespace | null) {
+/** `keep: false`: one of many on show (the stacked diff), which reads the recent diffs but doesn't push the open tab's out. */
+export function usePair(sel: FileSelection, revision: number, ws: Whitespace | null, keep = true) {
   const { kind, path, oldPath, sha, base, whitespace, id, rev, key } = pairArgs(sel, revision, ws);
   const [pair, setPair] = useState<DiffPair | null>(() => cachedPair(id, rev) ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -133,7 +135,7 @@ export function usePair(sel: FileSelection, revision: number, ws: Whitespace | n
     api
       .diffPair(kind, path, oldPath, sha, base, whitespace)
       .then((p) => {
-        const q = remember(id, rev, p, gen);
+        const q = keep ? remember(id, rev, p, gen) : p;
         if (seq > applied.current) {
           applied.current = seq;
           setPair((prev) => (samePair(prev, q) ? prev : q));
@@ -175,9 +177,3 @@ export function useBlame(path: string | null, pair: DiffPair | null, head: strin
   return result && result.key === key ? result.blame : null;
 }
 
-/** FNV-1a: tells file versions apart for the blame cache. */
-function hash(text: string) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193);
-  return (h >>> 0).toString(36);
-}

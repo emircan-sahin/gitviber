@@ -28,7 +28,7 @@ function AgentPicker({ value, onChange }: { value: Preset | "custom"; onChange: 
       {presets
         .filter((k) => !SUGGEST_PRESETS[k].other)
         .map((k) => (
-          <button key={k} onClick={() => onChange(k)} className={segmentClass("field", k === value)}>
+          <button key={k} aria-pressed={k === value} onClick={() => onChange(k)} className={segmentClass("field", k === value)}>
             {SUGGEST_PRESETS[k].label}
           </button>
         ))}
@@ -51,7 +51,7 @@ function AgentPicker({ value, onChange }: { value: Preset | "custom"; onChange: 
           </DropdownMenuRadioGroup>
         </DropdownMenuContent>
       </DropdownMenu>
-      <button onClick={() => onChange("custom")} className={segmentClass("field", value === "custom")}>
+      <button aria-pressed={value === "custom"} onClick={() => onChange("custom")} className={segmentClass("field", value === "custom")}>
         Custom
       </button>
     </div>

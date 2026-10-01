@@ -1,6 +1,6 @@
 import { ask } from "@/lib/app/ask";
 import { ArrowLeftToLine, ArrowRightToLine, Check, Minus, Plus, Undo2 } from "lucide-react";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Windowed } from "@/components/Windowed";
 import { api, type Commit, type FileChange, type RepoStatus } from "@/lib/api";
@@ -23,6 +23,8 @@ import { AllCaughtUp, collapsedSections, NestedRow, ReviewSummary, Row, Section,
 import { CommitBox } from "./CommitBox";
 import { RowAction } from "@/components/RowAction";
 import { primaryKey } from "@/lib/platform";
+import { useNotes } from "@/lib/review/noteStore";
+import { ReviewNotes } from "@/features/review/ReviewNotes";
 
 interface Props {
   status: RepoStatus;
@@ -212,6 +214,21 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     "review.toggleViewed": active && active.kind !== "staged" && targets(active).length > 1 ? () => setViewed(targets(active), !viewed(active)) : undefined,
   });
 
+  // A row the keyboard was on that left the list (staged, discarded) hands focus to the row now in its place, as
+  // in VS Code; when the open tab follows the file into the other list, its row takes focus from there.
+  const list = useRef<HTMLDivElement>(null);
+  const lostFocus = useRef<string | null>(null);
+  const shown = useRef(all);
+  useLayoutEffect(() => {
+    const lost = lostFocus.current;
+    const before = shown.current;
+    lostFocus.current = null;
+    shown.current = all;
+    if (lost === null || index.has(lost) || !all.length) return;
+    const to = all[Math.min(Math.max(before.findIndex((c) => selectionKey(c) === lost), 0), all.length - 1)];
+    list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(selectionKey(to))}"]`)?.focus();
+  });
+
   // One tab stop for the whole list (the active row), so Tab reaches its actions, not every row.
   const tabStop = active ? activeKey : all[0] && selectionKey(all[0]);
 
@@ -272,6 +289,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         onOpen={onOpen}
         onHover={onHover}
         onToggleViewed={() => setViewed(rows, !isViewed)}
+        lostFocus={lostFocus}
         menu={() => (
           <ChangeRowMenu
             sel={sel}
@@ -299,9 +317,13 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   };
 
   /** A section's rows; with thousands, only those near the screen (and the open and tab-stop rows). */
-  const rowsOf = (kind: Change["kind"], list: FileChange[], render: (file: FileChange) => React.ReactNode) => {
+  const rowsOf = (kind: Change["kind"], title: string, list: FileChange[], render: (file: FileChange) => React.ReactNode) => {
     const keep = [activeKey, tabStop].map((k) => list.findIndex((file) => selectionKey({ kind, file }) === k));
-    return <Windowed count={list.length} height={ROW_HEIGHT} keep={keep} render={(i) => render(list[i])} />;
+    return (
+      <div role="tree" aria-label={title} aria-multiselectable>
+        <Windowed count={list.length} height={ROW_HEIGHT} keep={keep} render={(i) => render(list[i])} />
+      </div>
+    );
   };
 
   const conflicts = status.conflicted.length > 0 && (
@@ -312,7 +334,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
       pinned={!!pickedConflicts}
       action={pickedConflicts && <SectionBtn onClick={() => markResolved(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
     >
-      {rowsOf("conflict", status.conflicted, (file) =>
+      {rowsOf("conflict", "Conflicts", status.conflicted, (file) =>
         row({ kind: "conflict", file }, (rows) => (
           <>
             <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => markResolved(rows)}>
@@ -338,11 +360,14 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         pickedStaged ? (
           <SectionBtn onClick={() => unstage(pickedStaged)}>Unstage {files(pickedStaged.length)}</SectionBtn>
         ) : (
-          <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
+          <>
+            <SectionBtn onClick={() => onOpen({ kind: "changes", list: "staged" }, true)}>Open All</SectionBtn>
+            <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
+          </>
         )
       }
     >
-      {rowsOf("staged", status.staged, (file) =>
+      {rowsOf("staged", "Staged", status.staged, (file) =>
         row({ kind: "staged", file }, (rows) => (
           <RowAction label={rows.length > 1 ? `Unstage ${files(rows.length)}` : "Unstage"} onClick={() => unstage(rows)}>
             <Minus />
@@ -364,6 +389,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
           </>
         ) : (
           <>
+            <SectionBtn onClick={() => onOpen({ kind: "changes", list: "unstaged" }, true)}>Open All</SectionBtn>
             {/* Leaves untracked files alone; deleting one is a per-file choice. */}
             <SectionBtn onClick={() => discard(discardable)}>{filtering ? `Discard ${discardable.length} shown…` : "Discard"}</SectionBtn>
             {viewedPaths.length > 0 && (
@@ -376,7 +402,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         )
       }
     >
-      {rowsOf("unstaged", status.unstaged, (file) =>
+      {rowsOf("unstaged", "Changes", status.unstaged, (file) =>
         file.nested ? (
           <NestedRow key={file.path} file={file} />
         ) : (
@@ -396,6 +422,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
       )}
     </Section>
   );
+  const reviewNotes = useNotes().length > 0 && <ReviewNotes changes={all} onOpen={onOpen} />;
   const stashList = (stashes.length > 0 || total.length > 0) && (
     <Section title="Stashes" count={stashes.length} action={total.length > 0 && !status.operation && <SectionBtn onClick={() => setStashing([])}>Stash…</SectionBtn>}>
       <StashList stashes={stashes} activeKey={activeKey} onOpen={onOpen} onHover={onHover} refresh={refresh} />
@@ -411,6 +438,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     ["Conflicts", conflicts],
     ["Staged", staged],
     ["Changes", changes],
+    ["Review Notes", reviewNotes],
     ["Stashes", stashList],
     ["Submodules", submoduleList],
   ] as const).filter(([, s]) => s);
@@ -422,6 +450,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
       {status.operation?.kind === "bisect" ? <BisectBar refresh={refresh} /> : status.operation && <OperationBanner status={full} refresh={refresh} />}
       {total.length > 0 && <ReviewSummary files={total.length} add={add} del={del} reviewed={reviewed} />}
       <div
+        ref={list}
         onKeyDown={onListKey}
         // React focus events bubble out of portals too, so a row's open context menu still counts as the list.
         onFocus={() => setListFocused(true)}

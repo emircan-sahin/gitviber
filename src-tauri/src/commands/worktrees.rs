@@ -1,10 +1,10 @@
 use crate::git;
-use crate::state::{in_repo, AppState, Res};
+use crate::state::{in_repo, read_repo, AppState, Res};
 use tauri::State;
 
 #[tauri::command]
 pub async fn worktrees(state: State<'_, AppState>) -> Res<Vec<git::Worktree>> {
-    in_repo(&state, move |r| git::worktrees(r).map(git::with_live_locks)).await
+    read_repo(&state, move |r| git::worktrees(r).map(git::with_live_locks)).await
 }
 
 #[tauri::command]
@@ -12,10 +12,11 @@ pub async fn add_worktree(
     state: State<'_, AppState>,
     branch: String,
     base: Option<String>,
+    track: bool,
     dir: Option<String>,
 ) -> Res<String> {
     in_repo(&state, move |r| {
-        git::add_worktree(r, &branch, base.as_deref(), dir.as_deref())
+        git::add_worktree(r, &branch, base.as_deref(), track, dir.as_deref())
     })
     .await
 }

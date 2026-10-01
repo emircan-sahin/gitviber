@@ -1,4 +1,4 @@
-import { History, ListTree, X } from "lucide-react";
+import { Files, History, ListTree, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
@@ -6,7 +6,7 @@ import { useShortcut } from "@/lib/commands/keybindings";
 import { focusMovedTab, focusTab, isMenuKey, openRowMenu, tabMove } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { useEdited } from "@/lib/editor/edits";
-import { basename } from "@/lib/path";
+import { basename, distinctFolders } from "@/lib/path";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { IssueStateIcon, PullStateIcon } from "@/features/github/shared/StateBadges";
 import { FileIcon } from "@/components/FileIcon";
@@ -25,7 +25,7 @@ interface Props {
 }
 
 function tabLabel(sel: Selection) {
-  if (sel.kind === "pull" || sel.kind === "issue") return selectionPath(sel);
+  if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes") return selectionPath(sel);
   return basename(selectionPath(sel));
 }
 
@@ -67,6 +67,9 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
     e.preventDefault();
   };
 
+  // As VS Code: two open files of one name show their folders too.
+  const folders = distinctFolders(tabs.filter((t) => t.sel.kind !== "pull" && t.sel.kind !== "issue").map((t) => selectionPath(t.sel)));
+
   return (
     <div
       ref={strip}
@@ -84,6 +87,7 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
             tab={t}
             active={t.key === active?.key}
             tabStop={active ? t.key === active.key : i === 0}
+            folder={folders.get(selectionPath(t.sel))}
             lostFocus={lostFocus}
             onActivate={onActivate}
             onClose={onClose}
@@ -103,6 +107,7 @@ function TabItem({
   tab: t,
   active: isActive,
   tabStop,
+  folder,
   lostFocus,
   onActivate,
   onClose,
@@ -115,6 +120,8 @@ function TabItem({
   tab: Tab;
   active: boolean;
   tabStop: boolean;
+  /** Its last folders, shown when another open tab has the same name. */
+  folder?: string;
   lostFocus: RefObject<boolean>;
   onActivate: (key: string) => void;
   onClose: (key: string) => void;
@@ -147,6 +154,7 @@ function TabItem({
       }}
       role="tab"
       aria-selected={isActive}
+      title={selectionPath(t.sel)}
       tabIndex={tabStop ? 0 : -1}
       onClick={guard(() => onActivate(t.key))}
       onDoubleClick={() => onPin(t.key)}
@@ -163,10 +171,13 @@ function TabItem({
         <PullStateIcon pull={t.sel.pull} />
       ) : t.sel.kind === "issue" ? (
         <IssueStateIcon issue={t.sel.issue} />
+      ) : t.sel.kind === "changes" ? (
+        <Files className="size-4 shrink-0 text-subtle" />
       ) : (
         <FileIcon path={selectionPath(t.sel)} />
       )}
       <span className={cn("truncate", t.preview && "italic")}>{tabLabel(t.sel)}</span>
+      {folder && <span className="min-w-0 shrink-[2] truncate text-[11px] text-subtle">{folder}</span>}
       <TabKind sel={t.sel} />
       <button
         aria-label={unsaved ? "Close tab (unsaved changes)" : "Close tab"}
@@ -188,7 +199,7 @@ function TabItem({
       </button>
     </div>
   );
-  const file = t.sel.kind !== "pull" && t.sel.kind !== "issue";
+  const file = t.sel.kind !== "pull" && t.sel.kind !== "issue" && t.sel.kind !== "changes";
   // As VS Code's tab menu, plus to the left.
   const group = (which: TabGroup, label: string, shortcut?: string) => (
     <ContextMenuItem disabled={!closes(which)} onSelect={() => onCloseGroup(which)}>

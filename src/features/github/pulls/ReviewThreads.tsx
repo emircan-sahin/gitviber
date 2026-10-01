@@ -2,16 +2,13 @@
 // a reply box, and "Add Comment on Line" in the context menu for a new one. The threads live in
 // Monaco view zones, each a small React root sized to what it holds.
 import { useCallback, useMemo, useState } from "react";
-import { createRoot } from "react-dom/client";
-import { Button } from "@/components/ui/button";
-import { type DiffRow, errorMessage, github, repoOf, type ReviewComment } from "@/lib/api";
+import { type DiffRow, github, repoOf, type ReviewComment } from "@/lib/api";
 import { useGitHubData } from "@/lib/github/githubCache";
-import { monaco } from "@/lib/editor/monaco";
-import { toast } from "@/lib/app/toast";
+import type { monaco } from "@/lib/editor/monaco";
 import { isoToUnix, relativeTime } from "@/lib/format";
 import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
-import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
-import { IS_MAC } from "@/lib/platform";
+import { Composer } from "@/features/review/Composer";
+import { newLineBefore, zoneWidget } from "@/features/review/zones";
 
 type Side = "LEFT" | "RIGHT";
 
@@ -57,81 +54,22 @@ interface Spot {
 /** The threads of `get()` in `diff`; `update` redraws them (new comments, another file, the other layout). */
 export function followReviewThreads(diff: monaco.editor.IStandaloneDiffEditor, get: () => Shown | null) {
   const editors = { original: diff.getOriginalEditor(), modified: diff.getModifiedEditor() };
-  let zones: { editor: "original" | "modified"; id: string; dispose: () => void }[] = [];
+  let zones: (() => void)[] = [];
   // A new comment being written, where.
   let draft: { side: Side; line: number } | null = null;
 
   const clear = () => {
-    zones.forEach((z) => z.dispose());
+    zones.forEach((dispose) => dispose());
     zones = [];
   };
 
-  // Unified view has no old side: a comment on a removed line goes under the new line before it.
   const spot = (side: Side, line: number, s: Shown): Spot => {
     if (side === "RIGHT") return { editor: "modified", after: line };
     if (!s.unified) return { editor: "original", after: line };
-    let before = 0;
-    for (const r of s.rows) {
-      if (r.o === line) return { editor: "modified", after: r.k === 0 ? r.n : before };
-      if (r.n) before = r.n;
-    }
-    return { editor: "modified", after: before };
+    return { editor: "modified", after: newLineBefore(s.rows, line) };
   };
 
-  // As Monaco's own zone widgets: the view zone only makes room (its layer is under the text,
-  // out of reach of clicks), and the thread is an overlay widget kept on top of it.
-  const add = (where: Spot, content: React.ReactNode) => {
-    const code = editors[where.editor];
-    const node = document.createElement("div");
-    node.style.position = "absolute";
-    // Keys typed in a comment are the comment's, not the editor's (⌘ chords still reach the app).
-    node.addEventListener("keydown", (e) => !e.metaKey && !e.ctrlKey && e.stopPropagation());
-    const root = createRoot(node);
-    root.render(content);
-    const zone: monaco.editor.IViewZone = {
-      afterLineNumber: where.after,
-      // Right under its line, before the diff's own zones there (removed lines, which default to
-      // 10000): after them, unified view's old line numbers came loose from their lines.
-      ordinal: 0,
-      heightInPx: 60,
-      domNode: document.createElement("div"),
-      onDomNodeTop: (top) => {
-        node.style.top = `${top}px`;
-      },
-    };
-    let id = "";
-    code.changeViewZones((a) => {
-      id = a.addZone(zone);
-    });
-    const widget: monaco.editor.IOverlayWidget = { getId: () => `gitviber.review.${id}`, getDomNode: () => node, getPosition: () => null };
-    code.addOverlayWidget(widget);
-    const place = () => {
-      const info = code.getLayoutInfo();
-      node.style.left = `${info.contentLeft}px`;
-      node.style.width = `${Math.max(0, info.contentWidth - info.verticalScrollbarWidth)}px`;
-    };
-    place();
-    const layout = code.onDidLayoutChange(place);
-    // The room it takes follows what it holds, as that loads and grows.
-    const observer = new ResizeObserver(() => {
-      const height = node.offsetHeight;
-      if (!height || Math.abs(height - (zone.heightInPx ?? 0)) < 1) return;
-      zone.heightInPx = height;
-      code.changeViewZones((a) => a.layoutZone(id));
-    });
-    observer.observe(node);
-    zones.push({
-      editor: where.editor,
-      id,
-      dispose: () => {
-        observer.disconnect();
-        layout.dispose();
-        root.unmount();
-        code.removeOverlayWidget(widget);
-        code.changeViewZones((a) => a.removeZone(id));
-      },
-    });
-  };
+  const add = (where: Spot, content: React.ReactNode) => void zones.push(zoneWidget(editors[where.editor], where.after, content));
 
   const update = () => {
     clear();
@@ -221,50 +159,4 @@ function Thread({ review, thread }: { review: Review; thread: ReviewComment[] })
       </div>
     </div>
   );
-}
-
-function Composer({ pull, label, onSubmit, onCancel, bare = false }: { pull: Review["pull"]; label: string; onSubmit: (body: string) => Promise<void>; onCancel: () => void; bare?: boolean }) {
-  const [body, setBody] = useState("");
-  const [busy, setBusy] = useState(false);
-  const submit = async () => {
-    if (!body.trim() || busy) return;
-    setBusy(true);
-    try {
-      await onSubmit(body);
-      setBody("");
-      onCancel();
-    } catch (e) {
-      toast("error", "Could not post the comment", errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-  const box = (
-    <div className="flex flex-col gap-2">
-      <MarkdownInput
-        pull={pull}
-        autoFocus
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            e.stopPropagation();
-            void submit();
-          } else if (e.key === "Escape") onCancel();
-        }}
-        rows={3}
-        placeholder={`${label}… (Markdown; ${IS_MAC ? "⌘↵" : "Ctrl+Enter"} to post)`}
-      />
-      <div className="flex justify-end gap-2">
-        <Button size="sm" variant="secondary" onClick={onCancel}>
-          Cancel
-        </Button>
-        <Button size="sm" disabled={!body.trim() || busy} onClick={() => void submit()}>
-          {busy ? "Posting…" : "Comment"}
-        </Button>
-      </div>
-    </div>
-  );
-  return bare ? box : <div className="mx-3 my-1.5 rounded-md border border-border-strong bg-panel p-2 font-sans">{box}</div>;
 }

@@ -37,7 +37,7 @@ export const GroupTab = memo(function GroupTab({ group: g, active, here, branch,
     <div
       role="tab"
       aria-selected={active}
-      aria-label={branch ? `${label} · ${branch}` : label}
+      aria-label={[label, branch, g.panes.length > 1 && `${g.panes.length} panes`].filter(Boolean).join(" · ")}
       tabIndex={active ? 0 : -1}
       // A double-click renames: its second click leaves focus for the name field.
       onClick={(e) => activateGroup(g.id, e.detail < 2)}

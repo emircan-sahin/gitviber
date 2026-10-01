@@ -10,6 +10,21 @@ export function parseMark(data: string): { kind: "A" | "B" | "C" | "D"; exit?: n
   return kind === "D" && arg !== undefined && /^\d+$/.test(arg) ? { kind, exit: Number(arg) } : { kind };
 }
 
+/**
+ * What a full-screen program turns off on its way out: ?1000l ends any mouse tracking in xterm.js
+ * (9, 1000, 1002 and 1003 alike), ?1006l puts reports back in the default encoding (from SGR and SGR
+ * pixels), ?1004l ends focus reports, which the shell would read as typed ^[[I and ^[[O.
+ */
+const MODES_OFF = "\x1b[?1000l\x1b[?1006l\x1b[?1004l";
+
+/**
+ * A prompt (A) in the history's buffer while the mouse is still reported: the program that asked
+ * for it died without turning it off (a crash, `kill -9`), and a drag at the prompt would select
+ * nothing. A shell under a full-screen program (tmux) prompts in the other buffer. Focus reports and
+ * kitty keyboard flags on their own aren't a sign: fish turns them on for its own prompt.
+ */
+export const mouseLeftOn = (kind: string, buffer: "normal" | "alternate", mouse: string) => kind === "A" && buffer === "normal" && mouse !== "none";
+
 /** Commands kept marked: each marker is updated as lines scroll off or get cleared. */
 const MAX_COMMANDS = 300;
 
@@ -45,6 +60,8 @@ export class CommandMarks {
     this.onPrompt = onPrompt;
     term.parser.registerOscHandler(133, (data) => {
       const mark = parseMark(data);
+      // To xterm, not the shell: as if the program had turned them off.
+      if (mark && mouseLeftOn(mark.kind, term.buffer.active.type, term.modes.mouseTrackingMode)) term.write(MODES_OFF);
       if (mark) this.on(mark.kind, mark.exit);
       return true;
     });

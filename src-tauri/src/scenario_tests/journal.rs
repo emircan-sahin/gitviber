@@ -1,6 +1,7 @@
 //! Undo and redo.
 
 use super::*;
+use crate::journal::EntryView;
 
 #[test]
 fn undo_and_redo_a_commit() {
@@ -53,6 +54,7 @@ fn undo_and_redo_a_commit() {
     let v = j.view(&r);
     assert!(v.redo.is_empty());
     assert_eq!(v.undo.len(), 2);
+    assert!(v.undo.iter().all(|e| e.switch_to.is_none()));
 }
 
 #[test]
@@ -132,11 +134,40 @@ fn undo_create_and_switch_branch() {
         switch_branch(r, "feat", true)
     })
     .unwrap();
-    step(&j, &r, false).unwrap();
+    // Undo and redo name the branch they check out, so ⌘Z never switches silently.
+    let switch_to = |v: Vec<EntryView>| v[0].switch_to.clone();
+    assert_eq!(switch_to(j.view(&r).undo).as_deref(), Some("main"));
+    let undone = j.step(&r, false, None, &Mutex::new(())).unwrap();
+    assert_eq!(undone.switch_to.as_deref(), Some("main"));
     assert_eq!(on_branch(&r), "main");
     assert!(!exists(&r, "feat"));
-    step(&j, &r, true).unwrap();
+    assert_eq!(switch_to(j.view(&r).redo).as_deref(), Some("feat"));
+    let redone = j.step(&r, true, None, &Mutex::new(())).unwrap();
+    assert_eq!(redone.switch_to.as_deref(), Some("feat"));
     assert_eq!(on_branch(&r), "feat");
+}
+
+/// On a detached HEAD, undoing a commit resets HEAD where it is: nothing to say it switches.
+#[test]
+fn undo_a_commit_on_a_detached_head_does_not_switch() {
+    let sb = Sandbox::new("j-detached");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let base = rev(&r, "HEAD");
+    run(&r, &["switch", "-q", "--detach"]).unwrap();
+    let j = Journal::default();
+    fs::write(r.join("a.txt"), "b\n").unwrap();
+    stage(&r, &["a.txt".into()]).unwrap();
+    j.record(&r, Action::new("Commit", Mode::Soft), |r| {
+        commit(r, "detached", &CommitOptions::default(), &Net::default())
+    })
+    .unwrap();
+    assert_eq!(j.view(&r).undo[0].switch_to, None);
+    let undone = j.step(&r, false, None, &Mutex::new(())).unwrap();
+    assert_eq!(undone.switch_to, None);
+    assert_eq!(rev(&r, "HEAD"), base);
+    assert_eq!(j.view(&r).redo[0].switch_to, None);
 }
 
 /// Undoing a pull just leaves the branch behind again; undoing a pushed commit would need

@@ -74,6 +74,14 @@ export const COMMANDS = [
   { id: "review.toggleViewed", title: "Toggle File Viewed", category: "Review", keys: ["v"] },
   // Changes then lists the branch's commits and uncommitted work since it left the default branch.
   { id: "review.branch", title: "Review Branch Against Base", category: "Review", keys: [] },
+  // Every file of a Changes list in one scroll (the branch's while Changes reviews it).
+  { id: "review.openAll", title: "Open All Changes", category: "Review", keys: [] },
+  { id: "review.openAllStaged", title: "Open All Staged Changes", category: "Review", keys: [] },
+  { id: "review.openAllBranch", title: "Open All Branch Changes", category: "Review", keys: [] },
+  // On the selected lines of the diff or file on show, else the cursor's (lib/review/notes).
+  { id: "review.addNote", title: "Add Review Note", category: "Review", keys: ["c"] },
+  { id: "review.copyNotes", title: "Copy Review Notes as Prompt", category: "Review", keys: [] },
+  { id: "review.sendNotes", title: "Send Review Notes to Terminal", category: "Review", keys: [] },
   { id: "diff.nextChange", title: "Next Change", category: "Diff", keys: ["f7", "alt+down"] },
   { id: "diff.prevChange", title: "Previous Change", category: "Diff", keys: ["shift+f7", "alt+up"] },
   // The selected lines, else the change at the cursor (which Next / Previous Change put there). VS Code

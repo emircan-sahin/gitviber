@@ -22,13 +22,21 @@ export type Selection =
   | { kind: "issue"; issue: Issue }
   | { kind: "pr-file"; range: PullRange; file: FileChange }
   // A branch under review: `base` is the merge base (a commit id), `label` the branch it was compared with.
-  | { kind: "branch"; base: string; label: string; file: FileChange };
+  | { kind: "branch"; base: string; label: string; file: FileChange }
+  // Every file of a Changes list in one scroll: uncommitted, staged, or the branch under review.
+  | { kind: "changes"; list: ChangeList };
+
+/** The lists Changes shows, which open whole as one stacked diff. */
+export type ChangeList = "unstaged" | "staged" | "branch";
+
+const LIST_TITLES: Record<ChangeList, string> = { unstaged: "All Changes", staged: "All Staged Changes", branch: "All Branch Changes" };
 
 /** File path for file-like tabs; for a PR or issue overview, a label. */
 export function selectionPath(s: Selection) {
   if (s.kind === "file") return s.path;
   if (s.kind === "pull") return `#${s.pull.number} ${s.pull.title}`;
   if (s.kind === "issue") return `#${s.issue.number} ${s.issue.title}`;
+  if (s.kind === "changes") return LIST_TITLES[s.list];
   return s.file.path;
 }
 

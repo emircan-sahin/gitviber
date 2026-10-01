@@ -1,16 +1,21 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Branch, type Commit, errorMessage, type Journal, LOG_PAGE, type RepoStatus, type Worktree } from "../api";
+import { recheckPullsSoon } from "../github/githubCache";
 import { useBackgroundFetch } from "./backgroundFetch";
 import { toast } from "../app/toast";
 
+// Focus flickers (a dialog, a click on the Dock) shouldn't reload what was just read.
+const WAKE_GAP_MS = 2_000;
+
 interface RepoChanged {
+  root: string;
   worktree: boolean;
   git: boolean;
 }
 
-/** Loads and live-refreshes everything the workspace shows for the open repo. */
-export function useRepo(root: string) {
+/** Loads and live-refreshes everything the workspace shows for the open repo. `onGone`: its folder was deleted. */
+export function useRepo(root: string, onGone: () => void) {
   const [status, setStatus] = useState<RepoStatus | null>(null);
   const [commits, setCommits] = useState<Commit[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -19,13 +24,27 @@ export function useRepo(root: string) {
   const [journal, setJournal] = useState<Journal | null>(null);
   // Bumped on every change on disk so open views can reload their content.
   const [revision, setRevision] = useState(0);
+  // What the revision was last bumped for: status (each changed file's size and mtime, HEAD) and
+  // the branch tips. A refresh that finds both the same (a focus, a git event that moved nothing
+  // shown) leaves open views alone. Status has no size or mtime for a conflicted file, so the
+  // watcher seeing files written still bumps it.
+  const seen = useRef({ status: "", refs: "" });
+  const written = useRef(false);
   const inFlight = useRef<Promise<void> | null>(null);
   const queued = useRef<{ history: boolean } | null>(null);
   // Commits shown so far: a refresh reloads all of them, or "Load more" pages would be lost.
   const loaded = useRef(0);
+  const loadedAt = useRef(0);
+  const reportGone = useRef(onGone);
+  reportGone.current = onGone;
+  const reportedGone = useRef(false);
+  // The root this hook's listener is for; null once unmounted.
+  const live = useRef<string | null>(null);
 
   const load = useCallback(async (history: boolean) => {
     const limit = Math.max(LOG_PAGE, loaded.current);
+    const wrote = written.current;
+    written.current = false;
     const [st, br, log, wt, jn] = await Promise.all([
       api.status(),
       history ? api.branches() : null,
@@ -42,7 +61,10 @@ export function useRepo(root: string) {
       setCommits(log);
       setHasMore(log.length === limit);
     }
-    setRevision((r) => r + 1);
+    const now = { status: JSON.stringify(st), refs: br ? JSON.stringify(br) : seen.current.refs };
+    if (wrote || now.status !== seen.current.status || now.refs !== seen.current.refs) setRevision((r) => r + 1);
+    seen.current = now;
+    loadedAt.current = Date.now();
   }, []);
 
   // Coalesce: if a refresh is running, remember one more and run it after.
@@ -56,7 +78,15 @@ export function useRepo(root: string) {
         try {
           await load(h);
         } catch (e) {
-          toast("error", "Could not read repository", errorMessage(e));
+          // A worktree removed from outside fails every read; that's for the app to handle, once.
+          const missing = await api.projectInfo([root]).then(([info]) => info?.exists === false, () => false);
+          // Another repo opened meanwhile: this one's failure is no longer the window's business.
+          const here = live.current === root;
+          if (here && !missing) toast("error", "Could not read repository", errorMessage(e));
+          else if (here && !reportedGone.current) {
+            reportedGone.current = true;
+            reportGone.current();
+          }
         }
         const next = queued.current;
         queued.current = null;
@@ -67,7 +97,7 @@ export function useRepo(root: string) {
       });
       return inFlight.current;
     },
-    [load],
+    [root, load],
   );
 
   const loadingMore = useRef(false);
@@ -94,13 +124,37 @@ export function useRepo(root: string) {
     setCommits([]);
     setJournal(null);
     loaded.current = 0;
+    live.current = root;
     refresh(true);
-    const unlisten = listen<RepoChanged>("repo-changed", (e) => refresh(e.payload.git));
+    // The previous repo's watcher can still deliver one last event after a switch.
+    const unlisten = listen<RepoChanged>("repo-changed", (e) => {
+      if (e.payload.root !== root) return;
+      if (e.payload.worktree) written.current = true;
+      refresh(e.payload.git);
+      if (e.payload.git) recheckPullsSoon();
+    });
     return () => {
+      live.current = null;
       // During hot reload the listener can already be gone; nothing to clean up then.
       unlisten.then((f) => f()).catch(() => {});
     };
   }, [root, refresh]);
+
+  // The watcher can miss a change (dropped events, a git dir it can't watch), so coming back
+  // to the window rereads the repo; a miss doesn't last until a restart.
+  useEffect(() => {
+    // focus and visibilitychange come together: one reload, not one queued behind the other.
+    const wake = () => {
+      if (document.visibilityState !== "visible" || inFlight.current || Date.now() - loadedAt.current < WAKE_GAP_MS) return;
+      refresh(true);
+    };
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
+    return () => {
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
+    };
+  }, [refresh]);
 
   useBackgroundFetch(root, !!status?.remotes.length, refresh);
 

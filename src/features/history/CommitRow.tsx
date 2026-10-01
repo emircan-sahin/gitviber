@@ -254,7 +254,7 @@ function RefBadges({ refs, remotes, show }: { refs: string[]; remotes: Set<strin
           title={r.synced ? `${r.name} (in sync with remote)` : r.name}
           className={cn(
             "flex max-w-full items-center gap-1 rounded-[3px] px-1.5 font-mono text-[10px] leading-[18px] font-medium",
-            r.kind === "head" && "bg-primary text-white",
+            r.kind === "head" && "bg-primary text-primary-foreground",
             r.kind === "local" && "bg-renamed/15 text-renamed",
             r.kind === "remote" && "border border-border-strong text-muted-foreground",
             r.kind === "tag" && "bg-modified/15 text-modified",

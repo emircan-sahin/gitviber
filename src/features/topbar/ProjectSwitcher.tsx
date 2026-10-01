@@ -16,7 +16,7 @@ export interface ProjectSwitcherProps {
   /** The main worktree: the project this window belongs to, even inside a linked worktree. */
   main: string;
   recent: string[];
-  onOpenRepo: (path?: string) => void;
+  onOpenRepo: (path?: string) => Promise<void>;
   onForgetRepo: (path: string) => void;
   onReorderRepos: (list: string[]) => void;
   onLocateRepo: (path: string) => void;

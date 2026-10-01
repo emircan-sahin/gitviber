@@ -162,6 +162,11 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     }
   };
 
+  // Names the folder that switched: a branch another worktree holds opens that worktree instead,
+  // and a bare "Switched to x" once read as having opened it.
+  const switched = (name: string) => `Switched ${folderName(root)} to ${name}`;
+  const switchBranch = (name: string) => run("Switch branch", switching(name, () => api.switchBranch(name, false)), switched(name));
+
   // upstream/dev → dev. A local dev that tracks something else (origin/dev, say) is a
   // different line of work; say so rather than switch to it silently.
   const switchRemote = async (b: Branch) => {
@@ -173,7 +178,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       const ok = await ask(`A local ${name} already exists and ${tracks}, not ${b.name}. Switch to it as it is?`, { title: "Switch branch", okLabel: "Switch" });
       if (!ok) return;
     }
-    await run("Switch branch", switching(name, () => api.switchTracking(b.name)), `Switched to ${name}`);
+    await run("Switch branch", switching(name, () => api.switchTracking(b.name)), switched(name));
   };
 
   // A fresh count decides force: git refuses a dirty or locked worktree otherwise, and the
@@ -232,5 +237,5 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     await run("Unlock worktree", () => api.unlockWorktree(w.path), `Unlocked ${name}`);
   };
 
-  return { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switching, switchRemote, removeWorktree, unlockWorktree };
+  return { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switchBranch, switchRemote, removeWorktree, unlockWorktree };
 }

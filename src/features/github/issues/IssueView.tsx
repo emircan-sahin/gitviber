@@ -211,7 +211,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
             <ExternalLink /> Open on GitHub
           </Button>
           <CopyLinkButton url={i.url} />
-          <Button variant="ghost" size="icon-sm" onClick={load} disabled={!!busy || detail.loading}>
+          <Button variant="ghost" size="icon-sm" aria-label="Refresh" onClick={load} disabled={!!busy || detail.loading}>
             <RefreshCw className={cn(detail.loading && "animate-spin")} />
           </Button>
           {busy && (

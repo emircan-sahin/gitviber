@@ -62,6 +62,9 @@ fn merged_branches_and_deleting_them() {
     };
     // main is the default branch: merged into the feature, but never offered for cleanup.
     assert_eq!(merged(&r), ["done", "wip"]);
+    // Each tip's id, for History to tell when a branch moved.
+    let wip = branches(&r).unwrap().into_iter().find(|b| b.name == "wip");
+    assert_eq!(wip.map(|b| b.sha), Some(rev(&r, "wip")));
 
     run(&r, &["switch", "-q", "main"]).unwrap();
     assert_eq!(merged(&r), ["done"]);

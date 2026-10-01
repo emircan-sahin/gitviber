@@ -182,7 +182,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
           <DropdownMenu>
             <Tip label="New terminal in another folder">
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon-sm" className="w-4">
+                <Button variant="ghost" size="icon-sm" className="w-5">
                   <ChevronDown className="size-3" />
                 </Button>
               </DropdownMenuTrigger>

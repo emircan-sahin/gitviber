@@ -1,7 +1,7 @@
 //! Whether a usable git is installed, and installing Apple's command line tools when not.
 
 use super::in_english;
-use crate::process::{exec, search_path};
+use crate::process::{exec, search_path, spawn};
 use serde::Serialize;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -24,11 +24,15 @@ pub struct GitInfo {
 }
 
 pub fn check_install() -> GitInfo {
-    let out = in_english(&mut Command::new("git"))
-        .arg("--version")
-        .env("PATH", search_path())
-        .stdin(Stdio::null())
-        .output();
+    let out = spawn(
+        in_english(&mut Command::new("git"))
+            .arg("--version")
+            .env("PATH", search_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .and_then(|c| c.wait_with_output());
     classify_install(out.map_err(|e| format!("could not run git: {e}")).map(|o| {
         (
             o.status.success(),

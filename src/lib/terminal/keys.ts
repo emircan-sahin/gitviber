@@ -3,7 +3,7 @@ import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } 
 import { getSettings } from "../settings";
 import { IS_LINUX, IS_MAC } from "../platform";
 import { pasteInto } from "./pasteInput";
-import { type Pane, TERMINAL_COMMANDS } from "./terminals";
+import { copyPaneSelection, type Pane, TERMINAL_COMMANDS } from "./terminals";
 
 // A pane's keys: the app's, the line editing and scrolling done here, and the shell's.
 // Imported through terminals.ts only: the two import each other.
@@ -72,6 +72,14 @@ export function paneKeys(p: Pane) {
         if (letter === "v") void pasteInto(p);
         else if (selection) void navigator.clipboard.writeText(selection).catch(() => {});
       }
+      e.preventDefault();
+      return false;
+    }
+    // ⌘C copies a selection here: xterm copies from WebKit's copy event, which WebKit can leave out
+    // with nothing selected in xterm's text area. Handled, the key doesn't reach the menu's Copy as
+    // well; with no selection it still does, and copies nothing.
+    if (IS_MAC && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && letter === "c" && term.hasSelection() && !appRunsFromTerminal(e) && !commandIn(TERMINAL_COMMANDS, e)) {
+      if (e.type === "keydown") copyPaneSelection(p.id);
       e.preventDefault();
       return false;
     }

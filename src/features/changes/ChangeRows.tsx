@@ -1,5 +1,5 @@
 import { Check, ChevronDown, FolderGit2, GitMerge, Plus } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
 import type { FileChange } from "@/lib/api";
@@ -14,6 +14,7 @@ import type { Change } from "./changeList";
 import { RowAction } from "@/components/RowAction";
 import { createStore } from "@/lib/store";
 import { readJson, stringList, writeJson } from "@/lib/storage";
+import { lastInputWasKey } from "@/lib/ui/pointer";
 
 // Closed sections, by title: kept across tab switches and restarts, as a closed pane is (RepoPanes).
 const COLLAPSED_KEY = "gitviber.changes-sections.collapsed";
@@ -58,7 +59,7 @@ export function ReviewSummary({ files, add, del, reviewed }: { files: number; ad
           <span className={cn("font-semibold", reviewed === files ? "text-added" : "text-foreground")}>{reviewed}</span>/{files} reviewed
         </span>
       </div>
-      <div className="mt-1.5 h-[3px] overflow-hidden bg-border">
+      <div role="progressbar" aria-label="Reviewed" aria-valuemin={0} aria-valuemax={files} aria-valuenow={reviewed} className="mt-1.5 h-[3px] overflow-hidden bg-border">
         <div className="h-full bg-added transition-[width] duration-300" style={{ width: `${(reviewed / files) * 100}%` }} />
       </div>
     </div>
@@ -85,6 +86,7 @@ export function Row({
   onOpen,
   onHover,
   onToggleViewed,
+  lostFocus,
   menu,
   children,
 }: {
@@ -100,6 +102,8 @@ export function Row({
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
   onToggleViewed: () => void;
+  /** Set to this row's key when it leaves the page holding focus, for the list to pass focus on. */
+  lostFocus?: RefObject<string | null>;
   /** Built only once the menu is first opened: thousands of rows each building theirs made the list slow. None: no menu. */
   menu?: () => React.ReactNode;
   children?: React.ReactNode;
@@ -114,12 +118,22 @@ export function Row({
     ref.current?.scrollIntoView({ block: "nearest" });
     if (document.activeElement instanceof HTMLElement && document.activeElement.dataset.row !== undefined) ref.current?.focus();
   }, [active]);
+  // Runs before the node leaves the page, while it can still say whether it had focus. Only the
+  // keyboard's: a click on Stage focuses the row too (WebKit), and its neighbour kept the highlight.
+  const key = selectionKey(sel);
+  useLayoutEffect(
+    () => () => {
+      if (lostFocus && lastInputWasKey() && ref.current?.contains(document.activeElement)) lostFocus.current = key;
+    },
+    [lostFocus, key],
+  );
   const row = (
     <div
       ref={ref}
-      role="button"
+      role="treeitem"
+      aria-selected={selected}
       tabIndex={tabStop ? 0 : -1}
-      data-row={selectionKey(sel)}
+      data-row={key}
       aria-current={active || undefined}
       onClick={onClick}
       onDoubleClick={() => onOpen(sel, true)}
@@ -144,8 +158,8 @@ export function Row({
             onToggleViewed();
           }}
           className={cn(
-            "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            viewed ? "border-added-fill bg-added-fill text-on-status" : "border-border-strong hover:border-muted-foreground",
+            "hit-area flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            viewed ? "border-added-fill bg-added-fill text-on-status" : "border-subtle hover:border-muted-foreground",
           )}
         >
           {viewed && <Check className="size-2.5" strokeWidth={3} />}
@@ -153,7 +167,8 @@ export function Row({
       </Tip>
       )}
       <FileIcon path={file.path} />
-      <PathLabel path={file.path} className={cn("flex-1", viewed && "opacity-45")} />
+      {/* Faded by color, not opacity: subtle text stays at 4.5:1. */}
+      <PathLabel path={file.path} className={cn("flex-1", viewed && "[&>span]:text-subtle")} />
       {/* Shown on the active row too, so Tab can reach them without a mouse. */}
       <LineCounts file={file} className={active ? "hidden" : "group-focus-within/row:hidden group-hover/row:hidden"} />
       <div className={cn("items-center", active ? "flex" : "hidden group-focus-within/row:flex group-hover/row:flex")} onClick={(e) => e.stopPropagation()}>

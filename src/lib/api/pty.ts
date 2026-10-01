@@ -14,7 +14,10 @@ export const pty = {
   },
   /** The folder a shell is in now, asked of its process; null if that can't be read. */
   cwd: (id: number) => invoke<string | null>("pty_cwd", { id }),
-  write: (id: number, data: string) => invoke<void>("pty_write", { id, data }),
+  /** `binary`: `data` is bytes, a char each (xterm's onBinary), not text. */
+  write: (id: number, data: string, binary = false) => invoke<void>("pty_write", { id, data, binary }),
+  /** `bytes` of the output that xterm.js has parsed: pty.rs stops reading past a high water of unparsed output. */
+  ack: (id: number, bytes: number) => invoke<void>("pty_ack", { id, bytes }),
   resize: (id: number, cols: number, rows: number) => invoke<void>("pty_resize", { id, cols, rows }),
   kill: (id: number) => invoke<void>("pty_kill", { id }),
   /** How many (of `ids`, or all) are running a command rather than sitting at the prompt. */

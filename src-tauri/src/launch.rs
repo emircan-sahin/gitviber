@@ -44,17 +44,17 @@ pub fn open_url(url: &str) -> Result<(), String> {
     };
     #[cfg(all(unix, not(target_os = "macos")))]
     let mut cmd = desktop_tool("xdg-open");
-    cmd.arg(&url).spawn().map(|_| ()).map_err(|e| e.to_string())
+    crate::process::spawn(cmd.arg(&url))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// Selects `path` in the file manager.
 pub fn reveal(path: PathBuf) -> Result<(), String> {
     // Waited on (it returns at once) so no zombie is left behind per click.
     #[cfg(target_os = "macos")]
-    return match std::process::Command::new("open")
-        .arg("-R")
-        .arg(path)
-        .status()
+    return match crate::process::spawn(Command::new("open").arg("-R").arg(path))
+        .and_then(|mut c| c.wait())
     {
         Ok(s) if s.success() => Ok(()),
         Ok(s) => Err(format!("open -R failed ({s})")),
@@ -91,21 +91,22 @@ pub fn reveal(path: PathBuf) -> Result<(), String> {
             ],
         ];
         for call in calls {
-            let shown = desktop_tool(call[0])
-                .args(&call[1..])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
+            let shown = crate::process::spawn(
+                desktop_tool(call[0])
+                    .args(&call[1..])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null()),
+            )
+            .and_then(|mut c| c.wait());
             if shown.is_ok_and(|s| s.success()) {
                 return Ok(());
             }
         }
         // Without one, open the folder it's in. xdg-open may stay until that window closes,
         // so it's reaped on a thread.
-        let mut child = desktop_tool("xdg-open")
-            .arg(path.parent().unwrap_or(&path))
-            .spawn()
-            .map_err(|e| format!("xdg-open: {e}"))?;
+        let mut child =
+            crate::process::spawn(desktop_tool("xdg-open").arg(path.parent().unwrap_or(&path)))
+                .map_err(|e| format!("xdg-open: {e}"))?;
         std::thread::spawn(move || child.wait());
         Ok(())
     }

@@ -1,5 +1,5 @@
 import { Check, ChevronsUpDown, Copy, CornerUpLeft, Eraser, FolderGit2, FolderOpen, GitBranch, GitMerge, Lock, LockOpen, Pencil, SquareTerminal, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -68,6 +68,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const calling = useNeedsYou();
   const [list, setList] = useState(worktrees);
   const { index, setIndex, move } = usePickerIndex(list.length);
+  const listId = useId();
   // A `git status` and two rev-lists per worktree: fetched when the menu opens, never before.
   const [states, setStates] = useState<Record<string, WorktreeState>>({});
   const listRef = useRef<HTMLDivElement>(null);
@@ -221,11 +222,20 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
           }}
         >
           {/* Like a native menu: the highlight leaves with the mouse; ↑↓ bring it back. */}
-          <div ref={listRef} tabIndex={-1} onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 outline-none">
-            <div className="px-2 pt-2 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Worktrees</div>
+          <div
+            ref={listRef}
+            tabIndex={-1}
+            role="listbox"
+            aria-label="Worktrees"
+            aria-activedescendant={index >= 0 && list[index] ? `${listId}-${index}` : undefined}
+            onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)}
+            className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 outline-none"
+          >
+            <div aria-hidden className="px-2 pt-2 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Worktrees</div>
             {list.map((w, i) => (
               <WorktreeRow
                 key={w.path}
+                id={`${listId}-${i}`}
                 i={i}
                 w={w}
                 hot={i === index}
@@ -295,6 +305,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
 type RowActions = Record<"pick" | "terminal" | "merge" | "rename" | "lock" | "remove" | "reveal" | "copy", (w: Worktree) => void>;
 
 function WorktreeRow({
+  id,
   i,
   w,
   hot,
@@ -311,6 +322,7 @@ function WorktreeRow({
   actions: a,
   onMenuClosed,
 }: {
+  id: string;
   i: number;
   w: Worktree;
   hot: boolean;
@@ -346,6 +358,7 @@ function WorktreeRow({
   const mergeLabel = `Merge into ${into}${state?.uncommitted ? ` · its ${state.uncommitted} uncommitted ${state.uncommitted === 1 ? "change stays" : "changes stay"} behind` : ""}`;
   const row = (
     <div
+      id={id}
       data-option={i}
       role="option"
       aria-selected={hot}
@@ -524,7 +537,7 @@ function StateLabel({ state: s, hot }: { state: WorktreeState; hot: boolean }) {
   );
 }
 
-function Chip({ hot, tone, className, ...props }: React.ComponentProps<"span"> & { hot: boolean; tone?: "live" }) {
+export function Chip({ hot, tone, className, ...props }: React.ComponentProps<"span"> & { hot: boolean; tone?: "live" }) {
   return (
     <span
       {...props}

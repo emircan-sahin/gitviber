@@ -1,5 +1,5 @@
 import { Check, ChevronRight, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitBranchPlus, GitMerge, GitPullRequestArrow, Link, Pencil, Plus, Search, SquareTerminal, Trash2, Unlink } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
@@ -15,6 +15,7 @@ import { RowAction } from "@/components/RowAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
 import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
+import { Chip } from "@/features/worktrees/WorktreePicker";
 
 interface Props {
   label: string;
@@ -105,6 +106,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     return name && !exact ? [...found, { kind: "create", name }] : found;
   }, [groups, branches, query, q, collapsed]);
   const { index, setIndex, move } = usePickerIndex(options.length);
+  const listId = useId();
 
   // Which GitHub repository each remote is, so branches on one you can't push to (a fork's
   // original) offer no delete.
@@ -246,6 +248,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     const hot = i === index;
     const row = (
       <div
+        id={`${listId}-${i}`}
         data-option={i}
         role="option"
         aria-selected={hot}
@@ -276,6 +279,12 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
               <GitBranch className="size-3.5 shrink-0 opacity-60" />
             )}
             <span className="truncate font-mono text-[11.5px]">{o.branch.name}</span>
+            {/* Hot or not, a row that opens a worktree says so: a plain one switches this checkout. */}
+            {heldIn(o.branch) && (
+              <Tip label={`Checked out in ${folderName(heldIn(o.branch)!)}: opens that worktree`}>
+                <Chip hot={hot}>worktree</Chip>
+              </Tip>
+            )}
             {/* Mounted on every row, shown on the hot one: a tooltip whose button unmounts
                 as the highlight moves gets stuck open or shows the previous label. */}
             <span className={cn("ml-auto shrink-0 gap-0.5", hot ? "flex" : "hidden")}>
@@ -306,7 +315,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
                 {o.branch.current
                   ? "current"
                   : heldIn(o.branch)
-                    ? `in worktree ${folderName(heldIn(o.branch)!)}`
+                    ? `in ${folderName(heldIn(o.branch)!)}`
                     : o.branch.merged
                     ? `merged · ${relativeTime(o.branch.timestamp)}`
                     : upstream(o.branch)
@@ -347,6 +356,11 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
           <input
             ref={input}
             autoFocus
+            role="combobox"
+            aria-expanded
+            aria-controls={listId}
+            aria-activedescendant={index >= 0 ? `${listId}-${index}` : undefined}
+            aria-autocomplete="list"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
@@ -355,14 +369,14 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
           />
         </div>
         {/* Like a native menu: the highlight leaves with the mouse; ↑↓ bring it back. */}
-        <div ref={listRef} onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
+        <div ref={listRef} id={listId} role="listbox" aria-label="Branches" onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
           {groups.length === 0 && options.length === 0 && (
             <div className="px-2 py-3 text-center text-[12px] text-subtle">
               No branches
             </div>
           )}
           {groups.map((g) => (
-            <div key={g.name}>
+            <div key={g.name} role="group" aria-label={g.name}>
               <button
                 // Keep the focus in the search box.
                 onMouseDown={(e) => e.preventDefault()}

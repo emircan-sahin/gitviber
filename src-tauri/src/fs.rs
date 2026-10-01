@@ -91,6 +91,16 @@ pub struct Entry {
     pub ignored: bool,
 }
 
+/// Whether the explorer shows `path` as a folder. Follows symlinks, so a linked folder expands
+/// like a folder, unless it leads into the git dir (resolve() would refuse to list it anyway).
+fn expands(root: &Path, real_root: &Path, path: &Path) -> bool {
+    path.is_dir()
+        && !(path.symlink_metadata().is_ok_and(|m| m.is_symlink())
+            && path
+                .canonicalize()
+                .is_ok_and(|p| in_git_dir(root, real_root, &p)))
+}
+
 pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<Entry>, String> {
     let dir = resolve(root, rel)?;
     let real_root = root.canonicalize().map_err(|e| e.to_string())?;
@@ -105,17 +115,10 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<Entry>, String> {
             } else {
                 format!("{rel}/{name}")
             };
-            // Follows symlinks, so a linked folder expands like a folder, unless it leads
-            // into the git dir (resolve() would refuse to list it anyway).
-            let is_dir = e.path().is_dir()
-                && !(e.file_type().is_ok_and(|t| t.is_symlink())
-                    && e.path()
-                        .canonicalize()
-                        .is_ok_and(|p| in_git_dir(root, &real_root, &p)));
             Entry {
                 name,
                 path,
-                is_dir,
+                is_dir: expands(root, &real_root, &e.path()),
                 ignored: false,
             }
         })
@@ -159,6 +162,42 @@ pub fn list_files(root: &Path) -> Result<Vec<String>, String> {
         .map(|p| String::from_utf8_lossy(p).into_owned())
         .filter(|p| root.join(p).is_file())
         .collect())
+}
+
+/// What the explorer's filter adds to `list_files`: ignored files one by one, and an ignored
+/// folder (node_modules) as one entry, not walked into; it opens lazily, as in the tree.
+/// `ls-files --ignored --directory` would also list a folder that only holds ignored files
+/// (app/ with just app/.env) as ignored; `matching` lists what a pattern matches, as the tree dims.
+pub fn list_ignored(root: &Path) -> Result<Vec<Entry>, String> {
+    let args = [
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--ignored=matching",
+        "--untracked-files=normal",
+        "--ignore-submodules=all",
+    ];
+    let out = git::run(root, &args)?;
+    let real_root = root.canonicalize().map_err(|e| e.to_string())?;
+    let mut fields = out.split(|&b| b == 0);
+    let mut entries = vec![];
+    while let Some(field) = fields.next() {
+        // A rename's old path is the next field, and any name may start with "! ".
+        if field.starts_with(b"2 ") {
+            fields.next();
+        } else if let Some(raw) = field.strip_prefix(b"! ") {
+            let raw = String::from_utf8_lossy(raw);
+            let path = raw.trim_end_matches('/');
+            entries.push(Entry {
+                name: path.rsplit('/').next().unwrap_or(path).to_string(),
+                path: path.to_string(),
+                // git prints a linked folder as a file, with no trailing "/".
+                is_dir: raw.ends_with('/') || expands(root, &real_root, &root.join(path)),
+                ignored: true,
+            });
+        }
+    }
+    Ok(entries)
 }
 
 /// What a path in the repo is on disk.
@@ -571,6 +610,76 @@ mod tests {
         let mut files = list_files(root).unwrap();
         files.sort();
         assert_eq!(files, [".gitignore", "src/new file.rs", "tracked.txt"]);
+    }
+
+    #[test]
+    fn list_ignored_lists_ignored_folders_whole() {
+        let sb = Sandbox::new("ignored");
+        let root = &sb.0;
+        git::run(root, &["init", "-q"]).unwrap();
+        fs::write(root.join(".gitignore"), ".env\nnode_modules/\n").unwrap();
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        for f in [".env", "app/.env", "node_modules/pkg/index.js", "kept.txt"] {
+            fs::write(root.join(f), "x").unwrap();
+        }
+        // A staged rename from "! old.txt": its old path is a field that must not read as ignored.
+        fs::write(root.join("! old.txt"), "x").unwrap();
+        git::run(root, &["add", "! old.txt"]).unwrap();
+        let id = [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+        ];
+        git::run(root, &[&id[..], &["commit", "-qm", "c"]].concat()).unwrap();
+        git::run(root, &["mv", "! old.txt", "renamed.txt"]).unwrap();
+        let mut listed: Vec<_> = list_ignored(root)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.path, e.name, e.is_dir, e.ignored))
+            .collect();
+        listed.sort();
+        let entry = |path: &str, name: &str, is_dir| (path.into(), name.into(), is_dir, true);
+        assert_eq!(
+            listed,
+            [
+                entry(".env", ".env", false),
+                entry("app/.env", ".env", false),
+                entry("node_modules", "node_modules", true),
+            ]
+        );
+    }
+
+    /// git prints an ignored link to a folder as a file; the filter shows it as the tree does.
+    #[cfg(unix)]
+    #[test]
+    fn list_ignored_shows_a_linked_folder_as_a_folder() {
+        use std::os::unix::fs::symlink;
+        let sb = Sandbox::new("ignored-link");
+        let root = &sb.0;
+        git::run(root, &["init", "-q"]).unwrap();
+        fs::write(root.join(".gitignore"), "vendor\ngit-link\n").unwrap();
+        fs::create_dir_all(root.join("lib")).unwrap();
+        symlink("lib", root.join("vendor")).unwrap();
+        symlink(".git", root.join("git-link")).unwrap();
+        let mut listed: Vec<_> = list_ignored(root)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.path, e.is_dir))
+            .collect();
+        listed.sort();
+        let want = [
+            ("git-link".to_string(), false),
+            ("vendor".to_string(), true),
+        ];
+        assert_eq!(listed, want);
+        let tree = list_dir(root, "").unwrap();
+        for (path, is_dir) in want {
+            assert!(tree.iter().any(|e| e.path == path && e.is_dir == is_dir));
+        }
     }
 
     #[test]
