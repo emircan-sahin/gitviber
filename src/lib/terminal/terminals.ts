@@ -256,6 +256,9 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   // pointer for: that paste is left to it.
   let middleAt = -Infinity;
   if (IS_LINUX) host.addEventListener("mousedown", (e) => e.button === 1 && (middleAt = performance.now()), true);
+  // ⌥-drag selects past a program that reads the mouse, which Claude Code's "option+click to native
+  // select" counts on. Forcing it always would cost ⌥-drag's block selection where none reads it.
+  if (IS_MAC) host.addEventListener("mousedown", () => (term.options.macOptionClickForcesSelection = term.modes.mouseTrackingMode !== "none"), true);
   if (!IS_WINDOWS)
     host.addEventListener(
       "paste",
@@ -574,10 +577,13 @@ export function paneMenuState(id: number) {
   return { selection: !!p?.term.hasSelection(), paste: !!p && !p.term.options.disableStdin, output: !!p?.marks.hasOutput() };
 }
 
-/** A program reading the mouse (tmux, vim `mouse=a`) gets the right-click, and shows its own menu. */
-export function paneTakesMouse(id: number) {
+/**
+ * A program reading the mouse (tmux, vim `mouse=a`) gets the right-click, and shows its own menu;
+ * with the key that forces a selection past it (⌥, ⇧ off macOS) the click is the pane's.
+ */
+export function paneTakesMouse(id: number, e: MouseEvent) {
   const mode = panes.get(id)?.term.modes.mouseTrackingMode;
-  return !!mode && mode !== "none";
+  return !!mode && mode !== "none" && !(IS_MAC ? e.altKey : e.shiftKey);
 }
 
 export function copyPaneSelection(id: number) {
