@@ -1,4 +1,4 @@
-import { Plus } from "lucide-react";
+import { ChevronsUpDown, Plus } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import type { DiffPair, DiffRow } from "@/lib/api";
 import { type TokenLine, tokenLookup, useHighlight } from "@/lib/editor/highlight";
@@ -12,10 +12,26 @@ import { cn } from "@/lib/utils";
 import { Composer } from "@/features/review/Composer";
 import { NoteCard } from "@/features/review/NoteThreads";
 import { Tokens, useCodeStyle } from "./codeLines";
+import { FOLD_REVEAL } from "./editorOptions";
 import type { FileMemo } from "./stackedMemo";
 
 /** A file's changes in unified form: old and new line numbers, then the line, colored as the code view colors it. */
-export function UnifiedDiff({ pair, rows, path, oldPath, memo }: { pair: DiffPair; rows: (DiffRow | Gap)[]; path: string; oldPath: string; memo: FileMemo }) {
+export function UnifiedDiff({
+  pair,
+  rows,
+  path,
+  oldPath,
+  memo,
+  onReveal,
+}: {
+  pair: DiffPair;
+  rows: (DiffRow | Gap)[];
+  path: string;
+  oldPath: string;
+  memo: FileMemo;
+  /** Opens some of a fold's lines. */
+  onReveal: (gap: Gap) => void;
+}) {
   const s = useSettings();
   const box = useRef<HTMLDivElement>(null);
   const style = useCodeStyle();
@@ -71,7 +87,7 @@ export function UnifiedDiff({ pair, rows, path, oldPath, memo }: { pair: DiffPai
     <div ref={box} className={cn("py-1 select-text", s.wordWrap ? "[overflow-wrap:anywhere]" : "overflow-x-auto")} style={{ ...style, color: (newHl ?? oldHl)?.data.fg }} onCopy={copyNarrowed(unit)}>
       <div className={cn(!s.wordWrap && "min-w-max")}>
         {rows.map((r) => {
-          if ("gap" in r) return <GapRow key={`g${r.o}:${r.n}`} count={r.gap} />;
+          if ("gap" in r) return <GapRow key={`g${r.o}:${r.n}`} count={r.gap} onClick={() => onReveal(r)} />;
           const raw = r.k === 2 ? (oldLines[r.o - 1] ?? "") : (newLines[r.n - 1] ?? "");
           const text = r.k === 2 ? (oldShown[r.o - 1] ?? "") : (newShown[r.n - 1] ?? "");
           const tokens = r.k === 2 ? oldTok(r.o - 1, text) : newTok(r.n - 1, text);
@@ -146,10 +162,16 @@ function LineRow({ row, text, tokens, ranges, digits, wrap, onNote }: { row: Dif
   );
 }
 
-function GapRow({ count }: { count: number }) {
+function GapRow({ count, onClick }: { count: number; onClick: () => void }) {
+  const more = Math.min(count, FOLD_REVEAL);
   return (
-    <div className="flex min-h-[1lh] items-center bg-panel px-3 font-sans text-[11px] text-subtle select-none">
+    <button
+      onClick={onClick}
+      title={count > more ? `Show ${more} more lines` : undefined}
+      className="sticky left-0 flex min-h-[1lh] w-full items-center gap-1.5 bg-panel px-3 text-left font-sans text-[11px] text-subtle outline-none select-none hover:bg-elevated hover:text-foreground focus-visible:bg-elevated focus-visible:text-foreground"
+    >
+      <ChevronsUpDown className="size-3" />
       {count === 1 ? "1 unchanged line" : `${count} unchanged lines`}
-    </div>
+    </button>
   );
 }

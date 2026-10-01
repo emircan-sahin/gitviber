@@ -9,6 +9,8 @@ export interface FileMemo {
   shut?: boolean;
   /** Its large diff was asked for. */
   large?: boolean;
+  /** Unchanged lines (new line numbers) opened from their fold. */
+  revealed?: ReadonlySet<number>;
   /** Its diff's height as last drawn: the room it keeps while it isn't, so nothing around it moves. */
   height?: number;
   /** What its status said when it was read (`rev`: the revision then): it's read again only when that changes. */

@@ -76,23 +76,24 @@ export interface Gap {
   n: number;
 }
 
-/** `rows` as a unified diff shows them on its own: the changes with `context` lines around each, the rest folded into gaps. */
-export function shownRows(rows: DiffRow[], context: number): (DiffRow | Gap)[] {
-  const keep = rows.map((r) => r.k !== 0);
+/**
+ * `rows` as a unified diff shows them on its own: the changes with `context` lines around each,
+ * the rest folded into gaps, except runs shorter than `minimum` and the new lines `revealed`.
+ */
+export function shownRows(rows: DiffRow[], context: number, minimum = 1, revealed: ReadonlySet<number> = new Set()): (DiffRow | Gap)[] {
+  const keep = rows.map((r) => r.k !== 0 || revealed.has(r.n));
   rows.forEach((r, i) => {
     if (r.k === 0) return;
     for (let j = Math.max(0, i - context); j <= Math.min(rows.length - 1, i + context); j++) keep[j] = true;
   });
   const out: (DiffRow | Gap)[] = [];
   for (let i = 0; i < rows.length; ) {
-    if (keep[i]) {
-      out.push(rows[i++]);
-      continue;
-    }
-    const first = rows[i];
-    let count = 0;
-    for (; i < rows.length && !keep[i]; i++) count++;
-    out.push({ gap: count, o: first.o, n: first.n });
+    let end = i;
+    while (end < rows.length && !keep[end]) end++;
+    if (end > i && end - i >= minimum) out.push({ gap: end - i, o: rows[i].o, n: rows[i].n });
+    else out.push(...rows.slice(i, end));
+    if (end < rows.length) out.push(rows[end]);
+    i = end + 1;
   }
   return out;
 }

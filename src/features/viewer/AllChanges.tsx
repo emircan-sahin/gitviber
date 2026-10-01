@@ -8,7 +8,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusPill } from "@/components/StatusBadge";
 import type { RepoStatus } from "@/lib/api";
-import { shownRows } from "@/lib/git/diffHunks";
+import { type Gap, shownRows } from "@/lib/git/diffHunks";
 import { useCommands } from "@/lib/commands/keybindings";
 import { codeWantsFocus } from "@/lib/ui/panels";
 import { type ChangeList, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
@@ -16,7 +16,7 @@ import { diffWhitespace, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { sumLines } from "@/features/changes/changeList";
 import type { BranchChange } from "@/features/changes/BranchReview";
-import { CONTEXT } from "./editorOptions";
+import { CONTEXT, FOLD_MIN, FOLD_REVEAL } from "./editorOptions";
 import { usePair } from "./diffPairs";
 import { mediaKind } from "./MediaView";
 import { diffNote, placeholderFor } from "./placeholders";
@@ -313,7 +313,14 @@ function FileDiff({ sel, memo, revision, estimate, onOpen }: { sel: ListFile; me
   const s = useSettings();
   const { pair, error } = usePair(sel, revision, diffWhitespace(s), false);
   const [large, setLarge] = useState(!!memo.large);
-  const rows = useMemo(() => (pair ? shownRows(pair.rows, CONTEXT) : []), [pair]);
+  // Folded as the code view folds unchanged lines, each fold opening FOLD_REVEAL lines a click.
+  const [revealed, setRevealed] = useState<ReadonlySet<number>>(() => memo.revealed ?? new Set());
+  const rows = useMemo(() => (pair ? shownRows(pair.rows, CONTEXT, FOLD_MIN, revealed) : []), [pair, revealed]);
+  const reveal = (gap: Gap) => {
+    const next = new Set(revealed);
+    for (let n = gap.n; n < gap.n + Math.min(gap.gap, FOLD_REVEAL); n++) next.add(n);
+    setRevealed((memo.revealed = next));
+  };
   if (error) return <Message text={`Could not load: ${error}`} />;
   if (!pair) return <div style={{ height: estimate }} />;
   if (mediaKind(sel.file.path)) return <Message text="Open the file to compare its versions" action={{ label: "Open", run: onOpen }} />;
@@ -324,7 +331,7 @@ function FileDiff({ sel, memo, revision, estimate, onOpen }: { sel: ListFile; me
   return (
     <>
       {note && <div className="px-4 pt-1.5 text-[11.5px] text-subtle">{note}</div>}
-      <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} />
+      <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} onReveal={reveal} />
     </>
   );
 }
