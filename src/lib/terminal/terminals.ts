@@ -232,6 +232,9 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   // A mouse wheel's notch arrives as ~53-100 px off macOS, so a row per row would scroll vim or
   // htop 3-5 rows a notch where it scrolled one; the replay is for the Mac trackpad it was made on.
   if (IS_MAC) reportWheelByRow(term);
+  // ⌥-drag selects past a program that reads the mouse, which Claude Code's "option+click to native
+  // select" counts on. Forcing it always would cost ⌥-drag's block selection where none reads it.
+  if (IS_MAC) host.addEventListener("mousedown", () => (term.options.macOptionClickForcesSelection = term.modes.mouseTrackingMode !== "none"), true);
   // XTVERSION names this app, as Ghostty and iTerm2 name themselves. Answered as xterm.js, Claude
   // Code took the pane for VS Code's terminal: 3 rows a report once the wheel slowed, and its
   // workarounds for VS Code's glyph atlas.
@@ -256,9 +259,6 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   // pointer for: that paste is left to it.
   let middleAt = -Infinity;
   if (IS_LINUX) host.addEventListener("mousedown", (e) => e.button === 1 && (middleAt = performance.now()), true);
-  // ⌥-drag selects past a program that reads the mouse, which Claude Code's "option+click to native
-  // select" counts on. Forcing it always would cost ⌥-drag's block selection where none reads it.
-  if (IS_MAC) host.addEventListener("mousedown", () => (term.options.macOptionClickForcesSelection = term.modes.mouseTrackingMode !== "none"), true);
   if (!IS_WINDOWS)
     host.addEventListener(
       "paste",
