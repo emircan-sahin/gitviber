@@ -1,5 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { api } from "../api";
+import { toast } from "../app/toast";
 import { loadNotes, saveNotes } from "../repo/session";
 import { checkNotes, isLive, type ReviewNote } from "./notes";
 
@@ -19,11 +20,17 @@ export function openNotes(worktree: string) {
   notes = loadNotes(worktree);
 }
 
+// Said once until a save works again, not on every note.
+let unsaved = false;
+
 function set(next: ReviewNote[]) {
   if (next === notes) return;
   notes = next;
   listeners.forEach((l) => l());
-  if (root) saveNotes(root, next);
+  if (!root) return;
+  const saved = saveNotes(root, next);
+  if (!saved && !unsaved) toast("error", "Could not save the review notes", "App storage is full or turned off: they last until GitViber quits.");
+  unsaved = !saved;
 }
 
 export const getNotes = () => notes;
