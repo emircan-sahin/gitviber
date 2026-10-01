@@ -112,9 +112,9 @@ pub fn main_worktree(repo: &Path) -> Option<String> {
         .map(|w| w.path)
 }
 
-/// Checks `branch` out in a new worktree and returns its real path, `<dir>/<branch>`; `dir` is
-/// `<parent>/<project>.worktrees` unless given. With `base`, `branch` is a new branch made
-/// there, tracking nothing like `create_branch`'s. Without, a branch only on a remote gets a
+/// Checks `branch` out in a new worktree and returns its path as listed, `<dir>/<branch>`;
+/// `dir` is `<parent>/<project>.worktrees` unless given. With `base`, `branch` is a new branch
+/// made there, tracking nothing like `create_branch`'s. Without, a branch only on a remote gets a
 /// local tracking branch (git's own DWIM for `worktree add`). The ignored files the main
 /// worktree's `.worktreeinclude` lists are copied in.
 pub fn add_worktree(
@@ -137,10 +137,15 @@ pub fn add_worktree(
     if let Ok(files) = worktree_includes(&from) {
         crate::fs::copy_into(&from, Path::new(&target), &files);
     }
-    // As `worktree list` reports it: a folder picked through a symlink is listed by its real path.
-    Ok(Path::new(&target)
-        .canonicalize()
-        .map_or(target, |p| p.to_string_lossy().into_owned()))
+    // As `worktree list` spells it, which callers compare with: git resolves a folder picked
+    // through a symlink, yet keeps the letter case typed (canonicalize would take the disk's).
+    let listed = worktrees(repo)
+        .ok()
+        .into_iter()
+        .flatten()
+        .map(|w| w.path)
+        .find(|p| same_folder(Path::new(p), Path::new(&target)));
+    Ok(listed.unwrap_or(target))
 }
 
 /// How many files `add_worktree` copies in: links and paths out of the worktree aren't copied, so

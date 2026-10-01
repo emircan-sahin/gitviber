@@ -329,8 +329,8 @@ fn a_new_worktree_checks_out_an_existing_branch() {
     }
 }
 
-/// A folder picked through a symlink: the new worktree's path is the one `worktree list`
-/// reports, which the picker and the terminals compare it with.
+/// A folder picked through a symlink, or typed in another case: the new worktree's path is
+/// the one `worktree list` reports, which the picker and the terminals compare it with.
 #[cfg(unix)]
 #[test]
 fn a_new_worktree_through_a_symlink_has_its_real_path() {
@@ -348,4 +348,12 @@ fn a_new_worktree_through_a_symlink_has_its_real_path() {
         sb.path("real").canonicalize().unwrap().join("feat")
     );
     assert!(worktrees(&r).unwrap().iter().any(|w| w.path == wt));
+
+    // A folder typed in another case, where the disk ignores case: git keeps the typed case.
+    fs::create_dir_all(sb.path("Cased")).unwrap();
+    let typed = sb.path("cased");
+    if typed.exists() {
+        let wt = add_worktree(&r, "other", Some("refs/heads/main"), typed.to_str()).unwrap();
+        assert!(worktrees(&r).unwrap().iter().any(|w| w.path == wt), "{wt}");
+    }
 }
