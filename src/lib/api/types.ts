@@ -300,6 +300,8 @@ export interface Branch {
   remote: boolean;
   current: boolean;
   upstream: string | null;
+  /** The tip's commit id. */
+  sha: string;
   timestamp: number;
   /** Checked out in another worktree (its path); git won't switch to it here. */
   worktree: string | null;

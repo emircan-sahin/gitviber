@@ -18,6 +18,8 @@ pub struct Branch {
     pub remote: bool,
     pub current: bool,
     pub upstream: Option<String>,
+    /// The tip's commit id.
+    pub sha: String,
     pub timestamp: i64,
     /// Checked out in another worktree (its path), where git refuses to switch to it.
     pub worktree: Option<String>,
@@ -34,7 +36,7 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         &[
             "for-each-ref",
             "--sort=-committerdate",
-            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)%1f%(symref)",
+            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)%1f%(symref)%1f%(objectname)",
             "refs/heads",
             "refs/remotes",
         ],
@@ -69,12 +71,13 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\x1f').collect();
             let elsewhere =
-                f.len() == 7 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
-            (f.len() == 7 && !f[0].ends_with("/HEAD")).then(|| Branch {
+                f.len() == 8 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
+            (f.len() == 8 && !f[0].ends_with("/HEAD")).then(|| Branch {
                 name: f[1].to_string(),
                 remote: f[0].starts_with("refs/remotes/"),
                 current: f[2] == "*",
                 upstream: (!f[3].is_empty()).then(|| f[3].to_string()),
+                sha: f[7].to_string(),
                 timestamp: f[4].parse().unwrap_or(0),
                 worktree: elsewhere.then(|| f[5].to_string()),
                 merged: f[2] != "*" && f[1] != default && merged.contains(&f[0]),
