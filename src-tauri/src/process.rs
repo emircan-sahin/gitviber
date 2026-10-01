@@ -57,6 +57,11 @@ pub(crate) fn exec(
     if input.is_some() {
         cmd.stdin(Stdio::piped());
     }
+    // What it starts (a submodule's status, an fsmonitor hook) holds the pipes open too: on a
+    // timeout the whole group goes, or it lingered and kept a drain thread waiting.
+    if timeout.is_some() {
+        in_own_group(&mut cmd);
+    }
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not run {label}: {e}"))?;
@@ -96,8 +101,7 @@ pub(crate) fn exec(
             break st;
         }
         if deadline.is_some_and(|d| Instant::now() > d) {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_group(&mut child, Duration::ZERO);
             return Err(format!("{label} timed out"));
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -252,10 +256,48 @@ mod tests {
     fn input_larger_than_a_pipe_echoes_back() {
         // Far past the 64 KB pipe buffers: written whole before draining, this never returned.
         let data = vec![b'x'; 4 << 20];
-        let mut cmd = Command::new("cat");
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let out = exec(cmd, "cat", &[], Some(&data), Some(Duration::from_secs(20))).unwrap();
-        assert_eq!(out.len(), data.len());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut cmd = Command::new("cat");
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let _ = tx.send(exec(cmd, "cat", &[], Some(&data), None).map(|o| o.len()));
+        });
+        let got = rx.recv_timeout(Duration::from_secs(30));
+        assert_eq!(
+            got,
+            Ok(Ok(4 << 20)),
+            "all of it came back, and the call returned"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_stops_what_the_process_started() {
+        let dir = std::env::temp_dir().join(format!("gitviber-exec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("pid");
+        // A child holding the pipes after its parent is gone, like an fsmonitor hook under git.
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            &format!("sleep 30 & echo $! > {}; wait", pidfile.display()),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+        let err = exec(cmd, "sh", &[], None, Some(Duration::from_millis(500))).unwrap_err();
+        assert_eq!(err, "sh timed out");
+        let pid: libc::pid_t = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // Orphaned, it lingers as a zombie until launchd reaps it.
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            (unsafe { libc::kill(pid, 0) }) != 0
+        });
+        assert!(gone, "the child still runs");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(target_os = "macos")]
