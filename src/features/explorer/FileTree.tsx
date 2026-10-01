@@ -480,7 +480,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
                   onMouseEnter={() => !e.isDir && !e.ignored && onHover(sel)}
                   className={cn(
                     active || picked?.paths.has(e.path) ? "bg-primary/15" : "hover:bg-hover",
-                    e.ignored && "opacity-40",
+                    e.ignored && "[&>img]:opacity-40",
                     // The tree holds the focus, not the row: the keyboard's row looks hovered too.
                     selected === e.path && "group-focus/tree:bg-hover group-focus/tree:outline group-focus/tree:-outline-offset-1 group-focus/tree:outline-primary/70",
                   )}
@@ -501,7 +501,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
                     <NameInput initial={e.name} selectStem={!e.isDir} onDone={finishEditing} />
                   ) : (
                     <>
-                      <span className={cn("truncate", tone ?? "text-foreground/85")}>{e.name}</span>
+                      <span className={cn("truncate", tone ?? (e.ignored ? "text-subtle" : "text-foreground/85"))}>{e.name}</span>
                       {st && <span className={cn("ml-auto font-mono text-[10.5px] font-bold", tone)}>{statusInfo(st).letter}</span>}
                       {!st && e.isDir && dirtyDirs.has(e.path) && <span className="ml-auto size-1.5 rounded-full bg-modified" />}
                     </>

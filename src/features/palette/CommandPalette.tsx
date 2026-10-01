@@ -163,7 +163,7 @@ export function CommandPalette() {
           row: () => (
             <>
               <Highlight text={label} hits={match.hits} className="min-w-0 flex-1 truncate" />
-              {recent.includes(c.id) && !query.slice(1).trim() && <span className="shrink-0 text-[10.5px] opacity-60">recently used</span>}
+              {recent.includes(c.id) && !query.slice(1).trim() && <span className="shrink-0 text-[10.5px] text-muted-foreground in-aria-selected:text-primary-foreground/80">recently used</span>}
               {chord && <kbd className="shrink-0 font-mono text-[11px] opacity-70">{formatChord(chord)}</kbd>}
             </>
           ),
@@ -202,7 +202,7 @@ export function CommandPalette() {
       row: () => (
         <>
           <PathRow path={path} hits={match.hits} />
-          {recent.includes(path) && !query.trim() && <span className="shrink-0 text-[10.5px] opacity-60">recently opened</span>}
+          {recent.includes(path) && !query.trim() && <span className="shrink-0 text-[10.5px] text-muted-foreground in-aria-selected:text-primary-foreground/80">recently opened</span>}
         </>
       ),
     }));
@@ -330,7 +330,7 @@ function PathRow({ path, hits, icon }: { path: string; hits: number[]; icon?: Re
     <>
       {icon ?? <FileIcon path={path} />}
       <Highlight text={name} hits={hits} offset={dir.length} className="shrink-0 truncate" />
-      <Highlight text={dir.replace(/\/$/, "")} hits={hits} className="min-w-0 flex-1 truncate text-[11.5px] opacity-60" />
+      <Highlight text={dir.replace(/\/$/, "")} hits={hits} className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground in-aria-selected:text-primary-foreground/80" />
     </>
   );
 }

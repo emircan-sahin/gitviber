@@ -158,7 +158,7 @@ export function Row({
           }}
           className={cn(
             "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            viewed ? "border-added-fill bg-added-fill text-on-status" : "border-border-strong hover:border-muted-foreground",
+            viewed ? "border-added-fill bg-added-fill text-on-status" : "border-subtle hover:border-muted-foreground",
           )}
         >
           {viewed && <Check className="size-2.5" strokeWidth={3} />}
@@ -166,7 +166,8 @@ export function Row({
       </Tip>
       )}
       <FileIcon path={file.path} />
-      <PathLabel path={file.path} className={cn("flex-1", viewed && "opacity-45")} />
+      {/* Faded by color, not opacity: subtle text stays at 4.5:1. */}
+      <PathLabel path={file.path} className={cn("flex-1", viewed && "[&>span]:text-subtle")} />
       {/* Shown on the active row too, so Tab can reach them without a mouse. */}
       <LineCounts file={file} className={active ? "hidden" : "group-focus-within/row:hidden group-hover/row:hidden"} />
       <div className={cn("items-center", active ? "flex" : "hidden group-focus-within/row:flex group-hover/row:flex")} onClick={(e) => e.stopPropagation()}>
