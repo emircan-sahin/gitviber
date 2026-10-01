@@ -1,5 +1,5 @@
 import { RotateCcw } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { isValidElement, useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
@@ -7,6 +7,7 @@ import { bindingsFor, type CommandId } from "@/lib/commands/commands";
 import { cleanFontName, useSettings } from "@/lib/settings";
 import { FieldLabel } from "@/lib/ui/fieldLabel";
 import { Select } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Keycaps } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 
@@ -63,6 +64,10 @@ export function Field({ label, hint, commands, children }: { label: string; hint
   const { keybindings } = useSettings();
   const keys = commands?.map((id) => bindingsFor(id, keybindings)[0]).filter(Boolean) ?? [];
   const id = useId();
+  const ids = { labelledBy: `${id}label`, describedBy: hint ? `${id}hint` : undefined };
+  // A lone Switch or Select (FontPicker's custom name field has its placeholder) takes the label and
+  // hint itself; any other row is a group named by them. Never both, or each is read twice.
+  const lone = isValidElement(children) && ([Switch, OptionSelect, FontPicker] as unknown[]).includes(children.type);
   return (
     <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border py-3.5 last:border-0">
       <div className="min-w-48 flex-1">
@@ -76,9 +81,8 @@ export function Field({ label, hint, commands, children }: { label: string; hint
           </div>
         )}
       </div>
-      {/* The group names whatever the row holds; a lone Switch or Select takes the label itself. */}
-      <div role="group" aria-labelledby={`${id}label`} aria-describedby={hint ? `${id}hint` : undefined} className="shrink-0">
-        <FieldLabel value={`${id}label`}>{children}</FieldLabel>
+      <div role={lone ? undefined : "group"} aria-labelledby={lone ? undefined : ids.labelledBy} aria-describedby={lone ? undefined : ids.describedBy} className="shrink-0">
+        <FieldLabel value={lone ? ids : {}}>{children}</FieldLabel>
       </div>
     </div>
   );

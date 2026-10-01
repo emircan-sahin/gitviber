@@ -1,5 +1,5 @@
 import { createContext, useContext } from "react";
 
-/** The id of a settings row's label: the Switch or Select beside it takes it as its name. */
-export const FieldLabel = createContext<string | undefined>(undefined);
+/** A settings row's label and hint ids: the Switch or Select beside them takes them as its name and description. */
+export const FieldLabel = createContext<{ labelledBy?: string; describedBy?: string }>({});
 export const useFieldLabel = () => useContext(FieldLabel);
