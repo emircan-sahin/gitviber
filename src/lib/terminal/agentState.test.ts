@@ -53,9 +53,10 @@ test("the save keeps resumable agents, one per conversation, and the restore rea
   assert.equal(other?.command, "claude --resume b-2");
   assert.equal(unread, undefined, "its id unread yet");
   assert.equal(none, undefined);
-  // Continued rather than read: no id to share.
+  // Continued rather than read: both would continue the folder's last conversation, so one per folder.
   const opencode = { name: "opencode", command: "opencode --continue", session: null, cwd: "/w", state: null };
-  assert.equal(savedAgents([opencode, opencode]).filter(Boolean).length, 2);
+  assert.equal(savedAgents([opencode, opencode]).filter(Boolean).length, 1);
+  assert.equal(savedAgents([opencode, { ...opencode, cwd: "/v" }]).filter(Boolean).length, 2);
   assert.deepEqual(restoredAgent(JSON.parse(JSON.stringify(saved))), saved);
   assert.equal(restoredAgent(undefined), null);
   assert.equal(restoredAgent({ name: "x", command: "x" }), null, "a save from before cwd was kept");

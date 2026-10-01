@@ -49,8 +49,10 @@ export function nextAgent(prev: PaneAgent | undefined, read: PaneAgent | null, l
 export function savedAgents(agents: (PaneAgent | undefined)[]): (SavedAgent | undefined)[] {
   const taken = new Set<string>();
   return agents.map((a) => {
-    if (!a?.command || !a.cwd || (a.session && taken.has(a.session))) return undefined;
-    if (a.session) taken.add(a.session);
+    // Without a session id the agent continues its folder's last conversation: one pane per folder.
+    const key = a?.session ?? `${a?.name}\0${a?.cwd}`;
+    if (!a?.command || !a.cwd || taken.has(key)) return undefined;
+    taken.add(key);
     return { name: a.name, command: a.command, cwd: a.cwd };
   });
 }

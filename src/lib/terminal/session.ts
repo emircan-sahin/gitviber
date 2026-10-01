@@ -33,8 +33,9 @@ let saveTimer: number | undefined;
 export function scheduleSave() {
   saveTimer ??= window.setTimeout(async () => {
     const due = dueForSave(panes.values(), Date.now(), false);
-    // Where their shells are now, and their agents, asked before they're saved (a reload's save keeps the last answer).
-    await Promise.all([...due.map(shellDir), refreshAgents(due)]);
+    // Where their shells are now, asked before they're saved (a reload's save keeps the last answer). Agents
+    // in every pane: one still printing isn't due for a while, and a short first task would go unnoticed.
+    await Promise.all([...due.map(shellDir), refreshAgents()]);
     saveTimer = undefined;
     saveSession(false, due.filter((p) => panes.has(p.id)));
   }, SAVE_MS);
