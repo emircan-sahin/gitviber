@@ -14,7 +14,6 @@ import type { Change } from "./changeList";
 import { RowAction } from "@/components/RowAction";
 import { createStore } from "@/lib/store";
 import { readJson, stringList, writeJson } from "@/lib/storage";
-import { lastInputWasKey } from "@/lib/ui/pointer";
 
 // Closed sections, by title: kept across tab switches and restarts, as a closed pane is (RepoPanes).
 const COLLAPSED_KEY = "gitviber.changes-sections.collapsed";
@@ -118,12 +117,11 @@ export function Row({
     ref.current?.scrollIntoView({ block: "nearest" });
     if (document.activeElement instanceof HTMLElement && document.activeElement.dataset.row !== undefined) ref.current?.focus();
   }, [active]);
-  // Runs before the node leaves the page, while it can still say whether it had focus. Only the
-  // keyboard's: a click on Stage focuses the row too (WebKit), and its neighbour kept the highlight.
+  // Runs before the node leaves the page, while it can still say whether it had focus.
   const key = selectionKey(sel);
   useLayoutEffect(
     () => () => {
-      if (lostFocus && lastInputWasKey() && ref.current?.contains(document.activeElement)) lostFocus.current = key;
+      if (lostFocus && ref.current?.contains(document.activeElement)) lostFocus.current = key;
     },
     [lostFocus, key],
   );

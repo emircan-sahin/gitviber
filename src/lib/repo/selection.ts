@@ -55,3 +55,13 @@ export function selectionKey(s: Selection) {
   const scope = s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number ?? ""}@${s.range.base}..${s.range.head}` : s.kind === "branch" ? s.base : "";
   return `${s.kind}:${scope}:${selectionPath(s)}`;
 }
+
+/**
+ * The row now in the place of `from`, which left a list whose keys were `before`, in order: the next
+ * one still there (`after`), else the one before it. None when the list has nothing left.
+ */
+export function rowInPlace(before: string[], after: { has: (key: string) => boolean }, from: string): string | undefined {
+  const at = before.indexOf(from);
+  if (at < 0) return undefined;
+  return before.slice(at + 1).find((k) => after.has(k)) ?? before.slice(0, at).reverse().find((k) => after.has(k));
+}
