@@ -54,12 +54,25 @@ export function App() {
   }, []);
   const noGit = git?.state === "missing" || git?.state === "tools";
 
-  /** `replacing`: a saved project whose folder moved; this repo takes its place in the list. Its root once open. */
+  // Two quick opens could finish in either order, leaving the backend on one folder and the window
+  // on the other. So they run one at a time, each shown once it opened, and one a later open
+  // overtook before it started is skipped: both end on the last folder that opened.
+  const opens = useRef({ last: 0, queue: Promise.resolve() as Promise<unknown> });
+
+  /**
+   * `replacing`: a saved project whose folder moved; this repo takes its place in the list. Its root
+   * once open; false: it failed; undefined: nothing to do (no folder picked, or a later open took over).
+   */
   const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string): Promise<string | false | undefined> => {
     const target = path ?? (await open({ directory: true, title: "Open a git repository" }));
     if (typeof target !== "string") return;
+    const seq = ++opens.current.last;
+    const latest = () => seq === opens.current.last;
+    const turn = opens.current.queue.then(() => (latest() ? api.openRepo(target) : null));
+    opens.current.queue = turn.catch(() => {});
     try {
-      const repo = await api.openRepo(target);
+      const repo = await turn;
+      if (!repo) return;
       // Projects are keyed by the main worktree; its other worktrees are reached from the top bar.
       // An older entry saved under this worktree's path, or the moved folder, turns into its project.
       setRepoOrder([...new Set(recentRepos().map((p) => (p === repo.root || p === replacing ? repo.main : p)))]);
@@ -69,6 +82,7 @@ export function App() {
       setOpened(repo);
       return repo.root;
     } catch (e) {
+      if (!latest()) return;
       if (quiet) return false;
       if (e === NOT_A_REPO && (await initAsked(target))) return openRepo(target, quiet, replacing);
       toast("error", "Could not open repository", errorMessage(e));
@@ -81,9 +95,10 @@ export function App() {
     const { open: targets, missing } = await api.takeOpened().catch(() => ({ open: [], missing: [] }));
     for (const path of missing) toast("error", "No such file or folder", path);
     const asked = targets.at(-1);
-    const root = asked && (await openRepo(asked.folder));
+    if (!asked) return false;
+    const root = await openRepo(asked.folder);
     if (root && asked.file) openTargetIn(root, { path: asked.file, line: asked.line ?? undefined, column: asked.column ?? undefined });
-    return !!root;
+    return root !== false;
   }, [openRepo]);
 
   const booted = useRef<Promise<void>>(Promise.resolve());
@@ -96,7 +111,8 @@ export function App() {
     const fallback = projects.find((p) => last && isInside(last, p)) ?? projects[0];
     booted.current = (async () => {
       if (await openAsked()) return;
-      if (last && (await openRepo(last, true))) return;
+      // Not false: it opened, or something opened meanwhile took over.
+      if (last && (await openRepo(last, true)) !== false) return;
       if (fallback && fallback !== last) await openRepo(fallback, true);
     })().finally(() => setBooting(false));
   }, [openRepo, openAsked]);
@@ -121,7 +137,7 @@ export function App() {
     };
   }, [openAsked]);
 
-  const onOpen = useCallback((p?: string) => void openRepo(p), [openRepo]);
+  const onOpen = useCallback((p?: string) => openRepo(p).then(() => {}), [openRepo]);
   const onReorder = useCallback((list: string[]) => {
     setRepoOrder(list);
     setRecent(list);
