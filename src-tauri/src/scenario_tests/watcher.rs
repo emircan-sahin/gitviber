@@ -96,6 +96,27 @@ fn watcher_skips_ignored_build_output() {
 }
 
 #[test]
+fn watcher_survives_a_flood_of_ignored_paths() {
+    use crate::watch::not_ignored;
+    use std::collections::HashSet;
+    let sb = Sandbox::new("watchflood");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, ".gitignore", "target/\n", "ignore");
+    let r = r.canonicalize().unwrap();
+    // A `cargo clean` deletes this many build files at once; git answers ~1 MB while it
+    // still reads, which used to hang the watcher thread for good.
+    let paths: HashSet<PathBuf> = (0..12_000)
+        .map(|i| r.join(format!("target/debug/deps/libsome_crate-{i:016x}.rmeta")))
+        .collect();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let root = r.clone();
+    std::thread::spawn(move || tx.send(not_ignored(&root, &paths)));
+    let got = rx.recv_timeout(std::time::Duration::from_secs(30));
+    assert_eq!(got, Ok(false), "all ignored, and the call returns");
+}
+
+#[test]
 fn watcher_still_follows_submodules() {
     use crate::watch::{classify, Kind};
     let sb = Sandbox::new("wtsubwatch");

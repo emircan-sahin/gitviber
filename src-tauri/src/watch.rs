@@ -200,7 +200,10 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
                 }
                 next = rx.recv_timeout(Duration::from_millis(150)).ok();
             }
-            change.worktree = not_ignored(&root, &touched);
+            // A git change reloads the status anyway; no need to ask git about the files.
+            if !change.git {
+                change.worktree = not_ignored(&root, &touched);
+            }
             if change.worktree || change.git {
                 let _ = app.emit("repo-changed", change);
             }

@@ -45,8 +45,8 @@ pub(crate) fn merge_paths(login: Option<&OsStr>, current: &OsStr) -> OsString {
     std::env::join_paths(dirs).unwrap_or_else(|_| current.to_os_string())
 }
 
-/// Runs a prepared command, killing it after `timeout`. Output is drained on threads so a
-/// chatty process can't block on a full pipe while we wait.
+/// Runs a prepared command, killing it after `timeout`. Input is written and output drained
+/// on threads, so a chatty process can't block on a full pipe while we wait or write.
 pub(crate) fn exec(
     mut cmd: Command,
     label: &str,
@@ -60,14 +60,15 @@ pub(crate) fn exec(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("could not run {label}: {e}"))?;
-    if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
-        // A process can exit before reading its input (a failing pre-commit hook stops
-        // `commit -F -`); its status and stderr say why, not the broken pipe.
-        match stdin.write_all(data) {
-            Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => return Err(e.to_string()),
-            _ => {}
+    // `check-ignore --stdin` answers while it reads: writing all of a large input before
+    // draining filled both pipes and hung the app and git for good.
+    let write = match (input, child.stdin.take()) {
+        (Some(data), Some(mut stdin)) => {
+            let data = data.to_vec();
+            Some(std::thread::spawn(move || stdin.write_all(&data)))
         }
-    }
+        _ => None,
+    };
     let drain = |r: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -105,6 +106,13 @@ pub(crate) fn exec(
         out.join().unwrap_or_default(),
         err.join().unwrap_or_default(),
     );
+    // A process can exit before reading its input (a failing pre-commit hook stops
+    // `commit -F -`); its status and stderr say why, not the broken pipe.
+    if let Some(Ok(Err(e))) = write.map(|w| w.join()) {
+        if e.kind() != std::io::ErrorKind::BrokenPipe {
+            return Err(e.to_string());
+        }
+    }
     let code = status.code().unwrap_or(-1);
     if status.success() || ok_codes.contains(&code) {
         Ok(stdout)
@@ -238,6 +246,16 @@ mod tests {
         assert!(split_command("claude -p \"oops").is_err());
         assert!(split_command("claude -p \"oops\\\"").is_err());
         assert!(split_command("code \\").is_err());
+    }
+
+    #[test]
+    fn input_larger_than_a_pipe_echoes_back() {
+        // Far past the 64 KB pipe buffers: written whole before draining, this never returned.
+        let data = vec![b'x'; 4 << 20];
+        let mut cmd = Command::new("cat");
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let out = exec(cmd, "cat", &[], Some(&data), Some(Duration::from_secs(20))).unwrap();
+        assert_eq!(out.len(), data.len());
     }
 
     #[cfg(target_os = "macos")]
