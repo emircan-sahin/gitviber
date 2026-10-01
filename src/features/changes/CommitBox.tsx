@@ -27,15 +27,17 @@ const SUMMARY_LIMIT = 72;
 
 /**
  * Asks before committing a file GitHub won't take: the push fails, and an agent's dump or build
- * output committed by mistake then has to be cut out of history.
+ * output committed by mistake then has to be cut out of history. `autoStaged`: Commit all staged
+ * them, and Cancel unstages them again.
  */
-async function largeFilesConfirmed() {
+async function largeFilesConfirmed(autoStaged: boolean) {
   const large = await api.largeStaged();
   if (!large.length) return true;
   const shown = large.slice(0, 10).map((f) => `${f.path} (${f.size})`).join("\n") + (large.length > 10 ? `\n…and ${large.length - 10} more` : "");
-  const one = large.length === 1;
+  const [it, these] = large.length === 1 ? ["it", "This file is"] : ["them", "These files are"];
+  const out = autoStaged ? `Cancel unstages what Commit all staged, so you can add ${it} to .gitignore` : `Unstage ${it} and add ${it} to .gitignore`;
   return ask(
-    `${one ? "This file is" : "These files are"} over GitHub's 100 MB limit:\n\n${shown}\n\nA push with ${one ? "it" : "them"} is refused, and taking ${one ? "it" : "them"} out later means rewriting history. Leave ${one ? "it" : "them"} out with .gitignore, or track ${one ? "it" : "them"} with Git LFS (git lfs track), and commit again.`,
+    `${these} over GitHub's 100 MB limit:\n\n${shown}\n\nA push with ${it} is refused, and taking ${it} out later means rewriting history. ${out}, or track ${it} with Git LFS (git lfs track), before you commit.`,
     { title: "Large files", kind: "warning", okLabel: "Commit anyway" },
   );
 }
@@ -88,8 +90,14 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     let ok = false;
     try {
       // Nothing staged means "commit everything", the common case after an agent run.
-      if (!hasStaged && !amend) await api.stage(all.paths);
-      if (!(await largeFilesConfirmed())) throw CANCELLED;
+      const autoStaged = !hasStaged && !amend;
+      if (autoStaged) await api.stage(all.paths);
+      if (!(await largeFilesConfirmed(autoStaged))) {
+        // Nothing was staged before, so unstaging what this commit staged puts the index back.
+        const staged = new Set(all.paths);
+        if (autoStaged) await api.unstage(status.unstaged.filter((f) => staged.has(f.path)));
+        throw CANCELLED;
+      }
       // Hooks can lint or test for minutes: the top bar shows their output, and Cancel.
       const options = { amend: !!amend, signOff, noVerify: noVerify || skipHooks, coAuthors: draft.coAuthors };
       [, entry] = await tracked(() => withNetActivity("Commit", (op) => api.commit(message, options, op)));
