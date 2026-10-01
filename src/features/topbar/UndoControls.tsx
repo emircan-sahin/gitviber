@@ -61,7 +61,8 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <span>
+          {/* DisabledTip's way: a disabled button takes no focus, so the wrapper does, for the reason. */}
+          <span tabIndex={off || !e || blocked ? 0 : undefined} className="rounded-md outline-none focus-visible:ring-1 focus-visible:ring-ring">
             <Button variant="ghost" size="icon" aria-label={verb} disabled={off || !e || !!blocked} onClick={() => e && go(forward, [e.id])}>
               {forward ? <Redo2 /> : <Undo2 />}
             </Button>

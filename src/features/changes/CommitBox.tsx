@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Tip } from "@/components/ui/tooltip";
+import { DisabledTip, Tip } from "@/components/ui/tooltip";
 import { api, type Commit, type RepoStatus } from "@/lib/api";
 import { matchesCommand, runCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { updateSettings, useSettings } from "@/lib/settings";
@@ -49,6 +49,15 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
   // The button stays short; the tooltip still says how much goes in.
   const scope = hasStaged && !amend ? `Commit ${status.staged.length} staged` : label;
   const target = status.branch ? `${scope} to ${status.branch}` : scope;
+  const blocked = busy
+    ? "Committing…"
+    : status.conflicted.length
+      ? "Resolve the conflicts first"
+      : !amend && !hasAny
+        ? "Nothing to commit"
+        : summary === ""
+          ? "Write a commit message first"
+          : null;
   const skipped = !hasStaged && !amend && all.skipped > 0;
   const committed = hasStaged || amend ? status.staged.map((f) => f.path) : all.paths;
   const visible = new Set(shown ? [...shown.staged, ...shown.unstaged].map((f) => f.path) : committed);
@@ -183,14 +192,16 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
             </DropdownMenuContent>
           </DropdownMenu>
         </CoAuthorPicker>
-        <Tip
-          label={[target, skipped && leftOut(all.skipped).toLowerCase(), hidden && `including ${files(hidden)} the filter hides`].filter(Boolean).join(", ")}
-          shortcut={commitKey}
+        <DisabledTip
+          label={!canCommit && blocked ? blocked : [target, skipped && leftOut(all.skipped).toLowerCase(), hidden && `including ${files(hidden)} the filter hides`].filter(Boolean).join(", ")}
+          shortcut={canCommit ? commitKey : undefined}
+          disabled={!canCommit}
+          className="ml-auto flex flex-1"
         >
-          <Button className="ml-auto flex-1" disabled={!canCommit} onClick={() => commit()}>
+          <Button className="flex-1" disabled={!canCommit} onClick={() => commit()}>
             {busy ? "Committing…" : hidden ? `${label} · ${hidden} hidden` : label}
           </Button>
-        </Tip>
+        </DisabledTip>
       </div>
       {suggesting && (
         <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">

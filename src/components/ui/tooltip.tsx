@@ -68,9 +68,9 @@ function Tip({ label, shortcut, children, side }: { label: string; shortcut?: st
  * `Tip` around a control that may be disabled, which takes no pointer or focus then: the wrapper
  * shows the label instead, and takes the focus (`disabled`) so the keyboard gets the reason too.
  */
-function DisabledTip({ label, disabled, className, children }: { label: string; disabled: boolean; className?: string; children: React.ReactNode }) {
+function DisabledTip({ label, shortcut, disabled, className, children }: { label: string; shortcut?: string; disabled: boolean; className?: string; children: React.ReactNode }) {
   return (
-    <Tip label={label}>
+    <Tip label={label} shortcut={shortcut}>
       <span tabIndex={disabled ? 0 : undefined} className={cn("rounded-md outline-none focus-visible:ring-1 focus-visible:ring-ring", className)}>
         {children}
       </span>
