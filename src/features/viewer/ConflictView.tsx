@@ -2,16 +2,17 @@ import { Check, ChevronsUpDown, Eye, GitMerge, Pencil, Undo2 } from "lucide-reac
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { api, errorMessage, type FileChange, type Operation } from "@/lib/api";
-import { type TokenLine, tokenLookup, useHighlight } from "@/lib/editor/highlight";
+import { tokenLookup, useHighlight } from "@/lib/editor/highlight";
 import { showLanguage } from "@/lib/editor/shownLanguage";
-import { copyNarrowed, indentUnit, TAB, widenLine } from "@/lib/editor/indent";
+import { copyNarrowed, indentUnit, widenLine } from "@/lib/editor/indent";
 import { languageFor } from "@/lib/editor/language";
-import { codeFontFamily, useSettings } from "@/lib/settings";
+import { useSettings } from "@/lib/settings";
 import { type Block, oursText, parseConflicts, type Segment } from "@/lib/git/conflicts";
 import { failed, toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { FileIcon } from "@/components/FileIcon";
 import { PathLabel } from "@/components/StatusBadge";
+import { Tokens, useCodeStyle } from "./codeLines";
 
 type Choice = { kind: "ours" | "theirs" | "both" | "custom"; lines: string[] };
 
@@ -265,11 +266,6 @@ function WholeFile({
   );
 }
 
-export function useCodeStyle() {
-  const s = useSettings();
-  return { fontFamily: codeFontFamily(s), fontSize: s.codeFontSize, fontWeight: s.codeFontWeight, lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`, tabSize: TAB } as const;
-}
-
 function CodeLines({ lines: raw, lang, className }: { lines: string[]; lang: string; className?: string }) {
   const s = useSettings();
   const style = useCodeStyle();
@@ -289,19 +285,6 @@ function CodeLines({ lines: raw, lang, className }: { lines: string[]; lang: str
         </div>
       ))}
     </div>
-  );
-}
-
-function Tokens({ tokens, text }: { tokens?: TokenLine; text: string }) {
-  if (!tokens) return <>{text}</>;
-  return (
-    <>
-      {tokens.map(([t, color, fs], i) => (
-        <span key={i} style={{ color: color || undefined, fontStyle: fs & 1 ? "italic" : undefined, fontWeight: fs & 2 ? 600 : undefined }}>
-          {t}
-        </span>
-      ))}
-    </>
   );
 }
 

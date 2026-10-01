@@ -1,0 +1,147 @@
+import { Plus } from "lucide-react";
+import { useMemo, useState } from "react";
+import type { DiffPair, DiffRow } from "@/lib/api";
+import { type TokenLine, tokenLookup, useHighlight } from "@/lib/editor/highlight";
+import { copyNarrowed, indentUnit, widen, widenColumn } from "@/lib/editor/indent";
+import { languageFor } from "@/lib/editor/language";
+import { type Gap, usefulEmphasis } from "@/lib/git/diffHunks";
+import { findLines, noteLines, type ReviewNote } from "@/lib/review/notes";
+import { addNote, useNotes } from "@/lib/review/noteStore";
+import { useSettings } from "@/lib/settings";
+import { cn } from "@/lib/utils";
+import { Composer } from "@/features/review/Composer";
+import { NoteCard } from "@/features/review/NoteThreads";
+import { Tokens, useCodeStyle } from "./codeLines";
+
+/** A file's changes in unified form: old and new line numbers, then the line, colored as the code view colors it. */
+export function UnifiedDiff({ pair, rows, path, oldPath }: { pair: DiffPair; rows: (DiffRow | Gap)[]; path: string; oldPath: string }) {
+  const s = useSettings();
+  const style = useCodeStyle();
+  const { original: a, modified: b } = pair;
+  const lang = useMemo(() => languageFor(path, b.exists ? b.text : a.text), [path, a.text, b.text, b.exists]);
+  // The file's own lines (notes are anchored by them), and as shown: indentation widened as the code view widens it.
+  const oldLines = useMemo(() => a.text.split(/\r?\n/), [a.text]);
+  const newLines = useMemo(() => b.text.split(/\r?\n/), [b.text]);
+  const unit = useMemo(() => indentUnit(b.text, a.text), [a.text, b.text]);
+  const [oldWide, newWide] = useMemo(() => [widen(a.text, unit), widen(b.text, unit)], [a.text, b.text, unit]);
+  const [oldShown, newShown] = useMemo(() => [oldWide.split(/\r?\n/), newWide.split(/\r?\n/)], [oldWide, newWide]);
+  const oldHl = useHighlight(a.exists ? oldWide : null, lang, s.codeTheme);
+  const newHl = useHighlight(b.exists ? newWide : null, lang, s.codeTheme);
+  const [oldTok, newTok] = useMemo(() => [tokenLookup(oldHl), tokenLookup(newHl)], [oldHl, newHl]);
+  // Room for the longest line number on each side.
+  const digits = `${String(Math.max(oldLines.length, newLines.length)).length + 1}ch`;
+
+  // Review notes, under the last of their lines wherever this version has them ("o:12" old line 12, "n:12" new).
+  const notes = useNotes();
+  const linesOf = (old: boolean) => (old ? (a.exists ? oldLines : null) : b.exists ? newLines : null);
+  const placed = useMemo(() => {
+    const at = new Map<string, ReviewNote[]>();
+    for (const n of notes) {
+      const lines = linesOf(!!n.old);
+      const start = !n.resolved && n.path === (n.old ? oldPath : path) && lines ? findLines(lines, n.code, n.start) : null;
+      if (start === null) continue;
+      const key = `${n.old ? "o" : "n"}:${start + n.code.length - 1}`;
+      at.set(key, [...(at.get(key) ?? []), n]);
+    }
+    return at;
+  }, [notes, path, oldPath, oldLines, newLines, a.exists, b.exists]);
+  // A note being written: its lines as picked, followed as the file changes.
+  const [draft, setDraft] = useState<{ old: boolean; start: number; code: string[] } | null>(null);
+  const drafted = useMemo(() => {
+    if (!draft) return null;
+    const start = findLines(draft.old ? oldLines : newLines, draft.code, draft.start) ?? draft.start;
+    const end = start + draft.code.length - 1;
+    return { ...draft, start, end, key: `${draft.old ? "o" : "n"}:${end}` };
+  }, [draft, oldLines, newLines]);
+  // ⇧-click stretches the note being written to the line clicked.
+  const note = (old: boolean, line: number, stretch: boolean) => {
+    const lines = linesOf(old);
+    if (!lines) return;
+    const [from, to] = stretch && drafted?.old === old ? [drafted.start, drafted.end] : [line, line];
+    const [start, end] = [Math.min(from, line), Math.max(to, line)];
+    setDraft({ old, start, code: lines.slice(start - 1, end) });
+  };
+
+  return (
+    <div className={cn("py-1 select-text", s.wordWrap ? "[overflow-wrap:anywhere]" : "overflow-x-auto")} style={{ ...style, color: (newHl ?? oldHl)?.data.fg }} onCopy={copyNarrowed(unit)}>
+      <div className={cn(!s.wordWrap && "min-w-max")}>
+        {rows.map((r, i) => {
+          if ("gap" in r) return <GapRow key={i} count={r.gap} />;
+          const raw = r.k === 2 ? (oldLines[r.o - 1] ?? "") : (newLines[r.n - 1] ?? "");
+          const text = r.k === 2 ? (oldShown[r.o - 1] ?? "") : (newShown[r.n - 1] ?? "");
+          const tokens = r.k === 2 ? oldTok(r.o - 1, text) : newTok(r.n - 1, text);
+          // Word changes are git's columns in the file's line: moved along with its widened indentation.
+          const ranges = r.k ? usefulEmphasis(raw, r.e).map(([x, y]) => [widenColumn(raw, x, unit), widenColumn(raw, y, unit)] as [number, number]) : [];
+          const keys = [r.k !== 1 && `o:${r.o}`, r.k !== 2 && `n:${r.n}`].filter((k): k is string => !!k);
+          const old = r.k === 2;
+          return (
+            <div key={i}>
+              <LineRow row={r} text={text} tokens={tokens} ranges={ranges} digits={digits} wrap={s.wordWrap} onNote={(stretch) => note(old, old ? r.o : r.n, stretch)} />
+              {keys.flatMap((k) => placed.get(k) ?? []).map((n) => (
+                <div key={n.id} className="sticky left-0 max-w-3xl py-0.5">
+                  <NoteCard note={n} />
+                </div>
+              ))}
+              {drafted && keys.includes(drafted.key) && (
+                <div className="sticky left-0 max-w-3xl py-0.5">
+                  <Composer
+                    label={`Note on ${noteLines(drafted)}${drafted.old ? " (old)" : ""}`}
+                    onCancel={() => setDraft(null)}
+                    onSubmit={async (body) => {
+                      addNote({ path: drafted.old ? oldPath : path, start: drafted.start, end: drafted.end, code: drafted.code, body: body.trim(), old: drafted.old || undefined });
+                      setDraft(null);
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+const TONES = {
+  0: { line: "", gutter: "text-subtle", emph: "", sign: " " },
+  1: { line: "bg-add-bg", gutter: "bg-add-gutter text-muted-foreground", emph: "bg-add-emph", sign: "+" },
+  2: { line: "bg-del-bg", gutter: "bg-del-gutter text-muted-foreground", emph: "bg-del-emph", sign: "−" },
+} as const;
+
+function LineRow({ row, text, tokens, ranges, digits, wrap, onNote }: { row: DiffRow; text: string; tokens: TokenLine | undefined; ranges: [number, number][]; digits: string; wrap: boolean; onNote: (stretch: boolean) => void }) {
+  const tone = TONES[row.k];
+  return (
+    <div className={cn("group/line relative flex min-h-[1lh]", tone.line)}>
+      {/* Off the Tab order, as there's one per line: the keyboard writes notes in the file's own diff. */}
+      <button
+        tabIndex={-1}
+        aria-label="Add review note"
+        title="Add review note (⇧-click: through this line)"
+        onClick={(e) => onNote(e.shiftKey)}
+        className="absolute top-0 left-0 z-[1] flex h-[1lh] w-[2.2ch] items-center justify-center rounded-sm bg-primary text-primary-foreground opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100 [&_svg]:size-3"
+      >
+        <Plus />
+      </button>
+      <span className={cn("shrink-0 pr-1 text-right select-none", tone.gutter)} style={{ width: digits }}>
+        {row.k !== 1 ? row.o : ""}
+      </span>
+      <span className={cn("shrink-0 pr-1 text-right select-none", tone.gutter)} style={{ width: digits }}>
+        {row.k !== 2 ? row.n : ""}
+      </span>
+      <span aria-hidden className="w-[3ch] shrink-0 text-center text-subtle select-none">
+        {tone.sign}
+      </span>
+      <span className={cn("min-w-0 flex-1 pr-4", wrap ? "whitespace-pre-wrap" : "whitespace-pre")}>
+        <Tokens text={text} tokens={tokens} ranges={ranges} emphasis={tone.emph} />
+      </span>
+    </div>
+  );
+}
+
+function GapRow({ count }: { count: number }) {
+  return (
+    <div className="flex min-h-[1lh] items-center bg-panel px-3 font-sans text-[11px] text-subtle select-none">
+      {count === 1 ? "1 unchanged line" : `${count} unchanged lines`}
+    </div>
+  );
+}

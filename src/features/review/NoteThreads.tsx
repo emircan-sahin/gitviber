@@ -7,7 +7,8 @@ import type { monaco } from "@/lib/editor/monaco";
 import { selectedLines } from "@/lib/editor/lineActions";
 import { findLines, noteLines, type ReviewNote } from "@/lib/review/notes";
 import { addNote, getNotes, removeNote, subscribeNotes, updateNote } from "@/lib/review/noteStore";
-import { Composer, newLineBefore, zoneWidget } from "@/features/github/pulls/ReviewThreads";
+import { Composer } from "./Composer";
+import { newLineBefore, zoneWidget } from "./zones";
 import { codeEditor, type Editor, isDiff } from "@/features/viewer/activeEditor";
 
 /** The file on show, as notes are placed in it and written on it. */
