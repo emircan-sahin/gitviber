@@ -131,3 +131,24 @@ fn watcher_still_follows_submodules() {
     init(&r.join("vendor/x"));
     assert_eq!(classify(&r, &r.join("vendor/x/f.txt")), None);
 }
+
+#[test]
+fn watcher_reloads_after_dropped_events() {
+    use crate::watch::{route, ExternalGitDirs, Kind};
+    use notify::event::{Event, EventKind, Flag};
+    let sb = Sandbox::new("watchrescan");
+    let r = sb.path("r");
+    init(&r);
+    let r = r.canonicalize().unwrap();
+    let ext = ExternalGitDirs::find(&r);
+    // On its own, .git is not a file the window shows.
+    let plain = Event::new(EventKind::Any).add_path(r.join(".git"));
+    assert!(route(&r, &ext, &plain).is_empty());
+    // FSEvents' MustScanSubDirs on .git: events were dropped, so everything reloads.
+    let rescan = plain.set_flag(Flag::Rescan);
+    let got: Vec<Kind> = route(&r, &ext, &rescan).into_iter().map(|c| c.0).collect();
+    assert_eq!(got, [Kind::Git]);
+    // inotify's queue overflow carries no path at all.
+    let overflow = Event::new(EventKind::Other).set_flag(Flag::Rescan);
+    assert_eq!(route(&r, &ext, &overflow).len(), 1);
+}

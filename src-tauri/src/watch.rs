@@ -139,6 +139,31 @@ pub(crate) fn not_ignored(root: &Path, paths: &HashSet<PathBuf>) -> bool {
     rels.iter().any(|r| !ignored.contains(r))
 }
 
+/// What one watcher event means for the window, path by path.
+pub(crate) fn route(
+    root: &Path,
+    external: &ExternalGitDirs,
+    event: &notify::Event,
+) -> Vec<(Kind, PathBuf)> {
+    // FSEvents dropped events (MustScanSubDirs; the path is often .git itself, which
+    // classifies to nothing): anything may have changed, so reload everything.
+    if event.need_rescan() {
+        return vec![(Kind::Git, root.to_path_buf())];
+    }
+    event
+        .paths
+        .iter()
+        .filter_map(|p| {
+            let kind = if p.starts_with(root) {
+                classify(root, p)
+            } else {
+                external.classify(p)
+            };
+            Some((kind?, p.clone()))
+        })
+        .collect()
+}
+
 pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String> {
     let (tx, rx) = mpsc::channel::<(Kind, PathBuf)>();
     let watch_root = root.clone();
@@ -158,15 +183,8 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
     .collect();
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
-            for p in &event.paths {
-                let kind = if p.starts_with(&watch_root) {
-                    classify(&watch_root, p)
-                } else {
-                    external.classify(p)
-                };
-                if let Some(kind) = kind {
-                    let _ = tx.send((kind, p.clone()));
-                }
+            for change in route(&watch_root, &external, &event) {
+                let _ = tx.send(change);
             }
         }
     })
