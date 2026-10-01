@@ -462,7 +462,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
           {rows.map(({ entry: e, depth }) => {
             const isOpen = shown.expanded.has(e.path);
             const st = fileStatus.get(e.path);
-            const tone = st ? statusInfo(st).text : undefined;
+            // Ignored: the whole row in the faint text color (still 4.5:1), its icons faded.
+            const tone = e.ignored ? "text-subtle" : st ? statusInfo(st).text : undefined;
             const sel: Selection = { kind: "file", path: e.path };
             const active = !e.isDir && activeKey === selectionKey(sel);
             const renaming = editing?.mode === "rename" && editing.entry.path === e.path;
@@ -501,9 +502,9 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
                     <NameInput initial={e.name} selectStem={!e.isDir} onDone={finishEditing} />
                   ) : (
                     <>
-                      <span className={cn("truncate", tone ?? (e.ignored ? "text-subtle" : "text-foreground/85"))}>{e.name}</span>
+                      <span className={cn("truncate", tone ?? "text-foreground/85")}>{e.name}</span>
                       {st && <span className={cn("ml-auto font-mono text-[10.5px] font-bold", tone)}>{statusInfo(st).letter}</span>}
-                      {!st && e.isDir && dirtyDirs.has(e.path) && <span className="ml-auto size-1.5 rounded-full bg-modified" />}
+                      {!st && e.isDir && dirtyDirs.has(e.path) && <span className={cn("ml-auto size-1.5 rounded-full", e.ignored ? "bg-subtle" : "bg-modified")} />}
                     </>
                   )}
                 </Row>
