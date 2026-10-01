@@ -22,10 +22,11 @@ import { api, errorMessage, type GitInfo, NOT_A_REPO, type OpenedRepo } from "@/
 import { useCommands } from "@/lib/commands/keybindings";
 import { useRecentMenu } from "@/lib/commands/menu";
 import { stepUiScale } from "@/lib/settings";
+import { fallbackFor, latestOnly } from "@/lib/repo/opening";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder } from "@/lib/repo/recent";
 import { toast } from "@/lib/app/toast";
 import { openTargetIn } from "@/lib/links/linkHost";
-import { folderName, isInside } from "@/lib/path";
+import { folderName } from "@/lib/path";
 import { IS_MAC } from "@/lib/platform";
 
 export function App() {
@@ -57,7 +58,10 @@ export function App() {
   // Two quick opens could finish in either order, leaving the backend on one folder and the window
   // on the other. So they run one at a time, each shown once it opened, and one a later open
   // overtook before it started is skipped: both end on the last folder that opened.
-  const opens = useRef({ last: 0, queue: Promise.resolve() as Promise<unknown> });
+  const [opens] = useState(latestOnly);
+  // The window's repo as of the last render, for the gone check below.
+  const shown = useRef<string | null>(null);
+  shown.current = opened?.root ?? null;
 
   /**
    * `replacing`: a saved project whose folder moved; this repo takes its place in the list. Its root
@@ -66,10 +70,7 @@ export function App() {
   const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string): Promise<string | false | undefined> => {
     const target = path ?? (await open({ directory: true, title: "Open a git repository" }));
     if (typeof target !== "string") return;
-    const seq = ++opens.current.last;
-    const latest = () => seq === opens.current.last;
-    const turn = opens.current.queue.then(() => (latest() ? api.openRepo(target) : null));
-    opens.current.queue = turn.catch(() => {});
+    const { turn, latest } = opens.run(() => api.openRepo(target));
     try {
       const repo = await turn;
       if (!repo) return;
@@ -88,7 +89,7 @@ export function App() {
       toast("error", "Could not open repository", errorMessage(e));
       return false;
     }
-  }, []);
+  }, [opens]);
 
   // The last path opened from outside wins (opened.rs); a file shows once its repository is open.
   const openAsked = useCallback(async () => {
@@ -107,7 +108,7 @@ export function App() {
   // fall back to the project it was under, else the first project.
   useEffect(() => {
     const last = lastRepo();
-    const fallback = fallbackFor(last);
+    const fallback = fallbackFor(recentRepos(), last);
     booted.current = (async () => {
       if (await openAsked()) return;
       // Not false: it opened, or something opened meanwhile took over.
@@ -120,12 +121,14 @@ export function App() {
   // its project takes its place, as at launch.
   const onRepoGone = useCallback(
     async (gone: OpenedRepo) => {
-      const next = fallbackFor(gone.root, gone.main);
+      // Too late: another repo is open, or on its way.
+      if (shown.current !== gone.root || opens.busy()) return;
+      const next = fallbackFor(recentRepos(), gone.root, gone.main);
       const root = next ? await openRepo(next, true) : false;
       if (root === false) setOpened(null);
       toast("info", `${folderName(gone.root)} no longer exists`, root ? `Opened ${folderName(root)} in its place.` : undefined);
     },
-    [openRepo],
+    [openRepo, opens],
   );
 
   // Paths opened from outside while the app runs (opened.rs): the last one wins. One that comes
@@ -206,12 +209,6 @@ export function App() {
       <Splash ready={!booting} />
     </TooltipProvider>
   );
-}
-
-/** What to open in place of `gone`: its main worktree if that's another, else the project it was inside, else the first. */
-function fallbackFor(gone: string | null, main?: string) {
-  const projects = recentRepos().filter((p) => p !== gone);
-  return (main !== gone ? main : undefined) ?? projects.find((p) => gone && isInside(gone, p)) ?? projects[0];
 }
 
 /** A folder outside any repository: offer to make it one. True once it is. */
