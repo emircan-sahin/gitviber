@@ -602,6 +602,7 @@ function ListTabButton({ active, onClick, count, children }: { active: boolean; 
   return (
     <button
       onClick={onClick}
+      aria-pressed={active}
       className={cn(
         "flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium",
         active ? "bg-active text-foreground" : "text-subtle hover:text-foreground focus-visible:text-foreground",

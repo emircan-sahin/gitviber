@@ -41,6 +41,7 @@ function Segmented<T extends string>({
           key={o.value}
           // Inside a form, a plain button would submit it.
           type="button"
+          aria-pressed={value === o.value}
           onClick={() => onChange(o.value)}
           className={segmentClass(variant, value === o.value)}
         >

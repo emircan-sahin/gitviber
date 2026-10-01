@@ -470,7 +470,7 @@ function CompareToggle() {
 function IconBtn({ label, command, active, onClick, children }: { label: string; command: CommandId; active?: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <Tip label={label} shortcut={useShortcut(command)}>
-      <Button variant="ghost" size="icon-sm" onClick={onClick} className={cn(active && "bg-primary/15 text-primary hover:bg-primary/20 focus-visible:bg-primary/20 hover:text-primary focus-visible:text-primary")}>
+      <Button variant="ghost" size="icon-sm" aria-pressed={active} onClick={onClick} className={cn(active && "bg-primary/15 text-primary hover:bg-primary/20 focus-visible:bg-primary/20 hover:text-primary focus-visible:text-primary")}>
         {children}
       </Button>
     </Tip>
