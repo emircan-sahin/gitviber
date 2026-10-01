@@ -39,6 +39,9 @@ export const UI_FONTS = {
   "Avenir Next": '"Avenir Next", -apple-system, BlinkMacSystemFont, sans-serif',
 } as const;
 export type UiFont = keyof typeof UI_FONTS | "Custom";
+/** The interface text's weight; medium and semibold labels stay a step above it. */
+export const UI_FONT_WEIGHTS = { 400: "Regular", 500: "Medium" } as const;
+export type UiFontWeight = keyof typeof UI_FONT_WEIGHTS;
 const MAC_ONLY_UI_FONTS: readonly UiFont[] = ["Helvetica Neue", "Avenir Next"];
 /** The presets this platform can show. */
 export const uiFontChoices = (Object.keys(UI_FONTS) as UiFont[]).filter((f) => IS_MAC || !MAC_ONLY_UI_FONTS.includes(f));
@@ -151,6 +154,7 @@ export interface Settings {
   lightTheme: LightTheme;
   uiFont: UiFont;
   customUiFont: string;
+  uiFontWeight: UiFontWeight;
   syntaxTheme: SyntaxTheme;
   lightSyntaxTheme: LightSyntaxTheme;
   sideBySide: boolean;
@@ -238,6 +242,7 @@ const DEFAULTS: Settings = {
   lightTheme: "light",
   uiFont: "System",
   customUiFont: "",
+  uiFontWeight: 500,
   syntaxTheme: "dark-plus",
   lightSyntaxTheme: "github-light-default",
   sideBySide: false,
@@ -295,6 +300,7 @@ function load(): Settings {
     if (!IS_MAC && MAC_ONLY_FONTS.includes(s.codeFont)) s.codeFont = DEFAULTS.codeFont;
     if (!Object.hasOwn(UI_FONTS, s.uiFont) && s.uiFont !== "Custom") s.uiFont = DEFAULTS.uiFont;
     if (!IS_MAC && MAC_ONLY_UI_FONTS.includes(s.uiFont)) s.uiFont = DEFAULTS.uiFont;
+    if (!Object.hasOwn(UI_FONT_WEIGHTS, s.uiFontWeight)) s.uiFontWeight = DEFAULTS.uiFontWeight;
     if (typeof s.codeFontSize !== "number" || !Number.isFinite(s.codeFontSize)) s.codeFontSize = DEFAULTS.codeFontSize;
     s.codeFontSize = clampCodeFont(s.codeFontSize);
     s.customCodeFont = typeof s.customCodeFont === "string" ? cleanFontName(s.customCodeFont) : "";
@@ -429,7 +435,12 @@ function applyScale() {
 }
 
 function applyUiFont() {
-  document.documentElement.style.setProperty("--font-ui", uiFontFamily(current));
+  const root = document.documentElement.style;
+  root.setProperty("--font-ui", uiFontFamily(current));
+  // Tailwind's font-normal/medium/semibold read these: shifted with the base, a label set in
+  // medium still stands out from Medium body text.
+  const step = current.uiFontWeight - 400;
+  for (const [name, weight] of [["normal", 400], ["medium", 500], ["semibold", 600]] as const) root.setProperty(`--font-weight-${name}`, String(weight + step));
 }
 
 function emit() {
