@@ -151,16 +151,27 @@ pub(crate) fn route(
     external: &ExternalGitDirs,
     event: &notify::Event,
 ) -> Vec<(Kind, PathBuf)> {
-    // FSEvents dropped events (MustScanSubDirs; the path is often .git itself, which
-    // classifies to nothing): anything may have changed, so reload everything.
-    if event.need_rescan() {
+    // Events were dropped (FSEvents' MustScanSubDirs, inotify's overflow): for the repo or a git
+    // dir itself, which classify to nothing, anything may have changed. A folder in the worktree
+    // counts as written to, so ignored build output and nested worktrees still stay out.
+    let rescan = event.need_rescan();
+    if rescan && event.paths.is_empty() {
         return vec![(Kind::Git, root.to_path_buf())];
     }
+    let whole = |p: &Path| {
+        p == root
+            || p == root.join(".git")
+            || [&external.own, &external.common]
+                .iter()
+                .any(|d| d.as_deref() == Some(p))
+    };
     event
         .paths
         .iter()
         .filter_map(|p| {
-            let kind = if p.starts_with(root) {
+            let kind = if rescan && whole(p) {
+                Some(Kind::Git)
+            } else if p.starts_with(root) {
                 classify(root, p)
             } else {
                 external.classify(p)
@@ -227,10 +238,12 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
                 }
                 next = rx.recv_timeout(Duration::from_millis(150)).ok();
             }
-            // A git change reloads the status anyway; no need to ask git about the files.
-            if !change.git {
-                change.worktree = not_ignored(&root, &touched);
-            }
+            // A git change reloads the status anyway; no need to ask git which files count.
+            change.worktree = if change.git {
+                !touched.is_empty()
+            } else {
+                not_ignored(&root, &touched)
+            };
             if change.worktree || change.git {
                 let _ = app.emit("repo-changed", change);
             }

@@ -160,14 +160,24 @@ fn watcher_reloads_after_dropped_events() {
     init(&r);
     let r = r.canonicalize().unwrap();
     let ext = ExternalGitDirs::find(&r);
+    let kinds = |e: &Event| -> Vec<Kind> { route(&r, &ext, e).into_iter().map(|c| c.0).collect() };
     // On its own, .git is not a file the window shows.
     let plain = Event::new(EventKind::Any).add_path(r.join(".git"));
-    assert!(route(&r, &ext, &plain).is_empty());
-    // FSEvents' MustScanSubDirs on .git: events were dropped, so everything reloads.
-    let rescan = plain.set_flag(Flag::Rescan);
-    let got: Vec<Kind> = route(&r, &ext, &rescan).into_iter().map(|c| c.0).collect();
-    assert_eq!(got, [Kind::Git]);
+    assert!(kinds(&plain).is_empty());
+    // FSEvents' MustScanSubDirs on .git or the repo: events were dropped, so everything reloads.
+    assert_eq!(kinds(&plain.set_flag(Flag::Rescan)), [Kind::Git]);
+    let root = Event::new(EventKind::Other).add_path(r.clone());
+    assert_eq!(kinds(&root.set_flag(Flag::Rescan)), [Kind::Git]);
     // inotify's queue overflow carries no path at all.
     let overflow = Event::new(EventKind::Other).set_flag(Flag::Rescan);
-    assert_eq!(route(&r, &ext, &overflow).len(), 1);
+    assert_eq!(kinds(&overflow), [Kind::Git]);
+    // A build folder overflowing is a folder written to: the ignore rules still apply to it.
+    let build = Event::new(EventKind::Other)
+        .add_path(r.join("target/debug"))
+        .set_flag(Flag::Rescan);
+    assert_eq!(kinds(&build), [Kind::Worktree]);
+    let objects = Event::new(EventKind::Other)
+        .add_path(r.join(".git/objects/ab"))
+        .set_flag(Flag::Rescan);
+    assert!(kinds(&objects).is_empty());
 }
