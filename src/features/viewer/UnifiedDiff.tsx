@@ -1,5 +1,5 @@
 import { Plus } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { DiffPair, DiffRow } from "@/lib/api";
 import { type TokenLine, tokenLookup, useHighlight } from "@/lib/editor/highlight";
 import { copyNarrowed, indentUnit, widen, widenColumn } from "@/lib/editor/indent";
@@ -17,6 +17,7 @@ import type { FileMemo } from "./stackedMemo";
 /** A file's changes in unified form: old and new line numbers, then the line, colored as the code view colors it. */
 export function UnifiedDiff({ pair, rows, path, oldPath, memo }: { pair: DiffPair; rows: (DiffRow | Gap)[]; path: string; oldPath: string; memo: FileMemo }) {
   const s = useSettings();
+  const box = useRef<HTMLDivElement>(null);
   const style = useCodeStyle();
   const { original: a, modified: b } = pair;
   const lang = useMemo(() => languageFor(path, b.exists ? b.text : a.text), [path, a.text, b.text, b.exists]);
@@ -49,6 +50,8 @@ export function UnifiedDiff({ pair, rows, path, oldPath, memo }: { pair: DiffPai
   const setDraft = (d: FileMemo["draft"] | null) => {
     memo.draft = d ?? undefined;
     setDraftState(d ?? null);
+    // A closed note box hands the keys back to the view, for J/K and C.
+    if (!d) box.current?.closest<HTMLElement>("[data-code-scroll]")?.focus({ preventScroll: true });
   };
   const drafted = useMemo(() => {
     if (!draft) return null;
@@ -65,7 +68,7 @@ export function UnifiedDiff({ pair, rows, path, oldPath, memo }: { pair: DiffPai
   };
 
   return (
-    <div className={cn("py-1 select-text", s.wordWrap ? "[overflow-wrap:anywhere]" : "overflow-x-auto")} style={{ ...style, color: (newHl ?? oldHl)?.data.fg }} onCopy={copyNarrowed(unit)}>
+    <div ref={box} className={cn("py-1 select-text", s.wordWrap ? "[overflow-wrap:anywhere]" : "overflow-x-auto")} style={{ ...style, color: (newHl ?? oldHl)?.data.fg }} onCopy={copyNarrowed(unit)}>
       <div className={cn(!s.wordWrap && "min-w-max")}>
         {rows.map((r) => {
           if ("gap" in r) return <GapRow key={`g${r.o}:${r.n}`} count={r.gap} />;
@@ -115,9 +118,10 @@ const TONES = {
 function LineRow({ row, text, tokens, ranges, digits, wrap, onNote }: { row: DiffRow; text: string; tokens: TokenLine | undefined; ranges: [number, number][]; digits: string; wrap: boolean; onNote: (stretch: boolean) => void }) {
   const tone = TONES[row.k];
   return (
-    <div className={cn("group/line relative flex min-h-[1lh]", tone.line)}>
-      {/* Off the Tab order, as there's one per line: the keyboard writes notes in the file's own diff. */}
+    <div data-line={row.k} className={cn("group/line relative flex min-h-[1lh]", tone.line)}>
+      {/* Off the Tab order, as there's one per line: the keyboard's way is Add Review Note (C). */}
       <button
+        data-add-note
         tabIndex={-1}
         aria-label="Add review note"
         title="Add review note (⇧-click: through this line)"

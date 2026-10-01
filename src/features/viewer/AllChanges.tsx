@@ -9,7 +9,8 @@ import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusPill } from "@/components/StatusBadge";
 import type { RepoStatus } from "@/lib/api";
 import { shownRows } from "@/lib/git/diffHunks";
-import { matchesCommand } from "@/lib/commands/keybindings";
+import { useCommands } from "@/lib/commands/keybindings";
+import { codeWantsFocus } from "@/lib/ui/panels";
 import { type ChangeList, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import { diffWhitespace, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
@@ -46,6 +47,14 @@ function filesOf(list: ChangeList, status: RepoStatus | null, branchRows: Branch
   // Nested repos have no diff, as in the list.
   return list === "staged" ? status.staged.map((file) => ({ kind: "staged", file })) : status.unstaged.filter((f) => !f.nested).map((file) => ({ kind: "unstaged", file }));
 }
+
+/** The stacked view on show: the review keys walk its files instead of opening one. */
+interface StackedView {
+  step(dir: 1 | -1): void;
+  toggleViewed(): void;
+}
+let onShow: StackedView | null = null;
+export const stackedView = () => onShow;
 
 /** The files' sections in `el`, the stacked view's scroller. */
 const blocksIn = (el: HTMLElement | null) => [...(el?.querySelectorAll<HTMLElement>("[data-file]") ?? [])];
@@ -118,17 +127,39 @@ export function AllChanges({ list, status, branchRows, revision, viewed, toggleV
     redraw();
   };
 
-  // J/K walk the files here and V marks the one on top, while this view has the keys.
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (!files?.length || (e.target as HTMLElement).closest("textarea, input")) return;
-    const step = matchesCommand("review.nextFile", e.nativeEvent) ? 1 : matchesCommand("review.prevFile", e.nativeEvent) ? -1 : 0;
-    const i = current();
-    if (step) scrollTo(blocks()[Math.max(0, Math.min(files.length - 1, i + step))]);
-    else if (matchesCommand("review.toggleViewed", e.nativeEvent) && files[i] && files[i].kind !== "staged") markViewed(files[i]);
-    else return;
-    e.preventDefault();
-    e.stopPropagation();
+  // J/K walk the files here, V marks the one on top and C writes a note on the line under the
+  // pointer, else the first changed one in view: Workspace hands this view the review keys.
+  const step = (dir: 1 | -1) => {
+    if (files?.length) scrollTo(blocks()[Math.max(0, Math.min(files.length - 1, current() + dir))]);
   };
+  const toggleTop = () => {
+    const sel = files?.[current()];
+    if (sel && sel.kind !== "staged") markViewed(sel);
+  };
+  const addNote = () => {
+    const el = scroller.current;
+    if (!el) return;
+    const { top, bottom } = el.getBoundingClientRect();
+    // Below the file's sticky header, which covers the line at the very top.
+    const seen = (row: HTMLElement) => row.getBoundingClientRect().top >= top + 32 && row.getBoundingClientRect().bottom <= bottom;
+    const rows = [...el.querySelectorAll<HTMLElement>("[data-line]")];
+    const row = el.querySelector<HTMLElement>("[data-line]:hover") ?? rows.find((r) => r.dataset.line !== "0" && seen(r)) ?? rows.find(seen);
+    row?.querySelector<HTMLButtonElement>("button[data-add-note]")?.click();
+  };
+  const keys = useRef({ step, toggleTop, addNote });
+  keys.current = { step, toggleTop, addNote };
+  useEffect(() => {
+    const view: StackedView = { step: (dir) => keys.current.step(dir), toggleViewed: () => keys.current.toggleTop() };
+    onShow = view;
+    return () => {
+      if (onShow === view) onShow = null;
+    };
+  }, []);
+  useCommands({ "review.addNote": files?.length ? () => keys.current.addNote() : undefined });
+  // Opened from the code view (a tab switch, quick open): it takes the keys, as a file would.
+  useEffect(() => {
+    if (codeWantsFocus()) scroller.current?.focus();
+  }, []);
 
   const { add, del } = sumLines((files ?? []).map((f) => f.file));
   const reviewed = (files ?? []).filter(viewed).length;
@@ -163,7 +194,7 @@ export function AllChanges({ list, status, branchRows, revision, viewed, toggleV
           </>
         )}
       </div>
-      <div ref={scroller} data-code-scroll tabIndex={0} onKeyDown={onKeyDown} className="relative min-h-0 flex-1 overflow-y-auto outline-none">
+      <div ref={scroller} data-code-scroll tabIndex={0} className="relative min-h-0 flex-1 overflow-y-auto outline-none">
         {empty ? (
           <div className="flex h-full items-center justify-center p-6 text-[12.5px] text-muted-foreground">{empty}</div>
         ) : (

@@ -10,7 +10,7 @@ import { setLinkHost } from "@/lib/links/linkHost";
 import { prepare } from "@/lib/editor/monaco";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { dropReveal, revealWaits } from "@/lib/editor/reveal";
-import { onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
+import { type ChangeList, onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
@@ -37,6 +37,7 @@ import { TerminalRestoreOffer } from "@/features/terminal/TerminalFind";
 import { TopBar } from "@/features/topbar/TopBar";
 import { Viewer } from "@/features/viewer/Viewer";
 import { prefetchSelection, resetPairCache } from "@/features/viewer/diffPairs";
+import { stackedView } from "@/features/viewer/AllChanges";
 import { openEdits } from "@/lib/editor/edits";
 import { openNotes, useNoteCheck } from "@/lib/review/noteStore";
 import { copyNotes, pendingNotes, sendNotes } from "@/features/review/ReviewNotes";
@@ -206,8 +207,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     for (const n of [changes[i + 1], changes[i - 1]]) if (n) prefetchSelection(n, repo.revision);
   }, [changes, activeKey, repo.revision]);
 
-  // J/K walk the changed files, the core loop of reviewing an agent's work.
+  // J/K walk the changed files, the core loop of reviewing an agent's work; in a stacked view of
+  // them, its files.
   const step = (dir: 1 | -1) => {
+    if (active?.sel.kind === "changes") return stackedView()?.step(dir);
     if (!changes.length) return;
     const i = changes.findIndex((c) => selectionKey(c) === activeKey);
     open(changes[i < 0 ? 0 : Math.min(changes.length - 1, Math.max(0, i + dir))]);
@@ -226,16 +229,22 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       : undefined;
 
   const active = tabs.find((t) => t.key === activeKey) ?? null;
+  // From the palette, as quick open: the code view takes the keys, and the stacked view them as it opens.
+  const openAll = (list: ChangeList) => {
+    focusPanel("code");
+    open({ kind: "changes", list }, true);
+  };
   useCommands({
     "review.nextFile": () => step(1),
     "review.prevFile": () => step(-1),
     "review.branch": startReview,
-    "review.openAll": () => open({ kind: "changes", list: reviewing ? "branch" : "unstaged" }, true),
-    "review.openAllStaged": status?.staged.length ? () => open({ kind: "changes", list: "staged" }, true) : undefined,
+    "review.openAll": () => openAll(reviewing ? "branch" : "unstaged"),
+    "review.openAllStaged": status?.staged.length ? () => openAll("staged") : undefined,
     "review.copyNotes": () => copyNotes(pendingNotes()),
     "review.sendNotes": () => sendNotes(pendingNotes()),
     "review.toggleViewed": () => {
       const t = tabs.find((x) => x.key === activeKey);
+      if (t?.sel.kind === "changes") return stackedView()?.toggleViewed();
       // On a staged file this would unstage it; too much for a stray single key.
       if (t && t.sel.kind !== "staged") toggleViewed(t.sel);
     },
