@@ -328,3 +328,24 @@ fn a_new_worktree_checks_out_an_existing_branch() {
         assert!(!elsewhere.join(held).exists());
     }
 }
+
+/// A folder picked through a symlink: the new worktree's path is the one `worktree list`
+/// reports, which the picker and the terminals compare it with.
+#[cfg(unix)]
+#[test]
+fn a_new_worktree_through_a_symlink_has_its_real_path() {
+    let sb = Sandbox::new("wtlink");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    fs::create_dir_all(sb.path("real")).unwrap();
+    std::os::unix::fs::symlink(sb.path("real"), sb.path("link")).unwrap();
+
+    let link = sb.path("link");
+    let wt = add_worktree(&r, "feat", Some("refs/heads/main"), link.to_str()).unwrap();
+    assert_eq!(
+        Path::new(&wt),
+        sb.path("real").canonicalize().unwrap().join("feat")
+    );
+    assert!(worktrees(&r).unwrap().iter().any(|w| w.path == wt));
+}

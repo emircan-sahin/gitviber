@@ -112,7 +112,7 @@ pub fn main_worktree(repo: &Path) -> Option<String> {
         .map(|w| w.path)
 }
 
-/// Checks `branch` out in a new worktree and returns its path, `<dir>/<branch>`; `dir` is
+/// Checks `branch` out in a new worktree and returns its real path, `<dir>/<branch>`; `dir` is
 /// `<parent>/<project>.worktrees` unless given. With `base`, `branch` is a new branch made
 /// there, tracking nothing like `create_branch`'s. Without, a branch only on a remote gets a
 /// local tracking branch (git's own DWIM for `worktree add`). The ignored files the main
@@ -137,7 +137,10 @@ pub fn add_worktree(
     if let Ok(files) = worktree_includes(&from) {
         crate::fs::copy_into(&from, Path::new(&target), &files);
     }
-    Ok(target)
+    // As `worktree list` reports it: a folder picked through a symlink is listed by its real path.
+    Ok(Path::new(&target)
+        .canonicalize()
+        .map_or(target, |p| p.to_string_lossy().into_owned()))
 }
 
 /// How many files `add_worktree` copies in: links and paths out of the worktree aren't copied, so
