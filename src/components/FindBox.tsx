@@ -58,7 +58,7 @@ export function FindBox({
         className="h-6 w-40 min-w-0 bg-transparent text-[12px] outline-none placeholder:text-subtle"
       />
       <FindToggles options={options} onOptions={onOptions} />
-      <span title={error ?? undefined} className={cn("min-w-16 shrink-0 text-right text-[11px] whitespace-nowrap tabular-nums", none ? "text-removed" : "text-subtle")}>
+      <span aria-live="polite" title={error ?? undefined} className={cn("min-w-16 shrink-0 text-right text-[11px] whitespace-nowrap tabular-nums", none ? "text-removed" : "text-subtle")}>
         {!query ? "" : error ? "Invalid regex" : !at ? "" : !at.total ? "No results" : at.index ? `${at.index} of ${at.total}` : `${at.total}+`}
       </span>
       <BoxButton label="Previous match (⇧↵)" disabled={!at?.total} onClick={() => onStep(-1)}>
