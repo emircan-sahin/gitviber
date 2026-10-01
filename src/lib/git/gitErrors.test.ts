@@ -161,6 +161,48 @@ To add an exception for this directory, call:
   assert.equal(fix(refused), "safe-directory");
 });
 
+// GitHub's push protection, as git prints it (GitHub's docs, "Resolving a blocked push").
+const PUSH_PROTECTION = `remote: error: GH013: Repository rule violations found for refs/heads/main.
+remote:
+remote: - GITHUB PUSH PROTECTION
+remote:   —————————————————————————————————————————
+remote:     Resolve the following violations before pushing again
+remote:
+remote:     - Push cannot contain secrets
+remote:
+remote:
+remote:      (?) Learn how to resolve a blocked push
+remote:      https://docs.github.com/code-security/secret-scanning/working-with-secret-scanning-and-push-protection/working-with-push-protection-from-the-command-line#resolving-a-blocked-push
+remote:
+remote:
+remote:       —— GitHub Personal Access Token ——————————————————————
+remote:        locations:
+remote:          - commit: 8728dbe67d1a1c4b3a0b1a2c3d4e5f6a7b8c9d0e
+remote:            path: config/env.ts:4
+remote:
+remote:        (?) To push, remove secret from commit(s) or follow this URL to allow the secret.
+remote:        https://github.com/owner/repo/security/secret-scanning/unblock-secret/2abcDEF
+remote:
+remote:       —— Slack API Token ——————————————————————
+remote:        (?) To push, remove secret from commit(s) or follow this URL to allow the secret.
+remote:        https://github.com/owner/repo/security/secret-scanning/unblock-secret/3ghiJKL
+remote:
+To github.com:owner/repo.git
+ ! [remote rejected] main -> main (push declined due to repository rule violations)
+error: failed to push some refs to 'github.com:owner/repo.git'`;
+
+test("a secret GitHub's push protection found is explained, with the page it links", () => {
+  const help = explainGitError(PUSH_PROTECTION);
+  assert.equal(help?.fix, "secret");
+  assert.equal(help?.target, "https://github.com/owner/repo/security/secret-scanning/unblock-secret/2abcDEF");
+  const old = `remote: error: GH009: Secrets detected! This push failed.
+remote:
+remote:     GITHUB PUSH PROTECTION`;
+  assert.deepEqual([fix(old), explainGitError(old)?.target], ["secret", undefined]);
+  // Other repository rules (signed commits, say) aren't about secrets.
+  assert.equal(explainGitError("remote: error: GH013: Repository rule violations found for refs/heads/main.\nremote: - Commits must have verified signatures."), null);
+});
+
 // commit.rs names the hooks set up when a commit fails; git prints nothing of its own then.
 const HOOK_FAILED = `${HOOK_OUTPUT}
 hint: Commit hooks set up here: pre-commit, commit-msg.`;

@@ -1,12 +1,12 @@
-/** Which way out fits: the caller that can take it supplies the buttons (a pull, a retry), except identity, signing and the index lock, which always fit. */
-export type GitFix = "diverged" | "fetch-first" | "autostash" | "identity" | "signing" | "hooks" | "index-lock" | "safe-directory";
+/** Which way out fits: the caller that can take it supplies the buttons (a pull, a retry); identity, signing, the index lock and GitHub's page on a secret always fit. */
+export type GitFix = "diverged" | "fetch-first" | "autostash" | "identity" | "signing" | "hooks" | "index-lock" | "safe-directory" | "secret";
 
 export interface GitErrorHelp {
   title: string;
   /** What went wrong and what to do, in a sentence or two. */
   explanation: string;
   fix?: GitFix;
-  /** What the fix acts on, from git's words (a pattern's `target` group): the lock file to remove. */
+  /** What the fix acts on, from git's words (a pattern's `target` group): the lock file to remove, the page GitHub linked. */
   target?: string;
 }
 
@@ -86,6 +86,17 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
       explanation:
         "This repository belongs to another account on this computer (copied from another disk, or made with sudo), and git refuses to run where someone else could have set up what it runs. If you trust it, Trust this folder adds it to safe.directory in your global git config.",
       fix: "safe-directory",
+    },
+  ],
+  // GitHub's push protection (GH013 under repository rules, GH009 before them). The page it links
+  // for each secret says what it found and the ways out; the first one is the target.
+  [
+    /^remote: error: GH009: Secrets detected!|^remote:\s+- Push cannot contain secrets(?:[\s\S]*?^remote:\s+(?<target>https:\/\/github\.com\/\S+\/unblock-secret\/\S+))?/m,
+    {
+      title: "GitHub found a secret in your commits",
+      explanation:
+        "The push was refused because a commit holds what looks like a token or key; Details lists which commit and file. Take it out of that commit (if it's the last one, undo it, remove the secret and commit again), and revoke the secret if it was real.",
+      fix: "secret",
     },
   ],
   // state.rs retried once already. A killed agent's git leaves the lock behind for good.

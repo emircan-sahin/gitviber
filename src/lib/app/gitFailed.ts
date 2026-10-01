@@ -17,6 +17,7 @@ const always = (target = ""): GitFixes => ({
         void api.removeIndexLock(target).then(() => toast("success", "Index lock removed", "Try again now."), failed("Could not remove the lock")),
     },
   ],
+  secret: target ? [{ label: "Open on GitHub", run: () => void github.openUrl(target).catch(failed("Could not open the link")) }] : [],
 });
 
 /**
@@ -27,5 +28,5 @@ export function gitFailed(title: string, e: unknown, fixes: GitFixes = {}) {
   const message = errorMessage(e);
   const help = explainGitError(message);
   if (!help) return toast("error", title, message);
-  explainedError(title, `${help.title}\n${help.explanation}`, message, (help.fix && (fixes[help.fix] ?? always(help.target)[help.fix])) || []);
+  explainedError(title, `${help.title}\n${help.explanation}`, message, (help.fix && [...(fixes[help.fix] ?? []), ...(always(help.target)[help.fix] ?? [])]) || []);
 }
