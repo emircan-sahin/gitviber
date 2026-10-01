@@ -7,7 +7,7 @@ import { api, type Branch, github, type Target, type Worktree } from "@/lib/api"
 import { loadWorktreeDir, loadWorktreeRun, moveRoot, saveBranchIssue, saveWorktreeDir, saveWorktreeRun, sharedWorktreeDir } from "@/lib/repo/session";
 import { issueBranchName, withIssue } from "@/lib/github/issueWork";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminal/terminals";
-import { localNames, refNameCheck } from "@/lib/git/refs";
+import { localNames, refNameCheck, worktreeBase, worktreeBranch } from "@/lib/git/refs";
 import { shortPath } from "@/lib/git/worktrees";
 import { plural } from "@/lib/format";
 import { folderName, parentFolder } from "@/lib/path";
@@ -63,16 +63,6 @@ type Inner = Props & { onClose: () => void };
 const folderFor = (branch: string) => branch.replaceAll("/", "-");
 const isCommit = (base: string) => /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(base);
 
-/** The default branch, as git/branch.rs's default_branch finds it: local if there is one. */
-function defaultBase(branches: Branch[]) {
-  const remote = branches.find((b) => b.remoteDefault && b.name.startsWith("origin/"));
-  const name = remote ? remote.name.slice("origin/".length) : "main";
-  if (branches.some((b) => !b.remote && b.name === name)) return `refs/heads/${name}`;
-  if (remote) return `refs/remotes/${remote.name}`;
-  const current = branches.find((b) => b.current);
-  return current ? `refs/heads/${current.name}` : "HEAD";
-}
-
 export function WorktreeDialogs(props: Props) {
   const dialog = useWorktreeDialog();
   if (!dialog) return null;
@@ -92,7 +82,7 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
   const beside = `${parentFolder(main)}${folderName(main)}.worktrees`;
   const fallback = sharedWorktreeDir(main) ?? beside;
   const [name, setName] = useState(() => (issue ? issueBranchName(issue.number, issue.title) : ""));
-  const [from, setFrom] = useState(() => base ?? defaultBase(branches));
+  const [from, setFrom] = useState(() => base ?? worktreeBase(branches));
   // No branch to default to (an unborn or detached repo): HEAD is listed, not silently used.
   const [headOption] = useState(from === "HEAD");
   const [dir, setDir] = useState(() => loadWorktreeDir(main) ?? fallback);
@@ -100,10 +90,12 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
   const [command, setCommand] = useState(() => loadWorktreeRun(main, !!issue));
   const [switchTo, setSwitchTo] = useState(false);
   const includes = useAsyncValue(api.worktreeIncludes, [], 0);
-  const check = refNameCheck(name, localNames(branches));
-  const n = pull ? pull.branch : check.name;
+  // An existing branch (local, or only on a remote) is checked out as it is; the base picked is for a new one.
+  const picked = worktreeBranch(name, branches);
+  const existing = picked.base !== undefined;
+  const n = pull ? pull.branch : picked.name;
   const { pending, send } = useSubmit(onClose);
-  const ready = !!n && (!!pull || !check.taken) && !pending;
+  const ready = !!n && (!!pull || !picked.taken) && !pending;
   const choose = async () => {
     const picked = await open({ directory: true, defaultPath: dir, title: "Folder for new worktrees" });
     if (typeof picked === "string") setDir(picked);
@@ -125,7 +117,7 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
       onClose();
       const p = pull;
       void runNet("Check out PR", (op) => github.checkoutWorktree(p.target, p.number, p.headRef, p.sameRepo, where, op).then(then), `Checked out #${p.number} in worktree ${folderFor(n)}`);
-    } else void send(() => run("Create worktree", () => api.addWorktree(n, from, where).then(then), `Created worktree ${n}`));
+    } else void send(() => run("Create worktree", () => api.addWorktree(n, picked.base === undefined ? from : picked.base, where, picked.track).then(then), existing ? `Checked out ${n} in a new worktree` : `Created worktree ${n}`));
   };
   return (
     <form
@@ -147,8 +139,9 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
         )}
       </DialogDescription>
       {!pull && <Input autoFocus className="mt-4 font-mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="Branch name" spellCheck={false} />}
-      {!pull && <NameHint {...check} />}
+      {!pull && <NameHint {...picked} />}
       {!pull &&
+        !existing &&
         (isCommit(from) ? (
           <div className="mt-3 text-[11.5px] text-muted-foreground">
             From commit <span className="font-mono text-foreground">{from.slice(0, 7)}</span>

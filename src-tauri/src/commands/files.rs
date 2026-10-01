@@ -106,6 +106,11 @@ pub async fn list_files(state: State<'_, AppState>) -> Res<Vec<String>> {
     in_repo(&state, fs::list_files).await
 }
 
+#[tauri::command]
+pub async fn list_ignored(state: State<'_, AppState>) -> Res<Vec<fs::Entry>> {
+    in_repo(&state, fs::list_ignored).await
+}
+
 /// Whether each path (repo-relative) is a file, a folder, or neither: for terminal links.
 #[tauri::command]
 pub async fn path_kinds(

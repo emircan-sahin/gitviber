@@ -73,6 +73,8 @@ export const api = {
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
   /** Tracked and untracked files, not ignored ones: what quick open searches. */
   listFiles: () => invoke<string[]>("list_files"),
+  /** Ignored files, and ignored folders whole (node_modules, not what's in it): what the explorer's filter adds to listFiles. */
+  listIgnored: () => invoke<Entry[]>("list_ignored"),
   /** Each repo path's kind on disk, null when it's missing: ignored files and folders, which listFiles leaves out. */
   pathKinds: (paths: string[]) => invoke<("file" | "dir" | null)[]>("path_kinds", { paths }),
   /** Rejects with SEARCH_CANCELLED when a newer search stops it. */
@@ -118,9 +120,9 @@ export const api = {
   worktreeState: (path: string, upstream = true) => invoke<WorktreeState>("worktree_state", { path, upstream }),
   /**
    * Checks a branch out in a new worktree in `dir` (default: beside the main one); returns its path.
-   * With `base` (a full ref, or HEAD) the branch is new, made there.
+   * With `base` (a full ref, or HEAD) the branch is new, made there; with `track` it tracks `base` (its remote namesake).
    */
-  addWorktree: (branch: string, base: string | null = null, dir: string | null = null) => invoke<string>("add_worktree", { branch, base, dir }),
+  addWorktree: (branch: string, base: string | null = null, dir: string | null = null, track = false) => invoke<string>("add_worktree", { branch, base, track, dir }),
   /** How many gitignored files the main worktree's .worktreeinclude has addWorktree copy in. */
   worktreeIncludes: () => invoke<number>("worktree_includes"),
   /** Renames a worktree's branch and, with `moveFolder`, its folder to match; returns its path afterwards. */

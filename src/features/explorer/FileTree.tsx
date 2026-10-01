@@ -16,6 +16,7 @@ import { copyFiles, copyLabel, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
 import { gitHubLink } from "@/lib/github/url";
 import { basename, childPath, compareEntries, dirname } from "@/lib/path";
+import { MAX_MATCHES, matchingTree } from "@/lib/repo/matchingTree";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import { NameInput } from "@/components/NameInput";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
@@ -53,9 +54,6 @@ const isInside = (path: string, dir: string) => path === dir || path.startsWith(
 /** `list` without the entries inside a folder also in it: trashing the folder takes them along. */
 const topmost = (list: Entry[]) => list.filter((e) => !list.some((d) => d !== e && d.isDir && isInside(e.path, d.path)));
 
-/** The filter lists this many files at most: the tree renders every row it has. */
-const MAX_MATCHES = 1000;
-
 /** A fresh, unsorted listing that says what `shown` already does. */
 function unchanged(shown: Entry[] | undefined, listed: Entry[]) {
   if (shown?.length !== listed.length) return false;
@@ -64,25 +62,6 @@ function unchanged(shown: Entry[] | undefined, listed: Entry[]) {
     const was = byName.get(e.name);
     return was?.isDir === e.isDir && was.ignored === e.ignored;
   });
-}
-
-/** The files that match and the folders down to them, all open, in the explorer's order. */
-function matchingTree(files: string[], matches: (path: string) => boolean) {
-  const children: Record<string, Entry[]> = {};
-  const add = (path: string, isDir: boolean) => (children[dirname(path)] ??= []).push({ name: basename(path), path, isDir, ignored: false });
-  const expanded = new Set([""]);
-  let found = 0;
-  for (const path of files) {
-    if (!matches(path)) continue;
-    if (++found > MAX_MATCHES) break;
-    add(path, false);
-    for (let dir = dirname(path); dir && !expanded.has(dir); dir = dirname(dir)) {
-      expanded.add(dir);
-      add(dir, true);
-    }
-  }
-  for (const list of Object.values(children)) list.sort(compareEntries);
-  return { children, expanded, found: Math.min(found, MAX_MATCHES), capped: found > MAX_MATCHES };
 }
 
 /** Lazy tree of the working directory, like VS Code's explorer, annotated with git status. */
@@ -102,15 +81,17 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   // A revealed path's folders may still be loading; scroll to it once its row exists.
   const revealing = useRef<string | null>(null);
 
-  // Filtering lists every file git does (not the ignored ones), open folders or not.
+  // Filtering matches what the tree shows, open folders or not: every file git lists, and the
+  // ignored ones (.env), an ignored folder whole.
   const filter = useListFilter("explorer", "Filter files");
   const filtering = !!filter.needle;
-  const [files, setFiles] = useState<string[] | null>(null);
+  const [files, setFiles] = useState<Entry[] | null>(null);
   useEffect(() => {
     if (!filtering) return;
     let live = true;
-    api.listFiles().then(
-      (list) => live && setFiles(list),
+    // Ignored entries add to what git lists; a failure to list them leaves the filter at that.
+    Promise.all([api.listFiles(), api.listIgnored().catch(() => [])]).then(
+      ([listed, ignored]) => live && setFiles([...listed.map((path) => ({ name: basename(path), path, isDir: false, ignored: false })), ...ignored]),
       (e) => live && toast("error", "Could not list files", errorMessage(e)),
     );
     return () => {
@@ -119,7 +100,13 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   }, [filtering, revision]);
   const matching = useMemo(() => (filtering && files ? matchingTree(files, (path) => filter.matches(path)) : null), [filtering, files, filter.needle]);
   // What the rows show: the matches while filtering (the last tree until they're listed), else the folders opened.
-  const shown = matching ?? { children, expanded };
+  // A matched ignored folder opens from the tree's listings, as in the tree; the filter's own folders win.
+  const shown = useMemo(
+    () => (matching ? { children: { ...children, ...matching.children }, expanded: new Set([...expanded, ...matching.expanded]) } : { children, expanded }),
+    [matching, children, expanded],
+  );
+  /** A folder the filter holds open around its matches. */
+  const heldOpen = (path: string) => !!matching?.children[path];
 
   // Per-path request counter: a slow, older listing must not overwrite a newer one.
   const requests = useRef(new Map<string, number>());
@@ -273,8 +260,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     if (open) loadDir(path);
   };
 
-  // While filtering, folders stay open around their matches.
-  const activate = (e: Entry, pin = false) => (!e.isDir ? onOpen({ kind: "file", path: e.path }, pin) : !matching && setOpen(e.path, !expanded.has(e.path)));
+  const activate = (e: Entry, pin = false) => (!e.isDir ? onOpen({ kind: "file", path: e.path }, pin) : !heldOpen(e.path) && setOpen(e.path, !expanded.has(e.path)));
 
   const startEditing = (next: Editing) => {
     if (next.mode === "new" && !expanded.has(next.parent)) setOpen(next.parent, true);
@@ -403,7 +389,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       } else if (!shown.expanded.has(cur.path)) setOpen(cur.path, true);
       else if (rows[i + 1] && dirname(rows[i + 1].entry.path) === cur.path) move(i + 1);
     } else if (ev.key === "ArrowLeft") {
-      if (cur.isDir && shown.expanded.has(cur.path) && !matching) {
+      if (cur.isDir && shown.expanded.has(cur.path) && !heldOpen(cur.path)) {
         setOpen(cur.path, false);
         setPicked(null);
       }

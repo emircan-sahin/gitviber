@@ -1,5 +1,6 @@
 import { ChevronDown, Redo2, TriangleAlert, Undo2 } from "lucide-react";
 import { useState } from "react";
+import { ask } from "@/lib/app/ask";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -14,6 +15,7 @@ import type { JournalEntry } from "@/lib/api";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { toast } from "@/lib/app/toast";
 import { travel } from "@/lib/repo/undo";
+import { landing, switchNote, switchQuestion } from "@/lib/repo/undoSwitch";
 import type { RepoData } from "@/lib/repo/useRepo";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
@@ -34,10 +36,14 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
   const redos = journal?.redo ?? [];
   const off = disabled || moving;
 
-  const go = async (forward: boolean, ids: number[]) => {
+  const go = async (forward: boolean, entries: JournalEntry[]) => {
+    // Moving from the start: a second ⌘Z while the question is up would queue a stale step.
     setMoving(true);
     try {
-      await travel(forward, ids, repo.refresh);
+      const question = switchQuestion(forward, entries, repo.status);
+      const verb = forward ? "Redo" : "Undo";
+      if (question && !(await ask(question, { title: `${verb} git action`, okLabel: `${verb} and Switch` }))) return;
+      await travel(forward, entries.map((e) => e.id), repo.refresh);
     } finally {
       setMoving(false);
     }
@@ -50,7 +56,7 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
     if (off) return;
     if (!e) toast("info", `Nothing to ${verb}`, `${UNDOABLE} can be undone.`);
     else if (blocked) toast("error", `Can't ${verb} ${e.label}`, blocked);
-    else void go(forward, [e.id]);
+    else void go(forward, [e]);
   };
   useCommands({ "git.undo": () => next(false), "git.redo": () => next(true) });
 
@@ -60,24 +66,25 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
     const verb = forward ? "Redo" : "Undo";
     return (
       <DisabledTip
-        label={!e ? `Nothing to ${verb.toLowerCase()}` : blocked ? `Can't ${verb.toLowerCase()} ${e.label}. ${blocked}` : `${verb} ${e.label}`}
+        label={!e ? `Nothing to ${verb.toLowerCase()}` : blocked ? `Can't ${verb.toLowerCase()} ${e.label}. ${blocked}` : `${verb} ${e.label}${switchNote(forward, e.switchTo)}`}
         shortcut={forward ? redoKey : undoKey}
         // A Tab stop only for a reason worth reading, not for an empty history.
         disabled={!!e && !!blocked}
       >
-        <Button variant="ghost" size="icon" aria-label={verb} disabled={off || !e || !!blocked} onClick={() => e && go(forward, [e.id])}>
+        <Button variant="ghost" size="icon" aria-label={verb} disabled={off || !e || !!blocked} onClick={() => e && go(forward, [e])}>
           {forward ? <Redo2 /> : <Undo2 />}
         </Button>
       </DisabledTip>
     );
   };
 
-  const row = (e: JournalEntry, forward: boolean, ids: number[], blocked: boolean) => (
+  // `steps`: this entry and the ones before it in its list, which picking it goes through.
+  const row = (e: JournalEntry, forward: boolean, steps: JournalEntry[], blocked: boolean) => (
     <DropdownMenuItem
       key={e.id}
       disabled={blocked}
-      onSelect={() => go(forward, ids)}
-      title={forward ? `Redo up to ${e.label}` : `Undo back to before ${e.label}`}
+      onSelect={() => go(forward, steps)}
+      title={`${forward ? `Redo up to ${e.label}` : `Undo back to before ${e.label}`}${switchNote(forward, landing(steps))}`}
       className={cn(forward && "text-subtle")}
     >
       {forward ? <Redo2 /> : <Undo2 />}
@@ -106,7 +113,7 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
           )}
           {/* Furthest redo on top, so the list reads newest to oldest. */}
           {redos
-            .map((e, i) => row(e, true, redos.slice(0, i + 1).map((x) => x.id), !!journal?.redoBlocked))
+            .map((e, i) => row(e, true, redos.slice(0, i + 1), !!journal?.redoBlocked))
             .reverse()}
           {redos.length > 0 && undos.length > 0 && (
             <div className="flex items-center gap-2 px-2 py-0.5 text-[10.5px] tracking-wide text-subtle uppercase select-none">
@@ -117,7 +124,7 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
             row(
               e,
               false,
-              undos.slice(0, i + 1).map((x) => x.id),
+              undos.slice(0, i + 1),
               !!journal?.undoBlocked,
             ),
           )}

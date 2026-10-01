@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { refNameCheck, reviewBase, sanitizedRefName } from "./refs.ts";
+import { refNameCheck, reviewBase, sanitizedRefName, worktreeBase, worktreeBranch } from "./refs.ts";
 
 test("a review starts from origin's default branch, else the local one", () => {
   const b = (name: string, remote = false, remoteDefault = false) => ({ name, remote, remoteDefault });
@@ -48,4 +48,48 @@ test("a typed name says what it becomes, or that it's taken", () => {
   // Where refs ignore case (macOS, Windows), Master is master.
   assert.equal(refNameCheck("Master", ["master"], false, true).hint, "A branch named master already exists.");
   assert.equal(refNameCheck("Master", ["master"], false, false).taken, false);
+});
+
+const row = (name: string, o: { remote?: boolean; current?: boolean; worktree?: string; remoteDefault?: boolean } = {}) => ({
+  name,
+  remote: o.remote ?? false,
+  current: o.current ?? false,
+  worktree: o.worktree ?? null,
+  remoteDefault: o.remoteDefault ?? false,
+});
+
+test("a new worktree checks out what the typed name already is", () => {
+  const branches = [
+    row("main", { current: true }),
+    row("feat"),
+    row("held", { worktree: "/w/repo.worktrees/held" }),
+    row("origin/main", { remote: true }),
+    row("origin/remote-only", { remote: true }),
+    row("upstream/remote-only", { remote: true }),
+    row("upstream/theirs", { remote: true }),
+  ];
+  const pick = (typed: string) => {
+    const { name, base, track, taken } = worktreeBranch(typed, branches, false);
+    return { name, base, ...(track && { track }), taken };
+  };
+  assert.deepEqual(pick("new thing"), { name: "new-thing", base: undefined, taken: false });
+  assert.deepEqual(pick("feat"), { name: "feat", base: null, taken: false });
+  assert.deepEqual(pick("main"), { name: "main", base: undefined, taken: true });
+  assert.deepEqual(pick("held"), { name: "held", base: undefined, taken: true });
+  assert.match(worktreeBranch("held", branches, false).hint!, /checked out in held;/);
+  // Only on a remote: tracked from origin's, or from the remote typed.
+  assert.deepEqual(pick("remote-only"), { name: "remote-only", base: "refs/remotes/origin/remote-only", track: true, taken: false });
+  assert.deepEqual(pick("upstream/remote-only"), { name: "remote-only", base: "refs/remotes/upstream/remote-only", track: true, taken: false });
+  assert.deepEqual(pick("theirs"), { name: "theirs", base: "refs/remotes/upstream/theirs", track: true, taken: false });
+  // origin/main is main, which is checked out here; origin/nope would be an ambiguous name.
+  assert.deepEqual(pick("origin/main"), { name: "main", base: undefined, taken: true });
+  assert.deepEqual(pick("origin/nope"), { name: "origin/nope", base: undefined, taken: true });
+});
+
+test("a new worktree starts from the current branch, else the default one", () => {
+  assert.equal(worktreeBase([row("main"), row("feat", { current: true })]), "refs/heads/feat");
+  assert.equal(worktreeBase([row("dev"), row("origin/dev", { remote: true, remoteDefault: true })]), "refs/heads/dev");
+  assert.equal(worktreeBase([row("origin/dev", { remote: true, remoteDefault: true })]), "refs/remotes/origin/dev");
+  assert.equal(worktreeBase([row("main")]), "refs/heads/main");
+  assert.equal(worktreeBase([]), "HEAD");
 });

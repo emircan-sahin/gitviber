@@ -15,6 +15,7 @@ import { RowAction } from "@/components/RowAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
 import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
+import { Chip } from "@/features/worktrees/WorktreePicker";
 
 interface Props {
   label: string;
@@ -278,6 +279,12 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
               <GitBranch className="size-3.5 shrink-0 opacity-60" />
             )}
             <span className="truncate font-mono text-[11.5px]">{o.branch.name}</span>
+            {/* Hot or not, a row that opens a worktree says so: a plain one switches this checkout. */}
+            {heldIn(o.branch) && (
+              <Tip label={`Checked out in ${folderName(heldIn(o.branch)!)}: opens that worktree`}>
+                <Chip hot={hot}>worktree</Chip>
+              </Tip>
+            )}
             {/* Mounted on every row, shown on the hot one: a tooltip whose button unmounts
                 as the highlight moves gets stuck open or shows the previous label. */}
             <span className={cn("ml-auto shrink-0 gap-0.5", hot ? "flex" : "hidden")}>
@@ -308,7 +315,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
                 {o.branch.current
                   ? "current"
                   : heldIn(o.branch)
-                    ? `in worktree ${folderName(heldIn(o.branch)!)}`
+                    ? `in ${folderName(heldIn(o.branch)!)}`
                     : o.branch.merged
                     ? `merged · ${relativeTime(o.branch.timestamp)}`
                     : upstream(o.branch)

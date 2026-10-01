@@ -1,4 +1,5 @@
 import type { Branch } from "../api/types.ts";
+import { folderName } from "../path.ts";
 import { IS_MAC, IS_WINDOWS } from "../platform.ts";
 
 /** refs/heads/main → main, refs/remotes/origin/main → origin/main. */
@@ -41,4 +42,48 @@ export function reviewBase(branches: Pick<Branch, "name" | "remote" | "remoteDef
   if (branches.some((b) => b.remote && b.name === `origin/${name}`)) return `refs/remotes/origin/${name}`;
   if (branches.some((b) => !b.remote && b.name === name)) return `refs/heads/${name}`;
   return null;
+}
+
+type BranchRow = Pick<Branch, "name" | "remote" | "current" | "worktree">;
+
+/**
+ * What a new worktree for the typed name checks out. A local branch as it is, unless a worktree
+ * has it already (git keeps a branch in one at a time). A branch only on a remote, as a local one
+ * tracking it: origin's where several remotes have it, or the one typed as `upstream/feat`. Else a
+ * new branch, from the base picked. `base`: what to give add_worktree, undefined for the picked one;
+ * `track`: whether the branch tracks it.
+ */
+export function worktreeBranch(typed: string, branches: BranchRow[], fold = FOLD_CASE) {
+  const check = refNameCheck(typed, localNames(branches), false, fold);
+  // A remote's name ends at the first "/", as everywhere in the app: "my/fork" remotes aren't told apart.
+  const remotes = branches.filter((b) => b.remote);
+  // "upstream/feat" is feat from upstream: a local branch by that name would be ambiguous.
+  const localOf = (n: string) => branches.find((b) => !b.remote && sameRef(b.name, n, fold));
+  const named = localOf(check.name) ? undefined : remotes.find((b) => b.name === check.name);
+  const name = named ? named.name.slice(named.name.indexOf("/") + 1) : check.name;
+  const local = localOf(name);
+  if (local) {
+    const held = local.current ? "here" : local.worktree && `in ${folderName(local.worktree)}`;
+    if (held) return { name: local.name, base: undefined, track: false, hint: `${local.name} is checked out ${held}; a branch can be in one worktree at a time.`, taken: true };
+    return { name: local.name, base: null, track: false, hint: `Checks out the existing branch ${local.name}.`, taken: false };
+  }
+  const namesakes = remotes.filter((b) => b.name.slice(b.name.indexOf("/") + 1) === name);
+  const remote = named ?? namesakes.find((b) => b.name.startsWith("origin/")) ?? namesakes[0];
+  if (remote) return { name, base: `refs/remotes/${remote.name}`, track: true, hint: `Checks out ${remote.name} as a new tracking branch ${name}.`, taken: false };
+  const prefix = remotes.map((b) => b.name.slice(0, b.name.indexOf("/") + 1)).find((p) => name.startsWith(p));
+  if (prefix) return { name, base: undefined, track: false, hint: `${prefix} is a remote's; a branch named ${name} would be ambiguous.`, taken: true };
+  return { name, base: undefined, track: false, hint: check.hint, taken: false };
+}
+
+/**
+ * Where a new worktree starts: the branch checked out here, as GitHub Desktop and VS Code have it.
+ * Detached, the default branch, as git/branch.rs's default_branch finds it: local if there is one.
+ */
+export function worktreeBase(branches: Pick<Branch, "name" | "remote" | "current" | "remoteDefault">[]) {
+  const current = branches.find((b) => b.current && !b.remote);
+  if (current) return `refs/heads/${current.name}`;
+  const remote = branches.find((b) => b.remoteDefault && b.name.startsWith("origin/"));
+  const name = remote ? remote.name.slice("origin/".length) : "main";
+  if (branches.some((b) => !b.remote && b.name === name)) return `refs/heads/${name}`;
+  return remote ? `refs/remotes/${remote.name}` : "HEAD";
 }

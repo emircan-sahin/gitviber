@@ -176,5 +176,5 @@ pub fn checkout_worktree(
             follow_pr(repo, &local, remote, number)?;
         }
     }
-    git::add_worktree(repo, &local, None, dir)
+    git::add_worktree(repo, &local, None, false, dir)
 }

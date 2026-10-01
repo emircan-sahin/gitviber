@@ -151,6 +151,7 @@ pub fn run() {
             commands::files::media_file,
             commands::files::list_dir,
             commands::files::list_files,
+            commands::files::list_ignored,
             commands::files::path_kinds,
             commands::files::search_files,
             commands::changes::change_lines,
