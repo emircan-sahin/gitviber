@@ -202,6 +202,8 @@ export const api = {
   cloneRepo: (url: string, parent: string, name: string, op?: NetOp) => network<string>("clone_repo", { url, parent, name }, op),
   /** `git init` in a folder that isn't in a repository yet. */
   initRepo: (path: string) => invoke<void>("init_repo", { path }),
+  /** Adds the repository git refuses at `path` for its owner to the global safe.directory: the folder git's error names, only while git refuses it. */
+  trustFolder: (path: string) => invoke<void>("trust_folder", { path }),
   // History actions. `sha` on undo and `head` on reset are the HEAD the user saw (refused if it moved).
   undoCommit: (sha: string) => invoke<void>("undo_commit", { sha }),
   reset: (sha: string, mode: ResetMode, head: string) => invoke<void>("reset", { sha, mode, head }),

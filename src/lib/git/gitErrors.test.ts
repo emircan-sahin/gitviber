@@ -153,6 +153,14 @@ test("a lock git can't take offers removing that exact file", () => {
   assert.equal(explainGitError("fatal: Unable to create '/r/.git/refs/heads/main.lock': File exists."), null);
 });
 
+test("a repository another user owns offers trusting it", () => {
+  const refused = `fatal: detected dubious ownership in repository at '/Volumes/Disk/app'
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory /Volumes/Disk/app`;
+  assert.equal(fix(refused), "safe-directory");
+});
+
 // commit.rs names the hooks set up when a commit fails; git prints nothing of its own then.
 const HOOK_FAILED = `${HOOK_OUTPUT}
 hint: Commit hooks set up here: pre-commit, commit-msg.`;

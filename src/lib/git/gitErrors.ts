@@ -1,5 +1,5 @@
 /** Which way out fits: the caller that can take it supplies the buttons (a pull, a retry), except identity, signing and the index lock, which always fit. */
-export type GitFix = "diverged" | "fetch-first" | "autostash" | "identity" | "signing" | "hooks" | "index-lock";
+export type GitFix = "diverged" | "fetch-first" | "autostash" | "identity" | "signing" | "hooks" | "index-lock" | "safe-directory";
 
 export interface GitErrorHelp {
   title: string;
@@ -77,6 +77,15 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
     {
       title: "The remote refused your SSH key",
       explanation: "Check that your key is loaded (`ssh-add -l`) and added to your account on the remote. For GitHub, `ssh -T git@github.com` tests it.",
+    },
+  ],
+  [
+    /^fatal: detected dubious ownership in repository at '/m,
+    {
+      title: "git won't open a folder another user owns",
+      explanation:
+        "This repository belongs to another account on this computer (copied from another disk, or made with sudo), and git refuses to run where someone else could have set up what it runs. If you trust it, Trust this folder adds it to safe.directory in your global git config.",
+      fix: "safe-directory",
     },
   ],
   // state.rs retried once already. A killed agent's git leaves the lock behind for good.

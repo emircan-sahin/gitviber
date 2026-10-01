@@ -215,6 +215,7 @@ pub fn run() {
             commands::sync::askpass_ready,
             commands::repo::clone_repo,
             commands::repo::init_repo,
+            commands::repo::trust_folder,
             commands::sync::merge,
             commands::sync::rebase,
             commands::sync::op_continue,
