@@ -495,6 +495,7 @@ function closePane(id: number, byUser = false) {
   const focused = document.activeElement;
   panes.delete(id);
   window.clearTimeout(p.fitTimer);
+  window.clearTimeout(p.ptyResizeTimer);
   forgetFind(p);
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});
   const canvases = [...(p.term.element?.querySelectorAll("canvas") ?? [])];
