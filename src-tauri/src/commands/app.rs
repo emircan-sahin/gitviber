@@ -114,28 +114,21 @@ pub async fn pty_agents(
 ) -> Res<std::collections::HashMap<u32, agents::Agent>> {
     blocking(move || {
         let state = app.state::<AppState>();
-        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            return Ok(Default::default());
+        };
         let mut running = std::collections::HashMap::new();
         for id in ids {
-            let found = home.as_ref().and_then(|home| {
-                let found = state.ptys.foreground(id).and_then(agents::detect)?;
-                Some(agents::look(&found, home))
-            });
-            let Some(look) = found else {
-                state.agents.forget(id);
-                continue;
+            let leader = state.ptys.foreground(id);
+            let sink = || -> agents::Sink {
+                let app = app.clone();
+                std::sync::Arc::new(move |id, state| {
+                    let _ = app.emit("agent-state", AgentState { id, state });
+                })
             };
-            match look.status {
-                Some((file, status)) => {
-                    let app = app.clone();
-                    let sink: agents::Sink = std::sync::Arc::new(move |id, state| {
-                        let _ = app.emit("agent-state", AgentState { id, state });
-                    });
-                    state.agents.track(id, &file, status, sink);
-                }
-                None => state.agents.forget(id),
+            if let Some(agent) = state.agents.agent(id, leader, &home, sink) {
+                running.insert(id, agent);
             }
-            running.insert(id, look.agent);
         }
         Ok(running)
     })

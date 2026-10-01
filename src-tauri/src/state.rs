@@ -13,8 +13,8 @@ pub(crate) struct AppState {
     pub(crate) watcher: Mutex<Option<notify::RecommendedWatcher>>,
     pub(crate) github: github::Session,
     pub(crate) ptys: pty::Ptys,
-    /// The state files of the agents running in terminals.
-    pub(crate) agents: agents::Watch,
+    /// The agents running in terminals, and their state files watched.
+    pub(crate) agents: agents::Agents,
     pub(crate) network: network::Running,
     /// Held by commands that write the index: two `git add`s at once fail on index.lock.
     pub(crate) index: Arc<Mutex<()>>,

@@ -1,12 +1,12 @@
-//! Coding agents running in the terminal's panes, told apart by a table rather than code per
-//! agent: how to know one from its command line, where it keeps the id of the conversation it's
-//! in, and the command that resumes that conversation. A restored terminal offers that command,
-//! and an agent whose state file says it stopped working marks its pane (Watch).
+//! Coding agents running in the terminal's panes, told apart by a table (agents.json) rather than
+//! code per agent: how to know one from its command line, where it keeps the id of the
+//! conversation it's in, and the command that resumes that conversation. A restored terminal
+//! offers that command, and an agent whose state file says it stopped working marks its pane.
 //!
 //! Only programs in the table are offered: running any other command line again could repeat a
 //! deploy or a publish.
 
-use crate::pty::{self, Process};
+use crate::procinfo::{self, Process};
 use notify::{recommended_watcher, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -30,62 +30,72 @@ pub enum Arity {
 
 /// Where an agent reports what it's doing: a field of its pid file, by value.
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(deny_unknown_fields)]
 pub struct Status {
     field: String,
     working: Vec<String>,
     waiting: Vec<String>,
+    idle: Vec<String>,
 }
 
 impl Status {
-    fn state(&self, value: &str) -> &'static str {
+    /// None for a value the table doesn't know (a newer version's): the last state stands.
+    fn state(&self, value: &str) -> Option<&'static str> {
         let is = |list: &[String]| list.iter().any(|v| v == value);
-        if is(&self.working) {
-            "working"
-        } else if is(&self.waiting) {
-            "waiting"
-        } else {
-            "idle"
-        }
+        [
+            (&self.working, "working"),
+            (&self.waiting, "waiting"),
+            (&self.idle, "idle"),
+        ]
+        .into_iter()
+        .find_map(|(list, state)| is(list).then_some(state))
     }
 }
 
 /// Where the id of the conversation an agent is in can be read. Paths start at the home folder
 /// (`~/`) and may hold `{pid}` (the agent's process) and `{cwdSha256}` (its folder, hashed).
+/// `uuid`: the id is one, and anything else read there isn't taken.
 #[derive(Deserialize, Debug)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum Session {
     /// A JSON file per running process, with the id in `id` and maybe its state.
-    #[serde(rename_all = "camelCase")]
     PidFile {
         path: String,
         id: String,
+        #[serde(default)]
+        uuid: bool,
         status: Option<Status>,
     },
     /// The newest `<prefix>*.json` in `dir` written since the process started, the id in `id`
     /// near its top.
-    #[serde(rename_all = "camelCase")]
     NewestFile {
         dir: String,
         prefix: String,
         id: String,
+        #[serde(default)]
+        uuid: bool,
     },
     /// None to read: the resume command continues the folder's last conversation.
-    Continue,
+    // Braced: a unit variant would take fields it doesn't know.
+    Continue {},
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Adapter {
     /// What the user calls it ("Claude Code").
     pub name: String,
+    /// The versions it was written against, and what doesn't hold.
+    #[allow(dead_code)]
+    note: String,
     /// argv[0]'s file name, or a script's that a runtime (node, bun) runs.
     programs: Vec<String>,
     /// Script paths that end with one of these (an npm install's `cli.js`).
     #[serde(default)]
     scripts: Vec<String>,
     session: Session,
-    /// The resume command's words: `{flags}` the flags kept from the run, `{id}` the session's.
+    /// The resume command's words: `{id}` the session's (before the flags, so a flag the table
+    /// doesn't know can't take it for its value), `{flags}` the flags kept from the run.
     resume: Vec<String>,
     /// The flags that take words after them.
     #[serde(default)]
@@ -98,313 +108,11 @@ pub struct Adapter {
     skip: Vec<String>,
 }
 
-fn strings(list: &[&str]) -> Vec<String> {
-    list.iter().map(|s| s.to_string()).collect()
-}
-
-fn arities(one: &[&str], optional: &[&str], many: &[&str]) -> HashMap<String, Arity> {
-    [
-        (one, Arity::One),
-        (optional, Arity::Optional),
-        (many, Arity::Many),
-    ]
-    .into_iter()
-    .flat_map(|(names, arity)| names.iter().map(move |n| (n.to_string(), arity)))
-    .collect()
-}
-
-/// The agents known. Flags as of the versions named; one added since is taken as a switch.
-fn built_in() -> Vec<Adapter> {
-    vec![
-        // Claude Code 2.1.287, native (argv[0] "claude"); npm installs run `node …/cli.js`.
-        // ~/.claude/sessions/<pid>.json holds sessionId and status (busy|shell|waiting|idle),
-        // rewritten as it changes.
-        Adapter {
-            name: "Claude Code".into(),
-            programs: strings(&["claude"]),
-            scripts: strings(&["@anthropic-ai/claude-code/cli.js"]),
-            session: Session::PidFile {
-                path: "~/.claude/sessions/{pid}.json".into(),
-                id: "sessionId".into(),
-                status: Some(Status {
-                    field: "status".into(),
-                    working: strings(&["busy", "shell"]),
-                    waiting: strings(&["waiting"]),
-                }),
-            },
-            resume: strings(&["claude", "{flags}", "--resume", "{id}"]),
-            flags: arities(
-                &[
-                    "--agent",
-                    "--agents",
-                    "--append-system-prompt",
-                    "--append-system-prompt-file",
-                    "--autocompact",
-                    "--debug-file",
-                    "--effort",
-                    "--environment",
-                    "--fallback-model",
-                    "--input-format",
-                    "--json-schema",
-                    "--max-budget-usd",
-                    "--model",
-                    "-n",
-                    "--name",
-                    "--output-format",
-                    "--permission-mode",
-                    "--permission-prompts",
-                    "--plugin-dir",
-                    "--plugin-url",
-                    "--remote-control-session-name-prefix",
-                    "--session-id",
-                    "--setting-sources",
-                    "--settings",
-                    "--system-prompt",
-                    "--system-prompt-file",
-                    "--system-prompt-snapshot",
-                ],
-                &[
-                    "--cloud",
-                    "-d",
-                    "--debug",
-                    "--from-pr",
-                    "--prompt-suggestions",
-                    "-r",
-                    "--remote-control",
-                    "--resume",
-                    "--teleport",
-                    "-w",
-                    "--worktree",
-                ],
-                &[
-                    "--add-dir",
-                    "--allowedTools",
-                    "--allowed-tools",
-                    "--betas",
-                    "--disallowedTools",
-                    "--disallowed-tools",
-                    "--file",
-                    "--mcp-config",
-                    "--tools",
-                ],
-            ),
-            drop: strings(&[
-                "-c",
-                "--continue",
-                "-r",
-                "--resume",
-                "--session-id",
-                "--fork-session",
-                "--from-pr",
-                "--teleport",
-                "--cloud",
-                "-n",
-                "--name",
-                // A new worktree each time.
-                "-w",
-                "--worktree",
-                "--tmux",
-            ]),
-            skip: strings(&[
-                "-p",
-                "--print",
-                "--bg",
-                "--background",
-                "--desktop",
-                "-h",
-                "--help",
-                "-v",
-                "--version",
-                "agents",
-                "attach",
-                "auth",
-                "auto-mode",
-                "doctor",
-                "gateway",
-                "import",
-                "install",
-                "kill",
-                "logs",
-                "mcp",
-                "plugin",
-                "plugins",
-                "project",
-                "respawn",
-                "rm",
-                "setup-token",
-                "stop",
-                "ultrareview",
-                "update",
-                "upgrade",
-            ]),
-        },
-        // Gemini CLI 0.27, `node …/bin/gemini`, relaunched as a child in the same job. A chat
-        // is ~/.gemini/tmp/<sha256 of its folder>/chats/session-<time>-<id8>.json; a resumed one
-        // is written to again, so the newest written since the start is this run's.
-        Adapter {
-            name: "Gemini CLI".into(),
-            programs: strings(&["gemini"]),
-            scripts: strings(&["@google/gemini-cli/dist/index.js"]),
-            session: Session::NewestFile {
-                dir: "~/.gemini/tmp/{cwdSha256}/chats".into(),
-                prefix: "session-".into(),
-                id: "sessionId".into(),
-            },
-            resume: strings(&["gemini", "{flags}", "--resume", "{id}"]),
-            flags: arities(
-                &[
-                    "--approval-mode",
-                    "--delete-session",
-                    "-e",
-                    "--extensions",
-                    "-i",
-                    "-m",
-                    "--model",
-                    "-o",
-                    "--output-format",
-                    "-p",
-                    "--prompt",
-                    "--prompt-interactive",
-                ],
-                &["-r", "--resume"],
-                &[
-                    "--allowed-mcp-server-names",
-                    "--allowed-tools",
-                    "--include-directories",
-                ],
-            ),
-            drop: strings(&["-r", "--resume", "-i", "--prompt-interactive"]),
-            skip: strings(&[
-                "-p",
-                "--prompt",
-                "--experimental-acp",
-                "-l",
-                "--list-extensions",
-                "--list-sessions",
-                "--delete-session",
-                "-h",
-                "--help",
-                "-v",
-                "--version",
-                "mcp",
-                "extensions",
-                "extension",
-                "skills",
-                "skill",
-                "hooks",
-                "hook",
-            ]),
-        },
-        // opencode 1.x, a native binary. Its sessions are in SQLite, so the folder's last one is
-        // continued rather than read.
-        Adapter {
-            name: "opencode".into(),
-            programs: strings(&["opencode"]),
-            scripts: Vec::new(),
-            session: Session::Continue,
-            resume: strings(&["opencode", "{flags}", "--continue"]),
-            flags: arities(
-                &[
-                    "--agent",
-                    "--hostname",
-                    "--log-level",
-                    "-m",
-                    "--mdns-domain",
-                    "--model",
-                    "--port",
-                    "--prompt",
-                    "--replay-limit",
-                    "-s",
-                    "--session",
-                ],
-                &[],
-                &["--cors"],
-            ),
-            drop: strings(&["-c", "--continue", "-s", "--session", "--fork", "--prompt"]),
-            skip: strings(&[
-                "-h",
-                "--help",
-                "-v",
-                "--version",
-                "acp",
-                "agent",
-                "attach",
-                "auth",
-                "completion",
-                "db",
-                "debug",
-                "export",
-                "github",
-                "import",
-                "mcp",
-                "models",
-                "plug",
-                "plugin",
-                "pr",
-                "providers",
-                "run",
-                "serve",
-                "session",
-                "stats",
-                "uninstall",
-                "upgrade",
-                "web",
-            ]),
-        },
-        // Codex: UNVERIFIED, not installed where this was written. From its docs: `codex resume
-        // --last` continues the folder's last session; `exec` runs without one. npm's launcher
-        // is `node …/bin/codex.js`.
-        Adapter {
-            name: "Codex".into(),
-            programs: strings(&["codex"]),
-            scripts: strings(&["@openai/codex/bin/codex.js"]),
-            session: Session::Continue,
-            resume: strings(&["codex", "resume", "--last", "{flags}"]),
-            flags: arities(
-                &[
-                    "-a",
-                    "--ask-for-approval",
-                    "-c",
-                    "--config",
-                    "-C",
-                    "--cd",
-                    "-m",
-                    "--model",
-                    "-p",
-                    "--profile",
-                    "-s",
-                    "--sandbox",
-                ],
-                &[],
-                &["-i", "--image"],
-            ),
-            drop: strings(&["--last", "-i", "--image"]),
-            skip: strings(&[
-                "-h",
-                "--help",
-                "-V",
-                "--version",
-                "apply",
-                "a",
-                "app-server",
-                "cloud",
-                "completion",
-                "debug",
-                "e",
-                "exec",
-                "login",
-                "logout",
-                "mcp",
-                "mcp-server",
-                "sandbox",
-            ]),
-        },
-    ]
-}
-
 fn adapters() -> &'static [Adapter] {
     static TABLE: OnceLock<Vec<Adapter>> = OnceLock::new();
-    TABLE.get_or_init(built_in)
+    TABLE.get_or_init(|| {
+        serde_json::from_str(include_str!("agents.json")).expect("agents.json is a valid table")
+    })
 }
 
 /// Runtimes that run an agent's script: its first word that isn't a flag of theirs.
@@ -433,6 +141,7 @@ impl Adapter {
 }
 
 /// An agent found running, and the process that is it.
+#[derive(Clone)]
 pub struct Found {
     adapter: &'static Adapter,
     process: Process,
@@ -451,13 +160,13 @@ fn found(table: &'static [Adapter], process: Process) -> Option<Found> {
 }
 
 /// The agent a pane's foreground job runs: its leader, or a process a launcher (npx) started in it.
-pub fn detect(leader: Process) -> Option<Found> {
+fn detect(leader: Process) -> Option<Found> {
     let pgid = leader.pid;
     found(adapters(), leader).or_else(|| {
-        pty::job(pgid)
+        procinfo::job(pgid)
             .into_iter()
             .filter(|&pid| pid != pgid)
-            .filter_map(pty::process)
+            .filter_map(procinfo::process)
             .find_map(|p| found(adapters(), p))
     })
 }
@@ -488,11 +197,11 @@ fn quote(word: &str) -> String {
             out.push(c);
         }
     }
-    if open || out.is_empty() {
+    if open {
         out.push('\'');
     }
     if word.is_empty() {
-        out.push('\'');
+        out.push_str("''");
     }
     out
 }
@@ -557,21 +266,33 @@ fn rewrite(adapter: &Adapter, args: &[String], id: Option<&str>) -> Option<Strin
     Some(words.iter().map(|w| quote(w)).collect::<Vec<_>>().join(" "))
 }
 
-/// A conversation id is typed into a shell: only plain ones.
-fn plain_id(id: &str) -> Option<String> {
+/// A conversation id is typed into a shell: only plain ones, never one a program would read as
+/// a flag, and a UUID where the agent uses those.
+fn plain_id(id: &str, uuid: bool) -> Option<String> {
     let plain = !id.is_empty()
         && id.len() <= 128
+        && !id.starts_with('-')
         && id
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    plain.then(|| id.to_string())
+    let shaped = !uuid || is_uuid(id);
+    (plain && shaped).then(|| id.to_string())
+}
+
+fn is_uuid(id: &str) -> bool {
+    let parts: Vec<&str> = id.split('-').collect();
+    parts.iter().map(|p| p.len()).eq([8, 4, 4, 4, 12])
+        && parts
+            .iter()
+            .all(|p| p.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 fn expand(template: &str, process: &Process, home: &Path) -> Option<PathBuf> {
+    use sha2::{Digest, Sha256};
     let mut path = template.replace("{pid}", &process.pid.to_string());
     if path.contains("{cwdSha256}") {
         let cwd = process.cwd.as_ref()?.to_str()?;
-        path = path.replace("{cwdSha256}", &sha256_hex(cwd.as_bytes())?);
+        path = path.replace("{cwdSha256}", &format!("{:x}", Sha256::digest(cwd)));
     }
     Some(match path.strip_prefix("~/") {
         Some(rest) => home.join(rest),
@@ -579,34 +300,15 @@ fn expand(template: &str, process: &Process, home: &Path) -> Option<PathBuf> {
     })
 }
 
-fn modified(meta: &std::fs::Metadata) -> u64 {
-    meta.modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_secs())
-}
-
 /// Written since the process started (to the second, with a second's slack): a file left by a
 /// process that had the same pid before isn't this one's.
 fn since_start(meta: &std::fs::Metadata, process: &Process) -> bool {
-    modified(meta) + 1 >= process.started
-}
-
-#[cfg(target_os = "macos")]
-fn sha256_hex(data: &[u8]) -> Option<String> {
-    // CommonCrypto, part of libSystem: no hashing crate for one folder name.
-    extern "C" {
-        fn CC_SHA256(data: *const std::ffi::c_void, len: u32, md: *mut u8) -> *mut u8;
-    }
-    let mut md = [0u8; 32];
-    let len = u32::try_from(data.len()).ok()?;
-    unsafe { CC_SHA256(data.as_ptr().cast(), len, md.as_mut_ptr()) };
-    Some(md.iter().map(|b| format!("{b:02x}")).collect())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn sha256_hex(_data: &[u8]) -> Option<String> {
-    None
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
+    modified + 1 >= process.started
 }
 
 /// The string `field` holds near the top of a JSON file too big to parse whole for it.
@@ -617,25 +319,22 @@ fn head_field(head: &str, field: &str) -> Option<String> {
     Some(rest[..rest.find('"')?].to_string())
 }
 
-/// A pid file's id and state, when it's this process's.
-fn read_pid_file(
-    file: &Path,
-    process: &Process,
-    id: &str,
-    status: Option<&Status>,
-) -> Option<(Option<String>, Option<&'static str>)> {
+/// A pid file's id, when it's this process's.
+fn pid_file_id(file: &Path, process: &Process, id: &str, uuid: bool) -> Option<String> {
     if !since_start(&std::fs::metadata(file).ok()?, process) {
         return None;
     }
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
-    let state = status.and_then(|s| Some(s.state(json.get(&s.field)?.as_str()?)));
-    Some((
-        json.get(id).and_then(|v| v.as_str()).and_then(plain_id),
-        state,
-    ))
+    plain_id(json.get(id)?.as_str()?, uuid)
 }
 
-fn newest_file(dir: &Path, prefix: &str, id: &str, process: &Process) -> Option<String> {
+fn newest_file(
+    dir: &Path,
+    prefix: &str,
+    id: &str,
+    uuid: bool,
+    process: &Process,
+) -> Option<String> {
     use std::io::Read;
     let (_, path) = std::fs::read_dir(dir)
         .ok()?
@@ -660,7 +359,7 @@ fn newest_file(dir: &Path, prefix: &str, id: &str, process: &Process) -> Option<
         .take(64 * 1024)
         .read_to_end(&mut head)
         .ok()?;
-    head_field(&String::from_utf8_lossy(&head), id).and_then(|v| plain_id(&v))
+    plain_id(&head_field(&String::from_utf8_lossy(&head), id)?, uuid)
 }
 
 /// What the page is told of a pane's agent.
@@ -670,42 +369,65 @@ pub struct Agent {
     pub name: String,
     /// What resumes its conversation; None when that can't be told (its id unread yet).
     pub command: Option<String>,
+    /// The conversation's id, so two panes that read the same one don't both resume it.
+    pub session: Option<String>,
+    /// Where it runs: a restore resumes it only in the same folder.
+    pub cwd: Option<String>,
     /// working, waiting or idle, for an agent that reports it.
     pub state: Option<&'static str>,
 }
 
 /// An agent, and the file to watch for its state if it has one.
-pub struct Look {
-    pub agent: Agent,
-    pub status: Option<(PathBuf, &'static Status)>,
+struct Look {
+    agent: Agent,
+    status: Option<(PathBuf, &'static Status)>,
 }
 
-pub fn look(found: &Found, home: &Path) -> Look {
+fn look(found: &Found, home: &Path) -> Look {
     let adapter: &'static Adapter = found.adapter;
     let process = &found.process;
     let args = process.argv.get(found.args_at..).unwrap_or_default();
-    let resume = |id: Option<&str>| rewrite(adapter, args, id);
-    let (command, state, status) = match &adapter.session {
-        Session::PidFile { path, id, status } => {
+    let (id, status) = match &adapter.session {
+        Session::PidFile {
+            path,
+            id,
+            uuid,
+            status,
+        } => {
             let file = expand(path, process, home);
-            let read = file
+            let id = file
                 .as_deref()
-                .and_then(|f| read_pid_file(f, process, id, status.as_ref()));
-            let (id, state) = read.unwrap_or((None, None));
-            let watched = file.zip(status.as_ref());
-            (id.and_then(|id| resume(Some(&id))), state, watched)
+                .and_then(|f| pid_file_id(f, process, id, *uuid));
+            (id, file.zip(status.as_ref()))
         }
-        Session::NewestFile { dir, prefix, id } => {
-            let id = expand(dir, process, home).and_then(|d| newest_file(&d, prefix, id, process));
-            (id.and_then(|id| resume(Some(&id))), None, None)
+        Session::NewestFile {
+            dir,
+            prefix,
+            id,
+            uuid,
+        } => {
+            let id = expand(dir, process, home)
+                .and_then(|d| newest_file(&d, prefix, id, *uuid, process));
+            (id, None)
         }
-        Session::Continue => (resume(None), None, None),
+        Session::Continue {} => (None, None),
+    };
+    let command = match adapter.session {
+        Session::Continue {} => rewrite(adapter, args, None),
+        _ => id
+            .as_deref()
+            .and_then(|id| rewrite(adapter, args, Some(id))),
     };
     Look {
         agent: Agent {
             name: adapter.name.clone(),
             command,
-            state,
+            session: id,
+            cwd: process
+                .cwd
+                .as_ref()
+                .map(|c| c.to_string_lossy().into_owned()),
+            state: None,
         },
         status,
     }
@@ -713,6 +435,84 @@ pub fn look(found: &Found, home: &Path) -> Look {
 
 /// Gets a pane's id and its agent's new state (None: its file is gone, the agent with it).
 pub type Sink = Arc<dyn Fn(u32, Option<&'static str>) + Send + Sync>;
+
+/// A pane's job leader as last looked up, by its start (a pid can come back as another program).
+struct Seen {
+    pid: u32,
+    started: u64,
+    found: Option<Found>,
+}
+
+/// A leader this young may be a launcher (npx) whose agent isn't started yet: looked up again.
+const SETTLING_SECS: u64 = 30;
+
+/// The agents in the panes: each pane's job leader read once (argv, its job) until it changes,
+/// and the state files watched.
+#[derive(Default)]
+pub struct Agents {
+    seen: Mutex<HashMap<u32, Seen>>,
+    watch: Watch,
+}
+
+fn now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+impl Agents {
+    /// The agent pane `id` runs, its foreground job led by `leader`. `sink` (made once) hears
+    /// of its state's changes from then on.
+    pub fn agent(
+        &self,
+        id: u32,
+        leader: Option<u32>,
+        home: &Path,
+        sink: impl FnOnce() -> Sink,
+    ) -> Option<Agent> {
+        let found = leader.and_then(|pid| self.found(id, pid));
+        let Some(found) = found else {
+            self.forget(id);
+            return None;
+        };
+        let Look { mut agent, status } = look(&found, home);
+        match status {
+            // Once watched, its state is the watcher's alone: a read here can be older than an
+            // event already sent.
+            Some((file, status)) => agent.state = self.watch.track(id, &file, status, sink),
+            None => self.watch.forget(id),
+        }
+        Some(agent)
+    }
+
+    fn found(&self, id: u32, pid: u32) -> Option<Found> {
+        let started = procinfo::started(pid)?;
+        if let Some(seen) = lock(&self.seen).get(&id) {
+            let settled = seen.found.is_some() || now().saturating_sub(started) > SETTLING_SECS;
+            if seen.pid == pid && seen.started == started && settled {
+                return seen.found.clone();
+            }
+        }
+        let found = procinfo::process(pid).and_then(detect);
+        let seen = Seen {
+            pid,
+            started,
+            found: found.clone(),
+        };
+        lock(&self.seen).insert(id, seen);
+        found
+    }
+
+    pub fn forget(&self, id: u32) {
+        lock(&self.seen).remove(&id);
+        self.watch.forget(id);
+    }
+
+    pub fn forget_all(&self) {
+        lock(&self.seen).clear();
+        self.watch.forget_all();
+    }
+}
 
 struct Tracked {
     id: u32,
@@ -725,7 +525,7 @@ type Files = Mutex<HashMap<PathBuf, Tracked>>;
 /// The state files of the agents in panes, watched (FSEvents on macOS) rather than polled: no
 /// work between an agent's writes, and none at all without an agent.
 #[derive(Default)]
-pub struct Watch {
+struct Watch {
     files: Arc<Files>,
     /// Locked apart from `files`: watching another folder restarts the watcher's thread and
     /// waits for it, and that thread may be waiting for `files` in `changed`.
@@ -738,31 +538,38 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 fn read_state(file: &Path, status: &Status) -> Option<&'static str> {
     let json: serde_json::Value = serde_json::from_slice(&std::fs::read(file).ok()?).ok()?;
-    Some(status.state(json.get(&status.field)?.as_str()?))
+    status.state(json.get(&status.field)?.as_str()?)
 }
 
 impl Watch {
-    /// Watches pane `id`'s agent's state `file`, in place of any it had; `sink` hears of changes.
-    pub fn track(&self, id: u32, file: &Path, status: &'static Status, sink: Sink) {
+    /// Watches pane `id`'s agent's state `file`, in place of any it had, and gives its state as
+    /// last seen. `sink` is made for the watcher, the first time there's one to make.
+    fn track(
+        &self,
+        id: u32,
+        file: &Path,
+        status: &'static Status,
+        sink: impl FnOnce() -> Sink,
+    ) -> Option<&'static str> {
         // Events name the real path.
         let (Some(dir), Some(name)) = (file.parent(), file.file_name()) else {
-            return;
+            return None;
         };
-        let Ok(dir) = dir.canonicalize() else {
-            return;
-        };
+        let dir = dir.canonicalize().ok()?;
         let file = dir.join(name);
-        {
+        let last = {
             let mut files = lock(&self.files);
             if files.get(&file).is_none_or(|t| t.id != id) {
                 files.retain(|_, t| t.id != id);
                 let last = read_state(&file, status);
-                files.insert(file, Tracked { id, status, last });
+                files.insert(file.clone(), Tracked { id, status, last });
             }
-        }
+            files.get(&file).and_then(|t| t.last)
+        };
         let mut watcher = lock(&self.watcher);
         if watcher.is_none() {
             let files = Arc::downgrade(&self.files);
+            let sink = sink();
             let made = recommended_watcher(move |event: notify::Result<notify::Event>| {
                 if let Ok(event) = event {
                     changed(&files, &event.paths, &sink);
@@ -775,10 +582,11 @@ impl Watch {
                 dirs.insert(dir);
             }
         }
+        last
     }
 
     /// Stops watching pane `id`'s agent; the watcher goes with the last one.
-    pub fn forget(&self, id: u32) {
+    fn forget(&self, id: u32) {
         let empty = {
             let mut files = lock(&self.files);
             files.retain(|_, t| t.id != id);
@@ -789,7 +597,7 @@ impl Watch {
         }
     }
 
-    pub fn forget_all(&self) {
+    fn forget_all(&self) {
         lock(&self.files).clear();
         self.stop();
     }
@@ -817,7 +625,7 @@ fn changed(files: &Weak<Files>, paths: &[PathBuf], sink: &Sink) {
                 files.remove(path);
                 continue;
             }
-            // Mid-write (or unreadable): the next event has it.
+            // Mid-write, unreadable or a state the table doesn't know: the last one stands.
             let Some(state) = read_state(path, t.status) else {
                 continue;
             };
@@ -843,20 +651,22 @@ mod tests {
     }
 
     fn args(words: &[&str]) -> Vec<String> {
-        strings(words)
+        words.iter().map(|s| s.to_string()).collect()
     }
+
+    const ID: &str = "7c3e9a41-5d2b-4f86-b0e1-2a9c4d6f8e16";
 
     fn process(pid: u32, argv: &[&str], cwd: &Path) -> Process {
         Process {
             pid,
             argv: args(argv),
             cwd: Some(cwd.to_path_buf()),
-            started: std::time::SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                - 60,
+            started: now() - 60,
         }
+    }
+
+    fn found_with(p: Process) -> Found {
+        found(adapters(), p).unwrap()
     }
 
     fn temp(name: &str) -> PathBuf {
@@ -868,22 +678,40 @@ mod tests {
     }
 
     #[test]
+    fn the_table_parses_and_refuses_a_field_it_doesnt_know() {
+        let names: Vec<&str> = adapters().iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Claude Code", "Gemini CLI", "opencode", "Codex"]);
+        for a in adapters() {
+            assert!(
+                a.resume.iter().filter(|w| *w == "{flags}").count() == 1,
+                "{}",
+                a.name
+            );
+            assert!(!a.note.is_empty(), "{}", a.name);
+        }
+        let typo = r#"[{"name":"x","note":"","programs":["x"],"session":{"kind":"continue"},"resume":["x"],"skp":[]}]"#;
+        assert!(serde_json::from_str::<Vec<Adapter>>(typo).is_err());
+        let typo = r#"[{"name":"x","note":"","programs":["x"],"session":{"kind":"continue","id":"x"},"resume":["x"]}]"#;
+        assert!(serde_json::from_str::<Vec<Adapter>>(typo).is_err());
+    }
+
+    #[test]
     fn the_resume_keeps_flags_and_drops_the_prompt_and_the_session_picked() {
         let id = Some("abc-123");
         let cases: &[(&[&str], Option<&str>)] = &[
             (&[], Some("claude --resume abc-123")),
             (
                 &["--dangerously-skip-permissions", "fix the login bug"],
-                Some("claude --dangerously-skip-permissions --resume abc-123"),
+                Some("claude --resume abc-123 --dangerously-skip-permissions"),
             ),
             (
                 &["--model", "opus", "--resume", "old-id", "go on"],
-                Some("claude --model opus --resume abc-123"),
+                Some("claude --resume abc-123 --model opus"),
             ),
             // An optional value: a flag after it isn't one.
             (
                 &["-r", "--verbose"],
-                Some("claude --verbose --resume abc-123"),
+                Some("claude --resume abc-123 --verbose"),
             ),
             (
                 &["--continue", "--fork-session"],
@@ -895,13 +723,15 @@ mod tests {
             ),
             (
                 &["--add-dir", "../a", "../b", "--model=sonnet"],
-                Some("claude --add-dir ../a ../b --model=sonnet --resume abc-123"),
+                Some("claude --resume abc-123 --add-dir ../a ../b --model=sonnet"),
             ),
             (
                 &["--append-system-prompt", "be brief, it's late"],
-                Some(r"claude --append-system-prompt 'be brief, it'\''s late' --resume abc-123"),
+                Some(r"claude --resume abc-123 --append-system-prompt 'be brief, it'\''s late'"),
             ),
             (&["--", "--not-a-flag"], Some("claude --resume abc-123")),
+            // npm's process.title blanks argv: nothing is kept, nothing breaks.
+            (&["", "", ""], Some("claude --resume abc-123")),
             (&["-p", "explain"], None),
             (&["--print"], None),
             (&["mcp", "serve"], None),
@@ -909,7 +739,7 @@ mod tests {
             // A subcommand's name later on is a prompt's word.
             (
                 &["--model", "opus", "fix", "mcp"],
-                Some("claude --model opus --resume abc-123"),
+                Some("claude --resume abc-123 --model opus"),
             ),
             (&["--system-prompt", "a\nb"], None),
         ];
@@ -936,7 +766,7 @@ mod tests {
                 Some("u-1")
             )
             .as_deref(),
-            Some("gemini -y -m gemini-2.5-pro --resume u-1")
+            Some("gemini --resume u-1 -y -m gemini-2.5-pro")
         );
         assert_eq!(resume(gemini, &["-p", "once"], Some("u-1")), None);
         assert_eq!(
@@ -977,6 +807,7 @@ mod tests {
                 .find_map(|a| Some((a.name.as_str(), a.args_at(&args(argv))?)))
         };
         assert_eq!(at(&["claude", "-c"]), Some(("Claude Code", 1)));
+        assert_eq!(at(&["claude", "", ""]), Some(("Claude Code", 1)));
         assert_eq!(at(&["/opt/homebrew/bin/claude"]), Some(("Claude Code", 1)));
         assert_eq!(
             at(&[
@@ -998,13 +829,44 @@ mod tests {
             Some(("Gemini CLI", 3))
         );
         assert_eq!(at(&["opencode"]), Some(("opencode", 1)));
+        // Claude's own background processes retitle themselves.
+        assert_eq!(at(&["claude bg-spare", "--bg-spare"]), None);
         assert_eq!(at(&["node", "server.js"]), None);
         assert_eq!(at(&["vim", "claude"]), None);
         assert_eq!(at(&["npm", "run", "dev"]), None);
     }
 
     #[test]
-    fn claude_is_resumed_from_its_pid_file_with_its_state() {
+    fn ids_are_plain_and_uuids_where_the_agent_uses_them() {
+        assert_eq!(plain_id(ID, true).as_deref(), Some(ID));
+        assert_eq!(plain_id("abc-123", false).as_deref(), Some("abc-123"));
+        for bad in [
+            "abc-123",
+            "-7c3e9a41-5d2b-4f86-b0e1-2a9c4d6f8e16",
+            "7c3e9a41-5d2b-4f86-b0e1-2a9c4d6f8e1z",
+        ] {
+            assert_eq!(plain_id(bad, true), None, "{bad}");
+        }
+        for bad in ["", "a b", "$(rm)", "--help"] {
+            assert_eq!(plain_id(bad, false), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_status_the_table_doesnt_know_is_no_state() {
+        let Session::PidFile {
+            status: Some(s), ..
+        } = &claude().session
+        else {
+            panic!("claude has a status");
+        };
+        assert_eq!(s.state("busy"), Some("working"));
+        assert_eq!(s.state("idle"), Some("idle"));
+        assert_eq!(s.state("compacting"), None);
+    }
+
+    #[test]
+    fn claude_is_resumed_from_its_pid_file() {
         let home = temp("claude");
         let dir = home.join(".claude/sessions");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1018,22 +880,25 @@ mod tests {
         let none = look(&run, &home);
         assert_eq!(none.agent.command, None);
         assert!(none.status.is_some());
-        std::fs::write(
-            dir.join("4242.json"),
-            r#"{"pid":4242,"sessionId":"7c3e9a41-bf76","cwd":"/x","status":"busy"}"#,
-        )
-        .unwrap();
-        let seen = look(&run, &home);
+        let write = |id: &str| {
+            std::fs::write(
+                dir.join("4242.json"),
+                format!(r#"{{"pid":4242,"sessionId":"{id}","cwd":"/x","status":"busy"}}"#),
+            )
+            .unwrap()
+        };
+        write(ID);
+        let seen = look(&run, &home).agent;
         assert_eq!(
-            seen.agent,
-            Agent {
-                name: "Claude Code".into(),
-                command: Some(
-                    "claude --dangerously-skip-permissions --resume 7c3e9a41-bf76".into()
-                ),
-                state: Some("working"),
-            }
+            seen.command.as_deref(),
+            Some(format!("claude --resume {ID} --dangerously-skip-permissions").as_str())
         );
+        assert_eq!(seen.session.as_deref(), Some(ID));
+        assert_eq!(seen.cwd.as_deref(), home.to_str());
+        // Not a UUID: not typed into a shell.
+        write("--help");
+        assert_eq!(look(&run, &home).agent.command, None);
+        write(ID);
         // A file from before the process started is another's that had its pid.
         let later = Process {
             started: p.started + 3600,
@@ -1043,39 +908,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    fn found_with(p: Process) -> Found {
-        found(adapters(), p).unwrap()
-    }
-
-    #[cfg(target_os = "macos")]
     #[test]
     fn gemini_is_resumed_from_its_newest_chat_in_the_folder() {
-        assert_eq!(
-            sha256_hex(b"abc").unwrap(),
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
+        use sha2::{Digest, Sha256};
         let home = temp("gemini");
         let project = home.join("project");
         let p = process(7, &["node", "/x/bin/gemini", "--yolo"], &project);
-        let chats = home
-            .join(".gemini/tmp")
-            .join(sha256_hex(project.to_str().unwrap().as_bytes()).unwrap())
-            .join("chats");
+        let hash = format!("{:x}", Sha256::digest(project.to_str().unwrap()));
+        let chats = home.join(".gemini/tmp").join(hash).join("chats");
         std::fs::create_dir_all(&chats).unwrap();
         let chat = |name: &str, id: &str| {
-            std::fs::write(
-                chats.join(name),
-                format!("{{\n  \"sessionId\": \"{id}\",\n  \"messages\": []\n}}"),
-            )
-            .unwrap();
+            let text = format!("{{\n  \"sessionId\": \"{id}\",\n  \"messages\": []\n}}");
+            std::fs::write(chats.join(name), text).unwrap();
         };
-        chat("session-2026-01-01T10-00-old.json", "old-id");
+        let old = "11111111-2222-3333-4444-555555555555";
+        chat("session-2026-01-01T10-00-11111111.json", old);
         std::thread::sleep(Duration::from_millis(20));
-        chat("session-2026-01-01T10-01-new.json", "new-uuid");
-        chat("logs.json", "not-a-chat");
+        chat("session-2026-01-01T10-01-7c3e9a41.json", ID);
+        chat("logs.json", old);
         assert_eq!(
-            look(&found_with(p.clone()), &home).agent.command.as_deref(),
-            Some("gemini --yolo --resume new-uuid")
+            look(&found_with(p.clone()), &home).agent.command,
+            Some(format!("gemini --resume {ID} --yolo"))
         );
         // None written since it started: its chat isn't there yet.
         let later = Process {
@@ -1105,8 +958,6 @@ mod tests {
             Some("a-b")
         );
         assert_eq!(head_field("{\"sessionId\": 3}", "sessionId"), None);
-        assert_eq!(plain_id("a b"), None);
-        assert_eq!(plain_id("$(rm)"), None);
     }
 
     #[test]
@@ -1126,21 +977,25 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let tx = Mutex::new(tx);
         let watch = Watch::default();
-        watch.track(
-            5,
-            &file,
-            status,
+        let sink = move || -> Sink {
             Arc::new(move |id: u32, s: Option<&'static str>| {
-                let _ = tx.lock().unwrap().send((id, s));
-            }),
-        );
+                let _ = lock(&tx).send((id, s));
+            })
+        };
+        assert_eq!(watch.track(5, &file, status, sink), Some("working"));
         // FSEvents starts with the next write after the watch.
         std::thread::sleep(Duration::from_millis(300));
         let next = || rx.recv_timeout(Duration::from_secs(5)).unwrap();
         write("idle");
         assert_eq!(next(), (5, Some("idle")));
+        // Unknown to the table: no change told, the last state stands.
+        write("compacting");
         write("waiting");
         assert_eq!(next(), (5, Some("waiting")));
+        assert_eq!(
+            watch.track(5, &file, status, || unreachable!()),
+            Some("waiting")
+        );
         std::fs::remove_file(&file).unwrap();
         assert_eq!(next(), (5, None));
         watch.forget(5);
