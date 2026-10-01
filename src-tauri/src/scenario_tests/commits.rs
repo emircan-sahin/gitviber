@@ -492,3 +492,42 @@ fn large_staged_files_are_found_before_the_commit() {
     stage(&r, &["small.txt".into()]).unwrap();
     assert!(large_staged(&r).unwrap().is_empty(), "already committed");
 }
+
+/// An agent's commit all can stage tens of thousands of files (a node_modules), and every staged
+/// blob's size goes through one `cat-file --batch-check`: its answers must be read while the ids
+/// are still being written, or both sides wait on a full pipe for good.
+#[test]
+fn large_staged_checks_tens_of_thousands_of_files() {
+    use std::time::Duration;
+    let sb = Sandbox::new("large-many");
+    let r = sb.path("r");
+    init(&r);
+    // One 100 KB blob under 40k paths, straight into the index: nothing on disk.
+    let blob = "x".repeat(100_000);
+    let id = run_with(
+        &r,
+        &["hash-object", "-w", "--stdin"],
+        &[],
+        Some(blob.as_bytes()),
+    )
+    .unwrap();
+    let id = String::from_utf8(id).unwrap();
+    let entries: String = (0..40_000)
+        .map(|i| format!("100644 {} 0\tf/{i}\n", id.trim()))
+        .collect();
+    run_with(
+        &r,
+        &["update-index", "--index-info"],
+        &[],
+        Some(entries.as_bytes()),
+    )
+    .unwrap();
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let repo = r.clone();
+    std::thread::spawn(move || tx.send(large_staged(&repo).map(|l| l.len())));
+    let found = rx
+        .recv_timeout(Duration::from_secs(60))
+        .expect("large_staged hung on cat-file's pipes");
+    assert_eq!(found.unwrap(), 0);
+}
