@@ -51,6 +51,14 @@ pub(crate) async fn in_repo<T: Send + 'static>(
     blocking(move || f(&r)).await
 }
 
+/// `in_repo` for the reads a refresh does: each git call in `f` times out (git::reading).
+pub(crate) async fn read_repo<T: Send + 'static>(
+    state: &State<'_, AppState>,
+    f: impl FnOnce(&Path) -> Res<T> + Send + 'static,
+) -> Res<T> {
+    in_repo(state, move |r| git::reading(|| f(r))).await
+}
+
 /// `f` with the GitHub session and the open repo, on the blocking pool. Tauri's `State` is
 /// borrowed, so this gets there through the app handle.
 pub(crate) async fn with_github<T: Send + 'static>(

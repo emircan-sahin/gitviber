@@ -2,8 +2,10 @@
 
 use crate::network::{self, Net};
 use crate::process::{exec, search_path};
+use std::cell::Cell;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// The app reads git's messages ("not a git repository", "non-fast-forward", index.lock,
 /// progress phases), so git must speak English whatever LANG says, as in VS Code. UTF-8
@@ -51,6 +53,28 @@ pub(crate) fn command(repo: &Path, args: &[&str]) -> Command {
     cmd
 }
 
+/// Generous: a cold cache on a big repo is slow. But one wedged read (fsmonitor, a network
+/// volume) used to leave the window's refresh waiting, and showing old state, for good.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+thread_local! {
+    static READING: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `f` with each git call in it given up after READ_TIMEOUT, on this thread. Only for
+/// reads: a commit's hooks or a rebase can rightly take longer.
+pub(crate) fn reading<T>(f: impl FnOnce() -> T) -> T {
+    // Reset even if `f` panics: the blocking pool reuses its threads.
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            READING.with(|r| r.set(self.0));
+        }
+    }
+    let _restore = Restore(READING.with(|r| r.replace(true)));
+    f()
+}
+
 /// Runs git and returns stdout. `ok_codes` lists exit codes that are not errors.
 pub(crate) fn run_with(
     repo: &Path,
@@ -63,7 +87,7 @@ pub(crate) fn run_with(
         &format!("git {}", args.first().unwrap_or(&"")),
         ok_codes,
         input,
-        None,
+        READING.with(Cell::get).then_some(READ_TIMEOUT),
     )
 }
 
@@ -121,6 +145,21 @@ pub fn toplevel(path: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_reads_time_out() {
+        let timeout = || READING.with(Cell::get).then_some(READ_TIMEOUT);
+        assert_eq!(timeout(), None);
+        assert_eq!(reading(timeout), Some(READ_TIMEOUT));
+        // A nested scope ending doesn't end the outer one.
+        let outer = reading(|| {
+            reading(|| ());
+            timeout()
+        });
+        assert_eq!(outer, Some(READ_TIMEOUT));
+        let _ = std::panic::catch_unwind(|| reading(|| panic!("a read failed")));
+        assert_eq!(timeout(), None, "reset after a panic");
+    }
 
     #[test]
     fn git_finds_the_repo_from_its_folder_only() {

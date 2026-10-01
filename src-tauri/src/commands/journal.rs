@@ -1,11 +1,11 @@
 use crate::journal;
-use crate::state::{in_repo, repo, AppState, Res};
+use crate::state::{in_repo, read_repo, repo, AppState, Res};
 use tauri::State;
 
 #[tauri::command]
 pub async fn journal(state: State<'_, AppState>) -> Res<journal::View> {
     let journal = state.journal.clone();
-    in_repo(&state, move |r| Ok(journal.view(r))).await
+    read_repo(&state, move |r| Ok(journal.view(r))).await
 }
 
 #[tauri::command]
