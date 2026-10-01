@@ -181,7 +181,7 @@ fn line_endings_filters_and_modes() {
         write_commit(&r, "run.sh", "echo 1\n", "script");
         fs::set_permissions(r.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
         stage(&r, &["run.sh".into()]).unwrap();
-        commit(&r, "exec", &CommitOptions::default()).unwrap();
+        commit(&r, "exec", &CommitOptions::default(), &Net::default()).unwrap();
         fs::write(r.join("run.sh"), "echo 1\necho 2\n").unwrap();
         act(&r, "unstaged", "stage", "run.sh", &[], &[2]);
         assert!(run_text(&r, &["ls-files", "-s", "run.sh"])

@@ -140,8 +140,8 @@ export const api = {
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
   /** Stages, unstages or discards some lines of a diff (lines.rs); a discard is undoable. */
   changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
-  /** An empty `message` with `amend` keeps the old one (--no-edit). */
-  commit: (message: string, options: CommitOptions) => invoke<void>("commit", { message, options }),
+  /** An empty `message` with `amend` keeps the old one (--no-edit). Watched as a network command: hook output is its progress, and Cancel stops it before anything is committed. */
+  commit: (message: string, options: CommitOptions, op?: NetOp) => network<void>("commit", { message, options }, op),
   /** The message git would start with, comment lines stripped: a squash merge's or `cherry-pick -n`'s, else `commit.template`; null for neither. */
   commitTemplate: () => invoke<string | null>("commit_template"),
   /** "Name <email>" of recent authors and co-authors, newest first, not the user. */

@@ -5,7 +5,7 @@
 use crate::{askpass, process};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
@@ -92,6 +92,10 @@ impl Net {
         self.state.load(Ordering::Relaxed) == CANCELLED_STATE
     }
 
+    fn running(&self) -> bool {
+        self.state.load(Ordering::Relaxed) == RUNNING
+    }
+
     /// From here on Cancel is ignored. True only for the call that settled it.
     fn settle(&self) -> bool {
         self.state
@@ -151,25 +155,59 @@ impl Running {
 /// means the transfer is over and local work began (a pull's FETCH_HEAD, written before its
 /// merge or rebase), which git may not announce at all.
 pub fn run(
+    cmd: Command,
+    label: &str,
+    net: &Net,
+    settle_on: Option<&Path>,
+) -> Result<Vec<u8>, String> {
+    supervise(cmd, label, net, settle_on, None)
+}
+
+/// A local command watched the same way, for a commit whose hooks lint or test for minutes:
+/// each line it prints is its progress, and `input` goes to its stdin. It never times out (a
+/// quiet hook may be running tests, a signing tool waiting on a passphrase) and gets no askpass,
+/// as when it ran without being watched.
+pub fn run_local(
+    cmd: Command,
+    label: &str,
+    net: &Net,
+    settle_on: Option<&Path>,
+    input: Option<&[u8]>,
+) -> Result<Vec<u8>, String> {
+    supervise(cmd, label, net, settle_on, Some(input))
+}
+
+/// `local`: None for a network command, else what goes to a local one's stdin.
+fn supervise(
     mut cmd: Command,
     label: &str,
     net: &Net,
     settle_on: Option<&Path>,
+    local: Option<Option<&[u8]>>,
 ) -> Result<Vec<u8>, String> {
     if net.cancelled() {
         return Err(CANCELLED.into());
     }
     // Its own process group, so stopping it also stops the ssh or remote helper it started,
-    // and the askpass helper either of them is waiting on, which closes the dialog.
+    // and the askpass helper either of them is waiting on, which closes the dialog. A commit's
+    // hooks, and whatever they started, stop with it.
     process::in_own_group(&mut cmd);
-    let asking = askpass::attach(&mut cmd, label, net.op());
+    let asking = match local {
+        None => askpass::attach(&mut cmd, label, net.op()),
+        Some(_) => None,
+    };
+    let input = local.flatten();
     let mut child = cmd
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("could not run {label}: {e}"))?;
-    let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
+    let (stdin, stdout, stderr) = (child.stdin.take(), child.stdout.take(), child.stderr.take());
     let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let marker = settle_on.map(|p| (p, modified(p)));
     let start = Instant::now();
@@ -178,6 +216,13 @@ pub fn run(
     let touch = || heard.store(start.elapsed().as_millis() as u64, Ordering::Relaxed);
 
     std::thread::scope(|s| {
+        // Its own thread: a message larger than the pipe would block until git reads it, and
+        // git reads it only after the pre-commit hook. Dropping the pipe ends git's input.
+        if let (Some(mut pipe), Some(bytes)) = (stdin, input) {
+            s.spawn(move || {
+                let _ = pipe.write_all(bytes);
+            });
+        }
         let out = s.spawn(|| {
             let mut buf = Vec::new();
             if let Some(mut r) = stdout {
@@ -189,7 +234,7 @@ pub fn run(
             }
             buf
         });
-        let err = s.spawn(|| read_stderr(stderr, net, &touch));
+        let err = s.spawn(|| read_stderr(stderr, net, &touch, local.is_some()));
 
         let status = loop {
             match child.try_wait() {
@@ -220,7 +265,7 @@ pub fn run(
             let quiet = start
                 .elapsed()
                 .saturating_sub(Duration::from_millis(heard.load(Ordering::Relaxed)));
-            if quiet > SILENCE_TIMEOUT {
+            if local.is_none() && quiet > SILENCE_TIMEOUT {
                 process::kill_group(&mut child, STOP_GRACE);
                 break Err(format!("{label} timed out: no response for 5 minutes"));
             }
@@ -246,16 +291,19 @@ pub fn run(
 }
 
 /// git redraws a progress line with `\r` and ends it with `\n`; each piece is either progress
-/// (reported when it changed) or text worth keeping.
-fn read_stderr(pipe: Option<impl Read>, net: &Net, touch: &dyn Fn()) -> String {
+/// (reported when it changed) or text worth keeping. A `local` command's pieces are all kept,
+/// and the last of each read is its progress: a hook pouring out lines doesn't send each one.
+fn read_stderr(pipe: Option<impl Read>, net: &Net, touch: &dyn Fn(), local: bool) -> String {
     let mut kept = String::new();
     let Some(mut r) = pipe else {
         return kept;
     };
     let mut last: Option<Progress> = None;
-    let mut piece = |bytes: &[u8]| {
+    // The text kept, if any.
+    let mut piece = |bytes: &[u8]| -> Option<String> {
         let text = String::from_utf8_lossy(bytes);
-        match parse_progress(&text) {
+        let progress = if local { None } else { parse_progress(&text) };
+        match progress {
             Some(p) if last.as_ref() != Some(&p) => {
                 if !p.cancellable {
                     net.settle();
@@ -268,17 +316,27 @@ fn read_stderr(pipe: Option<impl Read>, net: &Net, touch: &dyn Fn()) -> String {
             None => {
                 kept.push_str(text.trim_end());
                 kept.push('\n');
+                return Some(text.trim().to_string());
             }
         }
+        None
     };
     let mut pending = Vec::new();
     let mut chunk = [0u8; 8192];
     while let Ok(n @ 1..) = r.read(&mut chunk) {
         touch();
         pending.extend_from_slice(&chunk[..n]);
+        let mut latest = None;
         while let Some(i) = pending.iter().position(|b| *b == b'\r' || *b == b'\n') {
-            piece(&pending[..i]);
+            latest = piece(&pending[..i]).or(latest);
             pending.drain(..=i);
+        }
+        if let Some(phase) = latest.filter(|_| local) {
+            net.report(Progress {
+                phase,
+                percent: None,
+                cancellable: net.running(),
+            });
         }
     }
     piece(&pending);
@@ -337,7 +395,12 @@ mod tests {
 
         let running = Running::default();
         let net = running.start("op".into(), |_| {});
-        read_stderr(Some(&b"Updating files:  40% (4/10)\r"[..]), &net, &|| {});
+        read_stderr(
+            Some(&b"Updating files:  40% (4/10)\r"[..]),
+            &net,
+            &|| {},
+            false,
+        );
         running.cancel("op");
         assert!(
             !net.cancelled(),
@@ -392,7 +455,7 @@ mod tests {
         let sink = seen.clone();
         let net = Running::default().start("t".into(), move |p| sink.lock().unwrap().push(p));
         let stderr = b"Receiving objects:  50% (1/2)\rReceiving objects:  50% (1/2)\rReceiving objects: 100% (2/2), done.\nfatal: something broke\nhint: try again";
-        let kept = read_stderr(Some(&stderr[..]), &net, &|| {});
+        let kept = read_stderr(Some(&stderr[..]), &net, &|| {}, false);
         assert_eq!(kept, "fatal: something broke\nhint: try again\n");
         assert_eq!(
             *seen.lock().unwrap(),

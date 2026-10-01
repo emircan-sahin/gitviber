@@ -137,6 +137,15 @@ const HOOK_OUTPUT = `husky - pre-commit script failed (code 1)
   log: error: gpg failed to sign the data (fixture)
   ! [rejected]  main -> main (fetch first)  (fixture)`;
 
+// commit.rs names the hooks set up when a commit fails; git prints nothing of its own then.
+const HOOK_FAILED = `${HOOK_OUTPUT}
+hint: Commit hooks set up here: pre-commit, commit-msg.`;
+
+test("a failed commit with hooks set up offers committing without them, unless git said why", () => {
+  assert.equal(fix(HOOK_FAILED), "hooks");
+  assert.equal(fix(`${GPG}\nhint: Commit hooks set up here: pre-commit.`), "signing");
+});
+
 test("a hook quoting git's messages isn't taken for them", () => {
   assert.equal(explainGitError(HOOK_OUTPUT), null);
 });

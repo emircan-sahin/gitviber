@@ -1,6 +1,7 @@
 use crate::journal::{Action, Mode};
-use crate::state::{in_repo, indexed, journaled, with_index_lock, AppState, Res};
-use crate::{git, github, lines, suggest};
+use crate::state::{in_repo, indexed, journaled, watch_network, with_index_lock, AppState, Res};
+use crate::{git, github, lines, network, suggest};
+use tauri::ipc::Channel;
 use tauri::State;
 
 #[tauri::command]
@@ -63,6 +64,8 @@ pub async fn commit(
     state: State<'_, AppState>,
     message: String,
     options: git::CommitOptions,
+    op: String,
+    progress: Channel<network::Progress>,
 ) -> Res<()> {
     let subject = message.lines().next().unwrap_or("").trim();
     let label = match (options.amend, subject) {
@@ -71,8 +74,9 @@ pub async fn commit(
         (false, s) => format!("Commit \"{s}\""),
     };
     let lock = state.index.clone();
+    let net = watch_network(&state, op, progress);
     journaled(&state, Action::new(label, Mode::Soft), move |r| {
-        with_index_lock(&lock, r, |r| git::commit(r, &message, &options))
+        with_index_lock(&lock, r, |r| git::commit(r, &message, &options, &net))
     })
     .await
 }

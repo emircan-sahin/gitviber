@@ -1,9 +1,10 @@
 //! Committing, and what the commit form reads: template, recent authors, details.
 
-use super::{command, git_dir, has_head, run, run_text, run_with, validate_rev};
+use super::{command, git_dir, has_head, run_text, run_with, validate_rev};
+use crate::network::{self, Net, CANCELLED};
 use crate::process::exec;
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 #[derive(Deserialize, Default)]
@@ -18,7 +19,14 @@ pub struct CommitOptions {
     pub co_authors: Vec<String>,
 }
 
-pub fn commit(repo: &Path, message: &str, opts: &CommitOptions) -> Result<(), String> {
+/// Ends a failed commit's message when a hook `--no-verify` skips is set up. git says nothing of
+/// its own when one fails, so this is how the page knows to offer committing without them.
+pub const HOOKS_HINT: &str = "hint: Commit hooks set up here: ";
+
+/// Watched like a network command: the hooks' output is its progress, and Cancel stops git with
+/// the hooks it runs, before anything is committed. Once HEAD moved, only post-commit hooks are
+/// left and Cancel is ignored.
+pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Result<(), String> {
     // git formats and places the trailers, next to any the message already has.
     let trailers = opts
         .co_authors
@@ -41,14 +49,57 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions) -> Result<(), St
         }
     }
     args.extend(trailers.iter().map(String::as_str));
-    if opts.amend && message.trim().is_empty() {
+    let input = if opts.amend && message.trim().is_empty() {
         // Amending with no new message keeps the old one.
         args.push("--no-edit");
-        return run(repo, &args).map(|_| ());
-    }
-    // Message goes through stdin so it is never parsed as arguments.
-    args.extend(["-F", "-"]);
-    run_with(repo, &args, &[], Some(message.as_bytes())).map(|_| ())
+        None
+    } else {
+        // Message goes through stdin so it is never parsed as arguments.
+        args.extend(["-F", "-"]);
+        Some(message.as_bytes())
+    };
+    let paths = run_text(
+        repo,
+        &[
+            "rev-parse",
+            "--git-path",
+            "logs/HEAD",
+            "--git-path",
+            "hooks/pre-commit",
+            "--git-path",
+            "hooks/commit-msg",
+        ],
+    )
+    .unwrap_or_default();
+    let paths: Vec<_> = paths.lines().map(|p| repo.join(p)).collect();
+    let reflog = paths.first().map(PathBuf::as_path);
+    network::run_local(command(repo, &args), "git commit", net, reflog, input)
+        .map(|_| ())
+        .map_err(|e| {
+            let hooks: Vec<_> = ["pre-commit", "commit-msg"]
+                .into_iter()
+                .zip(paths.iter().skip(1))
+                .filter(|(_, p)| is_hook(p))
+                .map(|(name, _)| name)
+                .collect();
+            if e == CANCELLED || opts.no_verify || hooks.is_empty() {
+                e
+            } else {
+                format!("{e}\n{HOOKS_HINT}{}.", hooks.join(", "))
+            }
+        })
+}
+
+/// What git runs as a hook: a file it can execute (it skips one that isn't, with a hint).
+fn is_hook(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return false;
+    };
+    #[cfg(unix)]
+    return meta.is_file()
+        && std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
+    #[cfg(not(unix))]
+    meta.is_file()
 }
 
 /// Where git leaves a message for the next commit, in the order `git commit` joins them.

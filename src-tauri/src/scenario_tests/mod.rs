@@ -103,7 +103,7 @@ fn write_commit(repo: &Path, path: &str, content: &str, msg: &str) {
     }
     fs::write(repo.join(path), content).unwrap();
     stage(repo, &[path.into()]).unwrap();
-    commit(repo, msg, &CommitOptions::default()).unwrap();
+    commit(repo, msg, &CommitOptions::default(), &Net::default()).unwrap();
 }
 
 const AMEND: CommitOptions = CommitOptions {
@@ -168,7 +168,7 @@ fn repo_with_submodule(sb: &Sandbox) -> PathBuf {
     // A clone made by git, not `clone_of`: without its own identity a commit in it
     // fails where the machine has none (the Linux CI runner).
     identity(&r.join("sub"));
-    commit(&r, "add sub", &CommitOptions::default()).unwrap();
+    commit(&r, "add sub", &CommitOptions::default(), &Net::default()).unwrap();
     r
 }
 

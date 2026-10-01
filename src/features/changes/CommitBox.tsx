@@ -1,19 +1,21 @@
 import { ArrowUpFromLine, Ellipsis, LoaderCircle, RefreshCw, ShieldOff, Signature, TriangleAlert, UserPlus } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Commit, type RepoStatus } from "@/lib/api";
+import { api, CANCELLED, type Commit, type RepoStatus } from "@/lib/api";
 import { matchesCommand, runCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { updateSettings, useSettings } from "@/lib/settings";
+import { gitFailed } from "@/lib/app/gitFailed";
 import { toast } from "@/lib/app/toast";
+import { withNetActivity } from "@/lib/repo/netActivity";
 import { tracked, undoAction } from "@/lib/repo/undo";
 import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED, stageable } from "@/lib/git/worktrees";
 import { pasteMessage } from "@/lib/git/pasteMessage";
-import { attempt, files, leftOut } from "./changeList";
+import { files, leftOut } from "./changeList";
 import { SectionBtn } from "./ChangeRows";
 import { CoAuthorChip, CoAuthorPicker, OptionChip } from "./CoAuthorPicker";
 import { SuggestButton } from "./SuggestButton";
@@ -58,7 +60,8 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
   const length = [...draft.summary].length;
 
   // `then`: push or sync right after, as VS Code's Commit & Push (the top bar's commands do it).
-  const commit = async (then?: "git.push" | "git.sync") => {
+  // `skipHooks`: this once, from the failed commit's toast.
+  const commit = async (then?: "git.push" | "git.sync", skipHooks = false) => {
     if (!canCommit) return;
     dropSuggestion();
     setBusy(true);
@@ -66,11 +69,18 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     // An untouched amend message goes as none, so git keeps the original exactly.
     const message = amend && !edited ? "" : body ? `${summary}\n\n${body}` : summary;
     let entry: number | null = null;
-    const ok = await attempt("Commit failed", async () => {
+    let ok = false;
+    try {
       // Nothing staged means "commit everything", the common case after an agent run.
       if (!hasStaged && !amend) await api.stage(all.paths);
-      [, entry] = await tracked(() => api.commit(message, { amend: !!amend, signOff, noVerify, coAuthors: draft.coAuthors }));
-    });
+      // Hooks can lint or test for minutes: the top bar shows their output, and Cancel.
+      const options = { amend: !!amend, signOff, noVerify: noVerify || skipHooks, coAuthors: draft.coAuthors };
+      [, entry] = await tracked(() => withNetActivity("Commit", (op) => api.commit(message, options, op)));
+      ok = true;
+    } catch (e) {
+      if (e === CANCELLED) toast("info", "Commit cancelled");
+      else gitFailed("Commit failed", e, { hooks: [{ label: "Commit without hooks", run: () => withoutHooks(status.root, then) }] });
+    }
     setBusy(false);
     if (ok) {
       clear();
@@ -81,6 +91,16 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     }
     await refresh();
     if (ok && then) runCommand(then);
+  };
+
+  // The error toast outlives this render: its button commits what the box holds when pressed.
+  const latest = useRef({ root: status.root, commit });
+  useEffect(() => {
+    latest.current = { root: status.root, commit };
+  });
+  const withoutHooks = (root: string, then?: "git.push" | "git.sync") => {
+    if (latest.current.root !== root) toast("info", "Commit without hooks not run", "It was for the repository open before this one.");
+    else void latest.current.commit(then, true);
   };
 
   const { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest } = useSuggestMessage({ draft, setDraft, startBody, amend: !!amend, hasStaged, hasAny, busy });

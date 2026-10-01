@@ -12,7 +12,7 @@ fn undo_and_redo_a_commit() {
     fs::write(r.join("a.txt"), "one\n").unwrap();
     stage(&r, &["a.txt".into()]).unwrap();
     j.record(&r, Action::new("Commit", Mode::Soft), |r| {
-        commit(r, "base", &CommitOptions::default())
+        commit(r, "base", &CommitOptions::default(), &Net::default())
     })
     .unwrap();
     step(&j, &r, false).unwrap();
@@ -24,7 +24,7 @@ fn undo_and_redo_a_commit() {
     fs::write(r.join("a.txt"), "one\ntwo\n").unwrap();
     stage(&r, &["a.txt".into()]).unwrap();
     j.record(&r, Action::new("Commit", Mode::Soft), |r| {
-        commit(r, "second", &CommitOptions::default())
+        commit(r, "second", &CommitOptions::default(), &Net::default())
     })
     .unwrap();
     let second = rev(&r, "HEAD");
@@ -42,7 +42,12 @@ fn undo_and_redo_a_commit() {
     // A new action after an undo drops what could be redone.
     step(&j, &r, false).unwrap();
     j.record(&r, Action::new("Commit", Mode::Soft), |r| {
-        commit(r, "second, reworded", &CommitOptions::default())
+        commit(
+            r,
+            "second, reworded",
+            &CommitOptions::default(),
+            &Net::default(),
+        )
     })
     .unwrap();
     let v = j.view(&r);
@@ -156,7 +161,7 @@ fn undo_takes_back_a_pull_but_not_a_pushed_commit() {
     fs::write(b.join("y.txt"), "y\n").unwrap();
     stage(b, &["y.txt".into()]).unwrap();
     j.record(b, Action::new("Commit", Mode::Soft), |r| {
-        commit(r, "from b", &CommitOptions::default())
+        commit(r, "from b", &CommitOptions::default(), &Net::default())
     })
     .unwrap();
     assert!(j.view(b).undo_blocked.is_none());
@@ -212,7 +217,7 @@ fn tags_fetched_during_an_action_are_not_part_of_it() {
     stage(&r, &["a.txt".into()]).unwrap();
     j.record(&r, Action::new("Commit", Mode::Soft), |r| {
         run(r, &["tag", "fetched", "HEAD"]).unwrap();
-        commit(r, "second", &CommitOptions::default())
+        commit(r, "second", &CommitOptions::default(), &Net::default())
     })
     .unwrap();
     step(&j, &r, false).unwrap();

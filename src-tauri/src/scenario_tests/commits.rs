@@ -66,7 +66,7 @@ fn amend_without_message_keeps_the_old_one() {
     write_commit(&r, "a.txt", "a\n", "original message");
     fs::write(r.join("b.txt"), "b\n").unwrap();
     stage(&r, &["b.txt".into()]).unwrap();
-    commit(&r, "  ", &AMEND).unwrap();
+    commit(&r, "  ", &AMEND, &Net::default()).unwrap();
     let head = &log(&r, None, 0, 5).unwrap()[0];
     assert_eq!(head.subject, "original message");
     assert_eq!(log(&r, None, 0, 5).unwrap().len(), 1);
@@ -89,7 +89,7 @@ fn commit_options_trailers_sign_off_and_skipped_hooks() {
     fs::write(r.join("b.txt"), "b\n").unwrap();
     stage(&r, &["b.txt".into()]).unwrap();
 
-    let err = commit(&r, "Add b", &CommitOptions::default()).unwrap_err();
+    let err = commit(&r, "Add b", &CommitOptions::default(), &Net::default()).unwrap_err();
     assert!(err.contains("lint failed"), "{err}");
     let claude = "Claude <noreply@anthropic.com>";
     let opts = CommitOptions {
@@ -98,7 +98,7 @@ fn commit_options_trailers_sign_off_and_skipped_hooks() {
         co_authors: vec![claude.into()],
         ..Default::default()
     };
-    commit(&r, "Add b\n\nWhy it matters.", &opts).unwrap();
+    commit(&r, "Add b\n\nWhy it matters.", &opts, &Net::default()).unwrap();
     let head = &log(&r, None, 0, 1).unwrap()[0];
     assert_eq!(head.subject, "Add b");
     assert_eq!(
@@ -127,8 +127,8 @@ fn commit_options_trailers_sign_off_and_skipped_hooks() {
         co_authors: vec![ada.into()],
         ..Default::default()
     };
-    assert!(commit(&r, "", &amend(false)).is_err());
-    commit(&r, "", &amend(true)).unwrap();
+    assert!(commit(&r, "", &amend(false), &Net::default()).is_err());
+    commit(&r, "", &amend(true), &Net::default()).unwrap();
     let head = &log(&r, None, 0, 1).unwrap()[0];
     assert!(
         head.body.ends_with(&format!("Co-authored-by: {ada}")),
@@ -143,7 +143,7 @@ fn commit_options_trailers_sign_off_and_skipped_hooks() {
         no_verify: true,
         ..Default::default()
     };
-    assert!(commit(&r, "x", &bad).is_err());
+    assert!(commit(&r, "x", &bad, &Net::default()).is_err());
 
     // Suggestions: co-authors and authors, newest first, never the user.
     assert_eq!(recent_authors(&r).unwrap(), [claude, ada]);
@@ -191,7 +191,7 @@ fn a_prepared_message_comes_before_the_template() {
     let message = commit_template(&r).unwrap();
     assert!(message.starts_with("Squashed commit of the following:"));
     assert!(message.contains("add b"));
-    commit(&r, &message, &CommitOptions::default()).unwrap();
+    commit(&r, &message, &CommitOptions::default(), &Net::default()).unwrap();
     assert!(status(&r).unwrap().prepared_message.is_none());
     assert_eq!(commit_template(&r).as_deref(), Some("Why:"));
 }
@@ -223,7 +223,7 @@ fn init_then_first_commit() {
     stage(&r, &["a.txt".into()]).unwrap();
     let j = Journal::default();
     j.record(&r, Action::new("Commit", Mode::Soft), |r| {
-        commit(r, "first", &CommitOptions::default())
+        commit(r, "first", &CommitOptions::default(), &Net::default())
     })
     .unwrap();
     assert_eq!(log(&r, None, 0, 10).unwrap().len(), 1);
@@ -256,4 +256,122 @@ fn a_repository_of_its_own_identity_and_back_to_global() {
     assert!(repo_identity(&r).name.is_none() && repo_identity(&r).email.is_none());
     // Unsetting what isn't set is fine.
     set_repo_identity(&r, None).unwrap();
+}
+
+/// A hook's output is the commit's progress, and Cancel stops git with the hook and whatever it
+/// started: nothing is committed, index.lock is gone and the next commit goes through.
+#[cfg(unix)]
+#[test]
+fn a_commit_hook_shows_progress_and_can_be_cancelled() {
+    use crate::network::{Running, CANCELLED};
+    use std::time::{Duration, Instant};
+    let sb = Sandbox::new("hook-cancel");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let pidfile = sb.path("pid");
+    let hook = r.join(".git/hooks/pre-commit");
+    executable(
+        &hook,
+        &format!(
+            "#!/bin/sh\necho 'linting 1 file'\nsleep 30 & echo $! > {}\nwait\n",
+            pidfile.display()
+        ),
+    );
+    fs::write(r.join("b.txt"), "b\n").unwrap();
+    stage(&r, &["b.txt".into()]).unwrap();
+
+    let seen = std::sync::Arc::new(Mutex::new(vec![]));
+    let sink = seen.clone();
+    let running = Running::default();
+    let net = running.start("commit".into(), move |p| sink.lock().unwrap().push(p));
+    let started = Instant::now();
+    let result = std::thread::scope(|s| {
+        s.spawn(|| {
+            while fs::read_to_string(&pidfile).map_or(true, |s| s.trim().is_empty()) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            running.cancel("commit");
+        });
+        commit(&r, "Add b", &CommitOptions::default(), &net)
+    });
+    assert_eq!(result.unwrap_err(), CANCELLED);
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(seen
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|p| p.phase == "linting 1 file" && p.cancellable));
+    let pid: libc::pid_t = fs::read_to_string(&pidfile)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let gone = (0..100).any(|_| {
+        std::thread::sleep(Duration::from_millis(20));
+        (unsafe { libc::kill(pid, 0) }) != 0
+    });
+    assert!(gone, "the hook's child still runs");
+    assert_eq!(log(&r, None, 0, 5).unwrap().len(), 1);
+    let lock = run_text(&r, &["rev-parse", "--git-path", "index.lock"]).unwrap();
+    assert!(!r.join(lock.trim()).exists());
+    assert_eq!(status(&r).unwrap().staged.len(), 1);
+
+    // A message past the pipe's buffer still gets through once the hook passes.
+    executable(&hook, "#!/bin/sh\necho ok\n");
+    let body = "x".repeat(200_000);
+    commit(
+        &r,
+        &format!("Add b\n\n{body}"),
+        &CommitOptions::default(),
+        &Net::default(),
+    )
+    .unwrap();
+    let head = &log(&r, None, 0, 1).unwrap()[0];
+    assert_eq!(
+        (head.subject.as_str(), head.body.len()),
+        ("Add b", body.len())
+    );
+}
+
+/// git prints nothing of its own when a hook fails, so the error says which hooks are set up,
+/// for the page to offer committing without them; never when they were skipped or there are none.
+#[cfg(unix)]
+#[test]
+fn a_failed_commit_names_the_hooks_that_could_have_stopped_it() {
+    let sb = Sandbox::new("hook-fail");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    executable(
+        &r.join(".git/hooks/commit-msg"),
+        "#!/bin/sh\necho 'subject must start with a type'\nexit 1\n",
+    );
+    // Not executable: git skips it, so it isn't named.
+    fs::write(r.join(".git/hooks/pre-commit"), "#!/bin/sh\nexit 1\n").unwrap();
+    fs::write(r.join("b.txt"), "b\n").unwrap();
+    stage(&r, &["b.txt".into()]).unwrap();
+
+    let err = commit(&r, "Add b", &CommitOptions::default(), &Net::default()).unwrap_err();
+    assert!(err.contains("subject must start with a type\n"), "{err}");
+    assert!(
+        err.ends_with(&format!("\n{HOOKS_HINT}commit-msg.")),
+        "{err}"
+    );
+
+    // Another failure with the hooks skipped is git's own words alone.
+    let skip = CommitOptions {
+        no_verify: true,
+        co_authors: vec!["Eve <e@x>\nx".into()],
+        ..Default::default()
+    };
+    assert!(!commit(&r, "Add b", &skip, &Net::default())
+        .unwrap_err()
+        .contains(HOOKS_HINT));
+    let skip = CommitOptions {
+        no_verify: true,
+        ..Default::default()
+    };
+    commit(&r, "Add b", &skip, &Net::default()).unwrap();
+    assert_eq!(log(&r, None, 0, 5).unwrap().len(), 2);
 }

@@ -155,7 +155,7 @@ fn staging_unstaging_and_discarding_more_paths_than_argv_holds() {
     assert!(status(&r).unwrap().staged.is_empty());
 
     stage(&r, &files).unwrap();
-    commit(&r, "many", &CommitOptions::default()).unwrap();
+    commit(&r, "many", &CommitOptions::default(), &Net::default()).unwrap();
     for f in &files {
         fs::write(r.join(f), "b\n").unwrap();
     }

@@ -28,7 +28,7 @@ fn branch_review_is_everything_since_the_merge_base() {
     // Committed: an edit, a rename, and an edit the working tree takes back.
     write_commit(&r, "a.txt", "a\ncommitted\n", "edit a");
     run(&r, &["mv", "old.txt", "new.txt"]).unwrap();
-    commit(&r, "rename", &CommitOptions::default()).unwrap();
+    commit(&r, "rename", &CommitOptions::default(), &Net::default()).unwrap();
     write_commit(&r, "back.txt", "changed\n", "edit back");
     // main moves on after the branch left it: not this branch's change.
     run(&r, &["switch", "-q", "main"]).unwrap();

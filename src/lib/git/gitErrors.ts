@@ -1,5 +1,5 @@
 /** Which way out fits: the caller that can take it supplies the buttons (a pull, a retry), except identity and signing, which always fit. */
-export type GitFix = "diverged" | "fetch-first" | "autostash" | "identity" | "signing";
+export type GitFix = "diverged" | "fetch-first" | "autostash" | "identity" | "signing" | "hooks";
 
 export interface GitErrorHelp {
   title: string;
@@ -75,6 +75,16 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
     {
       title: "The remote refused your SSH key",
       explanation: "Check that your key is loaded (`ssh-add -l`) and added to your account on the remote. For GitHub, `ssh -T git@github.com` tests it.",
+    },
+  ],
+  // commit.rs's line: git says nothing of its own when a pre-commit or commit-msg hook fails.
+  // Last, so a failure git does explain (identity, signing) is told as that.
+  [
+    /^hint: Commit hooks set up here: /m,
+    {
+      title: "A commit hook stopped the commit",
+      explanation: "What it printed is under Details. Fix what it reports and commit again, or commit without hooks this once.",
+      fix: "hooks",
     },
   ],
 ];
