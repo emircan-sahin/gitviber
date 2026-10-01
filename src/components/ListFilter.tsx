@@ -45,7 +45,7 @@ export function useListFilter(panel: Panel, placeholder: string) {
         spellCheck={false}
         className="h-full min-w-0 flex-1 bg-transparent text-[12px] outline-none placeholder:text-subtle"
       />
-      <button aria-label="Close filter" onClick={dismiss} className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
+      <button aria-label="Close filter" onClick={dismiss} className="hit-area flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
         <X className="size-3" />
       </button>
     </div>

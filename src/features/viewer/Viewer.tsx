@@ -158,7 +158,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
         <FileIcon path={selectionPath(sel)} />
         <PathLabel path={selectionPath(sel)} className="min-w-0 text-[12px]" />
         <Tip label="Copy path">
-          <button className="text-subtle hover:text-foreground focus-visible:text-foreground" onClick={() => copyText(selectionPath(sel), "Path copied")}>
+          <button className="hit-area text-subtle hover:text-foreground focus-visible:text-foreground" onClick={() => copyText(selectionPath(sel), "Path copied")}>
             <Copy className="size-3" />
           </button>
         </Tip>

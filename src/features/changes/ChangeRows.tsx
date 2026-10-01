@@ -157,7 +157,7 @@ export function Row({
             onToggleViewed();
           }}
           className={cn(
-            "flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border outline-none focus-visible:ring-1 focus-visible:ring-ring",
+            "hit-area flex size-3.5 shrink-0 items-center justify-center rounded-[3px] border outline-none focus-visible:ring-1 focus-visible:ring-ring",
             viewed ? "border-added-fill bg-added-fill text-on-status" : "border-subtle hover:border-muted-foreground",
           )}
         >
