@@ -29,6 +29,7 @@ type ListFile = Selection & { kind: "unstaged" | "staged" | "branch" };
 const LARGE = 1500;
 /** How far off screen a file starts loading, so it's drawn by the time it scrolls in. */
 const AHEAD = "1200px 0px";
+const NONE: ReadonlySet<number> = new Set();
 
 interface Props {
   list: ChangeList;
@@ -85,7 +86,11 @@ export function AllChanges({ list, status, branchRows, revision, viewed, toggleV
     const { file } = sel;
     const sig = [file.status, file.oid ?? `${file.additions}:${file.deletions}`, file.submodule, sel.kind === "unstaged" ? file.indexOid : sel.kind === "staged" ? status?.head : ""].join(":");
     const m = memo(sel);
-    if (m.sig !== sig) Object.assign(m, { sig, rev: revision });
+    if (m.sig !== sig) {
+      Object.assign(m, { sig, rev: revision });
+      // Line numbers of the version before: unfolding them in this one opens other lines.
+      delete m.revealed;
+    }
     return m.rev!;
   };
 
@@ -314,12 +319,15 @@ function FileDiff({ sel, memo, revision, estimate, onOpen }: { sel: ListFile; me
   const { pair, error } = usePair(sel, revision, diffWhitespace(s), false);
   const [large, setLarge] = useState(!!memo.large);
   // Folded as the code view folds unchanged lines, each fold opening FOLD_REVEAL lines a click.
-  const [revealed, setRevealed] = useState<ReadonlySet<number>>(() => memo.revealed ?? new Set());
+  // What's open lives in the memo, which forgets it once the file changes.
+  const [, redraw] = useReducer((n: number) => n + 1, 0);
+  const revealed = memo.revealed ?? NONE;
   const rows = useMemo(() => (pair ? shownRows(pair.rows, CONTEXT, FOLD_MIN, revealed) : []), [pair, revealed]);
   const reveal = (gap: Gap) => {
     const next = new Set(revealed);
     for (let n = gap.n; n < gap.n + Math.min(gap.gap, FOLD_REVEAL); n++) next.add(n);
-    setRevealed((memo.revealed = next));
+    memo.revealed = next;
+    redraw();
   };
   if (error) return <Message text={`Could not load: ${error}`} />;
   if (!pair) return <div style={{ height: estimate }} />;
