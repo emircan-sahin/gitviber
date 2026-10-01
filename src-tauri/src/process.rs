@@ -172,7 +172,7 @@ pub fn kill_group(child: &mut Child, grace: Duration) {
         #[cfg(unix)]
         signal(libc::SIGTERM);
         let deadline = Instant::now() + grace;
-        while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
+        while Instant::now() < deadline && !exited(child) {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
@@ -180,6 +180,21 @@ pub fn kill_group(child: &mut Child, grace: Duration) {
     signal(libc::SIGKILL);
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Whether the child has exited, without reaping it. try_wait would reap it, and a reaped
+/// leader's pid (the group's id) can go to another process before the SIGKILL that follows.
+fn exited(child: &mut Child) -> bool {
+    #[cfg(unix)]
+    {
+        // Zeroed: with WNOHANG and nothing to report, the kernel may leave it untouched.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        let flags = libc::WEXITED | libc::WNOHANG | libc::WNOWAIT;
+        let r = unsafe { libc::waitid(libc::P_PID, child.id() as libc::id_t, &mut info, flags) };
+        r != 0 || info.si_signo != 0
+    }
+    #[cfg(not(unix))]
+    !matches!(child.try_wait(), Ok(None))
 }
 
 /// Splits a command line into argv with shell-style quoting and nothing else a shell does: no
@@ -221,6 +236,19 @@ pub fn split_command(line: &str) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn exited_leaves_the_child_to_be_reaped() {
+        let mut child = spawn(Command::new("sh").args(["-c", "exit 3"])).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !exited(&mut child) {
+            assert!(Instant::now() < deadline, "sh never exited");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Still there to reap: its pid wasn't freed for another process to take.
+        assert_eq!(child.try_wait().unwrap().and_then(|s| s.code()), Some(3));
+    }
 
     fn split(s: &str) -> Vec<String> {
         split_command(s).unwrap()
