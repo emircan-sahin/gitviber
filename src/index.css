@@ -747,7 +747,9 @@
 @media (prefers-reduced-motion: reduce) {
   .logo-draw,
   .logo-draw *,
-  .splash-text {
+  .splash-text,
+  /* Menus, dialogs, popovers, tooltips and toasts (tw-animate-css): they appear without zooming or sliding. */
+  .animate-in {
     animation: none;
   }
 }
