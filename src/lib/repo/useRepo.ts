@@ -5,6 +5,7 @@ import { useBackgroundFetch } from "./backgroundFetch";
 import { toast } from "../app/toast";
 
 interface RepoChanged {
+  root: string;
   worktree: boolean;
   git: boolean;
 }
@@ -95,7 +96,10 @@ export function useRepo(root: string) {
     setJournal(null);
     loaded.current = 0;
     refresh(true);
-    const unlisten = listen<RepoChanged>("repo-changed", (e) => refresh(e.payload.git));
+    // The previous repo's watcher can still deliver one last event after a switch.
+    const unlisten = listen<RepoChanged>("repo-changed", (e) => {
+      if (e.payload.root === root) refresh(e.payload.git);
+    });
     return () => {
       // During hot reload the listener can already be gone; nothing to clean up then.
       unlisten.then((f) => f()).catch(() => {});

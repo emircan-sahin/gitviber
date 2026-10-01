@@ -12,6 +12,8 @@ use tauri::{AppHandle, Emitter};
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoChanged {
+    /// The repo this watcher is for, as open_repo returned it.
+    pub root: String,
     /// Files in the working tree changed.
     pub worktree: bool,
     /// HEAD, refs or the index changed (commit, checkout, stage from the terminal...).
@@ -207,7 +209,10 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
     std::thread::spawn(move || {
         while let Ok(first) = rx.recv() {
             let started = Instant::now();
-            let mut change = RepoChanged::default();
+            let mut change = RepoChanged {
+                root: root.to_string_lossy().into_owned(),
+                ..Default::default()
+            };
             let mut touched = HashSet::new();
             let mut next = Some(first);
             while let Some((kind, path)) = next {
