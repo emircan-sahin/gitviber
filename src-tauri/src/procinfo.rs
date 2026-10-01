@@ -160,6 +160,11 @@ pub fn job(pgid: u32) -> Vec<u32> {
 #[cfg(target_os = "linux")]
 pub fn process(pid: u32) -> Option<Process> {
     let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    // Empty while an exec is still setting up the new program (spawn can return by then) and
+    // for a zombie: nothing to read yet, and the caller asks again.
+    if cmdline.is_empty() {
+        return None;
+    }
     let argv = cmdline
         .strip_suffix(b"\0")
         .unwrap_or(&cmdline[..])
@@ -304,7 +309,15 @@ mod tests {
         // `:` after it keeps sh from exec'ing sleep; the empty last argument is one too.
         cmd.args(["-c", "sleep 30; :", "x", ""]).process_group(0);
         let mut child = crate::process::spawn(&mut cmd).unwrap();
-        let read = process(child.id());
+        // On Linux spawn can return before the exec has set up argv.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let read = loop {
+            match process(child.id()) {
+                Some(p) if p.argv.len() > 1 => break Some(p),
+                _ if std::time::Instant::now() > deadline => break None,
+                _ => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        };
         let job = job(child.id());
         // The group, sleep with it, while sh isn't reaped and its number still names it.
         crate::process::kill_group(&mut child, std::time::Duration::ZERO);
