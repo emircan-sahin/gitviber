@@ -44,20 +44,21 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
   const hasStaged = status.staged.length > 0;
   const all = stageable(status.unstaged);
   const hasAny = hasStaged || all.paths.length > 0;
-  const canCommit = !busy && !status.conflicted.length && (amend ? !edited || summary !== "" : summary !== "" && hasAny);
-  const label = amend ? "Amend" : hasStaged ? "Commit" : "Commit all";
-  // The button stays short; the tooltip still says how much goes in.
-  const scope = hasStaged && !amend ? `Commit ${status.staged.length} staged` : label;
-  const target = status.branch ? `${scope} to ${status.branch}` : scope;
+  // Why the commit can't run yet, for the button's tooltip. An amend left unedited keeps its message.
   const blocked = busy
     ? "Committing…"
     : status.conflicted.length
       ? "Resolve the conflicts first"
       : !amend && !hasAny
         ? "Nothing to commit"
-        : summary === ""
+        : summary === "" && (!amend || edited)
           ? "Write a commit message first"
           : null;
+  const canCommit = !blocked;
+  const label = amend ? "Amend" : hasStaged ? "Commit" : "Commit all";
+  // The button stays short; the tooltip still says how much goes in.
+  const scope = hasStaged && !amend ? `Commit ${status.staged.length} staged` : label;
+  const target = status.branch ? `${scope} to ${status.branch}` : scope;
   const skipped = !hasStaged && !amend && all.skipped > 0;
   const committed = hasStaged || amend ? status.staged.map((f) => f.path) : all.paths;
   const visible = new Set(shown ? [...shown.staged, ...shown.unstaged].map((f) => f.path) : committed);
@@ -193,7 +194,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
           </DropdownMenu>
         </CoAuthorPicker>
         <DisabledTip
-          label={!canCommit && blocked ? blocked : [target, skipped && leftOut(all.skipped).toLowerCase(), hidden && `including ${files(hidden)} the filter hides`].filter(Boolean).join(", ")}
+          label={blocked ?? [target, skipped && leftOut(all.skipped).toLowerCase(), hidden && `including ${files(hidden)} the filter hides`].filter(Boolean).join(", ")}
           shortcut={canCommit ? commitKey : undefined}
           disabled={!canCommit}
           className="ml-auto flex flex-1"
