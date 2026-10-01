@@ -23,6 +23,8 @@ import { AllCaughtUp, collapsedSections, NestedRow, ReviewSummary, Row, Section,
 import { CommitBox } from "./CommitBox";
 import { RowAction } from "@/components/RowAction";
 import { primaryKey } from "@/lib/platform";
+import { useNotes } from "@/lib/review/noteStore";
+import { ReviewNotes } from "@/features/review/ReviewNotes";
 
 interface Props {
   status: RepoStatus;
@@ -400,6 +402,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
       )}
     </Section>
   );
+  const reviewNotes = useNotes().length > 0 && <ReviewNotes changes={all} onOpen={onOpen} />;
   const stashList = (stashes.length > 0 || total.length > 0) && (
     <Section title="Stashes" count={stashes.length} action={total.length > 0 && !status.operation && <SectionBtn onClick={() => setStashing([])}>Stash…</SectionBtn>}>
       <StashList stashes={stashes} activeKey={activeKey} onOpen={onOpen} onHover={onHover} refresh={refresh} />
@@ -415,6 +418,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     ["Conflicts", conflicts],
     ["Staged", staged],
     ["Changes", changes],
+    ["Review Notes", reviewNotes],
     ["Stashes", stashList],
     ["Submodules", submoduleList],
   ] as const).filter(([, s]) => s);

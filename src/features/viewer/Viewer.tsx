@@ -142,6 +142,12 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   const editable = isFile && !!pair && !pair.modified.lossy && keepsLineEndings(pair.modified.text);
   const dirty = useEdited().has(selectionPath(sel)) && isFile;
   const github = useMemo(() => githubSides(sel, webUrl), [sel, webUrl]);
+  // Review notes go on local diffs and the file view (a PR has its own comments); not on a file
+  // being typed into, whose lines are no longer the ones on disk.
+  const notes = useMemo(
+    () => (sel.kind === "pr-file" || (isFile && dirty) ? null : { oldPath: file?.oldPath ?? selectionPath(sel), at: sel.kind === "commit" ? `commit ${sel.commit.shortSha}` : undefined }),
+    [sel, isFile, dirty, file],
+  );
   // An image or a preview has no lines to pick: the whole file.
   const onGitHub = (open: boolean) => () => (view.current ? view.current.gitHubLink(open) : github?.modified && void gitHubLink(github.modified, null, open));
   // A preview shows the file as edited.
@@ -155,6 +161,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
     "diff.discardChange": code && sel.kind === "unstaged" ? () => view.current?.lineAction("discard") : undefined,
     "editor.copyGitHubLink": github ? onGitHub(false) : undefined,
     "editor.openOnGitHub": github ? onGitHub(true) : undefined,
+    "review.addNote": code && notes ? () => view.current?.addNote() : undefined,
   });
 
   return (
@@ -325,6 +332,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               links={linkSides(sel, revision)}
               staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, oldPath: sel.file.oldPath, refresh } : null}
               review={review}
+              notes={notes}
               editable={editable}
               github={github}
             />

@@ -1,7 +1,7 @@
 // A whole Changes list as one scroll of diffs, as GitHub's Files changed shows a pull request.
 // Monaco is one editor per view (MonacoView), so these are drawn as HTML: only the files near the
 // screen load, highlight and render, and a file scrolled far away keeps just its height.
-import { Check, ChevronDown, ChevronsDownUp, ChevronsUpDown, Files } from "lucide-react";
+import { Check, ChevronDown, ChevronsDownUp, ChevronsUpDown, Files, Plus } from "lucide-react";
 import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
@@ -22,6 +22,10 @@ import { CONTEXT } from "./editorOptions";
 import { usePair } from "./diffPairs";
 import { mediaKind } from "./MediaView";
 import { placeholderFor } from "./Viewer";
+import { findLines, noteLines, type ReviewNote } from "@/lib/review/notes";
+import { addNote, useNotes } from "@/lib/review/noteStore";
+import { Composer } from "@/features/github/pulls/ReviewThreads";
+import { NoteCard } from "@/features/review/NoteThreads";
 
 type ListFile = Selection & { kind: "unstaged" | "staged" | "branch" };
 
@@ -237,7 +241,7 @@ function FileDiff({ sel, revision, estimate, onOpen }: { sel: ListFile; revision
   const special = placeholderFor(pair, false, sel.file);
   if (special) return <Message text={special} />;
   if (rows.length > LARGE && !large) return <Message text={`A large diff, ${rows.length} lines`} action={{ label: "Show", run: () => setLarge(true) }} />;
-  return <DiffLines pair={pair} rows={rows} path={sel.file.path} />;
+  return <DiffLines pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} />;
 }
 
 function Message({ text, action }: { text: string; action?: { label: string; run: () => void } }) {
@@ -254,7 +258,7 @@ function Message({ text, action }: { text: string; action?: { label: string; run
 }
 
 /** A file's changes in unified form: old and new line numbers, then the line, colored as the code view colors it. */
-function DiffLines({ pair, rows, path }: { pair: DiffPair; rows: (DiffRow | Gap)[]; path: string }) {
+function DiffLines({ pair, rows, path, oldPath }: { pair: DiffPair; rows: (DiffRow | Gap)[]; path: string; oldPath: string }) {
   const s = useSettings();
   const style = useCodeStyle();
   const { original: a, modified: b } = pair;
@@ -266,6 +270,38 @@ function DiffLines({ pair, rows, path }: { pair: DiffPair; rows: (DiffRow | Gap)
   const [oldTok, newTok] = useMemo(() => [tokenLookup(oldHl), tokenLookup(newHl)], [oldHl, newHl]);
   // Room for the longest line number on each side.
   const digits = `${String(Math.max(oldLines.length, newLines.length)).length + 1}ch`;
+
+  // Review notes, under the last of their lines wherever this version has them ("o:12" old line 12, "n:12" new).
+  const notes = useNotes();
+  const linesOf = (old: boolean) => (old ? (a.exists ? oldLines : null) : b.exists ? newLines : null);
+  const placed = useMemo(() => {
+    const at = new Map<string, ReviewNote[]>();
+    for (const n of notes) {
+      const lines = linesOf(!!n.old);
+      const start = !n.resolved && n.path === (n.old ? oldPath : path) && lines ? findLines(lines, n.code, n.start) : null;
+      if (start === null) continue;
+      const key = `${n.old ? "o" : "n"}:${start + n.code.length - 1}`;
+      at.set(key, [...(at.get(key) ?? []), n]);
+    }
+    return at;
+  }, [notes, path, oldPath, oldLines, newLines, a.exists, b.exists]);
+  // A note being written: its lines as picked, followed as the file changes.
+  const [draft, setDraft] = useState<{ old: boolean; start: number; code: string[] } | null>(null);
+  const drafted = useMemo(() => {
+    if (!draft) return null;
+    const start = findLines(draft.old ? oldLines : newLines, draft.code, draft.start) ?? draft.start;
+    const end = start + draft.code.length - 1;
+    return { ...draft, start, end, key: `${draft.old ? "o" : "n"}:${end}` };
+  }, [draft, oldLines, newLines]);
+  // ⇧-click stretches the note being written to the line clicked.
+  const note = (old: boolean, line: number, stretch: boolean) => {
+    const lines = linesOf(old);
+    if (!lines) return;
+    const [from, to] = stretch && drafted?.old === old ? [drafted.start, drafted.end] : [line, line];
+    const [start, end] = [Math.min(from, line), Math.max(to, line)];
+    setDraft({ old, start, code: lines.slice(start - 1, end) });
+  };
+
   return (
     <div className={cn("py-1 select-text", s.wordWrap ? "[overflow-wrap:anywhere]" : "overflow-x-auto")} style={{ ...style, color: (newHl ?? oldHl)?.data.fg }}>
       <div className={cn(!s.wordWrap && "min-w-max")}>
@@ -273,7 +309,30 @@ function DiffLines({ pair, rows, path }: { pair: DiffPair; rows: (DiffRow | Gap)
           if ("gap" in r) return <GapRow key={i} count={r.gap} />;
           const text = r.k === 2 ? (oldLines[r.o - 1] ?? "") : (newLines[r.n - 1] ?? "");
           const tokens: TokenLine | undefined = r.k === 2 ? oldTok(r.o - 1, text) : newTok(r.n - 1, text);
-          return <LineRow key={i} row={r} text={text} tokens={tokens} digits={digits} wrap={s.wordWrap} />;
+          const keys = [r.k !== 1 && `o:${r.o}`, r.k !== 2 && `n:${r.n}`].filter((k): k is string => !!k);
+          const old = r.k === 2;
+          return (
+            <div key={i}>
+              <LineRow row={r} text={text} tokens={tokens} digits={digits} wrap={s.wordWrap} onNote={(stretch) => note(old, old ? r.o : r.n, stretch)} />
+              {keys.flatMap((k) => placed.get(k) ?? []).map((n) => (
+                <div key={n.id} className="sticky left-0 max-w-3xl py-0.5">
+                  <NoteCard note={n} />
+                </div>
+              ))}
+              {drafted && keys.includes(drafted.key) && (
+                <div className="sticky left-0 max-w-3xl py-0.5">
+                  <Composer
+                    label={`Note on ${noteLines(drafted)}${drafted.old ? " (old)" : ""}`}
+                    onCancel={() => setDraft(null)}
+                    onSubmit={async (body) => {
+                      addNote({ path: drafted.old ? oldPath : path, start: drafted.start, end: drafted.end, code: drafted.code, body: body.trim(), old: drafted.old || undefined });
+                      setDraft(null);
+                    }}
+                  />
+                </div>
+              )}
+            </div>
+          );
         })}
       </div>
     </div>
@@ -286,11 +345,21 @@ const TONES = {
   2: { line: "bg-del-bg", gutter: "bg-del-gutter text-muted-foreground", emph: "bg-del-emph", sign: "−" },
 } as const;
 
-function LineRow({ row, text, tokens, digits, wrap }: { row: DiffRow; text: string; tokens: TokenLine | undefined; digits: string; wrap: boolean }) {
+function LineRow({ row, text, tokens, digits, wrap, onNote }: { row: DiffRow; text: string; tokens: TokenLine | undefined; digits: string; wrap: boolean; onNote: (stretch: boolean) => void }) {
   const tone = TONES[row.k];
   const pieces = emphasized(text, tokens, row.k ? usefulEmphasis(text, row.e) : []);
   return (
-    <div className={cn("flex min-h-[1lh]", tone.line)}>
+    <div className={cn("group/line relative flex min-h-[1lh]", tone.line)}>
+      {/* Off the Tab order, as there's one per line: the keyboard writes notes in the file's own diff. */}
+      <button
+        tabIndex={-1}
+        aria-label="Add review note"
+        title="Add review note (⇧-click: through this line)"
+        onClick={(e) => onNote(e.shiftKey)}
+        className="absolute top-0 left-0 z-[1] flex h-[1lh] w-[2.2ch] items-center justify-center rounded-sm bg-primary text-primary-foreground opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100 [&_svg]:size-3"
+      >
+        <Plus />
+      </button>
       <span className={cn("shrink-0 pr-1 text-right select-none", tone.gutter)} style={{ width: digits }}>
         {row.k !== 1 ? row.o : ""}
       </span>

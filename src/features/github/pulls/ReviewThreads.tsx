@@ -11,6 +11,7 @@ import { toast } from "@/lib/app/toast";
 import { isoToUnix, relativeTime } from "@/lib/format";
 import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
 import { MarkdownInput } from "@/features/github/shared/MarkdownInput";
+import { Textarea } from "@/components/ui/textarea";
 import { IS_MAC } from "@/lib/platform";
 
 type Side = "LEFT" | "RIGHT";
@@ -57,81 +58,22 @@ interface Spot {
 /** The threads of `get()` in `diff`; `update` redraws them (new comments, another file, the other layout). */
 export function followReviewThreads(diff: monaco.editor.IStandaloneDiffEditor, get: () => Shown | null) {
   const editors = { original: diff.getOriginalEditor(), modified: diff.getModifiedEditor() };
-  let zones: { editor: "original" | "modified"; id: string; dispose: () => void }[] = [];
+  let zones: (() => void)[] = [];
   // A new comment being written, where.
   let draft: { side: Side; line: number } | null = null;
 
   const clear = () => {
-    zones.forEach((z) => z.dispose());
+    zones.forEach((dispose) => dispose());
     zones = [];
   };
 
-  // Unified view has no old side: a comment on a removed line goes under the new line before it.
   const spot = (side: Side, line: number, s: Shown): Spot => {
     if (side === "RIGHT") return { editor: "modified", after: line };
     if (!s.unified) return { editor: "original", after: line };
-    let before = 0;
-    for (const r of s.rows) {
-      if (r.o === line) return { editor: "modified", after: r.k === 0 ? r.n : before };
-      if (r.n) before = r.n;
-    }
-    return { editor: "modified", after: before };
+    return { editor: "modified", after: newLineBefore(s.rows, line) };
   };
 
-  // As Monaco's own zone widgets: the view zone only makes room (its layer is under the text,
-  // out of reach of clicks), and the thread is an overlay widget kept on top of it.
-  const add = (where: Spot, content: React.ReactNode) => {
-    const code = editors[where.editor];
-    const node = document.createElement("div");
-    node.style.position = "absolute";
-    // Keys typed in a comment are the comment's, not the editor's (⌘ chords still reach the app).
-    node.addEventListener("keydown", (e) => !e.metaKey && !e.ctrlKey && e.stopPropagation());
-    const root = createRoot(node);
-    root.render(content);
-    const zone: monaco.editor.IViewZone = {
-      afterLineNumber: where.after,
-      // Right under its line, before the diff's own zones there (removed lines, which default to
-      // 10000): after them, unified view's old line numbers came loose from their lines.
-      ordinal: 0,
-      heightInPx: 60,
-      domNode: document.createElement("div"),
-      onDomNodeTop: (top) => {
-        node.style.top = `${top}px`;
-      },
-    };
-    let id = "";
-    code.changeViewZones((a) => {
-      id = a.addZone(zone);
-    });
-    const widget: monaco.editor.IOverlayWidget = { getId: () => `gitviber.review.${id}`, getDomNode: () => node, getPosition: () => null };
-    code.addOverlayWidget(widget);
-    const place = () => {
-      const info = code.getLayoutInfo();
-      node.style.left = `${info.contentLeft}px`;
-      node.style.width = `${Math.max(0, info.contentWidth - info.verticalScrollbarWidth)}px`;
-    };
-    place();
-    const layout = code.onDidLayoutChange(place);
-    // The room it takes follows what it holds, as that loads and grows.
-    const observer = new ResizeObserver(() => {
-      const height = node.offsetHeight;
-      if (!height || Math.abs(height - (zone.heightInPx ?? 0)) < 1) return;
-      zone.heightInPx = height;
-      code.changeViewZones((a) => a.layoutZone(id));
-    });
-    observer.observe(node);
-    zones.push({
-      editor: where.editor,
-      id,
-      dispose: () => {
-        observer.disconnect();
-        layout.dispose();
-        root.unmount();
-        code.removeOverlayWidget(widget);
-        code.changeViewZones((a) => a.removeZone(id));
-      },
-    });
-  };
+  const add = (where: Spot, content: React.ReactNode) => void zones.push(zoneWidget(editors[where.editor], where.after, content));
 
   const update = () => {
     clear();
@@ -195,6 +137,69 @@ export function followReviewThreads(diff: monaco.editor.IStandaloneDiffEditor, g
   };
 }
 
+/** Unified view has no old side: where old line `line` goes there, under the new line before it. */
+export function newLineBefore(rows: DiffRow[], line: number) {
+  let before = 0;
+  for (const r of rows) {
+    if (r.o === line) return r.k === 0 ? r.n : before;
+    if (r.n) before = r.n;
+  }
+  return before;
+}
+
+/**
+ * `content` under line `after` of `code`, returning what takes it away. As Monaco's own zone
+ * widgets: the view zone only makes room (its layer is under the text, out of reach of clicks),
+ * and the content is an overlay widget kept on top of it, a small React root sized to what it holds.
+ */
+export function zoneWidget(code: monaco.editor.ICodeEditor, after: number, content: React.ReactNode) {
+  const node = document.createElement("div");
+  node.style.position = "absolute";
+  // Keys typed in a comment are the comment's, not the editor's (⌘ chords still reach the app).
+  node.addEventListener("keydown", (e) => !e.metaKey && !e.ctrlKey && e.stopPropagation());
+  const root = createRoot(node);
+  root.render(content);
+  const zone: monaco.editor.IViewZone = {
+    afterLineNumber: after,
+    // Right under its line, before the diff's own zones there (removed lines, which default to
+    // 10000): after them, unified view's old line numbers came loose from their lines.
+    ordinal: 0,
+    heightInPx: 60,
+    domNode: document.createElement("div"),
+    onDomNodeTop: (top) => {
+      node.style.top = `${top}px`;
+    },
+  };
+  let id = "";
+  code.changeViewZones((a) => {
+    id = a.addZone(zone);
+  });
+  const widget: monaco.editor.IOverlayWidget = { getId: () => `gitviber.review.${id}`, getDomNode: () => node, getPosition: () => null };
+  code.addOverlayWidget(widget);
+  const place = () => {
+    const info = code.getLayoutInfo();
+    node.style.left = `${info.contentLeft}px`;
+    node.style.width = `${Math.max(0, info.contentWidth - info.verticalScrollbarWidth)}px`;
+  };
+  place();
+  const layout = code.onDidLayoutChange(place);
+  // The room it takes follows what it holds, as that loads and grows.
+  const observer = new ResizeObserver(() => {
+    const height = node.offsetHeight;
+    if (!height || Math.abs(height - (zone.heightInPx ?? 0)) < 1) return;
+    zone.heightInPx = height;
+    code.changeViewZones((a) => a.layoutZone(id));
+  });
+  observer.observe(node);
+  return () => {
+    observer.disconnect();
+    layout.dispose();
+    root.unmount();
+    code.removeOverlayWidget(widget);
+    code.changeViewZones((a) => a.removeZone(id));
+  };
+}
+
 function Thread({ review, thread }: { review: Review; thread: ReviewComment[] }) {
   const [replying, setReplying] = useState(false);
   const root = thread[0];
@@ -223,8 +228,26 @@ function Thread({ review, thread }: { review: Review; thread: ReviewComment[] })
   );
 }
 
-function Composer({ pull, label, onSubmit, onCancel, bare = false }: { pull: Review["pull"]; label: string; onSubmit: (body: string) => Promise<void>; onCancel: () => void; bare?: boolean }) {
-  const [body, setBody] = useState("");
+/** A new comment on GitHub (`pull`: where it's posted, its markdown previewed there), or without `pull` a review note kept here. */
+export function Composer({
+  pull,
+  label,
+  initial = "",
+  onDraft,
+  onSubmit,
+  onCancel,
+  bare = false,
+}: {
+  pull?: Review["pull"];
+  label: string;
+  /** What was typed before it was drawn again; `onDraft` hears each change to it. */
+  initial?: string;
+  onDraft?: (body: string) => void;
+  onSubmit: (body: string) => Promise<void>;
+  onCancel: () => void;
+  bare?: boolean;
+}) {
+  const [body, setBody] = useState(initial);
   const [busy, setBusy] = useState(false);
   const submit = async () => {
     if (!body.trim() || busy) return;
@@ -239,29 +262,33 @@ function Composer({ pull, label, onSubmit, onCancel, bare = false }: { pull: Rev
       setBusy(false);
     }
   };
+  const input = {
+    autoFocus: true,
+    value: body,
+    "aria-label": label,
+    onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      setBody(e.target.value);
+      onDraft?.(e.target.value);
+    },
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        void submit();
+      } else if (e.key === "Escape") onCancel();
+    },
+    rows: 3,
+    placeholder: `${label}… (${pull ? "Markdown; " : ""}${IS_MAC ? "⌘↵" : "Ctrl+Enter"} to ${pull ? "post" : "add"})`,
+  };
   const box = (
     <div className="flex flex-col gap-2">
-      <MarkdownInput
-        pull={pull}
-        autoFocus
-        value={body}
-        onChange={(e) => setBody(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-            e.preventDefault();
-            e.stopPropagation();
-            void submit();
-          } else if (e.key === "Escape") onCancel();
-        }}
-        rows={3}
-        placeholder={`${label}… (Markdown; ${IS_MAC ? "⌘↵" : "Ctrl+Enter"} to post)`}
-      />
+      {pull ? <MarkdownInput pull={pull} {...input} /> : <Textarea {...input} />}
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="secondary" onClick={onCancel}>
           Cancel
         </Button>
         <Button size="sm" disabled={!body.trim() || busy} onClick={() => void submit()}>
-          {busy ? "Posting…" : "Comment"}
+          {pull ? (busy ? "Posting…" : "Comment") : "Add Note"}
         </Button>
       </div>
     </div>

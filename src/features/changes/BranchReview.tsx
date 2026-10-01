@@ -9,6 +9,8 @@ import { useListNav } from "@/lib/ui/useListNav";
 import { RefOptions } from "@/features/branches/BaseSelect";
 import { sumLines } from "./changeList";
 import { ReviewSummary, Row } from "./ChangeRows";
+import { useNotes } from "@/lib/review/noteStore";
+import { ReviewNotes } from "@/features/review/ReviewNotes";
 
 export type BranchChange = Selection & { kind: "branch" };
 
@@ -76,6 +78,7 @@ interface Props {
 /** Changes in place of the uncommitted list: what the branch changed since it left `base`, committed or not. */
 export function BranchReview({ base, data, branches, activeKey, onOpen, onHover, viewed, setViewed, onBase, onClose }: Props) {
   const nav = useListNav({ activeKey });
+  const hasNotes = useNotes().length > 0;
   const { rows, error, loading } = data;
   const { add, del } = sumLines(rows.map((r) => r.file));
   const reviewed = rows.filter(viewed).length;
@@ -143,6 +146,7 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
             }}
           />
         )}
+        {hasNotes && <ReviewNotes changes={rows} onOpen={onOpen} />}
       </div>
     </div>
   );

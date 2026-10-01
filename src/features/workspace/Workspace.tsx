@@ -38,6 +38,8 @@ import { TopBar } from "@/features/topbar/TopBar";
 import { Viewer } from "@/features/viewer/Viewer";
 import { prefetchSelection, resetPairCache } from "@/features/viewer/diffPairs";
 import { openEdits } from "@/lib/editor/edits";
+import { openNotes, useNoteCheck } from "@/lib/review/noteStore";
+import { copyNotes, pendingNotes, sendNotes } from "@/features/review/ReviewNotes";
 import { CountBadge } from "@/components/CountBadge";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
@@ -55,8 +57,9 @@ interface Props {
 }
 
 /**
- * Diffs are cached by revision, which restarts per repo, and GitHub data and unsaved file edits are
- * per repo: they start over with each repo, during its first render, before anything in it reads them.
+ * Diffs are cached by revision, which restarts per repo, and GitHub data, unsaved file edits and
+ * review notes are per repo: they start over with each repo, during its first render, before
+ * anything in it reads them.
  */
 function useFreshCaches(root: string) {
   const cleared = useRef<string | null>(null);
@@ -65,6 +68,7 @@ function useFreshCaches(root: string) {
   resetPairCache();
   resetGitHubCache();
   openEdits(root);
+  openNotes(root);
 }
 
 export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: Props) {
@@ -103,6 +107,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     [openTab],
   );
   const { viewedMap, viewed, setViewed, toggleViewed } = useViewed(saved, status, repo.refresh, branchReview.review);
+  useNoteCheck(repo.revision);
   useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap], review }), [root, tabs, activeKey, listTab, viewedMap, review]);
   // Git work on the left, files on the right; both collapse to give code the room.
   const listPanel = usePanelRef();
@@ -227,6 +232,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "review.branch": startReview,
     "review.openAll": () => open({ kind: "changes", list: reviewing ? "branch" : "unstaged" }, true),
     "review.openAllStaged": status?.staged.length ? () => open({ kind: "changes", list: "staged" }, true) : undefined,
+    "review.copyNotes": () => copyNotes(pendingNotes()),
+    "review.sendNotes": () => sendNotes(pendingNotes()),
     "review.toggleViewed": () => {
       const t = tabs.find((x) => x.key === activeKey);
       // On a staged file this would unstage it; too much for a stray single key.
