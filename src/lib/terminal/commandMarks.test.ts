@@ -21,9 +21,11 @@ test("OSC 133 marks, with their exit code and the extensions other shells add", 
 test("a prompt turns off mouse reporting a dead program left on, but not under tmux", () => {
   assert.equal(mouseLeftOn("A", "normal", "any"), true);
   assert.equal(mouseLeftOn("A", "normal", "vt200"), true);
+  assert.equal(mouseLeftOn("A", "normal", "x10"), true);
   assert.equal(mouseLeftOn("A", "normal", "none"), false);
   // The alternate buffer's prompt is a shell's under a full-screen program, which owns the mouse.
   assert.equal(mouseLeftOn("A", "alternate", "any"), false);
+  assert.equal(mouseLeftOn("B", "normal", "any"), false);
   assert.equal(mouseLeftOn("C", "normal", "any"), false);
   assert.equal(mouseLeftOn("D", "normal", "drag"), false);
 });
