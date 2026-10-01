@@ -16,6 +16,7 @@ import { copyFiles, copyLabel, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
 import { gitHubLink } from "@/lib/github/url";
 import { basename, childPath, compareEntries, dirname } from "@/lib/path";
+import { MAX_MATCHES, matchingTree } from "@/lib/repo/matchingTree";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import { NameInput } from "@/components/NameInput";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
@@ -53,9 +54,6 @@ const isInside = (path: string, dir: string) => path === dir || path.startsWith(
 /** `list` without the entries inside a folder also in it: trashing the folder takes them along. */
 const topmost = (list: Entry[]) => list.filter((e) => !list.some((d) => d !== e && d.isDir && isInside(e.path, d.path)));
 
-/** The filter lists this many files at most: the tree renders every row it has. */
-const MAX_MATCHES = 1000;
-
 /** A fresh, unsorted listing that says what `shown` already does. */
 function unchanged(shown: Entry[] | undefined, listed: Entry[]) {
   if (shown?.length !== listed.length) return false;
@@ -64,25 +62,6 @@ function unchanged(shown: Entry[] | undefined, listed: Entry[]) {
     const was = byName.get(e.name);
     return was?.isDir === e.isDir && was.ignored === e.ignored;
   });
-}
-
-/** The entries that match and the folders down to them, all open, in the explorer's order. */
-function matchingTree(listed: Entry[], matches: (path: string) => boolean) {
-  const children: Record<string, Entry[]> = {};
-  const add = (entry: Entry) => (children[dirname(entry.path)] ??= []).push(entry);
-  const expanded = new Set([""]);
-  let found = 0;
-  for (const entry of listed) {
-    if (!matches(entry.path)) continue;
-    if (++found > MAX_MATCHES) break;
-    add(entry);
-    for (let dir = dirname(entry.path); dir && !expanded.has(dir); dir = dirname(dir)) {
-      expanded.add(dir);
-      add({ name: basename(dir), path: dir, isDir: true, ignored: false });
-    }
-  }
-  for (const list of Object.values(children)) list.sort(compareEntries);
-  return { children, expanded, found: Math.min(found, MAX_MATCHES), capped: found > MAX_MATCHES };
 }
 
 /** Lazy tree of the working directory, like VS Code's explorer, annotated with git status. */
@@ -110,7 +89,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   useEffect(() => {
     if (!filtering) return;
     let live = true;
-    Promise.all([api.listFiles(), api.listIgnored()]).then(
+    // Ignored entries add to what git lists; a failure to list them leaves the filter at that.
+    Promise.all([api.listFiles(), api.listIgnored().catch(() => [])]).then(
       ([listed, ignored]) => live && setFiles([...listed.map((path) => ({ name: basename(path), path, isDir: false, ignored: false })), ...ignored]),
       (e) => live && toast("error", "Could not list files", errorMessage(e)),
     );
