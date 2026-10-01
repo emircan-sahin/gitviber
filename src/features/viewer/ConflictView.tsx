@@ -265,7 +265,7 @@ function WholeFile({
   );
 }
 
-function useCodeStyle() {
+export function useCodeStyle() {
   const s = useSettings();
   return { fontFamily: codeFontFamily(s), fontSize: s.codeFontSize, fontWeight: s.codeFontWeight, lineHeight: `${Math.round(s.codeFontSize * s.lineHeight)}px`, tabSize: TAB } as const;
 }

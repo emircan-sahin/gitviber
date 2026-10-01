@@ -68,3 +68,52 @@ export function hunks(rows: DiffRow[], oldLines: string[], newLines: string[]): 
   }
   return out;
 }
+
+/** A run of unchanged lines a stacked diff folds away: `count` of them, the first at old `o` and new `n`. */
+export interface Gap {
+  gap: number;
+  o: number;
+  n: number;
+}
+
+/** `rows` as a unified diff shows them on its own: the changes with `context` lines around each, the rest folded into gaps. */
+export function shownRows(rows: DiffRow[], context: number): (DiffRow | Gap)[] {
+  const keep = rows.map((r) => r.k !== 0);
+  rows.forEach((r, i) => {
+    if (r.k === 0) return;
+    for (let j = Math.max(0, i - context); j <= Math.min(rows.length - 1, i + context); j++) keep[j] = true;
+  });
+  const out: (DiffRow | Gap)[] = [];
+  for (let i = 0; i < rows.length; ) {
+    if (keep[i]) {
+      out.push(rows[i++]);
+      continue;
+    }
+    const first = rows[i];
+    let count = 0;
+    for (; i < rows.length && !keep[i]; i++) count++;
+    out.push({ gap: count, o: first.o, n: first.n });
+  }
+  return out;
+}
+
+/** A piece of a highlighted line: its text, its token's color and font style, and whether it's a word change. */
+export type Piece = [text: string, color: string, fontStyle: number, emphasis: boolean];
+
+/** A line's tokens (none: plain `text`) cut where the word-level `ranges` start and end, so those pieces can be marked. */
+export function emphasized(text: string, tokens: [string, string, number][] | undefined, ranges: [number, number][]): Piece[] {
+  const runs = tokens ?? [[text, "", 0]];
+  const out: Piece[] = [];
+  let at = 0;
+  for (const [t, color, fs] of runs) {
+    const end = at + t.length;
+    // Every range edge inside this token cuts it.
+    const cuts = [at, ...ranges.flat().filter((c) => c > at && c < end), end].sort((a, b) => a - b);
+    for (let c = 0; c < cuts.length - 1; c++) {
+      const [a, b] = [cuts[c], cuts[c + 1]];
+      if (b > a) out.push([t.slice(a - at, b - at), color, fs, ranges.some(([x, y]) => a >= x && b <= y)]);
+    }
+    at = end;
+  }
+  return out;
+}

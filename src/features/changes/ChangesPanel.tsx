@@ -338,7 +338,10 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         pickedStaged ? (
           <SectionBtn onClick={() => unstage(pickedStaged)}>Unstage {files(pickedStaged.length)}</SectionBtn>
         ) : (
-          <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
+          <>
+            <SectionBtn onClick={() => onOpen({ kind: "changes", list: "staged" }, true)}>Open All</SectionBtn>
+            <SectionBtn onClick={() => act("Unstage failed", () => api.unstage(status.staged))}>{allOrShown("Unstage", status.staged.length)}</SectionBtn>
+          </>
         )
       }
     >
@@ -364,6 +367,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
           </>
         ) : (
           <>
+            <SectionBtn onClick={() => onOpen({ kind: "changes", list: "unstaged" }, true)}>Open All</SectionBtn>
             {/* Leaves untracked files alone; deleting one is a per-file choice. */}
             <SectionBtn onClick={() => discard(discardable)}>{filtering ? `Discard ${discardable.length} shown…` : "Discard"}</SectionBtn>
             {viewedPaths.length > 0 && (

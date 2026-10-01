@@ -225,6 +225,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "review.nextFile": () => step(1),
     "review.prevFile": () => step(-1),
     "review.branch": startReview,
+    "review.openAll": () => open({ kind: "changes", list: reviewing ? "branch" : "unstaged" }, true),
+    "review.openAllStaged": status?.staged.length ? () => open({ kind: "changes", list: "staged" }, true) : undefined,
     "review.toggleViewed": () => {
       const t = tabs.find((x) => x.key === activeKey);
       // On a staged file this would unstage it; too much for a stray single key.
@@ -477,6 +479,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     tabs={tabs}
                     active={active}
                     status={status}
+                    branchRows={branchReview.review && branchReview.rows}
                     revision={repo.revision}
                     viewed={viewed}
                     toggleViewed={toggleViewed}

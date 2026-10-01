@@ -32,11 +32,15 @@ import { TabStrip } from "./TabStrip";
 import { CommitBar } from "./CommitBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { changedInside } from "@/features/changes/changeList";
+import type { BranchChange } from "@/features/changes/BranchReview";
+import { AllChanges } from "./AllChanges";
 
 interface ViewerProps {
   tabs: Tab[];
   active: Tab | null;
   status: RepoStatus | null;
+  /** The branch review's files as last loaded, for its stacked view; null while there's none. */
+  branchRows: BranchChange[] | null;
   revision: number;
   viewed: (sel: Selection) => boolean;
   toggleViewed: (sel: Selection) => void;
@@ -71,6 +75,8 @@ export function Viewer(props: ViewerProps) {
             <PullView pull={active.sel.pull} onOpen={props.onOpen} />
           ) : active.sel.kind === "issue" ? (
             <IssueView issue={active.sel.issue} onDeleted={() => props.onClose(active.key)} />
+          ) : active.sel.kind === "changes" ? (
+            <AllChanges list={active.sel.list} {...props} />
           ) : (
             <Pane tab={active} sel={active.sel} {...props} />
           )}
@@ -340,7 +346,7 @@ function fileNote(file: FileChange | null) {
   return changedInside(file) ? "This submodule has changes inside it; commit them in the submodule" : null;
 }
 
-function placeholderFor(pair: DiffPair, isFile: boolean, file: FileChange | null) {
+export function placeholderFor(pair: DiffPair, isFile: boolean, file: FileChange | null) {
   const { original: a, modified: b } = pair;
   if (isFile && !b.exists) return "This file no longer exists";
   if (b.lfsMissing || a.lfsMissing) return b.lfsMissing ?? a.lfsMissing;

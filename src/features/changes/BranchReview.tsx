@@ -1,4 +1,4 @@
-import { GitCompareArrows, X } from "lucide-react";
+import { Files, GitCompareArrows, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Select } from "@/components/ui/select";
 import { Windowed } from "@/components/Windowed";
@@ -92,6 +92,16 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
           {!listed && <option value={base}>{base ? shortRef(base) : "Pick a branch…"}</option>}
           <RefOptions branches={branches} />
         </Select>
+        {rows.length > 0 && (
+          <button
+            aria-label="Open all changes"
+            title="Open all changes"
+            onClick={() => onOpen({ kind: "changes", list: "branch" }, true)}
+            className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground"
+          >
+            <Files className="size-3" />
+          </button>
+        )}
         <button
           aria-label="Back to uncommitted changes"
           title="Back to uncommitted changes"
