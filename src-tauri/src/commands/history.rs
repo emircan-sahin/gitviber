@@ -14,8 +14,9 @@ pub async fn log(
     all: Option<git::GraphRefs>,
 ) -> Res<Vec<git::Commit>> {
     let filter = filter.unwrap_or_default();
-    // Searching every diff for code can rightly take minutes on a long history.
-    let searches_code = filter.code.as_deref().is_some_and(|c| !c.is_empty());
+    // Searching every diff for code, or one path's history (followed through renames), can
+    // rightly take minutes on a long history.
+    let slow = filter.code.as_deref().is_some_and(|c| !c.is_empty()) || !filter.paths.is_empty();
     let read = move |r: &Path| {
         // Only pathspecs, but the rule holds: no path from the frontend reaches outside the repo.
         for p in &filter.paths {
@@ -27,7 +28,7 @@ pub async fn log(
             (None, rev) => git::log_filtered(r, rev.as_deref(), skip, limit, &filter),
         }
     };
-    if searches_code {
+    if slow {
         in_repo(&state, read).await
     } else {
         read_repo(&state, read).await
