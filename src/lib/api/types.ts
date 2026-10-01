@@ -407,7 +407,7 @@ export interface Progress {
   cancellable: boolean;
 }
 
-/** One watched network command (fetch, pull, push, clone): its progress, and its id for Cancel. */
+/** One watched command (fetch, pull, push, clone, or a commit and its hooks): its progress, and its id for Cancel. */
 export interface NetOp {
   id: string;
   onProgress?: (p: Progress) => void;

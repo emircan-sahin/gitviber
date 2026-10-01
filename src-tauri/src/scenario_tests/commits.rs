@@ -258,29 +258,28 @@ fn a_repository_of_its_own_identity_and_back_to_global() {
     set_repo_identity(&r, None).unwrap();
 }
 
-/// A hook's output is the commit's progress, and Cancel stops git with the hook and whatever it
-/// started: nothing is committed, index.lock is gone and the next commit goes through.
+/// Commits b.txt in `r` while its `hook` runs `script`, then a 30 s child it waits on, and
+/// cancels once that child runs. Returns the result, the progress reported, and whether the
+/// child was stopped with it.
 #[cfg(unix)]
-#[test]
-fn a_commit_hook_shows_progress_and_can_be_cancelled() {
-    use crate::network::{Running, CANCELLED};
+fn cancel_in_hook(
+    sb: &Sandbox,
+    r: &Path,
+    hook: &str,
+    script: &str,
+) -> (Result<(), String>, Vec<crate::network::Progress>, bool) {
+    use crate::network::Running;
     use std::time::{Duration, Instant};
-    let sb = Sandbox::new("hook-cancel");
-    let r = sb.path("r");
-    init(&r);
-    write_commit(&r, "a.txt", "a\n", "base");
-    let pidfile = sb.path("pid");
-    let hook = r.join(".git/hooks/pre-commit");
+    let pidfile = sb.path(&format!("{hook}.pid"));
     executable(
-        &hook,
+        &r.join(".git/hooks").join(hook),
         &format!(
-            "#!/bin/sh\necho 'linting 1 file'\nsleep 30 & echo $! > {}\nwait\n",
+            "#!/bin/sh\n{script}\nsleep 30 & echo $! > {}\nwait\n",
             pidfile.display()
         ),
     );
     fs::write(r.join("b.txt"), "b\n").unwrap();
-    stage(&r, &["b.txt".into()]).unwrap();
-
+    stage(r, &["b.txt".into()]).unwrap();
     let seen = std::sync::Arc::new(Mutex::new(vec![]));
     let sink = seen.clone();
     let running = Running::default();
@@ -288,20 +287,18 @@ fn a_commit_hook_shows_progress_and_can_be_cancelled() {
     let started = Instant::now();
     let result = std::thread::scope(|s| {
         s.spawn(|| {
-            while fs::read_to_string(&pidfile).map_or(true, |s| s.trim().is_empty()) {
+            // Not forever: a hook that failed early never writes it.
+            for _ in 0..500 {
+                if fs::read_to_string(&pidfile).is_ok_and(|s| !s.trim().is_empty()) {
+                    break;
+                }
                 std::thread::sleep(Duration::from_millis(10));
             }
             running.cancel("commit");
         });
-        commit(&r, "Add b", &CommitOptions::default(), &net)
+        commit(r, "Add b", &CommitOptions::default(), &net)
     });
-    assert_eq!(result.unwrap_err(), CANCELLED);
     assert!(started.elapsed() < Duration::from_secs(10));
-    assert!(seen
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|p| p.phase == "linting 1 file" && p.cancellable));
     let pid: libc::pid_t = fs::read_to_string(&pidfile)
         .unwrap()
         .trim()
@@ -311,14 +308,39 @@ fn a_commit_hook_shows_progress_and_can_be_cancelled() {
         std::thread::sleep(Duration::from_millis(20));
         (unsafe { libc::kill(pid, 0) }) != 0
     });
+    let seen = seen.lock().unwrap().clone();
+    (result, seen, gone)
+}
+
+/// A hook's output is the commit's progress, and Cancel stops git with the hook and whatever it
+/// started: nothing is committed, index.lock is gone and the next commit goes through.
+#[cfg(unix)]
+#[test]
+fn a_commit_hook_shows_progress_and_can_be_cancelled() {
+    use crate::network::CANCELLED;
+    let sb = Sandbox::new("hook-cancel");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let (result, seen, gone) = cancel_in_hook(&sb, &r, "pre-commit", "echo 'linting 1 file'");
+    assert_eq!(result.unwrap_err(), CANCELLED);
     assert!(gone, "the hook's child still runs");
+    assert!(seen.iter().any(|p| p.phase == "linting 1 file"));
+    assert!(
+        seen.iter().all(|p| p.cancellable),
+        "Cancel stays up while the hook runs"
+    );
     assert_eq!(log(&r, None, 0, 5).unwrap().len(), 1);
     let lock = run_text(&r, &["rev-parse", "--git-path", "index.lock"]).unwrap();
     assert!(!r.join(lock.trim()).exists());
     assert_eq!(status(&r).unwrap().staged.len(), 1);
 
-    // A message past the pipe's buffer still gets through once the hook passes.
-    executable(&hook, "#!/bin/sh\necho ok\n");
+    // The message waits in the pipe while the hook fills stderr past a pipe's buffer: written
+    // before git's output was read, neither would get past the other.
+    executable(
+        &r.join(".git/hooks/pre-commit"),
+        "#!/bin/sh\nhead -c 200000 /dev/zero | tr '\\0' x\necho\n",
+    );
     let body = "x".repeat(200_000);
     commit(
         &r,
@@ -332,6 +354,44 @@ fn a_commit_hook_shows_progress_and_can_be_cancelled() {
         (head.subject.as_str(), head.body.len()),
         ("Add b", body.len())
     );
+}
+
+/// lint-staged stashes from inside the hook, which writes HEAD's reflog: that's no sign the
+/// commit was made, and Cancel still stops it with nothing committed.
+#[cfg(unix)]
+#[test]
+fn a_hook_that_stashes_can_still_be_cancelled() {
+    use crate::network::CANCELLED;
+    let sb = Sandbox::new("hook-stash");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    fs::write(r.join("a.txt"), "unstaged\n").unwrap();
+    let (result, seen, gone) = cancel_in_hook(
+        &sb,
+        &r,
+        "pre-commit",
+        "git stash push -q --keep-index || exit 1",
+    );
+    assert!(result.unwrap_err().starts_with(CANCELLED));
+    assert!(gone);
+    assert!(seen.iter().all(|p| p.cancellable));
+    assert_eq!(log(&r, None, 0, 5).unwrap().len(), 1);
+}
+
+/// Stopped in a post-commit hook, the commit was already made: it stands, and isn't reported
+/// as cancelled.
+#[cfg(unix)]
+#[test]
+fn a_cancel_after_the_commit_was_made_keeps_it() {
+    let sb = Sandbox::new("hook-post");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let (result, _, gone) = cancel_in_hook(&sb, &r, "post-commit", "");
+    result.unwrap();
+    assert!(gone);
+    assert_eq!(log(&r, None, 0, 1).unwrap()[0].subject, "Add b");
 }
 
 /// git prints nothing of its own when a hook fails, so the error says which hooks are set up,
@@ -374,6 +434,28 @@ fn a_failed_commit_names_the_hooks_that_could_have_stopped_it() {
     };
     commit(&r, "Add b", &skip, &Net::default()).unwrap();
     assert_eq!(log(&r, None, 0, 5).unwrap().len(), 2);
+
+    // With the hooks passing, git's own refusals aren't put on them: nothing staged (exit 1,
+    // said on stdout), a signature that failed (128).
+    executable(
+        &r.join(".git/hooks/commit-msg"),
+        "#!/bin/sh\necho checked\n",
+    );
+    let err = commit(&r, "Nothing", &CommitOptions::default(), &Net::default()).unwrap_err();
+    assert!(
+        err.contains("nothing to commit") && !err.contains(HOOKS_HINT),
+        "{err}"
+    );
+    fs::write(r.join("c.txt"), "c\n").unwrap();
+    stage(&r, &["c.txt".into()]).unwrap();
+    for (k, v) in [("commit.gpgSign", "true"), ("gpg.program", "false")] {
+        run(&r, &["config", k, v]).unwrap();
+    }
+    let err = commit(&r, "Add c", &CommitOptions::default(), &Net::default()).unwrap_err();
+    assert!(
+        err.contains("gpg failed to sign") && !err.contains(HOOKS_HINT),
+        "{err}"
+    );
 }
 
 /// Before a commit the page asks about staged files GitHub would refuse: by what's staged, not

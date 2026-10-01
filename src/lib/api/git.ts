@@ -142,7 +142,7 @@ export const api = {
   removeIndexLock: (path: string) => invoke<void>("remove_index_lock", { path }),
   /** Stages, unstages or discards some lines of a diff (lines.rs); a discard is undoable. */
   changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
-  /** An empty `message` with `amend` keeps the old one (--no-edit). Watched as a network command: hook output is its progress, and Cancel stops it before anything is committed. */
+  /** An empty `message` with `amend` keeps the old one (--no-edit). Watched as a network command: hook output is its progress, and Cancel stops it (once git has moved HEAD, the commit stands). */
   commit: (message: string, options: CommitOptions, op?: NetOp) => network<void>("commit", { message, options }, op),
   /** Staged files GitHub would refuse a push of (over 100 MiB), by their staged blobs; LFS files are staged as pointers, so they don't count. */
   largeStaged: () => invoke<LargeFile[]>("large_staged"),

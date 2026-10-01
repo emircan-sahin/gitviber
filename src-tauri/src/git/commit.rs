@@ -5,7 +5,7 @@ use crate::lfs;
 use crate::network::{self, Net, CANCELLED};
 use crate::process::exec;
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Duration;
 
 #[derive(Deserialize, Default)]
@@ -20,13 +20,22 @@ pub struct CommitOptions {
     pub co_authors: Vec<String>,
 }
 
-/// Ends a failed commit's message when a hook `--no-verify` skips is set up. git says nothing of
-/// its own when one fails, so this is how the page knows to offer committing without them.
+/// Ends a failed commit's message when a hook `--no-verify` skips is set up and stopped it. git
+/// says nothing of its own when one fails, so this is how the page knows to offer committing
+/// without them.
 pub const HOOKS_HINT: &str = "hint: Commit hooks set up here: ";
 
+/// How git starts the lines it ends a commit with, exit code 1, before or after the hooks ran.
+const OWN_REFUSALS: [&str; 4] = [
+    "nothing to commit",
+    "nothing added to commit",
+    "no changes added to commit",
+    "Aborting commit due to empty commit message",
+];
+
 /// Watched like a network command: the hooks' output is its progress, and Cancel stops git with
-/// the hooks it runs, before anything is committed. Once HEAD moved, only post-commit hooks are
-/// left and Cancel is ignored.
+/// the hooks it runs. Stopped after git moved HEAD (a post-commit hook was left), the commit
+/// stands and this succeeds.
 pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Result<(), String> {
     // git formats and places the trailers, next to any the message already has.
     let trailers = opts
@@ -64,8 +73,6 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
         &[
             "rev-parse",
             "--git-path",
-            "logs/HEAD",
-            "--git-path",
             "hooks/pre-commit",
             "--git-path",
             "hooks/commit-msg",
@@ -73,22 +80,42 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
     )
     .unwrap_or_default();
     let paths: Vec<_> = paths.lines().map(|p| repo.join(p)).collect();
-    let reflog = paths.first().map(PathBuf::as_path);
-    network::run_local(command(repo, &args), "git commit", net, reflog, input)
-        .map(|_| ())
-        .map_err(|e| {
+    let head = tip(repo, "HEAD");
+    let mut cmd = command(repo, &args);
+    // It has no paths, and hooks inherit its environment: lint-staged's `git stash --keep-index`
+    // restores the index with `:/`, which literal pathspecs turn into a file of that name.
+    cmd.env_remove("GIT_LITERAL_PATHSPECS");
+    match network::run_local(cmd, "git commit", net, input) {
+        Ok(_) => Ok(()),
+        // Not a file's change: a hook's own git (lint-staged's stash) writes the reflogs too.
+        Err(f) if f.message == CANCELLED && tip(repo, "HEAD") != head => Ok(()),
+        Err(f) => {
             let hooks: Vec<_> = ["pre-commit", "commit-msg"]
                 .into_iter()
-                .zip(paths.iter().skip(1))
+                .zip(&paths)
                 .filter(|(_, p)| is_hook(p))
                 .map(|(name, _)| name)
                 .collect();
-            if e == CANCELLED || opts.no_verify || hooks.is_empty() {
-                e
-            } else {
-                format!("{e}\n{HOOKS_HINT}{}.", hooks.join(", "))
-            }
-        })
+            // A failing hook makes git exit 1 without a word; its own failures are 128 (a
+            // signature that failed, a merge in the way) or 1 with one of these. A cancel is None.
+            let own = f
+                .message
+                .lines()
+                .any(|l| OWN_REFUSALS.iter().any(|r| l.starts_with(r)));
+            Err(
+                if f.code != Some(1) || own || opts.no_verify || hooks.is_empty() {
+                    f.message
+                } else {
+                    format!("{}\n{HOOKS_HINT}{}.", f.message, hooks.join(", "))
+                },
+            )
+        }
+    }
+}
+
+/// The commit `rev` names now; None for an unborn branch or a ref that isn't there.
+fn tip(repo: &Path, rev: &str) -> Option<String> {
+    run_text(repo, &["rev-parse", "-q", "--verify", rev]).ok()
 }
 
 /// What git runs as a hook: a file it can execute (it skips one that isn't, with a hint).
