@@ -52,7 +52,10 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
   // A branch's full ref; a search still goes first, and closing it comes back here.
   const [compare, setCompare] = useState<string | null>(null);
   const showAll = allBranches && !active && !compare;
-  const found = useCommitSearch(active ? search : null, head, allBranches ? refs : null);
+  // What a search covers: HEAD, and with all branches every branch's tip. A refresh that moved
+  // none of them (a focus, a staged file) doesn't search again.
+  const tips = allBranches ? `${head} ${props.branches.map((b) => b.sha).join(" ")}` : head;
+  const found = useCommitSearch(active ? search : null, tips, allBranches ? refs : null);
   const all = useAllBranches(showAll, props.commits, refs);
   const setQuery = (q: string) => onSearch({ ...search, query: q, reveal: null });
 
@@ -200,10 +203,11 @@ function request({ query, scope }: HistorySearch) {
 
 /**
  * The commits `search` matches, a page at a time, then any commit a SHA in it names on top.
- * Typing waits DEBOUNCE before asking; a reply to an older search is dropped. `head`: HEAD's
- * commit, to search again when it moves. `all`: search the branches the graph shows, not only HEAD's.
+ * Typing waits DEBOUNCE before asking; a reply to an older search is dropped. `tips`: the commits
+ * it starts from, to search again when one moves (a commit in another worktree, a fetch). `all`:
+ * search the branches the graph shows, not only HEAD's.
  */
-function useCommitSearch(search: HistorySearch | null, head: string | undefined, all: GraphRefs | null) {
+function useCommitSearch(search: HistorySearch | null, tips: string, all: GraphRefs | null) {
   const [result, setResult] = useState<{ key: string; all: GraphRefs | null; log: Commit[]; found: Commit[]; hasMore: boolean } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -240,7 +244,7 @@ function useCommitSearch(search: HistorySearch | null, head: string | undefined,
       }
     }, DEBOUNCE);
     return () => clearTimeout(t);
-  }, [key, head]);
+  }, [key, tips]);
 
   const loadMore = useCallback(async () => {
     const r = current.current;

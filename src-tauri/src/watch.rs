@@ -12,6 +12,8 @@ use tauri::{AppHandle, Emitter};
 #[derive(Serialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoChanged {
+    /// The repo this watcher is for, as open_repo returned it.
+    pub root: String,
     /// Files in the working tree changed.
     pub worktree: bool,
     /// HEAD, refs or the index changed (commit, checkout, stage from the terminal...).
@@ -45,9 +47,10 @@ pub(crate) fn git_file(rel: &Path, own: bool) -> bool {
         .collect();
     let parts: Vec<&str> = parts.iter().map(|p| p.as_ref()).collect();
     match parts.as_slice() {
-        ["HEAD" | "refs" | "packed-refs", ..] => true,
-        // Upstreams and remotes: `git branch -u`, `git remote set-url`.
-        ["config"] => true,
+        // reftable/: where a `--ref-format=reftable` repo keeps every ref.
+        ["HEAD" | "refs" | "packed-refs" | "reftable", ..] => true,
+        // Upstreams and remotes: `git branch -u`, `git remote set-url`. Ignore rules too.
+        ["config"] | ["info", "exclude"] => true,
         ["index" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "rebase-merge"
         | "rebase-apply", ..] => own,
         // Another worktree added or removed, or switched to a branch it now holds. Its index
@@ -114,12 +117,15 @@ impl ExternalGitDirs {
         if path.extension().is_some_and(|e| e == "lock") {
             return None;
         }
-        // The own dir sits inside the common one's worktrees/, so it goes first.
-        if self.own.as_ref().is_some_and(|d| path.starts_with(d)) {
+        // A submodule's (or any separate) git dir is both the own and the common one. As in a
+        // plain .git, only what git_file names counts: its objects and logs churn.
+        let own = self.own == self.common;
+        // A linked worktree's own dir sits inside the common one's worktrees/, so it goes first.
+        if !own && self.own.as_ref().is_some_and(|d| path.starts_with(d)) {
             return Some(Kind::Git);
         }
         let rel = path.strip_prefix(self.common.as_ref()?).ok()?;
-        git_file(rel, false).then_some(Kind::Git)
+        git_file(rel, own).then_some(Kind::Git)
     }
 }
 
@@ -137,6 +143,42 @@ pub(crate) fn not_ignored(root: &Path, paths: &HashSet<PathBuf>) -> bool {
     }
     let ignored: HashSet<String> = crate::git::ignored(root, &rels).into_iter().collect();
     rels.iter().any(|r| !ignored.contains(r))
+}
+
+/// What one watcher event means for the window, path by path.
+pub(crate) fn route(
+    root: &Path,
+    external: &ExternalGitDirs,
+    event: &notify::Event,
+) -> Vec<(Kind, PathBuf)> {
+    // Events were dropped (FSEvents' MustScanSubDirs, inotify's overflow): for the repo or a git
+    // dir itself, which classify to nothing, anything may have changed. A folder in the worktree
+    // counts as written to, so ignored build output and nested worktrees still stay out.
+    let rescan = event.need_rescan();
+    if rescan && event.paths.is_empty() {
+        return vec![(Kind::Git, root.to_path_buf())];
+    }
+    let whole = |p: &Path| {
+        p == root
+            || p == root.join(".git")
+            || [&external.own, &external.common]
+                .iter()
+                .any(|d| d.as_deref() == Some(p))
+    };
+    event
+        .paths
+        .iter()
+        .filter_map(|p| {
+            let kind = if rescan && whole(p) {
+                Some(Kind::Git)
+            } else if p.starts_with(root) {
+                classify(root, p)
+            } else {
+                external.classify(p)
+            };
+            Some((kind?, p.clone()))
+        })
+        .collect()
 }
 
 pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String> {
@@ -158,15 +200,8 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
     .collect();
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(event) = res {
-            for p in &event.paths {
-                let kind = if p.starts_with(&watch_root) {
-                    classify(&watch_root, p)
-                } else {
-                    external.classify(p)
-                };
-                if let Some(kind) = kind {
-                    let _ = tx.send((kind, p.clone()));
-                }
+            for change in route(&watch_root, &external, &event) {
+                let _ = tx.send(change);
             }
         }
     })
@@ -185,7 +220,10 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
     std::thread::spawn(move || {
         while let Ok(first) = rx.recv() {
             let started = Instant::now();
-            let mut change = RepoChanged::default();
+            let mut change = RepoChanged {
+                root: root.to_string_lossy().into_owned(),
+                ..Default::default()
+            };
             let mut touched = HashSet::new();
             let mut next = Some(first);
             while let Some((kind, path)) = next {
@@ -200,7 +238,12 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
                 }
                 next = rx.recv_timeout(Duration::from_millis(150)).ok();
             }
-            change.worktree = not_ignored(&root, &touched);
+            // A git change reloads the status anyway; no need to ask git which files count.
+            change.worktree = if change.git {
+                !touched.is_empty()
+            } else {
+                not_ignored(&root, &touched)
+            };
             if change.worktree || change.git {
                 let _ = app.emit("repo-changed", change);
             }

@@ -22,10 +22,11 @@ import { api, errorMessage, type GitInfo, NOT_A_REPO, type OpenedRepo } from "@/
 import { useCommands } from "@/lib/commands/keybindings";
 import { useRecentMenu } from "@/lib/commands/menu";
 import { stepUiScale } from "@/lib/settings";
+import { fallbackFor, latestOnly } from "@/lib/repo/opening";
 import { forgetRepo, lastRepo, recentRepos, rememberRepo, setLastRepo, setRepoOrder } from "@/lib/repo/recent";
 import { toast } from "@/lib/app/toast";
 import { openTargetIn } from "@/lib/links/linkHost";
-import { folderName, isInside } from "@/lib/path";
+import { folderName } from "@/lib/path";
 import { IS_MAC } from "@/lib/platform";
 
 export function App() {
@@ -54,12 +55,25 @@ export function App() {
   }, []);
   const noGit = git?.state === "missing" || git?.state === "tools";
 
-  /** `replacing`: a saved project whose folder moved; this repo takes its place in the list. Its root once open. */
+  // Two quick opens could finish in either order, leaving the backend on one folder and the window
+  // on the other. So they run one at a time, each shown once it opened, and one a later open
+  // overtook before it started is skipped: both end on the last folder that opened.
+  const [opens] = useState(latestOnly);
+  // The window's repo as of the last render, for the gone check below.
+  const shown = useRef<string | null>(null);
+  shown.current = opened?.root ?? null;
+
+  /**
+   * `replacing`: a saved project whose folder moved; this repo takes its place in the list. Its root
+   * once open; false: it failed; undefined: nothing to do (no folder picked, or a later open took over).
+   */
   const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string): Promise<string | false | undefined> => {
     const target = path ?? (await open({ directory: true, title: "Open a git repository" }));
     if (typeof target !== "string") return;
+    const { turn, latest } = opens.run(() => api.openRepo(target));
     try {
-      const repo = await api.openRepo(target);
+      const repo = await turn;
+      if (!repo) return;
       // Projects are keyed by the main worktree; its other worktrees are reached from the top bar.
       // An older entry saved under this worktree's path, or the moved folder, turns into its project.
       setRepoOrder([...new Set(recentRepos().map((p) => (p === repo.root || p === replacing ? repo.main : p)))]);
@@ -69,21 +83,23 @@ export function App() {
       setOpened(repo);
       return repo.root;
     } catch (e) {
+      if (!latest()) return;
       if (quiet) return false;
       if (e === NOT_A_REPO && (await initAsked(target))) return openRepo(target, quiet, replacing);
       toast("error", "Could not open repository", errorMessage(e));
       return false;
     }
-  }, []);
+  }, [opens]);
 
   // The last path opened from outside wins (opened.rs); a file shows once its repository is open.
   const openAsked = useCallback(async () => {
     const { open: targets, missing } = await api.takeOpened().catch(() => ({ open: [], missing: [] }));
     for (const path of missing) toast("error", "No such file or folder", path);
     const asked = targets.at(-1);
-    const root = asked && (await openRepo(asked.folder));
+    if (!asked) return false;
+    const root = await openRepo(asked.folder);
     if (root && asked.file) openTargetIn(root, { path: asked.file, line: asked.line ?? undefined, column: asked.column ?? undefined });
-    return !!root;
+    return root !== false;
   }, [openRepo]);
 
   const booted = useRef<Promise<void>>(Promise.resolve());
@@ -92,14 +108,28 @@ export function App() {
   // fall back to the project it was under, else the first project.
   useEffect(() => {
     const last = lastRepo();
-    const projects = recentRepos();
-    const fallback = projects.find((p) => last && isInside(last, p)) ?? projects[0];
+    const fallback = fallbackFor(recentRepos(), last);
     booted.current = (async () => {
       if (await openAsked()) return;
-      if (last && (await openRepo(last, true))) return;
-      if (fallback && fallback !== last) await openRepo(fallback, true);
+      // Not false: it opened, or something opened meanwhile took over.
+      if (last && (await openRepo(last, true)) !== false) return;
+      if (fallback) await openRepo(fallback, true);
     })().finally(() => setBooting(false));
   }, [openRepo, openAsked]);
+
+  // The open worktree was deleted from outside (an agent done with it, `git worktree remove`):
+  // its project takes its place, as at launch.
+  const onRepoGone = useCallback(
+    async (gone: OpenedRepo) => {
+      // Too late: another repo is open, or on its way.
+      if (shown.current !== gone.root || opens.busy()) return;
+      const next = fallbackFor(recentRepos(), gone.root, gone.main);
+      const root = next ? await openRepo(next, true) : false;
+      if (root === false) setOpened(null);
+      toast("info", `${folderName(gone.root)} no longer exists`, root ? `Opened ${folderName(root)} in its place.` : undefined);
+    },
+    [openRepo, opens],
+  );
 
   // Paths opened from outside while the app runs (opened.rs): the last one wins. One that comes
   // during the launch's own reopen waits for it (`booted`), so the last repository can't replace it.
@@ -121,7 +151,7 @@ export function App() {
     };
   }, [openAsked]);
 
-  const onOpen = useCallback((p?: string) => void openRepo(p), [openRepo]);
+  const onOpen = useCallback((p?: string) => openRepo(p).then(() => {}), [openRepo]);
   const onReorder = useCallback((list: string[]) => {
     setRepoOrder(list);
     setRecent(list);
@@ -161,7 +191,7 @@ export function App() {
     <TooltipProvider>
       {opened ? (
         <WorkspaceBoundary key={opened.root} onOpenRepo={onOpen}>
-          <Workspace root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} />
+          <Workspace root={opened.root} main={opened.main} recent={recent} onOpenRepo={onOpen} onForgetRepo={onForget} onReorderRepos={onReorder} onLocateRepo={onLocate} onRepoGone={onRepoGone} />
         </WorkspaceBoundary>
       ) : (
         !booting &&

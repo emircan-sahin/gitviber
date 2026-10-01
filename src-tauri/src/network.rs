@@ -163,12 +163,12 @@ pub fn run(
     // and the askpass helper either of them is waiting on, which closes the dialog.
     process::in_own_group(&mut cmd);
     let asking = askpass::attach(&mut cmd, label, net.op());
-    let mut child = cmd
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("could not run {label}: {e}"))?;
+    let mut child = process::spawn(
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped()),
+    )
+    .map_err(|e| format!("could not run {label}: {e}"))?;
     let (stdout, stderr) = (child.stdout.take(), child.stderr.take());
     let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
     let marker = settle_on.map(|p| (p, modified(p)));

@@ -281,7 +281,7 @@ fn ask(
     // Its own process group, so a cancel also stops what an agent CLI spawned (MCP servers,
     // tools) and nothing is left holding the output pipes open.
     process::in_own_group(&mut cmd);
-    let mut child = cmd.spawn().map_err(|e| match e.kind() {
+    let mut child = process::spawn(&mut cmd).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => format!(
             "Couldn't find \"{}\". Put its full path in Settings → Commit Messages (`which {}` in Terminal shows it).",
             argv[0],

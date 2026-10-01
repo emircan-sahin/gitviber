@@ -16,6 +16,7 @@ import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen, useTerminalTabCount } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
+import { type OpenedRepo } from "@/lib/api";
 import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
 import { revealPath } from "@/lib/app/openIn";
@@ -51,10 +52,12 @@ interface Props {
   /** The main worktree; differs from root when a linked worktree is open. */
   main: string;
   recent: string[];
-  onOpenRepo: (path?: string) => void;
+  onOpenRepo: (path?: string) => Promise<void>;
   onForgetRepo: (path: string) => void;
   onReorderRepos: (list: string[]) => void;
   onLocateRepo: (path: string) => void;
+  /** The repo's folder was deleted while open. */
+  onRepoGone: (repo: OpenedRepo) => void;
 }
 
 /**
@@ -72,9 +75,9 @@ function useFreshCaches(root: string) {
   openNotes(root);
 }
 
-export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo }: Props) {
+export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, onRepoGone }: Props) {
   useFreshCaches(root);
-  const repo = useRepo(root);
+  const repo = useRepo(root, () => onRepoGone({ root, main }));
   const { status } = repo;
   const origin = status?.origin;
   // origin's page on GitHub, for links; kept while git couldn't read the remotes, as the origin is.

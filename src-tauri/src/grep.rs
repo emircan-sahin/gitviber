@@ -193,9 +193,8 @@ pub(crate) fn run(root: &Path, q: &Query, id: u64, pcre: bool) -> Result<Found, 
     let mut cmd = git::command(root, &args);
     // Globs here are globs.
     cmd.env_remove("GIT_LITERAL_PATHSPECS");
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("could not run git grep: {e}"))?;
+    let mut child =
+        crate::process::spawn(&mut cmd).map_err(|e| format!("could not run git grep: {e}"))?;
     let stdout = child.stdout.take().ok_or("git grep has no output")?;
     let mut stderr = child.stderr.take();
     let err = std::thread::spawn(move || {

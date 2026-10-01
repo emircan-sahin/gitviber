@@ -9,6 +9,11 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::OnceLock;
+use std::time::Duration;
+
+/// Line counts are a nicety: after a mass reformat `diff --numstat` can take longer than the rest
+/// of status together, and status then comes back without them rather than not at all.
+const NUMSTAT_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -369,14 +374,23 @@ pub fn status(repo: &Path) -> Result<RepoStatus, String> {
         drop_worktrees(repo, &mut st.unstaged);
     }
     if !st.unstaged.is_empty() {
-        let stats = parse_numstat(&run(repo, &["diff", "--numstat", "-z"])?);
-        apply_numstat(&mut st.unstaged, &stats);
+        line_counts(repo, &["diff", "--numstat", "-z"], &mut st.unstaged);
     }
     if !st.staged.is_empty() {
-        let stats = parse_numstat(&run(repo, &["diff", "--cached", "--numstat", "-z", "-M"])?);
-        apply_numstat(&mut st.staged, &stats);
+        line_counts(
+            repo,
+            &["diff", "--cached", "--numstat", "-z", "-M"],
+            &mut st.staged,
+        );
     }
     Ok(st)
+}
+
+fn line_counts(repo: &Path, args: &[&str], list: &mut [FileChange]) {
+    let cmd = command(repo, args);
+    if let Ok(out) = exec(cmd, "git diff", &[], None, Some(NUMSTAT_TIMEOUT)) {
+        apply_numstat(list, &parse_numstat(&out));
+    }
 }
 
 /// "mA → mB" for a split porcelain v2 record's modes at `from` and `to` (mH 3, mI 4, mW 5)

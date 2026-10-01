@@ -2,10 +2,10 @@
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::RwLock;
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 /// Apps launched from Finder get a bare PATH, which hides Homebrew git, the credential
@@ -45,8 +45,22 @@ pub(crate) fn merge_paths(login: Option<&OsStr>, current: &OsStr) -> OsString {
     std::env::join_paths(dirs).unwrap_or_else(|_| current.to_os_string())
 }
 
-/// Runs a prepared command, killing it after `timeout`. Output is drained on threads so a
-/// chatty process can't block on a full pipe while we wait.
+/// macOS has no pipe2: std marks a new pipe close-on-exec a step after making it, and a child
+/// spawned on another thread in between inherits it. A `git patch-id` got the pipe a concurrent
+/// spawn reads until its child execs, and waited for input from the thread stuck there, forever.
+/// So making such fds and spawning share one lock (Go's ForkLock), never held while a child runs.
+pub(crate) fn spawning<T>(f: impl FnOnce() -> T) -> T {
+    static LOCK: Mutex<()> = Mutex::new(());
+    let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    f()
+}
+
+pub(crate) fn spawn(cmd: &mut Command) -> io::Result<Child> {
+    spawning(|| cmd.spawn())
+}
+
+/// Runs a prepared command, killing it after `timeout`. Input is written and output drained
+/// on threads, so a chatty process can't block on a full pipe while we wait or write.
 pub(crate) fn exec(
     mut cmd: Command,
     label: &str,
@@ -57,17 +71,21 @@ pub(crate) fn exec(
     if input.is_some() {
         cmd.stdin(Stdio::piped());
     }
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("could not run {label}: {e}"))?;
-    if let (Some(data), Some(mut stdin)) = (input, child.stdin.take()) {
-        // A process can exit before reading its input (a failing pre-commit hook stops
-        // `commit -F -`); its status and stderr say why, not the broken pipe.
-        match stdin.write_all(data) {
-            Err(e) if e.kind() != std::io::ErrorKind::BrokenPipe => return Err(e.to_string()),
-            _ => {}
-        }
+    // What it starts (a submodule's status, an fsmonitor hook) holds the pipes open too: on a
+    // timeout the whole group goes, or it lingered and kept a drain thread waiting.
+    if timeout.is_some() {
+        in_own_group(&mut cmd);
     }
+    let mut child = spawn(&mut cmd).map_err(|e| format!("could not run {label}: {e}"))?;
+    // `check-ignore --stdin` answers while it reads: writing all of a large input before
+    // draining filled both pipes and hung the app and git for good.
+    let write = match (input, child.stdin.take()) {
+        (Some(data), Some(mut stdin)) => {
+            let data = data.to_vec();
+            Some(std::thread::spawn(move || stdin.write_all(&data)))
+        }
+        _ => None,
+    };
     let drain = |r: Option<Box<dyn Read + Send>>| {
         std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -95,8 +113,7 @@ pub(crate) fn exec(
             break st;
         }
         if deadline.is_some_and(|d| Instant::now() > d) {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_group(&mut child, Duration::ZERO);
             return Err(format!("{label} timed out"));
         }
         std::thread::sleep(Duration::from_millis(10));
@@ -105,6 +122,13 @@ pub(crate) fn exec(
         out.join().unwrap_or_default(),
         err.join().unwrap_or_default(),
     );
+    // A process can exit before reading its input (a failing pre-commit hook stops
+    // `commit -F -`); its status and stderr say why, not the broken pipe.
+    if let Some(Ok(Err(e))) = write.map(|w| w.join()) {
+        if e.kind() != std::io::ErrorKind::BrokenPipe {
+            return Err(e.to_string());
+        }
+    }
     let code = status.code().unwrap_or(-1);
     if status.success() || ok_codes.contains(&code) {
         Ok(stdout)
@@ -238,6 +262,95 @@ mod tests {
         assert!(split_command("claude -p \"oops").is_err());
         assert!(split_command("claude -p \"oops\\\"").is_err());
         assert!(split_command("code \\").is_err());
+    }
+
+    #[test]
+    fn input_larger_than_a_pipe_echoes_back() {
+        // Far past the 64 KB pipe buffers: written whole before draining, this never returned.
+        let data = vec![b'x'; 4 << 20];
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut cmd = Command::new("cat");
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+            let _ = tx.send(exec(cmd, "cat", &[], Some(&data), None).map(|o| o.len()));
+        });
+        let got = rx.recv_timeout(Duration::from_secs(30));
+        assert_eq!(
+            got,
+            Ok(Ok(4 << 20)),
+            "all of it came back, and the call returned"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reader_spawned_beside_its_writer_gets_its_end_of_input() {
+        // patch_ids' shape: the pipe's reader spawned on one thread while another spawns its
+        // writer. Unlocked, the reader could get the pipe the writer's spawn waits on, and both
+        // waited for good. Its own PATH makes std fork, with that pipe, instead of posix_spawn.
+        let pair = || {
+            let (reader, writer) = spawning(std::io::pipe).unwrap();
+            let mut cat = Command::new("cat");
+            cat.env("PATH", search_path())
+                .stdin(reader)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            std::thread::scope(|s| {
+                let out = s.spawn(move || exec(cat, "cat", &[], None, None));
+                let mut writes = Command::new("true");
+                writes.env("PATH", search_path()).stdout(writer);
+                spawn(&mut writes).unwrap().wait().unwrap();
+                drop(writes);
+                assert_eq!(out.join().unwrap(), Ok(Vec::new()));
+            });
+        };
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..8 {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                (0..100).for_each(|_| pair());
+                let _ = tx.send(());
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let done = (0..8).all(|_| {
+            rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .is_ok()
+        });
+        assert!(
+            done,
+            "a spawn and the reader beside it waited for each other"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_timeout_stops_what_the_process_started() {
+        let dir = std::env::temp_dir().join(format!("gitviber-exec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let pidfile = dir.join("pid");
+        // A child holding the pipes after its parent is gone, like an fsmonitor hook under git.
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            &format!("sleep 30 & echo $! > {}; wait", pidfile.display()),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+        let err = exec(cmd, "sh", &[], None, Some(Duration::from_millis(500))).unwrap_err();
+        assert_eq!(err, "sh timed out");
+        let pid: libc::pid_t = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // Orphaned, it lingers as a zombie until launchd reaps it.
+        let gone = (0..100).any(|_| {
+            std::thread::sleep(Duration::from_millis(20));
+            (unsafe { libc::kill(pid, 0) }) != 0
+        });
+        assert!(gone, "the child still runs");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(target_os = "macos")]
