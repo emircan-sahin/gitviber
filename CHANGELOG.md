@@ -6,6 +6,72 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-02
+
+### Added
+
+- **Open every change in one scroll:** Open All on Changes, Staged or a branch review shows each
+  file's diff one under the other, live as the agent writes. J/K step through the files, V marks
+  the top one viewed, and a click on a fold opens 20 more lines. In #112.
+- **Review notes on diff lines.** Select lines in any diff and press C (or right-click → Add
+  Review Note) to leave a note. Review Notes in Changes lists them, copies them as a prompt with
+  `path:line` and the code, or pastes them into the worktree's terminal without pressing Enter.
+  A note turns outdated when the agent rewrites its lines. In #69.
+- **Agents resume after a restart.** Quit with Claude Code, Gemini CLI or opencode running, and
+  the restored terminal says so and types the command that resumes the conversation at the
+  prompt. Settings → Terminal can run it instead, or turn it off.
+- **A ring while an agent works, and a note when it's done.** A tab, a split pane and a worktree
+  show a ring while Claude Code works there, and a dot with a desktop notification (if turned
+  on) once it finishes or asks for you, with no setup in Claude Code.
+- **Commit hooks show their output in the top bar and can be cancelled.** A failed hook offers
+  committing without hooks.
+- **A file over GitHub's 100 MB limit** is caught before the commit, with .gitignore or LFS
+  suggested.
+- **Fixes one click away:** Remove lock for an index.lock a killed git left behind, Trust this
+  folder for a repository git refuses over its owner, and a plain explanation when GitHub refuses
+  a push over a secret, with its page and Undo last commit.
+- **Interface font weight** in Settings → Appearance.
+- **A screen reader mode for the terminal** in Settings → Terminal.
+
+### Changed
+
+- **S stages the open file and moves to the next one,** so S, S, S works down Changes and the
+  arrow keys keep working. Unstaging and discarding move on the same way.
+- **Interface text is medium weight,** and text on the blue accent (Commit, Push, highlighted
+  rows) is dark in the Dark and Dim themes, so both read more easily.
+- **The explorer's filter finds ignored files** such as .env, and shows an ignored folder like
+  node_modules as one row.
+- **A new worktree starts from the current branch,** can check out a branch that already exists,
+  and tracks a branch that's only on a remote.
+- **The branch picker marks branches checked out in another worktree,** and switching says which
+  folder switched. Undo and redo name the branch they switch to, and ask first when that would
+  carry uncommitted changes along.
+- **Two open files of one name show their folders** in their tabs, and every tab shows its path
+  on hover.
+- **Toasts stay 5 s, or 10 s with a button,** and Reduce Motion is followed by menus, dialogs,
+  tooltips and toasts.
+
+### Fixed
+
+- **The window follows git again after a burst of changes.** A build or a `cargo clean` could
+  stop it from showing branch switches, commits and file changes until a restart. Coming back
+  to the window now rereads the repository, a hung git read gives up after a minute, and a
+  worktree deleted from outside opens its project instead.
+- **Copying from the terminal keeps working while Claude Code is running.** ⌥-drag selects past
+  a program that reads the mouse, the selection stays when the pointer moves, and ⌘C copies it.
+  A program that crashed no longer leaves the mouse captured at the prompt.
+- **A program that floods its terminal no longer stalls every pane,** and an agent keeps running
+  while the window is hidden.
+- **A PR created or merged with gh in the terminal** shows up in the list and on the worktree
+  badges.
+- **A history search over all branches** picks up commits made in other worktrees and fetched
+  ones.
+- **Git calls no longer wait forever** when two programs start at the same moment.
+- **VoiceOver reads the app:** icon buttons have names, the file tree, Changes and the pickers
+  read as lists and trees, settings fields read their labels, and progress reads as progress.
+  Keyboard focus stays in the list after staging, and faded text and control edges have enough
+  contrast.
+
 ## [0.1.6] - 2026-09-28
 
 ### Added
@@ -329,7 +395,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/emircan-sahin/gitviber/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/emircan-sahin/gitviber/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/emircan-sahin/gitviber/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/emircan-sahin/gitviber/compare/v0.1.3...v0.1.4
