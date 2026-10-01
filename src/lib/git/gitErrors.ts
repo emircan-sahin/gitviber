@@ -1,11 +1,13 @@
-/** Which way out fits: the caller that can take it supplies the buttons (a pull, a retry), except identity and signing, which always fit. */
-export type GitFix = "diverged" | "fetch-first" | "autostash" | "identity" | "signing" | "hooks";
+/** Which way out fits: the caller that can take it supplies the buttons (a pull, a retry), except identity, signing and the index lock, which always fit. */
+export type GitFix = "diverged" | "fetch-first" | "autostash" | "identity" | "signing" | "hooks" | "index-lock";
 
 export interface GitErrorHelp {
   title: string;
   /** What went wrong and what to do, in a sentence or two. */
   explanation: string;
   fix?: GitFix;
+  /** What the fix acts on, from git's words (a pattern's `target` group): the lock file to remove. */
+  target?: string;
 }
 
 /** GitHub's guide to git signing; its macOS steps set up pinentry-mac. */
@@ -77,6 +79,16 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
       explanation: "Check that your key is loaded (`ssh-add -l`) and added to your account on the remote. For GitHub, `ssh -T git@github.com` tests it.",
     },
   ],
+  // state.rs retried once already. A killed agent's git leaves the lock behind for good.
+  [
+    /^fatal: Unable to create '(?<target>.+\/index\.lock)': File exists\./m,
+    {
+      title: "Another git command holds the index lock",
+      explanation:
+        "git takes index.lock while it changes what's staged, and a git that was killed (an agent stopped mid-command) leaves it behind. If no git command is running in this repository, in a terminal, an agent or a commit message editor left open, remove the lock and try again.",
+      fix: "index-lock",
+    },
+  ],
   // commit.rs's line: git says nothing of its own when a pre-commit or commit-msg hook fails.
   // Last, so a failure git does explain (identity, signing) is told as that.
   [
@@ -91,5 +103,9 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
 
 /** What a failed git command's output means, for the failures that have a known way out; null for the rest. */
 export function explainGitError(message: string): GitErrorHelp | null {
-  return KNOWN.find(([re]) => re.test(message))?.[1] ?? null;
+  for (const [re, help] of KNOWN) {
+    const m = re.exec(message);
+    if (m) return m.groups?.target ? { ...help, target: m.groups.target } : help;
+  }
+  return null;
 }

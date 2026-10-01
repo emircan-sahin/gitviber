@@ -2,7 +2,8 @@
 
 use super::{has_head, new_gitlink, run_text, run_with, untracked_nested_root};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub(super) fn with_paths<'a>(mut args: Vec<&'a str>, paths: &'a [String]) -> Vec<&'a str> {
     args.push("--");
@@ -108,4 +109,35 @@ pub fn unstage(repo: &Path, paths: &[String]) -> Result<(), String> {
 /// Reverts tracked files in the worktree to their index version. Untracked files are left alone.
 pub fn discard(repo: &Path, paths: &[String]) -> Result<(), String> {
     run_on(repo, &["restore", "--worktree"], paths)
+}
+
+/// git holds index.lock for as long as it writes the index, well under this; an older one is
+/// a killed git's (an agent stopped mid-command), or one that waits on an editor or a hook.
+const STALE_LOCK: Duration = Duration::from_secs(5);
+
+/// Removes the index.lock git named in an error, the user having said no git command is
+/// running. Only this repository's own (git's path for it: a linked worktree has its own),
+/// and only once it's too old to be a command's that is still writing.
+pub fn remove_index_lock(repo: &Path, named: &str) -> Result<(), String> {
+    let lock = repo.join(run_text(repo, &["rev-parse", "--git-path", "index.lock"])?.trim());
+    // The folders may be spelled differently (/tmp and /private/tmp on macOS).
+    let real = |p: &Path| -> Option<PathBuf> {
+        Some(p.parent()?.canonicalize().ok()?.join(p.file_name()?))
+    };
+    if real(&lock).is_none() || real(&lock) != real(Path::new(named)) {
+        return Err(format!(
+            "{named} isn't this repository's index lock. Open its repository to remove it."
+        ));
+    }
+    let modified = match std::fs::metadata(&lock).and_then(|m| m.modified()) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        m => m.map_err(|e| e.to_string())?,
+    };
+    if modified.elapsed().unwrap_or_default() < STALE_LOCK {
+        return Err("The lock was taken a moment ago: a git command is still using it. Let it finish, then try again.".into());
+    }
+    match std::fs::remove_file(&lock) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
 }

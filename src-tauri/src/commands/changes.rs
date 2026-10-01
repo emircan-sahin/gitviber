@@ -1,5 +1,7 @@
 use crate::journal::{Action, Mode};
-use crate::state::{in_repo, indexed, journaled, watch_network, with_index_lock, AppState, Res};
+use crate::state::{
+    in_repo, indexed, indexed_once, journaled, watch_network, with_index_lock, AppState, Res,
+};
 use crate::{git, github, lines, network, suggest};
 use tauri::ipc::Channel;
 use tauri::State;
@@ -31,6 +33,13 @@ pub async fn stage(state: State<'_, AppState>, paths: Vec<String>, allow_nested:
 #[tauri::command]
 pub async fn unstage(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
     indexed(&state, move |r| git::unstage(r, &paths)).await
+}
+
+/// Removes a stale index.lock that `path`, from git's error, names; see git::remove_index_lock.
+/// Not while one of ours writes the index.
+#[tauri::command]
+pub async fn remove_index_lock(state: State<'_, AppState>, path: String) -> Res<()> {
+    indexed_once(&state, move |r| git::remove_index_lock(r, &path)).await
 }
 
 #[tauri::command]

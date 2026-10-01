@@ -207,3 +207,48 @@ fn a_submodule_with_changes_inside_says_so() {
     let a = st.unstaged.iter().find(|f| f.path == "a.txt").unwrap();
     assert!(a.submodule.is_none());
 }
+
+/// A killed git leaves index.lock behind and every staging fails on it. The lock git names is
+/// removed once it's stale, and only when it is this repository's.
+#[test]
+fn a_stale_index_lock_can_be_removed() {
+    let sb = Sandbox::new("stale-lock");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let other = sb.path("other");
+    init(&other);
+    let lock = r.join(".git/index.lock");
+    let other_lock = other.join(".git/index.lock");
+    for l in [&lock, &other_lock] {
+        fs::write(l, "").unwrap();
+    }
+    fs::write(r.join("a.txt"), "b\n").unwrap();
+    let err = stage(&r, &["a.txt".into()]).unwrap_err();
+    let named = err
+        .split_once("Unable to create '")
+        .and_then(|(_, rest)| rest.split_once("': File exists"))
+        .map(|(path, _)| path.to_string())
+        .unwrap();
+
+    let err = remove_index_lock(&r, &named).unwrap_err();
+    assert!(err.contains("a moment ago"), "{err}");
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+    for l in [&lock, &other_lock] {
+        fs::File::options()
+            .write(true)
+            .open(l)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+    }
+    assert!(remove_index_lock(&r, other_lock.to_str().unwrap()).is_err());
+    assert!(remove_index_lock(&r, r.join("a.txt").to_str().unwrap()).is_err());
+    assert!(other_lock.exists() && r.join("a.txt").exists());
+
+    remove_index_lock(&r, &named).unwrap();
+    assert!(!lock.exists());
+    // Gone already (git finished after all): nothing to do.
+    remove_index_lock(&r, &named).unwrap();
+    stage(&r, &["a.txt".into()]).unwrap();
+}

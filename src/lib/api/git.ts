@@ -138,6 +138,8 @@ export const api = {
    */
   unstage: (files: FileChange[]) => invoke<void>("unstage", { paths: files.flatMap((f) => (f.status === "R" && f.oldPath ? [f.path, f.oldPath] : [f.path])) }),
   discard: (paths: string[]) => invoke<void>("discard", { paths }),
+  /** Removes the index.lock at `path`, as git's error named it: only this repository's, and only once it's a few seconds old. */
+  removeIndexLock: (path: string) => invoke<void>("remove_index_lock", { path }),
   /** Stages, unstages or discards some lines of a diff (lines.rs); a discard is undoable. */
   changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
   /** An empty `message` with `amend` keeps the old one (--no-edit). Watched as a network command: hook output is its progress, and Cancel stops it before anything is committed. */

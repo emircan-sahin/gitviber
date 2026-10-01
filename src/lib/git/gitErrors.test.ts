@@ -137,6 +137,22 @@ const HOOK_OUTPUT = `husky - pre-commit script failed (code 1)
   log: error: gpg failed to sign the data (fixture)
   ! [rejected]  main -> main (fetch first)  (fixture)`;
 
+const INDEX_LOCK = `fatal: Unable to create '/Users/me/my repo/.git/worktrees/fix/index.lock': File exists.
+
+Another git process seems to be running in this repository, e.g.
+an editor opened by 'git commit'. Please make sure all processes
+are terminated then try again. If it still fails, a git process
+may have crashed in this repository earlier:
+remove the file manually to continue.`;
+
+test("a lock git can't take offers removing that exact file", () => {
+  const help = explainGitError(INDEX_LOCK);
+  assert.equal(help?.fix, "index-lock");
+  assert.equal(help?.target, "/Users/me/my repo/.git/worktrees/fix/index.lock");
+  // Some other file's lock isn't the index's.
+  assert.equal(explainGitError("fatal: Unable to create '/r/.git/refs/heads/main.lock': File exists."), null);
+});
+
 // commit.rs names the hooks set up when a commit fails; git prints nothing of its own then.
 const HOOK_FAILED = `${HOOK_OUTPUT}
 hint: Commit hooks set up here: pre-commit, commit-msg.`;

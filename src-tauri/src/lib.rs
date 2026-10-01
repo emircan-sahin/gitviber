@@ -196,6 +196,7 @@ pub fn run() {
             commands::changes::stage,
             commands::changes::unstage,
             commands::changes::discard,
+            commands::changes::remove_index_lock,
             commands::changes::commit,
             commands::changes::large_staged,
             commands::changes::commit_template,
