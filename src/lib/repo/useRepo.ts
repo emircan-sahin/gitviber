@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type Branch, type Commit, errorMessage, type Journal, LOG_PAGE, type RepoStatus, type Worktree } from "../api";
+import { recheckPullsSoon } from "../github/githubCache";
 import { useBackgroundFetch } from "./backgroundFetch";
 import { toast } from "../app/toast";
 
@@ -103,7 +104,9 @@ export function useRepo(root: string) {
     refresh(true);
     // The previous repo's watcher can still deliver one last event after a switch.
     const unlisten = listen<RepoChanged>("repo-changed", (e) => {
-      if (e.payload.root === root) refresh(e.payload.git);
+      if (e.payload.root !== root) return;
+      refresh(e.payload.git);
+      if (e.payload.git) recheckPullsSoon();
     });
     return () => {
       // During hot reload the listener can already be gone; nothing to clean up then.

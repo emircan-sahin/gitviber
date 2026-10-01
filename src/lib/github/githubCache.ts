@@ -165,6 +165,26 @@ export function onGitHubWake(w: () => void) {
   return () => void wakers.delete(w);
 }
 
+// `gh pr create` pushes, then opens the PR a moment later; `gh pr merge -d` moves refs too.
+// So a git change rereads the PR lists once things settle, and an agent's run of commits
+// asks GitHub at most every PULLS_GAP.
+const PULLS_SETTLE = 3_000;
+const PULLS_GAP = 15_000;
+let pullsTimer: ReturnType<typeof setTimeout> | undefined;
+let pullsAt = 0;
+
+/** After git changed the repo on disk (a terminal, an agent): PR lists may be behind. */
+export function recheckPullsSoon() {
+  if (pullsTimer) return;
+  const wait = Math.max(PULLS_SETTLE, pullsAt + PULLS_GAP - Date.now());
+  pullsTimer = setTimeout(() => {
+    pullsTimer = undefined;
+    pullsAt = Date.now();
+    invalidate("pulls:");
+    wake();
+  }, wait);
+}
+
 const subscribe = (l: () => void) => {
   listeners.add(l);
   return () => void listeners.delete(l);
