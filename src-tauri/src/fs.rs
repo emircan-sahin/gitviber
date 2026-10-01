@@ -192,7 +192,7 @@ pub fn list_ignored(root: &Path) -> Result<Vec<Entry>, String> {
                 name: path.rsplit('/').next().unwrap_or(path).to_string(),
                 path: path.to_string(),
                 // git prints a linked folder as a file, with no trailing "/".
-                is_dir: expands(root, &real_root, &root.join(path)),
+                is_dir: raw.ends_with('/') || expands(root, &real_root, &root.join(path)),
                 ignored: true,
             });
         }
