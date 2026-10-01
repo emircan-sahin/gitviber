@@ -132,7 +132,6 @@ export function Row({
       aria-selected={selected}
       tabIndex={tabStop ? 0 : -1}
       data-row={key}
-      data-menu-row=""
       aria-current={active || undefined}
       onClick={onClick}
       onDoubleClick={() => onOpen(sel, true)}

@@ -1,5 +1,5 @@
 import { Check, ChevronsUpDown, Copy, CornerUpLeft, Eraser, FolderGit2, FolderOpen, GitBranch, GitMerge, Lock, LockOpen, Pencil, SquareTerminal, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -68,6 +68,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const calling = useNeedsYou();
   const [list, setList] = useState(worktrees);
   const { index, setIndex, move } = usePickerIndex(list.length);
+  const listId = useId();
   // A `git status` and two rev-lists per worktree: fetched when the menu opens, never before.
   const [states, setStates] = useState<Record<string, WorktreeState>>({});
   const listRef = useRef<HTMLDivElement>(null);
@@ -226,8 +227,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
             tabIndex={-1}
             role="listbox"
             aria-label="Worktrees"
-            // One picker is open at a time, so its ids are fixed.
-            aria-activedescendant={index >= 0 && list[index] ? `worktree-option-${index}` : undefined}
+            aria-activedescendant={index >= 0 && list[index] ? `${listId}-${index}` : undefined}
             onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)}
             className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 outline-none"
           >
@@ -235,6 +235,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
             {list.map((w, i) => (
               <WorktreeRow
                 key={w.path}
+                id={`${listId}-${i}`}
                 i={i}
                 w={w}
                 hot={i === index}
@@ -304,6 +305,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
 type RowActions = Record<"pick" | "terminal" | "merge" | "rename" | "lock" | "remove" | "reveal" | "copy", (w: Worktree) => void>;
 
 function WorktreeRow({
+  id,
   i,
   w,
   hot,
@@ -320,6 +322,7 @@ function WorktreeRow({
   actions: a,
   onMenuClosed,
 }: {
+  id: string;
   i: number;
   w: Worktree;
   hot: boolean;
@@ -355,7 +358,7 @@ function WorktreeRow({
   const mergeLabel = `Merge into ${into}${state?.uncommitted ? ` · its ${state.uncommitted} uncommitted ${state.uncommitted === 1 ? "change stays" : "changes stay"} behind` : ""}`;
   const row = (
     <div
-      id={`worktree-option-${i}`}
+      id={id}
       data-option={i}
       role="option"
       aria-selected={hot}

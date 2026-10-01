@@ -25,7 +25,7 @@ function ContextMenu({ modal = false, ...props }: React.ComponentProps<typeof Co
   );
 }
 
-/** Rows are the `role="button"` and `data-menu-row` elements inside the trigger; empty space keeps the menu at the cursor. */
+/** Rows are the `role="button"` and `role="treeitem"` elements inside the trigger; empty space keeps the menu at the cursor. */
 function ContextMenuTrigger({ onContextMenu, ...props }: React.ComponentProps<typeof ContextMenuPrimitive.Trigger>) {
   const [, setOffset] = useContext(RowOffset);
   return (
@@ -33,7 +33,7 @@ function ContextMenuTrigger({ onContextMenu, ...props }: React.ComponentProps<ty
       {...props}
       onContextMenu={(ev) => {
         onContextMenu?.(ev);
-        const row = (ev.target as HTMLElement).closest('[role="button"],[data-menu-row]');
+        const row = (ev.target as HTMLElement).closest('[role="button"],[role="treeitem"]');
         setOffset(row && ev.currentTarget.contains(row) ? row.getBoundingClientRect().bottom - ev.clientY : 0);
       }}
     />

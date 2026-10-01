@@ -606,7 +606,6 @@ function Row({ depth, path, className, children, ...props }: { depth: number; pa
   return (
     <div
       role="treeitem"
-      data-menu-row=""
       data-path={path}
       style={{ paddingLeft: 8 + depth * INDENT }}
       className={cn("relative flex h-6 cursor-pointer items-center gap-1.5 pr-2 text-[12px]", className)}
