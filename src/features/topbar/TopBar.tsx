@@ -202,7 +202,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         </DisabledTip>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="secondary" className="w-5 rounded-l-none border-l-0 px-0" disabled={!!busy || !pullable}>
+            <Button variant="secondary" className="w-5 rounded-l-none border-l-0 px-0" disabled={!!busy || !pullable} aria-label="More pull options">
               <ChevronDown className="size-3" />
             </Button>
           </DropdownMenuTrigger>

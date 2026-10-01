@@ -224,7 +224,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
             <ExternalLink /> Open on GitHub
           </Button>
           <CopyLinkButton url={p.url} />
-          <Button variant="ghost" size="icon-sm" onClick={load} disabled={!!busy || detail.loading}>
+          <Button variant="ghost" size="icon-sm" aria-label="Refresh" onClick={load} disabled={!!busy || detail.loading}>
             <RefreshCw className={cn(detail.loading && "animate-spin")} />
           </Button>
           {busy && (
