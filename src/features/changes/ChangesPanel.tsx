@@ -7,9 +7,11 @@ import { api, type Commit, type FileChange, type RepoStatus } from "@/lib/api";
 import { hasConflictMarkers } from "@/lib/git/conflicts";
 import { ignorePattern } from "@/lib/git/gitignore";
 import { focusPanel } from "@/lib/ui/panels";
+import { lastInputWasKey } from "@/lib/ui/pointer";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/ui/useListNav";
 import { matchesCommand, useCommands } from "@/lib/commands/keybindings";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
+import { type Leaving, rowInPlace, settleLeaving } from "@/lib/repo/leaving";
 import { toast } from "@/lib/app/toast";
 import { tracked, undoAction } from "@/lib/repo/undo";
 import { NESTED_EXPLAINED, stageable } from "@/lib/git/worktrees";
@@ -38,7 +40,8 @@ interface Props {
   onHover: (s: Selection) => void;
   refresh: () => Promise<void>;
   viewed: (s: Selection) => boolean;
-  setViewed: (s: Selection[], on: boolean) => void;
+  /** False: unstaging the staged ones it unchecked failed. */
+  setViewed: (s: Selection[], on: boolean) => Promise<boolean>;
   /** Shows the file in the explorer, opening the panel if it's hidden. */
   onRevealInExplorer: (path: string) => void;
   /** History, filtered to this file's commits. */
@@ -48,6 +51,8 @@ interface Props {
 // Row and NestedRow are h-[26px].
 const ROW_HEIGHT = 26;
 
+const SECTION_OF: Record<Change["kind"], string> = { conflict: "Conflicts", staged: "Staged", unstaged: "Changes" };
+
 export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer, onShowHistory }: Props) {
   // The list and its section actions (Stage all, Discard) cover the files the filter leaves, and
   // say so ("Stage 3 shown"); the commit takes hidden ones too and says how many.
@@ -56,8 +61,47 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   const status = filtering ? filtered(full, (f) => filter.matches(f.path, f.oldPath)) : full;
   const allOrShown = (verb: string, n: number) => (filtering ? `${verb} ${n} shown` : `${verb} all`);
   const act = async (title: string, fn: () => Promise<unknown>) => {
-    await attempt(title, fn);
+    const done = await attempt(title, fn);
     await refresh();
+    return done;
+  };
+
+  // The open row staged, unstaged or discarded here hands the tab and the selection to the row now in
+  // its place at once, without waiting for git (as in Fork), so S, S, S works down the list. Not
+  // conflicts: a resolved one's tab follows it into Staged.
+  const leaving = useRef(new Set<Leaving<RepoStatus>>());
+  const leavingKeys = () => new Set([...leaving.current].flatMap((l) => [...l.keys]));
+  // What the last render showed, for an action that starts after a dialog or settles after it.
+  const shownNow = useRef({ activeKey, status: full, rows: [] as Change[] });
+  const leave = async (rows: Change[], run: () => unknown) => {
+    const keys = new Set(rows.filter((r) => r.kind !== "conflict").map(selectionKey));
+    if (!keys.size) return run();
+    const record: Leaving<RepoStatus> = { keys, follow: false, seen: null };
+    const { activeKey: open, rows: now } = shownNow.current;
+    const from = open !== null && keys.has(open) ? now.find((c) => selectionKey(c) === open) : undefined;
+    let to: Change | undefined;
+    if (from) {
+      const out = new Set([...leavingKeys(), ...keys]);
+      const key = rowInPlace(now.filter((c) => c.kind === from.kind).map(selectionKey), { has: (k) => !out.has(k) }, selectionKey(from));
+      to = now.find((c) => selectionKey(c) === key);
+      if (to) {
+        setPicked(null);
+        onOpen(to);
+      } else record.follow = true;
+    }
+    leaving.current.add(record);
+    if ((await run()) !== false) {
+      record.seen = shownNow.current.status;
+      return;
+    }
+    leaving.current.delete(record);
+    // The file is still there: back to it, unless another row was opened meanwhile.
+    if (from && to && shownNow.current.activeKey === selectionKey(to)) onOpen(from);
+  };
+  // Not rows whose own action is still running: S again before git was done ran it twice.
+  const idle = (rows: Change[]) => {
+    const out = leavingKeys();
+    return rows.filter((r) => !out.has(selectionKey(r)));
   };
 
   const stageAll = () => {
@@ -66,8 +110,21 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     if (paths.length) act("Stage failed", () => api.stage(paths));
   };
 
-  const stage = (rows: Change[]) => act("Stage failed", () => api.stage(paths(rows)));
-  const unstage = (rows: Change[]) => act("Unstage failed", () => api.unstage(rows.map((r) => r.file)));
+  const stage = async (rows: Change[]) => {
+    const go = idle(rows);
+    if (go.length) await leave(go, () => act("Stage failed", () => api.stage(paths(go))));
+  };
+  const unstage = async (rows: Change[]) => {
+    const go = idle(rows);
+    if (go.length) await leave(go, () => act("Unstage failed", () => api.unstage(go.map((r) => r.file))));
+  };
+  // Unchecking a staged row unstages it (useViewed), so the tab moves on as Unstage's does.
+  const markViewed = (rows: Selection[], on: boolean) => {
+    const staged = rows.filter((r): r is Change => r.kind === "staged");
+    if (on || !staged.length) return setViewed(rows, on);
+    const go = idle(staged);
+    return go.length ? leave(go, () => setViewed(go, false)) : undefined;
+  };
   // Both sides edited (UU) or added (AA) the file, so git wrote markers into it; staging them
   // as they are would commit them.
   const markResolved = async (rows: Change[]) => {
@@ -131,15 +188,21 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     const ok = await ask(message, trashOnly ? { title: one ? "Delete file" : "Delete files", kind: "warning", okLabel: "Move to Trash" } : { title: "Discard changes", kind: "warning", okLabel: "Discard" });
     if (!ok) return;
     let entry: number | null = null;
-    const done = await attempt(trashOnly ? "Could not move to Trash" : "Discard failed", async () => {
-      if (restorable.length) [, entry] = await tracked(() => api.discard(restorable.map((f) => f.path)));
-      for (const f of untracked) await api.trashPath(f.path);
-    });
-    if (done && restorable.length) {
-      const single = restorable.length === 1;
-      toast("success", `Discarded ${single ? restorable[0].path : files(restorable.length)}`, copied ? `The old ${copied === 1 ? "version is" : "versions are"} in the Trash.` : undefined, undoAction(entry, refresh));
-    }
-    await refresh();
+    await leave(
+      list.map((file): Change => ({ kind: "unstaged", file })),
+      async () => {
+        const done = await attempt(trashOnly ? "Could not move to Trash" : "Discard failed", async () => {
+          if (restorable.length) [, entry] = await tracked(() => api.discard(restorable.map((f) => f.path)));
+          for (const f of untracked) await api.trashPath(f.path);
+        });
+        if (done && restorable.length) {
+          const single = restorable.length === 1;
+          toast("success", `Discarded ${single ? restorable[0].path : files(restorable.length)}`, copied ? `The old ${copied === 1 ? "version is" : "versions are"} in the Trash.` : undefined, undoAction(entry, refresh));
+        }
+        await refresh();
+        return done;
+      },
+    );
   };
 
   const ignore = (list: FileChange[]) =>
@@ -206,7 +269,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   const { add, del } = sumLines(total.map((c) => c.file));
 
   useCommands({
-    // The tab and the selection follow the files into the other list, so pressing it again undoes it. Conflicts are left to their own actions.
+    // The tab moves on to the next file (see `leave`). Conflicts are left to their own actions.
     "git.toggleStage": active?.kind === "unstaged" ? () => stage(targets(active)) : active?.kind === "staged" ? () => unstage(targets(active)) : undefined,
     "git.discard": active?.kind === "unstaged" && !targets(active).every((r) => keptByRestore(r.file)) ? () => discard(targets(active).map((r) => r.file)) : undefined,
     // Only while several rows are selected: registering then puts it over Workspace's V, which marks
@@ -214,19 +277,54 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     "review.toggleViewed": active && active.kind !== "staged" && targets(active).length > 1 ? () => setViewed(targets(active), !viewed(active)) : undefined,
   });
 
-  // A row the keyboard was on that left the list (staged, discarded) hands focus to the row now in its place, as
-  // in VS Code; when the open tab follows the file into the other list, its row takes focus from there.
+  // Once the rows have left (by git's lists, not what the filter shows), an open one that had no row
+  // of its list to move to goes to the other list's first. A record that settled without them leaving
+  // (the agent rewrote the file) ends with the next status. A row that left holding focus passes it to
+  // the row now in its place: always along with the tab, so ↑/↓ go on from there; otherwise only the
+  // keyboard's, as a click on Stage focuses its row (WebKit) and the neighbour kept the highlight. Rows
+  // git moved elsewhere (the terminal, ⌘Z) keep their tab, which follows the file.
   const list = useRef<HTMLDivElement>(null);
   const lostFocus = useRef<string | null>(null);
   const shown = useRef(all);
+  // A row to focus once it renders: a long list renders only what's near the screen.
+  const [reach, setReach] = useState<string | null>(null);
   useLayoutEffect(() => {
-    const lost = lostFocus.current;
+    const rowEl = (key: string) => list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(key)}"]`);
+    // In a closed section: the list's first row, so ↑/↓ still work. Nothing at all: the panel, not the page.
+    const focusRow = (to: Change | undefined) => {
+      const el = to && rowEl(selectionKey(to));
+      if (el) return el.focus();
+      if (to && !collapsedSections.get().includes(SECTION_OF[to.kind])) return setReach(selectionKey(to));
+      const first = [...(list.current?.querySelectorAll<HTMLElement>("[data-row]") ?? [])].find((r) => index.has(r.dataset.row ?? ""));
+      if (first) first.focus();
+      else focusPanel("git");
+    };
+    if (reach !== null) {
+      setReach(null);
+      const el = rowEl(reach);
+      if (el) {
+        el.focus();
+        el.scrollIntoView({ block: "nearest" });
+      } else focusRow(undefined);
+    }
+
     const before = shown.current;
-    lostFocus.current = null;
+    const lost = lostFocus.current;
     shown.current = all;
-    if (lost === null || index.has(lost) || !all.length) return;
-    const to = all[Math.min(Math.max(before.findIndex((c) => selectionKey(c) === lost), 0), all.length - 1)];
-    list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(selectionKey(to))}"]`)?.focus();
+    lostFocus.current = null;
+    shownNow.current = { activeKey, status: full, rows: all };
+    const follow = settleLeaving(leaving.current, new Set(total.map(selectionKey)), full, activeKey);
+    const from = follow ? activeKey : lost !== null && !index.has(lost) ? lost : null;
+    const was = from === null ? undefined : before.find((c) => selectionKey(c) === from);
+    if (!was || from === null) return;
+    const key = rowInPlace(before.filter((c) => c.kind === was.kind).map(selectionKey), index, from);
+    const other = was.kind === "staged" ? "unstaged" : "staged";
+    const to = key === undefined ? (all.find((c) => c.kind === other) ?? all[0]) : all[index.get(key) ?? -1];
+    if (follow) {
+      setPicked(null);
+      if (to) onOpen(to);
+    }
+    if (lost !== null && (follow || lastInputWasKey())) focusRow(to);
   });
 
   // One tab stop for the whole list (the active row), so Tab reaches its actions, not every row.
@@ -288,7 +386,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         onClick={(e) => pick(sel, e)}
         onOpen={onOpen}
         onHover={onHover}
-        onToggleViewed={() => setViewed(rows, !isViewed)}
+        onToggleViewed={() => markViewed(rows, !isViewed)}
         lostFocus={lostFocus}
         menu={() => (
           <ChangeRowMenu
@@ -297,7 +395,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
             root={status.root}
             canStash={!status.operation}
             viewed={viewed}
-            setViewed={setViewed}
+            setViewed={markViewed}
             onOpen={onOpen}
             onShowHistory={onShowHistory}
             onRevealInExplorer={onRevealInExplorer}
@@ -316,9 +414,9 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     );
   };
 
-  /** A section's rows; with thousands, only those near the screen (and the open and tab-stop rows). */
+  /** A section's rows; with thousands, only those near the screen (and the open, tab-stop and `reach` rows). */
   const rowsOf = (kind: Change["kind"], title: string, list: FileChange[], render: (file: FileChange) => React.ReactNode) => {
-    const keep = [activeKey, tabStop].map((k) => list.findIndex((file) => selectionKey({ kind, file }) === k));
+    const keep = [activeKey, tabStop, reach].map((k) => list.findIndex((file) => selectionKey({ kind, file }) === k));
     return (
       <div role="tree" aria-label={title} aria-multiselectable>
         <Windowed count={list.length} height={ROW_HEIGHT} keep={keep} render={(i) => render(list[i])} />

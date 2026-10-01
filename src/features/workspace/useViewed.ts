@@ -57,7 +57,7 @@ export function useViewed(saved: ReturnType<typeof loadWorkspace>, status: RepoS
         const m = marked(sel);
         return m ? [{ kind: sel.kind, ...m }] : [];
       });
-      // Unchecking a staged file takes it back out of the commit; the tab follows it to Changes.
+      // Unchecking a staged file takes it back out of the commit. False: that failed.
       const unstage = on ? [] : files.filter((x) => x.kind === "staged").map((x) => x.f);
       setViewedMap((m) => {
         const next = new Map(m);
@@ -70,7 +70,14 @@ export function useViewed(saved: ReturnType<typeof loadWorkspace>, status: RepoS
         return next;
       });
       // One call for all of them: parallel git calls would fight over index.lock.
-      if (unstage.length) api.unstage(unstage).catch(failed("Unstage failed")).finally(() => refresh(false));
+      if (!unstage.length) return Promise.resolve(true);
+      return api
+        .unstage(unstage)
+        .then(
+          () => true,
+          (e) => (failed("Unstage failed")(e), false),
+        )
+        .finally(() => refresh(false));
     },
     [marked, refresh],
   );
