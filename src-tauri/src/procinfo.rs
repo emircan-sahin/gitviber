@@ -127,6 +127,7 @@ fn args(pid: u32) -> Option<Vec<String>> {
 /// KERN_PROCARGS2: argc, the executable's path, NUL padding, then argv, each NUL-ended (then
 /// the environment). An empty argv[0] can't be told from the padding: it's skipped with it, and
 /// argv then ends one string into the environment, as `ps` reads it too.
+#[cfg(any(target_os = "macos", test))]
 fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
     const ARGC: usize = std::mem::size_of::<i32>();
     let argc = usize::try_from(i32::from_ne_bytes(buf.get(..ARGC)?.try_into().ok()?)).ok()?;
