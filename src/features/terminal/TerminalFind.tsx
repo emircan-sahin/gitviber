@@ -3,7 +3,8 @@ import { FindBox, useFindBox } from "@/components/FindBox";
 import { type FindOptions, NO_OPTIONS } from "@/lib/ui/findQuery";
 import { Button } from "@/components/ui/button";
 import { useEffect, useState } from "react";
-import { clearFind, dismissRestore, endFind, findInTerminal, restoreSession, useTerminals } from "@/lib/terminal/terminals";
+import { clearFind, dismissRestore, endFind, findInTerminal, restoreSession, resumable, useTerminals } from "@/lib/terminal/terminals";
+import { useSettings } from "@/lib/settings";
 import { folderName } from "@/lib/path";
 import { plural } from "@/lib/format";
 
@@ -60,19 +61,22 @@ export function TerminalFind() {
 /** Offers last run's terminals. Asked, not automatic: each one starts a shell. */
 export function TerminalRestoreOffer() {
   const { restorable } = useTerminals();
+  // What the restore does with agents follows the setting.
+  useSettings();
   if (!restorable) return null;
   const cwds = restorable.groups.flatMap((g) => g.panes.map((p) => p.cwd));
+  const agents = resumable(restorable).size;
   const folders = [...new Set(cwds.map((c) => folderName(c) || c))];
   return (
     <div className="pointer-events-auto fixed right-4 bottom-10 z-50 flex w-96 gap-3 rounded-md border border-border-strong bg-elevated p-3 shadow-lg shadow-black/50 animate-in fade-in-0 slide-in-from-bottom-2">
       <SquareTerminal className="mt-0.5 size-4 shrink-0 text-primary" />
       <div className="min-w-0 flex-1">
         <div className="text-[12px] font-medium">
-          Restore {plural(cwds.length, "terminal")} from last session?
+          Restore {plural(cwds.length, "terminal")} from last session{agents > 0 && <> and resume {plural(agents, "agent")}</>}?
         </div>
         <div className="mt-1 truncate text-[11.5px] text-muted-foreground">{folders.join(", ")}</div>
         <div className="mt-2.5 flex gap-2">
-          <Button size="sm" onClick={restoreSession}>
+          <Button size="sm" onClick={() => void restoreSession()}>
             Restore
           </Button>
           <Button size="sm" variant="secondary" onClick={dismissRestore}>

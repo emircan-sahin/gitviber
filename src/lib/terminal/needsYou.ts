@@ -21,7 +21,8 @@ export function watchAttention(p: Pane) {
     });
 }
 
-function needsYou(p: Pane, note?: Note) {
+/** Marks `p` (and tells the OS, when away) unless it's being looked at or already marked: an agent's own escape and its state file saying the same thing are one mark. */
+export function needsYou(p: Pane, note?: Note) {
   const g = state.groups.find((x) => x.panes.some((i) => i.id === p.id));
   const info = g?.panes.find((i) => i.id === p.id);
   if (!g || !info || info.needsYou || (document.hasFocus() && document.activeElement === p.term.textarea)) return;
