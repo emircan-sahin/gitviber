@@ -357,3 +357,32 @@ fn a_new_worktree_through_a_symlink_has_its_real_path() {
         assert!(worktrees(&r).unwrap().iter().any(|w| w.path == wt), "{wt}");
     }
 }
+
+/// A branch only on a remote gets a local branch tracking that remote's, also where two
+/// remotes have it (git's own DWIM gives up there); a new name from it tracks nothing.
+#[test]
+fn a_new_worktree_from_a_remote_only_branch_tracks_it() {
+    let sb = Sandbox::new("wtremote");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    switch_branch(a, "feat", true).unwrap();
+    write_commit(a, "f.txt", "f\n", "feat");
+    run(a, &["push", "-q", "-u", "origin", "feat"]).unwrap();
+    run(b, &["remote", "add", "upstream", &git_url(b)]).unwrap();
+    run(b, &["fetch", "-q", "--all"]).unwrap();
+    assert!(!exists(b, "feat"));
+    let upstream = |wt: &str| {
+        run_text(Path::new(wt), &["rev-parse", "--abbrev-ref", "@{upstream}"])
+            .map(|u| u.trim().to_string())
+    };
+
+    let dir = sb.path("wts");
+    let d = dir.to_str();
+    let wt = add_worktree(b, "feat", Some("refs/remotes/upstream/feat"), d).unwrap();
+    assert_eq!(on_branch(Path::new(&wt)), "feat");
+    assert_eq!(rev(Path::new(&wt), "HEAD"), rev(a, "feat"));
+    assert_eq!(upstream(&wt).unwrap(), "upstream/feat");
+
+    let other = add_worktree(b, "other", Some("refs/remotes/origin/feat"), d).unwrap();
+    assert!(upstream(&other).is_err(), "a new name tracks nothing");
+}
