@@ -83,6 +83,11 @@ pub fn pty_resize(state: State<'_, AppState>, id: u32, cols: u16, rows: u16) -> 
 }
 
 #[tauri::command]
+pub fn pty_ack(state: State<'_, AppState>, id: u32, bytes: usize) {
+    state.ptys.ack(id, bytes)
+}
+
+#[tauri::command]
 pub fn pty_cwd(state: State<'_, AppState>, id: u32) -> Option<String> {
     state.ptys.cwd(id).map(|p| p.to_string_lossy().into_owned())
 }

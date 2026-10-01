@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use tauri::ipc::{Channel, Response};
 
 /// Its own lock: a program that isn't reading blocks the write once the pty's buffer fills, and
@@ -35,11 +35,68 @@ pub struct Spawned {
     integrated: bool,
 }
 
+/// Output sent to the page that xterm.js hasn't parsed yet, past which the reader stops reading.
+/// The page parses on its one thread for every pane: unthrottled, a flood (`cat` of a huge file,
+/// `yes`) queued tens of MB, stalled every pane, and past 50 MB xterm.js drops data. Stopped, the
+/// pty's own buffer fills and the program waits on its write. At 512 KiB no more than that is
+/// drawn ahead of a ⌃C's effect, and eight 64 KiB reads fit before the reader waits.
+const HIGH_WATER: usize = 512 * 1024;
+/// Reading resumes below this, not at the first ack, so a flood moves in large steps.
+const LOW_WATER: usize = HIGH_WATER / 2;
+
+#[derive(Default)]
+struct Flow {
+    state: Mutex<FlowState>,
+    resumed: Condvar,
+}
+
+#[derive(Default)]
+struct FlowState {
+    unacked: usize,
+    closed: bool,
+}
+
+impl Flow {
+    /// Counts `n` bytes sent; past the high water, waits for the page's acks (or the session's end).
+    fn sent(&self, n: usize) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.unacked += n;
+        if s.unacked >= HIGH_WATER {
+            while s.unacked > LOW_WATER && !s.closed {
+                s = self.resumed.wait(s).unwrap_or_else(|e| e.into_inner());
+            }
+        }
+    }
+
+    /// `n` bytes the page has parsed.
+    fn ack(&self, n: usize) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        s.unacked = s.unacked.saturating_sub(n);
+        if s.unacked <= LOW_WATER {
+            self.resumed.notify_all();
+        }
+    }
+
+    /// Lets a waiting reader go, to see the pty close.
+    fn close(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).closed = true;
+        self.resumed.notify_all();
+    }
+}
+
 struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Writer,
     killer: Box<dyn ChildKiller + Send + Sync>,
     shell: Option<u32>,
+    flow: Arc<Flow>,
+}
+
+impl Session {
+    fn kill(mut self) {
+        let _ = self.killer.kill();
+        self.flow.close();
+    }
 }
 
 #[derive(Default)]
@@ -132,6 +189,7 @@ impl Ptys {
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
         let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let flow = Arc::new(Flow::default());
         self.sessions.lock().unwrap().insert(
             id,
             Session {
@@ -139,6 +197,7 @@ impl Ptys {
                 writer: Arc::new(Mutex::new(writer)),
                 killer: child.clone_killer(),
                 shell: child.process_id(),
+                flow: flow.clone(),
             },
         );
 
@@ -152,6 +211,7 @@ impl Ptys {
                         if output.send(Response::new(buf[..n].to_vec())).is_err() {
                             break;
                         }
+                        flow.sent(n);
                     }
                 }
             }
@@ -184,6 +244,14 @@ impl Ptys {
         self.with(id, |s| Ok(s.writer.clone()))
     }
 
+    /// `bytes` of a session's output that xterm.js has parsed.
+    pub fn ack(&self, id: u32, bytes: usize) {
+        let _ = self.with(id, |s| {
+            s.flow.ack(bytes);
+            Ok(())
+        });
+    }
+
     pub fn resize(&self, id: u32, cols: u16, rows: u16) -> Result<(), String> {
         self.with(id, |s| {
             s.master.resize(size(cols, rows)).map_err(|e| e.to_string())
@@ -193,8 +261,8 @@ impl Ptys {
     /// Hangs up the shell. Its reader thread then sees EOF and reports the exit.
     pub fn kill(&self, id: u32) {
         let session = self.sessions.lock().unwrap().remove(&id);
-        if let Some(mut s) = session {
-            let _ = s.killer.kill();
+        if let Some(s) = session {
+            s.kill();
         }
     }
 
@@ -231,8 +299,8 @@ impl Ptys {
             .drain()
             .map(|(_, s)| s)
             .collect();
-        for mut s in sessions {
-            let _ = s.killer.kill();
+        for s in sessions {
+            s.kill();
         }
     }
 }
@@ -275,7 +343,47 @@ fn process_cwd(_pid: u32) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::start_dir;
+    use super::{start_dir, Flow, HIGH_WATER, LOW_WATER};
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    /// Runs `sent(n)` on a reader thread; the receiver hears when it returns.
+    fn reader(flow: &Arc<Flow>, n: usize) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel();
+        let flow = flow.clone();
+        std::thread::spawn(move || {
+            flow.sent(n);
+            let _ = tx.send(());
+        });
+        rx
+    }
+
+    const WAIT: Duration = Duration::from_millis(100);
+
+    #[test]
+    fn the_reader_waits_past_the_high_water_until_acks_bring_it_below_the_low() {
+        let flow = Arc::new(Flow::default());
+        reader(&flow, HIGH_WATER - 1).recv_timeout(WAIT).unwrap();
+        let paused = reader(&flow, 1);
+        assert!(paused.recv_timeout(WAIT).is_err());
+        // Acked, but still above the low water.
+        flow.ack(HIGH_WATER - LOW_WATER - 1);
+        assert!(paused.recv_timeout(WAIT).is_err());
+        flow.ack(1);
+        paused.recv_timeout(WAIT).unwrap();
+    }
+
+    #[test]
+    fn a_closed_session_lets_its_waiting_reader_go() {
+        let flow = Arc::new(Flow::default());
+        let paused = reader(&flow, HIGH_WATER);
+        assert!(paused.recv_timeout(WAIT).is_err());
+        flow.close();
+        paused.recv_timeout(WAIT).unwrap();
+        // An ack for more than was counted (output sent before the count began) doesn't wrap.
+        flow.ack(usize::MAX);
+        reader(&flow, 1).recv_timeout(WAIT).unwrap();
+    }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]

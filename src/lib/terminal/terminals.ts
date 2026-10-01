@@ -60,6 +60,8 @@ export interface Pane extends SaveState {
   /** Typed while a write is in flight (or before the shell is up); sent next, in order. */
   pending: string;
   writing: boolean;
+  /** Output parsed and not yet acked to pty.rs (parsed). */
+  unacked: number;
   /** A column change held back from a long history (fitPane). */
   fitTimer?: number;
   /** The commands shell integration marks. */
@@ -212,7 +214,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   term.loadAddon(search);
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, marks: new CommandMarks(term, () => void shellDir(p)) };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: "", writing: false, unacked: 0, marks: new CommandMarks(term, () => void shellDir(p)) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   term.onWriteParsed(() => {
@@ -325,10 +327,12 @@ async function start(p: Pane) {
   try {
     const { cols, rows } = p.term;
     const began = performance.now();
-    const { id, integrated } = await pty.spawn(p.cwd, p.dir !== p.cwd ? p.dir : null, cols, rows, getSettings().shellIntegration, (bytes) => p.term.write(new Uint8Array(bytes)), (exit) => exited(p, exit, performance.now() - began));
+    const { id, integrated } = await pty.spawn(p.cwd, p.dir !== p.cwd ? p.dir : null, cols, rows, getSettings().shellIntegration, (bytes) => p.term.write(new Uint8Array(bytes), () => parsed(p, bytes.byteLength)), (exit) => exited(p, exit, performance.now() - began));
     // Closed while it was starting.
     if (!panes.has(p.id)) return void pty.kill(id).catch(() => {});
     p.pty = id;
+    // What was parsed before the id came back.
+    parsed(p, 0);
     // A resize while it was starting had no shell to reach.
     if (p.term.cols !== cols || p.term.rows !== rows) void pty.resize(id, p.term.cols, p.term.rows).catch(() => {});
     send(p, "");
@@ -336,6 +340,16 @@ async function start(p: Pane) {
   } catch (e) {
     p.term.write(`\x1b[31m${errorMessage(e)}\x1b[0m\r\n`);
   }
+}
+
+/** Acks go to pty.rs in steps of this, not an IPC a chunk; well under its 512 KiB high water. */
+const ACK_STEP = 64 * 1024;
+
+function parsed(p: Pane, bytes: number) {
+  p.unacked += bytes;
+  if (p.unacked < ACK_STEP || p.pty === null) return;
+  void pty.ack(p.pty, p.unacked).catch(() => {});
+  p.unacked = 0;
 }
 
 /**
