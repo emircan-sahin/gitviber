@@ -442,6 +442,11 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
         <div
           ref={treeRef}
           tabIndex={0}
+          role="tree"
+          aria-label="Files"
+          aria-multiselectable
+          // The tree keeps focus and `selected` is its cursor, which a screen reader follows through this.
+          aria-activedescendant={selected && rows.some((r) => r.entry.path === selected) ? rowId(selected) : undefined}
           onKeyDown={onKeyDown}
           onContextMenu={(ev) => {
             const path = (ev.target as HTMLElement).closest<HTMLElement>("[data-path]")?.dataset.path;
@@ -466,6 +471,10 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
                 <Row
                   depth={depth}
                   path={e.path}
+                  id={rowId(e.path)}
+                  aria-level={depth + 1}
+                  aria-expanded={e.isDir ? isOpen : undefined}
+                  aria-selected={active || !!picked?.paths.has(e.path)}
                   onClick={(ev) => click(e, ev)}
                   onDoubleClick={() => !e.isDir && onOpen(sel, true)}
                   onMouseEnter={() => !e.isDir && !e.ignored && onHover(sel)}
@@ -590,10 +599,14 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   );
 }
 
+// An id has no spaces, and a path can.
+const rowId = (path: string) => `explorer:${encodeURIComponent(path)}`;
+
 function Row({ depth, path, className, children, ...props }: { depth: number; path?: string } & React.ComponentProps<"div">) {
   return (
     <div
-      role="button"
+      role="treeitem"
+      data-menu-row=""
       data-path={path}
       style={{ paddingLeft: 8 + depth * INDENT }}
       className={cn("relative flex h-6 cursor-pointer items-center gap-1.5 pr-2 text-[12px]", className)}
