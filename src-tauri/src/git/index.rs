@@ -138,7 +138,7 @@ pub fn remove_index_lock(repo: &Path, named: &str) -> Result<(), String> {
         return Err("The lock was taken a moment ago: a git command is still using it. Let it finish, then try again.".into());
     }
     if let Some(pid) = git_working_in(repo) {
-        return Err(format!("git is still running in this repository (process {pid}), maybe a commit waiting on its hooks or an editor. Let it finish, then try again."));
+        return Err(format!("git is still running in this repository (process {pid}), maybe a commit waiting on its hooks or an editor, or a `git log`/`git diff` open in a pager. Let it finish or quit it, then try again."));
     }
     match std::fs::remove_file(&lock) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
