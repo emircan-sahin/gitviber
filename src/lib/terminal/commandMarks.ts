@@ -10,6 +10,16 @@ export function parseMark(data: string): { kind: "A" | "B" | "C" | "D"; exit?: n
   return kind === "D" && arg !== undefined && /^\d+$/.test(arg) ? { kind, exit: Number(arg) } : { kind };
 }
 
+/** Turns off each mouse reporting mode xterm.js reads, and SGR's encoding. */
+const MOUSE_OFF = "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l";
+
+/**
+ * A prompt (A) in the history's buffer while the mouse is still reported: the program that asked
+ * for it died without turning it off (a crash, `kill -9`), and a drag at the prompt would select
+ * nothing. A shell under a full-screen program (tmux) prompts in the other buffer.
+ */
+export const mouseLeftOn = (kind: string, buffer: "normal" | "alternate", mouse: string) => kind === "A" && buffer === "normal" && mouse !== "none";
+
 /** Commands kept marked: each marker is updated as lines scroll off or get cleared. */
 const MAX_COMMANDS = 300;
 
@@ -45,6 +55,8 @@ export class CommandMarks {
     this.onPrompt = onPrompt;
     term.parser.registerOscHandler(133, (data) => {
       const mark = parseMark(data);
+      // To xterm, not the shell: as if the program had turned it off.
+      if (mark && mouseLeftOn(mark.kind, term.buffer.active.type, term.modes.mouseTrackingMode)) term.write(MOUSE_OFF);
       if (mark) this.on(mark.kind, mark.exit);
       return true;
     });
