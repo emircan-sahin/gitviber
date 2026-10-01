@@ -440,10 +440,14 @@ pub type Sink = Arc<dyn Fn(u32, Option<&'static str>) + Send + Sync>;
 struct Seen {
     pid: u32,
     started: u64,
+    /// When it was last looked up.
+    checked: u64,
     found: Option<Found>,
 }
 
-/// A leader this young may be a launcher (npx) whose agent isn't started yet: looked up again.
+/// A leader this young may be a launcher (npx) whose agent isn't started yet: looked up on
+/// every call. Older and still without an agent (a launcher downloading for minutes), it's
+/// looked up again this often.
 const SETTLING_SECS: u64 = 30;
 
 /// The agents in the panes: each pane's job leader read once (argv, its job) until it changes,
@@ -488,7 +492,10 @@ impl Agents {
     fn found(&self, id: u32, pid: u32) -> Option<Found> {
         let started = procinfo::started(pid)?;
         if let Some(seen) = lock(&self.seen).get(&id) {
-            let settled = seen.found.is_some() || now().saturating_sub(started) > SETTLING_SECS;
+            let now = now();
+            let settled = seen.found.is_some()
+                || (now.saturating_sub(started) > SETTLING_SECS
+                    && now.saturating_sub(seen.checked) <= SETTLING_SECS);
             if seen.pid == pid && seen.started == started && settled {
                 return seen.found.clone();
             }
@@ -497,6 +504,7 @@ impl Agents {
         let seen = Seen {
             pid,
             started,
+            checked: now(),
             found: found.clone(),
         };
         lock(&self.seen).insert(id, seen);
