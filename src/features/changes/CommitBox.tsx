@@ -8,6 +8,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, CANCELLED, type Commit, type RepoStatus } from "@/lib/api";
 import { matchesCommand, runCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { updateSettings, useSettings } from "@/lib/settings";
+import { ask } from "@/lib/app/ask";
 import { gitFailed } from "@/lib/app/gitFailed";
 import { toast } from "@/lib/app/toast";
 import { withNetActivity } from "@/lib/repo/netActivity";
@@ -23,6 +24,21 @@ import { useCommitDraft, useSuggestMessage } from "./useCommitBox";
 
 /** Past this, `git log --oneline` and GitHub cut the summary off. */
 const SUMMARY_LIMIT = 72;
+
+/**
+ * Asks before committing a file GitHub won't take: the push fails, and an agent's dump or build
+ * output committed by mistake then has to be cut out of history.
+ */
+async function largeFilesConfirmed() {
+  const large = await api.largeStaged();
+  if (!large.length) return true;
+  const shown = large.slice(0, 10).map((f) => `${f.path} (${f.size})`).join("\n") + (large.length > 10 ? `\n…and ${large.length - 10} more` : "");
+  const one = large.length === 1;
+  return ask(
+    `${one ? "This file is" : "These files are"} over GitHub's 100 MB limit:\n\n${shown}\n\nA push with ${one ? "it" : "them"} is refused, and taking ${one ? "it" : "them"} out later means rewriting history. Leave ${one ? "it" : "them"} out with .gitignore, or track ${one ? "it" : "them"} with Git LFS (git lfs track), and commit again.`,
+    { title: "Large files", kind: "warning", okLabel: "Commit anyway" },
+  );
+}
 
 /** `shown`: what the list's filter leaves, while it has text; the button says how many files it takes that the list hides. */
 export function CommitBox({ status, shown, head, main, refresh }: { status: RepoStatus; shown: RepoStatus | null; head: Commit | null; main: string; refresh: () => Promise<void> }) {
@@ -73,6 +89,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     try {
       // Nothing staged means "commit everything", the common case after an agent run.
       if (!hasStaged && !amend) await api.stage(all.paths);
+      if (!(await largeFilesConfirmed())) throw CANCELLED;
       // Hooks can lint or test for minutes: the top bar shows their output, and Cancel.
       const options = { amend: !!amend, signOff, noVerify: noVerify || skipHooks, coAuthors: draft.coAuthors };
       [, entry] = await tracked(() => withNetActivity("Commit", (op) => api.commit(message, options, op)));

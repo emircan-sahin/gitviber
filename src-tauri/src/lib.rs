@@ -197,6 +197,7 @@ pub fn run() {
             commands::changes::unstage,
             commands::changes::discard,
             commands::changes::commit,
+            commands::changes::large_staged,
             commands::changes::commit_template,
             commands::changes::recent_authors,
             commands::changes::suggest_message,

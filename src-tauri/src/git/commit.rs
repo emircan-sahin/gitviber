@@ -1,6 +1,7 @@
 //! Committing, and what the commit form reads: template, recent authors, details.
 
-use super::{command, git_dir, has_head, run_text, run_with, validate_rev};
+use super::{command, git_dir, has_head, run, run_text, run_with, validate_rev};
+use crate::lfs;
 use crate::network::{self, Net, CANCELLED};
 use crate::process::exec;
 use serde::{Deserialize, Serialize};
@@ -100,6 +101,68 @@ fn is_hook(path: &Path) -> bool {
         && std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
     #[cfg(not(unix))]
     meta.is_file()
+}
+
+/// GitHub refuses a push with a file over 100 MiB, and by then the commit has to come out of
+/// history.
+const LARGE_FILE_BYTES: u64 = 100 * 1024 * 1024;
+
+#[derive(Serialize)]
+pub struct LargeFile {
+    pub path: String,
+    /// "123.4 MB"
+    pub size: String,
+}
+
+/// Staged files over GitHub's limit, by the blob the commit will hold: a file Git LFS tracks is
+/// staged as its small pointer, so it never counts, while one LFS should have taken but didn't
+/// (git-lfs not installed) does.
+pub fn large_staged(repo: &Path) -> Result<Vec<LargeFile>, String> {
+    let raw = run(
+        repo,
+        &[
+            "diff",
+            "--cached",
+            "--raw",
+            "-z",
+            "--no-abbrev",
+            "--no-renames",
+            "--diff-filter=AMT",
+        ],
+    )?;
+    let raw = String::from_utf8_lossy(&raw);
+    let mut fields = raw.split('\0');
+    let mut staged = vec![];
+    while let (Some(meta), Some(path)) = (fields.next(), fields.next()) {
+        // ":<old mode> <new mode> <old id> <new id> <status>"; a submodule (160000) is a commit.
+        if let [_, mode, _, id, _] = meta.split(' ').collect::<Vec<_>>()[..] {
+            if mode != "160000" {
+                staged.push((id, path));
+            }
+        }
+    }
+    if staged.is_empty() {
+        return Ok(vec![]);
+    }
+    let ids: String = staged.iter().map(|(id, _)| format!("{id}\n")).collect();
+    let sizes = run_with(
+        repo,
+        &["cat-file", "--batch-check=%(objectsize)"],
+        &[],
+        Some(ids.as_bytes()),
+    )?;
+    // One line per id, in order; a missing object's doesn't parse and is skipped.
+    Ok(staged
+        .iter()
+        .zip(String::from_utf8_lossy(&sizes).lines())
+        .filter_map(|((_, path), size)| {
+            let n: u64 = size.parse().ok()?;
+            (n > LARGE_FILE_BYTES).then(|| LargeFile {
+                path: path.to_string(),
+                size: lfs::size_label(n),
+            })
+        })
+        .collect())
 }
 
 /// Where git leaves a message for the next commit, in the order `git commit` joins them.

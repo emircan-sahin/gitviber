@@ -375,3 +375,37 @@ fn a_failed_commit_names_the_hooks_that_could_have_stopped_it() {
     commit(&r, "Add b", &skip, &Net::default()).unwrap();
     assert_eq!(log(&r, None, 0, 5).unwrap().len(), 2);
 }
+
+/// Before a commit the page asks about staged files GitHub would refuse: by what's staged, not
+/// the disk, and only what this commit adds or changes.
+#[test]
+fn large_staged_files_are_found_before_the_commit() {
+    let sb = Sandbox::new("large");
+    let r = sb.path("r");
+    init(&r);
+    assert!(
+        large_staged(&r).unwrap().is_empty(),
+        "no commit yet, nothing staged"
+    );
+    // Sparse: 100 MiB of zeros take no disk, and git stores them compressed.
+    let big = fs::File::create(r.join("dump.sql")).unwrap();
+    big.set_len(100 * 1024 * 1024 + 1).unwrap();
+    fs::write(r.join("small.txt"), "s\n").unwrap();
+    stage(&r, &["dump.sql".into(), "small.txt".into()]).unwrap();
+    let large = large_staged(&r).unwrap();
+    assert_eq!(
+        large
+            .iter()
+            .map(|f| (f.path.as_str(), f.size.as_str()))
+            .collect::<Vec<_>>(),
+        [("dump.sql", "100.0 MB")]
+    );
+
+    // Shrunk on disk but not restaged: the staged blob is what goes in.
+    fs::write(r.join("dump.sql"), "").unwrap();
+    assert_eq!(large_staged(&r).unwrap().len(), 1);
+    commit(&r, "with dump", &CommitOptions::default(), &Net::default()).unwrap();
+    fs::write(r.join("small.txt"), "t\n").unwrap();
+    stage(&r, &["small.txt".into()]).unwrap();
+    assert!(large_staged(&r).unwrap().is_empty(), "already committed");
+}

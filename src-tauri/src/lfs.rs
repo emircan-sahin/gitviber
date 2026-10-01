@@ -60,7 +60,7 @@ pub fn not_downloaded(p: &Pointer) -> String {
     format!("LFS object not downloaded ({})", size_label(p.size))
 }
 
-fn size_label(n: u64) -> String {
+pub fn size_label(n: u64) -> String {
     if n < 1024 {
         return format!("{n} B");
     }

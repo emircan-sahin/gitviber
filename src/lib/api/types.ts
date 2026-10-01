@@ -179,6 +179,12 @@ export interface CommitOptions {
   coAuthors?: string[];
 }
 
+/** A staged file over GitHub's 100 MiB limit; `size` reads "123.4 MB". */
+export interface LargeFile {
+  path: string;
+  size: string;
+}
+
 export interface CommitDetails {
   /** git's %G?: G good, U good but unknown validity, X/Y expired signature/key, R revoked key, B bad, E can't check, N none. */
   signature: string;

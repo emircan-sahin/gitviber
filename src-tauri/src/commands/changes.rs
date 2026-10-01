@@ -81,6 +81,12 @@ pub async fn commit(
     .await
 }
 
+/// Staged files GitHub would refuse, asked about before they're committed.
+#[tauri::command]
+pub async fn large_staged(state: State<'_, AppState>) -> Res<Vec<git::LargeFile>> {
+    in_repo(&state, git::large_staged).await
+}
+
 #[tauri::command]
 pub async fn commit_template(state: State<'_, AppState>) -> Res<Option<String>> {
     in_repo(&state, move |r| Ok(git::commit_template(r))).await

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LinesRequest, LogFilter, NetOp, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -142,6 +142,8 @@ export const api = {
   changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
   /** An empty `message` with `amend` keeps the old one (--no-edit). Watched as a network command: hook output is its progress, and Cancel stops it before anything is committed. */
   commit: (message: string, options: CommitOptions, op?: NetOp) => network<void>("commit", { message, options }, op),
+  /** Staged files GitHub would refuse a push of (over 100 MiB), by their staged blobs; LFS files are staged as pointers, so they don't count. */
+  largeStaged: () => invoke<LargeFile[]>("large_staged"),
   /** The message git would start with, comment lines stripped: a squash merge's or `cherry-pick -n`'s, else `commit.template`; null for neither. */
   commitTemplate: () => invoke<string | null>("commit_template"),
   /** "Name <email>" of recent authors and co-authors, newest first, not the user. */
