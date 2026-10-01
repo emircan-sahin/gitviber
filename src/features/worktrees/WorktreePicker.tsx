@@ -524,7 +524,7 @@ function StateLabel({ state: s, hot }: { state: WorktreeState; hot: boolean }) {
   );
 }
 
-function Chip({ hot, tone, className, ...props }: React.ComponentProps<"span"> & { hot: boolean; tone?: "live" }) {
+export function Chip({ hot, tone, className, ...props }: React.ComponentProps<"span"> & { hot: boolean; tone?: "live" }) {
   return (
     <span
       {...props}
