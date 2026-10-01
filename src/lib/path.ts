@@ -18,6 +18,13 @@ const names = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" 
 export const compareEntries = (a: { name: string; isDir: boolean }, b: { name: string; isDir: boolean }) =>
   Number(b.isDir) - Number(a.isDir) || names.compare(a.name, b.name) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
 
+/** Of `paths`, those whose name a different path shares: shown with their folder, they're told apart. */
+export function sharedNames(paths: string[]) {
+  const byName = new Map<string, Set<string>>();
+  for (const p of paths) byName.set(basename(p), (byName.get(basename(p)) ?? new Set()).add(p));
+  return new Set(paths.filter((p) => byName.get(basename(p))!.size > 1));
+}
+
 /** A repo path's folder, with its trailing "/" ("" at the root), and its name. */
 export function splitPath(path: string) {
   const i = path.lastIndexOf("/");
