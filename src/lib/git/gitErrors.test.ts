@@ -222,6 +222,13 @@ hint: Commit hooks set up here: pre-commit, commit-msg.`;
 test("a failed commit with hooks set up offers committing without them, unless git said why", () => {
   assert.equal(fix(HOOK_FAILED), "hooks");
   assert.equal(fix(`${GPG}\nhint: Commit hooks set up here: pre-commit.`), "signing");
+  assert.equal(fix(`${HOOK_OUTPUT}\nhint: Commit hooks set up here: pre-commit, prepare-commit-msg.`), "hooks");
+});
+
+test("a commit only prepare-commit-msg could have stopped isn't offered without hooks, which still run it", () => {
+  const help = explainGitError(`${HOOK_OUTPUT}\nhint: Commit hooks set up here: prepare-commit-msg.`);
+  assert.equal(help?.title, "The prepare-commit-msg hook stopped the commit");
+  assert.equal(help?.fix, undefined);
 });
 
 test("a hook quoting git's messages isn't taken for them", () => {

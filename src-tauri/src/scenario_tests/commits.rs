@@ -460,7 +460,8 @@ fn a_cancel_while_an_agent_commits_is_still_cancelled() {
 }
 
 /// git prints nothing of its own when a hook fails, so the error says which hooks are set up,
-/// for the page to offer committing without them; never when they were skipped or there are none.
+/// for the page to offer committing without them; not the ones `--no-verify` skipped, nor when
+/// there are none.
 #[cfg(unix)]
 #[test]
 fn a_failed_commit_names_the_hooks_that_could_have_stopped_it() {
@@ -499,6 +500,27 @@ fn a_failed_commit_names_the_hooks_that_could_have_stopped_it() {
     };
     commit(&r, "Add b", &skip, &Net::default()).unwrap();
     assert_eq!(log(&r, None, 0, 5).unwrap().len(), 2);
+
+    // `--no-verify` still runs prepare-commit-msg: it's named even then, alone.
+    executable(
+        &r.join(".git/hooks/prepare-commit-msg"),
+        "#!/bin/sh\necho 'no ticket in the branch name'\nexit 1\n",
+    );
+    fs::write(r.join("c.txt"), "c\n").unwrap();
+    stage(&r, &["c.txt".into()]).unwrap();
+    let err = commit(&r, "Add c", &CommitOptions::default(), &Net::default()).unwrap_err();
+    assert!(
+        err.ends_with(&format!("\n{HOOKS_HINT}prepare-commit-msg, commit-msg.")),
+        "{err}"
+    );
+    let err = commit(&r, "Add c", &skip, &Net::default()).unwrap_err();
+    assert!(
+        err.contains("no ticket in the branch name\n")
+            && err.ends_with(&format!("\n{HOOKS_HINT}prepare-commit-msg.")),
+        "{err}"
+    );
+    fs::remove_file(r.join(".git/hooks/prepare-commit-msg")).unwrap();
+    run(&r, &["rm", "-q", "-f", "c.txt"]).unwrap();
 
     // With the hooks passing, git's own refusals aren't put on them: nothing staged (exit 1,
     // said on stdout), a signature that failed (128).

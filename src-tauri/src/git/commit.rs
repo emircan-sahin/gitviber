@@ -20,9 +20,9 @@ pub struct CommitOptions {
     pub co_authors: Vec<String>,
 }
 
-/// Ends a failed commit's message when a hook `--no-verify` skips is set up and stopped it. git
-/// says nothing of its own when one fails, so this is how the page knows to offer committing
-/// without them.
+/// Ends a failed commit's message with the hooks set up that could have stopped it. git says
+/// nothing of its own when one fails, so this is how the page knows to offer committing without
+/// them (never for prepare-commit-msg alone, which `--no-verify` still runs).
 pub const HOOKS_HINT: &str = "hint: Commit hooks set up here: ";
 
 /// A commit cancelled after its hooks stashed something (lint-staged's backup), which they may
@@ -79,6 +79,8 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
             "--git-path",
             "hooks/pre-commit",
             "--git-path",
+            "hooks/prepare-commit-msg",
+            "--git-path",
             "hooks/commit-msg",
         ],
     )
@@ -100,10 +102,13 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
             Err(CANCELLED_STASHED.into())
         }
         Err(f) => {
-            let hooks: Vec<_> = ["pre-commit", "commit-msg"]
+            let hooks: Vec<_> = ["pre-commit", "prepare-commit-msg", "commit-msg"]
                 .into_iter()
                 .zip(&paths)
-                .filter(|(_, p)| is_hook(p))
+                // `--no-verify` skips all but prepare-commit-msg.
+                .filter(|(name, p)| {
+                    (*name == "prepare-commit-msg" || !opts.no_verify) && is_hook(p)
+                })
                 .map(|(name, _)| name)
                 .collect();
             // A failing hook makes git exit 1 without a word; its own failures are 128 (a
@@ -112,13 +117,11 @@ pub fn commit(repo: &Path, message: &str, opts: &CommitOptions, net: &Net) -> Re
                 .message
                 .lines()
                 .any(|l| OWN_REFUSALS.iter().any(|r| l.starts_with(r)));
-            Err(
-                if f.code != Some(1) || own || opts.no_verify || hooks.is_empty() {
-                    f.message
-                } else {
-                    format!("{}\n{HOOKS_HINT}{}.", f.message, hooks.join(", "))
-                },
-            )
+            Err(if f.code != Some(1) || own || hooks.is_empty() {
+                f.message
+            } else {
+                format!("{}\n{HOOKS_HINT}{}.", f.message, hooks.join(", "))
+            })
         }
     }
 }

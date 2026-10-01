@@ -109,8 +109,17 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
       fix: "index-lock",
     },
   ],
-  // commit.rs's line: git says nothing of its own when a pre-commit or commit-msg hook fails.
-  // Last, so a failure git does explain (identity, signing) is told as that.
+  // commit.rs's line: git says nothing of its own when a commit hook fails. Last, so a failure
+  // git does explain (identity, signing) is told as that.
+  [
+    // `--no-verify` still runs this one: committing without hooks would stop the same way.
+    /^hint: Commit hooks set up here: prepare-commit-msg\.$/m,
+    {
+      title: "The prepare-commit-msg hook stopped the commit",
+      explanation:
+        "What it printed is under Details. git runs this hook even when committing without hooks, so fix what it reports, or the hook itself, and commit again.",
+    },
+  ],
   [
     /^hint: Commit hooks set up here: /m,
     {
