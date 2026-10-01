@@ -97,8 +97,8 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
         </Select>
         {rows.length > 0 && (
           <button
-            aria-label="Open all changes"
-            title="Open all changes"
+            aria-label="Open all branch changes"
+            title="Open all branch changes"
             onClick={() => onOpen({ kind: "changes", list: "branch" }, true)}
             className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground"
           >

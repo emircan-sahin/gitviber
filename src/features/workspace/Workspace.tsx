@@ -238,8 +238,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "review.nextFile": () => step(1),
     "review.prevFile": () => step(-1),
     "review.branch": startReview,
-    "review.openAll": () => openAll(reviewing ? "branch" : "unstaged"),
+    "review.openAll": status?.unstaged.length ? () => openAll("unstaged") : undefined,
     "review.openAllStaged": status?.staged.length ? () => openAll("staged") : undefined,
+    "review.openAllBranch": reviewing && branchReview.rows.length ? () => openAll("branch") : undefined,
     "review.copyNotes": () => copyNotes(pendingNotes()),
     "review.sendNotes": () => sendNotes(pendingNotes()),
     "review.toggleViewed": () => {

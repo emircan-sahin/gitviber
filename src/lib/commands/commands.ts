@@ -74,9 +74,10 @@ export const COMMANDS = [
   { id: "review.toggleViewed", title: "Toggle File Viewed", category: "Review", keys: ["v"] },
   // Changes then lists the branch's commits and uncommitted work since it left the default branch.
   { id: "review.branch", title: "Review Branch Against Base", category: "Review", keys: [] },
-  // Every file of the list in one scroll: the branch's while Changes reviews it, else the uncommitted ones.
+  // Every file of a Changes list in one scroll (the branch's while Changes reviews it).
   { id: "review.openAll", title: "Open All Changes", category: "Review", keys: [] },
   { id: "review.openAllStaged", title: "Open All Staged Changes", category: "Review", keys: [] },
+  { id: "review.openAllBranch", title: "Open All Branch Changes", category: "Review", keys: [] },
   // On the selected lines of the diff or file on show, else the cursor's (lib/review/notes).
   { id: "review.addNote", title: "Add Review Note", category: "Review", keys: ["c"] },
   { id: "review.copyNotes", title: "Copy Review Notes as Prompt", category: "Review", keys: [] },
