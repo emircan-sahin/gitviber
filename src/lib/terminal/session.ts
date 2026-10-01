@@ -1,17 +1,22 @@
+import { pty } from "../api";
+import { beforeQuit } from "../app/quit";
+import { getSettings } from "../settings";
 import { readJson } from "../storage";
 import { dueForSave, SAVE_MS } from "./saveRound";
 import { type Layout, mapPanes, savedLayout } from "./layout";
+import { restoredAgent, resumeOf, type SavedAgent, savedAgents } from "./agentState";
+import { refreshAgents } from "./agents";
 import { createPane, focusActive, newId, panes, type Pane, set, shellDir, state } from "./terminals";
 
 // The session save: where each shell was and what it printed, for the next run to restore.
 // Imported through terminals.ts only: the two import each other, and it reads the save as it loads.
 
-/** The terminals of a previous run: where each shell was, and what it had printed. */
+/** The terminals of a previous run: where each shell was, what it had printed, and the agent it ran. */
 export interface SavedSession {
   savedAt: number;
   active: number;
   /** `layout`'s leaves index `panes`; a save from before splits went down has none. */
-  groups: { name?: string; focused: number; layout?: Layout; panes: { cwd: string; dir?: string; name?: string; history: string }[] }[];
+  groups: { name?: string; focused: number; layout?: Layout; panes: { cwd: string; dir?: string; name?: string; history: string; agent?: SavedAgent }[] }[];
 }
 
 const SESSION_KEY = "gitviber.terminals";
@@ -28,8 +33,9 @@ let saveTimer: number | undefined;
 export function scheduleSave() {
   saveTimer ??= window.setTimeout(async () => {
     const due = dueForSave(panes.values(), Date.now(), false);
-    // Where their shells are now, asked before they're saved (a reload's save keeps the last answer).
-    await Promise.all(due.map(shellDir));
+    // Where their shells are now, asked before they're saved (a reload's save keeps the last answer). Agents
+    // in every pane: one still printing isn't due for a while, and a short first task would go unnoticed.
+    await Promise.all([...due.map(shellDir), refreshAgents()]);
     saveTimer = undefined;
     saveSession(false, due.filter((p) => panes.has(p.id)));
   }, SAVE_MS);
@@ -38,6 +44,8 @@ export function scheduleSave() {
 // Out of sight (a reload, a quit (lib/app/quit), the window hidden) a stall goes unseen: every changed pane is saved.
 window.addEventListener("pagehide", () => saveSession(true));
 document.addEventListener("visibilitychange", () => document.hidden && saveSession(true));
+// An agent quit with the app is resumed on the next run; one that exited since the last round isn't.
+beforeQuit(refreshAgents);
 
 /** The layout last written, to skip a write that changes nothing (a title changing, a pane still printing). */
 let written = "";
@@ -53,6 +61,8 @@ function saveSession(all = false, due?: Pane[]) {
     }
     const now = Date.now();
     const saving = due ?? dueForSave(panes.values(), now, all);
+    const infos = state.groups.flatMap((g) => g.panes);
+    const agents = new Map(savedAgents(infos.map((i) => i.agent)).map((a, n) => [infos[n].id, a]));
     for (const p of saving) {
       // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
       p.saved = p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true });
@@ -67,7 +77,7 @@ function saveSession(all = false, due?: Pane[]) {
         layout: mapPanes(g.layout, (id) => g.panes.findIndex((p) => p.id === id)),
         panes: g.panes.map(({ id, cwd, name }) => {
           const dir = panes.get(id)?.dir;
-          return { cwd, dir: dir !== cwd ? dir : undefined, name, history: (history && panes.get(id)?.saved) || "" };
+          return { cwd, dir: dir !== cwd ? dir : undefined, name, history: (history && panes.get(id)?.saved) || "", agent: agents.get(id) };
         }),
       })),
     });
@@ -88,15 +98,44 @@ function saveSession(all = false, due?: Pane[]) {
   }
 }
 
-/** Reopens last run's terminals beside any opened since: same folders, their output, new shells. */
-export function restoreSession() {
+type SavedPane = SavedSession["groups"][number]["panes"][number];
+const savedDir = (p: SavedPane) => (typeof p.dir === "string" ? p.dir : undefined);
+
+/** How the restore resumes the agents saved in `saved`'s panes, by pane; none with Settings' "Off". */
+export function resumable(saved: SavedSession): Map<SavedPane, ReturnType<typeof resumeOf>> {
+  const mode = getSettings().resumeAgents;
+  if (mode === "off") return new Map();
+  return new Map(
+    saved.groups
+      .flatMap((g) => g.panes ?? [])
+      .flatMap((p) => {
+        const agent = restoredAgent(p.agent);
+        return agent && agent.cwd === (savedDir(p) ?? p.cwd) ? [[p, resumeOf(agent, mode)] as const] : [];
+      }),
+  );
+}
+
+let restoring = false;
+/**
+ * Reopens last run's terminals beside any opened since: same folders, their output, new shells,
+ * and the agents they ran, resumed where their folder is still there.
+ */
+export async function restoreSession() {
   const saved = state.restorable;
-  if (!saved) return;
+  if (!saved || restoring) return;
+  const resume = resumable(saved);
+  restoring = true;
+  // Resumed only where its shell restores into: a removed worktree's agent would start over
+  // in whatever folder the shell falls back to.
+  const left = await pty.foldersLeft([...resume.keys()].map((p) => savedDir(p) ?? p.cwd)).catch(() => []);
+  restoring = false;
+  [...resume.keys()].forEach((p, i) => left[i] || resume.delete(p));
+  if (state.restorable !== saved) return;
   // A tab saved with no panes (by hand, or a bug) has nothing to reopen, and left the restore with no tab to show.
   const restored = saved.groups.map((g) => {
     if (!g.panes?.length) return null;
     const infos = g.panes.map((p) => ({
-      ...createPane(p.cwd, { history: p.history, savedAt: saved.savedAt }, typeof p.dir === "string" ? p.dir : undefined),
+      ...createPane(p.cwd, { history: p.history, savedAt: saved.savedAt, resume: resume.get(p) }, savedDir(p)),
       name: typeof p.name === "string" ? p.name : undefined,
     }));
     const layout = mapPanes(savedLayout(g.layout, infos.length), (i) => infos[i].id);

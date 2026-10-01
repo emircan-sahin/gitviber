@@ -5,6 +5,7 @@ import { cleanOverrides } from "./commands/commands";
 import { IS_MAC, IS_WINDOWS } from "./platform";
 import { writeJson } from "./storage";
 import { SUGGEST_PRESETS, type SuggestPreset } from "./git/suggest";
+import type { ResumeMode } from "./terminal/agentState";
 import { useSyncExternalStore } from "react";
 
 const CODE_FONTS = {
@@ -170,6 +171,8 @@ export interface Settings {
   optionAsMeta: OptionKey;
   /** New terminals load the shell integration (zsh, bash 4.4+): command marks, ⌘↑ / ⌘↓ between prompts. */
   shellIntegration: boolean;
+  /** A restored terminal an agent was running in: its resume command typed at the prompt, run, or neither (agentState.ts). */
+  resumeAgents: ResumeMode;
   /** How far a split tab's panes other than the focused one fade (one of DIM_LEVELS). */
   terminalInactiveDim: number;
   terminalFont: TerminalFont;
@@ -254,6 +257,7 @@ const DEFAULTS: Settings = {
   uiScale: 1,
   optionAsMeta: "off",
   shellIntegration: true,
+  resumeAgents: "type",
   terminalInactiveDim: 20,
   terminalFont: "Editor",
   customTerminalFont: "",
@@ -319,6 +323,7 @@ function load(): Settings {
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (!Object.hasOwn(OPTION_KEYS, s.optionAsMeta)) s.optionAsMeta = DEFAULTS.optionAsMeta;
     if (typeof s.shellIntegration !== "boolean") s.shellIntegration = DEFAULTS.shellIntegration;
+    if (!["type", "run", "off"].includes(s.resumeAgents)) s.resumeAgents = DEFAULTS.resumeAgents;
     if (!DIM_LEVELS.includes(s.terminalInactiveDim)) s.terminalInactiveDim = DEFAULTS.terminalInactiveDim;
     if (!terminalFontChoices.includes(s.terminalFont) && s.terminalFont !== "Custom") s.terminalFont = DEFAULTS.terminalFont;
     s.customTerminalFont = typeof s.customTerminalFont === "string" ? cleanFontName(s.customTerminalFont) : "";

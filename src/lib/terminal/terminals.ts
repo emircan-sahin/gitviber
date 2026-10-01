@@ -24,14 +24,17 @@ import { failed, toast } from "../app/toast";
 import { copyText } from "../app/clipboard";
 import { loadSession, type SavedSession, scheduleSave } from "./session";
 import { lookedAt, watchAttention } from "./needsYou";
+import { agentPrompted } from "./agents";
+import { type PaneAgent } from "./agentState";
 import { reportWheelByRow } from "./wheel";
 import { paneKeys } from "./keys";
 import { forgetFind, watchFind } from "./find";
 import { copyFromProgram, pasteInto, pasteText } from "./pasteInput";
 import { type Direction, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
 
-export { dismissRestore, restoreSession } from "./session";
+export { dismissRestore, restoreSession, resumable } from "./session";
 export { useNeedsYou } from "./needsYou";
+export { useAgentsWorking } from "./agents";
 export { clearFind, endFind, findInTerminal } from "./find";
 
 /**
@@ -68,7 +71,7 @@ export interface Pane extends SaveState {
   ptyResizeTimer?: number;
   /** The commands shell integration marks. */
   marks: CommandMarks;
-  /** A command to type into the shell once it's up (openTerminal). */
+  /** Typed into the shell once it's up, with its Enter if it ends with one (openTerminal, a restored agent). */
   run?: string;
 }
 
@@ -81,6 +84,8 @@ interface PaneInfo {
   needsYou?: boolean;
   /** The user's name for it, over the title in its split header. */
   name?: string;
+  /** The coding agent running in it (agents.ts), until the shell prompts again. */
+  agent?: PaneAgent;
 }
 
 /** A tab: one or more panes, split right and down. */
@@ -205,8 +210,11 @@ function send(p: Pane, data: string, binary = false) {
 /** How long a pane's size holds still before its program hears of it. */
 const PTY_RESIZE_WAIT = 50;
 
-/** `dir`: where the shell starts, when that's not `cwd` (a split, a restore). */
-export function createPane(cwd: string, restored?: { history: string; savedAt: number }, dir = cwd): PaneInfo {
+/**
+ * `dir`: where the shell starts, when that's not `cwd` (a split, a restore). `resume`: a restored
+ * agent's command for the first prompt, and the line that says so.
+ */
+export function createPane(cwd: string, restored?: { history: string; savedAt: number; resume?: { hint: string; run: string } }, dir = cwd): PaneInfo {
   const id = nextId++;
   // The proposed API is the decorations, which find marks its matches with. The kitty keyboard
   // protocol is for programs that turn it on (Claude Code, Codex, neovim, fish 4): Shift+Enter is its
@@ -226,9 +234,18 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   term.loadAddon(search);
   const host = document.createElement("div");
   host.style.cssText = "width:100%;height:100%";
-  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, marks: new CommandMarks(term, () => void shellDir(p)) };
+  // Each prompt: where a `cd` settled, and the end of any agent that ran.
+  const prompted = () => {
+    void shellDir(p);
+    agentPrompted(p);
+  };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, marks: new CommandMarks(term, prompted) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
+  if (restored?.resume) {
+    p.run = restored.resume.run;
+    term.write(`\x1b[2m${restored.resume.hint}\x1b[0m\r\n`);
+  }
   term.onWriteParsed(() => {
     [p.dirty, p.wroteAt] = [true, Date.now()];
     scheduleSave();
@@ -353,7 +370,7 @@ async function start(p: Pane) {
     // A resize while it was starting had no shell to reach.
     if (p.term.cols !== cols || p.term.rows !== rows) void pty.resize(id, p.term.cols, p.term.rows).catch(() => {});
     send(p, "");
-    if (p.run) runAtPrompt(p, `${p.run}\r`, integrated);
+    if (p.run) runAtPrompt(p, p.run, integrated);
   } catch (e) {
     p.term.write(`\x1b[31m${errorMessage(e)}\x1b[0m\r\n`);
   }
@@ -456,7 +473,7 @@ setTerminalFocus(focusActive);
 /** `run`: typed into the shell at its first prompt (runAtPrompt), which stays once the command exits. */
 export function openTerminal(cwd: string, run?: string) {
   const pane = createPane(cwd);
-  if (run) panes.get(pane.id)!.run = run;
+  if (run) panes.get(pane.id)!.run = `${run}\r`;
   const group = { id: nextId++, panes: [pane], layout: pane.id, focused: pane.id };
   set({ open: true, groups: [...state.groups, group], active: group.id });
   focusActive();

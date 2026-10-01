@@ -17,6 +17,7 @@ import {
 } from "@/lib/settings";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
+import type { ResumeMode } from "@/lib/terminal/agentState";
 import { Field, FontPicker, Group, OptionSelect, SizeStepper } from "@/features/settings/controls";
 import { IS_MAC } from "@/lib/platform";
 
@@ -104,6 +105,21 @@ export function TerminalSection() {
           commands={["terminal.prevCommand", "terminal.nextCommand"]}
         >
           <Switch checked={s.shellIntegration} onChange={(v) => updateSettings({ shellIntegration: v })} />
+        </Field>
+        <Field
+          label="Resume agents on restore"
+          hint="A terminal restored from last session that was running Claude Code, Gemini CLI or opencode gets the command that resumes its conversation: typed at the prompt for you to run with Enter, or run at once. An agent you exited isn't resumed."
+        >
+          <Segmented<string>
+            value={s.resumeAgents}
+            onChange={(v) => updateSettings({ resumeAgents: v as ResumeMode })}
+            options={[
+              { value: "type", label: "Type it" },
+              { value: "run", label: "Run it" },
+              { value: "off", label: "Off" },
+            ]}
+            variant="field"
+          />
         </Field>
         {IS_MAC && (
           <Field

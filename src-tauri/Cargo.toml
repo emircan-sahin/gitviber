@@ -21,6 +21,8 @@ tauri-plugin-dialog = "=2.7.3"
 tauri-plugin-notification = "=2.3.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Gemini CLI keeps chats under its folder's SHA-256 (agents.rs); already in the tree through tauri.
+sha2 = "=0.10.9"
 notify = "8.2"
 similar = { version = "=3.2.0", features = ["inline"] }
 ureq = { version = "=3.4.2", features = ["json"] }

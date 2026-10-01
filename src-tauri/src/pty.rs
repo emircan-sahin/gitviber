@@ -125,6 +125,16 @@ struct Session {
 }
 
 impl Session {
+    #[cfg(unix)]
+    fn job_leader(&self) -> Option<u32> {
+        crate::procinfo::job_leader(self.master.process_group_leader(), self.shell)
+    }
+
+    #[cfg(not(unix))]
+    fn job_leader(&self) -> Option<u32> {
+        None
+    }
+
     fn kill(mut self) {
         let _ = self.killer.kill();
         self.flow.close();
@@ -304,9 +314,7 @@ impl Ptys {
     pub fn busy(&self, ids: Option<&[u32]>) -> usize {
         let sessions = self.sessions.lock().unwrap();
         let running = |(id, s): &(&u32, &Session)| {
-            let leader = s.master.process_group_leader();
-            ids.is_none_or(|ids| ids.contains(id))
-                && leader.is_some_and(|pid| Some(pid as u32) != s.shell)
+            ids.is_none_or(|ids| ids.contains(id)) && s.job_leader().is_some()
         };
         sessions.iter().filter(running).count()
     }
@@ -316,11 +324,17 @@ impl Ptys {
         0
     }
 
+    /// The pid of the program a session runs in the foreground (its job's leader), when that
+    /// isn't the shell.
+    pub fn foreground(&self, id: u32) -> Option<u32> {
+        self.with(id, |s| Ok(s.job_leader())).ok()?
+    }
+
     /// The folder a session's shell is in now, asked of the process as VS Code does for a split
     /// (its own, not the foreground job's): once, on a split or a save, never polled.
     pub fn cwd(&self, id: u32) -> Option<PathBuf> {
         let pid = self.with(id, |s| Ok(s.shell)).ok()??;
-        process_cwd(pid)
+        crate::procinfo::cwd(pid)
     }
 
     /// A reloaded page has lost every terminal it had; without this their shells run on unseen.
@@ -338,45 +352,10 @@ impl Ptys {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn process_cwd(pid: u32) -> Option<PathBuf> {
-    use std::os::unix::ffi::OsStrExt;
-    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
-    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
-    let got = unsafe {
-        libc::proc_pidinfo(
-            pid as libc::c_int,
-            libc::PROC_PIDVNODEPATHINFO,
-            0,
-            (&mut info as *mut libc::proc_vnodepathinfo).cast(),
-            size,
-        )
-    };
-    if got != size {
-        return None;
-    }
-    // libc declares the path as 32 rows of 32 chars; it's one MAXPATHLEN buffer.
-    let raw = &info.pvi_cdir.vip_path;
-    let bytes: &[u8] =
-        unsafe { std::slice::from_raw_parts(raw.as_ptr().cast(), std::mem::size_of_val(raw)) };
-    let path = std::ffi::CStr::from_bytes_until_nul(bytes).ok()?;
-    let path = Path::new(std::ffi::OsStr::from_bytes(path.to_bytes()));
-    path.is_absolute().then(|| path.to_path_buf())
-}
-
-#[cfg(target_os = "linux")]
-fn process_cwd(pid: u32) -> Option<PathBuf> {
-    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn process_cwd(_pid: u32) -> Option<PathBuf> {
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::{input_bytes, start_dir, Flow, ACK_WAIT, HIGH_WATER, LOW_WATER};
+    use std::io::Write;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
 
@@ -430,12 +409,44 @@ mod tests {
         reader(&flow, 1).recv_timeout(WAIT).unwrap();
     }
 
+    /// On a pty as the panes' shells are, but `sh -i` with no rc files: a login shell's took
+    /// over 15 s under load.
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
-    fn a_process_folder_is_read() {
-        let here = std::env::current_dir().unwrap().canonicalize().unwrap();
-        let read = super::process_cwd(std::process::id()).unwrap();
-        assert_eq!(read.canonicalize().unwrap(), here);
+    fn the_job_leader_is_the_command_running_and_none_at_the_prompt() {
+        use portable_pty::{native_pty_system, CommandBuilder};
+        let pair =
+            crate::process::spawning(|| native_pty_system().openpty(super::size(80, 24))).unwrap();
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-i");
+        cmd.env_clear();
+        cmd.env("PATH", "/usr/bin:/bin");
+        cmd.env("PS1", "$ ");
+        let mut child = crate::process::spawning(|| pair.slave.spawn_command(cmd)).unwrap();
+        drop(pair.slave);
+        let shell = child.process_id();
+        let mut writer = pair.master.take_writer().unwrap();
+        // Read, so the shell's writes never block on a full pty.
+        let mut reader = pair.master.try_clone_reader().unwrap();
+        std::thread::spawn(move || std::io::copy(&mut reader, &mut std::io::sink()));
+        let argv = || {
+            let pid = crate::procinfo::job_leader(pair.master.process_group_leader(), shell)?;
+            Some(crate::procinfo::process(pid)?.argv)
+        };
+        let wait = |want: Option<Vec<String>>| {
+            let until = std::time::Instant::now() + Duration::from_secs(60);
+            while argv() != want && std::time::Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            argv()
+        };
+        writer.write_all(b"sleep 30\n").unwrap();
+        let sleeping = Some(vec!["sleep".to_string(), "30".to_string()]);
+        assert_eq!(wait(sleeping.clone()), sleeping);
+        writer.write_all(b"\x03").unwrap();
+        assert_eq!(wait(None), None);
+        let _ = child.kill();
+        let _ = child.wait();
     }
 
     #[test]

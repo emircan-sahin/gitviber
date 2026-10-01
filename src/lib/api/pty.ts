@@ -1,4 +1,5 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
+import type { PaneAgent } from "../terminal/agentState";
 
 /** The shells behind the terminal's panes (pty.rs), by the id `spawn` gives. */
 export const pty = {
@@ -22,6 +23,10 @@ export const pty = {
   kill: (id: number) => invoke<void>("pty_kill", { id }),
   /** How many (of `ids`, or all) are running a command rather than sitting at the prompt. */
   busy: (ids?: number[]) => invoke<number>("pty_busy", { ids: ids ?? null }),
+  /** The coding agents (agents.rs) the shells `ids` run, by id; watched from then on for "agent-state". */
+  agents: (ids: number[]) => invoke<Partial<Record<number, PaneAgent>>>("pty_agents", { ids }),
+  /** Which of `paths` are still folders. */
+  foldersLeft: (paths: string[]) => invoke<boolean[]>("folders_left", { paths }),
   /** What ⌘V pastes into a terminal (clipboard.rs): copied files, text, or an image saved as a PNG. */
   paste: () => invoke<TerminalPaste>("terminal_paste"),
   /** Text a program in the terminal copies (OSC 52) onto the clipboard, natively (clipboard.rs). */
