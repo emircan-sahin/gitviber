@@ -170,7 +170,16 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         {activity && (
           <span className="mr-1.5 flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground select-none">
             <Loader2 className="size-3.5 shrink-0 animate-spin" />
-            <span className="min-w-0 truncate tabular-nums" title={`${activity}… ${progress}`}>
+            <span
+              role="progressbar"
+              aria-label={activity}
+              aria-valuetext={`${activity}… ${progress}`}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={net?.progress?.percent ?? undefined}
+              className="min-w-0 truncate tabular-nums"
+              title={`${activity}… ${progress}`}
+            >
               {activity}… <span className="text-subtle">{progress}</span>
             </span>
             {net && (

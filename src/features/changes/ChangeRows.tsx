@@ -58,7 +58,7 @@ export function ReviewSummary({ files, add, del, reviewed }: { files: number; ad
           <span className={cn("font-semibold", reviewed === files ? "text-added" : "text-foreground")}>{reviewed}</span>/{files} reviewed
         </span>
       </div>
-      <div className="mt-1.5 h-[3px] overflow-hidden bg-border">
+      <div role="progressbar" aria-label="Reviewed" aria-valuemin={0} aria-valuemax={files} aria-valuenow={reviewed} className="mt-1.5 h-[3px] overflow-hidden bg-border">
         <div className="h-full bg-added transition-[width] duration-300" style={{ width: `${(reviewed / files) * 100}%` }} />
       </div>
     </div>
