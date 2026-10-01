@@ -15,16 +15,13 @@ import type { JournalEntry } from "@/lib/api";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { toast } from "@/lib/app/toast";
 import { travel } from "@/lib/repo/undo";
+import { landing, switchNote, switchQuestion } from "@/lib/repo/undoSwitch";
 import type { RepoData } from "@/lib/repo/useRepo";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
 
 /** What the undo history covers; the empty history and the "Nothing to undo" toast both say it. */
 const UNDOABLE = "Commits, merges, pulls, discards, and branch and tag changes made in GitViber";
-
-/** The branch undoing (or redoing) `entries` in order leaves checked out, if one of them switches. */
-const landing = (entries: JournalEntry[]) => entries.reduce<string | null>((at, e) => e.switchTo ?? at, null);
-const switchNote = (forward: boolean, to: string | null) => (to ? `: switches ${forward ? "" : "back "}to ${to}` : "");
 
 /**
  * Undo and redo for the git actions taken in the app, with ⌘Z / ⇧⌘Z, and their history:
@@ -40,19 +37,12 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
   const off = disabled || moving;
 
   const go = async (forward: boolean, entries: JournalEntry[]) => {
-    const to = landing(entries);
-    const dirty = !!repo.status && repo.status.staged.length + repo.status.unstaged.length > 0;
-    // Switching carries uncommitted changes along, which ⌘Z pressed in passing shouldn't do unasked.
-    if (to && dirty) {
-      const verb = forward ? "Redo" : "Undo";
-      const ok = await ask(`This ${verb.toLowerCase()} switches ${forward ? "" : "back "}to ${to}, and your uncommitted changes go along to it.`, {
-        title: `${verb} Git Action`,
-        okLabel: `${verb} and Switch`,
-      });
-      if (!ok) return;
-    }
+    // Moving from the start: a second ⌘Z while the question is up would queue a stale step.
     setMoving(true);
     try {
+      const question = switchQuestion(forward, entries, repo.status);
+      const verb = forward ? "Redo" : "Undo";
+      if (question && !(await ask(question, { title: `${verb} git action`, okLabel: `${verb} and Switch` }))) return;
       await travel(forward, entries.map((e) => e.id), repo.refresh);
     } finally {
       setMoving(false);
