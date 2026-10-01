@@ -28,10 +28,13 @@ fn watcher_sees_config_and_other_worktrees() {
     let sb = Sandbox::new("wtgitwatch");
     let r = repo_with_worktrees(&sb);
     let git = |p: &str| classify(&r, &r.join(p));
-    // `git remote set-url`, `git worktree add`, a checkout in another worktree.
+    // `git remote set-url`, `git worktree add`, a checkout in another worktree, a ref in a
+    // reftable repo, a new rule in info/exclude.
     for p in [
         ".git/config",
         ".git/packed-refs",
+        ".git/reftable/tables.list",
+        ".git/info/exclude",
         ".git/worktrees/agent",
         ".git/worktrees/agent/HEAD",
     ] {
@@ -61,6 +64,11 @@ fn watcher_sees_config_and_other_worktrees() {
     }
     assert_eq!(ext.classify(&common.join("config")), Some(Kind::Git));
     assert_eq!(ext.classify(&common.join("refs/heads/x")), Some(Kind::Git));
+    assert_eq!(
+        ext.classify(&common.join("reftable/0x01.ref")),
+        Some(Kind::Git)
+    );
+    assert_eq!(ext.classify(&common.join("info/exclude")), Some(Kind::Git));
     // The main worktree's index and another worktree's aren't this window's.
     for p in [
         common.join("index"),

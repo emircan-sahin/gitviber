@@ -45,9 +45,10 @@ pub(crate) fn git_file(rel: &Path, own: bool) -> bool {
         .collect();
     let parts: Vec<&str> = parts.iter().map(|p| p.as_ref()).collect();
     match parts.as_slice() {
-        ["HEAD" | "refs" | "packed-refs", ..] => true,
-        // Upstreams and remotes: `git branch -u`, `git remote set-url`.
-        ["config"] => true,
+        // reftable/: where a `--ref-format=reftable` repo keeps every ref.
+        ["HEAD" | "refs" | "packed-refs" | "reftable", ..] => true,
+        // Upstreams and remotes: `git branch -u`, `git remote set-url`. Ignore rules too.
+        ["config"] | ["info", "exclude"] => true,
         ["index" | "MERGE_HEAD" | "CHERRY_PICK_HEAD" | "REVERT_HEAD" | "rebase-merge"
         | "rebase-apply", ..] => own,
         // Another worktree added or removed, or switched to a branch it now holds. Its index
