@@ -108,6 +108,14 @@ export function ShortcutOverlay() {
     setMore(!!el && el.scrollTop + el.clientHeight < el.scrollHeight - 1);
   };
   useLayoutEffect(measure, [state, keybindings]);
+  // A pinned overlay stays up while the window is resized.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!state || !el) return;
+    const resize = new ResizeObserver(measure);
+    resize.observe(el);
+    return () => resize.disconnect();
+  }, [state]);
 
   useCommands({ "workbench.shortcutOverlay": () => set(shown.get() === "pinned" ? null : "pinned") });
 

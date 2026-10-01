@@ -119,13 +119,22 @@ export function FontPicker({
   const missing = useMemo(() => !!name && !fontInstalled(name), [name]);
   // Applied on Enter or leaving the field: every partial name on the way would re-lay out the code view.
   const commit = () => name !== custom && onChange("Custom", name);
+  const warning = useId();
   return (
     <div className="flex w-52 flex-col gap-1.5">
       <OptionSelect value={value} options={Object.fromEntries([...fonts, "Custom"].map((f) => [f, labels?.[f] ?? f]))} onChange={(v) => onChange(v, custom)} />
       {value === "Custom" && (
         <>
-          <Input value={draft} placeholder="Installed font name" onChange={(e) => setDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === "Enter" && commit()} />
-          {missing && <div className="text-[11px] leading-snug text-modified">Not installed: the default font shows instead.</div>}
+          <Input
+            value={draft}
+            aria-label="Custom font name"
+            aria-describedby={missing ? warning : undefined}
+            placeholder="Installed font name"
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => e.key === "Enter" && commit()}
+          />
+          {missing && <div id={warning} className="text-[11px] leading-snug text-modified">Not installed: the default font shows instead.</div>}
         </>
       )}
     </div>
