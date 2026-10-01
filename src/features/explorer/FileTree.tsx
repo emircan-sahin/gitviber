@@ -66,19 +66,19 @@ function unchanged(shown: Entry[] | undefined, listed: Entry[]) {
   });
 }
 
-/** The files that match and the folders down to them, all open, in the explorer's order. */
-function matchingTree(files: string[], matches: (path: string) => boolean) {
+/** The entries that match and the folders down to them, all open, in the explorer's order. */
+function matchingTree(listed: Entry[], matches: (path: string) => boolean) {
   const children: Record<string, Entry[]> = {};
-  const add = (path: string, isDir: boolean) => (children[dirname(path)] ??= []).push({ name: basename(path), path, isDir, ignored: false });
+  const add = (entry: Entry) => (children[dirname(entry.path)] ??= []).push(entry);
   const expanded = new Set([""]);
   let found = 0;
-  for (const path of files) {
-    if (!matches(path)) continue;
+  for (const entry of listed) {
+    if (!matches(entry.path)) continue;
     if (++found > MAX_MATCHES) break;
-    add(path, false);
-    for (let dir = dirname(path); dir && !expanded.has(dir); dir = dirname(dir)) {
+    add(entry);
+    for (let dir = dirname(entry.path); dir && !expanded.has(dir); dir = dirname(dir)) {
       expanded.add(dir);
-      add(dir, true);
+      add({ name: basename(dir), path: dir, isDir: true, ignored: false });
     }
   }
   for (const list of Object.values(children)) list.sort(compareEntries);
@@ -102,15 +102,16 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   // A revealed path's folders may still be loading; scroll to it once its row exists.
   const revealing = useRef<string | null>(null);
 
-  // Filtering lists every file git does (not the ignored ones), open folders or not.
+  // Filtering matches what the tree shows, open folders or not: every file git lists, and the
+  // ignored ones (.env), an ignored folder whole.
   const filter = useListFilter("explorer", "Filter files");
   const filtering = !!filter.needle;
-  const [files, setFiles] = useState<string[] | null>(null);
+  const [files, setFiles] = useState<Entry[] | null>(null);
   useEffect(() => {
     if (!filtering) return;
     let live = true;
-    api.listFiles().then(
-      (list) => live && setFiles(list),
+    Promise.all([api.listFiles(), api.listIgnored()]).then(
+      ([listed, ignored]) => live && setFiles([...listed.map((path) => ({ name: basename(path), path, isDir: false, ignored: false })), ...ignored]),
       (e) => live && toast("error", "Could not list files", errorMessage(e)),
     );
     return () => {
@@ -119,7 +120,13 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   }, [filtering, revision]);
   const matching = useMemo(() => (filtering && files ? matchingTree(files, (path) => filter.matches(path)) : null), [filtering, files, filter.needle]);
   // What the rows show: the matches while filtering (the last tree until they're listed), else the folders opened.
-  const shown = matching ?? { children, expanded };
+  // A matched ignored folder opens from the tree's listings, as in the tree; the filter's own folders win.
+  const shown = useMemo(
+    () => (matching ? { children: { ...children, ...matching.children }, expanded: new Set([...expanded, ...matching.expanded]) } : { children, expanded }),
+    [matching, children, expanded],
+  );
+  /** A folder the filter holds open around its matches. */
+  const heldOpen = (path: string) => !!matching?.children[path];
 
   // Per-path request counter: a slow, older listing must not overwrite a newer one.
   const requests = useRef(new Map<string, number>());
@@ -273,8 +280,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     if (open) loadDir(path);
   };
 
-  // While filtering, folders stay open around their matches.
-  const activate = (e: Entry, pin = false) => (!e.isDir ? onOpen({ kind: "file", path: e.path }, pin) : !matching && setOpen(e.path, !expanded.has(e.path)));
+  const activate = (e: Entry, pin = false) => (!e.isDir ? onOpen({ kind: "file", path: e.path }, pin) : !heldOpen(e.path) && setOpen(e.path, !expanded.has(e.path)));
 
   const startEditing = (next: Editing) => {
     if (next.mode === "new" && !expanded.has(next.parent)) setOpen(next.parent, true);
@@ -403,7 +409,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
       } else if (!shown.expanded.has(cur.path)) setOpen(cur.path, true);
       else if (rows[i + 1] && dirname(rows[i + 1].entry.path) === cur.path) move(i + 1);
     } else if (ev.key === "ArrowLeft") {
-      if (cur.isDir && shown.expanded.has(cur.path) && !matching) {
+      if (cur.isDir && shown.expanded.has(cur.path) && !heldOpen(cur.path)) {
         setOpen(cur.path, false);
         setPicked(null);
       }

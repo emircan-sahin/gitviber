@@ -73,6 +73,8 @@ export const api = {
   listDir: (path: string) => invoke<Entry[]>("list_dir", { path }),
   /** Tracked and untracked files, not ignored ones: what quick open searches. */
   listFiles: () => invoke<string[]>("list_files"),
+  /** Ignored files, and ignored folders whole (node_modules, not what's in it): what the explorer's filter adds to listFiles. */
+  listIgnored: () => invoke<Entry[]>("list_ignored"),
   /** Each repo path's kind on disk, null when it's missing: ignored files and folders, which listFiles leaves out. */
   pathKinds: (paths: string[]) => invoke<("file" | "dir" | null)[]>("path_kinds", { paths }),
   /** Rejects with SEARCH_CANCELLED when a newer search stops it. */

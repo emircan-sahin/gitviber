@@ -161,6 +161,40 @@ pub fn list_files(root: &Path) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// What the explorer's filter adds to `list_files`: ignored files one by one, and an ignored
+/// folder (node_modules) as one entry, not walked into; it opens lazily, as in the tree.
+/// `ls-files --ignored --directory` would also list a folder that only holds ignored files
+/// (app/ with just app/.env) as ignored; `matching` lists what a pattern matches, as the tree dims.
+pub fn list_ignored(root: &Path) -> Result<Vec<Entry>, String> {
+    let args = [
+        "status",
+        "--porcelain=v2",
+        "-z",
+        "--ignored=matching",
+        "--untracked-files=normal",
+        "--ignore-submodules=all",
+    ];
+    let out = git::run(root, &args)?;
+    let mut fields = out.split(|&b| b == 0);
+    let mut entries = vec![];
+    while let Some(field) = fields.next() {
+        // A rename's old path is the next field, and any name may start with "! ".
+        if field.starts_with(b"2 ") {
+            fields.next();
+        } else if let Some(raw) = field.strip_prefix(b"! ") {
+            let raw = String::from_utf8_lossy(raw);
+            let path = raw.trim_end_matches('/');
+            entries.push(Entry {
+                name: path.rsplit('/').next().unwrap_or(path).to_string(),
+                path: path.to_string(),
+                is_dir: raw.ends_with('/'),
+                ignored: true,
+            });
+        }
+    }
+    Ok(entries)
+}
+
 /// What a path in the repo is on disk.
 #[derive(Serialize, Debug, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -571,6 +605,47 @@ mod tests {
         let mut files = list_files(root).unwrap();
         files.sort();
         assert_eq!(files, [".gitignore", "src/new file.rs", "tracked.txt"]);
+    }
+
+    #[test]
+    fn list_ignored_lists_ignored_folders_whole() {
+        let sb = Sandbox::new("ignored");
+        let root = &sb.0;
+        git::run(root, &["init", "-q"]).unwrap();
+        fs::write(root.join(".gitignore"), ".env\nnode_modules/\n").unwrap();
+        fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+        fs::create_dir_all(root.join("app")).unwrap();
+        for f in [".env", "app/.env", "node_modules/pkg/index.js", "kept.txt"] {
+            fs::write(root.join(f), "x").unwrap();
+        }
+        // A staged rename from "! old.txt": its old path is a field that must not read as ignored.
+        fs::write(root.join("! old.txt"), "x").unwrap();
+        git::run(root, &["add", "! old.txt"]).unwrap();
+        let id = [
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+        ];
+        git::run(root, &[&id[..], &["commit", "-qm", "c"]].concat()).unwrap();
+        git::run(root, &["mv", "! old.txt", "renamed.txt"]).unwrap();
+        let mut listed: Vec<_> = list_ignored(root)
+            .unwrap()
+            .into_iter()
+            .map(|e| (e.path, e.name, e.is_dir, e.ignored))
+            .collect();
+        listed.sort();
+        let entry = |path: &str, name: &str, is_dir| (path.into(), name.into(), is_dir, true);
+        assert_eq!(
+            listed,
+            [
+                entry(".env", ".env", false),
+                entry("app/.env", ".env", false),
+                entry("node_modules", "node_modules", true),
+            ]
+        );
     }
 
     #[test]
