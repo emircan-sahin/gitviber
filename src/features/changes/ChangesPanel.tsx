@@ -71,18 +71,19 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   // conflicts: a resolved one's tab follows it into Staged.
   const leaving = useRef(new Set<Leaving<RepoStatus>>());
   const leavingKeys = () => new Set([...leaving.current].flatMap((l) => [...l.keys]));
-  // What the last render showed, for an action settling after it.
-  const shownNow = useRef({ activeKey, status: full });
+  // What the last render showed, for an action that starts after a dialog or settles after it.
+  const shownNow = useRef({ activeKey, status: full, rows: [] as Change[] });
   const leave = async (rows: Change[], run: () => unknown) => {
     const keys = new Set(rows.filter((r) => r.kind !== "conflict").map(selectionKey));
     if (!keys.size) return run();
     const record: Leaving<RepoStatus> = { keys, follow: false, seen: null };
-    const from = active && keys.has(selectionKey(active)) ? active : undefined;
+    const { activeKey: open, rows: now } = shownNow.current;
+    const from = open !== null && keys.has(open) ? now.find((c) => selectionKey(c) === open) : undefined;
     let to: Change | undefined;
     if (from) {
       const out = new Set([...leavingKeys(), ...keys]);
-      const key = rowInPlace(all.filter((c) => c.kind === from.kind).map(selectionKey), { has: (k) => !out.has(k) }, selectionKey(from));
-      to = key === undefined ? undefined : all[index.get(key) ?? -1];
+      const key = rowInPlace(now.filter((c) => c.kind === from.kind).map(selectionKey), { has: (k) => !out.has(k) }, selectionKey(from));
+      to = now.find((c) => selectionKey(c) === key);
       if (to) {
         setPicked(null);
         onOpen(to);
@@ -311,7 +312,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     const lost = lostFocus.current;
     shown.current = all;
     lostFocus.current = null;
-    shownNow.current = { activeKey, status: full };
+    shownNow.current = { activeKey, status: full, rows: all };
     const follow = settleLeaving(leaving.current, new Set(total.map(selectionKey)), full, activeKey);
     const from = follow ? activeKey : lost !== null && !index.has(lost) ? lost : null;
     const was = from === null ? undefined : before.find((c) => selectionKey(c) === from);
