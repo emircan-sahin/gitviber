@@ -142,6 +142,29 @@ fn undo_create_and_switch_branch() {
     assert_eq!(on_branch(&r), "feat");
 }
 
+/// On a detached HEAD, undoing a commit resets HEAD where it is: nothing to say it switches.
+#[test]
+fn undo_a_commit_on_a_detached_head_does_not_switch() {
+    let sb = Sandbox::new("j-detached");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let base = rev(&r, "HEAD");
+    run(&r, &["switch", "-q", "--detach"]).unwrap();
+    let j = Journal::default();
+    fs::write(r.join("a.txt"), "b\n").unwrap();
+    stage(&r, &["a.txt".into()]).unwrap();
+    j.record(&r, Action::new("Commit", Mode::Soft), |r| {
+        commit(r, "detached", &CommitOptions::default())
+    })
+    .unwrap();
+    assert_eq!(j.view(&r).undo[0].switch_to, None);
+    let undone = j.step(&r, false, None, &Mutex::new(())).unwrap();
+    assert_eq!(undone.switch_to, None);
+    assert_eq!(rev(&r, "HEAD"), base);
+    assert_eq!(j.view(&r).redo[0].switch_to, None);
+}
+
 /// Undoing a pull just leaves the branch behind again; undoing a pushed commit would need
 /// a force push, so it's refused.
 #[test]

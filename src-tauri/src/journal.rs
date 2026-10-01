@@ -125,8 +125,9 @@ pub struct EntryView {
     pub label: String,
     /// Unix seconds.
     pub time: u64,
-    /// The branch (or the short commit, detached) undoing this, in the undo list, or redoing
-    /// it, in the redo list, checks out; None when HEAD stays on its branch.
+    /// The branch (or the short commit, detaching) undoing this, in the undo list, or redoing
+    /// it, in the redo list, switches to; None when it doesn't switch: HEAD stays on its branch,
+    /// or stays detached and is reset.
     pub switch_to: Option<String>,
 }
 
@@ -149,10 +150,15 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Entry {
     /// Seen from the side that moves it to state `to` (0 before, 1 after).
     fn view(&self, to: usize) -> EntryView {
-        let switch_to = (self.head[0] != self.head[1]).then(|| match &self.head[to] {
-            Head::Branch(b) => b.clone(),
-            Head::Detached(sha) => sha.chars().take(7).collect(),
-        });
+        // As move_head goes: a detached HEAD moves by a reset, not a switch.
+        let switch_to = match (&self.head[0], &self.head[1]) {
+            (a, b) if a == b => None,
+            (Head::Detached(_), Head::Detached(_)) => None,
+            _ => Some(match &self.head[to] {
+                Head::Branch(b) => b.clone(),
+                Head::Detached(sha) => sha.chars().take(7).collect(),
+            }),
+        };
         EntryView {
             id: self.id,
             label: self.label.clone(),
