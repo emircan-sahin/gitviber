@@ -14,8 +14,24 @@ pub(crate) fn in_english(cmd: &mut Command) -> &mut Command {
         .env_remove("LANGUAGE")
 }
 
+/// What git reads to find the repo before looking at the working directory. Inherited (the app
+/// started from a git hook, or from a terminal inside one), every repo resolved to that one.
+const REPO_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_PREFIX",
+];
+
 pub(crate) fn command(repo: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
+    for var in REPO_ENV {
+        cmd.env_remove(var);
+    }
     in_english(&mut cmd)
         .current_dir(repo)
         .args(args)
@@ -100,4 +116,23 @@ pub fn toplevel(path: &Path) -> Result<String, String> {
                 e
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_finds_the_repo_from_its_folder_only() {
+        let cmd = command(Path::new("."), &["status"]);
+        let removed: Vec<_> = cmd.get_envs().filter(|(_, v)| v.is_none()).collect();
+        for var in [
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+        ] {
+            assert!(removed.iter().any(|(k, _)| *k == var), "{var}");
+        }
+    }
 }
