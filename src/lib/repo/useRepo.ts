@@ -24,6 +24,12 @@ export function useRepo(root: string, onGone: () => void) {
   const [journal, setJournal] = useState<Journal | null>(null);
   // Bumped on every change on disk so open views can reload their content.
   const [revision, setRevision] = useState(0);
+  // What the revision was last bumped for: status (each changed file's size and mtime, HEAD) and
+  // the branch tips. A refresh that finds both the same (a focus, a git event that moved nothing
+  // shown) leaves open views alone. Status has no size or mtime for a conflicted file, so the
+  // watcher seeing files written still bumps it.
+  const seen = useRef({ status: "", refs: "" });
+  const written = useRef(false);
   const inFlight = useRef<Promise<void> | null>(null);
   const queued = useRef<{ history: boolean } | null>(null);
   // Commits shown so far: a refresh reloads all of them, or "Load more" pages would be lost.
@@ -32,9 +38,13 @@ export function useRepo(root: string, onGone: () => void) {
   const reportGone = useRef(onGone);
   reportGone.current = onGone;
   const reportedGone = useRef(false);
+  // The root this hook's listener is for; null once unmounted.
+  const live = useRef<string | null>(null);
 
   const load = useCallback(async (history: boolean) => {
     const limit = Math.max(LOG_PAGE, loaded.current);
+    const wrote = written.current;
+    written.current = false;
     const [st, br, log, wt, jn] = await Promise.all([
       api.status(),
       history ? api.branches() : null,
@@ -51,7 +61,9 @@ export function useRepo(root: string, onGone: () => void) {
       setCommits(log);
       setHasMore(log.length === limit);
     }
-    setRevision((r) => r + 1);
+    const now = { status: JSON.stringify(st), refs: br ? JSON.stringify(br) : seen.current.refs };
+    if (wrote || now.status !== seen.current.status || now.refs !== seen.current.refs) setRevision((r) => r + 1);
+    seen.current = now;
     loadedAt.current = Date.now();
   }, []);
 
@@ -68,8 +80,10 @@ export function useRepo(root: string, onGone: () => void) {
         } catch (e) {
           // A worktree removed from outside fails every read; that's for the app to handle, once.
           const missing = await api.projectInfo([root]).then(([info]) => info?.exists === false, () => false);
-          if (!missing) toast("error", "Could not read repository", errorMessage(e));
-          else if (!reportedGone.current) {
+          // Another repo opened meanwhile: this one's failure is no longer the window's business.
+          const here = live.current === root;
+          if (here && !missing) toast("error", "Could not read repository", errorMessage(e));
+          else if (here && !reportedGone.current) {
             reportedGone.current = true;
             reportGone.current();
           }
@@ -110,14 +124,17 @@ export function useRepo(root: string, onGone: () => void) {
     setCommits([]);
     setJournal(null);
     loaded.current = 0;
+    live.current = root;
     refresh(true);
     // The previous repo's watcher can still deliver one last event after a switch.
     const unlisten = listen<RepoChanged>("repo-changed", (e) => {
       if (e.payload.root !== root) return;
+      if (e.payload.worktree) written.current = true;
       refresh(e.payload.git);
       if (e.payload.git) recheckPullsSoon();
     });
     return () => {
+      live.current = null;
       // During hot reload the listener can already be gone; nothing to clean up then.
       unlisten.then((f) => f()).catch(() => {});
     };
