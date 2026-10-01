@@ -9,14 +9,19 @@ export interface PaneAgent {
   name: string;
   /** What resumes its conversation; null while that can't be told. */
   command: string | null;
+  /** The conversation's id, when it's read. */
+  session: string | null;
+  /** The folder it runs in. */
+  cwd: string | null;
   /** Null for an agent that doesn't report one. */
   state: AgentState | null;
 }
 
-/** What the session save keeps of a pane's agent: one that can be resumed. */
+/** What the session save keeps of a pane's agent: one that can be resumed, and where it ran. */
 export interface SavedAgent {
   name: string;
   command: string;
+  cwd: string;
 }
 
 /** Settings → Terminal: on a restore, type the resume command at the prompt, run it, or neither. */
@@ -25,11 +30,14 @@ export type ResumeMode = "type" | "run" | "off";
 /**
  * The pane's agent once `read` (null: none runs there now) is taken in, and what that's worth:
  * a `note` when it finished or stopped to ask, `first` when it's newly seen and reports its state.
- * The same object back when nothing changed, so no re-render follows.
+ * `live`: `read` is the state file's change as it happened. A lookup's state only starts the
+ * agent off: answered after a change that came since, it would undo it, and the next change
+ * would be told twice. The same object back when nothing changed, so no re-render follows.
  */
-export function nextAgent(prev: PaneAgent | undefined, read: PaneAgent | null): { agent: PaneAgent | undefined; note: string | null; first: boolean } {
+export function nextAgent(prev: PaneAgent | undefined, read: PaneAgent | null, live = false): { agent: PaneAgent | undefined; note: string | null; first: boolean } {
   if (!read) return { agent: undefined, note: null, first: false };
-  const same = prev && prev.name === read.name && prev.command === read.command && prev.state === read.state;
+  if (!live && prev?.name === read.name && prev.state !== null) read = { ...read, state: prev.state };
+  const same = prev && prev.name === read.name && prev.command === read.command && prev.session === read.session && prev.cwd === read.cwd && prev.state === read.state;
   const agent = same ? prev : read;
   let note: string | null = null;
   if (read.state === "waiting" && prev?.state !== "waiting") note = `${read.name} is waiting for you`;
@@ -37,15 +45,21 @@ export function nextAgent(prev: PaneAgent | undefined, read: PaneAgent | null): 
   return { agent, note, first: !prev && read.state !== null };
 }
 
-export function savedAgent(agent: PaneAgent | undefined): SavedAgent | undefined {
-  return agent?.command ? { name: agent.name, command: agent.command } : undefined;
+/** The agents the save keeps, pane by pane: resumable ones, and of two that read the same conversation, the first. */
+export function savedAgents(agents: (PaneAgent | undefined)[]): (SavedAgent | undefined)[] {
+  const taken = new Set<string>();
+  return agents.map((a) => {
+    if (!a?.command || !a.cwd || (a.session && taken.has(a.session))) return undefined;
+    if (a.session) taken.add(a.session);
+    return { name: a.name, command: a.command, cwd: a.cwd };
+  });
 }
 
 /** A saved agent as read back from storage, which an older or broken save may hold anything in. */
 export function restoredAgent(raw: unknown): SavedAgent | null {
   if (!raw || typeof raw !== "object") return null;
-  const { name, command } = raw as Record<string, unknown>;
-  return typeof name === "string" && typeof command === "string" && command && !/[\x00-\x1f\x7f]/.test(command) ? { name, command } : null;
+  const { name, command, cwd } = raw as Record<string, unknown>;
+  return typeof name === "string" && typeof command === "string" && typeof cwd === "string" && command && !/[\x00-\x1f\x7f]/.test(command) ? { name, command, cwd } : null;
 }
 
 /** The dim line a restored pane shows under its history, and what's typed at its first prompt. */

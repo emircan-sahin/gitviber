@@ -9,16 +9,17 @@ import { type AgentState, nextAgent, type PaneAgent } from "./agentState";
 import { needsYou } from "./needsYou";
 import { panes, type Pane, state, subscribe, update } from "./terminals";
 
-// The coding agents in the panes (agents.rs): looked up on each session save round, at ⌘Q and
-// after a prompt; their state comes as "agent-state" events from a watch on their state file,
-// never polled. An agent that finishes or asks marks its pane as a bell would (needsYou).
+// The coding agents in the panes (agents.rs): looked up for the panes a session save round
+// saves, at ⌘Q and after a prompt; their state comes as "agent-state" events from a watch on
+// their state file, never polled. An agent that finishes or asks marks its pane as a bell would
+// (needsYou).
 
 const info = (p: Pane) => state.groups.flatMap((g) => g.panes).find((i) => i.id === p.id);
 
-function apply(p: Pane, read: PaneAgent | null) {
+function apply(p: Pane, read: PaneAgent | null, live = false) {
   const i = info(p);
   if (!i) return;
-  const { agent, note, first } = nextAgent(i.agent, read);
+  const { agent, note, first } = nextAgent(i.agent, read, live);
   if (agent !== i.agent) update(p.id, (x) => ({ ...x, agent }));
   if (note) needsYou(p, { body: note });
   if (first && agent) suggestNotifications(agent.name);
@@ -46,7 +47,7 @@ try {
     const p = [...panes.values()].find((x) => x.pty === payload.id);
     const agent = p && info(p)?.agent;
     // Its state file gone: the agent with it.
-    if (agent) apply(p, payload.state ? { ...agent, state: payload.state } : null);
+    if (agent) apply(p, payload.state ? { ...agent, state: payload.state } : null, true);
   }).catch(() => {});
 } catch {
   // Not in Tauri (the browser-only dev fixture).

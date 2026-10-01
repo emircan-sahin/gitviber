@@ -4,7 +4,7 @@ import { getSettings } from "../settings";
 import { readJson } from "../storage";
 import { dueForSave, SAVE_MS } from "./saveRound";
 import { type Layout, mapPanes, savedLayout } from "./layout";
-import { restoredAgent, resumeOf, type SavedAgent, savedAgent } from "./agentState";
+import { restoredAgent, resumeOf, type SavedAgent, savedAgents } from "./agentState";
 import { refreshAgents } from "./agents";
 import { createPane, focusActive, newId, panes, type Pane, set, shellDir, state } from "./terminals";
 
@@ -34,7 +34,7 @@ export function scheduleSave() {
   saveTimer ??= window.setTimeout(async () => {
     const due = dueForSave(panes.values(), Date.now(), false);
     // Where their shells are now, and their agents, asked before they're saved (a reload's save keeps the last answer).
-    await Promise.all([...due.map(shellDir), refreshAgents()]);
+    await Promise.all([...due.map(shellDir), refreshAgents(due)]);
     saveTimer = undefined;
     saveSession(false, due.filter((p) => panes.has(p.id)));
   }, SAVE_MS);
@@ -60,6 +60,8 @@ function saveSession(all = false, due?: Pane[]) {
     }
     const now = Date.now();
     const saving = due ?? dueForSave(panes.values(), now, all);
+    const infos = state.groups.flatMap((g) => g.panes);
+    const agents = new Map(savedAgents(infos.map((i) => i.agent)).map((a, n) => [infos[n].id, a]));
     for (const p of saving) {
       // Alt-screen apps and terminal modes (mouse, bracketed paste) would leak into the new shell.
       p.saved = p.serialize.serialize({ scrollback: HISTORY_LINES, excludeAltBuffer: true, excludeModes: true });
@@ -72,9 +74,9 @@ function saveSession(all = false, due?: Pane[]) {
         name: g.name,
         focused: Math.max(0, g.panes.findIndex((p) => p.id === g.focused)),
         layout: mapPanes(g.layout, (id) => g.panes.findIndex((p) => p.id === id)),
-        panes: g.panes.map(({ id, cwd, name, agent }) => {
+        panes: g.panes.map(({ id, cwd, name }) => {
           const dir = panes.get(id)?.dir;
-          return { cwd, dir: dir !== cwd ? dir : undefined, name, history: (history && panes.get(id)?.saved) || "", agent: savedAgent(agent) };
+          return { cwd, dir: dir !== cwd ? dir : undefined, name, history: (history && panes.get(id)?.saved) || "", agent: agents.get(id) };
         }),
       })),
     });
@@ -107,7 +109,7 @@ export function resumable(saved: SavedSession): Map<SavedPane, ReturnType<typeof
       .flatMap((g) => g.panes ?? [])
       .flatMap((p) => {
         const agent = restoredAgent(p.agent);
-        return agent ? [[p, resumeOf(agent, mode)] as const] : [];
+        return agent && agent.cwd === (savedDir(p) ?? p.cwd) ? [[p, resumeOf(agent, mode)] as const] : [];
       }),
   );
 }
@@ -122,7 +124,8 @@ export async function restoreSession() {
   if (!saved || restoring) return;
   const resume = resumable(saved);
   restoring = true;
-  // A removed worktree's agent would resume in whatever folder its shell starts in instead.
+  // Resumed only where its shell restores into: a removed worktree's agent would start over
+  // in whatever folder the shell falls back to.
   const left = await pty.foldersLeft([...resume.keys()].map((p) => savedDir(p) ?? p.cwd)).catch(() => []);
   restoring = false;
   [...resume.keys()].forEach((p, i) => left[i] || resume.delete(p));
