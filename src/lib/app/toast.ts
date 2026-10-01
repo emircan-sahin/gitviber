@@ -63,8 +63,9 @@ export function holdToast(id: number, held: boolean) {
   if (!t || held || t.kind === "error") return;
   timers.set(
     id,
-    // An action needs time to reach for.
-    setTimeout(() => dismissToast(id), t.actions.length ? 6000 : 3000),
+    // An action needs time to reach for. At 3 s (6 s with one), a toast could go before a screen
+    // reader finished reading it or the keyboard got to its button.
+    setTimeout(() => dismissToast(id), t.actions.length ? 10_000 : 5000),
   );
 }
 

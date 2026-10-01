@@ -75,6 +75,7 @@ export function terminalOptions(): ITerminalOptions {
     cursorStyle: s.terminalCursor,
     cursorBlink: s.terminalCursorBlink,
     scrollback: s.terminalScrollback,
+    screenReaderMode: s.terminalScreenReader,
     // As VS Code's terminal does: a theme's own dim colors (Solarized Dark's bright black is its
     // background) are lifted until they read, so autosuggestions and dimmed output show.
     minimumContrastRatio: 4.5,

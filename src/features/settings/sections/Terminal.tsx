@@ -119,6 +119,11 @@ export function TerminalSection() {
           </Field>
         )}
       </Group>
+      <Group title="Accessibility">
+        <Field label="Screen reader mode" hint="Lets VoiceOver read the terminal's output and the line you type. Open terminals switch at once.">
+          <Switch checked={s.terminalScreenReader} onChange={(v) => updateSettings({ terminalScreenReader: v })} />
+        </Field>
+      </Group>
     </>
   );
 }

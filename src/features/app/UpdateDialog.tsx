@@ -41,7 +41,7 @@ export function UpdateDialog() {
           {release?.notes.trim() ? <MarkdownBody text={release.notes} components={components} idPrefix={NOTES_PREFIX} repo={REPO} /> : <span className="text-subtle italic">No release notes.</span>}
         </div>
         {typeof download === "object" && download && (
-          <div className="mt-3 h-1 overflow-hidden rounded-full bg-border">
+          <div role="progressbar" aria-label="Downloading the update" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress ?? undefined} className="mt-3 h-1 overflow-hidden rounded-full bg-border">
             {/* Unknown size: a full bar that pulses rather than a fake percentage. */}
             <div className={progress === null ? "h-full animate-pulse bg-primary" : "h-full bg-primary transition-[width]"} style={{ width: `${progress ?? 100}%` }} />
           </div>

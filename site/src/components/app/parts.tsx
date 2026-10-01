@@ -296,7 +296,7 @@ export function TopBar({
         <span
           className={cx(
             "flex h-7 items-center gap-1.5 rounded-l-md px-2.5 text-[12px] font-medium",
-            ahead > 0 ? "bg-primary text-white" : "border border-border-strong bg-elevated",
+            ahead > 0 ? "bg-primary text-primary-fg" : "border border-border-strong bg-elevated",
           )}
         >
           <ArrowUpFromLine className="size-3.5" /> Push
@@ -305,7 +305,7 @@ export function TopBar({
         <span
           className={cx(
             "flex h-7 w-5 items-center justify-center rounded-r-md border-l",
-            ahead > 0 ? "border-l-black/20 bg-primary text-white" : "border border-l-0 border-border-strong bg-elevated",
+            ahead > 0 ? "border-l-black/20 bg-primary text-primary-fg" : "border border-l-0 border-border-strong bg-elevated",
           )}
         >
           <ChevronDown className="size-3" />
@@ -362,13 +362,13 @@ export function WorktreeMenu({ rows, current, highlighted }: { rows: WorktreeRow
           if (row.commits) state.push([`${row.commits} ${row.commits === 1 ? "commit" : "commits"}`, "text-added"]);
           if (!state.length) state.push(["no changes", "text-subtle"]);
           return (
-            <div key={row.path} className={cx("flex h-9 items-center gap-2 rounded-sm px-2", hi && "bg-primary text-white")}>
+            <div key={row.path} className={cx("flex h-9 items-center gap-2 rounded-sm px-2", hi && "bg-primary text-primary-fg")}>
               {i === current ? <Check className="size-3.5 shrink-0" /> : <GitBranch className="size-3.5 shrink-0 opacity-60" />}
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="truncate font-mono text-[11.5px]">{row.branch}</span>
                   {row.main && <Chip hot={hi}>main</Chip>}
-                  {row.calling && <NeedsYouDot className={hi ? "bg-white" : undefined} />}
+                  {row.calling && <NeedsYouDot className={hi ? "bg-primary-fg" : undefined} />}
                   {row.pull && <PullChip pull={row.pull} hot={hi} />}
                 </div>
                 <div className={cx("flex min-w-0 items-center gap-1 text-[10.5px]", hi ? "opacity-80" : "text-subtle")}>
@@ -623,7 +623,7 @@ export function CommitBox({ summary, description, caret, asking, pressed, pointe
         </span>
         <span
           className={cx(
-            "ml-auto flex h-7 flex-1 items-center justify-center rounded-md bg-primary text-[12px] font-medium text-white transition",
+            "ml-auto flex h-7 flex-1 items-center justify-center rounded-md bg-primary text-[12px] font-medium text-primary-fg transition",
             pressed && "scale-[0.97] brightness-90",
           )}
         >
@@ -1023,7 +1023,7 @@ export function QuickOpen({ query, items }: { query: string; items: { path: stri
             return (
               <div
                 key={item.path}
-                className={cx("flex h-7 items-center gap-2 rounded-sm px-2 text-[12.5px]", i === 0 ? "bg-primary text-white" : "text-fg")}
+                className={cx("flex h-7 items-center gap-2 rounded-sm px-2 text-[12.5px]", i === 0 ? "bg-primary text-primary-fg" : "text-fg")}
               >
                 <img src={fileIcon(item.path)} alt="" className="size-4 shrink-0" />
                 <span className="shrink-0">{bold(item.path.slice(cut), cut)}</span>

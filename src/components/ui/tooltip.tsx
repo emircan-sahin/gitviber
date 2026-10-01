@@ -1,4 +1,5 @@
 import { Tooltip as TooltipPrimitive } from "radix-ui";
+import { cloneElement, isValidElement } from "react";
 import type * as React from "react";
 import { cn } from "@/lib/utils";
 import { WINDOW_SAFE_AREA } from "./dropdown-menu";
@@ -30,11 +31,31 @@ function TooltipContent({ className, sideOffset = 6, collisionPadding = WINDOW_S
   );
 }
 
+type Named = { "aria-label"?: string; "aria-labelledby"?: string; children?: React.ReactNode };
+
+const hasText = (node: React.ReactNode): boolean =>
+  typeof node === "string" || typeof node === "number"
+    ? String(node).trim() !== ""
+    : Array.isArray(node)
+      ? node.some(hasText)
+      : isValidElement<Named>(node) && hasText(node.props.children);
+
+/**
+ * An icon-only trigger takes its tooltip as its accessible name, or VoiceOver reads just "button".
+ * One showing text keeps that text (what Voice Control users say), and a plain div/span wrapper
+ * isn't the control: whatever it wraps names itself.
+ */
+function named(child: React.ReactNode, label: string) {
+  if (!isValidElement<Named>(child) || child.type === "div" || child.type === "span") return child;
+  const { props } = child;
+  return props["aria-label"] || props["aria-labelledby"] || hasText(props.children) ? child : cloneElement(child, { "aria-label": label });
+}
+
 /** Small helper: wraps any trigger with a tooltip label (and optional shortcut). */
 function Tip({ label, shortcut, children, side }: { label: string; shortcut?: string; children: React.ReactNode; side?: "top" | "bottom" | "left" | "right" }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipTrigger asChild>{named(children, label)}</TooltipTrigger>
       <TooltipContent side={side}>
         {label}
         {shortcut && <span className="ml-2 font-mono text-[11px] text-subtle">{shortcut}</span>}
@@ -47,9 +68,9 @@ function Tip({ label, shortcut, children, side }: { label: string; shortcut?: st
  * `Tip` around a control that may be disabled, which takes no pointer or focus then: the wrapper
  * shows the label instead, and takes the focus (`disabled`) so the keyboard gets the reason too.
  */
-function DisabledTip({ label, disabled, className, children }: { label: string; disabled: boolean; className?: string; children: React.ReactNode }) {
+function DisabledTip({ label, shortcut, disabled, className, children }: { label: string; shortcut?: string; disabled: boolean; className?: string; children: React.ReactNode }) {
   return (
-    <Tip label={label}>
+    <Tip label={label} shortcut={shortcut}>
       <span tabIndex={disabled ? 0 : undefined} className={cn("rounded-md outline-none focus-visible:ring-1 focus-visible:ring-ring", className)}>
         {children}
       </span>

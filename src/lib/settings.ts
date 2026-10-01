@@ -178,6 +178,8 @@ export interface Settings {
   terminalCursorBlink: boolean;
   /** One of SCROLLBACK_LINES. */
   terminalScrollback: number;
+  /** xterm's screenReaderMode. Off by default: it keeps a copy of the rows in the page and announces new output. */
+  terminalScreenReader: boolean;
   /** Markdown files open rendered rather than as source (diffs always start on the diff). */
   markdownPreview: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
@@ -257,6 +259,7 @@ const DEFAULTS: Settings = {
   terminalCursor: "block",
   terminalCursorBlink: true,
   terminalScrollback: 10_000,
+  terminalScreenReader: false,
   markdownPreview: true,
   svgPreview: false,
   imageCompare: "side",
@@ -321,6 +324,7 @@ function load(): Settings {
     if (!Object.hasOwn(TERMINAL_CURSORS, s.terminalCursor)) s.terminalCursor = DEFAULTS.terminalCursor;
     if (typeof s.terminalCursorBlink !== "boolean") s.terminalCursorBlink = DEFAULTS.terminalCursorBlink;
     if (!SCROLLBACK_LINES.includes(s.terminalScrollback)) s.terminalScrollback = DEFAULTS.terminalScrollback;
+    if (typeof s.terminalScreenReader !== "boolean") s.terminalScreenReader = DEFAULTS.terminalScreenReader;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     if (!["side", "swipe", "onion"].includes(s.imageCompare)) s.imageCompare = DEFAULTS.imageCompare;

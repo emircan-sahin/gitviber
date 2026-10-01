@@ -79,6 +79,7 @@ export function SettingsDialog() {
                 <button
                   key={id}
                   onClick={() => setOpen(id)}
+                  aria-current={section === id ? "page" : undefined}
                   className={cn(
                     "flex h-7 items-center gap-2 rounded-md px-2 text-left text-[12.5px]",
                     section === id ? "bg-active text-foreground" : "text-muted-foreground hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
@@ -97,7 +98,7 @@ export function SettingsDialog() {
           <div className="flex h-11 shrink-0 items-center border-b border-border pr-2 pl-5">
             <span className="text-[13.5px] font-semibold">{current?.label}</span>
             <DialogClose asChild>
-              <Button variant="ghost" size="icon" className="ml-auto">
+              <Button variant="ghost" size="icon" className="ml-auto" aria-label="Close">
                 <X />
               </Button>
             </DialogClose>

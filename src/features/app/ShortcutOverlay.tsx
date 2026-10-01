@@ -1,4 +1,4 @@
-import { Fragment, useEffect } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { bindingsFor, COMMANDS, commandFor, type Overrides } from "@/lib/commands/commands";
 import { IS_MAC } from "@/lib/platform";
 import { canRun, eventChord, matchesCommand, runsAt, useCommands } from "@/lib/commands/keybindings";
@@ -100,6 +100,22 @@ function groups(overrides: Overrides) {
 export function ShortcutOverlay() {
   const state = shown.use();
   const { keybindings } = useSettings();
+  // The list's scrollbar would sit under the overlay (scrollbars.ts' layer), so a fade says there's more.
+  const scroller = useRef<HTMLDivElement>(null);
+  const [more, setMore] = useState(false);
+  const measure = () => {
+    const el = scroller.current;
+    setMore(!!el && el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+  };
+  useLayoutEffect(measure, [state, keybindings]);
+  // A pinned overlay stays up while the window is resized.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!state || !el) return;
+    const resize = new ResizeObserver(measure);
+    resize.observe(el);
+    return () => resize.disconnect();
+  }, [state]);
 
   useCommands({ "workbench.shortcutOverlay": () => set(shown.get() === "pinned" ? null : "pinned") });
 
@@ -169,43 +185,47 @@ export function ShortcutOverlay() {
         e.preventDefault();
         set(null);
       }}
-      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-6 select-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 p-6 select-none animate-in fade-in-0 duration-150"
     >
-      <div className="flex max-h-full w-full max-w-[1320px] flex-col overflow-hidden rounded-lg border border-border-strong bg-elevated shadow-xl shadow-black/60">
+      <div role="dialog" aria-label="Keyboard shortcuts" className="flex max-h-full w-full max-w-[1320px] flex-col overflow-hidden rounded-lg border border-border-strong bg-elevated shadow-xl shadow-black/60">
         <div className="flex shrink-0 items-baseline gap-3 border-b border-border px-5 py-3">
           <span className="text-[13px] font-semibold">Keyboard Shortcuts</span>
           <span className="text-[11.5px] text-subtle">Change any of them in Settings → Keyboard Shortcuts</span>
           <span className="ml-auto text-[11.5px] text-subtle">{state === "held" ? `Release ${IS_MAC ? "⌘" : "Ctrl"} to close` : "Any key closes"}</span>
         </div>
-        <div className="min-h-0 columns-[17.5rem] gap-8 overflow-hidden px-5 pt-3">
-          {list.map((g) => (
-            <section key={g.category} className="mb-3.5 break-inside-avoid">
-              <div className="mb-1 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">{g.category}</div>
-              {g.rows.map((r) => (
-                <div key={r.id} className="flex min-h-[22px] items-center gap-2 py-px text-[11.5px]">
-                  <span className="min-w-0 flex-1 leading-tight">
-                    {r.title}
-                    {r.where && <span className="block text-[10.5px] text-subtle">in {r.where}</span>}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-1.5">
-                    {r.keys.map((k, i) =>
-                      k === THROUGH ? (
-                        <span key={i} className="text-subtle">
-                          {k}
-                        </span>
-                      ) : (
-                        <Fragment key={i}>
-                          {/* Alternatives, told apart from the keys of one chord. */}
-                          {i > 0 && r.keys[i - 1] !== THROUGH && <span className="text-[11px] text-subtle/70">/</span>}
-                          <Keycaps chord={k} />
-                        </Fragment>
-                      ),
-                    )}
-                  </span>
-                </div>
-              ))}
-            </section>
-          ))}
+        {/* A short window scrolls the list: with the columns' height capped, the rest went off to the side, clipped. */}
+        <div ref={scroller} onScroll={measure} className="min-h-0 overflow-y-auto px-5 pt-3">
+          <div className="columns-[17.5rem] gap-8">
+            {list.map((g) => (
+              <section key={g.category} className="mb-3.5 break-inside-avoid">
+                <div className="mb-1 text-[10.5px] font-semibold tracking-wide text-subtle uppercase">{g.category}</div>
+                {g.rows.map((r) => (
+                  <div key={r.id} className="flex min-h-[22px] items-center gap-2 py-px text-[11.5px]">
+                    <span className="min-w-0 flex-1 leading-tight">
+                      {r.title}
+                      {r.where && <span className="block text-[10.5px] text-subtle">in {r.where}</span>}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {r.keys.map((k, i) =>
+                        k === THROUGH ? (
+                          <span key={i} className="text-subtle">
+                            {k}
+                          </span>
+                        ) : (
+                          <Fragment key={i}>
+                            {/* Alternatives, told apart from the keys of one chord. */}
+                            {i > 0 && r.keys[i - 1] !== THROUGH && <span className="text-[11px] text-subtle/70">/</span>}
+                            <Keycaps chord={k} />
+                          </Fragment>
+                        ),
+                      )}
+                    </span>
+                  </div>
+                ))}
+              </section>
+            ))}
+          </div>
+          {more && <div aria-hidden className="pointer-events-none sticky bottom-0 -mt-10 h-10 bg-linear-to-t from-elevated" />}
         </div>
       </div>
     </div>

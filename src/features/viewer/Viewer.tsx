@@ -158,7 +158,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
         <FileIcon path={selectionPath(sel)} />
         <PathLabel path={selectionPath(sel)} className="min-w-0 text-[12px]" />
         <Tip label="Copy path">
-          <button className="text-subtle hover:text-foreground focus-visible:text-foreground" onClick={() => copyText(selectionPath(sel), "Path copied")}>
+          <button className="hit-area text-subtle hover:text-foreground focus-visible:text-foreground" onClick={() => copyText(selectionPath(sel), "Path copied")}>
             <Copy className="size-3" />
           </button>
         </Tip>
@@ -470,7 +470,7 @@ function CompareToggle() {
 function IconBtn({ label, command, active, onClick, children }: { label: string; command: CommandId; active?: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <Tip label={label} shortcut={useShortcut(command)}>
-      <Button variant="ghost" size="icon-sm" onClick={onClick} className={cn(active && "bg-primary/15 text-primary hover:bg-primary/20 focus-visible:bg-primary/20 hover:text-primary focus-visible:text-primary")}>
+      <Button variant="ghost" size="icon-sm" aria-pressed={active} onClick={onClick} className={cn(active && "bg-primary/15 text-primary hover:bg-primary/20 focus-visible:bg-primary/20 hover:text-primary focus-visible:text-primary")}>
         {children}
       </Button>
     </Tip>

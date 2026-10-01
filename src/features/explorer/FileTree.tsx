@@ -442,6 +442,11 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
         <div
           ref={treeRef}
           tabIndex={0}
+          role="tree"
+          aria-label="Files"
+          aria-multiselectable
+          // The tree keeps focus and `selected` is its cursor, which a screen reader follows through this.
+          aria-activedescendant={selected && rows.some((r) => r.entry.path === selected) ? rowId(selected) : undefined}
           onKeyDown={onKeyDown}
           onContextMenu={(ev) => {
             const path = (ev.target as HTMLElement).closest<HTMLElement>("[data-path]")?.dataset.path;
@@ -457,7 +462,8 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
           {rows.map(({ entry: e, depth }) => {
             const isOpen = shown.expanded.has(e.path);
             const st = fileStatus.get(e.path);
-            const tone = st ? statusInfo(st).text : undefined;
+            // Ignored: the whole row in the faint text color (still 4.5:1), its icons faded.
+            const tone = e.ignored ? "text-subtle" : st ? statusInfo(st).text : undefined;
             const sel: Selection = { kind: "file", path: e.path };
             const active = !e.isDir && activeKey === selectionKey(sel);
             const renaming = editing?.mode === "rename" && editing.entry.path === e.path;
@@ -466,12 +472,16 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
                 <Row
                   depth={depth}
                   path={e.path}
+                  id={rowId(e.path)}
+                  aria-level={depth + 1}
+                  aria-expanded={e.isDir ? isOpen : undefined}
+                  aria-selected={active || !!picked?.paths.has(e.path)}
                   onClick={(ev) => click(e, ev)}
                   onDoubleClick={() => !e.isDir && onOpen(sel, true)}
                   onMouseEnter={() => !e.isDir && !e.ignored && onHover(sel)}
                   className={cn(
                     active || picked?.paths.has(e.path) ? "bg-primary/15" : "hover:bg-hover",
-                    e.ignored && "opacity-40",
+                    e.ignored && "[&>img]:opacity-40",
                     // The tree holds the focus, not the row: the keyboard's row looks hovered too.
                     selected === e.path && "group-focus/tree:bg-hover group-focus/tree:outline group-focus/tree:-outline-offset-1 group-focus/tree:outline-primary/70",
                   )}
@@ -494,7 +504,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
                     <>
                       <span className={cn("truncate", tone ?? "text-foreground/85")}>{e.name}</span>
                       {st && <span className={cn("ml-auto font-mono text-[10.5px] font-bold", tone)}>{statusInfo(st).letter}</span>}
-                      {!st && e.isDir && dirtyDirs.has(e.path) && <span className="ml-auto size-1.5 rounded-full bg-modified" />}
+                      {!st && e.isDir && dirtyDirs.has(e.path) && <span className={cn("ml-auto size-1.5 rounded-full", e.ignored ? "bg-subtle" : "bg-modified")} />}
                     </>
                   )}
                 </Row>
@@ -590,10 +600,13 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   );
 }
 
+// An id has no spaces, and a path can.
+const rowId = (path: string) => `explorer:${encodeURIComponent(path)}`;
+
 function Row({ depth, path, className, children, ...props }: { depth: number; path?: string } & React.ComponentProps<"div">) {
   return (
     <div
-      role="button"
+      role="treeitem"
       data-path={path}
       style={{ paddingLeft: 8 + depth * INDENT }}
       className={cn("relative flex h-6 cursor-pointer items-center gap-1.5 pr-2 text-[12px]", className)}

@@ -1,11 +1,13 @@
 import { RotateCcw } from "lucide-react";
-import { useMemo, useState } from "react";
+import { isValidElement, useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
 import { bindingsFor, type CommandId } from "@/lib/commands/commands";
 import { cleanFontName, useSettings } from "@/lib/settings";
+import { FieldLabel } from "@/lib/ui/fieldLabel";
 import { Select } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Keycaps } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
 
@@ -42,11 +44,11 @@ export function SizeStepper({
 }) {
   return (
     <div className="flex items-center gap-1">
-      <Button variant="secondary" size="icon-sm" disabled={value <= min} onClick={() => onChange(value - step)}>
+      <Button variant="secondary" size="icon-sm" aria-label="Smaller" disabled={value <= min} onClick={() => onChange(value - step)}>
         −
       </Button>
       <span className="w-10 text-center font-mono text-[12px]">{value}</span>
-      <Button variant="secondary" size="icon-sm" disabled={value >= max} onClick={() => onChange(value + step)}>
+      <Button variant="secondary" size="icon-sm" aria-label="Larger" disabled={value >= max} onClick={() => onChange(value + step)}>
         +
       </Button>
       <Tip label="Reset">
@@ -61,11 +63,16 @@ export function SizeStepper({
 export function Field({ label, hint, commands, children }: { label: string; hint?: React.ReactNode; commands?: CommandId[]; children: React.ReactNode }) {
   const { keybindings } = useSettings();
   const keys = commands?.map((id) => bindingsFor(id, keybindings)[0]).filter(Boolean) ?? [];
+  const id = useId();
+  const ids = { labelledBy: `${id}label`, describedBy: hint ? `${id}hint` : undefined };
+  // A lone Switch or Select (FontPicker's custom name field has its placeholder) takes the label and
+  // hint itself; any other row is a group named by them. Never both, or each is read twice.
+  const lone = isValidElement(children) && ([Switch, OptionSelect, FontPicker] as unknown[]).includes(children.type);
   return (
     <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border py-3.5 last:border-0">
       <div className="min-w-48 flex-1">
-        <div className="text-[12.5px] font-medium">{label}</div>
-        {hint && <div className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">{hint}</div>}
+        <div id={`${id}label`} className="text-[12.5px] font-medium">{label}</div>
+        {hint && <div id={`${id}hint`} className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">{hint}</div>}
         {keys.length > 0 && (
           <div className="mt-1.5 flex gap-2">
             {keys.map((k) => (
@@ -74,7 +81,9 @@ export function Field({ label, hint, commands, children }: { label: string; hint
           </div>
         )}
       </div>
-      <div className="shrink-0">{children}</div>
+      <div role={lone ? undefined : "group"} aria-labelledby={lone ? undefined : ids.labelledBy} aria-describedby={lone ? undefined : ids.describedBy} className="shrink-0">
+        <FieldLabel value={lone ? ids : {}}>{children}</FieldLabel>
+      </div>
     </div>
   );
 }
@@ -110,13 +119,22 @@ export function FontPicker({
   const missing = useMemo(() => !!name && !fontInstalled(name), [name]);
   // Applied on Enter or leaving the field: every partial name on the way would re-lay out the code view.
   const commit = () => name !== custom && onChange("Custom", name);
+  const warning = useId();
   return (
     <div className="flex w-52 flex-col gap-1.5">
       <OptionSelect value={value} options={Object.fromEntries([...fonts, "Custom"].map((f) => [f, labels?.[f] ?? f]))} onChange={(v) => onChange(v, custom)} />
       {value === "Custom" && (
         <>
-          <Input value={draft} placeholder="Installed font name" onChange={(e) => setDraft(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === "Enter" && commit()} />
-          {missing && <div className="text-[11px] leading-snug text-modified">Not installed: the default font shows instead.</div>}
+          <Input
+            value={draft}
+            aria-label="Custom font name"
+            aria-describedby={missing ? warning : undefined}
+            placeholder="Installed font name"
+            onChange={(e) => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={(e) => e.key === "Enter" && commit()}
+          />
+          {missing && <div id={warning} className="text-[11px] leading-snug text-modified">Not installed: the default font shows instead.</div>}
         </>
       )}
     </div>

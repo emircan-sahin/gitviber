@@ -58,7 +58,7 @@ export function LanguageMenu({ up }: { up?: boolean }) {
               if (ref.current) ref.current.open = false;
               switchTo(l);
             }}
-            className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-[13px] text-fg hover:bg-primary hover:text-white"
+            className="flex items-center gap-2 rounded-sm px-2 py-1.5 text-[13px] text-fg hover:bg-primary hover:text-primary-fg"
           >
             <Check className={cx("size-3.5", l.code !== locale.code && "invisible")} />
             {l.name}

@@ -19,7 +19,8 @@
   /* ≥4.5:1 (WCAG AA) on every surface up to --elevated: it's used for 11-12px text. */
   --subtle: #86868d;
   --primary: #4a9ff5;
-  --primary-foreground: #ffffff;
+  /* Dark ink: white on this blue is 2.77:1; --sidebar's is 6.95:1, 5.27:1 on the /85 hover. */
+  --primary-foreground: #0e0e0f;
   --ring: #4a9ff5;
   --destructive: #f47067;
   --added: #57d17a;
@@ -71,6 +72,8 @@
   --muted-foreground: #a8a8af;
   --subtle: #96969e;
   --primary: #539bf5;
+  /* 5.97:1 (white was 2.85:1), 4.68:1 on the /85 hover. */
+  --primary-foreground: #1c1c1f;
   --ring: #539bf5;
   --destructive: #ef766e;
   --added: #5cc07a;
@@ -104,6 +107,7 @@
   --muted-foreground: #5b5b62;
   --subtle: #6e6e75;
   --primary: #0969da;
+  --primary-foreground: #ffffff;
   --ring: #0969da;
   --destructive: #cf222e;
   --added: #1a7f37;
@@ -438,6 +442,21 @@
   --radius-lg: 6px;
 }
 
+/* A small control's pointer target grown to at least 20px around its center (WCAG 2.5.8), looking
+   the same. Only where the neighbours sit far enough away not to be covered. */
+@utility hit-area {
+  position: relative;
+  &::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 20px);
+    height: max(100%, 20px);
+    translate: -50% -50%;
+  }
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/70;
@@ -728,7 +747,9 @@
 @media (prefers-reduced-motion: reduce) {
   .logo-draw,
   .logo-draw *,
-  .splash-text {
+  .splash-text,
+  /* Menus, dialogs, popovers, tooltips and toasts (tw-animate-css): they appear without zooming or sliding. */
+  .animate-in {
     animation: none;
   }
 }

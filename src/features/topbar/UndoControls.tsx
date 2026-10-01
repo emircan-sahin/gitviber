@@ -9,7 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Tip, Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { DisabledTip, Tip } from "@/components/ui/tooltip";
 import type { JournalEntry } from "@/lib/api";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { toast } from "@/lib/app/toast";
@@ -59,19 +59,16 @@ export function UndoControls({ repo, disabled }: { repo: RepoData; disabled: boo
     const blocked = forward ? journal?.redoBlocked : journal?.undoBlocked;
     const verb = forward ? "Redo" : "Undo";
     return (
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span>
-            <Button variant="ghost" size="icon" aria-label={verb} disabled={off || !e || !!blocked} onClick={() => e && go(forward, [e.id])}>
-              {forward ? <Redo2 /> : <Undo2 />}
-            </Button>
-          </span>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-80">
-          {!e ? `Nothing to ${verb.toLowerCase()}` : blocked ? `Can't ${verb.toLowerCase()} ${e.label}. ${blocked}` : `${verb} ${e.label}`}
-          <span className="ml-2 font-mono text-[11px] text-subtle">{forward ? redoKey : undoKey}</span>
-        </TooltipContent>
-      </Tooltip>
+      <DisabledTip
+        label={!e ? `Nothing to ${verb.toLowerCase()}` : blocked ? `Can't ${verb.toLowerCase()} ${e.label}. ${blocked}` : `${verb} ${e.label}`}
+        shortcut={forward ? redoKey : undoKey}
+        // A Tab stop only for a reason worth reading, not for an empty history.
+        disabled={!!e && !!blocked}
+      >
+        <Button variant="ghost" size="icon" aria-label={verb} disabled={off || !e || !!blocked} onClick={() => e && go(forward, [e.id])}>
+          {forward ? <Redo2 /> : <Undo2 />}
+        </Button>
+      </DisabledTip>
     );
   };
 
