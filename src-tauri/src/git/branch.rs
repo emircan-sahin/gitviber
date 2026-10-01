@@ -3,7 +3,7 @@
 use super::cmd::command;
 use super::{run, run_network, run_text, validate_base, validate_branch, worktrees};
 use crate::network::{self, Net};
-use crate::process::exec;
+use crate::process::{exec, spawn, spawning};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -369,7 +369,7 @@ const FORMAT: &str = "--format=commit %H";
 /// `git <source>; …| git patch-id --verbatim`: (id, commit) pairs, each source streamed through
 /// one pipe in turn, as a branch's and its base's history can be long.
 fn patch_ids(repo: &Path, sources: &[Vec<&str>]) -> Option<Vec<(String, String)>> {
-    let (reader, writer) = std::io::pipe().ok()?;
+    let (reader, writer) = spawning(std::io::pipe).ok()?;
     let mut ids = command(repo, &["patch-id", "--verbatim"]);
     ids.stdin(reader);
     std::thread::scope(|s| {
@@ -380,7 +380,8 @@ fn patch_ids(repo: &Path, sources: &[Vec<&str>]) -> Option<Vec<(String, String)>
             cmd.stderr(Stdio::null());
             written &= writer
                 .try_clone()
-                .is_ok_and(|w| cmd.stdout(w).status().is_ok_and(|s| s.success()));
+                .and_then(|w| spawn(cmd.stdout(w))?.wait())
+                .is_ok_and(|s| s.success());
         }
         drop(writer);
         let out = out.join().ok()?.ok().filter(|_| written)?;

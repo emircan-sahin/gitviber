@@ -305,19 +305,20 @@ fn launch(argv: &[String], dir: &Path) -> Result<(), String> {
     let shown = Path::new(program)
         .file_name()
         .map_or(program.clone(), |n| n.to_string_lossy().into_owned());
-    let mut child = Command::new(program)
-        .args(args)
-        .current_dir(dir)
-        // Also where a bare program name is looked up: Homebrew's bin isn't on a Finder app's PATH.
-        .env("PATH", crate::process::search_path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => format!("{shown}: command not found"),
-            _ => format!("{shown}: {e}"),
-        })?;
+    let mut child = crate::process::spawn(
+        Command::new(program)
+            .args(args)
+            .current_dir(dir)
+            // Also where a bare program name is looked up: Homebrew's bin isn't on a Finder app's PATH.
+            .env("PATH", crate::process::search_path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null()),
+    )
+    .map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => format!("{shown}: command not found"),
+        _ => format!("{shown}: {e}"),
+    })?;
     // `open` and the editors' CLIs hand over and exit at once, so their failures show. A custom
     // command may be the app itself and keep running; it's waited on elsewhere, leaving no zombie.
     let deadline = Instant::now() + Duration::from_secs(2);
