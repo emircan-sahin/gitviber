@@ -1,3 +1,4 @@
+import { useFieldLabel } from "@/lib/ui/fieldLabel";
 import { cn } from "@/lib/utils";
 
 function Switch({ checked, onChange }: { checked: boolean; onChange: (v: boolean) => void }) {
@@ -5,6 +6,7 @@ function Switch({ checked, onChange }: { checked: boolean; onChange: (v: boolean
     <button
       role="switch"
       aria-checked={checked}
+      aria-labelledby={useFieldLabel()}
       onClick={() => onChange(!checked)}
       className={cn("flex h-4 w-7 items-center rounded-full p-0.5 transition-colors", checked ? "bg-primary" : "bg-border-strong")}
     >

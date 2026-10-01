@@ -1,10 +1,11 @@
 import { RotateCcw } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
 import { bindingsFor, type CommandId } from "@/lib/commands/commands";
 import { cleanFontName, useSettings } from "@/lib/settings";
+import { FieldLabel } from "@/lib/ui/fieldLabel";
 import { Select } from "@/components/ui/select";
 import { Keycaps } from "@/components/ui/kbd";
 import { cn } from "@/lib/utils";
@@ -42,11 +43,11 @@ export function SizeStepper({
 }) {
   return (
     <div className="flex items-center gap-1">
-      <Button variant="secondary" size="icon-sm" disabled={value <= min} onClick={() => onChange(value - step)}>
+      <Button variant="secondary" size="icon-sm" aria-label="Smaller" disabled={value <= min} onClick={() => onChange(value - step)}>
         −
       </Button>
       <span className="w-10 text-center font-mono text-[12px]">{value}</span>
-      <Button variant="secondary" size="icon-sm" disabled={value >= max} onClick={() => onChange(value + step)}>
+      <Button variant="secondary" size="icon-sm" aria-label="Larger" disabled={value >= max} onClick={() => onChange(value + step)}>
         +
       </Button>
       <Tip label="Reset">
@@ -61,11 +62,12 @@ export function SizeStepper({
 export function Field({ label, hint, commands, children }: { label: string; hint?: React.ReactNode; commands?: CommandId[]; children: React.ReactNode }) {
   const { keybindings } = useSettings();
   const keys = commands?.map((id) => bindingsFor(id, keybindings)[0]).filter(Boolean) ?? [];
+  const id = useId();
   return (
     <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border py-3.5 last:border-0">
       <div className="min-w-48 flex-1">
-        <div className="text-[12.5px] font-medium">{label}</div>
-        {hint && <div className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">{hint}</div>}
+        <div id={`${id}label`} className="text-[12.5px] font-medium">{label}</div>
+        {hint && <div id={`${id}hint`} className="mt-0.5 text-[11.5px] leading-relaxed text-muted-foreground">{hint}</div>}
         {keys.length > 0 && (
           <div className="mt-1.5 flex gap-2">
             {keys.map((k) => (
@@ -74,7 +76,10 @@ export function Field({ label, hint, commands, children }: { label: string; hint
           </div>
         )}
       </div>
-      <div className="shrink-0">{children}</div>
+      {/* The group names whatever the row holds; a lone Switch or Select takes the label itself. */}
+      <div role="group" aria-labelledby={`${id}label`} aria-describedby={hint ? `${id}hint` : undefined} className="shrink-0">
+        <FieldLabel value={`${id}label`}>{children}</FieldLabel>
+      </div>
     </div>
   );
 }
