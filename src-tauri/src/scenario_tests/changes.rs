@@ -207,3 +207,38 @@ fn a_submodule_with_changes_inside_says_so() {
     let a = st.unstaged.iter().find(|f| f.path == "a.txt").unwrap();
     assert!(a.submodule.is_none());
 }
+
+/// A mixed reset moves the index under an unstaged change while its letter and its file stay
+/// the same: the stacked diff reads the file again by the index blob it's against.
+#[test]
+fn an_unstaged_change_names_the_index_blob_it_is_against() {
+    let sb = Sandbox::new("indexoid");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "1\n", "one");
+    write_commit(&r, "a.txt", "2\n", "two");
+    fs::write(r.join("a.txt"), "3\n").unwrap();
+    let before = status(&r).unwrap().unstaged[0].clone();
+    assert_eq!(before.index_oid, Some(rev(&r, ":a.txt")));
+    let head = rev(&r, "HEAD");
+    reset(&r, &rev(&r, "HEAD~1"), ResetMode::Mixed, &head).unwrap();
+    let st = status(&r).unwrap();
+    assert!(st.staged.is_empty());
+    let after = &st.unstaged[0];
+    assert_eq!((&after.status, &after.oid), (&before.status, &before.oid));
+    assert_eq!(after.index_oid, Some(rev(&r, ":a.txt")));
+    assert_ne!(after.index_oid, before.index_oid);
+}
+
+/// A submodule's folder doesn't change as its checkout moves from one new commit to another.
+#[test]
+fn a_moved_submodule_names_its_commit() {
+    let sb = Sandbox::new("submoved");
+    let r = repo_with_submodule(&sb);
+    let sub = r.join("sub");
+    write_commit(&sub, "l.txt", "2\n", "two");
+    let oid = |r: &Path| status(r).unwrap().unstaged[0].oid.clone();
+    assert_eq!(oid(&r), Some(rev(&sub, "HEAD")));
+    write_commit(&sub, "l.txt", "3\n", "three");
+    assert_eq!(oid(&r), Some(rev(&sub, "HEAD")));
+}

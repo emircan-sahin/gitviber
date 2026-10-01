@@ -78,12 +78,12 @@ export function AllChanges({ list, status, branchRows, revision, viewed, toggleV
   const isOpen = (sel: ListFile) => !(memo(sel).shut ?? (sel.kind !== "staged" && viewed(sel)));
   const scroller = useRef<HTMLDivElement>(null);
 
-  // What a file's diff depends on: its own content, and the index under unstaged changes or HEAD
-  // under staged ones. Each file is read again only when that changes, not on every change on disk.
-  const stagedOids = useMemo(() => new Map(status?.staged.map((f) => [f.path, f.oid])), [status]);
+  // What a file's diff depends on: its own content (a submodule's: its commit and whether it's
+  // dirty), and the index under unstaged changes or HEAD under staged ones. Each file is read again
+  // only when that changes, not on every change on disk.
   const revisionOf = (sel: ListFile) => {
     const { file } = sel;
-    const sig = [file.status, file.oid ?? `${file.additions}:${file.deletions}`, sel.kind === "unstaged" ? stagedOids.get(file.path) : sel.kind === "staged" ? status?.head : ""].join(":");
+    const sig = [file.status, file.oid ?? `${file.additions}:${file.deletions}`, file.submodule, sel.kind === "unstaged" ? file.indexOid : sel.kind === "staged" ? status?.head : ""].join(":");
     const m = memo(sel);
     if (m.sig !== sig) Object.assign(m, { sig, rev: revision });
     return m.rev!;
