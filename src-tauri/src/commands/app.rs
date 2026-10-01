@@ -1,7 +1,7 @@
 use crate::state::{blocking, AppState, Res};
-use crate::{cli, clipboard, errors, git, launch, menu, process, pty, updates};
+use crate::{agents, cli, clipboard, errors, git, launch, menu, process, pty, updates};
 use std::path::Path;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Any folder, unlike the repo commands: the shell can `cd` anywhere the user can anyway.
 /// `integration`: load the shell integration, whose scripts live in the app's cache folder.
@@ -94,6 +94,7 @@ pub fn pty_cwd(state: State<'_, AppState>, id: u32) -> Option<String> {
 
 #[tauri::command]
 pub fn pty_kill(state: State<'_, AppState>, id: u32) {
+    state.agents.forget(id);
     state.ptys.kill(id)
 }
 
@@ -102,6 +103,55 @@ pub fn pty_kill(state: State<'_, AppState>, id: u32) {
 #[tauri::command]
 pub fn pty_busy(state: State<'_, AppState>, ids: Option<Vec<u32>>) -> usize {
     state.ptys.busy(ids.as_deref())
+}
+
+/// The coding agents (agents.rs) the terminals `ids` run, by id; a terminal with none isn't
+/// listed. Each one's state file is watched from then on, its changes sent as "agent-state".
+#[tauri::command]
+pub async fn pty_agents(
+    app: AppHandle,
+    ids: Vec<u32>,
+) -> Res<std::collections::HashMap<u32, agents::Agent>> {
+    blocking(move || {
+        let state = app.state::<AppState>();
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let mut running = std::collections::HashMap::new();
+        for id in ids {
+            let found = home.as_ref().and_then(|home| {
+                let found = state.ptys.foreground(id).and_then(agents::detect)?;
+                Some(agents::look(&found, home))
+            });
+            let Some(look) = found else {
+                state.agents.forget(id);
+                continue;
+            };
+            match look.status {
+                Some((file, status)) => {
+                    let app = app.clone();
+                    let sink: agents::Sink = std::sync::Arc::new(move |id, state| {
+                        let _ = app.emit("agent-state", AgentState { id, state });
+                    });
+                    state.agents.track(id, &file, status, sink);
+                }
+                None => state.agents.forget(id),
+            }
+            running.insert(id, look.agent);
+        }
+        Ok(running)
+    })
+    .await
+}
+
+#[derive(serde::Serialize, Clone)]
+struct AgentState {
+    id: u32,
+    state: Option<&'static str>,
+}
+
+/// Which of `paths` are folders still: a restored agent resumes only where it ran.
+#[tauri::command]
+pub fn folders_left(paths: Vec<String>) -> Vec<bool> {
+    paths.iter().map(|p| Path::new(p).is_dir()).collect()
 }
 
 /// The page saved what it keeps on the way out (menu::quit).

@@ -1,3 +1,4 @@
+mod agents;
 pub mod askpass;
 mod cli;
 mod clipboard;
@@ -89,6 +90,7 @@ pub fn run() {
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
                 webview.state::<AppState>().ptys.kill_all();
+                webview.state::<AppState>().agents.forget_all();
                 askpass::decline_all();
             }
         })
@@ -299,6 +301,8 @@ pub fn run() {
             commands::app::keep_dropped,
             commands::app::copy_files,
             commands::app::pty_busy,
+            commands::app::pty_agents,
+            commands::app::folders_left,
             commands::app::quit,
             commands::app::update_mode,
             commands::app::take_opened,
