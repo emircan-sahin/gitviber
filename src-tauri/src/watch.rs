@@ -115,12 +115,15 @@ impl ExternalGitDirs {
         if path.extension().is_some_and(|e| e == "lock") {
             return None;
         }
-        // The own dir sits inside the common one's worktrees/, so it goes first.
-        if self.own.as_ref().is_some_and(|d| path.starts_with(d)) {
+        // A submodule's (or any separate) git dir is both the own and the common one. As in a
+        // plain .git, only what git_file names counts: its objects and logs churn.
+        let own = self.own == self.common;
+        // A linked worktree's own dir sits inside the common one's worktrees/, so it goes first.
+        if !own && self.own.as_ref().is_some_and(|d| path.starts_with(d)) {
             return Some(Kind::Git);
         }
         let rel = path.strip_prefix(self.common.as_ref()?).ok()?;
-        git_file(rel, false).then_some(Kind::Git)
+        git_file(rel, own).then_some(Kind::Git)
     }
 }
 

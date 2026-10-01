@@ -126,7 +126,7 @@ fn watcher_survives_a_flood_of_ignored_paths() {
 
 #[test]
 fn watcher_still_follows_submodules() {
-    use crate::watch::{classify, Kind};
+    use crate::watch::{classify, ExternalGitDirs, Kind};
     let sb = Sandbox::new("wtsubwatch");
     let r = repo_with_submodule(&sb);
     assert!(r.join("sub/.git").is_file());
@@ -138,6 +138,17 @@ fn watcher_still_follows_submodules() {
     // A plain nested repo (a .git dir) is still ignored.
     init(&r.join("vendor/x"));
     assert_eq!(classify(&r, &r.join("vendor/x/f.txt")), None);
+
+    // The submodule opened on its own: its git dir is .git/modules/sub, own and common at once.
+    let ext = ExternalGitDirs::find(&r.join("sub"));
+    let dir = ext.own.clone().expect("git dir outside the submodule");
+    assert_eq!(ext.common.as_ref(), Some(&dir));
+    for p in ["HEAD", "index", "refs/heads/main", "MERGE_HEAD"] {
+        assert_eq!(ext.classify(&dir.join(p)), Some(Kind::Git), "{p}");
+    }
+    for p in ["objects/ab/cdef", "logs/HEAD", "FETCH_HEAD"] {
+        assert_eq!(ext.classify(&dir.join(p)), None, "{p}");
+    }
 }
 
 #[test]
