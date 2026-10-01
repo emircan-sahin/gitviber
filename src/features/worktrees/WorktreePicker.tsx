@@ -221,8 +221,17 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
           }}
         >
           {/* Like a native menu: the highlight leaves with the mouse; ↑↓ bring it back. */}
-          <div ref={listRef} tabIndex={-1} onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 outline-none">
-            <div className="px-2 pt-2 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Worktrees</div>
+          <div
+            ref={listRef}
+            tabIndex={-1}
+            role="listbox"
+            aria-label="Worktrees"
+            // One picker is open at a time, so its ids are fixed.
+            aria-activedescendant={index >= 0 && list[index] ? `worktree-option-${index}` : undefined}
+            onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)}
+            className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1 outline-none"
+          >
+            <div aria-hidden className="px-2 pt-2 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Worktrees</div>
             {list.map((w, i) => (
               <WorktreeRow
                 key={w.path}
@@ -346,6 +355,7 @@ function WorktreeRow({
   const mergeLabel = `Merge into ${into}${state?.uncommitted ? ` · its ${state.uncommitted} uncommitted ${state.uncommitted === 1 ? "change stays" : "changes stay"} behind` : ""}`;
   const row = (
     <div
+      id={`worktree-option-${i}`}
       data-option={i}
       role="option"
       aria-selected={hot}

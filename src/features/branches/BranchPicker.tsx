@@ -246,6 +246,7 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     const hot = i === index;
     const row = (
       <div
+        id={`branch-option-${i}`}
         data-option={i}
         role="option"
         aria-selected={hot}
@@ -347,6 +348,12 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
           <input
             ref={input}
             autoFocus
+            // One picker is open at a time, so its ids are fixed.
+            role="combobox"
+            aria-expanded
+            aria-controls="branch-options"
+            aria-activedescendant={index >= 0 ? `branch-option-${index}` : undefined}
+            aria-autocomplete="list"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
@@ -355,14 +362,14 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
           />
         </div>
         {/* Like a native menu: the highlight leaves with the mouse; ↑↓ bring it back. */}
-        <div ref={listRef} onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
+        <div ref={listRef} id="branch-options" role="listbox" aria-label="Branches" onMouseLeave={(e) => pointerMoved(e) && setIndex(-1)} className="max-h-[360px] min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1">
           {groups.length === 0 && options.length === 0 && (
             <div className="px-2 py-3 text-center text-[12px] text-subtle">
               No branches
             </div>
           )}
           {groups.map((g) => (
-            <div key={g.name}>
+            <div key={g.name} role="group" aria-label={g.name}>
               <button
                 // Keep the focus in the search box.
                 onMouseDown={(e) => e.preventDefault()}
