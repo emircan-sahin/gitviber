@@ -12,10 +12,11 @@ pub async fn add_worktree(
     state: State<'_, AppState>,
     branch: String,
     base: Option<String>,
+    track: bool,
     dir: Option<String>,
 ) -> Res<String> {
     in_repo(&state, move |r| {
-        git::add_worktree(r, &branch, base.as_deref(), dir.as_deref())
+        git::add_worktree(r, &branch, base.as_deref(), track, dir.as_deref())
     })
     .await
 }

@@ -50,7 +50,8 @@ type BranchRow = Pick<Branch, "name" | "remote" | "current" | "worktree">;
  * What a new worktree for the typed name checks out. A local branch as it is, unless a worktree
  * has it already (git keeps a branch in one at a time). A branch only on a remote, as a local one
  * tracking it: origin's where several remotes have it, or the one typed as `upstream/feat`. Else a
- * new branch, from the base picked. `base`: what to give add_worktree, undefined for the picked one.
+ * new branch, from the base picked. `base`: what to give add_worktree, undefined for the picked one;
+ * `track`: whether the branch tracks it.
  */
 export function worktreeBranch(typed: string, branches: BranchRow[], fold = FOLD_CASE) {
   const check = refNameCheck(typed, localNames(branches), false, fold);
@@ -62,15 +63,15 @@ export function worktreeBranch(typed: string, branches: BranchRow[], fold = FOLD
   const local = localOf(name);
   if (local) {
     const held = local.current ? "here" : local.worktree && `in ${folderName(local.worktree)}`;
-    if (held) return { name: local.name, base: undefined, hint: `${local.name} is checked out ${held}; a branch can be in one worktree at a time.`, taken: true };
-    return { name: local.name, base: null, hint: `Checks out the existing branch ${local.name}.`, taken: false };
+    if (held) return { name: local.name, base: undefined, track: false, hint: `${local.name} is checked out ${held}; a branch can be in one worktree at a time.`, taken: true };
+    return { name: local.name, base: null, track: false, hint: `Checks out the existing branch ${local.name}.`, taken: false };
   }
   const namesakes = remotes.filter((b) => b.name.slice(b.name.indexOf("/") + 1) === name);
   const remote = named ?? namesakes.find((b) => b.name.startsWith("origin/")) ?? namesakes[0];
-  if (remote) return { name, base: `refs/remotes/${remote.name}`, hint: `Checks out ${remote.name} as a new tracking branch ${name}.`, taken: false };
+  if (remote) return { name, base: `refs/remotes/${remote.name}`, track: true, hint: `Checks out ${remote.name} as a new tracking branch ${name}.`, taken: false };
   const prefix = remotes.map((b) => b.name.slice(0, b.name.indexOf("/") + 1)).find((p) => name.startsWith(p));
-  if (prefix) return { name, base: undefined, hint: `${prefix} is a remote's; a branch named ${name} would be ambiguous.`, taken: true };
-  return { name, base: undefined, hint: check.hint, taken: false };
+  if (prefix) return { name, base: undefined, track: false, hint: `${prefix} is a remote's; a branch named ${name} would be ambiguous.`, taken: true };
+  return { name, base: undefined, track: false, hint: check.hint, taken: false };
 }
 
 /**

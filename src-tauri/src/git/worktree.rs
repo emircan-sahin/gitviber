@@ -114,26 +114,21 @@ pub fn main_worktree(repo: &Path) -> Option<String> {
 
 /// Checks `branch` out in a new worktree and returns its path as listed, `<dir>/<branch>`;
 /// `dir` is `<parent>/<project>.worktrees` unless given. With `base`, `branch` is a new branch
-/// made there, tracking nothing like `create_branch`'s unless `base` is its remote namesake. Without, a branch only on a remote gets a
+/// made there, tracking nothing like `create_branch`'s, or with `track` tracking `base`. Without, a branch only on a remote gets a
 /// local tracking branch (git's own DWIM for `worktree add`). The ignored files the main
 /// worktree's `.worktreeinclude` lists are copied in.
 pub fn add_worktree(
     repo: &Path,
     branch: &str,
     base: Option<&str>,
+    track: bool,
     dir: Option<&str>,
 ) -> Result<String, String> {
     let target = worktree_target(repo, branch, dir)?;
     match base {
         Some(base) => {
             validate_base(repo, base)?;
-            // Made from its namesake on a remote (upstream/feat for feat), it tracks that, as
-            // git's own DWIM would if only one remote had it.
-            let namesake = base
-                .strip_prefix("refs/remotes/")
-                .and_then(|r| r.strip_suffix(branch))
-                .is_some_and(|remote| remote.len() > 1 && remote.ends_with('/'));
-            let track = if namesake { "--track" } else { "--no-track" };
+            let track = if track { "--track" } else { "--no-track" };
             let args = ["worktree", "add", track, "-b", branch, &target, base];
             run(repo, &args)?
         }

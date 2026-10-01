@@ -69,8 +69,8 @@ test("a new worktree checks out what the typed name already is", () => {
     row("upstream/theirs", { remote: true }),
   ];
   const pick = (typed: string) => {
-    const { name, base, taken } = worktreeBranch(typed, branches, false);
-    return { name, base, taken };
+    const { name, base, track, taken } = worktreeBranch(typed, branches, false);
+    return { name, base, ...(track && { track }), taken };
   };
   assert.deepEqual(pick("new thing"), { name: "new-thing", base: undefined, taken: false });
   assert.deepEqual(pick("feat"), { name: "feat", base: null, taken: false });
@@ -78,9 +78,9 @@ test("a new worktree checks out what the typed name already is", () => {
   assert.deepEqual(pick("held"), { name: "held", base: undefined, taken: true });
   assert.match(worktreeBranch("held", branches, false).hint!, /checked out in held;/);
   // Only on a remote: tracked from origin's, or from the remote typed.
-  assert.deepEqual(pick("remote-only"), { name: "remote-only", base: "refs/remotes/origin/remote-only", taken: false });
-  assert.deepEqual(pick("upstream/remote-only"), { name: "remote-only", base: "refs/remotes/upstream/remote-only", taken: false });
-  assert.deepEqual(pick("theirs"), { name: "theirs", base: "refs/remotes/upstream/theirs", taken: false });
+  assert.deepEqual(pick("remote-only"), { name: "remote-only", base: "refs/remotes/origin/remote-only", track: true, taken: false });
+  assert.deepEqual(pick("upstream/remote-only"), { name: "remote-only", base: "refs/remotes/upstream/remote-only", track: true, taken: false });
+  assert.deepEqual(pick("theirs"), { name: "theirs", base: "refs/remotes/upstream/theirs", track: true, taken: false });
   // origin/main is main, which is checked out here; origin/nope would be an ambiguous name.
   assert.deepEqual(pick("origin/main"), { name: "main", base: undefined, taken: true });
   assert.deepEqual(pick("origin/nope"), { name: "origin/nope", base: undefined, taken: true });

@@ -101,8 +101,8 @@ fn status_history_and_diffs() {
         .any(|b| b.name == "feat/x" && b.current));
 
     switch_branch(&repo, "main", false).unwrap();
-    assert!(add_worktree(&repo, "--evil", None, None).is_err());
-    let wt = add_worktree(&repo, "feat/x", None, None).unwrap();
+    assert!(add_worktree(&repo, "--evil", None, false, None).is_err());
+    let wt = add_worktree(&repo, "feat/x", None, false, None).unwrap();
     // git reports real paths: /var/folders is /private/var/folders on macOS.
     let real = repo.canonicalize().unwrap();
     let expected = real.with_file_name(format!(
@@ -114,7 +114,7 @@ fn status_history_and_diffs() {
         .unwrap()
         .iter()
         .any(|w| w.branch.as_deref() == Some("feat/x")));
-    assert!(add_worktree(&repo, "feat/x", None, None).is_err());
+    assert!(add_worktree(&repo, "feat/x", None, false, None).is_err());
     let _ = fs::remove_dir_all(&repo);
     let _ = fs::remove_dir_all(&expected);
 }
@@ -136,9 +136,9 @@ fn worktree_new_branch_rename_and_prune() {
     };
 
     // A new branch, made in a chosen folder, tracking nothing.
-    assert!(add_worktree(&repo, "x", Some("main"), Some(d)).is_err());
-    assert!(add_worktree(&repo, "x", Some("refs/heads/main"), Some("rel")).is_err());
-    let wt = add_worktree(&repo, "feat/new", Some("refs/heads/main"), Some(d)).unwrap();
+    assert!(add_worktree(&repo, "x", Some("main"), false, Some(d)).is_err());
+    assert!(add_worktree(&repo, "x", Some("refs/heads/main"), false, Some("rel")).is_err());
+    let wt = add_worktree(&repo, "feat/new", Some("refs/heads/main"), false, Some(d)).unwrap();
     assert_eq!(Path::new(&wt), dir.join("feat-new"));
     assert_eq!(listed("feat/new").unwrap().path, wt);
     let upstream = run_text(
@@ -153,9 +153,9 @@ fn worktree_new_branch_rename_and_prune() {
     // From a commit, by its full id only.
     let first = run_text(&repo, &["rev-parse", "HEAD"]).unwrap();
     let first = first.trim();
-    assert!(add_worktree(&repo, "at", Some(&first[..12]), Some(d)).is_err());
-    assert!(add_worktree(&repo, "at", Some(&"0".repeat(40)), Some(d)).is_err());
-    let at = add_worktree(&repo, "at/first", Some(first), Some(d)).unwrap();
+    assert!(add_worktree(&repo, "at", Some(&first[..12]), false, Some(d)).is_err());
+    assert!(add_worktree(&repo, "at", Some(&"0".repeat(40)), false, Some(d)).is_err());
+    let at = add_worktree(&repo, "at/first", Some(first), false, Some(d)).unwrap();
     let head = run_text(Path::new(&at), &["rev-parse", "HEAD"]).unwrap();
     assert_eq!(head.trim(), first);
     remove_worktree(&repo, &listed("at/first").unwrap().path, false).unwrap();
@@ -185,7 +185,7 @@ fn worktree_new_branch_rename_and_prune() {
     assert!(unlock_worktree(&repo, "/not/a/worktree").is_err());
 
     // Only the case changes: on a case-insensitive disk the new folder name is "taken" by the old.
-    let upper = add_worktree(&repo, "Case", Some("refs/heads/main"), Some(d)).unwrap();
+    let upper = add_worktree(&repo, "Case", Some("refs/heads/main"), false, Some(d)).unwrap();
     let lower = rename_worktree(&repo, &upper, "case", true).unwrap();
     assert_eq!(Path::new(&lower), dir.join("case"));
     assert_eq!(listed("case").unwrap().path, lower);
@@ -211,7 +211,7 @@ fn worktree_new_branch_rename_and_prune() {
     assert!(listed("trunk").is_some_and(|w| w.main));
 
     // A worktree whose folder is gone is pruned by removing it.
-    let gone = add_worktree(&repo, "gone", Some("refs/heads/trunk"), Some(d)).unwrap();
+    let gone = add_worktree(&repo, "gone", Some("refs/heads/trunk"), false, Some(d)).unwrap();
     fs::remove_dir_all(&gone).unwrap();
     assert!(listed("gone").unwrap().prunable);
     remove_worktree(&repo, &gone, false).unwrap();

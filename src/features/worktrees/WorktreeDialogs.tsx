@@ -117,7 +117,7 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
       onClose();
       const p = pull;
       void runNet("Check out PR", (op) => github.checkoutWorktree(p.target, p.number, p.headRef, p.sameRepo, where, op).then(then), `Checked out #${p.number} in worktree ${folderFor(n)}`);
-    } else void send(() => run("Create worktree", () => api.addWorktree(n, picked.base === undefined ? from : picked.base, where).then(then), existing ? `Checked out ${n} in a new worktree` : `Created worktree ${n}`));
+    } else void send(() => run("Create worktree", () => api.addWorktree(n, picked.base === undefined ? from : picked.base, where, picked.track).then(then), existing ? `Checked out ${n} in a new worktree` : `Created worktree ${n}`));
   };
   return (
     <form

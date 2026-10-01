@@ -12,8 +12,8 @@ fn removing_the_last_worktree_removes_its_folder() {
     write_commit(&r, "a.txt", "a\n", "base");
     run(&r, &["branch", "one"]).unwrap();
     run(&r, &["branch", "two"]).unwrap();
-    let one = add_worktree(&r, "one", None, None).unwrap();
-    let two = add_worktree(&r, "two", None, None).unwrap();
+    let one = add_worktree(&r, "one", None, false, None).unwrap();
+    let two = add_worktree(&r, "two", None, false, None).unwrap();
     let dir = sb.path("r.worktrees");
     assert!(dir.is_dir());
 
@@ -240,7 +240,7 @@ fn a_new_worktree_gets_the_ignored_files_worktreeinclude_lists() {
     write_commit(&r, "sub/a.txt", "a\n", "sub");
     run(&r, &["branch", "one"]).unwrap();
     run(&r, &["branch", "two"]).unwrap();
-    let bare = add_worktree(&r, "one", None, None).unwrap();
+    let bare = add_worktree(&r, "one", None, false, None).unwrap();
     assert!(
         !Path::new(&bare).join(".env").exists(),
         "no .worktreeinclude yet"
@@ -281,7 +281,7 @@ fn a_new_worktree_gets_the_ignored_files_worktreeinclude_lists() {
     assert_eq!(include_count(&r).unwrap(), want.len());
 
     // Made from the linked worktree: the files still come from the main one.
-    let two = PathBuf::from(add_worktree(Path::new(&bare), "two", None, None).unwrap());
+    let two = PathBuf::from(add_worktree(Path::new(&bare), "two", None, false, None).unwrap());
     for path in want {
         assert_eq!(
             fs::read(two.join(path)).unwrap(),
@@ -316,7 +316,7 @@ fn a_new_worktree_checks_out_an_existing_branch() {
     let tip = rev(&r, "feat");
     run(&r, &["switch", "-q", "main"]).unwrap();
 
-    let wt = PathBuf::from(add_worktree(&r, "feat", None, None).unwrap());
+    let wt = PathBuf::from(add_worktree(&r, "feat", None, false, None).unwrap());
     assert_eq!(on_branch(&wt), "feat");
     assert_eq!(rev(&wt, "HEAD"), tip);
     assert!(wt.join("b.txt").is_file());
@@ -324,7 +324,7 @@ fn a_new_worktree_checks_out_an_existing_branch() {
 
     let elsewhere = sb.path("elsewhere");
     for held in ["main", "feat"] {
-        assert!(add_worktree(&r, held, None, Some(elsewhere.to_str().unwrap())).is_err());
+        assert!(add_worktree(&r, held, None, false, Some(elsewhere.to_str().unwrap())).is_err());
         assert!(!elsewhere.join(held).exists());
     }
 }
@@ -342,7 +342,7 @@ fn a_new_worktree_through_a_symlink_has_its_real_path() {
     std::os::unix::fs::symlink(sb.path("real"), sb.path("link")).unwrap();
 
     let link = sb.path("link");
-    let wt = add_worktree(&r, "feat", Some("refs/heads/main"), link.to_str()).unwrap();
+    let wt = add_worktree(&r, "feat", Some("refs/heads/main"), false, link.to_str()).unwrap();
     assert_eq!(
         Path::new(&wt),
         sb.path("real").canonicalize().unwrap().join("feat")
@@ -353,13 +353,14 @@ fn a_new_worktree_through_a_symlink_has_its_real_path() {
     fs::create_dir_all(sb.path("Cased")).unwrap();
     let typed = sb.path("cased");
     if typed.exists() {
-        let wt = add_worktree(&r, "other", Some("refs/heads/main"), typed.to_str()).unwrap();
+        let wt = add_worktree(&r, "other", Some("refs/heads/main"), false, typed.to_str()).unwrap();
         assert!(worktrees(&r).unwrap().iter().any(|w| w.path == wt), "{wt}");
     }
 }
 
 /// A branch only on a remote gets a local branch tracking that remote's, also where two
-/// remotes have it (git's own DWIM gives up there); a new name from it tracks nothing.
+/// remotes have it (git's own DWIM gives up there); a new branch from a remote one, even one
+/// whose name ends in it (login from origin/feature/login), tracks nothing unless asked.
 #[test]
 fn a_new_worktree_from_a_remote_only_branch_tracks_it() {
     let sb = Sandbox::new("wtremote");
@@ -368,6 +369,7 @@ fn a_new_worktree_from_a_remote_only_branch_tracks_it() {
     switch_branch(a, "feat", true).unwrap();
     write_commit(a, "f.txt", "f\n", "feat");
     run(a, &["push", "-q", "-u", "origin", "feat"]).unwrap();
+    run(a, &["push", "-q", "origin", "feat:feature/login"]).unwrap();
     run(b, &["remote", "add", "upstream", &git_url(b)]).unwrap();
     run(b, &["fetch", "-q", "--all"]).unwrap();
     assert!(!exists(b, "feat"));
@@ -378,11 +380,18 @@ fn a_new_worktree_from_a_remote_only_branch_tracks_it() {
 
     let dir = sb.path("wts");
     let d = dir.to_str();
-    let wt = add_worktree(b, "feat", Some("refs/remotes/upstream/feat"), d).unwrap();
+    let wt = add_worktree(b, "feat", Some("refs/remotes/upstream/feat"), true, d).unwrap();
     assert_eq!(on_branch(Path::new(&wt)), "feat");
     assert_eq!(rev(Path::new(&wt), "HEAD"), rev(a, "feat"));
     assert_eq!(upstream(&wt).unwrap(), "upstream/feat");
 
-    let other = add_worktree(b, "other", Some("refs/remotes/origin/feat"), d).unwrap();
-    assert!(upstream(&other).is_err(), "a new name tracks nothing");
+    let login = add_worktree(
+        b,
+        "login",
+        Some("refs/remotes/origin/feature/login"),
+        false,
+        d,
+    )
+    .unwrap();
+    assert!(upstream(&login).is_err(), "a new branch tracks nothing");
 }
