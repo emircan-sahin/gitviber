@@ -161,20 +161,23 @@ pub fn kill_group(child: &mut Child, grace: Duration) {
     // of the user, which took down the CI runner.
     #[cfg(unix)]
     let group = child.id() as libc::pid_t;
+    // 0 is our own group, 1 init's; neither is ever the child's.
+    #[cfg(unix)]
+    let signal = |sig| {
+        if group > 1 && group != unsafe { libc::getpgrp() } {
+            unsafe { libc::killpg(group, sig) };
+        }
+    };
     if !grace.is_zero() {
         #[cfg(unix)]
-        unsafe {
-            libc::killpg(group, libc::SIGTERM);
-        }
+        signal(libc::SIGTERM);
         let deadline = Instant::now() + grace;
         while Instant::now() < deadline && matches!(child.try_wait(), Ok(None)) {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
     #[cfg(unix)]
-    unsafe {
-        libc::killpg(group, libc::SIGKILL);
-    }
+    signal(libc::SIGKILL);
     let _ = child.kill();
     let _ = child.wait();
 }
