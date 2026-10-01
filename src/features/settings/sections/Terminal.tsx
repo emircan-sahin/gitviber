@@ -108,7 +108,7 @@ export function TerminalSection() {
         </Field>
         <Field
           label="Resume agents on restore"
-          hint="A terminal restored from last session that was running Claude Code, Gemini CLI, opencode or Codex gets the command that resumes its conversation: typed at the prompt for you to run with Enter, or run at once. An agent you exited isn't resumed."
+          hint="A terminal restored from last session that was running Claude Code, Gemini CLI or opencode gets the command that resumes its conversation: typed at the prompt for you to run with Enter, or run at once. An agent you exited isn't resumed."
         >
           <Segmented<string>
             value={s.resumeAgents}
