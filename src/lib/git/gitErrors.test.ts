@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { explainGitError } from "./gitErrors.ts";
+import { explainGitError, secretCommits } from "./gitErrors.ts";
 
 // What git 2.51 printed in scratch repos, as the app gets it (stderr, trimmed). Git 2.15 and
 // Apple Git 2.50 print the matched lines the same; only the hints around them differ.
@@ -195,10 +195,22 @@ test("a secret GitHub's push protection found is explained, with the page it lin
   const help = explainGitError(PUSH_PROTECTION);
   assert.equal(help?.fix, "secret");
   assert.equal(help?.target, "https://github.com/owner/repo/security/secret-scanning/unblock-secret/2abcDEF");
+  assert.deepEqual(secretCommits(PUSH_PROTECTION), ["8728dbe67d1a1c4b3a0b1a2c3d4e5f6a7b8c9d0e"]);
   const old = `remote: error: GH009: Secrets detected! This push failed.
 remote:
-remote:     GITHUB PUSH PROTECTION`;
-  assert.deepEqual([fix(old), explainGitError(old)?.target], ["secret", undefined]);
+remote:     GITHUB PUSH PROTECTION
+remote:       —— GitHub Personal Access Token ——————————————————————
+remote:        locations:
+remote:          - commit: 1111111111111111111111111111111111111111
+remote:            path: a.txt:1
+remote:          - commit: 2222222222222222222222222222222222222222
+remote:            path: b.txt:1
+remote:
+remote:        (?) To push, remove secret from commit(s) or follow this URL to allow the secret.
+remote:        https://github.com/owner/repo/security/secret-scanning/unblock-secret/9xyz`;
+  assert.deepEqual([fix(old), explainGitError(old)?.target], ["secret", "https://github.com/owner/repo/security/secret-scanning/unblock-secret/9xyz"]);
+  assert.deepEqual(secretCommits(old), ["1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"]);
+  assert.equal(fix("remote: error: GH009: Secrets detected! This push failed."), "secret");
   // Other repository rules (signed commits, say) aren't about secrets.
   assert.equal(explainGitError("remote: error: GH013: Repository rule violations found for refs/heads/main.\nremote: - Commits must have verified signatures."), null);
 });

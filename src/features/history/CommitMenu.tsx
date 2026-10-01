@@ -17,7 +17,7 @@ import { copyLink, openOnGitHub } from "@/lib/github/url";
 import { copyText } from "@/lib/app/clipboard";
 import { openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
 import { startBisect } from "./BisectBar";
-import { type Actions, checkoutDetached, commitUrl, dropsPushed, MERGE_WARNING, PUSHED_WARNING } from "./commitActions";
+import { type Actions, checkoutDetached, commitUrl, dropsPushed, MERGE_WARNING, PUSHED_WARNING, undoCommit } from "./commitActions";
 import { groupRefs } from "./groupRefs";
 
 /** The remote tags are pushed to and the ones it has, while asking it, or why that failed. */
@@ -78,7 +78,7 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
     if (drops === null) return;
     const warnings = [...(c.parents.length > 1 ? [MERGE_WARNING] : []), ...(drops ? [PUSHED_WARNING] : [])];
     if (warnings.length && !(await ask(`Undo "${c.subject}"?\n\n${warnings.join("\n\n")}`, { title: "Undo commit", kind: "warning", okLabel: "Undo" }))) return;
-    await run("Undo", () => api.undoCommit(c.sha), "Commit undone; its changes are staged");
+    await undoCommit(c.sha, run);
   };
 
   const reset = async (mode: ResetMode) => {

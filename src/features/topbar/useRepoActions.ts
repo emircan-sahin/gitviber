@@ -6,6 +6,8 @@ import { worktreeDir } from "@/lib/repo/session";
 import type { RepoData } from "@/lib/repo/useRepo";
 import { folderName } from "@/lib/path";
 import { useGitAction } from "@/hooks/useGitAction";
+import { undoCommit } from "@/features/history/commitActions";
+import { secretCommits } from "@/lib/git/gitErrors";
 
 /** The top bar's git actions: switching, merging, deleting branches, worktrees, pull, push and publish. */
 export function useRepoActions(repo: RepoData, root: string, main: string) {
@@ -77,13 +79,16 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       ? `Resolve them in Changes. Your uncommitted changes were set aside for the ${what} and come back when it finishes (Continue or Abort, if it's waiting on you). If they conflict coming back, they're kept in Stashes too: drop that stash once resolved.`
       : undefined;
   const retryStashed = (again: () => Promise<boolean>) => [{ label: "Retry with autostash", run: () => void again() }];
-  // A push GitHub refused over a secret: when it's in the last commit, undoing that brings the
-  // file back staged to fix. Only a plain commit not yet pushed, as History's Undo commit.
+  // A push GitHub refused over a secret: when only the last commit has it, undoing that brings
+  // the file back staged to fix. Only a plain commit not yet pushed, as History's Undo commit.
   const head = repo.commits[0];
-  const undoLast =
-    head && head.unpushed && head.parents.length === 1 && status?.head && head.sha.startsWith(status.head)
-      ? [{ label: "Undo last commit", run: () => void run("Undo", () => api.undoCommit(head.sha), "Commit undone; its changes are staged") }]
+  const undoLast = (message: string) => {
+    const listed = secretCommits(message);
+    const onlyHead = !!head && listed.length > 0 && listed.every((sha) => head.sha.startsWith(sha));
+    return onlyHead && head.unpushed && head.parents.length === 1 && status?.head && head.sha.startsWith(status.head)
+      ? [{ label: "Undo last commit", run: () => void undoCommit(head.sha, run) }]
       : undefined;
+  };
   const pull = (mode: PullMode, autostash = false): Promise<boolean> =>
     runNet("Pull", (op) => api.pull(mode, op, autostash), mode === "ff" ? "Pulled" : `Pulled (${mode})`, {
       fixes: { diverged: pulls, autostash: retryStashed(() => pull(mode, true)) },

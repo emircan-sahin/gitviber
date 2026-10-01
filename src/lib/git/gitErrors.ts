@@ -91,11 +91,11 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
   // GitHub's push protection (GH013 under repository rules, GH009 before them). The page it links
   // for each secret says what it found and the ways out; the first one is the target.
   [
-    /^remote: error: GH009: Secrets detected!|^remote:\s+- Push cannot contain secrets(?:[\s\S]*?^remote:\s+(?<target>https:\/\/github\.com\/\S+\/unblock-secret\/\S+))?/m,
+    /^remote:(?: error: GH009: Secrets detected!|\s+- Push cannot contain secrets)(?:[\s\S]*?^remote:\s+(?<target>https:\/\/github\.com\/\S+\/unblock-secret\/\S+))?/m,
     {
       title: "GitHub found a secret in your commits",
       explanation:
-        "The push was refused because a commit holds what looks like a token or key; Details lists which commit and file. Take it out of that commit (if it's the last one, undo it, remove the secret and commit again), and revoke the secret if it was real.",
+        "The push was refused because a commit holds what looks like a token or key; Details lists which commits and files. If only the last commit has it, undo that commit, take the secret out and commit again; an earlier commit has to be rewritten (an interactive rebase) before you push. Revoke the secret if it was real.",
       fix: "secret",
     },
   ],
@@ -120,6 +120,9 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
     },
   ],
 ];
+
+/** The commits GitHub's push protection lists a secret in ("- commit: <sha>"), as it printed them. */
+export const secretCommits = (message: string) => [...message.matchAll(/^remote:\s+- commit: ([0-9a-f]{7,64})$/gm)].map((m) => m[1]);
 
 /** What a failed git command's output means, for the failures that have a known way out; null for the rest. */
 export function explainGitError(message: string): GitErrorHelp | null {
