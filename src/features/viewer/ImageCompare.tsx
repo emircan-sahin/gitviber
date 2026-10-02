@@ -3,7 +3,8 @@
 // already shown side by side: nothing is decoded again.
 import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import type { ImageCompare } from "@/lib/settings";
-import { formatBytes, ImageMenu, type MediaSource, PAD, SvgSide, type SvgProps, useMediaUrl, useSize } from "./MediaView";
+import { ImageMenu, type MediaSource, PAD, SvgSide, type SvgProps, useMediaUrl, useSize } from "./MediaView";
+import { formatBytes } from "@/lib/format";
 
 export type Overlaid = Exclude<ImageCompare, "side">;
 

@@ -116,6 +116,10 @@ export const COMMANDS = [
   // ⌃` as in VS Code, ⌘J as its panel toggle. Elsewhere Ctrl+`, as VS Code has it there too.
   { id: "terminal.toggle", title: "Toggle Terminal", category: "Terminal", keys: ["cmd+j", "ctrl+`"], keysOther: ["cmd+j", "cmd+`"] },
   { id: "terminal.newInProject", title: "New Terminal in Project…", category: "Terminal", keys: [] },
+  // Every agent in a terminal, needing the user first (AgentsMenu).
+  { id: "terminal.showAgents", title: "Show Agents", category: "Terminal", keys: [] },
+  // An agent's past conversations in the open worktree, resumed in a new terminal (the palette lists them).
+  { id: "terminal.resumeConversation", title: "Resume a Conversation…", category: "Terminal", keys: [] },
   // Off macOS Ctrl+Shift, as in Linux terminals: Ctrl+letter is the shell's and desktops take Super
   // chords (KDE: Super+D, Super+W). The ones below it only run in the terminal.
   { id: "terminal.new", title: "New Terminal", category: "Terminal", keys: ["cmd+t"], keysOther: ["shift+cmd+t"] },
