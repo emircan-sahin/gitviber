@@ -589,7 +589,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
 // An id has no spaces, and a path can.
 const rowId = (path: string) => `explorer:${encodeURIComponent(path)}`;
 
-function Row({ depth, path, className, children, ...props }: { depth: number; path?: string } & React.ComponentProps<"div">) {
+export function Row({ depth, path, className, children, ...props }: { depth: number; path?: string } & React.ComponentProps<"div">) {
   return (
     <div
       role="treeitem"

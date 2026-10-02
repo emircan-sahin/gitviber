@@ -3,6 +3,7 @@ import { ask } from "../app/ask";
 import { useSyncExternalStore } from "react";
 import { api, errorMessage } from "../api";
 import { toast } from "../app/toast";
+import { vaultFileIO } from "../obsidian/vault";
 import { basename } from "../path";
 import { type FileEdit, loadEdits, saveEdits } from "../repo/session";
 import { narrow } from "./indent";
@@ -13,6 +14,7 @@ import { createEditModel, detachModel, monaco, unitOf } from "./monaco";
  * when the edit began (`base`), so a save can tell whether something else changed the file since.
  * They're stored per worktree as well: macOS's ⌘Q quits without asking, and a reload or a repo
  * switch shouldn't lose them either. An edit restored from there has no model until it's shown.
+ * A repo file is kept by its repo path, an Obsidian vault's by its full one (selection's editPath).
  */
 interface Edit {
   base: string;
@@ -111,6 +113,10 @@ export function saveEdit(path: string): Promise<boolean> {
 }
 const saving = new Map<string, Promise<boolean>>();
 
+/** Repo paths are relative; a full one is a vault file's. */
+const fileIO = async (path: string) =>
+  /^(\/|[A-Za-z]:[\\/])/.test(path) ? vaultFileIO(path) : { read: () => api.readFile(path), write: (text: string) => api.writeFile(path, text) };
+
 async function write(path: string) {
   const e = edits.get(path);
   if (!e) return true;
@@ -120,7 +126,8 @@ async function write(path: string) {
   const text = model ? fileText(model) : e.text;
   const version = model?.getAlternativeVersionId();
   try {
-    const disk = await api.readFile(path);
+    const file = await fileIO(path);
+    const disk = await file.read();
     // Text this view can't have been editing (e.g. now UTF-16) changed too.
     if (disk.exists && (disk.lossy || disk.text !== e.base)) {
       const ok = await ask(`${basename(path)} changed on disk since you began editing it. Overwrite it with your version?`, {
@@ -130,7 +137,7 @@ async function write(path: string) {
       });
       if (!ok) return false;
     }
-    await api.writeFile(path, text);
+    await file.write(text);
   } catch (err) {
     toast("error", `Could not save ${basename(path)}`, errorMessage(err));
     return false;

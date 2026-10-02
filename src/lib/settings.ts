@@ -189,6 +189,10 @@ export interface Settings {
   terminalScreenReader: boolean;
   /** Markdown files open rendered rather than as source (diffs always start on the diff). */
   markdownPreview: boolean;
+  /** The explorer shows Obsidian's vaults, when Obsidian lists any. */
+  obsidian: boolean;
+  /** Vaults (by path) the explorer leaves out. */
+  hiddenVaults: string[];
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
   svgPreview: boolean;
   /** The last mode picked on a changed image (an SVG preview's too). Set from the viewer, not the dialog. */
@@ -270,6 +274,8 @@ const DEFAULTS: Settings = {
   terminalScrollback: 10_000,
   terminalScreenReader: false,
   markdownPreview: true,
+  obsidian: true,
+  hiddenVaults: [],
   svgPreview: false,
   imageCompare: "side",
   blame: false,
@@ -337,6 +343,8 @@ function load(): Settings {
     if (!SCROLLBACK_LINES.includes(s.terminalScrollback)) s.terminalScrollback = DEFAULTS.terminalScrollback;
     if (typeof s.terminalScreenReader !== "boolean") s.terminalScreenReader = DEFAULTS.terminalScreenReader;
     if (typeof s.markdownPreview !== "boolean") s.markdownPreview = DEFAULTS.markdownPreview;
+    if (typeof s.obsidian !== "boolean") s.obsidian = DEFAULTS.obsidian;
+    s.hiddenVaults = Array.isArray(s.hiddenVaults) ? s.hiddenVaults.filter((p: unknown) => typeof p === "string") : [];
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     if (!["side", "swipe", "onion"].includes(s.imageCompare)) s.imageCompare = DEFAULTS.imageCompare;
     if (typeof s.blame !== "boolean") s.blame = DEFAULTS.blame;

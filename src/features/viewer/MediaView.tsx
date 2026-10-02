@@ -30,6 +30,8 @@ const TYPES: Record<string, [MediaKind, string]> = {
   mov: ["video", "video/quicktime"],
   webm: ["video", "video/webm"],
   ogv: ["video", "video/ogg"],
+  mkv: ["video", "video/x-matroska"],
+  "3gp": ["audio", "audio/3gpp"],
   mp3: ["audio", "audio/mpeg"],
   wav: ["audio", "audio/wav"],
   m4a: ["audio", "audio/mp4"],
@@ -75,22 +77,48 @@ export function MediaView({ src, before, after }: { src: MediaSource; before: bo
 }
 
 function Side({ src, original, label, tone }: { src: MediaSource; original: boolean; label?: string; tone: Tone }) {
-  const { url, size, error } = useMediaUrl(src, original);
-  const [dims, setDims] = useState<string | null>(null);
-  const kind = mediaKind(original ? (src.oldPath ?? src.path) : src.path);
+  const media = useMediaUrl(src, original);
+  return (
+    <MediaPanel
+      {...media}
+      path={original ? (src.oldPath ?? src.path) : src.path}
+      label={label}
+      tone={tone}
+      menu={(img) => (
+        <ImageMenu src={src} original={original}>
+          {img}
+        </ImageMenu>
+      )}
+    />
+  );
+}
 
+/** One media file shown whole: an image, a player, or a PDF. `menu` wraps an image in its context menu. */
+export function MediaPanel({
+  path,
+  url,
+  size,
+  error,
+  label,
+  tone = "added",
+  menu = (img) => img,
+}: {
+  path: string;
+  url: string | null;
+  size: number | null;
+  error: string | null;
+  label?: string;
+  tone?: Tone;
+  menu?: (img: ReactNode) => ReactNode;
+}) {
+  const [dims, setDims] = useState<string | null>(null);
+  const kind = mediaKind(path);
   return (
     <Panel label={label} tone={tone} details={[dims, size !== null && formatBytes(size)]}>
       {error ? (
         <div className="text-[12.5px] text-muted-foreground">{error}</div>
       ) : !url ? null : kind === "image" ? (
-        <ImageMenu src={src} original={original}>
-          <img
-            src={url}
-            onLoad={(e) => setDims(`${e.currentTarget.naturalWidth}×${e.currentTarget.naturalHeight}`)}
-            className="checkerboard max-h-full max-w-full object-contain"
-          />
-        </ImageMenu>
+        menu(<img src={url} onLoad={(e) => setDims(`${e.currentTarget.naturalWidth}×${e.currentTarget.naturalHeight}`)} className="checkerboard max-h-full max-w-full object-contain" />)
       ) : kind === "video" ? (
         <video src={url} controls className="max-h-full max-w-full" />
       ) : kind === "audio" ? (
@@ -372,29 +400,38 @@ export function useSize(el: HTMLElement | null): [number, number] {
 }
 
 export function useMediaUrl(src: MediaSource, original: boolean) {
+  const { kind, path, oldPath, sha, base, key } = src;
+  const file = original ? (oldPath ?? path) : path;
+  return useBytesUrl(`${kind}\0${key}\0${original}`, file, () => api.media(kind, path, oldPath, sha, base, original));
+}
+
+/**
+ * A blob URL for the bytes `load` reads, typed by `file`'s name; read again when `key` changes.
+ * The old URL stays until its replacement is ready, so a refresh doesn't blank the view.
+ */
+export function useBytesUrl(key: string, file: string, load: () => Promise<ArrayBuffer>) {
   const [state, setState] = useState<{ url: string | null; size: number | null; error: string | null }>({ url: null, size: null, error: null });
   const current = useRef<string | null>(null);
-  const { kind, path, oldPath, sha, base, key } = src;
+  const read = useRef(load);
+  read.current = load;
 
   useEffect(() => {
     let live = true;
-    const file = original ? (oldPath ?? path) : path;
     // SVG is not in TYPES (it is text), but markdown can still embed it as an image.
     const mime = typeOf(file)?.[1] ?? (isSvg(file) ? "image/svg+xml" : undefined);
-    // The old URL stays until its replacement is ready, so a working-tree refresh doesn't blank the view.
     const show = (url: string | null, size: number | null, error: string | null) => {
       if (current.current) URL.revokeObjectURL(current.current);
       current.current = url;
       setState({ url, size, error });
     };
-    api
-      .media(kind, path, oldPath, sha, base, original)
+    read
+      .current()
       .then((bytes) => live && show(URL.createObjectURL(new Blob([bytes], { type: mime })), bytes.byteLength, null))
       .catch((e) => live && show(null, null, errorMessage(e)));
     return () => {
       live = false;
     };
-  }, [key, kind, path, oldPath, sha, base, original]);
+  }, [key, file]);
   useEffect(() => () => void (current.current && URL.revokeObjectURL(current.current)), []);
   return state;
 }

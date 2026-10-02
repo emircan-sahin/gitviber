@@ -47,6 +47,24 @@ pub async fn vault_write_file(vault: String, path: String, content: String) -> R
     in_vault(vault, move |r| obsidian::write_file(r, &path, &content)).await
 }
 
+/// Shows a vault file in the file manager.
+#[tauri::command]
+pub async fn vault_reveal(vault: String, path: String) -> Res<()> {
+    in_vault(vault, move |r| {
+        crate::launch::reveal(obsidian::resolve(r, &path)?)
+    })
+    .await
+}
+
+/// Opens a vault file in Obsidian.
+#[tauri::command]
+pub async fn vault_open_in_obsidian(vault: String, path: String) -> Res<()> {
+    in_vault(vault, move |r| {
+        crate::launch::open_in_obsidian(&obsidian::resolve(r, &path)?)
+    })
+    .await
+}
+
 /// Watches `vault` (none: stops watching), replacing the vault watched before.
 #[tauri::command]
 pub async fn vault_watch(

@@ -16,7 +16,9 @@ import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen, useTerminalTabCount } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
-import { type OpenedRepo } from "@/lib/api";
+import { type OpenedRepo, vaultApi } from "@/lib/api";
+import { failed } from "@/lib/app/toast";
+import { REVEAL_FAILED } from "@/lib/platform";
 import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
 import { revealPath } from "@/lib/app/openIn";
@@ -33,6 +35,7 @@ import { useTabs } from "./useTabs";
 import { useViewed } from "./useViewed";
 import { PullsPanel } from "@/features/github/pulls/PullsPanel";
 import { SearchView } from "@/features/explorer/SearchView";
+import { ExplorerPanes } from "@/features/obsidian/VaultSection";
 import { TerminalPanel, useTerminalSetup } from "@/features/terminal/TerminalPanel";
 import { TerminalRestoreOffer } from "@/features/terminal/TerminalFind";
 import { TopBar } from "@/features/topbar/TopBar";
@@ -587,16 +590,22 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 <SearchView active={explorerView === "search"} ask={searchAsk} onOpen={open} />
               </div>
               <div className={cn("min-h-0 flex-1", explorerView !== "files" && "hidden")}>
-                <FileTree
-                  ref={fileTree}
-                  status={status}
-                  revision={repo.revision}
+                <ExplorerPanes
                   activeKey={activeKey}
                   onOpen={open}
-                  onHover={prefetch}
-                  onPathMoved={onPathMoved}
-                  onShowHistory={showHistory}
-                  webUrl={webUrl}
+                  tree={
+                    <FileTree
+                      ref={fileTree}
+                      status={status}
+                      revision={repo.revision}
+                      activeKey={activeKey}
+                      onOpen={open}
+                      onHover={prefetch}
+                      onPathMoved={onPathMoved}
+                      onShowHistory={showHistory}
+                      webUrl={webUrl}
+                    />
+                  }
                 />
               </div>
             </div>
@@ -642,8 +651,9 @@ function ListTabButton({ active, onClick, count, children }: { active: boolean; 
   );
 }
 
-/** The open file's working copy, else the repository's folder (a PR or an issue has no file). */
+/** The open file's working copy (a vault file's too), else the repository's folder (a PR or an issue has no file). */
 function revealInFinder(sel: Selection | undefined) {
+  if (sel?.kind === "vault") return void vaultApi.reveal(sel.vault, sel.path).catch(failed(REVEAL_FAILED));
   const path = sel && ["file", "unstaged", "staged", "conflict", "branch"].includes(sel.kind) ? selectionPath(sel) : "";
   void revealPath(path);
 }

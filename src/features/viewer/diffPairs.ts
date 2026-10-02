@@ -9,8 +9,8 @@ import { type GitHubSide, repoOfCommitUrl } from "@/lib/github/permalink";
 import { type Selection, selectionPath } from "@/lib/repo/selection";
 import { diffWhitespace, getSettings } from "@/lib/settings";
 
-/** Tabs whose content is a diff of one file (everything except PR and issue overviews, and whole lists). */
-export type FileSelection = Exclude<Selection, { kind: "pull" | "issue" | "changes" }>;
+/** Tabs whose content is a diff of one repo file (everything except PR and issue overviews, whole lists and vault files). */
+export type FileSelection = Exclude<Selection, { kind: "pull" | "issue" | "changes" | "vault" }>;
 
 export function pairArgs(sel: FileSelection, revision: number, whitespace: Whitespace | null = null) {
   const kind: DiffKind =
@@ -90,7 +90,7 @@ function remember(id: string, rev: number, pair: DiffPair, gen: number) {
 
 /** Loads a diff in the background, so opening it next is instant. */
 export function prefetchSelection(sel: Selection, revision: number) {
-  if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes") return;
+  if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes" || sel.kind === "vault") return;
   const { kind, path, oldPath, sha, base, whitespace, id, rev } = pairArgs(sel, revision, diffWhitespace(getSettings()));
   if (cachedPair(id, rev)) return;
   const gen = generation;

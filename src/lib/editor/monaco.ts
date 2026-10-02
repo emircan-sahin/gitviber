@@ -276,7 +276,8 @@ const units = new WeakMap<monaco.editor.ITextModel, number>();
 // Go to References lists places by their models' names. Each show makes new models before the
 // old ones go, so a name is only unique with a count.
 let shows = 0;
-const viewUri = (path: string) => monaco.Uri.from({ scheme: "gitviber-view", path: `/${path}`, query: String(++shows) });
+// A vault file's path is already absolute; a URI path can't start with "//".
+const viewUri = (path: string) => monaco.Uri.from({ scheme: "gitviber-view", path: `/${path.replace(/^\/+/, "")}`, query: String(++shows) });
 
 /** Spaces per indentation level `model`'s text was widened by (see lib/editor/indent). */
 export const unitOf = (model: monaco.editor.ITextModel) => units.get(model) ?? 0;

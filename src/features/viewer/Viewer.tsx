@@ -33,6 +33,7 @@ import { CommitBar } from "./CommitBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { BranchChange } from "@/features/changes/BranchReview";
 import { AllChanges } from "./AllChanges";
+import { VaultView } from "@/features/obsidian/VaultView";
 import { diffNote, placeholderFor } from "./placeholders";
 
 interface ViewerProps {
@@ -77,6 +78,8 @@ export function Viewer(props: ViewerProps) {
             <IssueView issue={active.sel.issue} onDeleted={() => props.onClose(active.key)} />
           ) : active.sel.kind === "changes" ? (
             <AllChanges list={active.sel.list} {...props} />
+          ) : active.sel.kind === "vault" ? (
+            <VaultView tab={active} sel={active.sel} onOpen={props.onOpen} />
           ) : (
             <Pane tab={active} sel={active.sel} {...props} />
           )}

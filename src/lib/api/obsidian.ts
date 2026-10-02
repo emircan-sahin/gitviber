@@ -26,6 +26,8 @@ export const vaultApi = {
   readFile: (vault: string, path: string) => invoke<FileText>("vault_read_file", { vault, path }),
   media: (vault: string, path: string) => invoke<ArrayBuffer>("vault_media", { vault, path }),
   writeFile: (vault: string, path: string, content: string) => invoke<void>("vault_write_file", { vault, path, content }),
+  reveal: (vault: string, path: string) => invoke<void>("vault_reveal", { vault, path }),
+  openInObsidian: (vault: string, path: string) => invoke<void>("vault_open_in_obsidian", { vault, path }),
   /** Watches `vault` for changes ("vault-changed" events); null stops. */
   watch: (vault: string | null) => invoke<void>("vault_watch", { vault }),
 };
