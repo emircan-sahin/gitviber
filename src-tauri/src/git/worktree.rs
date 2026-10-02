@@ -1,7 +1,7 @@
 //! Linked worktrees: listing, adding, renaming, locking and removing them.
 
 use super::{
-    default_branch, git_dir, include_source, is_nested_repo, landed, run, run_text, validate_base,
+    default_branch, include_source, is_nested_repo, landed, run, run_text, validate_base,
     validate_branch, worktree_includes,
 };
 use serde::Serialize;
@@ -361,20 +361,26 @@ pub fn worktree_state(repo: &Path, path: &str, upstream: bool) -> Result<Worktre
         dir,
         &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
     )?;
+    // Not following symlinks: a link made now to an old file is new work.
     let mtime = |p: &Path| {
-        let t = std::fs::metadata(p).and_then(|m| m.modified()).ok()?;
+        let t = std::fs::symlink_metadata(p)
+            .and_then(|m| m.modified())
+            .ok()?;
         t.duration_since(std::time::UNIX_EPOCH)
             .ok()
             .map(|d| d.as_secs())
     };
-    // The worktree's own HEAD reflog is appended to on every move, from its creation on.
-    let mut updated = git_dir(dir).and_then(|g| mtime(&g.join("logs/HEAD")));
+    // The newest entry's own time, not the log file's: gc rewrites every worktree's reflog.
+    let mut updated = reflog_time(dir);
     let mut uncommitted = 0;
     let mut touched = |p: Option<&[u8]>| {
         uncommitted += 1;
-        if let Some(p) = p {
-            updated = updated.max(mtime(&dir.join(String::from_utf8_lossy(p).as_ref())));
-        }
+        // A deleted file has no time; its folder changed when it went.
+        let Some(mut path) = p.map(|p| dir.join(os_path(p))) else {
+            return;
+        };
+        while !path.exists() && path.pop() && path.starts_with(dir) {}
+        updated = updated.max(mtime(&path));
     };
     let mut records = raw.split(|b| *b == 0);
     while let Some(rec) = records.next() {
@@ -447,6 +453,29 @@ pub fn worktree_state(repo: &Path, path: &str, upstream: bool) -> Result<Worktre
             || !bases.is_empty() && commits == 0 && w.branch.as_deref().is_some_and(moved),
         updated,
     })
+}
+
+/// When HEAD last moved, from its newest reflog entry; works for files and reftable alike.
+fn reflog_time(dir: &Path) -> Option<u64> {
+    let out = run_text(
+        dir,
+        &["log", "-g", "-1", "--date=unix", "--format=%gd", "HEAD"],
+    )
+    .ok()?;
+    // "HEAD@{1790936093}"
+    let (_, t) = out.trim().split_once("@{")?;
+    t.strip_suffix('}')?.parse().ok()
+}
+
+#[cfg(unix)]
+fn os_path(p: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::OsStr::from_bytes(p).into()
+}
+
+#[cfg(not(unix))]
+fn os_path(p: &[u8]) -> PathBuf {
+    String::from_utf8_lossy(p).into_owned().into()
 }
 
 /// A porcelain v2 status record's path: the field after `n` space-separated ones.
