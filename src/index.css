@@ -946,3 +946,31 @@
 .gv-command-mark[data-failed] {
   background: var(--destructive);
 }
+
+/* Link hints (lib/terminal/hints) over a pane's screen: each link boxed, its label on its first cells. */
+.gv-hints {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+}
+.gv-hint-box {
+  position: absolute;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+}
+.gv-hint {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+}
+.gv-hint > span {
+  opacity: 0.45;
+}

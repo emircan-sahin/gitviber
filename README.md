@@ -77,7 +77,8 @@ title bar with what runs there, and `⌘R` names it. The terminal has its own fo
 scrollback in Settings, and `⌘=` / `⌘−` in the terminal or a pinch over it size its text.
 `⌘`-click a path it prints to open the file at that line, or a folder to show it in the explorer;
 a commit's SHA opens it in History, and `#123` or a link to one of the repo's pull requests or
-issues opens it in its own tab.
+issues opens it in its own tab. `⌃⇧Space` puts a letter on every one of those links on screen, in
+vim or Claude Code too: type it to open the link, or with Shift to copy it.
 In zsh and bash 4.4+ each command gets a mark, red when it failed, that tells how long it took,
 `⌘↑` / `⌘↓` jump between them, and the last one's output copies from the right-click menu; your
 dotfiles stay as they are. A command that runs past 10 seconds and ends while you're looking
@@ -285,6 +286,7 @@ Reopening a closed tab and closing the other tabs have no default there either, 
 | `⇧⌘↵` | Show only the focused terminal pane in the panel, and all of them again (in the terminal) |
 | `⌘R` | Rename the focused pane of a split terminal (in the terminal; a double-click on its header too) |
 | `⌘↑` `⌘↓` | Scroll to the previous / next command's prompt (in the terminal, with shell integration) |
+| `⌃⇧Space` | Label the links on screen: type a label to open its link, with Shift to copy it (in the terminal) |
 | `⌘=` `⌘−` `⌘0` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too) |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |

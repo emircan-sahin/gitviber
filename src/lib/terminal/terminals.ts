@@ -30,6 +30,7 @@ import { type PaneAgent } from "./agentState";
 import { reportWheelByRow } from "./wheel";
 import { paneKeys } from "./keys";
 import { forgetFind, watchFind } from "./find";
+import { endHints, toggleHints } from "./hints";
 import { copyFromProgram, pasteInto, pasteText } from "./pasteInput";
 import { type Direction, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
 
@@ -132,6 +133,7 @@ export const TERMINAL_COMMANDS = [
   "terminal.fontZoomIn",
   "terminal.fontZoomOut",
   "terminal.fontZoomReset",
+  "terminal.hints",
 ] as const satisfies readonly CommandId[];
 
 export const panes = new Map<number, Pane>();
@@ -544,6 +546,7 @@ function closePane(id: number, byUser = false) {
   window.clearTimeout(p.hold?.timer);
   window.clearTimeout(p.ptyResizeTimer);
   forgetFind(p);
+  endHints(p);
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});
   const canvases = [...(p.term.element?.querySelectorAll("canvas") ?? [])];
   p.term.dispose();
@@ -698,6 +701,13 @@ export function copyLastOutput(id: number) {
 
 export function selectLastOutput(id: number) {
   panes.get(id)?.marks.selectLastOutput();
+}
+
+/** Letter labels on the links the focused pane shows (hints.ts). */
+export function showLinkHints() {
+  const g = activeGroup();
+  const p = g && panes.get(g.focused);
+  if (p) void toggleHints(p);
 }
 
 /** `focus: false` keeps focus where it is: arrowing along the tabs. */

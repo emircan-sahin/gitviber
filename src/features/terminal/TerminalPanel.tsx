@@ -17,6 +17,7 @@ import {
   focusToward,
   moveGroup,
   openTerminal,
+  showLinkHints,
   showWorktree,
   splitActive,
   stepPane,
@@ -96,6 +97,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
     "terminal.focusRight": () => focusToward("right"),
     "terminal.focusUp": () => focusToward("up"),
     "terminal.focusDown": () => focusToward("down"),
+    "terminal.hints": showLinkHints,
     // Only a pane with a header on screen: a split, not zoomed.
     "terminal.renamePane": () => group && group.panes.length > 1 && !zoomed && renamingPane.set(group.focused),
   });
