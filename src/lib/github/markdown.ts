@@ -5,7 +5,7 @@ import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkFrontmatter from "remark-frontmatter";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
-import { remarkCallouts, remarkFrontmatterTable, remarkMathGuard, remarkObsidian, remarkSection } from "../markdown/syntax.ts";
+import { remarkCallouts, remarkFrontmatterTable, remarkMathGuard, remarkObsidian, remarkSection, stripComments } from "../markdown/syntax.ts";
 
 // The markdown pipeline without JSX or app imports, so node tests render through the real thing.
 
@@ -76,6 +76,9 @@ export function markdownOptions({ idPrefix, repo, flavor = "github", section }: 
     ],
   };
 }
+
+/** The text a block of `flavor` parses: an Obsidian note leaves out its %%comments%%. */
+export const markdownSource = (text: string, flavor: Flavor = "github") => (flavor === "obsidian" ? stripComments(text) : text);
 
 // @login (GitHub's username rules) or #123, not inside a word (in any script), path or email
 // address; #0 and #007 are no issue.

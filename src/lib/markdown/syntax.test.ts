@@ -49,6 +49,13 @@ test("highlights, tags and inline footnotes", () => {
   assert.match(html, /a \[b\] note/);
 });
 
+test("an inline footnote's id never takes a written one's", () => {
+  const html = render("Written[^inline-1] and inline^[mine].\n\n[^inline-1]: The user's.");
+  assert.match(html, /The user&#x27;s\./);
+  assert.match(html, /mine/);
+  assert.match(html, /href="#fn-inline-2"/);
+});
+
 test("block ids land on their block", () => {
   const html = render("A line ^para1\n\n- item ^item1\n\n| a |\n| - |\n| 1 |\n\n^table1");
   assert.match(html, /<p id="n-\^para1">A line<\/p>/);

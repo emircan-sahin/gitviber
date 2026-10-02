@@ -27,7 +27,8 @@ export const plainText = (node: MNode): string => node.value ?? (node.children ?
 
 // ---------------------------------------------------------------- comments
 
-const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+// A code fence, also inside a callout or quote ("> ```") or a list item, at any indent there.
+const FENCE = /^(?:[ \t]*(?:>|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t])))*[ \t]*(`{3,}|~{3,})(.*)$/;
 
 /**
  * Obsidian's %%comments%%, inline or over many lines, cut from the source before it's parsed;
@@ -42,9 +43,9 @@ export function stripComments(src: string): string {
   lines.forEach((line, n) => {
     const eol = n < lines.length - 1 ? "\n" : "";
     if (!comment) {
-      const open = FENCE.exec(line)?.[1];
+      const [, open, rest] = FENCE.exec(line) ?? [];
       if (fence) {
-        if (open && open[0] === fence[0] && open.length >= fence.length && !line.trim().slice(open.length)) fence = null;
+        if (open && open[0] === fence[0] && open.length >= fence.length && !rest.trim()) fence = null;
         out += line + eol;
         return;
       }
@@ -252,12 +253,24 @@ const TASK = /^\[([^\]\n])\][ \t]+/;
 export function remarkObsidian() {
   return (tree: MNode) => {
     const notes: MNode[] = [];
+    // An id no written footnote has ([^inline-1] is the user's own).
+    const taken = new Set<string>();
+    const ids = (n: MNode): void => {
+      if (n.identifier) taken.add(n.identifier.toLowerCase());
+      n.children?.forEach(ids);
+    };
+    ids(tree);
+    let next = 0;
+    const fresh = () => {
+      while (taken.has(`inline-${++next}`));
+      return `inline-${next}`;
+    };
     const walk = (node: MNode, inLink: boolean) => {
       if (!node.children) return;
       // A link can't hold another, and a tag's text is already one.
       const link = inLink || node.type === "link" || node.type === "linkReference" || node.type === "tag";
-      let children = wrapPairs(node.children, "^[", "]", true, (inner) => {
-        const id = `inline-${notes.length + 1}`;
+      let children = wrapPairs(rejoin(node.children), "^[", "]", true, (inner) => {
+        const id = fresh();
         notes.push({ type: "footnoteDefinition", identifier: id, label: id, children: [{ type: "paragraph", children: inner }] });
         return { type: "footnoteReference", identifier: id, label: id };
       });
@@ -314,60 +327,96 @@ function wikiNode(embed: boolean, inner: string): MNode {
 function wrapPairs(nodes: MNode[], open: string, close: string, nested: boolean, make: (inner: MNode[]) => MNode): MNode[] {
   if (!nodes.some((n) => n.type === "text" && n.value!.includes(open))) return nodes;
   const out: MNode[] = [];
-  const queue = [...nodes];
-  while (queue.length) {
-    const node = queue.shift()!;
-    const v = node.type === "text" ? node.value! : "";
-    let at = v.indexOf(open);
+  const keep = (s: string) => s && out.push(text(s));
+  // Where the walk is: node `i`, from offset `from` in its text. Long notes are one paragraph
+  // of thousands of pieces, so nothing here copies the rest of it per match.
+  let [i, from] = [0, 0];
+  while (i < nodes.length) {
+    const node = nodes[i];
+    if (node.type !== "text") {
+      out.push(node);
+      [i, from] = [i + 1, 0];
+      continue;
+    }
+    const v = node.value!;
     // "===" opens nothing, and neither does "== " (a space after it). At the text's end, what
     // follows is the next node: ==**bold**== opens.
-    const after = (i: number) => v[i + open.length] ?? (queue[0] && queue[0].type !== "text" ? "x" : " ");
-    while (!nested && at >= 0 && (after(at) === "=" || /\s/.test(after(at)))) at = v.indexOf(open, at + open.length + 1);
+    const next = (at: number) => v[at + open.length] ?? (nodes[i + 1] && nodes[i + 1].type !== "text" ? "x" : " ");
+    let at = v.indexOf(open, from);
+    while (!nested && at >= 0 && (next(at) === "=" || /\s/.test(next(at)))) at = v.indexOf(open, at + open.length + 1);
     if (at < 0) {
-      out.push(node);
+      keep(v.slice(from));
+      [i, from] = [i + 1, 0];
       continue;
     }
+    const end = closing(nodes, i, at + open.length, close, nested);
+    // No close after this open, so none after a later one either: the rest stays as it is.
+    if (!end) {
+      keep(v.slice(from));
+      out.push(...nodes.slice(i + 1));
+      break;
+    }
+    keep(v.slice(from, at));
     const inner: MNode[] = [];
-    let depth = 0;
-    let found: { taken: number; after: string } | null = null;
-    // The rest of this text, then the siblings after it, until the closing mark.
-    const stream = [text(v.slice(at + open.length)), ...queue];
-    for (let s = 0; s < stream.length && !found; s++) {
-      const part = stream[s];
-      if (part.type !== "text") {
-        inner.push(part);
-        continue;
+    for (let k = i; k <= end.node; k++) {
+      const n = nodes[k];
+      if (n.type !== "text") inner.push(n);
+      else {
+        const piece = n.value!.slice(k === i ? at + open.length : 0, k === end.node ? end.at : undefined);
+        if (piece) inner.push(text(piece));
       }
-      const t = part.value!;
-      for (let i = 0; i < t.length; i++) {
-        if (nested && t[i] === "[") depth++;
-        else if (t.startsWith(close, i) && (!nested || depth-- === 0)) {
-          const before = t.slice(0, i);
-          if (!nested && (/\s$/.test(before) || (!before && !inner.length))) continue;
-          if (before) inner.push(text(before));
-          found = { taken: s, after: t.slice(i + close.length) };
-          break;
-        }
-      }
-      if (!found) inner.push(part);
     }
-    if (!found) {
-      out.push(text(v.slice(0, at + open.length)));
-      queue.unshift(text(v.slice(at + open.length)));
+    out.push(make(inner));
+    [i, from] = [end.node, end.at + close.length];
+  }
+  return rejoin(out);
+}
+
+/** Where `close` ends what opened at node `i`, offset `start`: its node and offset there. */
+function closing(nodes: MNode[], i: number, start: number, close: string, nested: boolean) {
+  let depth = 0;
+  let empty = true;
+  for (let k = i; k < nodes.length; k++) {
+    const n = nodes[k];
+    if (n.type !== "text") {
+      empty = false;
       continue;
     }
-    if (at > 0) out.push(text(v.slice(0, at)));
-    out.push(make(inner));
-    queue.splice(0, found.taken);
-    if (found.after) queue.unshift(text(found.after));
+    const t = n.value!;
+    for (let c = k === i ? start : 0; c < t.length; c++) {
+      if (nested && t[c] === "[") depth++;
+      else if (t.startsWith(close, c) && (!nested || depth-- === 0)) {
+        // Neither end of == may touch a space, nor wrap nothing.
+        const first = k === i ? start : 0;
+        if (!nested && ((c > first && /\s/.test(t[c - 1])) || (c === first && empty))) continue;
+        return { node: k, at: c };
+      } else if (!/\s/.test(t[c])) empty = false;
+    }
   }
-  // Neighboring text pieces join again, so later patterns see them whole.
-  return out.reduce<MNode[]>((acc, n) => {
-    const prev = acc.at(-1);
-    if (prev?.type === "text" && n.type === "text") acc[acc.length - 1] = text(prev.value! + n.value!);
-    else acc.push(n);
-    return acc;
-  }, []);
+  return null;
+}
+
+/** A link GFM made of a bare URL or email address in the text. */
+const autolinked = (n: MNode) => {
+  const t = n.type === "link" ? plainText(n) : null;
+  return t !== null && [t, `mailto:${t}`, `http://${t}`].includes(n.url ?? "");
+};
+
+/**
+ * Neighboring text pieces joined, so the patterns see them whole: math taken back as text
+ * left "[[Budget $5k vs $10k]]" in pieces. A URL inside an open [[ is text again: Obsidian
+ * reads [[https://x]] as a note's name, which GFM had made a live link.
+ */
+function rejoin(nodes: MNode[]): MNode[] {
+  const out: MNode[] = [];
+  for (const n of nodes) {
+    const prev = out.at(-1);
+    const open = prev?.type === "text" && prev.value!.lastIndexOf("[[") > prev.value!.lastIndexOf("]]");
+    const node = open && autolinked(n) ? text(plainText(n)) : n;
+    if (prev?.type === "text" && node.type === "text") out[out.length - 1] = text(prev.value! + node.value!);
+    else out.push(node);
+  }
+  return out;
 }
 
 /** `- [/] item`: a task with a status other than done, which GFM leaves as text. */
@@ -422,6 +471,17 @@ function blockEmbeds(node: MNode) {
 // ---------------------------------------------------------------- sections
 
 /**
+ * A heading as a link names it. Obsidian leaves # | ^ : % [ ] out when it links a heading
+ * ("Q&A: Part 1" is [[Note#Q&A Part 1]]), so neither those nor case or runs of spaces count.
+ */
+export const headingKey = (heading: string) =>
+  heading
+    .replace(/[#|^:%[\]\\]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+
+/**
  * Cuts a note down to what an embed shows: for `note#Heading` the heading and what's under it,
  * to the next heading as high; for `note#^id` the block with that id; for the whole note (""),
  * all but its properties.
@@ -436,8 +496,8 @@ export function remarkSection({ anchor }: { anchor: string }) {
       tree.children = !block ? [] : block.type === "listItem" ? [{ type: "list", ordered: false, spread: false, children: [block] }] : [block];
       return;
     }
-    const want = anchor.split("#").filter(Boolean).at(-1)?.trim().toLowerCase() ?? "";
-    const start = kids.findIndex((n) => n.type === "heading" && plainText(n).trim().toLowerCase() === want);
+    const want = headingKey(anchor.split("#").filter(Boolean).at(-1) ?? "");
+    const start = kids.findIndex((n) => n.type === "heading" && headingKey(plainText(n)) === want);
     if (start < 0) {
       tree.children = [];
       return;
