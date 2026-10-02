@@ -66,11 +66,8 @@ export interface Pane extends SaveState {
   writing: boolean;
   /** Output parsed and not yet acked to pty.rs (parsed). */
   unacked: number;
-  /**
-   * Set only while a column change is held back from a long history (fitPane), and kept past its
-   * timer while the pane is hidden: sendSize waits for it, and fitPane sends the size on letting go.
-   */
-  fitTimer?: number;
+  /** Columns held back from a long history (fitPane) and when they're due: sendSize waits for them. */
+  hold?: { cols: number; timer: number };
   /** The size the pty is sent once a resize settles. */
   ptyResizeTimer?: number;
   /** The size the pty last heard, `cols x rows`: a resize back to it reaches nobody. */
@@ -347,16 +344,29 @@ function fitPane(p: Pane, now = false) {
   if (!p.term.element) return;
   // The host, not its container, whose padding stays when the pane has no room.
   const box = { width: p.host.clientWidth, height: p.host.clientHeight };
-  const plan = planFit(box, p.fit.proposeDimensions(), p.term, now || !p.started ? 0 : p.term.buffer.normal.length);
-  // Hidden while columns are held: they wait for the pane to be back, and so does the pty.
-  if (!plan) return;
-  const held = p.fitTimer !== undefined;
-  window.clearTimeout(p.fitTimer);
-  p.fitTimer = plan.colsLater ? window.setTimeout(() => fitPane(p, true), 100) : undefined;
+  const proposed = p.fit.proposeDimensions();
+  const plan = planFit(box, proposed, p.term, now || !p.started ? 0 : p.term.buffer.normal.length);
+  if (!plan) return releaseHold(p);
+  const held = p.hold !== undefined;
+  window.clearTimeout(p.hold?.timer);
+  p.hold = plan.colsLater ? { cols: proposed!.cols, timer: window.setTimeout(() => fitPane(p, true), 100) } : undefined;
   p.term.resize(plan.size.cols, plan.size.rows);
   // The rows sent ahead of the held columns, when the columns themselves change nothing.
   if (held && !plan.colsLater) sendSizeSoon(p);
   if (!p.started) void start(p);
+}
+
+/**
+ * The held columns at once, where the pane can't be measured for them (hidden): left held, xterm
+ * had the new rows and the pty the old ones until the pane was back.
+ */
+function releaseHold(p: Pane) {
+  if (!p.hold) return;
+  window.clearTimeout(p.hold.timer);
+  const { cols } = p.hold;
+  p.hold = undefined;
+  p.term.resize(cols, p.term.rows);
+  sendSizeSoon(p);
 }
 
 function sendSizeSoon(p: Pane) {
@@ -367,7 +377,7 @@ function sendSizeSoon(p: Pane) {
 /** Tells the program its pane's size once a resize settled, held columns included: one SIGWINCH, not one a step. */
 function sendSize(p: Pane) {
   const size = `${p.term.cols}x${p.term.rows}`;
-  if (p.fitTimer !== undefined || p.pty === null || size === p.ptySize) return;
+  if (p.hold !== undefined || p.pty === null || size === p.ptySize) return;
   p.ptySize = size;
   void pty.resize(p.pty, p.term.cols, p.term.rows).catch(() => {});
 }
@@ -477,6 +487,7 @@ export function attachPane(id: number, container: HTMLElement) {
     // its cursor as focused, and a program that asked for focus reports (Claude Code) never hear it left.
     if (p.host.contains(document.activeElement)) p.term.blur();
     p.host.remove();
+    releaseHold(p);
   };
 }
 
@@ -530,7 +541,7 @@ function closePane(id: number, byUser = false) {
   if (!p) return;
   const focused = document.activeElement;
   panes.delete(id);
-  window.clearTimeout(p.fitTimer);
+  window.clearTimeout(p.hold?.timer);
   window.clearTimeout(p.ptyResizeTimer);
   forgetFind(p);
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});
