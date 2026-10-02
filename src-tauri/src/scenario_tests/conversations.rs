@@ -127,6 +127,8 @@ fn a_conversation_whose_first_prompt_is_longer_than_the_read_is_still_listed() {
     ];
     write(&dir, &format!("{}.jsonl", id(3)), &lines, 1_000);
     assert_eq!(list(&cwd, &home.0).len(), 1, "the conversation is missing");
+    // Named by the prompt it starts with, not the next one.
+    assert!(titles(&cwd, &home.0)[0].starts_with("why does this fail?"));
 }
 
 /// GitViber-like tools and scripts run `claude -p` in a project many times a day. Those are

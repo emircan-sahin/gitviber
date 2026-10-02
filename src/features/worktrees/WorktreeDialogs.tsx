@@ -3,13 +3,13 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { api, type Branch, github, type Target, type Worktree } from "@/lib/api";
+import { api, type Branch, github, type Pull, type Target, type Worktree } from "@/lib/api";
 import { loadWorktreeDir, loadWorktreeRun, moveRoot, saveBranchIssue, saveWorktreeDir, saveWorktreeRun, sharedWorktreeDir } from "@/lib/repo/session";
 import { issueBranchName, withIssue } from "@/lib/github/issueWork";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { localNames, refNameCheck, worktreeBase, worktreeBranch } from "@/lib/git/refs";
-import { type Cleanable, shortPath } from "@/lib/git/worktrees";
-import { keepColorOnRename } from "@/lib/git/worktreeColors";
+import { type Cleanable, cleanable, shortPath, worktreeHues } from "@/lib/git/worktrees";
+import { keepColorOnRename, pickedColors } from "@/lib/git/worktreeColors";
 import { toast } from "@/lib/app/toast";
 import { plural } from "@/lib/format";
 import { folderName, parentFolder } from "@/lib/path";
@@ -57,14 +57,20 @@ export const useWorktreeDialog = shown.use;
 /**
  * After a pull request merged in the app: the worktree that has its branch out at its head is
  * offered for removal. The head too: a fork's PR may share a branch name (patch-1) with another.
+ * Only where Clean up would offer it: nothing uncommitted, no terminal, no worktree inside it.
  */
 export async function offerWorktreeRemoval(branch: string, number: number, head: string) {
+  const list = await api.worktrees().catch(() => []);
   const at = (w: Worktree) => !!w.head && head.toLowerCase().startsWith(w.head.toLowerCase());
-  const w = (await api.worktrees().catch(() => [])).find((x) => x.branch === branch && at(x) && !x.main && !x.current && !x.bare && !x.prunable);
-  if (!w) return;
+  const w = list.find((x) => x.branch === branch && at(x));
+  const state = w && (await api.worktreeState(w.path, false).catch(() => null));
+  if (!w || !state) return;
+  const pull = { number, state: "merged", headSha: head } as Pull;
+  const [offer] = cleanable(list, { [w.path]: state }, (b) => (b === branch ? pull : undefined), terminalsIn);
+  if (!offer) return;
   toast("info", `Remove the worktree of #${number}?`, `${branch} is checked out in ${folderName(w.path)}.`, {
     label: "Remove…",
-    run: () => openWorktreeDialog({ kind: "cleanup", list: [{ worktree: w, why: `#${number} merged`, mergedHead: head }] }),
+    run: () => openWorktreeDialog({ kind: "cleanup", list: [{ ...offer, why: `#${number} merged` }] }),
   });
 }
 
@@ -272,11 +278,13 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
       run(
         "Rename worktree",
         async () => {
+          // The color it shows now, which its new name could change.
+          const hue = await api.worktrees().then((list) => worktreeHues(list, pickedColors()).get(w.path) ?? null, () => null);
           const to = await api.renameWorktree(w.path, n, moving);
           if (to === w.path) return;
           folderMoved(w.path, to);
           moveRoot(w.path, to);
-          keepColorOnRename(w, to);
+          keepColorOnRename(w.path, to, hue);
         },
         done,
       ),

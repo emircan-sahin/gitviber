@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FileChange, WorktreeState } from "../api/types.ts";
 import type { Pull, Worktree } from "../api/index.ts";
-import { cleanable, hueColor, HUES, isHueChoice, shortPath, stageable, worktreeHue } from "./worktrees.ts";
+import { cleanable, hueColor, HUE_NAMES, HUES, isHueChoice, shortPath, stageable, worktreeHue, worktreeHues } from "./worktrees.ts";
 
 test("short worktree paths", () => {
   const main = "/Users/me/code/app";
@@ -118,4 +118,25 @@ test("same-named worktrees in two repos share a color until one is picked for ei
   const picked = { [a.path]: "violet" as const };
   assert.equal(worktreeHue(a, picked), "violet");
   assert.equal(worktreeHue(b, picked), worktreeHue(b, {}));
+});
+
+test("one repo's worktrees get apart colors where their names hash alike, a pick still standing", () => {
+  const w = (name: string) => ({ path: `/p/app.worktrees/${name}`, main: false });
+  // Ten names, more than eight hues: the first eight are all different, then they repeat.
+  const list = [{ path: "/p/app", main: true }, ...["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"].map(w)];
+  const hues = worktreeHues(list, {});
+  assert.equal(hues.get("/p/app"), null);
+  const linked = list.slice(1).map((x) => hues.get(x.path)!);
+  assert.equal(new Set(linked.slice(0, 8)).size, 8);
+  assert.equal(new Set(linked).size, 8);
+  // The first keeps its name's own hue; the same list always gives the same colors.
+  assert.equal(linked[0], worktreeHue(list[1], {}));
+  assert.deepEqual(worktreeHues(list, {}), hues);
+  // A pick stands, and the others step around it.
+  const picked = { [list[2].path]: linked[0], [list[3].path]: "none" as const };
+  const again = worktreeHues(list, picked);
+  assert.equal(again.get(list[2].path), linked[0]);
+  assert.equal(again.get(list[3].path), null);
+  assert.notEqual(again.get(list[1].path), linked[0]);
+  assert.ok(HUE_NAMES.includes(again.get(list[1].path)!));
 });

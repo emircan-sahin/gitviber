@@ -75,5 +75,36 @@ export function worktreeHue(w: Pick<Worktree, "path" | "main">, picked: Record<s
   return HUE_NAMES[(h >>> 0) % HUE_NAMES.length];
 }
 
+/**
+ * The colors of one repo's worktrees, by path. A picked one stands; each other linked one takes
+ * its name's hue unless one before it in `list` already has that, then the least used from there
+ * on round the wheel: names that hash alike still get apart, until there are more than eight.
+ */
+export function worktreeHues(list: Pick<Worktree, "path" | "main">[], picked: Record<string, HueChoice>): Map<string, Hue | null> {
+  const used = new Map<Hue, number>(HUE_NAMES.map((h) => [h, 0]));
+  const take = (h: Hue) => used.set(h, used.get(h)! + 1);
+  for (const w of list) {
+    const p = picked[w.path];
+    if (p && p !== "none") take(p);
+  }
+  const out = new Map<string, Hue | null>();
+  for (const w of list) {
+    const named = worktreeHue(w, picked);
+    if (picked[w.path] || !named) {
+      out.set(w.path, named);
+      continue;
+    }
+    const start = HUE_NAMES.indexOf(named);
+    let best = named;
+    for (let k = 1; k < HUE_NAMES.length; k++) {
+      const h = HUE_NAMES[(start + k) % HUE_NAMES.length];
+      if (used.get(h)! < used.get(best)!) best = h;
+    }
+    take(best);
+    out.set(w.path, best);
+  }
+  return out;
+}
+
 /** The CSS color of `hue`, `alpha` of it over what's behind. */
 export const hueColor = (hue: Hue, alpha = 1) => `oklch(var(--tint-l) var(--tint-c) ${HUES[hue]}${alpha < 1 ? ` / ${alpha}` : ""})`;

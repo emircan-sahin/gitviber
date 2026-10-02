@@ -29,7 +29,7 @@ import {
   useTerminals,
 } from "@/lib/terminal/terminals";
 import { folderName, parentFolder } from "@/lib/path";
-import { worktreeHue } from "@/lib/git/worktrees";
+import { worktreeHue, worktreeHues } from "@/lib/git/worktrees";
 import { useWorktreeColors } from "@/lib/git/worktreeColors";
 import { ProjectTile } from "@/features/projects/ProjectList";
 import { showConversations } from "@/features/palette/CommandPalette";
@@ -104,10 +104,11 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
     "terminal.renamePane": () => group && group.panes.length > 1 && !zoomed && renamingPane.set(group.focused),
   });
   const colors = useWorktreeColors();
-  // This repo's worktrees take their name's color; a tab elsewhere only a color picked for its folder.
+  const hues = worktreeHues(worktrees, colors);
+  // This repo's worktrees take their color as the picker shows it; a tab elsewhere only a color picked for its folder.
   const hueOf = (g: TerminalGroup) => {
     const cwd = g.panes[0].cwd;
-    return worktreeHue(worktrees.find((x) => x.path === cwd) ?? { path: cwd, main: true }, colors);
+    return hues.has(cwd) ? hues.get(cwd)! : worktreeHue({ path: cwd, main: true }, colors);
   };
   const branchOf = (g: TerminalGroup) => {
     const w = worktrees.find((x) => x.path === g.panes[0].cwd);

@@ -1,5 +1,5 @@
 import { Bot } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tip } from "@/components/ui/tooltip";
@@ -31,6 +31,8 @@ function where(cwd: string, worktrees: Worktree[]) {
 export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
   const list = useAgentList();
   const [open, setOpen] = useState(false);
+  // An agent was picked: the keys stay with its pane once the menu closes.
+  const picked = useRef(false);
   // The times move on while it's open; nothing runs while it's closed.
   const [, tick] = useState(0);
   useEffect(() => {
@@ -57,12 +59,28 @@ export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
           </Button>
         </DropdownMenuTrigger>
       </Tip>
-      <DropdownMenuContent align="end" className="w-80">
+      {/* Radix would hand focus back to the trigger after revealPane gave it to the pane. */}
+      <DropdownMenuContent
+        align="end"
+        className="w-80"
+        onCloseAutoFocus={(e) => {
+          if (!picked.current) return;
+          picked.current = false;
+          e.preventDefault();
+        }}
+      >
         <DropdownMenuLabel>Agents</DropdownMenuLabel>
         {list.map((e) => {
           const calling = e.state === "waiting" || e.unseen;
           return (
-            <DropdownMenuItem key={e.pane} onSelect={() => revealPane(e.pane)} className="items-start py-1.5">
+            <DropdownMenuItem
+              key={e.pane}
+              onSelect={() => {
+                picked.current = true;
+                revealPane(e.pane);
+              }}
+              className="items-start py-1.5"
+            >
               <span className="flex h-4 w-1.5 shrink-0 items-center">
                 {calling ? <NeedsYouDot className="in-data-[highlighted]:bg-primary-foreground" /> : e.state === "working" && <WorkingDot className="in-data-[highlighted]:border-primary-foreground" />}
               </span>

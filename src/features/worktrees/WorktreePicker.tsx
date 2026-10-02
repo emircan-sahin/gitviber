@@ -11,7 +11,7 @@ import { pointerMoved } from "@/lib/ui/pointer";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { plural, relativeTime } from "@/lib/format";
-import { cleanable, type Hue, hueColor, shortPath, worktreeHue, worktreeOf } from "@/lib/git/worktrees";
+import { cleanable, type Hue, hueColor, shortPath, worktreeHues, worktreeOf } from "@/lib/git/worktrees";
 import { useWorktreeColors } from "@/lib/git/worktreeColors";
 import { folderName } from "@/lib/path";
 import { terminalsIn, useAgentsWorking, useNeedsYou } from "@/lib/terminal/terminals";
@@ -130,7 +130,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const extra = list.filter((w) => !w.main).length;
   const main = list.find((w) => w.main && !w.bare);
   const here = linked ? pullOf(current.branch) : undefined;
-  const hue = current ? worktreeHue(current, colors) : null;
+  const hues = worktreeHues(list, colors);
+  const hue = current ? (hues.get(current.path) ?? null) : null;
   const needy = needing(list, calling);
   const busy = needing(list, agentsWorking);
   const elsewhere = list.some((w) => !w.current && needy.has(w.path)) ? " · a terminal in another worktree needs you" : "";
@@ -253,7 +254,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 main={main?.path ?? w.path}
                 time={states[w.path]?.updated ?? branches.find((b) => !b.remote && b.name === w.branch)?.timestamp}
                 state={states[w.path]}
-                hue={worktreeHue(w, colors)}
+                hue={hues.get(w.path) ?? null}
                 calling={needy.has(w.path)}
                 agentWorking={busy.has(w.path)}
                 pull={pullOf(w.branch)}
@@ -289,7 +290,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
               )}
             </span>
             {merged.length > 0 && (
-              <Tip label={`Remove ${merged.length === 1 ? "the merged worktree" : `${merged.length} merged worktrees`} that have no changes and no terminal open`}>
+              // No count: a folder that can't be deleted only shows once the dialog has looked inside.
+              <Tip label={`${merged.length === 1 ? "A merged worktree has" : `${merged.length} merged worktrees have`} no changes and no terminal open: see which can go`}>
                 <button
                   onClick={() => {
                     afterClose.current = () => openWorktreeDialog({ kind: "cleanup", list: merged });
@@ -297,7 +299,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                   }}
                   className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
                 >
-                  Clean up ({merged.length})…
+                  Clean up…
                 </button>
               </Tip>
             )}

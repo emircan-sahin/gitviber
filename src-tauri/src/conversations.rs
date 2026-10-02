@@ -277,8 +277,13 @@ fn cut_prompt(head: &str, seen: &mut Seen) -> Option<(String, Option<String>)> {
     {
         return None;
     }
-    let at = line.find(r#""content":""#)? + r#""content":""#.len();
-    let mut text: String = line[at..].chars().take(TITLE_CHARS * 4).collect();
+    // A string, or (with an image pasted) a list of parts, the text one among them.
+    let content = &line[line.find(r#""content":"#)? + r#""content":"#.len()..];
+    let text = match content.strip_prefix('"') {
+        Some(text) => text,
+        None => &content[content.find(r#""text":""#)? + r#""text":""#.len()..],
+    };
+    let mut text: String = text.chars().take(TITLE_CHARS * 4).collect();
     // Cut mid-escape (`\`, `\u00`), the string doesn't parse: shorten it until it does.
     for _ in 0..8 {
         if let Ok(s) = serde_json::from_str::<String>(&format!("\"{text}\"")) {
@@ -415,6 +420,15 @@ mod tests {
         );
         // Not cut by the read (the file itself ends there): nothing to show.
         assert_eq!(claude_text(&head, None), None);
+        let parts = format!(
+            "{}\n{}",
+            r#"{"type":"mode"}"#,
+            r#"{"type":"user","message":{"role":"user","content":[{"type":"image","source":{}},{"type":"text","text":"what's in this log? \"ERR"#
+        );
+        assert_eq!(
+            claude_text(&parts, Some(&tail)).unwrap().0,
+            r#"what's in this log? "ERR"#
+        );
         let scripted = head.replace(r#""entrypoint":"cli""#, r#""entrypoint":"sdk-ts""#);
         assert_eq!(claude_text(&scripted, Some(&tail)), None);
     }
