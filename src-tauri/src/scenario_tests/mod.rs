@@ -7,6 +7,7 @@ mod content;
 mod history;
 mod journal;
 mod lines;
+mod obsidian;
 mod operations;
 mod pr_checkout;
 mod review;
