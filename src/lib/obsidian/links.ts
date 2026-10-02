@@ -17,7 +17,11 @@ export function linkIndex(files: string[]): LinkIndex {
   let index = indexes.get(files);
   if (index) return index;
   const byName = new Map<string, string[]>();
-  const add = (key: string, file: string) => byName.set(key, [...(byName.get(key) ?? []), file]);
+  const add = (key: string, file: string) => {
+    const list = byName.get(key);
+    if (list) list.push(file);
+    else byName.set(key, [file]);
+  };
   for (const file of files) {
     const name = norm(base(file));
     add(name, file);
@@ -55,12 +59,16 @@ export function resolveLink(index: LinkIndex, link: string, from: string): strin
     return [n, n.replace(/\.md$/, "")].some((p) => p === want || p.endsWith(`/${want}`));
   });
   if (!candidates.length) return null;
-  const exact = candidates.find((f) => norm(f) === want || norm(f) === `${want}.md`);
+  // The note before a file without an extension of the same name: [[Plan]] is Plan.md.
+  const exact = candidates.find((f) => norm(f) === `${want}.md`) ?? candidates.find((f) => norm(f) === want);
   if (exact) return exact;
   const here = candidates.find((f) => dir(f) === dir(from));
   if (here) return here;
   return [...candidates].sort((a, b) => a.split("/").length - b.split("/").length || a.length - b.length || (a < b ? -1 : 1))[0];
 }
+
+/** A file's name as Obsidian shows it: a note without its ".md". */
+export const noteName = (path: string) => base(path).replace(/\.md$/i, "");
 
 /** The target of a [[link]] or a markdown link's href, as path and anchor (heading or ^block). */
 export function splitTarget(target: string): { path: string; anchor: string } {

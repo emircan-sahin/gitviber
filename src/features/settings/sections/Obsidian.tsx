@@ -2,11 +2,11 @@ import { useEffect } from "react";
 import { Switch } from "@/components/ui/switch";
 import { Field, Group } from "@/features/settings/controls";
 import { refreshVaults, vaultList } from "@/lib/obsidian/vault";
-import { IS_MAC } from "@/lib/platform";
+import { IS_MAC, IS_WINDOWS } from "@/lib/platform";
 import { updateSettings, useSettings } from "@/lib/settings";
 
 // Where Obsidian keeps its vault list, as shown when it has none.
-const LIST = IS_MAC ? "~/Library/Application Support/obsidian/obsidian.json" : "~/.config/obsidian/obsidian.json";
+const LIST = IS_MAC ? "~/Library/Application Support/obsidian/obsidian.json" : IS_WINDOWS ? "%APPDATA%\\obsidian\\obsidian.json" : "~/.config/obsidian/obsidian.json";
 
 export function ObsidianSection() {
   const s = useSettings();

@@ -11,6 +11,8 @@ test("a canvas keeps what the spec allows, groups first", () => {
         { id: "f", type: "file", x: 300, y: 0, width: 200, height: 100, file: "Notes/Idea.md", subpath: "#Part" },
         { id: "bad", type: "text", x: 0, y: 0 },
         { id: "w", type: "widget", x: 0, y: 0, width: 1, height: 1 },
+        { id: "t", type: "text", x: 9, y: 9, width: 50, height: 50, text: "same id" },
+        { id: "n", type: "text", x: 0, y: 0, width: -10, height: 50 },
       ],
       edges: [
         { id: "e1", fromNode: "t", toNode: "f", fromSide: "right", toSide: "left" },
@@ -39,6 +41,8 @@ test("geometry: bounds, facing sides and edge curves", () => {
   const a = { x: 0, y: 0, width: 100, height: 50 };
   const b = { x: 300, y: 0, width: 100, height: 50 };
   assert.deepEqual(bounds([a, b]), { x: 0, y: 0, width: 400, height: 50 });
+  const many = Array.from({ length: 200_000 }, (_, i) => ({ x: i, y: -i, width: 1, height: 1 }));
+  assert.deepEqual(bounds(many), { x: 0, y: -199_999, width: 200_000, height: 200_000 });
   assert.equal(facing(a, b), "right");
   assert.equal(facing(b, a), "left");
   assert.equal(facing(a, { x: 0, y: 400, width: 10, height: 10 }), "bottom");

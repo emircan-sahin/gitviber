@@ -1,6 +1,8 @@
 // JSON Canvas (jsoncanvas.org, Obsidian's .canvas files): parsed defensively, and the geometry
 // to draw it. No JSX or app imports, so node tests run it.
 
+import { COLORS, type Rgb } from "./colors.ts";
+
 export type Side = "top" | "right" | "bottom" | "left";
 
 export interface CanvasNode {
@@ -47,9 +49,12 @@ export function parseCanvas(text: string): Canvas {
   const data: unknown = text.trim() ? JSON.parse(text) : {};
   const obj = (v: unknown) => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
   const list = (v: unknown) => (Array.isArray(v) ? v.map(obj).filter((o) => !!o) : []);
+  const seen = new Set<string>();
   const nodes = list(obj(data)?.nodes).flatMap((n): CanvasNode[] => {
     const [id, type, x, y, width, height] = [str(n.id), str(n.type), num(n.x), num(n.y), num(n.width), num(n.height)];
-    if (!id || !type || !TYPES.includes(type) || x === undefined || y === undefined || !width || !height) return [];
+    // Ids are unique (a second one with the same id is left out), sizes positive.
+    if (!id || seen.has(id) || !type || !TYPES.includes(type) || x === undefined || y === undefined || !width || width < 0 || !height || height < 0) return [];
+    seen.add(id);
     return [{ id, type: type as CanvasNode["type"], x, y, width, height, color: str(n.color), text: str(n.text), file: str(n.file), subpath: str(n.subpath), url: str(n.url), label: str(n.label) }];
   });
   const ids = new Set(nodes.map((n) => n.id));
@@ -84,9 +89,15 @@ export interface Box {
 /** The box around every node; a 0×0 box for none. */
 export function bounds(nodes: Box[]): Box {
   if (!nodes.length) return { x: 0, y: 0, width: 0, height: 0 };
-  const x = Math.min(...nodes.map((n) => n.x));
-  const y = Math.min(...nodes.map((n) => n.y));
-  return { x, y, width: Math.max(...nodes.map((n) => n.x + n.width)) - x, height: Math.max(...nodes.map((n) => n.y + n.height)) - y };
+  // A loop, not Math.min(...nodes): spreading 100k+ arguments overflows the stack.
+  let [x, y, right, bottom] = [Infinity, Infinity, -Infinity, -Infinity];
+  for (const n of nodes) {
+    x = Math.min(x, n.x);
+    y = Math.min(y, n.y);
+    right = Math.max(right, n.x + n.width);
+    bottom = Math.max(bottom, n.y + n.height);
+  }
+  return { x, y, width: right - x, height: bottom - y };
 }
 
 /** The middle of a node's side, where an edge meets it. */
@@ -126,15 +137,8 @@ export function edgePath(from: Box, to: Box, fromSide = facing(from, to), toSide
   };
 }
 
-/** Obsidian's six canvas colors ("1"–"6"), as RGB for dark and light themes; any other value is a CSS color as written. */
-const PRESETS: Record<string, [string, string]> = {
-  "1": ["251 70 76", "233 49 71"],
-  "2": ["233 151 63", "236 117 0"],
-  "3": ["224 222 113", "224 172 0"],
-  "4": ["68 207 110", "8 185 78"],
-  "5": ["83 223 221", "0 191 188"],
-  "6": ["168 130 255", "120 82 238"],
-};
+/** Obsidian's six canvas colors, "1" to "6"; any other value is a CSS color as written. */
+const PRESETS: Record<string, Rgb> = { "1": COLORS.red, "2": COLORS.orange, "3": COLORS.yellow, "4": COLORS.green, "5": COLORS.cyan, "6": COLORS.purple };
 
 /** A node's or edge's color as CSS, with `alpha`; null for none (the theme's). */
 export function canvasColor(color: string | undefined, dark: boolean, alpha = 1): string | null {

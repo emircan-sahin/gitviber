@@ -1,16 +1,10 @@
 import { Bug, Check, ChevronRight, CircleCheck, CircleHelp, ClipboardList, Flame, Info, Lightbulb, List, type LucideIcon, MessageSquareWarning, OctagonAlert, Pencil, Quote, TriangleAlert, X, Zap } from "lucide-react";
 import { Children, isValidElement, type ReactNode, useState } from "react";
+import { COLORS, type Rgb } from "@/lib/obsidian/colors";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
-type Rgb = [dark: string, light: string];
-const BLUE: Rgb = ["2 122 255", "8 109 221"];
-const CYAN: Rgb = ["83 223 221", "0 191 188"];
-const GREEN: Rgb = ["68 207 110", "8 185 78"];
-const ORANGE: Rgb = ["233 151 63", "236 117 0"];
-const RED: Rgb = ["251 70 76", "233 49 71"];
-const PURPLE: Rgb = ["168 130 255", "120 82 238"];
-const GRAY: Rgb = ["158 158 158", "158 158 158"];
+const { blue: BLUE, cyan: CYAN, green: GREEN, orange: ORANGE, red: RED, purple: PURPLE, gray: GRAY } = COLORS;
 
 // Obsidian's callout types with their default icons and colors (aliases are folded in by the
 // parser), then GitHub's five alerts with GitHub's.

@@ -23,6 +23,11 @@ test("of several that match: the path from the top, then the same folder, then t
   assert.equal(resolveLink(noRoot, "Plan", "Home.md"), "Inbox/Plan.md");
 });
 
+test("a note wins over a file without an extension of the same name", () => {
+  assert.equal(resolveLink(linkIndex(["Plan", "Plan.md"]), "Plan", "Home.md"), "Plan.md");
+  assert.equal(resolveLink(linkIndex(["Plan", "Plan.md"]), "Plan.md", "Home.md"), "Plan.md");
+});
+
 test("relative paths and Unicode forms", () => {
   assert.equal(resolveLink(index, "../Home", "Projects/Alpha.md"), "Home.md");
   assert.equal(resolveLink(index, "./Beta/Plan.md", "Projects/Alpha.md"), "Projects/Beta/Plan.md");
