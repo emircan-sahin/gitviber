@@ -2,54 +2,75 @@
 //! the page, whose title bar, side panels and status bar turn see-through (index.css).
 //! The window itself stays opaque, as Finder's does: a behind-window effect view shows the desktop
 //! all the same, and the shadow, corners and compositing stay as they are with the setting off.
+//! Only the webview stops drawing its background, and only while the material is on, so nothing
+//! changes for anyone who never turns it on.
 
 #[cfg(target_os = "macos")]
-#[tauri::command]
-pub fn set_translucent(window: tauri::WebviewWindow, on: bool) {
-    use tauri::window::Color;
+static ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// On the main thread, which apply_vibrancy insists on.
+#[cfg(target_os = "macos")]
+pub fn set<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, on: bool) -> Result<(), String> {
+    use std::sync::atomic::Ordering;
     use window_vibrancy::{
         apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
     };
 
-    // Off: the configured color, as the webview was created with.
-    let color = if on {
-        Some(Color(0, 0, 0, 0))
-    } else {
-        let label = window.label();
-        let windows = &tauri::Manager::config(&window).app.windows;
-        windows
-            .iter()
-            .find(|w| w.label == label)
-            .and_then(|w| w.background_color)
-    };
-    let w = window.clone();
-    let _ = window.run_on_main_thread(move || {
-        // Directly rather than through tauri's set_effects: its clear does nothing on macOS, and
-        // each apply stacks one more effect view.
-        let _ = clear_vibrancy(&w);
-        if on {
-            // Inactive, the material turns solid by itself, as the page does (settings.ts).
-            let _ = apply_vibrancy(
-                &w,
-                NSVisualEffectMaterial::Sidebar,
-                Some(NSVisualEffectState::FollowsWindowActiveState),
-                None,
-            );
-        }
-        // The webview alone: tauri's window-wide setter would turn the NSWindow clear too.
-        let webview: &tauri::Webview = w.as_ref();
-        let _ = webview.set_background_color(color);
-    });
+    // Directly rather than through tauri's set_effects: its clear does nothing on macOS, and each
+    // apply stacks one more effect view.
+    clear_vibrancy(window).map_err(|e| e.to_string())?;
+    ON.store(false, Ordering::Relaxed);
+    if on {
+        // Inactive, the material turns solid by itself, as the page does (translucency.ts).
+        apply_vibrancy(
+            window,
+            NSVisualEffectMaterial::Sidebar,
+            Some(NSVisualEffectState::FollowsWindowActiveState),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        ON.store(true, Ordering::Relaxed);
+    }
+    draw_background(window, !on)
 }
 
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-pub fn set_translucent(_on: bool) {}
-
-/// macOS's Reduce transparency (System Settings → Accessibility → Display); the page asks again
-/// each time the window comes forward.
+/// WKWebView has no public switch for its own background; this private key is the one wry's
+/// transparent webviews use. On the main thread with_webview runs at once, in the same turn as the
+/// material, so no frame shows one without the other.
 #[cfg(target_os = "macos")]
-#[tauri::command]
+fn draw_background<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    draws: bool,
+) -> Result<(), String> {
+    use objc2::runtime::{AnyObject, Bool};
+    use objc2::{class, msg_send};
+
+    window
+        .with_webview(move |webview| unsafe {
+            let view = webview.inner() as *mut AnyObject;
+            let value: *mut AnyObject =
+                msg_send![class!(NSNumber), numberWithBool: Bool::new(draws)];
+            let key: *mut AnyObject =
+                msg_send![class!(NSString), stringWithUTF8String: c"drawsBackground".as_ptr()];
+            let _: () = msg_send![view, setValue: value, forKey: key];
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// A page starting to load (a reload, ⌘R) starts solid: it asks for the material again if it wants
+/// it, and one turned off just before the reload doesn't stay behind.
+#[cfg(target_os = "macos")]
+pub fn reset<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
+    if ON.load(std::sync::atomic::Ordering::Relaxed) {
+        let w = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            let _ = set(&w, false);
+        });
+    }
+}
+
+/// macOS's Reduce transparency (System Settings → Accessibility → Display).
+#[cfg(target_os = "macos")]
 pub fn reduce_transparency() -> bool {
     use objc2::runtime::{AnyObject, Bool};
     use objc2::{class, msg_send};
@@ -62,7 +83,14 @@ pub fn reduce_transparency() -> bool {
 }
 
 #[cfg(not(target_os = "macos"))]
-#[tauri::command]
+pub fn set<R: tauri::Runtime>(_window: &tauri::WebviewWindow<R>, _on: bool) -> Result<(), String> {
+    Err("Translucency is only supported on macOS".into())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn reset<R: tauri::Runtime>(_window: &tauri::WebviewWindow<R>) {}
+
+#[cfg(not(target_os = "macos"))]
 pub fn reduce_transparency() -> bool {
     false
 }
