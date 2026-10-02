@@ -268,12 +268,20 @@ export interface DefinitionRequest {
   rev: string | null;
 }
 
-/** A change to the branch's history: reword a commit, squash it into its parent (fixup without a message), drop it, or move it. */
+/**
+ * A change to the branch's history (rewrite.rs): reword a commit; squash `shas` and `onto` into one
+ * where `onto` is (fixup, keeping the oldest's message, without a message); drop commits; move one
+ * past its neighbour, or several just under `before` (on top when null).
+ */
 export type HistoryEdit =
   | { kind: "reword"; sha: string; message: string }
-  | { kind: "squash"; sha: string; message: string | null }
-  | { kind: "drop"; sha: string }
-  | { kind: "move"; sha: string; up: boolean };
+  | { kind: "squash"; shas: string[]; onto: string; message: string | null }
+  | { kind: "drop"; shas: string[] }
+  | { kind: "move"; sha: string; up: boolean }
+  | { kind: "reorder"; shas: string[]; before: string | null };
+
+/** How a rewrite ended: done, waiting on conflicts, or done with the uncommitted changes it set aside conflicting as they came back (kept in the stash too). */
+export type RewriteOutcome = "done" | "conflicts" | "stashConflicts";
 
 export interface LinesRequest {
   path: string;

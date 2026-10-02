@@ -33,6 +33,11 @@ pub fn drops_pushed(repo: &Path, sha: &str) -> Result<bool, String> {
     drops_pushed_from(repo, "HEAD", &[sha])
 }
 
+/// Whether the push target has any of HEAD's commits, which a rewrite from the root makes anew.
+pub fn has_pushed(repo: &Path) -> Result<bool, String> {
+    drops_pushed_from(repo, "HEAD", &[])
+}
+
 /// Whether the push target has commits reachable from `from` but from none of `keep`.
 pub(crate) fn drops_pushed_from(repo: &Path, from: &str, keep: &[&str]) -> Result<bool, String> {
     // Commits both sides have: everything reachable from their merge bases.

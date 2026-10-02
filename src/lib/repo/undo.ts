@@ -1,4 +1,5 @@
-import { api, errorMessage } from "../api";
+import { api } from "../api";
+import { gitFailed } from "../app/gitFailed";
 import { toast, type ToastAction } from "../app/toast";
 
 type Refresh = () => unknown;
@@ -34,7 +35,7 @@ export async function travel(forward: boolean, ids: number[], refresh: Refresh) 
     }
   } catch (e) {
     const what = forward ? "Could not redo" : "Could not undo";
-    toast("error", done.length ? `${what} past ${label}` : what, errorMessage(e));
+    gitFailed(done.length ? `${what} past ${label}` : what, e);
   } finally {
     await refresh();
   }

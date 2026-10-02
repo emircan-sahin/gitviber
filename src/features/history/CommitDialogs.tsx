@@ -9,29 +9,38 @@ import { refNameCheck } from "@/lib/git/refs";
 import { NameHint } from "@/components/NameHint";
 import { useSubmit } from "@/hooks/useGitAction";
 import type { Actions } from "./commitActions";
+import type { Messaging } from "./edits";
 
 const fullMessage = (c: Commit) => (c.body.trim() ? `${c.subject}\n\n${c.body.trim()}` : c.subject);
 
-/** The message for a reworded commit, or for one squashed into its parent (both messages to start with). */
-export function MessageDialog({ kind, commit, parent, onClose, onSubmit }: { kind: "reword" | "squash"; commit: Commit; parent?: Commit; onClose: () => void; onSubmit: (message: string) => void }) {
-  const [message, setMessage] = useState(() => (kind === "reword" ? fullMessage(commit) : [parent && fullMessage(parent), fullMessage(commit)].filter(Boolean).join("\n\n")));
+/** The message for a reworded commit, or for commits squashed into one (theirs to start with, oldest first). */
+export function MessageDialog({ messaging: m, onClose, onSubmit }: { messaging: Messaging; onClose: () => void; onSubmit: (message: string) => void }) {
+  const [message, setMessage] = useState(() => (m.kind === "reword" ? [m.commit] : m.commits).map(fullMessage).join("\n\n"));
   const submit = () => {
     if (!message.trim()) return;
     onClose();
     onSubmit(message);
   };
+  const count = m.kind === "squash" ? new Set([...m.shas, m.onto]).size : 1;
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-lg">
-        <DialogTitle>{kind === "reword" ? "Reword commit" : "Squash into parent"}</DialogTitle>
+        <DialogTitle>{m.kind === "reword" ? "Reword commit" : `Squash ${count} commits`}</DialogTitle>
         <DialogDescription>
-          {kind === "reword" ? (
+          {m.kind === "reword" ? (
             <>
-              A new message for <span className="font-mono">{commit.shortSha}</span>; its changes stay as they are.
+              A new message for <span className="font-mono">{m.commit.shortSha}</span>; its changes stay as they are.
             </>
           ) : (
             <>
-              <span className="font-mono">{commit.shortSha}</span> and the commit before it become one, with this message.
+              These {count} commits become one
+              {m.apart && (
+                <>
+                  {" "}
+                  where <span className="font-mono">{m.onto.slice(0, 7)}</span> is
+                </>
+              )}
+              , with this message.
             </>
           )}
         </DialogDescription>
@@ -58,7 +67,7 @@ export function MessageDialog({ kind, commit, parent, onClose, onSubmit }: { kin
             spellCheck={false}
           />
           <Button type="submit" className="self-end" disabled={!message.trim()}>
-            {kind === "reword" ? "Reword" : "Squash"}
+            {m.kind === "reword" ? "Reword" : "Squash"}
           </Button>
         </form>
       </DialogContent>

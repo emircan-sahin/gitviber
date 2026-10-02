@@ -108,18 +108,34 @@ pub async fn commit_details(state: State<'_, AppState>, sha: String) -> Res<git:
     in_repo(&state, move |r| git::commit_details(r, &sha)).await
 }
 
-/// Rewords, squashes, drops or moves a commit of the branch; true when it stopped on conflicts.
+/// Rewords, squashes, drops or moves commits of the branch, and says how that ended.
 #[tauri::command]
-pub async fn rewrite(state: State<'_, AppState>, head: String, edit: rewrite::Edit) -> Res<bool> {
+pub async fn rewrite(
+    state: State<'_, AppState>,
+    head: String,
+    edit: rewrite::Edit,
+) -> Res<rewrite::Outcome> {
+    let what = |shas: &[String]| match shas {
+        [sha] => short(sha).to_string(),
+        _ => format!("{} commits", shas.len()),
+    };
     let label = match &edit {
         rewrite::Edit::Reword { sha, .. } => format!("Reword {}", short(sha)),
+        // Counted as the toast counts them: every commit that ends up in the one.
         rewrite::Edit::Squash {
-            sha,
-            message: Some(_),
-        } => format!("Squash {}", short(sha)),
-        rewrite::Edit::Squash { sha, message: None } => format!("Fixup {}", short(sha)),
-        rewrite::Edit::Drop { sha } => format!("Drop {}", short(sha)),
+            shas,
+            onto,
+            message,
+        } => {
+            let verb = if message.is_some() { "Squash" } else { "Fixup" };
+            match &shas[..] {
+                [sha] => format!("{verb} {} into {}", short(sha), short(onto)),
+                _ => format!("{verb} {} commits", shas.len() + 1),
+            }
+        }
+        rewrite::Edit::Drop { shas } => format!("Drop {}", what(shas)),
         rewrite::Edit::Move { sha, .. } => format!("Move {}", short(sha)),
+        rewrite::Edit::Reorder { shas, .. } => format!("Move {}", what(shas)),
     };
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
         rewrite::run(r, &head, &edit)
@@ -157,8 +173,12 @@ pub async fn reset(
 }
 
 #[tauri::command]
-pub async fn drops_pushed(state: State<'_, AppState>, sha: String) -> Res<bool> {
-    in_repo(&state, move |r| git::drops_pushed(r, &sha)).await
+pub async fn drops_pushed(state: State<'_, AppState>, sha: Option<String>) -> Res<bool> {
+    in_repo(&state, move |r| match sha {
+        Some(sha) => git::drops_pushed(r, &sha),
+        None => git::has_pushed(r),
+    })
+    .await
 }
 
 #[tauri::command]

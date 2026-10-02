@@ -7,12 +7,13 @@ import { focusPanel } from "./panels";
  * drift apart. Rows are the `[data-row]` elements inside, top to bottom, and keys do what the
  * mouse does on them: landing on a row is a click (the preview), ↵ a double-click (keeps the
  * tab), → goes on to its code. A row with aria-expanded (a commit) only opens and closes, with
- * ↵, Space or → / ←.
+ * ↵, Space or → / ←. With `onMove`, which hears each move by the rows' keys, ⇧ and a move key go
+ * along those rows only, for the list to pick them (History).
  *
  * Rows (and tabs) moved to by arrow keys get focus from script, which WebKit doesn't count as
  * :focus-visible: their hover-like fill uses :focus, or the keyboard's row showed only its icons.
  */
-export function useListNav({ activeKey, loadMore }: { activeKey: string | null; loadMore?: (() => Promise<unknown>) | null }) {
+export function useListNav({ activeKey, loadMore, onMove }: { activeKey: string | null; loadMore?: (() => Promise<unknown>) | null; onMove?: (from: string, to: string, shift: boolean) => void }) {
   const ref = useRef<HTMLDivElement>(null);
   // The row focus was last on: the list's one tab stop, else the open row, else the first.
   const cursor = useRef<string | null>(null);
@@ -51,8 +52,18 @@ export function useListNav({ activeKey, loadMore }: { activeKey: string | null; 
       e.preventDefault();
       return;
     }
-    if (e.shiftKey) return;
     const rows = rowsIn(ref.current);
+    if (e.shiftKey) {
+      const peers = onMove && row.hasAttribute("aria-expanded") ? rows.filter((r) => r.hasAttribute("aria-expanded")) : [];
+      const to = peers.length ? moveTarget(e.key, peers.indexOf(row), peers.length, pageOf(row)) : null;
+      if (to === null || !onMove) return;
+      if (peers[to] !== row) {
+        land(peers[to]);
+        onMove(row.dataset.row ?? "", peers[to].dataset.row ?? "", true);
+      }
+      e.preventDefault();
+      return;
+    }
     const i = rows.indexOf(row);
     const parent = row.hasAttribute("aria-expanded");
     const expanded = row.getAttribute("aria-expanded") === "true";
@@ -64,7 +75,10 @@ export function useListNav({ activeKey, loadMore }: { activeKey: string | null; 
           pending.current = rows.length;
           void loadMore().finally(() => (loading.current = false));
         }
-      } else if (to !== i) land(rows[to]);
+      } else if (to !== i) {
+        land(rows[to]);
+        onMove?.(row.dataset.row ?? "", rows[to].dataset.row ?? "", false);
+      }
     } else if (e.key === "Enter") {
       if (parent) row.click();
       else row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));

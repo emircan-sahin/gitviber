@@ -7,6 +7,15 @@ import { createContext, useContext, useRef } from "react";
 // The pointerup that ends a drag also clicks the item under it; items ask this before acting.
 const DragGuard = createContext<() => boolean>(() => false);
 
+/** A press only becomes a drag after 5px, so clicks still work. */
+export const useDragSensors = () => useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+
+/** Call `ended` when a drag ends; `justDragged` then tells the click that came with it apart. */
+export function useDragGuard() {
+  const endedAt = useRef(0);
+  return { ended: () => void (endedAt.current = performance.now()), justDragged: () => performance.now() - endedAt.current < 250 };
+}
+
 /**
  * Animated drag-to-reorder list (dnd-kit). Neighbours slide out of the way while dragging,
  * movement is locked to one axis, and a press only becomes a drag after 5px so clicks
@@ -23,20 +32,20 @@ export function SortableList({
   onMove: (from: number, to: number) => void;
   children: React.ReactNode;
 }) {
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
-  const endedAt = useRef(0);
+  const sensors = useDragSensors();
+  const { ended, justDragged } = useDragGuard();
   const onDragEnd = ({ active, over }: DragEndEvent) => {
-    endedAt.current = performance.now();
+    ended();
     if (over && active.id !== over.id) onMove(ids.indexOf(String(active.id)), ids.indexOf(String(over.id)));
   };
   return (
-    <DragGuard.Provider value={() => performance.now() - endedAt.current < 250}>
+    <DragGuard.Provider value={justDragged}>
       <DndContext
         sensors={sensors}
         collisionDetection={closestCenter}
         modifiers={[axis === "x" ? restrictToHorizontalAxis : restrictToVerticalAxis, restrictToParentElement]}
         onDragEnd={onDragEnd}
-        onDragCancel={() => (endedAt.current = performance.now())}
+        onDragCancel={ended}
       >
         <SortableContext items={ids} strategy={axis === "x" ? horizontalListSortingStrategy : verticalListSortingStrategy}>
           {children}

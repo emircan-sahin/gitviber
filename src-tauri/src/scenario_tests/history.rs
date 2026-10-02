@@ -217,6 +217,12 @@ fn drops_pushed_follows_ancestry_not_log_order() {
     // Undoing the merge (moving to its first parent, P) drops nothing pushed.
     assert!(!drops_pushed(b, &commits[0].parents[0]).unwrap());
     assert!(commits[2].on_origin && !commits[1].on_origin);
+    // From the root, every commit is made again: pushed ones are among them.
+    assert!(has_pushed(b).unwrap());
+    let lone = sb.path("lone");
+    init(&lone);
+    write_commit(&lone, "a.txt", "a\n", "only");
+    assert!(!has_pushed(&lone).unwrap());
 }
 
 #[test]
