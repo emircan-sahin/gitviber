@@ -25,12 +25,8 @@ export function NotificationsSection() {
   const s = useSettings();
   const permission = useNotifyPermission();
   const asking = useAskingNotify();
-  // The user may have just changed it in System Settings.
-  useEffect(() => {
-    refreshNotifyPermission();
-    window.addEventListener("focus", refreshNotifyPermission);
-    return () => window.removeEventListener("focus", refreshNotifyPermission);
-  }, []);
+  // notify.ts asks again whenever the window comes back, from System Settings say.
+  useEffect(refreshNotifyPermission, []);
   const canSend = permission === "granted" || permission === "unbundled";
   const status = !IS_MAC ? "Shows one now, to see how they look." : permission ? STATUS[permission] : "Checking with macOS…";
   return (

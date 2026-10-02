@@ -7,7 +7,8 @@ import { getSettings, type NotifyEvent, updateSettings } from "../settings";
 import { createStore } from "../store";
 import { failed, toast } from "./toast";
 
-// Null until asked: Settings asks each time it shows, as the user may have changed it in the OS.
+// Null until asked: Settings asks when it shows, and every return to the window asks again, as the
+// user may have changed it in System Settings.
 const permission = createStore<NotifyPermission | null>(null);
 export const useNotifyPermission = permission.use;
 
@@ -33,10 +34,12 @@ export async function enableNotifications(on: boolean) {
     asking.set(false);
     return updateSettings({ notify: false });
   }
-  asking.set(true);
   try {
     let state = await api.notificationPermission();
-    if (state === "prompt") state = await api.requestNotifications();
+    if (state === "prompt" && turn === turns) {
+      asking.set(true);
+      state = await api.requestNotifications();
+    }
     if (turn !== turns) return;
     permission.set(state);
     if (state === "granted" || state === "unbundled") updateSettings({ notify: true });
@@ -68,16 +71,16 @@ export function sendTestNotification() {
 let toldDenied = false;
 
 /**
- * With the switch on, what macOS says now. Up to 0.1.7 it was never asked, so a switch turned on
- * then has no permission behind it: off it goes, with a way back that asks. One taken back in
+ * What macOS says now. With the switch on: up to 0.1.7 it was never asked, so a switch turned on
+ * then has no permission behind it, and off it goes, with a way back that asks; one taken back in
  * System Settings would drop every notification unseen, so that's said once.
  */
 function checkPermission() {
-  if (!getSettings().notify) return;
   api
     .notificationPermission()
     .then((state) => {
       permission.set(state);
+      if (!getSettings().notify) return;
       if (state === "prompt") {
         updateSettings({ notify: false });
         toast("info", "Notifications need your permission", "GitViber now asks macOS before it shows any.", { label: "Turn on", run: () => void enableNotifications(true) });

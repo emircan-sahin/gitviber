@@ -297,17 +297,8 @@ pub async fn notification_send(
     blocking(move || notifications::send(&app, &title, &body, target.as_deref())).await
 }
 
-/// macOS only: elsewhere there's no permission to give back.
 #[tauri::command]
 pub async fn notification_settings(app: AppHandle) -> Res<()> {
-    #[cfg(target_os = "macos")]
-    {
-        let id = app.config().identifier.clone();
-        blocking(move || launch::notification_settings(&id)).await
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app;
-        Err("Notification settings are on macOS only".into())
-    }
+    let id = app.config().identifier.clone();
+    blocking(move || launch::notification_settings(&id)).await
 }

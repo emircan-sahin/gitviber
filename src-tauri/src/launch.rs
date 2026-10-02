@@ -50,15 +50,22 @@ pub fn open_url(url: &str) -> Result<(), String> {
 }
 
 /// System Settings → Notifications at this app (`id`, its bundle id), where a denied permission
-/// is given back. Waited on, as `reveal`.
-#[cfg(target_os = "macos")]
+/// is given back. Waited on, as `reveal`. Elsewhere there's no permission to give back.
 pub fn notification_settings(id: &str) -> Result<(), String> {
-    let url =
-        format!("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id={id}");
-    match crate::process::spawn(Command::new("open").arg(url)).and_then(|mut c| c.wait()) {
+    #[cfg(target_os = "macos")]
+    return match crate::process::spawn(Command::new("open").arg(format!(
+        "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id={id}"
+    )))
+    .and_then(|mut c| c.wait())
+    {
         Ok(s) if s.success() => Ok(()),
         Ok(s) => Err(format!("open failed ({s})")),
         Err(e) => Err(e.to_string()),
+    };
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = id;
+        Err("Notification settings are on macOS only".into())
     }
 }
 

@@ -173,95 +173,85 @@ mod mac {
         rx.recv_timeout(wait).ok()
     }
 
-    /// The commands run on worker threads, which have no autorelease pool of their own.
-    fn pooled<T>(f: impl FnOnce() -> T) -> T {
-        objc2::rc::autoreleasepool(|_| f())
-    }
-
     unsafe fn error_text(error: *mut AnyObject) -> String {
         let text: *mut AnyObject = msg_send![error, localizedDescription];
         rust_string(text).unwrap_or_else(|| "macOS refused".into())
     }
 
+    // Each runs in a pool of its own: the commands call them on worker threads, which have none.
     pub fn permission() -> Result<Permission, String> {
-        pooled(permission_in_pool)
-    }
-
-    fn permission_in_pool() -> Result<Permission, String> {
-        let Some(center) = center() else {
-            return Ok(Permission::Unbundled);
-        };
-        let status = ask(REPLY, |tx| {
-            let done = RcBlock::new(move |settings: *mut AnyObject| {
-                let status: isize = unsafe { msg_send![settings, authorizationStatus] };
-                let _ = tx.send(status);
+        objc2::rc::autoreleasepool(|_| {
+            let Some(center) = center() else {
+                return Ok(Permission::Unbundled);
+            };
+            let status = ask(REPLY, |tx| {
+                let done = RcBlock::new(move |settings: *mut AnyObject| {
+                    let status: isize = unsafe { msg_send![settings, authorizationStatus] };
+                    let _ = tx.send(status);
+                });
+                unsafe {
+                    let _: () =
+                        msg_send![center, getNotificationSettingsWithCompletionHandler: &*done];
+                }
             });
-            unsafe {
-                let _: () = msg_send![center, getNotificationSettingsWithCompletionHandler: &*done];
+            match status {
+                // UNAuthorizationStatus: notDetermined, denied; then authorized, provisional, ephemeral.
+                Some(0) => Ok(Permission::Prompt),
+                Some(1) => Ok(Permission::Denied),
+                Some(_) => Ok(Permission::Granted),
+                None => Err("macOS didn't say whether notifications are allowed".into()),
             }
-        });
-        match status {
-            // UNAuthorizationStatus: notDetermined, denied; then authorized, provisional, ephemeral.
-            Some(0) => Ok(Permission::Prompt),
-            Some(1) => Ok(Permission::Denied),
-            Some(_) => Ok(Permission::Granted),
-            None => Err("macOS didn't say whether notifications are allowed".into()),
-        }
+        })
     }
 
     pub fn request() -> Result<Permission, String> {
-        pooled(request_in_pool)
-    }
-
-    fn request_in_pool() -> Result<Permission, String> {
-        let Some(center) = center() else {
-            return Ok(Permission::Unbundled);
-        };
-        let answer = ask(ANSWER, |tx| {
-            let done = RcBlock::new(move |granted: Bool, error: *mut AnyObject| {
-                let _ = tx.send(if error.is_null() {
-                    Ok(granted.as_bool())
-                } else {
-                    Err(unsafe { error_text(error) })
+        objc2::rc::autoreleasepool(|_| {
+            let Some(center) = center() else {
+                return Ok(Permission::Unbundled);
+            };
+            let answer = ask(ANSWER, |tx| {
+                let done = RcBlock::new(move |granted: Bool, error: *mut AnyObject| {
+                    let _ = tx.send(if error.is_null() {
+                        Ok(granted.as_bool())
+                    } else {
+                        Err(unsafe { error_text(error) })
+                    });
                 });
+                unsafe {
+                    let _: () = msg_send![center, requestAuthorizationWithOptions: SOUND_AND_ALERT, completionHandler: &*done];
+                }
             });
-            unsafe {
-                let _: () = msg_send![center, requestAuthorizationWithOptions: SOUND_AND_ALERT, completionHandler: &*done];
+            match answer {
+                Some(Ok(true)) => Ok(Permission::Granted),
+                Some(Ok(false)) => Ok(Permission::Denied),
+                Some(Err(e)) => Err(e),
+                // Still unanswered: the prompt waits in Notification Center.
+                None => Ok(Permission::Prompt),
             }
-        });
-        match answer {
-            Some(Ok(true)) => Ok(Permission::Granted),
-            Some(Ok(false)) => Ok(Permission::Denied),
-            Some(Err(e)) => Err(e),
-            // Still unanswered: the prompt waits in Notification Center.
-            None => Ok(Permission::Prompt),
-        }
+        })
     }
 
     /// None outside an app bundle, where the plugin posts instead.
     pub fn send(title: &str, body: &str, target: Option<&str>) -> Option<Result<(), String>> {
-        pooled(|| send_in_pool(title, body, target))
-    }
-
-    fn send_in_pool(title: &str, body: &str, target: Option<&str>) -> Option<Result<(), String>> {
-        let center = center()?;
-        let sent = ask(REPLY, |tx| unsafe {
-            let Some(request) = build(title, body, target) else {
-                let _ = tx.send(Err("Could not build the notification".to_string()));
-                return;
-            };
-            let done = RcBlock::new(move |error: *mut AnyObject| {
-                let _ = tx.send(if error.is_null() {
-                    Ok(())
-                } else {
-                    Err(error_text(error))
+        objc2::rc::autoreleasepool(|_| {
+            let center = center()?;
+            let sent = ask(REPLY, |tx| unsafe {
+                let Some(request) = build(title, body, target) else {
+                    let _ = tx.send(Err("Could not build the notification".to_string()));
+                    return;
+                };
+                let done = RcBlock::new(move |error: *mut AnyObject| {
+                    let _ = tx.send(if error.is_null() {
+                        Ok(())
+                    } else {
+                        Err(error_text(error))
+                    });
                 });
+                let _: () = msg_send![center, addNotificationRequest: request, withCompletionHandler: &*done];
             });
-            let _: () =
-                msg_send![center, addNotificationRequest: request, withCompletionHandler: &*done];
-        });
-        // No answer in time isn't a failure: it's on its way, or macOS is slow to say.
-        Some(sent.unwrap_or(Ok(())))
+            // No answer in time isn't a failure: it's on its way, or macOS is slow to say.
+            Some(sent.unwrap_or(Ok(())))
+        })
     }
 
     /// An autoreleased UNNotificationRequest, shown at once, with the default sound.

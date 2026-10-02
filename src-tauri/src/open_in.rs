@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Serialize, Clone, Copy, PartialEq, Debug)]
@@ -191,10 +192,15 @@ fn bundle_path(app: &App) -> Option<PathBuf> {
 }
 
 #[cfg(target_os = "macos")]
-use crate::objc::app_path;
+use mac::{app_icon, app_path};
 
 #[cfg(not(target_os = "macos"))]
 fn app_path(_bundle_id: &str) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+fn app_icon(_bundle: &Path, _px: u32) -> Option<Vec<u8>> {
     None
 }
 
@@ -202,33 +208,18 @@ fn app_path(_bundle_id: &str) -> Option<PathBuf> {
 /// build of the app: an update that brings a new icon changes the bundle's modification time.
 pub fn icon(id: &str) -> Option<Vec<u8>> {
     type Key = (PathBuf, Option<std::time::SystemTime>);
-    static ICONS: std::sync::Mutex<Option<HashMap<Key, Vec<u8>>>> = std::sync::Mutex::new(None);
+    static ICONS: LazyLock<Mutex<HashMap<Key, Vec<u8>>>> = LazyLock::new(Default::default);
+    let icons = || ICONS.lock().unwrap_or_else(|e| e.into_inner());
     let bundle = APPS.iter().find(|a| a.id == id).and_then(bundle_path)?;
-    let key = (
-        bundle.clone(),
-        bundle.metadata().and_then(|m| m.modified()).ok(),
-    );
-    if let Some(png) = ICONS.lock().ok()?.get_or_insert_default().get(&key) {
+    let modified = bundle.metadata().and_then(|m| m.modified()).ok();
+    let key = (bundle, modified);
+    if let Some(png) = icons().get(&key) {
         return Some(png.clone());
     }
     // Drawn outside the lock: the menu asks for every app's at once.
-    let png = render_icon(&bundle)?;
-    ICONS
-        .lock()
-        .ok()?
-        .get_or_insert_default()
-        .insert(key, png.clone());
+    let png = app_icon(&key.0, 32)?;
+    icons().insert(key, png.clone());
     Some(png)
-}
-
-#[cfg(target_os = "macos")]
-fn render_icon(bundle: &Path) -> Option<Vec<u8>> {
-    crate::objc::app_icon(bundle, 32)
-}
-
-#[cfg(not(target_os = "macos"))]
-fn render_icon(_bundle: &Path) -> Option<Vec<u8>> {
-    None
 }
 
 /// What the placeholders stand for.
@@ -412,6 +403,131 @@ fn launch(argv: &[String], dir: &Path) -> Result<(), String> {
     }
     std::thread::spawn(move || child.wait());
     Ok(())
+}
+
+/// LaunchServices and AppKit, through raw objc2 messages (objc.rs).
+#[cfg(target_os = "macos")]
+mod mac {
+    use crate::objc::{bytes, c_string, ns_string, rust_string};
+    use objc2::encode::{Encode, Encoding};
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use std::ffi::CString;
+    use std::path::{Path, PathBuf};
+
+    /// Where LaunchServices has the app, as `open -b` would find it.
+    pub(super) fn app_path(bundle_id: &str) -> Option<PathBuf> {
+        let id = CString::new(bundle_id).ok()?;
+        let path = objc2::rc::autoreleasepool(|_| unsafe {
+            let workspace: *mut AnyObject =
+                msg_send![AnyClass::get(c"NSWorkspace")?, sharedWorkspace];
+            let url: *mut AnyObject =
+                msg_send![workspace, URLForApplicationWithBundleIdentifier: ns_string(&id)];
+            if url.is_null() {
+                return None;
+            }
+            rust_string(msg_send![url, path]).map(PathBuf::from)
+        })?;
+        // LaunchServices still knows an app that was just moved to the Trash.
+        (!path.to_string_lossy().contains("/.Trash/")).then_some(path)
+    }
+
+    #[repr(C)]
+    struct Rect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    }
+
+    const PAIR: [Encoding; 2] = [f64::ENCODING, f64::ENCODING];
+    unsafe impl Encode for Rect {
+        const ENCODING: Encoding = Encoding::Struct(
+            "CGRect",
+            &[
+                Encoding::Struct("CGPoint", &PAIR),
+                Encoding::Struct("CGSize", &PAIR),
+            ],
+        );
+    }
+
+    /// Finder's icon for `bundle`, as its Dock and the Open With menu show it: a PNG `px` wide,
+    /// drawn into a bitmap of that size, as the icon's own TIFF holds every size up to 1024.
+    pub(super) fn app_icon(bundle: &Path, px: u32) -> Option<Vec<u8>> {
+        const PNG: usize = 4; // NSBitmapImageFileTypePNG
+        const SOURCE_OVER: usize = 2; // NSCompositingOperationSourceOver
+        let path = c_string(&bundle.to_string_lossy());
+        let side = f64::from(px);
+        objc2::rc::autoreleasepool(|_| unsafe {
+            let workspace: *mut AnyObject =
+                msg_send![AnyClass::get(c"NSWorkspace")?, sharedWorkspace];
+            let image: *mut AnyObject = msg_send![workspace, iconForFile: ns_string(&path)];
+            if image.is_null() {
+                return None;
+            }
+            let rep: *mut AnyObject = msg_send![AnyClass::get(c"NSBitmapImageRep")?, alloc];
+            let rep: *mut AnyObject = msg_send![
+                rep,
+                initWithBitmapDataPlanes: std::ptr::null_mut::<*mut u8>(),
+                pixelsWide: px as isize,
+                pixelsHigh: px as isize,
+                bitsPerSample: 8isize,
+                samplesPerPixel: 4isize,
+                hasAlpha: Bool::YES,
+                isPlanar: Bool::NO,
+                colorSpaceName: ns_string(c"NSDeviceRGBColorSpace"),
+                bytesPerRow: 0isize,
+                bitsPerPixel: 0isize
+            ];
+            if rep.is_null() {
+                return None;
+            }
+            let png = (|| {
+                let graphics = AnyClass::get(c"NSGraphicsContext")?;
+                let context: *mut AnyObject =
+                    msg_send![graphics, graphicsContextWithBitmapImageRep: rep];
+                if context.is_null() {
+                    return None;
+                }
+                let _: () = msg_send![graphics, saveGraphicsState];
+                let _: () = msg_send![graphics, setCurrentContext: context];
+                let whole = Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 0.0,
+                    h: 0.0,
+                };
+                let into = Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: side,
+                    h: side,
+                };
+                let _: () = msg_send![image, drawInRect: into, fromRect: whole, operation: SOURCE_OVER, fraction: 1.0f64];
+                let _: () = msg_send![graphics, restoreGraphicsState];
+                let none: *mut AnyObject = msg_send![AnyClass::get(c"NSDictionary")?, dictionary];
+                bytes(msg_send![rep, representationUsingType: PNG, properties: none])
+            })();
+            let _: () = msg_send![rep, release];
+            png
+        })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Terminal ships with every Mac.
+        #[test]
+        fn draws_an_apps_icon() {
+            let terminal = app_path("com.apple.Terminal").unwrap();
+            let png = app_icon(&terminal, 32).unwrap();
+            assert!(png.starts_with(b"\x89PNG"));
+            // IHDR's width and height.
+            assert_eq!(png[16..24], [0, 0, 0, 32, 0, 0, 0, 32]);
+            assert!(app_path("com.example.not-an-app").is_none());
+        }
+    }
 }
 
 #[cfg(test)]
