@@ -17,6 +17,7 @@ import { terminalOptions } from "./theme";
 import { osc52Text } from "./osc52";
 import { CommandMarks } from "./commandMarks";
 import { type SaveState } from "./saveRound";
+import { planFit } from "./fit";
 import { ask } from "../app/ask";
 import { plural } from "../format";
 import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
@@ -253,14 +254,14 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   term.onData((data) => send(p, data));
   // Mouse reports in the default encoding: a byte a coordinate, past 127 beyond column 95, not UTF-8.
   term.onBinary((data) => send(p, data, true));
-  term.onResize(({ cols, rows }) => {
+  term.onResize(() => {
     // Reflow rewraps the history.
     p.dirty = true;
     scheduleSave();
     // A divider drag changes the rows each frame, and Claude Code redrew on each SIGWINCH, leaving
     // copies of its screen in the history: the program gets the size the drag settles on.
     window.clearTimeout(p.ptyResizeTimer);
-    p.ptyResizeTimer = window.setTimeout(() => p.pty !== null && void pty.resize(p.pty, cols, rows).catch(() => {}), PTY_RESIZE_WAIT);
+    p.ptyResizeTimer = window.setTimeout(() => sendSize(p), PTY_RESIZE_WAIT);
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   watchAttention(p);
@@ -337,23 +338,28 @@ export function update(id: number, fn: (p: PaneInfo) => PaneInfo) {
   set({ groups: state.groups.map((g) => (g.panes.some((p) => p.id === id) ? { ...g, panes: g.panes.map((p) => (p.id === id ? fn(p) : p)) } : g)) });
 }
 
-/** History lines past which a column change waits for the resize to settle (VS Code's threshold). */
-const REWRAP_LINES = 200;
-
-/** A hidden or collapsed container would shrink the shell to one row and garble its output. */
+/** `now`: the columns held back from a long history (planFit) are due. */
 function fitPane(p: Pane, now = false) {
-  const box = p.host.parentElement;
-  if (!p.term.element || !box || box.clientWidth === 0 || box.clientHeight === 0) return;
-  const size = p.fit.proposeDimensions();
-  if (!size || isNaN(size.cols) || isNaN(size.rows)) return;
+  if (!p.term.element) return;
+  // The host, not its container, whose padding stays when the pane has no room.
+  const box = { width: p.host.clientWidth, height: p.host.clientHeight };
+  const plan = planFit(box, p.fit.proposeDimensions(), p.term, now || !p.started ? null : p.term.buffer.normal.length);
+  if (!plan) return;
   window.clearTimeout(p.fitTimer);
-  // New columns rewrap the whole history, so past REWRAP_LINES they wait 100 ms for a drag to
-  // settle, as in VS Code; rows follow at once.
-  if (!now && p.started && size.cols !== p.term.cols && p.term.buffer.normal.length > REWRAP_LINES) {
-    p.term.resize(p.term.cols, size.rows);
-    p.fitTimer = window.setTimeout(() => fitPane(p, true), 100);
-  } else p.term.resize(size.cols, size.rows);
+  p.fitTimer = undefined;
+  p.term.resize(plan.size.cols, plan.size.rows);
+  if (plan.colsLater)
+    p.fitTimer = window.setTimeout(() => {
+      p.fitTimer = undefined;
+      fitPane(p, true);
+    }, 100);
   if (!p.started) void start(p);
+}
+
+/** Tells the program its pane's size once a resize settled, columns held back (fitPane) included: one SIGWINCH, not one a step. */
+function sendSize(p: Pane) {
+  if (p.fitTimer !== undefined) p.ptyResizeTimer = window.setTimeout(() => sendSize(p), PTY_RESIZE_WAIT);
+  else if (p.pty !== null) void pty.resize(p.pty, p.term.cols, p.term.rows).catch(() => {});
 }
 
 async function start(p: Pane) {
@@ -449,7 +455,9 @@ export function attachPane(id: number, container: HTMLElement) {
       // DOM renderer.
     }
   }
-  fitPane(p);
+  // The first fit is the observer's, once layout is done. Fitted here, the panel ⌘J brought back
+  // wasn't sized yet: one row, then its size again before the pty heard, and Claude Code redrew
+  // its screen two rows off what xterm had kept of it.
   const observer = new ResizeObserver(() => fitPane(p));
   observer.observe(container);
   return () => {
