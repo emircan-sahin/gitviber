@@ -106,5 +106,6 @@ export function splitVaultPath(full: string, vaults: Vault[]): { vault: string; 
 export async function vaultFileIO(full: string) {
   const at = splitVaultPath(full, vaultList.get() ?? (await refreshVaults()));
   if (!at) throw new Error(`${full} is in none of Obsidian's vaults`);
-  return { read: () => vaultApi.readFile(at.vault, at.path), write: (text: string) => vaultApi.writeFile(at.vault, at.path, text) };
+  // The vault reads again after a save: a vault no watcher covers wouldn't, and the view would go back to the old text.
+  return { read: () => vaultApi.readFile(at.vault, at.path), write: (text: string) => vaultApi.writeFile(at.vault, at.path, text).then(() => bump([at.vault])) };
 }
