@@ -67,7 +67,7 @@ export function AppearanceSection() {
             <Segmented<Translucency>
               value={s.translucency}
               onChange={(v) => updateSettings({ translucency: v })}
-              options={(Object.keys(TRANSLUCENCY) as Translucency[]).map((value) => ({ value, label: TRANSLUCENCY[value] }))}
+              options={Object.entries(TRANSLUCENCY).map(([value, label]) => ({ value: value as Translucency, label }))}
               variant="field"
             />
           </Field>

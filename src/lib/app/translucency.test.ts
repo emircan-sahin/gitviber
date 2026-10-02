@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import { test } from "node:test";
 
-// settings.ts imports "./api" the bundler way (no extension, a folder): let node find the .ts.
+// translucency.ts and settings.ts import "../api" and "./api" the bundler way (no extension, a
+// folder): let node find the .ts.
 // Each boot's ?boot= query is passed down to our own modules, so platform.ts is read afresh too.
 register(
   "data:text/javascript," +
@@ -28,11 +29,11 @@ export async function resolve(spec, ctx, next) {
 }`),
 );
 
-type Settings = typeof import("./settings.ts");
+type Settings = typeof import("../settings.ts");
 type Pending = { on: boolean; resolve: () => void; reject: (e: unknown) => void };
 
 /**
- * A fresh settings.ts in a fake macOS window: set_translucent calls wait in `pending` (in the
+ * A fresh translucency.ts (and settings.ts) in a fake macOS window: set_translucent calls wait in `pending` (in the
  * order the main thread would run them) until drained, as a busy main thread would hold them.
  */
 async function boot({ stored, platform = "MacIntel", focused = false, reduce = false }: { stored?: object; platform?: string; focused?: boolean; reduce?: boolean | (() => Promise<boolean>) } = {}) {
@@ -84,7 +85,10 @@ async function boot({ stored, platform = "MacIntel", focused = false, reduce = f
     },
   };
 
-  const settings: Settings = await import(`./settings.ts?boot=${Math.random()}`);
+  const query = `?boot=${Math.random()}`;
+  await import(`./translucency.ts${query}`);
+  // The same URL as translucency.ts's own import: the same module.
+  const settings: Settings = await import(`../settings.ts${query}`);
   await settle();
 
   async function settle() {
@@ -103,10 +107,14 @@ async function boot({ stored, platform = "MacIntel", focused = false, reduce = f
     get look() {
       return root.dataset.translucency;
     },
-    /** Runs the main thread's queued set_translucent calls, in order. */
+    /** Runs the main thread's queued set_translucent calls, in order, and the ones they lead to. */
     async drain() {
-      while (pending.length) pending.shift()!.resolve();
+      // Turning it on asks Reduce transparency first, so the call can still be on its way.
       await settle();
+      while (pending.length) {
+        while (pending.length) pending.shift()!.resolve();
+        await settle();
+      }
     },
     async frame(n = 1) {
       for (let i = 0; i < n; i++) {
@@ -133,6 +141,27 @@ test("off, macOS asks nothing of the window and the page stays as it was", async
   assert.deepEqual(w.asked, []);
   assert.equal(w.look, undefined);
   assert.equal("translucency" in w.root.dataset, false);
+});
+
+test("Reduce transparency is asked only while it's on: once when turned on, then on each return", async () => {
+  let asks = 0;
+  const w = await boot({
+    focused: true,
+    reduce: async () => {
+      asks++;
+      return false;
+    },
+  });
+  await w.focus(false);
+  await w.focus(true);
+  assert.equal(asks, 0, "off");
+  w.settings.updateSettings({ translucency: "subtle" });
+  await w.drain();
+  assert.equal(asks, 1);
+  w.settings.updateSettings({ translucency: "strong" });
+  await w.focus(false);
+  await w.focus(true);
+  assert.equal(asks, 2);
 });
 
 test("turned on, the material goes in before the page turns clear", async () => {
@@ -203,6 +232,8 @@ test("with the main thread held up, a stale answer never shows a clear page over
   // Subtle, Off, Subtle while the main thread runs something else: the first answer comes back
   // after the 'off' and the second 'on' are already queued behind it.
   w.settings.updateSettings({ translucency: "subtle" });
+  // Past the Reduce transparency question, so the 'on' is asked of the window.
+  await w.settle();
   w.settings.updateSettings({ translucency: "off" });
   await w.frame(2);
   w.settings.updateSettings({ translucency: "subtle" });
