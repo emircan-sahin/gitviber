@@ -1,10 +1,10 @@
 //! Linked worktrees: listing, adding, renaming, locking and removing them.
 
 use super::{
-    default_branch, include_source, is_nested_repo, landed, run, run_text, validate_base,
-    validate_branch, worktree_includes,
+    default_branch, delete_branch_at, include_source, is_nested_repo, landed, run, run_text,
+    validate_base, validate_branch, worktree_includes,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Serialize)]
@@ -507,4 +507,333 @@ pub fn remove_worktree(repo: &Path, path: &str, force: bool) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+/// An ignored file or folder in a worktree, which removing the worktree deletes for good.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Ignored {
+    /// From the worktree's folder; a folder git ignores whole is one entry, ending in "/".
+    pub path: String,
+    pub bytes: u64,
+    pub files: u64,
+}
+
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct IgnoredFiles {
+    /// Largest first.
+    pub entries: Vec<Ignored>,
+    /// False when the count stopped at IGNORED_WALK_LIMIT, or a folder couldn't be read: the
+    /// sizes are then at least these.
+    pub complete: bool,
+    /// Folders in them this user can't read or delete (a Docker volume root owns, a `chmod
+    /// 000` cache), from the worktree's folder; removing it would stop partway.
+    pub denied: Vec<String>,
+}
+
+/// Entries the size count looks at per worktree: a node_modules is ~100k; a few would be a
+/// second's walk each, and the dialog only needs the order of magnitude.
+const IGNORED_WALK_LIMIT: u64 = 300_000;
+/// Denied folders named; one is reason enough to leave the worktree.
+const DENIED_NAMED: usize = 5;
+
+/// What removing a worktree deletes that git doesn't call a change: its ignored files (`.env`,
+/// `node_modules/`). `git worktree remove` refuses untracked and modified files, never these.
+pub fn worktree_ignored(repo: &Path, path: &str) -> Result<IgnoredFiles, String> {
+    let w = listed_worktree(repo, path)?;
+    if w.bare || w.prunable {
+        return Err(format!("this worktree has no files on disk: {path}"));
+    }
+    let dir = Path::new(&w.path);
+    let raw = run(
+        dir,
+        &[
+            "status",
+            "--porcelain",
+            "-z",
+            "--ignored",
+            "--untracked-files=normal",
+        ],
+    )?;
+    let mut walk = Walk {
+        budget: IGNORED_WALK_LIMIT,
+        ..Walk::default()
+    };
+    let mut entries: Vec<Ignored> = raw
+        .split(|b| *b == 0)
+        .filter_map(|rec| rec.strip_prefix(b"!! "))
+        .map(|p| {
+            let (bytes, files) = walk.size(&dir.join(os_path(p)));
+            Ignored {
+                path: String::from_utf8_lossy(p).into_owned(),
+                bytes,
+                files,
+            }
+        })
+        .collect();
+    entries.sort_by(|a, b| b.bytes.cmp(&a.bytes).then_with(|| a.path.cmp(&b.path)));
+    // git lists no folder it can't read into: the whole worktree is looked at for one.
+    if walk.denied.is_empty() {
+        walk.denied.extend(undeletable(dir));
+    }
+    let denied: Vec<String> = walk
+        .denied
+        .iter()
+        .map(|p| {
+            let rel = p.strip_prefix(dir).unwrap_or(p).to_string_lossy();
+            if rel.is_empty() {
+                "./".into()
+            } else {
+                format!("{rel}/")
+            }
+        })
+        .collect();
+    Ok(IgnoredFiles {
+        entries,
+        complete: walk.budget > 0 && denied.is_empty(),
+        denied,
+    })
+}
+
+/// A size count over ignored folders: links not followed, a hard-linked file (pnpm's store
+/// links every package file) counted once, each entry taken from `budget`.
+#[derive(Default)]
+struct Walk {
+    budget: u64,
+    linked: std::collections::HashSet<(u64, u64)>,
+    denied: Vec<PathBuf>,
+}
+
+impl Walk {
+    /// Bytes and files under `path`.
+    fn size(&mut self, path: &Path) -> (u64, u64) {
+        let (mut bytes, mut files) = (0, 0);
+        let mut todo = vec![path.to_path_buf()];
+        while let Some(p) = todo.pop() {
+            if self.budget == 0 {
+                break;
+            }
+            self.budget -= 1;
+            // Gone meanwhile (a package manager at work): nothing to count.
+            let Ok(meta) = std::fs::symlink_metadata(&p) else {
+                continue;
+            };
+            if meta.is_dir() {
+                match std::fs::read_dir(&p) {
+                    Ok(read) if deletable(&p) => {
+                        todo.extend(read.filter_map(|e| e.ok().map(|e| e.path())))
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    _ => {
+                        if self.denied.len() < DENIED_NAMED {
+                            self.denied.push(p);
+                        }
+                    }
+                }
+            } else if self.first_link(&meta) {
+                bytes += meta.len();
+                files += 1;
+            }
+        }
+        (bytes, files)
+    }
+
+    #[cfg(unix)]
+    fn first_link(&mut self, meta: &std::fs::Metadata) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        meta.nlink() < 2 || self.linked.insert((meta.dev(), meta.ino()))
+    }
+
+    #[cfg(not(unix))]
+    fn first_link(&mut self, _meta: &std::fs::Metadata) -> bool {
+        true
+    }
+}
+
+/// Whether this user can empty folder `dir` and so delete it: list, write and enter it.
+#[cfg(unix)]
+fn deletable(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return false;
+    };
+    unsafe { libc::access(c.as_ptr(), libc::R_OK | libc::W_OK | libc::X_OK) == 0 }
+}
+
+#[cfg(not(unix))]
+fn deletable(_dir: &Path) -> bool {
+    true
+}
+
+/// The first folder in `dir` (or `dir` itself) this user can't empty: `git worktree remove`
+/// would delete what it can, then stop with the worktree's entry gone and a broken folder left.
+fn undeletable(dir: &Path) -> Option<PathBuf> {
+    let mut todo = vec![dir.to_path_buf()];
+    while let Some(p) = todo.pop() {
+        let read = std::fs::read_dir(&p).ok().filter(|_| deletable(&p));
+        let Some(read) = read else {
+            return Some(p);
+        };
+        // The entry's own type: no stat per file, and links aren't followed.
+        todo.extend(
+            read.filter_map(Result::ok)
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+                .map(|e| e.path()),
+        );
+    }
+    None
+}
+
+/// A worktree to clean up, as the page found it: merged by git's count, or by a merged pull
+/// request whose head is `merged_head` (a squash merge git can't see until the branch is gone).
+#[derive(Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanUp {
+    pub path: String,
+    pub merged_head: Option<String>,
+}
+
+#[derive(Serialize, Default, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct CleanedUp {
+    /// The worktrees removed.
+    pub removed: Vec<String>,
+    /// Their branches deleted along with them.
+    pub deleted: Vec<String>,
+    /// Their branches kept: what they hold isn't known to be merged.
+    pub kept: Vec<String>,
+    /// The worktrees left, and why.
+    pub failed: Vec<(String, String)>,
+}
+
+/// A branch whose worktree went, and the commit it was checked merged at.
+pub type MergedBranch = (String, String);
+
+/// Removes merged worktrees, each checked again first, and the branches whose work is known to
+/// be merged. A failure leaves that one and goes on with the rest. The command runs the two
+/// halves apart, the second journaled.
+#[cfg(test)]
+pub fn clean_up_worktrees(repo: &Path, list: &[CleanUp]) -> CleanedUp {
+    let (mut out, branches) = remove_merged_worktrees(repo, list);
+    delete_merged_branches(repo, &mut out, branches);
+    out
+}
+
+/// Clean up's first half: the worktrees, each checked again and removed, and the branches that
+/// may go with them. Apart from the second so the journal isn't held through a big folder's delete.
+pub fn remove_merged_worktrees(repo: &Path, list: &[CleanUp]) -> (CleanedUp, Vec<MergedBranch>) {
+    let mut out = CleanedUp::default();
+    let mut branches = vec![];
+    for item in list {
+        match clean_up(repo, item) {
+            Ok(branch) => {
+                out.removed.push(item.path.clone());
+                match branch {
+                    Some((b, Some(tip))) => branches.push((b, tip)),
+                    Some((b, None)) => out.kept.push(b),
+                    None => {}
+                }
+            }
+            Err(e) => out.failed.push((item.path.clone(), e)),
+        }
+    }
+    (out, branches)
+}
+
+/// Clean up's second half, for the journal to record: each branch deleted at the commit that was
+/// checked. One that moved meanwhile, or that another worktree has out (`worktree add --force`,
+/// whose HEAD would go unborn), is kept.
+pub fn delete_merged_branches(repo: &Path, out: &mut CleanedUp, branches: Vec<MergedBranch>) {
+    for (branch, tip) in branches {
+        let held = run_text(
+            repo,
+            &[
+                "for-each-ref",
+                "--format=%(worktreepath)",
+                &format!("refs/heads/{branch}"),
+            ],
+        )
+        .map_or(true, |s| !s.trim().is_empty());
+        if !held && delete_branch_at(repo, &branch, &tip).is_ok() {
+            out.deleted.push(branch);
+        } else {
+            out.kept.push(branch);
+        }
+    }
+}
+
+/// One worktree, if it's still unlocked, holds no other worktree, has nothing uncommitted, every
+/// folder in it can be deleted, and is merged: by git's count, or with its branch at the merged
+/// pull request's head (a detached HEAD's commits are on no branch, and would be lost). Then
+/// its branch, with the commit to delete it at when that's known merged.
+fn clean_up(repo: &Path, item: &CleanUp) -> Result<Option<(String, Option<String>)>, String> {
+    let all = worktrees(repo)?;
+    let w = all
+        .iter()
+        .find(|w| w.path == item.path)
+        .ok_or_else(|| format!("not a worktree of this repository: {}", item.path))?;
+    if w.locked {
+        return Err("it's locked".into());
+    }
+    // An agent's own worktrees sit inside the one it works in, ignored: removing the outer one
+    // would delete them, uncommitted work and all.
+    let real = |p: &str| {
+        Path::new(p)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(p))
+    };
+    let outer = real(&w.path);
+    if all
+        .iter()
+        .any(|o| o.path != w.path && real(&o.path).starts_with(&outer))
+    {
+        return Err("another worktree is inside it".into());
+    }
+    let state = worktree_state(repo, &item.path, true)?;
+    if state.uncommitted > 0 {
+        return Err(format!(
+            "it has {} uncommitted {}",
+            state.uncommitted,
+            if state.uncommitted == 1 {
+                "change"
+            } else {
+                "changes"
+            }
+        ));
+    }
+    let tip = w.branch.as_deref().and_then(|b| {
+        run_text(
+            repo,
+            &["rev-parse", "--verify", "-q", &format!("refs/heads/{b}")],
+        )
+        .ok()
+        .map(|s| s.trim().to_string())
+    });
+    let at_head = item
+        .merged_head
+        .as_deref()
+        .zip(tip.as_deref())
+        .is_some_and(|(h, t)| h.eq_ignore_ascii_case(t));
+    if !state.merged && !at_head {
+        return Err(match (&item.merged_head, &w.branch) {
+            (Some(_), None) => "its HEAD is detached, off the merged pull request's branch".into(),
+            (Some(_), Some(_)) => "it has commits the merged pull request doesn't".into(),
+            (None, _) => "it isn't merged anymore".into(),
+        });
+    }
+    if outer.parent().is_some_and(|p| !deletable(p)) {
+        return Err("its folder can't be deleted (permission denied)".into());
+    }
+    if let Some(p) = undeletable(&outer) {
+        return Err(match p.strip_prefix(&outer) {
+            Ok(rel) if !rel.as_os_str().is_empty() => format!(
+                "{}/ in it can't be deleted (permission denied)",
+                rel.to_string_lossy()
+            ),
+            _ => "its folder can't be deleted (permission denied)".into(),
+        });
+    }
+    remove_worktree(repo, &item.path, false)?;
+    Ok(w.branch.clone().map(|b| (b, tip)))
 }

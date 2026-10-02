@@ -305,6 +305,31 @@ export interface WorktreeState {
   updated: number | null;
 }
 
+/** A worktree's ignored files: a folder ignored whole is one entry, ending in "/". */
+export interface IgnoredFiles {
+  entries: { path: string; bytes: number; files: number }[];
+  /** False when the count stopped early or a folder couldn't be read: the sizes are at least these. */
+  complete: boolean;
+  /** Folders in it this user can't read or delete: removing it would stop partway, so Clean up leaves it. */
+  denied: string[];
+}
+
+/** A worktree to clean up; `mergedHead`: its merged pull request's head, for a merge git can't see (a squash). */
+export interface CleanUp {
+  path: string;
+  mergedHead: string | null;
+}
+
+export interface CleanedUp {
+  removed: string[];
+  /** Branches deleted with their worktrees. */
+  deleted: string[];
+  /** Branches kept: what they hold isn't known to be merged. */
+  kept: string[];
+  /** Worktrees left, and why. */
+  failed: [string, string][];
+}
+
 export interface Branch {
   name: string;
   remote: boolean;

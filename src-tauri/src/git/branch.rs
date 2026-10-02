@@ -132,11 +132,7 @@ pub fn delete_merged(repo: &Path, merged: &[String], upstream: &[String]) -> Res
             return Err(format!("{n} is checked out in {path}"));
         }
         for (n, sha) in checked {
-            run(repo, &["update-ref", "-d", &format!("refs/heads/{n}"), sha])?;
-            let _ = run(
-                repo,
-                &["config", "--remove-section", &format!("branch.{n}")],
-            );
+            delete_branch_at(repo, n, sha)?;
         }
     }
     if merged.is_empty() {
@@ -419,6 +415,20 @@ pub(super) fn default_branch(repo: &Path) -> String {
 }
 
 /// `git branch -d`, or `-D` when `force`: -d refuses a branch with commits found nowhere else.
+/// Deletes branch `name` only while it's still at `sha`, and its settings with it, as
+/// `git branch -D` does. update-ref has no checked-out guard: the caller checks that.
+pub(super) fn delete_branch_at(repo: &Path, name: &str, sha: &str) -> Result<(), String> {
+    run(
+        repo,
+        &["update-ref", "-d", &format!("refs/heads/{name}"), sha],
+    )?;
+    let _ = run(
+        repo,
+        &["config", "--remove-section", &format!("branch.{name}")],
+    );
+    Ok(())
+}
+
 pub fn delete_branches(repo: &Path, names: &[String], force: bool) -> Result<(), String> {
     for n in names {
         validate_branch(repo, n)?;

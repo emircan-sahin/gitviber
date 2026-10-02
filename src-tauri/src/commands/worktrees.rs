@@ -1,5 +1,6 @@
 use crate::git;
-use crate::state::{in_repo, read_repo, AppState, Res};
+use crate::journal::{Action, Mode};
+use crate::state::{in_repo, journaled, read_repo, AppState, Res};
 use tauri::State;
 
 #[tauri::command]
@@ -69,4 +70,32 @@ pub async fn worktree_state(
 #[tauri::command]
 pub async fn remove_worktree(state: State<'_, AppState>, path: String, force: bool) -> Res<()> {
     in_repo(&state, move |r| git::remove_worktree(r, &path, force)).await
+}
+
+/// What removing a worktree would delete that isn't a change: its ignored files, sized.
+#[tauri::command]
+pub async fn worktree_ignored(state: State<'_, AppState>, path: String) -> Res<git::IgnoredFiles> {
+    in_repo(&state, move |r| git::worktree_ignored(r, &path)).await
+}
+
+/// Removes merged worktrees and the branches known merged; Undo brings those branches back. The
+/// folders go first, outside the journal: a big node_modules takes seconds to delete, and a
+/// commit or an undo would wait for it.
+#[tauri::command]
+pub async fn clean_up_worktrees(
+    state: State<'_, AppState>,
+    list: Vec<git::CleanUp>,
+) -> Res<git::CleanedUp> {
+    let (mut out, branches) =
+        in_repo(&state, move |r| Ok(git::remove_merged_worktrees(r, &list))).await?;
+    if branches.is_empty() {
+        return Ok(out);
+    }
+    // Named for what Undo can bring back: the folders are gone for good.
+    let action = Action::new("Delete merged worktrees' branches", Mode::Keep);
+    journaled(&state, action, move |r| {
+        git::delete_merged_branches(r, &mut out, branches);
+        Ok(out)
+    })
+    .await
 }

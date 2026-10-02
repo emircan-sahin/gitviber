@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, CleanedUp, CleanUp, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -132,6 +132,10 @@ export const api = {
   unlockWorktree: (path: string) => invoke<void>("unlock_worktree", { path }),
   /** Deletes a linked worktree's folder (its branch stays); `force` drops uncommitted files and overrides a lock. */
   removeWorktree: (path: string, force: boolean) => invoke<void>("remove_worktree", { path, force }),
+  /** What removing a worktree deletes that git doesn't count as a change: its ignored files, sized, largest first. */
+  worktreeIgnored: (path: string) => invoke<IgnoredFiles>("worktree_ignored", { path }),
+  /** Removes merged worktrees, each checked again, and the branches known merged (Undo brings those back). */
+  cleanUpWorktrees: (list: CleanUp[]) => invoke<CleanedUp>("clean_up_worktrees", { list }),
   /** Nested repositories are refused unless `allowNested`: git would stage only a gitlink. */
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
   /**
