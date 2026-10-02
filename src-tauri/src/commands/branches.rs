@@ -14,6 +14,12 @@ pub async fn merged_upstream(state: State<'_, AppState>) -> Res<Vec<String>> {
     in_repo(&state, |r| Ok(git::merged_upstream(r))).await
 }
 
+/// Where this worktree's HEAD went last, for the picker's Recent group; asked for when it opens.
+#[tauri::command]
+pub async fn recent_branches(state: State<'_, AppState>) -> Res<Vec<String>> {
+    read_repo(&state, |r| git::recent_branches(r, 12)).await
+}
+
 /// Deletes merged branches: `merged` ones into HEAD, and `upstream` ones git sees as unmerged.
 #[tauri::command]
 pub async fn delete_merged(

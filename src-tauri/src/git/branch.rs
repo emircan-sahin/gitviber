@@ -1,7 +1,7 @@
 //! Local and remote branches: listing, creating, switching, renaming, deleting, upstreams.
 
 use super::cmd::command;
-use super::{run, run_network, run_text, validate_base, validate_branch, worktrees};
+use super::{run, run_network, run_text, run_with, validate_base, validate_branch, worktrees};
 use crate::network::{self, Net};
 use crate::process::{exec, spawn, spawning};
 use serde::Serialize;
@@ -94,6 +94,48 @@ pub fn merged_upstream(repo: &Path) -> Vec<String> {
         .into_iter()
         .map(|(name, _)| name)
         .collect()
+}
+
+/// The branches this worktree's HEAD most recently moved to, newest first, from its reflog's
+/// checkouts (as GitHub Desktop reads them). A name may no longer be a branch, or be a commit
+/// the checkout detached at: the picker keeps only the branches it lists.
+pub fn recent_branches(repo: &Path, limit: usize) -> Result<Vec<String>, String> {
+    // Bounded: a reflog can run to many thousands of entries. 128: no commit yet.
+    let out = run_with(
+        repo,
+        &["log", "-g", "--format=%gs", "-n", "2500", "HEAD", "--"],
+        &[128],
+        None,
+    )?;
+    Ok(recent_from_reflog(&String::from_utf8_lossy(&out), limit))
+}
+
+fn recent_from_reflog(subjects: &str, limit: usize) -> Vec<String> {
+    let mut names: Vec<String> = vec![];
+    let mut renamed_away = HashSet::new();
+    for line in subjects.lines() {
+        let to = if let Some(moved) = line.strip_prefix("checkout: moving from ") {
+            moved.rsplit_once(" to ").map(|(_, to)| to)
+        } else if let Some(renamed) = line.strip_prefix("Branch: renamed ") {
+            // The old name is gone; only what it became is recent.
+            renamed.split_once(" to ").map(|(from, to)| {
+                renamed_away.insert(from.trim_start_matches("refs/heads/").to_string());
+                to
+            })
+        } else {
+            None
+        };
+        let Some(name) = to.map(|t| t.trim_start_matches("refs/heads/")) else {
+            continue;
+        };
+        if !renamed_away.contains(name) && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+            if names.len() == limit {
+                break;
+            }
+        }
+    }
+    names
 }
 
 /// Deletes branches merged here (`-d`, which git checks again) and ones merged upstream, which
@@ -579,4 +621,30 @@ pub fn switch_tracking(repo: &Path, remote_ref: &str) -> Result<(), String> {
         return run(repo, &["switch", local]).map(|_| ());
     }
     run(repo, &["switch", "-c", local, "--track", remote_ref]).map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_branches_from_reflog_subjects() {
+        let subjects = "checkout: moving from feat-b to main
+commit: tweak
+checkout: moving from main to feat-b
+Branch: renamed refs/heads/old-name to refs/heads/feat-c
+checkout: moving from old-name to main
+checkout: moving from main to 1a2b3c4d5e6f
+checkout: moving from feat-a to old-name
+reset: moving to HEAD~1
+checkout: moving from main to feat-a
+";
+        // Newest first, each once; a renamed-away name never comes back.
+        assert_eq!(
+            recent_from_reflog(subjects, 10),
+            ["main", "feat-b", "feat-c", "1a2b3c4d5e6f", "feat-a"]
+        );
+        assert_eq!(recent_from_reflog(subjects, 2), ["main", "feat-b"]);
+        assert!(recent_from_reflog("", 5).is_empty());
+    }
 }

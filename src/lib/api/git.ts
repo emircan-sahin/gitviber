@@ -93,6 +93,8 @@ export const api = {
   branches: () => invoke<Branch[]>("branches"),
   /** Local branches squash- or rebase-merged on the remote, which then deleted them. */
   mergedUpstream: () => invoke<string[]>("merged_upstream"),
+  /** Where this worktree's HEAD went last (its reflog's checkouts), newest first; some may be gone or be commits. */
+  recentBranches: () => invoke<string[]>("recent_branches"),
   /** Deletes `merged` branches (git branch -d) and `upstream` ones, checked again as they are now, with -D. One undo. */
   deleteMerged: (merged: string[], upstream: string[]) => invoke<void>("delete_merged", { merged, upstream }),
   /** Switches to the local branch for a remote one ("upstream/dev" → dev), creating it to track exactly that. */
@@ -180,6 +182,14 @@ export const api = {
   opAbort: () => invoke<void>("op_abort"),
   rebaseSkip: () => invoke<boolean>("rebase_skip"),
   resolveSide: (path: string, side: "ours" | "theirs") => invoke<void>("resolve_side", { path, side }),
+  /** The conflicted file merged again from its index stages in diff3 style; null when a side has no text. */
+  conflictBase: (path: string) => invoke<string | null>("conflict_base", { path }),
+  /** The merge and diff tools git's config names (as `--gui` reads it); null where none a window can run. */
+  externalTools: () => invoke<{ merge: string | null; diff: string | null }>("external_tools"),
+  /** `git mergetool` on the path, settling once the tool is closed. */
+  openMergeTool: (path: string) => invoke<void>("open_merge_tool", { path }),
+  /** `git difftool` on the path's unstaged changes, or `staged` ones; settles once the tool is closed. */
+  openDiffTool: (path: string, staged: boolean) => invoke<void>("open_diff_tool", { path, staged }),
   writeFile: (path: string, content: string) => invoke<void>("write_file", { path, content }),
   createFile: (path: string) => invoke<void>("create_file", { path }),
   createDir: (path: string) => invoke<void>("create_dir", { path }),

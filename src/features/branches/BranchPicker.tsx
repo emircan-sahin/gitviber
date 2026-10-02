@@ -1,5 +1,5 @@
-import { Check, ChevronRight, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitBranchPlus, GitMerge, GitPullRequestArrow, Link, Pencil, Plus, Search, SquareTerminal, Trash2, Unlink } from "lucide-react";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { Check, ChevronRight, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitBranchPlus, GitMerge, GitPullRequestArrow, Link, Pencil, Pin, PinOff, Plus, Search, SquareTerminal, Trash2, Unlink } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
 import { sameRef, sanitizedRefName } from "@/lib/git/refs";
 import { folderName } from "@/lib/path";
+import { loadPinnedBranches, savePinnedBranches } from "@/lib/repo/session";
 import { RowAction } from "@/components/RowAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
@@ -18,6 +19,8 @@ import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
 import { Chip } from "@/features/worktrees/WorktreePicker";
 
 interface Props {
+  /** The main worktree: pins are kept per project, across its worktrees. */
+  main: string;
   label: string;
   current: string | null;
   branches: Branch[];
@@ -49,14 +52,19 @@ type Option = { kind: "create"; name: string } | { kind: "branch"; branch: Branc
 /** "origin/feature" → "feature": `git switch feature` then creates a tracking branch. */
 const localName = (b: Branch) => (b.remote ? b.name.slice(b.name.indexOf("/") + 1) : b.name);
 const remoteOf = (b: Branch) => b.name.slice(0, b.name.indexOf("/"));
+const optionKey = (o: Option | undefined) => (o ? (o.kind === "create" ? "\0create" : o.branch.name) : null);
 const LOCAL = "Local";
+const PINNED = "Pinned";
+const RECENT = "Recent";
+/** As GitHub Desktop's recent branches. */
+const RECENT_MAX = 5;
 
 /**
  * Searchable branch switcher: type to filter, ↑/↓ + Enter to switch, or create what you
  * typed. The highlighted row also offers merging it into, or rebasing onto it.
  * A branch checked out in another worktree, which git won't switch to here, opens that worktree.
  */
-export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemote, onCreate, onMerge, onRebase, onTerminal, onOpenWorktree, onDelete, onCleanUp, onRename, onNewBranch, onSetUpstream, onUnsetUpstream, side = "bottom" }: Props) {
+export function BranchPicker({ main, label, current, branches, onSwitch, onSwitchRemote, onCreate, onMerge, onRebase, onTerminal, onOpenWorktree, onDelete, onCleanUp, onRename, onNewBranch, onSetUpstream, onUnsetUpstream, side = "bottom" }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -73,21 +81,51 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     return (b: Branch) => (b.current ? null : (b.remote ? held.get(localName(b)) : b.worktree) ?? null);
   }, [branches]);
 
-  // Local, then one group per remote (origin first), each by recency. All open until closed.
+  // Read at once, so the first open's rows don't move; again on each open (a rename moved one).
+  const [pins, setPins] = useState(() => loadPinnedBranches(main));
+  useEffect(() => {
+    if (open) setPins(loadPinnedBranches(main));
+  }, [open, main]);
+  const togglePin = (name: string) => {
+    const next = pins.includes(name) ? pins.filter((p) => p !== name) : [...pins, name];
+    setPins(next);
+    savePinnedBranches(main, next);
+  };
+  // Asked on each open: a checkout in the terminal moves it.
+  const visited = useAsyncValue(open ? () => api.recentBranches() : null, [open], [] as string[]);
+
+  // Pinned, recently checked out, the rest of local, then one group per remote (origin first),
+  // each by recency. A branch shows in one group only. All open until closed.
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const q = query.trim().toLowerCase();
   const groups = useMemo(() => {
     // "fix login" finds fix-login, which is what it would be created as.
     const typed = sanitizedRefName(q);
     const match = (b: Branch) => (b.name.toLowerCase().includes(q) || (!!typed && b.name.toLowerCase().includes(typed)));
-    const byGroup = new Map<string, Branch[]>([[LOCAL, []]]);
+    const local = new Map(branches.filter((b) => !b.remote).map((b) => [b.name, b]));
+    const pinnedList = pins.filter((name) => branches.some((b) => b.name === name));
+    const pinned = new Set(pinnedList);
+    const recentList = visited.filter((name) => local.has(name) && !local.get(name)!.current && !pinned.has(name)).slice(0, RECENT_MAX);
+    const recent = new Set(recentList);
+    const byGroup = new Map<string, Branch[]>([
+      [PINNED, []],
+      [RECENT, []],
+      [LOCAL, []],
+    ]);
     // Current first among local, then backend order (recency).
     const found = branches.filter(match).sort((a, b) => Number(b.current) - Number(a.current));
     const remotes = [...new Set(found.filter((b) => b.remote).map(remoteOf))].sort((a, b) => Number(b === "origin") - Number(a === "origin") || a.localeCompare(b));
     for (const r of remotes) byGroup.set(r, []);
-    for (const b of found) byGroup.get(b.remote ? remoteOf(b) : LOCAL)!.push(b);
+    for (const b of found) byGroup.get(pinned.has(b.name) ? PINNED : recent.has(b.name) ? RECENT : b.remote ? remoteOf(b) : LOCAL)!.push(b);
+    // Pins in the order they were pinned, recent ones newest first.
+    const order = (names: string[]) => {
+      const at = new Map(names.map((n, i) => [n, i]));
+      return (a: Branch, b: Branch) => at.get(a.name)! - at.get(b.name)!;
+    };
+    byGroup.get(PINNED)!.sort(order(pinnedList));
+    byGroup.get(RECENT)!.sort(order(recentList));
     return [...byGroup].filter(([, list]) => list.length).map(([name, list]) => ({ name, list }));
-  }, [branches, q]);
+  }, [branches, q, pins, visited]);
   // Searching shows every match, whatever is collapsed.
   const isOpen = (group: string) => !!q || !collapsed.has(group);
   const toggleGroup = (group: string) =>
@@ -106,6 +144,20 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
     return name && !exact ? [...found, { kind: "create", name }] : found;
   }, [groups, branches, query, q, collapsed]);
   const { index, setIndex, move } = usePickerIndex(options.length);
+  // Rows that move under the highlight (the Recent group arriving after the picker opened) keep
+  // it on the same branch, so a quick ↓ and Enter switches to the one that was highlighted.
+  const shown = useRef({ options, index });
+  useLayoutEffect(() => {
+    const was = shown.current;
+    shown.current = { options, index };
+    if (was.options === options || was.index !== index) return;
+    const key = optionKey(was.options[index]);
+    const at = key === null ? -1 : options.findIndex((o) => optionKey(o) === key);
+    if (at >= 0 && at !== index) {
+      shown.current = { options, index: at };
+      setIndex(at);
+    }
+  }, [options, index]);
   const listId = useId();
 
   // Which GitHub repository each remote is, so branches on one you can't push to (a fork's
@@ -227,6 +279,17 @@ export function BranchPicker({ label, current, branches, onSwitch, onSwitchRemot
           <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}
         </ContextMenuItem>
       )}
+      <ContextMenuItem onSelect={() => togglePin(b.name)}>
+        {pins.includes(b.name) ? (
+          <>
+            <PinOff /> Unpin
+          </>
+        ) : (
+          <>
+            <Pin /> Pin to top
+          </>
+        )}
+      </ContextMenuItem>
       <ContextMenuItem onSelect={menuAct(() => onNewBranch(`refs/${b.remote ? "remotes" : "heads"}/${b.name}`))}>
         <GitBranchPlus /> New branch from {b.name}…
       </ContextMenuItem>

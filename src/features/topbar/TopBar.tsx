@@ -123,6 +123,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       <ProjectSwitcher repo={repo} root={root} main={main} recent={recent} onOpenRepo={onOpenRepo} onForgetRepo={onForgetRepo} onReorderRepos={onReorderRepos} onLocateRepo={onLocateRepo} />
       <span className="text-[13px] text-border-strong select-none">/</span>
       <BranchPicker
+        main={main}
         label={branchName}
         branches={branches}
         current={status?.branch ?? null}
@@ -140,7 +141,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onSetUpstream={(branch) => setBranchDialog({ kind: "upstream", branch })}
         onUnsetUpstream={(b) => run("Unset upstream", () => api.setUpstream(b.name, null), `${b.name} no longer tracks ${b.upstream}`)}
       />
-      {branchDialog && <BranchDialogs dialog={branchDialog} branches={branches} onClose={() => setBranchDialog(null)} run={run} runNet={runNet} />}
+      {branchDialog && <BranchDialogs main={main} dialog={branchDialog} branches={branches} onClose={() => setBranchDialog(null)} run={run} runNet={runNet} />}
       <WorktreePicker
         worktrees={worktrees}
         branches={branches}
