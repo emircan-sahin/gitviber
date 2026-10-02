@@ -122,6 +122,12 @@ test("a missing identity or a failed signature say what to set up", () => {
   assert.equal(fix(GPG), "signing");
 });
 
+test("conflicted files with nothing in progress offer opening Changes", () => {
+  // ⌘Z after an autostash came back conflicted, and a rebase started then.
+  assert.equal(fix("fatal: Cannot do a keep reset in the middle of a merge."), "conflicted");
+  assert.equal(fix("f1: needs merge\nerror: you need to resolve your current index first"), "conflicted");
+});
+
 test("credentials are explained, with nothing to click", () => {
   for (const message of [NO_USERNAME, CANCELLED_LOGIN, BAD_TOKEN, SSH_KEY, HOST_KEY]) {
     const help = explainGitError(message);

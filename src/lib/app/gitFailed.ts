@@ -1,5 +1,6 @@
 import { api, errorMessage, github } from "../api";
 import { explainGitError, type GitFix, SIGNING_HELP } from "../git/gitErrors";
+import { runCommand } from "../commands/keybindings";
 import { askForIdentity } from "./identity";
 import { explainedError, failed, toast, type ToastAction } from "./toast";
 
@@ -8,6 +9,7 @@ export type GitFixes = Partial<Record<GitFix, ToastAction[] | ((message: string)
 
 /** The ways out that fit wherever the failure happens; `target` is what git's words named. */
 const always = (target = ""): Partial<Record<GitFix, ToastAction[]>> => ({
+  conflicted: [{ label: "Open Changes", run: () => runCommand("view.changes") }],
   identity: [{ label: "Set name and email", run: askForIdentity }],
   signing: [{ label: "Signing guide", run: () => void github.openUrl(SIGNING_HELP).catch(failed("Could not open the link")) }],
   "index-lock": [

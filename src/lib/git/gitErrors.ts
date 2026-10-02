@@ -1,5 +1,5 @@
 /** Which way out fits: the caller that can take it supplies the buttons (a pull, a retry); identity, signing, the index lock and GitHub's page on a secret always fit. */
-export type GitFix = "diverged" | "fetch-first" | "autostash" | "identity" | "signing" | "hooks" | "index-lock" | "safe-directory" | "secret";
+export type GitFix = "diverged" | "fetch-first" | "autostash" | "conflicted" | "identity" | "signing" | "hooks" | "index-lock" | "safe-directory" | "secret";
 
 export interface GitErrorHelp {
   title: string;
@@ -40,6 +40,16 @@ const KNOWN: [RegExp, GitErrorHelp][] = [
       title: "Uncommitted changes are in the way",
       explanation: "git won't overwrite files you've changed but not committed. Commit or stash them first.",
       fix: "autostash",
+    },
+  ],
+  // Unmerged files with nothing in progress: changes a rewrite, pull or stash pop brought back
+  // from the stash that conflicted. An undo's reset says the first.
+  [
+    /^fatal: Cannot do a \w+ reset in the middle of a merge\.|^error: you need to resolve your current index first/m,
+    {
+      title: "Conflicted files are in the way",
+      explanation: "Some files are still marked conflicted, most often uncommitted changes that came back from the stash and clashed. Resolve or discard them in Changes, then try again.",
+      fix: "conflicted",
     },
   ],
   [
