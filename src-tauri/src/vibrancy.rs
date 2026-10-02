@@ -5,6 +5,7 @@
 //! Only the webview stops drawing its background, and only while the material is on, so nothing
 //! changes for anyone who never turns it on.
 
+/// Whether the material is on now, for `reset` on a page load.
 #[cfg(target_os = "macos")]
 static ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 

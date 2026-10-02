@@ -142,7 +142,7 @@ export function CommitRow({
         </ContextMenu>
       </div>
       {open && (
-        <div className="relative border-y border-border py-0.5">
+        <div className="border-y border-border py-0.5">
           {!files && <div className="py-1 pl-8 text-[11.5px] text-subtle">Loading…</div>}
           {files && (
             <div className="flex h-6 items-center gap-2 pr-2 pl-8 text-[10.5px] text-subtle">
