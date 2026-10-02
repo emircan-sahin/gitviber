@@ -67,6 +67,7 @@ export async function mergeInTool(tool: string, path: string) {
   }
   runCommand("repo.refresh");
 }
+
 /** Then reads the repo again too: a tool that edits (Meld, FileMerge) may have changed the file. */
 export async function diffInTool(tool: string, path: string, staged: boolean) {
   try {

@@ -75,7 +75,7 @@ export function App() {
     // Before the workspace shows: its first GitHub calls go out as the project's account.
     const { turn, latest } = opens.run(async () => {
       const repo = await api.openRepo(target);
-      await applyProjectAccount(repo.main).catch(() => {});
+      await applyProjectAccount(repo.main).catch(failed("Could not use this project's GitHub account"));
       return repo;
     });
     try {
