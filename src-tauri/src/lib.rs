@@ -6,6 +6,8 @@ mod commands;
 mod definitions;
 #[cfg(debug_assertions)]
 mod dev_bridge;
+#[cfg(all(target_os = "macos", debug_assertions))]
+pub mod dev_bundle;
 mod diff;
 mod display;
 mod errors;
@@ -20,6 +22,9 @@ mod lines;
 mod menu;
 mod navigation;
 mod network;
+mod notifications;
+#[cfg(target_os = "macos")]
+mod objc;
 mod open_in;
 mod opened;
 mod process;
@@ -112,6 +117,7 @@ pub fn run() {
                 errors::init(dir);
             }
             askpass::serve(app.handle().clone());
+            notifications::setup(app.handle());
             #[cfg(target_os = "macos")]
             menu::keep_typed_key_equivalents();
             #[cfg(target_os = "linux")]
@@ -136,6 +142,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app::log_error,
             commands::app::show_logs,
+            commands::app::notification_permission,
+            commands::app::notification_request,
+            commands::app::notification_send,
+            commands::app::notification_settings,
             commands::repo::open_repo,
             commands::repo::git_info,
             commands::repo::install_git,
@@ -237,6 +247,7 @@ pub fn run() {
             commands::files::trash_path,
             commands::files::reveal_path,
             commands::files::open_in_apps,
+            commands::files::open_in_icon,
             commands::files::open_in,
             commands::files::open_in_custom,
             commands::repo::project_info,

@@ -741,6 +741,14 @@ function focusPane(id: number) {
   set({ active: g.id, groups: state.groups.map((x) => (x === g ? { ...g, focused: id } : x)) });
 }
 
+/** A pane a notification was about: its tab, in the panel opened, with the keys. */
+export function revealPane(id: number) {
+  if (!panes.has(id)) return;
+  focusPane(id);
+  if (!state.open) set({ open: true });
+  focusActive();
+}
+
 /** The next split pane of the open tab, wrapping around. */
 export function stepPane(dir: 1 | -1) {
   const g = activeGroup();

@@ -74,5 +74,6 @@ What already failed, so don't retry it:
 - Undo any setting you changed. Dev localStorage (localhost:1420) carries over to the
   user's next dev run.
 - Reopen the repo the dev app had before (⌘O + `panel`).
-- `pkill -f target/debug/gitviber; pkill -f "tauri.mjs dev"`. Leave
+- `pkill -f 'target/debug/(gitviber|GitViber Dev\.app/)'; pkill -f "tauri.mjs dev"`. The dev
+  build reruns itself as `target/debug/GitViber Dev.app` (dev_bundle.rs), same pid. Leave
   `/Applications/GitViber.app` alone: that one is the user's own.

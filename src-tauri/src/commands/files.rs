@@ -201,15 +201,28 @@ pub async fn open_in_apps() -> Res<Vec<open_in::Installed>> {
     blocking(|| Ok(open_in::installed())).await
 }
 
+/// An app's icon as a small PNG; empty off macOS. Raw bytes, as `media`.
+#[tauri::command]
+pub async fn open_in_icon(app: String) -> Res<tauri::ipc::Response> {
+    blocking(move || Ok(open_in::icon(&app).unwrap_or_default()))
+        .await
+        .map(tauri::ipc::Response::new)
+}
+
 /// `path` in the open worktree ("" for all of it) in a known app; editors go to `line`.
+/// `project`: the worktree as a project, with the file in it (open_in::open).
 #[tauri::command]
 pub async fn open_in(
     state: State<'_, AppState>,
     app: String,
     path: String,
     line: Option<u32>,
+    project: bool,
 ) -> Res<()> {
-    in_repo(&state, move |r| open_in::open(r, &path, line, &app)).await
+    in_repo(&state, move |r| {
+        open_in::open(r, &path, line, &app, project)
+    })
+    .await
 }
 
 /// The same with the user's own command template.
@@ -219,9 +232,10 @@ pub async fn open_in_custom(
     command: String,
     path: String,
     line: Option<u32>,
+    project: bool,
 ) -> Res<()> {
     in_repo(&state, move |r| {
-        open_in::open_custom(r, &path, line, &command)
+        open_in::open_custom(r, &path, line, &command, project)
     })
     .await
 }

@@ -49,6 +49,26 @@ pub fn open_url(url: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// System Settings → Notifications at this app (`id`, its bundle id), where a denied permission
+/// is given back. Waited on, as `reveal`. Elsewhere there's no permission to give back.
+pub fn notification_settings(id: &str) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    return match crate::process::spawn(Command::new("open").arg(format!(
+        "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id={id}"
+    )))
+    .and_then(|mut c| c.wait())
+    {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("open failed ({s})")),
+        Err(e) => Err(e.to_string()),
+    };
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = id;
+        Err("Notification settings are on macOS only".into())
+    }
+}
+
 /// Selects `path` in the file manager.
 pub fn reveal(path: PathBuf) -> Result<(), String> {
     // Waited on (it returns at once) so no zombie is left behind per click.

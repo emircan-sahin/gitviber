@@ -8,7 +8,6 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type GitIdentity } from "@/lib/api";
 import { runCommand } from "@/lib/commands/keybindings";
 import { FETCH_INTERVALS, updateSettings, useSettings } from "@/lib/settings";
-import { enableNotifications } from "@/lib/app/notify";
 import { failed, toast } from "@/lib/app/toast";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
@@ -26,9 +25,6 @@ export function GitSection() {
             options={FETCH_INTERVALS.map((m) => ({ value: String(m), label: m ? `${m} min` : "Off" }))}
             variant="field"
           />
-        </Field>
-        <Field label="Notify in the background" hint="A desktop notification when a push, pull, fetch or clone ends, or a terminal rings or its agent asks for you, while GitViber isn't the app in front. Turning it on asks your OS for permission.">
-          <Switch checked={s.notify} onChange={(v) => void enableNotifications(v)} />
         </Field>
       </Group>
       <Group title="Worktrees">

@@ -1,8 +1,10 @@
+import { listen } from "@tauri-apps/api/event";
 import { useMemo, useSyncExternalStore } from "react";
 import { notifyIfAway } from "../app/notify";
+import type { NotifyEvent } from "../settings";
 import { folderName } from "../path";
 import { kittyNotes, type Note, osc777Note, osc9Note } from "./attention";
-import { panes, type Pane, state, subscribe, update } from "./terminals";
+import { panes, type Pane, revealPane, state, subscribe, update } from "./terminals";
 
 /**
  * A bell, or a notification escape (OSC 9, 777, 99: Claude Code, Codex), from a pane not being
@@ -21,18 +23,43 @@ export function watchAttention(p: Pane) {
     });
 }
 
-/** Marks `p` (and tells the OS, when away) unless it's being looked at or already marked: an agent's own escape and its state file saying the same thing are one mark. */
-export function needsYou(p: Pane, note?: Note) {
+// Panes whose mark has been told to the OS. Apart from the mark: with one kind of notification
+// turned off, a terminal's escape could mark the pane first and keep the agent's news quiet.
+const told = new Set<number>();
+// Pane ids start over each run: a click on an older run's notification, still in Notification
+// Center, would show some other pane.
+const RUN = Math.random().toString(36).slice(2, 10);
+
+/**
+ * Marks `p` (and tells the OS, when away and `event` is on) unless it's being looked at: once until
+ * it is, so an agent's own escape and its state file saying the same thing are one mark, one
+ * notification. Without `event` it's the terminal's bell or escape, which only marks a pane whose
+ * agent reports its state: agents.ts tells that one as finished or waiting, under its own switch.
+ */
+export function needsYou(p: Pane, note?: Note, event?: NotifyEvent) {
   const g = state.groups.find((x) => x.panes.some((i) => i.id === p.id));
   const info = g?.panes.find((i) => i.id === p.id);
-  if (!g || !info || info.needsYou || (document.hasFocus() && document.activeElement === p.term.textarea)) return;
-  update(p.id, (i) => ({ ...i, needsYou: true }));
+  if (!g || !info || told.has(p.id) || (document.hasFocus() && document.activeElement === p.term.textarea)) return;
+  if (!info.needsYou) update(p.id, (i) => ({ ...i, needsYou: true }));
+  if (!event && info.agent?.state != null) return;
   const text = [note?.title, note?.body].filter(Boolean).join(": ");
-  notifyIfAway(g.name ?? (folderName(p.cwd) || p.cwd), text || info.title || "Needs you");
+  const title = g.name ?? (folderName(p.cwd) || p.cwd);
+  if (notifyIfAway(event ?? "notifyTerminal", title, text || info.title || "Needs you", `pane:${RUN}:${p.id}`)) told.add(p.id);
 }
 
 export function lookedAt(id: number) {
+  told.delete(id);
   if (state.groups.some((g) => g.panes.some((p) => p.id === id && p.needsYou))) update(id, (p) => ({ ...p, needsYou: false }));
+}
+
+// A click on a pane's notification (notifications.rs has brought the app to the front) shows it.
+try {
+  listen<string | null>("notification-click", ({ payload }) => {
+    const pane = /^pane:(\w+):(\d+)$/.exec(payload ?? "");
+    if (pane?.[1] === RUN) revealPane(Number(pane[2]));
+  }).catch(() => {});
+} catch {
+  // Not in Tauri (the browser-only dev fixture).
 }
 
 // Back in the window, the pane that has the keys is looked at again.

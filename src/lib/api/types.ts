@@ -368,6 +368,9 @@ export interface Journal {
   redoBlocked: string | null;
 }
 
+/** "quiet": allowed without banners, into Notification Center only; "unbundled": a dev build macOS can't ask (notifications.rs). */
+export type NotifyPermission = "granted" | "quiet" | "denied" | "prompt" | "unbundled";
+
 export interface OpenInApp {
   id: string;
   name: string;

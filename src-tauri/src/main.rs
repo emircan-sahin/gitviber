@@ -6,6 +6,9 @@ fn main() {
     if let Some(code) = gitviber_lib::askpass::helper() {
         std::process::exit(code);
     }
+    // `tauri dev`: on as an app bundle, which macOS gives notifications (dev_bundle.rs).
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    gitviber_lib::dev_bundle::relaunch();
     #[cfg(target_os = "linux")]
     avoid_nvidia_dmabuf_crash();
     gitviber_lib::run()

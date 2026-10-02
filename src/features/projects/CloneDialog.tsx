@@ -70,7 +70,7 @@ export function CloneDialog({ onCloned }: { onCloned: (path: string) => void }) 
     setProgress(null);
     try {
       const path = await api.cloneRepo(cloneUrl(url), parent, folder.trim(), o);
-      notifyIfAway("Clone finished", folder.trim());
+      notifyIfAway("notifyGit", "Clone finished", folder.trim());
       updateSettings({ cloneParent: parent });
       close();
       onCloned(path);
@@ -78,7 +78,7 @@ export function CloneDialog({ onCloned }: { onCloned: (path: string) => void }) 
       if (e === CANCELLED) toast("info", "Clone cancelled");
       else {
         setError(errorMessage(e));
-        notifyIfAway("Clone failed", errorMessage(e));
+        notifyIfAway("notifyGit", "Clone failed", errorMessage(e));
       }
     } finally {
       setOp(null);
