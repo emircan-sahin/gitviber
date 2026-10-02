@@ -45,7 +45,7 @@ pub fn list(cwd: &Path, home: &Path) -> Vec<Conversation> {
             History::ClaudeProjects { dir } => claude(adapter, &agents::from_home(dir, home), cwd),
         })
         .collect();
-    out.sort_by(|a, b| b.modified.cmp(&a.modified));
+    out.sort_by_key(|c| std::cmp::Reverse(c.modified));
     out
 }
 
@@ -125,7 +125,7 @@ fn claude(adapter: &Adapter, projects: &Path, cwd: &Path) -> Vec<Conversation> {
             Some((modified, id, path))
         })
         .collect();
-    files.sort_by(|a, b| b.0.cmp(&a.0));
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
     // Scripted runs are skipped before the newest are counted: a tool running `claude -p` a
     // hundred times a day would hide every conversation typed.
     files
