@@ -58,13 +58,23 @@ export function Properties({ source }: { source: string }) {
   );
 }
 
-function Value({ value, tags }: { value: unknown; tags: boolean }): ReactNode {
-  if (Array.isArray(value) || (tags && typeof value === "string"))
+/** A nested list or object as one line; YAML aliases can make one contain itself. */
+function inline(value: object) {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return Array.isArray(value) ? "[…]" : "{…}";
+  }
+}
+
+/** One property's value; `nested`: inside a list, where lists and objects stay one line. */
+function Value({ value, tags, nested = false }: { value: unknown; tags: boolean; nested?: boolean }): ReactNode {
+  if ((Array.isArray(value) && !nested) || (tags && typeof value === "string"))
     return (
       <span className="flex flex-wrap gap-1">
         {(Array.isArray(value) ? value : value.split(/[\s,]+/).filter(Boolean)).map((v, i) => (
           <span key={i} className={tags ? "property-tag" : "property-chip"}>
-            {tags ? `#${String(v).replace(/^#/, "")}` : <Value value={v} tags={false} />}
+            {tags ? `#${String(v).replace(/^#/, "")}` : <Value value={v} tags={false} nested />}
           </span>
         ))}
       </span>
@@ -72,7 +82,7 @@ function Value({ value, tags }: { value: unknown; tags: boolean }): ReactNode {
   if (typeof value === "boolean") return <input type="checkbox" checked={value} disabled aria-label={String(value)} />;
   if (value === null || value === undefined) return <span className="text-subtle">—</span>;
   if (value instanceof Date) return value.toISOString().slice(0, 10);
-  if (typeof value === "object") return <code>{JSON.stringify(value)}</code>;
+  if (typeof value === "object") return <code>{inline(value)}</code>;
   return <Text value={String(value)} />;
 }
 

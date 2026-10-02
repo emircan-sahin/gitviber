@@ -42,7 +42,8 @@ const KINDS: Record<string, { icon: LucideIcon; color: Rgb }> = {
 export function Callout({ type, fold, children }: { type: string; fold: string; children: ReactNode }) {
   const { dark } = useSettings();
   const [open, setOpen] = useState(fold !== "-");
-  const kind = KINDS[type] ?? KINDS.note;
+  // Raw HTML can name any type, "toString" too.
+  const kind = Object.hasOwn(KINDS, type) ? KINDS[type] : KINDS.note;
   const [title, ...body] = Children.toArray(children).filter(isValidElement);
   const Icon = kind.icon;
   const github = type.startsWith("gh-");

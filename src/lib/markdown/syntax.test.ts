@@ -42,6 +42,7 @@ test("highlights, tags and inline footnotes", () => {
   const html = render("==a **b**== and == no == #tag/sub #123 x#not ^[a [b] note]");
   assert.match(html, /<mark>a <strong>b<\/strong><\/mark>/);
   assert.match(html, /== no ==/);
+  assert.match(render("==**bold**== and ==`code`=="), /<mark><strong>bold<\/strong><\/mark> and <mark><code>code<\/code><\/mark>/);
   assert.match(html, /<span data-tag="tag\/sub">#tag\/sub<\/span>/);
   assert.doesNotMatch(html, /data-tag="123"|data-tag="not"/);
   assert.match(html, /<sup><a href="#fn-inline-1"/);
@@ -59,6 +60,7 @@ test("block ids land on their block", () => {
 test("callouts: Obsidian's types, titles and folds; GitHub's five alerts", () => {
   const html = render("> [!faq]- Why **this**?\n> Because.\n\n> [!custom-type]\n> Body");
   assert.match(html, /<div data-callout="question" data-callout-fold="-">\n<div data-callout-title="">Why <strong>this<\/strong>\?<\/div>\n<div data-callout-body=""><p>Because.<\/p>/);
+  assert.match(render("> [!constructor] T"), /data-callout="constructor"/);
   assert.match(html, /data-callout="custom-type"[^>]*>\n<div data-callout-title="">Custom type<\/div>/);
   assert.match(render("> [!tip]+ Only a title"), /<div data-callout="tip" data-callout-fold="\+">\n<div data-callout-title="">Only a title<\/div>\n<\/div>/);
   const gh = render("> [!IMPORTANT]\n> Read this.\n\n> [!NOTE] Titled\n> not an alert\n\n> [!faq]\n> not one either", "github");
@@ -70,6 +72,7 @@ test("callouts: Obsidian's types, titles and folds; GitHub's five alerts", () =>
 test("math needs no space inside its dollars", () => {
   const html = render("Costs $5 and $10, area $\\pi r^2$.", "github");
   assert.match(html, /Costs \$5 and \$10/);
+  assert.match(render("Costs $5 for **this** and $6", "github"), /Costs \$5 for <strong>this<\/strong> and \$6/);
   assert.match(html, /<code class="language-math math-inline">\\pi r\^2<\/code>/);
   assert.match(render("$$\nx^2\n$$", "github"), /<pre><code class="language-math math-display">x\^2<\/code><\/pre>/);
 });
@@ -91,6 +94,7 @@ test("an embed of a heading or block keeps just that part", () => {
   assert.match(part, /Part[\s\S]*in part[\s\S]*Deeper[\s\S]*still/);
   assert.doesNotMatch(part, /intro|Next|out/);
   assert.match(render(note, "obsidian", "^b1"), /^<p id="n-\^b1">A block<\/p>$/);
+  assert.match(render("---\ntags: [a]\n---\nBody", "obsidian", ""), /^<p>Body<\/p>$/);
 });
 
 test("raw HTML can't smuggle in more than the plugins add", () => {

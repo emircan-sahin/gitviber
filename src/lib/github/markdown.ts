@@ -53,7 +53,7 @@ export type Flavor = "github" | "repo" | "obsidian";
  * Plugins for one rendered block. `idPrefix` namespaces every id and name in it (headings,
  * footnotes, raw HTML), so blocks on one page don't collide with each other or the app.
  * `repo` (https://github.com/owner/name) turns @mentions and #123 into links. `section` cuts a
- * note down to a heading's part or a block (an embed's #Heading or #^id).
+ * note down to what an embed of it shows (see remarkSection).
  */
 export function markdownOptions({ idPrefix, repo, flavor = "github", section }: { idPrefix: string; repo?: string; flavor?: Flavor; section?: string }): Pick<Options, "remarkPlugins" | "rehypePlugins" | "remarkRehypeOptions"> {
   const obsidian = flavor === "obsidian";
@@ -65,7 +65,7 @@ export function markdownOptions({ idPrefix, repo, flavor = "github", section }: 
       ...(flavor === "github" ? [] : [remarkFrontmatter, remarkFrontmatterTable]),
       [remarkCallouts, { obsidian }],
       ...(obsidian ? [remarkObsidian] : []),
-      ...(section ? [[remarkSection, { anchor: section }] as [typeof remarkSection, { anchor: string }]] : []),
+      ...(section !== undefined ? [[remarkSection, { anchor: section }] as [typeof remarkSection, { anchor: string }]] : []),
     ],
     // Footnote ids come out bare and the sanitizer prefixes them with everything else.
     remarkRehypeOptions: { clobberPrefix: "" },

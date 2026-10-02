@@ -152,7 +152,7 @@ function callout(quote: MNode, obsidian: boolean) {
     title.push(n);
   }
   const titled = obsidian && title.some((n) => plainText(n).trim() || n.type !== "text");
-  const type = obsidian ? (ALIASES[written] ?? written) : `gh-${written}`;
+  const type = obsidian ? (Object.hasOwn(ALIASES, written) ? ALIASES[written] : written) : `gh-${written}`;
   quote.data = { hName: "div", hProperties: { dataCallout: type, dataCalloutFold: obsidian ? m[2] : "" } };
   const content = [...(body.length ? [{ ...first, children: body }] : []), ...quote.children!.slice(1)];
   quote.children = [
@@ -172,17 +172,26 @@ function trimEnd(nodes: MNode[]) {
 
 /**
  * Inline math as GitHub and Obsidian read it: `$` with no space inside either end and no digit
- * right after the closing one, so "$5 and $10" stays text. Others go back to the text they were.
+ * right after the closing one, so "$5 and $10" stays text. Others go back to what they were,
+ * their insides parsed again so "$5 for **this** and $6" keeps its bold.
  */
-export function remarkMathGuard() {
+export function remarkMathGuard(this: { parse(text: string): MNode }) {
+  const parse = (inner: string): MNode[] => {
+    const [lead, trail] = [/^\s*/.exec(inner)![0], /\s*$/.exec(inner.trimStart())![0]];
+    const body = inner.trim();
+    const root = body ? this.parse(body) : { type: "root", children: [] };
+    const para = root.children?.length === 1 && root.children[0].type === "paragraph" ? root.children[0].children! : body ? [text(body)] : [];
+    return [text(`$${lead}`), ...para, text(`${trail}$`)];
+  };
   return (tree: MNode, file: { value?: unknown }) => {
     const src = String(file.value ?? "");
     const visit = (node: MNode) => {
-      node.children?.forEach((child, i) => {
-        if (child.type !== "inlineMath") return visit(child);
+      if (!node.children) return;
+      node.children = node.children.flatMap((child) => {
+        if (child.type !== "inlineMath") return visit(child), [child];
         const [start, end] = [child.position?.start.offset, child.position?.end.offset];
-        if (start === undefined || end === undefined || src[start + 1] === "$") return;
-        if (/^\s|\s$/.test(child.value ?? "") || /\d/.test(src[end] ?? "")) node.children![i] = text(src.slice(start, end));
+        if (start === undefined || end === undefined || src[start + 1] === "$") return [child];
+        return /^\s|\s$/.test(child.value ?? "") || /\d/.test(src[end] ?? "") ? parse(src.slice(start + 1, end - 1)) : [child];
       });
     };
     visit(tree);
@@ -310,8 +319,10 @@ function wrapPairs(nodes: MNode[], open: string, close: string, nested: boolean,
     const node = queue.shift()!;
     const v = node.type === "text" ? node.value! : "";
     let at = v.indexOf(open);
-    // "===" opens nothing, and neither does "== " (a space after it).
-    while (!nested && at >= 0 && (v[at + open.length] === "=" || /\s/.test(v[at + open.length] ?? " "))) at = v.indexOf(open, at + open.length + 1);
+    // "===" opens nothing, and neither does "== " (a space after it). At the text's end, what
+    // follows is the next node: ==**bold**== opens.
+    const after = (i: number) => v[i + open.length] ?? (queue[0] && queue[0].type !== "text" ? "x" : " ");
+    while (!nested && at >= 0 && (after(at) === "=" || /\s/.test(after(at)))) at = v.indexOf(open, at + open.length + 1);
     if (at < 0) {
       out.push(node);
       continue;
@@ -411,12 +422,15 @@ function blockEmbeds(node: MNode) {
 // ---------------------------------------------------------------- sections
 
 /**
- * Cuts a note down to one part, for an embed of `note#Heading` (the heading and what's under
- * it, to the next heading as high) or `note#^id` (the block with that id).
+ * Cuts a note down to what an embed shows: for `note#Heading` the heading and what's under it,
+ * to the next heading as high; for `note#^id` the block with that id; for the whole note (""),
+ * all but its properties.
  */
 export function remarkSection({ anchor }: { anchor: string }) {
   return (tree: MNode) => {
-    const kids = tree.children ?? [];
+    const kids = (tree.children ?? []).filter((n) => n.type !== "frontmatter");
+    tree.children = kids;
+    if (!anchor) return;
     if (anchor.startsWith("^")) {
       const block = findId(tree, anchor);
       tree.children = !block ? [] : block.type === "listItem" ? [{ type: "list", ordered: false, spread: false, children: [block] }] : [block];
