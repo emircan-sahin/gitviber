@@ -114,8 +114,8 @@ can be rebound in Settings, and holding `⌘` shows them all.
 | | |
 | --- | --- |
 | **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu; anything that rewrites pushed commits asks first |
-| **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Clean up the merged ones in one go, squash- and rebase-merged included |
-| **Conflicts** | Resolve block by block (current, incoming, both, or by hand), then continue, skip or abort |
+| **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Pin branches to the top of the picker, with the ones you checked out last under them. Clean up the merged ones in one go, squash- and rebase-merged included |
+| **Conflicts** | Resolve block by block (current, incoming, both, or by hand) with each block's merge base a click away, then continue, skip or abort. Or hand them to the agent in your terminal, or open them in the merge tool your git config names |
 | **Pull requests** | List, read, review in the same diff viewer, create, merge and check out. Read one commit by commit: pick a commit, or a run of them, to see only what they changed. See why a check failed and copy it for the agent (GitHub) |
 | **Issues** | List, read, open, edit, comment, close and reopen, or start one in its own worktree (GitHub) |
 
@@ -207,8 +207,8 @@ it against `SHA256SUMS` and download it again. A build of your own isn't notariz
 already trusted on the Mac that built it.
 
 **How do I sign in to GitHub?** There's no sign-in of its own. Run `gh auth login` once, or have
-git remember a github.com login (any HTTPS push does), and GitViber borrows it. See
-[Privacy](#privacy).
+git remember a github.com login (any HTTPS push does), and GitViber borrows it. With more than
+one account in `gh`, pick the one a repository uses in Settings → Git. See [Privacy](#privacy).
 
 **Where are the logs?** Help → Show Logs. They're at `~/Library/Logs/app.gitviber.desktop/` on
 macOS and `~/.local/share/app.gitviber.desktop/logs/` on Linux. Help → Copy Diagnostics copies
