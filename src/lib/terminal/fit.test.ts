@@ -17,12 +17,12 @@ test("rows follow at once, columns wait past a long history", () => {
   assert.deepEqual(planFit(box, { cols: 80, rows: 20 }, at, 10), { size: { cols: 80, rows: 20 }, colsLater: false });
   assert.deepEqual(planFit(box, { cols: 80, rows: 20 }, at, REWRAP_LINES + 1), { size: { cols: 100, rows: 20 }, colsLater: true });
   assert.deepEqual(planFit(box, { cols: 100, rows: 20 }, at, REWRAP_LINES + 1), { size: { cols: 100, rows: 20 }, colsLater: false }, "only the rows changed");
-  // Before the shell starts, and when the held columns come due.
-  assert.deepEqual(planFit(box, { cols: 80, rows: 20 }, at, null), { size: { cols: 80, rows: 20 }, colsLater: false });
+  // Before the shell starts, and when the held columns come due: no history to hold for.
+  assert.deepEqual(planFit(box, { cols: 80, rows: 20 }, at, 0), { size: { cols: 80, rows: 20 }, colsLater: false });
 });
 
 /** What fitPane does with a plan: the size xterm ends at, the sizes it passed through on the way. */
-function replay(frames: { box: { width: number; height: number }; proposed?: { cols: number; rows: number }; history: number | null }[], start = at) {
+function replay(frames: { box: { width: number; height: number }; proposed?: { cols: number; rows: number }; history: number }[], start = at) {
   let size = start;
   const seen: string[] = [];
   for (const f of frames) {
@@ -63,13 +63,13 @@ test("a font zoom over a long history: rows at once, then the held columns with 
   const zoomed = { cols: 89, rows: 19 };
   const first = planFit(box, zoomed, at, 5000)!;
   assert.deepEqual(first, { size: { cols: 100, rows: 19 }, colsLater: true });
-  // 100 ms later fitPane runs with `now`: no history passed.
-  assert.deepEqual(planFit(box, zoomed, first.size, null), { size: zoomed, colsLater: false });
+  // 100 ms later fitPane runs with `now`: no history to hold for.
+  assert.deepEqual(planFit(box, zoomed, first.size, 0), { size: zoomed, colsLater: false });
   // Hidden by ⌘J before the 100 ms: the held columns wait for the pane to be back.
-  assert.equal(planFit({ width: 0, height: 0 }, { cols: 2, rows: 1 }, first.size, null), null);
+  assert.equal(planFit({ width: 0, height: 0 }, { cols: 2, rows: 1 }, first.size, 0), null);
 });
 
 test("a restored tab with a long history opens at its full size before its shell starts", () => {
-  // Not started: fitPane passes no history, so the shell is spawned at the right columns.
-  assert.deepEqual(planFit(box, { cols: 146, rows: 17 }, { cols: 80, rows: 24 }, null), { size: { cols: 146, rows: 17 }, colsLater: false });
+  // Not started: fitPane passes no history to hold for, so the shell is spawned at the right columns.
+  assert.deepEqual(planFit(box, { cols: 146, rows: 17 }, { cols: 80, rows: 24 }, 0), { size: { cols: 146, rows: 17 }, colsLater: false });
 });
