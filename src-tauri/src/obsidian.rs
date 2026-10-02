@@ -3,23 +3,26 @@
 //! inside it and refused if it would escape it, symlinks included, or go through a hidden
 //! folder: Obsidian shows none, and .obsidian/plugins holds code Obsidian runs.
 
-use crate::git::{self, FileText};
-use notify::{recommended_watcher, RecommendedWatcher, RecursiveMode, Watcher};
+use crate::fs::{confine, read_media_at, read_text_at};
+use crate::git::FileText;
+use crate::watch::debounce;
+use notify::{recommended_watcher, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Vault {
+    #[serde(skip)]
     pub id: String,
     /// Its folder's name, as Obsidian's vault switcher shows it.
     pub name: String,
     pub path: String,
     /// Open in Obsidian right now.
+    #[serde(skip)]
     pub open: bool,
     /// Last opened, in ms since the epoch.
     pub ts: u64,
@@ -80,13 +83,22 @@ pub fn parse_vaults(json: &str) -> Vec<Vault> {
         .collect()
 }
 
-/// Every vault Obsidian lists whose folder is there, the last opened first.
-pub fn vaults() -> Vec<Vault> {
-    let mut seen = HashSet::new();
-    let mut all: Vec<Vault> = config_files()
+/// Every vault the lists in `configs` name, as written.
+fn listed(configs: &[PathBuf]) -> impl Iterator<Item = Vault> + '_ {
+    configs
         .iter()
         .filter_map(|f| std::fs::read_to_string(f).ok())
         .flat_map(|json| parse_vaults(&json))
+}
+
+/// Every vault Obsidian lists whose folder is there, the last opened first.
+pub fn vaults() -> Vec<Vault> {
+    vaults_in(&config_files())
+}
+
+pub(crate) fn vaults_in(configs: &[PathBuf]) -> Vec<Vault> {
+    let mut seen = HashSet::new();
+    let mut all: Vec<Vault> = listed(configs)
         .filter(|v| Path::new(&v.path).is_dir())
         .filter(|v| seen.insert(Path::new(&v.path).canonicalize().ok()))
         .collect();
@@ -96,10 +108,15 @@ pub fn vaults() -> Vec<Vault> {
 
 /// `vault`'s folder, when it's one Obsidian lists: the page can't point these commands anywhere else.
 pub fn root(vault: &str) -> Result<PathBuf, String> {
-    vaults()
-        .into_iter()
+    root_in(&config_files(), vault)
+}
+
+/// Runs on every call (a note's 30 images are 30): only the vault asked for is looked at on disk.
+pub(crate) fn root_in(configs: &[PathBuf], vault: &str) -> Result<PathBuf, String> {
+    listed(configs)
         .find(|v| v.path == vault)
         .map(|v| PathBuf::from(v.path))
+        .filter(|p| p.is_dir())
         .ok_or_else(|| format!("not an Obsidian vault: {vault}"))
 }
 
@@ -107,9 +124,14 @@ fn hidden(name: &std::ffi::OsStr) -> bool {
     matches!(name.as_encoded_bytes().first(), Some(b'.'))
 }
 
-/// `rel` (vault-relative, "/" between folders) inside `root`, as crate::fs::resolve does for the
-/// repo: no `..`, no hidden folder, and the deepest part that exists really inside the vault.
+/// `rel` (vault-relative, "/" between folders) inside `root`: crate::fs's confinement, with
+/// Obsidian's rule in place of git's: no `..` and nothing hidden, as written or as a link leads.
 pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    resolve_under(root, &root.canonicalize().map_err(|e| e.to_string())?, rel)
+}
+
+/// `resolve` with the root's real path read once, for many paths under it.
+fn resolve_under(root: &Path, real_root: &Path, rel: &str) -> Result<PathBuf, String> {
     let escape = || format!("path outside the vault: {rel}");
     let rel_path = Path::new(rel);
     if rel_path
@@ -118,23 +140,14 @@ pub fn resolve(root: &Path, rel: &str) -> Result<PathBuf, String> {
     {
         return Err(escape());
     }
-    let real_root = root.canonicalize().map_err(|e| e.to_string())?;
     let full = root.join(rel_path);
-    // A path that doesn't exist yet can't be canonicalized: check its deepest existing
-    // ancestor, and refuse dangling links (writing would follow them).
-    let mut probe = full.as_path();
-    let real = loop {
-        match probe.canonicalize() {
-            Ok(p) => break p,
-            Err(_) if probe.symlink_metadata().is_ok() => return Err(escape()),
-            Err(_) => probe = probe.parent().ok_or_else(escape)?,
-        }
-    };
+    let real = confine(real_root, &full).ok_or_else(escape)?;
     // A link inside the vault can still lead into its .obsidian.
-    match real.strip_prefix(&real_root) {
-        Ok(inside) if !inside.components().any(|c| hidden(c.as_os_str())) => Ok(full),
-        _ => Err(escape()),
+    let inside = real.strip_prefix(real_root).map_err(|_| escape())?;
+    if inside.components().any(|c| hidden(c.as_os_str())) {
+        return Err(escape());
     }
+    Ok(full)
 }
 
 #[derive(Serialize)]
@@ -156,7 +169,8 @@ fn child(rel: &str, name: &str) -> String {
 /// A folder's entries as Obsidian's file explorer has them: no hidden ones, and no links that
 /// lead out of the vault. Unsorted; the page orders them.
 pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<Entry>, String> {
-    let dir = resolve(root, rel)?;
+    let real_root = root.canonicalize().map_err(|e| e.to_string())?;
+    let dir = resolve_under(root, &real_root, rel)?;
     Ok(std::fs::read_dir(dir)
         .map_err(|e| e.to_string())?
         .filter_map(Result::ok)
@@ -164,7 +178,7 @@ pub fn list_dir(root: &Path, rel: &str) -> Result<Vec<Entry>, String> {
         .filter_map(|e| {
             let name = e.file_name().to_string_lossy().into_owned();
             let path = child(rel, &name);
-            let full = resolve(root, &path).ok()?;
+            let full = resolve_under(root, &real_root, &path).ok()?;
             Some(Entry {
                 is_dir: full.is_dir(),
                 name,
@@ -180,7 +194,7 @@ const MAX_FILES: usize = 200_000;
 /// Every file in the vault, for links to find their notes and attachments. Linked folders
 /// aren't walked (one could lead back up), their files are listed under their own folder.
 pub fn list_files(root: &Path) -> Result<Vec<String>, String> {
-    resolve(root, "")?;
+    let real_root = root.canonicalize().map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     let mut dirs = vec![String::new()];
     while let Some(rel) = dirs.pop() {
@@ -195,7 +209,10 @@ pub fn list_files(root: &Path) -> Result<Vec<String>, String> {
             match e.file_type() {
                 Ok(t) if t.is_dir() => dirs.push(path),
                 Ok(t) if t.is_file() => out.push(path),
-                Ok(t) if t.is_symlink() && resolve(root, &path).is_ok_and(|p| p.is_file()) => {
+                Ok(t)
+                    if t.is_symlink()
+                        && resolve_under(root, &real_root, &path).is_ok_and(|p| p.is_file()) =>
+                {
                     out.push(path)
                 }
                 _ => {}
@@ -206,58 +223,80 @@ pub fn list_files(root: &Path) -> Result<Vec<String>, String> {
 }
 
 pub fn read_file(root: &Path, rel: &str) -> FileText {
-    match resolve(root, rel).and_then(|p| git::read_regular(&p)) {
-        Ok(Some(bytes)) => git::to_file_text(bytes),
-        Ok(None) => FileText {
-            too_large: true,
-            exists: true,
-            ..Default::default()
-        },
-        Err(_) => FileText::default(),
-    }
+    resolve(root, rel)
+        .map(|p| read_text_at(&p))
+        .unwrap_or_default()
 }
 
 pub fn read_media(root: &Path, rel: &str) -> Result<Vec<u8>, String> {
-    let path = resolve(root, rel)?;
-    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
-    if !meta.is_file() {
-        return Err("not a regular file".into());
-    }
-    if meta.len() > git::MAX_MEDIA_BYTES {
-        return Err("File is too large to preview".into());
-    }
-    std::fs::read(path).map_err(|e| e.to_string())
+    read_media_at(&resolve(root, rel)?)
 }
 
-/// Saves a note edited in the code view. Only into a folder that's there: nothing is created.
+/// Saves a note edited in the code view, over the file it was read from: nothing is created.
 pub fn write_file(root: &Path, rel: &str, content: &str) -> Result<(), String> {
     let path = resolve(root, rel)?;
-    if !path.parent().is_some_and(Path::is_dir) {
-        return Err(format!("no such folder in the vault: {rel}"));
+    if !path.is_file() {
+        return Err(format!("{rel} is no longer in the vault"));
     }
     std::fs::write(path, content).map_err(|e| e.to_string())
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct VaultChanged {
     pub vault: String,
+    /// Files came or went (or were renamed): the vault's file list is stale, not just texts.
+    pub files: bool,
+    /// The files changed (vault-relative); none when events were dropped and anything may have.
+    pub paths: Vec<String>,
 }
 
-/// Tells the page when files in the vault change, once they go quiet for 150 ms (at least
-/// every second while writes go on). Obsidian rewrites .obsidian/workspace.json as you click
-/// around in it; hidden paths don't count.
+/// What one watcher event says about the vault at `root` (`real`: its canonical path): the
+/// files it touched, and whether any came, went or moved. Hidden paths don't count: Obsidian
+/// rewrites .obsidian/workspace.json as you click around in it. None: nothing that counts.
+pub(crate) fn vault_event(
+    root: &Path,
+    real: &Path,
+    event: &notify::Event,
+) -> Option<(bool, Vec<String>)> {
+    if event.need_rescan() {
+        return Some((true, vec![]));
+    }
+    let paths: Vec<String> = event
+        .paths
+        .iter()
+        .filter_map(|p| p.strip_prefix(root).or_else(|_| p.strip_prefix(real)).ok())
+        .filter(|rel| {
+            !rel.as_os_str().is_empty() && !rel.components().any(|c| hidden(c.as_os_str()))
+        })
+        .map(|rel| {
+            let parts: Vec<_> = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect();
+            parts.join("/")
+        })
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+    let files = matches!(
+        event.kind,
+        EventKind::Create(_)
+            | EventKind::Remove(_)
+            | EventKind::Modify(notify::event::ModifyKind::Name(_))
+            | EventKind::Any
+    );
+    Some((files, paths))
+}
+
+/// Tells the page what changed in the vault, once writes go quiet (watch::debounce).
 pub fn watch(app: AppHandle, vault: String) -> Result<RecommendedWatcher, String> {
     let root = PathBuf::from(&vault);
     let real = root.canonicalize().unwrap_or_else(|_| root.clone());
-    let (tx, rx) = mpsc::channel::<()>();
+    let (tx, rx) = mpsc::channel::<(bool, Vec<String>)>();
     let mut watcher = recommended_watcher(move |res: notify::Result<notify::Event>| {
-        let Ok(event) = res else { return };
-        let counts = |p: &PathBuf| {
-            let inside = p.strip_prefix(&root).or_else(|_| p.strip_prefix(&real));
-            inside.is_ok_and(|rel| !rel.components().any(|c| hidden(c.as_os_str())))
-        };
-        if event.need_rescan() || event.paths.iter().any(counts) {
-            let _ = tx.send(());
+        if let Some(change) = res.ok().and_then(|e| vault_event(&root, &real, &e)) {
+            let _ = tx.send(change);
         }
     })
     .map_err(|e| e.to_string())?;
@@ -266,18 +305,26 @@ pub fn watch(app: AppHandle, vault: String) -> Result<RecommendedWatcher, String
         .map_err(|e| e.to_string())?;
     // The thread ends when the watcher (and with it the sender) is dropped.
     std::thread::spawn(move || {
-        while rx.recv().is_ok() {
-            let started = Instant::now();
-            while started.elapsed() < Duration::from_secs(1)
-                && rx.recv_timeout(Duration::from_millis(150)).is_ok()
-            {}
+        debounce(rx, |batch| {
+            let files = batch.iter().any(|(files, _)| *files);
+            // A rescan says nothing about which files: none named, every one may have changed.
+            let all = batch.iter().any(|(_, paths)| paths.is_empty());
+            let mut paths: Vec<String> = if all {
+                vec![]
+            } else {
+                batch.into_iter().flat_map(|(_, p)| p).collect()
+            };
+            paths.sort();
+            paths.dedup();
             let _ = app.emit(
                 "vault-changed",
                 VaultChanged {
                     vault: vault.clone(),
+                    files: files || all,
+                    paths,
                 },
             );
-        }
+        })
     });
     Ok(watcher)
 }
@@ -352,7 +399,86 @@ mod tests {
         assert!(write_file(&vault, "Daily/Today.md", "# Now").is_ok());
         assert_eq!(read_file(&vault, "Daily/Today.md").text, "# Now");
         assert!(write_file(&vault, "Nope/New.md", "x").is_err());
+        // Saving goes over the note it was read from; a new file isn't made.
+        assert!(write_file(&vault, "Daily/New.md", "x").is_err());
         let _ = std::fs::remove_dir_all(&vault);
         let _ = std::fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn vaults_come_from_the_list_and_only_those_are_accepted() {
+        let dir = temp("config");
+        let (work, gone) = (dir.join("Work"), dir.join("Gone"));
+        std::fs::create_dir_all(&work).unwrap();
+        let config = dir.join("obsidian.json");
+        let json = serde_json::json!({ "vaults": {
+            "a": { "path": work.to_string_lossy(), "ts": 2 },
+            "b": { "path": gone.to_string_lossy(), "ts": 3 },
+            "c": { "path": work.to_string_lossy(), "ts": 1 },
+        }});
+        std::fs::write(&config, json.to_string()).unwrap();
+        let configs = [config, dir.join("missing.json")];
+        let found = vaults_in(&configs);
+        assert_eq!(
+            found.len(),
+            1,
+            "a missing folder is left out, the same folder listed once"
+        );
+        assert_eq!(found[0].path, work.to_string_lossy());
+        assert!(root_in(&configs, &work.to_string_lossy()).is_ok());
+        assert!(root_in(&configs, &gone.to_string_lossy()).is_err());
+        assert!(root_in(&configs, &dir.to_string_lossy()).is_err());
+        // The page never sees Obsidian's ids or open state.
+        let sent = serde_json::to_value(&found[0]).unwrap();
+        assert!(sent.get("id").is_none() && sent.get("open").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_watcher_event_counts_unless_hidden_and_says_when_files_came_or_went() {
+        use notify::event::{CreateKind, DataChange, ModifyKind, RenameMode};
+        let (root, real) = (Path::new("/v"), Path::new("/private/v"));
+        let event = |kind, paths: &[&str]| notify::Event {
+            kind,
+            paths: paths.iter().map(PathBuf::from).collect(),
+            attrs: Default::default(),
+        };
+        let edit = EventKind::Modify(ModifyKind::Data(DataChange::Content));
+        assert_eq!(
+            vault_event(root, real, &event(edit, &["/v/Daily/Today.md"])),
+            Some((false, vec!["Daily/Today.md".into()]))
+        );
+        assert_eq!(
+            vault_event(root, real, &event(edit, &["/private/v/A.md"])),
+            Some((false, vec!["A.md".into()]))
+        );
+        assert_eq!(
+            vault_event(
+                root,
+                real,
+                &event(EventKind::Create(CreateKind::File), &["/v/New.md"])
+            ),
+            Some((true, vec!["New.md".into()]))
+        );
+        assert_eq!(
+            vault_event(
+                root,
+                real,
+                &event(
+                    EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
+                    &["/v/Old.md"]
+                )
+            )
+            .map(|c| c.0),
+            Some(true)
+        );
+        assert_eq!(
+            vault_event(root, real, &event(edit, &["/v/.obsidian/workspace.json"])),
+            None
+        );
+        assert_eq!(
+            vault_event(root, real, &event(edit, &["/elsewhere/x.md"])),
+            None
+        );
     }
 }

@@ -30,24 +30,27 @@ fn resolve_under(root: &Path, real_root: &Path, rel: &str) -> Result<PathBuf, St
         return Err(format!("refusing to touch git internals: {rel}"));
     }
     let full = root.join(rel_path);
-    // Symlinks can point anywhere, and a path that doesn't exist yet can't be canonicalized:
-    // check the deepest existing ancestor, and refuse dangling links (writing would follow them).
-    let mut probe = full.as_path();
-    let real = loop {
-        match probe.canonicalize() {
-            Ok(p) => break p,
-            Err(_) if probe.symlink_metadata().is_ok() => return Err(escape()),
-            Err(_) => probe = probe.parent().ok_or_else(escape)?,
-        }
-    };
-    if !real.starts_with(real_root) {
-        return Err(escape());
-    }
+    let real = confine(real_root, &full).ok_or_else(escape)?;
     // The name check above misses a link like `docs -> .git`, which survives a clone.
     if in_git_dir(root, real_root, &real) {
         return Err(format!("refusing to touch git internals: {rel}"));
     }
     Ok(full)
+}
+
+/// The real path of `full`, or of its deepest part that exists, when that is inside `real_root`
+/// (a canonical root). Symlinks can point anywhere, and a path that doesn't exist yet can't be
+/// canonicalized; a dangling link is refused, as writing would follow it.
+pub(crate) fn confine(real_root: &Path, full: &Path) -> Option<PathBuf> {
+    let mut probe = full;
+    let real = loop {
+        match probe.canonicalize() {
+            Ok(p) => break p,
+            Err(_) if probe.symlink_metadata().is_ok() => return None,
+            Err(_) => probe = probe.parent()?,
+        }
+    };
+    real.starts_with(real_root).then_some(real)
 }
 
 fn in_git_dir(root: &Path, real_root: &Path, real: &Path) -> bool {
@@ -233,7 +236,14 @@ pub fn write_file(root: &Path, rel: &str, content: &str) -> Result<(), String> {
 }
 
 pub fn read_file(root: &Path, rel: &str) -> FileText {
-    match resolve(root, rel).and_then(|p| git::read_regular(&p)) {
+    resolve(root, rel)
+        .map(|p| read_text_at(&p))
+        .unwrap_or_default()
+}
+
+/// A resolved file's text; one too large says so, and one that can't be read doesn't exist.
+pub(crate) fn read_text_at(path: &Path) -> FileText {
+    match git::read_regular(path) {
         Ok(Some(bytes)) => git::to_file_text(bytes),
         Ok(None) => FileText {
             too_large: true,
@@ -258,8 +268,12 @@ pub fn read_diff_side(root: &Path, rel: &str) -> FileText {
 }
 
 pub fn read_media(root: &Path, rel: &str) -> Result<Vec<u8>, String> {
-    let path = resolve(root, rel)?;
-    let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    read_media_at(&resolve(root, rel)?)
+}
+
+/// A resolved file's bytes, up to MAX_MEDIA_BYTES; FIFOs and devices are refused.
+pub(crate) fn read_media_at(path: &Path) -> Result<Vec<u8>, String> {
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     if !meta.is_file() {
         return Err("not a regular file".into());
     }
