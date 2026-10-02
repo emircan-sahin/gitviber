@@ -1,9 +1,11 @@
-import { useEffect } from "react";
+import { Fragment, useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
 import type { NotifyPermission } from "@/lib/api";
 import { enableNotifications, openNotificationSettings, refreshNotifyPermission, sendTestNotification, useAskingNotify, useNotifyPermission } from "@/lib/app/notify";
 import { IS_MAC } from "@/lib/platform";
+import { formatDuration, LONG_COMMAND_SECONDS } from "@/lib/terminal/commandMarks";
 import { type NotifyEvent, updateSettings, useSettings } from "@/lib/settings";
 import { Field, Group } from "@/features/settings/controls";
 
@@ -11,6 +13,11 @@ const EVENTS: [NotifyEvent, string, string][] = [
   ["notifyAgentDone", "An agent finishes", "Claude Code, or another agent that reports its state, stops working in a terminal."],
   ["notifyAgentWaiting", "An agent asks for you", "It waits for an answer or a permission before it goes on."],
   ["notifyTerminal", "A terminal rings or notifies", "Any other program ringing the bell or sending a notification (OSC 9, 777 or 99). An agent that reports its state goes by the two switches above."],
+  [
+    "notifyLongCommand",
+    "A long command finishes",
+    "A command in a terminal you aren't looking at ends after running longer than the time below; its tab gets a dot too. Needs shell integration (zsh, bash 4.4+). An agent goes by the switches above.",
+  ],
   ["notifyGit", "A git command ends", "A push, pull, fetch, clone or commit finishes or fails."],
 ];
 
@@ -71,9 +78,21 @@ export function NotificationsSection() {
       </Group>
       <Group title="Notify when">
         {EVENTS.map(([key, label, hint]) => (
-          <Field key={key} label={label} hint={hint}>
-            <Switch checked={s[key]} onChange={(v) => updateSettings({ [key]: v })} />
-          </Field>
+          <Fragment key={key}>
+            <Field label={label} hint={hint}>
+              <Switch checked={s[key]} onChange={(v) => updateSettings({ [key]: v })} />
+            </Field>
+            {key === "notifyLongCommand" && s.notifyLongCommand && (
+              <Field label="Long means longer than">
+                <Segmented<string>
+                  value={String(s.longCommandSeconds)}
+                  onChange={(v) => updateSettings({ longCommandSeconds: Number(v) })}
+                  options={LONG_COMMAND_SECONDS.map((n) => ({ value: String(n), label: formatDuration(n * 1000) }))}
+                  variant="field"
+                />
+              </Field>
+            )}
+          </Fragment>
         ))}
       </Group>
     </>

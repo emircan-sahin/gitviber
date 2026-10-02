@@ -2,13 +2,80 @@ import type { IMarker, Terminal } from "@xterm/xterm";
 
 /**
  * An OSC 133 mark (shell integration): A a prompt starts, B the typed command does, C its output
- * does, D it ended, with its exit code when the shell gives one.
+ * does, D it ended, with its exit code when the shell gives one. C may say what was typed: fish's
+ * `cmdline_url=` (percent-encoded, as kitty's), or our zsh's `cmdline=`, the rest of the mark as
+ * typed with control characters made spaces.
  */
-export function parseMark(data: string): { kind: "A" | "B" | "C" | "D"; exit?: number } | null {
+export function parseMark(data: string): { kind: "A" | "B" | "C" | "D"; exit?: number; command?: string } | null {
   const [kind, arg] = data.split(";");
   if (kind !== "A" && kind !== "B" && kind !== "C" && kind !== "D") return null;
+  if (kind === "C") {
+    const command = commandLine(data);
+    return command ? { kind, command } : { kind };
+  }
   return kind === "D" && arg !== undefined && /^\d+$/.test(arg) ? { kind, exit: Number(arg) } : { kind };
 }
+
+/** A notification's or a tooltip's worth of it: a long one ends in "…". */
+const MAX_COMMAND = 80;
+
+function commandLine(data: string) {
+  let text: string | undefined;
+  const raw = /;cmdline=([\s\S]*)$/.exec(data);
+  if (raw) text = raw[1];
+  else {
+    const url = /;cmdline_url=([^;]*)/.exec(data);
+    try {
+      text = url ? decodeURIComponent(url[1]) : undefined;
+    } catch {
+      // Malformed escapes: no name, rather than a wrong one.
+    }
+  }
+  const line = text?.replace(/\s+/g, " ").trim();
+  return line && (line.length > MAX_COMMAND ? `${line.slice(0, MAX_COMMAND - 1)}…` : line);
+}
+
+/** How a command ended, from its output's mark (C) to its end (D) or the next prompt. */
+export interface CommandEnd {
+  /** As typed, when the shell said (zsh and fish do; bash doesn't). */
+  command?: string;
+  ms: number;
+  /** Unknown when the shell was interrupted, or doesn't say. */
+  exit?: number;
+}
+
+/** "350ms", "4.2s", "45s", "2m 3s", "5m", "1h 5m": how long a command took. */
+export function formatDuration(ms: number) {
+  if (Math.round(ms) < 1000) return `${Math.round(ms)}ms`;
+  const tenths = Math.round(ms / 100);
+  if (tenths < 100) return `${tenths / 10}s`;
+  const whole = Math.round(ms / 1000);
+  if (whole < 60) return `${whole}s`;
+  const [h, m, s] = [Math.floor(whole / 3600), Math.floor((whole % 3600) / 60), whole % 60];
+  const pair = (a: number, x: string, b: number, y: string) => (b ? `${a}${x} ${b}${y}` : `${a}${x}`);
+  return h ? pair(h, "h", m, "m") : pair(m, "m", s, "s");
+}
+
+/** The mark's hover, as VS Code words its command decorations. */
+export function endTitle({ ms, exit }: CommandEnd) {
+  const took = formatDuration(ms);
+  if (exit === undefined) return `Ended after ${took}`;
+  return exit === 0 ? `Took ${took}` : `Failed after ${took} (exit code ${exit})`;
+}
+
+/** What a notification says of a long command: "pnpm test failed after 2m 3s (exit code 1)". */
+export function endText({ command, ms, exit }: CommandEnd) {
+  const took = formatDuration(ms);
+  const what = command ?? "A command";
+  if (exit === undefined) return `${what} ended after ${took}`;
+  return exit === 0 ? `${what} finished after ${took}` : `${what} failed after ${took} (exit code ${exit})`;
+}
+
+/** Seconds a command runs before its end is news (Settings → Notifications). */
+export const LONG_COMMAND_SECONDS = [5, 10, 30, 60, 300];
+
+/** Whether a command that took `ms` is long at a threshold of `seconds`, as Ghostty's notify-on-command-finish-after. */
+export const isLong = (ms: number, seconds: number) => ms > seconds * 1000;
 
 /**
  * What a full-screen program turns off on its way out: ?1000l ends any mouse tracking in xterm.js
@@ -30,6 +97,9 @@ const MAX_COMMANDS = 300;
 
 interface Command {
   prompt: IMarker;
+  /** When its output started (performance.now), and what was typed, if the shell said. */
+  started?: number;
+  command?: string;
   /** Where its output starts (C), and where it ended (D) with the cursor's column there. */
   output?: IMarker;
   end?: IMarker;
@@ -50,24 +120,26 @@ export class CommandMarks {
   private last: Command | null = null;
   private term: Terminal;
   private onPrompt: () => void;
+  private onEnd: (end: CommandEnd) => void;
   private prompted = () => {};
   /** The shell's first prompt is up: it reads what's typed now. */
   readonly ready = new Promise<void>((resolve) => (this.prompted = resolve));
 
-  /** `onPrompt`: each prompt, where a `cd` has settled. */
-  constructor(term: Terminal, onPrompt = () => {}) {
+  /** `onPrompt`: each prompt, where a `cd` has settled. `onEnd`: each command that ends. */
+  constructor(term: Terminal, onPrompt = () => {}, onEnd: (end: CommandEnd) => void = () => {}) {
     this.term = term;
     this.onPrompt = onPrompt;
+    this.onEnd = onEnd;
     term.parser.registerOscHandler(133, (data) => {
       const mark = parseMark(data);
       // To xterm, not the shell: as if the program had turned them off.
       if (mark && mouseLeftOn(mark.kind, term.buffer.active.type, term.modes.mouseTrackingMode)) term.write(MODES_OFF);
-      if (mark) this.on(mark.kind, mark.exit);
+      if (mark) this.on(mark.kind, mark.exit, mark.command);
       return true;
     });
   }
 
-  private on(kind: string, exit?: number) {
+  private on(kind: string, exit?: number, command?: string) {
     // A shell under a full-screen program (tmux) marks lines that aren't the history's.
     if (this.term.buffer.active.type !== "normal") return;
     if (kind === "A") {
@@ -81,6 +153,9 @@ export class CommandMarks {
       this.onPrompt();
     } else if (kind === "C" && this.current && !this.current.output) {
       this.current.output = this.term.registerMarker(0);
+      // Timed here, as Ghostty times it: from the command's start to its end, not from the prompt.
+      this.current.started = performance.now();
+      this.current.command = command;
       this.commands = this.commands.filter((x) => !x.prompt.isDisposed);
       this.commands.push(this.current);
       // Its mark goes with its marker.
@@ -100,6 +175,7 @@ export class CommandMarks {
     }
     this.last = c;
     const failed = exit !== undefined && exit !== 0;
+    const end: CommandEnd = { command: c.command, ms: performance.now() - (c.started ?? performance.now()), exit };
     const mark = this.term.registerDecoration({ marker: c.prompt });
     mark?.onRender((el) => {
       if (el.firstChild) return;
@@ -108,9 +184,10 @@ export class CommandMarks {
       const dot = document.createElement("div");
       dot.className = "gv-command-mark";
       if (failed) dot.dataset.failed = "";
-      dot.title = exit === undefined ? "Command ended" : `Exit code ${exit}`;
+      dot.title = endTitle(end);
       el.appendChild(dot);
     });
+    this.onEnd(end);
   }
 
   /**

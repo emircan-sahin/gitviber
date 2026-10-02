@@ -6,6 +6,7 @@ import { IS_MAC, IS_WINDOWS } from "./platform";
 import { writeJson } from "./storage";
 import { SUGGEST_PRESETS, type SuggestPreset } from "./git/suggest";
 import type { ResumeMode } from "./terminal/agentState";
+import { LONG_COMMAND_SECONDS } from "./terminal/commandMarks";
 import { useSyncExternalStore } from "react";
 
 const CODE_FONTS = {
@@ -217,6 +218,10 @@ export interface Settings {
   notifyAgentWaiting: boolean;
   /** A terminal rang its bell or sent a notification escape. */
   notifyTerminal: boolean;
+  /** A command shell integration marks ran past `longCommandSeconds` and ended out of sight: its tab is marked, and this notifies. */
+  notifyLongCommand: boolean;
+  /** One of LONG_COMMAND_SECONDS. */
+  longCommandSeconds: number;
   /** A push, pull, fetch, clone or commit ended. */
   notifyGit: boolean;
   /** Ask GitHub Releases for a newer GitViber at launch and every few hours (updates.ts). */
@@ -239,7 +244,7 @@ export interface Settings {
 }
 
 /** What can notify, each with its own switch (Settings → Notifications). */
-export const NOTIFY_EVENTS = ["notifyAgentDone", "notifyAgentWaiting", "notifyTerminal", "notifyGit"] as const;
+export const NOTIFY_EVENTS = ["notifyAgentDone", "notifyAgentWaiting", "notifyTerminal", "notifyLongCommand", "notifyGit"] as const;
 export type NotifyEvent = (typeof NOTIFY_EVENTS)[number];
 
 export const DEFAULT_FONT_SIZE = 13.5;
@@ -302,6 +307,9 @@ const DEFAULTS: Settings = {
   notifyAgentDone: true,
   notifyAgentWaiting: true,
   notifyTerminal: true,
+  notifyLongCommand: true,
+  // Ghostty's is 5 s, for a notification alone; here the tab's dot comes with it.
+  longCommandSeconds: 10,
   notifyGit: true,
   autoUpdate: true,
   cloneParent: null,
@@ -369,6 +377,7 @@ function load(): Settings {
     if (typeof s.shortcutOverlay !== "boolean") s.shortcutOverlay = DEFAULTS.shortcutOverlay;
     s.keybindings = cleanOverrides(s.keybindings);
     for (const k of ["notify", ...NOTIFY_EVENTS] as const) if (typeof s[k] !== "boolean") s[k] = DEFAULTS[k];
+    if (!LONG_COMMAND_SECONDS.includes(s.longCommandSeconds)) s.longCommandSeconds = DEFAULTS.longCommandSeconds;
     if (typeof s.autoUpdate !== "boolean") s.autoUpdate = DEFAULTS.autoUpdate;
     if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;

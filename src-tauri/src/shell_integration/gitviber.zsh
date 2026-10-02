@@ -1,5 +1,6 @@
 # GitViber's shell integration for zsh, loaded by the .zshenv beside it. It marks where each prompt
-# starts (OSC 133;A), where a command's output starts (C) and how it ended (D;status), as in
+# starts (OSC 133;A), where a command's output starts (C, with the command line) and how it ended
+# (D;status), as in
 # https://gitlab.freedesktop.org/Per_Bothner/specifications/blob/master/proposals/semantic-prompts.md
 # The prompt mark goes at the start of PS1, set as the last precmd hook and taken off again for the
 # other hooks, as Ghostty's zsh integration does, so it lands on the prompt's first line.
@@ -45,7 +46,9 @@ _gitviber_unmark() {
 _gitviber_preexec() {
   _gitviber_unmark
   _gitviber_ran=1
-  builtin print -n '\e]133;C\a'
+  # The line as typed, for "pnpm test finished after 2m": the rest of the mark, cut short, its
+  # control characters (an ESC or BEL would end the mark) made spaces. Raw, so no \ is read.
+  builtin print -rn -- $'\e]133;C;cmdline='"${${1[1,200]}//[[:cntrl:]]/ }"$'\a'
 }
 
 builtin autoload -Uz add-zsh-hook add-zle-hook-widget

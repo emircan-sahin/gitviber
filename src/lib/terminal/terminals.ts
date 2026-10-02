@@ -24,7 +24,7 @@ import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
 import { copyText } from "../app/clipboard";
 import { loadSession, type SavedSession, scheduleSave } from "./session";
-import { lookedAt, watchAttention } from "./needsYou";
+import { commandEnded, lookedAt, watchAttention } from "./needsYou";
 import { agentPrompted } from "./agents";
 import { type PaneAgent } from "./agentState";
 import { reportWheelByRow } from "./wheel";
@@ -242,7 +242,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
     void shellDir(p);
     agentPrompted(p);
   };
-  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, ptySize: "", marks: new CommandMarks(term, prompted) };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, ptySize: "", marks: new CommandMarks(term, prompted, (end) => commandEnded(p, end)) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   if (restored?.resume) {

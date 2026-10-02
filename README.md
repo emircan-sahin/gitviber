@@ -76,8 +76,10 @@ server or talk to the agent without leaving the change you're reading. Each pane
 title bar with what runs there, and `⌘R` names it. The terminal has its own font, size, cursor and
 scrollback in Settings, and `⌘=` / `⌘−` in the terminal or a pinch over it size its text.
 `⌘`-click a path it prints to open the file at that line, or a folder to show it in the explorer.
-In zsh and bash 4.4+ each command gets a mark, red when it failed, `⌘↑` / `⌘↓` jump between them,
-and the last one's output copies from the right-click menu; your dotfiles stay as they are.
+In zsh and bash 4.4+ each command gets a mark, red when it failed, that tells how long it took,
+`⌘↑` / `⌘↓` jump between them, and the last one's output copies from the right-click menu; your
+dotfiles stay as they are. A command that runs past 10 seconds and ends while you're looking
+elsewhere puts a dot on its tab, with a desktop notification if you turned those on.
 
 It's made for agents too: paste a screenshot or drop files and Claude Code or Codex gets their
 paths, Shift+Enter reaches them as its own key, and on a Mac a trackpad swipe scrolls Claude

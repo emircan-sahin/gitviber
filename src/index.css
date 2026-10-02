@@ -937,6 +937,12 @@
   background: var(--subtle);
   pointer-events: auto;
 }
+/* A bigger target for its hover (how it ended, how long it took), kept off the cell to its right. */
+.gv-command-mark::before {
+  content: "";
+  position: absolute;
+  inset: -4px 0 -4px -3px;
+}
 .gv-command-mark[data-failed] {
   background: var(--destructive);
 }
