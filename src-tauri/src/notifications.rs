@@ -18,6 +18,8 @@ pub enum Permission {
     Denied,
     /// Not asked yet.
     Prompt,
+    /// Allowed without banners (alert style None): they only go to Notification Center.
+    Quiet,
     /// Not an app bundle (a dev build whose bundle failed): the plugin's notifications, unasked,
     /// shown as Terminal's.
     Unbundled,
@@ -144,14 +146,13 @@ mod mac {
     /// throws, and the app aborts.
     fn center() -> Option<*mut AnyObject> {
         static BUNDLED: OnceLock<bool> = OnceLock::new();
-        let bundled = *BUNDLED.get_or_init(|| unsafe {
-            let Some(bundle) = AnyClass::get(c"NSBundle") else {
-                return false;
-            };
-            let main: *mut AnyObject = msg_send![bundle, mainBundle];
-            let id: *mut AnyObject = msg_send![main, bundleIdentifier];
-            let path: *mut AnyObject = msg_send![main, bundlePath];
-            !id.is_null() && rust_string(path).is_some_and(|p| p.ends_with(".app"))
+        let bundled = *BUNDLED.get_or_init(|| {
+            bundle_id().is_some()
+                && objc2::rc::autoreleasepool(|_| unsafe {
+                    let main: *mut AnyObject = msg_send![AnyClass::get(c"NSBundle")?, mainBundle];
+                    rust_string(msg_send![main, bundlePath])
+                })
+                .is_some_and(|p| p.ends_with(".app"))
         });
         if !bundled {
             return None;
@@ -198,7 +199,8 @@ mod mac {
                     let status: isize = msg_send![settings, authorizationStatus];
                     let alerts: isize = msg_send![settings, alertSetting];
                     let style: isize = msg_send![settings, alertStyle];
-                    let _ = tx.send((status, alerts, style));
+                    let listed: isize = msg_send![settings, notificationCenterSetting];
+                    let _ = tx.send((status, alerts, style, listed));
                 });
                 unsafe {
                     let _: () =
@@ -206,24 +208,35 @@ mod mac {
                 }
             });
             settings
-                .map(|(status, alerts, style)| map_permission(status, alerts, style))
+                .map(|(status, alerts, style, listed)| {
+                    map_permission(status, alerts, style, listed)
+                })
                 .ok_or_else(|| "macOS didn't say whether notifications are allowed".into())
         })
     }
 
-    /// UNAuthorizationStatus, UNNotificationSetting for alerts, UNAlertStyle. Allowed isn't shown:
-    /// in System Settings alerts can be off, or their style None, with the app still authorized,
-    /// and macOS then takes every notification without a word (MonoCode's map_permission).
-    pub(super) fn map_permission(status: isize, alerts: isize, style: isize) -> Permission {
+    /// UNAuthorizationStatus; UNNotificationSetting for alerts; UNAlertStyle; UNNotificationSetting
+    /// for Notification Center. Authorized isn't shown: in System Settings alerts can be off, or
+    /// their style None, with the app still authorized (MonoCode's map_permission). Then only
+    /// "Show in Notification Center" still keeps them, quietly; without it macOS takes every
+    /// notification and shows none.
+    pub(super) fn map_permission(
+        status: isize,
+        alerts: isize,
+        style: isize,
+        listed: isize,
+    ) -> Permission {
         const NOT_DETERMINED: isize = 0;
         const DENIED: isize = 1;
         const DISABLED: isize = 1;
+        const ENABLED: isize = 2;
         const NONE: isize = 0;
         match status {
             NOT_DETERMINED => Permission::Prompt,
             DENIED => Permission::Denied,
-            _ if alerts == DISABLED || style == NONE => Permission::Denied,
-            _ => Permission::Granted,
+            _ if alerts != DISABLED && style != NONE => Permission::Granted,
+            _ if listed == ENABLED => Permission::Quiet,
+            _ => Permission::Denied,
         }
     }
 
@@ -269,7 +282,7 @@ mod mac {
             // Asked here, not trusted from the page: macOS takes a notification it won't show
             // (alerts turned off in System Settings) without an error.
             match permission() {
-                Ok(Permission::Granted) => {}
+                Ok(Permission::Granted | Permission::Quiet) => {}
                 Ok(_) => {
                     return Some(Err(
                         "GitViber isn't allowed to show notifications: see System Settings → Notifications".into(),
@@ -358,18 +371,45 @@ mod tests {
         assert!(objc2::runtime::AnyClass::get(c"UNUserNotificationCenter").is_some());
     }
 
-    /// Authorized isn't enough: alerts off, or their style None, shows nothing.
+    /// Authorized isn't enough: alerts off, or their style None, shows nothing unless Notification
+    /// Center keeps them.
     #[cfg(target_os = "macos")]
     #[test]
-    fn allowed_means_alerts_show() {
+    fn allowed_means_they_show_somewhere() {
         use mac::map_permission;
-        assert_eq!(map_permission(0, 0, 0), Permission::Prompt);
-        assert_eq!(map_permission(1, 2, 1), Permission::Denied);
-        assert_eq!(map_permission(2, 2, 1), Permission::Granted);
-        assert_eq!(map_permission(2, 2, 2), Permission::Granted);
-        assert_eq!(map_permission(3, 2, 1), Permission::Granted, "provisional");
-        assert_eq!(map_permission(2, 1, 1), Permission::Denied, "alerts off");
-        assert_eq!(map_permission(2, 2, 0), Permission::Denied, "style None");
+        assert_eq!(map_permission(0, 0, 0, 0), Permission::Prompt);
+        assert_eq!(map_permission(1, 2, 1, 2), Permission::Denied);
+        assert_eq!(map_permission(2, 2, 1, 2), Permission::Granted);
+        assert_eq!(
+            map_permission(2, 2, 2, 1),
+            Permission::Granted,
+            "alerts, not listed"
+        );
+        assert_eq!(
+            map_permission(3, 2, 1, 2),
+            Permission::Granted,
+            "provisional"
+        );
+        assert_eq!(
+            map_permission(2, 1, 1, 1),
+            Permission::Denied,
+            "alerts off, not listed"
+        );
+        assert_eq!(
+            map_permission(2, 2, 0, 1),
+            Permission::Denied,
+            "style None, not listed"
+        );
+        assert_eq!(
+            map_permission(2, 2, 0, 2),
+            Permission::Quiet,
+            "style None, listed"
+        );
+        assert_eq!(
+            map_permission(2, 1, 1, 2),
+            Permission::Quiet,
+            "alerts off, listed"
+        );
     }
 
     /// What's sent carries the target a click gives back; a NUL from a terminal doesn't stop it.

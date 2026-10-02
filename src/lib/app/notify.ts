@@ -27,8 +27,8 @@ let toldDenied = false;
 export const openNotificationSettings = () => void api.notificationSettings().catch(failed("Could not open System Settings"));
 const openSettingsAction = { label: "Open System Settings", run: openNotificationSettings };
 
-/** Whether one can show now: granted, or a dev build that can't be asked. */
-const allowed = (state: NotifyPermission | null) => state === "granted" || state === "unbundled";
+/** Whether one can show now: granted (with banners or into Notification Center only), or a dev build that can't be asked. */
+const allowed = (state: NotifyPermission | null) => state === "granted" || state === "quiet" || state === "unbundled";
 
 /**
  * Whether macOS lets them show, asking it first when it hasn't been. When it says no, System
@@ -47,8 +47,7 @@ async function ensurePermission(turn: number) {
       // Sent there just now: coming back isn't news.
       toldDenied = true;
       openNotificationSettings();
-    }
-    else if (state === "prompt") toast("info", "macOS is still asking", "Answer its prompt, then try again.");
+    } else if (state === "prompt") toast("info", "macOS is still asking", "Answer its prompt, then try again.");
     return allowed(state);
   } catch (e) {
     if (turn === turns) toast("error", "Could not ask macOS about notifications", errorMessage(e));
@@ -72,13 +71,12 @@ export async function enableNotifications(on: boolean) {
 
 /**
  * Tells the user `title`, if they asked to be told of `event` and aren't looking at the app.
- * `target`: what a click on it shows ("pane:<id>", needsYou). True when it was sent.
+ * `target`: what a click on it shows ("pane:<run>:<id>", needsYou). True when it was sent.
  */
 export function notifyIfAway(event: NotifyEvent, title: string, body?: string, target?: string) {
   const s = getSettings();
   const state = permission.get();
   if (!s.notify || !s[event] || document.hasFocus() || (state !== null && !allowed(state))) return false;
-  // Permission taken back in the OS: nothing to show then.
   api.notify(title, body ?? "", target).catch(() => {});
   return true;
 }
@@ -91,26 +89,19 @@ export async function sendTestNotification() {
 
 /**
  * What macOS says now, at launch and on each return to the window. With the switch on, a
- * permission taken back in System Settings would drop every notification unseen: that's said,
- * once. At launch only (a prompt open now is the switch's own): up to 0.1.7 macOS was never
- * asked, so a switch turned on then has no permission behind it; off it goes, with a way back.
+ * permission taken back in System Settings would drop every notification unseen: that's said, once.
  */
-function checkPermission(launch = false) {
+function checkPermission() {
   api
     .notificationPermission()
     .then((state) => {
       permission.set(state);
-      if (!getSettings().notify) return;
-      if (state === "prompt" && launch) {
-        updateSettings({ notify: false });
-        toast("info", "Notifications need your permission", "GitViber now asks macOS before it shows any.", { label: "Turn on", run: () => void enableNotifications(true) });
-      } else if (state === "denied" && !toldDenied) {
-        toldDenied = true;
-        toast("info", "Notifications are off for GitViber", "System Settings → Notifications doesn't let them show.", openSettingsAction);
-      }
+      if (!getSettings().notify || state !== "denied" || toldDenied) return;
+      toldDenied = true;
+      toast("info", "Notifications are off for GitViber", "System Settings → Notifications doesn't let them show.", openSettingsAction);
     })
     .catch(() => {});
 }
 
-checkPermission(true);
-window.addEventListener("focus", () => checkPermission());
+checkPermission();
+window.addEventListener("focus", checkPermission);

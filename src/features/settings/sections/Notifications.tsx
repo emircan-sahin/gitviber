@@ -16,6 +16,7 @@ const EVENTS: [NotifyEvent, string, string][] = [
 
 const STATUS: Record<NotifyPermission, string> = {
   granted: "macOS shows them. How (banners, sound, in Focus) is up to System Settings → Notifications.",
+  quiet: "Banners are off: their alert style is None in System Settings → Notifications, so they only go to Notification Center.",
   denied: "macOS doesn't show them: GitViber is off in System Settings → Notifications, or its alert style is None.",
   prompt: "macOS hasn't been asked yet: turning notifications on or sending a test asks.",
   unbundled: "This development build couldn't become an app bundle (see the dev terminal), so macOS can't be asked: its notifications show as Terminal's, and a click opens Terminal.",
@@ -57,7 +58,7 @@ export function NotificationsSection() {
         </Field>
         <Field label="Test notification" hint={status}>
           <div className="flex gap-2">
-            {IS_MAC && !needed && (permission === "granted" || permission === "denied") && (
+            {IS_MAC && !needed && (permission === "granted" || permission === "quiet" || permission === "denied") && (
               <Button variant="outline" size="sm" onClick={openNotificationSettings}>
                 Open System Settings
               </Button>

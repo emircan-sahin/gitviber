@@ -44,7 +44,8 @@ fn try_relaunch() -> Result<(), String> {
     let stamp = app.join("Contents/.source");
     let source = stamp_of(&exe)?;
     // The copy and its signature are made again only for a new build: signing reads all 70 MB.
-    if std::fs::read_to_string(&stamp).ok().as_deref() != Some(&source) || !bundled.is_file() {
+    let whole = bundled.is_file() && app.join("Contents/Info.plist").is_file();
+    if std::fs::read_to_string(&stamp).ok().as_deref() != Some(&source) || !whole {
         build(&app, &name, &exe, &bundled)?;
         sign(&app)?;
         std::fs::write(&stamp, &source).map_err(|e| e.to_string())?;
@@ -216,7 +217,7 @@ mod tests {
         let app = root.join("Test.app");
         let bundled = app.join("Contents/MacOS").join(EXECUTABLE);
         build(&app, "Test", Path::new("/usr/bin/true"), &bundled).unwrap();
-        sign(&app).unwrap();
+        crate::process::spawning(|| sign(&app)).unwrap();
         assert_eq!(bundle_of(&bundled), Some(app.clone()));
         let shown = crate::process::spawning(|| {
             Command::new("/usr/bin/codesign")
