@@ -84,7 +84,13 @@ export function BranchPicker({ main, label, current, branches, onSwitch, onSwitc
   // Read at once, so the first open's rows don't move; again on each open (a rename moved one).
   const [pins, setPins] = useState(() => loadPinnedBranches(main));
   useEffect(() => {
-    if (open) setPins(loadPinnedBranches(main));
+    if (!open) return;
+    // A pin of a branch deleted or renamed outside the app goes, rather than pin a new branch
+    // that takes its name. Not while the list is still empty (loading).
+    const saved = loadPinnedBranches(main);
+    const kept = branches.length ? saved.filter((name) => branches.some((b) => b.name === name)) : saved;
+    if (kept.length !== saved.length) savePinnedBranches(main, kept);
+    setPins(kept);
   }, [open, main]);
   const togglePin = (name: string) => {
     const next = pins.includes(name) ? pins.filter((p) => p !== name) : [...pins, name];
@@ -169,7 +175,8 @@ export function BranchPicker({ main, label, current, branches, onSwitch, onSwitc
     return repo ? ([account?.origin, account?.parent].find((a) => a && fullName(a.repo).toLowerCase() === repo) ?? null) : null;
   };
 
-  useEffect(() => setIndex(0), [query, open]);
+  // Opening starts on the current branch, where Enter does nothing; a search, on its first match.
+  useEffect(() => setIndex(q ? 0 : Math.max(0, options.findIndex((o) => o.kind === "branch" && o.branch.current))), [query, open]);
 
   useEffect(() => {
     listRef.current?.querySelector(`[data-option="${index}"]`)?.scrollIntoView({ block: "nearest" });
