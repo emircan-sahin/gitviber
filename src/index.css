@@ -492,9 +492,10 @@
     cursor: default;
   }
 }
-/* Translucency (settings.ts, macOS): the window's material (vibrancy.rs) shows through the chrome
-   around the code, each part tinted once with its own color. What sits in it on the same color goes
-   clear rather than stacking a second tint. Code, diffs, the terminal, Monaco and dialogs keep the
+/* Translucency (translucency.ts, macOS): the window's material (vibrancy.rs) shows through the
+   chrome around the code, each part tinted once with its own color. What sits in it on that same
+   color goes clear rather than stacking a second tint; the other token stays solid (the history's
+   hollow dots are --sidebar in a panel). Code, diffs, the terminal, Monaco and dialogs keep the
    solid tokens: they sit outside these parts, or read the colors from :root. */
 :root[data-translucency] {
   --glass-sidebar: color-mix(in srgb, var(--sidebar) var(--glass), transparent);
@@ -503,25 +504,23 @@
 :root[data-translucency="subtle"] {
   --glass: 80%;
 }
-/* Not lower, or --subtle text loses its contrast over a bright wallpaper. */
+/* Not lower: over a white wallpaper, --subtle text comes to about 4.5:1 here (estimated). */
 :root[data-translucency="strong"] {
-  --glass: 60%;
+  --glass: 65%;
 }
 :root[data-translucency] body {
   background: transparent;
 }
-:root[data-translucency] :is(.glass-sidebar, .glass-panel) {
-  --sidebar: transparent;
-  --panel: transparent;
-}
 :root[data-translucency] .glass-sidebar {
+  --sidebar: transparent;
   background-color: var(--glass-sidebar);
 }
 :root[data-translucency] .glass-panel {
+  --panel: transparent;
   background-color: var(--glass-panel);
 }
 /* A header rows scroll under keeps covering them: the tint again, over a blur, as native ones do. */
-:root[data-translucency] :is(.glass-sidebar, .glass-panel) .sticky.bg-panel {
+:root[data-translucency] .glass-panel .glass-header {
   background-color: var(--glass-panel);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);

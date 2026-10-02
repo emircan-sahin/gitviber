@@ -30,7 +30,7 @@ export function Section({ title, count, tone, action, pinned, children }: { titl
   const open = !collapsedSections.use().includes(title);
   return (
     <div>
-      <div className="group sticky top-0 z-10 flex h-7 items-center gap-1 border-b border-border bg-panel pr-1.5 pl-2">
+      <div className="group glass-header sticky top-0 z-10 flex h-7 items-center gap-1 border-b border-border bg-panel pr-1.5 pl-2">
         <button className="flex items-center gap-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase hover:text-foreground focus-visible:text-foreground" aria-expanded={open} onClick={() => toggleSection(title)}>
           <ChevronDown className={cn("size-3 transition-transform", !open && "-rotate-90")} />
           <span className={tone}>{title}</span>

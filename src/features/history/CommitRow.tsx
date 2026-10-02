@@ -90,56 +90,59 @@ export function CommitRow({
   const dotLabel = isHead ? ["HEAD", mark].filter(Boolean).join(" · ") : (mark ?? undefined);
 
   return (
-    <div className="relative" onMouseMove={(e) => onPoint(graph, e)}>
-      <GraphLines row={graph} />
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <div
-            role="treeitem"
-            aria-level={1}
-            aria-expanded={open}
-            tabIndex={-1}
-            data-row={`commit:${commit.sha}`}
-            onClick={(e) => onToggle(e.currentTarget)}
-            className={cn(
-              "relative flex cursor-pointer items-start gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset data-[state=open]:bg-hover",
-              open ? "bg-active" : "hover:bg-hover focus:bg-hover",
-            )}
-          >
-            <span
+    <div onMouseMove={(e) => onPoint(graph, e)}>
+      {/* The lines span the commit alone: an open file list breaks them, and they go on below it. */}
+      <div className="relative">
+        <GraphLines row={graph} />
+        <ContextMenu>
+          <ContextMenuTrigger asChild>
+            <div
+              role="treeitem"
+              aria-level={1}
+              aria-expanded={open}
+              tabIndex={-1}
+              data-row={`commit:${commit.sha}`}
+              onClick={(e) => onToggle(e.currentTarget)}
               className={cn(
-                "relative z-10 mt-[3px] size-[9px] shrink-0 rounded-full border-2",
-                commit.unpushed ? "border-primary bg-primary" : commit.notInHead ? "border-added bg-added" : "border-subtle bg-sidebar",
-                // Where you are, among every branch's commits.
-                isHead && "outline-2 outline-offset-1 outline-primary",
+                "relative flex cursor-pointer items-start gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset data-[state=open]:bg-hover",
+                open ? "bg-active" : "hover:bg-hover focus:bg-hover",
               )}
-              title={dotLabel}
-              aria-label={dotLabel}
-              role={dotLabel ? "img" : undefined}
-              // In its lane and its colour, with the text after the row's last lane.
-              style={{
-                marginLeft: laneOf(graph.col) * LANE,
-                marginRight: (lanesOf(graph) - 1 - laneOf(graph.col)) * LANE,
-                borderColor: commit.unpushed || commit.notInHead || !graph.id ? undefined : laneColor(graph.id),
-              }}
-            />
-            <div className="min-w-0 flex-1">
-              <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
-              <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] text-subtle">
-                <span className="min-w-0 truncate">{commit.authorName}</span>
-                <span>·</span>
-                <CommitTime commit={commit} />
-                <CiBadge state={ci} className="ml-auto" />
-                <span className={cn("shrink-0 font-mono", !ci && "ml-auto")}>{commit.shortSha}</span>
+            >
+              <span
+                className={cn(
+                  "relative z-10 mt-[3px] size-[9px] shrink-0 rounded-full border-2",
+                  commit.unpushed ? "border-primary bg-primary" : commit.notInHead ? "border-added bg-added" : "border-subtle bg-sidebar",
+                  // Where you are, among every branch's commits.
+                  isHead && "outline-2 outline-offset-1 outline-primary",
+                )}
+                title={dotLabel}
+                aria-label={dotLabel}
+                role={dotLabel ? "img" : undefined}
+                // In its lane and its colour, with the text after the row's last lane.
+                style={{
+                  marginLeft: laneOf(graph.col) * LANE,
+                  marginRight: (lanesOf(graph) - 1 - laneOf(graph.col)) * LANE,
+                  borderColor: commit.unpushed || commit.notInHead || !graph.id ? undefined : laneColor(graph.id),
+                }}
+              />
+              <div className="min-w-0 flex-1">
+                <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
+                <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] text-subtle">
+                  <span className="min-w-0 truncate">{commit.authorName}</span>
+                  <span>·</span>
+                  <CommitTime commit={commit} />
+                  <CiBadge state={ci} className="ml-auto" />
+                  <span className={cn("shrink-0 font-mono", !ci && "ml-auto")}>{commit.shortSha}</span>
+                </div>
+                <RefBadges refs={commit.refs} remotes={remotes} show={showRefs} />
               </div>
-              <RefBadges refs={commit.refs} remotes={remotes} show={showRefs} />
             </div>
-          </div>
-        </ContextMenuTrigger>
-        {menu}
-      </ContextMenu>
+          </ContextMenuTrigger>
+          {menu}
+        </ContextMenu>
+      </div>
       {open && (
-        <div className="relative border-y border-border bg-panel py-0.5">
+        <div className="relative border-y border-border py-0.5">
           {!files && <div className="py-1 pl-8 text-[11.5px] text-subtle">Loading…</div>}
           {files && (
             <div className="flex h-6 items-center gap-2 pr-2 pl-8 text-[10.5px] text-subtle">
