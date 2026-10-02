@@ -26,7 +26,8 @@ front_keys() {
 case $1 in
   init)
     # The main window is the tallest: tauri also owns a hidden 500x500 one, and the menu bar strips are wider.
-    ./winid gitviber | sort -k5 -n | tail -1 | read WID WX WY WW WH PID
+    # A dev build runs as "GitViber Dev.app" (dev_bundle.rs), or as the bare binary if that failed.
+    { ./winid "GitViber Dev"; ./winid gitviber } | sort -k5 -n | tail -1 | read WID WX WY WW WH PID
     echo $PID > pid; echo $WID > win; echo "$WX $WY $WW" > origin
     echo "pid $PID window $WID at $WX,$WY width $WW";;
   shot)

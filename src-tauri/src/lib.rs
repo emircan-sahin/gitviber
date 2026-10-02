@@ -6,6 +6,8 @@ mod commands;
 mod definitions;
 #[cfg(debug_assertions)]
 mod dev_bridge;
+#[cfg(all(target_os = "macos", debug_assertions))]
+pub mod dev_bundle;
 mod diff;
 mod display;
 mod errors;
