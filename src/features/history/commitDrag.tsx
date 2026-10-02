@@ -64,7 +64,8 @@ export function CommitDrag({
       <DragOverlay dropAnimation={null} className="pointer-events-none">
         {dragged && (
           <div className="w-fit rounded-md border border-border bg-popover px-2.5 py-1 text-[12px] text-popover-foreground shadow-md">
-            {at?.where === "onto" ? "Squash" : "Move"} {dragged.length === 1 ? "1 commit" : `${dragged.length} commits`}
+            {/* Onto a commit, that one is squashed too. */}
+            {at?.where === "onto" ? `Squash ${dragged.length + 1} commits` : `Move ${dragged.length === 1 ? "1 commit" : `${dragged.length} commits`}`}
           </div>
         )}
       </DragOverlay>

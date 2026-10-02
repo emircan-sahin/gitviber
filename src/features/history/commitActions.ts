@@ -45,7 +45,7 @@ export const PUSHED_WARNING = "Some of these commits are already pushed, so you'
 export const MERGE_WARNING = "This is a merge: the merged-in commits leave the branch too, and all of their changes end up staged together.";
 
 /** Asked at click time: only ancestry, not log order, tells which pushed commits a move drops. */
-export async function dropsPushed(sha: string) {
+export async function dropsPushed(sha: string | null) {
   try {
     return await api.dropsPushed(sha);
   } catch (e) {

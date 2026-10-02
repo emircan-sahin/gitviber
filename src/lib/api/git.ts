@@ -209,8 +209,8 @@ export const api = {
   // History actions. `sha` on undo and `head` on reset are the HEAD the user saw (refused if it moved).
   undoCommit: (sha: string) => invoke<void>("undo_commit", { sha }),
   reset: (sha: string, mode: ResetMode, head: string) => invoke<void>("reset", { sha, mode, head }),
-  /** Moving HEAD to `sha` would drop commits the upstream already has (needs a force-push). */
-  dropsPushed: (sha: string) => invoke<boolean>("drops_pushed", { sha }),
+  /** Moving HEAD to `sha` would drop commits the upstream already has (needs a force-push); null: rewriting from the root, so any it has. */
+  dropsPushed: (sha: string | null) => invoke<boolean>("drops_pushed", { sha }),
   revert: (sha: string) => invoke<boolean>("revert", { sha }),
   cherryPick: (sha: string) => invoke<boolean>("cherry_pick", { sha }),
   /** Picks onto the branch of another worktree (`path`), running git there; true = stopped on conflicts there. */

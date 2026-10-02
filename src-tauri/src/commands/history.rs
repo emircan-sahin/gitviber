@@ -121,16 +121,18 @@ pub async fn rewrite(
     };
     let label = match &edit {
         rewrite::Edit::Reword { sha, .. } => format!("Reword {}", short(sha)),
+        // Counted as the toast counts them: every commit that ends up in the one.
         rewrite::Edit::Squash {
             shas,
-            message: Some(_),
-            ..
-        } => format!("Squash {}", what(shas)),
-        rewrite::Edit::Squash {
-            shas,
-            message: None,
-            ..
-        } => format!("Fixup {}", what(shas)),
+            onto,
+            message,
+        } => {
+            let verb = if message.is_some() { "Squash" } else { "Fixup" };
+            match &shas[..] {
+                [sha] => format!("{verb} {} into {}", short(sha), short(onto)),
+                _ => format!("{verb} {} commits", shas.len() + 1),
+            }
+        }
         rewrite::Edit::Drop { shas } => format!("Drop {}", what(shas)),
         rewrite::Edit::Move { sha, .. } => format!("Move {}", short(sha)),
         rewrite::Edit::Reorder { shas, .. } => format!("Move {}", what(shas)),
@@ -171,8 +173,12 @@ pub async fn reset(
 }
 
 #[tauri::command]
-pub async fn drops_pushed(state: State<'_, AppState>, sha: String) -> Res<bool> {
-    in_repo(&state, move |r| git::drops_pushed(r, &sha)).await
+pub async fn drops_pushed(state: State<'_, AppState>, sha: Option<String>) -> Res<bool> {
+    in_repo(&state, move |r| match sha {
+        Some(sha) => git::drops_pushed(r, &sha),
+        None => git::has_pushed(r),
+    })
+    .await
 }
 
 #[tauri::command]

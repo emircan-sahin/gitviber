@@ -16,8 +16,8 @@ export function useHistoryEdits({ commits, head, graph, run }: { commits: Commit
 
   // Everything from the edit's oldest commit on is made again: pushed ones would need a force-push.
   const rewrite = async (edit: HistoryEdit, about: Commit[]) => {
-    const from = keptUpTo(editedShas(edit, about), commits);
-    const drops = from ? await dropsPushed(from) : false;
+    // null: from the root, where every commit is made again.
+    const drops = await dropsPushed(keptUpTo(editedShas(edit, about), commits));
     if (drops === null) return;
     const [c, n] = [about[0], about.length];
     const verb = { reword: "Reword", squash: edit.kind === "squash" && edit.message === null ? "Fixup" : "Squash", drop: "Drop", move: "Move", reorder: "Move" }[edit.kind];
@@ -25,7 +25,7 @@ export function useHistoryEdits({ commits, head, graph, run }: { commits: Commit
     const warnings = [...(edit.kind === "drop" ? [dropping] : []), ...(drops ? [PUSHED_WARNING] : [])];
     if (warnings.length && !(await ask(warnings.join("\n\n"), { title: `${verb} commit${n === 1 ? "" : "s"}`, kind: "warning", okLabel: verb }))) return;
     const what = n === 1 ? c.shortSha : `${n} commits`;
-    const done = { reword: "Commit reworded", squash: n === 1 ? `Squashed ${what} into its parent` : `Squashed ${what} into one`, drop: `Dropped ${what}`, move: `Moved ${what}`, reorder: `Moved ${what}` }[edit.kind];
+    const done = edit.kind === "squash" ? squashed(edit, about) : { reword: "Commit reworded", drop: `Dropped ${what}`, move: `Moved ${what}`, reorder: `Moved ${what}` }[edit.kind];
     let stashed = false;
     const ok = await run(verb, async () => {
       const outcome = await api.rewrite(head, edit);
@@ -48,6 +48,15 @@ export function useHistoryEdits({ commits, head, graph, run }: { commits: Commit
     const [lo, hi] = [indexOf(all[all.length - 1]), indexOf(all[0])];
     const apart = graph && !!target && commits.slice(lo, hi + 1).some((c) => !c.notInHead && !all.includes(c));
     setMessaging({ kind: "squash", commits: all, shas, onto, apart });
+  };
+
+  // As the undo entry names it (commands/history.rs): every commit that ends up in the one.
+  const squashed = (edit: HistoryEdit & { kind: "squash" }, about: Commit[]) => {
+    const verb = edit.message === null ? "Fixed up" : "Squashed";
+    if (edit.shas.length > 1) return `${verb} ${edit.shas.length + 1} commits into one`;
+    const [sha, onto] = [edit.shas[0], edit.onto];
+    const parent = about.find((c) => c.sha === sha)?.parents[0] === onto;
+    return `${verb} ${sha.slice(0, 7)} into ${parent ? "its parent" : onto.slice(0, 7)}`;
   };
 
   const submit = (m: Messaging, message: string) =>

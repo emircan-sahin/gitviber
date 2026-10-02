@@ -13,7 +13,7 @@ import { type Actions, commitUrl, type RefMenu } from "./commitActions";
 import { CommitDrag } from "./commitDrag";
 import { CommitMenu, PickedMenu } from "./CommitMenu";
 import { MessageDialog, NameDialog } from "./CommitDialogs";
-import { type DropAt, reorderBefore } from "./edits";
+import { type DropAt, firstParentLine, reorderBefore } from "./edits";
 import { useHistoryEdits } from "./useHistoryEdits";
 import { usePickedCommits } from "./usePickedCommits";
 import { CommitRow, type Reveal } from "./CommitRow";
@@ -182,6 +182,8 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
   const nav = useListNav({ activeKey, loadMore: hasMore ? more : null, onMove });
   // Only the branch's own history as the graph draws it: not matches, nor another branch's commits.
   const draggable = graph && !headSha && !actions.locked;
+  // Nor a merged-in side branch's, which an edit can't name.
+  const line = useMemo(() => firstParentLine(commits, head), [commits, head]);
 
   if (!commits.length) {
     return <div className="px-6 pt-20 text-center text-[12px] text-subtle">{empty}</div>;
@@ -194,7 +196,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
       onMouseLeave={() => light(null)}
       className="h-full overflow-x-hidden overflow-y-auto py-1 [&[data-dim]_[data-lane]:not([data-lit])]:opacity-25"
     >
-      <CommitDrag drag={drag} canDrop={(sha) => !bySha(sha)?.notInHead} onDrop={drop}>
+      <CommitDrag drag={drag} canDrop={(sha) => line.has(sha)} onDrop={drop}>
         {({ dragged, at, justDragged }) => (
           <div
             role="tree"
@@ -220,7 +222,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
                 onPoint={point}
                 open={open === c.sha}
                 picked={pickedSet.has(c.sha)}
-                draggable={draggable && !c.notInHead}
+                draggable={draggable && line.has(c.sha)}
                 dragged={dragged.has(c.sha)}
                 dropAt={at?.sha === c.sha ? at.where : undefined}
                 reveal={reveal?.sha === c.sha ? reveal : null}

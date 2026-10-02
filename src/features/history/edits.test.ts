@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Commit } from "../../lib/api/types.ts";
-import { editedShas, keptUpTo, reorderBefore } from "./edits.ts";
+import { editedShas, firstParentLine, keptUpTo, reorderBefore } from "./edits.ts";
 
 // Newest first, as History lists them.
 const line = ["e", "d", "c", "b", "a"];
@@ -59,6 +59,17 @@ test("an edit names the commits it starts from", () => {
 test("the rewrite keeps what's under its oldest commit", () => {
   assert.equal(keptUpTo(["e", "c"], listed), "b");
   assert.equal(keptUpTo(["d", "a"], listed), null);
+  // Every commit fixed up into the root, or one dragged onto it: nothing is kept.
+  assert.equal(keptUpTo(editedShas({ kind: "squash", shas: ["e", "d", "c", "b"], onto: "a", message: null }, listed), listed), null);
+  assert.equal(keptUpTo(editedShas({ kind: "squash", shas: ["c"], onto: "a", message: "m" }, [listed[2]]), listed), null);
   // Not listed yet (the next page, a search's gap): it stands in for its parent.
   assert.equal(keptUpTo(["e", "z"], listed), "z");
+});
+
+test("the first-parent line leaves a merged-in side branch out", () => {
+  // m merges s (whose parent is b) into c; HEAD is m.
+  const side = [commit("m", "c"), commit("s", "b"), commit("c", "b"), commit("b", "a"), commit("a")];
+  side[0].parents.push("s");
+  assert.deepEqual([...firstParentLine(side, "m")], ["m", "c", "b", "a"]);
+  assert.deepEqual([...firstParentLine(side, "x")], []);
 });

@@ -1355,6 +1355,8 @@ fn the_outcome_says_whose_conflicts_they_are() {
         },
     );
     assert_eq!(outcome, Ok(Outcome::StashConflicts));
+    // Its todo and message go once it's over.
+    assert!(!r.join(".git/gitviber-rewrite").exists());
     // And conflicted files left behind refuse the next one.
     let e = rewrite(
         &r,
@@ -1374,6 +1376,8 @@ fn the_outcome_says_whose_conflicts_they_are() {
         up: false,
     };
     assert_eq!(rewrite(&r, &head(&r), &edit), Ok(Outcome::Conflicts));
+    // Still read by the rebase that waits.
+    assert!(r.join(".git/gitviber-rewrite/todo").exists());
     op_abort(&r).unwrap();
 }
 

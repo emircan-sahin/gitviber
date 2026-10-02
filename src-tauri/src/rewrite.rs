@@ -161,6 +161,10 @@ pub fn run(repo: &Path, head: &str, edit: &Edit) -> Result<Outcome, String> {
     if result.is_err() && git::operation(repo).is_some() {
         let _ = git::run(repo, &["rebase", "--abort"]);
     }
+    // A rebase waiting on conflicts still reads them; the next rewrite starts afresh anyway.
+    if git::operation(repo).is_none() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     result.map(|stopped| Outcome::of(repo, stopped))
 }
 
@@ -369,6 +373,8 @@ fn work_dir(repo: &Path) -> Result<PathBuf, String> {
     let dir = git::git_dir(repo)
         .ok_or("Not a git repository.")?
         .join("gitviber-rewrite");
+    // What an earlier rewrite left, if it stopped on conflicts.
+    let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     Ok(dir)
 }

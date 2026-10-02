@@ -17,10 +17,18 @@ export function editedShas(edit: HistoryEdit, about: Commit[]): string[] {
   }
 }
 
+/** HEAD's first-parent line among `commits`, which history edits can name: merged-in side branches' commits aren't on it. */
+export function firstParentLine(commits: Commit[], head: string): Set<string> {
+  const bySha = new Map(commits.map((c) => [c.sha, c]));
+  const line = new Set<string>();
+  for (let c = bySha.get(head); c && !line.has(c.sha); c = bySha.get(c.parents[0])) line.add(c.sha);
+  return line;
+}
+
 /**
  * What the rewrite keeps as it is, for asking whether it drops pushed commits: the parent of the
- * oldest of `shas` in `commits` (newest first), null from the root. One not listed yet stands in
- * for its parent.
+ * oldest of `shas` in `commits` (newest first). Null from the root: nothing is kept, so any
+ * pushed commit counts. One not listed yet stands in for its parent.
  */
 export function keptUpTo(shas: string[], commits: Commit[]): string | null {
   const at = shas.map((sha) => commits.findIndex((c) => c.sha === sha));

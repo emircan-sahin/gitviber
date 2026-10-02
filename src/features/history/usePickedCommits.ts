@@ -24,8 +24,9 @@ export function usePickedCommits(commits: Commit[], open: string | null) {
   const chosen = new Set(picked);
   // As listed, newest first.
   const selection = commits.filter((c) => chosen.has(c.sha));
-  /** Lets the picks go; false when there were none. */
+  /** Lets the picks go, and where a range would start; false when there were none. */
   const clear = () => {
+    from.current = null;
     if (!selection.length) return false;
     setPicked([]);
     return true;
@@ -59,7 +60,8 @@ export function usePickedCommits(commits: Commit[], open: string | null) {
       clear();
       if (to) from.current = to.sha;
     } else if (to) {
-      from.current ??= of(fromKey)?.sha ?? null;
+      // With nothing picked, the range starts on the row the keys left.
+      if (!selection.length) from.current = of(fromKey)?.sha ?? null;
       range(to);
     }
   };
