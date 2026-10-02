@@ -82,6 +82,13 @@ impl Drop for Sandbox {
     }
 }
 
+/// Clean up as the command runs it: the worktrees, then their branches (journaled there).
+fn clean_up_worktrees(repo: &Path, list: &[CleanUp]) -> CleanedUp {
+    let (mut out, branches) = remove_merged_worktrees(repo, list);
+    delete_merged_branches(repo, &mut out, branches);
+    out
+}
+
 fn identity(repo: &Path) {
     for (k, v) in [
         ("user.name", "T"),

@@ -61,7 +61,8 @@ export function CleanUpWorktrees({ list, main, run, onClose }: { list: Cleanable
     if (terminals) return `${terminals === 1 ? "A terminal runs" : `${terminals} terminals run`} in it`;
     if (failed(state)) return state.error;
     if (state?.uncommitted) return `${plural(state.uncommitted, "uncommitted change")}: remove it from its row to drop them`;
-    if (sized && !failed(sized) && sized.denied.length) return `${sized.denied[0]} in it can't be deleted (permission denied)`;
+    if (sized && !failed(sized) && sized.denied.length)
+      return sized.denied[0] === "./" ? "Its folder can't be deleted (permission denied)" : `${sized.denied[0]} in it can't be deleted (permission denied)`;
     return null;
   };
   const chosen = list.filter((c) => !unpicked.has(c.worktree.path) && !blocked(c) && states[c.worktree.path]);

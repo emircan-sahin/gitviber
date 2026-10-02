@@ -273,6 +273,10 @@ fn ignored_files_are_sized_without_following_links() {
 #[test]
 fn clean_up_leaves_a_worktree_with_a_folder_it_cant_delete() {
     use std::os::unix::fs::PermissionsExt;
+    // root reads and deletes through any mode: nothing to deny.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
     let sb = Sandbox::new("cu-denied");
     let (r, w) = merged_worktree(&sb, "data/\n", "denied");
     let locked = Path::new(&w).join("data/pg");
@@ -319,7 +323,8 @@ fn a_big_node_modules_is_sized_quickly_while_it_changes() {
     let got = worktree_ignored(&r, &w).unwrap();
     let took = t.elapsed();
     deleter.join().unwrap();
-    assert!(took.as_secs() < 5, "took {took:?}");
+    // Catches a walk gone quadratic or unbounded, not a slow machine: cargo test runs in parallel.
+    assert!(took.as_secs() < 30, "took {took:?}");
     let e = &got.entries[0];
     assert_eq!(e.path, "node_modules/");
     assert!(e.files >= 10_000 && e.files <= 20_000, "{e:?}");

@@ -306,7 +306,8 @@ fn a_project_with_many_and_huge_conversations_lists_quickly() {
     let t = std::time::Instant::now();
     let got = list(&cwd, &home.0);
     assert!(
-        t.elapsed() < Duration::from_secs(2),
+        // Reading every file, or one whole, takes far longer; this allows for a loaded machine.
+        t.elapsed() < Duration::from_secs(15),
         "took {:?}",
         t.elapsed()
     );

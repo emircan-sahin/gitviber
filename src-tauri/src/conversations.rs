@@ -160,6 +160,10 @@ fn claude_file(path: &Path) -> Option<(String, Option<String>)> {
         Some(String::from_utf8_lossy(&buf).into_owned())
     };
     let head = read(0, HEAD_BYTES)?;
+    // A program's run (claude -p): skipped, so its tail isn't read.
+    if head.contains(r#""entrypoint":"sdk-"#) {
+        return None;
+    }
     let tail = if len > HEAD_BYTES {
         Some(read(
             len.saturating_sub(TAIL_BYTES).max(HEAD_BYTES),
