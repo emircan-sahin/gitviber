@@ -1,8 +1,7 @@
-import { ask } from "@/lib/app/ask";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { useCi } from "@/lib/github/ci";
-import { api, type Commit, errorMessage, type GraphRefs, type HistoryEdit, type RepoStatus, type Worktree } from "@/lib/api";
+import { api, type Commit, errorMessage, type GraphRefs, type RepoStatus, type Worktree } from "@/lib/api";
 import { type GraphRow, graphRows } from "@/lib/git/commitGraph";
 import { pointerMoved } from "@/lib/ui/pointer";
 import type { Selection } from "@/lib/repo/selection";
@@ -10,9 +9,13 @@ import { failed, toast } from "@/lib/app/toast";
 import { useListNav } from "@/lib/ui/useListNav";
 import { folderName } from "@/lib/path";
 import { useGitAction } from "@/hooks/useGitAction";
-import { type Actions, commitUrl, dropsPushed, PUSHED_WARNING, type RefMenu } from "./commitActions";
-import { CommitMenu } from "./CommitMenu";
+import { type Actions, commitUrl, type RefMenu } from "./commitActions";
+import { CommitDrag } from "./commitDrag";
+import { CommitMenu, PickedMenu } from "./CommitMenu";
 import { MessageDialog, NameDialog } from "./CommitDialogs";
+import { type DropAt, reorderBefore } from "./edits";
+import { useHistoryEdits } from "./useHistoryEdits";
+import { usePickedCommits } from "./usePickedCommits";
 import { CommitRow, type Reveal } from "./CommitRow";
 
 interface Props {
@@ -63,7 +66,6 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
   const scroller = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ el: HTMLElement; top: number } | null>(null);
   const [naming, setNaming] = useState<{ kind: "branch" | "tag"; commit: Commit } | null>(null);
-  const [messaging, setMessaging] = useState<{ kind: "reword" | "squash"; commit: Commit } | null>(null);
 
   // An action that stops on conflicts: Workspace then brings Changes into view.
   const { busy, run, runNet } = useGitAction({ refresh });
@@ -91,21 +93,11 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
   // HEAD's own history starts at the HEAD the user sees.
   const head = headSha ?? commits[0]?.sha ?? "";
   const bySha = (sha: string | undefined) => commits.find((x) => x.sha === sha);
+  const { selection, many, pickedSet, click, onMove, onEscape, clear } = usePickedCommits(commits, open);
+  const { rewrite, squash, reword, messaging, closeMessage, submit } = useHistoryEdits({ commits, head, graph, run });
   // Only commits GitHub has have checks: origin's, or all of a fork's original.
   const ci = useCi(ciTarget ?? null, commits.filter((c) => c.onOrigin || !!web).slice(0, 100).map((c) => c.sha));
 
-  // Everything from the edit's oldest commit on is made again: pushed ones would need a force-push.
-  const rewrite = async (edit: HistoryEdit, c: Commit) => {
-    const oldest = edit.kind === "squash" || (edit.kind === "move" && !edit.up) ? bySha(c.parents[0]) : c;
-    const from = oldest?.parents[0] ?? (oldest ? null : c.parents[0]);
-    const drops = from ? await dropsPushed(from) : false;
-    if (drops === null) return;
-    const verb = { reword: "Reword", squash: edit.kind === "squash" && edit.message === null ? "Fixup" : "Squash", drop: "Drop", move: "Move" }[edit.kind];
-    const warnings = [...(edit.kind === "drop" ? [`Drop "${c.subject}"? Its changes leave the branch.`] : []), ...(drops ? [PUSHED_WARNING] : [])];
-    if (warnings.length && !(await ask(warnings.join("\n\n"), { title: `${verb} commit`, kind: "warning", okLabel: verb }))) return;
-    const done = { reword: "Commit reworded", squash: `Squashed ${c.shortSha} into its parent`, drop: `Dropped ${c.shortSha}`, move: `Moved ${c.shortSha}` }[edit.kind];
-    await run(verb, () => api.rewrite(head, edit), done);
-  };
   const actions: Actions = {
     status,
     headSha: head,
@@ -115,7 +107,8 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
     runNet,
     name: (kind, commit) => setNaming({ kind, commit }),
     rewrite,
-    message: (kind, commit) => setMessaging({ kind, commit }),
+    reword,
+    squash,
     refresh,
     everyOnWeb: !!web,
     pickTargets: worktrees.filter((w) => !w.current && !w.bare && !w.prunable && w.branch),
@@ -136,6 +129,22 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
   const toggle = (sha: string, el: HTMLElement) => {
     anchor.current = { el, top: el.getBoundingClientRect().top };
     setOpen(open === sha ? null : sha);
+  };
+
+  // A drag takes the picked commits it starts on, else its own.
+  const drag = (sha: string) => {
+    if (many && pickedSet.has(sha)) return selection.map((c) => c.sha);
+    clear();
+    return [sha];
+  };
+  const drop = (shas: string[], at: DropAt) => {
+    const moved = commits.filter((c) => shas.includes(c.sha));
+    const target = bySha(at.sha);
+    if (!target || !moved.length) return;
+    if (at.where === "onto") return squash(moved, target.sha, true);
+    const before = reorderBefore(commits.map((c) => c.sha), new Set(shas), at);
+    if (before === undefined) return;
+    void rewrite({ kind: "reorder", shas, before }, moved);
   };
 
   // Without the graph, one line joins each row to the next.
@@ -170,7 +179,9 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
   const point = (row: GraphRow, e: React.MouseEvent) => pointerMoved(e) && light(row);
 
   const more = () => loadMore().catch(failed("Could not load history"));
-  const nav = useListNav({ activeKey, loadMore: hasMore ? more : null });
+  const nav = useListNav({ activeKey, loadMore: hasMore ? more : null, onMove });
+  // Only the branch's own history as the graph draws it: not matches, nor another branch's commits.
+  const draggable = graph && !headSha && !actions.locked;
 
   if (!commits.length) {
     return <div className="px-6 pt-20 text-center text-[12px] text-subtle">{empty}</div>;
@@ -183,28 +194,51 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
       onMouseLeave={() => light(null)}
       className="h-full overflow-x-hidden overflow-y-auto py-1 [&[data-dim]_[data-lane]:not([data-lit])]:opacity-25"
     >
-      <div role="tree" aria-label="History" {...nav}>
-      {commits.map((c, i) => (
-        <CommitRow
-          key={c.sha}
-          commit={c}
-          remotes={remotes}
-          graph={rows[i]}
-          isHead={c.sha === head}
-          showRefs={showRefs}
-          onPoint={point}
-          open={open === c.sha}
-          reveal={reveal?.sha === c.sha ? reveal : null}
-          onToggle={(el) => toggle(c.sha, el)}
-          activeKey={activeKey}
-          onOpen={onOpen}
-          onHover={onHover}
-          url={commitUrl(c, actions)}
-          ci={ci[c.sha]}
-          menu={<CommitMenu commit={c} head={c.sha === head} actions={actions} />}
-        />
-      ))}
-      </div>
+      <CommitDrag drag={drag} canDrop={(sha) => !bySha(sha)?.notInHead} onDrop={drop}>
+        {({ dragged, at, justDragged }) => (
+          <div
+            role="tree"
+            aria-label="History"
+            aria-multiselectable
+            {...nav}
+            onKeyDown={(e) => {
+              // Esc lets the picked commits go; without any, it isn't this list's to take.
+              if (e.key === "Escape" && onEscape()) {
+                e.preventDefault();
+                e.stopPropagation();
+              } else nav.onKeyDown(e);
+            }}
+          >
+            {commits.map((c, i) => (
+              <CommitRow
+                key={c.sha}
+                commit={c}
+                remotes={remotes}
+                graph={rows[i]}
+                isHead={c.sha === head}
+                showRefs={showRefs}
+                onPoint={point}
+                open={open === c.sha}
+                picked={pickedSet.has(c.sha)}
+                draggable={draggable && !c.notInHead}
+                dragged={dragged.has(c.sha)}
+                dropAt={at?.sha === c.sha ? at.where : undefined}
+                reveal={reveal?.sha === c.sha ? reveal : null}
+                onClick={(e) => {
+                  if (!justDragged() && !click(c, e)) toggle(c.sha, e.currentTarget);
+                }}
+                onMenu={() => !pickedSet.has(c.sha) && clear()}
+                activeKey={activeKey}
+                onOpen={onOpen}
+                onHover={onHover}
+                url={commitUrl(c, actions)}
+                ci={ci[c.sha]}
+                menu={many && pickedSet.has(c.sha) ? <PickedMenu commits={selection} all={!hasMore && selection.length === commits.length} actions={actions} /> : <CommitMenu commit={c} head={c.sha === head} actions={actions} />}
+              />
+            ))}
+          </div>
+        )}
+      </CommitDrag>
       {hasMore && (
         <div className="p-2">
           <Button variant="secondary" size="sm" className="w-full" onClick={more}>
@@ -213,9 +247,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
         </div>
       )}
       {naming && <NameDialog {...naming} onClose={() => setNaming(null)} run={run} />}
-      {messaging && (
-        <MessageDialog {...messaging} parent={bySha(messaging.commit.parents[0])} onClose={() => setMessaging(null)} onSubmit={(message) => rewrite({ kind: messaging.kind, sha: messaging.commit.sha, message }, messaging.commit)} />
-      )}
+      {messaging && <MessageDialog messaging={messaging} onClose={closeMessage} onSubmit={(message) => void submit(messaging, message)} />}
     </div>
   );
 }

@@ -113,7 +113,7 @@ can be rebound in Settings, and holding `⌘` shows them all.
 
 | | |
 | --- | --- |
-| **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu; anything that rewrites pushed commits asks first |
+| **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu. Reword, squash, drop or reorder commits: pick several with ⌘- or ⇧-click, drag them between commits to move them or onto one to squash them; anything that rewrites pushed commits asks first |
 | **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Clean up the merged ones in one go, squash- and rebase-merged included |
 | **Conflicts** | Resolve block by block (current, incoming, both, or by hand), then continue, skip or abort |
 | **Pull requests** | List, read, review in the same diff viewer, create, merge and check out. Read one commit by commit: pick a commit, or a run of them, to see only what they changed. See why a check failed and copy it for the agent (GitHub) |
@@ -250,6 +250,7 @@ Reopening a closed tab and closing the other tabs have no default there either, 
 | `⇧⌘T` `⌥⌘T` | Reopen the closed tab, close the other tabs |
 | `J` `K` | Next / previous changed file |
 | `↓` `↑` `↵` | Move through the focused list (Changes, History, PRs, Issues), `↵` keeps the tab open; `Home` `End` `PgUp` `PgDn` too |
+| `⇧↓` `⇧↑`, `Esc` | Pick a range of rows in Changes or History, let the picked rows go |
 | `⇧F10` | The focused row's right-click menu |
 | `V` | Mark file viewed |
 | `C` | Add a review note on the selected lines, else the cursor's |

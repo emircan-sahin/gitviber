@@ -1,4 +1,5 @@
 import { Cloud, Tag } from "lucide-react";
+import { useDraggable } from "@dnd-kit/core";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { CiBadge } from "@/components/CiBadge";
@@ -11,6 +12,7 @@ import { fullDate, relativeTime } from "@/lib/format";
 import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import { sumLines } from "@/features/changes/changeList";
+import type { DropAt } from "./edits";
 import { groupRefs } from "./groupRefs";
 
 /** Blame's link to a commit: open it and `path` (the file's name there). `id` is new per click. */
@@ -28,8 +30,13 @@ export function CommitRow({
   showRefs,
   onPoint,
   open,
+  picked,
+  draggable,
+  dragged,
+  dropAt,
   reveal,
-  onToggle,
+  onClick,
+  onMenu,
   activeKey,
   onOpen,
   onHover,
@@ -44,8 +51,14 @@ export function CommitRow({
   showRefs: GraphRefs | undefined;
   onPoint: (row: GraphRow, e: React.MouseEvent) => void;
   open: boolean;
+  /** One of several commits picked together. */
+  picked: boolean;
+  draggable: boolean;
+  dragged: boolean;
+  dropAt?: DropAt["where"];
   reveal: Reveal | null;
-  onToggle: (row: HTMLElement) => void;
+  onClick: (e: React.MouseEvent<HTMLElement>) => void;
+  onMenu: () => void;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
@@ -54,6 +67,7 @@ export function CommitRow({
   menu: React.ReactNode;
 }) {
   const [files, setFiles] = useState<FileChange[] | null>(null);
+  const drag = useDraggable({ id: commit.sha, disabled: !draggable });
   const revealed = useRef<number | null>(null);
 
   useEffect(() => {
@@ -92,18 +106,26 @@ export function CommitRow({
   return (
     <div className="relative" onMouseMove={(e) => onPoint(graph, e)}>
       <GraphLines row={graph} />
+      {(dropAt === "above" || dropAt === "below") && <span className={cn("absolute inset-x-0 z-20 h-0.5 bg-primary", dropAt === "above" ? "-top-px" : "-bottom-px")} />}
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
+            ref={drag.setNodeRef}
+            {...drag.listeners}
             role="treeitem"
             aria-level={1}
             aria-expanded={open}
+            aria-selected={picked || undefined}
             tabIndex={-1}
             data-row={`commit:${commit.sha}`}
-            onClick={(e) => onToggle(e.currentTarget)}
+            data-commit={commit.sha}
+            onClick={onClick}
+            onContextMenu={onMenu}
             className={cn(
               "relative flex cursor-pointer items-start gap-2.5 py-1.5 pr-2 pl-3 outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset data-[state=open]:bg-hover",
-              open ? "bg-active" : "hover:bg-hover focus:bg-hover",
+              picked ? "bg-primary/15" : open ? "bg-active" : "hover:bg-hover focus:bg-hover",
+              dragged && "opacity-50",
+              dropAt === "onto" && "bg-primary/15 ring-1 ring-primary ring-inset",
             )}
           >
             <span

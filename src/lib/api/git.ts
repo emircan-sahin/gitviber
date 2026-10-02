@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RewriteOutcome, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -216,8 +216,8 @@ export const api = {
   /** Picks onto the branch of another worktree (`path`), running git there; true = stopped on conflicts there. */
   cherryPickInto: (path: string, sha: string) => invoke<boolean>("cherry_pick_into", { path, sha }),
   checkoutCommit: (sha: string) => invoke<void>("checkout_commit", { sha }),
-  /** Edits the branch's history (rewrite.rs); `head` as the history showed it. True = stopped on conflicts. */
-  rewrite: (head: string, edit: HistoryEdit) => invoke<boolean>("rewrite", { head, edit }),
+  /** Edits the branch's history (rewrite.rs); `head` as the history showed it. */
+  rewrite: (head: string, edit: HistoryEdit) => invoke<RewriteOutcome>("rewrite", { head, edit }),
   stashes: () => invoke<Stash[]>("stashes"),
   stashFiles: (sha: string) => invoke<StashFiles>("stash_files", { sha }),
   /** `untracked`: take untracked files along (nested repositories stay); `staged`: only what's staged; `paths`: only those files. */

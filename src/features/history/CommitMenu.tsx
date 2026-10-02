@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { ArrowDown, ArrowUp, Cherry, SearchCode, Copy, ExternalLink, Eye, EyeOff, FolderGit2, GitBranchPlus, GitCommitHorizontal, History, Link, Pencil, RotateCcw, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
+import { ArrowDown, ArrowUp, Cherry, Combine, SearchCode, Copy, ExternalLink, Eye, EyeOff, FolderGit2, GitBranchPlus, GitCommitHorizontal, History, Link, Pencil, RotateCcw, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { Fragment, useRef, useState } from "react";
 import {
   ContextMenuContent,
@@ -114,22 +114,23 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
           <Pencil /> Edit history
         </ContextMenuSubTrigger>
         <ContextMenuSubContent>
-          <ContextMenuItem onSelect={() => actions.message("reword", c)}>Reword…</ContextMenuItem>
-          <ContextMenuItem disabled={!c.parents.length} onSelect={() => actions.message("squash", c)}>
+          <ContextMenuItem onSelect={() => actions.reword(c)}>Reword…</ContextMenuItem>
+          <ContextMenuItem disabled={!c.parents.length} onSelect={() => actions.squash([c], c.parents[0], true)}>
             Squash into Parent…
           </ContextMenuItem>
-          <ContextMenuItem disabled={!c.parents.length} onSelect={() => void actions.rewrite({ kind: "squash", sha: c.sha, message: null }, c)}>
+          <ContextMenuItem disabled={!c.parents.length} onSelect={() => actions.squash([c], c.parents[0], false)}>
             Fixup into Parent <span className="ml-auto pl-4 text-[11px] opacity-70">keeps its message</span>
           </ContextMenuItem>
           <ContextMenuSeparator />
-          <ContextMenuItem disabled={head} onSelect={() => void actions.rewrite({ kind: "move", sha: c.sha, up: true }, c)}>
+          <ContextMenuItem disabled={head} onSelect={() => void actions.rewrite({ kind: "move", sha: c.sha, up: true }, [c])}>
             <ArrowUp /> Move Up
           </ContextMenuItem>
-          <ContextMenuItem disabled={!c.parents.length} onSelect={() => void actions.rewrite({ kind: "move", sha: c.sha, up: false }, c)}>
+          <ContextMenuItem disabled={!c.parents.length} onSelect={() => void actions.rewrite({ kind: "move", sha: c.sha, up: false }, [c])}>
             <ArrowDown /> Move Down
           </ContextMenuItem>
           <ContextMenuSeparator />
-          <ContextMenuItem className="text-destructive" onSelect={() => void actions.rewrite({ kind: "drop", sha: c.sha }, c)}>
+          {/* The only commit: dropping it would leave the branch with none. */}
+          <ContextMenuItem disabled={head && !c.parents.length} className="text-destructive" onSelect={() => void actions.rewrite({ kind: "drop", shas: [c.sha] }, [c])}>
             <Trash2 /> Drop Commit…
           </ContextMenuItem>
         </ContextMenuSubContent>
@@ -230,6 +231,33 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
           </ContextMenuItem>
         </>
       )}
+    </ContextMenuContent>
+  );
+}
+
+/** Right-click actions on several commits picked together (newest first, as listed); `all`: every commit of the branch. */
+export function PickedMenu({ commits, all, actions }: { commits: Commit[]; all: boolean; actions: Actions }) {
+  const n = commits.length;
+  const oldest = commits[n - 1];
+  // Only the branch's own commits, as for one.
+  const off = actions.locked || commits.some((c) => c.notInHead);
+  return (
+    <ContextMenuContent>
+      <ContextMenuLabel className="normal-case">{n} commits</ContextMenuLabel>
+      <ContextMenuItem disabled={off} onSelect={() => actions.squash(commits, oldest.sha, true)}>
+        <Combine /> Squash {n} Commits…
+      </ContextMenuItem>
+      <ContextMenuItem disabled={off} onSelect={() => actions.squash(commits, oldest.sha, false)}>
+        <Combine /> Fixup into Oldest <span className="ml-auto pl-4 text-[11px] opacity-70">keeps its message</span>
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem disabled={off || all} className="text-destructive" onSelect={() => void actions.rewrite({ kind: "drop", shas: commits.map((c) => c.sha) }, commits)}>
+        <Trash2 /> Drop {n} Commits…
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={() => copyText(commits.map((c) => c.sha).join("\n"), "SHAs copied")}>
+        <Copy /> Copy SHAs
+      </ContextMenuItem>
     </ContextMenuContent>
   );
 }
