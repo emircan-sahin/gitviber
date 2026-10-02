@@ -36,6 +36,10 @@
   --conflict-fill: var(--conflict);
   --on-status: rgb(0 0 0 / 0.85);
   --hatch: #ffffff08;
+  /* A worktree's color (lib/git/worktrees HUES) is a hue at this lightness and chroma: any of
+     them clears 3:1 on every surface here. The light themes set their own. */
+  --tint-l: 0.74;
+  --tint-c: 0.13;
 
   /* Diff: rows get a faint tint (pre-mixed on --background, since the sticky gutter must
      be opaque); a bright 2px edge marks the line; word changes are a translucent wash so
@@ -128,6 +132,8 @@
   --del-bg: #fdeeee;
   --del-gutter: #fad5d5;
   --del-emph: rgb(207 34 46 / 0.17);
+  --tint-l: 0.53;
+  --tint-c: 0.14;
   color-scheme: light;
 }
 
@@ -325,6 +331,8 @@
   --del-bg: #ecdfe6;
   --del-gutter: #e8cdd6;
   --del-emph: rgb(197 14 54 / 0.17);
+  --tint-l: 0.53;
+  --tint-c: 0.14;
   color-scheme: light;
 }
 
@@ -362,6 +370,8 @@
   --del-bg: #f2e7e2;
   --del-gutter: #eadad7;
   --del-emph: rgb(151 83 102 / 0.17);
+  --tint-l: 0.53;
+  --tint-c: 0.14;
   color-scheme: light;
 }
 
@@ -399,6 +409,8 @@
   --del-bg: #f8e6d4;
   --del-gutter: #f4d6c5;
   --del-emph: rgb(194 44 41 / 0.17);
+  --tint-l: 0.53;
+  --tint-c: 0.14;
   color-scheme: light;
 }
 

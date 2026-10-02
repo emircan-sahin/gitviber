@@ -3,6 +3,7 @@ import { getSettings } from "../settings";
 import { isRecord, putRecent, readJson } from "../storage";
 import { folderName, joinPath } from "../path";
 import { isNote, type ReviewNote } from "../review/notes";
+import { type HueChoice, isHueChoice } from "../git/worktrees";
 
 /** What a worktree's window looked like, so reopening the app picks up where it was. */
 interface WorkspaceSnapshot {
@@ -33,6 +34,7 @@ const WORKTREE_DIRS_KEY = "gitviber.worktreeDirs";
 const WORKTREE_RUN_KEY = "gitviber.worktreeRun";
 const ISSUE_BRANCHES_KEY = "gitviber.issueBranches";
 const ISSUE_RUN_KEY = "gitviber.issueRun";
+const COLORS_KEY = "gitviber.worktreeColors";
 // Agent worktrees come and go; keep only the most recently used.
 const MAX = 30;
 
@@ -105,14 +107,23 @@ export function saveNotes(root: string, notes: ReviewNote[]) {
   return put(NOTES_KEY, root, notes.length ? notes : null);
 }
 
-/** A worktree's folder moved: its layout, unsent commit message, unsaved files and review notes, kept by path, go along. */
+/** A worktree's folder moved: its layout, unsent commit message, unsaved files, review notes and color, kept by path, go along. */
 export function moveRoot(from: string, to: string) {
-  for (const key of [KEY, DRAFTS_KEY, EDITS_KEY, NOTES_KEY]) {
+  for (const key of [KEY, DRAFTS_KEY, EDITS_KEY, NOTES_KEY, COLORS_KEY]) {
     const saved = all(key)[from];
     if (saved === undefined) continue;
     put(key, from, null);
     put(key, to, saved);
   }
+}
+
+/** The colors picked for worktrees, by path (lib/git/worktreeColors); the rest take their name's. */
+export function loadWorktreeColors(): Record<string, HueChoice> {
+  return Object.fromEntries(Object.entries(all(COLORS_KEY)).filter((e): e is [string, HueChoice] => isHueChoice(e[1])));
+}
+
+export function saveWorktreeColor(path: string, choice: HueChoice) {
+  put(COLORS_KEY, path, choice);
 }
 
 /** The folder the project `main` puts new worktrees in, when it isn't the default one beside it. */
