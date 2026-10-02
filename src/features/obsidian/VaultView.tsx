@@ -20,6 +20,7 @@ import { isMarkdown } from "@/features/viewer/MarkdownView";
 import { isSvg, MediaPanel, mediaKind, SvgView, useBytesUrl } from "@/features/viewer/MediaView";
 import { MonacoView } from "@/features/viewer/MonacoView";
 import type { Tab } from "@/features/viewer/tabs";
+import { CanvasView } from "./CanvasView";
 import { VaultMarkdown } from "./VaultMarkdown";
 
 type VaultSelection = Extract<Selection, { kind: "vault" }>;
@@ -52,7 +53,7 @@ function useVaultText(sel: VaultSelection, skip: boolean) {
 
 /**
  * A file of an Obsidian vault in a tab: a note rendered (or its source, typed into and saved
- * like a repo file), an image, a player or a PDF, an SVG drawn, anything else as code.
+ * like a repo file), a canvas drawn, an image, a player or a PDF, an SVG drawn, anything else as code.
  */
 export function VaultView({ tab, sel, onOpen }: { tab: Tab; sel: VaultSelection; onOpen: (s: Selection, pin?: boolean) => void }) {
   const s = useSettings();
@@ -60,6 +61,7 @@ export function VaultView({ tab, sel, onOpen }: { tab: Tab; sel: VaultSelection;
   const media = mediaKind(path) !== null;
   const markdown = isMarkdown(path);
   const svg = isSvg(path);
+  const canvas = /\.canvas$/i.test(path);
   const key = editPath(sel)!;
   const { file, error } = useVaultText(sel, media);
   const [preview, setPreview] = useState(markdown ? s.markdownPreview : true);
@@ -72,7 +74,7 @@ export function VaultView({ tab, sel, onOpen }: { tab: Tab; sel: VaultSelection;
   const vaultName = vaultList.use()?.find((v) => v.path === sel.vault)?.name ?? basename(sel.vault);
   useCommands({ "file.save": dirty ? () => void saveEdit(key) : undefined });
 
-  const switchable = markdown || svg;
+  const switchable = markdown || svg || canvas;
   const rendered = switchable && preview;
   const problem = error ?? (file && (!file.exists ? "This file no longer exists" : file.tooLarge ? "This file is too large to show" : file.binary ? "This file can't be shown" : null));
 
@@ -109,7 +111,9 @@ export function VaultView({ tab, sel, onOpen }: { tab: Tab; sel: VaultSelection;
           <VaultMediaFile vault={sel.vault} path={path} />
         ) : problem ? (
           <div className="flex h-full items-center justify-center p-6 text-center text-[12.5px] text-muted-foreground">{problem}</div>
-        ) : !pair ? null : rendered && svg ? (
+        ) : !pair ? null : rendered && canvas ? (
+          <CanvasView vault={sel.vault} path={path} text={text} onOpen={onOpen} />
+        ) : rendered && svg ? (
           <SvgView before={null} after={text} stacked={false} zoom={zoom} onZoom={setZoom} backdrop="theme" />
         ) : rendered ? (
           <VaultMarkdown vault={sel.vault} path={path} text={text} tabKey={tab.key} onOpen={onOpen} />

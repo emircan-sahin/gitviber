@@ -221,3 +221,21 @@ export function VaultMarkdown({ vault, path, text, tabKey, onOpen }: { vault: st
     </div>
   );
 }
+
+/** Notes, links and embeds inside it resolve from `path` (a canvas): for NoteText and NoteFile. */
+export function NoteScope({ vault, path, onOpen, children }: { vault: string; path: string; onOpen: Open; children: React.ReactNode }) {
+  const files = useVaultFiles(vault);
+  // Depth 1: a canvas's notes are already one level in.
+  const note = useMemo<Note>(() => ({ vault, path, depth: 1, trail: [path], idPrefix: "canvas-", files: files && linkIndex(files), open: onOpen }), [vault, path, files, onOpen]);
+  return <NoteContext value={note}>{children}</NoteContext>;
+}
+
+/** Markdown written in a canvas card, in its NoteScope. */
+export function NoteText({ text }: { text: string }) {
+  return <NoteBody text={text} note={use(NoteContext)!} />;
+}
+
+/** A vault file shown in a canvas card as an embed shows it: a note (or its #part), an image, a player. */
+export function NoteFile({ file, subpath }: { file: string; subpath?: string }) {
+  return <Embed target={`${file}${subpath ?? ""}`} alias="" block />;
+}
