@@ -53,13 +53,18 @@ count, its pull request and how its checks are doing. Start one from any branch,
 in the folder you choose, or check a pull request out into its own worktree without touching
 yours. A new worktree can run a command such as `claude` in its terminal right away, and gets copies
 of the ignored files `.worktreeinclude` lists, like your `.env`. Rename one along with its folder,
-lock it, and remove or prune it when the work is merged.
+give it a color its chip and terminal tabs wear, lock it, and remove or prune it when the work is
+merged. Clean up removes every merged worktree with nothing uncommitted in one go, branches too,
+after showing the ignored files that go with them, like `node_modules`; merging a pull request in
+the app offers to remove its worktree.
 Every worktree keeps its own terminals, so nothing gets lost when you hop between them, and a
 terminal can open in another project or any folder too. A tab and its worktree show a ring while
 Claude Code works there, and a dot once it finishes or asks for you, with a desktop notification if
 you turned those on. Other agents get the dot when they ring the terminal bell or send a
-notification. Quit with Claude Code, Gemini CLI or opencode still running, and the restored terminal
-has the command that resumes the conversation typed at the prompt.
+notification. The Agents menu in the top bar lists every agent in your terminals, the ones waiting
+for you first, and the Dock icon counts those. Quit with Claude Code, Gemini CLI or opencode still
+running, and the restored terminal has the command that resumes the conversation typed at the
+prompt; Resume a conversation picks up any older Claude Code conversation in a worktree.
 
 ### Watch the work land
 
