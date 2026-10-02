@@ -7,6 +7,7 @@ import { api, type Commit, type FileChange, type RepoStatus } from "@/lib/api";
 import { hasConflictMarkers } from "@/lib/git/conflicts";
 import { ignorePattern } from "@/lib/git/gitignore";
 import { focusPanel } from "@/lib/ui/panels";
+import { rangeOf, toggled } from "@/lib/ui/pick";
 import { lastInputWasKey } from "@/lib/ui/pointer";
 import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/ui/useListNav";
 import { matchesCommand, useCommands } from "@/lib/commands/keybindings";
@@ -244,15 +245,11 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   /** What an action on a row covers: the selected rows of its kind if it's selected, else just the row. */
   const targets = (c: Change) => (selected.has(selectionKey(c)) ? selectedOf[c.kind] : [c]);
 
-  const range = (from: Change, to: Change) => {
-    const [i, j] = [index.get(selectionKey(from)) ?? -1, index.get(selectionKey(to)) ?? -1];
-    return i < 0 || j < 0 ? [to] : all.slice(Math.min(i, j), Math.max(i, j) + 1);
-  };
+  const range = (from: Change, to: Change) => rangeOf(all, from, to, selectionKey);
 
   // ⌘-click (Ctrl off macOS) toggles a row, ⇧-click picks the range from the anchor. The open tab follows the clicked row either way.
   const pick = (c: Change, e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => {
-    const key = selectionKey(c);
-    if (primaryKey(e)) setPicked({ rows: selected.has(key) ? [...selected.values()].filter((s) => selectionKey(s) !== key) : [...selected.values(), c], anchor: c, focus: c.file.path });
+    if (primaryKey(e)) setPicked({ rows: toggled([...selected.values()], c, selectionKey), anchor: c, focus: c.file.path });
     else if (e.shiftKey && anchor) setPicked({ rows: range(anchor, c), anchor, focus: c.file.path });
     else setPicked(null);
     onOpen(c);
