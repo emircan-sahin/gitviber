@@ -86,12 +86,13 @@ pub(super) fn operation_in(dir: &Path) -> Option<Operation> {
         })
 }
 
-/// Runs an operation that may stop on conflicts. Stopping is not an error: it returns
-/// Ok(true) so the UI can switch to resolving. Anything else that fails is an error.
-fn has_conflicts(repo: &Path) -> bool {
+/// True when the index has unmerged paths.
+pub(crate) fn has_conflicts(repo: &Path) -> bool {
     run(repo, &["diff", "--name-only", "--diff-filter=U"]).is_ok_and(|o| !o.is_empty())
 }
 
+/// Runs an operation that may stop on conflicts. Stopping is not an error: it returns
+/// Ok(true) so the UI can switch to resolving. Anything else that fails is an error.
 fn run_stoppable(repo: &Path, args: &[&str]) -> Result<bool, String> {
     stoppable(repo, run(repo, args))
 }
