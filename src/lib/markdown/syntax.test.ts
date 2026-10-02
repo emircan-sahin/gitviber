@@ -60,6 +60,7 @@ test("callouts: Obsidian's types, titles and folds; GitHub's five alerts", () =>
   const html = render("> [!faq]- Why **this**?\n> Because.\n\n> [!custom-type]\n> Body");
   assert.match(html, /<div data-callout="question" data-callout-fold="-">\n<div data-callout-title="">Why <strong>this<\/strong>\?<\/div>\n<div data-callout-body=""><p>Because.<\/p>/);
   assert.match(html, /data-callout="custom-type"[^>]*>\n<div data-callout-title="">Custom type<\/div>/);
+  assert.match(render("> [!tip]+ Only a title"), /<div data-callout="tip" data-callout-fold="\+">\n<div data-callout-title="">Only a title<\/div>\n<\/div>/);
   const gh = render("> [!IMPORTANT]\n> Read this.\n\n> [!NOTE] Titled\n> not an alert\n\n> [!faq]\n> not one either", "github");
   assert.match(gh, /<div data-callout="gh-important" data-callout-fold="">\n<div data-callout-title="">Important<\/div>\n<div data-callout-body=""><p>Read this.<\/p>/);
   assert.match(gh, /<blockquote>\n<p>\[!NOTE\] Titled/);

@@ -154,13 +154,11 @@ function callout(quote: MNode, obsidian: boolean) {
   const titled = obsidian && title.some((n) => plainText(n).trim() || n.type !== "text");
   const type = obsidian ? (ALIASES[written] ?? written) : `gh-${written}`;
   quote.data = { hName: "div", hProperties: { dataCallout: type, dataCalloutFold: obsidian ? m[2] : "" } };
+  const content = [...(body.length ? [{ ...first, children: body }] : []), ...quote.children!.slice(1)];
   quote.children = [
     { type: "calloutTitle", data: { hName: "div", hProperties: { dataCalloutTitle: true } }, children: titled ? trimEnd(title) : [text(titleCase(m[1].toLowerCase()))] },
-    {
-      type: "calloutBody",
-      data: { hName: "div", hProperties: { dataCalloutBody: true } },
-      children: [...(body.length ? [{ ...first, children: body }] : []), ...quote.children!.slice(1)],
-    },
+    // A title-only callout has no body.
+    ...(content.length ? [{ type: "calloutBody", data: { hName: "div", hProperties: { dataCalloutBody: true } }, children: content }] : []),
   ];
 }
 
