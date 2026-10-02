@@ -17,6 +17,7 @@ import { terminalOptions } from "./theme";
 import { osc52Text } from "./osc52";
 import { CommandMarks } from "./commandMarks";
 import { type SaveState } from "./saveRound";
+import { planFit } from "./fit";
 import { ask } from "../app/ask";
 import { plural } from "../format";
 import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
@@ -65,10 +66,12 @@ export interface Pane extends SaveState {
   writing: boolean;
   /** Output parsed and not yet acked to pty.rs (parsed). */
   unacked: number;
-  /** A column change held back from a long history (fitPane). */
-  fitTimer?: number;
+  /** Columns held back from a long history (fitPane) and when they're due: sendSize waits for them. */
+  hold?: { cols: number; timer: number };
   /** The size the pty is sent once a resize settles. */
   ptyResizeTimer?: number;
+  /** The size the pty last heard, `cols x rows`: a resize back to it reaches nobody. */
+  ptySize: string;
   /** The commands shell integration marks. */
   marks: CommandMarks;
   /** Typed into the shell once it's up, with its Enter if it ends with one (openTerminal, a restored agent). */
@@ -239,7 +242,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
     void shellDir(p);
     agentPrompted(p);
   };
-  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, marks: new CommandMarks(term, prompted) };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, ptySize: "", marks: new CommandMarks(term, prompted) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   if (restored?.resume) {
@@ -253,14 +256,13 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
   term.onData((data) => send(p, data));
   // Mouse reports in the default encoding: a byte a coordinate, past 127 beyond column 95, not UTF-8.
   term.onBinary((data) => send(p, data, true));
-  term.onResize(({ cols, rows }) => {
+  term.onResize(() => {
     // Reflow rewraps the history.
     p.dirty = true;
     scheduleSave();
     // A divider drag changes the rows each frame, and Claude Code redrew on each SIGWINCH, leaving
     // copies of its screen in the history: the program gets the size the drag settles on.
-    window.clearTimeout(p.ptyResizeTimer);
-    p.ptyResizeTimer = window.setTimeout(() => p.pty !== null && void pty.resize(p.pty, cols, rows).catch(() => {}), PTY_RESIZE_WAIT);
+    sendSizeSoon(p);
   });
   term.onTitleChange((title) => update(id, (info) => ({ ...info, title })));
   watchAttention(p);
@@ -337,23 +339,47 @@ export function update(id: number, fn: (p: PaneInfo) => PaneInfo) {
   set({ groups: state.groups.map((g) => (g.panes.some((p) => p.id === id) ? { ...g, panes: g.panes.map((p) => (p.id === id ? fn(p) : p)) } : g)) });
 }
 
-/** History lines past which a column change waits for the resize to settle (VS Code's threshold). */
-const REWRAP_LINES = 200;
-
-/** A hidden or collapsed container would shrink the shell to one row and garble its output. */
+/** `now`: the columns held back from a long history (planFit) are due. */
 function fitPane(p: Pane, now = false) {
-  const box = p.host.parentElement;
-  if (!p.term.element || !box || box.clientWidth === 0 || box.clientHeight === 0) return;
-  const size = p.fit.proposeDimensions();
-  if (!size || isNaN(size.cols) || isNaN(size.rows)) return;
-  window.clearTimeout(p.fitTimer);
-  // New columns rewrap the whole history, so past REWRAP_LINES they wait 100 ms for a drag to
-  // settle, as in VS Code; rows follow at once.
-  if (!now && p.started && size.cols !== p.term.cols && p.term.buffer.normal.length > REWRAP_LINES) {
-    p.term.resize(p.term.cols, size.rows);
-    p.fitTimer = window.setTimeout(() => fitPane(p, true), 100);
-  } else p.term.resize(size.cols, size.rows);
+  if (!p.term.element) return;
+  // The host, not its container, whose padding stays when the pane has no room.
+  const box = { width: p.host.clientWidth, height: p.host.clientHeight };
+  const proposed = p.fit.proposeDimensions();
+  const plan = planFit(box, proposed, p.term, now || !p.started ? 0 : p.term.buffer.normal.length);
+  if (!plan) return releaseHold(p);
+  const held = p.hold !== undefined;
+  window.clearTimeout(p.hold?.timer);
+  p.hold = plan.colsLater ? { cols: proposed!.cols, timer: window.setTimeout(() => fitPane(p, true), 100) } : undefined;
+  p.term.resize(plan.size.cols, plan.size.rows);
+  // The rows sent ahead of the held columns, when the columns themselves change nothing.
+  if (held && !plan.colsLater) sendSizeSoon(p);
   if (!p.started) void start(p);
+}
+
+/**
+ * The held columns at once, where the pane can't be measured for them (hidden): left held, xterm
+ * had the new rows and the pty the old ones until the pane was back.
+ */
+function releaseHold(p: Pane) {
+  if (!p.hold) return;
+  window.clearTimeout(p.hold.timer);
+  const { cols } = p.hold;
+  p.hold = undefined;
+  p.term.resize(cols, p.term.rows);
+  sendSizeSoon(p);
+}
+
+function sendSizeSoon(p: Pane) {
+  window.clearTimeout(p.ptyResizeTimer);
+  p.ptyResizeTimer = window.setTimeout(() => sendSize(p), PTY_RESIZE_WAIT);
+}
+
+/** Tells the program its pane's size once a resize settled, held columns included: one SIGWINCH, not one a step. */
+function sendSize(p: Pane) {
+  const size = `${p.term.cols}x${p.term.rows}`;
+  if (p.hold !== undefined || p.pty === null || size === p.ptySize) return;
+  p.ptySize = size;
+  void pty.resize(p.pty, p.term.cols, p.term.rows).catch(() => {});
 }
 
 async function start(p: Pane) {
@@ -365,10 +391,11 @@ async function start(p: Pane) {
     // Closed while it was starting.
     if (!panes.has(p.id)) return void pty.kill(id).catch(() => {});
     p.pty = id;
+    p.ptySize = `${cols}x${rows}`;
     // What was parsed before the id came back.
     parsed(p, 0);
     // A resize while it was starting had no shell to reach.
-    if (p.term.cols !== cols || p.term.rows !== rows) void pty.resize(id, p.term.cols, p.term.rows).catch(() => {});
+    sendSize(p);
     send(p, "");
     if (p.run) runAtPrompt(p, p.run, integrated);
   } catch (e) {
@@ -449,15 +476,18 @@ export function attachPane(id: number, container: HTMLElement) {
       // DOM renderer.
     }
   }
-  fitPane(p);
+  // The first fit is the observer's, once layout is done. Fitted here, the panel ⌘J brought back
+  // wasn't sized yet: one row, then its size again before the pty heard, and Claude Code redrew
+  // its screen two rows off what xterm had kept of it.
   const observer = new ResizeObserver(() => fitPane(p));
-  observer.observe(container);
+  observer.observe(p.host);
   return () => {
     observer.disconnect();
     // WebKit fires no blur for a focused element taken out of the page: the pane would go on drawing
     // its cursor as focused, and a program that asked for focus reports (Claude Code) never hear it left.
     if (p.host.contains(document.activeElement)) p.term.blur();
     p.host.remove();
+    releaseHold(p);
   };
 }
 
@@ -511,7 +541,7 @@ function closePane(id: number, byUser = false) {
   if (!p) return;
   const focused = document.activeElement;
   panes.delete(id);
-  window.clearTimeout(p.fitTimer);
+  window.clearTimeout(p.hold?.timer);
   window.clearTimeout(p.ptyResizeTimer);
   forgetFind(p);
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});
