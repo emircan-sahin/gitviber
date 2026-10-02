@@ -5,7 +5,9 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
-import { api, errorMessage, type GitIdentity } from "@/lib/api";
+import { api, errorMessage, type GhAccount, type GitIdentity, github } from "@/lib/api";
+import { pickAccount } from "@/lib/github/account";
+import { loadGitHubAccount } from "@/lib/repo/session";
 import { runCommand } from "@/lib/commands/keybindings";
 import { FETCH_INTERVALS, updateSettings, useSettings } from "@/lib/settings";
 import { enableNotifications } from "@/lib/app/notify";
@@ -13,8 +15,10 @@ import { failed, toast } from "@/lib/app/toast";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
 import { Field, Group } from "@/features/settings/controls";
+import { Select } from "@/components/ui/select";
 
-export function GitSection() {
+/** `main`: the open project's main worktree, null with none open. */
+export function GitSection({ main }: { main: string | null }) {
   const s = useSettings();
   return (
     <>
@@ -36,6 +40,7 @@ export function GitSection() {
       </Group>
       <Group title="This repository">
         <RepoIdentityField />
+        {main && <GitHubAccountField main={main} />}
         <RemotesField />
       </Group>
     </>
@@ -227,6 +232,33 @@ function RepoIdentityField() {
           </form>
         )}
       </div>
+    </Field>
+  );
+}
+
+/**
+ * With more than one account signed in to gh, which one this project's GitHub calls use. Also
+ * while one is picked, even if gh has fewer now (or is gone), so the pick can be undone.
+ */
+function GitHubAccountField({ main }: { main: string }) {
+  const [accounts, setAccounts] = useState<GhAccount[] | null>(null);
+  const [picked, setPicked] = useState(() => loadGitHubAccount(main));
+  useEffect(() => void github.accounts().then(setAccounts, () => setAccounts([])), []);
+  if (!picked && (!accounts || accounts.length < 2)) return null;
+  const active = accounts?.find((a) => a.active);
+  const pick = (login: string | null) => pickAccount(main, login).then(() => setPicked(login), failed("Could not switch the account"));
+  return (
+    <Field label="GitHub account" hint="Pull requests, issues and checks here use this gh account. Push and fetch sign in as git does.">
+      <Select value={picked ?? ""} onChange={(e) => void pick(e.target.value || null)} className="w-64">
+        <option value="">{active ? `Active in gh (${active.login})` : "Active in gh"}</option>
+        {accounts?.map((a) => (
+          <option key={a.login} value={a.login}>
+            {a.ok ? a.login : `${a.login} (sign-in expired)`}
+          </option>
+        ))}
+        {/* Signed out of gh since, or gh gone: still the pick until it's undone. */}
+        {picked && !accounts?.some((a) => a.login === picked) && <option value={picked}>{accounts ? `${picked} (not in gh)` : picked}</option>}
+      </Select>
     </Field>
   );
 }

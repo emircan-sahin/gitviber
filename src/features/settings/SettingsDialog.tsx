@@ -43,7 +43,8 @@ export function openSettings(section: Section = lastSection) {
   setOpen(section);
 }
 
-export function SettingsDialog() {
+/** `main`: the open project's main worktree, for its own settings; null with none open. */
+export function SettingsDialog({ main }: { main: string | null }) {
   const section = openSection.use();
   const [recording, setRecording] = useState<Recording>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -108,7 +109,7 @@ export function SettingsDialog() {
             {section === "editor" && <EditorSection />}
             {section === "diff" && <DiffSection />}
             {section === "terminal" && <TerminalSection />}
-            {section === "git" && <GitSection />}
+            {section === "git" && <GitSection main={main} />}
             {section === "commit" && <CommitSection />}
             {section === "openIn" && <OpenInSection />}
             {section === "shortcuts" && <ShortcutsSection recording={recording} setRecording={setRecording} />}
