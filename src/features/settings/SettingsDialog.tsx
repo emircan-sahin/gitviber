@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { CircleArrowUp, Code2, GitBranch, GitCompareArrows, Keyboard, Palette, RotateCcw, Sparkles, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-react";
+import { CircleArrowUp, Code2, Gem, GitBranch, GitCompareArrows, Keyboard, Palette, RotateCcw, Sparkles, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -16,6 +16,7 @@ import { OpenInSection } from "./sections/OpenIn";
 import { type Recording, ShortcutsSection } from "./sections/Shortcuts";
 import { UpdatesSection } from "./sections/Updates";
 import { TerminalSection } from "./sections/Terminal";
+import { ObsidianSection } from "./sections/Obsidian";
 
 const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette, group: "General" },
@@ -25,6 +26,7 @@ const SECTIONS = [
   { id: "editor", label: "Editor", icon: Code2, group: "Workspace" },
   { id: "diff", label: "Diff", icon: GitCompareArrows, group: "Workspace" },
   { id: "terminal", label: "Terminal", icon: SquareTerminal, group: "Workspace" },
+  { id: "obsidian", label: "Obsidian", icon: Gem, group: "Workspace" },
   { id: "git", label: "Git", icon: GitBranch, group: "Git" },
   { id: "commit", label: "Commit Messages", icon: Sparkles, group: "Git" },
 ] as const;
@@ -71,7 +73,7 @@ export function SettingsDialog() {
       >
         <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar p-2">
           <DialogTitle className="px-2 pt-1.5 pb-2.5">Settings</DialogTitle>
-          <DialogDescription className="sr-only">Appearance, keyboard shortcut, Open in, update, editor, diff, terminal, git and commit message preferences.</DialogDescription>
+          <DialogDescription className="sr-only">Appearance, keyboard shortcut, Open in, update, editor, diff, terminal, Obsidian, git and commit message preferences.</DialogDescription>
           {GROUPS.map((group) => (
             <div key={group} className="flex flex-col gap-0.5 not-first-of-type:mt-3">
               <GroupLabel className="px-2 pb-1">{group}</GroupLabel>
@@ -108,6 +110,7 @@ export function SettingsDialog() {
             {section === "editor" && <EditorSection />}
             {section === "diff" && <DiffSection />}
             {section === "terminal" && <TerminalSection />}
+            {section === "obsidian" && <ObsidianSection />}
             {section === "git" && <GitSection />}
             {section === "commit" && <CommitSection />}
             {section === "openIn" && <OpenInSection />}
