@@ -181,6 +181,23 @@ pub(crate) fn route(
         .collect()
 }
 
+/// Hands `emit` the events that come in a burst (agents write files in bursts): once things go
+/// quiet for 150 ms, but at least every second while something keeps writing (a build, a log
+/// file). Returns when every sender is gone.
+pub(crate) fn debounce<T>(rx: mpsc::Receiver<T>, mut emit: impl FnMut(Vec<T>)) {
+    while let Ok(first) = rx.recv() {
+        let started = Instant::now();
+        let mut batch = vec![first];
+        while started.elapsed() <= Duration::from_secs(1) {
+            match rx.recv_timeout(Duration::from_millis(150)) {
+                Ok(next) => batch.push(next),
+                Err(_) => break,
+            }
+        }
+        emit(batch);
+    }
+}
+
 pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String> {
     let (tx, rx) = mpsc::channel::<(Kind, PathBuf)>();
     let watch_root = root.clone();
@@ -214,29 +231,21 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
         let _ = watcher.watch(&dir, mode);
     }
 
-    // Debounce: agents write files in bursts; emit once things go quiet for 150ms, but at
-    // least every second while something keeps writing (a build, a log file).
     // The thread ends when the watcher (and with it the sender) is dropped.
     std::thread::spawn(move || {
-        while let Ok(first) = rx.recv() {
-            let started = Instant::now();
+        debounce(rx, |batch| {
             let mut change = RepoChanged {
                 root: root.to_string_lossy().into_owned(),
                 ..Default::default()
             };
             let mut touched = HashSet::new();
-            let mut next = Some(first);
-            while let Some((kind, path)) = next {
+            for (kind, path) in batch {
                 match kind {
                     Kind::Worktree => {
                         touched.insert(path);
                     }
                     Kind::Git => change.git = true,
                 }
-                if started.elapsed() > Duration::from_secs(1) {
-                    break;
-                }
-                next = rx.recv_timeout(Duration::from_millis(150)).ok();
             }
             // A git change reloads the status anyway; no need to ask git which files count.
             change.worktree = if change.git {
@@ -247,7 +256,7 @@ pub fn start(app: AppHandle, root: PathBuf) -> Result<RecommendedWatcher, String
             if change.worktree || change.git {
                 let _ = app.emit("repo-changed", change);
             }
-        }
+        })
     });
     Ok(watcher)
 }

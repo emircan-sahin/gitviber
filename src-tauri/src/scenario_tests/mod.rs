@@ -7,6 +7,7 @@ mod content;
 mod history;
 mod journal;
 mod lines;
+mod obsidian;
 // A `sh` recorder stands in for the editor.
 #[cfg(unix)]
 mod open_in;

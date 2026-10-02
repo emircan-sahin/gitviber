@@ -89,6 +89,17 @@ A full file explorer with change bars in the gutter, quick open (`⌘P`) and ren
 delete from the right-click menu. Fix a line right in the file view and save it with `⌘S`. For most
 days that's the editor you no longer need open.
 
+Markdown renders the way GitHub shows it, in files, pull requests and issues alike: Mermaid
+diagrams, math, `> [!NOTE]` alerts, and a file's frontmatter as a table.
+
+### Your Obsidian vault, beside the code
+
+If you use Obsidian, your vault shows in a section under the explorer's files, found on its own.
+Notes open in a tab the way Obsidian's reading view shows them: wikilinks that open the note they
+name, embedded notes, images and PDFs, callouts, highlights, tags and properties. Canvases open
+as their board, to pan and zoom, and images, audio, video and PDFs in the media viewer. Switch a
+note to Code to edit it and save it with `⌘S`. Settings → Obsidian picks which vaults show.
+
 ### Commit messages from your agent
 
 Turn it on in Settings, hit the sparkle next to the commit box, and your own `claude -p` or
@@ -198,7 +209,9 @@ error message the app shows you (a failed push's git output, say), go to a local
 with logins in URLs and GitHub tokens blanked out. Help → Copy Diagnostics copies only the versions
 of GitViber, the OS, git, `gh` and WebKit, for you to paste into a bug report. Markdown from GitHub
 is cut down to GitHub's own HTML allowlist, and an image hosted outside GitHub loads only when you
-click it. Commit message suggestions go wherever the command you picked sends them.
+click it. Commit message suggestions go wherever the command you picked sends them. To show your
+Obsidian vault, GitViber reads Obsidian's own list of vaults on your disk; it never touches the
+vault's `.obsidian` folder.
 
 ## FAQ
 

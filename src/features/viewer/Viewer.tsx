@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Copy, Eye, FileCode2, FoldVertical, GitCompareArrows, Rows2, Space, UserSearch } from "lucide-react";
+import { ArrowDown, ArrowUp, Check, Columns2, Contrast, Eye, FileCode2, FoldVertical, GitCompareArrows, Rows2, Space, UserSearch } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
@@ -14,18 +14,16 @@ import { diffWhitespace, updateSettings, useSettings } from "@/lib/settings";
 import { FIT, type Zoom } from "@/lib/ui/svg";
 import { toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
-import { copyText } from "@/lib/app/clipboard";
 import { gitHubLink } from "@/lib/github/url";
 import { type CodeViewHandle, MonacoView } from "./MonacoView";
 import { ConflictView } from "./ConflictView";
 import { IssueView } from "@/features/github/issues/IssueView";
 import { PullView } from "@/features/github/pulls/PullView";
-import { FileIcon } from "@/components/FileIcon";
 import { useReview } from "@/features/github/pulls/ReviewThreads";
 import { isImageChange, isSvg, MediaView, mediaKind, SvgView } from "./MediaView";
 import { ImageOverlay, type Overlaid, SvgOverlay } from "./ImageCompare";
 import { isMarkdown, MarkdownView } from "./MarkdownView";
-import { LineCounts, PathLabel, StatusPill } from "@/components/StatusBadge";
+import { LineCounts, StatusPill } from "@/components/StatusBadge";
 import { type FileSelection, githubSides, linkSides, pairArgs, useBlame, usePair } from "./diffPairs";
 import type { Tab } from "./tabs";
 import { TabStrip } from "./TabStrip";
@@ -33,7 +31,9 @@ import { CommitBar } from "./CommitBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { BranchChange } from "@/features/changes/BranchReview";
 import { AllChanges } from "./AllChanges";
+import { VaultView } from "@/features/obsidian/VaultView";
 import { diffNote, placeholderFor } from "./placeholders";
+import { FileHeaderPath, Placeholder } from "./FileHeader";
 
 interface ViewerProps {
   tabs: Tab[];
@@ -77,6 +77,8 @@ export function Viewer(props: ViewerProps) {
             <IssueView issue={active.sel.issue} onDeleted={() => props.onClose(active.key)} />
           ) : active.sel.kind === "changes" ? (
             <AllChanges list={active.sel.list} {...props} />
+          ) : active.sel.kind === "vault" ? (
+            <VaultView tab={active} sel={active.sel} onOpen={props.onOpen} />
           ) : (
             <Pane tab={active} sel={active.sel} {...props} />
           )}
@@ -167,13 +169,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
     <>
       {sel.kind === "commit" && <CommitBar commit={sel.commit} url={sel.url} web={webUrl} />}
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border pr-2 pl-3">
-        <FileIcon path={selectionPath(sel)} />
-        <PathLabel path={selectionPath(sel)} className="min-w-0 text-[12px]" />
-        <Tip label="Copy path">
-          <button className="hit-area text-subtle hover:text-foreground focus-visible:text-foreground" onClick={() => copyText(selectionPath(sel), "Path copied")}>
-            <Copy className="size-3" />
-          </button>
-        </Tip>
+        <FileHeaderPath path={selectionPath(sel)} />
         {file?.oldPath && <span className="truncate text-[11.5px] text-subtle">← {file.oldPath}</span>}
         {file && <LineCounts file={file} />}
         {file && <StatusPill status={file.status} />}
@@ -372,20 +368,6 @@ function Kbd({ ids }: { ids: CommandId[] }) {
     .map(formatChord)
     .join(" ");
   return <span className="text-right font-mono text-muted-foreground">{k}</span>;
-}
-
-function Placeholder({ title, detail, action }: { title: string; detail?: string; action?: { label: string; run: () => void } }) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-      <div className="text-[12.5px] text-muted-foreground">{title}</div>
-      {detail && <pre className="max-w-xl font-mono text-[11.5px] whitespace-pre-wrap text-subtle select-text">{detail}</pre>}
-      {action && (
-        <Button variant="secondary" size="sm" className="mt-1" onClick={action.run}>
-          {action.label}
-        </Button>
-      )}
-    </div>
-  );
 }
 
 /** A Git LFS file's object, fetched as a network command the top bar shows. */

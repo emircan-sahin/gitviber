@@ -1,7 +1,9 @@
 import { Files, History, ListTree, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
+import { editPath, onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
+import { noteName } from "@/lib/obsidian/links";
+import { isFileSelection } from "./diffPairs";
 import { useShortcut } from "@/lib/commands/keybindings";
 import { focusMovedTab, focusTab, isMenuKey, openRowMenu, tabMove } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
@@ -26,6 +28,8 @@ interface Props {
 
 function tabLabel(sel: Selection) {
   if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes") return selectionPath(sel);
+  // A note by its name, as Obsidian's tabs have it.
+  if (sel.kind === "vault") return noteName(sel.path);
   return basename(selectionPath(sel));
 }
 
@@ -134,7 +138,7 @@ function TabItem({
 }) {
   const { props, dragging, guard } = useSortableItem(t.key);
   // Unsaved edits: a dot where the close button goes, the button on hover (as VS Code).
-  const unsaved = useEdited().has(selectionPath(t.sel)) && t.sel.kind === "file";
+  const unsaved = useEdited().has(editPath(t.sel) ?? "");
   const closeKey = useShortcut("tab.close");
   const closeOthersKey = useShortcut("tab.closeOthers");
   const el = useRef<HTMLDivElement | null>(null);
@@ -199,7 +203,7 @@ function TabItem({
       </button>
     </div>
   );
-  const file = t.sel.kind !== "pull" && t.sel.kind !== "issue" && t.sel.kind !== "changes";
+  const file = isFileSelection(t.sel);
   // As VS Code's tab menu, plus to the left.
   const group = (which: TabGroup, label: string, shortcut?: string) => (
     <ContextMenuItem disabled={!closes(which)} onSelect={() => onCloseGroup(which)}>
@@ -242,7 +246,7 @@ function TabItem({
 }
 
 function TabKind({ sel }: { sel: Selection }) {
-  const labels: Partial<Record<Selection["kind"], string>> = { staged: "staged", unstaged: "diff", conflict: "conflict" };
+  const labels: Partial<Record<Selection["kind"], string>> = { staged: "staged", unstaged: "diff", conflict: "conflict", vault: "vault" };
   const label =
     sel.kind === "commit" ? sel.commit.shortSha : sel.kind === "pr-file" ? [sel.range.number && `#${sel.range.number}`, sel.range.label].filter(Boolean).join(" ") || "compare" : sel.kind === "branch" ? `vs ${sel.label}` : labels[sel.kind];
   return label ? <span className="shrink-0 font-mono text-[10px] text-subtle">{label}</span> : null;
