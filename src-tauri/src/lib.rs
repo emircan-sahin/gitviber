@@ -172,6 +172,7 @@ pub fn run() {
             commands::files::list_files,
             commands::files::list_ignored,
             commands::files::path_kinds,
+            commands::files::file_mtimes,
             commands::files::search_files,
             commands::changes::change_lines,
             commands::stash::stash_branch,

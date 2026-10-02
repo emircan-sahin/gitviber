@@ -88,6 +88,8 @@ export const api = {
   definitions: (request: DefinitionRequest) => invoke<Definition[]>("definitions", { request }),
   /** Where the name is used, its definition and imports included; rejects like `definitions`. */
   references: (request: DefinitionRequest) => invoke<Definition[]>("references", { request }),
+  /** Modified times (ms) of repo files; null: not on disk. */
+  fileMtimes: (paths: string[]) => invoke<(number | null)[]>("file_mtimes", { paths }),
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
   /** Every file in a commit (`<sha>`, or `<sha>^` for its parent): where its links resolve. */
   treePaths: (rev: string) => invoke<string[]>("tree_paths", { rev }),

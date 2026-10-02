@@ -1,4 +1,4 @@
-import { Check, ChevronDown, FolderGit2, GitMerge, Plus } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, FolderGit2, GitMerge, Plus } from "lucide-react";
 import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
@@ -7,7 +7,7 @@ import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED } from "@/lib/git/worktrees";
-import { FileIcon } from "@/components/FileIcon";
+import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import type { BranchChange } from "./BranchReview";
 import type { Change } from "./changeList";
@@ -87,6 +87,8 @@ export function Row({
   onToggleViewed,
   lostFocus,
   menu,
+  depth,
+  label,
   children,
 }: {
   sel: Change | BranchChange;
@@ -105,6 +107,9 @@ export function Row({
   lostFocus?: RefObject<string | null>;
   /** Built only once the menu is first opened: thousands of rows each building theirs made the list slow. None: no menu. */
   menu?: () => React.ReactNode;
+  /** In the tree view: how deep it sits, and its name alone. */
+  depth?: number;
+  label?: string;
   children?: React.ReactNode;
 }) {
   const file = sel.file;
@@ -136,11 +141,13 @@ export function Row({
       onClick={onClick}
       onDoubleClick={() => onOpen(sel, true)}
       onMouseEnter={() => onHover(sel)}
+      style={depth ? { paddingLeft: indent(depth) } : undefined}
       className={cn(
         "group/row relative flex h-[26px] scroll-mt-7 cursor-pointer items-center gap-2 pr-2 pl-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
         selected ? (dim ? "bg-active" : "bg-primary/15") : "hover:bg-hover focus:bg-hover data-[state=open]:bg-hover",
       )}
     >
+      <IndentGuides depth={depth ?? 0} />
       {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
       {sel.kind === "conflict" ? (
         <GitMerge className="size-3.5 shrink-0 text-conflict" />
@@ -166,7 +173,13 @@ export function Row({
       )}
       <FileIcon path={file.path} />
       {/* Faded by color, not opacity: subtle text stays at 4.5:1. */}
-      <PathLabel path={file.path} className={cn("flex-1", viewed && "[&>span]:text-subtle")} />
+      {label !== undefined ? (
+        <span title={file.path} className={cn("min-w-0 flex-1 truncate", viewed ? "text-subtle" : "text-foreground")}>
+          {label}
+        </span>
+      ) : (
+        <PathLabel path={file.path} className={cn("flex-1", viewed && "[&>span]:text-subtle")} />
+      )}
       {/* Shown on the active row too, so Tab can reach them without a mouse. */}
       <LineCounts file={file} className={active ? "hidden" : "group-focus-within/row:hidden group-hover/row:hidden"} />
       <div className={cn("items-center", active ? "flex" : "hidden group-focus-within/row:flex group-hover/row:flex")} onClick={(e) => e.stopPropagation()}>
@@ -184,16 +197,102 @@ export function Row({
   );
 }
 
+// As the explorer's tree.
+const INDENT = 12;
+const indent = (depth: number) => 8 + depth * INDENT;
+
+function IndentGuides({ depth }: { depth: number }) {
+  return Array.from({ length: depth }, (_, i) => <span key={i} className="absolute inset-y-0 w-px bg-border" style={{ left: 14 + i * INDENT }} />);
+}
+
+/**
+ * A folder of the tree view: opens and closes on a click, and its actions (Stage, Discard…)
+ * cover every file under it, as VS Code's do.
+ */
+export function FolderRow({
+  rowKey,
+  path,
+  label,
+  depth,
+  open,
+  count,
+  tabStop,
+  onToggle,
+  lostFocus,
+  menu,
+  children,
+}: {
+  rowKey: string;
+  path: string;
+  label: string;
+  depth: number;
+  open: boolean;
+  count: number;
+  tabStop: boolean;
+  onToggle: () => void;
+  /** Set to `lostFocus.current`'s value for this row when it leaves the page holding focus. */
+  lostFocus: { ref: RefObject<string | null>; as: string };
+  menu: () => React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [menuOpened, setMenuOpened] = useState(false);
+  const { ref: lost, as } = lostFocus;
+  useLayoutEffect(
+    () => () => {
+      if (ref.current?.contains(document.activeElement)) lost.current = as;
+    },
+    [lost, as],
+  );
+  return (
+    <ContextMenu onOpenChange={(o) => o && setMenuOpened(true)}>
+      <ContextMenuTrigger asChild>
+        <div
+          ref={ref}
+          role="treeitem"
+          aria-expanded={open}
+          aria-level={depth + 1}
+          aria-selected={false}
+          tabIndex={tabStop ? 0 : -1}
+          data-row={rowKey}
+          onClick={onToggle}
+          style={{ paddingLeft: indent(depth) }}
+          className="group/row relative flex h-[26px] scroll-mt-7 cursor-pointer items-center gap-1.5 pr-2 text-[12px] outline-none hover:bg-hover focus:bg-hover focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset data-[state=open]:bg-hover"
+        >
+          <IndentGuides depth={depth} />
+          <ChevronRight className={cn("size-3 shrink-0 text-subtle transition-transform duration-100", open && "rotate-90")} />
+          <FolderIcon name={path.slice(path.lastIndexOf("/") + 1)} open={open} />
+          <span title={path} className="min-w-0 flex-1 truncate text-foreground/85">
+            {label}
+          </span>
+          <span className="shrink-0 font-mono text-[10.5px] text-subtle group-focus-within/row:hidden group-hover/row:hidden">{count}</span>
+          <div className="hidden items-center group-focus-within/row:flex group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
+            {children}
+          </div>
+        </div>
+      </ContextMenuTrigger>
+      {menuOpened && menu()}
+    </ContextMenu>
+  );
+}
+
 /**
  * An untracked folder that is another repository (not one of ours: worktrees stay out of
  * status). Git lists it, so we do too, but it has no diff here and can't be staged.
  */
-export function NestedRow({ file }: { file: FileChange }) {
+export function NestedRow({ file, depth, label }: { file: FileChange; depth?: number; label?: string }) {
   return (
-    <div className="group/row relative flex h-[26px] cursor-default items-center gap-2 pr-2 pl-2 text-[12px]">
+    <div className="group/row relative flex h-[26px] cursor-default items-center gap-2 pr-2 pl-2 text-[12px]" style={depth ? { paddingLeft: indent(depth) } : undefined}>
+      <IndentGuides depth={depth ?? 0} />
       <span className="size-3.5 shrink-0" />
       <FolderGit2 className="size-4 shrink-0 text-subtle" />
-      <PathLabel path={file.path.replace(/\/$/, "")} className="flex-1" />
+      {label !== undefined ? (
+        <span title={file.path} className="min-w-0 flex-1 truncate text-foreground">
+          {label}
+        </span>
+      ) : (
+        <PathLabel path={file.path.replace(/\/$/, "")} className="flex-1" />
+      )}
       <span className="max-w-32 shrink-0 truncate rounded-sm bg-elevated px-1 font-mono text-[10.5px] leading-4 text-muted-foreground group-focus-within/row:hidden group-hover/row:hidden">
         nested repo
       </span>

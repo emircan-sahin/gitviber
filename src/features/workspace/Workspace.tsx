@@ -24,6 +24,9 @@ import { cn } from "@/lib/utils";
 import { revealPath } from "@/lib/app/openIn";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
 import { changeList } from "@/features/changes/changeList";
+import { changesView, ordered } from "@/features/changes/changesView";
+import { ChangesViewMenu } from "@/features/changes/ChangesViewMenu";
+import { useMtimes } from "@/features/changes/useMtimes";
 import { BranchReview, useBranchReview } from "@/features/changes/BranchReview";
 import { showQuickOpen, useQuickOpenSource } from "@/features/palette/CommandPalette";
 import { FileTree, type FileTreeHandle } from "@/features/explorer/FileTree";
@@ -181,7 +184,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const layout = useDefaultLayout({ id: "gitviber-main-v4", storage: localStorage });
   const viewerLayout = useDefaultLayout({ id: "gitviber-viewer-v1", storage: localStorage, panelIds: terminalOpen ? ["editor", "terminal"] : ["editor"] });
 
-  const uncommitted = useMemo(() => (status ? changeList(status) : []), [status]);
+  const changeView = changesView.use();
+  const mtimes = useMtimes(status);
+  const uncommitted = useMemo(() => (status ? changeList(ordered(status, changeView, mtimes)) : []), [status, changeView, mtimes]);
   // What J/K walk: the list Changes shows.
   const changes: Selection[] = review === null ? uncommitted : branchReview.rows;
   const startReview = () => {
@@ -418,6 +423,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 </ListTabButton>
                 {/* One group: two ml-autos split the free space. */}
                 <div className="ml-auto flex items-center gap-0.5">
+                  {listTab === "changes" && !reviewing && <ChangesViewMenu />}
                   <Tip label={reviewing ? "Back to uncommitted changes" : `Review branch against ${reviewLabel}`}>
                     <button
                       aria-label={reviewing ? "Back to uncommitted changes" : "Review branch"}
@@ -450,7 +456,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                   />
                 )}
                 {listTab === "changes" && review === null && status && (
-                  <ChangesPanel status={status} head={repo.commits[0] ?? null} main={main} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} setViewed={setViewed} onRevealInExplorer={revealInExplorer} onShowHistory={(path) => showHistory(path, true)} />
+                  <ChangesPanel status={status} head={repo.commits[0] ?? null} main={main} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} setViewed={setViewed} onRevealInExplorer={revealInExplorer} onShowHistory={(path) => showHistory(path, true)} mtimes={mtimes} />
                 )}
                 {listTab === "pulls" && (
                   <PullsPanel

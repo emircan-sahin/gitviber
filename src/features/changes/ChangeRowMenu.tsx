@@ -7,7 +7,7 @@ import { copyFiles, copyLabel, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
 import { diffInTool, mergeInTool, mergingInTool, toolCanOpen, toolName, useExternalTools } from "@/lib/git/externalTools";
-import { type Change, keptByRestore, paths } from "./changeList";
+import { type Change, files, keptByRestore, paths } from "./changeList";
 
 /** The row's right-click menu, modeled on VS Code's Source Control view. `rows`: what its git actions cover. */
 export function ChangeRowMenu({
@@ -149,6 +149,98 @@ export function ChangeRowMenu({
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => copyText(paths(rows).join("\n"), n > 1 ? `${n} relative paths copied` : "Relative path copied")}>
         <Copy /> {n > 1 ? "Copy Relative Paths" : "Copy Relative Path"}
+      </ContextMenuItem>
+    </ContextMenuContent>
+  );
+}
+
+/** A tree folder's right-click menu: its git actions cover `rows`, every file under it. */
+export function FolderRowMenu({
+  kind,
+  path,
+  rows,
+  root,
+  canStash,
+  viewed,
+  setViewed,
+  onRevealInExplorer,
+  stage,
+  unstage,
+  markResolved,
+  discard,
+  resolve,
+  stash,
+}: {
+  kind: Change["kind"];
+  path: string;
+  rows: Change[];
+  root: string;
+  canStash: boolean;
+  viewed: (s: Selection) => boolean;
+  setViewed: (s: Selection[], on: boolean) => void;
+  onRevealInExplorer: (path: string) => void;
+  stage: (rows: Change[]) => void;
+  unstage: (rows: Change[]) => void;
+  markResolved: (rows: Change[]) => void;
+  discard: (list: FileChange[]) => void;
+  resolve: (rows: Change[], side: "ours" | "theirs") => void;
+  stash: (paths: string[]) => void;
+}) {
+  const n = rows.length;
+  const allViewed = rows.every(viewed);
+  return (
+    <ContextMenuContent>
+      {kind === "unstaged" && (
+        <>
+          <ContextMenuItem disabled={!n} onSelect={() => stage(rows)}>
+            <Plus /> Stage {files(n)}
+          </ContextMenuItem>
+          <ContextMenuItem disabled={rows.every((r) => keptByRestore(r.file))} onSelect={() => discard(rows.map((r) => r.file))}>
+            <Undo2 /> Discard {files(n)}…
+          </ContextMenuItem>
+        </>
+      )}
+      {kind === "staged" && (
+        <ContextMenuItem onSelect={() => unstage(rows)}>
+          <Minus /> Unstage {files(n)}
+        </ContextMenuItem>
+      )}
+      {kind !== "conflict" && canStash && (
+        <ContextMenuItem disabled={!n} onSelect={() => stash(paths(rows))}>
+          <Archive /> Stash {files(n)}…
+        </ContextMenuItem>
+      )}
+      {kind === "conflict" && (
+        <>
+          <ContextMenuItem onSelect={() => markResolved(rows)}>
+            <Check /> Mark {files(n)} as Resolved
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => resolve(rows, "ours")}>
+            <ArrowLeftToLine /> Take Current Version of {files(n)}
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => resolve(rows, "theirs")}>
+            <ArrowRightToLine /> Take Incoming Version of {files(n)}
+          </ContextMenuItem>
+        </>
+      )}
+      {kind === "unstaged" && n > 0 && (
+        <ContextMenuItem onSelect={() => setViewed(rows, !allViewed)}>
+          <SquareCheck /> Mark {files(n)} as {allViewed ? "Not Viewed" : "Viewed"}
+        </ContextMenuItem>
+      )}
+      <ContextMenuSeparator />
+      <ContextMenuItem keepFocus onSelect={() => onRevealInExplorer(path)}>
+        <ListTree /> Reveal in Explorer View
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => revealPath(path)}>
+        <FolderSearch /> {REVEAL_LABEL}
+      </ContextMenuItem>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={() => copyText(`${root}/${path}`, "Path copied")}>
+        <Copy /> Copy Path
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => copyText(path, "Relative path copied")}>
+        <Copy /> Copy Relative Path
       </ContextMenuItem>
     </ContextMenuContent>
   );
