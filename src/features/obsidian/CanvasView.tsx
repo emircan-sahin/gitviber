@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { Tip } from "@/components/ui/tooltip";
 import { errorMessage } from "@/lib/api";
 import { matchesCommand } from "@/lib/commands/keybindings";
-import { bounds, type Canvas, canvasColor, type CanvasEdge, type CanvasNode, edgePath, parseCanvas } from "@/lib/obsidian/canvas";
+import { type Canvas, canvasColor, type CanvasEdge, type CanvasNode, edgePath, fitBox, parseCanvas } from "@/lib/obsidian/canvas";
 import type { Selection } from "@/lib/repo/selection";
 import { useSettings } from "@/lib/settings";
 import { followLink } from "@/features/viewer/MarkdownView";
@@ -18,7 +18,7 @@ interface View {
 }
 
 const PAD = 40;
-const [MIN, MAX] = [0.05, 4];
+const [MIN, MAX, FIT_MIN] = [0.05, 4, 0.1];
 
 /**
  * A JSON Canvas (Obsidian's .canvas): its cards, groups and arrows, read-only. Text cards render
@@ -51,10 +51,11 @@ function Board({ canvas }: { canvas: Canvas }) {
   const { dark } = useSettings();
   const [stage, setStage] = useState<HTMLDivElement | null>(null);
   const [w, h] = useSize(stage);
-  const box = useMemo(() => bounds(canvas.nodes), [canvas]);
+  const box = useMemo(() => fitBox(canvas.nodes), [canvas]);
   const fit = useMemo((): View => {
     if (!w || !h || !box.width) return { x: w / 2, y: h / 2, scale: 1 };
-    const scale = Math.min(1, Math.max(MIN, Math.min((w - 2 * PAD) / box.width, (h - 2 * PAD) / box.height)));
+    // Fitting never goes below 10%: two cards far apart would be dots; the rest is a pan away.
+    const scale = Math.min(1, Math.max(FIT_MIN, Math.min((w - 2 * PAD) / box.width, (h - 2 * PAD) / box.height)));
     return { scale, x: (w - box.width * scale) / 2 - box.x * scale, y: (h - box.height * scale) / 2 - box.y * scale };
   }, [w, h, box]);
   // null: fitted, following the pane's size until the user moves.

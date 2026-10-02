@@ -487,19 +487,21 @@ export const headingKey = (heading: string) =>
  * all but its properties.
  */
 export function remarkSection({ anchor }: { anchor: string }) {
+  // Obsidian's words for a part the note doesn't have.
+  const missing = (what: string): MNode[] => [{ type: "paragraph", children: [{ type: "emphasis", children: [text(`Unable to find ${what}`)] }] }];
   return (tree: MNode) => {
     const kids = (tree.children ?? []).filter((n) => n.type !== "frontmatter");
     tree.children = kids;
     if (!anchor) return;
     if (anchor.startsWith("^")) {
       const block = findId(tree, anchor);
-      tree.children = !block ? [] : block.type === "listItem" ? [{ type: "list", ordered: false, spread: false, children: [block] }] : [block];
+      tree.children = !block ? missing(`block ${anchor}`) : block.type === "listItem" ? [{ type: "list", ordered: false, spread: false, children: [block] }] : [block];
       return;
     }
     const want = headingKey(anchor.split("#").filter(Boolean).at(-1) ?? "");
     const start = kids.findIndex((n) => n.type === "heading" && headingKey(plainText(n)) === want);
     if (start < 0) {
-      tree.children = [];
+      tree.children = missing(`section #${anchor}`);
       return;
     }
     const depth = kids[start].depth ?? 1;

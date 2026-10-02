@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bounds, canvasColor, edgePath, facing, parseCanvas } from "./canvas.ts";
+import { bounds, canvasColor, edgePath, facing, fitBox, parseCanvas } from "./canvas.ts";
 
 test("a canvas keeps what the spec allows, groups first", () => {
   const canvas = parseCanvas(
@@ -41,6 +41,11 @@ test("geometry: bounds, facing sides and edge curves", () => {
   const a = { x: 0, y: 0, width: 100, height: 50 };
   const b = { x: 300, y: 0, width: 100, height: 50 };
   assert.deepEqual(bounds([a, b]), { x: 0, y: 0, width: 400, height: 50 });
+  // One card dragged far away doesn't shrink the rest to dots; spread-out cards all stay in.
+  const grid = Array.from({ length: 9 }, (_, i) => ({ x: (i % 3) * 300, y: Math.floor(i / 3) * 200, width: 250, height: 150 }));
+  assert.deepEqual(fitBox([...grid, { x: 1e7, y: 1e7, width: 250, height: 150 }]), bounds(grid));
+  assert.deepEqual(fitBox(grid), bounds(grid));
+  assert.deepEqual(fitBox([a, b]), bounds([a, b]));
   const many = Array.from({ length: 200_000 }, (_, i) => ({ x: i, y: -i, width: 1, height: 1 }));
   assert.deepEqual(bounds(many), { x: 0, y: -199_999, width: 200_000, height: 200_000 });
   assert.equal(facing(a, b), "right");

@@ -54,23 +54,24 @@ export function useVaults(): { vaults: Vault[]; vault: Vault | null } {
 /**
  * How current what's read from each vault is: `text` moves on any change (notes read again),
  * `files` when files came, went or moved (the file list for links), and each file has its own
- * count (media read again only when it changed).
+ * count (media read again only when it changed), started over under a new `all` when events
+ * were dropped and any file may have.
  */
 interface Revisions {
   text: number;
   files: number;
+  all: number;
   file: Record<string, number>;
 }
 const revisions = createStore<Record<string, Revisions>>({});
-const NONE: Revisions = { text: 0, files: 0, file: {} };
+const NONE: Revisions = { text: 0, files: 0, all: 0, file: {} };
 
 /** `paths` changed in `vault`; none named: anything may have. */
 function bump(vault: string, files: boolean, paths: string[]) {
   const now = revisions.get();
   const was = now[vault] ?? NONE;
   const file = paths.length ? { ...was.file, ...Object.fromEntries(paths.map((p) => [p, (was.file[p] ?? 0) + 1])) } : {};
-  // With no file named, every file's count starts over under a new `files`, which is in its key.
-  revisions.set({ ...now, [vault]: { text: was.text + 1, files: was.files + (files || !paths.length ? 1 : 0), file } });
+  revisions.set({ ...now, [vault]: { text: was.text + 1, files: was.files + (files || !paths.length ? 1 : 0), all: was.all + (paths.length ? 0 : 1), file } });
 }
 
 let watched: string | null = null;
@@ -107,10 +108,13 @@ export const useVaultRevision = (vault: string) => useRevisions(vault).text;
 /** Changes when files in `vault` came, went or moved: what its folders list. */
 export const useVaultFilesRevision = (vault: string) => useRevisions(vault).files;
 
-/** Changes when `path` in `vault` changed (or anything may have). */
+/**
+ * Changes when `path` in `vault` changed, was renamed or came back (or anything may have): not
+ * when another file comes or goes, which an open video or PDF shouldn't reload for.
+ */
 export function useFileRevision(vault: string, path: string) {
   const r = useRevisions(vault);
-  return `${r.files}.${r.file[path] ?? 0}`;
+  return `${r.all}.${r.file[path] ?? 0}`;
 }
 
 // Each vault's file list as of the `files` revision it was read at; links resolve against it.

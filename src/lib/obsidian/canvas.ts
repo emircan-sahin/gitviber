@@ -100,6 +100,29 @@ export function bounds(nodes: Box[]): Box {
   return { x, y, width: right - x, height: bottom - y };
 }
 
+const median = (xs: number[]) => {
+  const sorted = [...xs].sort((a, b) => a - b);
+  return sorted[Math.floor((sorted.length - 1) / 2)];
+};
+
+/**
+ * The box a canvas is fitted to: around every card, unless a few lie far off from the rest (a
+ * card dragged to x = 10,000,000), which would shrink the rest to dots. Those are left out: the
+ * cards more than four times as far from the middle as three in four of them are, past a card's
+ * size. They stay a pan away.
+ */
+export function fitBox(nodes: Box[]): Box {
+  const all = bounds(nodes);
+  if (nodes.length < 3) return all;
+  const centers = nodes.map((n) => [n.x + n.width / 2, n.y + n.height / 2]);
+  const [mx, my] = [median(centers.map((c) => c[0])), median(centers.map((c) => c[1]))];
+  const dist = centers.map(([x, y]) => Math.hypot(x - mx, y - my));
+  const sorted = [...dist].sort((a, b) => a - b);
+  const reach = 4 * sorted[Math.floor((sorted.length - 1) * 0.75)] + Math.max(...nodes.slice(0, 1000).map((n) => Math.hypot(n.width, n.height)));
+  const near = nodes.filter((_, i) => dist[i] <= reach);
+  return near.length ? bounds(near) : all;
+}
+
 /** The middle of a node's side, where an edge meets it. */
 export function anchor(n: Box, s: Side): [number, number] {
   if (s === "top") return [n.x + n.width / 2, n.y];

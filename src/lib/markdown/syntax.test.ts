@@ -101,6 +101,8 @@ test("an embed of a heading or block keeps just that part", () => {
   assert.match(part, /Part[\s\S]*in part[\s\S]*Deeper[\s\S]*still/);
   assert.doesNotMatch(part, /intro|Next|out/);
   assert.match(render(note, "obsidian", "^b1"), /^<p id="n-\^b1">A block<\/p>$/);
+  assert.equal(render(note, "obsidian", "Goals"), "<p><em>Unable to find section #Goals</em></p>");
+  assert.equal(render(note, "obsidian", "^gone"), "<p><em>Unable to find block ^gone</em></p>");
   assert.match(render("---\ntags: [a]\n---\nBody", "obsidian", ""), /^<p>Body<\/p>$/);
 });
 
