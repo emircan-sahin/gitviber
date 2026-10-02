@@ -15,9 +15,13 @@ mod pr_checkout;
 mod review;
 mod rewrite;
 mod search;
+// zsh on a pty.
+#[cfg(unix)]
+mod shell_marks;
 mod stash;
 mod suggest;
 mod sync;
+mod terminal_links;
 mod watcher;
 mod worktrees;
 
