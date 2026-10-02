@@ -1,13 +1,13 @@
 import { ask } from "@/lib/app/ask";
 import { ChevronRight, Copy, ExternalLink, File, FilePlus, FolderPlus, FolderSearch, History, Link, Pencil, Trash2, Undo2 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { api, type ChangeStatus, type Entry, errorMessage, type RepoStatus } from "@/lib/api";
 import { IS_MAC, primaryKey, REVEAL_LABEL } from "@/lib/platform";
 import { matchesCommand, useShortcut } from "@/lib/commands/keybindings";
 import { focusPanel } from "@/lib/ui/panels";
-import { isMenuKey, moveTarget, openRowMenu, pageOf } from "@/lib/ui/useListNav";
+import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { toast } from "@/lib/app/toast";
 import { tracked, undoAction } from "@/lib/repo/undo";
@@ -15,12 +15,13 @@ import { cn } from "@/lib/utils";
 import { copyFiles, copyLabel, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
 import { gitHubLink } from "@/lib/github/url";
-import { basename, childPath, compareEntries, dirname } from "@/lib/path";
+import { basename, childPath, dirname } from "@/lib/path";
 import { MAX_MATCHES, matchingTree } from "@/lib/repo/matchingTree";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import { NameInput } from "@/components/NameInput";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
 import { statusInfo } from "@/components/StatusBadge";
+import { treeKey, treeRows, useLazyTree } from "./lazyTree";
 
 export interface FileTreeHandle {
   collapseAll: () => void;
@@ -54,20 +55,15 @@ const isInside = (path: string, dir: string) => path === dir || path.startsWith(
 /** `list` without the entries inside a folder also in it: trashing the folder takes them along. */
 const topmost = (list: Entry[]) => list.filter((e) => !list.some((d) => d !== e && d.isDir && isInside(e.path, d.path)));
 
-/** A fresh, unsorted listing that says what `shown` already does. */
-function unchanged(shown: Entry[] | undefined, listed: Entry[]) {
-  if (shown?.length !== listed.length) return false;
-  const byName = new Map(shown.map((e) => [e.name, e]));
-  return listed.every((e) => {
-    const was = byName.get(e.name);
-    return was?.isDir === e.isDir && was.ignored === e.ignored;
-  });
-}
-
 /** Lazy tree of the working directory, like VS Code's explorer, annotated with git status. */
 export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathMoved, onShowHistory, webUrl, ref }: Props) {
-  const [children, setChildren] = useState<Record<string, Entry[]>>({});
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set([""]));
+  const { children, expanded, setExpanded, loadDir, setOpen } = useLazyTree<Entry>({
+    list: api.listDir,
+    revision,
+    same: (was, now) => was.ignored === now.ignored,
+    // The root stays expanded, so the tree comes back once the error clears.
+    onRootError: (e) => toast("error", "Could not list repository", errorMessage(e)),
+  });
   // Keyboard cursor, separate from the open tab (activeKey) like VS Code's focused item.
   const [selected, setSelected] = useState<string | null>(null);
   // Rows picked with ⌘/⇧ (clicks or ⇧-arrows) from `anchor`, as in the Changes panel; null: just `selected`.
@@ -107,35 +103,6 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   );
   /** A folder the filter holds open around its matches. */
   const heldOpen = (path: string) => !!matching?.children[path];
-
-  // Per-path request counter: a slow, older listing must not overwrite a newer one.
-  const requests = useRef(new Map<string, number>());
-  const loadDir = useCallback(async (path: string) => {
-    const id = (requests.current.get(path) ?? 0) + 1;
-    requests.current.set(path, id);
-    try {
-      const listed = await api.listDir(path);
-      // Every refresh re-lists each open folder: an unchanged one skips the sort (13 ms at 10k
-      // entries) and the tree's re-render.
-      if (requests.current.get(path) === id) setChildren((c) => (unchanged(c[path], listed) ? c : { ...c, [path]: listed.sort(compareEntries) }));
-    } catch (e) {
-      if (requests.current.get(path) !== id) return;
-      // The root must stay expanded, or the tree would stay empty after the error clears.
-      if (path === "") return toast("error", "Could not list repository", errorMessage(e));
-      // Folder deleted (agents do that): close it quietly instead of erroring on every refresh.
-      setExpanded((x) => {
-        const next = new Set(x);
-        next.delete(path);
-        return next;
-      });
-      setChildren(({ [path]: _gone, ...rest }) => rest);
-    }
-  }, []);
-
-  // Re-list open folders whenever the disk changes so new/deleted files show up.
-  useEffect(() => {
-    expanded.forEach((p) => loadDir(p));
-  }, [revision, loadDir]);
 
   /** Opens the folders down to `path` and scrolls to it once its row is there. */
   const openTo = (path: string) => {
@@ -190,16 +157,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   }, [status]);
 
   // What's on screen, top to bottom: arrow keys walk this list.
-  const rows = useMemo(() => {
-    const out: { entry: Entry; depth: number }[] = [];
-    const walk = (dir: string, depth: number) =>
-      shown.children[dir]?.forEach((entry) => {
-        out.push({ entry, depth });
-        if (entry.isDir && shown.expanded.has(entry.path)) walk(entry.path, depth + 1);
-      });
-    walk("", 0);
-    return out;
-  }, [shown.children, shown.expanded]);
+  const rows = useMemo(() => treeRows(shown.children, shown.expanded), [shown.children, shown.expanded]);
 
   /** The paths from `from` to `to` in the order they show; just `to` if `from` is gone. */
   const range = (from: string, to: string) => {
@@ -248,17 +206,6 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     row.scrollIntoView({ block: "center" });
     revealing.current = null;
   }, [rows]);
-
-  const setOpen = (path: string, open: boolean) => {
-    setExpanded((x) => {
-      const next = new Set(x);
-      if (open) next.add(path);
-      else next.delete(path);
-      return next;
-    });
-    // Always re-list: the cached listing may be from before the agent changed it.
-    if (open) loadDir(path);
-  };
 
   const activate = (e: Entry, pin = false) => (!e.isDir ? onOpen({ kind: "file", path: e.path }, pin) : !heldOpen(e.path) && setOpen(e.path, !expanded.has(e.path)));
 
@@ -374,28 +321,21 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
     if (cur && matchesCommand("explorer.rename", ev.nativeEvent)) setEditing({ mode: "rename", entry: cur });
     else if (cur && matchesCommand("explorer.delete", ev.nativeEvent)) remove(picked?.paths.has(cur.path) ? pickedEntries : [cur]);
     else if (ev.key === "Escape" && picked) setPicked(null);
-    else if (ev.key === "ArrowDown") move(i + 1);
-    else if (ev.key === "ArrowUp") move(i < 0 ? rows.length - 1 : i - 1);
-    else if (["Home", "End", "PageUp", "PageDown"].includes(ev.key) && rows.length) {
-      const row = rowOf(rows[Math.max(i, 0)].entry.path);
-      move(moveTarget(ev.key, Math.max(i, 0), rows.length, row instanceof HTMLElement ? pageOf(row) : 1)!);
-    }
-    else if (!cur) handled = false;
-    else if (ev.key === "ArrowRight") {
-      // A file: open it and read it.
-      if (!cur.isDir) {
-        activate(cur);
-        focusPanel("code");
-      } else if (!shown.expanded.has(cur.path)) setOpen(cur.path, true);
-      else if (rows[i + 1] && dirname(rows[i + 1].entry.path) === cur.path) move(i + 1);
-    } else if (ev.key === "ArrowLeft") {
-      if (cur.isDir && shown.expanded.has(cur.path) && !heldOpen(cur.path)) {
-        setOpen(cur.path, false);
+    else {
+      const k = treeKey(ev.key, rows, i, { isOpen: (p) => shown.expanded.has(p), closable: (p) => !heldOpen(p), row: rows.length ? rowOf(rows[Math.max(i, 0)].entry.path) : null });
+      if (!k) handled = false;
+      else if ("move" in k) move(k.move);
+      else if ("open" in k) setOpen(k.open, true);
+      else if ("close" in k) {
+        setOpen(k.close, false);
         setPicked(null);
+      } else if ("select" in k) setSelected(k.select);
+      else {
+        activate(k.activate, k.pin);
+        // A file: open it and read it.
+        if (k.focusCode) focusPanel("code");
       }
-      else if (dirname(cur.path)) setSelected(dirname(cur.path));
-    } else if (ev.key === "Enter") activate(cur, true);
-    else handled = false;
+    }
     if (handled) ev.preventDefault();
   };
 
