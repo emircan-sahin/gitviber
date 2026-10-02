@@ -11,22 +11,21 @@ import { lineInView } from "@/features/viewer/activeEditor";
 import { openSettings } from "@/features/settings/SettingsDialog";
 
 /**
- * The app's own icon (macOS), the size of a menu's: a plain one for an app without, so the names
- * line up, and a blank while it's drawn. Off macOS there are none, and nothing takes the space.
+ * The app's own icon (macOS) the size of a menu's, a blank while it's drawn. Without one,
+ * `fallback`: on macOS a plain icon by default, so the names line up; elsewhere nothing.
  */
-function AppIcon({ app, className = "size-4" }: { app: OpenApp; className?: string }) {
+function AppIcon({ app, className = "size-4", fallback = IS_MAC ? <AppWindow className={className} /> : null }: { app: OpenApp; className?: string; fallback?: React.ReactNode }) {
   const url = useOpenAppIcon(app);
-  if (!IS_MAC) return null;
   if (url) return <img src={url} alt="" draggable={false} className={cn("shrink-0", className)} />;
-  return url === undefined ? <span className={cn("shrink-0", className)} /> : <AppWindow className={className} />;
+  return url === undefined ? <span className={cn("shrink-0", className)} /> : fallback;
 }
 
 const grouped = (apps: OpenApp[]) => GROUPS.map(([group, label]) => [label, apps.filter((a) => a.group === group)] as const).filter(([, list]) => list.length);
 
 /**
  * The status bar's split button: a click opens `target()` (the worktree as a project) in the
- * last app picked, the arrow lists the rest. Also runs the rebindable "Open in" command, which shows the list until an
- * app has been picked.
+ * last app picked, the arrow lists the rest. Also runs the rebindable "Open in" command, which
+ * shows the list until an app has been picked.
  */
 export function OpenInButton({ target }: { target: () => OpenTarget }) {
   const { apps, last } = useOpenApps();
@@ -43,7 +42,7 @@ export function OpenInButton({ target }: { target: () => OpenTarget }) {
     <div className="flex items-center">
       <Tip label={last ? `Open in ${last.name}` : "Open in…"} shortcut={shortcut}>
         <button onClick={run} className="flex items-center gap-1 hover:text-foreground focus-visible:text-foreground">
-          {last && IS_MAC ? <AppIcon app={last} className="size-3.5" /> : <SquareArrowOutUpRight className="size-3" />}
+          {last ? <AppIcon app={last} className="size-3.5" fallback={<SquareArrowOutUpRight className="size-3" />} /> : <SquareArrowOutUpRight className="size-3" />}
           {last ? last.name : "Open in…"}
         </button>
       </Tip>
@@ -85,7 +84,7 @@ export function OpenInMenuItem({ path, disabled }: { path: string; disabled?: bo
   if (last)
     return (
       <ContextMenuItem disabled={disabled} onSelect={() => openIn(last, target())}>
-        {IS_MAC ? <AppIcon app={last} /> : <SquareArrowOutUpRight />} Open in {last.name}
+        <AppIcon app={last} fallback={<SquareArrowOutUpRight />} /> Open in {last.name}
       </ContextMenuItem>
     );
   if (!apps.length) return null;

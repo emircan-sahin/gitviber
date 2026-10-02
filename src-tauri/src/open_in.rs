@@ -3,6 +3,7 @@
 //! argument list, never through a shell: paths can hold quotes, spaces and `$`.
 
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -52,15 +53,32 @@ impl Cli {
     /// JetBrains' CommandLineProcessor opens a folder argument as a project, then a file after
     /// it in the open project holding it; VS Code opens files in the window of the folders
     /// given with them; Zed and Sublime Text open all their arguments in one window.
-    fn args(self, project: bool) -> Vec<&'static str> {
+    fn args(self, ctx: &Context, project: bool) -> Vec<&'static str> {
         let folder: &[&str] = if project { &["{path}"] } else { &[] };
+        let file = ctx.file.as_deref().unwrap_or(&ctx.path).to_string_lossy();
         let at: &[&str] = match self.goto {
+            // With -g, VS Code's parseLineAndColumnAware reads every argument split at its
+            // colons, any number among them a line: a path with a colon goes without its line.
+            Goto::Flag
+                if file.contains(':') || (project && ctx.path.to_string_lossy().contains(':')) =>
+            {
+                &["{file}"]
+            }
             Goto::Flag => &["-g", "{file}:{line}"],
+            // Zed's PathWithPosition takes the last one or two numbers after colons: with a
+            // column too, a name's own `:N` stays in the name.
+            Goto::Suffix if ends_in_number(&file) => &["{file}:{line}:1"],
             Goto::Suffix => &["{file}:{line}"],
             Goto::Line => &["--line", "{line}", "{file}"],
         };
         [self.run, folder, at].concat()
     }
+}
+
+/// `name:12`, which reads as a line.
+fn ends_in_number(path: &str) -> bool {
+    path.rsplit_once(':')
+        .is_some_and(|(_, n)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }
 
 const OPEN: &[&str] = &["open", "-a", "{app}", "{path}"];
@@ -172,128 +190,40 @@ fn bundle_path(app: &App) -> Option<PathBuf> {
     app.bundle_ids.iter().find_map(|id| app_path(id))
 }
 
-/// Where LaunchServices has the app, as `open -b` would find it.
 #[cfg(target_os = "macos")]
-fn app_path(bundle_id: &str) -> Option<PathBuf> {
-    use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject};
-    use std::ffi::{c_char, CStr, CString};
-
-    let id = CString::new(bundle_id).ok()?;
-    let path = objc2::rc::autoreleasepool(|_| unsafe {
-        let workspace: *mut AnyObject = msg_send![AnyClass::get(c"NSWorkspace")?, sharedWorkspace];
-        let id: *mut AnyObject =
-            msg_send![AnyClass::get(c"NSString")?, stringWithUTF8String: id.as_ptr()];
-        let url: *mut AnyObject = msg_send![workspace, URLForApplicationWithBundleIdentifier: id];
-        if url.is_null() {
-            return None;
-        }
-        let path: *mut AnyObject = msg_send![url, path];
-        let utf8: *const c_char = msg_send![path, UTF8String];
-        (!utf8.is_null())
-            .then(|| PathBuf::from(CStr::from_ptr(utf8).to_string_lossy().into_owned()))
-    })?;
-    // LaunchServices still knows an app that was just moved to the Trash.
-    (!path.to_string_lossy().contains("/.Trash/")).then_some(path)
-}
+use crate::objc::app_path;
 
 #[cfg(not(target_os = "macos"))]
 fn app_path(_bundle_id: &str) -> Option<PathBuf> {
     None
 }
 
-/// The app's icon as a PNG, drawn once per bundle: Finder's icon for it, as its Dock and the
-/// Open With menu show.
+/// The app's icon as a 32 px PNG (the menu shows it at 16, on a Retina screen), drawn once per
+/// build of the app: an update that brings a new icon changes the bundle's modification time.
 pub fn icon(id: &str) -> Option<Vec<u8>> {
-    static ICONS: std::sync::Mutex<Vec<(PathBuf, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+    type Key = (PathBuf, Option<std::time::SystemTime>);
+    static ICONS: std::sync::Mutex<Option<HashMap<Key, Vec<u8>>>> = std::sync::Mutex::new(None);
     let bundle = APPS.iter().find(|a| a.id == id).and_then(bundle_path)?;
-    let mut icons = ICONS.lock().ok()?;
-    if let Some((_, png)) = icons.iter().find(|(b, _)| *b == bundle) {
+    let key = (
+        bundle.clone(),
+        bundle.metadata().and_then(|m| m.modified()).ok(),
+    );
+    if let Some(png) = ICONS.lock().ok()?.get_or_insert_default().get(&key) {
         return Some(png.clone());
     }
+    // Drawn outside the lock: the menu asks for every app's at once.
     let png = render_icon(&bundle)?;
-    icons.push((bundle, png.clone()));
+    ICONS
+        .lock()
+        .ok()?
+        .get_or_insert_default()
+        .insert(key, png.clone());
     Some(png)
 }
 
-/// 32 px: the menu shows it at 16, on a Retina screen. Drawn into a bitmap of that size, as
-/// the icon's own TIFF would hold every size up to 1024.
 #[cfg(target_os = "macos")]
 fn render_icon(bundle: &Path) -> Option<Vec<u8>> {
-    use objc2::encode::{Encode, Encoding};
-    use objc2::msg_send;
-    use objc2::runtime::{AnyClass, AnyObject, Bool};
-    use std::ffi::CString;
-
-    #[repr(C)]
-    struct Rect {
-        x: f64,
-        y: f64,
-        w: f64,
-        h: f64,
-    }
-    const PAIR: [Encoding; 2] = [f64::ENCODING, f64::ENCODING];
-    unsafe impl Encode for Rect {
-        const ENCODING: Encoding = Encoding::Struct(
-            "CGRect",
-            &[
-                Encoding::Struct("CGPoint", &PAIR),
-                Encoding::Struct("CGSize", &PAIR),
-            ],
-        );
-    }
-    const SIZE: f64 = 32.0;
-    const PNG: usize = 4; // NSBitmapImageFileTypePNG
-    const SOURCE_OVER: usize = 2; // NSCompositingOperationSourceOver
-
-    let path = CString::new(bundle.to_string_lossy().as_bytes()).ok()?;
-    objc2::rc::autoreleasepool(|_| unsafe {
-        let string = |s: &std::ffi::CStr| -> Option<*mut AnyObject> {
-            Some(msg_send![AnyClass::get(c"NSString")?, stringWithUTF8String: s.as_ptr()])
-        };
-        let workspace: *mut AnyObject = msg_send![AnyClass::get(c"NSWorkspace")?, sharedWorkspace];
-        let image: *mut AnyObject = msg_send![workspace, iconForFile: string(&path)?];
-        if image.is_null() {
-            return None;
-        }
-        let rep: *mut AnyObject = msg_send![AnyClass::get(c"NSBitmapImageRep")?, alloc];
-        let rep: *mut AnyObject = msg_send![
-            rep,
-            initWithBitmapDataPlanes: std::ptr::null_mut::<*mut u8>(),
-            pixelsWide: SIZE as isize,
-            pixelsHigh: SIZE as isize,
-            bitsPerSample: 8isize,
-            samplesPerPixel: 4isize,
-            hasAlpha: Bool::YES,
-            isPlanar: Bool::NO,
-            colorSpaceName: string(c"NSDeviceRGBColorSpace")?,
-            bytesPerRow: 0isize,
-            bitsPerPixel: 0isize
-        ];
-        if rep.is_null() {
-            return None;
-        }
-        let graphics = AnyClass::get(c"NSGraphicsContext")?;
-        let context: *mut AnyObject = msg_send![graphics, graphicsContextWithBitmapImageRep: rep];
-        let png = (!context.is_null()).then(|| {
-            let _: () = msg_send![graphics, saveGraphicsState];
-            let _: () = msg_send![graphics, setCurrentContext: context];
-            let whole = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
-            let into = Rect { x: 0.0, y: 0.0, w: SIZE, h: SIZE };
-            let _: () = msg_send![image, drawInRect: into, fromRect: whole, operation: SOURCE_OVER, fraction: 1.0f64];
-            let _: () = msg_send![graphics, restoreGraphicsState];
-            let none: *mut AnyObject = msg_send![AnyClass::get(c"NSDictionary")?, dictionary];
-            let data: *mut AnyObject = msg_send![rep, representationUsingType: PNG, properties: none];
-            if data.is_null() {
-                return None;
-            }
-            let len: usize = msg_send![data, length];
-            let bytes: *const u8 = msg_send![data, bytes];
-            Some(std::slice::from_raw_parts(bytes, len).to_vec())
-        });
-        let _: () = msg_send![rep, release];
-        png.flatten()
-    })
+    crate::objc::app_icon(bundle, 32)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -355,13 +285,17 @@ fn fill(arg: &str, values: &[(&str, &str)]) -> String {
 }
 
 /// `rel` in the worktree ("" is the worktree itself): the folder to open, and the file if
-/// it is one. Both go through fs::resolve, which keeps them inside the repo.
-fn target(root: &Path, rel: &str) -> Result<(PathBuf, Option<PathBuf>), String> {
+/// it is one. Both go through fs::resolve, which keeps them inside the repo. A `project` is the
+/// worktree, with `rel` as its file while that is one: the focused tab's file may have been
+/// deleted since (by an agent, a checkout), which leaves the worktree to open.
+fn target(root: &Path, rel: &str, project: bool) -> Result<(PathBuf, Option<PathBuf>), String> {
     if rel.is_empty() {
         return Ok((root.to_path_buf(), None));
     }
     let full = crate::fs::resolve(root, rel)?;
-    if full.is_dir() {
+    if project {
+        Ok((root.to_path_buf(), full.is_file().then_some(full)))
+    } else if full.is_dir() {
         Ok((full, None))
     } else if full.is_file() {
         Ok((root.to_path_buf(), Some(full)))
@@ -384,10 +318,10 @@ pub fn open(
         .find(|a| a.id == id)
         .ok_or_else(|| format!("unknown app: {id}"))?;
     let bundle = bundle_path(app).ok_or_else(|| format!("{} is not installed", app.name))?;
-    let (dir, file) = target(root, rel)?;
+    let (dir, file) = target(root, rel, project)?;
     // Terminals open where they're pointed; a git client wants the repository itself.
     let (path, file) = match app.group {
-        Editor if project => (root.to_path_buf(), file.filter(|_| app.cli.is_some())),
+        Editor if project => (dir, file.filter(|_| app.cli.is_some())),
         Editor => (dir, file),
         Terminal => (dir, None),
         Other => (root.to_path_buf(), None),
@@ -401,7 +335,7 @@ pub fn open(
     let argv = match (&ctx.file, app.cli) {
         (None, _) => expand(app.folder, &ctx),
         (Some(_), Some(cli)) => {
-            let cli = expand(&cli.args(project), &ctx);
+            let cli = expand(&cli.args(&ctx, project), &ctx);
             // The CLI moved in some version of the app: the project, or the file without its
             // line, beats failing.
             if Path::new(&cli[0]).is_absolute() && !Path::new(&cli[0]).exists() {
@@ -434,10 +368,10 @@ pub fn open_custom(
     {
         template.push(if project { "{path}" } else { "{file}" }.into());
     }
-    let (path, file) = target(root, rel)?;
+    let (path, file) = target(root, rel, project)?;
     let ctx = Context {
         app: None,
-        path: if project { root.to_path_buf() } else { path },
+        path,
         file,
         line: line.unwrap_or(1),
     };
@@ -540,19 +474,19 @@ mod tests {
         let cli = |run, goto| Cli { run, goto };
         let code = cli(&["code"], Goto::Flag);
         assert_eq!(
-            expand(&code.args(true), &file),
+            expand(&code.args(&file, true), &file),
             ["code", "/work/my repo", "-g", "/work/my repo/src/a.ts:42"]
         );
         assert_eq!(
-            expand(&code.args(false), &file),
+            expand(&code.args(&file, false), &file),
             ["code", "-g", "/work/my repo/src/a.ts:42"]
         );
         assert_eq!(
-            expand(&cli(&["subl"], Goto::Suffix).args(true), &file),
+            expand(&cli(&["subl"], Goto::Suffix).args(&file, true), &file),
             ["subl", "/work/my repo", "/work/my repo/src/a.ts:42"]
         );
         assert_eq!(
-            expand(&cli(JETBRAINS, Goto::Line).args(true), &file),
+            expand(&cli(JETBRAINS, Goto::Line).args(&file, true), &file),
             [
                 "open",
                 "-na",
@@ -564,6 +498,39 @@ mod tests {
                 "/work/my repo/src/a.ts"
             ]
         );
+    }
+
+    /// A colon in a path would be read as the line's: VS Code gets the file without one, and
+    /// Zed a column after the line, so the name's own `:12` stays in it.
+    #[test]
+    fn a_name_with_a_colon_keeps_it() {
+        let file = ctx(Some("/work/my repo/notes:12"));
+        let code = Cli {
+            run: &["code"],
+            goto: Goto::Flag,
+        };
+        assert_eq!(
+            expand(&code.args(&file, true), &file),
+            ["code", "/work/my repo", "/work/my repo/notes:12"]
+        );
+        let zed = Cli {
+            run: &["zed"],
+            goto: Goto::Suffix,
+        };
+        assert_eq!(
+            expand(&zed.args(&file, false), &file),
+            ["zed", "/work/my repo/notes:12:42:1"]
+        );
+        let plain = ctx(Some("/work/a:b/c.ts"));
+        assert_eq!(
+            expand(&zed.args(&plain, false), &plain),
+            ["zed", "/work/a:b/c.ts:42"]
+        );
+        assert_eq!(
+            expand(&code.args(&plain, false), &plain),
+            ["code", "/work/a:b/c.ts"]
+        );
+        assert!(!ends_in_number("a:") && !ends_in_number("a") && ends_in_number("a:7"));
     }
 
     /// A custom command with no placeholder gets the project's folder, or the file a row names.
@@ -612,15 +579,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("gitviber-open-in-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src")).unwrap();
         std::fs::write(dir.join("src/a.txt"), "a").unwrap();
-        assert_eq!(target(&dir, "").unwrap(), (dir.clone(), None));
-        assert_eq!(target(&dir, "src").unwrap(), (dir.join("src"), None));
+        assert_eq!(target(&dir, "", false).unwrap(), (dir.clone(), None));
+        assert_eq!(target(&dir, "src", false).unwrap(), (dir.join("src"), None));
         assert_eq!(
-            target(&dir, "src/a.txt").unwrap(),
+            target(&dir, "src/a.txt", false).unwrap(),
             (dir.clone(), Some(dir.join("src/a.txt")))
         );
-        assert!(target(&dir, "../etc").is_err());
-        assert!(target(&dir, "/etc").is_err());
-        assert!(target(&dir, "missing").is_err());
+        assert!(target(&dir, "../etc", false).is_err());
+        assert!(target(&dir, "/etc", false).is_err());
+        assert!(target(&dir, "missing", false).is_err());
+        // The status bar's project: the worktree, with the file while it's there.
+        assert_eq!(target(&dir, "missing", true).unwrap(), (dir.clone(), None));
+        assert_eq!(target(&dir, "src", true).unwrap(), (dir.clone(), None));
+        assert!(target(&dir, "../etc", true).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

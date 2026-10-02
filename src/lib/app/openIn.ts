@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { api, type OpenInApp } from "../api";
-import { REVEAL_FAILED } from "../platform";
+import { IS_MAC, REVEAL_FAILED } from "../platform";
 import { getSettings, type Settings, updateSettings, useSettings } from "../settings";
 import { readJson, writeJson } from "../storage";
 import { createStore } from "../store";
@@ -11,7 +11,7 @@ export type OpenApp = Omit<OpenInApp, "group"> & { group: OpenInApp["group"] | "
 
 /**
  * What to open: a path in the worktree ("" for the worktree), and the line an editor should show.
- * `project`: the worktree opens as a project, editors that can also showing `path` in it.
+ * `project`: the worktree opens as a project, and editors that can also show `path` in it.
  */
 export interface OpenTarget {
   path: string;
@@ -79,12 +79,16 @@ function loadIcon(id: string) {
   api
     .openInIcon(id)
     .then((png) => icons.set({ ...icons.get(), [id]: png.byteLength ? URL.createObjectURL(new Blob([png], { type: "image/png" })) : "" }))
-    .catch(() => icons.set({ ...icons.get(), [id]: "" }));
+    .catch(() => {
+      // Asked again the next time something shows it.
+      asked.delete(id);
+      icons.set({ ...icons.get(), [id]: "" });
+    });
 }
 
 /** A found app's icon: its URL, "" for none (the user's own apps, off macOS), undefined while it's drawn. */
 export function useOpenAppIcon(app: OpenApp): string | undefined {
-  const id = app.command ? undefined : app.id;
+  const id = IS_MAC && !app.command ? app.id : undefined;
   const url = icons.use()[id ?? ""];
   useEffect(() => {
     if (id) loadIcon(id);

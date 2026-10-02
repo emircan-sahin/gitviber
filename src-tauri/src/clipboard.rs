@@ -221,34 +221,11 @@ fn contents() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {
 
 #[cfg(target_os = "macos")]
 mod pasteboard {
+    use crate::objc::{bytes, ns_string, rust_string};
     use objc2::msg_send;
     use objc2::runtime::{AnyClass, AnyObject};
-    use std::ffi::{c_char, CStr, CString};
+    use std::ffi::CString;
     use std::path::Path;
-
-    unsafe fn ns_string(s: &CStr) -> *mut AnyObject {
-        let Some(cls) = AnyClass::get(c"NSString") else {
-            return std::ptr::null_mut();
-        };
-        msg_send![cls, stringWithUTF8String: s.as_ptr()]
-    }
-
-    unsafe fn rust_string(s: *mut AnyObject) -> Option<String> {
-        if s.is_null() {
-            return None;
-        }
-        let utf8: *const c_char = msg_send![s, UTF8String];
-        (!utf8.is_null()).then(|| CStr::from_ptr(utf8).to_string_lossy().into_owned())
-    }
-
-    unsafe fn bytes(data: *mut AnyObject) -> Option<Vec<u8>> {
-        if data.is_null() {
-            return None;
-        }
-        let len: usize = msg_send![data, length];
-        let ptr: *const u8 = msg_send![data, bytes];
-        (!ptr.is_null() && len > 0).then(|| std::slice::from_raw_parts(ptr, len).to_vec())
-    }
 
     /// The general pasteboard's file paths, text and image (as PNG). Call inside an autorelease pool.
     pub unsafe fn read() -> (Vec<String>, Option<String>, Option<Vec<u8>>) {

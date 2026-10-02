@@ -21,6 +21,8 @@ mod menu;
 mod navigation;
 mod network;
 mod notifications;
+#[cfg(target_os = "macos")]
+mod objc;
 mod open_in;
 mod opened;
 mod process;
