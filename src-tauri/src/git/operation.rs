@@ -231,10 +231,29 @@ pub fn bisect_start(repo: &Path, good: &str) -> Result<BisectStep, String> {
 /// Past this a side isn't shown line by line anyway.
 const MERGE_BASE_MAX: usize = 4 << 20;
 
+/// A conflicted text file's sides as the index holds them (stages 2 and 3).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictSides {
+    /// The file merged again in diff3 style (conflict_base); None for a side binary or too big.
+    pub merged: Option<String>,
+    /// Whether each side's file ends with a newline. Git ends the closing marker line with one
+    /// either way, so a conflict at the end of the file can't tell.
+    pub ours_newline: bool,
+    pub theirs_newline: bool,
+}
+
 /// The conflicted `path` merged again from its index stages in diff3 style, whatever
 /// conflictstyle the merge wrote it in, so each conflict can show the base both sides changed.
 /// None when a side has no text (it deleted the file, or it's binary) or is too big to show.
+/// The page gets it with how each side ends (conflict_sides); the scenarios check it alone.
+#[cfg(test)]
 pub fn conflict_base(repo: &Path, path: &str) -> Result<Option<String>, String> {
+    Ok(conflict_sides(repo, path)?.and_then(|s| s.merged))
+}
+
+/// None when a side has no file (it deleted it).
+pub fn conflict_sides(repo: &Path, path: &str) -> Result<Option<ConflictSides>, String> {
     let paths = [path.to_string()];
     // "<mode> <blob> <stage>\t<path>": 1 base (none for add/add), 2 ours, 3 theirs.
     let raw = run_text(repo, &with_paths(vec!["ls-files", "-u", "-z"], &paths))?;
@@ -255,11 +274,17 @@ pub fn conflict_base(repo: &Path, path: &str) -> Result<Option<String>, String> 
         None => Ok(vec![]),
     };
     let sides = [read(Some(ours))?, read(base)?, read(Some(theirs))?];
+    let ends = |s: &[u8]| s.last() == Some(&b'\n');
+    let mut out = ConflictSides {
+        merged: None,
+        ours_newline: ends(&sides[0]),
+        theirs_newline: ends(&sides[2]),
+    };
     if sides
         .iter()
         .any(|s| s.len() > MERGE_BASE_MAX || s.contains(&0))
     {
-        return Ok(None);
+        return Ok(Some(out));
     }
     // merge-file reads files; `--object-id` would take the blobs, but only from git 2.43.
     let dir = crate::scratch::ScratchDir::new("merge")?;
@@ -279,8 +304,9 @@ pub fn conflict_base(repo: &Path, path: &str) -> Result<Option<String>, String> 
     args.extend(files.iter().map(String::as_str));
     // Its exit code is the number of conflicts (capped at 127); a negative one is an error.
     let conflicts: Vec<i32> = (1..=127).collect();
-    let out = run_with(repo, &args, &conflicts, None)?;
-    Ok(Some(String::from_utf8_lossy(&out).into_owned()))
+    let merged = run_with(repo, &args, &conflicts, None)?;
+    out.merged = Some(String::from_utf8_lossy(&merged).into_owned());
+    Ok(Some(out))
 }
 
 /// The commit checked out is "good", "bad", or to "skip" (can't be tested).

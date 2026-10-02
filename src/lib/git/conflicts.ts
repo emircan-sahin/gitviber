@@ -50,6 +50,19 @@ export function parseConflicts(text: string): { segments: Segment[]; trailingNew
   return { segments, trailingNewline };
 }
 
+/**
+ * Whether the file the choices make ends with a newline. Git ends a closing marker line with one
+ * even where neither side's file did, so for a conflict at the very end it comes from the sides
+ * (`sides`, from the index; null while unknown): the one chosen, the incoming one for both (it
+ * comes last), either for an edit by hand.
+ */
+export function endsWithNewline(parsed: { segments: Segment[]; trailingNewline: boolean }, lastChoice: "ours" | "theirs" | "both" | "custom" | undefined, sides: { oursNewline: boolean; theirsNewline: boolean } | null): boolean {
+  if (parsed.segments.at(-1)?.t !== "conflict" || !lastChoice || !sides) return parsed.trailingNewline;
+  if (lastChoice === "ours") return sides.oursNewline;
+  if (lastChoice === "custom") return sides.oursNewline || sides.theirsNewline;
+  return sides.theirsNewline;
+}
+
 /** Whether a file still has conflict blocks, or a start marker left open. */
 export function hasConflictMarkers(text: string): boolean {
   const parsed = parseConflicts(text);

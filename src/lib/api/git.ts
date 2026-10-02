@@ -182,8 +182,8 @@ export const api = {
   opAbort: () => invoke<void>("op_abort"),
   rebaseSkip: () => invoke<boolean>("rebase_skip"),
   resolveSide: (path: string, side: "ours" | "theirs") => invoke<void>("resolve_side", { path, side }),
-  /** The conflicted file merged again from its index stages in diff3 style; null when a side has no text. */
-  conflictBase: (path: string) => invoke<string | null>("conflict_base", { path }),
+  /** A conflicted file's sides: `merged` again in diff3 style (null for a binary or huge side), and whether each ends with a newline. Null when a side deleted it. */
+  conflictBase: (path: string) => invoke<{ merged: string | null; oursNewline: boolean; theirsNewline: boolean } | null>("conflict_base", { path }),
   /** The merge and diff tools git's config names (as `--gui` reads it); null where none a window can run. */
   externalTools: () => invoke<{ merge: string | null; diff: string | null }>("external_tools"),
   /** `git mergetool` on the path, settling once the tool is closed. */

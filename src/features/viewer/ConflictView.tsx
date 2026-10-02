@@ -6,7 +6,7 @@ import { api, errorMessage, type FileChange, type Operation } from "@/lib/api";
 import { showLanguage } from "@/lib/editor/shownLanguage";
 import { copyNarrowed, indentUnit } from "@/lib/editor/indent";
 import { languageFor } from "@/lib/editor/language";
-import { basesFor, type Block, mergingWhat, oursText, parseConflicts, resolvePrompt, type Segment } from "@/lib/git/conflicts";
+import { basesFor, type Block, endsWithNewline, mergingWhat, oursText, parseConflicts, resolvePrompt, type Segment } from "@/lib/git/conflicts";
 import { forTerminal } from "@/lib/review/notes";
 import { pasteToAgent } from "@/lib/terminal/terminals";
 import { copyText } from "@/lib/app/clipboard";
@@ -66,13 +66,21 @@ export function ConflictView({ file, root, branch, conflicted, operation, revisi
   const resolved = blocks.filter((b) => choices.has(b.id)).length;
   // Each conflict's base, from the index stages unless the file's diff3 style wrote it: asked for
   // the text read, and kept with it, so another file's never shows.
-  const needBase = blocks.some((b) => !b.base);
+  // Also how each side ends, for a conflict at the end of the file (endsWithNewline).
   const rebuilt = useAsyncValue(
-    text != null && needBase ? () => api.conflictBase(file.path).then((out) => ({ text, blocks: (out && parseConflicts(out)?.segments.filter((s) => s.t === "conflict")) || [] })) : null,
-    [file.path, text, needBase],
-    null as { text: string; blocks: Block[] } | null,
+    text != null && blocks.length
+      ? () =>
+          api.conflictBase(file.path).then((out) => ({
+            text,
+            sides: out,
+            blocks: (out?.merged && parseConflicts(out.merged)?.segments.filter((s) => s.t === "conflict")) || [],
+          }))
+      : null,
+    [file.path, text, blocks.length > 0],
+    null as { text: string; sides: Awaited<ReturnType<typeof api.conflictBase>>; blocks: Block[] } | null,
   );
-  const bases = useMemo(() => basesFor(blocks, rebuilt?.text === text ? rebuilt.blocks : []), [parsed, rebuilt, text]);
+  const current = rebuilt?.text === text ? rebuilt : null;
+  const bases = useMemo(() => basesFor(blocks, current?.blocks ?? []), [parsed, current]);
   // In a rebase HEAD is the branch you're rebasing onto; "incoming" is your own commit being replayed.
   const rebase = operation?.kind === "rebase";
 
@@ -108,7 +116,9 @@ export function ConflictView({ file, root, branch, conflicted, operation, revisi
         setChoices(new Map());
         return;
       }
-      await api.writeFile(file.path, out.join("\n") + (parsed.trailingNewline ? "\n" : ""));
+      const last = parsed.segments.at(-1);
+      const eol = endsWithNewline(parsed, last?.t === "conflict" ? choices.get(last.id)?.kind : undefined, current?.sides ?? null);
+      await api.writeFile(file.path, out.join("\n") + (eol ? "\n" : ""));
       await api.stage([file.path]);
       toast("success", "Conflict resolved", file.path);
     } catch (e) {

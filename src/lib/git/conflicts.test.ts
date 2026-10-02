@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { languageFor } from "../editor/language.ts";
 import { forTerminal } from "../review/notes.ts";
-import { basesFor, hasConflictMarkers, mergingWhat, oursText, parseConflicts, resolvePrompt } from "./conflicts.ts";
+import { basesFor, endsWithNewline, hasConflictMarkers, mergingWhat, oursText, parseConflicts, resolvePrompt } from "./conflicts.ts";
 
 test("conflicted files are sniffed without their markers", () => {
   const detect = (path: string, text: string) => languageFor(path, oursText(parseConflicts(text)!.segments));
@@ -89,4 +89,24 @@ test("the agent prompt pasted into a terminal carries no control characters and 
   assert.equal(mergingWhat("revert", null, "main", "parent of 1a2b3c4 (Fix)"), "reverting parent of 1a2b3c4 (Fix)");
   assert.equal(mergingWhat(undefined, null, "main", "x"), null);
   assert.equal(mergingWhat("merge", null, null, null), "merging the incoming branch into HEAD");
+});
+
+test("a conflict at the end of a file keeps the file's own last newline, or its lack", () => {
+  // Neither side's file ends with a newline, but git ends the closing marker line with one.
+  const parsed = parseConflicts("a\n<<<<<<< HEAD\nend-ours\n=======\nend-theirs\n>>>>>>> feat\n")!;
+  assert.equal(parsed.trailingNewline, true);
+  const none = { oursNewline: false, theirsNewline: false };
+  for (const kind of ["ours", "theirs", "both", "custom"] as const) assert.equal(endsWithNewline(parsed, kind, none), false, kind);
+  const mixed = { oursNewline: true, theirsNewline: false };
+  assert.equal(endsWithNewline(parsed, "ours", mixed), true);
+  assert.equal(endsWithNewline(parsed, "theirs", mixed), false);
+  // Both: the incoming lines come last.
+  assert.equal(endsWithNewline(parsed, "both", mixed), false);
+  assert.equal(endsWithNewline(parsed, "custom", mixed), true);
+  // Not known yet: as the file reads.
+  assert.equal(endsWithNewline(parsed, "ours", null), true);
+  // Text after the last conflict is the file's own end.
+  const inner = parseConflicts("<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> feat\nlast")!;
+  assert.equal(endsWithNewline(inner, "ours", none), false);
+  assert.equal(endsWithNewline(parseConflicts("<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> feat\nlast\n")!, "ours", none), true);
 });

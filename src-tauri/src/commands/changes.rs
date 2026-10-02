@@ -153,10 +153,14 @@ pub async fn resolve_side(state: State<'_, AppState>, path: String, side: git::S
     indexed(&state, move |r| git::resolve_side(r, &path, side)).await
 }
 
-/// A conflicted file in diff3 style, built from its index stages: the base of each conflict.
+/// A conflicted file's sides: merged again in diff3 style for each conflict's base, and how
+/// each ends.
 #[tauri::command]
-pub async fn conflict_base(state: State<'_, AppState>, path: String) -> Res<Option<String>> {
-    read_repo(&state, move |r| git::conflict_base(r, &path)).await
+pub async fn conflict_base(
+    state: State<'_, AppState>,
+    path: String,
+) -> Res<Option<git::ConflictSides>> {
+    read_repo(&state, move |r| git::conflict_sides(r, &path)).await
 }
 
 /// The merge and diff tools git's config names, for "Open in <tool>"; read when a menu or a

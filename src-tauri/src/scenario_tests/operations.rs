@@ -737,6 +737,17 @@ fn conflict_bases_across_conflict_kinds() {
     assert!(crlf.contains("||||||| base\r\nb\r\n"), "{crlf:?}");
     let no_eol = conflict_base(&r, "no-eol.txt").unwrap().unwrap();
     assert!(no_eol.contains("||||||| base\nend\n"), "{no_eol:?}");
+    // The merged text ends the marker line with a newline; the sides say neither file had one.
+    let sides = conflict_sides(&r, "no-eol.txt").unwrap().unwrap();
+    assert!(!sides.ours_newline && !sides.theirs_newline);
+    let sides = conflict_sides(&r, "crlf.txt").unwrap().unwrap();
+    assert!(sides.ours_newline && sides.theirs_newline);
+    // Binary: no merged text, but still how it ends.
+    assert!(conflict_sides(&r, "bin.dat")
+        .unwrap()
+        .unwrap()
+        .merged
+        .is_none());
     assert_eq!(conflict_base(&r, "bin.dat").unwrap(), None);
     assert_eq!(conflict_base(&r, "del-here.txt").unwrap(), None);
     assert_eq!(conflict_base(&r, "del-there.txt").unwrap(), None);
