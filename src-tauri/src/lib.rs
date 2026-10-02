@@ -3,6 +3,7 @@ pub mod askpass;
 mod cli;
 mod clipboard;
 mod commands;
+mod conversations;
 mod definitions;
 #[cfg(debug_assertions)]
 mod dev_bridge;
@@ -197,6 +198,8 @@ pub fn run() {
             commands::worktrees::lock_worktree,
             commands::worktrees::unlock_worktree,
             commands::worktrees::remove_worktree,
+            commands::worktrees::worktree_ignored,
+            commands::worktrees::clean_up_worktrees,
             commands::changes::stage,
             commands::changes::unstage,
             commands::changes::discard,
@@ -306,6 +309,7 @@ pub fn run() {
             commands::app::copy_files,
             commands::app::pty_busy,
             commands::app::pty_agents,
+            commands::app::agent_conversations,
             commands::app::folders_left,
             commands::app::quit,
             commands::app::update_mode,

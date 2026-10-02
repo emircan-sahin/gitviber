@@ -1,5 +1,7 @@
 use crate::state::{blocking, AppState, Res};
-use crate::{agents, cli, clipboard, errors, git, launch, menu, process, pty, updates};
+use crate::{
+    agents, cli, clipboard, conversations, errors, git, launch, menu, process, pty, updates,
+};
 use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -131,6 +133,18 @@ pub async fn pty_agents(
             }
         }
         Ok(running)
+    })
+    .await
+}
+
+/// The conversations agents had in `cwd` (conversations.rs), newest first: read now, never kept.
+#[tauri::command]
+pub async fn agent_conversations(cwd: String) -> Res<Vec<conversations::Conversation>> {
+    blocking(move || {
+        let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) else {
+            return Ok(vec![]);
+        };
+        Ok(conversations::list(std::path::Path::new(&cwd), &home))
     })
     .await
 }
