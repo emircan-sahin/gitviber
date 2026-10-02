@@ -44,6 +44,27 @@ fn worktree_list_detached_prunable_and_counts() {
     assert!(gone.prunable);
 
     assert_eq!(worktree_state(&r, &a.path, true).unwrap().uncommitted, 2);
+    // Last activity: a fresh worktree's creation, then its newest uncommitted file.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let made = worktree_state(&r, &det.path, true)
+        .unwrap()
+        .updated
+        .unwrap();
+    assert!(made + 60 >= now);
+    let later = std::time::UNIX_EPOCH + std::time::Duration::from_secs(now + 3600);
+    fs::File::options()
+        .write(true)
+        .open(agent.join("new.txt"))
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    assert_eq!(
+        worktree_state(&r, &a.path, true).unwrap().updated,
+        Some(now + 3600)
+    );
     let d = worktree_state(&r, &det.path, true).unwrap();
     assert!(d.uncommitted == 0 && d.commits == 0 && !d.merged);
     assert!(worktree_state(&r, &gone.path, true).is_err());
@@ -394,4 +415,254 @@ fn a_new_worktree_from_a_remote_only_branch_tracks_it() {
     )
     .unwrap();
     assert!(upstream(&login).is_err(), "a new branch tracks nothing");
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn set_mtime(p: &Path, secs: u64) {
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+    fs::File::open(p).unwrap().set_modified(t).unwrap();
+}
+
+/// A linked worktree at `sb/name` on a new branch, made `then`: its reflog entry carries that
+/// time and every file in it, and the reflog file itself, were last modified then.
+fn old_worktree(r: &Path, sb: &Sandbox, name: &str, then: u64) -> String {
+    let dir = sb.path(name);
+    let ok = std::process::Command::new("git")
+        .current_dir(r)
+        .env("GIT_COMMITTER_DATE", format!("@{then} +0000"))
+        .args(["worktree", "add", "-q", "-b", name, dir.to_str().unwrap()])
+        .status()
+        .unwrap()
+        .success();
+    assert!(ok);
+    age(&dir, then);
+    worktrees(r)
+        .unwrap()
+        .into_iter()
+        .find(|w| same_dir(&w.path, &dir))
+        .unwrap()
+        .path
+}
+
+/// Every file and folder of a worktree, and its HEAD reflog, last modified at `secs`.
+fn age(dir: &Path, secs: u64) {
+    fn walk(p: &Path, secs: u64) {
+        for e in fs::read_dir(p).unwrap() {
+            let e = e.unwrap();
+            let t = e.file_type().unwrap();
+            if e.file_name() == ".git" || t.is_symlink() {
+                continue;
+            }
+            if t.is_dir() {
+                walk(&e.path(), secs);
+            }
+            set_mtime(&e.path(), secs);
+        }
+    }
+    walk(dir, secs);
+    let git = run_text(dir, &["rev-parse", "--absolute-git-dir"]).unwrap();
+    set_mtime(&Path::new(git.trim()).join("logs/HEAD"), secs);
+}
+
+/// Every kind of `git status` record gives its file's time: modified, untracked (odd names),
+/// a staged rename or copy (whose original path is a record of its own), and a conflict.
+#[test]
+fn worktree_time_reads_every_kind_of_status_record() {
+    let sb = Sandbox::new("wttime");
+    let r = sb.path("r");
+    init(&r);
+    for f in ["keep.txt", "old name.txt", "conflict.txt", "src.txt"] {
+        write_commit(&r, f, &format!("{f}\n"), f);
+    }
+    let now = unix_now();
+    let w = old_worktree(&r, &sb, "w", now - 10 * 86400);
+    let dir = Path::new(&w);
+    // Later than anything the reflog could say, so only this file can be the answer.
+    let mut later = now + 3600;
+    let mut newest = |file: &str| {
+        age(dir, now - 10 * 86400);
+        later += 60;
+        set_mtime(&dir.join(file), later);
+        let s = worktree_state(&r, &w, true).unwrap();
+        assert_eq!(s.updated, Some(later), "{file:?}");
+        s.uncommitted
+    };
+
+    fs::write(dir.join("keep.txt"), "changed\n").unwrap();
+    assert_eq!(newest("keep.txt"), 1);
+    let odd = "spaced dir/ü $HOME 'q\" #1.txt";
+    fs::create_dir_all(dir.join("spaced dir")).unwrap();
+    fs::write(dir.join(odd), "x\n").unwrap();
+    assert_eq!(newest(odd), 2);
+    fs::write(dir.join("line\nbreak.txt"), "x\n").unwrap();
+    assert_eq!(newest("line\nbreak.txt"), 3);
+
+    run(dir, &["mv", "old name.txt", "new näme.txt"]).unwrap();
+    assert_eq!(newest("new näme.txt"), 4);
+    // The record after a rename (its original path is skipped, not this one).
+    fs::write(dir.join("zz after.txt"), "x\n").unwrap();
+    assert_eq!(newest("zz after.txt"), 5);
+    run(dir, &["config", "status.renames", "copies"]).unwrap();
+    // Copy detection takes a source that changed too.
+    fs::copy(dir.join("src.txt"), dir.join("copy of src.txt")).unwrap();
+    fs::write(dir.join("src.txt"), "src.txt\nmore\n").unwrap();
+    run(dir, &["add", "copy of src.txt", "src.txt"]).unwrap();
+    let st = run_text(dir, &["status", "--porcelain=v2"]).unwrap();
+    assert!(st.contains("\n2 C") || st.starts_with("2 C"), "{st}");
+    assert_eq!(newest("copy of src.txt"), 7);
+
+    // A conflict: `u` records.
+    run(dir, &["reset", "-q", "--hard"]).unwrap();
+    run(dir, &["clean", "-q", "-fd"]).unwrap();
+    write_commit(dir, "conflict.txt", "ours\n", "ours");
+    write_commit(&r, "conflict.txt", "theirs\n", "theirs");
+    assert!(run(dir, &["merge", "-q", "main"]).is_err());
+    let st = run_text(dir, &["status", "--porcelain=v2"]).unwrap();
+    assert!(st.contains("u UU"), "{st}");
+    assert_eq!(newest("conflict.txt"), 1);
+}
+
+/// `git gc` (also run by itself after a fetch or commit, `gc --auto`) rewrites every
+/// worktree's HEAD reflog to expire old entries: that is no work done in any of them.
+#[test]
+fn worktree_time_is_not_moved_by_gc() {
+    let sb = Sandbox::new("wtgc");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let then = unix_now() - 10 * 86400;
+    let w = old_worktree(&r, &sb, "w", then);
+    assert_eq!(worktree_state(&r, &w, true).unwrap().updated, Some(then));
+
+    run(&r, &["gc", "-q"]).unwrap();
+    assert_eq!(
+        worktree_state(&r, &w, true).unwrap().updated,
+        Some(then),
+        "a gc in the main checkout made an untouched worktree look just worked in"
+    );
+
+    // Real work still moves it.
+    write_commit(Path::new(&w), "b.txt", "b\n", "work");
+    let s = worktree_state(&r, &w, true).unwrap();
+    assert!(s.updated.unwrap() + 60 >= unix_now());
+}
+
+/// Deleting files is work too: an agent that only removes files moves the time.
+#[test]
+fn worktree_time_counts_a_deleted_file() {
+    let sb = Sandbox::new("wtdel");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "lib/a.txt", "a\n", "base");
+    let w = old_worktree(&r, &sb, "w", unix_now() - 10 * 86400);
+    fs::remove_file(Path::new(&w).join("lib/a.txt")).unwrap();
+    let s = worktree_state(&r, &w, true).unwrap();
+    assert_eq!(s.uncommitted, 1);
+    assert!(
+        s.updated.unwrap() + 60 >= unix_now(),
+        "the deletion just now isn't counted: {:?}",
+        s.updated
+    );
+}
+
+/// A symlink made just now is new work, whatever it points at (or doesn't, yet).
+#[cfg(unix)]
+#[test]
+fn worktree_time_counts_a_new_symlink() {
+    let sb = Sandbox::new("wtlink");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let w = old_worktree(&r, &sb, "w", unix_now() - 10 * 86400);
+    std::os::unix::fs::symlink("../shared/.env", Path::new(&w).join(".env")).unwrap();
+    let s = worktree_state(&r, &w, true).unwrap();
+    assert_eq!(s.uncommitted, 1);
+    assert!(
+        s.updated.unwrap() + 60 >= unix_now(),
+        "a dangling symlink made just now isn't counted: {:?}",
+        s.updated
+    );
+}
+
+/// The main worktree's time leaves out worktrees kept inside it (.claude/worktrees/*),
+/// as its uncommitted count does.
+#[test]
+fn main_worktree_time_leaves_out_nested_worktrees() {
+    let sb = Sandbox::new("wtnest");
+    let r = repo_with_worktrees(&sb);
+    let then = unix_now() - 10 * 86400;
+    age(&r, then);
+    let main = worktrees(&r).unwrap().into_iter().find(|w| w.main).unwrap();
+    let agent = r.join(".claude/worktrees/agent");
+    fs::write(agent.join("work.txt"), "x\n").unwrap();
+    set_mtime(&agent.join("work.txt"), unix_now() + 3600);
+    let s = worktree_state(&r, &main.path, true).unwrap();
+    assert_eq!(s.uncommitted, 0);
+    assert!(s.updated.unwrap() < unix_now() + 3600, "{:?}", s.updated);
+}
+
+/// Without a reflog (core.logAllRefUpdates=false) a clean worktree has no time of its own,
+/// so the picker keeps the branch's commit time.
+#[test]
+fn worktree_time_without_a_reflog() {
+    let sb = Sandbox::new("wtnolog");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["config", "core.logAllRefUpdates", "false"]).unwrap();
+    let dir = sb.path("w");
+    run(
+        &r,
+        &["worktree", "add", "-q", "-b", "w", dir.to_str().unwrap()],
+    )
+    .unwrap();
+    let w = worktrees(&r)
+        .unwrap()
+        .into_iter()
+        .find(|w| same_dir(&w.path, &dir))
+        .unwrap()
+        .path;
+    assert_eq!(worktree_state(&r, &w, true).unwrap().updated, None);
+    fs::write(dir.join("n.txt"), "n\n").unwrap();
+    set_mtime(&dir.join("n.txt"), 1_700_000_000);
+    assert_eq!(
+        worktree_state(&r, &w, true).unwrap().updated,
+        Some(1_700_000_000)
+    );
+}
+
+/// Thousands of untracked files (a generated folder nobody ignored yet): every one counts
+/// and the newest wins, in reasonable time.
+#[test]
+fn worktree_time_over_thousands_of_untracked_files() {
+    let sb = Sandbox::new("wtmany");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let w = old_worktree(&r, &sb, "w", unix_now() - 10 * 86400);
+    let dir = Path::new(&w);
+    for d in 0..30 {
+        let sub = dir.join(format!("gen/d{d}"));
+        fs::create_dir_all(&sub).unwrap();
+        for f in 0..100 {
+            fs::write(sub.join(format!("f {f}.txt")), "x").unwrap();
+        }
+    }
+    age(dir, unix_now() - 86400);
+    let later = unix_now() + 3600;
+    set_mtime(&dir.join("gen/d17/f 42.txt"), later);
+    let t = std::time::Instant::now();
+    let s = worktree_state(&r, &w, true).unwrap();
+    eprintln!(
+        "worktree_state over 3000 untracked files: {:?}",
+        t.elapsed()
+    );
+    assert_eq!(s.uncommitted, 3000);
+    assert_eq!(s.updated, Some(later));
 }

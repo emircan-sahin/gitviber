@@ -333,6 +333,10 @@ pub struct WorktreeState {
     /// Committed on, then fully taken into the default branch, or squash- or rebase-merged
     /// upstream. A branch that never moved is in it too, but has nothing to call merged.
     pub merged: bool,
+    /// Unix seconds of the last thing done in it: HEAD moving (made, committed, checked out)
+    /// or an uncommitted file changing. Its branch's last commit says neither for a fresh
+    /// worktree, nor while an agent edits without committing.
+    pub updated: Option<u64>,
 }
 
 /// Where one of this repo's worktrees stands: uncommitted files, and commits found nowhere else.
@@ -357,7 +361,27 @@ pub fn worktree_state(repo: &Path, path: &str, upstream: bool) -> Result<Worktre
         dir,
         &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
     )?;
+    // Not following symlinks: a link made now to an old file is new work.
+    let mtime = |p: &Path| {
+        let t = std::fs::symlink_metadata(p)
+            .and_then(|m| m.modified())
+            .ok()?;
+        t.duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_secs())
+    };
+    // The newest entry's own time, not the log file's: gc rewrites every worktree's reflog.
+    let mut updated = reflog_time(dir);
     let mut uncommitted = 0;
+    let mut touched = |p: Option<&[u8]>| {
+        uncommitted += 1;
+        // A deleted file has no time; its folder changed when it went.
+        let Some(mut path) = p.map(|p| dir.join(os_path(p))) else {
+            return;
+        };
+        while !path.exists() && path.pop() && path.starts_with(dir) {}
+        updated = updated.max(mtime(&path));
+    };
     let mut records = raw.split(|b| *b == 0);
     while let Some(rec) = records.next() {
         match rec.first() {
@@ -365,13 +389,14 @@ pub fn worktree_state(repo: &Path, path: &str, upstream: bool) -> Result<Worktre
                 let p = String::from_utf8_lossy(&rec[2..]);
                 let root = real(&dir.join(p.as_ref()));
                 if !(is_nested_repo(dir, &p) && root.is_some_and(|r| others.contains(&r))) {
-                    uncommitted += 1;
+                    touched(rec.get(2..));
                 }
             }
-            Some(b'1' | b'u') => uncommitted += 1,
+            Some(b'1') => touched(path_after(rec, 8)),
+            Some(b'u') => touched(path_after(rec, 10)),
             // A rename's original path follows as its own record.
             Some(b'2') => {
-                uncommitted += 1;
+                touched(path_after(rec, 9));
                 records.next();
             }
             _ => {}
@@ -426,7 +451,36 @@ pub fn worktree_state(repo: &Path, path: &str, upstream: bool) -> Result<Worktre
         commits: if squashed { 0 } else { commits },
         merged: squashed
             || !bases.is_empty() && commits == 0 && w.branch.as_deref().is_some_and(moved),
+        updated,
     })
+}
+
+/// When HEAD last moved, from its newest reflog entry; works for files and reftable alike.
+fn reflog_time(dir: &Path) -> Option<u64> {
+    let out = run_text(
+        dir,
+        &["log", "-g", "-1", "--date=unix", "--format=%gd", "HEAD"],
+    )
+    .ok()?;
+    // "HEAD@{1790936093}"
+    let (_, t) = out.trim().split_once("@{")?;
+    t.strip_suffix('}')?.parse().ok()
+}
+
+#[cfg(unix)]
+fn os_path(p: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::OsStr::from_bytes(p).into()
+}
+
+#[cfg(not(unix))]
+fn os_path(p: &[u8]) -> PathBuf {
+    String::from_utf8_lossy(p).into_owned().into()
+}
+
+/// A porcelain v2 status record's path: the field after `n` space-separated ones.
+fn path_after(rec: &[u8], n: usize) -> Option<&[u8]> {
+    rec.splitn(n + 1, |b| *b == b' ').nth(n)
 }
 
 /// Deletes a linked worktree's folder and entry; its branch stays. `force` also drops
