@@ -15,7 +15,7 @@ import { changeTotals } from "@/features/changes/changeList";
 import { lineInView } from "@/features/viewer/activeEditor";
 import { OpenInButton } from "./OpenIn";
 
-/** `active`: the open tab's selection, which Open In opens. */
+/** `active`: the open tab's selection, which Open In shows in the worktree it opens. */
 export function StatusBar({ repo, reviewed, active }: { repo: ReturnType<typeof useRepo>; reviewed: number; active: Selection | undefined }) {
   const s = useSettings();
   const language = useShownLanguage();
@@ -86,9 +86,9 @@ function VersionInfo() {
   );
 }
 
-/** The open file while it's on disk, at the line in view; else the whole worktree. */
+/** The worktree as a project, with the open file in it (while it's on disk) at the line in view. */
 function openTarget(sel: Selection | undefined): OpenTarget {
   const change = sel?.kind === "unstaged" || sel?.kind === "staged" || sel?.kind === "conflict" || sel?.kind === "branch";
   const path = sel?.kind === "file" ? sel.path : change && sel.file.status !== "D" ? sel.file.path : null;
-  return path === null ? { path: "" } : { path, line: lineInView(path) };
+  return path === null ? { path: "", project: true } : { path, line: lineInView(path), project: true };
 }

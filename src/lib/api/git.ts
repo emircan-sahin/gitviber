@@ -189,10 +189,12 @@ export const api = {
   revealPath: (path: string) => invoke<void>("reveal_path", { path }),
   /** Known editors, terminals and git apps found on this machine (open_in.rs). */
   openInApps: () => invoke<OpenInApp[]>("open_in_apps"),
-  /** `path` in the worktree ("" for all of it) in an app; editors that can go to `line` do. */
-  openIn: (app: string, path: string, line?: number) => invoke<void>("open_in", { app, path, line }),
+  /** A found app's icon as PNG bytes; empty where there's none (off macOS). */
+  openInIcon: (app: string) => invoke<ArrayBuffer>("open_in_icon", { app }),
+  /** `path` in the worktree ("" for all of it) in an app; editors that can go to `line` do. `project`: the worktree as a project, with `path` open in it. */
+  openIn: (app: string, path: string, line: number | undefined, project: boolean) => invoke<void>("open_in", { app, path, line, project }),
   /** The same with the user's own command. */
-  openInCustom: (command: string, path: string, line?: number) => invoke<void>("open_in_custom", { command, path, line }),
+  openInCustom: (command: string, path: string, line: number | undefined, project: boolean) => invoke<void>("open_in_custom", { command, path, line, project }),
   /** Any saved project's folder, not just the open repo's. */
   revealProject: (path: string) => invoke<void>("reveal_project", { path }),
   projectInfo: (paths: string[]) => invoke<ProjectInfo[]>("project_info", { paths }),

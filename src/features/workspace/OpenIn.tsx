@@ -1,18 +1,31 @@
-import { Check, ChevronDown, Settings2, SquareArrowOutUpRight } from "lucide-react";
+import { AppWindow, Check, ChevronDown, Settings2, SquareArrowOutUpRight } from "lucide-react";
 import { Fragment, useState } from "react";
 import { ContextMenuItem, ContextMenuLabel, ContextMenuSub, ContextMenuSubContent, ContextMenuSubTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tip } from "@/components/ui/tooltip";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
-import { GROUPS, type OpenApp, type OpenTarget, openIn, refreshOpenApps, useOpenApps } from "@/lib/app/openIn";
+import { GROUPS, type OpenApp, type OpenTarget, openIn, refreshOpenApps, useOpenAppIcon, useOpenApps } from "@/lib/app/openIn";
+import { IS_MAC } from "@/lib/platform";
+import { cn } from "@/lib/utils";
 import { lineInView } from "@/features/viewer/activeEditor";
 import { openSettings } from "@/features/settings/SettingsDialog";
+
+/**
+ * The app's own icon (macOS), the size of a menu's: a plain one for an app without, so the names
+ * line up, and a blank while it's drawn. Off macOS there are none, and nothing takes the space.
+ */
+function AppIcon({ app, className = "size-4" }: { app: OpenApp; className?: string }) {
+  const url = useOpenAppIcon(app);
+  if (!IS_MAC) return null;
+  if (url) return <img src={url} alt="" draggable={false} className={cn("shrink-0", className)} />;
+  return url === undefined ? <span className={cn("shrink-0", className)} /> : <AppWindow className={className} />;
+}
 
 const grouped = (apps: OpenApp[]) => GROUPS.map(([group, label]) => [label, apps.filter((a) => a.group === group)] as const).filter(([, list]) => list.length);
 
 /**
- * The status bar's split button: a click opens `target()` in the last app picked, the arrow
- * lists the rest. Also runs the rebindable "Open in" command, which shows the list until an
+ * The status bar's split button: a click opens `target()` (the worktree as a project) in the
+ * last app picked, the arrow lists the rest. Also runs the rebindable "Open in" command, which shows the list until an
  * app has been picked.
  */
 export function OpenInButton({ target }: { target: () => OpenTarget }) {
@@ -30,7 +43,7 @@ export function OpenInButton({ target }: { target: () => OpenTarget }) {
     <div className="flex items-center">
       <Tip label={last ? `Open in ${last.name}` : "Open in…"} shortcut={shortcut}>
         <button onClick={run} className="flex items-center gap-1 hover:text-foreground focus-visible:text-foreground">
-          <SquareArrowOutUpRight className="size-3" />
+          {last && IS_MAC ? <AppIcon app={last} className="size-3.5" /> : <SquareArrowOutUpRight className="size-3" />}
           {last ? last.name : "Open in…"}
         </button>
       </Tip>
@@ -47,6 +60,7 @@ export function OpenInButton({ target }: { target: () => OpenTarget }) {
               <DropdownMenuLabel>{label}</DropdownMenuLabel>
               {list.map((a) => (
                 <DropdownMenuItem key={a.id} onSelect={() => openIn(a, target())}>
+                  <AppIcon app={a} />
                   {a.name}
                   {a.id === last?.id && <Check className="ml-auto" />}
                 </DropdownMenuItem>
@@ -71,7 +85,7 @@ export function OpenInMenuItem({ path, disabled }: { path: string; disabled?: bo
   if (last)
     return (
       <ContextMenuItem disabled={disabled} onSelect={() => openIn(last, target())}>
-        <SquareArrowOutUpRight /> Open in {last.name}
+        {IS_MAC ? <AppIcon app={last} /> : <SquareArrowOutUpRight />} Open in {last.name}
       </ContextMenuItem>
     );
   if (!apps.length) return null;
@@ -86,6 +100,7 @@ export function OpenInMenuItem({ path, disabled }: { path: string; disabled?: bo
             <ContextMenuLabel>{label}</ContextMenuLabel>
             {list.map((a) => (
               <ContextMenuItem key={a.id} onSelect={() => openIn(a, target())}>
+                <AppIcon app={a} />
                 {a.name}
               </ContextMenuItem>
             ))}

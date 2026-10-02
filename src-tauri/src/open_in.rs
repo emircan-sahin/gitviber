@@ -26,16 +26,47 @@ struct App {
     /// macOS: the first one installed is used, so stable builds go before previews.
     bundle_ids: &'static [&'static str],
     folder: &'static [&'static str],
-    /// A file at a line, for apps with a CLI for it; the rest get the file without a line.
-    file_line: Option<&'static [&'static str]>,
+    /// An editor's own command line, which can go to a file's line; the rest get the file alone.
+    cli: Option<Cli>,
+}
+
+#[derive(Clone, Copy)]
+struct Cli {
+    run: &'static [&'static str],
+    goto: Goto,
+}
+
+/// How a CLI takes a file at a line. Each also takes a project folder before it, opening the
+/// file in that folder's window (Cli::args).
+#[derive(Clone, Copy)]
+enum Goto {
+    /// `code -g file:line`, the VS Code family.
+    Flag,
+    /// `zed file:line`, `subl file:line`.
+    Suffix,
+    /// `idea --line N file`, the JetBrains IDEs.
+    Line,
+}
+
+impl Cli {
+    /// JetBrains' CommandLineProcessor opens a folder argument as a project, then a file after
+    /// it in the open project holding it; VS Code opens files in the window of the folders
+    /// given with them; Zed and Sublime Text open all their arguments in one window.
+    fn args(self, project: bool) -> Vec<&'static str> {
+        let folder: &[&str] = if project { &["{path}"] } else { &[] };
+        let at: &[&str] = match self.goto {
+            Goto::Flag => &["-g", "{file}:{line}"],
+            Goto::Suffix => &["{file}:{line}"],
+            Goto::Line => &["--line", "{line}", "{file}"],
+        };
+        [self.run, folder, at].concat()
+    }
 }
 
 const OPEN: &[&str] = &["open", "-a", "{app}", "{path}"];
 const OPEN_FILE: &[&str] = &["open", "-a", "{app}", "{file}"];
 // -n: a running IDE ignores the arguments of a plain `open`; a new launcher hands them over.
-const JETBRAINS: &[&str] = &[
-    "open", "-na", "{app}", "--args", "--line", "{line}", "{file}",
-];
+const JETBRAINS: &[&str] = &["open", "-na", "{app}", "--args"];
 
 const fn app(
     id: &'static str,
@@ -49,19 +80,20 @@ const fn app(
         group,
         bundle_ids,
         folder: OPEN,
-        file_line: None,
+        cli: None,
     }
 }
 
-const fn vscode_like(
+const fn editor_cli(
     id: &'static str,
     name: &'static str,
-    bundle_id: &'static [&'static str],
-    cli: &'static [&'static str],
+    bundle_ids: &'static [&'static str],
+    run: &'static [&'static str],
+    goto: Goto,
 ) -> App {
     App {
-        file_line: Some(cli),
-        ..app(id, name, Editor, bundle_id)
+        cli: Some(Cli { run, goto }),
+        ..app(id, name, Editor, bundle_ids)
     }
 }
 
@@ -70,10 +102,7 @@ const fn jetbrains(
     name: &'static str,
     bundle_ids: &'static [&'static str],
 ) -> App {
-    App {
-        file_line: Some(JETBRAINS),
-        ..app(id, name, Editor, bundle_ids)
-    }
+    editor_cli(id, name, bundle_ids, JETBRAINS, Goto::Line)
 }
 
 /// Terminals that take the folder as a flag rather than as a document to open.
@@ -92,12 +121,12 @@ const fn terminal_args(
 /// In menu order within each group. One row per app, kept on one line each.
 #[rustfmt::skip]
 const APPS: &[App] = &[
-    vscode_like("vscode", "VS Code", &["com.microsoft.VSCode"], &["{app}/Contents/Resources/app/bin/code", "-g", "{file}:{line}"]),
-    vscode_like("vscode-insiders", "VS Code Insiders", &["com.microsoft.VSCodeInsiders"], &["{app}/Contents/Resources/app/bin/code-insiders", "-g", "{file}:{line}"]),
-    vscode_like("cursor", "Cursor", &["com.todesktop.230313mzl4w4u92"], &["{app}/Contents/Resources/app/bin/cursor", "-g", "{file}:{line}"]),
-    vscode_like("windsurf", "Windsurf", &["com.exafunction.windsurf"], &["{app}/Contents/Resources/app/bin/windsurf", "-g", "{file}:{line}"]),
-    vscode_like("zed", "Zed", &["dev.zed.Zed", "dev.zed.Zed-Preview"], &["{app}/Contents/MacOS/cli", "{file}:{line}"]),
-    vscode_like("sublime", "Sublime Text", &["com.sublimetext.4", "com.sublimetext.3"], &["{app}/Contents/SharedSupport/bin/subl", "{file}:{line}"]),
+    editor_cli("vscode", "VS Code", &["com.microsoft.VSCode"], &["{app}/Contents/Resources/app/bin/code"], Goto::Flag),
+    editor_cli("vscode-insiders", "VS Code Insiders", &["com.microsoft.VSCodeInsiders"], &["{app}/Contents/Resources/app/bin/code-insiders"], Goto::Flag),
+    editor_cli("cursor", "Cursor", &["com.todesktop.230313mzl4w4u92"], &["{app}/Contents/Resources/app/bin/cursor"], Goto::Flag),
+    editor_cli("windsurf", "Windsurf", &["com.exafunction.windsurf"], &["{app}/Contents/Resources/app/bin/windsurf"], Goto::Flag),
+    editor_cli("zed", "Zed", &["dev.zed.Zed", "dev.zed.Zed-Preview"], &["{app}/Contents/MacOS/cli"], Goto::Suffix),
+    editor_cli("sublime", "Sublime Text", &["com.sublimetext.4", "com.sublimetext.3"], &["{app}/Contents/SharedSupport/bin/subl"], Goto::Suffix),
     app("nova", "Nova", Editor, &["com.panic.Nova"]),
     app("xcode", "Xcode", Editor, &["com.apple.dt.Xcode"]),
     jetbrains("intellij", "IntelliJ IDEA", &["com.jetbrains.intellij", "com.jetbrains.intellij.ce"]),
@@ -173,6 +202,105 @@ fn app_path(_bundle_id: &str) -> Option<PathBuf> {
     None
 }
 
+/// The app's icon as a PNG, drawn once per bundle: Finder's icon for it, as its Dock and the
+/// Open With menu show.
+pub fn icon(id: &str) -> Option<Vec<u8>> {
+    static ICONS: std::sync::Mutex<Vec<(PathBuf, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+    let bundle = APPS.iter().find(|a| a.id == id).and_then(bundle_path)?;
+    let mut icons = ICONS.lock().ok()?;
+    if let Some((_, png)) = icons.iter().find(|(b, _)| *b == bundle) {
+        return Some(png.clone());
+    }
+    let png = render_icon(&bundle)?;
+    icons.push((bundle, png.clone()));
+    Some(png)
+}
+
+/// 32 px: the menu shows it at 16, on a Retina screen. Drawn into a bitmap of that size, as
+/// the icon's own TIFF would hold every size up to 1024.
+#[cfg(target_os = "macos")]
+fn render_icon(bundle: &Path) -> Option<Vec<u8>> {
+    use objc2::encode::{Encode, Encoding};
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+    use std::ffi::CString;
+
+    #[repr(C)]
+    struct Rect {
+        x: f64,
+        y: f64,
+        w: f64,
+        h: f64,
+    }
+    const PAIR: [Encoding; 2] = [f64::ENCODING, f64::ENCODING];
+    unsafe impl Encode for Rect {
+        const ENCODING: Encoding = Encoding::Struct(
+            "CGRect",
+            &[
+                Encoding::Struct("CGPoint", &PAIR),
+                Encoding::Struct("CGSize", &PAIR),
+            ],
+        );
+    }
+    const SIZE: f64 = 32.0;
+    const PNG: usize = 4; // NSBitmapImageFileTypePNG
+    const SOURCE_OVER: usize = 2; // NSCompositingOperationSourceOver
+
+    let path = CString::new(bundle.to_string_lossy().as_bytes()).ok()?;
+    objc2::rc::autoreleasepool(|_| unsafe {
+        let string = |s: &std::ffi::CStr| -> Option<*mut AnyObject> {
+            Some(msg_send![AnyClass::get(c"NSString")?, stringWithUTF8String: s.as_ptr()])
+        };
+        let workspace: *mut AnyObject = msg_send![AnyClass::get(c"NSWorkspace")?, sharedWorkspace];
+        let image: *mut AnyObject = msg_send![workspace, iconForFile: string(&path)?];
+        if image.is_null() {
+            return None;
+        }
+        let rep: *mut AnyObject = msg_send![AnyClass::get(c"NSBitmapImageRep")?, alloc];
+        let rep: *mut AnyObject = msg_send![
+            rep,
+            initWithBitmapDataPlanes: std::ptr::null_mut::<*mut u8>(),
+            pixelsWide: SIZE as isize,
+            pixelsHigh: SIZE as isize,
+            bitsPerSample: 8isize,
+            samplesPerPixel: 4isize,
+            hasAlpha: Bool::YES,
+            isPlanar: Bool::NO,
+            colorSpaceName: string(c"NSDeviceRGBColorSpace")?,
+            bytesPerRow: 0isize,
+            bitsPerPixel: 0isize
+        ];
+        if rep.is_null() {
+            return None;
+        }
+        let graphics = AnyClass::get(c"NSGraphicsContext")?;
+        let context: *mut AnyObject = msg_send![graphics, graphicsContextWithBitmapImageRep: rep];
+        let png = (!context.is_null()).then(|| {
+            let _: () = msg_send![graphics, saveGraphicsState];
+            let _: () = msg_send![graphics, setCurrentContext: context];
+            let whole = Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 };
+            let into = Rect { x: 0.0, y: 0.0, w: SIZE, h: SIZE };
+            let _: () = msg_send![image, drawInRect: into, fromRect: whole, operation: SOURCE_OVER, fraction: 1.0f64];
+            let _: () = msg_send![graphics, restoreGraphicsState];
+            let none: *mut AnyObject = msg_send![AnyClass::get(c"NSDictionary")?, dictionary];
+            let data: *mut AnyObject = msg_send![rep, representationUsingType: PNG, properties: none];
+            if data.is_null() {
+                return None;
+            }
+            let len: usize = msg_send![data, length];
+            let bytes: *const u8 = msg_send![data, bytes];
+            Some(std::slice::from_raw_parts(bytes, len).to_vec())
+        });
+        let _: () = msg_send![rep, release];
+        png.flatten()
+    })
+}
+
+#[cfg(not(target_os = "macos"))]
+fn render_icon(_bundle: &Path) -> Option<Vec<u8>> {
+    None
+}
+
 /// What the placeholders stand for.
 struct Context {
     app: Option<PathBuf>,
@@ -242,7 +370,15 @@ fn target(root: &Path, rel: &str) -> Result<(PathBuf, Option<PathBuf>), String> 
     }
 }
 
-pub fn open(root: &Path, rel: &str, line: Option<u32>, id: &str) -> Result<(), String> {
+/// `project`: the worktree as a project (the status bar's Open in), an editor also going to the
+/// file `rel` names when its CLI can take both; else `rel` itself, as a row's menu opens it.
+pub fn open(
+    root: &Path,
+    rel: &str,
+    line: Option<u32>,
+    id: &str,
+    project: bool,
+) -> Result<(), String> {
     let app = APPS
         .iter()
         .find(|a| a.id == id)
@@ -251,6 +387,7 @@ pub fn open(root: &Path, rel: &str, line: Option<u32>, id: &str) -> Result<(), S
     let (dir, file) = target(root, rel)?;
     // Terminals open where they're pointed; a git client wants the repository itself.
     let (path, file) = match app.group {
+        Editor if project => (root.to_path_buf(), file.filter(|_| app.cli.is_some())),
         Editor => (dir, file),
         Terminal => (dir, None),
         Other => (root.to_path_buf(), None),
@@ -261,13 +398,14 @@ pub fn open(root: &Path, rel: &str, line: Option<u32>, id: &str) -> Result<(), S
         file,
         line: line.unwrap_or(1),
     };
-    let argv = match (&ctx.file, app.file_line) {
+    let argv = match (&ctx.file, app.cli) {
         (None, _) => expand(app.folder, &ctx),
-        (Some(_), Some(t)) => {
-            let cli = expand(t, &ctx);
-            // The CLI moved in some version of the app: the file without its line beats failing.
+        (Some(_), Some(cli)) => {
+            let cli = expand(&cli.args(project), &ctx);
+            // The CLI moved in some version of the app: the project, or the file without its
+            // line, beats failing.
             if Path::new(&cli[0]).is_absolute() && !Path::new(&cli[0]).exists() {
-                expand(OPEN_FILE, &ctx)
+                expand(if project { app.folder } else { OPEN_FILE }, &ctx)
             } else {
                 cli
             }
@@ -278,8 +416,14 @@ pub fn open(root: &Path, rel: &str, line: Option<u32>, id: &str) -> Result<(), S
 }
 
 /// A user's own command (Settings → General → Open In). With no placeholder it gets the
-/// file, or the folder, as its last argument.
-pub fn open_custom(root: &Path, rel: &str, line: Option<u32>, command: &str) -> Result<(), String> {
+/// file, or the folder (always, as a `project`), as its last argument.
+pub fn open_custom(
+    root: &Path,
+    rel: &str,
+    line: Option<u32>,
+    command: &str,
+    project: bool,
+) -> Result<(), String> {
     let mut template = crate::process::split_command(command)?;
     if template.is_empty() {
         return Err("the command is empty".into());
@@ -288,12 +432,12 @@ pub fn open_custom(root: &Path, rel: &str, line: Option<u32>, command: &str) -> 
         .iter()
         .any(|a| ["{path}", "{file}", "{line}"].iter().any(|p| a.contains(p)))
     {
-        template.push("{file}".into());
+        template.push(if project { "{path}" } else { "{file}" }.into());
     }
     let (path, file) = target(root, rel)?;
     let ctx = Context {
         app: None,
-        path,
+        path: if project { root.to_path_buf() } else { path },
         file,
         line: line.unwrap_or(1),
     };
@@ -391,6 +535,49 @@ mod tests {
     }
 
     #[test]
+    fn a_project_opens_with_the_file_in_it() {
+        let file = ctx(Some("/work/my repo/src/a.ts"));
+        let cli = |run, goto| Cli { run, goto };
+        let code = cli(&["code"], Goto::Flag);
+        assert_eq!(
+            expand(&code.args(true), &file),
+            ["code", "/work/my repo", "-g", "/work/my repo/src/a.ts:42"]
+        );
+        assert_eq!(
+            expand(&code.args(false), &file),
+            ["code", "-g", "/work/my repo/src/a.ts:42"]
+        );
+        assert_eq!(
+            expand(&cli(&["subl"], Goto::Suffix).args(true), &file),
+            ["subl", "/work/my repo", "/work/my repo/src/a.ts:42"]
+        );
+        assert_eq!(
+            expand(&cli(JETBRAINS, Goto::Line).args(true), &file),
+            [
+                "open",
+                "-na",
+                "/Applications/Visual Studio Code.app",
+                "--args",
+                "/work/my repo",
+                "--line",
+                "42",
+                "/work/my repo/src/a.ts"
+            ]
+        );
+    }
+
+    /// A custom command with no placeholder gets the project's folder, or the file a row names.
+    #[test]
+    fn a_custom_command_gets_the_project() {
+        let dir = std::env::temp_dir().join(format!("gitviber-open-custom-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        assert_eq!(open_custom(&dir, "a.txt", None, "test -d", true), Ok(()));
+        assert!(open_custom(&dir, "a.txt", None, "test -d", false).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn the_table_is_well_formed() {
         let mut ids: Vec<_> = APPS.iter().map(|a| a.id).collect();
         ids.sort();
@@ -399,8 +586,8 @@ mod tests {
         for a in APPS {
             assert!(!a.bundle_ids.is_empty(), "{}", a.id);
             assert!(a.folder.iter().any(|x| x.contains("{path}")), "{}", a.id);
-            if let Some(t) = a.file_line {
-                assert!(t.iter().any(|x| x.contains("{file}")), "{}", a.id);
+            if let Some(cli) = a.cli {
+                assert!(!cli.run.is_empty() && a.group == Editor, "{}", a.id);
             }
         }
     }
@@ -412,6 +599,12 @@ mod tests {
         let found = installed();
         assert!(found.iter().any(|a| a.id == "terminal"));
         assert!(app_path("com.example.not-an-app").is_none());
+        let png = icon("terminal").unwrap();
+        assert!(png.starts_with(b"\x89PNG"));
+        // IHDR's width and height.
+        assert_eq!(png[16..24], [0, 0, 0, 32, 0, 0, 0, 32]);
+        assert_eq!(icon("terminal"), Some(png));
+        assert_eq!(icon("not-an-app"), None);
     }
 
     #[test]
@@ -434,14 +627,14 @@ mod tests {
     #[test]
     fn reports_a_custom_command_that_fails() {
         let dir = std::env::temp_dir();
-        assert_eq!(open_custom(&dir, "", None, "true {path}"), Ok(()));
-        assert!(open_custom(&dir, "", None, "false")
+        assert_eq!(open_custom(&dir, "", None, "true {path}", false), Ok(()));
+        assert!(open_custom(&dir, "", None, "false", false)
             .unwrap_err()
             .contains("false failed"));
         assert_eq!(
-            open_custom(&dir, "", None, "gitviber-no-such-editor"),
+            open_custom(&dir, "", None, "gitviber-no-such-editor", false),
             Err("gitviber-no-such-editor: command not found".into())
         );
-        assert!(open_custom(&dir, "", None, "  ").is_err());
+        assert!(open_custom(&dir, "", None, "  ", false).is_err());
     }
 }

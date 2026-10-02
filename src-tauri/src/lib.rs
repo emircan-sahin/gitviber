@@ -233,6 +233,7 @@ pub fn run() {
             commands::files::trash_path,
             commands::files::reveal_path,
             commands::files::open_in_apps,
+            commands::files::open_in_icon,
             commands::files::open_in,
             commands::files::open_in_custom,
             commands::repo::project_info,

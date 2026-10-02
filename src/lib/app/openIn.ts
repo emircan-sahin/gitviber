@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { api, type OpenInApp } from "../api";
 import { REVEAL_FAILED } from "../platform";
 import { getSettings, type Settings, updateSettings, useSettings } from "../settings";
@@ -9,10 +9,14 @@ import { failed } from "./toast";
 /** A built-in app found on this machine, or one of the user's own (with its command). */
 export type OpenApp = Omit<OpenInApp, "group"> & { group: OpenInApp["group"] | "custom"; command?: string };
 
-/** What to open: a path in the worktree ("" for the worktree), and the line an editor should show. */
+/**
+ * What to open: a path in the worktree ("" for the worktree), and the line an editor should show.
+ * `project`: the worktree opens as a project, editors that can also showing `path` in it.
+ */
 export interface OpenTarget {
   path: string;
   line?: number;
+  project?: boolean;
 }
 
 export const GROUPS: [OpenApp["group"], string][] = [
@@ -64,10 +68,35 @@ export function useOpenApps(): { apps: OpenApp[]; last: OpenApp | undefined } {
   }, [found, s.openInCustom, s.openInHideBuiltins, s.openInApp]);
 }
 
+// Each found app's icon as an image URL, "" for one without: drawn by open_in.rs, asked for
+// once per run, the first time something shows it.
+const icons = createStore<Record<string, string>>({});
+const asked = new Set<string>();
+
+function loadIcon(id: string) {
+  if (asked.has(id)) return;
+  asked.add(id);
+  api
+    .openInIcon(id)
+    .then((png) => icons.set({ ...icons.get(), [id]: png.byteLength ? URL.createObjectURL(new Blob([png], { type: "image/png" })) : "" }))
+    .catch(() => icons.set({ ...icons.get(), [id]: "" }));
+}
+
+/** A found app's icon: its URL, "" for none (the user's own apps, off macOS), undefined while it's drawn. */
+export function useOpenAppIcon(app: OpenApp): string | undefined {
+  const id = app.command ? undefined : app.id;
+  const url = icons.use()[id ?? ""];
+  useEffect(() => {
+    if (id) loadIcon(id);
+  }, [id]);
+  return id ? url : "";
+}
+
 /** Opens `target` in `app`, which becomes the one a click runs. */
 export function openIn(app: OpenApp, target: OpenTarget) {
   updateSettings({ openInApp: app.id });
-  const run = app.command ? api.openInCustom(app.command, target.path, target.line) : api.openIn(app.id, target.path, target.line);
+  const project = !!target.project;
+  const run = app.command ? api.openInCustom(app.command, target.path, target.line, project) : api.openIn(app.id, target.path, target.line, project);
   run.catch(failed(`Could not open in ${app.name}`));
 }
 
