@@ -41,20 +41,37 @@ fn try_relaunch() -> Result<(), String> {
         .unwrap_or_else(|| NAME.into());
     let app = exe.parent().ok_or("no folder")?.join(format!("{name}.app"));
     let bundled = app.join("Contents/MacOS").join(EXECUTABLE);
-    let stamp = app.join("Contents/.source");
-    let source = stamp_of(&exe)?;
-    // The copy and its signature are made again only for a new build: signing reads all 70 MB.
-    let whole = bundled.is_file() && app.join("Contents/Info.plist").is_file();
-    if std::fs::read_to_string(&stamp).ok().as_deref() != Some(&source) || !whole {
-        build(&app, &name, &exe, &bundled)?;
-        sign(&app)?;
-        std::fs::write(&stamp, &source).map_err(|e| e.to_string())?;
-    }
+    refresh(&app, &name, &exe)?;
     keep_webkit_data();
     Err(Command::new(&bundled)
         .args(std::env::args_os().skip(1))
         .exec()
         .to_string())
+}
+
+/// Makes the copy and its signature again for a new build only: signing reads all 70 MB. The build
+/// it was made from is noted beside the bundle, not in it, where codesign would refuse the next
+/// signing over a file it didn't seal ("code object is not signed at all").
+fn refresh(app: &Path, name: &str, exe: &Path) -> Result<(), String> {
+    let bundled = app.join("Contents/MacOS").join(EXECUTABLE);
+    let mut stamp = app.as_os_str().to_owned();
+    stamp.push(".source");
+    let stamp = PathBuf::from(stamp);
+    let source = stamp_of(exe)?;
+    let whole = bundled.is_file() && app.join("Contents/Info.plist").is_file();
+    if std::fs::read_to_string(&stamp).ok().as_deref() == Some(&source) && whole {
+        return Ok(());
+    }
+    let _ = std::fs::remove_file(&stamp);
+    let made = build(app, name, exe, &bundled).and_then(|()| sign(app));
+    // Something left in the bundle that signing chokes on (an older build's stamp did): once
+    // more from nothing.
+    if made.is_err() {
+        let _ = std::fs::remove_dir_all(app);
+        build(app, name, exe, &bundled)?;
+        sign(app)?;
+    }
+    std::fs::write(&stamp, &source).map_err(|e| e.to_string())
 }
 
 fn build(app: &Path, name: &str, exe: &Path, bundled: &Path) -> Result<(), String> {
@@ -210,28 +227,52 @@ mod tests {
         assert!(text.contains("<key>CFBundleExecutable</key>\n\t<string>gitviber</string>"));
     }
 
-    /// Signed under the dev id, which UNUserNotificationCenter checks against the bundle's.
+    /// Signed under the dev id, which UNUserNotificationCenter checks against the bundle's, and
+    /// signed again for each new build: the stamp stays out of the bundle, and a stray file left
+    /// in it (where the stamp once was) makes it start over rather than fail.
     #[test]
-    fn builds_and_signs_a_bundle() {
+    fn signs_each_new_build() {
         let root = std::env::temp_dir().join(format!("gitviber-devsign-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
         let app = root.join("Test.app");
         let bundled = app.join("Contents/MacOS").join(EXECUTABLE);
-        build(&app, "Test", Path::new("/usr/bin/true"), &bundled).unwrap();
-        crate::process::spawning(|| sign(&app)).unwrap();
+        let (exe, stamp) = (root.join("gitviber"), root.join("Test.app.source"));
+        let identifier = || {
+            let shown = crate::process::spawning(|| {
+                Command::new("/usr/bin/codesign")
+                    .arg("-dv")
+                    .arg(&app)
+                    .output()
+            })
+            .unwrap();
+            // codesign -d prints to stderr.
+            String::from_utf8_lossy(&shown.stderr).into_owned()
+        };
+        let refreshed = |from: &str| {
+            std::fs::copy(from, &exe).unwrap();
+            crate::process::spawning(|| refresh(&app, "Test", &exe))
+        };
+
+        refreshed("/usr/bin/true").unwrap();
+        assert!(stamp.is_file() && !app.join("Contents/.source").exists());
+        assert!(identifier().contains("Identifier=app.gitviber.desktop.dev"));
         assert_eq!(bundle_of(&bundled), Some(app.clone()));
-        let shown = crate::process::spawning(|| {
-            Command::new("/usr/bin/codesign")
-                .arg("-dv")
-                .arg(&app)
-                .output()
-        })
-        .unwrap();
-        // codesign -d prints to stderr.
-        let shown = String::from_utf8_lossy(&shown.stderr);
-        assert!(
-            shown.contains("Identifier=app.gitviber.desktop.dev"),
-            "{shown}"
+
+        // A new build (another size: the system's binaries share one modification time): copied
+        // and signed again.
+        refreshed("/bin/echo").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&stamp).unwrap(),
+            stamp_of(&exe).unwrap()
         );
+        assert!(identifier().contains("Identifier=app.gitviber.desktop.dev"));
+
+        // An older bundle with the stamp inside.
+        std::fs::write(app.join("Contents/.source"), "old").unwrap();
+        refreshed("/usr/bin/true").unwrap();
+        assert!(!app.join("Contents/.source").exists());
+        assert!(identifier().contains("Identifier=app.gitviber.desktop.dev"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
