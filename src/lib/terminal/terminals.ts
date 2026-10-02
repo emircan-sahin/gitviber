@@ -805,3 +805,10 @@ export function useTerminalsMaximized() {
 export function useTerminalTabCount() {
   return useSyncExternalStore(subscribe, () => (state.open ? state.groups.length : 0));
 }
+
+/** Pane `id` in view with the keys (the agents list): the panel opened, its tab picked, the pane focused in it. */
+export function revealPane(id: number) {
+  if (!state.open) set({ open: true });
+  focusPane(id);
+  focusActive();
+}

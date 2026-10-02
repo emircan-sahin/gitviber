@@ -39,6 +39,7 @@ import { openSettings } from "@/features/settings/SettingsDialog";
 import { openWorktreeDialog, WorktreeDialogs } from "@/features/worktrees/WorktreeDialogs";
 import { WorktreePicker } from "@/features/worktrees/WorktreePicker";
 import { NeedsYouDot } from "@/components/NeedsYouDot";
+import { AgentsMenu } from "@/features/terminal/AgentsMenu";
 
 type Props = ProjectSwitcherProps & {
   onOpenPull: (p: Pull) => void;
@@ -261,6 +262,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         />
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
+      <AgentsMenu worktrees={worktrees} />
       <Tip label={terminalOpen ? "Hide terminal" : calling ? "Show terminal · a terminal needs you" : "Show terminal"} shortcut={useShortcut("terminal.toggle")}>
         <Button variant="ghost" size="icon" onClick={() => togglePanel(root)} className={cn("relative", terminalOpen && "text-foreground")}>
           <SquareTerminal />
