@@ -297,8 +297,9 @@ pub async fn notification_send(
     blocking(move || notifications::send(&app, &title, &body, target.as_deref())).await
 }
 
+/// At the running app's id: a dev build's bundle has its own (dev_bundle.rs).
 #[tauri::command]
 pub async fn notification_settings(app: AppHandle) -> Res<()> {
-    let id = app.config().identifier.clone();
+    let id = notifications::bundle_id().unwrap_or_else(|| app.config().identifier.clone());
     blocking(move || launch::notification_settings(&id)).await
 }

@@ -15,10 +15,10 @@ const EVENTS: [NotifyEvent, string, string][] = [
 ];
 
 const STATUS: Record<NotifyPermission, string> = {
-  granted: "macOS allows them. How they show (banners, sound, in Focus) is up to System Settings → Notifications.",
-  denied: "Turned off for GitViber in System Settings → Notifications. None can show until they're allowed there.",
-  prompt: "macOS hasn't been asked yet: turning notifications on asks.",
-  unbundled: "This development build isn't an app bundle, so macOS can't be asked: its notifications show as Terminal's, and a click opens Terminal.",
+  granted: "macOS shows them. How (banners, sound, in Focus) is up to System Settings → Notifications.",
+  denied: "macOS doesn't show them: GitViber is off in System Settings → Notifications, or its alert style is None.",
+  prompt: "macOS hasn't been asked yet: turning notifications on or sending a test asks.",
+  unbundled: "This development build couldn't become an app bundle (see the dev terminal), so macOS can't be asked: its notifications show as Terminal's, and a click opens Terminal.",
 };
 
 export function NotificationsSection() {
@@ -27,7 +27,8 @@ export function NotificationsSection() {
   const asking = useAskingNotify();
   // notify.ts asks again whenever the window comes back, from System Settings say.
   useEffect(refreshNotifyPermission, []);
-  const canSend = permission === "granted" || permission === "unbundled";
+  // On but not allowed: the wish stays, and so does the way to grant it.
+  const needed = IS_MAC && s.notify && !asking && (permission === "denied" || permission === "prompt");
   const status = !IS_MAC ? "Shows one now, to see how they look." : permission ? STATUS[permission] : "Checking with macOS…";
   return (
     <>
@@ -36,16 +37,32 @@ export function NotificationsSection() {
           label="Desktop notifications"
           hint={asking ? "Waiting for your answer to macOS's prompt…" : "While GitViber isn't the app in front. Clicking one brings it back, at the terminal it's about."}
         >
-          <Switch checked={s.notify} disabled={asking} onChange={(v) => void enableNotifications(v)} />
+          <div className="flex items-center gap-3">
+            {needed && (
+              <>
+                <span className="text-[11.5px] font-medium text-modified">Permission needed</span>
+                {permission === "denied" ? (
+                  <Button variant="outline" size="sm" onClick={openNotificationSettings}>
+                    Open System Settings
+                  </Button>
+                ) : (
+                  <Button variant="outline" size="sm" onClick={() => void enableNotifications(true)}>
+                    Ask macOS
+                  </Button>
+                )}
+              </>
+            )}
+            <Switch checked={s.notify} disabled={asking} onChange={(v) => void enableNotifications(v)} />
+          </div>
         </Field>
         <Field label="Test notification" hint={status}>
           <div className="flex gap-2">
-            {IS_MAC && (permission === "granted" || permission === "denied") && (
+            {IS_MAC && !needed && (permission === "granted" || permission === "denied") && (
               <Button variant="outline" size="sm" onClick={openNotificationSettings}>
                 Open System Settings
               </Button>
             )}
-            <Button variant="outline" size="sm" disabled={!canSend} onClick={sendTestNotification}>
+            <Button variant="outline" size="sm" disabled={asking} onClick={() => void sendTestNotification()}>
               Send Test
             </Button>
           </div>
@@ -54,7 +71,7 @@ export function NotificationsSection() {
       <Group title="Notify when">
         {EVENTS.map(([key, label, hint]) => (
           <Field key={key} label={label} hint={hint}>
-            <Switch checked={s[key]} disabled={!s.notify} onChange={(v) => updateSettings({ [key]: v })} />
+            <Switch checked={s[key]} onChange={(v) => updateSettings({ [key]: v })} />
           </Field>
         ))}
       </Group>

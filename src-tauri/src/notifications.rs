@@ -3,8 +3,8 @@
 //! (which is what lists the app in System Settings → Notifications), the answer can be read
 //! back, and a click comes back to us. tauri-plugin-notification's desktop side reports
 //! "granted" without asking and posts through the NSUserNotificationCenter deprecated since
-//! macOS 11. It stays for Windows and Linux, and for `tauri dev`: UN needs an app bundle, and
-//! there the plugin posts as Terminal.
+//! macOS 11. It stays for Windows and Linux, and for a dev build that couldn't become an app
+//! bundle (dev_bundle.rs): UN needs one, and there the plugin posts as Terminal.
 
 use serde::Serialize;
 use tauri::AppHandle;
@@ -18,7 +18,8 @@ pub enum Permission {
     Denied,
     /// Not asked yet.
     Prompt,
-    /// Not an app bundle (`tauri dev`): the plugin's notifications, unasked, shown as Terminal's.
+    /// Not an app bundle (a dev build whose bundle failed): the plugin's notifications, unasked,
+    /// shown as Terminal's.
     Unbundled,
 }
 
@@ -35,6 +36,14 @@ pub fn permission() -> Result<Permission, String> {
     return mac::permission();
     #[cfg(not(target_os = "macos"))]
     Ok(Permission::Granted)
+}
+
+/// The running app's bundle id, which a dev build's own bundle changes (dev_bundle.rs).
+pub fn bundle_id() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    return mac::bundle_id();
+    #[cfg(not(target_os = "macos"))]
+    None
 }
 
 /// Asks the OS, which asks the user once; after that it answers as they did.
@@ -184,23 +193,45 @@ mod mac {
             let Some(center) = center() else {
                 return Ok(Permission::Unbundled);
             };
-            let status = ask(REPLY, |tx| {
-                let done = RcBlock::new(move |settings: *mut AnyObject| {
-                    let status: isize = unsafe { msg_send![settings, authorizationStatus] };
-                    let _ = tx.send(status);
+            let settings = ask(REPLY, |tx| {
+                let done = RcBlock::new(move |settings: *mut AnyObject| unsafe {
+                    let status: isize = msg_send![settings, authorizationStatus];
+                    let alerts: isize = msg_send![settings, alertSetting];
+                    let style: isize = msg_send![settings, alertStyle];
+                    let _ = tx.send((status, alerts, style));
                 });
                 unsafe {
                     let _: () =
                         msg_send![center, getNotificationSettingsWithCompletionHandler: &*done];
                 }
             });
-            match status {
-                // UNAuthorizationStatus: notDetermined, denied; then authorized, provisional, ephemeral.
-                Some(0) => Ok(Permission::Prompt),
-                Some(1) => Ok(Permission::Denied),
-                Some(_) => Ok(Permission::Granted),
-                None => Err("macOS didn't say whether notifications are allowed".into()),
-            }
+            settings
+                .map(|(status, alerts, style)| map_permission(status, alerts, style))
+                .ok_or_else(|| "macOS didn't say whether notifications are allowed".into())
+        })
+    }
+
+    /// UNAuthorizationStatus, UNNotificationSetting for alerts, UNAlertStyle. Allowed isn't shown:
+    /// in System Settings alerts can be off, or their style None, with the app still authorized,
+    /// and macOS then takes every notification without a word (MonoCode's map_permission).
+    pub(super) fn map_permission(status: isize, alerts: isize, style: isize) -> Permission {
+        const NOT_DETERMINED: isize = 0;
+        const DENIED: isize = 1;
+        const DISABLED: isize = 1;
+        const NONE: isize = 0;
+        match status {
+            NOT_DETERMINED => Permission::Prompt,
+            DENIED => Permission::Denied,
+            _ if alerts == DISABLED || style == NONE => Permission::Denied,
+            _ => Permission::Granted,
+        }
+    }
+
+    /// The running app's own id: the dev bundle's isn't the config's.
+    pub fn bundle_id() -> Option<String> {
+        objc2::rc::autoreleasepool(|_| unsafe {
+            let main: *mut AnyObject = msg_send![AnyClass::get(c"NSBundle")?, mainBundle];
+            rust_string(msg_send![main, bundleIdentifier])
         })
     }
 
@@ -235,6 +266,17 @@ mod mac {
     pub fn send(title: &str, body: &str, target: Option<&str>) -> Option<Result<(), String>> {
         objc2::rc::autoreleasepool(|_| {
             let center = center()?;
+            // Asked here, not trusted from the page: macOS takes a notification it won't show
+            // (alerts turned off in System Settings) without an error.
+            match permission() {
+                Ok(Permission::Granted) => {}
+                Ok(_) => {
+                    return Some(Err(
+                        "GitViber isn't allowed to show notifications: see System Settings → Notifications".into(),
+                    ))
+                }
+                Err(e) => return Some(Err(e)),
+            }
             let sent = ask(REPLY, |tx| unsafe {
                 let Some(request) = build(title, body, target) else {
                     let _ = tx.send(Err("Could not build the notification".to_string()));
@@ -314,6 +356,20 @@ mod tests {
         assert_eq!(permission(), Ok(Permission::Unbundled));
         assert_eq!(request(), Ok(Permission::Unbundled));
         assert!(objc2::runtime::AnyClass::get(c"UNUserNotificationCenter").is_some());
+    }
+
+    /// Authorized isn't enough: alerts off, or their style None, shows nothing.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn allowed_means_alerts_show() {
+        use mac::map_permission;
+        assert_eq!(map_permission(0, 0, 0), Permission::Prompt);
+        assert_eq!(map_permission(1, 2, 1), Permission::Denied);
+        assert_eq!(map_permission(2, 2, 1), Permission::Granted);
+        assert_eq!(map_permission(2, 2, 2), Permission::Granted);
+        assert_eq!(map_permission(3, 2, 1), Permission::Granted, "provisional");
+        assert_eq!(map_permission(2, 1, 1), Permission::Denied, "alerts off");
+        assert_eq!(map_permission(2, 2, 0), Permission::Denied, "style None");
     }
 
     /// What's sent carries the target a click gives back; a NUL from a terminal doesn't stop it.
