@@ -16,14 +16,9 @@ use tauri::{AppHandle, Emitter};
 #[derive(Serialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Vault {
-    #[serde(skip)]
-    pub id: String,
     /// Its folder's name, as Obsidian's vault switcher shows it.
     pub name: String,
     pub path: String,
-    /// Open in Obsidian right now.
-    #[serde(skip)]
-    pub open: bool,
     /// Last opened, in ms since the epoch.
     pub ts: u64,
 }
@@ -59,7 +54,8 @@ fn config_files() -> Vec<PathBuf> {
     dirs.into_iter().map(|d| d.join("obsidian.json")).collect()
 }
 
-/// The vaults in one obsidian.json: `{"vaults": {"<id>": {"path", "ts", "open"}}}`.
+/// The vaults in one obsidian.json: `{"vaults": {"<id>": {"path", "ts", "open"}}}`; the id and
+/// whether it's open in Obsidian don't matter here.
 pub fn parse_vaults(json: &str) -> Vec<Vault> {
     let Ok(value) = serde_json::from_str::<serde_json::Value>(json) else {
         return vec![];
@@ -68,15 +64,13 @@ pub fn parse_vaults(json: &str) -> Vec<Vault> {
         return vec![];
     };
     vaults
-        .iter()
-        .filter_map(|(id, v)| {
+        .values()
+        .filter_map(|v| {
             let path = v.get("path")?.as_str()?.to_string();
             let name = Path::new(&path).file_name()?.to_string_lossy().into_owned();
             Some(Vault {
-                id: id.clone(),
                 name,
                 path,
-                open: v.get("open").and_then(|o| o.as_bool()).unwrap_or(false),
                 ts: v.get("ts").and_then(|t| t.as_u64()).unwrap_or(0),
             })
         })
@@ -346,12 +340,11 @@ mod tests {
         let json = r#"{"vaults":{"a1b2":{"path":"/notes/Work Notes","ts":1700000000000,"open":true},"c3d4":{"path":"/notes/Home","ts":1600000000000},"bad":{"ts":1}},"frame":"hidden"}"#;
         let vaults = parse_vaults(json);
         assert_eq!(vaults.len(), 2);
-        let work = vaults.iter().find(|v| v.id == "a1b2").unwrap();
-        assert_eq!(
-            (work.name.as_str(), work.path.as_str(), work.open, work.ts),
-            ("Work Notes", "/notes/Work Notes", true, 1700000000000)
-        );
-        assert!(!vaults.iter().find(|v| v.id == "c3d4").unwrap().open);
+        let work = vaults
+            .iter()
+            .find(|v| v.path == "/notes/Work Notes")
+            .unwrap();
+        assert_eq!((work.name.as_str(), work.ts), ("Work Notes", 1700000000000));
         assert!(parse_vaults("not json").is_empty());
         assert!(parse_vaults(r#"{"other":1}"#).is_empty());
     }
@@ -428,9 +421,6 @@ mod tests {
         assert!(root_in(&configs, &work.to_string_lossy()).is_ok());
         assert!(root_in(&configs, &gone.to_string_lossy()).is_err());
         assert!(root_in(&configs, &dir.to_string_lossy()).is_err());
-        // The page never sees Obsidian's ids or open state.
-        let sent = serde_json::to_value(&found[0]).unwrap();
-        assert!(sent.get("id").is_none() && sent.get("open").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

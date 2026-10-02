@@ -62,8 +62,10 @@ export function VaultView({ tab, sel, onOpen }: { tab: Tab; sel: VaultSelection;
   const canvas = /\.canvas$/i.test(path);
   const key = editPath(sel)!;
   // Typed into, it's kept and saved with its vault, apart from the repo's files.
-  claimVaultEdits(sel.vault, path);
-  useEffect(() => openVaultEdits(sel.vault), [sel.vault]);
+  useEffect(() => {
+    openVaultEdits(sel.vault);
+    claimVaultEdits(sel.vault, path);
+  }, [sel.vault, path]);
   const { file, error } = useVaultText(sel, media);
   // Markdown starts rendered unless turned off; an SVG as the last one was left, as in the repo.
   const [markdownPreview, setMarkdownPreview] = useState(s.markdownPreview);

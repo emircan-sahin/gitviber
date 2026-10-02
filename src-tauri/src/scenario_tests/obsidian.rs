@@ -271,13 +271,13 @@ fn obsidian_json_as_it_is_found_in_the_wild() {
         "updateDisabled": true
     }"#;
     let vaults = parse_vaults(json);
-    let by = |id: &str| vaults.iter().find(|v| v.id == id);
-    assert_eq!(by("a").unwrap().name, "Work");
-    assert!(by("c").is_none() && by("d").is_none() && by("e").is_none() && by("g").is_none());
+    let by = |path: &str| vaults.iter().find(|v| v.path == path);
+    assert_eq!(by("/notes/Work/").unwrap().name, "Work");
+    // "/" and "" have no folder name; a path that isn't a string, or a vault that isn't an object, is no vault.
+    assert_eq!(vaults.len(), 3);
     // Kept as written; vaults() drops what isn't a folder ("~" is never expanded).
-    assert_eq!(by("b").unwrap().path, "~/Notes");
-    let f = by("f").unwrap();
-    assert!(!f.open && f.ts == 0);
+    assert!(by("~/Notes").is_some());
+    assert_eq!(by("/notes/Float").unwrap().ts, 0);
     for broken in [
         "",
         "{",

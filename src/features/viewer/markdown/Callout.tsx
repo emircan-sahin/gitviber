@@ -4,24 +4,22 @@ import { COLORS, type Rgb } from "@/lib/obsidian/colors";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 
-const { blue: BLUE, cyan: CYAN, green: GREEN, orange: ORANGE, red: RED, purple: PURPLE, gray: GRAY } = COLORS;
-
 // Obsidian's callout types with their default icons and colors (aliases are folded in by the
 // parser), then GitHub's five alerts with GitHub's.
 const KINDS: Record<string, { icon: LucideIcon; color: Rgb }> = {
-  note: { icon: Pencil, color: BLUE },
-  abstract: { icon: ClipboardList, color: CYAN },
-  info: { icon: Info, color: BLUE },
-  todo: { icon: CircleCheck, color: BLUE },
-  tip: { icon: Flame, color: CYAN },
-  success: { icon: Check, color: GREEN },
-  question: { icon: CircleHelp, color: ORANGE },
-  warning: { icon: TriangleAlert, color: ORANGE },
-  failure: { icon: X, color: RED },
-  danger: { icon: Zap, color: RED },
-  bug: { icon: Bug, color: RED },
-  example: { icon: List, color: PURPLE },
-  quote: { icon: Quote, color: GRAY },
+  note: { icon: Pencil, color: COLORS.blue },
+  abstract: { icon: ClipboardList, color: COLORS.cyan },
+  info: { icon: Info, color: COLORS.blue },
+  todo: { icon: CircleCheck, color: COLORS.blue },
+  tip: { icon: Flame, color: COLORS.cyan },
+  success: { icon: Check, color: COLORS.green },
+  question: { icon: CircleHelp, color: COLORS.orange },
+  warning: { icon: TriangleAlert, color: COLORS.orange },
+  failure: { icon: X, color: COLORS.red },
+  danger: { icon: Zap, color: COLORS.red },
+  bug: { icon: Bug, color: COLORS.red },
+  example: { icon: List, color: COLORS.purple },
+  quote: { icon: Quote, color: COLORS.gray },
   "gh-note": { icon: Info, color: ["68 147 248", "9 105 218"] },
   "gh-tip": { icon: Lightbulb, color: ["63 185 80", "26 127 55"] },
   "gh-important": { icon: MessageSquareWarning, color: ["171 125 248", "130 80 223"] },

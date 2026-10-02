@@ -143,7 +143,8 @@ const PRESETS: Record<string, Rgb> = { "1": COLORS.red, "2": COLORS.orange, "3":
 /** A node's or edge's color as CSS, with `alpha`; null for none (the theme's). */
 export function canvasColor(color: string | undefined, dark: boolean, alpha = 1): string | null {
   if (!color) return null;
-  const preset = PRESETS[color];
+  // A color named like a built-in ("constructor") is no preset.
+  const preset = Object.hasOwn(PRESETS, color) ? PRESETS[color] : undefined;
   if (preset) return `rgb(${preset[dark ? 0 : 1]} / ${alpha})`;
   // Only a hex color: the value goes into a style attribute.
   return /^#[0-9a-f]{3,8}$/i.test(color) ? (alpha === 1 ? color : `color-mix(in srgb, ${color} ${Math.round(alpha * 100)}%, transparent)`) : null;

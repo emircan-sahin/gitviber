@@ -12,7 +12,7 @@ import { errorMessage, type Vault, vaultApi, type VaultEntry } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
 import { failed, toast } from "@/lib/app/toast";
 import { noteName } from "@/lib/obsidian/links";
-import { pickVault, useVaultEvents, useVaultRevision, useVaults } from "@/lib/obsidian/vault";
+import { pickVault, useVaultEvents, useVaultFilesRevision, useVaults } from "@/lib/obsidian/vault";
 import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/platform";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { readJson, writeJson } from "@/lib/storage";
@@ -131,7 +131,8 @@ interface VaultTreeHandle {
 function VaultTree({ vault, activeKey, onOpen, ref }: { vault: Vault; activeKey: string | null; onOpen: (s: Selection, pin?: boolean) => void; ref: React.Ref<VaultTreeHandle> }) {
   const { children, expanded, setExpanded, setOpen } = useLazyTree<VaultEntry>({
     list: (path) => vaultApi.listDir(vault.path, path),
-    revision: useVaultRevision(vault.path),
+    // Not on every note's autosave: folders list again only when files came, went or moved.
+    revision: useVaultFilesRevision(vault.path),
     onRootError: (e) => toast("error", `Could not list ${vault.name}`, errorMessage(e)),
     initial: openFolders.get(vault.path),
   });

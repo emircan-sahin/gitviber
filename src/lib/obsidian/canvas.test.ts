@@ -58,4 +58,5 @@ test("colors: Obsidian's presets by theme, hex as written, nothing else", () => 
   assert.equal(canvasColor("#ff8800", true), "#ff8800");
   assert.equal(canvasColor("red; background: url(x)", true), null);
   assert.equal(canvasColor(undefined, true), null);
+  assert.equal(canvasColor("constructor", true), null);
 });

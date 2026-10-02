@@ -104,6 +104,9 @@ const useRevisions = (vault: string) => revisions.use()[vault] ?? NONE;
 /** Changes whenever notes in `vault` may have changed. */
 export const useVaultRevision = (vault: string) => useRevisions(vault).text;
 
+/** Changes when files in `vault` came, went or moved: what its folders list. */
+export const useVaultFilesRevision = (vault: string) => useRevisions(vault).files;
+
 /** Changes when `path` in `vault` changed (or anything may have). */
 export function useFileRevision(vault: string, path: string) {
   const r = useRevisions(vault);
