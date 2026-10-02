@@ -36,6 +36,7 @@ mod titlebar;
 #[cfg(target_os = "linux")]
 mod trash;
 mod updates;
+mod vibrancy;
 mod watch;
 
 use state::AppState;
@@ -310,7 +311,9 @@ pub fn run() {
             commands::app::quit,
             commands::app::update_mode,
             commands::app::take_opened,
-            commands::app::install_cli
+            commands::app::install_cli,
+            vibrancy::set_translucent,
+            vibrancy::reduce_transparency
         ])
         .build(context)
         .expect("error while building GitViber")

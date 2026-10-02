@@ -10,6 +10,8 @@ import {
   SYNTAX_THEMES,
   type SyntaxTheme,
   THEMES,
+  TRANSLUCENCY,
+  type Translucency,
   UI_SCALES,
   type UiFont,
   UI_FONT_WEIGHTS,
@@ -53,6 +55,20 @@ export function AppearanceSection() {
               value={s.lightTheme}
               options={LIGHT_THEMES}
               onChange={(v) => updateSettings({ lightTheme: v as LightTheme, lightSyntaxTheme: THEMES[v as LightTheme].syntax })}
+            />
+          </Field>
+        )}
+        {/* macOS's own material: elsewhere there's nothing to show through. */}
+        {IS_MAC && (
+          <Field
+            label="Translucency"
+            hint="The desktop shows through the title bar, side panels and status bar, blurred. Code and the terminal stay solid, as does the window in the background or with Reduce transparency on."
+          >
+            <Segmented<Translucency>
+              value={s.translucency}
+              onChange={(v) => updateSettings({ translucency: v })}
+              options={(Object.keys(TRANSLUCENCY) as Translucency[]).map((value) => ({ value, label: TRANSLUCENCY[value] }))}
+              variant="field"
             />
           </Field>
         )}

@@ -1,6 +1,6 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow, type Theme as WindowTheme } from "@tauri-apps/api/window";
-import type { Whitespace } from "./api";
+import { api, type Whitespace } from "./api";
 import { cleanOverrides } from "./commands/commands";
 import { IS_MAC, IS_WINDOWS } from "./platform";
 import { writeJson } from "./storage";
@@ -121,6 +121,10 @@ export const THEMES = {
 export type Theme = keyof typeof THEMES;
 export type DarkTheme = { [K in Theme]: (typeof THEMES)[K]["dark"] extends true ? K : never }[Theme];
 export type LightTheme = Exclude<Theme, DarkTheme>;
+/** How much of the desktop shows through the window's chrome, blurred; macOS only (index.css has the tints). */
+export const TRANSLUCENCY = { off: "Off", subtle: "Subtle", strong: "Strong" } as const;
+export type Translucency = keyof typeof TRANSLUCENCY;
+
 export const DARK_THEMES = Object.fromEntries(Object.entries(THEMES).filter(([, t]) => t.dark).map(([id, t]) => [id, t.label])) as Record<DarkTheme, string>;
 export const LIGHT_THEMES = Object.fromEntries(Object.entries(THEMES).filter(([, t]) => !t.dark).map(([id, t]) => [id, t.label])) as Record<LightTheme, string>;
 
@@ -153,6 +157,8 @@ export interface Settings {
   appearance: Appearance;
   darkTheme: DarkTheme;
   lightTheme: LightTheme;
+  /** One of TRANSLUCENCY; applied on macOS only, and only while the window is in front. */
+  translucency: Translucency;
   uiFont: UiFont;
   customUiFont: string;
   uiFontWeight: UiFontWeight;
@@ -243,6 +249,7 @@ const DEFAULTS: Settings = {
   appearance: "system",
   darkTheme: "dark",
   lightTheme: "light",
+  translucency: "off",
   uiFont: "System",
   customUiFont: "",
   uiFontWeight: 500,
@@ -320,6 +327,7 @@ function load(): Settings {
     if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
     if (!Object.hasOwn(DARK_THEMES, s.darkTheme)) s.darkTheme = DEFAULTS.darkTheme;
     if (!Object.hasOwn(LIGHT_THEMES, s.lightTheme)) s.lightTheme = DEFAULTS.lightTheme;
+    if (!Object.hasOwn(TRANSLUCENCY, s.translucency)) s.translucency = DEFAULTS.translucency;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (!Object.hasOwn(OPTION_KEYS, s.optionAsMeta)) s.optionAsMeta = DEFAULTS.optionAsMeta;
     if (typeof s.shellIntegration !== "boolean") s.shellIntegration = DEFAULTS.shellIntegration;
@@ -448,17 +456,76 @@ function applyUiFont() {
   for (const [name, weight] of [["normal", 400], ["medium", 500], ["semibold", 600]] as const) root.setProperty(`--font-weight-${name}`, String(weight + step));
 }
 
+// Out of focus, or with Reduce transparency on, the page is solid, as native windows go. Out of
+// focus until the window says otherwise: it starts hidden.
+let windowFocused = false;
+let reduceTransparency = false;
+// What the window was last asked for. Off at launch, so nothing is asked of it while the setting is
+// off; on, a reload (⌘R) asks again, which replaces the material rather than adding one.
+let materialOn = false;
+let materialReady = false;
+
+function applyTranslucency() {
+  const level = IS_MAC && !reduceTransparency ? current.translucency : "off";
+  const on = level !== "off";
+  const root = document.documentElement;
+  if (on && materialReady && windowFocused) root.dataset.translucency = level;
+  else delete root.dataset.translucency;
+  if (!IS_MAC || on === materialOn) return;
+  materialOn = on;
+  materialReady = false;
+  if (on) {
+    // The material first, then the see-through page: the other way round, the window's own
+    // color shows through for a frame.
+    api
+      .setTranslucent(true)
+      .then(() => {
+        if (!materialOn) return;
+        materialReady = true;
+        applyTranslucency();
+      })
+      .catch(() => {});
+  } else {
+    // And away once the solid page has been painted over it.
+    requestAnimationFrame(() => requestAnimationFrame(() => materialOn === false && api.setTranslucent(false).catch(() => {})));
+  }
+}
+
+if (IS_MAC) {
+  try {
+    const win = getCurrentWindow();
+    const focusChanged = (focused: boolean) => {
+      windowFocused = focused;
+      if (!focused) return applyTranslucency();
+      // Reduce transparency is set in System Settings, so it can only have changed while away.
+      api
+        .reduceTransparency()
+        .then((reduce) => {
+          reduceTransparency = reduce;
+        })
+        .catch(() => {})
+        .finally(applyTranslucency);
+    };
+    win.isFocused().then(focusChanged, () => {});
+    win.onFocusChanged(({ payload }) => focusChanged(payload)).catch(() => {});
+  } catch {
+    // Not in a Tauri window.
+  }
+}
+
 function emit() {
   resolved = resolve();
   applyTheme();
   applyScale();
   applyUiFont();
+  applyTranslucency();
   listeners.forEach((l) => l());
 }
 
 applyTheme();
 applyScale();
 applyUiFont();
+applyTranslucency();
 systemDark.addEventListener("change", () => current.appearance === "system" && emit());
 
 export function updateSettings(patch: Partial<Settings>) {
