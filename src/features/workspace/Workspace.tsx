@@ -361,8 +361,11 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         if (show) revealInExplorer(path);
         else if (!filesPanel.current?.isCollapsed()) fileTree.current?.reveal(path, false);
       },
+      github: webUrl,
+      showCommit: (sha) => showInHistory({ query: sha, scope: null, reveal: { sha, path: "", id: ++reveals.current } }),
+      openItem: (item) => open(item, true),
     });
-  }, [root, repo.worktrees, repo.revision, open, revealInExplorer]);
+  }, [root, repo.worktrees, repo.revision, open, revealInExplorer, webUrl, showInHistory]);
   useEffect(() => () => setLinkHost(null), []);
 
   const changeCount = uncommitted.length;

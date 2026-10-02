@@ -1,7 +1,7 @@
 //! The commit log, its filters and graph, reflog and branch comparisons.
 
 use super::{
-    has_head, has_origin, pushed_base, range_files, run, run_text, validate_branch,
+    has_head, has_origin, pushed_base, range_files, run, run_text, run_with, validate_branch,
     validate_full_ref, validate_rev, FileChange, REF_KINDS,
 };
 use serde::{Deserialize, Serialize};
@@ -376,6 +376,47 @@ pub fn find_commit(repo: &Path, sha: &str) -> Result<Option<Commit>, String> {
         &LogFilter::default(),
     )?;
     Ok(found.into_iter().next())
+}
+
+/// The terminal asks about this many SHAs at most at once: a screen's worth, with room to spare.
+const MAX_KNOWN: usize = 500;
+
+/// The full id of the commit each of `shas` (7 to 40 hex digits, as printed) names, if exactly
+/// one: one `cat-file --batch-check` for them all, for the terminal's commit links.
+pub fn known_commits(repo: &Path, shas: &[String]) -> Result<Vec<Option<String>>, String> {
+    if shas.len() > MAX_KNOWN {
+        return Err(format!("at most {MAX_KNOWN} commits at once"));
+    }
+    let hex = |s: &str| (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let input: String = shas
+        .iter()
+        .filter(|s| hex(s))
+        .map(|s| format!("{s}^{{commit}}\n"))
+        .collect();
+    if input.is_empty() {
+        return Ok(vec![None; shas.len()]);
+    }
+    // A line an answer, in order: `<id> commit`, or `<asked> missing` / `ambiguous`.
+    let out = run_with(
+        repo,
+        &["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        &[],
+        Some(input.as_bytes()),
+    )?;
+    let text = String::from_utf8_lossy(&out);
+    let mut answers = text.lines();
+    Ok(shas
+        .iter()
+        .map(|s| {
+            if !hex(s) {
+                return None;
+            }
+            let id = answers.next()?.strip_suffix(" commit")?;
+            id.bytes()
+                .all(|b| b.is_ascii_hexdigit())
+                .then(|| id.to_string())
+        })
+        .collect())
 }
 
 /// `limit` commits of `tips`' history after `skip`. `mark_unpushed` / `mark_not_in_head`: work

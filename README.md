@@ -75,7 +75,9 @@ A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the test
 server or talk to the agent without leaving the change you're reading. Each pane of a split has a
 title bar with what runs there, and `⌘R` names it. The terminal has its own font, size, cursor and
 scrollback in Settings, and `⌘=` / `⌘−` in the terminal or a pinch over it size its text.
-`⌘`-click a path it prints to open the file at that line, or a folder to show it in the explorer.
+`⌘`-click a path it prints to open the file at that line, or a folder to show it in the explorer;
+a commit's SHA opens it in History, and `#123` or a link to one of the repo's pull requests or
+issues opens it in its own tab.
 In zsh and bash 4.4+ each command gets a mark, red when it failed, that tells how long it took,
 `⌘↑` / `⌘↓` jump between them, and the last one's output copies from the right-click menu; your
 dotfiles stay as they are. A command that runs past 10 seconds and ends while you're looking

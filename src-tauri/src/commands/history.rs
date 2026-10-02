@@ -80,6 +80,14 @@ pub async fn find_commit(state: State<'_, AppState>, sha: String) -> Res<Option<
 }
 
 #[tauri::command]
+pub async fn known_commits(
+    state: State<'_, AppState>,
+    shas: Vec<String>,
+) -> Res<Vec<Option<String>>> {
+    read_repo(&state, move |r| git::known_commits(r, &shas)).await
+}
+
+#[tauri::command]
 pub async fn commit_files(state: State<'_, AppState>, sha: String) -> Res<Vec<git::FileChange>> {
     in_repo(&state, move |r| git::commit_files(r, &sha)).await
 }
