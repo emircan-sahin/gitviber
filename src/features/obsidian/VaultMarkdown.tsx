@@ -23,7 +23,7 @@ interface Note {
   path: string;
   /** 0 for the tab's note, one more per embed it's inside. */
   depth: number;
-  /** The notes embedding this one, to stop one embedding itself. */
+  /** The notes (path#anchor) embedding this one, to stop one embedding itself. */
   trail: string[];
   idPrefix: string;
   files: LinkIndex | null;
@@ -94,11 +94,12 @@ function VaultLink({ node: _node, href, children, ...rest }: ComponentProps<"a">
   );
 }
 
-// "alt|300" or "alt|300x200" in an image's alt text sets its size, as Obsidian reads it.
-const SIZED = /^(.*?)\|?\s*(\d+)(?:x(\d+))?$/;
+// "300", "300x200", "alt|300" or "alt|300x200" (an image's alt text, an embed's alias) sets its
+// size, as Obsidian reads it; "Photo 2023" is just alt text.
+const SIZED = /^(?:(.*)\|)?\s*(\d+)(?:x(\d+))?\s*$/;
 function sized(alt: string) {
   const m = SIZED.exec(alt);
-  return m ? { alt: m[1], width: m[2], height: m[3] } : { alt, width: undefined, height: undefined };
+  return m ? { alt: m[1] ?? "", width: m[2], height: m[3] } : { alt, width: undefined, height: undefined };
 }
 
 /** An image in a note: from the web as written, from the vault wherever it is in there. */
@@ -116,9 +117,14 @@ const COMPONENTS: Components = { a: VaultLink as Components["a"], img: VaultImag
 
 /** An image, player or PDF from the vault, by its path in there. */
 function VaultMedia({ vault, path, alt, width, height, anchor = "" }: { vault: string; path: string; alt?: string; width?: string | number; height?: string | number; anchor?: string }) {
-  const rev = useVaultRevision(vault);
-  const { url, error } = useBytesUrl(`${vault}\0${path}\0${rev}`, path, () => vaultApi.media(vault, path));
-  if (error) return <Missing name={basename(path)} detail={error} />;
+  // Read once per note on show: every vault change re-reading it restarted a video, and a PDF went back to page 1.
+  const { url, error } = useBytesUrl(`${vault}\0${path}`, path, () => vaultApi.media(vault, path));
+  if (error)
+    return (
+      <span className="text-[12px] text-subtle italic">
+        Can't show “{basename(path)}”: {error}
+      </span>
+    );
   if (!url) return null;
   const kind = isSvg(path) ? "image" : mediaKind(path);
   if (kind === "video") return <video src={url} controls width={width} height={height} className="embed-media" />;
@@ -128,9 +134,9 @@ function VaultMedia({ vault, path, alt, width, height, anchor = "" }: { vault: s
   return <img src={url} alt={alt} width={width} height={height} />;
 }
 
-function Missing({ name, detail }: { name: string; detail?: string }) {
+function Missing({ name }: { name: string }) {
   return (
-    <span className="text-[12px] text-subtle italic" title={detail}>
+    <span className="text-[12px] text-subtle italic">
       “{name}” isn't in this vault
     </span>
   );
@@ -144,7 +150,8 @@ function Embed({ target, alias, block }: { target: string; alias: string; block:
   const file = path ? resolveLink(note.files, path, note.path) : note.path;
   if (!file) return <Missing name={path} />;
   if (isMarkdown(file)) {
-    if (note.depth >= MAX_DEPTH || (note.trail.includes(file) && !anchor)) return <EmbedLink note={note} file={file} anchor={anchor} label={alias} />;
+    // The same note and part again, inside itself: a link, or it would go on forever.
+    if (note.depth >= MAX_DEPTH || note.trail.includes(`${file}#${anchor}`)) return <EmbedLink note={note} file={file} anchor={anchor} label={alias} />;
     return <NoteEmbed file={file} anchor={anchor} alias={alias} block={block} />;
   }
   if (isSvg(file) || mediaKind(file)) {
@@ -168,14 +175,14 @@ function NoteEmbed({ file, anchor, alias, block }: { file: string; anchor: strin
   const rev = useVaultRevision(note.vault);
   const loaded = useAsyncValue<FileText | null>(() => vaultApi.readFile(note.vault, file), [note.vault, file, rev], null);
   const id = useId();
-  const inner = useMemo<Note>(() => ({ ...note, path: file, depth: note.depth + 1, trail: [...note.trail, file], idPrefix: `embed${id.replace(/:/g, "")}-` }), [note, file, id]);
+  const inner = useMemo<Note>(() => ({ ...note, path: file, depth: note.depth + 1, trail: [...note.trail, `${file}#${anchor}`], idPrefix: `embed${id.replace(/:/g, "")}-` }), [note, file, id]);
   const Tag = block ? "div" : "span";
   return (
     <Tag className="embed block">
       <span className="embed-title block">
         <EmbedLink note={note} file={file} anchor={anchor} label={alias} />
       </span>
-      {loaded && (loaded.exists && !loaded.binary ? <NoteBody text={loaded.text} note={inner} section={anchor || undefined} /> : <Missing name={basename(file)} />)}
+      {loaded && (loaded.exists && !loaded.binary ? <NoteBody text={loaded.text} note={inner} section={anchor} /> : <Missing name={basename(file)} />)}
     </Tag>
   );
 }
@@ -200,7 +207,7 @@ function NoteBody({ text, note, section }: { text: string; note: Note; section?:
 /** A vault note rendered as Obsidian's reading view shows it: links, embeds and all. */
 export function VaultMarkdown({ vault, path, text, tabKey, onOpen }: { vault: string; path: string; text: string; tabKey: string; onOpen: Open }) {
   const files = useVaultFiles(vault);
-  const note = useMemo<Note>(() => ({ vault, path, depth: 0, trail: [path], idPrefix: "user-content-", files: files && linkIndex(files), open: onOpen }), [vault, path, files, onOpen]);
+  const note = useMemo<Note>(() => ({ vault, path, depth: 0, trail: [`${path}#`], idPrefix: "user-content-", files: files && linkIndex(files), open: onOpen }), [vault, path, files, onOpen]);
   const want = pending.use();
   // A link to a part of this note, followed from another: there once it's drawn.
   useEffect(() => {
@@ -226,7 +233,7 @@ export function VaultMarkdown({ vault, path, text, tabKey, onOpen }: { vault: st
 export function NoteScope({ vault, path, onOpen, children }: { vault: string; path: string; onOpen: Open; children: React.ReactNode }) {
   const files = useVaultFiles(vault);
   // Depth 1: a canvas's notes are already one level in.
-  const note = useMemo<Note>(() => ({ vault, path, depth: 1, trail: [path], idPrefix: "canvas-", files: files && linkIndex(files), open: onOpen }), [vault, path, files, onOpen]);
+  const note = useMemo<Note>(() => ({ vault, path, depth: 1, trail: [`${path}#`], idPrefix: "canvas-", files: files && linkIndex(files), open: onOpen }), [vault, path, files, onOpen]);
   return <NoteContext value={note}>{children}</NoteContext>;
 }
 

@@ -113,9 +113,9 @@ export function saveEdit(path: string): Promise<boolean> {
 }
 const saving = new Map<string, Promise<boolean>>();
 
-/** Repo paths are relative; a full one is a vault file's. */
+/** Repo paths are relative; a full one (\\server\share too) is a vault file's. */
 const fileIO = async (path: string) =>
-  /^(\/|[A-Za-z]:[\\/])/.test(path) ? vaultFileIO(path) : { read: () => api.readFile(path), write: (text: string) => api.writeFile(path, text) };
+  /^(\/|[A-Za-z]:[\\/]|\\\\)/.test(path) ? vaultFileIO(path) : { read: () => api.readFile(path), write: (text: string) => api.writeFile(path, text) };
 
 async function write(path: string) {
   const e = edits.get(path);

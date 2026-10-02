@@ -10,7 +10,7 @@ import { Row } from "@/features/explorer/FileTree";
 import { errorMessage, type Vault, vaultApi, type VaultEntry } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
 import { failed, toast } from "@/lib/app/toast";
-import { pickVault, useVaultRevision, useVaults } from "@/lib/obsidian/vault";
+import { pickVault, useVaultRevision, useVaults, watchVault } from "@/lib/obsidian/vault";
 import { compareEntries, dirname } from "@/lib/path";
 import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/platform";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
@@ -43,7 +43,7 @@ export function ExplorerPanes({ tree, activeKey, onOpen }: { tree: ReactNode; ac
   // The vault on show is watched, so its tree and open notes follow edits made in Obsidian. Not
   // stopped on unmount: the next window's watch could land before the stop.
   useEffect(() => {
-    vaultApi.watch(vault?.path ?? null).catch(() => {});
+    watchVault(vault?.path ?? null);
   }, [vault?.path]);
 
   const header = vault && <VaultHeader vaults={vaults} vault={vault} open={open} onCollapseAll={() => treeRef.current?.collapseAll()} />;

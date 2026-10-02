@@ -47,8 +47,8 @@ export function useVaults(): { vaults: Vault[]; vault: Vault | null } {
   return { vaults, vault: vaults.find((v) => v.path === want) ?? vaults[0] ?? null };
 }
 
-// Each vault's revision: bumped when its watcher sees a change, or the window comes back into
-// focus (a vault no watcher covers may have changed meanwhile).
+// Each vault's revision: bumped when its watcher sees a change, or for one no watcher covers,
+// when the window comes back into focus (it may have changed meanwhile).
 const revisions = createStore<Record<string, number>>({});
 const bump = (vaults: string[]) => {
   const now = revisions.get();
@@ -56,9 +56,16 @@ const bump = (vaults: string[]) => {
 };
 listen<{ vault: string }>("vault-changed", (e) => bump([e.payload.vault])).catch(() => {});
 window.addEventListener("focus", () => {
-  bump((vaultList.get() ?? []).map((v) => v.path));
+  bump((vaultList.get() ?? []).map((v) => v.path).filter((v) => v !== watched));
   void refreshVaults();
 });
+
+let watched: string | null = null;
+/** Watches `vault` for changes (one at a time; null: none). */
+export function watchVault(vault: string | null) {
+  watched = vault;
+  vaultApi.watch(vault).catch(() => (watched = null));
+}
 
 /** Changes whenever files in `vault` may have changed. */
 export const useVaultRevision = (vault: string | null) => {
