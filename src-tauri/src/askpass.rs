@@ -332,7 +332,7 @@ fn host_of(url: &str) -> Option<String> {
 }
 
 /// `n` random bytes, in hex.
-fn random_hex(n: usize) -> Option<String> {
+pub(crate) fn random_hex(n: usize) -> Option<String> {
     use std::io::Read;
     let mut bytes = vec![0u8; n];
     std::fs::File::open("/dev/urandom")

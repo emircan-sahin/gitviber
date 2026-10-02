@@ -28,6 +28,7 @@ mod pty;
 mod rewrite;
 #[cfg(test)]
 mod scenario_tests;
+mod scratch;
 mod shell;
 mod shell_integration;
 mod state;
@@ -181,6 +182,7 @@ pub fn run() {
             commands::history::blame,
             commands::branches::branches,
             commands::branches::merged_upstream,
+            commands::branches::recent_branches,
             commands::branches::delete_merged,
             commands::branches::switch_branch,
             commands::branches::delete_branches,
@@ -226,6 +228,10 @@ pub fn run() {
             commands::sync::op_abort,
             commands::sync::rebase_skip,
             commands::changes::resolve_side,
+            commands::changes::conflict_base,
+            commands::changes::external_tools,
+            commands::changes::open_merge_tool,
+            commands::changes::open_diff_tool,
             commands::files::write_file,
             commands::files::create_file,
             commands::files::create_dir,
@@ -262,6 +268,8 @@ pub fn run() {
             commands::journal::redo,
             commands::github::github_permalink,
             commands::github::gh_account,
+            commands::github::gh_accounts,
+            commands::github::gh_use_account,
             commands::github::gh_protected_branches,
             commands::github::gh_original_remote,
             commands::github::gh_remotes,

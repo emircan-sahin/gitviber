@@ -228,6 +228,61 @@ pub fn bisect_start(repo: &Path, good: &str) -> Result<BisectStep, String> {
     run(repo, &["bisect", "start", "HEAD", good]).map(bisect_step)
 }
 
+/// Past this a side isn't shown line by line anyway.
+const MERGE_BASE_MAX: usize = 4 << 20;
+
+/// The conflicted `path` merged again from its index stages in diff3 style, whatever
+/// conflictstyle the merge wrote it in, so each conflict can show the base both sides changed.
+/// None when a side has no text (it deleted the file, or it's binary) or is too big to show.
+pub fn conflict_base(repo: &Path, path: &str) -> Result<Option<String>, String> {
+    let paths = [path.to_string()];
+    // "<mode> <blob> <stage>\t<path>": 1 base (none for add/add), 2 ours, 3 theirs.
+    let raw = run_text(repo, &with_paths(vec!["ls-files", "-u", "-z"], &paths))?;
+    let mut blobs: [Option<&str>; 3] = [None; 3];
+    for entry in raw.split('\0') {
+        let mut meta = entry.split('\t').next().unwrap_or_default().split(' ');
+        if let (Some(_), Some(blob), Some(n @ ("1" | "2" | "3"))) =
+            (meta.next(), meta.next(), meta.next())
+        {
+            blobs[n.as_bytes()[0] as usize - b'1' as usize] = Some(blob);
+        }
+    }
+    let [base, Some(ours), Some(theirs)] = blobs else {
+        return Ok(None);
+    };
+    let read = |blob: Option<&str>| match blob {
+        Some(b) => run(repo, &["cat-file", "blob", b]),
+        None => Ok(vec![]),
+    };
+    let sides = [read(Some(ours))?, read(base)?, read(Some(theirs))?];
+    if sides
+        .iter()
+        .any(|s| s.len() > MERGE_BASE_MAX || s.contains(&0))
+    {
+        return Ok(None);
+    }
+    // merge-file reads files; `--object-id` would take the blobs, but only from git 2.43.
+    let dir = crate::scratch::ScratchDir::new("merge")?;
+    let files: Vec<String> = ["current", "base", "incoming"]
+        .iter()
+        .zip(&sides)
+        .map(|(name, text)| {
+            let f = dir.path().join(name);
+            std::fs::write(&f, text).map_err(|e| e.to_string())?;
+            Ok(f.to_string_lossy().into_owned())
+        })
+        .collect::<Result<_, String>>()?;
+    let mut args = vec!["merge-file", "-p", "--diff3"];
+    for label in ["current", "base", "incoming"] {
+        args.extend(["-L", label]);
+    }
+    args.extend(files.iter().map(String::as_str));
+    // Its exit code is the number of conflicts (capped at 127); a negative one is an error.
+    let conflicts: Vec<i32> = (1..=127).collect();
+    let out = run_with(repo, &args, &conflicts, None)?;
+    Ok(Some(String::from_utf8_lossy(&out).into_owned()))
+}
+
 /// The commit checked out is "good", "bad", or to "skip" (can't be tested).
 pub fn bisect_mark(repo: &Path, verdict: &str) -> Result<BisectStep, String> {
     if !matches!(verdict, "good" | "bad" | "skip") {
