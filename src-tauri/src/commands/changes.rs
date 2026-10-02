@@ -1,9 +1,10 @@
-use crate::journal::{Action, Mode};
+use crate::journal::{files_label, Action, Mode, Rewrite};
 use crate::state::{
     in_repo, indexed, indexed_once, journaled, read_repo, watch_network, with_index_lock, AppState,
     Res,
 };
 use crate::{git, github, lines, network, suggest};
+use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -47,9 +48,12 @@ pub async fn remove_index_lock(state: State<'_, AppState>, path: String) -> Res<
 pub async fn discard(state: State<'_, AppState>, paths: Vec<String>) -> Res<()> {
     let (journal, index) = (state.journal.clone(), state.index.clone());
     in_repo(&state, move |r| {
-        journal.discard(r, &paths, || {
-            with_index_lock(&index, r, |r| git::discard(r, &paths))
-        })
+        let label = files_label("Discard", &paths);
+        let list = paths.clone();
+        let write: Rewrite = Arc::new(move |r| git::discard(r, &list).map(|_| vec![]));
+        journal
+            .replace(r, label, "discarded", &paths, &index, write)
+            .map(|_| ())
     })
     .await
 }
@@ -60,11 +64,14 @@ pub async fn change_lines(state: State<'_, AppState>, request: lines::Request) -
     if request.action != "discard" {
         return indexed(&state, move |r| lines::run(r, &request)).await;
     }
-    let journal = state.journal.clone();
+    let (journal, index) = (state.journal.clone(), state.index.clone());
     in_repo(&state, move |r| {
-        journal.discard(r, std::slice::from_ref(&request.path), || {
-            lines::run(r, &request)
-        })
+        let paths = [request.path.clone()];
+        let label = files_label("Discard", &paths);
+        let write: Rewrite = Arc::new(move |r| lines::run(r, &request).map(|_| vec![]));
+        journal
+            .replace(r, label, "discarded", &paths, &index, write)
+            .map(|_| ())
     })
     .await
 }

@@ -262,6 +262,15 @@ fn tags_fetched_during_an_action_are_not_part_of_it() {
     assert!(v.undo.is_empty() && v.redo.len() == 1);
 }
 
+fn discard_files(j: &Journal, r: &Path, paths: &[String]) {
+    let list = paths.to_vec();
+    let write: crate::journal::Rewrite =
+        std::sync::Arc::new(move |r| discard(r, &list).map(|_| vec![]));
+    let label = crate::journal::files_label("Discard", paths);
+    j.replace(r, label, "discarded", paths, &Mutex::new(()), write)
+        .unwrap();
+}
+
 /// Discard puts the old versions in the Trash (a temporary folder under test), and undo
 /// writes them back unless the file changed since.
 #[test]
@@ -275,7 +284,7 @@ fn undo_and_redo_a_discard() {
     fs::remove_file(r.join("dir/b.txt")).unwrap();
     let j = Journal::default();
     let paths: Vec<String> = vec!["a.txt".into(), "dir/b.txt".into()];
-    j.discard(&r, &paths, || discard(&r, &paths)).unwrap();
+    discard_files(&j, &r, &paths);
     assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "a\n");
     assert!(r.join("dir/b.txt").exists());
     let v = j.view(&r);
@@ -307,7 +316,7 @@ fn undoing_a_discard_that_brought_back_a_submodule() {
     fs::remove_dir_all(r.join("sub")).unwrap();
     let j = Journal::default();
     let paths: Vec<String> = vec!["sub".into(), "a.txt".into()];
-    j.discard(&r, &paths, || discard(&r, &paths)).unwrap();
+    discard_files(&j, &r, &paths);
     assert!(r.join("sub").is_dir());
     assert_eq!(j.view(&r).undo[0].label, "Discard 2 files");
 
