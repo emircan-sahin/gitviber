@@ -29,6 +29,13 @@ export interface GitHubAccount {
   parent: GitHubAccess | null;
 }
 
+/** An account signed in to gh on github.com. `ok` false: GitHub refused the token gh holds for it. */
+export interface GhAccount {
+  login: string;
+  active: boolean;
+  ok: boolean;
+}
+
 export const fullName = (r: GitHubAccess["repo"]) => `${r.owner}/${r.name}`;
 
 /** owner/name from a PR's or issue's html url. */
@@ -151,6 +158,10 @@ export interface StateCounts {
 
 export const github = {
   account: () => invoke<GitHubAccount>("gh_account"),
+  /** Asks GitHub about every account's token, so only on demand. */
+  accounts: () => invoke<GhAccount[]>("gh_accounts"),
+  /** The gh account the open repository's GitHub calls use; null follows gh's active one. */
+  setAccount: (login: string | null) => invoke<void>("gh_use_account", { login }),
   /** Origin's branches under branch protection (names without "origin/"). */
   protectedBranches: () => invoke<string[]>("gh_protected_branches"),
   /** The most recently updated `pages` × PR_PAGE. */

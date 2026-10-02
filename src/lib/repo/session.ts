@@ -1,6 +1,6 @@
 import { type Selection, selectionKey } from "./selection";
 import { getSettings } from "../settings";
-import { isRecord, putRecent, readJson } from "../storage";
+import { isRecord, putRecent, readJson, stringList } from "../storage";
 import { folderName, joinPath } from "../path";
 import { isNote, type ReviewNote } from "../review/notes";
 
@@ -33,6 +33,8 @@ const WORKTREE_DIRS_KEY = "gitviber.worktreeDirs";
 const WORKTREE_RUN_KEY = "gitviber.worktreeRun";
 const ISSUE_BRANCHES_KEY = "gitviber.issueBranches";
 const ISSUE_RUN_KEY = "gitviber.issueRun";
+const PINNED_BRANCHES_KEY = "gitviber.pinnedBranches";
+const GITHUB_ACCOUNTS_KEY = "gitviber.githubAccounts";
 // Agent worktrees come and go; keep only the most recently used.
 const MAX = 30;
 
@@ -154,6 +156,33 @@ export function saveBranchIssue(repo: string, branch: string, url: string) {
   const r = all(ISSUE_BRANCHES_KEY)[repo.toLowerCase()];
   const { [branch]: _, ...rest } = isRecord(r) ? r : {};
   put(ISSUE_BRANCHES_KEY, repo.toLowerCase(), Object.fromEntries([...Object.entries(rest), [branch, url]].slice(-MAX)));
+}
+
+/** The branches pinned to the top of the project `main`'s branch picker, in pin order. */
+export const loadPinnedBranches = (main: string): string[] => stringList(all(PINNED_BRANCHES_KEY)[main]);
+
+export function savePinnedBranches(main: string, names: string[]) {
+  put(PINNED_BRANCHES_KEY, main, names.length ? names : null);
+}
+
+/** A branch renamed in the app keeps its pin. */
+export function renamePinnedBranch(main: string, from: string, to: string) {
+  const pins = loadPinnedBranches(main);
+  if (pins.includes(from)) savePinnedBranches(main, pins.map((p) => (p === from ? to : p)));
+}
+
+/**
+ * The gh account the project `main` uses for GitHub, when it isn't gh's active one. Kept here,
+ * never in the repo's config; the backend is told as the project opens (lib/github/account).
+ */
+export function loadGitHubAccount(main: string): string | null {
+  const login = all(GITHUB_ACCOUNTS_KEY)[main];
+  return typeof login === "string" ? login : null;
+}
+
+/** null goes back to gh's active account. */
+export function saveGitHubAccount(main: string, login: string | null) {
+  put(GITHUB_ACCOUNTS_KEY, main, login);
 }
 
 /** The project's own subfolder of the worktree folder set in Settings, or null while that's off. */

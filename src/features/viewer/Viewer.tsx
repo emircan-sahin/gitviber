@@ -70,7 +70,14 @@ export function Viewer(props: ViewerProps) {
         // A render error in one file's view stays in that tab instead of blanking the app.
         <ErrorBoundary key={active.key} fallback={(e) => <Placeholder title="This view crashed" detail={errorMessage(e)} />}>
           {active.sel.kind === "conflict" ? (
-            <ConflictView file={active.sel.file} operation={props.status?.operation ?? null} revision={props.revision} />
+            <ConflictView
+              file={active.sel.file}
+              root={props.status?.root ?? ""}
+              branch={props.status?.branch ?? null}
+              conflicted={props.status?.conflicted.map((f) => f.path) ?? []}
+              operation={props.status?.operation ?? null}
+              revision={props.revision}
+            />
           ) : active.sel.kind === "pull" ? (
             <PullView pull={active.sel.pull} onOpen={props.onOpen} />
           ) : active.sel.kind === "issue" ? (
