@@ -20,6 +20,7 @@ mod lines;
 mod menu;
 mod navigation;
 mod network;
+mod obsidian;
 mod open_in;
 mod opened;
 mod process;
@@ -227,6 +228,13 @@ pub fn run() {
             commands::sync::rebase_skip,
             commands::changes::resolve_side,
             commands::files::write_file,
+            commands::obsidian::vaults,
+            commands::obsidian::vault_list_dir,
+            commands::obsidian::vault_files,
+            commands::obsidian::vault_read_file,
+            commands::obsidian::vault_media,
+            commands::obsidian::vault_write_file,
+            commands::obsidian::vault_watch,
             commands::files::create_file,
             commands::files::create_dir,
             commands::files::rename_path,

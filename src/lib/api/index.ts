@@ -3,6 +3,7 @@ export * from "./errors";
 export * from "./git";
 export * from "./github";
 export * from "./issues";
+export * from "./obsidian";
 export { answerPrompt, cancelNetwork, isQuietOp, netOp, networkBusy, promptsReady } from "./network";
 export * from "./pty";
 export * from "./types";
