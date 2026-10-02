@@ -58,8 +58,9 @@ Every worktree keeps its own terminals, so nothing gets lost when you hop betwee
 terminal can open in another project or any folder too. A tab and its worktree show a ring while
 Claude Code works there, and a dot once it finishes or asks for you, with a desktop notification if
 you turned those on (Settings → Notifications, one switch per kind); clicking it brings you to that
-terminal. Other agents get the dot when they ring the terminal bell or send a notification. Quit with Claude Code, Gemini CLI or opencode still running, and the restored terminal
-has the command that resumes the conversation typed at the prompt.
+terminal. Other agents get the dot when they ring the terminal bell or send a notification. Quit
+with Claude Code, Gemini CLI or opencode still running, and the restored terminal has the command
+that resumes the conversation typed at the prompt.
 
 ### Watch the work land
 

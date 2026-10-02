@@ -61,30 +61,17 @@ pub fn send(app: &AppHandle, title: &str, body: &str, target: Option<&str>) -> R
     note.show().map_err(|e| e.to_string())
 }
 
-/// System Settings at GitViber's notifications, where a denied permission is given back.
-pub fn open_settings(app: &AppHandle) -> Result<(), String> {
-    let id = &app.config().identifier;
-    let url =
-        format!("x-apple.systempreferences:com.apple.Notifications-Settings.extension?id={id}");
-    let ok = cfg!(target_os = "macos")
-        && std::process::Command::new("/usr/bin/open")
-            .arg(url)
-            .status()
-            .is_ok_and(|s| s.success());
-    ok.then_some(())
-        .ok_or_else(|| "Could not open System Settings".into())
-}
-
 #[cfg(target_os = "macos")]
 mod mac {
     use super::Permission;
+    use crate::objc::{c_string, ns_string, rust_string};
     use block2::{Block, RcBlock};
     use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject};
     use objc2::{define_class, msg_send, ClassType};
-    use std::ffi::{c_char, CStr, CString};
+    use std::ffi::CStr;
     use std::sync::{mpsc, OnceLock};
     use std::time::Duration;
-    use tauri::{AppHandle, Emitter, Manager};
+    use tauri::{AppHandle, Emitter};
 
     #[link(name = "UserNotifications", kind = "framework")]
     extern "C" {}
@@ -140,29 +127,8 @@ mod mac {
 
     /// A click on one of ours: the app comes to the front, and the page shows what it was about.
     fn clicked(app: &AppHandle, target: Option<String>) {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.unminimize();
-            let _ = window.show();
-            let _ = window.set_focus();
-        }
+        crate::opened::raise(app);
         let _ = app.emit("notification-click", target);
-    }
-
-    unsafe fn ns_string(s: &CStr) -> Option<*mut AnyObject> {
-        Some(msg_send![AnyClass::get(c"NSString")?, stringWithUTF8String: s.as_ptr()])
-    }
-
-    unsafe fn rust_string(s: *mut AnyObject) -> Option<String> {
-        if s.is_null() {
-            return None;
-        }
-        let utf8: *const c_char = msg_send![s, UTF8String];
-        (!utf8.is_null()).then(|| CStr::from_ptr(utf8).to_string_lossy().into_owned())
-    }
-
-    /// A terminal's notification text can hold a NUL, which a C string can't.
-    fn c_string(s: &str) -> CString {
-        CString::new(s.replace('\0', "")).unwrap_or_default()
     }
 
     /// The app's center, inside an app bundle only: elsewhere `currentNotificationCenter`
@@ -203,8 +169,13 @@ mod mac {
     /// Runs `call` with a sender for its completion handler's answer, and waits that long for it.
     fn ask<T: 'static>(wait: Duration, call: impl FnOnce(mpsc::Sender<T>)) -> Option<T> {
         let (tx, rx) = mpsc::channel();
-        objc2::rc::autoreleasepool(|_| call(tx));
+        call(tx);
         rx.recv_timeout(wait).ok()
+    }
+
+    /// The commands run on worker threads, which have no autorelease pool of their own.
+    fn pooled<T>(f: impl FnOnce() -> T) -> T {
+        objc2::rc::autoreleasepool(|_| f())
     }
 
     unsafe fn error_text(error: *mut AnyObject) -> String {
@@ -213,6 +184,10 @@ mod mac {
     }
 
     pub fn permission() -> Result<Permission, String> {
+        pooled(permission_in_pool)
+    }
+
+    fn permission_in_pool() -> Result<Permission, String> {
         let Some(center) = center() else {
             return Ok(Permission::Unbundled);
         };
@@ -235,6 +210,10 @@ mod mac {
     }
 
     pub fn request() -> Result<Permission, String> {
+        pooled(request_in_pool)
+    }
+
+    fn request_in_pool() -> Result<Permission, String> {
         let Some(center) = center() else {
             return Ok(Permission::Unbundled);
         };
@@ -261,6 +240,10 @@ mod mac {
 
     /// None outside an app bundle, where the plugin posts instead.
     pub fn send(title: &str, body: &str, target: Option<&str>) -> Option<Result<(), String>> {
+        pooled(|| send_in_pool(title, body, target))
+    }
+
+    fn send_in_pool(title: &str, body: &str, target: Option<&str>) -> Option<Result<(), String>> {
         let center = center()?;
         let sent = ask(REPLY, |tx| unsafe {
             let Some(request) = build(title, body, target) else {
@@ -293,16 +276,16 @@ mod mac {
             return None;
         }
         let filled = (|| {
-            let _: () = msg_send![content, setTitle: ns_string(&c_string(title))?];
-            let _: () = msg_send![content, setBody: ns_string(&c_string(body))?];
+            let _: () = msg_send![content, setTitle: ns_string(&c_string(title))];
+            let _: () = msg_send![content, setBody: ns_string(&c_string(body))];
             let sound: *mut AnyObject =
                 msg_send![AnyClass::get(c"UNNotificationSound")?, defaultSound];
             let _: () = msg_send![content, setSound: sound];
             if let Some(target) = target {
                 let info: *mut AnyObject = msg_send![
                     AnyClass::get(c"NSDictionary")?,
-                    dictionaryWithObject: ns_string(&c_string(target))?,
-                    forKey: ns_string(TARGET)?
+                    dictionaryWithObject: ns_string(&c_string(target)),
+                    forKey: ns_string(TARGET)
                 ];
                 let _: () = msg_send![content, setUserInfo: info];
             }
@@ -324,7 +307,7 @@ mod mac {
     pub(super) unsafe fn target_of(request: *mut AnyObject) -> Option<String> {
         let content: *mut AnyObject = msg_send![request, content];
         let info: *mut AnyObject = msg_send![content, userInfo];
-        let value: *mut AnyObject = msg_send![info, objectForKey: ns_string(TARGET)?];
+        let value: *mut AnyObject = msg_send![info, objectForKey: ns_string(TARGET)];
         rust_string(value)
     }
 }

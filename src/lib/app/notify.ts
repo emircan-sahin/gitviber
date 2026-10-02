@@ -15,25 +15,39 @@ export function refreshNotifyPermission() {
   api.notificationPermission().then(permission.set, () => {});
 }
 
+// True while macOS's prompt is open: the switch waits for the answer.
+const asking = createStore(false);
+export const useAskingNotify = asking.use;
+// Each turn of the switch; an answer to an older one is let go.
+let turns = 0;
+
 export const openNotificationSettings = () => void api.notificationSettings().catch(failed("Could not open System Settings"));
 
 const DENIED = "Allow them in System Settings → Notifications, then turn this on again.";
+const openSettingsAction = { label: "Open System Settings", run: openNotificationSettings };
 
 /** Turns them on, asking the OS first; stays off if it says no. */
 export async function enableNotifications(on: boolean) {
-  if (!on) return updateSettings({ notify: false });
+  const turn = ++turns;
+  if (!on) {
+    asking.set(false);
+    return updateSettings({ notify: false });
+  }
+  asking.set(true);
   try {
     let state = await api.notificationPermission();
     if (state === "prompt") state = await api.requestNotifications();
+    if (turn !== turns) return;
     permission.set(state);
     if (state === "granted" || state === "unbundled") updateSettings({ notify: true });
-    else if (state === "denied") toast("info", "Notifications are off for GitViber", DENIED, { label: "Open System Settings", run: openNotificationSettings });
+    else if (state === "denied") toast("info", "Notifications are off for GitViber", DENIED, openSettingsAction);
     else toast("info", "macOS is still asking", "Answer its prompt, then turn this on again.");
   } catch (e) {
-    toast("error", "Could not turn on notifications", errorMessage(e));
+    if (turn === turns) toast("error", "Could not turn on notifications", errorMessage(e));
+  } finally {
+    if (turn === turns) asking.set(false);
   }
 }
-
 /**
  * Tells the user `title`, if they asked to be told of `event` and aren't looking at the app.
  * `target`: what a click on it shows ("pane:<id>", needsYou). True when it was sent.
@@ -51,14 +65,29 @@ export function sendTestNotification() {
   api.notify("GitViber", "Notifications are on. Click one to come back here.").catch(failed("Could not send a notification"));
 }
 
-// Up to 0.1.7 macOS was never asked, so a switch turned on then has no permission behind it, and
-// every notification would be dropped unseen. Off it goes, with a way back that asks.
-if (getSettings().notify)
+let toldDenied = false;
+
+/**
+ * With the switch on, what macOS says now. Up to 0.1.7 it was never asked, so a switch turned on
+ * then has no permission behind it: off it goes, with a way back that asks. One taken back in
+ * System Settings would drop every notification unseen, so that's said once.
+ */
+function checkPermission() {
+  if (!getSettings().notify) return;
   api
     .notificationPermission()
     .then((state) => {
-      if (state !== "prompt") return;
-      updateSettings({ notify: false });
-      toast("info", "Notifications need your permission", "GitViber now asks macOS before it shows any.", { label: "Turn On", run: () => void enableNotifications(true) });
+      permission.set(state);
+      if (state === "prompt") {
+        updateSettings({ notify: false });
+        toast("info", "Notifications need your permission", "GitViber now asks macOS before it shows any.", { label: "Turn on", run: () => void enableNotifications(true) });
+      } else if (state === "denied" && !toldDenied) {
+        toldDenied = true;
+        toast("info", "Notifications are off for GitViber", "They were turned off in System Settings → Notifications, so none can show.", openSettingsAction);
+      }
     })
     .catch(() => {});
+}
+
+checkPermission();
+window.addEventListener("focus", checkPermission);

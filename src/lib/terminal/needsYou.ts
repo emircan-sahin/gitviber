@@ -24,20 +24,27 @@ export function watchAttention(p: Pane) {
 }
 
 // Panes whose mark has been told to the OS. Apart from the mark: with one kind of notification
-// turned off, an agent's own escape could mark the pane first and keep its state file's news quiet.
+// turned off, a terminal's escape could mark the pane first and keep the agent's news quiet.
 const told = new Set<number>();
+// Pane ids start over each run: a click on an older run's notification, still in Notification
+// Center, would show some other pane.
+const RUN = Math.random().toString(36).slice(2, 10);
 
 /**
  * Marks `p` (and tells the OS, when away and `event` is on) unless it's being looked at: once until
- * it is, so an agent's own escape and its state file saying the same thing are one mark, one notification.
+ * it is, so an agent's own escape and its state file saying the same thing are one mark, one
+ * notification. Without `event` it's the terminal's bell or escape, which only marks a pane whose
+ * agent reports its state: agents.ts tells that one as finished or waiting, under its own switch.
  */
-export function needsYou(p: Pane, note?: Note, event: NotifyEvent = "notifyTerminal") {
+export function needsYou(p: Pane, note?: Note, event?: NotifyEvent) {
   const g = state.groups.find((x) => x.panes.some((i) => i.id === p.id));
   const info = g?.panes.find((i) => i.id === p.id);
   if (!g || !info || told.has(p.id) || (document.hasFocus() && document.activeElement === p.term.textarea)) return;
   if (!info.needsYou) update(p.id, (i) => ({ ...i, needsYou: true }));
+  if (!event && info.agent?.state != null) return;
   const text = [note?.title, note?.body].filter(Boolean).join(": ");
-  if (notifyIfAway(event, g.name ?? (folderName(p.cwd) || p.cwd), text || info.title || "Needs you", `pane:${p.id}`)) told.add(p.id);
+  const title = g.name ?? (folderName(p.cwd) || p.cwd);
+  if (notifyIfAway(event ?? "notifyTerminal", title, text || info.title || "Needs you", `pane:${RUN}:${p.id}`)) told.add(p.id);
 }
 
 export function lookedAt(id: number) {
@@ -48,8 +55,8 @@ export function lookedAt(id: number) {
 // A click on a pane's notification (notifications.rs has brought the app to the front) shows it.
 try {
   listen<string | null>("notification-click", ({ payload }) => {
-    const pane = /^pane:(\d+)$/.exec(payload ?? "");
-    if (pane) revealPane(Number(pane[1]));
+    const pane = /^pane:(\w+):(\d+)$/.exec(payload ?? "");
+    if (pane?.[1] === RUN) revealPane(Number(pane[2]));
   }).catch(() => {});
 } catch {
   // Not in Tauri (the browser-only dev fixture).
