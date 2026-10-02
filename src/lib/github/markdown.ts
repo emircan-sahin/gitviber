@@ -2,7 +2,10 @@ import { createElement, type MouseEvent, type ReactNode } from "react";
 import type { Components, Options } from "react-markdown";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
+import remarkFrontmatter from "remark-frontmatter";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import { remarkCallouts, remarkFrontmatterTable, remarkMathGuard, remarkObsidian, remarkSection } from "../markdown/syntax.ts";
 
 // The markdown pipeline without JSX or app imports, so node tests render through the real thing.
 
@@ -19,23 +22,58 @@ interface HNode {
 // down to GitHub's own allowlist: no scripts, styles, event handlers, iframes or forms, and
 // only http(s)/mailto URLs. <picture>/<source> go too: srcset would load images around the
 // img component, which decides what may load.
-const schema = {
+const base = {
   ...defaultSchema,
   tagNames: defaultSchema.tagNames?.filter((t) => t !== "picture" && t !== "source"),
   attributes: Object.fromEntries(Object.entries(defaultSchema.attributes ?? {}).filter(([tag]) => tag !== "source")),
 };
+type Schema = typeof base;
+
+const extend = (schema: Schema, attributes: Record<string, string[]>, tagNames: string[] = []): Schema => ({
+  ...schema,
+  tagNames: [...(schema.tagNames ?? []), ...tagNames],
+  attributes: { ...schema.attributes, ...Object.fromEntries(Object.entries(attributes).map(([tag, more]) => [tag, [...(schema.attributes[tag] ?? []), ...more]])) },
+});
+
+// What the syntax plugins (lib/markdown/syntax) add, let through on purpose: data attributes
+// the components read to draw a callout, math, a table or an embed, and <mark>. Nothing that
+// loads or runs; raw HTML carrying them gets a styled box at most.
+const githubSchema = extend({ ...base, attributes: { ...base.attributes, code: [["className", /^language-./, "math-inline", "math-display"]] } }, { div: ["dataCallout", "dataCalloutFold", "dataCalloutTitle", "dataCalloutBody"] });
+const repoSchema = extend(githubSchema, { div: ["dataFrontmatter"] });
+const obsidianSchema = extend(repoSchema, { a: ["dataWikilink"], div: ["dataEmbed", "dataEmbedAlias"], span: ["dataEmbed", "dataEmbedAlias", "dataTag"], li: ["dataTask"] }, ["mark"]);
+const SCHEMAS = { github: githubSchema, repo: repoSchema, obsidian: obsidianSchema };
+
+/**
+ * Which markdown a block is: GitHub's (PR and issue text: alerts, math), a repo file's (also
+ * YAML frontmatter, as a table) or an Obsidian note's (also wikilinks, embeds, callouts and the rest).
+ */
+export type Flavor = "github" | "repo" | "obsidian";
 
 /**
  * Plugins for one rendered block. `idPrefix` namespaces every id and name in it (headings,
  * footnotes, raw HTML), so blocks on one page don't collide with each other or the app.
- * `repo` (https://github.com/owner/name) turns @mentions and #123 into links.
+ * `repo` (https://github.com/owner/name) turns @mentions and #123 into links. `section` cuts a
+ * note down to a heading's part or a block (an embed's #Heading or #^id).
  */
-export function markdownOptions({ idPrefix, repo }: { idPrefix: string; repo?: string }): Pick<Options, "remarkPlugins" | "rehypePlugins" | "remarkRehypeOptions"> {
+export function markdownOptions({ idPrefix, repo, flavor = "github", section }: { idPrefix: string; repo?: string; flavor?: Flavor; section?: string }): Pick<Options, "remarkPlugins" | "rehypePlugins" | "remarkRehypeOptions"> {
+  const obsidian = flavor === "obsidian";
   return {
-    remarkPlugins: [remarkGfm],
+    remarkPlugins: [
+      remarkGfm,
+      remarkMath,
+      remarkMathGuard,
+      ...(flavor === "github" ? [] : [remarkFrontmatter, remarkFrontmatterTable]),
+      [remarkCallouts, { obsidian }],
+      ...(obsidian ? [remarkObsidian] : []),
+      ...(section ? [[remarkSection, { anchor: section }] as [typeof remarkSection, { anchor: string }]] : []),
+    ],
     // Footnote ids come out bare and the sanitizer prefixes them with everything else.
     remarkRehypeOptions: { clobberPrefix: "" },
-    rehypePlugins: [rehypeRaw, ...(repo ? [[rehypeGithubRefs, { repo }] as [typeof rehypeGithubRefs, { repo: string }]] : []), [rehypeSanitize, { ...schema, clobberPrefix: idPrefix }]],
+    rehypePlugins: [
+      rehypeRaw,
+      ...(repo ? [[rehypeGithubRefs, { repo }] as [typeof rehypeGithubRefs, { repo: string }]] : []),
+      [rehypeSanitize, { ...SCHEMAS[flavor], clobberPrefix: idPrefix }],
+    ],
   };
 }
 

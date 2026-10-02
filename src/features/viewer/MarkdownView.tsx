@@ -1,16 +1,22 @@
-import { Children, type ComponentProps, isValidElement, type ReactNode, useMemo } from "react";
+import { Children, type ComponentProps, isValidElement, type ReactNode, use, useMemo } from "react";
 import Markdown, { type Components } from "react-markdown";
 import { PageFind } from "@/components/FindBox";
 import { github } from "@/lib/api";
 import { useHighlight } from "@/lib/editor/highlight";
 import { copyNarrowed, indentUnit, TAB, widen } from "@/lib/editor/indent";
 import { languageFor } from "@/lib/editor/language";
-import { markdownLink, markdownOptions, safeDecode } from "@/lib/github/markdown";
+import { type Flavor, markdownLink, markdownOptions, safeDecode } from "@/lib/github/markdown";
+import { stripComments } from "@/lib/markdown/syntax";
 import type { Selection } from "@/lib/repo/selection";
 import { useSettings } from "@/lib/settings";
 import { failed, toast } from "@/lib/app/toast";
 import { copyText } from "@/lib/app/clipboard";
 import { type MediaSource, useMediaUrl } from "./MediaView";
+import { Callout } from "./markdown/Callout";
+import { MarkdownHostContext } from "./markdown/host";
+import { MathTex } from "./markdown/MathTex";
+import { Mermaid } from "./markdown/Mermaid";
+import { Properties } from "./markdown/Properties";
 
 export function isMarkdown(path: string) {
   return /\.(md|markdown|mdown|mkd)$/i.test(path);
@@ -34,7 +40,7 @@ function textOf(node: ReactNode): string {
 }
 
 /** GitHub's heading anchors, so `#section` links inside READMEs work. */
-const slug = (children: ReactNode) =>
+export const slug = (children: ReactNode) =>
   textOf(children)
     .toLowerCase()
     .trim()
@@ -52,7 +58,7 @@ function baseComponents(prefix: string) {
   let base = bases.get(prefix);
   if (!base) {
     const h = (tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") => heading(tag, prefix);
-    base = { h1: h("h1"), h2: h("h2"), h3: h("h3"), h4: h("h4"), h5: h("h5"), h6: h("h6"), pre: ({ children }) => <>{children}</>, code: CodeBlock };
+    base = { h1: h("h1"), h2: h("h2"), h3: h("h3"), h4: h("h4"), h5: h("h5"), h6: h("h6"), pre: ({ children }) => <>{children}</>, code: CodeBlock, div: Div, span: Span };
     bases.set(prefix, base);
   }
   return base;
@@ -86,14 +92,30 @@ export function followLink(href: string, local: (href: string) => void, idPrefix
 }
 
 /**
- * GitHub-flavored markdown with code highlighting; wrap it in `.markdown` for styling. Every
- * id in it gets `idPrefix`, so give each block on a page its own. `repo` links @mentions and #123.
+ * GitHub-flavored markdown with code highlighting, diagrams and math; wrap it in `.markdown` for
+ * styling. Every id in it gets `idPrefix`, so give each block on a page its own. `repo` links
+ * @mentions and #123; `flavor` and `section` as markdownOptions has them.
  */
-export function MarkdownBody({ text, components, idPrefix = "user-content-", repo }: { text: string; components: Components; idPrefix?: string; repo?: string }) {
-  const options = useMemo(() => markdownOptions({ idPrefix, repo }), [idPrefix, repo]);
+export function MarkdownBody({
+  text,
+  components,
+  idPrefix = "user-content-",
+  repo,
+  flavor,
+  section,
+}: {
+  text: string;
+  components: Components;
+  idPrefix?: string;
+  repo?: string;
+  flavor?: Flavor;
+  section?: string;
+}) {
+  const options = useMemo(() => markdownOptions({ idPrefix, repo, flavor, section }), [idPrefix, repo, flavor, section]);
+  const source = useMemo(() => (flavor === "obsidian" ? stripComments(text) : text), [flavor, text]);
   return (
     <Markdown {...options} components={{ ...baseComponents(idPrefix), ...components }}>
-      {text}
+      {source}
     </Markdown>
   );
 }
@@ -124,7 +146,7 @@ export function MarkdownView({ text, src, onOpen }: { text: string; src: MediaSo
     <div data-code-scroll tabIndex={0} className="h-full overflow-auto outline-none">
       <PageFind />
       <article className="markdown mx-auto max-w-[860px] px-8 py-6 select-text">
-        <MarkdownBody text={text} components={components} />
+        <MarkdownBody text={text} components={components} flavor="repo" />
       </article>
     </div>
   );
@@ -138,9 +160,32 @@ function RepoImage({ src, ...props }: { src: MediaSource } & Omit<ComponentProps
 function CodeBlock({ className, children }: ComponentProps<"code">) {
   const lang = /language-(\S+)/.exec(className ?? "")?.[1];
   const code = String(children ?? "");
+  // remark-math's: $inline$ and $$display$$.
+  if (lang === "math" && className?.includes("math-")) return <MathTex tex={code} display={className.includes("math-display")} />;
   // Inline code has no language and no trailing newline; fenced blocks always end in one.
   if (!lang && !code.endsWith("\n")) return <code>{children}</code>;
-  return <Fence code={code.replace(/\n$/, "")} lang={lang ? languageFor(`x.${lang}`) : "text"} />;
+  const source = code.replace(/\n$/, "");
+  if (lang === "math") return <MathTex tex={source} display />;
+  const fence = <Fence code={source} lang={lang ? languageFor(`x.${lang}`) : "text"} />;
+  if (lang === "mermaid") return <Mermaid code={source} fallback={fence} />;
+  return fence;
+}
+
+type Data = { node?: unknown; "data-callout"?: string; "data-callout-fold"?: string; "data-frontmatter"?: string; "data-embed"?: string; "data-embed-alias"?: string };
+
+/** The divs the syntax plugins mark: callouts, frontmatter, and embeds the host resolves. */
+function Div({ node: _node, ...props }: ComponentProps<"div"> & Data) {
+  const host = use(MarkdownHostContext);
+  if (props["data-callout"] !== undefined) return <Callout type={props["data-callout"]} fold={props["data-callout-fold"] ?? ""}>{props.children}</Callout>;
+  if (props["data-frontmatter"] !== undefined) return <Properties source={props["data-frontmatter"]} />;
+  if (props["data-embed"] !== undefined) return host.embed?.(props["data-embed"], props["data-embed-alias"] ?? "", true) ?? null;
+  return <div {...props} />;
+}
+
+function Span({ node: _node, ...props }: ComponentProps<"span"> & Data) {
+  const host = use(MarkdownHostContext);
+  if (props["data-embed"] !== undefined) return host.embed?.(props["data-embed"], props["data-embed-alias"] ?? "", false) ?? null;
+  return <span {...props} />;
 }
 
 function Fence({ code: raw, lang }: { code: string; lang: string }) {
