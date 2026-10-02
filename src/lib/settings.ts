@@ -128,6 +128,10 @@ export const LIGHT_THEMES = Object.fromEntries(Object.entries(THEMES).filter(([,
 export const OPTION_KEYS = { off: "Off", left: "Left ⌥", both: "Both ⌥" } as const;
 export type OptionKey = keyof typeof OPTION_KEYS;
 
+/** How much of the desktop shows through the window's chrome, blurred; macOS only (translucency.ts). */
+export const TRANSLUCENCY = { off: "Off", subtle: "Subtle", strong: "Strong" } as const;
+export type Translucency = keyof typeof TRANSLUCENCY;
+
 /** Minutes between background fetches; 0 is off. */
 export const FETCH_INTERVALS = [0, 5, 15, 30];
 
@@ -153,6 +157,8 @@ export interface Settings {
   appearance: Appearance;
   darkTheme: DarkTheme;
   lightTheme: LightTheme;
+  /** One of TRANSLUCENCY; applied on macOS only, and only while the window is in front. */
+  translucency: Translucency;
   uiFont: UiFont;
   customUiFont: string;
   uiFontWeight: UiFontWeight;
@@ -243,6 +249,7 @@ const DEFAULTS: Settings = {
   appearance: "system",
   darkTheme: "dark",
   lightTheme: "light",
+  translucency: "off",
   uiFont: "System",
   customUiFont: "",
   uiFontWeight: 500,
@@ -320,6 +327,7 @@ function load(): Settings {
     if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
     if (!Object.hasOwn(DARK_THEMES, s.darkTheme)) s.darkTheme = DEFAULTS.darkTheme;
     if (!Object.hasOwn(LIGHT_THEMES, s.lightTheme)) s.lightTheme = DEFAULTS.lightTheme;
+    if (!Object.hasOwn(TRANSLUCENCY, s.translucency)) s.translucency = DEFAULTS.translucency;
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (!Object.hasOwn(OPTION_KEYS, s.optionAsMeta)) s.optionAsMeta = DEFAULTS.optionAsMeta;
     if (typeof s.shellIntegration !== "boolean") s.shellIntegration = DEFAULTS.shellIntegration;

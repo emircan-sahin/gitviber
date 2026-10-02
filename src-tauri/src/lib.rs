@@ -36,6 +36,7 @@ mod titlebar;
 #[cfg(target_os = "linux")]
 mod trash;
 mod updates;
+mod vibrancy;
 mod watch;
 
 use state::AppState;
@@ -93,6 +94,9 @@ pub fn run() {
                 webview.state::<AppState>().ptys.kill_all();
                 webview.state::<AppState>().agents.forget_all();
                 askpass::decline_all();
+                if let Some(window) = webview.get_webview_window(webview.label()) {
+                    vibrancy::reset(&window);
+                }
             }
         })
         .manage(AppState::default())
@@ -310,7 +314,9 @@ pub fn run() {
             commands::app::quit,
             commands::app::update_mode,
             commands::app::take_opened,
-            commands::app::install_cli
+            commands::app::install_cli,
+            commands::app::set_translucent,
+            commands::app::reduce_transparency
         ])
         .build(context)
         .expect("error while building GitViber")

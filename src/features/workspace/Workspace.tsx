@@ -398,7 +398,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
             collapsedSize={0}
             onResize={(size) => setLeftOpen(size.inPixels > 0)}
           >
-            <div data-panel="git" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel outline-none">
+            <div data-panel="git" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel glass-panel outline-none">
               <FocusLine />
               <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border pr-1 pl-2">
                 <ListTabButton active={listTab === "changes"} onClick={() => setListTab("changes")} count={changeCount}>
@@ -548,7 +548,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
             collapsedSize={0}
             onResize={(size) => setRightOpen(size.inPixels > 0)}
           >
-            <div data-panel="explorer" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel outline-none">
+            <div data-panel="explorer" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel glass-panel outline-none">
               <FocusLine />
               <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border pr-1 pl-2">
                 <ListTabButton active={explorerView === "files"} onClick={() => setExplorerView("files")}>

@@ -1,5 +1,5 @@
 use crate::state::{blocking, AppState, Res};
-use crate::{agents, cli, clipboard, errors, git, launch, menu, process, pty, updates};
+use crate::{agents, cli, clipboard, errors, git, launch, menu, process, pty, updates, vibrancy};
 use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -57,6 +57,18 @@ pub fn copy_files(paths: Vec<String>) -> Res<()> {
 #[tauri::command]
 pub fn terminal_copy(text: String) -> Res<()> {
     clipboard::write_text(&text)
+}
+
+/// macOS's material behind the window, for the Translucency setting (vibrancy.rs). Sync, so it runs
+/// on the main thread, where AppKit's views belong.
+#[tauri::command]
+pub fn set_translucent(window: tauri::WebviewWindow, on: bool) -> Res<()> {
+    vibrancy::set(&window, on)
+}
+
+#[tauri::command]
+pub fn reduce_transparency() -> bool {
+    vibrancy::reduce_transparency()
 }
 
 /// The `gitviber` command (cli.rs).

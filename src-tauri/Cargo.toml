@@ -69,3 +69,5 @@ gtk = "=0.18.2"
 objc2 = "=0.6.4"
 # Also already linked; wraps the full-screen notification handlers (see titlebar.rs).
 block2 = "=0.6.2"
+# Also already linked (by tauri); puts the translucent background on and off (see vibrancy.rs).
+window-vibrancy = "=0.6.0"

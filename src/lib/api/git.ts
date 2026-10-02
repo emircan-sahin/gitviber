@@ -24,6 +24,10 @@ export const api = {
   setRepoIdentity: (identity: { name: string; email: string } | null) => invoke<void>("set_repo_identity", identity ?? { name: null, email: null }),
   status: () => invoke<RepoStatus>("status"),
   about: () => invoke<About>("about"),
+  /** macOS's material behind the window (the Translucency setting). */
+  setTranslucent: (on: boolean) => invoke<void>("set_translucent", { on }),
+  /** macOS's Reduce transparency accessibility setting; false elsewhere. */
+  reduceTransparency: () => invoke<boolean>("reduce_transparency"),
   /**
    * HEAD's history, or `rev`'s: a remote-tracking branch (refs/remotes/…), e.g. a fork's original.
    * `all`: every branch, remote-tracking branch and tag it lets through, with what HEAD lacks marked.

@@ -24,7 +24,7 @@ export function StatusBar({ repo, reviewed, active }: { repo: ReturnType<typeof 
   const totals = changeTotals(repo);
   return (
     // The branch is in the top bar's breadcrumb already, so it isn't repeated here.
-    <div className="flex h-6 shrink-0 items-center gap-3 border-t border-border bg-sidebar px-3 text-[11px] text-subtle">
+    <div className="flex h-6 shrink-0 items-center gap-3 border-t border-border bg-sidebar glass-sidebar px-3 text-[11px] text-subtle">
       {status?.upstream && !status.upstreamGone && (
         <span className="flex items-center gap-1.5 font-mono">
           <span className={cn("flex items-center", status.ahead && "text-primary")}>
