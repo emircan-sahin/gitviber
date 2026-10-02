@@ -203,8 +203,16 @@ export interface Settings {
   signOffRepos: string[];
   /** Minutes between quiet fetches of the open repo (one of FETCH_INTERVALS); 0 is off. */
   backgroundFetch: number;
-  /** A desktop notification when a push, pull or the like ends, or a terminal asks for the user, while the app is in the background. */
+  /** Desktop notifications while the app is in the background (notify.ts); each NotifyEvent turns its own off. */
   notify: boolean;
+  /** An agent in a terminal finished working. */
+  notifyAgentDone: boolean;
+  /** An agent in a terminal waits for an answer. */
+  notifyAgentWaiting: boolean;
+  /** A terminal rang its bell or sent a notification escape. */
+  notifyTerminal: boolean;
+  /** A push, pull, fetch, clone or commit ended. */
+  notifyGit: boolean;
   /** Ask GitHub Releases for a newer GitViber at launch and every few hours (updates.ts). */
   autoUpdate: boolean;
   /** Where the last clone went; the next one offers the same folder. */
@@ -223,6 +231,10 @@ export interface Settings {
   /** List only the user's own "Open in" entries. */
   openInHideBuiltins: boolean;
 }
+
+/** What can notify, each with its own switch (Settings → Notifications). */
+export const NOTIFY_EVENTS = ["notifyAgentDone", "notifyAgentWaiting", "notifyTerminal", "notifyGit"] as const;
+export type NotifyEvent = (typeof NOTIFY_EVENTS)[number];
 
 export const DEFAULT_FONT_SIZE = 13.5;
 export const CODE_FONT_MIN = 10;
@@ -280,6 +292,10 @@ const DEFAULTS: Settings = {
   backgroundFetch: 0,
   // Off until asked for: turning it on is what asks the OS for permission.
   notify: false,
+  notifyAgentDone: true,
+  notifyAgentWaiting: true,
+  notifyTerminal: true,
+  notifyGit: true,
   autoUpdate: true,
   cloneParent: null,
   worktreeRoot: null,
@@ -344,7 +360,7 @@ function load(): Settings {
     if (!["amount", "all"].includes(s.whitespaceMode)) s.whitespaceMode = DEFAULTS.whitespaceMode;
     if (typeof s.shortcutOverlay !== "boolean") s.shortcutOverlay = DEFAULTS.shortcutOverlay;
     s.keybindings = cleanOverrides(s.keybindings);
-    if (typeof s.notify !== "boolean") s.notify = DEFAULTS.notify;
+    for (const k of ["notify", ...NOTIFY_EVENTS] as const) if (typeof s[k] !== "boolean") s[k] = DEFAULTS[k];
     if (typeof s.autoUpdate !== "boolean") s.autoUpdate = DEFAULTS.autoUpdate;
     if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;

@@ -21,7 +21,7 @@ function apply(p: Pane, read: PaneAgent | null, live = false) {
   if (!i) return;
   const { agent, note, first } = nextAgent(i.agent, read, live);
   if (agent !== i.agent) update(p.id, (x) => ({ ...x, agent }));
-  if (note) needsYou(p, { body: note });
+  if (note) needsYou(p, { body: note }, agent?.state === "waiting" ? "notifyAgentWaiting" : "notifyAgentDone");
   if (first && agent) suggestNotifications(agent.name);
 }
 

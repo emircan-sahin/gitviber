@@ -20,6 +20,7 @@ mod lines;
 mod menu;
 mod navigation;
 mod network;
+mod notifications;
 mod open_in;
 mod opened;
 mod process;
@@ -108,6 +109,7 @@ pub fn run() {
                 errors::init(dir);
             }
             askpass::serve(app.handle().clone());
+            notifications::setup(app.handle());
             #[cfg(target_os = "macos")]
             menu::keep_typed_key_equivalents();
             #[cfg(target_os = "linux")]
@@ -132,6 +134,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app::log_error,
             commands::app::show_logs,
+            commands::app::notification_permission,
+            commands::app::notification_request,
+            commands::app::notification_send,
+            commands::app::notification_settings,
             commands::repo::open_repo,
             commands::repo::git_info,
             commands::repo::install_git,

@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { CircleArrowUp, Code2, GitBranch, GitCompareArrows, Keyboard, Palette, RotateCcw, Sparkles, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-react";
+import { Bell, CircleArrowUp, Code2, GitBranch, GitCompareArrows, Keyboard, Palette, RotateCcw, Sparkles, SquareArrowOutUpRight, SquareTerminal, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
@@ -13,6 +13,7 @@ import { DiffSection } from "./sections/Diff";
 import { GitSection } from "./sections/Git";
 import { CommitSection } from "./sections/Commit";
 import { OpenInSection } from "./sections/OpenIn";
+import { NotificationsSection } from "./sections/Notifications";
 import { type Recording, ShortcutsSection } from "./sections/Shortcuts";
 import { UpdatesSection } from "./sections/Updates";
 import { TerminalSection } from "./sections/Terminal";
@@ -21,6 +22,7 @@ const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette, group: "General" },
   { id: "shortcuts", label: "Keyboard Shortcuts", icon: Keyboard, group: "General" },
   { id: "openIn", label: "Open In", icon: SquareArrowOutUpRight, group: "General" },
+  { id: "notifications", label: "Notifications", icon: Bell, group: "General" },
   { id: "updates", label: "Updates", icon: CircleArrowUp, group: "General" },
   { id: "editor", label: "Editor", icon: Code2, group: "Workspace" },
   { id: "diff", label: "Diff", icon: GitCompareArrows, group: "Workspace" },
@@ -71,7 +73,7 @@ export function SettingsDialog() {
       >
         <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar p-2">
           <DialogTitle className="px-2 pt-1.5 pb-2.5">Settings</DialogTitle>
-          <DialogDescription className="sr-only">Appearance, keyboard shortcut, Open in, update, editor, diff, terminal, git and commit message preferences.</DialogDescription>
+          <DialogDescription className="sr-only">Appearance, keyboard shortcut, Open in, notification, update, editor, diff, terminal, git and commit message preferences.</DialogDescription>
           {GROUPS.map((group) => (
             <div key={group} className="flex flex-col gap-0.5 not-first-of-type:mt-3">
               <GroupLabel className="px-2 pb-1">{group}</GroupLabel>
@@ -111,6 +113,7 @@ export function SettingsDialog() {
             {section === "git" && <GitSection />}
             {section === "commit" && <CommitSection />}
             {section === "openIn" && <OpenInSection />}
+            {section === "notifications" && <NotificationsSection />}
             {section === "shortcuts" && <ShortcutsSection recording={recording} setRecording={setRecording} />}
             {section === "updates" && <UpdatesSection />}
           </div>

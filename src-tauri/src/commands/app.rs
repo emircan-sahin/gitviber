@@ -1,5 +1,7 @@
 use crate::state::{blocking, AppState, Res};
-use crate::{agents, cli, clipboard, errors, git, launch, menu, process, pty, updates};
+use crate::{
+    agents, cli, clipboard, errors, git, launch, menu, notifications, process, pty, updates,
+};
 use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -270,4 +272,32 @@ pub fn set_menu(
     recent: Option<Vec<menu::Recent>>,
 ) -> Res<()> {
     menu::update(&app, &handles, items, recent).map_err(|e| e.to_string())
+}
+
+/// Whether the OS shows GitViber's notifications (notifications.rs).
+#[tauri::command]
+pub async fn notification_permission() -> Res<notifications::Permission> {
+    blocking(notifications::permission).await
+}
+
+/// Asks the OS for it; waits while the user answers its prompt.
+#[tauri::command]
+pub async fn notification_request() -> Res<notifications::Permission> {
+    blocking(notifications::request).await
+}
+
+/// `target`: given back with "notification-click" when the user clicks it.
+#[tauri::command]
+pub async fn notification_send(
+    app: AppHandle,
+    title: String,
+    body: String,
+    target: Option<String>,
+) -> Res<()> {
+    blocking(move || notifications::send(&app, &title, &body, target.as_deref())).await
+}
+
+#[tauri::command]
+pub async fn notification_settings(app: AppHandle) -> Res<()> {
+    blocking(move || notifications::open_settings(&app)).await
 }

@@ -24,10 +24,10 @@ export async function withNetActivity<T>(label: string, fn: (op: NetOp) => Promi
   update([...active, { label, op, progress: null }]);
   try {
     const value = await fn(op);
-    notifyIfAway(`${label} finished`);
+    notifyIfAway("notifyGit", `${label} finished`);
     return value;
   } catch (e) {
-    if (e !== CANCELLED && e !== CANCELLED_STASHED) notifyIfAway(`${label} failed`, errorMessage(e));
+    if (e !== CANCELLED && e !== CANCELLED_STASHED) notifyIfAway("notifyGit", `${label} failed`, errorMessage(e));
     throw e;
   } finally {
     update(active.filter((a) => a.op !== op));

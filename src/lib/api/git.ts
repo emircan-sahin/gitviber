@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -254,4 +254,12 @@ export const api = {
   showLogs: () => invoke<void>("show_logs"),
   /** How this install updates (updates.rs): in place, from the Releases page, or not at all. */
   updateMode: () => invoke<"install" | "download" | null>("update_mode"),
+  /** Whether the OS shows GitViber's notifications (notifications.rs). */
+  notificationPermission: () => invoke<NotifyPermission>("notification_permission"),
+  /** Asks the OS, which asks the user the first time; resolves once they answer. */
+  requestNotifications: () => invoke<NotifyPermission>("notification_request"),
+  /** `target` comes back with a "notification-click" event when the user clicks it. */
+  notify: (title: string, body: string, target?: string) => invoke<void>("notification_send", { title, body, target }),
+  /** System Settings → Notifications at GitViber (macOS). */
+  notificationSettings: () => invoke<void>("notification_settings"),
 };

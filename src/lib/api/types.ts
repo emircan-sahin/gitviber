@@ -366,6 +366,9 @@ export interface Journal {
   redoBlocked: string | null;
 }
 
+/** "unbundled": a dev build, which macOS can't ask (notifications.rs). */
+export type NotifyPermission = "granted" | "denied" | "prompt" | "unbundled";
+
 export interface OpenInApp {
   id: string;
   name: string;
