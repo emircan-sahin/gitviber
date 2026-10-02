@@ -44,6 +44,27 @@ fn worktree_list_detached_prunable_and_counts() {
     assert!(gone.prunable);
 
     assert_eq!(worktree_state(&r, &a.path, true).unwrap().uncommitted, 2);
+    // Last activity: a fresh worktree's creation, then its newest uncommitted file.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let made = worktree_state(&r, &det.path, true)
+        .unwrap()
+        .updated
+        .unwrap();
+    assert!(made + 60 >= now);
+    let later = std::time::UNIX_EPOCH + std::time::Duration::from_secs(now + 3600);
+    fs::File::options()
+        .write(true)
+        .open(agent.join("new.txt"))
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    assert_eq!(
+        worktree_state(&r, &a.path, true).unwrap().updated,
+        Some(now + 3600)
+    );
     let d = worktree_state(&r, &det.path, true).unwrap();
     assert!(d.uncommitted == 0 && d.commits == 0 && !d.merged);
     assert!(worktree_state(&r, &gone.path, true).is_err());

@@ -301,6 +301,8 @@ export interface WorktreeState {
   commits: number;
   /** Committed on, then fully taken into the default branch, or squash- or rebase-merged upstream. */
   merged: boolean;
+  /** Unix seconds of its last activity: HEAD moving (made, committed, checked out) or an uncommitted file changing. */
+  updated: number | null;
 }
 
 export interface Branch {

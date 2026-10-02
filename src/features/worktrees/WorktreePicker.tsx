@@ -26,7 +26,7 @@ import { usePickerIndex } from "@/hooks/usePickerIndex";
 
 interface Props {
   worktrees: Worktree[];
-  /** For each worktree's last commit time. */
+  /** Each worktree's last commit time, until its state says when it was last worked in. */
   branches: Branch[];
   /** Opens a worktree in this window (the regular open-repo flow). */
   onOpen: (path: string) => void;
@@ -243,7 +243,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 hot={i === index}
                 usable={usable(w)}
                 main={main?.path ?? w.path}
-                time={branches.find((b) => !b.remote && b.name === w.branch)?.timestamp}
+                time={states[w.path]?.updated ?? branches.find((b) => !b.remote && b.name === w.branch)?.timestamp}
                 state={states[w.path]}
                 calling={needy.has(w.path)}
                 agentWorking={busy.has(w.path)}
