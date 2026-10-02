@@ -12,6 +12,8 @@ import { diffWhitespace, getSettings } from "@/lib/settings";
 /** Tabs whose content is a diff of one repo file (everything except PR and issue overviews, whole lists and vault files). */
 export type FileSelection = Exclude<Selection, { kind: "pull" | "issue" | "changes" | "vault" }>;
 
+export const isFileSelection = (s: Selection): s is FileSelection => s.kind !== "pull" && s.kind !== "issue" && s.kind !== "changes" && s.kind !== "vault";
+
 export function pairArgs(sel: FileSelection, revision: number, whitespace: Whitespace | null = null) {
   const kind: DiffKind =
     sel.kind === "file" ? "worktree" : sel.kind === "conflict" ? "unstaged" : sel.kind === "pr-file" ? "range" : sel.kind === "branch" ? "base" : sel.kind;
@@ -90,7 +92,7 @@ function remember(id: string, rev: number, pair: DiffPair, gen: number) {
 
 /** Loads a diff in the background, so opening it next is instant. */
 export function prefetchSelection(sel: Selection, revision: number) {
-  if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes" || sel.kind === "vault") return;
+  if (!isFileSelection(sel)) return;
   const { kind, path, oldPath, sha, base, whitespace, id, rev } = pairArgs(sel, revision, diffWhitespace(getSettings()));
   if (cachedPair(id, rev)) return;
   const gen = generation;

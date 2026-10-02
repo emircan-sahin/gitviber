@@ -3,10 +3,8 @@ import type { FileText } from "./types";
 
 /** An Obsidian vault, from Obsidian's own list (obsidian.rs). `path` names it in every call. */
 export interface Vault {
-  id: string;
   name: string;
   path: string;
-  open: boolean;
   /** Last opened, in ms since the epoch. */
   ts: number;
 }

@@ -1,24 +1,22 @@
-import { Copy, ExternalLink, Eye, FileCode2 } from "lucide-react";
+import { ExternalLink, Eye, FileCode2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
-import { Tip } from "@/components/ui/tooltip";
-import { FileIcon } from "@/components/FileIcon";
-import { PathLabel } from "@/components/StatusBadge";
 import { type DiffPair, errorMessage, type FileText, vaultApi } from "@/lib/api";
-import { copyText } from "@/lib/app/clipboard";
 import { failed } from "@/lib/app/toast";
 import { useCommands } from "@/lib/commands/keybindings";
 import { editedText, saveEdit, useEdited } from "@/lib/editor/edits";
 import { keepsLineEndings } from "@/lib/editor/lineEndings";
-import { useVaultRevision, vaultList } from "@/lib/obsidian/vault";
+import { claimVaultEdits, openVaultEdits, useFileRevision, vaultList } from "@/lib/obsidian/vault";
 import { basename } from "@/lib/path";
 import { editPath, type Selection } from "@/lib/repo/selection";
-import { useSettings } from "@/lib/settings";
+import { updateSettings, useSettings } from "@/lib/settings";
 import { FIT, type Zoom } from "@/lib/ui/svg";
 import { isMarkdown } from "@/features/viewer/MarkdownView";
 import { isSvg, MediaPanel, mediaKind, SvgView, useBytesUrl } from "@/features/viewer/MediaView";
 import { MonacoView } from "@/features/viewer/MonacoView";
+import { FileHeaderPath, Placeholder } from "@/features/viewer/FileHeader";
+import { placeholderFor } from "@/features/viewer/placeholders";
 import type { Tab } from "@/features/viewer/tabs";
 import { CanvasView } from "./CanvasView";
 import { VaultMarkdown } from "./VaultMarkdown";
@@ -29,7 +27,7 @@ const MISSING: FileText = { text: "", binary: false, tooLarge: false, exists: fa
 
 /** The file's text, read again when the vault changes; the copy on show stays while it does, and when the new one says the same. */
 function useVaultText(sel: VaultSelection, skip: boolean) {
-  const rev = useVaultRevision(sel.vault);
+  const rev = useFileRevision(sel.vault, sel.path);
   const [state, setState] = useState<{ key: string; file: FileText | null; error: string | null }>({ key: "", file: null, error: null });
   const key = `${sel.vault}\0${sel.path}`;
   useEffect(() => {
@@ -63,8 +61,16 @@ export function VaultView({ tab, sel, onOpen }: { tab: Tab; sel: VaultSelection;
   const svg = isSvg(path);
   const canvas = /\.canvas$/i.test(path);
   const key = editPath(sel)!;
+  // Typed into, it's kept and saved with its vault, apart from the repo's files.
+  claimVaultEdits(sel.vault, path);
+  useEffect(() => openVaultEdits(sel.vault), [sel.vault]);
   const { file, error } = useVaultText(sel, media);
-  const [preview, setPreview] = useState(markdown ? s.markdownPreview : true);
+  // Markdown starts rendered unless turned off; an SVG as the last one was left, as in the repo.
+  const [markdownPreview, setMarkdownPreview] = useState(s.markdownPreview);
+  const preview = svg ? s.svgPreview : markdown ? markdownPreview : true;
+  const [canvasPreview, setCanvasPreview] = useState(true);
+  const setPreview = (on: boolean) => (svg ? updateSettings({ svgPreview: on }) : markdown ? setMarkdownPreview(on) : setCanvasPreview(on));
+  const shown = canvas ? canvasPreview : preview;
   const [zoom, setZoom] = useState<Zoom>(FIT);
   const dirty = useEdited().has(key);
   const pair = useMemo<DiffPair | null>(() => file && { original: MISSING, modified: file, rows: [], whitespaceHidden: false, eolOnly: false }, [file]);
@@ -75,19 +81,13 @@ export function VaultView({ tab, sel, onOpen }: { tab: Tab; sel: VaultSelection;
   useCommands({ "file.save": dirty ? () => void saveEdit(key) : undefined });
 
   const switchable = markdown || svg || canvas;
-  const rendered = switchable && preview;
-  const problem = error ?? (file && (!file.exists ? "This file no longer exists" : file.tooLarge ? "This file is too large to show" : file.binary ? "This file can't be shown" : null));
+  const rendered = switchable && shown;
+  const special = pair && placeholderFor(pair, true, null);
 
   return (
     <>
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border pr-2 pl-3">
-        <FileIcon path={path} />
-        <PathLabel path={`${vaultName}/${path}`} className="min-w-0 text-[12px]" />
-        <Tip label="Copy path">
-          <button className="hit-area text-subtle hover:text-foreground focus-visible:text-foreground" onClick={() => copyText(`${sel.vault}/${path}`, "Path copied")}>
-            <Copy className="size-3" />
-          </button>
-        </Tip>
+        <FileHeaderPath path={`${sel.vault}/${path}`} shown={`${vaultName}/${path}`} />
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <Button variant="secondary" size="sm" onClick={() => vaultApi.openInObsidian(sel.vault, path).catch(failed("Could not open Obsidian"))}>
             <ExternalLink /> Open in Obsidian
@@ -95,7 +95,7 @@ export function VaultView({ tab, sel, onOpen }: { tab: Tab; sel: VaultSelection;
           {switchable && (
             <div className="ml-1">
               <Segmented
-                value={preview ? "preview" : "code"}
+                value={shown ? "preview" : "code"}
                 onChange={(v) => setPreview(v === "preview")}
                 options={[
                   { value: "code", label: "Code", icon: FileCode2 },
@@ -109,8 +109,10 @@ export function VaultView({ tab, sel, onOpen }: { tab: Tab; sel: VaultSelection;
       <div className="relative min-h-0 flex-1">
         {media ? (
           <VaultMediaFile vault={sel.vault} path={path} />
-        ) : problem ? (
-          <div className="flex h-full items-center justify-center p-6 text-center text-[12.5px] text-muted-foreground">{problem}</div>
+        ) : error ? (
+          <Placeholder title="Could not load" detail={error} />
+        ) : special ? (
+          <Placeholder title={special} />
         ) : !pair ? null : rendered && canvas ? (
           <CanvasView vault={sel.vault} path={path} text={text} onOpen={onOpen} />
         ) : rendered && svg ? (
@@ -126,7 +128,8 @@ export function VaultView({ tab, sel, onOpen }: { tab: Tab; sel: VaultSelection;
 }
 
 function VaultMediaFile({ vault, path }: { vault: string; path: string }) {
-  const rev = useVaultRevision(vault);
+  // Read again only when this file changed: a PDF stays on its page, a video where it was.
+  const rev = useFileRevision(vault, path);
   const media = useBytesUrl(`${vault}\0${path}\0${rev}`, path, () => vaultApi.media(vault, path));
   // Mounted again per file, so an image's size doesn't carry over to the next.
   return <MediaPanel key={path} {...media} path={path} />;

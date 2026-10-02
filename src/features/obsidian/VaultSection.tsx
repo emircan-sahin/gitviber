@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, ChevronsDownUp, Copy, ExternalLink, File, FolderSearch } from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -7,16 +7,18 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { Tip } from "@/components/ui/tooltip";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
 import { Row } from "@/features/explorer/FileTree";
+import { treeKey, treeRows, useLazyTree } from "@/features/explorer/lazyTree";
 import { errorMessage, type Vault, vaultApi, type VaultEntry } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
 import { failed, toast } from "@/lib/app/toast";
-import { pickVault, useVaultRevision, useVaults, watchVault } from "@/lib/obsidian/vault";
-import { compareEntries, dirname } from "@/lib/path";
+import { noteName } from "@/lib/obsidian/links";
+import { pickVault, useVaultEvents, useVaultRevision, useVaults } from "@/lib/obsidian/vault";
 import { REVEAL_FAILED, REVEAL_LABEL } from "@/lib/platform";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { readJson, writeJson } from "@/lib/storage";
 import { createStore } from "@/lib/store";
 import { focusPanel } from "@/lib/ui/panels";
+import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 
 const COLLAPSED_KEY = "gitviber.obsidian.collapsed";
@@ -40,11 +42,8 @@ export function ExplorerPanes({ tree, activeKey, onOpen }: { tree: ReactNode; ac
   const open = !!vault && !closed;
   const layout = useDefaultLayout({ id: "gitviber-explorer-vault-v1", storage: localStorage, panelIds: open ? ["tree", "vault"] : ["tree"] });
   const treeRef = useRef<VaultTreeHandle>(null);
-  // The vault on show is watched, so its tree and open notes follow edits made in Obsidian. Not
-  // stopped on unmount: the next window's watch could land before the stop.
-  useEffect(() => {
-    watchVault(vault?.path ?? null);
-  }, [vault?.path]);
+  // The vault on show is watched, so its tree and open notes follow edits made in Obsidian.
+  useVaultEvents(vault?.path ?? null);
 
   const header = vault && <VaultHeader vaults={vaults} vault={vault} open={open} onCollapseAll={() => treeRef.current?.collapseAll()} />;
   return (
@@ -130,99 +129,50 @@ interface VaultTreeHandle {
 
 /** The vault's folders and files as Obsidian's file explorer lists them, opened lazily like the explorer's. */
 function VaultTree({ vault, activeKey, onOpen, ref }: { vault: Vault; activeKey: string | null; onOpen: (s: Selection, pin?: boolean) => void; ref: React.Ref<VaultTreeHandle> }) {
-  const rev = useVaultRevision(vault.path);
-  const [children, setChildren] = useState<Record<string, VaultEntry[]>>({});
-  const [expanded, setExpandedState] = useState<Set<string>>(() => openFolders.get(vault.path) ?? new Set([""]));
-  const setExpanded = useCallback(
-    (next: (x: Set<string>) => Set<string>) =>
-      setExpandedState((x) => {
-        const value = next(x);
-        openFolders.set(vault.path, value);
-        return value;
-      }),
-    [vault.path],
-  );
+  const { children, expanded, setExpanded, setOpen } = useLazyTree<VaultEntry>({
+    list: (path) => vaultApi.listDir(vault.path, path),
+    revision: useVaultRevision(vault.path),
+    onRootError: (e) => toast("error", `Could not list ${vault.name}`, errorMessage(e)),
+    initial: openFolders.get(vault.path),
+  });
+  useEffect(() => void openFolders.set(vault.path, expanded), [vault.path, expanded]);
   const [selected, setSelected] = useState<string | null>(null);
   const [menu, setMenu] = useState<VaultEntry | null>(null);
   const treeRef = useRef<HTMLDivElement>(null);
+  useImperativeHandle(ref, () => ({ collapseAll: () => setExpanded(new Set([""])) }), [setExpanded]);
 
-  // Per-folder request counter: a slow, older listing must not overwrite a newer one.
-  const requests = useRef(new Map<string, number>());
-  const loadDir = useCallback(
-    async (path: string) => {
-      const id = (requests.current.get(path) ?? 0) + 1;
-      requests.current.set(path, id);
-      try {
-        const listed = await vaultApi.listDir(vault.path, path);
-        if (requests.current.get(path) === id) setChildren((c) => ({ ...c, [path]: listed.sort(compareEntries) }));
-      } catch (e) {
-        if (requests.current.get(path) !== id) return;
-        if (path === "") return toast("error", `Could not list ${vault.name}`, errorMessage(e));
-        // Folder gone (renamed or deleted in Obsidian): close it quietly.
-        setExpanded((x) => new Set([...x].filter((p) => p !== path)));
-      }
-    },
-    [vault.path, vault.name, setExpanded],
-  );
-  // Every open folder again when the vault changes.
-  useEffect(() => {
-    expanded.forEach((p) => void loadDir(p));
-  }, [rev, loadDir]);
-
-  const setOpen = (path: string, open: boolean) => {
-    setExpanded((x) => {
-      const next = new Set(x);
-      if (open) next.add(path);
-      else next.delete(path);
-      return next;
-    });
-    if (open) void loadDir(path);
-  };
-
-  useImperativeHandle(ref, () => ({ collapseAll: () => setExpanded(() => new Set([""])) }), [setExpanded]);
-
-  const rows = useMemo(() => {
-    const out: { entry: VaultEntry; depth: number }[] = [];
-    const walk = (dir: string, depth: number) =>
-      children[dir]?.forEach((entry) => {
-        out.push({ entry, depth });
-        if (entry.isDir && expanded.has(entry.path)) walk(entry.path, depth + 1);
-      });
-    walk("", 0);
-    return out;
-  }, [children, expanded]);
-
+  const rows = useMemo(() => treeRows(children, expanded), [children, expanded]);
   const sel = (path: string): Selection => ({ kind: "vault", vault: vault.path, path });
   const activate = (e: VaultEntry, pin = false) => (e.isDir ? setOpen(e.path, !expanded.has(e.path)) : onOpen(sel(e.path), pin));
+  const rowOf = (path: string) => treeRef.current?.querySelector(`[data-path="${CSS.escape(path)}"]`);
 
   const onKeyDown = (ev: React.KeyboardEvent) => {
-    if (ev.target !== ev.currentTarget || ev.altKey || ev.metaKey) return;
+    if (ev.target !== ev.currentTarget) return;
+    if (isMenuKey(ev)) {
+      const row = selected ? rowOf(selected) : null;
+      openRowMenu(row instanceof HTMLElement ? row : (ev.currentTarget as HTMLElement));
+      return ev.preventDefault();
+    }
+    // ⌥ and ⌘ arrows belong to the global shortcuts.
+    if (ev.altKey || ev.metaKey) return;
     const i = rows.findIndex((r) => r.entry.path === selected);
-    const cur = rows[i]?.entry;
-    const move = (to: number) => {
-      const row = rows[Math.max(0, Math.min(rows.length - 1, to))];
+    const k = treeKey(ev.key, rows, i, { isOpen: (p) => expanded.has(p), row: rows.length ? rowOf(rows[Math.max(i, 0)].entry.path) : null });
+    if (!k) return;
+    ev.preventDefault();
+    if ("move" in k) {
+      const row = rows[Math.max(0, Math.min(rows.length - 1, k.move))];
       if (row) setSelected(row.entry.path);
-    };
-    let handled = true;
-    if (ev.key === "ArrowDown") move(i + 1);
-    else if (ev.key === "ArrowUp") move(i < 0 ? rows.length - 1 : i - 1);
-    else if (!cur) handled = false;
-    else if (ev.key === "ArrowRight") {
-      if (!cur.isDir) {
-        activate(cur);
-        focusPanel("code");
-      } else if (!expanded.has(cur.path)) setOpen(cur.path, true);
-      else move(i + 1);
-    } else if (ev.key === "ArrowLeft") {
-      if (cur.isDir && expanded.has(cur.path)) setOpen(cur.path, false);
-      else if (dirname(cur.path)) setSelected(dirname(cur.path));
-    } else if (ev.key === "Enter") activate(cur, true);
-    else handled = false;
-    if (handled) ev.preventDefault();
+    } else if ("open" in k) setOpen(k.open, true);
+    else if ("close" in k) setOpen(k.close, false);
+    else if ("select" in k) setSelected(k.select);
+    else {
+      activate(k.activate, k.pin);
+      if (k.focusCode) focusPanel("code");
+    }
   };
   // The keyboard's row stays in view.
   useEffect(() => {
-    if (selected) treeRef.current?.querySelector(`[data-path="${CSS.escape(selected)}"]`)?.scrollIntoView({ block: "nearest" });
+    if (selected) rowOf(selected)?.scrollIntoView({ block: "nearest" });
   }, [selected]);
 
   return (
@@ -277,7 +227,7 @@ function VaultTree({ vault, activeKey, onOpen, ref }: { vault: Vault; activeKey:
                   </>
                 )}
                 {/* Notes by their name, as Obsidian lists them. */}
-                <span className="truncate text-foreground/85">{e.isDir ? e.name : e.name.replace(/\.md$/i, "")}</span>
+                <span className="truncate text-foreground/85">{e.isDir ? e.name : noteName(e.path)}</span>
               </Row>
             );
           })}

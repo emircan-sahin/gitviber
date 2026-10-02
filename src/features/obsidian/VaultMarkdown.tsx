@@ -1,17 +1,17 @@
 import { createContext, type ComponentProps, type MouseEvent, use, useEffect, useId, useMemo } from "react";
 import type { Components } from "react-markdown";
-import { PageFind } from "@/components/FindBox";
 import { type FileText, vaultApi } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { safeDecode } from "@/lib/github/markdown";
-import { type LinkIndex, linkIndex, resolveLink, splitTarget } from "@/lib/obsidian/links";
+import { headingKey } from "@/lib/markdown/syntax";
+import { type LinkIndex, linkIndex, noteName, resolveLink, splitTarget } from "@/lib/obsidian/links";
 import { useVaultFiles, useVaultRevision, vaultFiles } from "@/lib/obsidian/vault";
 import { basename } from "@/lib/path";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { createStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
-import { followLink, isMarkdown, MarkdownBody, slug } from "@/features/viewer/MarkdownView";
+import { followLink, isMarkdown, MarkdownBody, MarkdownPage, slug } from "@/features/viewer/MarkdownView";
 import { isSvg, mediaKind, useBytesUrl } from "@/features/viewer/MediaView";
 import { type MarkdownHost, MarkdownHostContext } from "@/features/viewer/markdown/host";
 
@@ -37,11 +37,22 @@ const MAX_DEPTH = 4;
 // A link to a heading or block in another note: where to scroll once that note's tab shows.
 const pending = createStore<{ key: string; anchor: string } | null>(null);
 
-/** The element a #Heading or #^block in a link names, among ids made with `prefix`. */
+/**
+ * The element a #Heading or #^block in a link names, among ids made with `prefix`: a heading
+ * matched as an embed matches it (headingKey), else by its GitHub-style id.
+ */
 function anchorTarget(prefix: string, anchor: string) {
   const last = anchor.split("#").filter(Boolean).at(-1) ?? "";
-  const id = last.startsWith("^") ? last : slug(last);
-  return document.getElementById(prefix + id) ?? document.getElementById(prefix + last) ?? document.getElementById(last);
+  if (last.startsWith("^")) return document.getElementById(prefix + last);
+  const want = headingKey(last);
+  const headings = [...document.querySelectorAll<HTMLElement>("h1, h2, h3, h4, h5, h6")];
+  return headings.find((h) => h.id.startsWith(prefix) && headingKey(h.textContent ?? "") === want) ?? document.getElementById(prefix + slug(last)) ?? document.getElementById(last);
+}
+
+/** A link's note and part. A markdown link's are URL-encoded, after the split: "C%23%20basics.md" is the note "C# basics.md". */
+function linkTarget(target: string, wiki: boolean) {
+  const { path, anchor } = splitTarget(target);
+  return wiki ? { path, anchor } : { path: safeDecode(path), anchor: safeDecode(anchor) };
 }
 
 const vaultSel = (vault: string, path: string): Selection => ({ kind: "vault", vault, path });
@@ -59,7 +70,7 @@ function openNote(note: Note, path: string, anchor: string) {
 
 /** Follows a [[wikilink]] or a markdown link written in `note`, as Obsidian does. */
 async function follow(note: Note, target: string, wiki: boolean) {
-  const { path, anchor } = splitTarget(wiki ? target : safeDecode(target));
+  const { path, anchor } = linkTarget(target, wiki);
   if (!path) return openNote(note, note.path, anchor);
   const file = resolveLink(note.files ?? linkIndex(await vaultFiles(note.vault)), path, note.path);
   if (file) openNote(note, file, anchor);
@@ -75,12 +86,13 @@ function VaultLink({ node: _node, href, children, ...rest }: ComponentProps<"a">
   const wiki = rest["data-wikilink"];
   if (wiki === undefined && !href) return <span id={rest.id}>{children}</span>;
   const target = wiki ?? href ?? "";
-  const local = !isExternal(target) && !target.startsWith("#");
-  const path = local ? splitTarget(wiki === undefined ? safeDecode(target) : target).path : "";
+  // A wikilink names a note even when it looks like a URL, as in Obsidian.
+  const local = wiki !== undefined || (!isExternal(target) && !target.startsWith("#"));
+  const path = local ? linkTarget(target, wiki !== undefined).path : "";
   const missing = !!path && !!note.files && !resolveLink(note.files, path, note.path);
   const onClick = (e: MouseEvent) => {
     e.preventDefault();
-    if (local || (wiki !== undefined && target.startsWith("#"))) void follow(note, target, wiki !== undefined);
+    if (local) void follow(note, target, wiki !== undefined);
     else if (target.startsWith("#")) {
       const el = anchorTarget(note.idPrefix, safeDecode(target.slice(1)));
       if (el) el.scrollIntoView();
@@ -164,7 +176,7 @@ function Embed({ target, alias, block }: { target: string; alias: string; block:
 function EmbedLink({ note, file, anchor, label }: { note: Note; file: string; anchor: string; label: string }) {
   return (
     <a href="#" onClick={(e) => (e.preventDefault(), openNote(note, file, anchor))} onContextMenu={stop} onAuxClick={stop}>
-      {label || [basename(file).replace(/\.md$/i, ""), ...anchor.split("#").filter(Boolean)].join(" > ")}
+      {label || [noteName(file), ...anchor.split("#").filter(Boolean)].join(" > ")}
     </a>
   );
 }
@@ -175,14 +187,21 @@ function NoteEmbed({ file, anchor, alias, block }: { file: string; anchor: strin
   const rev = useVaultRevision(note.vault);
   const loaded = useAsyncValue<FileText | null>(() => vaultApi.readFile(note.vault, file), [note.vault, file, rev], null);
   const id = useId();
-  const inner = useMemo<Note>(() => ({ ...note, path: file, depth: note.depth + 1, trail: [...note.trail, `${file}#${anchor}`], idPrefix: `embed${id.replace(/:/g, "")}-` }), [note, file, id]);
+  const inner = useMemo<Note>(() => ({ ...note, path: file, depth: note.depth + 1, trail: [...note.trail, `${file}#${anchor}`], idPrefix: `embed${id.replace(/:/g, "")}-` }), [note, file, anchor, id]);
   const Tag = block ? "div" : "span";
   return (
     <Tag className="embed block">
       <span className="embed-title block">
         <EmbedLink note={note} file={file} anchor={anchor} label={alias} />
       </span>
-      {loaded && (loaded.exists && !loaded.binary ? <NoteBody text={loaded.text} note={inner} section={anchor} /> : <Missing name={basename(file)} />)}
+      {loaded &&
+        (loaded.tooLarge ? (
+          <span className="text-[12px] text-subtle italic">“{noteName(file)}” is too large to show here</span>
+        ) : loaded.exists && !loaded.binary ? (
+          <NoteBody text={loaded.text} note={inner} section={anchor} />
+        ) : (
+          <Missing name={basename(file)} />
+        ))}
     </Tag>
   );
 }
@@ -219,13 +238,9 @@ export function VaultMarkdown({ vault, path, text, tabKey, onOpen }: { vault: st
     return () => cancelAnimationFrame(frame);
   }, [want, tabKey, note.idPrefix, text]);
   return (
-    // Focusable so the keyboard can scroll it (focusPanel("code") lands here).
-    <div data-code-scroll tabIndex={0} className="h-full overflow-auto outline-none">
-      <PageFind />
-      <article className="markdown mx-auto max-w-[860px] px-8 py-6 select-text">
-        <NoteBody text={text} note={note} />
-      </article>
-    </div>
+    <MarkdownPage>
+      <NoteBody text={text} note={note} />
+    </MarkdownPage>
   );
 }
 

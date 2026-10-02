@@ -5,8 +5,7 @@ import { github } from "@/lib/api";
 import { useHighlight } from "@/lib/editor/highlight";
 import { copyNarrowed, indentUnit, TAB, widen } from "@/lib/editor/indent";
 import { languageFor } from "@/lib/editor/language";
-import { type Flavor, markdownLink, markdownOptions, safeDecode } from "@/lib/github/markdown";
-import { stripComments } from "@/lib/markdown/syntax";
+import { type Flavor, markdownLink, markdownOptions, markdownSource, safeDecode } from "@/lib/github/markdown";
 import type { Selection } from "@/lib/repo/selection";
 import { useSettings } from "@/lib/settings";
 import { failed, toast } from "@/lib/app/toast";
@@ -112,7 +111,7 @@ export function MarkdownBody({
   section?: string;
 }) {
   const options = useMemo(() => markdownOptions({ idPrefix, repo, flavor, section }), [idPrefix, repo, flavor, section]);
-  const source = useMemo(() => (flavor === "obsidian" ? stripComments(text) : text), [flavor, text]);
+  const source = useMemo(() => markdownSource(text, flavor), [flavor, text]);
   return (
     <Markdown {...options} components={{ ...baseComponents(idPrefix), ...components }}>
       {source}
@@ -142,12 +141,19 @@ export function MarkdownView({ text, src, onOpen }: { text: string; src: MediaSo
   };
 
   return (
+    <MarkdownPage>
+      <MarkdownBody text={text} components={components} flavor="repo" />
+    </MarkdownPage>
+  );
+}
+
+/** A rendered markdown file filling the view: it scrolls, Find searches it. */
+export function MarkdownPage({ children }: { children: ReactNode }) {
+  return (
     // Focusable so the keyboard can scroll it (focusPanel("code") lands here).
     <div data-code-scroll tabIndex={0} className="h-full overflow-auto outline-none">
       <PageFind />
-      <article className="markdown mx-auto max-w-[860px] px-8 py-6 select-text">
-        <MarkdownBody text={text} components={components} flavor="repo" />
-      </article>
+      <article className="markdown mx-auto max-w-[860px] px-8 py-6 select-text">{children}</article>
     </div>
   );
 }

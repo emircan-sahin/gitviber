@@ -1,6 +1,8 @@
 import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import { type Vault, vaultApi } from "../api";
+import { claimEdits, openStore } from "../editor/edits";
+import { editPath } from "../repo/selection";
 import { useSettings } from "../settings";
 import { readJson, writeJson } from "../storage";
 import { createStore } from "../store";
@@ -17,6 +19,8 @@ export function refreshVaults(): Promise<Vault[]> {
     .then((vaults) => {
       const was = vaultList.get();
       if (!was || JSON.stringify(was) !== JSON.stringify(vaults)) vaultList.set(vaults);
+      // Unsaved edits of their notes come back, with their tabs' dots.
+      vaults.forEach((v) => openVaultEdits(v.path));
       return vaults;
     })
     .finally(() => (reading = null));
@@ -47,37 +51,70 @@ export function useVaults(): { vaults: Vault[]; vault: Vault | null } {
   return { vaults, vault: vaults.find((v) => v.path === want) ?? vaults[0] ?? null };
 }
 
-// Each vault's revision: bumped when its watcher sees a change, or for one no watcher covers,
-// when the window comes back into focus (it may have changed meanwhile).
-const revisions = createStore<Record<string, number>>({});
-const bump = (vaults: string[]) => {
-  const now = revisions.get();
-  revisions.set({ ...now, ...Object.fromEntries(vaults.map((v) => [v, (now[v] ?? 0) + 1])) });
-};
-listen<{ vault: string }>("vault-changed", (e) => bump([e.payload.vault])).catch(() => {});
-window.addEventListener("focus", () => {
-  bump((vaultList.get() ?? []).map((v) => v.path).filter((v) => v !== watched));
-  void refreshVaults();
-});
+/**
+ * How current what's read from each vault is: `text` moves on any change (notes read again),
+ * `files` when files came, went or moved (the file list for links), and each file has its own
+ * count (media read again only when it changed).
+ */
+interface Revisions {
+  text: number;
+  files: number;
+  file: Record<string, number>;
+}
+const revisions = createStore<Record<string, Revisions>>({});
+const NONE: Revisions = { text: 0, files: 0, file: {} };
 
-let watched: string | null = null;
-/** Watches `vault` for changes (one at a time; null: none). */
-export function watchVault(vault: string | null) {
-  watched = vault;
-  vaultApi.watch(vault).catch(() => (watched = null));
+/** `paths` changed in `vault`; none named: anything may have. */
+function bump(vault: string, files: boolean, paths: string[]) {
+  const now = revisions.get();
+  const was = now[vault] ?? NONE;
+  const file = paths.length ? { ...was.file, ...Object.fromEntries(paths.map((p) => [p, (was.file[p] ?? 0) + 1])) } : {};
+  // With no file named, every file's count starts over under a new `files`, which is in its key.
+  revisions.set({ ...now, [vault]: { text: was.text + 1, files: was.files + (files || !paths.length ? 1 : 0), file } });
 }
 
-/** Changes whenever files in `vault` may have changed. */
-export const useVaultRevision = (vault: string | null) => {
-  const all = revisions.use();
-  return vault ? (all[vault] ?? 0) : 0;
-};
+let watched: string | null = null;
 
-// Each vault's file list at the revision it was read at; links resolve against it.
+/**
+ * Follows the vault the explorer shows, and while there is one, the others too: they're read
+ * again when the window comes back into focus, as no watcher covers them. Used by the explorer
+ * section, as the repo's watcher is by the workspace.
+ */
+export function useVaultEvents(vault: string | null) {
+  useEffect(() => {
+    if (!vault) return void vaultApi.watch(null).catch(() => {});
+    watched = vault;
+    vaultApi.watch(vault).catch(() => (watched = null));
+    const changed = listen<{ vault: string; files: boolean; paths: string[] }>("vault-changed", ({ payload: p }) => bump(p.vault, p.files, p.paths));
+    const focus = () => {
+      for (const v of vaultList.get() ?? []) if (v.path !== watched) bump(v.path, true, []);
+      void refreshVaults();
+    };
+    window.addEventListener("focus", focus);
+    return () => {
+      watched = null;
+      window.removeEventListener("focus", focus);
+      void changed.then((stop) => stop());
+    };
+  }, [vault]);
+}
+
+const useRevisions = (vault: string) => revisions.use()[vault] ?? NONE;
+
+/** Changes whenever notes in `vault` may have changed. */
+export const useVaultRevision = (vault: string) => useRevisions(vault).text;
+
+/** Changes when `path` in `vault` changed (or anything may have). */
+export function useFileRevision(vault: string, path: string) {
+  const r = useRevisions(vault);
+  return `${r.files}.${r.file[path] ?? 0}`;
+}
+
+// Each vault's file list as of the `files` revision it was read at; links resolve against it.
 const fileLists = new Map<string, { rev: number; files: Promise<string[]> }>();
 
 export function vaultFiles(vault: string): Promise<string[]> {
-  const rev = revisions.get()[vault] ?? 0;
+  const rev = (revisions.get()[vault] ?? NONE).files;
   const hit = fileLists.get(vault);
   if (hit?.rev === rev) return hit.files;
   const files = vaultApi.files(vault);
@@ -88,7 +125,7 @@ export function vaultFiles(vault: string): Promise<string[]> {
 
 /** Every file in `vault`, kept current; null until first read. */
 export function useVaultFiles(vault: string): string[] | null {
-  const rev = useVaultRevision(vault);
+  const rev = useRevisions(vault).files;
   const [files, setFiles] = useState<{ vault: string; list: string[] } | null>(null);
   useEffect(() => {
     let live = true;
@@ -103,16 +140,18 @@ export function useVaultFiles(vault: string): string[] | null {
   return files?.vault === vault ? files.list : null;
 }
 
-/** A vault file's full path (see editPath) back to its vault and its path in there; null when it's in none. */
-export function splitVaultPath(full: string, vaults: Vault[]): { vault: string; path: string } | null {
-  const vault = vaults.filter((v) => full.startsWith(`${v.path}/`)).sort((a, b) => b.path.length - a.path.length)[0];
-  return vault ? { vault: vault.path, path: full.slice(vault.path.length + 1) } : null;
+/** The store a vault's unsaved edits are kept in (lib/editor/edits), apart from any repo's. */
+export function openVaultEdits(vault: string) {
+  const prefix = editPath({ kind: "vault", vault, path: "" })!;
+  const path = (key: string) => key.slice(prefix.length);
+  openStore(`obsidian:${vault}`, {
+    read: (key) => vaultApi.readFile(vault, path(key)),
+    // Read again after a save: a vault no watcher covers wouldn't be, and the view would show the old text.
+    write: (key, text) => vaultApi.writeFile(vault, path(key), text).then(() => bump(vault, false, [path(key)])),
+  });
 }
 
-/** Reads and writes a vault file named by its full path, for saving edits made in the code view. */
-export async function vaultFileIO(full: string) {
-  const at = splitVaultPath(full, vaultList.get() ?? (await refreshVaults()));
-  if (!at) throw new Error(`${full} is in none of Obsidian's vaults`);
-  // The vault reads again after a save: a vault no watcher covers wouldn't, and the view would go back to the old text.
-  return { read: () => vaultApi.readFile(at.vault, at.path), write: (text: string) => vaultApi.writeFile(at.vault, at.path, text).then(() => bump([at.vault])) };
+/** Edits to this vault file are kept with its vault. */
+export function claimVaultEdits(vault: string, path: string) {
+  claimEdits(editPath({ kind: "vault", vault, path })!, `obsidian:${vault}`);
 }

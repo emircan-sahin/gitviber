@@ -2,6 +2,8 @@ import { Files, History, ListTree, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { editPath, onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
+import { noteName } from "@/lib/obsidian/links";
+import { isFileSelection } from "./diffPairs";
 import { useShortcut } from "@/lib/commands/keybindings";
 import { focusMovedTab, focusTab, isMenuKey, openRowMenu, tabMove } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
@@ -27,7 +29,7 @@ interface Props {
 function tabLabel(sel: Selection) {
   if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes") return selectionPath(sel);
   // A note by its name, as Obsidian's tabs have it.
-  if (sel.kind === "vault") return basename(sel.path).replace(/\.md$/i, "");
+  if (sel.kind === "vault") return noteName(sel.path);
   return basename(selectionPath(sel));
 }
 
@@ -201,7 +203,7 @@ function TabItem({
       </button>
     </div>
   );
-  const file = t.sel.kind !== "pull" && t.sel.kind !== "issue" && t.sel.kind !== "changes" && t.sel.kind !== "vault";
+  const file = isFileSelection(t.sel);
   // As VS Code's tab menu, plus to the left.
   const group = (which: TabGroup, label: string, shortcut?: string) => (
     <ContextMenuItem disabled={!closes(which)} onSelect={() => onCloseGroup(which)}>

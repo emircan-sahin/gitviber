@@ -49,12 +49,12 @@ export function onDisk(s: Selection) {
 }
 
 /**
- * Where unsaved edits to the tab's file are kept (lib/editor/edits): a repo file by its path, a
- * vault's by its full path on disk. Null for anything that can't be typed into.
+ * What unsaved edits to the tab's file are kept under (lib/editor/edits): a repo file by its
+ * path, a vault's by its tab's key. Null for anything that can't be typed into.
  */
 export function editPath(s: Selection) {
   if (s.kind === "file") return s.path;
-  return s.kind === "vault" ? `${s.vault}/${s.path}` : null;
+  return s.kind === "vault" ? selectionKey(s) : null;
 }
 
 /** Identity of what a tab shows; also used to match list rows to the open tab. */
