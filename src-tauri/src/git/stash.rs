@@ -6,7 +6,6 @@ use super::{
 };
 use crate::lines::StashPart;
 use crate::process::exec;
-use crate::scratch::ScratchDir;
 use serde::Serialize;
 use std::path::Path;
 
@@ -115,18 +114,19 @@ pub fn stash_drop(repo: &Path, sha: &str) -> Result<(), String> {
     run(repo, &["stash", "drop", &r]).map(|_| ())
 }
 
-/// Puts `message` on the stash `sha` and moves it to the top, as lazygit's rename does (a drop
-/// and a store), but storing first: the stash is never missing, whatever fails. A message
-/// without the "On branch:" prefix git writes keeps the prefix the old one had.
+/// Gives the stash `sha` the message `message` and puts it on top, as lazygit's rename does (a
+/// drop and a store), but storing first: the stash is never missing, whatever fails. It is
+/// stored as a copy of its commit with the new message, since `git stash store` of a commit
+/// that is already the top one changes nothing. A message without the "On branch:" prefix git
+/// writes keeps the prefix the old one had.
 pub fn stash_rename(repo: &Path, sha: &str, message: &str) -> Result<(), String> {
     let message = message.trim();
     if message.is_empty() || message.contains(['\n', '\r']) {
         return Err("A stash needs a one-line name.".into());
     }
     validate_rev(sha)?;
-    let all = stashes(repo)?;
-    let old = all
-        .iter()
+    let old = stashes(repo)?
+        .into_iter()
         .find(|s| s.sha == sha)
         .ok_or("That stash is gone (dropped or popped elsewhere).")?;
     let full = match old.message.split_once(": ") {
@@ -140,15 +140,38 @@ pub fn stash_rename(repo: &Path, sha: &str, message: &str) -> Result<(), String>
         }
         _ => message.to_string(),
     };
-    let at = old.index;
-    run(repo, &["stash", "store", "-m", &full, sha])?;
-    // Everything moved down one; the old entry is the same commit, now at at + 1.
-    let r = format!("stash@{{{}}}", at + 1);
-    let there = run_text(repo, &["rev-parse", "--verify", "-q", &r])?;
-    if there.trim() != sha {
-        return Err("The stashes changed while renaming; the old name is still there.".into());
+    let tree = format!("{sha}^{{tree}}");
+    let tree = run_text(repo, &["rev-parse", "--verify", &tree])?;
+    let family = run_text(repo, &["rev-list", "--parents", "-n", "1", sha])?;
+    let mut args = vec!["commit-tree", tree.trim()];
+    for parent in family.split_whitespace().skip(1) {
+        args.extend(["-p", parent]);
     }
-    run(repo, &["stash", "drop", &r]).map(|_| ())
+    args.extend(["-m", &full]);
+    let copy = run_text(repo, &args)?;
+    run(repo, &["stash", "store", "-m", &full, copy.trim()])?;
+    // Stashes pushed since moved it down, and one can land between looking and dropping: git's
+    // answer says which commit it dropped, and one that isn't ours goes back where it was named.
+    for _ in 0..3 {
+        let list = stashes(repo)?;
+        let at = list
+            .iter()
+            .find(|s| s.sha == sha)
+            .ok_or("The old stash went away while renaming; the renamed one is there.")?;
+        let dropped = run_text(repo, &["stash", "drop", &format!("stash@{{{}}}", at.index)])?;
+        let Some(wrong) = dropped
+            .split(|c: char| !c.is_ascii_hexdigit())
+            .find(|w| w.len() >= 40 && *w != sha)
+        else {
+            return Ok(());
+        };
+        let message = list
+            .iter()
+            .find(|s| s.sha == wrong)
+            .map_or("stash", |s| &s.message);
+        run(repo, &["stash", "store", "-m", message, wrong])?;
+    }
+    Err("The stashes kept changing while renaming; the old name is still there.".into())
 }
 
 /// Stashes the lines `part` says (tracked or new files alike) without touching the index: the
@@ -161,18 +184,9 @@ pub fn stash_lines(repo: &Path, message: &str, parts: &[StashPart]) -> Result<()
     let head = run_text(repo, &["rev-parse", "--verify", "-q", "HEAD"])
         .map_err(|_| "Stash needs a first commit.".to_string())?;
     let head = head.trim();
-    let scratch = ScratchDir::new("stash")?;
-    let index = scratch.path().join("index");
-    let real = run_text(
-        repo,
-        &["rev-parse", "--path-format=absolute", "--git-path", "index"],
-    )?;
-    // Without an index file (nothing staged ever) git reads the scratch path as empty.
-    let _ = std::fs::copy(real.trim(), &index);
+    let index = crate::patch::Scratch::index(repo)?;
     let on_scratch = |args: &[&str], input: Option<&[u8]>| -> Result<String, String> {
-        let mut cmd = command(repo, args);
-        cmd.env("GIT_INDEX_FILE", &index);
-        let out = exec(cmd, &format!("git {}", args[0]), &[], input, None)?;
+        let out = index.git(repo, args, input)?;
         Ok(String::from_utf8_lossy(&out).trim().to_string())
     };
     let base_tree = on_scratch(&["write-tree"], None)?;
