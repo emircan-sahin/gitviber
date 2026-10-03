@@ -38,6 +38,15 @@ pub fn commit_files(repo: &Path, sha: &str) -> Result<Vec<FileChange>, String> {
     }
 }
 
+/// What `rev` is diffed against: its first parent, or the empty tree for a root commit.
+pub fn parent_or_empty(repo: &Path, rev: &str) -> Result<String, String> {
+    let parent = format!("{rev}^");
+    if run(repo, &["rev-parse", "--verify", "-q", &parent]).is_ok() {
+        return Ok(parent);
+    }
+    run_text(repo, &["hash-object", "-t", "tree", "/dev/null"]).map(|s| s.trim().to_string())
+}
+
 /// Files changed between two commits (e.g. a PR's merge base and its head).
 pub fn range_files(repo: &Path, from: &str, to: &str) -> Result<Vec<FileChange>, String> {
     validate_rev(from)?;

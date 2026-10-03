@@ -271,7 +271,7 @@ pub fn read_media(root: &Path, rel: &str) -> Result<Vec<u8>, String> {
 
 /// For operations on an entry itself (create, rename, trash): only the parent is resolved,
 /// so a symlink is renamed or trashed as a link instead of being followed.
-fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_entry(root: &Path, rel: &str) -> Result<PathBuf, String> {
     entry_under(root, &root.canonicalize().map_err(|e| e.to_string())?, rel)
 }
 

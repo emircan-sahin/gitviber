@@ -420,3 +420,25 @@ fn submodule_bump_diffs_as_subproject_commits() {
             .exists
     );
 }
+
+#[test]
+fn two_files_of_the_working_tree_diff_against_each_other() {
+    let sb = Sandbox::new("files-diff");
+    let r = sb.path("r");
+    init(&r);
+    fs::write(r.join("a.txt"), "1\n2\n").unwrap();
+    fs::write(r.join("b.txt"), "1\nB\n").unwrap();
+    let pair = diff_pair(&r, "files", "b.txt", Some("a.txt"), None, None, None, |p| {
+        vfs::read_diff_side(&r, p)
+    })
+    .unwrap();
+    assert_eq!(
+        (pair.original.text.as_str(), pair.modified.text.as_str()),
+        ("1\n2\n", "1\nB\n")
+    );
+    let outside = diff_pair(&r, "files", "b.txt", Some("../x"), None, None, None, |p| {
+        vfs::read_diff_side(&r, p)
+    })
+    .unwrap();
+    assert!(!outside.original.exists);
+}

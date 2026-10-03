@@ -1,9 +1,9 @@
-import { Archive, ArrowLeftToLine, ArrowRightToLine, Check, Copy, Diff, EyeOff, File, Files, FolderSearch, GitMerge, History, ListTree, Minus, Plus, SquareCheck, Undo2 } from "lucide-react";
+import { Archive, ArrowLeftToLine, ArrowRightToLine, Check, Copy, Diff, EyeOff, File, FileDiff, Files, FolderSearch, GitMerge, History, ListTree, Minus, Plus, SquareCheck, Undo2 } from "lucide-react";
 import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import type { FileChange } from "@/lib/api";
+import { api, type FileChange } from "@/lib/api";
 import { IS_MAC, REVEAL_LABEL } from "@/lib/platform";
 import type { Selection } from "@/lib/repo/selection";
-import { copyFiles, copyLabel, copyText } from "@/lib/app/clipboard";
+import { copyFiles, copyLabel, copyLater, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
 import { type Change, keptByRestore, paths } from "./changeList";
@@ -53,6 +53,8 @@ export function ChangeRowMenu({
   // A deleted file has nothing on disk to copy (its old version copies from the diff view), and a
   // submodule is a folder, not a file.
   const onDiskPaths = [...new Set(rows.filter((r) => r.file.status !== "D" && !r.file.nested).map((r) => r.file.path))];
+  // A rename's old path too, so the patch has both sides of it.
+  const patchPaths = rows.filter((r) => !r.file.nested).flatMap((r) => (r.file.oldPath ? [r.file.oldPath, r.file.path] : [r.file.path]));
   return (
     <ContextMenuContent>
       <ContextMenuItem onSelect={() => onOpen(sel, true)}>
@@ -133,6 +135,11 @@ export function ChangeRowMenu({
       <ContextMenuItem onSelect={() => copyText(paths(rows).join("\n"), n > 1 ? `${n} relative paths copied` : "Relative path copied")}>
         <Copy /> {n > 1 ? "Copy Relative Paths" : "Copy Relative Path"}
       </ContextMenuItem>
+      {list && patchPaths.length > 0 && (
+        <ContextMenuItem onSelect={() => copyLater(() => api.changesPatch(list, patchPaths), "Patch copied")}>
+          <FileDiff /> Copy as Patch
+        </ContextMenuItem>
+      )}
     </ContextMenuContent>
   );
 }

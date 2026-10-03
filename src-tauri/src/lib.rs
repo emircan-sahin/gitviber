@@ -27,9 +27,11 @@ mod notifications;
 mod objc;
 mod open_in;
 mod opened;
+mod patch;
 mod process;
 mod procinfo;
 mod pty;
+mod revert;
 mod rewrite;
 #[cfg(test)]
 mod scenario_tests;
@@ -142,6 +144,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::app::log_error,
             commands::app::show_logs,
+            commands::app::clipboard_text,
+            commands::app::clipboard_write,
             commands::app::notification_permission,
             commands::app::notification_request,
             commands::app::notification_send,
@@ -157,6 +161,16 @@ pub fn run() {
             commands::repo::set_repo_identity,
             commands::changes::status,
             commands::changes::branch_review,
+            commands::history::compare_worktree,
+            commands::patch::changes_patch,
+            commands::patch::commit_patch,
+            commands::patch::stash_patch,
+            commands::patch::lines_patch,
+            commands::patch::patch_preview,
+            commands::patch::apply_patch,
+            commands::patch::restore_file,
+            commands::patch::revert_file,
+            commands::patch::revert_lines,
             commands::history::log,
             commands::history::log_compare,
             commands::history::compare_counts,

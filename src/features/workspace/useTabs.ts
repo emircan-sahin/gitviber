@@ -152,7 +152,7 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
   useEffect(() => {
     if (!review) return;
     const rows = new Map(review.map((r) => [r.file.path, r]));
-    follow((sel) => (sel.kind === "branch" ? (rows.get(sel.file.path) ?? null) : sel));
+    follow((sel) => (sel.kind === "branch" && !sel.fixed ? (rows.get(sel.file.path) ?? null) : sel));
   }, [review, follow]);
 
   // Issue and PR tabs hold the item as it was when opened, saved across restarts too. When a

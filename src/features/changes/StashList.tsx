@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { Archive, ArchiveRestore, ChevronRight, GitBranchPlus, PackageOpen, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronRight, FileDiff, GitBranchPlus, PackageOpen, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { api, type Commit, errorMessage, type FileChange, type RepoStatus, type Stash, type StashFiles } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { toast } from "@/lib/app/toast";
+import { copyLater } from "@/lib/app/clipboard";
 import { useListNav } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
@@ -166,6 +167,9 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
                 </ContextMenuItem>
                 <ContextMenuItem disabled={!!busy} onSelect={() => setBranching(s)}>
                   <GitBranchPlus /> Create Branch from Stash…
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={() => copyLater(() => api.stashPatch(s.sha), "Patch copied")}>
+                  <FileDiff /> Copy as Patch
                 </ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem disabled={!!busy} className="text-destructive" onSelect={() => drop(s)}>

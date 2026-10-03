@@ -2,7 +2,7 @@
 
 use super::{
     apply_numstat, change, count_lines, disk_oid, parse_name_status, parse_numstat, parted_at, run,
-    untracked_nested_root, CountBudget, FileChange,
+    run_text, untracked_nested_root, validate_rev, CountBudget, FileChange,
 };
 use serde::Serialize;
 use std::collections::HashSet;
@@ -11,7 +11,7 @@ use std::path::Path;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BranchReview {
-    /// The merge base: each file's old side (`diff_pair` kind "base").
+    /// The merge base (or the commit compared with): each file's old side (`diff_pair` kind "base").
     pub base: String,
     pub files: Vec<FileChange>,
 }
@@ -20,7 +20,22 @@ pub struct BranchReview {
 /// unstaged edits and untracked files, as one diff from the merge base to the working tree.
 /// From the merge base, so what `base` gained since doesn't show up here as undone.
 pub fn branch_review(repo: &Path, base: &str) -> Result<BranchReview, String> {
-    let merge_base = parted_at(repo, base)?;
+    review_from(repo, parted_at(repo, base)?)
+}
+
+/// The working tree against commit `sha` itself, uncommitted work included: what changed since
+/// it, or what it has that the working tree doesn't when it isn't an ancestor.
+pub fn worktree_review(repo: &Path, sha: &str) -> Result<BranchReview, String> {
+    validate_rev(sha)?;
+    let full = run_text(
+        repo,
+        &["rev-parse", "--verify", "-q", &format!("{sha}^{{commit}}")],
+    )
+    .map_err(|_| format!("No commit {sha} here."))?;
+    review_from(repo, full.trim().to_string())
+}
+
+fn review_from(repo: &Path, merge_base: String) -> Result<BranchReview, String> {
     let diff = |format: &str| run(repo, &["diff", "-z", "-M", format, &merge_base, "--"]);
     let mut files = parse_name_status(&diff("--name-status")?);
     apply_numstat(&mut files, &parse_numstat(&diff("--numstat")?));

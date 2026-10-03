@@ -1,24 +1,29 @@
 // Staging part of a file from its diff, as in VS Code: hovering a change shows Stage and Discard
 // (Unstage on the staged side), and the context menu and the Diff commands' keys stage, unstage or
 // discard the selected lines, or the change at the cursor. lib/git/lineStaging says which lines;
-// lines.rs writes them.
-import { api, type DiffPair, errorMessage } from "../api";
+// lines.rs writes them. A commit's diff reverts lines in the working tree instead (revert.rs), and
+// any of them copies the selected lines as a patch.
+import { api, type DiffPair, errorMessage, type LinesRequest } from "../api";
 import { type Change, changeAt, changes, isEmpty, type Picked, pick, type Side, whole } from "../git/lineStaging";
 import { monaco } from "./monaco";
 import { toast } from "../app/toast";
-import { tracked, undoAction } from "../repo/undo";
+import { copyLater } from "../app/clipboard";
+import { rewriteFiles } from "../repo/undo";
 
-/** A working-tree diff whose lines can move: index → worktree ("unstaged") or HEAD → index ("staged"). */
-export interface Staging {
-  kind: "unstaged" | "staged";
-  path: string;
+/**
+ * Where a diff's lines can go: index → worktree ("unstaged") or HEAD → index ("staged") stage,
+ * unstage and discard; a commit's ("commit") revert in the working tree.
+ */
+export type StagingSide = ({ kind: "unstaged" | "staged" } | { kind: "commit"; sha: string }) & {
   /** A staged rename's old path: HEAD's side of the diff is read there. */
   oldPath: string | null;
-  pair: DiffPair;
   refresh: () => unknown;
-}
+};
 
-export type LineAction = "stage" | "unstage" | "discard";
+/** A diff on show whose lines can move. */
+export type Staging = StagingSide & { path: string; pair: DiffPair };
+
+export type LineAction = LinesRequest["action"] | "revert";
 
 /** The lines a selection takes, first and last. One that ends at the start of a line doesn't take that line. */
 export function selectedLines(sel: monaco.Selection): [number, number] {
@@ -29,14 +34,22 @@ const LABELS: Record<LineAction, [change: string, lines: string, failed: string]
   stage: ["Stage Change", "Stage Selected Lines", "Stage failed"],
   unstage: ["Unstage Change", "Unstage Selected Lines", "Unstage failed"],
   discard: ["Discard Change", "Discard Selected Lines", "Discard failed"],
+  revert: ["Revert Change", "Revert Selected Lines", "Revert failed"],
 };
 
-const actionsFor = (kind: Staging["kind"]): LineAction[] => (kind === "unstaged" ? ["stage", "discard"] : ["unstage"]);
+// Which diff each action is on: its menu item's precondition, and the hover bar's buttons in this order.
+const KIND_OF: Record<LineAction, Staging["kind"]> = { stage: "unstaged", discard: "unstaged", unstage: "staged", revert: "commit" };
+const actionsFor = (kind: Staging["kind"]) => (Object.keys(KIND_OF) as LineAction[]).filter((a) => KIND_OF[a] === kind);
 
 async function run(s: Staging, action: LineAction, p: Picked) {
-  if (isEmpty(p)) return;
+  if (isEmpty(p) || KIND_OF[action] !== s.kind) return;
+  if (s.kind === "commit") {
+    const request = { sha: s.sha, path: s.path, oldPath: s.oldPath, removed: p.removed, added: p.added };
+    return rewriteFiles(`Reverted lines in ${s.path}`, LABELS.revert[2], () => api.revertLines(request), s.refresh);
+  }
+  if (action === "revert") return;
   const { pair } = s;
-  const request = {
+  const request: LinesRequest = {
     path: s.path,
     oldPath: s.oldPath,
     kind: s.kind,
@@ -46,11 +59,9 @@ async function run(s: Staging, action: LineAction, p: Picked) {
     removed: p.removed,
     added: p.added,
   };
+  if (action === "discard") return rewriteFiles(`Discarded lines in ${s.path}`, LABELS.discard[2], () => api.changeLines(request), s.refresh);
   try {
-    if (action === "discard") {
-      const [, entry] = await tracked(() => api.changeLines(request));
-      toast("success", `Discarded lines in ${s.path}`, "The old version is in the Trash.", undoAction(entry, s.refresh));
-    } else await api.changeLines(request);
+    await api.changeLines(request);
   } catch (e) {
     toast("error", LABELS[action][2], errorMessage(e));
   }
@@ -107,8 +118,8 @@ export function followLineActions(diff: monaco.editor.IStandaloneDiffEditor, sta
     };
     pickers.set(code, chosen);
     subs.push(code.onDidChangeCursorPosition(moved), code.onDidChangeModel(update), code.onDidFocusEditorText(update));
-    for (const action of ["stage", "unstage", "discard"] as LineAction[]) {
-      const on = `gitviberStaging == ${action === "unstage" ? "staged" : "unstaged"}`;
+    for (const action of Object.keys(LABELS) as LineAction[]) {
+      const on = `gitviberStaging == ${KIND_OF[action]}`;
       const [change, lines] = LABELS[action];
       const go = () => {
         const s = staging();
@@ -120,6 +131,22 @@ export function followLineActions(diff: monaco.editor.IStandaloneDiffEditor, sta
         code.addAction({ id: `gitviber.${action}Lines`, label: lines, contextMenuGroupId: "0_staging", precondition: `${on} && editorHasSelection`, run: go }),
       );
     }
+    subs.push(
+      code.addAction({
+        id: "gitviber.copyLinesPatch",
+        label: "Copy Selected Lines as Patch",
+        contextMenuGroupId: "0_staging",
+        precondition: "gitviberStaging != '' && editorHasSelection",
+        run: () => {
+          const s = staging();
+          const p = s && chosen();
+          if (!s || !p || isEmpty(p)) return;
+          const { original, modified } = s.pair;
+          const request = { path: s.path, oldPath: s.oldPath, original: original.exists ? original.text : null, modified: modified.exists ? modified.text : null, removed: p.removed, added: p.added };
+          void copyLater(() => api.linesPatch(request), "Patch copied");
+        },
+      }),
+    );
     update();
   }
 
@@ -169,7 +196,8 @@ function hoverBar(diff: monaco.editor.IStandaloneDiffEditor, staging: () => Stag
   const show = (c: Change | null) => {
     window.clearTimeout(hideTimer);
     const s = staging();
-    if (!c || !s) {
+    // A commit's lines revert from the menu: browsing history shouldn't offer it on every change.
+    if (!c || !s || s.kind === "commit") {
       shown = null;
       node.style.display = "none";
       return;

@@ -7,6 +7,7 @@ pub mod files;
 pub mod github;
 pub mod history;
 pub mod journal;
+pub mod patch;
 pub mod repo;
 pub mod stash;
 pub mod sync;

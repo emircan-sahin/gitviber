@@ -1,6 +1,6 @@
 //! Local and remote branches: listing, creating, switching, renaming, deleting, upstreams.
 
-use super::cmd::command;
+use super::cmd::{command, PINS};
 use super::{run, run_network, run_text, validate_base, validate_branch, worktrees};
 use crate::network::{self, Net};
 use crate::process::{exec, spawn, spawning};
@@ -338,22 +338,7 @@ fn check_content(repo: &Path, base: &str, tip: &str, since: i64) -> Option<bool>
     )
 }
 
-/// patch-id reads the patches as text, so none of the user's diff settings may shape them: a
-/// submodule's log or hidden pointer, fewer context lines, blank ones cut, other prefixes.
-const PINS: [&str; 12] = [
-    "-c",
-    "diff.suppressBlankEmpty=false",
-    "-c",
-    "diff.noprefix=false",
-    "-c",
-    "diff.mnemonicPrefix=false",
-    "-c",
-    "diff.relative=false",
-    "-c",
-    "color.diff=false",
-    "-c",
-    "log.showSignature=false",
-];
+// The user's diff settings are pinned (PINS): patch-id reads the patches as text.
 const PATCH: [&str; 8] = [
     "--ignore-submodules=none",
     "--submodule=short",

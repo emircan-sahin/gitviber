@@ -1,4 +1,4 @@
-import { ChevronsDownUp, GitCompareArrows, PanelLeftClose, PanelRightClose, Search } from "lucide-react";
+import { ChevronsDownUp, ClipboardPaste, GitCompareArrows, PanelLeftClose, PanelRightClose, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -21,6 +21,7 @@ import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
 import { revealPath } from "@/lib/app/openIn";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
+import { ApplyPatchDialog, openApplyPatch } from "@/features/changes/ApplyPatchDialog";
 import { changeList } from "@/features/changes/changeList";
 import { BranchReview, useBranchReview } from "@/features/changes/BranchReview";
 import { showQuickOpen, useQuickOpenSource } from "@/features/palette/CommandPalette";
@@ -246,6 +247,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "review.nextFile": () => step(1),
     "review.prevFile": () => step(-1),
     "review.branch": startReview,
+    "git.applyPatch": () => void openApplyPatch(),
     "review.openAll": status?.unstaged.length ? () => openAll("unstaged") : undefined,
     "review.openAllStaged": status?.staged.length ? () => openAll("staged") : undefined,
     "review.openAllBranch": reviewing && branchReview.rows.length ? () => openAll("branch") : undefined,
@@ -415,6 +417,17 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 </ListTabButton>
                 {/* One group: two ml-autos split the free space. */}
                 <div className="ml-auto flex items-center gap-0.5">
+                  {listTab === "changes" && !reviewing && (
+                    <Tip label="Apply patch from clipboard">
+                      <button
+                        aria-label="Apply patch from clipboard"
+                        onClick={() => void openApplyPatch()}
+                        className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
+                      >
+                        <ClipboardPaste className="size-3.5" />
+                      </button>
+                    </Tip>
+                  )}
                   <Tip label={reviewing ? "Back to uncommitted changes" : `Review branch against ${reviewLabel}`}>
                     <button
                       aria-label={reviewing ? "Back to uncommitted changes" : "Review branch"}
@@ -463,6 +476,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 {listTab === "history" && (
                   <SearchableHistory
                     main={main}
+                    revision={repo.revision}
                     search={historySearch}
                     onSearch={setHistorySearch}
                     focusRequested={searchFocus}
@@ -605,6 +619,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       </div>
       <StatusBar repo={repo} reviewed={uncommitted.filter(viewed).length} active={active?.sel} />
       <TerminalRestoreOffer />
+      <ApplyPatchDialog refresh={() => repo.refresh(false)} />
     </div>
   );
 }

@@ -144,7 +144,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   // Review notes go on local diffs and the file view (a PR has its own comments); not on a file
   // being typed into, whose lines are no longer the ones on disk.
   const notes = useMemo(
-    () => (sel.kind === "pr-file" || (isFile && dirty) ? null : { oldPath: file?.oldPath ?? selectionPath(sel), at: sel.kind === "commit" ? `commit ${sel.commit.shortSha}` : undefined }),
+    () => (sel.kind === "pr-file" || sel.kind === "files" || (isFile && dirty) ? null : { oldPath: file?.oldPath ?? selectionPath(sel), at: sel.kind === "commit" ? `commit ${sel.commit.shortSha}` : undefined }),
     [sel, isFile, dirty, file],
   );
   // An image or a preview has no lines to pick: the whole file.
@@ -256,7 +256,7 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               <FileCode2 /> Open file
             </Button>
           )}
-          {(sel.kind === "unstaged" || sel.kind === "staged" || sel.kind === "branch") && (
+          {(sel.kind === "unstaged" || sel.kind === "staged" || (sel.kind === "branch" && !sel.fixed)) && (
             <Tip label={sel.kind === "staged" ? "Unstage" : viewed(sel) ? "Mark as not viewed" : "Mark as viewed"}>
               <Button
                 variant={viewed(sel) ? "default" : "secondary"}
@@ -329,7 +329,13 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
               blameColumn={!!s.blame && isFile && !blame?.unavailable}
               onBlameClick={(c) => onShowCommit(c.sha, c.path)}
               links={linkSides(sel, revision)}
-              staging={sel.kind === "unstaged" || sel.kind === "staged" ? { kind: sel.kind, oldPath: sel.file.oldPath, refresh } : null}
+              staging={
+                sel.kind === "unstaged" || sel.kind === "staged"
+                  ? { kind: sel.kind, oldPath: sel.file.oldPath, refresh }
+                  : sel.kind === "commit"
+                    ? { kind: "commit", sha: sel.commit.sha, oldPath: sel.file.oldPath, refresh }
+                    : null
+              }
               review={review}
               notes={notes}
               editable={editable}
