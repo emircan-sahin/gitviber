@@ -15,7 +15,7 @@ import { pullSource } from "./pullSource";
 import { PullStateIcon, PullStatePill } from "@/features/github/shared/StateBadges";
 import { notifyPullsChanged } from "@/features/github/shared/changed";
 import { CopyLinkButton } from "@/features/github/shared/LinkMenu";
-import { openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
+import { offerWorktreeRemoval, openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
 import { Section } from "@/features/github/shared/Section";
@@ -109,7 +109,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
 
   const merge = async (method: MergeMethod) => {
     const ok = await ask(`${METHODS[method]}: #${p.number} into ${p.baseRef}?`, { title: "Merge pull request", okLabel: "Merge" });
-    if (ok) await act("Merge", () => github.merge(target, p.number, method), `Merged #${p.number}`);
+    if (ok && (await act("Merge", () => github.merge(target, p.number, method), `Merged #${p.number}`))) void offerWorktreeRemoval(checkoutBranch, p.number, p.headSha);
   };
 
   const setOpen = async (open: boolean) => {

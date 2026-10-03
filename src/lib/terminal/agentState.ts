@@ -70,3 +70,26 @@ export function resumeOf(agent: SavedAgent, mode: Exclude<ResumeMode, "off">) {
     ? { hint: `Resuming ${agent.name}, which was running here.`, run: `${agent.command}\r` }
     : { hint: `${agent.name} was running here. Press Enter to resume.`, run: agent.command };
 }
+
+/** An agent in the agents list: `waiting` it asked, `finished` it's done (idle), `running` it doesn't say. */
+export interface AgentEntry {
+  pane: number;
+  name: string;
+  state: "working" | "waiting" | "finished" | "running";
+  /** Its pane needs the user (needsYou): a finish or a question not looked at yet. */
+  unseen: boolean;
+  /** Where its pane opened, which decides its worktree. */
+  cwd: string;
+  /** Since when it's been in `state` (ms); 0 when not known. */
+  since: number;
+}
+
+const RANK: Record<AgentEntry["state"], number> = { waiting: 0, working: 2, running: 2, finished: 3 };
+// A finish not looked at yet waits for the user too, after the questions.
+const rank = (e: AgentEntry) => (e.unseen ? Math.min(RANK[e.state], 1) : RANK[e.state]);
+
+/** The agents that need the user first, then the working ones, then the finished; the longest in its state first. */
+export const byUrgency = (a: AgentEntry, b: AgentEntry) => rank(a) - rank(b) || a.since - b.since;
+
+/** How many agents wait for the user, for the Dock badge: asked, or finished and not looked at. */
+export const agentsWaiting = (list: AgentEntry[]) => list.filter((e) => e.state === "waiting" || e.unseen).length;

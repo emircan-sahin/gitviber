@@ -80,6 +80,15 @@ pub enum Session {
     Continue {},
 }
 
+/// Where an agent keeps the conversations it had, for Resume a conversation (conversations.rs).
+#[derive(Deserialize, Debug)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum History {
+    /// Claude Code's: in `dir`, a folder per project named after its path, a JSON-lines file
+    /// per conversation named by its id.
+    ClaudeProjects { dir: String },
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Adapter {
@@ -106,6 +115,9 @@ pub struct Adapter {
     /// Flags, or a first word (a subcommand), that mean the run wasn't a conversation to resume.
     #[serde(default)]
     skip: Vec<String>,
+    /// Where its past conversations are, when they can be listed.
+    #[serde(default)]
+    history: Option<History>,
 }
 
 fn adapters() -> &'static [Adapter] {
@@ -113,6 +125,21 @@ fn adapters() -> &'static [Adapter] {
     TABLE.get_or_init(|| {
         serde_json::from_str(include_str!("agents.json")).expect("agents.json is a valid table")
     })
+}
+
+/// The agents whose past conversations can be listed, and where those are.
+pub fn histories() -> impl Iterator<Item = (&'static Adapter, &'static History)> {
+    adapters()
+        .iter()
+        .filter_map(|a| Some((a, a.history.as_ref()?)))
+}
+
+/// A table path, `~/` the home folder.
+pub fn from_home(path: &str, home: &Path) -> PathBuf {
+    match path.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None => PathBuf::from(path),
+    }
 }
 
 /// Runtimes that run an agent's script: its first word that isn't a flag of theirs.
@@ -123,6 +150,15 @@ fn file_name(path: &str) -> &str {
 }
 
 impl Adapter {
+    /// The command that resumes conversation `id`, read from a file: a plain one only.
+    pub fn resume_command(&self, id: &str) -> Option<String> {
+        let uuid = matches!(
+            self.session,
+            Session::PidFile { uuid: true, .. } | Session::NewestFile { uuid: true, .. }
+        );
+        rewrite(self, &[], Some(&plain_id(id, uuid)?))
+    }
+
     /// Where the agent's own arguments start in `argv`, if it's this agent's.
     fn args_at(&self, argv: &[String]) -> Option<usize> {
         let program = file_name(argv.first()?);
@@ -294,10 +330,7 @@ fn expand(template: &str, process: &Process, home: &Path) -> Option<PathBuf> {
         let cwd = process.cwd.as_ref()?.to_str()?;
         path = path.replace("{cwdSha256}", &format!("{:x}", Sha256::digest(cwd)));
     }
-    Some(match path.strip_prefix("~/") {
-        Some(rest) => home.join(rest),
-        None => PathBuf::from(path),
-    })
+    Some(from_home(&path, home))
 }
 
 /// Written since the process started (to the second, with a second's slack): a file left by a

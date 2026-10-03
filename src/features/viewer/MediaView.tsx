@@ -4,6 +4,7 @@ import { matchesCommand } from "@/lib/commands/keybindings";
 import { FIT, panAxis, place, svgSize, type Zoom, zoomAxis, zoomLimits } from "@/lib/ui/svg";
 import { cn } from "@/lib/utils";
 import { basename } from "@/lib/path";
+import { formatBytes } from "@/lib/format";
 import { Copy } from "lucide-react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { copyFiles } from "@/lib/app/clipboard";
@@ -434,16 +435,4 @@ export function useBytesUrl(key: string, file: string, load: () => Promise<Array
   }, [key, file]);
   useEffect(() => () => void (current.current && URL.revokeObjectURL(current.current)), []);
   return state;
-}
-
-export function formatBytes(n: number) {
-  if (n < 1024) return `${n} B`;
-  const units = ["KB", "MB", "GB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(v < 10 ? 1 : 0)} ${units[i]}`;
 }

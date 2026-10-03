@@ -359,6 +359,7 @@ mod mac {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
     use super::*;
 
     /// A test binary isn't an app bundle: UN is never touched (it would abort), and the

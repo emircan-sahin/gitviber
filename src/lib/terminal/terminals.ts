@@ -762,7 +762,7 @@ function focusPane(id: number) {
   set({ active: g.id, groups: state.groups.map((x) => (x === g ? { ...g, focused: id } : x)) });
 }
 
-/** A pane a notification was about: its tab, in the panel opened, with the keys. */
+/** A pane in view with the keys (a notification's, or one picked in the Agents menu): its tab, in the panel opened. */
 export function revealPane(id: number) {
   if (!panes.has(id)) return;
   focusPane(id);
