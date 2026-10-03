@@ -18,7 +18,7 @@ import { emptyText, isNarrowed } from "@/features/github/shared/narrow";
 
 /** github/client.rs reads at most this many pages; a search (github/search.rs) stops at GitHub's 1000 results. */
 const MAX_PAGES = 30;
-const MAX_SEARCH_PAGES = 10;
+const MAX_SEARCH_PAGES = 1000 / PR_PAGE;
 
 export function PullRows({
   pulls: loaded,

@@ -30,15 +30,12 @@ export function IssuesPanel({ repoKey, activeKey, onOpen }: { repoKey: string | 
   const [filter, setFilter] = useState<Filter>("open");
   const find = useListFilter("git", "Filter loaded issues");
   const match = (i: Issue) => find.matches(i.title, `#${i.number}`, i.author, ...i.labels.map((l) => l.name));
-  const addLabel = (label: IssueLabel) => setLabels((l) => (l.some((m) => m.name === label.name) ? l : [...l, label]));
   // The repository the new issue goes to: origin (null), or a fork's parent.
   const [creating, setCreating] = useState<{ target: Target } | null>(null);
   const acct = useGitHubAccount();
   const { account, origin, parent, upstream } = acct;
-  // The chips that name the account wait on it, but not for it: the saved one lists at once.
-  const meUsable = acct.error === undefined || !!account;
-  const meReason = meUsable ? null : isNotConnected(acct.error) ? "Sign in to GitHub to filter by you" : "Your GitHub account couldn't be read";
-  const { choice, setChoice, labels, setLabels, narrow } = useNarrow("issues", repoKey, meUsable);
+  const { choice, setChoice, labels, setLabels, narrow, meReason } = useNarrow("issues", repoKey, account, acct.error);
+  const addLabel = (label: IssueLabel) => setLabels((l) => (l.some((m) => m.name === label.name) ? l : [...l, label]));
   // Forks start with issues off: nothing is listed where they are.
   const tag = narrowKey(narrow);
   const own = useGitHubData(`issues:origin:${filter}:${tag}`, useCallback(() => issues.list(null, filter, narrow), [filter, narrow]));

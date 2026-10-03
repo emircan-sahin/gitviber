@@ -52,10 +52,7 @@ export function PullsPanel({ status, branches, lastCommit, repoKey, activeKey, o
   const [creating, setCreating] = useState<GitHubAccess | null>(null);
   const acct = useGitHubAccount();
   const { account, origin, upstream } = acct;
-  // The chips that name the account wait on it, but not for it: the saved one lists at once.
-  const meUsable = acct.error === undefined || !!account;
-  const meReason = meUsable ? null : isNotConnected(acct.error) ? "Sign in to GitHub to filter by you" : "Your GitHub account couldn't be read";
-  const { choice, setChoice, labels, setLabels, narrow } = useNarrow("pulls", repoKey, meUsable);
+  const { choice, setChoice, labels, setLabels, narrow, meReason } = useNarrow("pulls", repoKey, account, acct.error);
   const firstPages = () => setPages({ origin: 1, parent: 1 });
   const pickChoice = (c: Choice) => {
     setChoice(c);
