@@ -78,6 +78,9 @@ export const COMMANDS = [
   { id: "review.openAll", title: "Open All Changes", category: "Review", keys: [] },
   { id: "review.openAllStaged", title: "Open All Staged Changes", category: "Review", keys: [] },
   { id: "review.openAllBranch", title: "Open All Branch Changes", category: "Review", keys: [] },
+  // From a file of a commit or a comparison on show: every file of it in one scroll.
+  { id: "review.openAllCommit", title: "Open All Changes in This Commit", category: "Review", keys: [] },
+  { id: "review.openAllComparison", title: "Open All Changes in This Comparison", category: "Review", keys: [] },
   // On the selected lines of the diff or file on show, else the cursor's (lib/review/notes).
   { id: "review.addNote", title: "Add Review Note", category: "Review", keys: ["c"] },
   { id: "review.copyNotes", title: "Copy Review Notes as Prompt", category: "Review", keys: [] },
@@ -157,6 +160,8 @@ export const COMMANDS = [
   { id: "explorer.delete", title: "Delete File", category: "Explorer", keys: ["cmd+backspace"], local: "the explorer" },
   { id: "git.switchBranch", title: "Switch Branch", category: "Git", keys: [] },
   { id: "git.newBranch", title: "New Branch", category: "Git", keys: [] },
+  // The Compare screen: any two branches, tags or commits against each other.
+  { id: "git.compareBranches", title: "Compare Branches…", category: "Git", keys: [] },
   { id: "git.switchWorktree", title: "Switch Worktree", category: "Git", keys: [] },
   { id: "git.newWorktree", title: "New Worktree", category: "Git", keys: [] },
   { id: "git.fetch", title: "Fetch", category: "Git", keys: [] },

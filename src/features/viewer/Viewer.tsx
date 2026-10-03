@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { Tip } from "@/components/ui/tooltip";
-import { api, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
+import { api, type Branch, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { withNetActivity } from "@/lib/repo/netActivity";
 import { onReveal, revealWaits } from "@/lib/editor/reveal";
 import { editedText, saveEdit, useEdited } from "@/lib/editor/edits";
@@ -31,6 +31,7 @@ import { CommitBar } from "./CommitBar";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { BranchChange } from "@/features/changes/BranchReview";
 import { AllChanges } from "./AllChanges";
+import { CompareView } from "@/features/compare/CompareView";
 import { VaultView } from "@/features/obsidian/VaultView";
 import { diffNote, placeholderFor } from "./placeholders";
 import { FileHeaderPath, Placeholder } from "./FileHeader";
@@ -41,6 +42,8 @@ interface ViewerProps {
   status: RepoStatus | null;
   /** The branch review's files as last loaded, for its stacked view; null while there's none. */
   branchRows: BranchChange[] | null;
+  /** The branches and tags the Compare screen picks its sides from. */
+  branches: Branch[];
   revision: number;
   viewed: (sel: Selection) => boolean;
   toggleViewed: (sel: Selection) => void;
@@ -49,7 +52,7 @@ interface ViewerProps {
   onCloseTabs: (keys: string[]) => void;
   onPin: (key: string) => void;
   onMoveTab: (from: number, to: number) => void;
-  onOpen: (s: Selection) => void;
+  onOpen: (s: Selection, pin?: boolean) => void;
   /** History, filtered to a file's commits. */
   onShowHistory: (path: string) => void;
   onRevealInExplorer: (path: string) => void;
@@ -83,7 +86,9 @@ export function Viewer(props: ViewerProps) {
           ) : active.sel.kind === "issue" ? (
             <IssueView issue={active.sel.issue} onDeleted={() => props.onClose(active.key)} />
           ) : active.sel.kind === "changes" ? (
-            <AllChanges list={active.sel.list} {...props} />
+            <AllChanges changes={active.sel} {...props} />
+          ) : active.sel.kind === "compare" ? (
+            <CompareView sel={active.sel} branches={props.branches} status={props.status} webUrl={props.webUrl} onChange={props.onOpen} onOpen={props.onOpen} refresh={props.refresh} />
           ) : active.sel.kind === "vault" ? (
             <VaultView tab={active} sel={active.sel} onOpen={props.onOpen} />
           ) : (

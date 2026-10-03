@@ -10,7 +10,9 @@ import { setLinkHost } from "@/lib/links/linkHost";
 import { prepare } from "@/lib/editor/monaco";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { dropReveal, revealWaits } from "@/lib/editor/reveal";
-import { type ChangeList, onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
+import { type ChangeList, type ComparePoint, onDisk, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
+import { useCompareAsk } from "@/lib/repo/compareRequest";
+import { defaultPoints } from "@/lib/git/comparePoints";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
@@ -251,11 +253,32 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
 
   const active = tabs.find((t) => t.key === activeKey) ?? null;
   // From the palette, as quick open: the code view takes the keys, and the stacked view them as it opens.
-  const openAll = (list: ChangeList) => {
+  const openAll = (all: Selection | ChangeList) => {
     focusPanel("code");
-    open({ kind: "changes", list }, true);
+    open(typeof all === "string" ? { kind: "changes", list: all } : all, true);
   };
+  // The Compare screen: a request from outside (the branch picker) or the palette; a side not named is the default.
+  const openCompare = (sides: { base?: ComparePoint; head?: ComparePoint } = {}) => {
+    const start = defaultPoints(repo.branches, status?.branch ?? null);
+    focusPanel("code");
+    open({ kind: "compare", base: sides.base ?? start.base, head: sides.head ?? start.head, mergeBase: true }, true);
+  };
+  const ask = useCompareAsk();
+  const handled = useRef(ask?.id ?? 0);
+  useEffect(() => {
+    // One that came before this window opened isn't its own.
+    if (!ask || ask.id === handled.current) return;
+    handled.current = ask.id;
+    openCompare(ask);
+  });
+  // From a file of a commit or a range on show: the whole of it.
+  const shown = active?.sel;
+  const ofCommit = shown?.kind === "commit" ? shown : null;
+  const ofRange = shown?.kind === "pr-file" ? shown.range : null;
   useCommands({
+    "git.compareBranches": () => openCompare(),
+    "review.openAllCommit": ofCommit ? () => openAll({ kind: "changes", list: "commit", commit: ofCommit.commit, url: ofCommit.url }) : undefined,
+    "review.openAllComparison": ofRange ? () => openAll({ kind: "changes", list: "range", range: ofRange }) : undefined,
     "review.nextFile": () => step(1),
     "review.prevFile": () => step(-1),
     "review.branch": startReview,
@@ -535,6 +558,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     active={active}
                     status={status}
                     branchRows={branchReview.review && branchReview.rows}
+                    branches={repo.branches}
                     revision={repo.revision}
                     viewed={viewed}
                     toggleViewed={toggleViewed}
@@ -544,7 +568,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     refresh={repo.refresh}
                     onPin={pin}
                     onMoveTab={moveTab}
-                    onOpen={(sel) => open(sel, true)}
+                    onOpen={(sel, pin = true) => open(sel, pin)}
                     onShowHistory={(path) => showHistory(path, true)}
                     onRevealInExplorer={revealInExplorer}
                     onShowCommit={showCommit}

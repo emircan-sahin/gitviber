@@ -1,4 +1,4 @@
-import { Check, ChevronRight, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitBranchPlus, GitMerge, GitPullRequestArrow, Link, Pencil, Pin, PinOff, Plus, Search, SquareTerminal, Trash2, Unlink } from "lucide-react";
+import { Check, ChevronRight, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitBranchPlus, GitCompareArrows, GitMerge, GitPullRequestArrow, Link, Pencil, Pin, PinOff, Plus, Search, SquareTerminal, Trash2, Unlink } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -12,6 +12,8 @@ import { relativeTime } from "@/lib/format";
 import { sameRef, sanitizedRefName } from "@/lib/git/refs";
 import { folderName } from "@/lib/path";
 import { loadPinnedBranches, savePinnedBranches } from "@/lib/repo/session";
+import { askCompare } from "@/lib/repo/compareRequest";
+import { branchPoint } from "@/lib/git/comparePoints";
 import { RowAction } from "@/components/RowAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
@@ -281,6 +283,10 @@ export function BranchPicker({ main, label, current, branches, onSwitch, onSwitc
           <ContextMenuSeparator />
         </>
       )}
+      {/* Current is the base: what the branch has that it lacks, which merging it would bring. */}
+      <ContextMenuItem onSelect={menuAct(() => askCompare(b.current || !current ? {} : { base: branchPoint({ name: current, remote: false }), head: branchPoint(b) }))}>
+        <GitCompareArrows /> {b.current || !current ? "Compare Branches…" : `Compare with ${current}…`}
+      </ContextMenuItem>
       {!b.remote && (
         <ContextMenuItem onSelect={menuAct(() => onRename(b))}>
           <Pencil /> Rename…{renameKey && <ContextMenuShortcut>{renameKey}</ContextMenuShortcut>}

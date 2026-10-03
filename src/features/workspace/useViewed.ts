@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, type FileChange, type RepoStatus } from "@/lib/api";
-import type { Selection } from "@/lib/repo/selection";
+import { pruned } from "@/lib/review/viewedMarks";
+import { type Selection, selectionKey } from "@/lib/repo/selection";
 import type { loadWorkspace } from "@/lib/repo/session";
 import type { RepoData } from "@/lib/repo/useRepo";
 import { failed } from "@/lib/app/toast";
@@ -31,6 +32,8 @@ export function useViewed(saved: ReturnType<typeof loadWorkspace>, status: RepoS
   // The file as it is now, and its mark's key.
   const marked = useCallback(
     (sel: Selection) => {
+      // A commit's or a range's file never changes, so its mark never lapses.
+      if (sel.kind === "commit" || sel.kind === "pr-file") return { f: sel.file, key: selectionKey(sel) };
       if (sel.kind !== "branch") {
         const f = currentFile(status, sel);
         return f && { f, key: `${sel.kind}:${f.path}` };
@@ -64,10 +67,13 @@ export function useViewed(saved: ReturnType<typeof loadWorkspace>, status: RepoS
         for (const { kind, f, key } of files) {
           // Drop the mark it had in Changes before staging, or it would come back already checked.
           if (kind === "staged") next.delete(`unstaged:${f.path}`);
-          else if (on) next.set(key, fileSig(f));
-          else next.delete(key);
+          else if (on) {
+            // Set again, so the oldest of a commit's or range's marks (below) are the ones given up.
+            next.delete(key);
+            next.set(key, fileSig(f));
+          } else next.delete(key);
         }
-        return next;
+        return pruned(next);
       });
       // One call for all of them: parallel git calls would fight over index.lock.
       if (!unstage.length) return Promise.resolve(true);

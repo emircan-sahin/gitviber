@@ -12,6 +12,7 @@ import { fullDate, relativeTime } from "@/lib/format";
 import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import { sumLines } from "@/features/changes/changeList";
+import { SectionBtn } from "@/features/changes/ChangeRows";
 import type { DropAt } from "./edits";
 import { groupRefs } from "./groupRefs";
 
@@ -173,6 +174,7 @@ export function CommitRow({
             <div className="flex h-6 items-center gap-2 pr-2 pl-8 text-[10.5px] text-subtle">
               <span className="font-semibold tracking-[0.08em] uppercase">Changed files</span>
               <span className="font-mono text-muted-foreground">{files.length}</span>
+              {files.length > 0 && <SectionBtn onClick={() => onOpen({ kind: "changes", list: "commit", commit, url }, true)}>Open All</SectionBtn>}
               <span className="ml-auto font-mono">
                 <span className="text-added">+{add}</span> <span className="text-removed">-{del}</span>
               </span>
