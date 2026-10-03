@@ -357,4 +357,19 @@ mod tests {
         assert!(parse_remote("https://gitlab.com/a/b.git").is_none());
         assert!(parse_remote("https://github.com/a").is_none());
     }
+
+    /// Only github.com itself: an ~/.ssh/config alias, a look-alike host, another host's path.
+    #[test]
+    fn other_hosts_are_not_github() {
+        for url in [
+            "git@gh-work:a/b.git",
+            "git@github.com.example.org:a/b.git",
+            "https://github.com.example.org/a/b",
+            "https://example.org/github.com/a/b",
+            "ssh://git@example.org/github.com/a/b",
+            "",
+        ] {
+            assert!(parse_remote(url).is_none(), "{url}");
+        }
+    }
 }

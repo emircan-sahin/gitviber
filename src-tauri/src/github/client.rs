@@ -6,8 +6,9 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const API: &str = "https://api.github.com";
 
@@ -20,7 +21,6 @@ pub struct Token {
     account: Option<String>,
 }
 
-#[derive(Default)]
 pub struct Session {
     token: Mutex<Option<Token>>,
     /// The account picked for the open repository (accounts.rs); None: gh's active one.
@@ -28,11 +28,56 @@ pub struct Session {
     etags: Mutex<Etags>,
     /// One for every request, so they share its connection pool.
     agent: OnceLock<ureq::Agent>,
+    /// When a lookup last found no token. For NO_TOKEN_GAP nothing looks again: a screen makes a
+    /// dozen calls, and every one used to run gh and git's credential helper.
+    missing: Mutex<Option<Instant>>,
+    /// The user connected through git's credential store before (kept by the page): it may be
+    /// asked once a session without being clicked.
+    store_allowed: AtomicBool,
+    /// The store was asked this session, whoever asked.
+    store_asked: AtomicBool,
+    /// Held while a token is looked for: the calls of a screen wait for the one lookup instead of
+    /// each running gh (and, once, the credential store: one Keychain dialog, not several).
+    looking: Mutex<()>,
+    tools: Box<dyn Tools>,
 }
+
+/// Where a token is looked for; tests stand in their own and count the calls.
+pub(super) trait Tools: Send + Sync {
+    fn gh(&self, user: Option<&str>) -> Option<String>;
+    fn store(&self, repo: &Path) -> Option<String>;
+}
+
+struct Real;
+
+impl Tools for Real {
+    fn gh(&self, user: Option<&str>) -> Option<String> {
+        gh_token(user)
+    }
+    fn store(&self, repo: &Path) -> Option<String> {
+        git::credential_token(repo)
+    }
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Session::with_tools(Box::new(Real))
+    }
+}
+
+/// `gh auth token` is local and quiet, so a sign-in made in a terminal is found within this
+/// (on the next focus or tab click). Git's credential store is never asked again on its own:
+/// the macOS Keychain answers it with a password dialog.
+const NO_TOKEN_GAP: Duration = Duration::from_secs(60);
 
 /// `user`: that gh account's token (gh 2.40+), else the active account's.
 fn gh_token(user: Option<&str>) -> Option<String> {
-    let mut cmd = Command::new("gh");
+    gh_auth_token("gh", user, Duration::from_secs(10))
+}
+
+/// `gh` is a parameter for the tests' stand-in.
+fn gh_auth_token(gh: &str, user: Option<&str>, timeout: Duration) -> Option<String> {
+    let mut cmd = Command::new(gh);
     cmd.args(["auth", "token", "--hostname", "github.com"]);
     if let Some(user) = user {
         cmd.args(["--user", user]);
@@ -41,35 +86,90 @@ fn gh_token(user: Option<&str>) -> Option<String> {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let out = process::exec(
-        cmd,
-        "gh auth token",
-        &[],
-        None,
-        Some(Duration::from_secs(10)),
-    )
-    .ok()?;
+    let out = process::exec(cmd, "gh auth token", &[], None, Some(timeout)).ok()?;
     let token = String::from_utf8_lossy(&out).trim().to_string();
     (!token.is_empty()).then_some(token)
 }
 
 impl Session {
+    fn with_tools(tools: Box<dyn Tools>) -> Self {
+        Session {
+            token: Mutex::default(),
+            picked: Mutex::default(),
+            etags: Mutex::default(),
+            agent: OnceLock::new(),
+            missing: Mutex::default(),
+            store_allowed: AtomicBool::new(false),
+            store_asked: AtomicBool::new(false),
+            looking: Mutex::default(),
+            tools,
+        }
+    }
+
+    /// The token in hand, or one gh gives. Never git's credential store unless the user
+    /// connected through it before, and then once a session: this runs from every screen load.
     pub(super) fn token(&self, repo: &Path) -> Result<Token, String> {
-        let account = self.picked();
-        let held = self.token.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(t) = held.filter(|t| t.account == account) {
+        if let Some(t) = self.held() {
             return Ok(t);
         }
-        let (value, source) = match &account {
+        let _one = self.looking.lock().unwrap_or_else(|e| e.into_inner());
+        // The lookup this call waited for may have answered.
+        if let Some(t) = self.held() {
+            return Ok(t);
+        }
+        let account = self.picked();
+        let missing = *self.missing.lock().unwrap_or_else(|e| e.into_inner());
+        // The gap is gh's active account's: a picked one's lookup is its own message, asked afresh.
+        if account.is_none() && missing.is_some_and(|at| at.elapsed() < NO_TOKEN_GAP) {
+            return Err(NOT_CONNECTED.to_string());
+        }
+        // `swap`: of several first calls, only one may ask the store.
+        let store = self.store_allowed.load(Ordering::Relaxed)
+            && !self.store_asked.swap(true, Ordering::Relaxed);
+        self.lookup(repo, account, store)
+    }
+
+    /// The user asked to connect (Check again): looks now, and in git's credential store too
+    /// when they chose that.
+    pub fn connect(&self, repo: &Path, store: bool) -> Result<&'static str, String> {
+        let _one = self.looking.lock().unwrap_or_else(|e| e.into_inner());
+        if store {
+            self.store_asked.store(true, Ordering::Relaxed);
+        }
+        self.lookup(repo, self.picked(), store).map(|t| t.source)
+    }
+
+    /// Whether git's credential store may answer without being clicked, from the first lookup.
+    pub fn allow_store(&self, allow: bool) {
+        self.store_allowed.store(allow, Ordering::Relaxed);
+    }
+
+    /// The token in hand for the picked account.
+    fn held(&self) -> Option<Token> {
+        let account = self.picked();
+        let held = self.token.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        held.filter(|t| t.account == account)
+    }
+
+    /// With `looking` held.
+    fn lookup(&self, repo: &Path, account: Option<String>, store: bool) -> Result<Token, String> {
+        let found = match &account {
             // Never another account's token in its place: that would act as someone else.
-            Some(user) => gh_token(Some(user)).map(|v| (v, "gh")).ok_or_else(|| {
+            Some(user) => self.tools.gh(Some(user)).map(|v| (v, "gh")).ok_or_else(|| {
                 format!("gh has no token for {user}, the GitHub account picked for this repository. Sign in with `gh auth login`, or pick another account in Settings > Git.")
             })?,
-            None => gh_token(None)
-                .map(|v| (v, "gh"))
-                .or_else(|| git::credential_token(repo).map(|v| (v, "git")))
-                .ok_or_else(|| NOT_CONNECTED.to_string())?,
+            None => {
+                let found = self.tools.gh(None).map(|v| (v, "gh")).or_else(|| {
+                    store
+                        .then(|| self.tools.store(repo).map(|v| (v, "git")))
+                        .flatten()
+                });
+                *self.missing.lock().unwrap_or_else(|e| e.into_inner()) =
+                    found.is_none().then(Instant::now);
+                found.ok_or_else(|| NOT_CONNECTED.to_string())?
+            }
         };
+        let (value, source) = found;
         let token = Token {
             value,
             source,
@@ -96,6 +196,8 @@ impl Session {
 
     pub(super) fn pick(&self, account: Option<String>) {
         *self.picked.lock().unwrap_or_else(|e| e.into_inner()) = account;
+        // Another account, another repository: its gh login may be there.
+        *self.missing.lock().unwrap_or_else(|e| e.into_inner()) = None;
     }
 
     /// Whether the token for the picked account is already in hand, so a call needn't ask gh or
@@ -110,7 +212,11 @@ impl Session {
     }
 
     fn forget(&self) {
-        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        let old = self.token.lock().unwrap_or_else(|e| e.into_inner()).take();
+        // The store would hand back the same refused token, and a click is what asks it again.
+        if old.is_some_and(|t| t.source == "git") {
+            *self.missing.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        }
         // Responses seen with the old token are not the next token's to reuse.
         *self.etags.lock().unwrap_or_else(|e| e.into_inner()) = Etags::default();
     }
@@ -527,6 +633,317 @@ pub(super) fn graphql(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+
+    /// What gh and git's credential store hold, and how many times each was asked.
+    #[derive(Default)]
+    struct Fake {
+        gh: Mutex<Option<String>>,
+        store: Option<String>,
+        /// How long each lookup takes, so calls overlap.
+        delay: Duration,
+        gh_calls: AtomicUsize,
+        store_calls: AtomicUsize,
+    }
+
+    struct Shared(Arc<Fake>);
+
+    impl Tools for Shared {
+        fn gh(&self, _: Option<&str>) -> Option<String> {
+            self.0.gh_calls.fetch_add(1, Ordering::Relaxed);
+            std::thread::sleep(self.0.delay);
+            self.0.gh.lock().unwrap().clone()
+        }
+        fn store(&self, _: &Path) -> Option<String> {
+            self.0.store_calls.fetch_add(1, Ordering::Relaxed);
+            std::thread::sleep(self.0.delay);
+            self.0.store.clone()
+        }
+    }
+
+    fn session(fake: Fake) -> (Session, Arc<Fake>) {
+        let fake = Arc::new(fake);
+        (Session::with_tools(Box::new(Shared(fake.clone()))), fake)
+    }
+
+    fn calls(f: &Fake) -> (usize, usize) {
+        (
+            f.gh_calls.load(Ordering::Relaxed),
+            f.store_calls.load(Ordering::Relaxed),
+        )
+    }
+
+    const REPO: &str = "/repo";
+
+    /// An ssh clone with no gh: the PR tab, the Issues tab and a focus make dozens of calls, and
+    /// not one may reach the credential store (the macOS Keychain's password dialog, #113).
+    #[test]
+    fn no_token_is_looked_for_once_and_never_in_the_credential_store() {
+        let (s, f) = session(Fake {
+            store: Some("stored".into()),
+            ..Fake::default()
+        });
+        for _ in 0..30 {
+            assert_eq!(
+                s.token(Path::new(REPO)).err().as_deref(),
+                Some(NOT_CONNECTED)
+            );
+        }
+        assert_eq!(calls(&f), (1, 0));
+    }
+
+    #[test]
+    fn a_sign_in_is_found_after_the_gap_not_before() {
+        let (s, f) = session(Fake::default());
+        assert!(s.token(Path::new(REPO)).is_err());
+        *f.gh.lock().unwrap() = Some("gh-token".into());
+        assert!(s.token(Path::new(REPO)).is_err(), "still inside the gap");
+        assert_eq!(calls(&f), (1, 0));
+        *s.missing.lock().unwrap() = Instant::now().checked_sub(NO_TOKEN_GAP * 2);
+        assert_eq!(s.token(Path::new(REPO)).unwrap().value, "gh-token");
+        assert_eq!(calls(&f), (2, 0));
+        // Found: held, nothing asks again.
+        s.token(Path::new(REPO)).unwrap();
+        assert_eq!(calls(&f), (2, 0));
+    }
+
+    #[test]
+    fn check_again_looks_at_once() {
+        let (s, f) = session(Fake::default());
+        assert!(s.token(Path::new(REPO)).is_err());
+        *f.gh.lock().unwrap() = Some("gh-token".into());
+        assert_eq!(s.connect(Path::new(REPO), false), Ok("gh"));
+        assert_eq!(calls(&f), (2, 0));
+    }
+
+    #[test]
+    fn the_credential_store_is_asked_on_a_click_only() {
+        let (s, f) = session(Fake {
+            store: Some("stored".into()),
+            ..Fake::default()
+        });
+        assert_eq!(s.connect(Path::new(REPO), true), Ok("git"));
+        assert_eq!(calls(&f), (1, 1));
+        assert_eq!(s.token(Path::new(REPO)).unwrap().value, "stored");
+        assert_eq!(calls(&f), (1, 1));
+    }
+
+    #[test]
+    fn a_store_the_user_chose_is_asked_once_a_session() {
+        let (s, f) = session(Fake::default());
+        s.allow_store(true);
+        assert!(s.token(Path::new(REPO)).is_err());
+        assert_eq!(calls(&f), (1, 1));
+        *s.missing.lock().unwrap() = Instant::now().checked_sub(NO_TOKEN_GAP * 2);
+        assert!(s.token(Path::new(REPO)).is_err());
+        assert_eq!(calls(&f), (2, 1), "gh again, the store not");
+    }
+
+    #[test]
+    fn a_refused_stored_token_is_not_asked_for_again() {
+        let (s, f) = session(Fake {
+            store: Some("stored".into()),
+            ..Fake::default()
+        });
+        s.connect(Path::new(REPO), true).unwrap();
+        s.forget();
+        assert!(s.token(Path::new(REPO)).is_err());
+        assert_eq!(calls(&f), (1, 1));
+    }
+
+    #[test]
+    fn picking_an_account_looks_again() {
+        let (s, f) = session(Fake::default());
+        assert!(s.token(Path::new(REPO)).is_err());
+        s.pick(Some("octo-one".into()));
+        assert!(s.token(Path::new(REPO)).is_err());
+        assert_eq!(calls(&f), (2, 0));
+    }
+
+    /// A screen's calls arrive together: they share one lookup, found or not.
+    #[test]
+    fn parallel_calls_share_one_lookup() {
+        for gh in [None, Some("gh-token".to_string())] {
+            let (s, f) = session(Fake {
+                gh: Mutex::new(gh.clone()),
+                delay: Duration::from_millis(100),
+                ..Fake::default()
+            });
+            let s = Arc::new(s);
+            let all: Vec<_> = (0..20)
+                .map(|_| {
+                    let s = s.clone();
+                    std::thread::spawn(move || s.token(Path::new(REPO)).map(|t| t.value))
+                })
+                .collect();
+            for h in all {
+                assert_eq!(h.join().unwrap().ok(), gh);
+            }
+            assert_eq!(calls(&f), (1, 0), "gh was {gh:?}");
+        }
+    }
+
+    /// Several first calls with the store allowed: one Keychain dialog, not one each.
+    #[test]
+    fn parallel_calls_ask_the_store_once() {
+        let (s, f) = session(Fake {
+            delay: Duration::from_millis(100),
+            ..Fake::default()
+        });
+        s.allow_store(true);
+        let s = Arc::new(s);
+        let all: Vec<_> = (0..20)
+            .map(|_| {
+                let s = s.clone();
+                std::thread::spawn(move || s.token(Path::new(REPO)).is_err())
+            })
+            .collect();
+        assert!(all.into_iter().all(|h| h.join().unwrap()));
+        assert_eq!(calls(&f), (1, 1));
+    }
+
+    #[test]
+    fn the_gap_ends_at_its_length() {
+        let (s, f) = session(Fake::default());
+        assert!(s.token(Path::new(REPO)).is_err());
+        *s.missing.lock().unwrap() =
+            Instant::now().checked_sub(NO_TOKEN_GAP - Duration::from_secs(5));
+        assert!(s.token(Path::new(REPO)).is_err());
+        assert_eq!(calls(&f), (1, 0), "five seconds left");
+        *s.missing.lock().unwrap() = Instant::now().checked_sub(NO_TOKEN_GAP);
+        assert!(s.token(Path::new(REPO)).is_err());
+        assert_eq!(calls(&f), (2, 0), "the gap is over");
+    }
+
+    /// Picking an account while the lookup for gh's active one is out: its miss is not the
+    /// picked account's, which asks gh afresh.
+    #[test]
+    fn a_pick_during_a_lookup_is_not_held_to_its_miss() {
+        let (s, f) = session(Fake {
+            delay: Duration::from_millis(200),
+            ..Fake::default()
+        });
+        let s = Arc::new(s);
+        let looking = {
+            let s = s.clone();
+            std::thread::spawn(move || s.token(Path::new(REPO)).is_err())
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        s.pick(Some("octo-two".into()));
+        assert!(looking.join().unwrap());
+        *f.gh.lock().unwrap() = Some("two-token".into());
+        let t = s.token(Path::new(REPO)).unwrap();
+        assert_eq!(
+            (t.value.as_str(), t.account.as_deref()),
+            ("two-token", Some("octo-two"))
+        );
+    }
+
+    #[test]
+    fn a_token_held_for_another_account_is_not_handed_out() {
+        let (s, f) = session(Fake {
+            gh: Mutex::new(Some("one-token".into())),
+            ..Fake::default()
+        });
+        assert_eq!(s.token(Path::new(REPO)).unwrap().value, "one-token");
+        s.pick(Some("octo-two".into()));
+        assert!(!s.has_token());
+        *f.gh.lock().unwrap() = None;
+        assert!(s.token(Path::new(REPO)).err().unwrap().contains("octo-two"));
+    }
+
+    /// Signed out, then in with `gh auth login` in a terminal: Check again finds it without a
+    /// restart, and so does a call once the gap is over.
+    #[test]
+    fn signing_in_after_being_signed_out_works_without_a_restart() {
+        let (s, f) = session(Fake::default());
+        assert_eq!(
+            s.token(Path::new(REPO)).err().as_deref(),
+            Some(NOT_CONNECTED)
+        );
+        *f.gh.lock().unwrap() = Some("fresh".into());
+        assert_eq!(s.connect(Path::new(REPO), false), Ok("gh"));
+        assert_eq!(s.token(Path::new(REPO)).unwrap().value, "fresh");
+        assert!(s.has_token());
+    }
+
+    /// The token gh revoked: forgotten, and the next lookup is gh's again (a new login there).
+    #[test]
+    fn a_refused_gh_token_is_looked_up_again() {
+        let (s, f) = session(Fake {
+            gh: Mutex::new(Some("old".into())),
+            ..Fake::default()
+        });
+        s.token(Path::new(REPO)).unwrap();
+        s.forget();
+        assert!(!s.has_token());
+        *f.gh.lock().unwrap() = Some("new".into());
+        assert_eq!(s.token(Path::new(REPO)).unwrap().value, "new");
+    }
+
+    /// `gh` as a script in a folder of its own: what it prints, and the arguments it got.
+    #[cfg(unix)]
+    mod gh_script {
+        use super::*;
+        use std::os::unix::fs::PermissionsExt;
+
+        fn gh(name: &str, body: &str) -> String {
+            let dir =
+                std::env::temp_dir().join(format!("gitviber-gh-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("gh");
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path.display().to_string()
+        }
+
+        const TEN: Duration = Duration::from_secs(10);
+
+        #[test]
+        fn whitespace_around_the_token_is_dropped() {
+            let g = gh("blank", "printf '  tok-1234 \\r\\n\\n\\n'");
+            assert_eq!(gh_auth_token(&g, None, TEN).as_deref(), Some("tok-1234"));
+        }
+
+        #[test]
+        fn an_empty_answer_is_no_token() {
+            let g = gh("empty", "printf '\\n'");
+            assert_eq!(gh_auth_token(&g, None, TEN), None);
+        }
+
+        /// Installed, not signed in: gh exits 1 with its message on stderr.
+        #[test]
+        fn gh_without_a_login_is_no_token() {
+            let g = gh(
+                "out",
+                "echo 'no oauth token found for github.com' >&2; exit 1",
+            );
+            assert_eq!(gh_auth_token(&g, None, TEN), None);
+        }
+
+        #[test]
+        fn a_token_is_never_asked_of_another_host() {
+            let g = gh("args", "echo \"$*\"");
+            assert_eq!(
+                gh_auth_token(&g, Some("octo-one"), TEN).as_deref(),
+                Some("auth token --hostname github.com --user octo-one")
+            );
+            assert_eq!(
+                gh_auth_token(&g, None, TEN).as_deref(),
+                Some("auth token --hostname github.com")
+            );
+        }
+
+        /// A gh that never answers is cut off, and its children with it.
+        #[test]
+        fn a_hanging_gh_is_cut_off() {
+            let g = gh("hang", "sleep 30");
+            let started = Instant::now();
+            assert_eq!(gh_auth_token(&g, None, Duration::from_millis(300)), None);
+            assert!(started.elapsed() < Duration::from_secs(5));
+        }
+    }
 
     #[test]
     fn etags_revalidate() {

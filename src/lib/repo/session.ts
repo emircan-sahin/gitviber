@@ -1,6 +1,6 @@
 import { type Selection, selectionKey } from "./selection";
 import { getSettings } from "../settings";
-import { isRecord, putRecent, readJson, stringList } from "../storage";
+import { isRecord, putRecent, readJson, stringList, writeJson } from "../storage";
 import { folderName, joinPath } from "../path";
 import { isNote, type ReviewNote } from "../review/notes";
 import { type HueChoice, isHueChoice } from "../git/worktrees";
@@ -36,6 +36,7 @@ const ISSUE_BRANCHES_KEY = "gitviber.issueBranches";
 const ISSUE_RUN_KEY = "gitviber.issueRun";
 const PINNED_BRANCHES_KEY = "gitviber.pinnedBranches";
 const GITHUB_ACCOUNTS_KEY = "gitviber.githubAccounts";
+const GITHUB_STORE_KEY = "gitviber.githubStore";
 const COLORS_KEY = "gitviber.worktreeColors";
 // Agent worktrees come and go; keep only the most recently used.
 const MAX = 30;
@@ -195,6 +196,11 @@ export function loadGitHubAccount(main: string): string | null {
 export function saveGitHubAccount(main: string, login: string | null) {
   put(GITHUB_ACCOUNTS_KEY, main, login);
 }
+
+/** Whether the user connected GitHub through git's credential store, which is then asked once a session by itself. */
+export const loadGitHubStore = () => readJson<unknown>(GITHUB_STORE_KEY, false) === true;
+
+export const saveGitHubStore = (on: boolean) => writeJson(GITHUB_STORE_KEY, on);
 
 /** The project's own subfolder of the worktree folder set in Settings, or null while that's off. */
 export function sharedWorktreeDir(main: string): string | null {

@@ -53,6 +53,9 @@ export const resetGitHubCache = () => {
   resets.forEach((r) => r());
 };
 
+/** Origin's URL as the last status read it. */
+export const gitHubOrigin = () => origin;
+
 /**
  * Origin's URL, from each status read. A new one (`git remote set-url`) is another repository on
  * GitHub: what was read for the old one goes, and the mounted views read it again.

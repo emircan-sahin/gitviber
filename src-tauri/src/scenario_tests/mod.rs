@@ -6,6 +6,9 @@ mod clean_up;
 mod commits;
 mod content;
 mod conversations;
+// `sh` recorders stand in for the credential helper and askpass.
+#[cfg(unix)]
+mod github_token;
 mod history;
 mod history_more;
 mod journal;

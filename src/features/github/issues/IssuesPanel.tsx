@@ -52,7 +52,7 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
 
   const load = useReloadAll(issuesChanged, acct, own, up, ownCounts, upCounts);
 
-  if (isNotConnected(failure)) return <ConnectGitHub onRetry={load} subject="issues" />;
+  if (isNotConnected(failure)) return <ConnectGitHub subject="issues" />;
 
   const rowProps = { match: find.needle ? match : null, filter, labels, onLabel: addLabel, onClearLabels: () => setLabels([]), activeKey, onOpen };
   const ownRows = (roomy: boolean) => <IssueRows items={own.data ?? null} error={error} roomy={roomy} {...rowProps} />;

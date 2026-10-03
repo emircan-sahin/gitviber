@@ -239,8 +239,11 @@ it against `SHA256SUMS` and download it again. A build of your own isn't notariz
 already trusted on the Mac that built it.
 
 **How do I sign in to GitHub?** There's no sign-in of its own. Run `gh auth login` once, or have
-git remember a github.com login (any HTTPS push does), and GitViber borrows it. With more than
-one account in `gh`, pick the one a repository uses in Settings → Git. See [Privacy](#privacy).
+git remember a github.com login (any HTTPS push does) and press "Use it" on the sign-in screen,
+and GitViber borrows it. An SSH key signs git in but not GitHub's API, which lists pull requests
+and issues, so an SSH clone needs `gh auth login` too. Nothing asks for a login by itself: until
+you sign in, the Pull requests and Issues tabs show a sign-in screen. With more than one account
+in `gh`, pick the one a repository uses in Settings → Git. See [Privacy](#privacy).
 
 **Where are the logs?** Help → Show Logs. They're at `~/Library/Logs/app.gitviber.desktop/` on
 macOS and `~/.local/share/app.gitviber.desktop/logs/` on Linux. Help → Copy Diagnostics copies
