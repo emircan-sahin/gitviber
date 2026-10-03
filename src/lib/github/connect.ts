@@ -4,8 +4,9 @@ export type RemoteKind = "ssh" | "https" | "other";
 export function remoteKind(url: string | null | undefined): RemoteKind {
   const u = url?.trim() ?? "";
   if (/^https?:\/\//i.test(u)) return "https";
-  // ssh://git@github.com/o/r, or scp-style git@github.com:o/r (a colon before any slash).
-  if (/^ssh:\/\//i.test(u) || /^[^/\s:]+@[^/\s:]+:/.test(u)) return "ssh";
+  // ssh://git@github.com/o/r, or scp-style: git@github.com:o/r, or an ~/.ssh/config alias, work:o/r.
+  // Hosts of one letter are drives (C:\work), and `//` after the colon is a URL (file:///x).
+  if (/^ssh:\/\//i.test(u) || /^(?:[^/\s:@]+@)?[^/\s:@]{2,}:(?!\/\/)/.test(u)) return "ssh";
   return "other";
 }
 

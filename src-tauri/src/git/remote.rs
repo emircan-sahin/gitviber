@@ -92,9 +92,9 @@ pub fn remote_url(repo: &Path, remote: &str) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-/// The token git already stores for github.com (osxkeychain, GitHub Desktop, GCM…). Only for a
-/// click: the macOS Keychain asks its own password dialog when another app made the item, which
-/// no setting here can switch off.
+/// The token git already stores for github.com (osxkeychain, GitHub Desktop, GCM…). Never from a
+/// screen load: the macOS Keychain asks its own password dialog when another app made the item,
+/// which no setting here can switch off.
 pub fn credential_token(repo: &Path) -> Option<String> {
     let mut cmd = command(repo, &["-c", "core.askPass=", "credential", "fill"]);
     // No window of ours or the helper's: no stored credential means "none".

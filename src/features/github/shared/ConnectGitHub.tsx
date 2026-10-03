@@ -18,6 +18,7 @@ const LOGIN = "gh auth login";
 export function ConnectGitHub({ subject = "pull requests" }: { subject?: string }) {
   const [busy, setBusy] = useState<"gh" | "store" | null>(null);
   const [missed, setMissed] = useState<"gh" | "store" | null>(null);
+  const command = IS_MAC ? `brew install gh && ${LOGIN}` : LOGIN;
   const look = async (store: boolean) => {
     setBusy(store ? "store" : "gh");
     setMissed(null);
@@ -41,8 +42,8 @@ export function ConnectGitHub({ subject = "pull requests" }: { subject?: string 
           {/* Homebrew is macOS's; elsewhere gh comes from the distro or cli.github.com. */}
           {!IS_MAC && <span className="mb-1 block text-[11.5px] text-muted-foreground">Install gh (cli.github.com), then:</span>}
           <div className="flex items-center gap-1">
-            <code className="min-w-0 flex-1 rounded-sm bg-background px-2 py-1 font-mono text-[11.5px]">{IS_MAC ? `brew install gh && ${LOGIN}` : LOGIN}</code>
-            <Button variant="ghost" size="icon-sm" aria-label="Copy command" onClick={() => copyText(IS_MAC ? `brew install gh && ${LOGIN}` : LOGIN, "Command copied")}>
+            <code className="min-w-0 flex-1 rounded-sm bg-background px-2 py-1 font-mono text-[11.5px]">{command}</code>
+            <Button variant="ghost" size="icon-sm" aria-label="Copy command" onClick={() => copyText(command, "Command copied")}>
               <Copy />
             </Button>
           </div>
