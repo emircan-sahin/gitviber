@@ -4,6 +4,7 @@ mod branches;
 mod changes;
 mod clean_up;
 mod commits;
+mod compare;
 mod content;
 mod conversations;
 mod history;

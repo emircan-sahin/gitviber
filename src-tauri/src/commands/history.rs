@@ -80,6 +80,38 @@ pub async fn compare_files(state: State<'_, AppState>, with: String) -> Res<git:
     in_repo(&state, move |r| git::compare_files(r, &with)).await
 }
 
+/// Two points of history compared (Compare screen): `merge_base` for what a pull request shows.
+#[tauri::command]
+pub async fn compare(
+    state: State<'_, AppState>,
+    base: String,
+    head: String,
+    merge_base: bool,
+) -> Res<git::Comparison> {
+    read_repo(&state, move |r| git::compare(r, &base, &head, merge_base)).await
+}
+
+/// The commits `head` has that `base` doesn't, newest first (both commit ids).
+#[tauri::command]
+pub async fn log_between(
+    state: State<'_, AppState>,
+    base: String,
+    head: String,
+    skip: u32,
+    limit: u32,
+) -> Res<Vec<git::Commit>> {
+    read_repo(&state, move |r| {
+        git::log_between(r, &base, &head, skip, limit)
+    })
+    .await
+}
+
+/// What merging a point into HEAD would bring, and whether it would conflict.
+#[tauri::command]
+pub async fn merge_check(state: State<'_, AppState>, with: String) -> Res<git::MergeCheck> {
+    read_repo(&state, move |r| git::merge_check(r, &with)).await
+}
+
 #[tauri::command]
 pub async fn find_commit(state: State<'_, AppState>, sha: String) -> Res<Option<git::Commit>> {
     in_repo(&state, move |r| git::find_commit(r, &sha)).await

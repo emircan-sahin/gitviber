@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, CleanedUp, CleanUp, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, StackedBranches, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, CleanedUp, CleanUp, Commit, CommitDetails, CommitOptions, Comparison, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, MergeCheck, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, StackedBranches, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -54,6 +54,12 @@ export const api = {
   branchReview: (base: string) => invoke<{ base: string; files: FileChange[] }>("branch_review", { base }),
   /** The working tree against a commit itself, no merge base: its full id, and the files from it to the working tree. */
   compareWorktree: (sha: string) => invoke<{ base: string; files: FileChange[] }>("compare_worktree", { sha }),
+  /** Two points (HEAD, a full ref, or a commit id) against each other; `mergeBase`: the files are what `head` changed since they parted, as a PR shows them. */
+  compare: (base: string, head: string, mergeBase: boolean) => invoke<Comparison>("compare", { base, head, mergeBase }),
+  /** The commits `head` has that `base` doesn't, newest first (both commit ids, from a comparison). */
+  logBetween: (base: string, head: string, skip: number, limit: number) => invoke<Commit[]>("log_between", { base, head, skip, limit }),
+  /** What merging a point into HEAD would bring, and which files would conflict. */
+  mergeCheck: (ref: string) => invoke<MergeCheck>("merge_check", { with: ref }),
   compareCounts: (ref: string) => invoke<[number, number]>("compare_counts", { with: ref }),
   /** The commit a SHA or SHA prefix names, if exactly one, or a full ref's tip (refs/heads/…). */
   findCommit: (sha: string) => invoke<Commit | null>("find_commit", { sha }),

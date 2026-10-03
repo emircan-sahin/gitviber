@@ -519,3 +519,24 @@ export type ResetMode = "soft" | "mixed" | "hard";
 
 /** Which suggestion a run is for: the commit box's message, or the pull request dialog's; each runs and cancels apart. */
 export type SuggestKind = "message" | "pull";
+
+/** Two points compared (the Compare screen): the commit ids they name, and what lies between them. */
+export interface Comparison {
+  base: string;
+  head: string;
+  /** Where each file's old side is: the merge base, or `base` itself. */
+  from: string;
+  /** No commit in common: the files are then the plain difference. */
+  unrelated: boolean;
+  /** Commits `head` has that `base` doesn't, and the other way round. */
+  ahead: number;
+  behind: number;
+  files: FileChange[];
+}
+
+/** What merging a point into HEAD would do; `conflicts` null: git is too old to tell. */
+export interface MergeCheck {
+  incoming: number;
+  unrelated: boolean;
+  conflicts: string[] | null;
+}
