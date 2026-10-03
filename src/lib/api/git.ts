@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, CleanedUp, CleanUp, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RewriteOutcome, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, CleanedUp, CleanUp, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RewriteOutcome, SearchQuery, StackedBranches, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -185,7 +185,10 @@ export const api = {
   pull: (mode: PullMode, op?: NetOp, autostash = false) => network<boolean>("pull", { mode, autostash }, op),
   /** `how`: fast-forward when possible, always a merge commit, or the branch's changes as one commit. */
   merge: (name: string, how: "ff" | "no-ff" | "squash" = "ff", autostash = false) => invoke<boolean>("merge", { name, how, autostash }),
-  rebase: (onto: string, autostash = false) => invoke<boolean>("rebase", { onto, autostash }),
+  /** `updateRefs`: move the branches on the replayed commits along (or not); undefined leaves it to rebase.updateRefs. */
+  rebase: (onto: string, autostash = false, updateRefs?: boolean) => invoke<boolean>("rebase", { onto, autostash, updateRefs }),
+  /** The branches a rebase onto `onto` would replay commits of. */
+  rebaseStacked: (onto: string) => invoke<StackedBranches>("rebase_stacked", { onto }),
   opContinue: () => invoke<boolean>("op_continue"),
   opAbort: () => invoke<void>("op_abort"),
   rebaseSkip: () => invoke<boolean>("rebase_skip"),
@@ -233,11 +236,15 @@ export const api = {
   dropsPushed: (sha: string | null) => invoke<boolean>("drops_pushed", { sha }),
   revert: (sha: string) => invoke<boolean>("revert", { sha }),
   cherryPick: (sha: string) => invoke<boolean>("cherry_pick", { sha }),
+  /** Picks `shas`, oldest first, onto HEAD; true = stopped on conflicts. */
+  cherryPickMany: (shas: string[]) => invoke<boolean>("cherry_pick_many", { shas }),
   /** Picks onto the branch of another worktree (`path`), running git there; true = stopped on conflicts there. */
   cherryPickInto: (path: string, sha: string) => invoke<boolean>("cherry_pick_into", { path, sha }),
   checkoutCommit: (sha: string) => invoke<void>("checkout_commit", { sha }),
-  /** Edits the branch's history (rewrite.rs); `head` as the history showed it. */
-  rewrite: (head: string, edit: HistoryEdit) => invoke<RewriteOutcome>("rewrite", { head, edit }),
+  /** Edits the branch's history (rewrite.rs); `head` as the history showed it; `branches`: the local branches on the commits it replays move along. */
+  rewrite: (head: string, edit: HistoryEdit, branches = false) => invoke<RewriteOutcome>("rewrite", { head, edit, branches }),
+  /** The branches `edit` would replay commits of. */
+  stackedBranches: (edit: HistoryEdit) => invoke<StackedBranches>("stacked_branches", { edit }),
   stashes: () => invoke<Stash[]>("stashes"),
   stashFiles: (sha: string) => invoke<StashFiles>("stash_files", { sha }),
   /** `untracked`: take untracked files along (nested repositories stay); `staged`: only what's staged; `paths`: only those files. */

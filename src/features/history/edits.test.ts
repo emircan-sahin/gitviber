@@ -73,3 +73,8 @@ test("the first-parent line leaves a merged-in side branch out", () => {
   assert.deepEqual([...firstParentLine(side, "m")], ["m", "c", "b", "a"]);
   assert.deepEqual([...firstParentLine(side, "x")], []);
 });
+
+test("split and fixup name their commit", () => {
+  assert.deepEqual(editedShas({ kind: "split", sha: "c" }, []), ["c"]);
+  assert.deepEqual(editedShas({ kind: "fixupStaged", sha: "b" }, []), ["b"]);
+});

@@ -14,6 +14,9 @@ export function editedShas(edit: HistoryEdit, about: Commit[]): string[] {
       return edit.before ? [...edit.shas, edit.before] : edit.shas;
     case "drop":
       return edit.shas;
+    case "split":
+    case "fixupStaged":
+      return [edit.sha];
   }
 }
 

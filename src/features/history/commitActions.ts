@@ -32,6 +32,8 @@ export interface Actions {
   /** Other worktrees with a branch checked out, to cherry-pick onto. */
   pickTargets: Worktree[];
   pickInto: (w: Worktree, commit: Commit) => Promise<void>;
+  /** Picks `commits` (newest first, as listed) onto the current branch, oldest first. */
+  pickMany: (commits: Commit[]) => Promise<boolean>;
   remotes: Set<string>;
   refMenu?: RefMenu;
   showRefs?: GraphRefs;

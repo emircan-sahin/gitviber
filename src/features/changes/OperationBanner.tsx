@@ -15,6 +15,8 @@ export function OperationBanner({ status, refresh }: { status: RepoStatus; refre
   const op = status.operation!;
   const [busy, setBusy] = useState(false);
   const left = status.conflicted.length;
+  const split = op.split;
+  const uncommitted = status.unstaged.length + status.staged.length;
   const run = async (title: string, fn: () => Promise<boolean | void>) => {
     setBusy(true);
     try {
@@ -37,7 +39,7 @@ export function OperationBanner({ status, refresh }: { status: RepoStatus; refre
     <div className="shrink-0 border-b border-conflict/40 bg-conflict/10 px-3 py-2">
       <div className="flex items-center gap-2 text-[12px]">
         <GitMerge className="size-3.5 shrink-0 text-conflict" />
-        <span className="font-semibold">{OP_LABEL[op.kind]}</span>
+        <span className="font-semibold">{split ? "Splitting a commit" : OP_LABEL[op.kind]}</span>
         {op.step != null && op.total != null && (
           <span className="font-mono text-[11px] text-muted-foreground">
             {op.step}/{op.total}
@@ -46,13 +48,17 @@ export function OperationBanner({ status, refresh }: { status: RepoStatus; refre
         {op.subject && <span className="min-w-0 truncate text-muted-foreground">{op.subject}</span>}
       </div>
       <div className="mt-1 text-[11.5px] text-muted-foreground">
-        {left ? `${plural(left, "conflict")} left. Resolve them, then continue.` : "All conflicts resolved. Continue to finish."}
+        {split
+          ? `Commit the pieces with line staging, then Continue.${uncommitted ? ` ${plural(uncommitted, "file")} not committed yet: Continue leaves them as changes.` : ""}`
+          : left
+            ? `${plural(left, "conflict")} left. Resolve them, then continue.`
+            : "All conflicts resolved. Continue to finish."}
       </div>
       <div className="mt-2 flex gap-1">
         <Button size="sm" className="flex-1" disabled={busy || left > 0} onClick={() => run("Continue failed", api.opContinue)}>
           Continue
         </Button>
-        {op.kind === "rebase" && (
+        {op.kind === "rebase" && !split && (
           <Button variant="secondary" size="sm" disabled={busy} onClick={() => run("Skip failed", api.rebaseSkip)}>
             Skip commit
           </Button>
