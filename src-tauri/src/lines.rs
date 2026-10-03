@@ -42,24 +42,48 @@ pub fn apply(base: &str, target: &str, drop: &HashSet<u32>, take: &HashSet<u32>)
         "\n"
     };
     let mut out = String::with_capacity(base.len().max(target.len()));
-    for change in diff.iter_all_changes() {
-        let keep = match change.tag() {
-            ChangeTag::Equal => true,
-            ChangeTag::Delete => !change
-                .old_index()
-                .is_some_and(|i| drop.contains(&(i as u32 + 1))),
-            ChangeTag::Insert => change
-                .new_index()
-                .is_some_and(|i| take.contains(&(i as u32 + 1))),
-        };
-        if keep {
-            // A last line without a newline that is no longer last gets one.
-            if !out.is_empty() && !out.ends_with('\n') {
-                out.push_str(newline);
+    let mut push = |line: &str| {
+        // A last line without a newline that is no longer last gets one.
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push_str(newline);
+        }
+        out.push_str(line);
+    };
+    // A run of changed lines is all its deletes, then all its inserts; taking some of them must
+    // keep each line where its pair is (the 2nd old line stays before the 2nd new one), or a
+    // block with one line picked comes out shuffled.
+    let (mut old, mut new) = (vec![], vec![]);
+    let flush =
+        |old: &mut Vec<Option<&str>>, new: &mut Vec<Option<&str>>, push: &mut dyn FnMut(&str)| {
+            for k in 0..old.len().max(new.len()) {
+                for line in [old.get(k), new.get(k)].into_iter().flatten().flatten() {
+                    push(line);
+                }
             }
-            out.push_str(change.value());
+            old.clear();
+            new.clear();
+        };
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Equal => {
+                flush(&mut old, &mut new, &mut push);
+                push(change.value());
+            }
+            ChangeTag::Delete => {
+                let dropped = change
+                    .old_index()
+                    .is_some_and(|i| drop.contains(&(i as u32 + 1)));
+                old.push((!dropped).then(|| change.value()));
+            }
+            ChangeTag::Insert => {
+                let taken = change
+                    .new_index()
+                    .is_some_and(|i| take.contains(&(i as u32 + 1)));
+                new.push(taken.then(|| change.value()));
+            }
         }
     }
+    flush(&mut old, &mut new, &mut push);
     out
 }
 
