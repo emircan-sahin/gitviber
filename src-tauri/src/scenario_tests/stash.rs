@@ -403,9 +403,7 @@ fn taking_one_file_from_a_stash_can_be_undone() {
     let j = Journal::default();
     let take = |path: &str, untracked: bool| {
         let (sha, p) = (sha.clone(), path.to_string());
-        let write: crate::journal::Rewrite = std::sync::Arc::new(move |r| {
-            stash_restore_file(r, &sha, &p, untracked).map(|_| vec![])
-        });
+        let write = move |r: &Path| stash_restore_file(r, &sha, &p, untracked).map(|_| vec![]);
         let paths = [path.to_string()];
         j.replace(
             &r,

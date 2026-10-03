@@ -1,6 +1,6 @@
 //! Staging, unstaging and discarding whole files.
 
-use super::{has_head, new_gitlink, run_text, run_with, untracked_nested_root};
+use super::{has_head, new_gitlink, run_text, run_with, untracked_nested_root, validate_rev};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -109,6 +109,19 @@ pub fn unstage(repo: &Path, paths: &[String]) -> Result<(), String> {
 /// Reverts tracked files in the worktree to their index version. Untracked files are left alone.
 pub fn discard(repo: &Path, paths: &[String]) -> Result<(), String> {
     run_on(repo, &["restore", "--worktree"], paths)
+}
+
+/// Puts `path` in the working tree as commit `sha` has it; the index stays as it is.
+pub fn restore_from(repo: &Path, sha: &str, path: &str) -> Result<(), String> {
+    validate_rev(sha)?;
+    let source = format!("--source={sha}");
+    run_with(
+        repo,
+        &["restore", &source, "--worktree", "--", path],
+        &[],
+        None,
+    )
+    .map(|_| ())
 }
 
 /// git holds index.lock for as long as it writes the index, well under this; an older one is

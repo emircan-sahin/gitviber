@@ -1,14 +1,16 @@
 // Where links (lib/links/links) resolve and what opening one does: the repo's file lists, loaded on the
 // first ⌘-hover in a tree, and the workspace that opens files. Shared by the code view's Go to
-// Definition (lib/editor/definitions) and the terminal (terminalLinks below).
-import type { IDisposable, ILink, Terminal } from "@xterm/xterm";
-import { api, github } from "../api";
+// Definition (lib/editor/definitions) and the terminal (terminalLinks below), whose links also
+// reach commits (History), and pull requests and issues (their tabs) of the repo.
+import type { IBufferRange, IDisposable, ILink, Terminal } from "@xterm/xterm";
+import { api, fullName, type GitHubAccount, github, type Issue, issues, type Pull, repoOf, toIssue, toPull } from "../api";
 import { IS_MAC, primaryKey } from "../platform";
-import { type Alias, cellText, diskCandidates, diskTarget, type FileIndex, findTerminalLinks, folders, hyperlinkTarget, indexCase, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
+import { type Alias, cellText, diskCandidates, diskTarget, type FileIndex, findTerminalLinks, folders, githubItem, hyperlinkTarget, indexCase, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
 import { dirname, slashes } from "../path";
 import { failed } from "../app/toast";
 import { revealInCode } from "../editor/reveal";
 import { revealPath } from "../app/openIn";
+import { cached as cachedData, revalidate } from "../github/githubCache";
 
 /** Where a file's paths resolve: a commit's tree (`<sha>`, `<sha>^`), or the working tree (null) as of `revision`. */
 export interface LinkTree {
@@ -31,6 +33,12 @@ interface LinkHost {
   open(path: string, focus: boolean): void;
   /** `show`: the explorer comes up and takes the keys, as for a folder; else it follows along if it's there. */
   reveal(path: string, show: boolean): void;
+  /** origin's page on GitHub (null: it isn't there): #123, and its pull requests' and issues' URLs, open here. */
+  github: string | null;
+  /** A commit, by its full id, opened in History. */
+  showCommit(sha: string): void;
+  /** A pull request or an issue, in its tab. */
+  openItem(item: { kind: "pull"; pull: Pull } | { kind: "issue"; issue: Issue }): void;
 }
 
 let host: LinkHost | null = null;
@@ -107,30 +115,93 @@ export function openTargetIn(root: string, target: Target) {
   else waiting = { root, target, until: Date.now() + 10_000 };
 }
 
+/**
+ * What only terminal links open: a commit in History, and a pull request or an issue in its tab
+ * (`pull`: the URL said which; `repo`: its https://github.com/owner/name).
+ */
+type GitTarget = { commit: string } | { number: number; pull: boolean; repo: string };
+export type TerminalTarget = Target | GitTarget;
+
 const CLICK = `${IS_MAC ? "⌘" : "Ctrl"}-click`;
 
 /** What ⌘-click does, for the hover: as VS Code's terminal says it. */
-const hint = (target: Target) => `${"url" in target ? "Follow link" : target.dir ? "Show folder" : "Open file"} (${CLICK})`;
+function hint(target: TerminalTarget) {
+  const does = "commit" in target ? "Show in History" : "number" in target ? `Open #${target.number}` : "url" in target ? "Follow link" : target.dir ? "Show folder" : "Open file";
+  return `${does} (${CLICK})`;
+}
 
-/** A terminal link: a page in the browser, a file in the code view and shown in the explorer, a folder in the explorer. */
-function follow(target: Target) {
+/** A terminal link: a page in the browser, a file in the code view and shown in the explorer, a folder in the explorer, a commit in History, a pull request or issue in its tab. */
+export function followTerminalLink(target: TerminalTarget) {
+  if ("commit" in target) return host?.showCommit(target.commit);
+  if ("number" in target) return void openItem(target);
   if ("url" in target || !host) return openTarget(target, true);
   if (target.dir) return host.reveal(target.path, true);
   openTarget(target, true);
   host.reveal(target.path, false);
 }
 
+/**
+ * #123 or a pull request's or issue's URL, in its tab: as a pull request unless GitHub says there's
+ * none of that number, then as an issue (whose read would take a pull request for one). Asked only
+ * on a click. Not signed in, or GitHub unreachable: the page, in the browser.
+ */
+async function openItem({ number, pull, repo }: { number: number; pull: boolean; repo: string }) {
+  const h = host;
+  if (!h) return;
+  // Under the keys the tab's own view reads with, so it opens on what was just read.
+  const [target, pullUrl, issueUrl] = [repoOf(repo), `${repo}/pull/${number}`, `${repo}/issues/${number}`];
+  try {
+    return h.openItem({ kind: "pull", pull: toPull(await revalidate(`pr:${pullUrl}`, () => github.detail(target, number))) });
+  } catch {
+    // No such pull request: an issue, or GitHub can't be asked.
+  }
+  if (!pull)
+    try {
+      return h.openItem({ kind: "issue", issue: toIssue(await revalidate(`issue:${issueUrl}`, () => issues.detail(target, number))) });
+    } catch {
+      // GitHub can't be asked.
+    }
+  openTarget({ url: pull ? pullUrl : issueUrl });
+}
+
+// What the repo said of SHAs, until the working tree changes, as `disk` below: a full id, or null.
+let commits = { at: "", known: new Map<string, string | null>() };
+
+/** The commits `shas` name in the open repo, one git call for those not asked yet. */
+async function commitIds(shas: string[], revision: number) {
+  if (commits.at !== stamp(revision) || commits.known.size > 2000) commits = { at: stamp(revision), known: new Map() };
+  const { known } = commits;
+  // api.knownCommits takes 500 at most: a screen of hints has far fewer.
+  const ask = [...new Set(shas.filter((s) => !known.has(s)))].slice(0, 500);
+  if (ask.length) {
+    const ids = await api.knownCommits(ask).catch(() => ask.map(() => null));
+    ask.forEach((s, i) => known.set(s, ids[i] ?? null));
+  }
+  return shas.map((s) => known.get(s) ?? null);
+}
+
+/** The GitHub repos whose #123 and URLs open here: origin, then a fork's parent once the account says. */
+function githubRepos(h: LinkHost) {
+  if (!h.github) return [];
+  const parent = cachedData<GitHubAccount>("account")?.parent;
+  return parent ? [h.github, `https://github.com/${fullName(parent.repo)}`] : [h.github];
+}
+
 type OnDisk = { path: string; kind: "file" | "dir" } | null;
 // What the disk said about paths the file list lacks, until the working tree changes: a line
 // hovered again, or redrawn under the pointer while output streams, asks nothing.
-let disk = { revision: -1, known: new Map<string, OnDisk>() };
+// Per repo too: a revision count starts over in each workspace.
+let disk = { at: "", known: new Map<string, OnDisk>() };
+
+/** Which repo's tree, and which state of it, an answer is for. */
+const stamp = (revision: number) => `${host?.root}@${revision}`;
 
 /**
  * What's at `paths` on disk (ignored files and folders), spelled as the index has them when it has
  * them in another case (APFS finds either).
  */
 async function onDisk(paths: string[], index: FileIndex, revision: number): Promise<OnDisk[]> {
-  if (disk.revision !== revision || disk.known.size > 2000) disk = { revision, known: new Map() };
+  if (disk.at !== stamp(revision) || disk.known.size > 2000) disk = { at: stamp(revision), known: new Map() };
   const { known } = disk;
   const ask = [...new Set(paths.filter((p) => !known.has(p)))];
   if (ask.length) {
@@ -188,9 +259,9 @@ export function terminalLinks(term: Terminal, cwd: () => string): IDisposable {
     activate: (e, uri) => {
       const target = hyperlink(uri);
       if (!primaryKey(e) || !target) return;
-      if ("url" in target) return follow(target);
+      if ("url" in target) return followTerminalLink(target);
       if (!target.path) return void revealPath("");
-      void hyperlinkFile(target).then((t) => t && follow(t));
+      void hyperlinkFile(target).then((t) => t && followTerminalLink(t));
     },
   };
   // xterm keeps one line's links at a time and files a late answer under the line asked last:
@@ -199,59 +270,123 @@ export function terminalLinks(term: Terminal, cwd: () => string): IDisposable {
   return term.registerLinkProvider({
     provideLinks(y, callback) {
       const ask = ++asked;
-      const h = host;
-      const buf = term.buffer.active;
-      // A long line wraps over several rows: read the rows of it around this one, as far as links
-      // are looked for (LINK_WINDOW).
-      const reach = Math.ceil(LINK_WINDOW / term.cols) + 1;
-      let first = y - 1;
-      while (first > y - 1 - reach && first > 0 && buf.getLine(first)?.isWrapped) first--;
-      let last = y - 1;
-      while (last < y - 1 + reach && buf.getLine(last + 1)?.isWrapped) last++;
-      // Rows cut off either side: a link at that edge may go on past it.
-      const [cutBefore, cutAfter] = [!!buf.getLine(first)?.isWrapped, !!buf.getLine(last + 1)?.isWrapped];
-      const rows = Array.from({ length: last - first + 1 }, (_, i) => buf.getLine(first + i));
-      const { text, cells, starts } = cellText(rows, term.cols, buf.getNullCell());
-      const cellAt = (c: number) => ({ x: (c % term.cols) + 1, y: first + Math.floor(c / term.cols) + 1 });
-      // From a link's first cell to its last, the second half of a wide character included.
-      const range = (l: Link) => ({ start: cellAt(cells[l.start]), end: cellAt(cells[l.end] - 1) });
-      const row = y - 1 - first;
-      const found = findTerminalLinks(text, { start: starts[row], end: starts[row + 1] }).filter((l) => {
-        const { start, end } = range(l);
-        return start.y <= y && end.y >= y && (!cutBefore || l.start > 0) && (!cutAfter || l.end < text.length);
+      const line = logicalLine(term, y - 1);
+      const row = y - 1 - line.first;
+      const found = findTerminalLinks(line.text, { start: line.starts[row], end: line.starts[row + 1] }).filter((l) => {
+        const { start, end } = line.range(l);
+        return start.y <= y && end.y >= y && line.whole(l);
       });
-      if (!found.length || !h) return callback(undefined);
-      // Windows paths come with backslashes; the index and the links have forward ones.
-      const [root, from] = [slashes(h.root), slashes(cwd())];
-      const dir = from === root ? "" : from.startsWith(`${root}/`) ? from.slice(root.length + 1) : null;
-      // A shell in a worktree inside this one (an agent's): its paths are that checkout's files,
-      // never the same names in this one's.
-      const nested = dir !== null && h.worktrees.some((w) => {
-        const at = slashes(w);
-        return at.startsWith(`${root}/`) && (from === at || from.startsWith(`${at}/`));
-      });
-      // Only a shell in this checkout may fall back to its root (a …/ path, a root-relative one).
-      const rootToo = dir !== null && !nested;
-      const needsIndex = found.some((l) => l.kind !== "url");
-      void (needsIndex ? indexOf({ rev: null, revision: h.revision }) : Promise.resolve(NO_FILES)).then(async (index) => {
-        const targets = found.map((l) => resolveTerminalLink(l, dir, index, root, rootToo));
-        // What the list lacks may be on disk, ignored: one call for the line's paths, only when hovered.
-        const asks = found.map((l, i) => (targets[i] ? [] : diskCandidates(l, dir, root, rootToo)));
-        const hits = await onDisk(asks.flat(), index, h.revision);
+      if (!found.length || !host) return callback(undefined);
+      void targetsOf(found, host, cwd()).then((targets) => {
         if (ask !== asked) return;
-        let at = 0;
-        asks.forEach((paths, i) => {
-          const hit = hits.slice(at, at + paths.length).find(Boolean);
-          if (hit) targets[i] = diskTarget(found[i].spec, hit.path, hit.kind);
-          at += paths.length;
-        });
         const links = found.flatMap((l, i): ILink[] => {
           const target = targets[i];
           if (!target) return [];
-          return [{ range: range(l), text: l.spec, hover: () => title(hint(target)), leave: () => title(null), activate: (e) => primaryKey(e) && follow(target) }];
+          return [{ range: line.range(l), text: l.spec, hover: () => title(hint(target)), leave: () => title(null), activate: (e) => primaryKey(e) && followTerminalLink(target) }];
         });
         callback(links.length ? links : undefined);
       });
     },
+  });
+}
+
+/**
+ * The line of output buffer row `y` is in: a long one wraps over several rows, read around it as far
+ * as links are looked for (LINK_WINDOW). `range`: a link's cells, from its first to its last (the
+ * second half of a wide character included), 1-based as xterm's links; `whole`: no row cut off
+ * either side may carry the link on past what was read.
+ */
+function logicalLine(term: Terminal, y: number) {
+  const buf = term.buffer.active;
+  const reach = Math.ceil(LINK_WINDOW / term.cols) + 1;
+  let first = y;
+  while (first > y - reach && first > 0 && buf.getLine(first)?.isWrapped) first--;
+  let last = y;
+  while (last < y + reach && buf.getLine(last + 1)?.isWrapped) last++;
+  const [cutBefore, cutAfter] = [!!buf.getLine(first)?.isWrapped, !!buf.getLine(last + 1)?.isWrapped];
+  const rows = Array.from({ length: last - first + 1 }, (_, i) => buf.getLine(first + i));
+  const { text, cells, starts } = cellText(rows, term.cols, buf.getNullCell());
+  const cellAt = (c: number) => ({ x: (c % term.cols) + 1, y: first + Math.floor(c / term.cols) + 1 });
+  const range = (l: Link): IBufferRange => ({ start: cellAt(cells[l.start]), end: cellAt(cells[l.end] - 1) });
+  const whole = (l: Link) => (!cutBefore || l.start > 0) && (!cutAfter || l.end < text.length);
+  return { first, last, text, starts, range, whole };
+}
+
+/**
+ * What terminal links go to, null for one that goes nowhere: paths by the shell's folder `cwd`, from
+ * the file list or else the disk; SHAs the repo knows; #123 when origin is on GitHub. Commits and
+ * issues only from a shell in this checkout, whose repo they'd be.
+ */
+async function targetsOf(found: Link[], h: LinkHost, cwd: string): Promise<(TerminalTarget | null)[]> {
+  // Windows paths come with backslashes; the index and the links have forward ones.
+  const [root, from] = [slashes(h.root), slashes(cwd)];
+  const dir = from === root ? "" : from.startsWith(`${root}/`) ? from.slice(root.length + 1) : null;
+  // A shell in a worktree inside this one (an agent's): its paths are that checkout's files,
+  // never the same names in this one's.
+  const nested =
+    dir !== null &&
+    h.worktrees.some((w) => {
+      const at = slashes(w);
+      return at.startsWith(`${root}/`) && (from === at || from.startsWith(`${at}/`));
+    });
+  // Only a shell in this checkout may fall back to its root (a …/ path, a root-relative one).
+  const rootToo = dir !== null && !nested;
+  const repos = githubRepos(h);
+  const files = found.some((l) => l.kind === "file");
+  const shas = dir === null ? [] : found.filter((l) => l.kind === "commit").map((l) => l.spec);
+  const [index, ids] = await Promise.all([files ? indexOf({ rev: null, revision: h.revision }) : NO_FILES, shas.length ? commitIds(shas, h.revision) : []]);
+  const known = new Map(shas.map((s, i) => [s, ids[i]]));
+  const targets = found.map((l): TerminalTarget | null => {
+    if (l.kind === "commit") return known.get(l.spec) ? { commit: known.get(l.spec)! } : null;
+    const item = l.kind === "issue" && dir === null ? null : githubItem(l, repos);
+    return item ?? resolveTerminalLink(l, dir, index, root, rootToo);
+  });
+  // What the list lacks may be on disk, ignored: one call for the line's paths, only when hovered.
+  const asks = found.map((l, i) => (targets[i] ? [] : diskCandidates(l, dir, root, rootToo)));
+  const hits = await onDisk(asks.flat(), index, h.revision);
+  let at = 0;
+  asks.forEach((paths, i) => {
+    const hit = hits.slice(at, at + paths.length).find(Boolean);
+    if (hit) targets[i] = diskTarget(found[i].spec, hit.path, hit.kind);
+    at += paths.length;
+  });
+  return targets;
+}
+
+/** A link on screen in a terminal: its cells (1-based, as xterm's links), its text and where it goes. */
+export interface ShownLink {
+  range: IBufferRange;
+  text: string;
+  target: TerminalTarget;
+}
+
+/**
+ * Every link that goes somewhere on `term`'s screen, top to bottom, in whichever buffer shows (a
+ * full-screen program's too): the hints' (lib/terminal/hints). Asked once per call, all together.
+ */
+export async function shownLinks(term: Terminal, cwd: string): Promise<ShownLink[]> {
+  const h = host;
+  if (!h) return [];
+  const top = term.buffer.active.viewportY;
+  const bottom = top + term.rows - 1;
+  const found: { link: Link; range: IBufferRange }[] = [];
+  for (let y = top; y <= bottom; ) {
+    const line = logicalLine(term, y);
+    for (const l of findTerminalLinks(line.text)) {
+      const range = line.range(l);
+      // Labelled at its first cell, which must be on screen.
+      if (line.whole(l) && range.start.y - 1 >= top && range.start.y - 1 <= bottom) found.push({ link: l, range });
+    }
+    y = Math.max(line.last, y) + 1;
+  }
+  if (!found.length) return [];
+  const targets = await targetsOf(
+    found.map((f) => f.link),
+    h,
+    cwd,
+  );
+  return found.flatMap((f, i) => {
+    const target = targets[i];
+    return target ? [{ range: f.range, text: f.link.spec, target }] : [];
   });
 }

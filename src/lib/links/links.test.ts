@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { IBufferLine } from "@xterm/xterm";
 import { test } from "node:test";
-import { cellText, diskCandidates, diskTarget, findLinks, findTerminalLinks, hyperlinkTarget, indexCase, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
+import { cellText, diskCandidates, diskTarget, findLinks, findTerminalLinks, githubItem, hyperlinkTarget, indexCase, indexFiles, join, loadAliases, parseJsonc, resolveLink, resolveTerminalLink, splitPosition } from "./links.ts";
 
 const specs = (line: string, lang: string) => findLinks(line, lang).map((l) => [line.slice(l.start, l.end), l.kind]);
 
@@ -244,6 +244,55 @@ test("terminal output: URLs, paths from the shell's folder, bare names", () => {
   assert.deepEqual(open("/repo/docs/guide.md", null), { path: "docs/guide.md", line: undefined, column: undefined });
   assert.equal(open("src/lib/api.ts", null), null, "a shell outside the repo: its relative paths aren't the repo's");
   assert.equal(open("package.json", ""), null);
+});
+
+test("terminal output: what may be a commit or an issue, for the repo to say", () => {
+  const term = (line: string) => findTerminalLinks(line).map((l) => [l.spec, l.kind]);
+  assert.deepEqual(term(`[main 9a1c2e4] fix the thing`), [["9a1c2e4", "commit"]]);
+  assert.deepEqual(term(`   1f3a9c0..7bd4e21  main -> main`), [
+    ["1f3a9c0", "commit"],
+    ["7bd4e21", "commit"],
+  ]);
+  assert.deepEqual(term(`git diff 1f3a9c0...7bd4e21`), [
+    ["1f3a9c0", "commit"],
+    ["7bd4e21", "commit"],
+  ]);
+  assert.deepEqual(term(`commit 0123456789abcdef0123456789abcdef01234567 (HEAD)`), [["0123456789abcdef0123456789abcdef01234567", "commit"]]);
+  // blame's boundary commits, and a parent.
+  assert.deepEqual(term(`^9a1c2e4 (Ada 2026-01-01) x`), [["9a1c2e4", "commit"]]);
+  assert.deepEqual(term(`see 9a1c2e4^ and 9a1c2e4~2.`), [
+    ["9a1c2e4", "commit"],
+    ["9a1c2e4", "commit"],
+  ]);
+  // Numbers, versions, hex numbers, colors, ids in words or paths, and too short or long a run.
+  assert.deepEqual(term(`pid 1234567 took 20260927 ms`), []);
+  const refs = (line: string) => term(line).filter(([, kind]) => kind !== "file");
+  assert.deepEqual(refs(`0x1a2b3c4d #ff00aa v1.2.3abcdef1 img-9a1c2e4 sha256:9a1c2e4f a/9a1c2e4f abc123 ${"a".repeat(41)}`), []);
+  assert.deepEqual(term(`9A1C2E4`), [], "git prints them in lower case");
+  // An issue or pull request, not a heading's, an entity's or a word's.
+  assert.deepEqual(refs(`Merge pull request #42 from ada/fix (#7)`), [
+    ["#42", "issue"],
+    ["#7", "issue"],
+  ]);
+  assert.deepEqual(refs(`&#123; a#1 #0 #007 ##5 #12abc`), []);
+  // A path or URL keeps its text.
+  assert.deepEqual(term(`https://github.com/o/r/commit/9a1c2e4f#3`), [["https://github.com/o/r/commit/9a1c2e4f#3", "url"]]);
+});
+
+test("#123 and a repo's pull request and issue URLs open in the app", () => {
+  const repos = ["https://github.com/Ada/Repo", "https://github.com/up/repo"];
+  const link = (spec: string) => ({ spec, kind: spec.startsWith("#") ? ("issue" as const) : ("url" as const) });
+  assert.deepEqual(githubItem(link("#42"), repos), { number: 42, pull: false, repo: repos[0] });
+  assert.equal(githubItem(link("#42"), []), null, "no GitHub origin");
+  assert.deepEqual(githubItem(link("https://github.com/ada/repo/pull/7"), repos), { number: 7, pull: true, repo: repos[0] });
+  assert.deepEqual(githubItem(link("https://github.com/ada/repo/pull/7/files#diff-1"), repos), { number: 7, pull: true, repo: repos[0] });
+  assert.deepEqual(githubItem(link("https://github.com/ada/repo/issues/9#issuecomment-1"), repos), { number: 9, pull: false, repo: repos[0] });
+  assert.deepEqual(githubItem(link("https://github.com/up/repo/pull/3?w=1"), repos), { number: 3, pull: true, repo: repos[1] });
+  assert.equal(githubItem(link("https://github.com/other/repo/pull/7"), repos), null);
+  assert.equal(githubItem(link("https://github.com/ada/repo/pulls"), repos), null);
+  assert.equal(githubItem(link("https://github.com/ada/repo/pull/7x"), repos), null);
+  assert.equal(githubItem(link("https://github.com/ada/repo-two/pull/7"), repos), null);
+  assert.equal(githubItem({ spec: "9a1c2e4", kind: "commit" }, repos), null);
 });
 
 test("terminal output: folders, shortened paths, and what the disk is asked about", () => {

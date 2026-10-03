@@ -29,6 +29,23 @@ const REPO_ENV: &[&str] = &[
     "GIT_PREFIX",
 ];
 
+/// For a patch read as text (patch-id, or `git apply` in patch.rs), none of the user's diff
+/// settings may shape it: a submodule's log or hidden pointer, fewer context lines, blank ones cut,
+/// other prefixes.
+pub(crate) const PINS: [&str; 12] = [
+    "-c",
+    "diff.suppressBlankEmpty=false",
+    "-c",
+    "diff.noprefix=false",
+    "-c",
+    "diff.mnemonicPrefix=false",
+    "-c",
+    "diff.relative=false",
+    "-c",
+    "color.diff=false",
+    "-c",
+    "log.showSignature=false",
+];
 pub(crate) fn command(repo: &Path, args: &[&str]) -> Command {
     let mut cmd = Command::new("git");
     for var in REPO_ENV {
@@ -76,7 +93,7 @@ pub(crate) fn reading<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-fn read_timeout() -> Option<Duration> {
+pub(crate) fn read_timeout() -> Option<Duration> {
     READING.with(Cell::get).then_some(READ_TIMEOUT)
 }
 

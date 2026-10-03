@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { Archive, ArchiveRestore, ChevronRight, FileDown, GitBranchPlus, PackageOpen, Pencil, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronRight, FileDiff, FileDown, GitBranchPlus, PackageOpen, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -9,6 +9,7 @@ import { api, type Commit, errorMessage, type FileChange, type RepoStatus, type 
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { toast } from "@/lib/app/toast";
 import { rewriteFiles } from "@/lib/repo/undo";
+import { copyLater } from "@/lib/app/clipboard";
 import { useListNav } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
@@ -190,6 +191,9 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
                 </ContextMenuItem>
                 <ContextMenuItem disabled={!!busy} onSelect={() => setRenaming(s)}>
                   <Pencil /> Rename…
+                </ContextMenuItem>
+                <ContextMenuItem onSelect={() => copyLater(() => api.stashPatch(s.sha), "Patch copied")}>
+                  <FileDiff /> Copy as Patch
                 </ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem disabled={!!busy} className="text-destructive" onSelect={() => drop(s)}>

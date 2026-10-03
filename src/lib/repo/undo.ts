@@ -42,11 +42,14 @@ export async function travel(forward: boolean, ids: number[], refresh: Refresh) 
   let label = "";
   // Where HEAD ends up, when a step switched branches: ⌘Z must not switch without saying so.
   let switched: string | null = null;
+  // A redone patch or restore can meet edits made since.
+  const conflicts = new Set<string>();
   try {
     for (const id of ids) {
       const step = await (forward ? api.redo(id) : api.undo(id));
       label = step.label;
       switched = step.switchTo ?? switched;
+      step.conflicts.forEach((c) => conflicts.add(c));
       done.push(id);
     }
   } catch (e) {
@@ -58,7 +61,8 @@ export async function travel(forward: boolean, ids: number[], refresh: Refresh) 
   if (done.length === ids.length) {
     // The way back is the same entries in reverse.
     const back = { label: forward ? "Undo" : "Redo", run: () => void travel(!forward, [...done].reverse(), refresh) };
-    const detail = switched ? `Switched ${forward ? "" : "back "}to ${switched}.` : undefined;
-    toast("success", done.length === 1 ? `${verb}: ${label}` : `${verb} ${done.length} actions`, detail, back);
+    const marked = conflicts.size ? `Conflicts are marked in ${[...conflicts].join(", ")}.` : null;
+    const detail = [switched && `Switched ${forward ? "" : "back "}to ${switched}.`, marked].filter(Boolean).join(" ") || undefined;
+    toast(marked ? "info" : "success", done.length === 1 ? `${verb}: ${label}` : `${verb} ${done.length} actions`, detail, back);
   }
 }

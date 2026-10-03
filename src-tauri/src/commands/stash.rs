@@ -2,10 +2,10 @@
 //! by its sha.
 
 use crate::git;
-use crate::journal::{files_label, Action, Mode, Rewrite};
+use crate::journal::{files_label, Action, Mode};
 use crate::lines;
 use crate::state::{in_repo, indexed_once, journaled, AppState, Res};
-use std::sync::Arc;
+use std::path::Path;
 use tauri::State;
 
 #[tauri::command]
@@ -72,7 +72,7 @@ pub async fn stash_lines(
     in_repo(&state, move |r| {
         let paths = [request.path.clone()];
         let label = files_label("Stash lines of", &paths);
-        let write: Rewrite = Arc::new(move |r| lines::stash(r, &message, &request).map(|_| vec![]));
+        let write = move |r: &Path| lines::stash(r, &message, &request).map(|_| vec![]);
         journal
             .replace(r, label, "stashed", &paths, &index, write)
             .map(|_| ())
@@ -92,8 +92,8 @@ pub async fn stash_restore_file(
     in_repo(&state, move |r| {
         let paths = [path.clone()];
         let label = files_label("Take from a stash", &paths);
-        let write: Rewrite =
-            Arc::new(move |r| git::stash_restore_file(r, &sha, &path, untracked).map(|_| vec![]));
+        let write =
+            move |r: &Path| git::stash_restore_file(r, &sha, &path, untracked).map(|_| vec![]);
         journal
             .replace(r, label, "before stash", &paths, &index, write)
             .map(|_| ())

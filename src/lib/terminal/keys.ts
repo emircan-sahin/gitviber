@@ -3,6 +3,7 @@ import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } 
 import { getSettings } from "../settings";
 import { IS_LINUX, IS_MAC } from "../platform";
 import { pasteInto } from "./pasteInput";
+import { hintKey } from "./hints";
 import { copyPaneSelection, type Pane, TERMINAL_COMMANDS } from "./terminals";
 
 // A pane's keys: the app's, the line editing and scrolling done here, and the shell's.
@@ -57,6 +58,9 @@ function lineEditKey(e: KeyboardEvent): string | undefined {
 export function paneKeys(p: Pane) {
   const term = p.term;
   return (e: KeyboardEvent) => {
+    // Link hints showing: the letters are theirs.
+    const hinted = hintKey(p, e);
+    if (hinted !== undefined) return hinted;
     // xterm's Meta ⌥ can't tell left from right: for the left one only, it's set as a key is typed
     // with ⌥ (xterm reads it after this), and only when the side changed, as a change redraws.
     if (getSettings().optionAsMeta === "left") {

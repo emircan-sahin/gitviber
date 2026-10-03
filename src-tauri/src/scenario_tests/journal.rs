@@ -264,8 +264,7 @@ fn tags_fetched_during_an_action_are_not_part_of_it() {
 
 fn discard_files(j: &Journal, r: &Path, paths: &[String]) {
     let list = paths.to_vec();
-    let write: crate::journal::Rewrite =
-        std::sync::Arc::new(move |r| discard(r, &list).map(|_| vec![]));
+    let write = move |r: &Path| discard(r, &list).map(|_| vec![]);
     let label = crate::journal::files_label("Discard", paths);
     j.replace(r, label, "discarded", paths, &Mutex::new(()), write)
         .unwrap();

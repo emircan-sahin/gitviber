@@ -1,9 +1,10 @@
 import { listen } from "@tauri-apps/api/event";
 import { useMemo, useSyncExternalStore } from "react";
 import { notifyIfAway } from "../app/notify";
-import type { NotifyEvent } from "../settings";
+import { getSettings, type NotifyEvent } from "../settings";
 import { folderName } from "../path";
 import { kittyNotes, type Note, osc777Note, osc9Note } from "./attention";
+import { type CommandEnd, endText } from "./commandMarks";
 import { panes, type Pane, revealPane, state, subscribe, update } from "./terminals";
 
 /**
@@ -45,6 +46,20 @@ export function needsYou(p: Pane, note?: Note, event?: NotifyEvent) {
   const text = [note?.title, note?.body].filter(Boolean).join(": ");
   const title = g.name ?? (folderName(p.cwd) || p.cwd);
   if (notifyIfAway(event ?? "notifyTerminal", title, text || info.title || "Needs you", `pane:${RUN}:${p.id}`)) told.add(p.id);
+}
+
+/**
+ * A command that ran past the setting's threshold and ended out of sight marks its pane, and tells
+ * the OS when the app is in the background: Ghostty's notify-on-command-finish. A pane on screen in
+ * the app in front is seen, focused or not. An agent's pane has its own news (agents.ts).
+ */
+export function commandEnded(p: Pane, end: CommandEnd) {
+  const s = getSettings();
+  if (!s.notifyLongCommand || end.ms <= s.longCommandSeconds * 1000) return;
+  if (state.groups.some((g) => g.panes.some((i) => i.id === p.id && i.agent))) return;
+  const onScreen = p.host.isConnected && p.host.clientWidth > 0;
+  if (document.hasFocus() && onScreen) return;
+  needsYou(p, { body: endText(end) }, "notifyLongCommand");
 }
 
 export function lookedAt(id: number) {

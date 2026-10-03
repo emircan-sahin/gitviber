@@ -197,8 +197,7 @@ fn a_discarded_change_comes_back_with_undo() {
     fs::write(r.join("a.txt"), "a\nkeep\nb\ngone\n").unwrap();
     let j = crate::journal::Journal::default();
     let req = request(&r, "unstaged", "discard", "a.txt", &[], &[4]);
-    let write: crate::journal::Rewrite =
-        std::sync::Arc::new(move |r| change(r, &req).map(|_| vec![]));
+    let write = move |r: &Path| change(r, &req).map(|_| vec![]);
     let lock = std::sync::Mutex::new(());
     j.replace(
         &r,
