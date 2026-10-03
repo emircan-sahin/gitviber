@@ -1,8 +1,9 @@
 import { type Selection, selectionKey } from "./selection";
 import { getSettings } from "../settings";
-import { isRecord, putRecent, readJson } from "../storage";
+import { isRecord, putRecent, readJson, stringList } from "../storage";
 import { folderName, joinPath } from "../path";
 import { isNote, type ReviewNote } from "../review/notes";
+import { type HueChoice, isHueChoice } from "../git/worktrees";
 
 /** What a worktree's window looked like, so reopening the app picks up where it was. */
 interface WorkspaceSnapshot {
@@ -33,6 +34,9 @@ const WORKTREE_DIRS_KEY = "gitviber.worktreeDirs";
 const WORKTREE_RUN_KEY = "gitviber.worktreeRun";
 const ISSUE_BRANCHES_KEY = "gitviber.issueBranches";
 const ISSUE_RUN_KEY = "gitviber.issueRun";
+const PINNED_BRANCHES_KEY = "gitviber.pinnedBranches";
+const GITHUB_ACCOUNTS_KEY = "gitviber.githubAccounts";
+const COLORS_KEY = "gitviber.worktreeColors";
 // Agent worktrees come and go; keep only the most recently used.
 const MAX = 30;
 
@@ -105,14 +109,23 @@ export function saveNotes(root: string, notes: ReviewNote[]) {
   return put(NOTES_KEY, root, notes.length ? notes : null);
 }
 
-/** A worktree's folder moved: its layout, unsent commit message, unsaved files and review notes, kept by path, go along. */
+/** A worktree's folder moved: its layout, unsent commit message, unsaved files, review notes and color, kept by path, go along. */
 export function moveRoot(from: string, to: string) {
-  for (const key of [KEY, DRAFTS_KEY, EDITS_KEY, NOTES_KEY]) {
+  for (const key of [KEY, DRAFTS_KEY, EDITS_KEY, NOTES_KEY, COLORS_KEY]) {
     const saved = all(key)[from];
     if (saved === undefined) continue;
     put(key, from, null);
     put(key, to, saved);
   }
+}
+
+/** The colors picked for worktrees, by path (lib/git/worktreeColors); the rest take their name's. */
+export function loadWorktreeColors(): Record<string, HueChoice> {
+  return Object.fromEntries(Object.entries(all(COLORS_KEY)).filter((e): e is [string, HueChoice] => isHueChoice(e[1])));
+}
+
+export function saveWorktreeColor(path: string, choice: HueChoice) {
+  put(COLORS_KEY, path, choice);
 }
 
 /** The folder the project `main` puts new worktrees in, when it isn't the default one beside it. */
@@ -154,6 +167,33 @@ export function saveBranchIssue(repo: string, branch: string, url: string) {
   const r = all(ISSUE_BRANCHES_KEY)[repo.toLowerCase()];
   const { [branch]: _, ...rest } = isRecord(r) ? r : {};
   put(ISSUE_BRANCHES_KEY, repo.toLowerCase(), Object.fromEntries([...Object.entries(rest), [branch, url]].slice(-MAX)));
+}
+
+/** The branches pinned to the top of the project `main`'s branch picker, in pin order. */
+export const loadPinnedBranches = (main: string): string[] => stringList(all(PINNED_BRANCHES_KEY)[main]);
+
+export function savePinnedBranches(main: string, names: string[]) {
+  put(PINNED_BRANCHES_KEY, main, names.length ? names : null);
+}
+
+/** A branch renamed in the app keeps its pin. */
+export function renamePinnedBranch(main: string, from: string, to: string) {
+  const pins = loadPinnedBranches(main);
+  if (pins.includes(from)) savePinnedBranches(main, pins.map((p) => (p === from ? to : p)));
+}
+
+/**
+ * The gh account the project `main` uses for GitHub, when it isn't gh's active one. Kept here,
+ * never in the repo's config; the backend is told as the project opens (lib/github/account).
+ */
+export function loadGitHubAccount(main: string): string | null {
+  const login = all(GITHUB_ACCOUNTS_KEY)[main];
+  return typeof login === "string" ? login : null;
+}
+
+/** null goes back to gh's active account. */
+export function saveGitHubAccount(main: string, login: string | null) {
+  put(GITHUB_ACCOUNTS_KEY, main, login);
 }
 
 /** The project's own subfolder of the worktree folder set in Settings, or null while that's off. */

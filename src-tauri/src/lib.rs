@@ -3,6 +3,7 @@ pub mod askpass;
 mod cli;
 mod clipboard;
 mod commands;
+mod conversations;
 mod definitions;
 #[cfg(debug_assertions)]
 mod dev_bridge;
@@ -25,6 +26,7 @@ mod network;
 mod notifications;
 #[cfg(target_os = "macos")]
 mod objc;
+mod obsidian;
 mod open_in;
 mod opened;
 mod process;
@@ -33,6 +35,7 @@ mod pty;
 mod rewrite;
 #[cfg(test)]
 mod scenario_tests;
+mod scratch;
 mod shell;
 mod shell_integration;
 mod state;
@@ -196,6 +199,7 @@ pub fn run() {
             commands::history::blame,
             commands::branches::branches,
             commands::branches::merged_upstream,
+            commands::branches::recent_branches,
             commands::branches::delete_merged,
             commands::branches::switch_branch,
             commands::branches::delete_branches,
@@ -212,6 +216,8 @@ pub fn run() {
             commands::worktrees::lock_worktree,
             commands::worktrees::unlock_worktree,
             commands::worktrees::remove_worktree,
+            commands::worktrees::worktree_ignored,
+            commands::worktrees::clean_up_worktrees,
             commands::changes::stage,
             commands::changes::unstage,
             commands::changes::discard,
@@ -241,7 +247,20 @@ pub fn run() {
             commands::sync::op_abort,
             commands::sync::rebase_skip,
             commands::changes::resolve_side,
+            commands::changes::conflict_base,
+            commands::changes::external_tools,
+            commands::changes::open_merge_tool,
+            commands::changes::open_diff_tool,
             commands::files::write_file,
+            commands::obsidian::vaults,
+            commands::obsidian::vault_list_dir,
+            commands::obsidian::vault_files,
+            commands::obsidian::vault_read_file,
+            commands::obsidian::vault_media,
+            commands::obsidian::vault_write_file,
+            commands::obsidian::vault_watch,
+            commands::obsidian::vault_reveal,
+            commands::obsidian::vault_open_in_obsidian,
             commands::files::create_file,
             commands::files::create_dir,
             commands::files::rename_path,
@@ -278,6 +297,8 @@ pub fn run() {
             commands::journal::redo,
             commands::github::github_permalink,
             commands::github::gh_account,
+            commands::github::gh_accounts,
+            commands::github::gh_use_account,
             commands::github::gh_protected_branches,
             commands::github::gh_original_remote,
             commands::github::gh_remotes,
@@ -322,6 +343,7 @@ pub fn run() {
             commands::app::copy_files,
             commands::app::pty_busy,
             commands::app::pty_agents,
+            commands::app::agent_conversations,
             commands::app::folders_left,
             commands::app::quit,
             commands::app::update_mode,

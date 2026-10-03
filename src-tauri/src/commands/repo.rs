@@ -28,6 +28,9 @@ pub async fn open_repo(
     let root_path = PathBuf::from(&root);
     let watcher = watch::start(app, root_path.clone())?;
     *state.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher);
+    // gh's active account until the page sends this project's own (gh_use_account): one
+    // project's pick never carries into the next. Before the repo switches, so none goes out as both.
+    github::use_account(&state.github, None)?;
     *state.repo.lock().unwrap_or_else(|e| e.into_inner()) = Some(root_path);
     Ok(OpenedRepo { root, main })
 }

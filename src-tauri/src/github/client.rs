@@ -16,20 +16,28 @@ pub struct Token {
     value: String,
     /// "gh" or "git"
     pub(super) source: &'static str,
+    /// The account it was picked as; None: gh's active one.
+    account: Option<String>,
 }
 
 #[derive(Default)]
 pub struct Session {
     token: Mutex<Option<Token>>,
+    /// The account picked for the open repository (accounts.rs); None: gh's active one.
+    picked: Mutex<Option<String>>,
     etags: Mutex<Etags>,
     /// One for every request, so they share its connection pool.
     agent: OnceLock<ureq::Agent>,
 }
 
-fn gh_token() -> Option<String> {
+/// `user`: that gh account's token (gh 2.40+), else the active account's.
+fn gh_token(user: Option<&str>) -> Option<String> {
     let mut cmd = Command::new("gh");
-    cmd.args(["auth", "token", "--hostname", "github.com"])
-        .env("PATH", process::search_path())
+    cmd.args(["auth", "token", "--hostname", "github.com"]);
+    if let Some(user) = user {
+        cmd.args(["--user", user]);
+    }
+    cmd.env("PATH", process::search_path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -47,31 +55,58 @@ fn gh_token() -> Option<String> {
 
 impl Session {
     pub(super) fn token(&self, repo: &Path) -> Result<Token, String> {
-        if let Some(t) = self.token.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        let account = self.picked();
+        let held = self.token.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(t) = held.filter(|t| t.account == account) {
             return Ok(t);
         }
-        let token = gh_token()
-            .map(|value| Token {
-                value,
-                source: "gh",
-            })
-            .or_else(|| {
-                git::credential_token(repo).map(|value| Token {
-                    value,
-                    source: "git",
-                })
-            })
-            .ok_or_else(|| NOT_CONNECTED.to_string())?;
-        *self.token.lock().unwrap_or_else(|e| e.into_inner()) = Some(token.clone());
+        let (value, source) = match &account {
+            // Never another account's token in its place: that would act as someone else.
+            Some(user) => gh_token(Some(user)).map(|v| (v, "gh")).ok_or_else(|| {
+                format!("gh has no token for {user}, the GitHub account picked for this repository. Sign in with `gh auth login`, or pick another account in Settings > Git.")
+            })?,
+            None => gh_token(None)
+                .map(|v| (v, "gh"))
+                .or_else(|| git::credential_token(repo).map(|v| (v, "git")))
+                .ok_or_else(|| NOT_CONNECTED.to_string())?,
+        };
+        let token = Token {
+            value,
+            source,
+            account,
+        };
+        let replaced = self
+            .token
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .replace(token.clone());
+        if replaced.is_some_and(|old| old.account != token.account) {
+            // Another account's responses are not this one's to reuse.
+            *self.etags.lock().unwrap_or_else(|e| e.into_inner()) = Etags::default();
+        }
         Ok(token)
     }
 
-    /// Whether a token is already in hand, so a call needn't ask gh or the keychain first.
+    fn picked(&self) -> Option<String> {
+        self.picked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub(super) fn pick(&self, account: Option<String>) {
+        *self.picked.lock().unwrap_or_else(|e| e.into_inner()) = account;
+    }
+
+    /// Whether the token for the picked account is already in hand, so a call needn't ask gh or
+    /// the keychain first.
     pub(super) fn has_token(&self) -> bool {
+        let account = self.picked();
         self.token
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .is_some()
+            .as_ref()
+            .is_some_and(|t| t.account == account)
     }
 
     fn forget(&self) {
@@ -227,9 +262,10 @@ pub(super) fn request(
     path: &str,
     accept: &str,
 ) -> Result<Value, String> {
-    let token = session.token(repo)?;
+    let mut token = session.token(repo)?;
     let url = format!("{API}{path}");
-    let auth = format!("Bearer {}", token.value);
+    let mut auth = format!("Bearer {}", token.value);
+    let mut renewed = false;
     let agent = agent(session);
     let cacheable = matches!(method, Method::Get) && accept == JSON;
     let mut etag = if cacheable {
@@ -280,6 +316,16 @@ pub(super) fn request(
             return Err("GitHub sent no data (304).".into());
         }
         if let Some(e) = response_error(session, &mut resp) {
+            // A token gh replaced since it was read (a new login, the account signed out and in
+            // again): asked for afresh once, so the call doesn't fail on the stale one.
+            if e == NOT_CONNECTED && !renewed {
+                renewed = true;
+                if let Some(fresh) = session.token(repo).ok().filter(|t| t.value != token.value) {
+                    token = fresh;
+                    auth = format!("Bearer {}", token.value);
+                    continue;
+                }
+            }
             return Err(e);
         }
         let new_etag = resp

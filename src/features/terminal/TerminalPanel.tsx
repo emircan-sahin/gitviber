@@ -1,5 +1,5 @@
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
-import { ChevronDown, Columns2, FolderGit2, FolderOpen, Maximize2, Minimize2, Plus, Rows2, Trash2, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronDown, Columns2, FolderGit2, FolderOpen, History, Maximize2, Minimize2, Plus, Rows2, Trash2, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -30,7 +30,10 @@ import {
   useTerminals,
 } from "@/lib/terminal/terminals";
 import { folderName, parentFolder } from "@/lib/path";
+import { worktreeHue, worktreeHues } from "@/lib/git/worktrees";
+import { useWorktreeColors } from "@/lib/git/worktreeColors";
 import { ProjectTile } from "@/features/projects/ProjectList";
+import { showConversations } from "@/features/palette/CommandPalette";
 import { GroupTab } from "./GroupTab";
 import { LayoutView, renamingPane, shape } from "./PaneLayout";
 import { TerminalFind } from "./TerminalFind";
@@ -45,6 +48,7 @@ export function useTerminalSetup(root: string) {
   useCommands({
     "terminal.toggle": () => toggle(root),
     "terminal.new": () => openTerminal(root),
+    "terminal.resumeConversation": () => showConversations(root),
     "terminal.toggleMaximize": () => toggleMaximize(root),
     "terminal.zoomPane": () => toggleZoom(root),
     "terminal.fontZoomIn": () => stepTerminalFont(1),
@@ -101,6 +105,13 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
     // Only a pane with a header on screen: a split, not zoomed.
     "terminal.renamePane": () => group && group.panes.length > 1 && !zoomed && renamingPane.set(group.focused),
   });
+  const colors = useWorktreeColors();
+  const hues = worktreeHues(worktrees, colors);
+  // This repo's worktrees take their color as the picker shows it; a tab elsewhere only a color picked for its folder.
+  const hueOf = (g: TerminalGroup) => {
+    const cwd = g.panes[0].cwd;
+    return hues.has(cwd) ? hues.get(cwd)! : worktreeHue({ path: cwd, main: true }, colors);
+  };
   const branchOf = (g: TerminalGroup) => {
     const w = worktrees.find((x) => x.path === g.panes[0].cwd);
     return w ? w.branch : (outsideBranches.get(g.id) ?? null);
@@ -172,7 +183,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
       <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-panel">
         <div ref={tablist} role="tablist" aria-label="Terminals" onKeyDown={onTabKey} data-scrollbar="none" className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
           {groups.map((g) => (
-            <GroupTab key={g.id} group={g} active={g.id === active} here={g.panes[0].cwd === root} branch={branchOf(g)} alone={groups.length === 1} />
+            <GroupTab key={g.id} group={g} active={g.id === active} here={g.panes[0].cwd === root} branch={branchOf(g)} hue={hueOf(g)} alone={groups.length === 1} />
           ))}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 px-1.5">
@@ -182,7 +193,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
             </Button>
           </Tip>
           <DropdownMenu>
-            <Tip label="New terminal in another folder">
+            <Tip label="New terminal in another folder, or resume a conversation">
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon-sm" className="w-5">
                   <ChevronDown className="size-3" />
@@ -190,6 +201,10 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
               </DropdownMenuTrigger>
             </Tip>
             <DropdownMenuContent align="end" className="w-72">
+              <DropdownMenuItem onSelect={() => showConversations(root)}>
+                <History /> Resume a Conversation…
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
               {others.length > 0 && (
                 <>
                   <DropdownMenuLabel>New terminal in worktree</DropdownMenuLabel>

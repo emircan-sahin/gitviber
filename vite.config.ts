@@ -1,11 +1,19 @@
 import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
+
+// KaTeX's stylesheet lists each font as woff2, woff and ttf; the webview reads woff2, so the
+// other two (~1 MB) stay out of the app.
+const katexWoff2Only: Plugin = {
+  name: "katex-woff2-only",
+  enforce: "pre",
+  transform: (code, id) => (/katex[\\/]dist[\\/]katex(\.min)?\.css$/.test(id) ? code.replace(/,url\([^)]*\.(woff|ttf)\) format\("(woff|truetype)"\)/g, "") : undefined),
+};
 
 // https://v2.tauri.app/start/frontend/vite/
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), katexWoff2Only],
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
   clearScreen: false,
   server: {

@@ -6,6 +6,62 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-02
+
+### Added
+
+- **Mermaid diagrams, math and alerts in markdown.** A ```` ```mermaid ```` block draws its diagram
+  (with the app's light or dark theme, and the error plus its source if it can't), `$x^2$` and
+  `$$…$$` render as math, and GitHub's `> [!NOTE]` alerts and a file's YAML properties show as they
+  do on GitHub. In #111.
+- **Your Obsidian vault in the Explorer.** A collapsible Obsidian section at the bottom lists the
+  vaults Obsidian knows about. Notes open rendered with wikilinks, embeds, callouts, highlights, tags
+  and properties, and can be edited and saved; `.canvas` boards, `.base` files, images, audio, video
+  and PDFs open too. Settings → Obsidian turns it off. In #111.
+- **Squash, fix up, drop and reorder several commits.** Pick commits in History with ⌘- or
+  ⇧-click (or ⇧↑/⇧↓), then squash them into one, fix them up into the oldest or drop them, or drag
+  them between commits to move them and onto one to squash them. Anything that rewrites pushed commits
+  asks first, and ⌘Z undoes it. In #70.
+- **Open in opens the project.** The button at the right of the status bar (⇧⌘O) opens the worktree
+  in your editor or terminal, at the file and line you're looking at where the editor can, and each
+  app shows its own icon. In #51.
+- **Notifications have their own page.** Settings → Notifications has a switch per kind (an agent
+  finishes, an agent asks for you, a terminal rings, a push or pull ends), shows whether macOS allows
+  them, opens System Settings when it doesn't, and sends a test. Clicking a notification brings you to
+  the terminal it was about.
+- **A translucent window on macOS.** Settings → Appearance → Translucency lets the desktop show
+  through the title bar, the side panels and the status bar; code, diffs and the terminal stay solid.
+  In #27.
+- **Clean up merged worktrees together.** The worktree picker lists the ones whose branch or pull
+  request is merged and that hold nothing of yours, shows the ignored files removing them would
+  delete, and removes them and their branches in one step, with Undo.
+- **All your agents in one menu.** The Agents menu in the top bar lists every agent in your
+  terminals, the ones waiting for you first, and the Dock icon counts them.
+- **A color per worktree.** Each worktree gets one, which you can change from its row's menu; it
+  shows on the top bar, the picker and the terminal tabs.
+- **Resume an older conversation.** Resume a conversation in a worktree's menu lists its past Claude
+  Code conversations and continues the one you pick.
+- **A GitHub account per repository.** With more than one account in `gh`, Settings → Git picks the
+  one a repository's pull requests and issues use.
+- **Pinned and recent branches.** The branch picker keeps pinned branches at the top, with the ones
+  you checked out last under them.
+- **Each conflict's merge base, and a way to hand it on.** A conflict block shows what both sides
+  started from, and Ask agent to resolve pastes the files into the agent's terminal. A conflict
+  or a diff also opens in the merge or diff tool your git config names.
+
+### Changed
+
+- **The worktree picker shows when a worktree was last worked in,** not when its branch last
+  committed.
+- **Text sent to a worktree's terminal** goes to the pane an agent is running in, when there is one.
+
+### Fixed
+
+- **Hiding and showing the terminal (⌘J) garbled a running program's screen.** Claude Code was left
+  with stray digits and missing letters because the terminal was measured while the panel was still
+  laying out; it is now sized once the layout settles.
+- **Resolving a conflict in a file without a final newline** no longer adds one.
+
 ## [0.1.7] - 2026-10-02
 
 ### Added
@@ -395,7 +451,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/emircan-sahin/gitviber/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/emircan-sahin/gitviber/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/emircan-sahin/gitviber/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/emircan-sahin/gitviber/compare/v0.1.4...v0.1.5

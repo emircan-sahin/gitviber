@@ -36,6 +36,10 @@
   --conflict-fill: var(--conflict);
   --on-status: rgb(0 0 0 / 0.85);
   --hatch: #ffffff08;
+  /* A worktree's color (lib/git/worktrees HUES) is a hue at this lightness and chroma: any of
+     them clears 3:1 on every surface here. The light themes set their own. */
+  --tint-l: 0.74;
+  --tint-c: 0.13;
 
   /* Diff: rows get a faint tint (pre-mixed on --background, since the sticky gutter must
      be opaque); a bright 2px edge marks the line; word changes are a translucent wash so
@@ -128,6 +132,8 @@
   --del-bg: #fdeeee;
   --del-gutter: #fad5d5;
   --del-emph: rgb(207 34 46 / 0.17);
+  --tint-l: 0.53;
+  --tint-c: 0.14;
   color-scheme: light;
 }
 
@@ -325,6 +331,8 @@
   --del-bg: #ecdfe6;
   --del-gutter: #e8cdd6;
   --del-emph: rgb(197 14 54 / 0.17);
+  --tint-l: 0.53;
+  --tint-c: 0.14;
   color-scheme: light;
 }
 
@@ -362,6 +370,8 @@
   --del-bg: #f2e7e2;
   --del-gutter: #eadad7;
   --del-emph: rgb(151 83 102 / 0.17);
+  --tint-l: 0.53;
+  --tint-c: 0.14;
   color-scheme: light;
 }
 
@@ -399,6 +409,8 @@
   --del-bg: #f8e6d4;
   --del-gutter: #f4d6c5;
   --del-emph: rgb(194 44 41 / 0.17);
+  --tint-l: 0.53;
+  --tint-c: 0.14;
   color-scheme: light;
 }
 
@@ -732,6 +744,187 @@
 .markdown th {
   font-weight: 600;
   background: var(--panel);
+}
+
+/* Diagrams, math and callouts (viewer/markdown), all markdown views. */
+.markdown .mermaid-diagram {
+  margin: 0 0 1em;
+  padding: 12px;
+  overflow-x: auto;
+  text-align: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.markdown .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+.markdown .mermaid-error {
+  text-align: left;
+}
+.markdown .mermaid-error pre {
+  margin: 0;
+}
+.markdown .math-display {
+  margin: 0 0 1em;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.markdown .math-display pre {
+  margin: 0;
+}
+.markdown .katex {
+  font-size: 1.1em;
+}
+.markdown .callout {
+  margin: 0 0 1em;
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  background: rgb(var(--callout) / 0.1);
+  border-left: 3px solid rgb(var(--callout) / 0.6);
+}
+.markdown .callout-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  color: rgb(var(--callout));
+}
+.markdown .callout-title-text {
+  min-width: 0;
+  flex: 1;
+}
+.markdown .callout-title-text > * {
+  margin: 0;
+}
+.markdown .callout [data-callout-body] {
+  margin-top: 8px;
+}
+.markdown .callout [data-callout-body] > :last-child {
+  margin-bottom: 0;
+}
+/* GitHub's alerts: a colored rule and title, no fill. */
+.markdown .callout-github {
+  padding: 0 1em;
+  background: none;
+  border-left-width: 4px;
+  border-left-color: rgb(var(--callout));
+  border-radius: 0;
+}
+.markdown .callout-github .callout-title {
+  font-weight: 500;
+}
+
+/* An Obsidian note's own syntax (vault notes only). */
+.markdown mark {
+  padding: 0 2px;
+  border-radius: 2px;
+  color: inherit;
+  background: rgb(255 208 0 / 0.4);
+}
+.markdown [data-tag] {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 0.85em;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  white-space: nowrap;
+}
+.markdown a[data-wikilink].unresolved {
+  opacity: 0.6;
+  text-decoration: underline dotted;
+}
+.markdown li[data-task] {
+  list-style: none;
+  margin-left: -1.4em;
+}
+.markdown li[data-task="x"],
+.markdown li[data-task="-"] {
+  color: var(--muted-foreground);
+  text-decoration: line-through;
+}
+/* Statuses past done and to do, as a box with their mark (Obsidian themes draw them as icons). */
+.markdown li[data-task]:not([data-task=" "]):not([data-task="x"]):not([data-task="X"])::before {
+  content: attr(data-task);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05em;
+  height: 1.05em;
+  margin-right: 0.45em;
+  vertical-align: -0.12em;
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--primary);
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+}
+.markdown table.properties {
+  display: table;
+  width: 100%;
+  margin-bottom: 1.5em;
+  font-size: 0.9em;
+}
+.markdown table.properties :is(th, td) {
+  padding: 4px 10px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+.markdown table.properties th {
+  width: 1%;
+  white-space: nowrap;
+  text-align: left;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  background: none;
+}
+.markdown .property-chip,
+.markdown .property-tag {
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--elevated);
+  border: 1px solid var(--border);
+}
+.markdown .property-tag {
+  color: var(--primary);
+}
+.markdown .embed {
+  margin: 0 0 1em;
+  padding: 4px 0 4px 16px;
+  border-left: 2px solid var(--primary);
+}
+.markdown .embed > :last-child {
+  margin-bottom: 0;
+}
+.markdown .embed-title {
+  margin-bottom: 6px;
+  font-size: 12px;
+  color: var(--subtle);
+}
+.markdown .embed-media {
+  max-width: 100%;
+}
+/* A canvas's dotted backdrop; its position and size follow the pan and zoom (CanvasView). */
+.canvas-board {
+  background-color: var(--background);
+  background-image: radial-gradient(circle, var(--border-strong) 1px, transparent 1.2px);
+}
+.canvas-board .markdown {
+  font-size: 13px;
+}
+/* A file card is the file itself, not a quote of it. */
+.canvas-board .markdown > .embed {
+  padding: 0;
+  border: 0;
+}
+.markdown iframe.embed-media {
+  width: 100%;
+  height: 640px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
 }
 
 /* Launch splash (Splash.tsx): the tile pops in, the commits land, the branch draws to its head. */

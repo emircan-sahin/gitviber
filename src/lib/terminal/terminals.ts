@@ -678,18 +678,39 @@ export function pasteIntoPane(id: number) {
   if (p) void pasteInto(p);
 }
 
-/**
- * Pastes `text` into the terminal `cwd`'s worktree last had focus in (the open tab's pane, else its
- * first tab's), shown and focused, without pressing Enter. False when the worktree has no terminal.
- */
-export function pasteToWorktree(cwd: string, text: string) {
-  const here = (g: TerminalGroup | undefined) => !!g && g.panes.some((p) => p.id === g.focused && p.cwd === cwd);
-  const g = [activeGroup(), ...state.groups].find(here);
-  const p = g && panes.get(g.focused);
-  if (!g || !p) return false;
-  set({ open: true, active: g.id });
+/** The pane an agent runs in, in `cwd`'s worktree: the open tab's first, each tab's focused one first. */
+function agentPane(cwd: string) {
+  for (const g of [activeGroup(), ...state.groups]) {
+    const p = g && [g.panes.find((x) => x.id === g.focused), ...g.panes].find((x) => x?.cwd === cwd && x.agent);
+    if (p) return p.id;
+  }
+  return undefined;
+}
+
+function pasteIn(id: number, text: string) {
+  const p = panes.get(id);
+  if (!p) return false;
+  focusPane(id);
+  set({ open: true });
   void pasteText(p, text).then(focusActive);
   return true;
+}
+
+/**
+ * Pastes `text` into `cwd`'s worktree's terminal, shown and focused, without pressing Enter: a pane
+ * an agent runs in, else the one the worktree last had focus in (the open tab's, else its first
+ * tab's). False when the worktree has no terminal.
+ */
+export function pasteToWorktree(cwd: string, text: string) {
+  const g = [activeGroup(), ...state.groups].find((x) => x?.panes.some((p) => p.id === x.focused && p.cwd === cwd));
+  const id = agentPane(cwd) ?? g?.focused;
+  return id !== undefined && pasteIn(id, text);
+}
+
+/** `pasteToWorktree`, only into a pane an agent runs in: false when none does. */
+export function pasteToAgent(cwd: string, text: string) {
+  const id = agentPane(cwd);
+  return id !== undefined && pasteIn(id, text);
 }
 
 /** The last command's output, from shell integration's marks (commandMarks.ts). */
@@ -751,7 +772,7 @@ function focusPane(id: number) {
   set({ active: g.id, groups: state.groups.map((x) => (x === g ? { ...g, focused: id } : x)) });
 }
 
-/** A pane a notification was about: its tab, in the panel opened, with the keys. */
+/** A pane in view with the keys (a notification's, or one picked in the Agents menu): its tab, in the panel opened. */
 export function revealPane(id: number) {
   if (!panes.has(id)) return;
   focusPane(id);

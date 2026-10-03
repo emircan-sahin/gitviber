@@ -22,6 +22,19 @@ pub async fn gh_account(app: AppHandle) -> Res<github::Account> {
     with_github(app, github::account).await
 }
 
+/// gh's accounts on github.com; asked for when the repository's settings open.
+#[tauri::command]
+pub async fn gh_accounts() -> Res<Vec<github::GhAccount>> {
+    blocking(|| Ok(github::accounts())).await
+}
+
+/// `login`: the gh account the open repository's GitHub calls use; None for gh's active one. Sent
+/// as each repository opens, before its GitHub calls start, and when the pick changes.
+#[tauri::command]
+pub fn gh_use_account(state: State<'_, AppState>, login: Option<String>) -> Res<()> {
+    github::use_account(&state.github, login)
+}
+
 #[tauri::command]
 pub async fn gh_original_remote(
     state: State<'_, AppState>,
