@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { Archive, ArchiveRestore, ChevronRight, GitBranchPlus, PackageOpen, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ChevronRight, FileDown, GitBranchPlus, PackageOpen, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { api, type Commit, errorMessage, type FileChange, type RepoStatus, type Stash, type StashFiles } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { toast } from "@/lib/app/toast";
+import { rewriteFiles } from "@/lib/repo/undo";
 import { useListNav } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
@@ -62,6 +63,7 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
   // Conflicts from an apply or pop land in Changes like a merge's; git keeps the stash then.
   const { busy, run: act } = useGitAction({ refresh, tracked: false, conflicts: "Resolve them in Changes. The stash is kept; drop it once you're done." });
   const [branching, setBranching] = useState<Stash | null>(null);
+  const [renaming, setRenaming] = useState<Stash | null>(null);
   const nav = useListNav({ activeKey });
 
   useEffect(() => {
@@ -83,33 +85,52 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
     if (ok) await act("Drop", () => api.stashDrop(s.sha), "Stash dropped", `To get it back: git stash apply ${s.sha.slice(0, 10)}`);
   };
 
+  // The file as the stash has it, over the working tree's: its Trash copy and Undo bring the old one back.
+  const take = (sha: string, path: string, untracked: boolean) =>
+    rewriteFiles(`Took ${path} from the stash`, "Could not take the file", () => api.stashRestoreFile(sha, path, untracked), refresh);
+
   if (!stashes.length) return <div className="py-1 pl-8 text-[11.5px] text-subtle">Nothing stashed</div>;
 
   const fileRow = (s: Stash, sha: string, f: FileChange) => {
     const sel: Selection = { kind: "commit", commit: asCommit(s, sha), file: f };
     const active = activeKey === selectionKey(sel);
+    const untracked = f.status === "?";
+    const takeThis = () => take(s.sha, f.path, untracked);
     return (
-      <div
-        key={`${sha}:${f.path}`}
-        role="treeitem"
-        aria-level={2}
-        aria-selected={active}
-        tabIndex={-1}
-        data-row={selectionKey(sel)}
-        onClick={() => onOpen(sel)}
-        onDoubleClick={() => onOpen(sel, true)}
-        onMouseEnter={() => onHover(sel)}
-        className={cn(
-          "relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-8 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-          active ? "bg-primary/15" : "hover:bg-hover focus:bg-hover",
-        )}
-      >
-        {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
-        <FileIcon path={f.path} />
-        <PathLabel path={f.path} className="flex-1" />
-        <LineCounts file={f} />
-        <StatusLetter status={f.status} />
-      </div>
+      <ContextMenu key={`${sha}:${f.path}`}>
+        <ContextMenuTrigger asChild>
+        <div
+          role="treeitem"
+          aria-level={2}
+          aria-selected={active}
+          tabIndex={-1}
+          data-row={selectionKey(sel)}
+          onClick={() => onOpen(sel)}
+          onDoubleClick={() => onOpen(sel, true)}
+          onMouseEnter={() => onHover(sel)}
+          className={cn(
+            "group/row relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-8 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+            active ? "bg-primary/15" : "hover:bg-hover focus:bg-hover",
+          )}
+        >
+          {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
+          <FileIcon path={f.path} />
+          <PathLabel path={f.path} className="flex-1" />
+          <LineCounts file={f} className="group-focus-within/row:hidden group-hover/row:hidden" />
+          <div className="hidden items-center group-focus-within/row:flex group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
+            <RowAction label="Take this file (replaces the working copy)" disabled={!!busy || f.status === "D"} onClick={takeThis}>
+              <FileDown />
+            </RowAction>
+          </div>
+          <StatusLetter status={f.status} />
+        </div>
+        </ContextMenuTrigger>
+        <ContextMenuContent>
+          <ContextMenuItem disabled={!!busy || f.status === "D"} onSelect={takeThis}>
+            <FileDown /> Take This File
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
     );
   };
 
@@ -167,6 +188,9 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
                 <ContextMenuItem disabled={!!busy} onSelect={() => setBranching(s)}>
                   <GitBranchPlus /> Create Branch from Stash…
                 </ContextMenuItem>
+                <ContextMenuItem disabled={!!busy} onSelect={() => setRenaming(s)}>
+                  <Pencil /> Rename…
+                </ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem disabled={!!busy} className="text-destructive" onSelect={() => drop(s)}>
                   <Trash2 /> Drop stash…
@@ -183,6 +207,13 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
           </div>
         );
       })}
+      {renaming && (
+        <StashRenameDialog
+          stash={renaming}
+          onClose={() => setRenaming(null)}
+          onRename={(text) => act("Rename", () => api.stashRename(renaming.sha, text), "Stash renamed", "It moved to the top of the list.")}
+        />
+      )}
       {branching && (
         <StashBranchDialog
           stash={branching}
@@ -191,6 +222,33 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
         />
       )}
     </div>
+  );
+}
+
+/** A new message for a stash. */
+function StashRenameDialog({ stash, onClose, onRename }: { stash: Stash; onClose: () => void; onRename: (text: string) => void }) {
+  const [text, setText] = useState(describe(stash).text);
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogTitle>Rename stash</DialogTitle>
+        <DialogDescription>The stash keeps its changes and moves to the top of the list.</DialogDescription>
+        <form
+          className="mt-4 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!text.trim()) return;
+            onClose();
+            onRename(text.trim());
+          }}
+        >
+          <Input autoFocus onFocus={(e) => e.target.select()} value={text} onChange={(e) => setText(e.target.value)} placeholder="Message" />
+          <Button type="submit" disabled={!text.trim()}>
+            Rename
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 

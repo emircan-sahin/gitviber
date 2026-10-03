@@ -63,12 +63,8 @@ pub fn apply(base: &str, target: &str, drop: &HashSet<u32>, take: &HashSet<u32>)
     out
 }
 
-pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
-    let action = req.action.as_str();
-    match (req.kind.as_str(), action) {
-        ("unstaged", "stage" | "discard") | ("staged", "unstage") => {}
-        _ => return Err(format!("can't {action} lines of a {} diff", req.kind)),
-    }
+/// The diff `req` was made from as it is now, once it's checked that it is still what was shown.
+fn live(repo: &Path, req: &Request) -> Result<git::DiffPair, String> {
     let now = git::diff_pair(
         repo,
         &req.kind,
@@ -93,6 +89,59 @@ pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
             ));
         }
     }
+    Ok(now)
+}
+
+/// What stashing some of an unstaged file's lines does to it.
+pub struct StashPart {
+    pub path: String,
+    /// The mode and content the stash keeps the file with (the index's version plus the chosen
+    /// changes); None: the chosen changes delete it.
+    pub stashed: Option<(String, String)>,
+    /// What the working-tree file becomes without them; None: it goes (they were all of a new file).
+    pub left: Option<String>,
+}
+
+/// Works out the stash of the lines `req` picks from an unstaged diff, touching nothing.
+pub fn stash_part(repo: &Path, req: &Request) -> Result<StashPart, String> {
+    if req.kind != "unstaged" || req.action != "stash" {
+        return Err(format!("can't {} lines of a {} diff", req.action, req.kind));
+    }
+    let now = live(repo, req)?;
+    let removed: HashSet<u32> = req.removed.iter().copied().collect();
+    let added: HashSet<u32> = req.added.iter().copied().collect();
+    let (old, new) = (text(&now.original), text(&now.modified));
+    let taken = apply(old, new, &removed, &added);
+    let left = apply(new, old, &added, &removed);
+    if taken == old && (now.original.exists || !taken.is_empty()) {
+        return Err("Nothing is selected.".into());
+    }
+    let deletion = !now.modified.exists && taken.is_empty();
+    Ok(StashPart {
+        path: req.path.clone(),
+        stashed: (!deletion).then(|| (index_mode(repo, &req.path), taken)),
+        left: (now.original.exists || !left.is_empty()).then_some(left),
+    })
+}
+
+/// Stashes the lines `req` picks: the stash is stored first, then the file loses them.
+pub fn stash(repo: &Path, message: &str, req: &Request) -> Result<(), String> {
+    let part = stash_part(repo, req)?;
+    let path = crate::fs::resolve(repo, &req.path)?;
+    git::stash_lines(repo, message, std::slice::from_ref(&part))?;
+    match &part.left {
+        Some(text) => std::fs::write(&path, text).map_err(|e| e.to_string()),
+        None => std::fs::remove_file(&path).map_err(|e| e.to_string()),
+    }
+}
+
+pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
+    let action = req.action.as_str();
+    match (req.kind.as_str(), action) {
+        ("unstaged", "stage" | "discard") | ("staged", "unstage") => {}
+        _ => return Err(format!("can't {action} lines of a {} diff", req.kind)),
+    }
+    let now = live(repo, req)?;
     let removed: HashSet<u32> = req.removed.iter().copied().collect();
     let added: HashSet<u32> = req.added.iter().copied().collect();
     let (old, new) = (text(&now.original), text(&now.modified));

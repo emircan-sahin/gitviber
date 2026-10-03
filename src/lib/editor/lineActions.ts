@@ -18,7 +18,7 @@ export interface Staging {
   refresh: () => unknown;
 }
 
-export type LineAction = "stage" | "unstage" | "discard";
+export type LineAction = "stage" | "unstage" | "discard" | "stash";
 
 /** The lines a selection takes, first and last. One that ends at the start of a line doesn't take that line. */
 export function selectedLines(sel: monaco.Selection): [number, number] {
@@ -29,9 +29,10 @@ const LABELS: Record<LineAction, [change: string, lines: string, failed: string]
   stage: ["Stage Change", "Stage Selected Lines", "Stage failed"],
   unstage: ["Unstage Change", "Unstage Selected Lines", "Unstage failed"],
   discard: ["Discard Change", "Discard Selected Lines", "Discard failed"],
+  stash: ["Stash Change", "Stash Selected Lines", "Stash failed"],
 };
 
-const actionsFor = (kind: Staging["kind"]): LineAction[] => (kind === "unstaged" ? ["stage", "discard"] : ["unstage"]);
+const actionsFor = (kind: Staging["kind"]): LineAction[] => (kind === "unstaged" ? ["stage", "stash", "discard"] : ["unstage"]);
 
 async function run(s: Staging, action: LineAction, p: Picked) {
   if (isEmpty(p)) return;
@@ -50,6 +51,10 @@ async function run(s: Staging, action: LineAction, p: Picked) {
     if (action === "discard") {
       const [, entry] = await tracked(() => api.changeLines(request));
       toast("success", `Discarded lines in ${s.path}`, "The old version is in the Trash.", undoAction(entry, s.refresh));
+    } else if (action === "stash") {
+      // Not a branch move: Undo puts the file back, the stash stays to drop.
+      const [, entry] = await tracked(() => api.stashLines("", request));
+      toast("success", `Stashed lines of ${s.path}`, "Name it in Stashes. Undo puts the lines back; the stash stays.", undoAction(entry, s.refresh));
     } else await api.changeLines(request);
   } catch (e) {
     toast("error", LABELS[action][2], errorMessage(e));
@@ -107,7 +112,7 @@ export function followLineActions(diff: monaco.editor.IStandaloneDiffEditor, sta
     };
     pickers.set(code, chosen);
     subs.push(code.onDidChangeCursorPosition(moved), code.onDidChangeModel(update), code.onDidFocusEditorText(update));
-    for (const action of ["stage", "unstage", "discard"] as LineAction[]) {
+    for (const action of ["stage", "unstage", "stash", "discard"] as LineAction[]) {
       const on = `gitviberStaging == ${action === "unstage" ? "staged" : "unstaged"}`;
       const [change, lines] = LABELS[action];
       const go = () => {
@@ -178,7 +183,7 @@ function hoverBar(diff: monaco.editor.IStandaloneDiffEditor, staging: () => Stag
       node.replaceChildren(
         ...actionsFor(s.kind).map((action) => {
           const b = document.createElement("button");
-          b.textContent = action === "stage" ? "Stage" : action === "unstage" ? "Unstage" : "Discard";
+          b.textContent = action === "stage" ? "Stage" : action === "unstage" ? "Unstage" : action === "stash" ? "Stash" : "Discard";
           b.title = LABELS[action][0];
           b.className = action === "discard" ? "gv-hunk-discard" : "";
           b.onclick = () => {
