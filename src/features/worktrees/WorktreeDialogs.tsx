@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -8,7 +8,7 @@ import { loadWorktreeDir, loadWorktreeRun, moveRoot, saveBranchIssue, saveWorktr
 import { issueBranchName, withIssue } from "@/lib/github/issueWork";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { localNames, refNameCheck, worktreeBase, worktreeBranch } from "@/lib/git/refs";
-import { type Cleanable, cleanable, shortPath, worktreeHues } from "@/lib/git/worktrees";
+import { type Cleanable, cleanable, defaultBranch, folderForBranch, shortPath, worktreeHues } from "@/lib/git/worktrees";
 import { keepColorOnRename, pickedColors } from "@/lib/git/worktreeColors";
 import { toast } from "@/lib/app/toast";
 import { plural } from "@/lib/format";
@@ -87,8 +87,6 @@ interface Props {
 
 type Inner = Props & { onClose: () => void };
 
-/** Worktree folders are named after their branch, "/" being a folder separator. */
-const folderFor = (branch: string) => branch.replaceAll("/", "-");
 const isCommit = (base: string) => /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(base);
 
 export function WorktreeDialogs(props: Props) {
@@ -118,16 +116,30 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
   const [terminal, setTerminal] = useState(true);
   const [command, setCommand] = useState(() => loadWorktreeRun(main, !!issue));
   const [switchTo, setSwitchTo] = useState(false);
+  const nameInput = useRef<HTMLInputElement>(null);
+  // Asked once, when Create is pressed on the default branch (see `guarded`).
+  const [warned, setWarned] = useState(false);
   const includes = useAsyncValue(api.worktreeIncludes, [], 0);
   // An existing branch (local, or only on a remote) is checked out as it is; the base picked is for a new one.
   const picked = worktreeBranch(name, branches);
   const existing = picked.base !== undefined;
   const n = pull ? pull.branch : picked.name;
   const { pending, send } = useSubmit(onClose);
-  const ready = !!n && (!!pull || !picked.taken) && !pending;
+  // The default branch checked out here would be held by this folder, and git then refuses to
+  // switch to it anywhere else, the main folder included.
+  const guarded = !pull && existing && !picked.taken && n === defaultBranch(branches);
+  const warning = warned && guarded;
+  const ready = !!n && (!!pull || !picked.taken) && !pending && !warning;
   const choose = async () => {
     const picked = await open({ directory: true, defaultPath: dir, title: "Folder for new worktrees" });
     if (typeof picked === "string") setDir(picked);
+  };
+  // A new branch from the default one instead: the name is the only thing left to type.
+  const branchOff = () => {
+    setFrom(picked.base ?? `refs/heads/${n}`);
+    setName("");
+    setWarned(false);
+    nameInput.current?.focus();
   };
   const submit = () => {
     const where = dir === beside ? null : dir;
@@ -154,14 +166,15 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
       // Nothing typed to keep, and the fetch's Cancel is in the top bar behind this dialog.
       onClose();
       const p = pull;
-      void runNet("Check out PR", (op) => github.checkoutWorktree(p.target, p.number, p.headRef, p.sameRepo, where, op).then(then), `Checked out #${p.number} in worktree ${folderFor(n)}`).then(switched);
+      void runNet("Check out PR", (op) => github.checkoutWorktree(p.target, p.number, p.headRef, p.sameRepo, where, op).then(then), `Checked out #${p.number} in worktree ${folderForBranch(n)}`).then(switched);
     } else void send(() => run("Create worktree", () => api.addWorktree(n, picked.base === undefined ? from : picked.base, where, picked.track).then(then), existing ? `Checked out ${n} in a new worktree` : `Created worktree ${n}`).then(switched));
   };
   return (
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (ready) submit();
+        if (guarded && !warned && !pending) setWarned(true);
+        else if (ready) submit();
       }}
     >
       <DialogTitle>{pull ? `Check out #${pull.number} in a new worktree` : issue ? `Start #${issue.number} in a new worktree` : "New worktree"}</DialogTitle>
@@ -176,7 +189,20 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
           "A new branch, checked out in its own folder, side by side with this one."
         )}
       </DialogDescription>
-      {!pull && <Input autoFocus className="mt-4 font-mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="Branch name" spellCheck={false} />}
+      {!pull && (
+        <Input
+          ref={nameInput}
+          autoFocus
+          className="mt-4 font-mono"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setWarned(false);
+          }}
+          placeholder="Branch name"
+          spellCheck={false}
+        />
+      )}
       {!pull && <NameHint {...picked} />}
       {!pull &&
         !existing &&
@@ -193,7 +219,7 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
           {/* rtl cuts the start of a long path, keeping the branch's folder in view. The LRMs keep
               it reading left to right; a <bdi> did too, but WebKit drew the … over a letter. */}
           <span dir="rtl" className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-foreground" title={dir}>
-            {`\u200e${shortPath(dir, main)}/${n ? folderFor(n) : "…"}\u200e`}
+            {`\u200e${shortPath(dir, main)}/${n ? folderForBranch(n) : "…"}\u200e`}
           </span>
           {dir !== fallback && (
             <Button type="button" variant="ghost" size="sm" onClick={() => setDir(fallback)}>
@@ -238,6 +264,19 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
           )}
         </div>
       )}
+      {warning && (
+        <div className="mt-3 rounded-md bg-removed/10 px-2.5 py-2 text-[11.5px]">
+          <span className="font-mono">{n}</span> is best kept in the main folder, <span className="font-mono">{folderName(main)}</span>: a worktree that holds it blocks switching to it there.
+          <div className="mt-2 flex justify-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={branchOff}>
+              Create from a new branch instead
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={submit}>
+              Create anyway
+            </Button>
+          </div>
+        </div>
+      )}
       <div className="mt-3 flex items-center gap-3">
         <label className="flex items-center gap-1.5 text-[12px]">
           <input type="checkbox" checked={switchTo} onChange={(e) => setSwitchTo(e.target.checked)} className="accent-primary" />
@@ -267,13 +306,13 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
   const check = refNameCheck(name, localNames(branches, old), true);
   const n = check.name;
   const { pending, send } = useSubmit(onClose);
-  const target = `${parentFolder(w.path)}${folderFor(n)}`;
+  const target = `${parentFolder(w.path)}${folderForBranch(n)}`;
   const moving = move && !stays && !!n && target !== w.path;
   const terminals = moving ? terminalsIn(w.path) : 0;
   const upstream = branches.find((b) => !b.remote && b.name === old)?.upstream;
   const ready = !!n && (n !== old || moving) && !check.taken && !pending;
   const submit = () => {
-    const done = n === old ? `Moved ${folderName(w.path)} to ${folderFor(n)}` : `Renamed ${old} to ${n}${moving ? ", folder too" : ""}`;
+    const done = n === old ? `Moved ${folderName(w.path)} to ${folderForBranch(n)}` : `Renamed ${old} to ${n}${moving ? ", folder too" : ""}`;
     void send(() =>
       run(
         "Rename worktree",
@@ -313,7 +352,7 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
         <input type="checkbox" checked={move && !stays} disabled={!!stays} onChange={(e) => setMove(e.target.checked)} className="mt-0.5 accent-primary" />
         <span>
           Rename its folder to match
-          <span className="block text-[11.5px] break-all text-muted-foreground">{stays ?? `${shortPath(w.path, main)} → ${folderFor(n) || "…"}`}</span>
+          <span className="block text-[11.5px] break-all text-muted-foreground">{stays ?? `${shortPath(w.path, main)} → ${folderForBranch(n) || "…"}`}</span>
         </span>
       </label>
       {terminals > 0 && (

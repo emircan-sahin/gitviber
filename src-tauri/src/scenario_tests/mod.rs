@@ -13,6 +13,8 @@ mod history;
 mod history_more;
 mod journal;
 mod lines;
+mod main_back;
+mod main_back_edges;
 mod obsidian;
 // A `sh` recorder stands in for the editor.
 #[cfg(unix)]

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, CleanedUp, CleanUp, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, StackedBranches, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, CleanedUp, CleanUp, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, MainBack, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, StackedBranches, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -135,6 +135,11 @@ export const api = {
    * With `base` (a full ref, or HEAD) the branch is new, made there; with `track` it tracks `base` (its remote namesake).
    */
   addWorktree: (branch: string, base: string | null = null, dir: string | null = null, track = false) => invoke<string>("add_worktree", { branch, base, track, dir }),
+  /** What `moveMainBack` would change for `branch`, which a linked worktree holds; rejects with why not (changes in either folder, a detached main folder…). */
+  mainBackPlan: (branch: string) => invoke<MainBack>("main_back_plan", { branch }),
+  /** Detaches the worktree holding `branch` where it stands, then switches the main folder to it. */
+  moveMainBack: (branch: string) => invoke<MainBack>("move_main_back", { branch }),
+  undoMainBack: (plan: MainBack) => invoke<void>("undo_main_back", { plan }),
   /** How many gitignored files the main worktree's .worktreeinclude has addWorktree copy in. */
   worktreeIncludes: () => invoke<number>("worktree_includes"),
   /** Renames a worktree's branch and, with `moveFolder`, its folder to match; returns its path afterwards. */

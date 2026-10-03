@@ -57,6 +57,11 @@ give it a color its chip and terminal tabs wear, lock it, and remove or prune it
 merged. Clean up removes every merged worktree with nothing uncommitted in one go, branches too,
 after showing the ignored files that go with them, like `node_modules`; merging a pull request in
 the app offers to remove its worktree.
+The top bar names a worktree by its branch and its folder, so a folder that no longer says what it
+holds shows. Git keeps a branch in one worktree, so picking one that another holds says where it
+is: Enter opens that worktree (with a way back), and the row's menu checks the commit out here
+detached, or starts a new branch from it. When a linked worktree holds the default branch and the
+main folder is on another, the worktree picker offers to move it back.
 Every worktree keeps its own terminals, so nothing gets lost when you hop between them, and a
 terminal can open in another project or any folder too. A tab and its worktree show a ring while
 Claude Code works there, and a dot once it finishes or asks for you, with a desktop notification if

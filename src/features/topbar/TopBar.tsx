@@ -98,11 +98,13 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   // Say why, and leave a way back: the window changed folders without being asked to.
   const openHolder = async (path: string, branch: string) => {
     const from = root;
+    // The branch it was on names where Back goes better than a folder that may not say.
+    const was = status?.branch ?? folderName(from);
     if (!(await onOpenRepo(path))) return;
-    toast("info", `Opened ${folderName(path)}`, `${branch} is checked out there, and git keeps a branch in one worktree.`, { label: `Back to ${folderName(from)}`, run: () => void onOpenRepo(from) });
+    toast("info", `Opened ${folderName(path)}`, `${branch} is checked out there, and git keeps a branch in one worktree.`, { label: `Back to ${was}`, run: () => void onOpenRepo(from) });
   };
 
-  const { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switchBranch, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
+  const { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switchBranch, switchRemote, detachHere, pruneHolder, moveMainBack, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
 
   const activity = busy ?? net?.label;
   const progress = net?.progress ? `${net.progress.phase}${net.progress.percent !== null ? ` ${net.progress.percent}%` : ""}` : "";
@@ -137,6 +139,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         main={main}
         label={branchName}
         branches={branches}
+        worktrees={worktrees}
         current={status?.branch ?? null}
         onSwitch={switchBranch}
         onSwitchRemote={switchRemote}
@@ -145,6 +148,9 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onRebase={(name) => void rebase(name)}
         onTerminal={branchTerminal}
         onOpenWorktree={openHolder}
+        onDetach={detachHere}
+        onPruneHolder={pruneHolder}
+        onMainBack={moveMainBack}
         onDelete={deleteBranch}
         onCleanUp={cleanUp}
         onRename={(branch) => setBranchDialog({ kind: "rename", branch })}
@@ -164,6 +170,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onLock={(worktree) => openWorktreeDialog({ kind: "lock", worktree })}
         onUnlock={unlockWorktree}
         onNew={() => openWorktreeDialog({ kind: "new" })}
+        onMainBack={moveMainBack}
         onGitHub={!!webUrl}
         onOpenPull={onOpenPull}
       />

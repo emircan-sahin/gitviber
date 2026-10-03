@@ -1,22 +1,22 @@
-import { Check, ChevronRight, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitBranchPlus, GitMerge, GitPullRequestArrow, Link, Pencil, Pin, PinOff, Plus, Search, SquareTerminal, Trash2, Unlink } from "lucide-react";
+import { Check, ChevronRight, ChevronsUpDown, Cloud, FolderGit2, GitBranch, GitBranchPlus, GitCommitHorizontal, GitMerge, GitPullRequestArrow, Link, Pencil, Pin, PinOff, Plus, Search, SquareTerminal, Trash2, Unlink } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, fullName, github } from "@/lib/api";
+import { api, type Branch, fullName, github, type Worktree } from "@/lib/api";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { pointerMoved } from "@/lib/ui/pointer";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
 import { sameRef, sanitizedRefName } from "@/lib/git/refs";
+import { mainBackOffer } from "@/lib/git/worktrees";
 import { folderName } from "@/lib/path";
 import { loadPinnedBranches, savePinnedBranches } from "@/lib/repo/session";
 import { RowAction } from "@/components/RowAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
 import { useGitHubAccount } from "@/features/github/shared/useGitHubAccount";
-import { Chip } from "@/features/worktrees/WorktreePicker";
 
 interface Props {
   /** The main worktree: pins are kept per project, across its worktrees. */
@@ -24,6 +24,8 @@ interface Props {
   label: string;
   current: string | null;
   branches: Branch[];
+  /** What each branch's `worktree` path is: a folder that's gone is pruned, not opened. */
+  worktrees: Worktree[];
   onSwitch: (name: string) => void;
   /** Switches to a remote branch's local branch, creating it to track exactly that remote. */
   onSwitchRemote: (branch: Branch) => void;
@@ -34,6 +36,12 @@ interface Props {
   onTerminal: (name: string) => void;
   /** Opens the worktree at `path`, for a branch checked out there. */
   onOpenWorktree: (path: string, branch: string) => void;
+  /** Checks a held branch's commit out here, detached: nothing is moved. */
+  onDetach: (branch: Branch) => void;
+  /** Prunes a worktree whose folder is gone, which frees its branch, then switches to it. */
+  onPruneHolder: (worktree: Worktree, branch: string) => void;
+  /** Hands the default branch back to the main folder (the confirm is the caller's). */
+  onMainBack: (branch: string) => void;
   /** Deletes a branch; asks first unless it's a merged local one, here or `upstream`. */
   onDelete: (branch: Branch, upstream: boolean) => void;
   /** Deletes these merged branches together (asks first); `upstream` ones git sees as unmerged. */
@@ -62,9 +70,10 @@ const RECENT_MAX = 5;
 /**
  * Searchable branch switcher: type to filter, ↑/↓ + Enter to switch, or create what you
  * typed. The highlighted row also offers merging it into, or rebasing onto it.
- * A branch checked out in another worktree, which git won't switch to here, opens that worktree.
+ * A branch checked out in another worktree, which git won't switch to here, opens that worktree
+ * (↵, and the row says so); its menu has the other ways: detached here, or a new branch from it.
  */
-export function BranchPicker({ main, label, current, branches, onSwitch, onSwitchRemote, onCreate, onMerge, onRebase, onTerminal, onOpenWorktree, onDelete, onCleanUp, onRename, onNewBranch, onSetUpstream, onUnsetUpstream, side = "bottom" }: Props) {
+export function BranchPicker({ main, label, current, branches, worktrees, onSwitch, onSwitchRemote, onCreate, onMerge, onRebase, onTerminal, onOpenWorktree, onDetach, onPruneHolder, onMainBack, onDelete, onCleanUp, onRename, onNewBranch, onSetUpstream, onUnsetUpstream, side = "bottom" }: Props) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -80,6 +89,9 @@ export function BranchPicker({ main, label, current, branches, onSwitch, onSwitc
     const held = new Map(branches.filter((b) => !b.remote && !b.current && b.worktree).map((b) => [b.name, b.worktree!]));
     return (b: Branch) => (b.current ? null : (b.remote ? held.get(localName(b)) : b.worktree) ?? null);
   }, [branches]);
+
+  const holderOf = (b: Branch) => worktrees.find((w) => w.path === heldIn(b));
+  const mainBack = useMemo(() => mainBackOffer(worktrees, branches), [worktrees, branches]);
 
   // Read at once, so the first open's rows don't move; again on each open (a rename moved one).
   const [pins, setPins] = useState(() => loadPinnedBranches(main));
@@ -165,6 +177,8 @@ export function BranchPicker({ main, label, current, branches, onSwitch, onSwitc
     }
   }, [options, index]);
   const listId = useId();
+  const hotOption = options[index];
+  const hotHeld = hotOption?.kind === "branch" && heldIn(hotOption.branch) ? hotOption.branch : null;
 
   // Which GitHub repository each remote is, so branches on one you can't push to (a fork's
   // original) offer no delete.
@@ -208,10 +222,18 @@ export function BranchPicker({ main, label, current, branches, onSwitch, onSwitc
   const squashed = branches.filter((b) => upstream(b) && !b.current && !b.worktree).map((b) => b.name);
   const cleanable = stale.length + squashed.length;
 
+  const openHolder = (b: Branch) => {
+    const holder = holderOf(b);
+    if (holder?.prunable) onPruneHolder(holder, localName(b));
+    else onOpenWorktree(heldIn(b)!, localName(b));
+  };
+  /** What ↵ does on a held branch's row. */
+  const heldHint = (b: Branch) => (holderOf(b)?.prunable ? `${folderName(heldIn(b)!)} is gone` : `opens ${folderName(heldIn(b)!)}`);
+
   const choose = (o: Option | undefined) => {
     if (!o) return;
     if (o.kind === "create") onCreate(o.name);
-    else if (heldIn(o.branch)) onOpenWorktree(heldIn(o.branch)!, localName(o.branch));
+    else if (heldIn(o.branch)) openHolder(o.branch);
     else if (o.branch.remote) onSwitchRemote(o.branch);
     else if (!o.branch.current) onSwitch(o.branch.name);
     else return;
@@ -267,6 +289,25 @@ export function BranchPicker({ main, label, current, branches, onSwitch, onSwitc
         if (input.current?.isConnected) input.current.focus();
       }}
     >
+      {heldIn(b) && (
+        <>
+          <ContextMenuItem onSelect={menuAct(() => openHolder(b))}>
+            <FolderGit2 /> {holderOf(b)?.prunable ? `Prune ${folderName(heldIn(b)!)}, its folder is gone…` : `Open worktree ${folderName(heldIn(b)!)}`}
+            <ContextMenuShortcut>↵</ContextMenuShortcut>
+          </ContextMenuItem>
+          {!holderOf(b)?.prunable && (
+            <ContextMenuItem onSelect={menuAct(() => onDetach(b))}>
+              <GitCommitHorizontal /> Check out here, detached
+            </ContextMenuItem>
+          )}
+          {mainBack?.branch === localName(b) && (
+            <ContextMenuItem onSelect={menuAct(() => onMainBack(mainBack.branch))}>
+              <FolderGit2 /> Move {mainBack.branch} back to {folderName(mainBack.main.path)}…
+            </ContextMenuItem>
+          )}
+          <ContextMenuSeparator />
+        </>
+      )}
       {!b.current && current && (
         <>
           <ContextMenuItem onSelect={menuAct(() => onMerge(b.name))}>
@@ -349,50 +390,51 @@ export function BranchPicker({ main, label, current, branches, onSwitch, onSwitc
               <GitBranch className="size-3.5 shrink-0 opacity-60" />
             )}
             <span className="truncate font-mono text-[11.5px]">{o.branch.name}</span>
-            {/* Hot or not, a row that opens a worktree says so: a plain one switches this checkout. */}
-            {heldIn(o.branch) && (
-              <Tip label={`Checked out in ${folderName(heldIn(o.branch)!)}: opens that worktree`}>
-                <Chip hot={hot}>worktree</Chip>
-              </Tip>
-            )}
-            {/* Mounted on every row, shown on the hot one: a tooltip whose button unmounts
-                as the highlight moves gets stuck open or shows the previous label. */}
-            <span className={cn("ml-auto shrink-0 gap-0.5", hot ? "flex" : "hidden")}>
-              {!heldIn(o.branch) && (
-                <RowAction variant="picker" hot={hot} label={o.branch.current ? "Open a terminal here" : "Open a terminal in a new worktree"} onClick={act(onTerminal, localName(o.branch))}>
-                  <SquareTerminal />
-                </RowAction>
-              )}
-              {!o.branch.current && current && (
-                <>
-                  <RowAction variant="picker" hot={hot} label={`Merge into ${current}`} onClick={act(onMerge, o.branch.name)}>
-                    <GitMerge />
+            {/* Hot or not, a row that opens a worktree says which: a plain one switches this checkout. */}
+            <span className="ml-auto flex min-w-0 shrink-0 items-center gap-1.5">
+              {/* Mounted on every row, shown on the hot one: a tooltip whose button unmounts
+                  as the highlight moves gets stuck open or shows the previous label. */}
+              <span className={cn("shrink-0 gap-0.5", hot ? "flex" : "hidden")}>
+                {!heldIn(o.branch) && (
+                  <RowAction variant="picker" hot={hot} label={o.branch.current ? "Open a terminal here" : "Open a terminal in a new worktree"} onClick={act(onTerminal, localName(o.branch))}>
+                    <SquareTerminal />
                   </RowAction>
-                  <RowAction variant="picker" hot={hot} label={`Rebase ${current} onto it`} onClick={act(onRebase, o.branch.name)}>
-                    <GitPullRequestArrow />
+                )}
+                {!o.branch.current && current && (
+                  <>
+                    <RowAction variant="picker" hot={hot} label={`Merge into ${current}`} onClick={act(onMerge, o.branch.name)}>
+                      <GitMerge />
+                    </RowAction>
+                    <RowAction variant="picker" hot={hot} label={`Rebase ${current} onto it`} onClick={act(onRebase, o.branch.name)}>
+                      <GitPullRequestArrow />
+                    </RowAction>
+                  </>
+                )}
+                {/* Where you can't push, GitHub would refuse the delete anyway. */}
+                {!o.branch.current && !heldIn(o.branch) && !o.branch.remoteDefault && !guarded.has(o.branch.name) && !(o.branch.remote && accessOf(remoteOf(o.branch))?.push === false) && (
+                  <RowAction variant="picker" hot={hot} label={o.branch.remote ? "Delete from the remote…" : o.branch.merged || upstream(o.branch) ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch, upstream(o.branch)), o.branch.name)}>
+                    <Trash2 />
                   </RowAction>
-                </>
-              )}
-              {/* Where you can't push, GitHub would refuse the delete anyway. */}
-              {!o.branch.current && !heldIn(o.branch) && !o.branch.remoteDefault && !guarded.has(o.branch.name) && !(o.branch.remote && accessOf(remoteOf(o.branch))?.push === false) && (
-                <RowAction variant="picker" hot={hot} label={o.branch.remote ? "Delete from the remote…" : o.branch.merged || upstream(o.branch) ? "Delete branch (merged)" : "Delete branch…"} onClick={act(() => onDelete(o.branch, upstream(o.branch)), o.branch.name)}>
-                  <Trash2 />
-                </RowAction>
+                )}
+              </span>
+              {heldIn(o.branch) ? (
+                <Tip label={`${localName(o.branch)} is checked out in ${heldIn(o.branch)}. git keeps a branch in one worktree, so ↵ opens that one. Right-click for other ways.`}>
+                  <span className={cn("max-w-40 truncate text-[10.5px]", hot ? "opacity-80" : "text-subtle")}>{heldHint(o.branch)}</span>
+                </Tip>
+              ) : (
+                !hot && (
+                  <span className="max-w-40 truncate text-[10.5px] text-subtle">
+                    {o.branch.current
+                      ? "current"
+                      : o.branch.merged
+                        ? `merged · ${relativeTime(o.branch.timestamp)}`
+                        : upstream(o.branch)
+                          ? `merged upstream · ${relativeTime(o.branch.timestamp)}`
+                          : relativeTime(o.branch.timestamp)}
+                  </span>
+                )
               )}
             </span>
-            {!hot && (
-              <span className="ml-auto max-w-40 shrink-0 truncate text-[10.5px] text-subtle">
-                {o.branch.current
-                  ? "current"
-                  : heldIn(o.branch)
-                    ? `in ${folderName(heldIn(o.branch)!)}`
-                    : o.branch.merged
-                    ? `merged · ${relativeTime(o.branch.timestamp)}`
-                    : upstream(o.branch)
-                      ? `merged upstream · ${relativeTime(o.branch.timestamp)}`
-                      : relativeTime(o.branch.timestamp)}
-              </span>
-            )}
           </>
         )}
       </div>
@@ -465,7 +507,7 @@ export function BranchPicker({ main, label, current, branches, onSwitch, onSwitc
           {options.at(-1)?.kind === "create" && optionRow(options.at(-1)!, options.length - 1)}
         </div>
         <div className="flex shrink-0 items-center gap-2 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
-          <span className="min-w-0 flex-1 truncate">↑↓ navigate · ↵ switch · {renameKey ? `${renameKey} rename · ` : ""}⇧F10 or right-click for more</span>
+          <span className="min-w-0 flex-1 truncate">↑↓ navigate · ↵ {hotHeld ? (holderOf(hotHeld)?.prunable ? "prune, then switch" : heldHint(hotHeld)) : "switch"} · {renameKey ? `${renameKey} rename · ` : ""}⇧F10 or right-click for more</span>
           <Tip label={`New branch from ${current ?? "HEAD"}, or from any branch or tag`}>
             <button
               onClick={() => {
