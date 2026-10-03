@@ -37,8 +37,8 @@ test("a range's list is told apart by its ends, and by being a PR's", () => {
   const key = selectionKey({ kind: "changes", list: "range", range });
   assert.notEqual(key, selectionKey({ kind: "changes", list: "range", range: { ...range, head: "3".repeat(40) } }));
   assert.notEqual(key, selectionKey({ kind: "changes", list: "range", range: { ...range, number: 4 } }));
-  assert.equal(selectionPath({ kind: "changes", list: "range", range }), "Compare main...feature");
-  assert.equal(selectionPath({ kind: "changes", list: "range", range: { base: "1".repeat(40), head: "2".repeat(40) } }), "Compare 1111111..2222222");
+  assert.equal(selectionPath({ kind: "changes", list: "range", range }), "All Changes · main...feature");
+  assert.equal(selectionPath({ kind: "changes", list: "range", range: { base: "1".repeat(40), head: "2".repeat(40) } }), "All Changes · 1111111..2222222");
 });
 
 test("the Compare screen is one tab, whichever two points it shows", () => {
