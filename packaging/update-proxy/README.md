@@ -33,7 +33,7 @@ Dashboard:
 1. Cloudflare dashboard -> Workers & Pages -> Create -> Create Worker.
 2. Name it `gitviber-updates` and deploy the Hello World it offers.
 3. Edit code, replace everything with the contents of [`worker.js`](worker.js), Deploy.
-4. The URL is `https://gitviber-updates.<your-subdomain>.workers.dev`.
+4. The URL is `https://gitviber-updates.gitviber.workers.dev`.
 
 Or with Wrangler (not a dependency of this repository; `npx` fetches it):
 
@@ -49,7 +49,7 @@ URL on. Deploy again after any change to `worker.js`; a release needs no deploy.
 ## Test it
 
 ```sh
-MIRROR=https://gitviber-updates.<your-subdomain>.workers.dev
+MIRROR=https://gitviber-updates.gitviber.workers.dev
 curl -s $MIRROR/latest.json | head -c 600                 # version, and urls under $MIRROR/download/
 curl -s $MIRROR/latest.json | grep -o '"url":"[^"]*"' | sort -u   # every url under $MIRROR/download/
 curl -sI $MIRROR/download/v0.1.9/SHA256SUMS                # 200, content-length, accept-ranges: bytes
@@ -69,7 +69,7 @@ The mirror goes first and GitHub second, in `plugins.updater.endpoints` of
 `src-tauri/tauri.conf.json`:
 
 ```json
-"endpoints": ["https://gitviber-updates.<your-subdomain>.workers.dev/latest.json", "https://github.com/emircan-sahin/gitviber/releases/latest/download/latest.json"]
+"endpoints": ["https://gitviber-updates.gitviber.workers.dev/latest.json", "https://github.com/emircan-sahin/gitviber/releases/latest/download/latest.json"]
 ```
 
 It takes effect in the release that ships it; installed versions keep asking GitHub only.
