@@ -10,7 +10,7 @@ import { pointerMoved } from "@/lib/ui/pointer";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { plural, relativeTime } from "@/lib/format";
-import { cleanable, type Hue, hueColor, shortPath, worktreeHues, worktreeOf } from "@/lib/git/worktrees";
+import { cleanable, type Hue, hueColor, mainBackOffer, shortPath, worktreeHues, worktreeName, worktreeOf } from "@/lib/git/worktrees";
 import { useWorktreeColors } from "@/lib/git/worktreeColors";
 import { folderName } from "@/lib/path";
 import { terminalsIn, useAgentsWorking, useNeedsYou } from "@/lib/terminal/terminals";
@@ -43,6 +43,8 @@ interface Props {
   onLock: (w: Worktree) => void;
   onUnlock: (w: Worktree) => void;
   onNew: () => void;
+  /** Hands the default branch back to the main folder (asks first). */
+  onMainBack: (branch: string) => void;
   /** Origin is on GitHub: its pull requests show. */
   onGitHub: boolean;
   /** Opens a pull request in the app. */
@@ -63,9 +65,9 @@ function needing(worktrees: Worktree[], cwds: string[]) {
  * `git worktree list` as a switcher. Always shown, even with only the main worktree, so
  * the feature is found at all; then it says how to make one.
  * Rows lead with the branch, the name people know a worktree by; the folder comes second.
- * In a linked worktree it names it.
+ * In a linked worktree the button names both, so a folder that no longer says what it holds shows.
  */
-export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew, onGitHub, onOpenPull }: Props) {
+export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew, onMainBack, onGitHub, onOpenPull }: Props) {
   const [open, setOpen] = useState(false);
   const calling = useNeedsYou();
   const agentsWorking = useAgentsWorking();
@@ -129,6 +131,8 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const extra = list.filter((w) => !w.main).length;
   const main = list.find((w) => w.main && !w.bare);
   const here = linked ? pullOf(current.branch) : undefined;
+  const named = linked ? worktreeName(current) : null;
+  const offer = mainBackOffer(list, branches);
   const hues = worktreeHues(list, colors);
   const hue = current ? (hues.get(current.path) ?? null) : null;
   const needy = needing(list, calling);
@@ -189,10 +193,10 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
     <>
       {/* Never over one of its own dialogs, whatever the order things closed in. */}
       <Popover open={open && !dialog} onOpenChange={setOpen}>
-        <Tip label={(linked ? `In worktree ${folderName(current.path)} · switch worktree` : extra === 0 ? "Worktrees" : `${plural(extra, "worktree")} besides the main one · switch worktree`) + elsewhere}>
+        <Tip label={(linked ? `${named!.branch} in worktree ${folderName(current.path)} (${current.path}) · switch worktree` : extra === 0 ? "Worktrees" : `${plural(extra, "worktree")} besides the main one · switch worktree`) + elsewhere}>
           <PopoverTrigger asChild>
             <button
-              aria-label={(linked ? `Worktree ${folderName(current.path)}, switch worktree` : extra === 0 ? "Worktrees" : `Switch worktree (${extra} besides the main one)`) + elsewhere}
+              aria-label={(linked ? `Worktree ${named!.branch}${named!.folder ? ` in ${named!.folder}` : ""}, switch worktree` : extra === 0 ? "Worktrees" : `Switch worktree (${extra} besides the main one)`) + elsewhere}
               className={cn(
                 "relative flex h-7 max-w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2 hover:bg-hover focus-visible:bg-hover data-[state=open]:bg-active",
                 linked && !hue && "bg-primary/10",
@@ -200,8 +204,11 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
               style={hue ? { background: hueColor(hue, 0.16) } : undefined}
             >
               <FolderGit2 className={cn("size-3.5 shrink-0", linked ? "text-primary" : "text-subtle")} style={hue ? { color: hueColor(hue) } : undefined} />
-              {linked ? (
-                <span className="truncate font-mono text-[12px]">{folderName(current.path)}</span>
+              {named ? (
+                <span className="flex min-w-0 items-baseline gap-1.5">
+                  <span className="truncate font-mono text-[12px]">{named.branch}</span>
+                  {named.folder && <span className="min-w-0 shrink-[3] truncate font-mono text-[10.5px] text-muted-foreground">{named.folder}</span>}
+                </span>
               ) : (
                 // Named, so it's found even before there are any. Counted as people count them:
                 // the extra checkouts, not the main folder git also lists.
@@ -272,6 +279,21 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
               </div>
             )}
           </div>
+          {offer && (
+            <div className="shrink-0 border-t border-border px-2.5 py-2 text-[11px] leading-snug text-muted-foreground">
+              <span className="font-mono text-foreground">{offer.branch}</span> is checked out in <span className="font-mono text-foreground">{folderName(offer.holder.path)}</span>, so{" "}
+              <span className="font-mono text-foreground">{folderName(offer.main.path)}</span> (on {offer.main.branch}) can't switch to it.{" "}
+              <button
+                onClick={() => {
+                  afterClose.current = () => onMainBack(offer.branch);
+                  setOpen(false);
+                }}
+                className="rounded-sm text-primary hover:underline focus-visible:underline"
+              >
+                Move {offer.branch} back to {folderName(offer.main.path)}…
+              </button>
+            </div>
+          )}
           <div className="flex shrink-0 items-start gap-2 border-t border-border px-2.5 py-1.5 text-[10.5px] text-subtle">
             <span className="min-w-0 flex-1">
               ↑↓ navigate · ↵ open here{can.terminal && " · T terminal"}
@@ -404,7 +426,8 @@ function WorktreeRow({
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={cn("truncate font-mono text-[11.5px]", !w.branch && "opacity-70")}>{branch}</span>
-          {w.main && <Chip hot={hot}>main</Chip>}
+          {/* "main" alone read as the branch: the main folder can be on any. */}
+          {w.main && <Chip hot={hot}>main folder</Chip>}
           {calling ? (
             <Tip label="A terminal here needs you">
               <NeedsYouDot className={cn(hot && "bg-primary-foreground")} />
@@ -443,7 +466,7 @@ function WorktreeRow({
         <div className={cn("flex min-w-0 items-center gap-1 text-[10.5px]", hot ? "opacity-80" : "text-subtle")}>
           <FolderGit2 className="size-3 shrink-0" />
           {/* A worktree away from the project has a long path; rtl cuts its start, not its folder (LRMs: see the New worktree dialog). */}
-          <span dir="rtl" className="truncate text-left">
+          <span dir="rtl" className="truncate text-left" title={w.path}>
             {`\u200e${w.main ? folderName(w.path) : shortPath(w.path, main)}\u200e`}
           </span>
         </div>

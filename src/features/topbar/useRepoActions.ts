@@ -1,6 +1,7 @@
 import { askStacked } from "@/features/history/StackedDialog";
 import { ask } from "@/lib/app/ask";
-import { api, type Branch, CANCELLED, errorMessage, type PullMode, type Worktree } from "@/lib/api";
+import { api, type Branch, CANCELLED, errorMessage, type MainBack, type PullMode, type Worktree } from "@/lib/api";
+import { toast } from "@/lib/app/toast";
 import { openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { forgetRemoteTags } from "@/lib/repo/remoteTags";
 import { worktreeDir } from "@/lib/repo/session";
@@ -9,6 +10,7 @@ import { folderName } from "@/lib/path";
 import { useGitAction } from "@/hooks/useGitAction";
 import { undoCommit } from "@/features/history/commitActions";
 import { secretCommits } from "@/lib/git/gitErrors";
+import { defaultBranch } from "@/lib/git/worktrees";
 
 /** The top bar's git actions: switching, merging, deleting branches, worktrees, pull, push and publish. */
 export function useRepoActions(repo: RepoData, root: string, main: string) {
@@ -21,7 +23,9 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     if (name === status?.branch) return openTerminal(root);
     const dir = worktreeDir(main);
     const where = `${dir ?? `${folderName(main)}.worktrees`}/${name.replaceAll("/", "-")}`;
-    const ok = await ask(`${name} isn't checked out anywhere. Create a worktree for it at ${where}${dir ? "" : ", next to this project,"} and open a terminal there?`, {
+    // The default branch held by a worktree can't be switched to in the main folder.
+    const keep = name === defaultBranch(branches) ? ` ${name} is best kept in ${folderName(main)}: a worktree that holds it blocks switching to it there.` : "";
+    const ok = await ask(`${name} isn't checked out anywhere. Create a worktree for it at ${where}${dir ? "" : ", next to this project,"} and open a terminal there?${keep}`, {
       title: "Open terminal on branch",
       okLabel: "Create worktree",
     });
@@ -178,6 +182,11 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
   const switched = (name: string) => `Switched ${folderName(root)} to ${name}`;
   const switchBranch = (name: string) => run("Switch branch", switching(name, () => api.switchBranch(name, false)), switched(name));
 
+  // A branch another worktree holds, checked out here as its commit: the files to read or build,
+  // with no branch to move. Starting a new branch from it is the picker's menu.
+  const detachHere = (b: Branch) =>
+    run("Check out", switching(b.name, () => api.checkoutCommit(b.sha)), `Checked out ${b.name} in ${folderName(root)}, detached`, "No branch is moved: commits made here belong to no branch until you create one.");
+
   // upstream/dev → dev. A local dev that tracks something else (origin/dev, say) is a
   // different line of work; say so rather than switch to it silently.
   const switchRemote = async (b: Branch) => {
@@ -194,7 +203,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
 
   // A fresh count decides force: git refuses a dirty or locked worktree otherwise, and the
   // warning must say what gets lost. If counting fails, git's own refusal is the fallback.
-  const removeWorktree = async (w: Worktree) => {
+  const removeWorktree = async (w: Worktree): Promise<boolean> => {
     const name = folderName(w.path);
     // A missing folder may only be on a drive that isn't plugged in; pruned, the link is gone
     // for good even once it's back. The branch stays either way.
@@ -204,8 +213,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
         title: "Prune worktree",
         okLabel: "Prune",
       });
-      if (ok) await run("Prune worktree", () => api.removeWorktree(w.path, false), `Pruned ${name}`);
-      return;
+      return ok && run("Prune worktree", () => api.removeWorktree(w.path, false), `Pruned ${name}`);
     }
     const changed = w.prunable ? 0 : await api.worktreeState(w.path, false).then((s) => s.uncommitted, () => 0);
     const branch = w.branch ? ` The branch ${w.branch} stays.` : "";
@@ -221,9 +229,9 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       w.prunable ? `${name}'s folder is gone, but it's locked${w.lockReason ? ` (${w.lockReason})` : ""}: its drive may only be unplugged. Prune it anyway?${branch}` : `Delete worktree ${name} and its folder?${lost}${lock}${terminals}${branch}`,
       { title: w.prunable ? "Prune worktree" : "Remove worktree", kind: "warning", okLabel: w.prunable ? "Prune" : "Delete worktree" },
     );
-    if (!ok) return;
+    if (!ok) return false;
     const force = changed > 0 || w.locked;
-    await run(
+    return run(
       "Remove worktree",
       async () => {
         try {
@@ -240,6 +248,32 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     );
   };
 
+  // Git keeps a branch for a worktree whose folder is gone until it's pruned, and refuses to
+  // switch to it meanwhile; opening the folder would only fail.
+  const pruneHolder = async (w: Worktree, branch: string) => {
+    if (await removeWorktree(w)) await switchBranch(branch);
+  };
+
+  // The default branch back in the main folder, which git won't switch to while a linked worktree
+  // holds it. Neither folder's files change, so Undo can hand it back as long as nothing moved on.
+  const moveMainBack = async (branch: string) => {
+    let plan: MainBack;
+    try {
+      plan = await api.mainBackPlan(branch);
+    } catch (e) {
+      toast("error", `Can't move ${branch} back`, errorMessage(e));
+      return;
+    }
+    const [main, held] = [folderName(plan.main), folderName(plan.holder)];
+    const ok = await ask(
+      `${main} is on ${plan.mainBranch}, and ${branch} is checked out in ${held}, so git won't switch ${main} to it.\n\nThis detaches ${held} where it stands (its files don't change), then switches ${main} to ${branch}. ${plan.mainBranch} stays as a branch, and nothing is deleted.`,
+      { title: `Move ${branch} back to ${main}`, okLabel: "Move" },
+    );
+    if (!ok) return;
+    const undo = () => void run("Undo", () => api.undoMainBack(plan), `${main} is back on ${plan.mainBranch}, ${held} on ${branch}`);
+    if (await run("Move main back", () => api.moveMainBack(branch))) toast("success", `${branch} is back in ${main}`, `${held} is detached at the same commit.`, { label: "Undo", run: undo });
+  };
+
   const unlockWorktree = async (w: Worktree) => {
     const name = folderName(w.path);
     const why = w.lockReason ?? "it holds the lock";
@@ -248,5 +282,5 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
     await run("Unlock worktree", () => api.unlockWorktree(w.path), `Unlocked ${name}`);
   };
 
-  return { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switchBranch, switchRemote, removeWorktree, unlockWorktree };
+  return { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switchBranch, switchRemote, detachHere, pruneHolder, moveMainBack, removeWorktree, unlockWorktree };
 }
