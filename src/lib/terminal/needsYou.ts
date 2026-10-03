@@ -4,7 +4,7 @@ import { notifyIfAway } from "../app/notify";
 import { getSettings, type NotifyEvent } from "../settings";
 import { folderName } from "../path";
 import { kittyNotes, type Note, osc777Note, osc9Note } from "./attention";
-import { type CommandEnd, endText, isLong } from "./commandMarks";
+import { type CommandEnd, endText } from "./commandMarks";
 import { panes, type Pane, revealPane, state, subscribe, update } from "./terminals";
 
 /**
@@ -55,7 +55,7 @@ export function needsYou(p: Pane, note?: Note, event?: NotifyEvent) {
  */
 export function commandEnded(p: Pane, end: CommandEnd) {
   const s = getSettings();
-  if (!s.notifyLongCommand || !isLong(end.ms, s.longCommandSeconds)) return;
+  if (!s.notifyLongCommand || end.ms <= s.longCommandSeconds * 1000) return;
   if (state.groups.some((g) => g.panes.some((i) => i.id === p.id && i.agent))) return;
   const onScreen = p.host.isConnected && p.host.clientWidth > 0;
   if (document.hasFocus() && onScreen) return;

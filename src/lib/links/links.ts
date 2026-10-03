@@ -158,7 +158,15 @@ const ISSUE = /(?<![\p{L}\p{N}_@/.&#-])#[1-9]\d{0,6}(?![\p{L}\p{N}_])/gu;
  */
 function gitRefs(line: string, add: Add) {
   for (const m of line.matchAll(SHA)) if (/[a-f]/.test(m[0])) add(m.index, m[0], "commit");
-  for (const m of line.matchAll(ISSUE)) add(m.index, m[0], "issue");
+  for (const m of line.matchAll(ISSUE)) if (!cssColor(line, m.index, m[0])) add(m.index, m[0], "issue");
+}
+
+// A color property and its value so far, no `;` or brace between: `color: #333`, `border: 1px solid #111`.
+const CSS_VALUE = /(?:color|background|border|outline|shadow|fill|stroke)[\w-]*\s*:[^#;{}]*$/i;
+
+/** `#333`: digits that are as many as a hex color has (3, 4, 6, 8) after a color property: a stylesheet's diff, not an issue. */
+function cssColor(line: string, at: number, ref: string) {
+  return [4, 5, 7, 9].includes(ref.length) && CSS_VALUE.test(line.slice(Math.max(0, at - 120), at));
 }
 
 /**

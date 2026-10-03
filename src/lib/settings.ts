@@ -6,7 +6,6 @@ import { IS_MAC, IS_WINDOWS } from "./platform";
 import { writeJson } from "./storage";
 import { SUGGEST_PRESETS, type SuggestPreset } from "./git/suggest";
 import type { ResumeMode } from "./terminal/agentState";
-import { LONG_COMMAND_SECONDS } from "./terminal/commandMarks";
 import { useSyncExternalStore } from "react";
 
 const CODE_FONTS = {
@@ -135,6 +134,8 @@ export type Translucency = keyof typeof TRANSLUCENCY;
 
 /** Minutes between background fetches; 0 is off. */
 export const FETCH_INTERVALS = [0, 5, 15, 30];
+/** Seconds a command runs before its end is news (notifyLongCommand). */
+export const LONG_COMMAND_SECONDS = [5, 10, 30, 60, 300];
 
 /** Percent a split terminal's other panes fade; 0 is off. */
 export const DIM_LEVELS = [0, 10, 20, 35, 50];
@@ -307,7 +308,8 @@ const DEFAULTS: Settings = {
   notifyAgentDone: true,
   notifyAgentWaiting: true,
   notifyTerminal: true,
-  notifyLongCommand: true,
+  // Off as in Ghostty and kitty: an update shouldn't start notifying.
+  notifyLongCommand: false,
   // Ghostty's is 5 s, for a notification alone; here the tab's dot comes with it.
   longCommandSeconds: 10,
   notifyGit: true,

@@ -114,7 +114,8 @@ export function hintKey(p: Pane, e: KeyboardEvent): false | undefined {
   }
   e.preventDefault();
   if (e.type !== "keydown") return false;
-  const key = e.key.toLowerCase();
+  // The key's own letter where the layout types none (Cyrillic, Greek), as keys.ts reads it.
+  const key = /^[a-z]$/i.test(e.key) ? e.key.toLowerCase() : e.code.replace(/^Key/, "").toLowerCase();
   if (e.key === "Escape") endHints(p);
   else if (e.key === "Backspace") s.typed = s.typed.slice(0, -1);
   else if (key.length === 1 && HINT_ALPHABET.includes(key) && s.labels.some((l) => l.startsWith(s.typed + key))) {

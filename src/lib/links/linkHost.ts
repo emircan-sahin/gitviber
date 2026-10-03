@@ -1,15 +1,16 @@
 // Where links (lib/links/links) resolve and what opening one does: the repo's file lists, loaded on the
 // first ⌘-hover in a tree, and the workspace that opens files. Shared by the code view's Go to
-// Definition (lib/editor/definitions) and the terminal (terminalLinks below).
+// Definition (lib/editor/definitions) and the terminal (terminalLinks below), whose links also
+// reach commits (History), and pull requests and issues (their tabs) of the repo.
 import type { IBufferRange, IDisposable, ILink, Terminal } from "@xterm/xterm";
-import { api, fullName, type GitHubAccount, github, type Issue, issues, type Pull } from "../api";
+import { api, fullName, type GitHubAccount, github, type Issue, issues, type Pull, repoOf, toIssue, toPull } from "../api";
 import { IS_MAC, primaryKey } from "../platform";
 import { type Alias, cellText, diskCandidates, diskTarget, type FileIndex, findTerminalLinks, folders, githubItem, hyperlinkTarget, indexCase, indexFiles, type Link, LINK_WINDOW, loadAliases, resolveLink, resolveTerminalLink, type Target } from "./links";
 import { dirname, slashes } from "../path";
 import { failed } from "../app/toast";
 import { revealInCode } from "../editor/reveal";
 import { revealPath } from "../app/openIn";
-import { cached } from "../github/githubCache";
+import { cached as cachedData, revalidate } from "../github/githubCache";
 
 /** Where a file's paths resolve: a commit's tree (`<sha>`, `<sha>^`), or the working tree (null) as of `revision`. */
 export interface LinkTree {
@@ -61,7 +62,7 @@ export function resetLinks() {
   indexes.clear();
 }
 
-function cachedIn<T>(map: Map<string, T>, key: string, make: () => T) {
+function cached<T>(map: Map<string, T>, key: string, make: () => T) {
   let value = map.get(key);
   if (value) return value;
   map.set(key, (value = make()));
@@ -77,7 +78,7 @@ function indexOf(tree: LinkTree) {
   // The working tree's list at an older revision is out of date, and one full copy of every path
   // piled up per change while an agent wrote files. Only older ones go: a late ask can't evict a newer.
   if (!tree.rev) for (const k of indexes.keys()) if (k.startsWith("worktree@") && Number(k.slice(9)) < tree.revision) indexes.delete(k);
-  const loading = cachedIn(indexes, key, () => (tree.rev ? api.treePaths(tree.rev) : api.listFiles()).then(indexFiles));
+  const loading = cached(indexes, key, () => (tree.rev ? api.treePaths(tree.rev) : api.listFiles()).then(indexFiles));
   return loading.catch(() => {
     if (indexes.get(key) === loading) indexes.delete(key);
     return NO_FILES;
@@ -93,7 +94,7 @@ export async function resolverFor({ path, tree }: LinkSide) {
   };
   let byDir = aliasSets.get(index);
   if (!byDir) aliasSets.set(index, (byDir = new Map()));
-  const aliases = await cachedIn(byDir, dirname(path), () => loadAliases(path, index, read));
+  const aliases = await cached(byDir, dirname(path), () => loadAliases(path, index, read));
   const root = host?.root ?? "";
   return (link: Link) => resolveLink(link, path, index, aliases, root);
 }
@@ -147,30 +148,28 @@ export function followTerminalLink(target: TerminalTarget) {
 async function openItem({ number, pull, repo }: { number: number; pull: boolean; repo: string }) {
   const h = host;
   if (!h) return;
-  // null: origin; else the fork's parent, as owner/name.
-  const to = repo === h.github ? null : repo.replace("https://github.com/", "");
+  // Under the keys the tab's own view reads with, so it opens on what was just read.
+  const [target, pullUrl, issueUrl] = [repoOf(repo), `${repo}/pull/${number}`, `${repo}/issues/${number}`];
   try {
-    const { title, state, draft, author, headRef, headSha, headRepo, baseRef, baseSha, createdAt, updatedAt, url } = await github.detail(to, number);
-    return h.openItem({ kind: "pull", pull: { number, title, state, draft, author, headRef, headSha, headRepo, baseRef, baseSha, createdAt, updatedAt, url } });
+    return h.openItem({ kind: "pull", pull: toPull(await revalidate(`pr:${pullUrl}`, () => github.detail(target, number))) });
   } catch {
     // No such pull request: an issue, or GitHub can't be asked.
   }
   if (!pull)
     try {
-      const { title, state, stateReason, author, labels, assignees, comments, createdAt, updatedAt, url } = await issues.detail(to, number);
-      return h.openItem({ kind: "issue", issue: { number, title, state, stateReason, author, labels, assignees, comments, createdAt, updatedAt, url } });
+      return h.openItem({ kind: "issue", issue: toIssue(await revalidate(`issue:${issueUrl}`, () => issues.detail(target, number))) });
     } catch {
       // GitHub can't be asked.
     }
-  openTarget({ url: `${repo}/${pull ? "pull" : "issues"}/${number}` });
+  openTarget({ url: pull ? pullUrl : issueUrl });
 }
 
 // What the repo said of SHAs, until the working tree changes, as `disk` below: a full id, or null.
-let commits = { revision: -1, known: new Map<string, string | null>() };
+let commits = { at: "", known: new Map<string, string | null>() };
 
 /** The commits `shas` name in the open repo, one git call for those not asked yet. */
 async function commitIds(shas: string[], revision: number) {
-  if (commits.revision !== revision || commits.known.size > 2000) commits = { revision, known: new Map() };
+  if (commits.at !== stamp(revision) || commits.known.size > 2000) commits = { at: stamp(revision), known: new Map() };
   const { known } = commits;
   // api.knownCommits takes 500 at most: a screen of hints has far fewer.
   const ask = [...new Set(shas.filter((s) => !known.has(s)))].slice(0, 500);
@@ -184,21 +183,25 @@ async function commitIds(shas: string[], revision: number) {
 /** The GitHub repos whose #123 and URLs open here: origin, then a fork's parent once the account says. */
 function githubRepos(h: LinkHost) {
   if (!h.github) return [];
-  const parent = cached<GitHubAccount>("account")?.parent;
+  const parent = cachedData<GitHubAccount>("account")?.parent;
   return parent ? [h.github, `https://github.com/${fullName(parent.repo)}`] : [h.github];
 }
 
 type OnDisk = { path: string; kind: "file" | "dir" } | null;
 // What the disk said about paths the file list lacks, until the working tree changes: a line
 // hovered again, or redrawn under the pointer while output streams, asks nothing.
-let disk = { revision: -1, known: new Map<string, OnDisk>() };
+// Per repo too: a revision count starts over in each workspace.
+let disk = { at: "", known: new Map<string, OnDisk>() };
+
+/** Which repo's tree, and which state of it, an answer is for. */
+const stamp = (revision: number) => `${host?.root}@${revision}`;
 
 /**
  * What's at `paths` on disk (ignored files and folders), spelled as the index has them when it has
  * them in another case (APFS finds either).
  */
 async function onDisk(paths: string[], index: FileIndex, revision: number): Promise<OnDisk[]> {
-  if (disk.revision !== revision || disk.known.size > 2000) disk = { revision, known: new Map() };
+  if (disk.at !== stamp(revision) || disk.known.size > 2000) disk = { at: stamp(revision), known: new Map() };
   const { known } = disk;
   const ask = [...new Set(paths.filter((p) => !known.has(p)))];
   if (ask.length) {

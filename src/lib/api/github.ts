@@ -62,6 +62,12 @@ export interface Pull {
   url: string;
 }
 
+/**
+ * The list item of a detail read. Tabs store the item, not the detail (its body, thread and checks
+ * are read again as the tab shows), and saved with the session: a tab opened from a link is one too.
+ */
+export const toPull = ({ number, title, state, draft, author, headRef, headSha, headRepo, baseRef, baseSha, createdAt, updatedAt, url }: Pull): Pull => ({ number, title, state, draft, author, headRef, headSha, headRepo, baseRef, baseSha, createdAt, updatedAt, url });
+
 export interface PullCheck {
   name: string;
   state: string;

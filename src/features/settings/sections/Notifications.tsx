@@ -1,12 +1,12 @@
-import { Fragment, useEffect } from "react";
+import { Fragment, type ReactNode, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
 import type { NotifyPermission } from "@/lib/api";
 import { enableNotifications, openNotificationSettings, refreshNotifyPermission, sendTestNotification, useAskingNotify, useNotifyPermission } from "@/lib/app/notify";
 import { IS_MAC } from "@/lib/platform";
-import { formatDuration, LONG_COMMAND_SECONDS } from "@/lib/terminal/commandMarks";
-import { type NotifyEvent, updateSettings, useSettings } from "@/lib/settings";
+import { formatDuration } from "@/lib/terminal/commandMarks";
+import { LONG_COMMAND_SECONDS, type NotifyEvent, updateSettings, useSettings } from "@/lib/settings";
 import { Field, Group } from "@/features/settings/controls";
 
 const EVENTS: [NotifyEvent, string, string][] = [
@@ -38,6 +38,19 @@ export function NotificationsSection() {
   // On but not allowed: the wish stays, and so does the way to grant it.
   const needed = IS_MAC && s.notify && !asking && (permission === "denied" || permission === "prompt");
   const status = !IS_MAC ? "Shows one now, to see how they look." : permission ? STATUS[permission] : "Checking with macOS…";
+  // Rows that go with a switch, shown while it's on.
+  const after: Partial<Record<NotifyEvent, ReactNode>> = {
+    notifyLongCommand: (
+      <Field label="Long means longer than">
+        <Segmented<string>
+          value={String(s.longCommandSeconds)}
+          onChange={(v) => updateSettings({ longCommandSeconds: Number(v) })}
+          options={LONG_COMMAND_SECONDS.map((n) => ({ value: String(n), label: formatDuration(n * 1000) }))}
+          variant="field"
+        />
+      </Field>
+    ),
+  };
   return (
     <>
       <Group>
@@ -82,16 +95,7 @@ export function NotificationsSection() {
             <Field label={label} hint={hint}>
               <Switch checked={s[key]} onChange={(v) => updateSettings({ [key]: v })} />
             </Field>
-            {key === "notifyLongCommand" && s.notifyLongCommand && (
-              <Field label="Long means longer than">
-                <Segmented<string>
-                  value={String(s.longCommandSeconds)}
-                  onChange={(v) => updateSettings({ longCommandSeconds: Number(v) })}
-                  options={LONG_COMMAND_SECONDS.map((n) => ({ value: String(n), label: formatDuration(n * 1000) }))}
-                  variant="field"
-                />
-              </Field>
-            )}
+            {s[key] && after[key]}
           </Fragment>
         ))}
       </Group>

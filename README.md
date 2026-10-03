@@ -81,8 +81,9 @@ issues opens it in its own tab. `⌃⇧Space` puts a letter on every one of thos
 vim or Claude Code too: type it to open the link, or with Shift to copy it.
 In zsh and bash 4.4+ each command gets a mark, red when it failed, that tells how long it took,
 `⌘↑` / `⌘↓` jump between them, and the last one's output copies from the right-click menu; your
-dotfiles stay as they are. A command that runs past 10 seconds and ends while you're looking
-elsewhere puts a dot on its tab, with a desktop notification if you turned those on.
+dotfiles stay as they are. Turn on "A long command finishes" in Settings → Notifications and a
+command that runs past 10 seconds and ends while you're looking elsewhere puts a dot on its tab,
+with a desktop notification naming the program (never its arguments) if you turned those on.
 
 It's made for agents too: paste a screenshot or drop files and Claude Code or Codex gets their
 paths, Shift+Enter reaches them as its own key, and on a Mac a trackpad swipe scrolls Claude

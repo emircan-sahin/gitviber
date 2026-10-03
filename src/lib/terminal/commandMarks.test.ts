@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { endText, endTitle, formatDuration, isLong, mouseLeftOn, parseMark } from "./commandMarks.ts";
+import { endText, endTitle, formatDuration, mouseLeftOn, parseMark, shortCommand } from "./commandMarks.ts";
 
 test("OSC 133 marks, with their exit code and the extensions other shells add", () => {
   assert.deepEqual(parseMark("A"), { kind: "A" });
@@ -61,16 +61,27 @@ test("how long a command took, as its mark and a notification say it", () => {
   assert.equal(endTitle({ ms: 2100, exit: 0 }), "Took 2.1s");
   assert.equal(endTitle({ ms: 123_000, exit: 1 }), "Failed after 2m 3s (exit code 1)");
   assert.equal(endTitle({ ms: 61_000 }), "Ended after 1m 1s");
-  assert.equal(endText({ command: "pnpm test", ms: 123_000, exit: 1 }), "pnpm test failed after 2m 3s (exit code 1)");
+  assert.equal(endText({ command: "pnpm test --watch", ms: 123_000, exit: 1 }), "pnpm test failed after 2m 3s (exit code 1)");
   assert.equal(endText({ command: "cargo build", ms: 45_000, exit: 0 }), "cargo build finished after 45s");
   // bash doesn't say what ran.
   assert.equal(endText({ ms: 45_000, exit: 0 }), "A command finished after 45s");
   assert.equal(endText({ ms: 45_000 }), "A command ended after 45s");
 });
 
-test("a command is long once it ran past the threshold", () => {
-  assert.equal(isLong(10_000, 10), false);
-  assert.equal(isLong(10_001, 10), true);
-  assert.equal(isLong(9_000, 5), true);
-  assert.equal(isLong(299_999, 300), false);
+test("a notification names the program and subcommand, never the arguments", () => {
+  assert.equal(shortCommand("pnpm test"), "pnpm test");
+  assert.equal(shortCommand("cargo build --release"), "cargo build");
+  assert.equal(shortCommand("git push origin main"), "git push origin");
+  assert.equal(shortCommand("git push origin main extra"), "git push origin");
+  assert.equal(shortCommand('curl -H "Authorization: Bearer abc" https://x.test'), "curl");
+  assert.equal(shortCommand("curl https://x.test/a?token=1"), "curl");
+  assert.equal(shortCommand("deploy prod user@host"), "deploy prod");
+  assert.equal(shortCommand("mysql --password=hunter2"), "mysql");
+  assert.equal(shortCommand("TOKEN=abc123 pnpm test"), "pnpm test");
+  assert.equal(shortCommand("./scripts/build.sh fast"), "build.sh fast");
+  assert.equal(shortCommand("make a_very_long_target_name_over_the_limit"), "make");
+  assert.equal(shortCommand("TOKEN=abc"), undefined);
+  assert.equal(shortCommand(""), undefined);
+  assert.equal(shortCommand(undefined), undefined);
+  assert.equal(endText({ command: "curl -H 'X-Key: s3cret' x", ms: 45_000, exit: 0 }), "curl finished after 45s");
 });
