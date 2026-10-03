@@ -326,3 +326,49 @@ fn undoing_a_discard_that_brought_back_a_submodule() {
     );
     assert!(r.join("sub").is_dir());
 }
+
+/// A folder's Discard in the tree view sends every changed file under it: all of them go to the
+/// Trash in one entry, files elsewhere stay, and undo brings the whole folder's work back.
+#[test]
+fn discarding_a_folder_and_undoing_it() {
+    let sb = Sandbox::new("j-discard-folder");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "src/a.txt", "a\n", "a");
+    write_commit(&r, "src/lib/b.txt", "b\n", "b");
+    write_commit(&r, "other.txt", "o\n", "o");
+    fs::write(r.join("src/a.txt"), "agent a\n").unwrap();
+    fs::remove_file(r.join("src/lib/b.txt")).unwrap();
+    fs::write(r.join("other.txt"), "agent o\n").unwrap();
+    let under: Vec<String> = status(&r)
+        .unwrap()
+        .unstaged
+        .iter()
+        .map(|f| f.path.clone())
+        .filter(|p| p.starts_with("src/"))
+        .collect();
+    assert_eq!(under, ["src/a.txt", "src/lib/b.txt"]);
+    let j = Journal::default();
+    discard_files(&j, &r, &under);
+    assert_eq!(fs::read_to_string(r.join("src/a.txt")).unwrap(), "a\n");
+    assert_eq!(fs::read_to_string(r.join("src/lib/b.txt")).unwrap(), "b\n");
+    assert_eq!(
+        fs::read_to_string(r.join("other.txt")).unwrap(),
+        "agent o\n"
+    );
+    assert_eq!(j.view(&r).undo[0].label, "Discard 2 files");
+
+    step(&j, &r, false).unwrap();
+    assert_eq!(
+        fs::read_to_string(r.join("src/a.txt")).unwrap(),
+        "agent a\n"
+    );
+    assert!(!r.join("src/lib/b.txt").exists(), "deleted again");
+    let back: Vec<String> = status(&r)
+        .unwrap()
+        .unstaged
+        .iter()
+        .map(|f| f.path.clone())
+        .collect();
+    assert_eq!(back, ["other.txt", "src/a.txt", "src/lib/b.txt"]);
+}

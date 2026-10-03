@@ -1,6 +1,6 @@
 import { ask } from "@/lib/app/ask";
 import { ArrowLeftToLine, ArrowRightToLine, Check, Minus, Plus, Undo2 } from "lucide-react";
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Windowed } from "@/components/Windowed";
 import { api, type Commit, type FileChange, type RepoStatus } from "@/lib/api";
@@ -20,9 +20,11 @@ import { StashDialog, StashList, useStashes } from "./StashList";
 import { BisectBar } from "@/features/history/BisectBar";
 import { SubmoduleList, updateSubmodules, useSubmodules } from "./SubmoduleList";
 import { attempt, type Change, changeList, files, filtered, keptByRestore, leftOut, paths, sumLines } from "./changeList";
-import { ChangeRowMenu } from "./ChangeRowMenu";
+import { ChangeRowMenu, FolderRowMenu } from "./ChangeRowMenu";
 import { OperationBanner } from "./OperationBanner";
-import { AllCaughtUp, collapsedSections, NestedRow, ReviewSummary, Row, Section, SectionBtn } from "./ChangeRows";
+import { AllCaughtUp, collapsedSections, FolderRow, NestedRow, ReviewSummary, Row, Section, SectionBtn } from "./ChangeRows";
+import { changesView, closedFolders, folderKey, type Item, itemsOf, type Mtimes, ordered, toggleFolder } from "./changesView";
+import { foldersOf } from "@/lib/ui/pathTree";
 import { CommitBox } from "./CommitBox";
 import { RowAction } from "@/components/RowAction";
 import { primaryKey } from "@/lib/platform";
@@ -47,6 +49,8 @@ interface Props {
   onRevealInExplorer: (path: string) => void;
   /** History, filtered to this file's commits. */
   onShowHistory: (path: string) => void;
+  /** The files' modified times, while sorting by them. */
+  mtimes: Mtimes | null;
 }
 
 // Row and NestedRow are h-[26px].
@@ -54,12 +58,19 @@ const ROW_HEIGHT = 26;
 
 const SECTION_OF: Record<Change["kind"], string> = { conflict: "Conflicts", staged: "Staged", unstaged: "Changes" };
 
-export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer, onShowHistory }: Props) {
+export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer, onShowHistory, mtimes }: Props) {
   // The list and its section actions (Stage all, Discard) cover the files the filter leaves, and
   // say so ("Stage 3 shown"); the commit takes hidden ones too and says how many.
   const filter = useListFilter("git", "Filter changed files");
   const filtering = !!filter.needle;
-  const status = filtering ? filtered(full, (f) => filter.matches(f.path, f.oldPath)) : full;
+  const view = changesView.use();
+  const closed = closedFolders.use();
+  // Each list in the order shown (by name or newest first, as a tree or not), which ranges and ↑/↓ follow.
+  const status = useMemo(
+    () => ordered(filtering ? filtered(full, (f) => filter.matches(f.path, f.oldPath)) : full, view, mtimes),
+    // filter.matches follows the needle.
+    [full, filter.needle, view, mtimes],
+  );
   const allOrShown = (verb: string, n: number) => (filtering ? `${verb} ${n} shown` : `${verb} all`);
   const act = async (title: string, fn: () => Promise<unknown>) => {
     const done = await attempt(title, fn);
@@ -223,6 +234,26 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   const here = (c: Change): Change | undefined => all[index.get(selectionKey(c)) ?? -1] ?? firstOfPath.get(c.file.path);
   const active = activeKey === null ? undefined : all[index.get(activeKey) ?? -1];
 
+  // The rows each list shows: its files, or in the tree view its folders and the files of open ones.
+  const listed = useMemo(() => {
+    const of = (kind: Change["kind"], list: FileChange[]) => itemsOf(kind, list, view, mtimes, closed);
+    return { conflict: of("conflict", status.conflicted), staged: of("staged", status.staged), unstaged: of("unstaged", status.unstaged) };
+  }, [status, view, mtimes, closed]);
+  const keyOf = (it: Item) => (it.type === "folder" ? it.key : selectionKey(it));
+  // What ↑/↓ go along: the rows shown, but not nested repositories, which can't be picked.
+  const nav = (["conflict", "staged", "unstaged"] as const).flatMap((kind) => listed[kind].filter((it) => it.type === "folder" || !it.file.nested));
+  const navKeys = nav.map(keyOf);
+  const navIndex = new Map(navKeys.map((k, i) => [k, i]));
+  const shownFiles = navKeys.flatMap((k) => (index.has(k) ? [all[index.get(k)!]] : []));
+  const folderRows = (it: Item & { type: "folder" }): Change[] => it.files.filter((f) => !f.nested).map((file) => ({ kind: it.kind, file }));
+
+  // Opening a file in a closed folder (J/K, a tab) opens the folders around it.
+  useEffect(() => {
+    if (!view.tree || !active) return;
+    for (const p of foldersOf(active.file.path)) toggleFolder(folderKey(active.kind, p), true);
+    // Not on `active`, a new object each status: a folder closed around the open file stays closed.
+  }, [activeKey, view.tree]);
+
   // Rows picked with ⌘/⇧ around `focus`, the file the open tab was on. Once the tab moves to
   // another file (a plain click, J/K), the selection is just the open row again.
   const [picked, setPicked] = useState<{ rows: Change[]; anchor: Change; focus: string } | null>(null);
@@ -245,7 +276,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   /** What an action on a row covers: the selected rows of its kind if it's selected, else just the row. */
   const targets = (c: Change) => (selected.has(selectionKey(c)) ? selectedOf[c.kind] : [c]);
 
-  const range = (from: Change, to: Change) => rangeOf(all, from, to, selectionKey);
+  const range = (from: Change, to: Change) => rangeOf(shownFiles, from, to, selectionKey);
 
   // ⌘-click (Ctrl off macOS) toggles a row, ⇧-click picks the range from the anchor. The open tab follows the clicked row either way.
   const pick = (c: Change, e: { metaKey: boolean; ctrlKey: boolean; shiftKey: boolean }) => {
@@ -285,8 +316,14 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   const shown = useRef(all);
   // A row to focus once it renders: a long list renders only what's near the screen.
   const [reach, setReach] = useState<string | null>(null);
+  const rowEl = (key: string) => list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(key)}"]`);
+  const focusKey = (key: string) => {
+    const el = rowEl(key);
+    if (!el) return setReach(key);
+    el.focus();
+    el.scrollIntoView({ block: "nearest" });
+  };
   useLayoutEffect(() => {
-    const rowEl = (key: string) => list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(key)}"]`);
     // In a closed section: the list's first row, so ↑/↓ still work. Nothing at all: the panel, not the page.
     const focusRow = (to: Change | undefined) => {
       const el = to && rowEl(selectionKey(to));
@@ -325,24 +362,36 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   });
 
   // One tab stop for the whole list (the active row), so Tab reaches its actions, not every row.
-  const tabStop = active ? activeKey : all[0] && selectionKey(all[0]);
+  const tabStop = activeKey !== null && navIndex.has(activeKey) ? activeKey : (navKeys[0] ?? null);
 
   // ↑/↓ (Home/End, PageUp/PageDown) from a focused row (clicking one focuses it), ⇧ to extend the
   // selection, ⌘A (git.selectAllChanges) for all of it, Esc to let it go; ↵ keeps the preview tab, Space opens it like a
   // click, → goes to its code, ⇧F10 opens its menu. The other lists share the moves through useListNav.
   const onListKey = (e: React.KeyboardEvent) => {
     const key = e.target instanceof HTMLElement ? e.target.dataset.row : undefined;
-    const i = key === undefined ? -1 : (index.get(key) ?? -1);
-    if (i < 0) return;
-    const cur = all[i];
+    const i = key === undefined ? -1 : (navIndex.get(key) ?? -1);
+    if (key === undefined || i < 0) return;
+    const item = nav[i];
+    // Undefined on a folder.
+    const cur: Change | undefined = all[index.get(key) ?? -1];
     if (matchesCommand("git.selectAllChanges", e.nativeEvent)) {
       e.preventDefault();
-      setPicked({ rows: all, anchor: anchor ?? cur, focus: (active ?? cur).file.path });
-      if (!active) onOpen(cur);
+      const first = cur ?? active ?? all[0];
+      if (!first) return;
+      setPicked({ rows: all, anchor: anchor ?? first, focus: (active ?? first).file.path });
+      if (!active) onOpen(first);
       return;
     }
     if (e.altKey || e.ctrlKey) return;
-    const move = e.metaKey ? null : moveTarget(e.key, i, all.length, pageOf(e.target as HTMLElement));
+    const move = e.metaKey ? null : moveTarget(e.key, i, nav.length, pageOf(e.target as HTMLElement));
+    // A folder's row: the nearest one above that is less deep.
+    const parent = (): Item | undefined =>
+      item.depth
+        ? nav
+            .slice(0, i)
+            .reverse()
+            .find((it) => it.type === "folder" && it.depth < item.depth!)
+        : undefined;
     if (isMenuKey(e)) openRowMenu(e.target as HTMLElement);
     else if (e.key === "Escape") {
       // Only when there's a selection to drop; otherwise Esc isn't ours to take.
@@ -351,21 +400,83 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     } else if (e.metaKey) return;
     else if (move !== null) {
       // A focused row that isn't open yet (Tab into a list with nothing open) opens first.
-      const to = all[key !== activeKey ? i : move];
-      if (e.shiftKey) setPicked({ rows: range(anchor ?? cur, to), anchor: anchor ?? cur, focus: to.file.path });
-      else setPicked(null);
-      onOpen(to);
+      const toKey = cur && key !== activeKey ? key : navKeys[move];
+      const to: Change | undefined = all[index.get(toKey) ?? -1];
+      // A folder takes focus only; ⇧ keeps the selection as it is.
+      if (!to) focusKey(toKey);
+      else {
+        const from = anchor ?? cur ?? to;
+        if (e.shiftKey) setPicked({ rows: range(from, to), anchor: from, focus: to.file.path });
+        else setPicked(null);
+        onOpen(to);
+      }
     } else if (e.shiftKey) return;
+    else if (item.type === "folder") {
+      const closedKey = folderKey(item.kind, item.path);
+      if (e.key === "Enter" || e.key === " ") toggleFolder(closedKey);
+      else if (e.key === "ArrowRight") {
+        if (!item.open) toggleFolder(closedKey, true);
+        else if (navKeys[i + 1]) focusKey(navKeys[i + 1]);
+      } else if (e.key === "ArrowLeft") {
+        const up = parent();
+        if (item.open) toggleFolder(closedKey, false);
+        else if (up) focusKey(keyOf(up));
+      } else return;
+    } else if (!cur) return;
     else if (e.key === "ArrowRight") {
       if (key !== activeKey) onOpen(cur);
       focusPanel("code");
+    } else if (e.key === "ArrowLeft") {
+      const up = parent();
+      if (!up) return;
+      focusKey(keyOf(up));
     } else if (e.key === "Enter") onOpen(cur, true);
     else if (e.key === " ") pick(cur, e);
     else return;
     e.preventDefault();
   };
 
-  const row = (sel: Change, actions: (rows: Change[]) => React.ReactNode) => {
+  // A row's buttons, for its own file or a folder's (`rows`, every file under it).
+  const actionsFor = (kind: Change["kind"], rows: Change[], file?: FileChange, stageRows = stage) => {
+    const many = rows.length > 1 || !file;
+    if (kind === "conflict")
+      return (
+        <>
+          <RowAction label={many ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => markResolved(rows)}>
+            <Check />
+          </RowAction>
+          <RowAction label={many ? `Take current version of ${files(rows.length)}` : "Take current version"} onClick={() => resolve(rows, "ours")}>
+            <ArrowLeftToLine />
+          </RowAction>
+          <RowAction label={many ? `Take incoming version of ${files(rows.length)}` : "Take incoming version"} onClick={() => resolve(rows, "theirs")}>
+            <ArrowRightToLine />
+          </RowAction>
+        </>
+      );
+    if (kind === "staged")
+      return (
+        <RowAction label={many ? `Unstage ${files(rows.length)}` : "Unstage"} onClick={() => unstage(rows)}>
+          <Minus />
+        </RowAction>
+      );
+    // A file's own button leaves untracked files out (deleting is in its menu); a folder's covers them.
+    const discardable = file ? file.status !== "?" && !keptByRestore(file) : rows.some((r) => !keptByRestore(r.file));
+    return (
+      <>
+        {discardable && (
+          <RowAction label={many ? `Discard ${files(rows.length)}…` : "Discard changes"} onClick={() => discard(rows.map((r) => r.file))}>
+            <Undo2 />
+          </RowAction>
+        )}
+        <RowAction label={many ? `Stage ${files(rows.length)}` : "Stage"} onClick={() => stageRows(rows)}>
+          <Plus />
+        </RowAction>
+      </>
+    );
+  };
+
+  const row = (it: Item & { type: "file" }) => {
+    const sel: Change = { kind: it.kind, file: it.file };
     const key = selectionKey(sel);
     const rows = targets(sel);
     const n = rows.length > 1 ? `${rows.length} ` : "";
@@ -385,6 +496,8 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         onHover={onHover}
         onToggleViewed={() => markViewed(rows, !isViewed)}
         lostFocus={lostFocus}
+        depth={it.depth}
+        label={it.name}
         menu={() => (
           <ChangeRowMenu
             sel={sel}
@@ -406,17 +519,64 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
           />
         )}
       >
-        {actions(rows)}
+        {actionsFor(sel.kind, rows, sel.file)}
       </Row>
     );
   };
 
+  const folderRow = (it: Item & { type: "folder" }) => {
+    const rows = folderRows(it);
+    // Nested repositories in it are left out of its actions, which say so where it matters.
+    const nested = it.files.length - rows.length;
+    const stageFolder = (r: Change[]) => {
+      if (nested) toast("info", leftOut(nested), NESTED_EXPLAINED);
+      return stage(r);
+    };
+    return (
+      <FolderRow
+        key={it.key}
+        rowKey={it.key}
+        path={it.path}
+        label={it.label}
+        depth={it.depth}
+        open={it.open}
+        count={it.files.length}
+        tabStop={tabStop === it.key}
+        onToggle={() => toggleFolder(folderKey(it.kind, it.path))}
+        // Its files left (staged, say): focus goes on as from the first of them.
+        lostFocus={{ ref: lostFocus, as: rows[0] ? selectionKey(rows[0]) : it.key }}
+        menu={() => (
+          <FolderRowMenu
+            kind={it.kind}
+            path={it.path}
+            rows={rows}
+            root={status.root}
+            canStash={!status.operation}
+            viewed={viewed}
+            setViewed={markViewed}
+            onRevealInExplorer={onRevealInExplorer}
+            stage={stageFolder}
+            unstage={unstage}
+            markResolved={markResolved}
+            discard={discard}
+            resolve={resolve}
+            stash={setStashing}
+          />
+        )}
+      >
+        {rows.length > 0 && actionsFor(it.kind, rows, undefined, stageFolder)}
+      </FolderRow>
+    );
+  };
+
   /** A section's rows; with thousands, only those near the screen (and the open, tab-stop and `reach` rows). */
-  const rowsOf = (kind: Change["kind"], title: string, list: FileChange[], render: (file: FileChange) => React.ReactNode) => {
-    const keep = [activeKey, tabStop, reach].map((k) => list.findIndex((file) => selectionKey({ kind, file }) === k));
+  const rowsOf = (kind: Change["kind"], title: string) => {
+    const items = listed[kind];
+    const keep = [activeKey, tabStop, reach].map((k) => items.findIndex((it) => keyOf(it) === k));
+    const render = (it: Item) => (it.type === "folder" ? folderRow(it) : it.file.nested ? <NestedRow key={it.file.path} file={it.file} depth={it.depth} label={it.name} /> : row(it));
     return (
       <div role="tree" aria-label={title} aria-multiselectable>
-        <Windowed count={list.length} height={ROW_HEIGHT} keep={keep} render={(i) => render(list[i])} />
+        <Windowed count={items.length} height={ROW_HEIGHT} keep={keep} render={(i) => render(items[i])} />
       </div>
     );
   };
@@ -429,21 +589,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
       pinned={!!pickedConflicts}
       action={pickedConflicts && <SectionBtn onClick={() => markResolved(pickedConflicts)}>Mark {files(pickedConflicts.length)} resolved</SectionBtn>}
     >
-      {rowsOf("conflict", "Conflicts", status.conflicted, (file) =>
-        row({ kind: "conflict", file }, (rows) => (
-          <>
-            <RowAction label={rows.length > 1 ? `Mark ${files(rows.length)} resolved as they are` : "Mark resolved as it is"} onClick={() => markResolved(rows)}>
-              <Check />
-            </RowAction>
-            <RowAction label={rows.length > 1 ? `Take current version of ${files(rows.length)}` : "Take current version"} onClick={() => resolve(rows, "ours")}>
-              <ArrowLeftToLine />
-            </RowAction>
-            <RowAction label={rows.length > 1 ? `Take incoming version of ${files(rows.length)}` : "Take incoming version"} onClick={() => resolve(rows, "theirs")}>
-              <ArrowRightToLine />
-            </RowAction>
-          </>
-        )),
-      )}
+      {rowsOf("conflict", "Conflicts")}
     </Section>
   );
   const staged = status.staged.length > 0 && (
@@ -462,13 +608,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         )
       }
     >
-      {rowsOf("staged", "Staged", status.staged, (file) =>
-        row({ kind: "staged", file }, (rows) => (
-          <RowAction label={rows.length > 1 ? `Unstage ${files(rows.length)}` : "Unstage"} onClick={() => unstage(rows)}>
-            <Minus />
-          </RowAction>
-        )),
-      )}
+      {rowsOf("staged", "Staged")}
     </Section>
   );
   const changes = status.unstaged.length > 0 && (
@@ -497,24 +637,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         )
       }
     >
-      {rowsOf("unstaged", "Changes", status.unstaged, (file) =>
-        file.nested ? (
-          <NestedRow key={file.path} file={file} />
-        ) : (
-          row({ kind: "unstaged", file }, (rows) => (
-            <>
-              {file.status !== "?" && !keptByRestore(file) && (
-                <RowAction label={rows.length > 1 ? `Discard ${files(rows.length)}` : "Discard changes"} onClick={() => discard(rows.map((r) => r.file))}>
-                  <Undo2 />
-                </RowAction>
-              )}
-              <RowAction label={rows.length > 1 ? `Stage ${files(rows.length)}` : "Stage"} onClick={() => stage(rows)}>
-                <Plus />
-              </RowAction>
-            </>
-          ))
-        ),
-      )}
+      {rowsOf("unstaged", "Changes")}
     </Section>
   );
   const reviewNotes = useNotes().length > 0 && <ReviewNotes changes={all} onOpen={onOpen} />;

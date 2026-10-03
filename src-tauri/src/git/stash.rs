@@ -1,9 +1,10 @@
 //! The stash: saving, applying, branching from and dropping entries.
 
 use super::{
-    command, commit_files, ensure_idle, run, run_text, stoppable, validate_branch, validate_rev,
-    FileChange,
+    command, commit_files, ensure_idle, run, run_text, run_with, stoppable, validate_branch,
+    validate_rev, FileChange,
 };
+use crate::lines::StashPart;
 use crate::process::exec;
 use serde::Serialize;
 use std::path::Path;
@@ -111,6 +112,152 @@ pub fn stash_branch(repo: &Path, name: &str, sha: &str) -> Result<bool, String> 
 pub fn stash_drop(repo: &Path, sha: &str) -> Result<(), String> {
     let r = stash_ref(repo, sha)?;
     run(repo, &["stash", "drop", &r]).map(|_| ())
+}
+
+/// Gives the stash `sha` the message `message` and puts it on top, as lazygit's rename does (a
+/// drop and a store), but storing first: the stash is never missing, whatever fails. It is
+/// stored as a copy of its commit with the new message, since `git stash store` of a commit
+/// that is already the top one changes nothing. A message without the "On branch:" prefix git
+/// writes keeps the prefix the old one had.
+pub fn stash_rename(repo: &Path, sha: &str, message: &str) -> Result<(), String> {
+    let message = message.trim();
+    if message.is_empty() || message.contains(['\n', '\r']) {
+        return Err("A stash needs a one-line name.".into());
+    }
+    validate_rev(sha)?;
+    let old = stashes(repo)?
+        .into_iter()
+        .find(|s| s.sha == sha)
+        .ok_or("That stash is gone (dropped or popped elsewhere).")?;
+    let full = match old.message.split_once(": ") {
+        Some((prefix, _)) if prefix.starts_with("On ") || prefix.starts_with("WIP on ") => {
+            format!(
+                "On {}: {message}",
+                prefix
+                    .trim_start_matches("WIP on ")
+                    .trim_start_matches("On ")
+            )
+        }
+        _ => message.to_string(),
+    };
+    let tree = format!("{sha}^{{tree}}");
+    let tree = run_text(repo, &["rev-parse", "--verify", &tree])?;
+    let family = run_text(repo, &["rev-list", "--parents", "-n", "1", sha])?;
+    let mut args = vec!["commit-tree", tree.trim()];
+    for parent in family.split_whitespace().skip(1) {
+        args.extend(["-p", parent]);
+    }
+    args.extend(["-m", &full]);
+    let copy = run_text(repo, &args)?;
+    run(repo, &["stash", "store", "-m", &full, copy.trim()])?;
+    // Stashes pushed since moved it down, and one can land between looking and dropping: git's
+    // answer says which commit it dropped, and one that isn't ours goes back where it was named.
+    for _ in 0..3 {
+        let list = stashes(repo)?;
+        let at = list
+            .iter()
+            .find(|s| s.sha == sha)
+            .ok_or("The old stash went away while renaming; the renamed one is there.")?;
+        let dropped = run_text(repo, &["stash", "drop", &format!("stash@{{{}}}", at.index)])?;
+        let Some(wrong) = dropped
+            .split(|c: char| !c.is_ascii_hexdigit())
+            .find(|w| w.len() >= 40 && *w != sha)
+        else {
+            return Ok(());
+        };
+        let message = list
+            .iter()
+            .find(|s| s.sha == wrong)
+            .map_or("stash", |s| &s.message);
+        run(repo, &["stash", "store", "-m", message, wrong])?;
+    }
+    Err("The stashes kept changing while renaming; the old name is still there.".into())
+}
+
+/// Stashes the lines `part` says (tracked or new files alike) without touching the index: the
+/// stash is built as objects (its base is the index's own tree, so it holds just the chosen
+/// changes, which also keeps the staged ones out of it) and stored, and only then does the
+/// working tree lose them. A scratch copy of the index makes the trees, so the real file is
+/// only read: nothing here can leave it changed or lost.
+pub fn stash_lines(repo: &Path, message: &str, parts: &[StashPart]) -> Result<(), String> {
+    ensure_idle(repo)?;
+    let head = run_text(repo, &["rev-parse", "--verify", "-q", "HEAD"])
+        .map_err(|_| "Stash needs a first commit.".to_string())?;
+    let head = head.trim();
+    let index = crate::patch::Scratch::index(repo)?;
+    let on_scratch = |args: &[&str], input: Option<&[u8]>| -> Result<String, String> {
+        let out = index.git(repo, args, input)?;
+        Ok(String::from_utf8_lossy(&out).trim().to_string())
+    };
+    let base_tree = on_scratch(&["write-tree"], None)?;
+    for part in parts {
+        match &part.stashed {
+            Some((mode, text)) => {
+                let oid = run_with(
+                    repo,
+                    &["hash-object", "-w", "--path", &part.path, "--stdin"],
+                    &[],
+                    Some(text.as_bytes()),
+                )?;
+                let oid = String::from_utf8_lossy(&oid).trim().to_string();
+                let info = format!("{mode},{oid},{}", part.path);
+                on_scratch(&["update-index", "--add", "--cacheinfo", &info], None)?;
+            }
+            None => {
+                on_scratch(&["update-index", "--force-remove", "--", &part.path], None)?;
+            }
+        }
+    }
+    let stash_tree = on_scratch(&["write-tree"], None)?;
+    if stash_tree == base_tree {
+        return Err("There are no changes to stash.".into());
+    }
+    let branch = run_text(repo, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .map(|b| b.trim().to_string())
+        .unwrap_or_else(|_| "(no branch)".into());
+    let subject = run_text(repo, &["log", "-1", "--format=%h %s", head])?;
+    let subject = subject.trim();
+    let named = message.trim();
+    let label = if named.is_empty() {
+        format!("WIP on {branch}: {subject}")
+    } else {
+        format!("On {branch}: {named}")
+    };
+    let commit = |tree: &str, parents: &[&str], msg: &str| -> Result<String, String> {
+        let mut args = vec!["commit-tree", tree];
+        for p in parents {
+            args.extend(["-p", p]);
+        }
+        args.extend(["-m", msg]);
+        Ok(run_text(repo, &args)?.trim().to_string())
+    };
+    // git's own stash is HEAD, the index's commit and the working tree's; here HEAD is
+    // followed by a commit of the index's tree, which `stash apply` takes as the base to merge from.
+    let base = commit(&base_tree, &[head], &format!("base of {label}"))?;
+    let idx = commit(
+        &base_tree,
+        &[&base],
+        &format!("index on {branch}: {subject}"),
+    )?;
+    let stash = commit(&stash_tree, &[&base, &idx], &label)?;
+    run(repo, &["stash", "store", "-m", &label, &stash]).map(|_| ())
+}
+
+/// Puts one file of a stash in the working tree as the stash has it (an untracked file, from
+/// the stash's third parent: `untracked`); the index stays as it is.
+pub fn stash_restore_file(
+    repo: &Path,
+    sha: &str,
+    path: &str,
+    untracked: bool,
+) -> Result<(), String> {
+    validate_rev(sha)?;
+    let source = if untracked {
+        format!("--source={sha}^3")
+    } else {
+        format!("--source={sha}")
+    };
+    run(repo, &["restore", &source, "--worktree", "--", path]).map(|_| ())
 }
 
 #[derive(Serialize)]

@@ -62,7 +62,8 @@ export function onDisk(s: Selection) {
  * path, a vault's by its tab's key. Null for anything that can't be typed into.
  */
 export function editPath(s: Selection) {
-  if (s.kind === "file") return s.path;
+  // An unstaged diff's new side is the file on disk, typed into as the file view is.
+  if (s.kind === "file" || s.kind === "unstaged") return selectionPath(s);
   return s.kind === "vault" ? selectionKey(s) : null;
 }
 

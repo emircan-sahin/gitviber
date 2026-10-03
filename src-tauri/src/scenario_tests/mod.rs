@@ -25,6 +25,7 @@ mod search;
 #[cfg(unix)]
 mod shell_marks;
 mod stash;
+mod stash_edges;
 mod suggest;
 mod sync;
 mod terminal_links;

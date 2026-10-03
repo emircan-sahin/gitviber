@@ -42,33 +42,53 @@ pub fn apply(base: &str, target: &str, drop: &HashSet<u32>, take: &HashSet<u32>)
         "\n"
     };
     let mut out = String::with_capacity(base.len().max(target.len()));
-    for change in diff.iter_all_changes() {
-        let keep = match change.tag() {
-            ChangeTag::Equal => true,
-            ChangeTag::Delete => !change
-                .old_index()
-                .is_some_and(|i| drop.contains(&(i as u32 + 1))),
-            ChangeTag::Insert => change
-                .new_index()
-                .is_some_and(|i| take.contains(&(i as u32 + 1))),
-        };
-        if keep {
-            // A last line without a newline that is no longer last gets one.
-            if !out.is_empty() && !out.ends_with('\n') {
-                out.push_str(newline);
+    let mut push = |line: &str| {
+        // A last line without a newline that is no longer last gets one.
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push_str(newline);
+        }
+        out.push_str(line);
+    };
+    // A run of changed lines is all its deletes, then all its inserts; taking some of them must
+    // keep each line where its pair is (the 2nd old line stays before the 2nd new one), or a
+    // block with one line picked comes out shuffled.
+    let (mut old, mut new) = (vec![], vec![]);
+    let flush =
+        |old: &mut Vec<Option<&str>>, new: &mut Vec<Option<&str>>, push: &mut dyn FnMut(&str)| {
+            for k in 0..old.len().max(new.len()) {
+                for line in [old.get(k), new.get(k)].into_iter().flatten().flatten() {
+                    push(line);
+                }
             }
-            out.push_str(change.value());
+            old.clear();
+            new.clear();
+        };
+    for change in diff.iter_all_changes() {
+        match change.tag() {
+            ChangeTag::Equal => {
+                flush(&mut old, &mut new, &mut push);
+                push(change.value());
+            }
+            ChangeTag::Delete => {
+                let dropped = change
+                    .old_index()
+                    .is_some_and(|i| drop.contains(&(i as u32 + 1)));
+                old.push((!dropped).then(|| change.value()));
+            }
+            ChangeTag::Insert => {
+                let taken = change
+                    .new_index()
+                    .is_some_and(|i| take.contains(&(i as u32 + 1)));
+                new.push(taken.then(|| change.value()));
+            }
         }
     }
+    flush(&mut old, &mut new, &mut push);
     out
 }
 
-pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
-    let action = req.action.as_str();
-    match (req.kind.as_str(), action) {
-        ("unstaged", "stage" | "discard") | ("staged", "unstage") => {}
-        _ => return Err(format!("can't {action} lines of a {} diff", req.kind)),
-    }
+/// The diff `req` was made from as it is now, once it's checked that it is still what was shown.
+fn live(repo: &Path, req: &Request) -> Result<git::DiffPair, String> {
     let now = git::diff_pair(
         repo,
         &req.kind,
@@ -93,6 +113,59 @@ pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
             ));
         }
     }
+    Ok(now)
+}
+
+/// What stashing some of an unstaged file's lines does to it.
+pub struct StashPart {
+    pub path: String,
+    /// The mode and content the stash keeps the file with (the index's version plus the chosen
+    /// changes); None: the chosen changes delete it.
+    pub stashed: Option<(String, String)>,
+    /// What the working-tree file becomes without them; None: it goes (they were all of a new file).
+    pub left: Option<String>,
+}
+
+/// Works out the stash of the lines `req` picks from an unstaged diff, touching nothing.
+pub fn stash_part(repo: &Path, req: &Request) -> Result<StashPart, String> {
+    if req.kind != "unstaged" || req.action != "stash" {
+        return Err(format!("can't {} lines of a {} diff", req.action, req.kind));
+    }
+    let now = live(repo, req)?;
+    let removed: HashSet<u32> = req.removed.iter().copied().collect();
+    let added: HashSet<u32> = req.added.iter().copied().collect();
+    let (old, new) = (text(&now.original), text(&now.modified));
+    let taken = apply(old, new, &removed, &added);
+    let left = apply(new, old, &added, &removed);
+    if taken == old && (now.original.exists || !taken.is_empty()) {
+        return Err("Nothing is selected.".into());
+    }
+    let deletion = !now.modified.exists && taken.is_empty();
+    Ok(StashPart {
+        path: req.path.clone(),
+        stashed: (!deletion).then(|| (index_mode(repo, &req.path), taken)),
+        left: (now.original.exists || !left.is_empty()).then_some(left),
+    })
+}
+
+/// Stashes the lines `req` picks: the stash is stored first, then the file loses them.
+pub fn stash(repo: &Path, message: &str, req: &Request) -> Result<(), String> {
+    let part = stash_part(repo, req)?;
+    let path = crate::fs::resolve(repo, &req.path)?;
+    git::stash_lines(repo, message, std::slice::from_ref(&part))?;
+    match &part.left {
+        Some(text) => std::fs::write(&path, text).map_err(|e| e.to_string()),
+        None => std::fs::remove_file(&path).map_err(|e| e.to_string()),
+    }
+}
+
+pub fn run(repo: &Path, req: &Request) -> Result<(), String> {
+    let action = req.action.as_str();
+    match (req.kind.as_str(), action) {
+        ("unstaged", "stage" | "discard") | ("staged", "unstage") => {}
+        _ => return Err(format!("can't {action} lines of a {} diff", req.kind)),
+    }
+    let now = live(repo, req)?;
     let removed: HashSet<u32> = req.removed.iter().copied().collect();
     let added: HashSet<u32> = req.added.iter().copied().collect();
     let (old, new) = (text(&now.original), text(&now.modified));

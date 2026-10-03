@@ -477,7 +477,7 @@ impl Scratch {
     }
 
     /// A copy of the index.
-    fn index(repo: &Path) -> Result<Self, String> {
+    pub(crate) fn index(repo: &Path) -> Result<Self, String> {
         let (path, real) = Self::paths(repo, "index", "index")?;
         let index = Scratch(path);
         if real.exists() {
@@ -500,7 +500,12 @@ impl Scratch {
     }
 
     /// git with this as its index.
-    fn git(&self, repo: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+    pub(crate) fn git(
+        &self,
+        repo: &Path,
+        args: &[&str],
+        input: Option<&[u8]>,
+    ) -> Result<Vec<u8>, String> {
         let mut cmd = git::command(repo, args);
         cmd.env("GIT_INDEX_FILE", &self.0);
         crate::process::exec(cmd, "git", &[], input, None)

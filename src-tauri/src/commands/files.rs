@@ -120,6 +120,23 @@ pub async fn path_kinds(
     in_repo(&state, move |r| Ok(fs::kinds(r, &paths))).await
 }
 
+/// When each path (repo-relative) was last modified, in ms since 1970; None: not on disk.
+/// Changes sorts by it, read once per refresh.
+#[tauri::command]
+pub async fn file_mtimes(state: State<'_, AppState>, paths: Vec<String>) -> Res<Vec<Option<f64>>> {
+    in_repo(&state, move |r| {
+        Ok(paths
+            .iter()
+            .map(|p| {
+                let (_, at) = fs::stamp(r, p)?;
+                let since = at.duration_since(std::time::UNIX_EPOCH).ok()?;
+                Some(since.as_millis() as f64)
+            })
+            .collect())
+    })
+    .await
+}
+
 /// Search in files; a newer search stops this one, which then fails with grep::CANCELLED.
 #[tauri::command]
 pub async fn search_files(state: State<'_, AppState>, query: grep::Query) -> Res<grep::Found> {

@@ -298,7 +298,7 @@ export interface LinesRequest {
   path: string;
   oldPath: string | null;
   kind: "unstaged" | "staged";
-  action: "stage" | "unstage" | "discard";
+  action: "stage" | "unstage" | "discard" | "stash";
   /** The texts the diff showed (null: no such file), so a file changed since isn't touched. */
   original: string | null;
   modified: string | null;

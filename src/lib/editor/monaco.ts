@@ -184,9 +184,14 @@ const monacoLanguage = (lang: string) => (lang === "text" ? "plaintext" : lang);
 /**
  * Models for a file's two versions (the old one only for a diff, which then shows git's `rows`),
  * named by their paths. `unit`: spaces per indentation level turned into tabs for display (see
- * lib/editor/indent), or 0.
+ * lib/editor/indent), or 0. `edited`: the model of the file as typed into (lib/editor/edits), which
+ * a diff then shows as its new side, its changes worked out live instead of git's.
  */
-export function createModels(lang: string, path: string, modifiedText: string, original: OldSide | null) {
+export function createModels(lang: string, path: string, modifiedText: string, original: OldSide | null, edited: monaco.editor.ITextModel | null = null) {
+  if (edited) {
+    const unit = unitOf(edited);
+    return { modified: edited, original: original && createModel(original.text, lang, unit, viewUri(original.path)), unit };
+  }
   const i = kept.findIndex(
     (k) =>
       k.lang === lang &&
@@ -260,6 +265,8 @@ export const createEditModel = (text: string, lang: string, path: string) => cre
 /** A model being edited no longer holds the text it's kept under: disposed on release, not kept. */
 export function detachModel(model: monaco.editor.ITextModel) {
   keptBy.delete(model);
+  // Git's diff is of the text it was made for.
+  gitDiffs.delete(model);
 }
 
 function createModel(text: string, lang: string, unit: number, uri?: monaco.Uri) {

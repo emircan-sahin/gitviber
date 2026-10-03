@@ -8,7 +8,7 @@ import { type Change, changeAt, changes, isEmpty, type Picked, pick, type Side, 
 import { monaco } from "./monaco";
 import { toast } from "../app/toast";
 import { copyLater } from "../app/clipboard";
-import { rewriteFiles } from "../repo/undo";
+import { rewriteFiles, tracked, undoAction } from "../repo/undo";
 
 /**
  * Where a diff's lines can go: index → worktree ("unstaged") or HEAD → index ("staged") stage,
@@ -23,7 +23,7 @@ export type StagingSide = ({ kind: "unstaged" | "staged" } | { kind: "commit"; s
 /** A diff on show whose lines can move. */
 export type Staging = StagingSide & { path: string; pair: DiffPair };
 
-export type LineAction = LinesRequest["action"] | "revert";
+export type LineAction = LinesRequest["action"] | "stash" | "revert";
 
 /** The lines a selection takes, first and last. One that ends at the start of a line doesn't take that line. */
 export function selectedLines(sel: monaco.Selection): [number, number] {
@@ -33,12 +33,13 @@ export function selectedLines(sel: monaco.Selection): [number, number] {
 const LABELS: Record<LineAction, [change: string, lines: string, failed: string]> = {
   stage: ["Stage Change", "Stage Selected Lines", "Stage failed"],
   unstage: ["Unstage Change", "Unstage Selected Lines", "Unstage failed"],
+  stash: ["Stash Change", "Stash Selected Lines", "Stash failed"],
   discard: ["Discard Change", "Discard Selected Lines", "Discard failed"],
   revert: ["Revert Change", "Revert Selected Lines", "Revert failed"],
 };
 
 // Which diff each action is on: its menu item's precondition, and the hover bar's buttons in this order.
-const KIND_OF: Record<LineAction, Staging["kind"]> = { stage: "unstaged", discard: "unstaged", unstage: "staged", revert: "commit" };
+const KIND_OF: Record<LineAction, Staging["kind"]> = { stage: "unstaged", stash: "unstaged", discard: "unstaged", unstage: "staged", revert: "commit" };
 const actionsFor = (kind: Staging["kind"]) => (Object.keys(KIND_OF) as LineAction[]).filter((a) => KIND_OF[a] === kind);
 
 async function run(s: Staging, action: LineAction, p: Picked) {
@@ -61,7 +62,11 @@ async function run(s: Staging, action: LineAction, p: Picked) {
   };
   if (action === "discard") return rewriteFiles(`Discarded lines in ${s.path}`, LABELS.discard[2], () => api.changeLines(request), s.refresh);
   try {
-    await api.changeLines(request);
+    if (action === "stash") {
+      // Not a branch move: Undo puts the file back, the stash stays to drop.
+      const [, entry] = await tracked(() => api.stashLines("", request));
+      toast("success", `Stashed lines of ${s.path}`, "Name it in Stashes. Undo puts the lines back; the stash stays.", undoAction(entry, s.refresh));
+    } else await api.changeLines(request);
   } catch (e) {
     toast("error", LABELS[action][2], errorMessage(e));
   }
@@ -206,7 +211,7 @@ function hoverBar(diff: monaco.editor.IStandaloneDiffEditor, staging: () => Stag
       node.replaceChildren(
         ...actionsFor(s.kind).map((action) => {
           const b = document.createElement("button");
-          b.textContent = action === "stage" ? "Stage" : action === "unstage" ? "Unstage" : "Discard";
+          b.textContent = action === "stage" ? "Stage" : action === "unstage" ? "Unstage" : action === "stash" ? "Stash" : "Discard";
           b.title = LABELS[action][0];
           b.className = action === "discard" ? "gv-hunk-discard" : "";
           b.onclick = () => {

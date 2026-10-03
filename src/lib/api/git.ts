@@ -92,6 +92,8 @@ export const api = {
   definitions: (request: DefinitionRequest) => invoke<Definition[]>("definitions", { request }),
   /** Where the name is used, its definition and imports included; rejects like `definitions`. */
   references: (request: DefinitionRequest) => invoke<Definition[]>("references", { request }),
+  /** Modified times (ms) of repo files; null: not on disk. */
+  fileMtimes: (paths: string[]) => invoke<(number | null)[]>("file_mtimes", { paths }),
   readFile: (path: string) => invoke<FileText>("read_file", { path }),
   /** Every file in a commit (`<sha>`, or `<sha>^` for its parent): where its links resolve. */
   treePaths: (rev: string) => invoke<string[]>("tree_paths", { rev }),
@@ -277,6 +279,12 @@ export const api = {
   /** `pop` also drops it, unless it stopped on conflicts (true). */
   stashApply: (sha: string, pop: boolean) => invoke<boolean>("stash_apply", { sha, pop }),
   stashDrop: (sha: string) => invoke<void>("stash_drop", { sha }),
+  /** Stashes the chosen lines of an unstaged diff, the index untouched; the file's old version goes to the Trash (see `tracked`). */
+  stashLines: (message: string, request: LinesRequest) => invoke<void>("stash_lines", { message, request }),
+  /** One file of a stash into the working tree (`untracked`: from its untracked files); what it replaces goes to the Trash. */
+  stashRestoreFile: (sha: string, path: string, untracked: boolean) => invoke<void>("stash_restore_file", { sha, path, untracked }),
+  /** Another message for a stash, which moves to the top. */
+  stashRename: (sha: string, message: string) => invoke<void>("stash_rename", { sha, message }),
   createBranchAt: (name: string, sha: string) => invoke<void>("create_branch_at", { name, sha }),
   /** With a `message`, an annotated tag. */
   createTag: (name: string, sha: string, message?: string) => invoke<void>("create_tag", { name, sha, message }),
