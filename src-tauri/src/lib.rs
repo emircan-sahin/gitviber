@@ -319,6 +319,8 @@ pub fn run() {
             commands::github::github_permalink,
             commands::github::gh_account,
             commands::github::gh_accounts,
+            commands::github::gh_connect,
+            commands::github::gh_allow_store,
             commands::github::gh_use_account,
             commands::github::gh_protected_branches,
             commands::github::gh_original_remote,

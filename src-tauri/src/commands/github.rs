@@ -22,6 +22,21 @@ pub async fn gh_account(app: AppHandle) -> Res<github::Account> {
     with_github(app, github::account).await
 }
 
+/// Looks for a GitHub token now, as the user asked to: gh's, and with `store` git's credential
+/// store too (which may show the OS's password dialog). Returns where it came from. Nothing else
+/// asks the store, so a screen load never raises that dialog.
+#[tauri::command]
+pub async fn gh_connect(app: AppHandle, store: bool) -> Res<String> {
+    with_github(app, move |gh, r| gh.connect(r, store).map(str::to_string)).await
+}
+
+/// Set as a project opens, from what the user chose before: whether git's credential store may be
+/// asked once a session without a click.
+#[tauri::command]
+pub fn gh_allow_store(state: State<'_, AppState>, allow: bool) {
+    state.github.allow_store(allow);
+}
+
 /// gh's accounts on github.com; asked for when the repository's settings open.
 #[tauri::command]
 pub async fn gh_accounts() -> Res<Vec<github::GhAccount>> {
