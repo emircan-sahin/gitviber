@@ -166,6 +166,10 @@ export const github = {
   account: () => invoke<GitHubAccount>("gh_account"),
   /** Asks GitHub about every account's token, so only on demand. */
   accounts: () => invoke<GhAccount[]>("gh_accounts"),
+  /** Looks for a token now, in git's credential store too when `store` (the OS may ask for a password). Resolves with where it came from; rejects with GITHUB_NOT_CONNECTED. */
+  connect: (store: boolean) => invoke<"gh" | "git">("gh_connect", { store }),
+  /** Whether git's credential store may be asked once a session without a click: only for who connected through it before. */
+  allowStore: (allow: boolean) => invoke<void>("gh_allow_store", { allow }),
   /** The gh account the open repository's GitHub calls use; null follows gh's active one. */
   setAccount: (login: string | null) => invoke<void>("gh_use_account", { login }),
   /** Origin's branches under branch protection (names without "origin/"). */

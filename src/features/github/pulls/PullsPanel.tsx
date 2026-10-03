@@ -61,7 +61,7 @@ export function PullsPanel({ status, branches, lastCommit, activeKey, onOpen, re
   const upCounts = useGitHubData(upstream ? `pulls:counts:${upstream}` : null, useCallback(() => github.counts(upstream), [upstream]));
   const load = useReloadAll(pullsChanged, acct, own, up, ownCounts, upCounts);
 
-  if (isNotConnected(failure)) return <ConnectGitHub onRetry={load} />;
+  if (isNotConnected(failure)) return <ConnectGitHub />;
 
   // This branch's open PR, in either repository. Another fork's same-named branch isn't it.
   const originName = origin ? fullName(origin.repo).toLowerCase() : null;
