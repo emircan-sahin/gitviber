@@ -130,6 +130,10 @@ pub fn cherry_pick_many(repo: &Path, shas: &[String]) -> Result<bool, String> {
     }
     args.extend(shas.iter().map(String::as_str));
     let result = skip_empty(repo, stoppable(repo, run(repo, &args)));
+    // Refused part-way (a changed file in the way): nothing to resolve, so back to the start.
+    if result.is_err() && operation(repo).is_some_and(|op| op.kind == "cherry-pick") {
+        let _ = run(repo, &["cherry-pick", "--abort"]);
+    }
     if result.is_ok()
         && operation(repo).is_none()
         && run_text(repo, &["rev-parse", "HEAD"])? == before
