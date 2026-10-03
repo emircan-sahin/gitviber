@@ -452,9 +452,15 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
               <File /> Open <ContextMenuShortcut>↵</ContextMenuShortcut>
             </ContextMenuItem>
             <ContextMenuSeparator />
-            <ContextMenuItem disabled={!status} onSelect={() => status && fileMark.set({ root: status.root, path: t.path })}>
-              <SquareDashedMousePointer /> Select for Compare
-            </ContextMenuItem>
+            {mark?.path === t.path ? (
+              <ContextMenuItem onSelect={fileMark.clear}>
+                <SquareDashedMousePointer /> Clear Compare Selection
+              </ContextMenuItem>
+            ) : (
+              <ContextMenuItem disabled={!status} onSelect={() => status && fileMark.pick({ root: status.root, path: t.path }, basename(t.path))}>
+                <SquareDashedMousePointer /> Select for Compare
+              </ContextMenuItem>
+            )}
             {marked && (
               <ContextMenuItem onSelect={() => onOpen(filesSelection(marked, t.path), true)}>
                 <GitCompare /> Compare with {basename(marked)}
