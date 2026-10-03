@@ -146,8 +146,8 @@ can be rebound in Settings, and holding `⌘` shows them all.
 | **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Pin branches to the top of the picker, with the ones you checked out last under them. Clean up the merged ones in one go, squash- and rebase-merged included |
 | **Patches** | Copy a file, a few lines, a commit or a stash as a patch. Apply one from the clipboard: it shows what it changes first, merges with your edits where it must, and `⌘Z` takes it back |
 | **Conflicts** | Resolve block by block (current, incoming, both, or by hand) with each block's merge base a click away, then continue, skip or abort. Or hand them to the agent in your terminal, or open them in the merge tool your git config names |
-| **Pull requests** | List, read, review in the same diff viewer, create, merge and check out. Read one commit by commit: pick a commit, or a run of them, to see only what they changed. See why a check failed and copy it for the agent (GitHub) |
-| **Issues** | List, read, open, edit, comment, close and reopen, or start one in its own worktree (GitHub) |
+| **Pull requests** | List (narrow it to the ones you created, are assigned, are asked to review or are mentioned in, or to drafts and labels, and it remembers per repository), read, review in the same diff viewer, create, merge and check out. Read one commit by commit: pick a commit, or a run of them, to see only what they changed. See why a check failed and copy it for the agent (GitHub) |
+| **Issues** | List (narrow it to the ones you created, are assigned or are mentioned in, or by label), read, open, edit, comment, close and reopen, or start one in its own worktree (GitHub) |
 
 ## Install
 

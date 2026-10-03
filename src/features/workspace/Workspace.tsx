@@ -483,12 +483,13 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     status={status}
                     branches={repo.branches}
                     lastCommit={repo.commits[0] ?? null}
+                    repoKey={main}
                     activeKey={activeKey}
                     onOpen={open}
                     refreshRepo={() => repo.refresh()}
                   />
                 )}
-                {listTab === "issues" && <IssuesPanel activeKey={activeKey} onOpen={open} />}
+                {listTab === "issues" && <IssuesPanel repoKey={main} activeKey={activeKey} onOpen={open} />}
                 {listTab === "history" && (
                   <SearchableHistory
                     main={main}

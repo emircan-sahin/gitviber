@@ -1,4 +1,4 @@
-import { Check, ChevronDown, Search, Tag } from "lucide-react";
+import { Check, ChevronDown, Search, Tag, X } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { errorMessage, type IssueLabel, issues, type Target } from "@/lib/api";
@@ -16,12 +16,15 @@ export function LabelFilter({
   selected,
   onChange,
   counted,
+  noun = "Issues",
 }: {
   upstream: string | null;
   selected: IssueLabel[];
   onChange: (labels: IssueLabel[]) => void;
   /** The filters beside it show counts: its word goes first, as New's does. */
   counted: boolean;
+  /** What the list holds, for the hint on picking several. */
+  noun?: "Issues" | "Pull requests";
 }) {
   // Spelled out: Tailwind only finds whole class names.
   const hide = counted ? "@max-[380px]:hidden" : "@max-[300px]:hidden";
@@ -30,7 +33,7 @@ export function LabelFilter({
       repos={upstream ? [null, upstream] : [null]}
       selected={selected}
       onChange={onChange}
-      hint={selected.length > 1 ? "Issues with all of them" : undefined}
+      hint={selected.length > 1 ? `${noun} with all of them` : undefined}
       align="end"
     >
       {/* Compact: the chosen labels show in a row of their own under the header. */}
@@ -51,6 +54,33 @@ export function LabelFilter({
         )}
       </button>
     </LabelPicker>
+  );
+}
+
+/** The labels a list is filtered by, each to take off, under its header. */
+export function SelectedLabels({ labels, onChange }: { labels: IssueLabel[]; onChange: (labels: IssueLabel[]) => void }) {
+  if (labels.length === 0) return null;
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
+      {labels.map((l) => (
+        <span key={l.name} className="inline-flex max-w-48 items-center gap-1 rounded-full border border-border-strong bg-active pr-0.5 pl-1.5 text-[10.5px] leading-4">
+          <LabelDot label={l} />
+          <span className="truncate">{l.name}</span>
+          <button
+            aria-label={`Remove ${l.name}`}
+            onClick={() => onChange(labels.filter((m) => m.name !== l.name))}
+            className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
+          >
+            <X className="size-2.5" />
+          </button>
+        </span>
+      ))}
+      {labels.length > 1 && (
+        <button onClick={() => onChange([])} className="ml-auto px-1 text-[10.5px] text-subtle hover:text-foreground focus-visible:text-foreground">
+          Clear
+        </button>
+      )}
+    </div>
   );
 }
 

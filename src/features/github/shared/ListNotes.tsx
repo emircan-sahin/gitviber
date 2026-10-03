@@ -13,6 +13,15 @@ export function EmptyNote({ roomy, children }: { roomy: boolean; children: React
   return <div className={cn("px-4 text-center text-[12px] text-subtle", roomy ? "pt-16" : "py-3")}>{children}</div>;
 }
 
+/** Beside an empty list that a filter emptied. */
+export function ClearNarrow({ onClick }: { onClick: () => void }) {
+  return (
+    <button onClick={onClick} className="ml-1 font-medium text-primary hover:underline">
+      Clear filter
+    </button>
+  );
+}
+
 export function SignedInAs({ account }: { account: GitHubAccount }) {
   return (
     <div className="shrink-0 border-t border-border px-3 py-1.5 text-[10.5px] text-subtle">

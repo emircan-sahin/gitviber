@@ -1,7 +1,7 @@
 import { FolderGit2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { type GitHubAccount, PR_PAGE, type Pull, type Target } from "@/lib/api";
+import { type GitHubAccount, type Narrow, PR_PAGE, type Pull, type Target } from "@/lib/api";
 import { CiBadge } from "@/components/CiBadge";
 import { useCi } from "@/lib/github/ci";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
@@ -13,16 +13,20 @@ import type { Filter } from "@/features/github/shared/FilterTabs";
 import { LinkMenu } from "@/features/github/shared/LinkMenu";
 import { PullStateIcon } from "@/features/github/shared/StateBadges";
 import { pullSource } from "./pullSource";
-import { EmptyNote, ListError } from "@/features/github/shared/ListNotes";
+import { ClearNarrow, EmptyNote, ListError } from "@/features/github/shared/ListNotes";
+import { emptyText, isNarrowed } from "@/features/github/shared/narrow";
 
-/** github/client.rs reads at most this many pages. */
+/** github/client.rs reads at most this many pages; a search (github/search.rs) stops at GitHub's 1000 results. */
 const MAX_PAGES = 30;
+const MAX_SEARCH_PAGES = 10;
 
 export function PullRows({
   pulls: loaded,
   match,
   error,
   filter,
+  narrow,
+  onClearNarrow,
   activeKey,
   onOpen,
   account,
@@ -37,6 +41,8 @@ export function PullRows({
   match: ((p: Pull) => boolean) | null;
   error: string | null;
   filter: Filter;
+  narrow: Narrow;
+  onClearNarrow: () => void;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   /** For where a PR would be checked out; null until it loads. */
@@ -50,6 +56,8 @@ export function PullRows({
   /** The repository the PRs are on, for their checks. */
   target: Target;
 }) {
+  const narrowed = isNarrowed(narrow);
+  const maxPages = narrowed ? MAX_SEARCH_PAGES : MAX_PAGES;
   const full = loaded?.length === shown * PR_PAGE;
   const pulls = match ? (loaded?.filter(match) ?? null) : loaded;
   const ci = useCi(target, (loaded ?? []).filter((p) => p.state === "open").map((p) => p.headSha));
@@ -59,7 +67,8 @@ export function PullRows({
       <ListError error={error} loaded={!!loaded} />
       {pulls?.length === 0 && (
         <EmptyNote roomy={roomy}>
-          {match && loaded?.length ? `None of the ${loaded?.length} loaded pull requests match.` : `No ${filter === "all" ? "" : filter} pull requests.`}
+          {match && loaded?.length ? `None of the ${loaded?.length} loaded pull requests match.` : emptyText("pulls", filter, narrow)}
+          {narrowed && !(match && loaded?.length) && <ClearNarrow onClick={onClearNarrow} />}
         </EmptyNote>
       )}
       <div role="listbox" aria-label="Pull requests" {...nav}>
@@ -106,7 +115,7 @@ export function PullRows({
         );
       })}
       </div>
-      {full && shown < MAX_PAGES && (
+      {full && shown < maxPages && (
         <div className="p-2">
           <Button variant="secondary" size="sm" className="w-full" disabled={loading} onClick={onMore}>
             {loading ? "Loading…" : "Load more"}
@@ -114,7 +123,7 @@ export function PullRows({
         </div>
       )}
       {/* Past client.rs's cap: say so rather than look complete. */}
-      {full && shown >= MAX_PAGES && <div className="px-4 py-2 text-center text-[11px] text-subtle">Showing the {loaded.length} most recently updated</div>}
+      {full && shown >= maxPages && <div className="px-4 py-2 text-center text-[11px] text-subtle">Showing the {loaded.length} most recently updated</div>}
     </>
   );
 }

@@ -1,9 +1,9 @@
-import { MessageSquare, Plus, RefreshCw, X } from "lucide-react";
+import { MessageSquare, Plus, RefreshCw } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
-import { errorMessage, fullName, type Issue, type IssueLabel, isNotConnected, issues, type Target } from "@/lib/api";
+import { errorMessage, fullName, type Issue, type IssueLabel, isNotConnected, issues, type Narrow, type Target } from "@/lib/api";
 import { useGitHubData } from "@/lib/github/githubCache";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { useListNav } from "@/lib/ui/useListNav";
@@ -17,14 +17,17 @@ import { RepoPanes } from "@/components/RepoPanes";
 import { IssueStateIcon } from "@/features/github/shared/StateBadges";
 import { issuesChanged } from "@/features/github/shared/changed";
 import { useGitHubAccount, useReloadAll } from "@/features/github/shared/useGitHubAccount";
-import { EmptyNote, ListError, SignedInAs } from "@/features/github/shared/ListNotes";
-import { LabelChip, LabelDot } from "./IssueBadges";
-import { LabelFilter } from "./LabelPicker";
+import { ClearNarrow, EmptyNote, ListError, SignedInAs } from "@/features/github/shared/ListNotes";
+import { NarrowBar } from "@/features/github/shared/NarrowBar";
+import { emptyText, isNarrowed, narrowKey, NO_CHOICE } from "@/features/github/shared/narrow";
+import { useNarrow } from "@/features/github/shared/useNarrow";
+import { LabelChip } from "./IssueBadges";
+import { LabelFilter, SelectedLabels } from "./LabelPicker";
 import { CreateIssueDialog } from "./CreateIssueDialog";
 
-export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; onOpen: (s: Selection, pin?: boolean) => void }) {
+/** `repoKey`: the repository's main worktree, what the chips' choice is kept under. */
+export function IssuesPanel({ repoKey, activeKey, onOpen }: { repoKey: string | undefined; activeKey: string | null; onOpen: (s: Selection, pin?: boolean) => void }) {
   const [filter, setFilter] = useState<Filter>("open");
-  const [labels, setLabels] = useState<IssueLabel[]>([]);
   const find = useListFilter("git", "Filter loaded issues");
   const match = (i: Issue) => find.matches(i.title, `#${i.number}`, i.author, ...i.labels.map((l) => l.name));
   const addLabel = (label: IssueLabel) => setLabels((l) => (l.some((m) => m.name === label.name) ? l : [...l, label]));
@@ -32,19 +35,22 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
   const [creating, setCreating] = useState<{ target: Target } | null>(null);
   const acct = useGitHubAccount();
   const { account, origin, parent, upstream } = acct;
+  // The chips that name the account wait on it, but not for it: the saved one lists at once.
+  const meUsable = acct.error === undefined || !!account;
+  const meReason = meUsable ? null : isNotConnected(acct.error) ? "Sign in to GitHub to filter by you" : "Your GitHub account couldn't be read";
+  const { choice, setChoice, labels, setLabels, narrow } = useNarrow("issues", repoKey, meUsable);
   // Forks start with issues off: nothing is listed where they are.
-  const query = `${filter}:${JSON.stringify(labels.map((l) => l.name))}`;
-  const own = useGitHubData(`issues:origin:${query}`, useCallback(() => issues.list(null, filter, labels.map((l) => l.name)), [filter, labels]));
+  const tag = narrowKey(narrow);
+  const own = useGitHubData(`issues:origin:${filter}:${tag}`, useCallback(() => issues.list(null, filter, narrow), [filter, narrow]));
   const up = useGitHubData(
-    upstream && parent?.issues ? `issues:${upstream}:${query}` : null,
-    useCallback(() => issues.list(upstream, filter, labels.map((l) => l.name)), [upstream, filter, labels]),
+    upstream && parent?.issues ? `issues:${upstream}:${filter}:${tag}` : null,
+    useCallback(() => issues.list(upstream, filter, narrow), [upstream, filter, narrow]),
   );
   // Counted apart from the list, which holds only the 50 most recent.
-  const labelKey = JSON.stringify(labels.map((l) => l.name));
-  const ownCounts = useGitHubData(`issues:counts:origin:${labelKey}`, useCallback(() => issues.counts(null, labels.map((l) => l.name)), [labels]));
+  const ownCounts = useGitHubData(`issues:counts:origin:${tag}`, useCallback(() => issues.counts(null, narrow), [narrow]));
   const upCounts = useGitHubData(
-    upstream && parent?.issues ? `issues:counts:${upstream}:${labelKey}` : null,
-    useCallback(() => issues.counts(upstream, labels.map((l) => l.name)), [upstream, labels]),
+    upstream && parent?.issues ? `issues:counts:${upstream}:${tag}` : null,
+    useCallback(() => issues.counts(upstream, narrow), [upstream, narrow]),
   );
   const failure = acct.error ?? own.error;
   const error = failure === undefined ? null : errorMessage(failure);
@@ -54,7 +60,11 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
 
   if (isNotConnected(failure)) return <ConnectGitHub onRetry={load} subject="issues" />;
 
-  const rowProps = { match: find.needle ? match : null, filter, labels, onLabel: addLabel, onClearLabels: () => setLabels([]), activeKey, onOpen };
+  const clearNarrow = () => {
+    setChoice(NO_CHOICE);
+    setLabels([]);
+  };
+  const rowProps = { match: find.needle ? match : null, filter, narrow, onLabel: addLabel, onClearNarrow: clearNarrow, activeKey, onOpen };
   const ownRows = (roomy: boolean) => <IssueRows items={own.data ?? null} error={error} roomy={roomy} {...rowProps} />;
 
   return (
@@ -80,28 +90,8 @@ export function IssuesPanel({ activeKey, onOpen }: { activeKey: string | null; o
           )}
         </div>
       </div>
-      {labels.length > 0 && (
-        <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
-          {labels.map((l) => (
-            <span key={l.name} className="inline-flex max-w-48 items-center gap-1 rounded-full border border-border-strong bg-active pr-0.5 pl-1.5 text-[10.5px] leading-4">
-              <LabelDot label={l} />
-              <span className="truncate">{l.name}</span>
-              <button
-                aria-label={`Remove ${l.name}`}
-                onClick={() => setLabels((ls) => ls.filter((m) => m.name !== l.name))}
-                className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
-              >
-                <X className="size-2.5" />
-              </button>
-            </span>
-          ))}
-          {labels.length > 1 && (
-            <button onClick={() => setLabels([])} className="ml-auto px-1 text-[10.5px] text-subtle hover:text-foreground focus-visible:text-foreground">
-              Clear
-            </button>
-          )}
-        </div>
-      )}
+      <NarrowBar kind="issues" choice={choice} onChange={setChoice} meReason={meReason} />
+      <SelectedLabels labels={labels} onChange={setLabels} />
       {find.bar}
       {parent && upstream ? (
         <div className="min-h-0 flex-1">
@@ -160,9 +150,9 @@ function IssueRows({
   match,
   error,
   filter,
-  labels,
+  narrow,
   onLabel,
-  onClearLabels,
+  onClearNarrow,
   activeKey,
   onOpen,
   roomy,
@@ -172,9 +162,9 @@ function IssueRows({
   match: ((i: Issue) => boolean) | null;
   error: string | null;
   filter: Filter;
-  labels: IssueLabel[];
+  narrow: Narrow;
   onLabel: (label: IssueLabel) => void;
-  onClearLabels: () => void;
+  onClearNarrow: () => void;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   /** The whole panel, not a pane: the empty note sits lower. */
@@ -188,12 +178,8 @@ function IssueRows({
       {match && !!loaded?.length && items?.length === 0 && <EmptyNote roomy={roomy}>None of the {loaded?.length} loaded issues match.</EmptyNote>}
       {!(match && loaded?.length) && items?.length === 0 && (
         <EmptyNote roomy={roomy}>
-          No {filter === "all" ? "" : filter} issues{labels.length > 0 && (labels.length === 1 ? " with this label" : " with all these labels")}.
-          {labels.length > 0 && (
-            <button onClick={onClearLabels} className="ml-1 font-medium text-primary hover:underline">
-              Clear labels
-            </button>
-          )}
+          {emptyText("issues", filter, narrow)}
+          {isNarrowed(narrow) && <ClearNarrow onClick={onClearNarrow} />}
         </EmptyNote>
       )}
       <div role="listbox" aria-label="Issues" {...nav}>
