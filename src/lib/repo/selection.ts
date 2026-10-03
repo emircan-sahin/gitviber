@@ -19,6 +19,9 @@ export interface ComparePoint {
   label: string;
 }
 
+/** A stored tab's point, which a build that wrote it may have shaped otherwise: the screen reads both sides' labels. */
+export const isComparePoint = (p: unknown): p is ComparePoint => typeof p === "object" && p !== null && typeof (p as ComparePoint).ref === "string" && typeof (p as ComparePoint).label === "string";
+
 export type Selection =
   | { kind: "unstaged" | "staged" | "conflict"; file: FileChange }
   // `url`: the commit's GitHub page, when it's there (History knows; a fork's original has it too).

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Commit } from "../api/types.ts";
-import { filesSelection, onDisk, selectionKey, selectionPath } from "./selection.ts";
+import { filesSelection, isComparePoint, onDisk, selectionKey, selectionPath } from "./selection.ts";
 
 test("two working-tree files compared make one tab per pair, the right one's path its own", () => {
   const ab = filesSelection("src/a.ts", "src/b.ts");
@@ -46,4 +46,9 @@ test("the Compare screen is one tab, whichever two points it shows", () => {
   const one = selectionKey({ kind: "compare", base: side("main"), head: side("a"), mergeBase: true });
   assert.equal(one, selectionKey({ kind: "compare", base: side("dev"), head: side("b"), mergeBase: false }));
   assert.equal(selectionPath({ kind: "compare", base: side("main"), head: side("a"), mergeBase: true }), "Compare");
+});
+
+test("a stored comparison with a side missing or misshapen isn't taken for one", () => {
+  assert.ok(isComparePoint({ ref: "refs/heads/a", label: "a" }));
+  for (const bad of [undefined, null, "a", {}, { ref: "refs/heads/a" }, { ref: 1, label: "a" }]) assert.equal(isComparePoint(bad), false);
 });
