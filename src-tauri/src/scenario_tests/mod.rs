@@ -7,6 +7,7 @@ mod commits;
 mod content;
 mod conversations;
 mod history;
+mod history_more;
 mod journal;
 mod lines;
 mod obsidian;
