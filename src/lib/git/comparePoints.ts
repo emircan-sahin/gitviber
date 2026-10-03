@@ -20,12 +20,6 @@ export function defaultPoints(branches: Pick<Branch, "name" | "remote" | "remote
 }
 
 /**
- * What `git merge` is given for a point: a branch by its name, as the branch picker does; a tag by
- * its full ref, which a branch of the same name couldn't be taken for; a commit by its id.
- */
-export const mergeName = (p: ComparePoint) => (pointKind(p.ref) === "tag" ? p.ref : shortRef(p.ref));
-
-/**
  * GitHub's page for a comparison, as `base...head` (a PR's view) or `base..head`. Only what GitHub
  * knows by name: a branch, a tag or a commit, and a remote branch only of `origin`.
  */

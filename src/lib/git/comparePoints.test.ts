@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { branchPoint, commitPoint, defaultPoints, githubCompareUrl, HEAD_POINT, mergeName, pointKind, tagPoint } from "./comparePoints.ts";
+import { branchPoint, commitPoint, defaultPoints, githubCompareUrl, HEAD_POINT, pointKind, tagPoint } from "./comparePoints.ts";
 
 const sha = "0123456789abcdef0123456789abcdef01234567";
 
@@ -20,13 +20,6 @@ test("the screen starts on origin's default branch against the branch checked ou
   assert.deepEqual(defaultPoints(branches, "fix"), { base: { ref: "refs/remotes/origin/main", label: "origin/main" }, head: { ref: "refs/heads/fix", label: "fix" } });
   // Detached, and no default branch to be found: HEAD on both sides, for the person to pick from.
   assert.deepEqual(defaultPoints([], null), { base: HEAD_POINT, head: HEAD_POINT });
-});
-
-test("a tag is merged by its full ref, a branch by its name, a commit by its id", () => {
-  assert.equal(mergeName(branchPoint({ name: "feature", remote: false })), "feature");
-  assert.equal(mergeName(branchPoint({ name: "origin/feature", remote: true })), "origin/feature");
-  assert.equal(mergeName(tagPoint("main")), "refs/tags/main");
-  assert.equal(mergeName(commitPoint(sha)), sha);
 });
 
 test("GitHub's compare page needs names it knows", () => {
