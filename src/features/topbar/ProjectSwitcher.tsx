@@ -58,7 +58,7 @@ export function ProjectSwitcher({ repo, root, main, recent, onOpenRepo, onForget
       <PopoverContent align="start" className="flex w-80 flex-col overflow-hidden">
         <div className="px-3 pt-2.5 pb-1 text-[10.5px] font-semibold tracking-[0.08em] text-subtle uppercase">Projects</div>
         <div className="max-h-[360px] min-h-0 overflow-x-hidden overflow-y-auto p-1">
-          <ProjectList recent={recent} current={main} onOpen={pick} onForget={onForgetRepo} onReorder={onReorderRepos} onLocate={locate} onTerminal={terminal} />
+          <ProjectList recent={recent} current={main} away={root === main ? undefined : { folder: folderName(root), mainBranch: repo.worktrees.find((w) => w.main)?.branch ?? null }} onOpen={pick} onForget={onForgetRepo} onReorder={onReorderRepos} onLocate={locate} onTerminal={terminal} />
         </div>
         <div className="border-t border-border p-1">
           <button onClick={() => pick()} className="flex h-7 w-full items-center gap-2 rounded-sm px-2 text-[12px] hover:bg-hover focus-visible:bg-hover">

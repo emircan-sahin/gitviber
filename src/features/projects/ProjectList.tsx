@@ -1,4 +1,4 @@
-import { ArrowUpToLine, Check, Copy, ExternalLink, FolderOpen, FolderSearch, SquareTerminal, X } from "lucide-react";
+import { ArrowUpToLine, Check, Copy, CornerUpLeft, ExternalLink, FolderOpen, FolderSearch, SquareTerminal, X } from "lucide-react";
 import { arrayMove } from "@dnd-kit/sortable";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -15,8 +15,10 @@ import { useAsyncValue } from "@/hooks/useAsyncValue";
 
 export interface ProjectListProps {
   recent: string[];
-  /** The open project: it can't be opened again or removed. */
+  /** The open project: it can't be removed, and opening it again does nothing. */
   current?: string;
+  /** The open project is entered through a linked worktree: its row then opens the main folder, as a row of another project would. */
+  away?: { folder: string; mainBranch: string | null };
   onOpen: (path: string) => void;
   onForget: (path: string) => void;
   onReorder: (list: string[]) => void;
@@ -44,7 +46,7 @@ function useProjectInfo(paths: string[]) {
  * The saved projects, shared by the top bar's switcher and the welcome screen. Rows open on
  * click or ↵, reorder by dragging, and have hover actions and a right-click menu (also ⇧F10).
  */
-export function ProjectList({ recent, current, onOpen, onForget, onReorder, onLocate, onTerminal }: ProjectListProps) {
+export function ProjectList({ recent, current, away, onOpen, onForget, onReorder, onLocate, onTerminal }: ProjectListProps) {
   const info = useProjectInfo(recent);
   const tabStop = current && recent.includes(current) ? current : recent[0];
 
@@ -66,7 +68,7 @@ export function ProjectList({ recent, current, onOpen, onForget, onReorder, onLo
     else if (e.key === "ArrowUp") rows[Math.max(0, i - 1)].focus();
     else if (e.key === "Enter" || e.key === " ") {
       if (info.get(path)?.exists === false) onLocate(path);
-      else if (path !== current) onOpen(path);
+      else if (path !== current || away) onOpen(path);
     }
     else return;
     e.preventDefault();
@@ -81,6 +83,7 @@ export function ProjectList({ recent, current, onOpen, onForget, onReorder, onLo
             path={p}
             info={info.get(p)}
             current={p === current}
+            away={p === current ? away : undefined}
             first={i === 0}
             tabStop={p === tabStop}
             onOpen={onOpen}
@@ -99,6 +102,7 @@ function ProjectRow({
   path,
   info,
   current,
+  away,
   first,
   tabStop,
   onOpen,
@@ -110,6 +114,7 @@ function ProjectRow({
   path: string;
   info: ProjectInfo | undefined;
   current: boolean;
+  away?: { folder: string; mainBranch: string | null };
   first: boolean;
   tabStop: boolean;
   onOpen: (p: string) => void;
@@ -123,6 +128,9 @@ function ProjectRow({
   // Unknown until project_info answers; treat it as there rather than flash every row dimmed.
   const missing = info?.exists === false;
   const github = info?.github;
+  // Opening the open project does nothing, unless the window is in one of its worktrees.
+  const here = current && !away;
+  const openLabel = away ? `Open the main folder${away.mainBranch ? `, on ${away.mainBranch}` : ""}` : "Open";
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -132,17 +140,18 @@ function ProjectRow({
           tabIndex={tabStop ? 0 : -1}
           data-project={path}
           aria-current={current || undefined}
-          onClick={guard(() => (missing ? onLocate(path) : !current && onOpen(path)))}
+          onClick={guard(() => (missing ? onLocate(path) : !here && onOpen(path)))}
           className={cn(
             "group flex h-9 items-center gap-2.5 rounded-sm px-2 outline-none select-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-            current ? "cursor-default bg-active" : "cursor-pointer hover:bg-hover focus:bg-hover data-[state=open]:bg-hover",
+            here ? "cursor-default bg-active" : "cursor-pointer hover:bg-hover focus:bg-hover data-[state=open]:bg-hover",
+            away && "bg-active",
             dragging && "cursor-grabbing bg-elevated shadow-lg ring-1 shadow-black/40 ring-border-strong",
           )}
         >
           <ProjectTile name={name} large className={cn(missing && "opacity-45")} />
           <div className="min-w-0 flex-1">
             <div className={cn("truncate text-[12.5px] font-medium", missing && "text-muted-foreground")}>{name}</div>
-            <div className={cn("truncate text-[10.5px]", missing ? "text-conflict" : "text-subtle")}>{missing ? "Folder not found" : path}</div>
+            <div className={cn("truncate text-[10.5px]", missing ? "text-conflict" : "text-subtle")}>{missing ? "Folder not found" : away ? `In worktree ${away.folder}` : path}</div>
           </div>
           {current && <Check className="size-3.5 shrink-0 text-primary group-focus-within:hidden group-hover:hidden" />}
           {!dragging && (
@@ -166,6 +175,11 @@ function ProjectRow({
                   </RowAction>
                 </>
               )}
+              {away && (
+                <RowAction variant="subtle" stopPropagation label={openLabel} onClick={() => onOpen(path)}>
+                  <CornerUpLeft />
+                </RowAction>
+              )}
               {!current && (
                 <RowAction variant="subtle" stopPropagation label="Remove from list" onClick={(e) => forget(e.currentTarget, path, onForget)}>
                   <X />
@@ -182,8 +196,8 @@ function ProjectRow({
           </ContextMenuItem>
         ) : (
           <>
-            <ContextMenuItem disabled={current} onSelect={() => onOpen(path)}>
-              <FolderOpen /> Open
+            <ContextMenuItem disabled={here} onSelect={() => onOpen(path)}>
+              <FolderOpen /> {openLabel}
               <ContextMenuShortcut>↵</ContextMenuShortcut>
             </ContextMenuItem>
             {onTerminal && (
