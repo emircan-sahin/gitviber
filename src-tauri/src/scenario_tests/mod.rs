@@ -5,6 +5,7 @@ mod changes;
 mod clean_up;
 mod commits;
 mod compare;
+mod compare_edges;
 mod content;
 mod conversations;
 mod history;
