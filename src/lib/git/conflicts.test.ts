@@ -34,6 +34,20 @@ test("each conflict gets the base of the diff3 conflict that holds its sides", (
   assert.deepEqual(basesFor(conflicts("<<<<<<< HEAD\r\nB\r\n=======\r\nb\r\n>>>>>>> f\r\n"), conflicts("<<<<<<< c\nB\n||||||| base\no\n=======\nb\n>>>>>>> i\n")), [["o"]]);
 });
 
+// From a real cherry-pick of two edits two lines apart: git's default style wrote one block with the
+// shared "l3" inside, `git merge-file --diff3` on the stages two.
+test("a block that joins two diff3 conflicts gets their bases and the lines between", () => {
+  const file = "l1\n<<<<<<< HEAD\nl2 MAIN\nl3\nl4 MAIN\n=======\nl2 SIDE\nl3\n>>>>>>> side\n";
+  const rebuilt = "l1\n<<<<<<< current\nl2 MAIN\n||||||| base\nl2 v3\n=======\nl2 SIDE\n>>>>>>> incoming\nl3\n<<<<<<< current\nl4 MAIN\n||||||| base\nl4\n=======\n>>>>>>> incoming\n";
+  assert.deepEqual(basesFor(conflicts(file), conflicts(rebuilt)), [["l2 v3", "l3", "l4"]]);
+  // Blocks that don't make up the file's one stay unmatched, and the one after is still found.
+  const other = "<<<<<<< HEAD\nx\nmid\ny\n=======\nX\nmid\n>>>>>>> f\nz\n<<<<<<< HEAD\nq\n=======\nr\n>>>>>>> f\n";
+  const otherRebuilt = "<<<<<<< c\nx\n||||||| b\nbx\n=======\nX\n>>>>>>> i\nmid\n<<<<<<< c\ny\n||||||| b\nby\n=======\n>>>>>>> i\nz\n<<<<<<< c\nq\n||||||| b\nbq\n=======\nr\n>>>>>>> i\n";
+  assert.deepEqual(basesFor(conflicts(other), conflicts(otherRebuilt)), [["bx", "mid", "by"], ["bq"]]);
+  // The lines between differ in the two sides: not the same block.
+  assert.deepEqual(basesFor(conflicts(file.replace("l2 SIDE\nl3\n", "l2 SIDE\nl8\n")), conflicts(rebuilt)), [null]);
+});
+
 test("the prompt names the files and what's being merged", () => {
   assert.equal(
     resolvePrompt(["a.ts", "b.ts"], mergingWhat("merge", "Merge branch 'feat'", "main", "feat")),
