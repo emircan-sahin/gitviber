@@ -22,6 +22,24 @@ pub async fn add_worktree(
     .await
 }
 
+/// What handing `branch` back to the main folder would change, or why it can't be done.
+#[tauri::command]
+pub async fn main_back_plan(state: State<'_, AppState>, branch: String) -> Res<git::MainBack> {
+    in_repo(&state, move |r| git::main_back_plan(r, &branch)).await
+}
+
+/// Detaches the worktree that holds `branch` and switches the main folder to it. Not in the
+/// undo history, which follows one folder's HEAD: the toast's Undo calls `undo_main_back`.
+#[tauri::command]
+pub async fn move_main_back(state: State<'_, AppState>, branch: String) -> Res<git::MainBack> {
+    in_repo(&state, move |r| git::move_main_back(r, &branch)).await
+}
+
+#[tauri::command]
+pub async fn undo_main_back(state: State<'_, AppState>, plan: git::MainBack) -> Res<()> {
+    in_repo(&state, move |r| git::undo_main_back(r, &plan)).await
+}
+
 /// How many ignored files `.worktreeinclude` would copy into a new worktree.
 #[tauri::command]
 pub async fn worktree_includes(state: State<'_, AppState>) -> Res<usize> {

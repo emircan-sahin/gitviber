@@ -43,6 +43,15 @@ export interface Worktree {
   main: boolean;
 }
 
+/** What handing a branch a linked worktree holds back to the main folder changes. */
+export interface MainBack {
+  main: string;
+  /** The branch the main folder was on; it stays a branch. */
+  mainBranch: string;
+  holder: string;
+  branch: string;
+}
+
 /** Paths opened from outside the window (opened.rs): what to open, and what named nothing. */
 export interface Opened {
   open: {
