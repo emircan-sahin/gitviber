@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
-    "test": "node --test \"src/**/*.test.ts\"",
+    "test": "node --test \"src/**/*.test.ts\" \"packaging/**/*.test.mjs\"",
     "check": "pnpm version:check && pnpm build && pnpm test && pnpm check:licenses && pnpm check:rust",
     "check:rust": "cd src-tauri && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test",
     "check:licenses": "node scripts/licenses.mjs --check",
