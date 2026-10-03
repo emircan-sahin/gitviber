@@ -162,6 +162,8 @@ export const COMMANDS = [
   { id: "git.push", title: "Push", category: "Git", keys: [] },
   // VS Code's Sync Changes: what the remote has, then what's here.
   { id: "git.sync", title: "Sync (Pull, then Push)", category: "Git", keys: [] },
+  // A patch from Copy as Patch, a mail or a chat: previewed first, then applied to the working tree.
+  { id: "git.applyPatch", title: "Apply Patch from Clipboard", category: "Git", keys: [] },
   // Not while typing: text fields keep ⌘Z for their own undo.
   { id: "git.undo", title: "Undo Git Action", category: "Git", keys: ["cmd+z"], outsideText: true },
   { id: "git.redo", title: "Redo Git Action", category: "Git", keys: ["shift+cmd+z"], outsideText: true },

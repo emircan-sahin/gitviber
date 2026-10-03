@@ -18,19 +18,19 @@ export type BranchChange = Selection & { kind: "branch" };
 export type ReviewFiles = { base: string; files: FileChange[] };
 
 /**
- * HEAD's branch against `ref` (a full ref; "" while none is picked): its commits and uncommitted
- * work as one list, read again on every change on disk (`revision`) while `live`.
+ * The files from a commit to the working tree that `load` reads for `key` (null or "": none yet),
+ * read again on every change on disk (`revision`) while `live`.
  */
-export function useBranchReview(ref: string | null, revision: number, live: boolean) {
-  const [state, setState] = useState<{ ref: string; review: ReviewFiles | null; error: string | null } | null>(null);
-  const wanted = useRef(ref);
-  wanted.current = ref;
+export function useReviewFiles(key: string | null, load: (key: string) => Promise<ReviewFiles>, revision: number, live: boolean) {
+  const [state, setState] = useState<{ key: string; review: ReviewFiles | null; error: string | null } | null>(null);
+  const wanted = useRef({ key, load });
+  wanted.current = { key, load };
   // A read costs a few statuses: one at a time, and changes during it make one more once it lands.
   const running = useRef(false);
   const again = useRef(false);
-  const load = useRef(() => {});
-  load.current = () => {
-    const at = wanted.current;
+  const read = useRef(() => {});
+  read.current = () => {
+    const { key: at, load: reader } = wanted.current;
     if (!at) return;
     if (running.current) {
       again.current = true;
@@ -39,24 +39,29 @@ export function useBranchReview(ref: string | null, revision: number, live: bool
     running.current = true;
     const land = (review: ReviewFiles | null, error: string | null) => {
       running.current = false;
-      setState({ ref: at, review, error });
+      setState({ key: at, review, error });
       if (again.current) {
         again.current = false;
-        load.current();
+        read.current();
       }
     };
-    api.branchReview(at).then(
+    reader(at).then(
       (r) => land(r, null),
       (e) => land(null, errorMessage(e)),
     );
   };
   useEffect(() => {
-    if (live) load.current();
-  }, [ref, revision, live]);
-  const shown = ref && state?.ref === ref ? state : null;
-  const review = shown?.review ?? null;
+    if (live) read.current();
+  }, [key, revision, live]);
+  const shown = key && state?.key === key ? state : null;
+  return { review: shown?.review ?? null, error: shown?.error ?? null, loading: !!key && !shown };
+}
+
+/** HEAD's branch against `ref` (a full ref; "" while none is picked): its commits and uncommitted work as one list. */
+export function useBranchReview(ref: string | null, revision: number, live: boolean) {
+  const { review, error, loading } = useReviewFiles(ref, api.branchReview, revision, live);
   const rows = useMemo<BranchChange[]>(() => (review && ref ? review.files.map((file) => ({ kind: "branch", base: review.base, label: shortRef(ref), file })) : []), [review, ref]);
-  return { review, rows, error: shown?.error ?? null, loading: !!ref && !shown };
+  return { review, rows, error, loading };
 }
 
 const ROW_HEIGHT = 26;

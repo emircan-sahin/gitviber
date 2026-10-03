@@ -5,6 +5,15 @@ import { failed, toast } from "./toast";
 export const copyText = (text: string, what: string, detail?: string) =>
   navigator.clipboard.writeText(text).then(() => toast("success", what, detail), failed("Could not copy"));
 
+/**
+ * Copies text worked out after the click, such as a patch git writes. The webview lets a page
+ * write the clipboard only while the click lasts, so the app writes it (clipboard.rs).
+ */
+export const copyLater = (text: () => Promise<string>, what: string) =>
+  text()
+    .then(api.clipboardWrite)
+    .then(() => toast("success", what), failed("Could not copy"));
+
 /** Copies files as Finder's ⌘C does: pasted into a terminal they become paths, elsewhere files. */
 export const copyFiles = (paths: string[]) =>
   api.copyFiles(paths).then(() => toast("success", paths.length > 1 ? `${paths.length} files copied` : `${copyNoun(paths)} copied`), failed("Could not copy"));

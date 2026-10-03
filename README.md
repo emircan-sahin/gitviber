@@ -91,8 +91,9 @@ Code's fullscreen view row by row, as it does vim and htop.
 ### Browse the code, not just the diff
 
 A full file explorer with change bars in the gutter, quick open (`⌘P`) and rename, create and
-delete from the right-click menu. Fix a line right in the file view and save it with `⌘S`. For most
-days that's the editor you no longer need open.
+delete from the right-click menu. Pick two files with `⌘`-click to compare them side by side. Fix a
+line right in the file view and save it with `⌘S`. For most days that's the editor you no longer
+need open.
 
 Markdown renders the way GitHub shows it, in files, pull requests and issues alike: Mermaid
 diagrams, math, `> [!NOTE]` alerts, and a file's frontmatter as a table.
@@ -131,8 +132,9 @@ can be rebound in Settings, and holding `⌘` shows them all.
 
 | | |
 | --- | --- |
-| **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu. Reword, squash, drop or reorder commits: pick several with ⌘- or ⇧-click, drag them between commits to move them or onto one to squash them; anything that rewrites pushed commits asks first |
+| **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu. Reword, squash, drop or reorder commits: pick several with ⌘- or ⇧-click, drag them between commits to move them or onto one to squash them; anything that rewrites pushed commits asks first. Compare any two commits, or one with the working tree. Put a file back as a commit had it, or take back just that commit's change to it, or a few of its lines; `⌘Z` undoes it |
 | **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Pin branches to the top of the picker, with the ones you checked out last under them. Clean up the merged ones in one go, squash- and rebase-merged included |
+| **Patches** | Copy a file, a few lines, a commit or a stash as a patch. Apply one from the clipboard: it shows what it changes first, merges with your edits where it must, and `⌘Z` takes it back |
 | **Conflicts** | Resolve block by block (current, incoming, both, or by hand) with each block's merge base a click away, then continue, skip or abort. Or hand them to the agent in your terminal, or open them in the merge tool your git config names |
 | **Pull requests** | List, read, review in the same diff viewer, create, merge and check out. Read one commit by commit: pick a commit, or a run of them, to see only what they changed. See why a check failed and copy it for the agent (GitHub) |
 | **Issues** | List, read, open, edit, comment, close and reopen, or start one in its own worktree (GitHub) |

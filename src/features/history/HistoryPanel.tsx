@@ -12,10 +12,12 @@ import { useGitAction } from "@/hooks/useGitAction";
 import { type Actions, commitUrl, type RefMenu } from "./commitActions";
 import { CommitDrag } from "./commitDrag";
 import { CommitMenu, PickedMenu } from "./CommitMenu";
+import { CommitFileMenu } from "./CommitFileMenu";
 import { MessageDialog, NameDialog } from "./CommitDialogs";
 import { type DropAt, firstParentLine, reorderBefore } from "./edits";
 import { useHistoryEdits } from "./useHistoryEdits";
 import { usePickedCommits } from "./usePickedCommits";
+import type { Points } from "@/lib/repo/compareMark";
 import { CommitRow, type Reveal } from "./CommitRow";
 
 interface Props {
@@ -56,9 +58,11 @@ interface Props {
   refMenu?: RefMenu;
   /** Only these refs' badges show, as the all-branches graph walks only them. */
   showRefs?: GraphRefs;
+  /** Shows what changed between two commits, or one and the working tree, in place of the list. */
+  onComparePoints?: (points: Points) => void;
 }
 
-export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, ciTarget, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs }: Props) {
+export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, ciTarget, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs, onComparePoints }: Props) {
   const [open, setOpen] = useState<string | null>(reveal?.sha ?? null);
   useEffect(() => {
     if (reveal) setOpen(reveal.sha);
@@ -116,6 +120,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
     remotes,
     refMenu,
     showRefs,
+    comparePoints: onComparePoints,
   };
 
   // Opening a commit collapses the one above it; WebKit has no scroll anchoring, so without
@@ -235,6 +240,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
                 onHover={onHover}
                 url={commitUrl(c, actions)}
                 ci={ci[c.sha]}
+                fileMenu={(f, sel) => <CommitFileMenu commit={c} file={f} sel={sel} refresh={refresh} onOpen={onOpen} />}
                 menu={many && pickedSet.has(c.sha) ? <PickedMenu commits={selection} all={!hasMore && selection.length === commits.length} actions={actions} /> : <CommitMenu commit={c} head={c.sha === head} actions={actions} />}
               />
             ))}

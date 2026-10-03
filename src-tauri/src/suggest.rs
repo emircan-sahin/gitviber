@@ -84,12 +84,8 @@ fn diff(repo: &Path, scope: Scope) -> Result<(String, bool), String> {
     let text = match scope {
         Scope::Staged => run(&["--cached"])?,
         Scope::Amend => {
-            // A root commit has no parent: diff from the empty tree.
-            let base = match git::run_text(repo, &["rev-parse", "--verify", "-q", "HEAD^"]) {
-                Ok(p) => p,
-                Err(_) => git::run_text(repo, &["hash-object", "-t", "tree", "/dev/null"])?,
-            };
-            run(&["--cached", base.trim()])?
+            let base = git::parent_or_empty(repo, "HEAD")?;
+            run(&["--cached", &base])?
         }
         Scope::All => {
             let mut text = run(&[])?;

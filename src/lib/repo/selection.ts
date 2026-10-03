@@ -22,11 +22,20 @@ export type Selection =
   | { kind: "issue"; issue: Issue }
   | { kind: "pr-file"; range: PullRange; file: FileChange }
   // A branch under review: `base` is the merge base (a commit id), `label` the branch it was compared with.
-  | { kind: "branch"; base: string; label: string; file: FileChange }
+  // `fixed`: History's comparison of the working tree with one commit, whose base stays as the review moves.
+  | { kind: "branch"; base: string; label: string; file: FileChange; fixed?: true }
   // Every file of a Changes list in one scroll: uncommitted, staged, or the branch under review.
   | { kind: "changes"; list: ChangeList }
+  // Two working-tree files side by side (the explorer's Compare Selected): `file.oldPath` against `file.path`.
+  | { kind: "files"; file: FileChange }
   // A file in an Obsidian vault (`vault`: its folder), outside the repo; `path` is vault-relative.
   | { kind: "vault"; vault: string; path: string };
+
+/** The explorer's comparison of two working-tree files, `left` the old side. */
+export const filesSelection = (left: string, right: string): Selection => ({
+  kind: "files",
+  file: { path: right, oldPath: left, status: "M", additions: null, deletions: null, oid: null, indexOid: null, conflict: null, mode: null, submodule: null, nested: null },
+});
 
 /** The lists Changes shows, which open whole as one stacked diff. */
 export type ChangeList = "unstaged" | "staged" | "branch";
@@ -64,6 +73,7 @@ export function selectionKey(s: Selection) {
   if (s.kind === "issue") return `issue:${s.issue.url}`;
   if (s.kind === "vault") return `vault:${s.vault}:${s.path}`;
   // A PR file by its commits too: a fork's #3 and its original's #3 differ, and so do the PR and one of its commits.
-  const scope = s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number ?? ""}@${s.range.base}..${s.range.head}` : s.kind === "branch" ? s.base : "";
+  const scope =
+    s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number ?? ""}@${s.range.base}..${s.range.head}` : s.kind === "branch" ? s.base : s.kind === "files" ? (s.file.oldPath ?? "") : "";
   return `${s.kind}:${scope}:${selectionPath(s)}`;
 }

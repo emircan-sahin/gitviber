@@ -61,10 +61,15 @@ function CompareFiles({ with: ref, ours, activeKey, onOpen }: { with: string; ou
   if ("error" in found) return <div className="px-4 py-2 text-[11.5px] text-muted-foreground">{found.error}</div>;
   if (!found.files.length) return <div className="py-1 pl-4 text-[11.5px] text-subtle">No changes</div>;
   const range = { label: shortRef(ref), base: found.base, head: found.head };
+  return <FileList rows={found.files.map((file) => ({ kind: "pr-file", range, file }))} activeKey={activeKey} onOpen={onOpen} />;
+}
+
+/** A comparison's changed files, each opening its diff. */
+export function FileList({ rows, activeKey, onOpen }: { rows: (Selection & { file: FileChange })[]; activeKey: string | null; onOpen: (s: Selection, pin?: boolean) => void }) {
   return (
     <div role="listbox" aria-label="Changed files">
-      {found.files.map((f) => {
-        const sel: Selection = { kind: "pr-file", range, file: f };
+      {rows.map((sel) => {
+        const f = sel.file;
         const active = activeKey === selectionKey(sel);
         return (
           <div

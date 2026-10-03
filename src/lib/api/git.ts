@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, CleanedUp, CleanUp, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesRequest, LogFilter, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RewriteOutcome, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, CleanedUp, CleanUp, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -52,6 +52,8 @@ export const api = {
   compareFiles: (ref: string) => invoke<{ base: string; head: string; files: FileChange[] }>("compare_files", { with: ref }),
   /** What HEAD's branch changed since it left a full ref, uncommitted work included: the merge base, and files from it to the working tree. */
   branchReview: (base: string) => invoke<{ base: string; files: FileChange[] }>("branch_review", { base }),
+  /** The working tree against a commit itself, no merge base: its full id, and the files from it to the working tree. */
+  compareWorktree: (sha: string) => invoke<{ base: string; files: FileChange[] }>("compare_worktree", { sha }),
   compareCounts: (ref: string) => invoke<[number, number]>("compare_counts", { with: ref }),
   /** The commit a SHA or SHA prefix names, if exactly one, or a full ref's tip (refs/heads/…). */
   findCommit: (sha: string) => invoke<Commit | null>("find_commit", { sha }),
@@ -154,6 +156,25 @@ export const api = {
   removeIndexLock: (path: string) => invoke<void>("remove_index_lock", { path }),
   /** Stages, unstages or discards some lines of a diff (lines.rs); a discard is undoable. */
   changeLines: (request: LinesRequest) => invoke<void>("change_lines", { request }),
+  /** Files' changes as a patch: unstaged (untracked ones as new files), staged, or a commit's. `paths` take a rename's old path too. */
+  changesPatch: (kind: "unstaged" | "staged" | "commit", paths: string[], sha: string | null = null) => invoke<string>("changes_patch", { kind, paths, sha }),
+  /** A commit as `git format-patch` writes it. */
+  commitPatch: (sha: string) => invoke<string>("commit_patch", { sha }),
+  /** A stash's changes, its untracked files too. */
+  stashPatch: (sha: string) => invoke<string>("stash_patch", { sha }),
+  linesPatch: (request: LinesPatch) => invoke<string>("lines_patch", { request }),
+  /** The clipboard's text, read by the app: the webview's own read asks the user first. */
+  clipboardText: () => invoke<string>("clipboard_text"),
+  /** Puts text on the clipboard after the click that asked for it is over, which the webview can't. */
+  clipboardWrite: (text: string) => invoke<void>("clipboard_write", { text }),
+  patchPreview: (patch: string) => invoke<PatchPreview>("patch_preview", { patch }),
+  /** Applies a patch to the working tree (merging three ways where it must); undoable. Returns the files left with conflict markers. */
+  applyPatch: (patch: string) => invoke<string[]>("apply_patch", { patch }),
+  /** `path` in the working tree as commit `sha` has it; undoable. */
+  restoreFile: (sha: string, path: string) => invoke<void>("restore_file", { sha, path }),
+  /** Undoes what commit `sha` did to the file, in the working tree; undoable. Returns the files left with conflicts. */
+  revertFile: (sha: string, path: string, oldPath: string | null) => invoke<string[]>("revert_file", { sha, path, oldPath }),
+  revertLines: (request: RevertLines) => invoke<string[]>("revert_lines", { request }),
   /** An empty `message` with `amend` keeps the old one (--no-edit). Watched as a network command: hook output is its progress, and Cancel stops it (once git has moved HEAD, the commit stands). */
   commit: (message: string, options: CommitOptions, op?: NetOp) => network<void>("commit", { message, options }, op),
   /** Staged files GitHub would refuse a push of (over 100 MiB), by their staged blobs; LFS files are staged as pointers, so they don't count. */

@@ -14,6 +14,8 @@ mod obsidian;
 #[cfg(unix)]
 mod open_in;
 mod operations;
+mod patch;
+mod patch_edges;
 mod pr_checkout;
 mod review;
 mod rewrite;

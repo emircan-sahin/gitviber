@@ -32,7 +32,7 @@ pub(super) fn validate_one_line(key: &str, value: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn validate_rev(rev: &str) -> Result<(), String> {
+pub(crate) fn validate_rev(rev: &str) -> Result<(), String> {
     if rev.len() >= 4 && rev.len() <= 64 && rev.chars().all(|c| c.is_ascii_hexdigit()) {
         Ok(())
     } else {

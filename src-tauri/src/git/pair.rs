@@ -46,6 +46,8 @@ fn sides(
             validate_rev(base)?;
             (rev(base), None)
         }
+        // Two files of the working tree: `old_path` against `path`.
+        "files" => (None, None),
         other => return Err(format!("unknown diff kind: {other}")),
     })
 }
@@ -97,7 +99,8 @@ pub fn media(
 }
 
 /// `kind`: "unstaged" (index → worktree), "staged" (HEAD → index), "worktree" (HEAD → worktree),
-/// "commit" (parent → commit), "range" (base → sha, e.g. a pull request) or "base" (base → worktree).
+/// "commit" (parent → commit), "range" (base → sha, e.g. a pull request), "base" (base → worktree)
+/// or "files" (the worktree's `old_path` → its `path`).
 /// `whitespace`: "all" or "amount" to ignore those changes (see `diff::whitespace_mode`).
 #[allow(clippy::too_many_arguments)]
 pub fn diff_pair(

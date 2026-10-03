@@ -9,6 +9,8 @@ import { toast } from "@/lib/app/toast";
 import { BisectBar } from "./BisectBar";
 import { ForkHistory } from "./ForkHistory";
 import { CompareHistory } from "./CompareHistory";
+import { ComparePoints } from "./ComparePoints";
+import type { Points } from "@/lib/repo/compareMark";
 import { GraphMenu, GraphNotice } from "./GraphMenu";
 import { useAllBranches } from "./useAllBranches";
 import { hideRefs, useAllBranchesSetting, useGraphRefs } from "./useGraphRefs";
@@ -38,10 +40,12 @@ type Props = ComponentProps<typeof ForkHistory> & {
   onFocused: () => void;
   /** The main worktree: the graph's hidden branches are the repository's, across its worktrees. */
   main: string;
+  /** Bumped on every change on disk: a comparison with the working tree reads it again. */
+  revision: number;
 };
 
 /** History with a search box on top; while it's searching, the matches replace the full history. */
-export function SearchableHistory({ search, onSearch, focusRequested, onFocused, main, ...props }: Props) {
+export function SearchableHistory({ search, onSearch, focusRequested, onFocused, main, revision, ...props }: Props) {
   const { query, scope, reveal } = search;
   const input = useRef<HTMLInputElement>(null);
   const shortcut = useShortcut("history.search");
@@ -49,9 +53,13 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
   const head = props.commits[0]?.sha ?? "";
   const [allBranches, setAllBranches] = useAllBranchesSetting();
   const [refs, setRefs] = useGraphRefs(main);
-  // A branch's full ref; a search still goes first, and closing it comes back here.
-  const [compare, setCompare] = useState<string | null>(null);
-  const showAll = allBranches && !active && !compare;
+  // In place of the history: a branch (its full ref), or two commits or one and the working tree
+  // (from a commit's menu). A search still goes first, and closing it comes back here.
+  const [comparing, setComparing] = useState<{ ref: string } | { points: Points } | null>(null);
+  const compare = comparing && "ref" in comparing ? comparing.ref : null;
+  const points = comparing && "points" in comparing ? comparing.points : null;
+  const list = { ...props, onComparePoints: (p: Points) => setComparing({ points: p }) };
+  const showAll = allBranches && !active && !compare && !points;
   // What a search covers: HEAD, and with all branches every branch's tip. A refresh that moved
   // none of them (a focus, a staged file) doesn't search again.
   const tips = allBranches ? `${head} ${props.branches.map((b) => b.sha).join(" ")}` : head;
@@ -130,7 +138,7 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
           // Only the graph's own list loads pages to go to; a search or a comparison lists others.
           onGoToHead={showAll ? () => goTo(head, "HEAD") : null}
           onGoTo={showAll ? goTo : null}
-          onCompare={setCompare}
+          onCompare={(ref) => setComparing({ ref })}
         />
       </div>
       {showAll && <GraphNotice refs={refs} setRefs={setRefs} />}
@@ -155,7 +163,7 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
             <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{found.error}</div>
           ) : (
             <HistoryPanel
-              {...props}
+              {...list}
               commits={found.commits ?? []}
               hasMore={found.hasMore}
               loadMore={found.loadMore}
@@ -167,14 +175,23 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
             />
           )
         ) : compare ? (
-          <CompareHistory {...props} with={compare} current={props.status?.branch ?? "HEAD"} ours={props.commits} headSha={head} onClose={() => setCompare(null)} />
+          <CompareHistory {...list} with={compare} current={props.status?.branch ?? "HEAD"} ours={props.commits} headSha={head} onClose={() => setComparing(null)} />
+        ) : points ? (
+          <ComparePoints
+            points={points}
+            revision={revision}
+            activeKey={props.activeKey}
+            onOpen={props.onOpen}
+            onSwap={() => points.head && setComparing({ points: { base: points.head, head: points.base } })}
+            onClose={() => setComparing(null)}
+          />
         ) : !allBranches ? (
-          <ForkHistory {...props} />
+          <ForkHistory {...list} />
         ) : all.error && !all.commits?.length ? (
           <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{all.error}</div>
         ) : (
           <HistoryPanel
-            {...props}
+            {...list}
             commits={all.commits ?? []}
             hasMore={all.hasMore}
             loadMore={all.loadMore}

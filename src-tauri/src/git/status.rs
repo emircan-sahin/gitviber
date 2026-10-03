@@ -120,7 +120,8 @@ pub(super) fn change(path: &str, old_path: Option<&str>, status: char) -> FileCh
 }
 
 /// Parses `--numstat -z` into path -> (additions, deletions). Binary files report `-`.
-pub(super) fn parse_numstat(raw: &[u8]) -> HashMap<String, (Option<u32>, Option<u32>)> {
+/// Counts per path of `--numstat -z`; a path listed again (an mbox's commits) adds up.
+pub(crate) fn parse_numstat(raw: &[u8]) -> HashMap<String, (Option<u32>, Option<u32>)> {
     let mut map = HashMap::new();
     let mut tokens = raw
         .split(|b| *b == 0)
@@ -140,7 +141,13 @@ pub(super) fn parse_numstat(raw: &[u8]) -> HashMap<String, (Option<u32>, Option<
         } else {
             path.to_string()
         };
-        map.insert(path, (a.parse().ok(), d.parse().ok()));
+        let (a, d): (Option<u32>, Option<u32>) = (a.parse().ok(), d.parse().ok());
+        map.entry(path)
+            .and_modify(|(x, y): &mut (Option<u32>, Option<u32>)| {
+                *x = x.zip(a).map(|(x, a)| x + a);
+                *y = y.zip(d).map(|(y, d)| y + d);
+            })
+            .or_insert((a, d));
     }
     map
 }
