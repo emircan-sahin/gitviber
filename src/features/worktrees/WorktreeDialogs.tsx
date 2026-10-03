@@ -87,7 +87,6 @@ interface Props {
 
 type Inner = Props & { onClose: () => void };
 
-const folderFor = folderForBranch;
 const isCommit = (base: string) => /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(base);
 
 export function WorktreeDialogs(props: Props) {
@@ -167,7 +166,7 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
       // Nothing typed to keep, and the fetch's Cancel is in the top bar behind this dialog.
       onClose();
       const p = pull;
-      void runNet("Check out PR", (op) => github.checkoutWorktree(p.target, p.number, p.headRef, p.sameRepo, where, op).then(then), `Checked out #${p.number} in worktree ${folderFor(n)}`).then(switched);
+      void runNet("Check out PR", (op) => github.checkoutWorktree(p.target, p.number, p.headRef, p.sameRepo, where, op).then(then), `Checked out #${p.number} in worktree ${folderForBranch(n)}`).then(switched);
     } else void send(() => run("Create worktree", () => api.addWorktree(n, picked.base === undefined ? from : picked.base, where, picked.track).then(then), existing ? `Checked out ${n} in a new worktree` : `Created worktree ${n}`).then(switched));
   };
   return (
@@ -220,7 +219,7 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
           {/* rtl cuts the start of a long path, keeping the branch's folder in view. The LRMs keep
               it reading left to right; a <bdi> did too, but WebKit drew the … over a letter. */}
           <span dir="rtl" className="min-w-0 flex-1 truncate text-left font-mono text-[12px] text-foreground" title={dir}>
-            {`\u200e${shortPath(dir, main)}/${n ? folderFor(n) : "…"}\u200e`}
+            {`\u200e${shortPath(dir, main)}/${n ? folderForBranch(n) : "…"}\u200e`}
           </span>
           {dir !== fallback && (
             <Button type="button" variant="ghost" size="sm" onClick={() => setDir(fallback)}>
@@ -307,13 +306,13 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
   const check = refNameCheck(name, localNames(branches, old), true);
   const n = check.name;
   const { pending, send } = useSubmit(onClose);
-  const target = `${parentFolder(w.path)}${folderFor(n)}`;
+  const target = `${parentFolder(w.path)}${folderForBranch(n)}`;
   const moving = move && !stays && !!n && target !== w.path;
   const terminals = moving ? terminalsIn(w.path) : 0;
   const upstream = branches.find((b) => !b.remote && b.name === old)?.upstream;
   const ready = !!n && (n !== old || moving) && !check.taken && !pending;
   const submit = () => {
-    const done = n === old ? `Moved ${folderName(w.path)} to ${folderFor(n)}` : `Renamed ${old} to ${n}${moving ? ", folder too" : ""}`;
+    const done = n === old ? `Moved ${folderName(w.path)} to ${folderForBranch(n)}` : `Renamed ${old} to ${n}${moving ? ", folder too" : ""}`;
     void send(() =>
       run(
         "Rename worktree",
@@ -353,7 +352,7 @@ function RenameWorktree({ worktree: w, branches, main, onClose, run }: { worktre
         <input type="checkbox" checked={move && !stays} disabled={!!stays} onChange={(e) => setMove(e.target.checked)} className="mt-0.5 accent-primary" />
         <span>
           Rename its folder to match
-          <span className="block text-[11.5px] break-all text-muted-foreground">{stays ?? `${shortPath(w.path, main)} → ${folderFor(n) || "…"}`}</span>
+          <span className="block text-[11.5px] break-all text-muted-foreground">{stays ?? `${shortPath(w.path, main)} → ${folderForBranch(n) || "…"}`}</span>
         </span>
       </label>
       {terminals > 0 && (

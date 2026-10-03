@@ -6,11 +6,12 @@ import { openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { forgetRemoteTags } from "@/lib/repo/remoteTags";
 import { worktreeDir } from "@/lib/repo/session";
 import type { RepoData } from "@/lib/repo/useRepo";
+import { plural } from "@/lib/format";
 import { folderName } from "@/lib/path";
 import { useGitAction } from "@/hooks/useGitAction";
 import { undoCommit } from "@/features/history/commitActions";
 import { secretCommits } from "@/lib/git/gitErrors";
-import { defaultBranch } from "@/lib/git/worktrees";
+import { defaultBranch, folderForBranch } from "@/lib/git/worktrees";
 
 /** The top bar's git actions: switching, merging, deleting branches, worktrees, pull, push and publish. */
 export function useRepoActions(repo: RepoData, root: string, main: string) {
@@ -22,7 +23,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
   const branchTerminal = async (name: string) => {
     if (name === status?.branch) return openTerminal(root);
     const dir = worktreeDir(main);
-    const where = `${dir ?? `${folderName(main)}.worktrees`}/${name.replaceAll("/", "-")}`;
+    const where = `${dir ?? `${folderName(main)}.worktrees`}/${folderForBranch(name)}`;
     // The default branch held by a worktree can't be switched to in the main folder.
     const keep = name === defaultBranch(branches) ? ` ${name} is best kept in ${folderName(main)}: a worktree that holds it blocks switching to it there.` : "";
     const ok = await ask(`${name} isn't checked out anywhere. Create a worktree for it at ${where}${dir ? "" : ", next to this project,"} and open a terminal there?${keep}`, {
@@ -264,14 +265,16 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
       toast("error", `Can't move ${branch} back`, errorMessage(e));
       return;
     }
-    const [main, held] = [folderName(plan.main), folderName(plan.holder)];
+    const [into, held] = [folderName(plan.main), folderName(plan.holder)];
+    const shells = terminalsIn(plan.holder);
+    const note = shells ? ` ${plural(shells, "terminal")} open in ${held} will be on a detached HEAD.` : "";
     const ok = await ask(
-      `${main} is on ${plan.mainBranch}, and ${branch} is checked out in ${held}, so git won't switch ${main} to it.\n\nThis detaches ${held} where it stands (its files don't change), then switches ${main} to ${branch}. ${plan.mainBranch} stays as a branch, and nothing is deleted.`,
-      { title: `Move ${branch} back to ${main}`, okLabel: "Move" },
+      `${into} is on ${plan.mainBranch}, and ${branch} is checked out in ${held}, so git won't switch ${into} to it.\n\nThis detaches ${held} where it stands (its files don't change), then switches ${into} to ${branch}. ${plan.mainBranch} stays as a branch, and nothing is deleted.${note}`,
+      { title: `Move ${branch} back to ${into}`, okLabel: "Move" },
     );
     if (!ok) return;
-    const undo = () => void run("Undo", () => api.undoMainBack(plan), `${main} is back on ${plan.mainBranch}, ${held} on ${branch}`);
-    if (await run("Move main back", () => api.moveMainBack(branch))) toast("success", `${branch} is back in ${main}`, `${held} is detached at the same commit.`, { label: "Undo", run: undo });
+    const undo = () => void run("Undo", () => api.undoMainBack(plan), `${into} is back on ${plan.mainBranch}, ${held} on ${branch}`);
+    if (await run("Move main back", () => api.moveMainBack(branch))) toast("success", `${branch} is back in ${into}`, `${held} is detached at the same commit.`, { label: "Undo", run: undo });
   };
 
   const unlockWorktree = async (w: Worktree) => {

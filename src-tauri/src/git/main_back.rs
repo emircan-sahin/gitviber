@@ -26,6 +26,40 @@ fn folder(path: &str) -> String {
         .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
+/// The branch `dir` is on; None when detached.
+fn on_branch(dir: &Path) -> Option<String> {
+    run_text(dir, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
+/// Puts each folder on its branch (None: detached), in order, and says what stayed out of place.
+/// A failing post-checkout hook makes git exit non-zero after it has switched, so where a
+/// folder is says more than a switch's result.
+fn put_back(error: String, folders: &[(&Path, Option<&str>)]) -> String {
+    let stuck: Vec<String> = folders
+        .iter()
+        .filter(|(dir, branch)| {
+            if on_branch(dir).as_deref() != *branch {
+                let _ = match branch {
+                    Some(b) => run(dir, &["switch", b]),
+                    None => run(dir, &["switch", "--detach"]),
+                };
+            }
+            on_branch(dir).as_deref() != *branch
+        })
+        .map(|(dir, _)| folder(&dir.to_string_lossy()))
+        .collect();
+    if stuck.is_empty() {
+        error
+    } else {
+        format!(
+            "{error}\n\nCouldn't put {} back; check what it's on.",
+            stuck.join(" and ")
+        )
+    }
+}
+
 /// Both folders are switched under their files, so neither may have changes or a stopped operation.
 fn tidy(repo: &Path, w: &Worktree) -> Result<(), String> {
     let name = folder(&w.path);
@@ -53,7 +87,9 @@ pub fn main_back_plan(repo: &Path, branch: &str) -> Result<MainBack, String> {
         .find(|w| w.main)
         .ok_or("This repository has no main folder.")?;
     if main.bare || main.prunable || !Path::new(&main.path).is_dir() {
-        return Err("The main folder is a bare repository: it has no files to switch.".into());
+        return Err(
+            "The main folder has no files to switch: it's a bare repository, or gone.".into(),
+        );
     }
     let name = folder(&main.path);
     let Some(main_branch) = main.branch.clone() else {
@@ -95,12 +131,14 @@ pub fn main_back_plan(repo: &Path, branch: &str) -> Result<MainBack, String> {
 pub fn move_main_back(repo: &Path, branch: &str) -> Result<MainBack, String> {
     let plan = main_back_plan(repo, branch)?;
     let (main, holder) = (Path::new(&plan.main), Path::new(&plan.holder));
-    run(holder, &["switch", "--detach"])?;
-    if let Err(e) = run(main, &["switch", branch]) {
-        let _ = run(holder, &["switch", branch]);
-        return Err(e);
+    let moved = run(holder, &["switch", "--detach"]).and_then(|_| run(main, &["switch", branch]));
+    match moved {
+        Ok(_) => Ok(plan),
+        Err(e) => Err(put_back(
+            e,
+            &[(main, Some(&plan.main_branch)), (holder, Some(branch))],
+        )),
     }
-    Ok(plan)
 }
 
 /// The reverse of `move_main_back`, while nothing has moved on: the main folder is still on the
@@ -129,15 +167,11 @@ pub fn undo_main_back(repo: &Path, plan: &MainBack) -> Result<(), String> {
     tidy(repo, main)?;
     tidy(repo, holder)?;
     let (m, h) = (Path::new(&main.path), Path::new(&holder.path));
-    run(m, &["switch", "--detach"])?;
-    if let Err(e) = run(h, &["switch", &plan.branch]) {
-        let _ = run(m, &["switch", &plan.branch]);
-        return Err(e);
+    let undone = run(m, &["switch", "--detach"])
+        .and_then(|_| run(h, &["switch", &plan.branch]))
+        .and_then(|_| run(m, &["switch", &plan.main_branch]));
+    match undone {
+        Ok(_) => Ok(()),
+        Err(e) => Err(put_back(e, &[(h, None), (m, Some(&plan.branch))])),
     }
-    if let Err(e) = run(m, &["switch", &plan.main_branch]) {
-        let _ = run(h, &["switch", "--detach"]);
-        let _ = run(m, &["switch", &plan.branch]);
-        return Err(e);
-    }
-    Ok(())
 }
