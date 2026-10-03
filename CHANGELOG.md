@@ -6,6 +6,12 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-10-03
+
+### Changed
+
+- **Updates download through a faster route first.** GitViber asks a small mirror for the update and falls back to GitHub if the mirror doesn't answer. GitHub's download server can be very slow for some connections (an update that took minutes, or far longer, to download); the mirror fetches the file from GitHub itself and hands it to you at your connection's speed. Every download is still checked against GitViber's signing key, so the mirror can't serve anything unsigned.
+
 ## [0.1.9] - 2026-10-03
 
 ### Added
@@ -489,7 +495,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/emircan-sahin/gitviber/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/emircan-sahin/gitviber/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/emircan-sahin/gitviber/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/emircan-sahin/gitviber/compare/v0.1.6...v0.1.7
