@@ -1,6 +1,5 @@
-import { Check, ChevronsUpDown, Copy, CornerUpLeft, Eraser, FolderGit2, FolderOpen, GitBranch, GitMerge, History, Lock, LockOpen, Pencil, SquareTerminal, Trash2 } from "lucide-react";
+import { Check, ChevronsUpDown, Copy, Eraser, FolderGit2, FolderOpen, GitBranch, GitMerge, History, Lock, LockOpen, Pencil, SquareTerminal, Trash2 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
@@ -64,7 +63,7 @@ function needing(worktrees: Worktree[], cwds: string[]) {
  * `git worktree list` as a switcher. Always shown, even with only the main worktree, so
  * the feature is found at all; then it says how to make one.
  * Rows lead with the branch, the name people know a worktree by; the folder comes second.
- * In a linked worktree it names it and offers the way back to the main one.
+ * In a linked worktree it names it.
  */
 export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew, onGitHub, onOpenPull }: Props) {
   const [open, setOpen] = useState(false);
@@ -318,13 +317,6 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
         </PopoverContent>
       </Popover>
       {here && <PullChip bp={here} hot={false} onClick={() => onOpenPull(here.pull)} className="h-7 rounded-md px-1.5 text-[11px]" />}
-      {linked && main && (
-        <Tip label={`Back to the main worktree (${folderName(main.path)})`}>
-          <Button variant="ghost" size="icon-sm" aria-label={`Back to the main worktree (${folderName(main.path)})`} onClick={() => onOpen(main.path)}>
-            <CornerUpLeft />
-          </Button>
-        </Tip>
-      )}
     </>
   );
 }
