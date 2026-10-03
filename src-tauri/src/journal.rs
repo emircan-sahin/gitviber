@@ -1,18 +1,31 @@
 //! Undo and redo for the app's own git actions. Each one records how it moved HEAD, the
 //! local branches and the tags; undo moves them back, redo forward again. The record lives in memory
 //! only: nothing is written to the repo, and commits an undo takes off a branch stay in the
-//! object store, where redo (or the reflog) finds them. A discard records the files it
-//! replaced instead, whose old versions it put in the Trash.
+//! object store, where redo (or the reflog) finds them. A discard (or a restore, revert or patch
+//! applied to files) records the files it replaced instead, whose old versions it put in the Trash.
 
 use crate::fs::{self, Stamp};
 use crate::git::{self, run, run_text};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 /// Entries kept per repository.
 const KEEP: usize = 50;
+
+/// Writes working-tree files (a discard, a restore, a patch) and says which it left with conflict
+/// markers. Redo runs it again, on the versions undo put back.
+type Write = Arc<dyn Fn(&Path) -> Result<Vec<String>, String> + Send + Sync>;
+
+/// A discard's (or a restore's, a revert's, a patch's) files, and how to write them again.
+#[derive(Clone)]
+struct FileAction {
+    files: Vec<Discarded>,
+    write: Write,
+    /// "discarded": "a.txt (discarded 2026-09-22 14.03)".
+    word: &'static str,
+}
 
 /// How the checked-out branch's tip is moved back or forth.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -97,11 +110,11 @@ struct Entry {
     /// The push target's tip when the entry was last done or undone. Commits it had then
     /// (pulled ones, say) may come off the branch; ones pushed since may not.
     pushed: Option<String>,
-    /// A discard's files; the fields above don't apply to one.
-    files: Vec<Discarded>,
+    /// A file action's files; the fields above don't apply to one.
+    files: Option<FileAction>,
 }
 
-/// A file a discard replaced with its index version.
+/// A file a discard (or another file action) replaced.
 #[derive(Clone)]
 struct Discarded {
     path: String,
@@ -139,6 +152,8 @@ pub struct EntryView {
     /// it, in the redo list, switches to; None when it doesn't switch: HEAD stays on its branch,
     /// or stays detached and is reset.
     pub switch_to: Option<String>,
+    /// Files a redo of a file action left with conflict markers.
+    pub conflicts: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -151,6 +166,19 @@ pub struct View {
     /// Why the next undo or redo can't run now, if it can't.
     pub undo_blocked: Option<String>,
     pub redo_blocked: Option<String>,
+}
+
+/// The last part of a repo path: "a.txt" of "src/a.txt".
+pub fn file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// "Discard a.txt", "Discard 3 files": a file action's undo label.
+pub fn files_label(verb: &str, paths: &[String]) -> String {
+    match paths {
+        [one] => format!("{verb} {}", file_name(one)),
+        _ => format!("{verb} {} files", paths.len()),
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -174,6 +202,7 @@ impl Entry {
             label: self.label.clone(),
             time: self.time,
             switch_to,
+            conflicts: vec![],
         }
     }
 }
@@ -231,26 +260,30 @@ impl Journal {
         result
     }
 
-    /// Discards the working-tree changes to `paths` with `restore`, after copying what they
-    /// are now to the Trash, and records it: undo writes those copies back.
-    pub fn discard(
+    /// Rewrites the working-tree files `paths` with `write` (a discard, a restore), after copying
+    /// what they are now to the Trash, and records it: undo writes those copies back, redo runs
+    /// `write` again. `word` names the copies; `index` is held while `write` runs. Returns the
+    /// files `write` left with conflicts.
+    pub fn replace(
         &self,
         repo: &Path,
+        label: String,
+        word: &'static str,
         paths: &[String],
-        restore: impl FnOnce() -> Result<(), String>,
-    ) -> Result<(), String> {
+        index: &Mutex<()>,
+        write: impl Fn(&Path) -> Result<Vec<String>, String> + Send + Sync + 'static,
+    ) -> Result<Vec<String>, String> {
         let _one = lock(&self.acting);
-        let files = discard_files(repo, paths, restore)?;
+        let write: Write = Arc::new(write);
+        let (files, conflicts) = replace_files(repo, paths, word, || {
+            crate::state::with_index_lock(index, repo, |r| write(r))
+        })?;
         let Ok(snap) = snapshot(repo, false) else {
-            return Ok(());
+            return Ok(conflicts);
         };
         if files.is_empty() {
-            return Ok(());
+            return Ok(conflicts);
         }
-        let label = match paths {
-            [one] => format!("Discard {}", one.rsplit('/').next().unwrap_or(one)),
-            _ => format!("Discard {} files", paths.len()),
-        };
         let mut stacks = lock(&self.stacks);
         let s = stacks.entry(repo.to_path_buf()).or_default();
         s.undone.clear();
@@ -263,13 +296,13 @@ impl Journal {
             changes: vec![],
             tags: vec![],
             pushed: None,
-            files,
+            files: Some(FileAction { files, write, word }),
         });
         s.next += 1;
         if s.done.len() > KEEP {
             s.done.remove(0);
         }
-        Ok(())
+        Ok(conflicts)
     }
 
     /// Undoes the newest entry, or redoes (`forward`) the last undone one. `id`, when given,
@@ -300,9 +333,12 @@ impl Journal {
             top.clone()
         };
         let (from, to) = if forward { (0, 1) } else { (1, 0) };
-        apply(repo, &mut e, from, to)?;
+        let conflicts = apply(repo, &mut e, from, to)?;
         e.pushed = git::pushed_tip(repo);
-        let view = e.view(to);
+        let view = EntryView {
+            conflicts,
+            ..e.view(to)
+        };
         let mut stacks = lock(&self.stacks);
         let s = stacks.entry(repo.to_path_buf()).or_default();
         let (src, dst) = if forward {
@@ -476,16 +512,18 @@ fn diff(
         changes,
         tags,
         pushed,
-        files: vec![],
+        files: None,
     })
 }
 
-/// Copies each file as it is now to the Trash, then runs `restore` to discard them.
-fn discard_files(
+/// Copies each file as it is now to the Trash, then runs `write` to replace them. Returns them,
+/// and the ones `write` left with conflicts.
+fn replace_files(
     repo: &Path,
     paths: &[String],
-    restore: impl FnOnce() -> Result<(), String>,
-) -> Result<Vec<Discarded>, String> {
+    word: &str,
+    write: impl FnOnce() -> Result<Vec<String>, String>,
+) -> Result<(Vec<Discarded>, Vec<String>), String> {
     let when = local_minute();
     let mut files = vec![];
     for path in paths {
@@ -494,10 +532,7 @@ fn discard_files(
             continue;
         }
         let before = fs::stamp(repo, path);
-        let name = format!(
-            "{} (discarded {when})",
-            path.rsplit('/').next().unwrap_or(path)
-        );
+        let name = format!("{} ({word} {when})", file_name(path));
         let copy = before
             .map(|_| fs::trash_copy(repo, path, &name))
             .transpose()?;
@@ -507,7 +542,7 @@ fn discard_files(
             stamps: [before, None],
         });
     }
-    restore()?;
+    let conflicts = write()?;
     // A deleted submodule comes back as its folder, which undo must not take away again.
     files.retain(|f| {
         !repo
@@ -518,7 +553,7 @@ fn discard_files(
     for f in &mut files {
         f.stamps[1] = fs::stamp(repo, &f.path);
     }
-    Ok(files)
+    Ok((files, conflicts))
 }
 
 /// "2026-09-22 14.03" in local time: when a discarded version went to the Trash.
@@ -558,8 +593,8 @@ fn local_minute() -> String {
 
 /// Why moving `e` from state `from` to state `to` (0 before, 1 after) isn't safe now.
 fn blocked(repo: &Path, e: &Entry, from: usize, to: usize) -> Option<String> {
-    if !e.files.is_empty() {
-        return e
+    if let Some(action) = &e.files {
+        return action
             .files
             .iter()
             .find(|f| fs::stamp(repo, &f.path) != f.stamps[from])
@@ -611,12 +646,13 @@ fn blocked(repo: &Path, e: &Entry, from: usize, to: usize) -> Option<String> {
         })
 }
 
-fn apply(repo: &Path, e: &mut Entry, from: usize, to: usize) -> Result<(), String> {
+/// Moves `e` from state `from` to `to`; a file action's redo says which files it left conflicted.
+fn apply(repo: &Path, e: &mut Entry, from: usize, to: usize) -> Result<Vec<String>, String> {
     if let Some(why) = blocked(repo, e, from, to) {
         return Err(why);
     }
-    if !e.files.is_empty() {
-        return files(repo, e, to);
+    if let Some(action) = &mut e.files {
+        return files(repo, action, to);
     }
     let current = match &e.head[from] {
         Head::Branch(b) => Some(b.clone()),
@@ -656,21 +692,22 @@ fn apply(repo: &Path, e: &mut Entry, from: usize, to: usize) -> Result<(), Strin
             let _ = set_tag(repo, t, at[from].as_deref());
         }
     }
-    result
+    result.map(|_| vec![])
 }
 
-/// Undoing a discard writes the old versions back from the Trash; redoing it discards again.
-fn files(repo: &Path, e: &mut Entry, to: usize) -> Result<(), String> {
+/// Undoing a file action writes the old versions back from the Trash; redoing it runs it again.
+fn files(repo: &Path, action: &mut FileAction, to: usize) -> Result<Vec<String>, String> {
     if to == 1 {
-        let paths: Vec<String> = e.files.iter().map(|f| f.path.clone()).collect();
-        e.files = discard_files(repo, &paths, || git::discard(repo, &paths))?;
-        return Ok(());
+        let paths: Vec<String> = action.files.iter().map(|f| f.path.clone()).collect();
+        let (files, conflicts) = replace_files(repo, &paths, action.word, || (action.write)(repo))?;
+        action.files = files;
+        return Ok(conflicts);
     }
-    for f in &mut e.files {
+    for f in &mut action.files {
         fs::put_back(repo, &f.path, f.copy.as_deref())?;
         f.stamps[0] = fs::stamp(repo, &f.path);
     }
-    Ok(())
+    Ok(vec![])
 }
 
 fn move_head(repo: &Path, e: &mut Entry, from: usize, to: usize) -> Result<(), String> {

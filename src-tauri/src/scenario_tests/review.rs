@@ -135,3 +135,29 @@ fn branch_review_in_a_linked_worktree() {
         .files
         .is_empty());
 }
+
+#[test]
+fn the_working_tree_compared_with_a_commit_has_no_merge_base() {
+    let sb = Sandbox::new("review-commit");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    let base = rev(&r, "HEAD");
+    run(&r, &["switch", "-q", "-c", "side"]).unwrap();
+    write_commit(&r, "side.txt", "s\n", "side");
+    let side = rev(&r, "HEAD");
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    write_commit(&r, "a.txt", "a\nb\n", "edit");
+    fs::write(r.join("new.txt"), "n\n").unwrap();
+
+    let since = worktree_review(&r, &base[..7]).unwrap();
+    assert_eq!(since.base, base, "the full id");
+    let paths: Vec<&str> = since.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, ["a.txt", "new.txt"]);
+    // Not an ancestor: what it has that the working tree lacks shows as deleted.
+    let other = worktree_review(&r, &side).unwrap();
+    let side_file = other.files.iter().find(|f| f.path == "side.txt").unwrap();
+    assert_eq!(side_file.status, "D");
+    assert!(worktree_review(&r, "--output=x").is_err());
+    assert!(worktree_review(&r, "abcdef1234").is_err());
+}

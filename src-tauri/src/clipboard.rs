@@ -105,8 +105,8 @@ pub fn copy_files(_paths: Vec<String>) -> Result<(), String> {
     Err("Copying files is only supported on macOS".into())
 }
 
-/// Text a program in the terminal copies with OSC 52 (terminals.ts). The webview writes the
-/// clipboard only during a key or a click, and the copy arrives in the program's output.
+/// Text a program in the terminal copies with OSC 52 (terminals.ts), or a patch git wrote: the
+/// webview writes the clipboard only during a key or a click, and these arrive later.
 #[cfg(target_os = "macos")]
 pub fn write_text(text: &str) -> Result<(), String> {
     objc2::rc::autoreleasepool(|_| unsafe { pasteboard::write_text(text) })
@@ -124,7 +124,7 @@ pub fn write_text(text: &str) -> Result<(), String> {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn write_text(_text: &str) -> Result<(), String> {
-    Err("Copying from the terminal is only supported on macOS and Linux".into())
+    Err("Copying is only supported on macOS and Linux".into())
 }
 
 /// Dropped files, with the ones macOS takes back once the drag ends (a screenshot's floating
@@ -169,6 +169,31 @@ pub fn read() -> Result<Paste, String> {
     Ok(Paste::Image {
         path: path.to_string_lossy().into_owned(),
     })
+}
+
+/// The clipboard's text alone, for Apply Patch from Clipboard: the webview's own read asks the
+/// user first with a Paste button.
+#[cfg(target_os = "macos")]
+pub fn read_text() -> Result<String, String> {
+    Ok(objc2::rc::autoreleasepool(|_| unsafe { pasteboard::read_text() }).unwrap_or_default())
+}
+
+#[cfg(target_os = "linux")]
+pub fn read_text() -> Result<String, String> {
+    // GTK panics off its thread (see `contents`).
+    if !gtk::is_initialized_main_thread() {
+        return Err("The clipboard is unavailable".into());
+    }
+    let clipboard = gtk::Clipboard::get(&gtk::gdk::SELECTION_CLIPBOARD);
+    Ok(clipboard
+        .wait_for_text()
+        .map(String::from)
+        .unwrap_or_default())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn read_text() -> Result<String, String> {
+    Err("Reading the clipboard is only supported on macOS and Linux".into())
 }
 
 #[cfg(target_os = "macos")]
@@ -272,6 +297,16 @@ mod pasteboard {
             png = tiff_to_png(msg_send![pb, dataForType: ns_string(c"public.tiff")]);
         }
         (files, text, png)
+    }
+
+    /// The general pasteboard's text. Call inside an autorelease pool.
+    pub unsafe fn read_text() -> Option<String> {
+        let pb_class = AnyClass::get(c"NSPasteboard")?;
+        let pb: *mut AnyObject = msg_send![pb_class, generalPasteboard];
+        if pb.is_null() {
+            return None;
+        }
+        rust_string(msg_send![pb, stringForType: ns_string(c"public.utf8-plain-text")])
     }
 
     /// Extensions NSImage reads, whose picture goes on the pasteboard next to the file.

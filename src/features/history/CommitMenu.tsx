@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { ArrowDown, ArrowUp, Cherry, Combine, SearchCode, Scissors, GitCommitVertical, Copy, ExternalLink, Eye, EyeOff, FolderGit2, GitBranchPlus, GitCommitHorizontal, History, Link, Pencil, RotateCcw, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
+import { ArrowDown, ArrowUp, Cherry, Combine, SearchCode, Scissors, GitCommitVertical, Copy, ExternalLink, Eye, EyeOff, FileDiff, FolderGit2, GitBranchPlus, GitCommitHorizontal, GitCompare, GitCompareArrows, History, Link, Pencil, RotateCcw, SquareDashedMousePointer, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { Fragment, useRef, useState } from "react";
 import {
   ContextMenuContent,
@@ -14,11 +14,12 @@ import { api, type Commit, errorMessage, type RemoteTags, type ResetMode } from 
 import { forgetRemoteTags, remoteTags } from "@/lib/repo/remoteTags";
 import { folderName } from "@/lib/path";
 import { copyLink, openOnGitHub } from "@/lib/github/url";
-import { copyText } from "@/lib/app/clipboard";
+import { copyLater, copyText } from "@/lib/app/clipboard";
 import { openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
 import { startBisect } from "./BisectBar";
 import { type Actions, checkoutDetached, commitUrl, dropsPushed, MERGE_WARNING, PUSHED_WARNING, undoCommit } from "./commitActions";
 import { groupRefs } from "./groupRefs";
+import { commitMark } from "@/lib/repo/compareMark";
 
 /** The remote tags are pushed to and the ones it has, while asking it, or why that failed. */
 type TagsThere = RemoteTags | { error: string } | "loading" | null;
@@ -72,6 +73,10 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
   const url = commitUrl(c, actions);
   const short = c.shortSha;
   const target = status?.branch ?? "HEAD";
+  const root = status?.root;
+  const mark = commitMark.use(root);
+  const point = { sha: c.sha, label: short };
+  const compare = actions.comparePoints;
 
   const undo = async () => {
     const drops = await dropsPushed(c.parents[0]);
@@ -181,6 +186,22 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
           </ContextMenuItem>
         </ContextMenuSubContent>
       </ContextMenuSub>
+      {compare && root && (
+        <>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => compare({ base: point, head: null })}>
+            <GitCompareArrows /> Compare with Working Tree
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => commitMark.set({ ...point, root })}>
+            <SquareDashedMousePointer /> Select for Compare
+          </ContextMenuItem>
+          {mark && mark.sha !== c.sha && (
+            <ContextMenuItem onSelect={() => compare({ base: mark, head: point })}>
+              <GitCompare /> Compare with <span className="font-mono">{mark.label}</span>
+            </ContextMenuItem>
+          )}
+        </>
+      )}
       <ContextMenuSeparator />
       {/* HEAD has the bug, this commit didn't: git halves what's between until it finds where it came in. */}
       <ContextMenuItem disabled={locked || head || c.notInHead} onSelect={() => void startBisect(c.sha, actions.refresh)}>
@@ -229,6 +250,9 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
       <ContextMenuItem onSelect={() => copyText(c.body ? `${c.subject}\n\n${c.body}` : c.subject, "Message copied")}>
         <Copy /> Copy message
       </ContextMenuItem>
+      <ContextMenuItem disabled={c.parents.length > 1} onSelect={() => copyLater(() => api.commitPatch(c.sha), "Patch copied")}>
+        <FileDiff /> Copy as Patch
+      </ContextMenuItem>
       {webUrl && (
         <>
           <ContextMenuItem disabled={!url} onSelect={() => url && copyLink(url)}>
@@ -273,6 +297,15 @@ export function PickedMenu({ commits, all, actions }: { commits: Commit[]; all: 
       <ContextMenuItem disabled={off || all} className="text-destructive" onSelect={() => void actions.rewrite({ kind: "drop", shas: commits.map((c) => c.sha) }, commits)}>
         <Trash2 /> Drop {n} Commits…
       </ContextMenuItem>
+      {n === 2 && actions.comparePoints && (
+        <>
+          <ContextMenuSeparator />
+          {/* Newest first: the older one is the old side. */}
+          <ContextMenuItem onSelect={() => actions.comparePoints?.({ base: { sha: commits[1].sha, label: commits[1].shortSha }, head: { sha: commits[0].sha, label: commits[0].shortSha } })}>
+            <GitCompare /> Compare These Two
+          </ContextMenuItem>
+        </>
+      )}
       <ContextMenuSeparator />
       <ContextMenuItem onSelect={() => copyText(commits.map((c) => c.sha).join("\n"), "SHAs copied")}>
         <Copy /> Copy SHAs

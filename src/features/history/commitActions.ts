@@ -2,6 +2,7 @@ import { api, type Commit, errorMessage, type GraphRefs, type HistoryEdit, type 
 import { ask } from "@/lib/app/ask";
 import { toast } from "@/lib/app/toast";
 import type { GitRun, NetRun } from "@/hooks/useGitAction";
+import type { Points } from "@/lib/repo/compareMark";
 
 /** Refs are full names (refs/heads/…). */
 export interface RefMenu {
@@ -37,6 +38,8 @@ export interface Actions {
   remotes: Set<string>;
   refMenu?: RefMenu;
   showRefs?: GraphRefs;
+  /** Lists that can show a comparison in their place. */
+  comparePoints?: (points: Points) => void;
 }
 
 /** GitHub only has commits that reached one of origin's branches (or all, for a fork's original). */

@@ -69,6 +69,12 @@ pub async fn reflog(state: State<'_, AppState>, limit: u32) -> Res<Vec<git::Refl
     in_repo(&state, move |r| git::reflog(r, limit)).await
 }
 
+/// The working tree against commit `sha` itself, no merge base: History's Compare with Working Tree.
+#[tauri::command]
+pub async fn compare_worktree(state: State<'_, AppState>, sha: String) -> Res<git::BranchReview> {
+    in_repo(&state, move |r| git::worktree_review(r, &sha)).await
+}
+
 #[tauri::command]
 pub async fn compare_files(state: State<'_, AppState>, with: String) -> Res<git::CompareFiles> {
     in_repo(&state, move |r| git::compare_files(r, &with)).await
@@ -77,6 +83,14 @@ pub async fn compare_files(state: State<'_, AppState>, with: String) -> Res<git:
 #[tauri::command]
 pub async fn find_commit(state: State<'_, AppState>, sha: String) -> Res<Option<git::Commit>> {
     in_repo(&state, move |r| git::find_commit(r, &sha)).await
+}
+
+#[tauri::command]
+pub async fn known_commits(
+    state: State<'_, AppState>,
+    shas: Vec<String>,
+) -> Res<Vec<Option<String>>> {
+    read_repo(&state, move |r| git::known_commits(r, &shas)).await
 }
 
 #[tauri::command]

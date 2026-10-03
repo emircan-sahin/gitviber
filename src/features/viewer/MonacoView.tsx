@@ -8,7 +8,7 @@ import { findMatches } from "@/lib/ui/findQuery";
 import { type CodeReveal, onReveal, takeReveal } from "@/lib/editor/reveal";
 import { codeWantsFocus, setCodeEditor } from "@/lib/ui/panels";
 import { followDefinitions } from "@/lib/editor/definitions";
-import { followLineActions, type LineAction, type LineActions } from "@/lib/editor/lineActions";
+import { followLineActions, type LineAction, type LineActions, type StagingSide } from "@/lib/editor/lineActions";
 import { followGitHubLinks, type GitHubLinks, linkSelection } from "@/lib/editor/githubLinks";
 import type { GitHubSide } from "@/lib/github/permalink";
 import { codeEditor, type Editor, hideEditor, hideFile, isDiff, showEditor, showFile } from "./activeEditor";
@@ -48,8 +48,8 @@ interface Props {
   onBlameClick?: (commit: BlameCommit) => void;
   /** Each side's file and tree, for Go to Definition (the old side only in a diff); none: nowhere to go. */
   links?: { original: LinkSide | null; modified: LinkSide } | null;
-  /** A working-tree diff whose changes can be staged, unstaged or discarded from here. */
-  staging?: { kind: "unstaged" | "staged"; oldPath: string | null; refresh: () => unknown } | null;
+  /** A working-tree diff whose changes can be staged, unstaged or discarded from here, or a commit's, whose lines revert. */
+  staging?: StagingSide | null;
   /** A PR file's line comments, drawn under their lines. */
   review?: Review | null;
   /** Review notes can be written here and show under their lines: the old side's path, and a commit's version (`at`). */

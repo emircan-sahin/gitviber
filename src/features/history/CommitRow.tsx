@@ -43,6 +43,7 @@ export function CommitRow({
   url,
   ci,
   menu,
+  fileMenu,
 }: {
   commit: Commit;
   remotes: Set<string>;
@@ -65,6 +66,8 @@ export function CommitRow({
   url: string | undefined;
   ci?: CiState;
   menu: React.ReactNode;
+  /** A changed file's right-click menu. */
+  fileMenu: (file: FileChange, sel: Selection) => React.ReactNode;
 }) {
   const [files, setFiles] = useState<FileChange[] | null>(null);
   const drag = useDraggable({ id: commit.sha, disabled: !draggable });
@@ -180,27 +183,31 @@ export function CommitRow({
             const key = selectionKey(sel);
             const active = activeKey === key;
             return (
-              <div
-                key={f.path}
-                role="treeitem"
-                aria-level={2}
-                aria-selected={active}
-                tabIndex={-1}
-                data-row={key}
-                onClick={() => onOpen(sel)}
-                onDoubleClick={() => onOpen(sel, true)}
-                onMouseEnter={() => onHover(sel)}
-                className={cn(
-                  "relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-8 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
-                  active ? "bg-primary/15" : "hover:bg-hover focus:bg-hover",
-                )}
-              >
-                {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
-                <FileIcon path={f.path} />
-                <PathLabel path={f.path} className="flex-1" />
-                <LineCounts file={f} />
-                <StatusLetter status={f.status} />
-              </div>
+              <ContextMenu key={f.path}>
+                <ContextMenuTrigger asChild>
+                  <div
+                    role="treeitem"
+                    aria-level={2}
+                    aria-selected={active}
+                    tabIndex={-1}
+                    data-row={key}
+                    onClick={() => onOpen(sel)}
+                    onDoubleClick={() => onOpen(sel, true)}
+                    onMouseEnter={() => onHover(sel)}
+                    className={cn(
+                      "relative flex h-[26px] cursor-pointer items-center gap-2 pr-2 pl-8 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset",
+                      active ? "bg-primary/15" : "hover:bg-hover focus:bg-hover",
+                    )}
+                  >
+                    {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
+                    <FileIcon path={f.path} />
+                    <PathLabel path={f.path} className="flex-1" />
+                    <LineCounts file={f} />
+                    <StatusLetter status={f.status} />
+                  </div>
+                </ContextMenuTrigger>
+                {fileMenu(f, sel)}
+              </ContextMenu>
             );
           })}
         </div>

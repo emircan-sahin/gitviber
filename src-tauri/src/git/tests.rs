@@ -311,6 +311,30 @@ fn rebase_conflict_abort() {
 }
 
 #[test]
+fn known_commits_take_short_and_full_ids_and_nothing_else() {
+    let repo = temp_repo("known");
+    commit_file(&repo, "a.txt", "a\n", "first");
+    let head = run_text(&repo, &["rev-parse", "HEAD"]).unwrap();
+    let head = head.trim().to_string();
+    let tree = run_text(&repo, &["rev-parse", "HEAD^{tree}"]).unwrap();
+    let asked = [
+        head[..7].to_string(),
+        "0000000".into(),
+        "not-hex".into(),
+        head.clone(),
+        tree.trim().into(),
+        "abc".into(),
+    ];
+    let known = known_commits(&repo, &asked).unwrap();
+    assert_eq!(
+        known,
+        [Some(head.clone()), None, None, Some(head), None, None]
+    );
+    assert_eq!(known_commits(&repo, &["zz".into()]).unwrap(), [None]);
+    let _ = fs::remove_dir_all(&repo);
+}
+
+#[test]
 fn unborn_branch() {
     let repo = temp_repo("unborn");
     fs::write(repo.join("x"), "x\n").unwrap();

@@ -9,7 +9,7 @@ import type { IBufferCell, IBufferLine } from "@xterm/xterm";
 import { basename, dirname, slashes } from "../path.ts";
 
 /** How a link's text becomes a target: each kind has its own lookup rules. */
-type LinkKind = "module" | "style" | "doc" | "path" | "rust" | "python" | "url" | "file";
+type LinkKind = "module" | "style" | "doc" | "path" | "rust" | "python" | "url" | "file" | "commit" | "issue";
 
 /** What a link opens: a web page, a repo file at a line (1-based) when the link names one, or a repo folder (terminal links only). */
 export type Target = { url: string } | { path: string; line?: number; column?: number; dir?: boolean };
@@ -135,13 +135,52 @@ export function findLinks(line: string, lang: string, near?: Near): Link[] {
 
 /**
  * The links in a line of terminal output: URLs, and paths with or without a line (`ls` prints bare
- * names), folders with a slash in them, and paths shortened to their end (`…/lib/a.ts`).
+ * names), folders with a slash in them, and paths shortened to their end (`…/lib/a.ts`); then what
+ * may be a commit or an issue (gitRefs), for the repo to say.
  */
 export function findTerminalLinks(line: string, near?: Near): Link[] {
   return windowed(line, near, (text, _, add) => {
     urls(text, add);
     filePaths(text, add, true, true);
+    gitRefs(text, add);
   });
+}
+
+// 7 to 40 hex digits on their own, as git prints them: `[main 59bd0e8]`, `^59bd0e8` (blame), either
+// side of `..` or `...`. Not in a word, a path, a version, a hex number or a color.
+const SHA = /(?<=^|[^\w./:#@-]|\.\.)[0-9a-f]{7,40}(?![\w/@-])/g;
+// #123, not inside a word, a path or an HTML entity (&#123;); as GitHub links them (lib/github/markdown).
+const ISSUE = /(?<![\p{L}\p{N}_@/.&#-])#[1-9]\d{0,6}(?![\p{L}\p{N}_])/gu;
+
+/**
+ * Commits and issues a line may name, for the repo to confirm: a run of digits alone is a number
+ * (a size, a time, a pid) far more often than a short SHA, so a SHA needs a letter.
+ */
+function gitRefs(line: string, add: Add) {
+  for (const m of line.matchAll(SHA)) if (/[a-f]/.test(m[0])) add(m.index, m[0], "commit");
+  for (const m of line.matchAll(ISSUE)) if (!cssColor(line, m.index, m[0])) add(m.index, m[0], "issue");
+}
+
+// A color property and its value so far, no `;` or brace between: `color: #333`, `border: 1px solid #111`.
+const CSS_VALUE = /(?:color|background|border|outline|shadow|fill|stroke)[\w-]*\s*:[^#;{}]*$/i;
+
+/** `#333`: digits that are as many as a hex color has (3, 4, 6, 8) after a color property: a stylesheet's diff, not an issue. */
+function cssColor(line: string, at: number, ref: string) {
+  return [4, 5, 7, 9].includes(ref.length) && CSS_VALUE.test(line.slice(Math.max(0, at - 120), at));
+}
+
+/**
+ * The pull request or issue a link opens in the app: #123, or a URL of one in `repos` (each
+ * https://github.com/owner/name, as GitHub spells it in any case), a tab of it or a comment in it
+ * included. `pull`: the URL said it's a pull request; else it's either (GitHub sends an issue's
+ * URL on to the pull request of that number). `repo`: which of `repos` it's in.
+ */
+export function githubItem(link: Pick<Link, "spec" | "kind">, repos: readonly string[]): { number: number; pull: boolean; repo: string } | null {
+  if (link.kind === "issue") return repos[0] ? { number: Number(link.spec.slice(1)), pull: false, repo: repos[0] } : null;
+  if (link.kind !== "url") return null;
+  const m = /^(https:\/\/github\.com\/[^/]+\/[^/]+)\/(pull|issues)\/([1-9]\d{0,8})(?=$|[/?#])/i.exec(link.spec);
+  const repo = m && repos.find((r) => r.toLowerCase() === m[1].toLowerCase());
+  return repo ? { number: Number(m[3]), pull: m[2].toLowerCase() === "pull", repo } : null;
 }
 
 /**
@@ -342,7 +381,9 @@ export function resolveLink(link: Link, from: string, index: FileIndex, aliases:
  * outside the repo, where only absolute paths into it resolve), or the repo root, as agents print
  * them; a folder when no line is named, and a shortened path when one file ends that way.
  */
+/** A URL's or a path's target; a commit or an issue is the repo's to say (lib/links/linkHost). */
 export function resolveTerminalLink(link: Link, cwd: string | null, index: FileIndex, root: string, rootToo = true): Target | null {
+  if (link.kind === "commit" || link.kind === "issue") return null;
   return link.kind === "url" ? { url: link.spec } : resolveFile(link.spec, cwd, index, root, true, rootToo);
 }
 
@@ -414,7 +455,7 @@ function endingWith(files: ReadonlySet<string>, tail: string): string | null {
 export function diskCandidates(link: Link, cwd: string | null, root: string, rootToo = true): string[] {
   const path = slashes(splitPosition(link.spec).path);
   // Digits and slashes are a date or a fraction (2026/09/27, 3/4), not worth asking about.
-  return link.kind === "url" || SHORTENED.test(path) ? [] : candidates(path, cwd, root, rootToo).filter((c) => !/^[\d/]+$/.test(c));
+  return link.kind !== "file" || SHORTENED.test(path) ? [] : candidates(path, cwd, root, rootToo).filter((c) => !/^[\d/]+$/.test(c));
 }
 
 /** A terminal link's target at `path`, found on disk as `kind`; a folder with a line isn't one. */

@@ -80,9 +80,15 @@ A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the test
 server or talk to the agent without leaving the change you're reading. Each pane of a split has a
 title bar with what runs there, and `⌘R` names it. The terminal has its own font, size, cursor and
 scrollback in Settings, and `⌘=` / `⌘−` in the terminal or a pinch over it size its text.
-`⌘`-click a path it prints to open the file at that line, or a folder to show it in the explorer.
-In zsh and bash 4.4+ each command gets a mark, red when it failed, `⌘↑` / `⌘↓` jump between them,
-and the last one's output copies from the right-click menu; your dotfiles stay as they are.
+`⌘`-click a path it prints to open the file at that line, or a folder to show it in the explorer;
+a commit's SHA opens it in History, and `#123` or a link to one of the repo's pull requests or
+issues opens it in its own tab. `⌃⇧Space` puts a letter on every one of those links on screen, in
+vim or Claude Code too: type it to open the link, or with Shift to copy it.
+In zsh and bash 4.4+ each command gets a mark, red when it failed, that tells how long it took,
+`⌘↑` / `⌘↓` jump between them, and the last one's output copies from the right-click menu; your
+dotfiles stay as they are. Turn on "A long command finishes" in Settings → Notifications and a
+command that runs past 10 seconds and ends while you're looking elsewhere puts a dot on its tab,
+with a desktop notification naming the program (never its arguments) if you turned those on.
 
 It's made for agents too: paste a screenshot or drop files and Claude Code or Codex gets their
 paths, Shift+Enter reaches them as its own key, and on a Mac a trackpad swipe scrolls Claude
@@ -91,8 +97,9 @@ Code's fullscreen view row by row, as it does vim and htop.
 ### Browse the code, not just the diff
 
 A full file explorer with change bars in the gutter, quick open (`⌘P`) and rename, create and
-delete from the right-click menu. Fix a line right in the file view and save it with `⌘S`. For most
-days that's the editor you no longer need open.
+delete from the right-click menu. Pick two files with `⌘`-click to compare them side by side. Fix a
+line right in the file view and save it with `⌘S`. For most days that's the editor you no longer
+need open.
 
 Markdown renders the way GitHub shows it, in files, pull requests and issues alike: Mermaid
 diagrams, math, `> [!NOTE]` alerts, and a file's frontmatter as a table.
@@ -131,8 +138,9 @@ can be rebound in Settings, and holding `⌘` shows them all.
 
 | | |
 | --- | --- |
-| **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu. Reword, squash, drop or reorder commits: pick several with ⌘- or ⇧-click, drag them between commits to move them or onto one to squash them; split a commit into pieces to commit with line staging, or fix staged changes up into an older one, and cherry-pick several commits at once. Branches that point into rewritten commits can move along; anything that rewrites pushed commits asks first |
+| **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu. Reword, squash, drop or reorder commits: pick several with ⌘- or ⇧-click, drag them between commits to move them or onto one to squash them; split a commit into pieces to commit with line staging, or fix staged changes up into an older one, and cherry-pick several commits at once. Branches that point into rewritten commits can move along; anything that rewrites pushed commits asks first. Compare any two commits, or one with the working tree. Put a file back as a commit had it, or take back just that commit's change to it, or a few of its lines; `⌘Z` undoes it |
 | **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Pin branches to the top of the picker, with the ones you checked out last under them. Clean up the merged ones in one go, squash- and rebase-merged included |
+| **Patches** | Copy a file, a few lines, a commit or a stash as a patch. Apply one from the clipboard: it shows what it changes first, merges with your edits where it must, and `⌘Z` takes it back |
 | **Conflicts** | Resolve block by block (current, incoming, both, or by hand) with each block's merge base a click away, then continue, skip or abort. Or hand them to the agent in your terminal, or open them in the merge tool your git config names |
 | **Pull requests** | List, read, review in the same diff viewer, create, merge and check out. Read one commit by commit: pick a commit, or a run of them, to see only what they changed. See why a check failed and copy it for the agent (GitHub) |
 | **Issues** | List, read, open, edit, comment, close and reopen, or start one in its own worktree (GitHub) |
@@ -299,6 +307,7 @@ Reopening a closed tab and closing the other tabs have no default there either, 
 | `⇧⌘↵` | Show only the focused terminal pane in the panel, and all of them again (in the terminal) |
 | `⌘R` | Rename the focused pane of a split terminal (in the terminal; a double-click on its header too) |
 | `⌘↑` `⌘↓` | Scroll to the previous / next command's prompt (in the terminal, with shell integration) |
+| `⌃⇧Space` | Label the links on screen: type a label to open its link, with Shift to copy it (in the terminal) |
 | `⌘=` `⌘−` `⌘0` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too) |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |

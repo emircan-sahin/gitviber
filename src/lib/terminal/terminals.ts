@@ -24,12 +24,13 @@ import { IS_LINUX, IS_MAC, IS_WINDOWS } from "../platform";
 import { failed, toast } from "../app/toast";
 import { copyText } from "../app/clipboard";
 import { loadSession, type SavedSession, scheduleSave } from "./session";
-import { lookedAt, watchAttention } from "./needsYou";
+import { commandEnded, lookedAt, watchAttention } from "./needsYou";
 import { agentPrompted } from "./agents";
 import { type PaneAgent } from "./agentState";
 import { reportWheelByRow } from "./wheel";
 import { paneKeys } from "./keys";
 import { forgetFind, watchFind } from "./find";
+import { endHints, toggleHints } from "./hints";
 import { copyFromProgram, pasteInto, pasteText } from "./pasteInput";
 import { type Direction, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
 
@@ -132,6 +133,7 @@ export const TERMINAL_COMMANDS = [
   "terminal.fontZoomIn",
   "terminal.fontZoomOut",
   "terminal.fontZoomReset",
+  "terminal.hints",
 ] as const satisfies readonly CommandId[];
 
 export const panes = new Map<number, Pane>();
@@ -242,7 +244,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
     void shellDir(p);
     agentPrompted(p);
   };
-  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, ptySize: "", marks: new CommandMarks(term, prompted) };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, ptySize: "", marks: new CommandMarks(term, prompted, (end) => commandEnded(p, end)) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   if (restored?.resume) {
@@ -544,6 +546,7 @@ function closePane(id: number, byUser = false) {
   window.clearTimeout(p.hold?.timer);
   window.clearTimeout(p.ptyResizeTimer);
   forgetFind(p);
+  endHints(p);
   if (p.pty !== null) void pty.kill(p.pty).catch(() => {});
   const canvases = [...(p.term.element?.querySelectorAll("canvas") ?? [])];
   p.term.dispose();
@@ -719,6 +722,13 @@ export function copyLastOutput(id: number) {
 
 export function selectLastOutput(id: number) {
   panes.get(id)?.marks.selectLastOutput();
+}
+
+/** Letter labels on the links the focused pane shows (hints.ts). */
+export function showLinkHints() {
+  const g = activeGroup();
+  const p = g && panes.get(g.focused);
+  if (p) void toggleHints(p);
 }
 
 /** `focus: false` keeps focus where it is: arrowing along the tabs. */

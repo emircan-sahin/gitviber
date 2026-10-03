@@ -197,11 +197,23 @@ fn a_discarded_change_comes_back_with_undo() {
     fs::write(r.join("a.txt"), "a\nkeep\nb\ngone\n").unwrap();
     let j = crate::journal::Journal::default();
     let req = request(&r, "unstaged", "discard", "a.txt", &[], &[4]);
-    j.discard(&r, &["a.txt".into()], || change(&r, &req))
-        .unwrap();
+    let write = move |r: &Path| change(r, &req).map(|_| vec![]);
+    let lock = std::sync::Mutex::new(());
+    j.replace(
+        &r,
+        "Discard a.txt".into(),
+        "discarded",
+        &["a.txt".into()],
+        &lock,
+        write,
+    )
+    .unwrap();
     assert_eq!(disk(&r, "a.txt"), "a\nkeep\nb\n");
-    j.step(&r, false, None, &std::sync::Mutex::new(())).unwrap();
+    j.step(&r, false, None, &lock).unwrap();
     assert_eq!(disk(&r, "a.txt"), "a\nkeep\nb\ngone\n");
+    // Redo discards those lines again, not the whole file.
+    j.step(&r, true, None, &lock).unwrap();
+    assert_eq!(disk(&r, "a.txt"), "a\nkeep\nb\n");
 }
 
 #[test]

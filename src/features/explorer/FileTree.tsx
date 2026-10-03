@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { ChevronRight, Copy, ExternalLink, File, FilePlus, FolderPlus, FolderSearch, History, Link, Pencil, Trash2, Undo2 } from "lucide-react";
+import { ChevronRight, Copy, ExternalLink, File, FilePlus, FolderPlus, FolderSearch, GitCompare, History, Link, Pencil, SquareDashedMousePointer, Trash2, Undo2 } from "lucide-react";
 import { Fragment, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -8,7 +8,8 @@ import { IS_MAC, primaryKey, REVEAL_LABEL } from "@/lib/platform";
 import { matchesCommand, useShortcut } from "@/lib/commands/keybindings";
 import { focusPanel } from "@/lib/ui/panels";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
-import { type Selection, selectionKey } from "@/lib/repo/selection";
+import { filesSelection, type Selection, selectionKey } from "@/lib/repo/selection";
+import { fileMark } from "@/lib/repo/compareMark";
 import { toast } from "@/lib/app/toast";
 import { tracked, undoAction } from "@/lib/repo/undo";
 import { cn } from "@/lib/utils";
@@ -48,6 +49,7 @@ interface Props {
 
 type Editing = { mode: "rename"; entry: Entry } | { mode: "new"; parent: string; isDir: boolean };
 
+
 const INDENT = 12;
 
 const isInside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
@@ -68,6 +70,7 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   const [selected, setSelected] = useState<string | null>(null);
   // Rows picked with ⌘/⇧ (clicks or ⇧-arrows) from `anchor`, as in the Changes panel; null: just `selected`.
   const [picked, setPicked] = useState<{ paths: Set<string>; anchor: string } | null>(null);
+  const mark = fileMark.use(status?.root);
   const [editing, setEditing] = useState<Editing | null>(null);
   const renameKey = useShortcut("explorer.rename");
   const deleteKey = useShortcut("explorer.delete");
@@ -359,6 +362,9 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
   // Untracked or ignored: GitHub has no copy, as History has none.
   const offGitHub = !!t && (t.ignored || fileStatus.get(t.path) === "?");
   const gitHubItem = (open: boolean) => webUrl && void gitHubLink({ web: webUrl, path: t?.path ?? "", sha: null }, null, open);
+  // Two files picked compare with each other, as listed; one compares with the file Select for Compare picked.
+  const pair = multi && targets.length === 2 && targetFiles.length === 2 ? targetFiles : null;
+  const marked = mark && mark.path !== t?.path ? mark.path : null;
 
   return (
     <div className="flex h-full flex-col">
@@ -446,6 +452,23 @@ export function FileTree({ status, revision, activeKey, onOpen, onHover, onPathM
           <>
             <ContextMenuItem onSelect={() => activate(t, true)}>
               <File /> Open <ContextMenuShortcut>↵</ContextMenuShortcut>
+            </ContextMenuItem>
+            <ContextMenuSeparator />
+            <ContextMenuItem disabled={!status} onSelect={() => status && fileMark.set({ root: status.root, path: t.path })}>
+              <SquareDashedMousePointer /> Select for Compare
+            </ContextMenuItem>
+            {marked && (
+              <ContextMenuItem onSelect={() => onOpen(filesSelection(marked, t.path), true)}>
+                <GitCompare /> Compare with {basename(marked)}
+              </ContextMenuItem>
+            )}
+            <ContextMenuSeparator />
+          </>
+        )}
+        {pair && (
+          <>
+            <ContextMenuItem onSelect={() => onOpen(filesSelection(pair[0].path, pair[1].path), true)}>
+              <GitCompare /> Compare Selected
             </ContextMenuItem>
             <ContextMenuSeparator />
           </>
