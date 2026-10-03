@@ -53,14 +53,19 @@ count, its pull request and how its checks are doing. Start one from any branch,
 in the folder you choose, or check a pull request out into its own worktree without touching
 yours. A new worktree can run a command such as `claude` in its terminal right away, and gets copies
 of the ignored files `.worktreeinclude` lists, like your `.env`. Rename one along with its folder,
-lock it, and remove or prune it when the work is merged.
+give it a color its chip and terminal tabs wear, lock it, and remove or prune it when the work is
+merged. Clean up removes every merged worktree with nothing uncommitted in one go, branches too,
+after showing the ignored files that go with them, like `node_modules`; merging a pull request in
+the app offers to remove its worktree.
 Every worktree keeps its own terminals, so nothing gets lost when you hop between them, and a
 terminal can open in another project or any folder too. A tab and its worktree show a ring while
 Claude Code works there, and a dot once it finishes or asks for you, with a desktop notification if
 you turned those on (Settings → Notifications, one switch per kind); clicking it brings you to that
-terminal. Other agents get the dot when they ring the terminal bell or send a notification. Quit
-with Claude Code, Gemini CLI or opencode still running, and the restored terminal has the command
-that resumes the conversation typed at the prompt.
+terminal. Other agents get the dot when they ring the terminal bell or send a notification. The
+Agents menu in the top bar lists every agent in your terminals, the ones waiting for you first, and
+the Dock icon counts those. Quit with Claude Code, Gemini CLI or opencode still running, and the
+restored terminal has the command that resumes the conversation typed at the prompt; Resume a
+conversation picks up any older Claude Code conversation in a worktree.
 
 ### Watch the work land
 
@@ -90,6 +95,17 @@ delete from the right-click menu. Pick two files with `⌘`-click to compare the
 line right in the file view and save it with `⌘S`. For most days that's the editor you no longer
 need open.
 
+Markdown renders the way GitHub shows it, in files, pull requests and issues alike: Mermaid
+diagrams, math, `> [!NOTE]` alerts, and a file's frontmatter as a table.
+
+### Your Obsidian vault, beside the code
+
+If you use Obsidian, your vault shows in a section under the explorer's files, found on its own.
+Notes open in a tab the way Obsidian's reading view shows them: wikilinks that open the note they
+name, embedded notes, images and PDFs, callouts, highlights, tags and properties. Canvases open
+as their board, to pan and zoom, and images, audio, video and PDFs in the media viewer. Switch a
+note to Code to edit it and save it with `⌘S`. Settings → Obsidian picks which vaults show.
+
 ### Commit messages from your agent
 
 Turn it on in Settings, hit the sparkle next to the commit box, and your own `claude -p` or
@@ -117,9 +133,9 @@ can be rebound in Settings, and holding `⌘` shows them all.
 | | |
 | --- | --- |
 | **History** | Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag from the right-click menu. Reword, squash, drop or reorder commits: pick several with ⌘- or ⇧-click, drag them between commits to move them or onto one to squash them; anything that rewrites pushed commits asks first. Compare any two commits, or one with the working tree. Put a file back as a commit had it, or take back just that commit's change to it, or a few of its lines; `⌘Z` undoes it |
-| **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Clean up the merged ones in one go, squash- and rebase-merged included |
+| **Branches** | Merge, rebase, and pull with fast-forward, merge or rebase. Pin branches to the top of the picker, with the ones you checked out last under them. Clean up the merged ones in one go, squash- and rebase-merged included |
 | **Patches** | Copy a file, a few lines, a commit or a stash as a patch. Apply one from the clipboard: it shows what it changes first, merges with your edits where it must, and `⌘Z` takes it back |
-| **Conflicts** | Resolve block by block (current, incoming, both, or by hand), then continue, skip or abort |
+| **Conflicts** | Resolve block by block (current, incoming, both, or by hand) with each block's merge base a click away, then continue, skip or abort. Or hand them to the agent in your terminal, or open them in the merge tool your git config names |
 | **Pull requests** | List, read, review in the same diff viewer, create, merge and check out. Read one commit by commit: pick a commit, or a run of them, to see only what they changed. See why a check failed and copy it for the agent (GitHub) |
 | **Issues** | List, read, open, edit, comment, close and reopen, or start one in its own worktree (GitHub) |
 
@@ -200,7 +216,9 @@ error message the app shows you (a failed push's git output, say), go to a local
 with logins in URLs and GitHub tokens blanked out. Help → Copy Diagnostics copies only the versions
 of GitViber, the OS, git, `gh` and WebKit, for you to paste into a bug report. Markdown from GitHub
 is cut down to GitHub's own HTML allowlist, and an image hosted outside GitHub loads only when you
-click it. Commit message suggestions go wherever the command you picked sends them.
+click it. Commit message suggestions go wherever the command you picked sends them. To show your
+Obsidian vault, GitViber reads Obsidian's own list of vaults on your disk; it never touches the
+vault's `.obsidian` folder.
 
 ## FAQ
 
@@ -211,8 +229,8 @@ it against `SHA256SUMS` and download it again. A build of your own isn't notariz
 already trusted on the Mac that built it.
 
 **How do I sign in to GitHub?** There's no sign-in of its own. Run `gh auth login` once, or have
-git remember a github.com login (any HTTPS push does), and GitViber borrows it. See
-[Privacy](#privacy).
+git remember a github.com login (any HTTPS push does), and GitViber borrows it. With more than
+one account in `gh`, pick the one a repository uses in Settings → Git. See [Privacy](#privacy).
 
 **Where are the logs?** Help → Show Logs. They're at `~/Library/Logs/app.gitviber.desktop/` on
 macOS and `~/.local/share/app.gitviber.desktop/logs/` on Linux. Help → Copy Diagnostics copies

@@ -4,3 +4,8 @@ packages:
 patchedDependencies:
   '@xterm/addon-webgl@0.20.0-beta.300': patches/@xterm__addon-webgl@0.20.0-beta.300.patch
   '@xterm/xterm@6.1.0-beta.304': patches/@xterm__xterm@6.1.0-beta.304.patch
+
+# Mermaid sanitizes every diagram with DOMPurify; monaco-editor pins 3.4.8, which has known
+# bypasses, and pnpm would otherwise hand mermaid that copy too.
+overrides:
+  'mermaid>dompurify': 3.4.16

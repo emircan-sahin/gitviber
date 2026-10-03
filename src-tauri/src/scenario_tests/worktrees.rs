@@ -324,6 +324,93 @@ fn a_new_worktree_gets_the_ignored_files_worktreeinclude_lists() {
     }
 }
 
+/// Clean up removes a merged worktree and its branch, a merged pull request's too (squashed:
+/// git can't tell), and leaves one with commits made since the PR's head, with changes, or not
+/// merged. What it deletes that git doesn't count is listed first.
+#[test]
+fn clean_up_removes_merged_worktrees_and_branches_known_merged() {
+    let sb = Sandbox::new("wtclean");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, ".gitignore", ".env\nnode_modules/\n", "ignore");
+    let made = |name: &str| {
+        run(&r, &["branch", name]).unwrap();
+        let path = add_worktree(&r, name, None, false, None).unwrap();
+        write_commit(Path::new(&path), &format!("{name}.txt"), "x\n", name);
+        path
+    };
+    let (done, pr, more, dirty, open) = (
+        made("done"),
+        made("pr"),
+        made("more"),
+        made("dirty"),
+        made("open"),
+    );
+    run(&r, &["merge", "-q", "done", "dirty"]).unwrap();
+    let tip = |b: &str| run_text(&r, &["rev-parse", b]).unwrap().trim().to_string();
+    let (pr_head, more_head) = (tip("pr"), tip("more"));
+    write_commit(Path::new(&more), "later.txt", "x\n", "after the PR");
+    fs::write(Path::new(&dirty).join("new.txt"), "x\n").unwrap();
+
+    fs::write(Path::new(&done).join(".env"), "SECRET=1\n").unwrap();
+    fs::create_dir_all(Path::new(&done).join("node_modules/pkg")).unwrap();
+    fs::write(
+        Path::new(&done).join("node_modules/pkg/index.js"),
+        "x".repeat(4000),
+    )
+    .unwrap();
+    fs::write(Path::new(&done).join("node_modules/pkg/package.json"), "{}").unwrap();
+    let ignored = worktree_ignored(&r, &done).unwrap();
+    assert!(ignored.complete);
+    let shown: Vec<_> = ignored
+        .entries
+        .iter()
+        .map(|e| (e.path.as_str(), e.bytes, e.files))
+        .collect();
+    assert_eq!(shown, [("node_modules/", 4002, 2), (".env", 9, 1)]);
+
+    let item = |path: &str, head: Option<&str>| CleanUp {
+        path: path.to_string(),
+        merged_head: head.map(str::to_string),
+    };
+    let out = clean_up_worktrees(
+        &r,
+        &[
+            item(&done, None),
+            item(&pr, Some(&pr_head.to_uppercase())),
+            item(&more, Some(&more_head)),
+            item(&dirty, None),
+            item(&open, None),
+        ],
+    );
+    assert_eq!(out.removed, [done.clone(), pr.clone()]);
+    assert_eq!(out.deleted, ["done", "pr"]);
+    assert!(out.kept.is_empty());
+    let failed: Vec<_> = out
+        .failed
+        .iter()
+        .map(|(p, e)| (p.as_str(), e.as_str()))
+        .collect();
+    assert_eq!(
+        failed,
+        [
+            (
+                more.as_str(),
+                "it has commits the merged pull request doesn't"
+            ),
+            (dirty.as_str(), "it has 1 uncommitted change"),
+            (open.as_str(), "it isn't merged anymore")
+        ]
+    );
+    assert!(!Path::new(&done).exists() && Path::new(&dirty).exists());
+    let mut left: Vec<_> = branches(&r).unwrap().into_iter().map(|b| b.name).collect();
+    left.sort();
+    assert_eq!(left, ["dirty", "main", "more", "open"]);
+    // The main worktree and the open one are never taken.
+    let main = item(r.to_str().unwrap(), Some(&tip("main")));
+    assert_eq!(clean_up_worktrees(&r, &[main]).failed.len(), 1);
+}
+
 /// A branch that exists checks out in a new worktree as it is, with no base to start from;
 /// one checked out already, here or in another worktree, is refused and leaves no folder.
 #[test]

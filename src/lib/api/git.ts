@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, CleanedUp, CleanUp, Commit, CommitDetails, CommitOptions, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, NetOp, NotifyPermission, Opened, OpenedRepo, OpenInApp, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -99,6 +99,8 @@ export const api = {
   branches: () => invoke<Branch[]>("branches"),
   /** Local branches squash- or rebase-merged on the remote, which then deleted them. */
   mergedUpstream: () => invoke<string[]>("merged_upstream"),
+  /** Where this worktree's HEAD went last (its reflog's checkouts), newest first; some may be gone or be commits. */
+  recentBranches: () => invoke<string[]>("recent_branches"),
   /** Deletes `merged` branches (git branch -d) and `upstream` ones, checked again as they are now, with -D. One undo. */
   deleteMerged: (merged: string[], upstream: string[]) => invoke<void>("delete_merged", { merged, upstream }),
   /** Switches to the local branch for a remote one ("upstream/dev" → dev), creating it to track exactly that. */
@@ -138,6 +140,10 @@ export const api = {
   unlockWorktree: (path: string) => invoke<void>("unlock_worktree", { path }),
   /** Deletes a linked worktree's folder (its branch stays); `force` drops uncommitted files and overrides a lock. */
   removeWorktree: (path: string, force: boolean) => invoke<void>("remove_worktree", { path, force }),
+  /** What removing a worktree deletes that git doesn't count as a change: its ignored files, sized, largest first. */
+  worktreeIgnored: (path: string) => invoke<IgnoredFiles>("worktree_ignored", { path }),
+  /** Removes merged worktrees, each checked again, and the branches known merged (Undo brings those back). */
+  cleanUpWorktrees: (list: CleanUp[]) => invoke<CleanedUp>("clean_up_worktrees", { list }),
   /** Nested repositories are refused unless `allowNested`: git would stage only a gitlink. */
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
   /**
@@ -205,6 +211,14 @@ export const api = {
   opAbort: () => invoke<void>("op_abort"),
   rebaseSkip: () => invoke<boolean>("rebase_skip"),
   resolveSide: (path: string, side: "ours" | "theirs") => invoke<void>("resolve_side", { path, side }),
+  /** A conflicted file's sides: `merged` again in diff3 style (null for a binary or huge side), and whether each ends with a newline. Null when a side deleted it. */
+  conflictBase: (path: string) => invoke<{ merged: string | null; oursNewline: boolean; theirsNewline: boolean } | null>("conflict_base", { path }),
+  /** The merge and diff tools git's config names (as `--gui` reads it); null where none a window can run. */
+  externalTools: () => invoke<{ merge: string | null; diff: string | null }>("external_tools"),
+  /** `git mergetool` on the path, settling once the tool is closed. */
+  openMergeTool: (path: string) => invoke<void>("open_merge_tool", { path }),
+  /** `git difftool` on the path's unstaged changes, or `staged` ones; settles once the tool is closed. */
+  openDiffTool: (path: string, staged: boolean) => invoke<void>("open_diff_tool", { path, staged }),
   writeFile: (path: string, content: string) => invoke<void>("write_file", { path, content }),
   createFile: (path: string) => invoke<void>("create_file", { path }),
   createDir: (path: string) => invoke<void>("create_dir", { path }),

@@ -1,31 +1,35 @@
-import { Check, ChevronsUpDown, Eye, GitMerge, Pencil, Undo2 } from "lucide-react";
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { Bot, Check, Eye, GitMerge } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type FileChange, type Operation } from "@/lib/api";
-import { tokenLookup, useHighlight } from "@/lib/editor/highlight";
 import { showLanguage } from "@/lib/editor/shownLanguage";
-import { copyNarrowed, indentUnit, widenLine } from "@/lib/editor/indent";
+import { copyNarrowed, indentUnit } from "@/lib/editor/indent";
 import { languageFor } from "@/lib/editor/language";
-import { useSettings } from "@/lib/settings";
-import { type Block, oursText, parseConflicts, type Segment } from "@/lib/git/conflicts";
+import { basesFor, type Block, endsWithNewline, mergingWhat, oursText, parseConflicts, resolvePrompt, type Segment } from "@/lib/git/conflicts";
+import { forTerminal } from "@/lib/review/notes";
+import { pasteToAgent } from "@/lib/terminal/terminals";
+import { copyText } from "@/lib/app/clipboard";
 import { failed, toast } from "@/lib/app/toast";
+import { mergeInTool, toolCanOpen, toolName, useExternalTools, useMergingInTool } from "@/lib/git/externalTools";
 import { cn } from "@/lib/utils";
 import { FileIcon } from "@/components/FileIcon";
 import { PathLabel } from "@/components/StatusBadge";
-import { Tokens, useCodeStyle } from "./codeLines";
-
-type Choice = { kind: "ours" | "theirs" | "both" | "custom"; lines: string[] };
-
-/** Spaces per indentation level the file's code is shown widened from (see lib/editor/indent). */
-const IndentUnit = createContext(0);
+import { type Choice, CodeLines, ConflictCard, IndentUnit, TextRun } from "./ConflictCard";
+import { useAsyncValue } from "@/hooks/useAsyncValue";
 
 interface Props {
   file: FileChange;
+  /** The worktree's root. */
+  root: string;
+  branch: string | null;
+  /** Every conflicted file's path, for the agent's prompt. */
+  conflicted: string[];
   operation: Operation | null;
   revision: number;
 }
 
-export function ConflictView({ file, operation, revision }: Props) {
+export function ConflictView({ file, root, branch, conflicted, operation, revision }: Props) {
   const [text, setText] = useState<string | null>(null);
   const [lossy, setLossy] = useState(false);
   const [choices, setChoices] = useState<Map<number, Choice>>(() => new Map());
@@ -60,6 +64,23 @@ export function ConflictView({ file, operation, revision }: Props) {
   const unit = useMemo(() => indentUnit(text), [text]);
   const blocks = parsed?.segments.filter((s): s is Extract<Segment, { t: "conflict" }> => s.t === "conflict") ?? [];
   const resolved = blocks.filter((b) => choices.has(b.id)).length;
+  // Each conflict's base, from the index stages unless the file's diff3 style wrote it: asked for
+  // the text read, and kept with it, so another file's never shows.
+  // Also how each side ends, for a conflict at the end of the file (endsWithNewline).
+  const rebuilt = useAsyncValue(
+    text != null && blocks.length
+      ? () =>
+          api.conflictBase(file.path).then((out) => ({
+            text,
+            sides: out,
+            blocks: (out?.merged && parseConflicts(out.merged)?.segments.filter((s) => s.t === "conflict")) || [],
+          }))
+      : null,
+    [file.path, text, blocks.length > 0],
+    null as { text: string; sides: Awaited<ReturnType<typeof api.conflictBase>>; blocks: Block[] } | null,
+  );
+  const current = rebuilt?.text === text ? rebuilt : null;
+  const bases = useMemo(() => basesFor(blocks, current?.blocks ?? []), [parsed, current]);
   // In a rebase HEAD is the branch you're rebasing onto; "incoming" is your own commit being replayed.
   const rebase = operation?.kind === "rebase";
 
@@ -95,7 +116,9 @@ export function ConflictView({ file, operation, revision }: Props) {
         setChoices(new Map());
         return;
       }
-      await api.writeFile(file.path, out.join("\n") + (parsed.trailingNewline ? "\n" : ""));
+      const last = parsed.segments.at(-1);
+      const eol = endsWithNewline(parsed, last?.t === "conflict" ? choices.get(last.id)?.kind : undefined, current?.sides ?? null);
+      await api.writeFile(file.path, out.join("\n") + (eol ? "\n" : ""));
       await api.stage([file.path]);
       toast("success", "Conflict resolved", file.path);
     } catch (e) {
@@ -129,6 +152,20 @@ export function ConflictView({ file, operation, revision }: Props) {
     }
   };
 
+  // mergetool merges text both sides changed; for a deleted side it asks on the terminal.
+  const tools = useExternalTools(root);
+  const mergeTool = (code === "UU" || code === "AA") && toolCanOpen(file.path) ? tools.merge : null;
+  const inTool = useMergingInTool(file.path);
+
+  // Into the terminal an agent runs in, here; Enter is left to you. Never a plain shell, where
+  // Enter would run the file names' backticks.
+  const askAgent = () => {
+    const files = conflicted.length ? conflicted : [file.path];
+    const prompt = resolvePrompt(files, mergingWhat(operation?.kind, operation?.subject ?? null, branch, blocks[0]?.theirsLabel || null));
+    if (!pasteToAgent(root, forTerminal(prompt)))
+      toast("info", "No agent running in this worktree", "Start one in a terminal here, or copy the prompt for it.", { label: "Copy prompt", run: () => void copyText(prompt, "Prompt copied") });
+  };
+
   const oursName = rebase ? "Current (base)" : "Current";
   const theirsName = rebase ? "Incoming (your commit)" : "Incoming";
 
@@ -143,22 +180,34 @@ export function ConflictView({ file, operation, revision }: Props) {
             <span className={cn("font-semibold", resolved === blocks.length ? "text-added" : "text-foreground")}>{resolved}</span>/{blocks.length} resolved
           </span>
         )}
-        {blocks.length > 0 && (
-          <div className="ml-auto flex shrink-0 items-center gap-1">
-            <Button variant={preview ? "default" : "secondary"} size="sm" aria-pressed={preview} onClick={() => setPreview((p) => !p)}>
-              <Eye /> Preview result
+        <div className="ml-auto flex shrink-0 items-center gap-1">
+          <Tip label="Pastes a prompt into the terminal an agent runs in, here">
+            <Button variant="secondary" size="sm" onClick={askAgent}>
+              <Bot /> Ask agent to resolve
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => chooseAll("ours")}>
-              All current
+          </Tip>
+          {mergeTool && (
+            <Button variant="secondary" size="sm" disabled={busy || inTool} onClick={() => void mergeInTool(mergeTool, file.path)}>
+              <GitMerge /> {inTool ? `Waiting for ${toolName(mergeTool)}…` : `Open in ${toolName(mergeTool)}`}
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => chooseAll("theirs")}>
-              All incoming
-            </Button>
-            <Button size="sm" disabled={busy || resolved < blocks.length} onClick={save}>
-              <Check /> Mark resolved
-            </Button>
-          </div>
-        )}
+          )}
+          {blocks.length > 0 && (
+            <>
+              <Button variant={preview ? "default" : "secondary"} size="sm" aria-pressed={preview} onClick={() => setPreview((p) => !p)}>
+                <Eye /> Preview result
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => chooseAll("ours")}>
+                All current
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => chooseAll("theirs")}>
+                All incoming
+              </Button>
+              <Button size="sm" disabled={busy || resolved < blocks.length} onClick={save}>
+                <Check /> Mark resolved
+              </Button>
+            </>
+          )}
+        </div>
       </div>
       <div className="min-h-0 flex-1 overflow-auto" onCopy={copyNarrowed(unit)}>
         <IndentUnit.Provider value={unit}>
@@ -180,6 +229,7 @@ export function ConflictView({ file, operation, revision }: Props) {
                     index={seg.id + 1}
                     total={blocks.length}
                     choice={choices.get(seg.id)}
+                    base={bases[seg.id] ?? null}
                     lang={lang}
                     oursName={oursName}
                     theirsName={theirsName}
@@ -262,150 +312,6 @@ function WholeFile({
           </button>
         ))}
       </div>
-    </div>
-  );
-}
-
-function CodeLines({ lines: raw, lang, className }: { lines: string[]; lang: string; className?: string }) {
-  const s = useSettings();
-  const style = useCodeStyle();
-  const unit = useContext(IndentUnit);
-  const lines = useMemo(() => (unit ? raw.map((l) => widenLine(l, unit)) : raw), [raw, unit]);
-  const hl = useHighlight(lines.join("\n"), lang, s.codeTheme);
-  const tok = useMemo(() => tokenLookup(hl), [hl]);
-  return (
-    <div
-      // The I-beam over the whole block, as an editor has it, not only over the letters.
-      className={cn("cursor-text px-4 select-text", s.wordWrap ? "whitespace-pre-wrap [overflow-wrap:anywhere]" : "overflow-x-auto whitespace-pre", className)}
-      style={{ ...style, color: hl?.data.fg }}
-    >
-      {lines.map((l, i) => (
-        <div key={i} className="min-h-[1lh]">
-          <Tokens tokens={tok(i, l)} text={l} />
-        </div>
-      ))}
-    </div>
-  );
-}
-
-const CONTEXT = 3;
-
-/** Unchanged text between conflicts, folded to a few lines of context. */
-function TextRun({ lines, lang }: { lines: string[]; lang: string }) {
-  const [open, setOpen] = useState(false);
-  if (open || lines.length <= CONTEXT * 2 + 1) return <CodeLines lines={lines} lang={lang} className="text-foreground/70" />;
-  return (
-    <>
-      <CodeLines lines={lines.slice(0, CONTEXT)} lang={lang} className="text-foreground/70" />
-      <button onClick={() => setOpen(true)} className="flex w-full items-center gap-2 border-y border-border bg-panel px-4 py-1 text-[11.5px] text-subtle hover:bg-elevated focus-visible:bg-elevated hover:text-foreground focus-visible:text-foreground">
-        <ChevronsUpDown className="size-3.5" /> {lines.length - CONTEXT * 2} unchanged lines
-      </button>
-      <CodeLines lines={lines.slice(-CONTEXT)} lang={lang} className="text-foreground/70" />
-    </>
-  );
-}
-
-function ConflictCard({
-  block,
-  index,
-  total,
-  choice,
-  lang,
-  oursName,
-  theirsName,
-  onChoose,
-  onUndo,
-}: {
-  block: Block;
-  index: number;
-  total: number;
-  choice?: Choice;
-  lang: string;
-  oursName: string;
-  theirsName: string;
-  onChoose: (kind: Choice["kind"], lines?: string[]) => void;
-  onUndo: () => void;
-}) {
-  const [editing, setEditing] = useState<string | null>(null);
-  const style = useCodeStyle();
-  const label = { ours: `Accepted ${oursName.toLowerCase()}`, theirs: `Accepted ${theirsName.toLowerCase()}`, both: "Accepted both", custom: "Edited" };
-
-  return (
-    <div className={cn("mx-3 my-2 overflow-hidden rounded-md border", choice ? "border-added/50" : "border-conflict/60")}>
-      <div className="flex h-8 items-center gap-2 border-b border-border bg-panel px-3 text-[11.5px]">
-        <span className={cn("font-semibold", choice ? "text-added" : "text-conflict")}>
-          Conflict {index} of {total}
-        </span>
-        {choice && <span className="text-muted-foreground">· {label[choice.kind]}</span>}
-        <div className="ml-auto flex items-center gap-1">
-          {choice ? (
-            <Button variant="ghost" size="sm" onClick={onUndo}>
-              <Undo2 /> Undo
-            </Button>
-          ) : editing == null ? (
-            <>
-              <Button variant="secondary" size="sm" onClick={() => onChoose("ours")}>
-                Accept current
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => onChoose("theirs")}>
-                Accept incoming
-              </Button>
-              <Button variant="secondary" size="sm" onClick={() => onChoose("both")}>
-                Accept both
-              </Button>
-              <Button variant="ghost" size="sm" onClick={() => setEditing([...block.ours, ...block.theirs].join("\n"))}>
-                <Pencil /> Edit
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button variant="ghost" size="sm" onClick={() => setEditing(null)}>
-                Cancel
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => {
-                  onChoose("custom", editing.split("\n"));
-                  setEditing(null);
-                }}
-              >
-                Use this
-              </Button>
-            </>
-          )}
-        </div>
-      </div>
-      {choice ? (
-        <CodeLines lines={choice.lines} lang={lang} className="bg-add-bg py-1" />
-      ) : editing != null ? (
-        <textarea
-          autoFocus
-          value={editing}
-          onChange={(e) => setEditing(e.target.value)}
-          spellCheck={false}
-          rows={Math.min(24, editing.split("\n").length + 1)}
-          className="block w-full resize-y bg-background px-4 py-1 text-foreground outline-none select-text"
-          style={style}
-        />
-      ) : (
-        <>
-          <Side title={oursName} ref_={block.oursLabel} tone="bg-primary/10 border-primary" lines={block.ours} lang={lang} />
-          {block.base && <Side title="Common ancestor" ref_="" tone="bg-hover border-subtle" lines={block.base} lang={lang} />}
-          <Side title={theirsName} ref_={block.theirsLabel} tone="bg-renamed/10 border-renamed" lines={block.theirs} lang={lang} />
-        </>
-      )}
-    </div>
-  );
-}
-
-function Side({ title, ref_, tone, lines, lang }: { title: string; ref_: string; tone: string; lines: string[]; lang: string }) {
-  return (
-    <div className={cn("border-l-2", tone)}>
-      <div className="px-4 pt-1.5 text-[10.5px] font-semibold tracking-[0.06em] text-muted-foreground uppercase">
-        {title}
-        {ref_ && <span className="ml-2 font-mono tracking-normal normal-case text-subtle">{ref_}</span>}
-      </div>
-      {lines.length ? <CodeLines lines={lines} lang={lang} className="pb-1.5" /> : <div className="px-4 pb-1.5 text-[11.5px] text-subtle italic">(empty)</div>}
     </div>
   );
 }

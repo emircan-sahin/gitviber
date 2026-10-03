@@ -21,3 +21,26 @@ export const isoToUnix = (iso: string) => Date.parse(iso) / 1000;
 
 /** "1 commit", "3 commits": `word` with an "s" unless there's one. */
 export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
+
+/** "512 B", "3.4 MB": binary units, a decimal under 10; never "1024 KB", which is 1.0 MB. */
+export function formatBytes(n: number) {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let v = n;
+  let i = 0;
+  // 1023.6 KB would round to "1024 KB": past 1023.5 it's the next unit's.
+  while (v >= (i ? 1023.5 : 1024) && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  if (!i) return `${n} B`;
+  return `${v.toFixed(v < 9.95 ? 1 : 0)} ${units[i]}`;
+}
+
+/** How long something has lasted, as a glance needs it: "<1m", "42m", "3h 5m", "2d". */
+export function shortDuration(seconds: number) {
+  const m = Math.floor(Math.max(0, seconds) / 60);
+  if (m < 1) return "<1m";
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  return h < 24 ? `${h}h ${m % 60}m` : `${Math.floor(h / 24)}d`;
+}

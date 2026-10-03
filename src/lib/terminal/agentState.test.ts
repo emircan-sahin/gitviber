@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { nextAgent, type PaneAgent, restoredAgent, resumeOf, savedAgents } from "./agentState.ts";
+import { type AgentEntry, agentsWaiting, byUrgency, nextAgent, type PaneAgent, restoredAgent, resumeOf, savedAgents } from "./agentState.ts";
 
 const claude = (state: PaneAgent["state"], command: string | null = "claude --resume a-1", session: string | null = "a-1"): PaneAgent => ({ name: "Claude Code", command, session, cwd: "/w", state });
 /** A change of state as the state file's watch tells it. */
@@ -68,4 +68,27 @@ test("a restored agent's command is typed for Enter, or run", () => {
   const agent = { name: "Claude Code", command: "claude --resume a-1", cwd: "/w" };
   assert.deepEqual(resumeOf(agent, "type"), { hint: "Claude Code was running here. Press Enter to resume.", run: "claude --resume a-1" });
   assert.deepEqual(resumeOf(agent, "run"), { hint: "Resuming Claude Code, which was running here.", run: "claude --resume a-1\r" });
+});
+
+test("the agents list puts the ones that need the user first, and counts them for the badge", () => {
+  const e = (pane: number, state: AgentEntry["state"], since: number, unseen = false): AgentEntry => ({ pane, name: "Claude Code", state, unseen, cwd: "/w", since });
+  const list = [e(1, "finished", 10), e(2, "working", 30), e(3, "finished", 50, true), e(4, "waiting", 40), e(5, "running", 20), e(6, "waiting", 5)];
+  assert.deepEqual(
+    [...list].sort(byUrgency).map((x) => x.pane),
+    [6, 4, 3, 5, 2, 1],
+  );
+  assert.equal(agentsWaiting(list), 3);
+  assert.equal(agentsWaiting([]), 0);
+});
+
+test("the badge counts each agent once, and drops to 0 as panes close", () => {
+  const e = (pane: number, state: AgentEntry["state"], unseen = false): AgentEntry => ({ pane, name: "Claude Code", state, unseen, cwd: "/w", since: 0 });
+  // A question not looked at yet is both waiting and unseen: one agent, one count.
+  const all = [e(1, "waiting", true), e(2, "finished", true), e(3, "working"), e(4, "running", true), e(5, "finished")];
+  assert.equal(agentsWaiting(all), 3);
+  for (let n = all.length; n >= 0; n--) assert.ok(agentsWaiting(all.slice(0, n)) <= n);
+  assert.equal(agentsWaiting(all.slice(2, 3)), 0);
+  // Many agents across tabs and projects: still one count each.
+  const many = Array.from({ length: 500 }, (_, i) => e(i, i % 2 ? "waiting" : "working", i % 3 === 0));
+  assert.equal(agentsWaiting(many), many.filter((x) => x.state === "waiting" || x.unseen).length);
 });

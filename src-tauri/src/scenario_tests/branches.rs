@@ -40,6 +40,24 @@ fn current_branch_of_any_folder() {
     assert_eq!(current_branch(&plain), None);
 }
 
+/// The picker's Recent group: where HEAD went last, read from the reflog's checkouts.
+#[test]
+fn recent_branches_follow_checkouts() {
+    let sb = Sandbox::new("recent");
+    let r = sb.path("r");
+    init(&r);
+    // No commit yet: the reflog can't be read, and nothing is recent.
+    assert!(recent_branches(&r, 5).unwrap().is_empty());
+    write_commit(&r, "a.txt", "a\n", "base");
+    for b in ["one", "two"] {
+        run(&r, &["switch", "-q", "-c", b]).unwrap();
+    }
+    run(&r, &["switch", "-q", "one"]).unwrap();
+    run(&r, &["branch", "-m", "uno"]).unwrap();
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    assert_eq!(recent_branches(&r, 5).unwrap(), ["main", "uno", "two"]);
+}
+
 #[test]
 fn merged_branches_and_deleting_them() {
     let sb = Sandbox::new("brdel");
@@ -501,4 +519,83 @@ fn annotated_tags_push_and_undo() {
     // Moved outside the app since: no longer safe to undo or redo.
     run(a, &["tag", "-f", "v1", "HEAD~1"]).unwrap();
     assert!(j.view(a).redo_blocked.is_some());
+}
+
+/// Recent branches as people move: `git checkout -`, detached at a commit and a tag, names with
+/// slashes and non-ASCII, a branch deleted since, and an agent worktree with its own history.
+#[test]
+fn recent_branches_in_real_use() {
+    let sb = Sandbox::new("recent-real");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["tag", "v1.0"]).unwrap();
+    for b in ["feat/login", "fix/ünïcode-名前", "gone"] {
+        run(&r, &["switch", "-q", "-c", b, "main"]).unwrap();
+    }
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    run(&r, &["branch", "-D", "gone"]).unwrap();
+    run(&r, &["checkout", "-q", "feat/login"]).unwrap();
+    run(&r, &["checkout", "-q", "-"]).unwrap();
+    run(&r, &["checkout", "-q", "v1.0"]).unwrap();
+    run(&r, &["checkout", "-q", "@{-1}"]).unwrap();
+    // A branch renamed while not checked out: HEAD's reflog never hears of it.
+    run(&r, &["branch", "-m", "fix/ünïcode-名前", "fix/renamed"]).unwrap();
+    let recent = recent_branches(&r, 12).unwrap();
+    assert_eq!(recent[0], on_branch(&r));
+    assert_eq!(recent[0], "main");
+    for want in ["feat/login", "fix/ünïcode-名前", "gone", "v1.0"] {
+        assert!(recent.iter().any(|n| n == want), "{want} in {recent:?}");
+    }
+    // Each once.
+    let mut unique = recent.clone();
+    unique.dedup();
+    assert_eq!(unique.len(), recent.len());
+
+    run(
+        &r,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "agent",
+            sb.path("wt").to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let wt = sb.path("wt");
+    run(&wt, &["switch", "-q", "-c", "agent-2"]).unwrap();
+    // A linked worktree has a HEAD, and a reflog, of its own. (Only where HEAD moved *to* counts,
+    // so "agent", which it was created on, isn't recent until it's checked out again.)
+    assert_eq!(recent_branches(&wt, 12).unwrap(), ["agent-2"]);
+    assert_eq!(recent_branches(&r, 12).unwrap(), recent);
+}
+
+/// Years of use: tens of thousands of reflog entries. The newest checkouts still come back, fast.
+#[test]
+fn recent_branches_on_a_huge_reflog() {
+    let sb = Sandbox::new("recent-huge");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "base");
+    run(&r, &["branch", "old"]).unwrap();
+    run(&r, &["branch", "new"]).unwrap();
+    let sha = rev(&r, "HEAD");
+    let entry = |msg: &str| format!("{sha} {sha} T <t@example.com> 1700000000 +0000\t{msg}\n");
+    let mut log = fs::read_to_string(r.join(".git/logs/HEAD")).unwrap();
+    for i in 0..60_000 {
+        log.push_str(&entry(&format!("commit: work {i}")));
+    }
+    log.push_str(&entry("checkout: moving from main to old"));
+    // Within the entries read (GitHub Desktop's 2500); a checkout older than those is forgotten.
+    for i in 0..2_000 {
+        log.push_str(&entry(&format!("rebase (pick): step {i}")));
+    }
+    log.push_str(&entry("checkout: moving from old to new"));
+    log.push_str(&entry("checkout: moving from new to main"));
+    fs::write(r.join(".git/logs/HEAD"), log).unwrap();
+    let t0 = std::time::Instant::now();
+    assert_eq!(recent_branches(&r, 12).unwrap(), ["main", "new", "old"]);
+    assert!(t0.elapsed().as_secs() < 5, "{:?}", t0.elapsed());
 }

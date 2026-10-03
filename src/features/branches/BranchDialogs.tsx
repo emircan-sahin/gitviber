@@ -4,6 +4,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/compone
 import { Input } from "@/components/ui/input";
 import { api, type Branch } from "@/lib/api";
 import { localNames, refNameCheck, shortRef } from "@/lib/git/refs";
+import { renamePinnedBranch } from "@/lib/repo/session";
 import { Select } from "@/components/ui/select";
 import { BaseSelect } from "./BaseSelect";
 import { NameHint } from "@/components/NameHint";
@@ -13,6 +14,8 @@ import { type GitRun, type NetRun, useSubmit } from "@/hooks/useGitAction";
 export type BranchDialog = { kind: "rename"; branch: Branch } | { kind: "new"; base: string } | { kind: "upstream"; branch: Branch };
 
 interface Props {
+  /** The main worktree, whose branch pins a rename carries over. */
+  main: string;
   dialog: BranchDialog;
   branches: Branch[];
   onClose: () => void;
@@ -21,11 +24,11 @@ interface Props {
   runNet: NetRun;
 }
 
-export function BranchDialogs({ dialog, branches, onClose, run, runNet }: Props) {
+export function BranchDialogs({ main, dialog, branches, onClose, run, runNet }: Props) {
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
-        {dialog.kind === "rename" && <Rename branch={dialog.branch} branches={branches} onClose={onClose} run={run} runNet={runNet} />}
+        {dialog.kind === "rename" && <Rename main={main} branch={dialog.branch} branches={branches} onClose={onClose} run={run} runNet={runNet} />}
         {dialog.kind === "new" && <NewBranch base={dialog.base} branches={branches} onClose={onClose} run={run} />}
         {dialog.kind === "upstream" && <Upstream branch={dialog.branch} branches={branches} onClose={onClose} run={run} />}
       </DialogContent>
@@ -33,7 +36,7 @@ export function BranchDialogs({ dialog, branches, onClose, run, runNet }: Props)
   );
 }
 
-function Rename({ branch, branches, onClose, run, runNet }: { branch: Branch } & Omit<Props, "dialog">) {
+function Rename({ main, branch, branches, onClose, run, runNet }: { branch: Branch } & Omit<Props, "dialog">) {
   const [name, setName] = useState(branch.name);
   const [remote, setRemote] = useState(false);
   const check = refNameCheck(name, localNames(branches, branch.name), true);
@@ -43,13 +46,14 @@ function Rename({ branch, branches, onClose, run, runNet }: { branch: Branch } &
   // Only an upstream that is still there can be renamed; a local one (remote ".") never.
   const upstream = branches.find((b) => b.remote && b.name === branch.upstream)?.name ?? null;
   const remoteName = upstream?.slice(0, upstream.indexOf("/"));
+  const moved = () => renamePinnedBranch(main, branch.name, n);
   const submit = () => {
     const done = `Renamed ${branch.name} to ${n}${remote ? ` here and on ${remoteName}` : ""}`;
     if (remote) {
       // Its Cancel is in the top bar, behind this dialog.
       onClose();
-      void runNet("Rename branch", (op) => api.renameBranch(branch.name, n, true, op), done);
-    } else void send(() => run("Rename branch", () => api.renameBranch(branch.name, n, false), done));
+      void runNet("Rename branch", (op) => api.renameBranch(branch.name, n, true, op).then(moved), done);
+    } else void send(() => run("Rename branch", () => api.renameBranch(branch.name, n, false).then(moved), done));
   };
   return (
     <form

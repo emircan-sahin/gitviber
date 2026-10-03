@@ -183,6 +183,9 @@ const EXTENSIONS: Record<string, string> = {
   patch: "diff",
   gitignore: IGNORE,
   svg: "xml",
+  // Obsidian's JSON Canvas and Bases files.
+  canvas: "json",
+  base: "yaml",
   plist: "xml",
   entitlements: "xml",
   csproj: "xml",

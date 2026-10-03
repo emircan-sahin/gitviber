@@ -61,7 +61,11 @@ export function setGitHubOrigin(url: string | null) {
   if (url === origin) return;
   const known = origin !== undefined;
   origin = url;
-  if (!known) return;
+  if (known) refetchGitHub();
+}
+
+/** Drops every answer and has the mounted views read again: another repository, or another account. */
+export function refetchGitHub() {
   entries = new Map();
   resets.forEach((r) => r());
   version++;

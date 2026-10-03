@@ -1,7 +1,7 @@
 import { message } from "@tauri-apps/plugin-dialog";
 import { ask } from "../app/ask";
 import { useSyncExternalStore } from "react";
-import { api, errorMessage } from "../api";
+import { api, errorMessage, type FileText } from "../api";
 import { toast } from "../app/toast";
 import { basename } from "../path";
 import { type FileEdit, loadEdits, saveEdits } from "../repo/session";
@@ -13,15 +13,29 @@ import { createEditModel, detachModel, monaco, unitOf } from "./monaco";
  * when the edit began (`base`), so a save can tell whether something else changed the file since.
  * They're stored per worktree as well: macOS's ⌘Q quits without asking, and a reload or a repo
  * switch shouldn't lose them either. An edit restored from there has no model until it's shown.
+ * Files outside the repo (an Obsidian vault's) belong to a store of their own (openStore).
  */
 interface Edit {
   base: string;
   model: monaco.editor.ITextModel | null;
   /** The edited text while there's no model. */
   text: string;
+  /** The store it's read, saved and kept in: the repo's (its worktree) or another's. */
+  store: string;
 }
 
+/** Where a store's files are read and written, by their edit paths. */
+export interface EditStore {
+  read: (path: string) => Promise<FileText>;
+  write: (path: string, text: string) => Promise<unknown>;
+}
+
+const repoStore: EditStore = { read: (path) => api.readFile(path), write: (path, text) => api.writeFile(path, text) };
+
+/** The open worktree, whose store holds every edit not claimed for another. */
 let root: string | null = null;
+const stores = new Map<string, EditStore>();
+const owners = new Map<string, string>();
 const edits = new Map<string, Edit>();
 let snapshot: ReadonlySet<string> = new Set();
 const listeners = new Set<() => void>();
@@ -95,7 +109,7 @@ function onChange(model: monaco.editor.ITextModel) {
     return changed();
   }
   if (e?.model === model) return persistSoon();
-  edits.set(t.path, { base: t.base, model, text: "" });
+  edits.set(t.path, { base: t.base, model, text: "", store: owners.get(t.path) ?? root ?? "" });
   changed();
 }
 
@@ -111,6 +125,29 @@ export function saveEdit(path: string): Promise<boolean> {
 }
 const saving = new Map<string, Promise<boolean>>();
 
+/**
+ * Opens a store of edits kept apart from any repo's (an Obsidian vault's: its files outside the
+ * repo, its edits across repo switches); the edits saved there come back once.
+ */
+export function openStore(id: string, io: EditStore) {
+  if (stores.has(id)) return;
+  stores.set(id, io);
+  restore(id);
+  changed();
+}
+
+/** Edits to `path` go to the store `id` (see openStore), not the repo's. */
+export function claimEdits(path: string, id: string) {
+  owners.set(path, id);
+}
+
+function restore(id: string) {
+  for (const [path, e] of Object.entries(loadEdits(id))) {
+    if (id !== root) owners.set(path, id);
+    if (!edits.has(path)) edits.set(path, { base: e.base, model: null, text: e.text, store: id });
+  }
+}
+
 async function write(path: string) {
   const e = edits.get(path);
   if (!e) return true;
@@ -120,7 +157,9 @@ async function write(path: string) {
   const text = model ? fileText(model) : e.text;
   const version = model?.getAlternativeVersionId();
   try {
-    const disk = await api.readFile(path);
+    const file = stores.get(e.store);
+    if (!file) throw new Error("Its folder isn't open.");
+    const disk = await file.read(path);
     // Text this view can't have been editing (e.g. now UTF-16) changed too.
     if (disk.exists && (disk.lossy || disk.text !== e.base)) {
       const ok = await ask(`${basename(path)} changed on disk since you began editing it. Overwrite it with your version?`, {
@@ -130,7 +169,7 @@ async function write(path: string) {
       });
       if (!ok) return false;
     }
-    await api.writeFile(path, text);
+    await file.write(path, text);
   } catch (err) {
     toast("error", `Could not save ${basename(path)}`, errorMessage(err));
     return false;
@@ -177,7 +216,7 @@ export async function settleEdits(paths: string[]): Promise<boolean> {
 
 /** Explorer renamed or trashed `from` (a file or a folder): its edits follow, or go with it (`to` null). */
 export function moveEdits(from: string, to: string | null) {
-  const hit = [...edits.keys()].filter((p) => p === from || p.startsWith(`${from}/`));
+  const hit = [...edits.keys()].filter((p) => edits.get(p)!.store === root && (p === from || p.startsWith(`${from}/`)));
   if (!hit.length) return;
   for (const p of hit) {
     if (to === null) {
@@ -194,14 +233,21 @@ export function moveEdits(from: string, to: string | null) {
   changed();
 }
 
-/** The worktree now open (null: none): the last one's edits are stored and let go, this one's come back. */
+/** The worktree now open (null: none): the last one's edits are stored and let go, this one's come back. Other stores' stay. */
 export function openEdits(next: string | null) {
   if (next === root) return;
   persist();
-  for (const e of edits.values()) if (e.model && !e.model.isAttachedToEditor()) e.model.dispose();
-  edits.clear();
+  for (const [path, e] of edits) {
+    if (e.store !== root) continue;
+    if (e.model && !e.model.isAttachedToEditor()) e.model.dispose();
+    edits.delete(path);
+  }
+  if (root) stores.delete(root);
   root = next;
-  if (next) for (const [path, e] of Object.entries(loadEdits(next))) edits.set(path, { base: e.base, model: null, text: e.text });
+  if (next) {
+    stores.set(next, repoStore);
+    restore(next);
+  }
   // Called while the new workspace renders, before anything in it subscribes: no one to tell.
   snapshot = new Set(edits.keys());
 }
@@ -214,10 +260,11 @@ function persistSoon() {
 
 function persist() {
   clearTimeout(timer);
-  if (!root) return;
-  const out: Record<string, FileEdit> = {};
-  for (const [path, e] of edits) out[path] = { text: editedText(path)!, base: e.base };
-  saveEdits(root, out);
+  for (const id of stores.keys()) {
+    const out: Record<string, FileEdit> = {};
+    for (const [path, e] of edits) if (e.store === id) out[path] = { text: editedText(path)!, base: e.base };
+    saveEdits(id, out);
+  }
 }
 
 // A reload or a quit may land inside the wait.

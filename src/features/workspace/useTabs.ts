@@ -2,7 +2,7 @@ import { arrayMove } from "@dnd-kit/sortable";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RepoStatus } from "@/lib/api";
 import { newerCopy, useGitHubCacheVersion } from "@/lib/github/githubCache";
-import { type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
+import { editPath, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import type { loadWorkspace } from "@/lib/repo/session";
 import { isChange, relocate } from "@/features/changes/changeList";
 import type { BranchChange } from "@/features/changes/BranchReview";
@@ -52,7 +52,7 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
   // Files with unsaved edits ask first: save, drop the edits, or keep the tabs.
   const closeTabs = useCallback(
     async (keys: string[]) => {
-      const paths = tabsNow.current.flatMap((t) => (keys.includes(t.key) && t.sel.kind === "file" ? [t.sel.path] : []));
+      const paths = tabsNow.current.flatMap((t) => (keys.includes(t.key) ? (editPath(t.sel) ?? []) : []));
       if (await settleEdits(paths)) dropTabs(keys);
     },
     [dropTabs],
@@ -88,7 +88,7 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
   // A preview tab typed into stays, as in VS Code: opening another file doesn't replace it.
   const edited = useEdited();
   useEffect(() => {
-    const typed = (t: Tab) => t.preview && t.sel.kind === "file" && edited.has(t.sel.path);
+    const typed = (t: Tab) => t.preview && edited.has(editPath(t.sel) ?? "");
     setTabState((st) => (st.tabs.some(typed) ? { ...st, tabs: st.tabs.map((t) => (typed(t) ? { ...t, preview: false } : t)) } : st));
   }, [edited]);
 

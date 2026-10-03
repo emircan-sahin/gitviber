@@ -14,11 +14,27 @@ import {
 } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
 import { folderName } from "@/lib/path";
+import { type Hue, hueColor } from "@/lib/git/worktrees";
 import { NameInput } from "@/components/NameInput";
 import { NeedsYouDot, WorkingDot } from "@/components/NeedsYouDot";
 
 // Memoized: every title a program sets re-renders the panel, and the other tabs keep their group object.
-export const GroupTab = memo(function GroupTab({ group: g, active, here, branch, alone }: { group: TerminalGroup; active: boolean; here: boolean; branch: string | null; alone: boolean }) {
+export const GroupTab = memo(function GroupTab({
+  group: g,
+  active,
+  here,
+  branch,
+  hue,
+  alone,
+}: {
+  group: TerminalGroup;
+  active: boolean;
+  here: boolean;
+  branch: string | null;
+  /** Its worktree's color. */
+  hue: Hue | null;
+  alone: boolean;
+}) {
   const [renaming, setRenaming] = useState(false);
   const cwd = g.panes[0].cwd;
   const title = g.panes.find((p) => p.id === g.focused)?.title;
@@ -51,7 +67,8 @@ export const GroupTab = memo(function GroupTab({ group: g, active, here, branch,
     >
       {active && <span className="absolute inset-x-0 top-0 h-0.5 bg-primary" />}
       {active && <span className="absolute inset-x-0 -bottom-px h-px bg-background" />}
-      <SquareTerminal className={cn("size-3.5 shrink-0", here ? "text-primary" : "text-subtle")} />
+      {hue && <span className="absolute inset-y-2 left-0 w-0.5 rounded-r-full" style={{ background: hueColor(hue) }} />}
+      <SquareTerminal className={cn("size-3.5 shrink-0", here ? "text-primary" : "text-subtle")} style={hue ? { color: hueColor(hue) } : undefined} />
       {renaming ? (
         <NameInput
           initial={shown}

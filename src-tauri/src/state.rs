@@ -11,6 +11,8 @@ use tauri::{AppHandle, Manager, State};
 pub(crate) struct AppState {
     pub(crate) repo: Mutex<Option<PathBuf>>,
     pub(crate) watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    /// The Obsidian vault the explorer shows, watched while it does.
+    pub(crate) vault_watcher: Mutex<Option<notify::RecommendedWatcher>>,
     pub(crate) github: github::Session,
     pub(crate) ptys: pty::Ptys,
     /// The agents running in terminals, and their state files watched.

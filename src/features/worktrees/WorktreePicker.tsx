@@ -1,4 +1,4 @@
-import { Check, ChevronsUpDown, Copy, CornerUpLeft, Eraser, FolderGit2, FolderOpen, GitBranch, GitMerge, Lock, LockOpen, Pencil, SquareTerminal, Trash2 } from "lucide-react";
+import { Check, ChevronsUpDown, Copy, CornerUpLeft, Eraser, FolderGit2, FolderOpen, GitBranch, GitMerge, History, Lock, LockOpen, Pencil, SquareTerminal, Trash2 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -11,9 +11,10 @@ import { pointerMoved } from "@/lib/ui/pointer";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { plural, relativeTime } from "@/lib/format";
-import { shortPath } from "@/lib/git/worktrees";
-import { folderName, isInside } from "@/lib/path";
-import { useAgentsWorking, useNeedsYou } from "@/lib/terminal/terminals";
+import { cleanable, type Hue, hueColor, shortPath, worktreeHues, worktreeOf } from "@/lib/git/worktrees";
+import { useWorktreeColors } from "@/lib/git/worktreeColors";
+import { folderName } from "@/lib/path";
+import { terminalsIn, useAgentsWorking, useNeedsYou } from "@/lib/terminal/terminals";
 import { copyText } from "@/lib/app/clipboard";
 import { revealProject } from "@/lib/app/openIn";
 import { RowAction } from "@/components/RowAction";
@@ -21,8 +22,10 @@ import { NeedsYouDot, WorkingDot } from "@/components/NeedsYouDot";
 import { CiBadge, ciLabel } from "@/components/CiBadge";
 import { PullStateIcon } from "@/features/github/shared/StateBadges";
 import { type BranchPull, useWorktreePulls } from "./useWorktreePulls";
-import { useWorktreeDialog } from "./WorktreeDialogs";
+import { openWorktreeDialog, useWorktreeDialog } from "./WorktreeDialogs";
+import { WorktreeColorMenu } from "./WorktreeColorMenu";
 import { usePickerIndex } from "@/hooks/usePickerIndex";
+import { showConversations } from "@/features/palette/CommandPalette";
 
 interface Props {
   worktrees: Worktree[];
@@ -47,11 +50,11 @@ interface Props {
   onOpenPull: (p: Pull) => void;
 }
 
-/** The worktrees of the terminals in `cwds` (ones that need the user, or whose agent works): each pane's deepest one, as agents' worktrees can sit inside the main one. */
+/** The worktrees of the terminals in `cwds` (ones that need the user, or whose agent works). */
 function needing(worktrees: Worktree[], cwds: string[]) {
   const out = new Set<string>();
   for (const cwd of cwds) {
-    const w = worktrees.filter((x) => cwd === x.path || isInside(cwd, x.path)).sort((a, b) => b.path.length - a.path.length)[0];
+    const w = worktreeOf(cwd, worktrees);
     if (w) out.add(w.path);
   }
   return out;
@@ -121,11 +124,14 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const current = list.find((w) => w.current);
   const linked = !!current && !current.main;
   const pullOf = useWorktreePulls(list, open, onGitHub);
+  const colors = useWorktreeColors();
 
   if (!list.length) return null;
   const extra = list.filter((w) => !w.main).length;
   const main = list.find((w) => w.main && !w.bare);
   const here = linked ? pullOf(current.branch) : undefined;
+  const hues = worktreeHues(list, colors);
+  const hue = current ? (hues.get(current.path) ?? null) : null;
   const needy = needing(list, calling);
   const busy = needing(list, agentsWorking);
   const elsewhere = list.some((w) => !w.current && needy.has(w.path)) ? " · a terminal in another worktree needs you" : "";
@@ -149,9 +155,11 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
     onOpenPull(p);
   };
   const rename = thenDialog(onRename);
+  const merged = cleanable(list, states, (b) => pullOf(b)?.pull, terminalsIn);
   const lock = thenDialog((w) => (w.locked ? onUnlock(w) : onLock(w)));
   // revealProject, not revealPath: that one only reaches inside the open worktree.
-  const actions = { pick, terminal, merge, rename, lock, remove, reveal: then((w) => void revealProject(w.path)), copy: then((w) => void copyText(w.path, "Path copied")) };
+  const resume = thenDialog((w) => showConversations(w.path));
+  const actions = { pick, terminal, resume, merge, rename, lock, remove, reveal: then((w) => void revealProject(w.path)), copy: then((w) => void copyText(w.path, "Path copied")) };
 
   // The hot row's actions, which the mouse finds on the row.
   const hot = list[index];
@@ -188,10 +196,11 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
               aria-label={(linked ? `Worktree ${folderName(current.path)}, switch worktree` : extra === 0 ? "Worktrees" : `Switch worktree (${extra} besides the main one)`) + elsewhere}
               className={cn(
                 "relative flex h-7 max-w-56 min-w-0 shrink-0 items-center gap-1.5 rounded-md px-2 hover:bg-hover focus-visible:bg-hover data-[state=open]:bg-active",
-                linked && "bg-primary/10",
+                linked && !hue && "bg-primary/10",
               )}
+              style={hue ? { background: hueColor(hue, 0.16) } : undefined}
             >
-              <FolderGit2 className={cn("size-3.5 shrink-0", linked ? "text-primary" : "text-subtle")} />
+              <FolderGit2 className={cn("size-3.5 shrink-0", linked ? "text-primary" : "text-subtle")} style={hue ? { color: hueColor(hue) } : undefined} />
               {linked ? (
                 <span className="truncate font-mono text-[12px]">{folderName(current.path)}</span>
               ) : (
@@ -245,6 +254,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 main={main?.path ?? w.path}
                 time={states[w.path]?.updated ?? branches.find((b) => !b.remote && b.name === w.branch)?.timestamp}
                 state={states[w.path]}
+                hue={hues.get(w.path) ?? null}
                 calling={needy.has(w.path)}
                 agentWorking={busy.has(w.path)}
                 pull={pullOf(w.branch)}
@@ -279,6 +289,20 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 </>
               )}
             </span>
+            {merged.length > 0 && (
+              // No count: a folder that can't be deleted only shows once the dialog has looked inside.
+              <Tip label={`${merged.length === 1 ? "A merged worktree has" : `${merged.length} merged worktrees have`} no changes and no terminal open: see which can go`}>
+                <button
+                  onClick={() => {
+                    afterClose.current = () => openWorktreeDialog({ kind: "cleanup", list: merged });
+                    setOpen(false);
+                  }}
+                  className="shrink-0 rounded-sm px-1.5 py-0.5 hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
+                >
+                  Clean up…
+                </button>
+              </Tip>
+            )}
             <Tip label="A new branch in its own folder">
               <button
                 onClick={() => {
@@ -305,7 +329,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   );
 }
 
-type RowActions = Record<"pick" | "terminal" | "merge" | "rename" | "lock" | "remove" | "reveal" | "copy", (w: Worktree) => void>;
+type RowActions = Record<"pick" | "terminal" | "resume" | "merge" | "rename" | "lock" | "remove" | "reveal" | "copy", (w: Worktree) => void>;
 
 function WorktreeRow({
   id,
@@ -316,6 +340,7 @@ function WorktreeRow({
   main,
   time,
   state,
+  hue,
   calling,
   agentWorking,
   pull,
@@ -334,6 +359,7 @@ function WorktreeRow({
   main: string;
   time: number | undefined;
   state: WorktreeState | undefined;
+  hue: Hue | null;
   /** A terminal in it needs the user. */
   calling: boolean;
   /** An agent in a terminal in it is working. */
@@ -378,7 +404,11 @@ function WorktreeRow({
         (w.prunable || w.bare) && "opacity-50",
       )}
     >
-      {w.current ? <Check className="size-3.5 shrink-0" /> : <GitBranch className="size-3.5 shrink-0 opacity-60" />}
+      {w.current ? (
+        <Check className="size-3.5 shrink-0" style={hue && !hot ? { color: hueColor(hue) } : undefined} />
+      ) : (
+        <GitBranch className={cn("size-3.5 shrink-0", !hue && "opacity-60")} style={hue && !hot ? { color: hueColor(hue) } : undefined} />
+      )}
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={cn("truncate font-mono text-[11.5px]", !w.branch && "opacity-70")}>{branch}</span>
@@ -481,6 +511,11 @@ function WorktreeRow({
             <SquareTerminal /> Open a terminal here
           </ContextMenuItem>
         )}
+        {onDisk && (
+          <ContextMenuItem onSelect={() => a.resume(w)}>
+            <History /> Resume a conversation…
+          </ContextMenuItem>
+        )}
         {pull && (
           <ContextMenuItem onSelect={() => onOpenPull(pull.pull)}>
             <PullStateIcon pull={pull.pull} className="text-current" /> Open pull request #{pull.pull.number}
@@ -501,7 +536,8 @@ function WorktreeRow({
             {w.locked ? <LockOpen /> : <Lock />} {w.locked ? "Unlock" : "Lock…"}
           </ContextMenuItem>
         )}
-        {(usable || onDisk || pull || can.merge || can.rename || can.lock) && <ContextMenuSeparator />}
+        {!w.bare && <WorktreeColorMenu path={w.path} hue={hue} />}
+        {(usable || onDisk || pull || can.merge || can.rename || can.lock || !w.bare) && <ContextMenuSeparator />}
         {onDisk && (
           <ContextMenuItem onSelect={() => a.reveal(w)}>
             <FolderOpen /> {REVEAL_LABEL}

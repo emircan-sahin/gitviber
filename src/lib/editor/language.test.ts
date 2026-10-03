@@ -28,6 +28,8 @@ test("well-known file names", () => {
     [".cursorrules", "markdown"],
     ["CMakeLists.txt", "cmake"],
     ["src/App.tsx", "tsx"],
+    ["Boards/Plan.canvas", "json"],
+    ["Views/Reading.base", "yaml"],
     ["lib/util.mjs", "javascript"],
     ["README", "text"],
   ];

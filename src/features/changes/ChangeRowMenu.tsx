@@ -1,4 +1,4 @@
-import { Archive, ArrowLeftToLine, ArrowRightToLine, Check, Copy, Diff, EyeOff, File, FileDiff, Files, FolderSearch, GitMerge, History, ListTree, Minus, Plus, SquareCheck, Undo2 } from "lucide-react";
+import { Archive, ArrowLeftToLine, ArrowRightToLine, Check, Copy, Diff, EyeOff, File, FileDiff, Files, FolderSearch, GitCompareArrows, GitMerge, History, ListTree, Minus, Plus, SquareCheck, Undo2 } from "lucide-react";
 import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import { api, type FileChange } from "@/lib/api";
 import { IS_MAC, REVEAL_LABEL } from "@/lib/platform";
@@ -6,6 +6,7 @@ import type { Selection } from "@/lib/repo/selection";
 import { copyFiles, copyLabel, copyLater, copyText } from "@/lib/app/clipboard";
 import { revealPath } from "@/lib/app/openIn";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
+import { diffInTool, mergeInTool, mergingInTool, toolCanOpen, toolName, useExternalTools } from "@/lib/git/externalTools";
 import { type Change, keptByRestore, paths } from "./changeList";
 
 /** The row's right-click menu, modeled on VS Code's Source Control view. `rows`: what its git actions cover. */
@@ -55,6 +56,12 @@ export function ChangeRowMenu({
   const onDiskPaths = [...new Set(rows.filter((r) => r.file.status !== "D" && !r.file.nested).map((r) => r.file.path))];
   // A rename's old path too, so the patch has both sides of it.
   const patchPaths = rows.filter((r) => !r.file.nested).flatMap((r) => (r.file.oldPath ? [r.file.oldPath, r.file.path] : [r.file.path]));
+  // One file at a time, as git opens it. mergetool merges text both sides changed; a deleted side
+  // asks on the terminal. difftool has nothing for an untracked file or a submodule.
+  const tools = useExternalTools(root);
+  const one = n === 1 && toolCanOpen(file.path);
+  const mergeTool = one && sel.kind === "conflict" && (file.conflict === "UU" || file.conflict === "AA") ? tools.merge : null;
+  const diffTool = one && sel.kind !== "conflict" && file.status !== "?" && !file.nested ? tools.diff : null;
   return (
     <ContextMenuContent>
       <ContextMenuItem onSelect={() => onOpen(sel, true)}>
@@ -71,6 +78,16 @@ export function ChangeRowMenu({
       <ContextMenuItem disabled={file.status === "?"} onSelect={() => onShowHistory(file.path)}>
         <History /> Show History
       </ContextMenuItem>
+      {mergeTool && (
+        <ContextMenuItem disabled={mergingInTool(file.path)} onSelect={() => void mergeInTool(mergeTool, file.path)}>
+          <GitMerge /> Open in {toolName(mergeTool)}
+        </ContextMenuItem>
+      )}
+      {diffTool && (
+        <ContextMenuItem onSelect={() => void diffInTool(diffTool, file.path, sel.kind === "staged")}>
+          <GitCompareArrows /> Open in {toolName(diffTool)}
+        </ContextMenuItem>
+      )}
       <ContextMenuSeparator />
       {sel.kind === "unstaged" && (
         <>

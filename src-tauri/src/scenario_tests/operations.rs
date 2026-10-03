@@ -426,3 +426,420 @@ fn merge_and_rebase_autostash_uncommitted_changes() {
     );
     assert!(run_text(&r, &["stash", "list"]).unwrap().is_empty());
 }
+
+/// "Open in <tool>": a tool set up in git's config runs on the path, and git stages what it merged.
+#[test]
+fn configured_merge_and_diff_tools_run_on_one_path() {
+    let sb = Sandbox::new("tools");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "base\n", "base");
+    write_commit(&r, "b.txt", "b\n", "b");
+    switch_branch(&r, "feature", true).unwrap();
+    write_commit(&r, "a.txt", "feature\n", "f");
+    switch_branch(&r, "main", false).unwrap();
+    write_commit(&r, "a.txt", "main\n", "m");
+    assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
+
+    // Stand-ins for a GUI tool: take the incoming side; note which file the diff got. The gui keys,
+    // which come first, so a tool in the user's global config can't take over.
+    let seen = sb.path("seen.txt");
+    run(&r, &["config", "merge.guitool", "fake"]).unwrap();
+    run(
+        &r,
+        &["config", "mergetool.fake.cmd", "cp \"$REMOTE\" \"$MERGED\""],
+    )
+    .unwrap();
+    run(&r, &["config", "mergetool.fake.trustExitCode", "true"]).unwrap();
+    run(&r, &["config", "mergetool.keepBackup", "false"]).unwrap();
+    run(&r, &["config", "diff.guitool", "look"]).unwrap();
+    let look = format!("cat \"$REMOTE\" > '{}'", seen.display());
+    run(&r, &["config", "difftool.look.cmd", &look]).unwrap();
+    assert_eq!(
+        external_tools(&r),
+        ExternalTools {
+            merge: Some("fake".into()),
+            diff: Some("look".into()),
+        }
+    );
+
+    open_merge_tool(&r, "a.txt").unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "feature\n");
+    assert!(status(&r).unwrap().conflicted.is_empty());
+
+    fs::write(r.join("b.txt"), "b2\n").unwrap();
+    open_diff_tool(&r, "b.txt", false).unwrap();
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "b2\n");
+    // Staged: the index's copy, against HEAD.
+    stage(&r, &["b.txt".into()]).unwrap();
+    fs::write(r.join("b.txt"), "b3\n").unwrap();
+    open_diff_tool(&r, "b.txt", true).unwrap();
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "b2\n");
+}
+
+/// Whatever conflictstyle wrote the file, each conflict's base is built from the index stages.
+#[test]
+fn conflict_base_from_the_index_stages() {
+    let sb = Sandbox::new("cbase");
+    let r = sb.path("r");
+    init(&r);
+    run(&r, &["config", "merge.conflictStyle", "merge"]).unwrap();
+    write_commit(&r, "a.txt", "one\ntwo\nthree\n", "base");
+    switch_branch(&r, "feature", true).unwrap();
+    write_commit(&r, "a.txt", "one\nTWO-f\nthree\n", "f");
+    write_commit(&r, "new.txt", "f\n", "add f");
+    switch_branch(&r, "main", false).unwrap();
+    write_commit(&r, "a.txt", "one\nTWO-m\nthree\n", "m");
+    write_commit(&r, "new.txt", "m\n", "add m");
+    assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
+    // The file has no base section; the rebuilt one does.
+    assert!(!fs::read_to_string(r.join("a.txt"))
+        .unwrap()
+        .contains("|||||||"));
+    assert_eq!(
+        conflict_base(&r, "a.txt").unwrap().as_deref(),
+        Some("one\n<<<<<<< current\nTWO-m\n||||||| base\ntwo\n=======\nTWO-f\n>>>>>>> incoming\nthree\n")
+    );
+    // Added on both sides: an empty base.
+    assert_eq!(
+        conflict_base(&r, "new.txt").unwrap().as_deref(),
+        Some("<<<<<<< current\nm\n||||||| base\n=======\nf\n>>>>>>> incoming\n")
+    );
+    assert_eq!(conflict_base(&r, "missing.txt").unwrap(), None);
+}
+
+#[cfg(unix)]
+fn fake_tool(path: &Path, script: &str) {
+    fs::write(path, script).unwrap();
+    std::process::Command::new("chmod")
+        .args(["+x", path.to_str().unwrap()])
+        .status()
+        .unwrap();
+}
+
+/// main and feature both rewrote `path` (created in the base commit) with different text.
+fn conflicted_on(r: &Path, path: &str) {
+    init(r);
+    write_commit(r, path, "base\n", "base");
+    switch_branch(r, "feature", true).unwrap();
+    write_commit(r, path, "feature\n", "f");
+    switch_branch(r, "main", false).unwrap();
+    write_commit(r, path, "main\n", "m");
+    assert!(merge(r, "feature", MergeKind::Ff, false).unwrap());
+}
+
+fn untracked(r: &Path) -> Vec<String> {
+    status(r)
+        .unwrap()
+        .unstaged
+        .into_iter()
+        .filter(|f| f.status == "?")
+        .map(|f| f.path)
+        .collect()
+}
+
+/// A team's shared config (an include, or ~/.gitconfig) names one tool and the repo another: git
+/// takes the last value it reads, so the button has to name that one, the tool that opens.
+#[test]
+fn the_tool_named_is_the_tool_git_opens() {
+    let sb = Sandbox::new("tool-last");
+    let r = sb.path("r");
+    conflicted_on(&r, "a.txt");
+    let ran = sb.path("ran.txt");
+    let shared = sb.path("shared.gitconfig");
+    fs::write(
+        &shared,
+        "[merge]\n\ttool = shared-tool\n[diff]\n\ttool = shared-tool\n",
+    )
+    .unwrap();
+    run(&r, &["config", "include.path", shared.to_str().unwrap()]).unwrap();
+    run(&r, &["config", "merge.tool", "repo-tool"]).unwrap();
+    run(&r, &["config", "diff.tool", "repo-tool"]).unwrap();
+    for name in ["shared-tool", "repo-tool"] {
+        let cmd = format!(
+            "echo {name} > '{}'; cp \"$REMOTE\" \"$MERGED\"",
+            ran.display()
+        );
+        run(&r, &["config", &format!("mergetool.{name}.cmd"), &cmd]).unwrap();
+        run(
+            &r,
+            &["config", &format!("mergetool.{name}.trustExitCode"), "true"],
+        )
+        .unwrap();
+    }
+    run(&r, &["config", "mergetool.keepBackup", "false"]).unwrap();
+    open_merge_tool(&r, "a.txt").unwrap();
+    let opened = fs::read_to_string(&ran).unwrap().trim().to_string();
+    assert_eq!(opened, "repo-tool");
+    assert_eq!(
+        external_tools(&r),
+        ExternalTools {
+            merge: Some(opened.clone()),
+            diff: Some(opened),
+        }
+    );
+}
+
+/// Paths as people name them: spaces, an apostrophe, `$`, backticks, non-ASCII, a folder. (A
+/// double quote or a tab in the name: `git mergetool` itself answers "file not found".)
+#[cfg(unix)]
+#[test]
+fn tools_open_files_with_odd_names() {
+    let sb = Sandbox::new("tool-odd");
+    let r = sb.path("r");
+    let path = "dir with space/it's ü $HOME `x`.txt";
+    conflicted_on(&r, path);
+    run(&r, &["config", "merge.guitool", "take"]).unwrap();
+    run(
+        &r,
+        &["config", "mergetool.take.cmd", "cp \"$REMOTE\" \"$MERGED\""],
+    )
+    .unwrap();
+    run(&r, &["config", "mergetool.take.trustExitCode", "true"]).unwrap();
+    run(&r, &["config", "mergetool.keepBackup", "false"]).unwrap();
+    open_merge_tool(&r, path).unwrap();
+    assert_eq!(fs::read_to_string(r.join(path)).unwrap(), "feature\n");
+    assert!(status(&r).unwrap().conflicted.is_empty());
+    assert!(untracked(&r).is_empty(), "{:?}", untracked(&r));
+
+    let seen = sb.path("seen.txt");
+    run(&r, &["config", "diff.guitool", "look"]).unwrap();
+    let look = format!("cat \"$REMOTE\" > '{}'", seen.display());
+    run(&r, &["config", "difftool.look.cmd", &look]).unwrap();
+    commit(&r, "merged", &CommitOptions::default(), &Net::default()).unwrap();
+    fs::write(r.join(path), "edited\n").unwrap();
+    open_diff_tool(&r, path, false).unwrap();
+    assert_eq!(fs::read_to_string(&seen).unwrap(), "edited\n");
+}
+
+/// A tool that isn't installed where the config says, or one that fails: the file stays in conflict
+/// and the click leaves nothing behind in the worktree (an agent's `git add -A` would commit it).
+#[test]
+fn a_missing_or_failing_tool_leaves_the_worktree_as_it_was() {
+    let sb = Sandbox::new("tool-fail");
+    let r = sb.path("r");
+    conflicted_on(&r, "a.txt");
+    run(&r, &["config", "merge.guitool", "kdiff3"]).unwrap();
+    run(
+        &r,
+        &["config", "mergetool.kdiff3.path", "/nonexistent/kdiff3"],
+    )
+    .unwrap();
+    assert_eq!(external_tools(&r).merge.as_deref(), Some("kdiff3"));
+    let err = open_merge_tool(&r, "a.txt").unwrap_err();
+    assert!(err.contains("not available"), "{err}");
+    assert_eq!(status(&r).unwrap().conflicted.len(), 1);
+    assert!(untracked(&r).is_empty(), "left behind: {:?}", untracked(&r));
+
+    run(&r, &["config", "merge.guitool", "broken"]).unwrap();
+    run(&r, &["config", "mergetool.broken.cmd", "exit 3"]).unwrap();
+    assert!(open_merge_tool(&r, "a.txt").is_err());
+    assert_eq!(status(&r).unwrap().conflicted.len(), 1);
+    assert!(untracked(&r).is_empty(), "left behind: {:?}", untracked(&r));
+}
+
+/// A tool left open for an hour: the app goes on reading and staging meanwhile, and the merge
+/// lands when it's closed.
+#[cfg(unix)]
+#[test]
+fn an_open_tool_blocks_nothing_else() {
+    let sb = Sandbox::new("tool-open");
+    let r = sb.path("r");
+    conflicted_on(&r, "a.txt");
+    let (started, close) = (sb.path("started"), sb.path("close"));
+    let tool = sb.path("slow-tool");
+    fake_tool(
+        &tool,
+        &format!(
+            "#!/bin/sh\ntouch '{}'\nwhile [ ! -e '{}' ]; do sleep 0.05; done\ncp \"$1\" \"$2\"\n",
+            started.display(),
+            close.display()
+        ),
+    );
+    run(&r, &["config", "merge.guitool", "slow"]).unwrap();
+    let cmd = format!("'{}' \"$REMOTE\" \"$MERGED\"", tool.display());
+    run(&r, &["config", "mergetool.slow.cmd", &cmd]).unwrap();
+    run(&r, &["config", "mergetool.slow.trustExitCode", "true"]).unwrap();
+    run(&r, &["config", "mergetool.keepBackup", "false"]).unwrap();
+
+    let repo = r.clone();
+    let open = std::thread::spawn(move || open_merge_tool(&repo, "a.txt"));
+    let t0 = std::time::Instant::now();
+    while !started.exists() {
+        assert!(t0.elapsed().as_secs() < 20, "the tool never started");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(status(&r).unwrap().conflicted.len(), 1);
+    assert!(conflict_base(&r, "a.txt").unwrap().is_some());
+    fs::write(r.join("b.txt"), "b2\n").unwrap();
+    stage(&r, &["b.txt".into()]).unwrap();
+    assert!(!open.is_finished());
+
+    fs::write(&close, "").unwrap();
+    open.join().unwrap().unwrap();
+    assert_eq!(fs::read_to_string(r.join("a.txt")).unwrap(), "feature\n");
+    assert!(status(&r).unwrap().conflicted.is_empty());
+}
+
+/// Every kind of conflict the view can show: only text both sides changed gets a base, the rest
+/// say so without an error.
+#[test]
+fn conflict_bases_across_conflict_kinds() {
+    let sb = Sandbox::new("cbase-kinds");
+    let r = sb.path("r");
+    init(&r);
+    run(&r, &["config", "merge.conflictStyle", "merge"]).unwrap();
+    run(&r, &["config", "core.autocrlf", "false"]).unwrap();
+    let files: &[(&str, &str, &str, &str)] = &[
+        // path, base, feature, main
+        (
+            "crlf.txt",
+            "a\r\nb\r\nc\r\n",
+            "a\r\nB-f\r\nc\r\n",
+            "a\r\nB-m\r\nc\r\n",
+        ),
+        ("no-eol.txt", "a\nend", "a\nend-f", "a\nend-m"),
+        ("bin.dat", "x\0base", "x\0feat", "x\0main"),
+        ("del-here.txt", "base\n", "feature\n", ""),
+        ("del-there.txt", "base\n", "", "main\n"),
+        (
+            "odd \"name\" ü $x.txt",
+            "1\n2\n3\n",
+            "1\nf\n3\n",
+            "1\nm\n3\n",
+        ),
+    ];
+    for (p, base, _, _) in files {
+        fs::write(r.join(p), base).unwrap();
+    }
+    run(&r, &["add", "-A"]).unwrap();
+    commit(&r, "base", &CommitOptions::default(), &Net::default()).unwrap();
+    for (branch, side) in [("feature", 2), ("main", 3)] {
+        if branch == "feature" {
+            switch_branch(&r, "feature", true).unwrap();
+        } else {
+            switch_branch(&r, "main", false).unwrap();
+        }
+        for f in files {
+            let text = if side == 2 { f.2 } else { f.3 };
+            if text.is_empty() {
+                fs::remove_file(r.join(f.0)).unwrap();
+            } else {
+                fs::write(r.join(f.0), text).unwrap();
+            }
+        }
+        run(&r, &["add", "-A"]).unwrap();
+        commit(&r, branch, &CommitOptions::default(), &Net::default()).unwrap();
+    }
+    assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
+
+    let crlf = conflict_base(&r, "crlf.txt").unwrap().unwrap();
+    assert!(crlf.contains("||||||| base\r\nb\r\n"), "{crlf:?}");
+    let no_eol = conflict_base(&r, "no-eol.txt").unwrap().unwrap();
+    assert!(no_eol.contains("||||||| base\nend\n"), "{no_eol:?}");
+    // The merged text ends the marker line with a newline; the sides say neither file had one.
+    let sides = conflict_sides(&r, "no-eol.txt").unwrap().unwrap();
+    assert!(!sides.ours_newline && !sides.theirs_newline);
+    let sides = conflict_sides(&r, "crlf.txt").unwrap().unwrap();
+    assert!(sides.ours_newline && sides.theirs_newline);
+    // Binary: no merged text, but still how it ends.
+    assert!(conflict_sides(&r, "bin.dat")
+        .unwrap()
+        .unwrap()
+        .merged
+        .is_none());
+    assert_eq!(conflict_base(&r, "bin.dat").unwrap(), None);
+    assert_eq!(conflict_base(&r, "del-here.txt").unwrap(), None);
+    assert_eq!(conflict_base(&r, "del-there.txt").unwrap(), None);
+    let odd = conflict_base(&r, "odd \"name\" ü $x.txt").unwrap().unwrap();
+    assert!(odd.contains("||||||| base\n2\n"), "{odd:?}");
+}
+
+/// Renamed on one side, edited on both: the conflict sits at the new name, and so do its stages.
+/// Renamed apart on both sides: the stages split over two paths, and neither errors.
+#[test]
+fn conflict_bases_after_renames() {
+    let sb = Sandbox::new("cbase-rename");
+    let r = sb.path("r");
+    init(&r);
+    let body: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+    write_commit(&r, "old.txt", &body, "base");
+    let other: String = (1..=30).map(|i| format!("other {i}\n")).collect();
+    write_commit(&r, "split.txt", &other, "base2");
+    switch_branch(&r, "feature", true).unwrap();
+    write_commit(
+        &r,
+        "old.txt",
+        &body.replace("line 15\n", "feature 15\n"),
+        "f",
+    );
+    run(&r, &["mv", "split.txt", "split-f.txt"]).unwrap();
+    commit(&r, "f mv", &CommitOptions::default(), &Net::default()).unwrap();
+    switch_branch(&r, "main", false).unwrap();
+    run(&r, &["mv", "old.txt", "new.txt"]).unwrap();
+    commit(&r, "mv", &CommitOptions::default(), &Net::default()).unwrap();
+    write_commit(&r, "new.txt", &body.replace("line 15\n", "main 15\n"), "m");
+    run(&r, &["mv", "split.txt", "split-m.txt"]).unwrap();
+    commit(&r, "m mv", &CommitOptions::default(), &Net::default()).unwrap();
+    assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
+
+    let moved = conflict_base(&r, "new.txt").unwrap().unwrap();
+    assert!(moved.contains("||||||| base\nline 15\n"), "{moved:?}");
+    for p in ["split.txt", "split-f.txt", "split-m.txt"] {
+        assert_eq!(conflict_base(&r, p).unwrap(), None, "{p}");
+    }
+}
+
+/// Two places with the same edit on each side but different originals: each keeps its own base
+/// in what the backend builds (the view has to pair them up in order).
+#[test]
+fn conflict_base_keeps_twin_conflicts_apart() {
+    let sb = Sandbox::new("cbase-twin");
+    let r = sb.path("r");
+    init(&r);
+    run(&r, &["config", "merge.conflictStyle", "merge"]).unwrap();
+    let text =
+        |a: &str, b: &str| format!("fn a() {{\n  {a};\n}}\n1\n2\n3\n4\nfn b() {{\n  {b};\n}}\n");
+    write_commit(&r, "f.rs", &text("old_a()", "old_b()"), "base");
+    switch_branch(&r, "feature", true).unwrap();
+    write_commit(&r, "f.rs", &text("theirs()", "theirs()"), "f");
+    switch_branch(&r, "main", false).unwrap();
+    write_commit(&r, "f.rs", &text("ours()", "ours()"), "m");
+    assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
+    let rebuilt = conflict_base(&r, "f.rs").unwrap().unwrap();
+    let a = rebuilt.find("old_a").unwrap();
+    let b = rebuilt.find("old_b").unwrap();
+    assert!(a < b);
+}
+
+/// A conflicted generated file past the limit: no base, and no scratch folder left behind.
+#[test]
+fn conflict_base_skips_huge_files_and_cleans_up() {
+    let sb = Sandbox::new("cbase-huge");
+    let r = sb.path("r");
+    init(&r);
+    let big: String = (0..600_000).map(|i| format!("row {i}\n")).collect();
+    write_commit(&r, "big.txt", &big, "base");
+    switch_branch(&r, "feature", true).unwrap();
+    write_commit(&r, "big.txt", &big.replace("row 7\n", "feature\n"), "f");
+    switch_branch(&r, "main", false).unwrap();
+    write_commit(&r, "big.txt", &big.replace("row 7\n", "main\n"), "m");
+    assert!(merge(&r, "feature", MergeKind::Ff, false).unwrap());
+    assert!(big.len() > 4 << 20);
+    assert_eq!(conflict_base(&r, "big.txt").unwrap(), None);
+    // Under the limit (one side small enough is not enough): built, then its folder removed.
+    let prefix = "gitviber-merge-";
+    let left = || {
+        fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(prefix))
+            .count()
+    };
+    let t0 = std::time::Instant::now();
+    // Other tests in this process build bases too; theirs go within milliseconds.
+    while left() > 0 {
+        assert!(t0.elapsed().as_secs() < 10, "scratch folders left behind");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}

@@ -2,11 +2,14 @@
 
 mod branches;
 mod changes;
+mod clean_up;
 mod commits;
 mod content;
+mod conversations;
 mod history;
 mod journal;
 mod lines;
+mod obsidian;
 // A `sh` recorder stands in for the editor.
 #[cfg(unix)]
 mod open_in;
@@ -83,6 +86,13 @@ impl Drop for Sandbox {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+/// Clean up as the command runs it: the worktrees, then their branches (journaled there).
+fn clean_up_worktrees(repo: &Path, list: &[CleanUp]) -> CleanedUp {
+    let (mut out, branches) = remove_merged_worktrees(repo, list);
+    delete_merged_branches(repo, &mut out, branches);
+    out
 }
 
 fn identity(repo: &Path) {

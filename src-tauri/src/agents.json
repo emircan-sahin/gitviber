@@ -1,7 +1,7 @@
 [
   {
     "name": "Claude Code",
-    "note": "2.1.287, native (argv[0] \"claude\"). ~/.claude/sessions/<pid>.json holds sessionId and status (busy|shell|waiting|idle), rewritten as they change. An npm install runs `node …/cli.js` and sets process.title, which overwrites its argv: its flags read as empty and aren't kept.",
+    "note": "2.1.287, native (argv[0] \"claude\"). ~/.claude/sessions/<pid>.json holds sessionId and status (busy|shell|waiting|idle), rewritten as they change. An npm install runs `node …/cli.js` and sets process.title, which overwrites its argv: its flags read as empty and aren't kept. Past conversations: ~/.claude/projects/<its folder's path, every char but [A-Za-z0-9] a \"-\">/<sessionId>.jsonl, one JSON record a line (conversations.rs).",
     "programs": ["claude"],
     "scripts": ["@anthropic-ai/claude-code/cli.js"],
     "session": {
@@ -12,6 +12,7 @@
       "status": { "field": "status", "working": ["busy", "shell"], "waiting": ["waiting"], "idle": ["idle"] }
     },
     "resume": ["claude", "--resume", "{id}", "{flags}"],
+    "history": { "kind": "claudeProjects", "dir": "~/.claude/projects" },
     "flags": {
       "--agent": "1",
       "--agents": "1",
