@@ -33,7 +33,7 @@ interface Props {
   /** Opens a terminal on the branch. */
   onTerminal: (name: string) => void;
   /** Opens the worktree at `path`, for a branch checked out there. */
-  onOpenWorktree: (path: string) => void;
+  onOpenWorktree: (path: string, branch: string) => void;
   /** Deletes a branch; asks first unless it's a merged local one, here or `upstream`. */
   onDelete: (branch: Branch, upstream: boolean) => void;
   /** Deletes these merged branches together (asks first); `upstream` ones git sees as unmerged. */
@@ -211,7 +211,7 @@ export function BranchPicker({ main, label, current, branches, onSwitch, onSwitc
   const choose = (o: Option | undefined) => {
     if (!o) return;
     if (o.kind === "create") onCreate(o.name);
-    else if (heldIn(o.branch)) onOpenWorktree(heldIn(o.branch)!);
+    else if (heldIn(o.branch)) onOpenWorktree(heldIn(o.branch)!, localName(o.branch));
     else if (o.branch.remote) onSwitchRemote(o.branch);
     else if (!o.branch.current) onSwitch(o.branch.name);
     else return;

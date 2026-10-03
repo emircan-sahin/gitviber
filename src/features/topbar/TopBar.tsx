@@ -22,6 +22,8 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { DisabledTip, Tip } from "@/components/ui/tooltip";
 import { api, cancelNetwork, type Pull } from "@/lib/api";
+import { toast } from "@/lib/app/toast";
+import { folderName } from "@/lib/path";
 import { IS_MAC } from "@/lib/platform";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { openTerminal, togglePanel, useNeedsYou, useTerminalsOpen } from "@/lib/terminal/terminals";
@@ -92,6 +94,14 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const calling = !terminalOpen && needing;
   const fullscreen = useFullscreen();
 
+  // A branch another worktree holds can't be switched to here, so the pick opens that worktree.
+  // Say why, and leave a way back: the window changed folders without being asked to.
+  const openHolder = async (path: string, branch: string) => {
+    const from = root;
+    if (!(await onOpenRepo(path))) return;
+    toast("info", `Opened ${folderName(path)}`, `${branch} is checked out there, and git keeps a branch in one worktree.`, { label: `Back to ${folderName(from)}`, run: () => void onOpenRepo(from) });
+  };
+
   const { busy, run, runNet, pull, sync, branchTerminal, deleteBranch, cleanUp, publish, publishTo, merge, rebase, push, pushAhead, switchBranch, switchRemote, removeWorktree, unlockWorktree } = useRepoActions(repo, root, main);
 
   const activity = busy ?? net?.label;
@@ -134,7 +144,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
         onMerge={merge}
         onRebase={(name) => void rebase(name)}
         onTerminal={branchTerminal}
-        onOpenWorktree={onOpenRepo}
+        onOpenWorktree={openHolder}
         onDelete={deleteBranch}
         onCleanUp={cleanUp}
         onRename={(branch) => setBranchDialog({ kind: "rename", branch })}
