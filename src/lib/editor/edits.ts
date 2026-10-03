@@ -28,6 +28,8 @@ interface Edit {
 export interface EditStore {
   read: (path: string) => Promise<FileText>;
   write: (path: string, text: string) => Promise<unknown>;
+  /** What to call a path in a prompt, when its key holds more than the file's own path. */
+  name?: (path: string) => string;
 }
 
 const repoStore: EditStore = { read: (path) => api.readFile(path), write: (path, text) => api.writeFile(path, text) };
@@ -54,6 +56,9 @@ export const useEdited = () =>
   );
 
 export const isEdited = (path: string) => edits.has(path);
+
+/** The file's name for a prompt: a vault note's key carries its vault's folder. */
+const nameOf = (path: string) => stores.get(edits.get(path)?.store ?? owners.get(path) ?? "")?.name?.(path) ?? basename(path);
 
 /** Whether `model` holds an unsaved edit: a view done with it leaves it to the edit, undisposed. */
 export const holdsEdit = (model: monaco.editor.ITextModel) => [...edits.values()].some((e) => e.model === model);
@@ -162,7 +167,7 @@ async function write(path: string) {
     const disk = await file.read(path);
     // Text this view can't have been editing (e.g. now UTF-16) changed too.
     if (disk.exists && (disk.lossy || disk.text !== e.base)) {
-      const ok = await ask(`${basename(path)} changed on disk since you began editing it. Overwrite it with your version?`, {
+      const ok = await ask(`${nameOf(path)} changed on disk since you began editing it. Overwrite it with your version?`, {
         title: "Save",
         kind: "warning",
         okLabel: "Overwrite",
@@ -171,7 +176,7 @@ async function write(path: string) {
     }
     await file.write(path, text);
   } catch (err) {
-    toast("error", `Could not save ${basename(path)}`, errorMessage(err));
+    toast("error", `Could not save ${nameOf(path)}`, errorMessage(err));
     return false;
   }
   // Typing may have gone on while it saved: that stays an edit, of the text now on disk.
@@ -201,7 +206,7 @@ export async function settleEdits(paths: string[]): Promise<boolean> {
   const dirty = paths.filter((p) => edits.has(p));
   if (!dirty.length) return true;
   const answer = await message(
-    dirty.length === 1 ? `Do you want to save the changes you made to ${basename(dirty[0])}?` : `Do you want to save the changes you made to ${dirty.length} files?`,
+    dirty.length === 1 ? `Do you want to save the changes you made to ${nameOf(dirty[0])}?` : `Do you want to save the changes you made to ${dirty.length} files?`,
     { title: "Unsaved changes", kind: "warning", buttons: { yes: "Save", no: "Don't Save", cancel: "Cancel" } },
   );
   if (answer === "Save" || answer === "Yes") {

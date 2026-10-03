@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Commit } from "../api/types.ts";
-import { filesSelection, isComparePoint, onDisk, selectionKey, selectionPath } from "./selection.ts";
+import { editPath, filesSelection, isComparePoint, onDisk, selectionKey, selectionPath, vaultEditFile } from "./selection.ts";
 
 test("two working-tree files compared make one tab per pair, the right one's path its own", () => {
   const ab = filesSelection("src/a.ts", "src/b.ts");
@@ -51,4 +51,13 @@ test("the Compare screen is one tab, whichever two points it shows", () => {
 test("a stored comparison with a side missing or misshapen isn't taken for one", () => {
   assert.ok(isComparePoint({ ref: "refs/heads/a", label: "a" }));
   for (const bad of [undefined, null, "a", {}, { ref: "refs/heads/a" }, { ref: 1, label: "a" }]) assert.equal(isComparePoint(bad), false);
+});
+
+test("a vault note's path comes back out of its edit key, at the vault's root or deep in it", () => {
+  for (const vault of ["/Users/x/My Vault", "C:\\Notes", "/v/odd:name"]) {
+    for (const path of ["Home.md", "Projects/Alpha/Plan.md", "Odd names/Note #1.md", "a:b.md"]) {
+      const key = editPath({ kind: "vault", vault, path })!;
+      assert.equal(vaultEditFile(vault, key), path);
+    }
+  }
 });

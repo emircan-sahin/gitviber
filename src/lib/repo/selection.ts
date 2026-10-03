@@ -94,6 +94,9 @@ export function editPath(s: Selection) {
   return s.kind === "vault" ? selectionKey(s) : null;
 }
 
+/** A vault note's path inside its vault, taken out of its edit key (`editPath`). */
+export const vaultEditFile = (vault: string, key: string) => key.slice(editPath({ kind: "vault", vault, path: "" })!.length);
+
 /** Identity of what a tab shows; also used to match list rows to the open tab. */
 export function selectionKey(s: Selection) {
   // By url: a fork's #3 and its original's #3 are different threads.
