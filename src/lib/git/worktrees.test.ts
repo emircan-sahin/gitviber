@@ -168,6 +168,16 @@ test("a worktree is named by its branch, then its folder", () => {
   assert.equal(worktreeName(wt({ path: "/p/x.git", branch: null, bare: true })).branch, "bare");
 });
 
+test("worktree names survive odd branches and folders", () => {
+  // A folder that differs only by case is shown: it is a different name on a case-sensitive disk.
+  assert.deepEqual(worktreeName(wt({ path: "/p/fix-login", branch: "Fix-Login" })), { branch: "Fix-Login", folder: "fix-login" });
+  assert.deepEqual(worktreeName(wt({ path: "/p/ünï cödé", branch: "feat/ünï" })), { branch: "feat/ünï", folder: "ünï cödé" });
+  // A trailing slash or a root path leaves the folder empty, never "undefined".
+  assert.equal(worktreeName(wt({ path: "/p/app.worktrees/x/", branch: "x" })).folder, null);
+  assert.equal(typeof worktreeName(wt({ path: "/", branch: "x" })).branch, "string");
+  assert.deepEqual(worktreeName(wt({ path: "/p/det", branch: null, detached: true, head: null, bare: false })).branch, "detached @ ?");
+});
+
 test("the default branch is origin/HEAD's, else a local main or master", () => {
   assert.equal(defaultBranch([br("trunk"), br("origin/trunk", { remoteDefault: true }), br("main")]), "trunk");
   // origin's wins over another remote's; the name keeps any slash after the remote.
