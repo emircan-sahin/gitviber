@@ -7,6 +7,13 @@ test("remotes are told apart by how git signs in to them", () => {
   assert.equal(remoteKind("ssh://git@github.com/octo-one/demo.git"), "ssh");
   assert.equal(remoteKind("https://github.com/octo-one/demo.git"), "https");
   assert.equal(remoteKind("HTTP://github.com/octo-one/demo"), "https");
+  assert.equal(remoteKind("https://octo-one:secret@github.com/octo-one/demo.git"), "https");
+  assert.equal(remoteKind("git@gh-work:octo-one/demo.git"), "ssh");
+  assert.equal(remoteKind("gh-work:octo-one/demo.git"), "ssh");
+  assert.equal(remoteKind("  git@github.com:octo-one/demo.git\n"), "ssh");
+  assert.equal(remoteKind("file:///srv/demo.git"), "other");
+  assert.equal(remoteKind("C:/work/demo.git"), "other");
+  assert.equal(remoteKind(""), "other");
   assert.equal(remoteKind("/Users/someone/demo.git"), "other");
   assert.equal(remoteKind("C:\\work\\demo.git"), "other");
   assert.equal(remoteKind(null), "other");

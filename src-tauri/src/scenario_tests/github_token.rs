@@ -33,8 +33,9 @@ fn repo(sb: &Sandbox, token: Option<&str>) -> (PathBuf, PathBuf, PathBuf) {
     script(
         &helper,
         &format!(
-            "[ \"$1\" = get ] || exit 0\necho get >> '{}'\n{answer}",
-            helper_log.display()
+            "[ \"$1\" = get ] || exit 0\necho get >> '{}'\ncat > '{}'\n{answer}",
+            helper_log.display(),
+            sb.path("helper.in").display()
         ),
     );
     script(
@@ -81,4 +82,25 @@ fn nothing_stored_is_none_and_never_asks_for_a_password() {
     assert_eq!(credential_token(&r), None);
     assert_eq!(lines(&helper), 1);
     assert_eq!(lines(&askpass), 0, "git fell through to askpass");
+}
+
+/// The request names github.com whatever origin says: a look-alike or odd remote never
+/// becomes the host the helper is asked about.
+#[test]
+fn the_helper_is_only_asked_about_github_com() {
+    let sb = Sandbox::new("ghtoken-host");
+    let (r, _, _) = repo(&sb, Some("tok-1234"));
+    run(
+        &r,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com.example.org/o/r",
+        ],
+    )
+    .unwrap();
+    assert_eq!(credential_token(&r).as_deref(), Some("tok-1234"));
+    let asked = fs::read_to_string(sb.path("helper.in")).unwrap();
+    assert_eq!(asked, "protocol=https\nhost=github.com\n");
 }
