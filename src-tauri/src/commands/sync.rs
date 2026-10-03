@@ -60,9 +60,11 @@ pub async fn merge(
     autostash: Option<bool>,
 ) -> Res<bool> {
     let how = how.unwrap_or(git::MergeKind::Ff);
+    // Compare hands over a full ref; the undo list names the branch.
+    let shown = git::short_ref(&name);
     let label = match how {
-        git::MergeKind::Squash => format!("Squash merge {name}"),
-        git::MergeKind::Ff | git::MergeKind::NoFf => format!("Merge {name}"),
+        git::MergeKind::Squash => format!("Squash merge {shown}"),
+        git::MergeKind::Ff | git::MergeKind::NoFf => format!("Merge {shown}"),
     };
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
         git::merge(r, &name, how, autostash.unwrap_or(false))

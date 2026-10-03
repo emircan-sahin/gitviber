@@ -388,6 +388,14 @@ fn merge_kinds_fast_forward_no_ff_and_squash() {
     );
 }
 
+#[test]
+fn a_full_ref_is_worded_by_its_short_name() {
+    assert_eq!(short_ref("refs/heads/feat/x"), "feat/x");
+    assert_eq!(short_ref("refs/remotes/origin/main"), "origin/main");
+    assert_eq!(short_ref("refs/tags/v1"), "v1");
+    assert_eq!(short_ref("main"), "main");
+}
+
 /// Changes in the way of a merge or rebase from the branch picker: refused as git says, then
 /// set aside and brought back with `autostash`, as Pull's retry does.
 #[test]
