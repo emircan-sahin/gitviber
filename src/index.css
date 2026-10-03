@@ -480,7 +480,9 @@
     overscroll-behavior: none;
   }
   body {
-    @apply bg-sidebar text-foreground font-sans antialiased select-none;
+    /* No `antialiased`: on macOS it turns off the stem darkening native apps get, so light text on
+       the dark themes rendered a weight thinner than the same font in Finder or VS Code. */
+    @apply bg-sidebar text-foreground font-sans select-none;
     font-weight: var(--font-weight-normal);
     font-size: 12px;
     line-height: 1.4;
