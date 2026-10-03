@@ -149,6 +149,8 @@ function report({ removed, deleted, kept, failed: left }: CleanedUp, undo: Toast
     deleted.length && `Deleted ${deleted.length === 1 ? "branch" : "branches"} ${deleted.join(", ")}.`,
     kept.length && `Kept ${kept.length === 1 ? "branch" : "branches"} ${kept.join(", ")}: moved since, or out in another worktree.`,
     ...left.map(([path, why]) => `Left ${folderName(path)}: ${why}.`),
+    // The folders went outside the journal, so Undo has only the branches to bring back.
+    undo && removed.length && "Undo brings back the branches, not the worktree folders.",
   ].filter(Boolean);
   const title = removed.length ? `Removed ${plural(removed.length, "worktree")}` : "No worktree removed";
   toast(left.length ? "info" : "success", title, lines.join("\n") || undefined, undo);

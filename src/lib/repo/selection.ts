@@ -73,7 +73,7 @@ export function selectionPath(s: Selection) {
   if (s.kind === "file" || s.kind === "vault") return s.path;
   if (s.kind === "pull") return `#${s.pull.number} ${s.pull.title}`;
   if (s.kind === "issue") return `#${s.issue.number} ${s.issue.title}`;
-  if (s.kind === "changes") return s.list === "commit" ? `Commit ${s.commit.shortSha}` : s.list === "range" ? `Compare ${rangeLabel(s.range)}` : LIST_TITLES[s.list];
+  if (s.kind === "changes") return s.list === "commit" ? `Commit ${s.commit.shortSha}` : s.list === "range" ? `All Changes · ${rangeLabel(s.range)}` : LIST_TITLES[s.list];
   if (s.kind === "compare") return "Compare";
   return s.file.path;
 }

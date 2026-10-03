@@ -155,13 +155,18 @@ pub enum MergeKind {
     Squash,
 }
 
+/// A full ref as people say it: "refs/heads/x" is "x", "refs/remotes/origin/x" "origin/x".
+pub fn short_ref(name: &str) -> &str {
+    REF_KINDS
+        .iter()
+        .find_map(|(prefix, _)| name.strip_prefix(prefix))
+        .unwrap_or(name)
+}
+
 /// A full ref by its short name, which is how git words a merge message ("Merge branch 'x'"). Kept
 /// whole when the short name would read as another ref: a tag named like the branch wins.
 fn merge_name(repo: &Path, name: &str) -> String {
-    let short = REF_KINDS
-        .iter()
-        .find_map(|(prefix, _)| name.strip_prefix(prefix))
-        .filter(|short| !short.starts_with('-'));
+    let short = Some(short_ref(name)).filter(|short| *short != name && !short.starts_with('-'));
     let tip = |n: &str| {
         run_text(
             repo,

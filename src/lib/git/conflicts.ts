@@ -106,8 +106,47 @@ export function basesFor(blocks: Block[], rebuilt: Block[]): (string[] | null)[]
       [at, ours, theirs] = [i, o + Math.max(1, b.ours.length), t + Math.max(1, b.theirs.length)];
       return rebuilt[i].base;
     }
+    // Git's default style also joins conflicts a line or two apart that diff3 style keeps as two:
+    // such a block is those rebuilt ones with the lines between them.
+    for (let i = at; i < rebuilt.length - 1; i++) {
+      const joined = joinedFrom(b, rebuilt, i);
+      if (!joined) continue;
+      [at, ours, theirs] = [joined.last, rebuilt[joined.last].ours.length, rebuilt[joined.last].theirs.length];
+      return joined.base;
+    }
     return null;
   });
+}
+
+const sameRun = (a: string[], b: string[]) => a.length === b.length && a.every((l, i) => sameLine(l, b[i]));
+
+/** The base of `b` if it is `rebuilt[from]` and the blocks after it, with the lines both sides share between them. */
+function joinedFrom(b: Block, rebuilt: Block[], from: number): { base: string[]; last: number } | null {
+  const base: string[] = [];
+  let [o, t] = [0, 0];
+  for (let k = from; k < rebuilt.length; k++) {
+    const r = rebuilt[k];
+    if (!r.base || !sameRun(b.ours.slice(o, o + r.ours.length), r.ours) || !sameRun(b.theirs.slice(t, t + r.theirs.length), r.theirs)) return null;
+    base.push(...r.base);
+    o += r.ours.length;
+    t += r.theirs.length;
+    if (o === b.ours.length && t === b.theirs.length) return k > from ? { base, last: k } : null;
+    // What lies between is the same in both sides; how much, the next block's start tells.
+    const between = [...Array(Math.min(b.ours.length - o, b.theirs.length - t) + 1).keys()].find((n) => {
+      const next = rebuilt[k + 1];
+      return (
+        next?.base &&
+        sameRun(b.ours.slice(o, o + n), b.theirs.slice(t, t + n)) &&
+        sameRun(b.ours.slice(o + n, o + n + next.ours.length), next.ours) &&
+        sameRun(b.theirs.slice(t + n, t + n + next.theirs.length), next.theirs)
+      );
+    });
+    if (between === undefined) return null;
+    base.push(...b.ours.slice(o, o + between));
+    o += between;
+    t += between;
+  }
+  return null;
 }
 
 /** What's being merged, in an agent's words; `theirs`: the incoming side's marker label. */

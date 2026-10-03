@@ -196,9 +196,15 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
           <ContextMenuItem onSelect={() => compare({ base: point, head: null })}>
             <GitCompareArrows /> Compare with Working Tree
           </ContextMenuItem>
-          <ContextMenuItem onSelect={() => commitMark.set({ ...point, root })}>
-            <SquareDashedMousePointer /> Select for Compare
-          </ContextMenuItem>
+          {mark?.sha === c.sha ? (
+            <ContextMenuItem onSelect={commitMark.clear}>
+              <SquareDashedMousePointer /> Clear Compare Selection
+            </ContextMenuItem>
+          ) : (
+            <ContextMenuItem onSelect={() => commitMark.pick({ ...point, root }, short)}>
+              <SquareDashedMousePointer /> Select for Compare
+            </ContextMenuItem>
+          )}
           {mark && mark.sha !== c.sha && (
             <ContextMenuItem onSelect={() => compare({ base: mark, head: point })}>
               <GitCompare /> Compare with <span className="font-mono">{mark.label}</span>

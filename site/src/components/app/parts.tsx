@@ -16,7 +16,6 @@ import {
   CircleX,
   Columns2,
   Copy,
-  CornerUpLeft,
   Ellipsis,
   FileCode2,
   FoldVertical,
@@ -262,11 +261,6 @@ export function TopBar({
         {elsewhere && <NeedsYouDot className="absolute top-1 right-1" />}
       </span>
       {worktree && pull && <PullChip pull={pull} className="h-7 rounded-md px-1.5 text-[11px]" />}
-      {worktree && (
-        <IconBtn>
-          <CornerUpLeft />
-        </IconBtn>
-      )}
       <span className="!shrink flex-1" />
       <span className="flex items-center">
         <Ghost>

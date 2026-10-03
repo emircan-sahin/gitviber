@@ -11,6 +11,7 @@ import { folderName } from "@/lib/path";
 import { type GitRun, useGitAction } from "@/hooks/useGitAction";
 import { undoCommit } from "@/features/history/commitActions";
 import { secretCommits } from "@/lib/git/gitErrors";
+import { shortRef } from "@/lib/git/refs";
 import { defaultBranch, folderForBranch } from "@/lib/git/worktrees";
 
 // Autostashed changes wait out a stopped merge or rebase (MERGE_AUTOSTASH), and git keeps them
@@ -22,13 +23,16 @@ const stashedFor = (autostash: boolean, what = "pull") =>
 const retryStashed = (again: () => Promise<boolean>) => [{ label: "Retry with autostash", run: () => void again() }];
 
 /** Merges `name` into HEAD's branch. A squash's changes would get the stash back before they're committed: no autostash for it. */
-export const mergeInto = (run: GitRun, name: string, how: "ff" | "no-ff" | "squash" = "ff", autostash = false): Promise<boolean> =>
-  how === "squash"
-    ? run("Squash merge", () => api.merge(name, how), `Squashed ${name} into one commit`)
-    : run("Merge", () => api.merge(name, how, autostash), `Merged ${name}`, undefined, {
+export const mergeInto = (run: GitRun, name: string, how: "ff" | "no-ff" | "squash" = "ff", autostash = false): Promise<boolean> => {
+  const nothing = `Nothing to merge: ${shortRef(name)}'s changes are already here`;
+  return how === "squash"
+    ? run("Squash merge", () => api.merge(name, how), `Squashed ${shortRef(name)} into one commit`, undefined, { nothing })
+    : run("Merge", () => api.merge(name, how, autostash), `Merged ${shortRef(name)}`, undefined, {
         fixes: { autostash: retryStashed(() => mergeInto(run, name, how, true)) },
         conflicts: stashedFor(autostash, "merge"),
+        nothing,
       });
+};
 
 /** The top bar's git actions: switching, merging, deleting branches, worktrees, pull, push and publish. */
 export function useRepoActions(repo: RepoData, root: string, main: string) {
