@@ -2,7 +2,7 @@
 
 use super::{
     command, has_head, has_origin, pushed_base, range_files, read_timeout, run, run_text,
-    validate_branch, validate_full_ref, validate_rev, FileChange, REF_KINDS,
+    short_ref, validate_branch, validate_full_ref, validate_rev, FileChange, REF_KINDS,
 };
 use crate::process::exec;
 use serde::{Deserialize, Serialize};
@@ -302,10 +302,7 @@ pub(super) fn parted_at(repo: &Path, with: &str) -> Result<String, String> {
     )
     .is_err()
     {
-        let name = REF_KINDS
-            .iter()
-            .find_map(|(prefix, _)| with.strip_prefix(prefix))
-            .unwrap_or(with);
+        let name = short_ref(with);
         return Err(format!(
             "{name} doesn't exist here. Fetch, or pick another branch."
         ));

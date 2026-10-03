@@ -90,8 +90,6 @@ function runAt(outer: string[], inner: string[], from: number) {
  * which fits anywhere: the other side, never empty too, places it.
  */
 export function basesFor(blocks: Block[], rebuilt: Block[]): (string[] | null)[] {
-  // Git's default style also joins conflicts a line or two apart that diff3 style keeps as two:
-  // such a block is those rebuilt ones with the lines between them.
   // Walked in file order: a rebuilt block, and within it each side, only forward from where the
   // last block was found. So twins (the same edit in two places) each find their own, and two
   // parts split from one find it in turn.
@@ -108,6 +106,8 @@ export function basesFor(blocks: Block[], rebuilt: Block[]): (string[] | null)[]
       [at, ours, theirs] = [i, o + Math.max(1, b.ours.length), t + Math.max(1, b.theirs.length)];
       return rebuilt[i].base;
     }
+    // Git's default style also joins conflicts a line or two apart that diff3 style keeps as two:
+    // such a block is those rebuilt ones with the lines between them.
     for (let i = at; i < rebuilt.length - 1; i++) {
       const joined = joinedFrom(b, rebuilt, i);
       if (!joined) continue;

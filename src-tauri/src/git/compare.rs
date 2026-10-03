@@ -2,8 +2,8 @@
 //! each other, and what merging one into HEAD would do.
 
 use super::{
-    has_head, range_files, run, run_text, run_with, validate_full_ref, validate_rev, FileChange,
-    REF_KINDS,
+    has_head, range_files, run, run_text, run_with, short_ref, validate_full_ref, validate_rev,
+    FileChange,
 };
 use serde::Serialize;
 use std::path::Path;
@@ -57,10 +57,7 @@ fn commit_of(repo: &Path, point: &str) -> Result<String, String> {
     )
     .map(|s| s.trim().to_string())
     .map_err(|_| {
-        let name = REF_KINDS
-            .iter()
-            .find_map(|(prefix, _)| point.strip_prefix(prefix))
-            .unwrap_or(point);
+        let name = short_ref(point);
         format!("{name} doesn't exist here. Fetch, or pick another branch.")
     })
 }
