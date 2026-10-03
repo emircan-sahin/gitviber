@@ -116,23 +116,23 @@
     "items": [
       {
         "title": "Verlauf",
-        "text": "Branches und Merges als farbiger Lane-Graph. Rückgängig machen, reverten, resetten, auschecken oder taggen."
+        "text": "Branches und Merges als farbiger Lane-Graph. Rückgängig machen, reverten, resetten, auschecken oder taggen. Commits per Squash oder Fixup zusammenlegen, droppen, aufteilen oder umsortieren und zwei beliebige Punkte vergleichen."
       },
       {
         "title": "Branches",
-        "text": "Merge, Rebase und Pull per Fast-Forward, Merge oder Rebase."
+        "text": "Merge, Rebase und Pull per Fast-Forward, Merge oder Rebase. Häufig genutzte Branches anheften, zwei Branches vergleichen und Konflikte sehen, bevor du mergst."
       },
       {
         "title": "Konflikte",
-        "text": "Block für Block auflösen, dann fortsetzen, überspringen oder abbrechen."
+        "text": "Block für Block auflösen, die Merge-Base jedes Blocks nur einen Klick entfernt, dann fortsetzen, überspringen oder abbrechen. Oder du überlässt sie deinem Agenten."
       },
       {
         "title": "Pull Requests",
-        "text": "Lesen, im selben Diff-Viewer reviewen, auf Wunsch Commit für Commit, erstellen, mergen und auschecken."
+        "text": "Lesen, im selben Diff-Viewer reviewen, auf Wunsch Commit für Commit, erstellen, mergen und auschecken. Filtern nach „von mir erstellt“, „mir zugewiesen“ oder „Review angefragt“."
       },
       {
         "title": "Issues",
-        "text": "Öffnen, bearbeiten, kommentieren, schließen und wieder öffnen, ohne Browser."
+        "text": "Öffnen, bearbeiten, kommentieren, schließen und wieder öffnen, ohne Browser. Filtern nach „mir zugewiesen“ oder „erwähnt mich“."
       },
       {
         "title": "Shortcuts",

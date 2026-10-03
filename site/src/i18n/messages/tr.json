@@ -116,23 +116,23 @@
     "items": [
       {
         "title": "Geçmiş",
-        "text": "Branch ve merge'ler renkli şeritli bir grafikte. Geri al, revert et, reset'le, checkout et ya da tag'le."
+        "text": "Branch ve merge'ler renkli şeritli bir grafikte. Geri al, revert et, reset'le, checkout et ya da tag'le. Commit'leri squash'la, fixup'la, drop'la, böl ya da yeniden sırala, istediğin iki noktayı karşılaştır."
       },
       {
         "title": "Branch'ler",
-        "text": "Merge ve rebase yap, pull'u fast-forward, merge ya da rebase ile çek."
+        "text": "Merge ve rebase yap, pull'u fast-forward, merge ya da rebase ile çek. Sık kullandıklarını sabitle, iki branch'i karşılaştır, merge'den önce conflict'leri gör."
       },
       {
         "title": "Conflict'ler",
-        "text": "Blok blok çöz, sonra devam et, atla ya da iptal et."
+        "text": "Blok blok çöz, her bloğun merge base'i bir tık ötede. Sonra devam et, atla ya da iptal et. İstersen ajanına bırak."
       },
       {
         "title": "Pull request'ler",
-        "text": "Oku, aynı diff görüntüleyicide incele, istersen commit commit. Oluştur, merge et ve checkout et."
+        "text": "Oku, aynı diff görüntüleyicide incele, istersen commit commit. Oluştur, merge et ve checkout et. Benim açtıklarım, bana atananlar ya da incelemem istenenler diye filtrele."
       },
       {
         "title": "Issue'lar",
-        "text": "Tarayıcıya gitmeden aç, düzenle, yorum yaz, kapat ve yeniden aç."
+        "text": "Tarayıcıya gitmeden aç, düzenle, yorum yaz, kapat ve yeniden aç. Bana atananlar ya da benden bahsedenler diye filtrele."
       },
       {
         "title": "Kısayollar",

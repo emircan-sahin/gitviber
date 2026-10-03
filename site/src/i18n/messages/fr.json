@@ -116,23 +116,23 @@
     "items": [
       {
         "title": "Historique",
-        "text": "Branches et merges sous forme de graphe coloré. Annulez, faites un revert, un reset, un checkout ou posez un tag."
+        "text": "Branches et merges sous forme de graphe coloré. Annulez, faites un revert, un reset, un checkout ou posez un tag. Faites un squash, un fixup ou un drop, découpez ou réordonnez vos commits, et comparez deux points au choix."
       },
       {
         "title": "Branches",
-        "text": "Merge, rebase, et pull en fast-forward, merge ou rebase."
+        "text": "Merge, rebase, et pull en fast-forward, merge ou rebase. Épinglez celles que vous utilisez, comparez deux branches et repérez les conflits avant de merger."
       },
       {
         "title": "Conflits",
-        "text": "Résolvez bloc par bloc, puis continuez, sautez l'étape ou abandonnez."
+        "text": "Résolvez bloc par bloc, avec la merge base de chaque bloc à portée de clic, puis continuez, sautez l'étape ou abandonnez. Ou confiez-les à votre agent."
       },
       {
         "title": "Pull requests",
-        "text": "Lecture, revue dans le même visualiseur de diff, commit par commit si vous voulez, création, merge et checkout."
+        "text": "Lecture, revue dans le même visualiseur de diff, commit par commit si vous voulez, création, merge et checkout. Filtrez sur celles que vous avez créées, qui vous sont assignées ou qui attendent votre revue."
       },
       {
         "title": "Issues",
-        "text": "Ouvrez, modifiez, commentez, fermez et rouvrez, sans passer par le navigateur."
+        "text": "Ouvrez, modifiez, commentez, fermez et rouvrez, sans passer par le navigateur. Filtrez sur celles qui vous sont assignées ou qui vous mentionnent."
       },
       {
         "title": "Raccourcis",

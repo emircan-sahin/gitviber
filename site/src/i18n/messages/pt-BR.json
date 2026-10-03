@@ -116,23 +116,23 @@
     "items": [
       {
         "title": "Histórico",
-        "text": "Branches e merges num grafo de faixas coloridas. Desfazer, revert, reset, checkout ou tag."
+        "text": "Branches e merges num grafo de faixas coloridas. Desfazer, revert, reset, checkout ou tag. Squash, fixup, drop, dividir ou reordenar commits, e comparar quaisquer dois pontos."
       },
       {
         "title": "Branches",
-        "text": "Merge, rebase e pull com fast-forward, merge ou rebase."
+        "text": "Merge, rebase e pull com fast-forward, merge ou rebase. Fixe as que você mais usa, compare duas branches e veja os conflitos antes do merge."
       },
       {
         "title": "Conflitos",
-        "text": "Resolva bloco a bloco e depois continue, pule ou aborte."
+        "text": "Resolva bloco a bloco com a merge base de cada bloco a um clique, e depois continue, pule ou aborte. Ou passe tudo para o seu agente."
       },
       {
         "title": "Pull requests",
-        "text": "Leia, revise no mesmo visualizador de diff, commit por commit se quiser, crie, faça merge e checkout."
+        "text": "Leia, revise no mesmo visualizador de diff, commit por commit se quiser, crie, faça merge e checkout. Filtre por criados por mim, atribuídos a mim ou com revisão solicitada."
       },
       {
         "title": "Issues",
-        "text": "Abra, edite, comente, feche e reabra, sem ir para o navegador."
+        "text": "Abra, edite, comente, feche e reabra, sem ir para o navegador. Filtre por atribuídas a mim ou que me mencionam."
       },
       {
         "title": "Atalhos",

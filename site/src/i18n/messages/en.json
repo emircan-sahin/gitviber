@@ -116,23 +116,23 @@
     "items": [
       {
         "title": "History",
-        "text": "Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag."
+        "text": "Branches and merges as a colored lane graph. Undo, revert, reset, check out or tag. Squash, fix up, drop, split or reorder commits, and compare any two points."
       },
       {
         "title": "Branches",
-        "text": "Merge, rebase, and pull with fast-forward, merge or rebase."
+        "text": "Merge, rebase, and pull with fast-forward, merge or rebase. Pin the ones you use, compare two branches and see conflicts before you merge."
       },
       {
         "title": "Conflicts",
-        "text": "Resolve block by block, then continue, skip or abort."
+        "text": "Resolve block by block with each block's merge base a click away, then continue, skip or abort. Or hand them to your agent."
       },
       {
         "title": "Pull requests",
-        "text": "Read, review in the same diff viewer, commit by commit if you like, create, merge and check out."
+        "text": "Read, review in the same diff viewer, commit by commit if you like, create, merge and check out. Filter by created by me, assigned to me or review requested."
       },
       {
         "title": "Issues",
-        "text": "Open, edit, comment, close and reopen, without the browser."
+        "text": "Open, edit, comment, close and reopen, without the browser. Filter by assigned to me or mentions me."
       },
       {
         "title": "Shortcuts",
