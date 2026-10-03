@@ -3,6 +3,58 @@ use crate::git;
 use crate::network::Net;
 use std::path::Path;
 
+fn labelled(labels: &[String]) -> ListFilter {
+    ListFilter {
+        labels: labels.to_vec(),
+        ..Default::default()
+    }
+}
+
+/// Read-only, against this checkout's origin: `cargo test -- --ignored live_scope_filter`.
+/// Every row a scope returns names the signed-in account.
+#[test]
+#[ignore = "talks to GitHub"]
+fn live_scope_filter() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let session = Session::default();
+    let me = account(&session, repo).unwrap().login;
+    let scoped = |scope| ListFilter {
+        scope: Some(scope),
+        ..Default::default()
+    };
+    let mine = list(
+        &session,
+        repo,
+        None,
+        "all",
+        1,
+        &scoped(search::Scope::Created),
+    )
+    .unwrap();
+    println!("{} pull requests by {me}", mine.len());
+    assert!(mine.iter().all(|p| p.author.eq_ignore_ascii_case(&me)));
+    let c = pull_counts(&session, repo, None, &scoped(search::Scope::Created)).unwrap();
+    assert!(c.open + c.closed >= mine.len() as u64);
+    let assigned = issues(
+        &session,
+        repo,
+        None,
+        "all",
+        &scoped(search::Scope::Assigned),
+    )
+    .unwrap();
+    assert!(assigned
+        .iter()
+        .all(|i| i.assignees.iter().any(|a| a.eq_ignore_ascii_case(&me))));
+    // A draft filter and a label with a space and a quote must at least be accepted.
+    let drafts = ListFilter {
+        draft: Some(true),
+        labels: vec!["say \"hi\"".into()],
+        ..Default::default()
+    };
+    list(&session, repo, None, "open", 1, &drafts).unwrap();
+}
+
 /// Read-only, against this checkout's origin: `cargo test -- --ignored live_label_filter`.
 #[test]
 #[ignore = "talks to GitHub"]
@@ -16,18 +68,31 @@ fn live_label_filter() {
         .iter()
         .find(|l| l.name.contains(' '))
         .expect("a label with a space");
-    let with = issues(&session, repo, None, "all", std::slice::from_ref(&odd.name)).unwrap();
+    let with = issues(
+        &session,
+        repo,
+        None,
+        "all",
+        &labelled(std::slice::from_ref(&odd.name)),
+    )
+    .unwrap();
     println!("{:?}: {} issues", odd.name, with.len());
     assert!(!with.is_empty());
     assert!(with
         .iter()
         .all(|i| i.labels.iter().any(|l| l.name == odd.name)));
     // The list stops at 50; the counts don't.
-    let c = issue_counts(&session, repo, None, std::slice::from_ref(&odd.name)).unwrap();
+    let c = issue_counts(
+        &session,
+        repo,
+        None,
+        &labelled(std::slice::from_ref(&odd.name)),
+    )
+    .unwrap();
     println!("counted {} open, {} closed", c.open, c.closed);
     let counted = (c.open + c.closed) as usize;
     assert!(counted >= with.len() && (with.len() == 50 || counted == with.len()));
-    let all = issue_counts(&session, repo, None, &[]).unwrap();
+    let all = issue_counts(&session, repo, None, &ListFilter::default()).unwrap();
     assert!(all.open + all.closed >= c.open + c.closed);
     // Two labels mean both: never more than either alone.
     let other = &with[0].labels.iter().find(|l| l.name != odd.name);
@@ -37,7 +102,7 @@ fn live_label_filter() {
             repo,
             None,
             "all",
-            &[odd.name.clone(), other.name.clone()],
+            &labelled(&[odd.name.clone(), other.name.clone()]),
         )
         .unwrap();
         println!("+ {:?}: {} issues", other.name, both.len());
@@ -69,9 +134,9 @@ fn live_fork_reads_both_repositories() {
     );
     let up = parent.repo.full();
     for (to, name) in [(None, "origin"), (Some(up.as_str()), "parent")] {
-        let pulls = list(&session, repo, to, "all", 1).unwrap();
-        let open = issues(&session, repo, to, "open", &[]).unwrap_or_default();
-        let all = issues(&session, repo, to, "all", &[]).unwrap_or_default();
+        let pulls = list(&session, repo, to, "all", 1, &ListFilter::default()).unwrap();
+        let open = issues(&session, repo, to, "open", &ListFilter::default()).unwrap_or_default();
+        let all = issues(&session, repo, to, "all", &ListFilter::default()).unwrap_or_default();
         println!(
             "{name}: {} PRs, {} open / {} total issues",
             pulls.len(),
@@ -92,14 +157,30 @@ fn live_fork_reads_both_repositories() {
             detail(&session, repo, to, p.number).unwrap();
         }
     }
-    let closed = list(&session, repo, Some(&up), "closed", 1).unwrap();
+    let closed = list(
+        &session,
+        repo,
+        Some(&up),
+        "closed",
+        1,
+        &ListFilter::default(),
+    )
+    .unwrap();
     if let Some(p) = closed.iter().find(|p| p.state == "closed") {
         let d = detail(&session, repo, Some(&up), p.number).unwrap();
         println!("#{} closed by {:?}", p.number, d.closed_by);
         assert!(d.closed_by.is_some());
     }
     // Anything but origin and its parent is refused, whatever the token could reach.
-    assert!(list(&session, repo, Some("torvalds/linux"), "open", 1).is_err());
+    assert!(list(
+        &session,
+        repo,
+        Some("torvalds/linux"),
+        "open",
+        1,
+        &ListFilter::default()
+    )
+    .is_err());
     let remote = original_remote(repo, &up, false, &Net::default()).unwrap();
     println!("original remote: {remote:?}");
     if let Some(r) = remote {
@@ -129,7 +210,7 @@ fn live_pull_request_flow() {
         acct.origin.and_then(|o| o.default_branch)
     );
 
-    let open = list(&session, repo, None, "open", 1).unwrap();
+    let open = list(&session, repo, None, "open", 1, &ListFilter::default()).unwrap();
     let number = match open.iter().find(|p| p.head_ref == "feature/review") {
         Some(p) => p.number,
         None => {

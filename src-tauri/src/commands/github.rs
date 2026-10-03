@@ -92,17 +92,22 @@ pub async fn pr_list(
     target: Option<String>,
     filter: String,
     pages: usize,
+    narrow: github::ListFilter,
 ) -> Res<Vec<github::Pull>> {
     with_github(app, move |gh, r| {
-        github::list(gh, r, target.as_deref(), &filter, pages)
+        github::list(gh, r, target.as_deref(), &filter, pages, &narrow)
     })
     .await
 }
 
 #[tauri::command]
-pub async fn pr_counts(app: AppHandle, target: Option<String>) -> Res<github::StateCounts> {
+pub async fn pr_counts(
+    app: AppHandle,
+    target: Option<String>,
+    narrow: github::ListFilter,
+) -> Res<github::StateCounts> {
     with_github(app, move |gh, r| {
-        github::pull_counts(gh, r, target.as_deref())
+        github::pull_counts(gh, r, target.as_deref(), &narrow)
     })
     .await
 }
@@ -315,10 +320,10 @@ pub async fn issue_list(
     app: AppHandle,
     target: Option<String>,
     filter: String,
-    labels: Vec<String>,
+    narrow: github::ListFilter,
 ) -> Res<Vec<github::Issue>> {
     with_github(app, move |gh, r| {
-        github::issues(gh, r, target.as_deref(), &filter, &labels)
+        github::issues(gh, r, target.as_deref(), &filter, &narrow)
     })
     .await
 }
@@ -327,10 +332,10 @@ pub async fn issue_list(
 pub async fn issue_counts(
     app: AppHandle,
     target: Option<String>,
-    labels: Vec<String>,
+    narrow: github::ListFilter,
 ) -> Res<github::StateCounts> {
     with_github(app, move |gh, r| {
-        github::issue_counts(gh, r, target.as_deref(), &labels)
+        github::issue_counts(gh, r, target.as_deref(), &narrow)
     })
     .await
 }

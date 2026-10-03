@@ -64,7 +64,7 @@ fn split_full(full: &str) -> Option<RepoRef> {
     })
 }
 
-fn repo_info(session: &Session, repo: &Path, r: &RepoRef) -> Result<Value, String> {
+pub(super) fn repo_info(session: &Session, repo: &Path, r: &RepoRef) -> Result<Value, String> {
     call(session, repo, Method::Get, &r.api(""))
 }
 
