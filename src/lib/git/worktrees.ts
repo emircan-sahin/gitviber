@@ -1,4 +1,4 @@
-import type { FileChange, Pull, Worktree, WorktreeState } from "../api";
+import type { Branch, FileChange, Pull, Worktree, WorktreeState } from "../api";
 import { folderName, isInside } from "../path.ts";
 
 /** Where a worktree sits, as short as it can be said: inside the main one, or beside it. */
@@ -8,6 +8,50 @@ export function shortPath(path: string, main: string) {
   const parent = main.slice(0, main.lastIndexOf("/"));
   if (parent && path.startsWith(`${parent}/`)) return `../${path.slice(parent.length + 1)}`;
   return path;
+}
+
+/** Worktree folders are named after their branch, "/" being a folder separator. */
+export const folderForBranch = (branch: string) => branch.replaceAll("/", "-");
+
+/**
+ * A worktree as the top bar names it: its branch first, the name people know it by, and its
+ * folder second, so one that no longer says what it holds (a "vault-tiers" on main) shows.
+ * `folder` is null when it's only the branch's own name.
+ */
+export function worktreeName(w: Pick<Worktree, "path" | "branch" | "head" | "bare">) {
+  const branch = w.branch ?? (w.bare ? "bare" : `detached @ ${w.head ?? "?"}`);
+  const folder = folderName(w.path);
+  return { branch, folder: folder === folderForBranch(branch) ? null : folder };
+}
+
+/**
+ * The project's default branch: what origin/HEAD points at (origin's, when several remotes
+ * have one), else a local main or master. Null when none of those exist.
+ */
+export function defaultBranch(branches: Pick<Branch, "name" | "remote" | "remoteDefault">[]): string | null {
+  const heads = branches.filter((b) => b.remote && b.remoteDefault);
+  const head = heads.find((b) => b.name.startsWith("origin/")) ?? heads[0];
+  if (head) return head.name.slice(head.name.indexOf("/") + 1);
+  return ["main", "master"].find((n) => branches.some((b) => !b.remote && b.name === n)) ?? null;
+}
+
+/** The default branch held by a linked worktree while the main folder is on another branch. */
+export interface MainBackOffer {
+  main: Worktree;
+  holder: Worktree;
+  branch: string;
+}
+
+/**
+ * Where "Move main back" is worth offering: git won't switch the main folder to the default
+ * branch while a linked worktree holds it, which is what the folder's own name hides.
+ */
+export function mainBackOffer(list: Worktree[], branches: Pick<Branch, "name" | "remote" | "remoteDefault">[]): MainBackOffer | null {
+  const branch = defaultBranch(branches);
+  if (!branch) return null;
+  const main = list.find((w) => w.main && !w.bare && !w.prunable && !!w.branch && w.branch !== branch);
+  const holder = list.find((w) => !w.main && !w.prunable && w.branch === branch);
+  return main && holder ? { main, holder, branch } : null;
 }
 
 /**

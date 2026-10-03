@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { FileChange, WorktreeState } from "../api/types.ts";
 import type { Pull, Worktree } from "../api/index.ts";
-import { cleanable, hueColor, HUE_NAMES, HUES, isHueChoice, shortPath, stageable, worktreeHue, worktreeHues } from "./worktrees.ts";
+import { cleanable, defaultBranch, folderForBranch, hueColor, HUE_NAMES, HUES, isHueChoice, mainBackOffer, shortPath, stageable, worktreeHue, worktreeHues, worktreeName } from "./worktrees.ts";
 
 test("short worktree paths", () => {
   const main = "/Users/me/code/app";
@@ -139,4 +139,54 @@ test("one repo's worktrees get apart colors where their names hash alike, a pick
   assert.equal(again.get(list[3].path), null);
   assert.notEqual(again.get(list[1].path), linked[0]);
   assert.ok(HUE_NAMES.includes(again.get(list[1].path)!));
+});
+
+const wt = (over: Partial<Worktree>): Worktree => ({
+  path: "/p/app",
+  head: "abc1234",
+  branch: "main",
+  detached: false,
+  bare: false,
+  locked: false,
+  lockReason: null,
+  inUse: false,
+  prunable: false,
+  current: false,
+  main: false,
+  ...over,
+});
+const br = (name: string, over: Record<string, unknown> = {}) => ({ name, remote: name.includes("/"), remoteDefault: false, ...over });
+
+test("a worktree is named by its branch, then its folder", () => {
+  assert.deepEqual(worktreeName(wt({ path: "/p/app.worktrees/vault-tiers" })), { branch: "main", folder: "vault-tiers" });
+  // A folder that only repeats the branch adds nothing; a slash in the branch is a dash in the folder.
+  assert.deepEqual(worktreeName(wt({ path: "/p/app.worktrees/fix-login", branch: "fix-login" })), { branch: "fix-login", folder: null });
+  assert.deepEqual(worktreeName(wt({ path: "/p/app.worktrees/feat-x", branch: "feat/x" })), { branch: "feat/x", folder: null });
+  assert.equal(folderForBranch("feat/x/y"), "feat-x-y");
+  assert.deepEqual(worktreeName(wt({ path: "/p/det", branch: null })), { branch: "detached @ abc1234", folder: "det" });
+  assert.deepEqual(worktreeName(wt({ path: "/p/det", branch: null, head: null })), { branch: "detached @ ?", folder: "det" });
+  assert.equal(worktreeName(wt({ path: "/p/x.git", branch: null, bare: true })).branch, "bare");
+});
+
+test("the default branch is origin/HEAD's, else a local main or master", () => {
+  assert.equal(defaultBranch([br("trunk"), br("origin/trunk", { remoteDefault: true }), br("main")]), "trunk");
+  // origin's wins over another remote's; the name keeps any slash after the remote.
+  assert.equal(defaultBranch([br("up/dev", { remoteDefault: true }), br("origin/rel/1", { remoteDefault: true })]), "rel/1");
+  assert.equal(defaultBranch([br("feat"), br("master")]), "master");
+  assert.equal(defaultBranch([br("main"), br("master")]), "main");
+  assert.equal(defaultBranch([br("feat"), br("origin/main")]), null);
+});
+
+test("Move main back is offered only when a linked worktree holds the default branch from the main folder", () => {
+  const branches = [br("main"), br("feat/x"), br("origin/main", { remoteDefault: true })];
+  const main = wt({ path: "/p/app", main: true, branch: "feat/x" });
+  const holder = wt({ path: "/p/app-vault-tiers" });
+  assert.deepEqual(mainBackOffer([main, holder], branches), { main, holder, branch: "main" });
+  // The main folder already has it, or has no branch to leave, or can't be switched.
+  assert.equal(mainBackOffer([{ ...main, branch: "main" }, wt({ path: "/p/other", branch: "x" })], branches), null);
+  assert.equal(mainBackOffer([{ ...main, branch: null }, holder], branches), null);
+  assert.equal(mainBackOffer([{ ...main, bare: true }, holder], branches), null);
+  // A holder whose folder is gone is for Prune, not a move.
+  assert.equal(mainBackOffer([main, { ...holder, prunable: true }], branches), null);
+  assert.equal(mainBackOffer([main, holder], [br("feat/x")]), null);
 });
