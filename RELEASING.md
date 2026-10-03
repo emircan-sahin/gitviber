@@ -140,6 +140,26 @@ Users install it with
 `brew install --cask emircan-sahin/tap/gitviber`. The cask sets `auto_updates true`, so
 `brew upgrade` leaves updates to the app itself.
 
+## Update mirror
+
+GitHub's asset host is very slow for some users, so the app can ask a download mirror first and
+GitHub second (`plugins.updater.endpoints`, once the mirror is deployed and listed). The mirror
+is a Cloudflare Worker, [`packaging/update-proxy/`](packaging/update-proxy/README.md), that serves
+the latest release's `latest.json` with its URLs pointed at itself and streams the files from
+GitHub. There is no release step: it reads `releases/latest` when asked, so publishing the draft updates it too. It
+only changes when `worker.js` does, and then it is deployed by hand (the README has the steps).
+
+After publishing a release, check it (`MIRROR` is the Worker's URL):
+
+```sh
+curl -s $MIRROR/latest.json | grep '"version"'                     # the new version
+curl -s -r 0-99 -o /dev/null -w '%{http_code} %{size_download}\n' \
+  $MIRROR/download/vX.Y.Z/GitViber_X.Y.Z_universal.app.tar.gz        # 206 100
+```
+
+Installs fall back to GitHub when the mirror fails, so a broken mirror slows an update down
+without blocking it.
+
 ## App icon
 
 macOS 26 draws the icon from `src-tauri/icons/Assets.car`, compiled from the Icon Composer source

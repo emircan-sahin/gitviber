@@ -1,0 +1,5 @@
+# Deploy steps and limits: README.md
+name = "gitviber-updates"
+main = "worker.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
