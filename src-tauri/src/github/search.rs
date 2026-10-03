@@ -467,4 +467,115 @@ mod tests {
         );
         assert_eq!(i.labels[0].name, "bug");
     }
+    #[test]
+    fn label_names_with_colons_emoji_and_spaces_stay_one_qualifier_each() {
+        let f = filter(None, None, &["type: bug", "🐛 crash", "priority:high"]);
+        assert_eq!(
+            search_query("a/b", Kind::Issue, "open", &f, ""),
+            r#"repo:a/b is:issue is:open label:"type: bug" label:"🐛 crash" label:"priority:high" sort:updated-desc"#
+        );
+    }
+
+    #[test]
+    fn logins_with_bot_suffixes_and_underscores_go_in_as_they_are() {
+        for login in ["dependabot[bot]", "octo_cat", "mona-lisa"] {
+            let q = search_query(
+                "a/b",
+                Kind::Pull,
+                "open",
+                &filter(Some(Scope::Created), None, &[]),
+                login,
+            );
+            assert!(q.contains(&format!(" author:{login} ")), "{q}");
+        }
+    }
+
+    #[test]
+    fn every_narrowing_composes_in_one_query() {
+        let f = filter(Some(Scope::ReviewRequested), Some(false), &["bug"]);
+        assert_eq!(
+            search_query("a/b", Kind::Pull, "closed", &f, "mona"),
+            r#"repo:a/b is:pr is:closed review-requested:mona draft:false label:"bug" sort:updated-desc"#
+        );
+    }
+
+    #[test]
+    fn merged_and_closed_pull_requests_keep_their_own_state() {
+        let state = |s: &str, draft: bool| {
+            let p = pull_from_node(&json!({ "number": 1, "state": s, "isDraft": draft }));
+            (p.state, p.draft)
+        };
+        assert_eq!(state("MERGED", false), ("merged".to_string(), false));
+        assert_eq!(state("CLOSED", false), ("closed".to_string(), false));
+        assert_eq!(state("OPEN", true), ("open".to_string(), true));
+        // A draft closed unmerged stays a draft; a merged one was never a draft in REST.
+        assert_eq!(state("CLOSED", true), ("closed".to_string(), true));
+    }
+
+    #[test]
+    fn issue_close_reasons_map_to_the_rest_spelling() {
+        let reason = |r: Value| {
+            issue_from_node(&json!({ "number": 1, "state": "CLOSED", "stateReason": r }))
+                .state_reason
+        };
+        assert_eq!(reason(json!("COMPLETED")).as_deref(), Some("completed"));
+        assert_eq!(reason(json!("DUPLICATE")).as_deref(), Some("not_planned"));
+        assert_eq!(reason(json!("REOPENED")).as_deref(), Some("reopened"));
+        assert_eq!(reason(Value::Null), None);
+    }
+
+    #[test]
+    fn an_issue_with_missing_pieces_still_maps() {
+        let i = issue_from_node(&json!({
+            "number": 3, "author": null,
+            "labels": { "nodes": [{ "name": "x", "color": "fff", "description": null }] },
+            "assignees": { "nodes": [null, { "login": "mona" }] }
+        }));
+        assert_eq!(i.author, "ghost");
+        assert_eq!(i.labels[0].description, "");
+        assert_eq!(i.comments, 0);
+        // A null assignee node reads as a deleted account, not as a panic.
+        assert_eq!(i.assignees, vec!["ghost".to_string(), "mona".to_string()]);
+    }
+
+    #[test]
+    fn pages_stop_at_githubs_thousand_results() {
+        assert_eq!(MAX_SEARCH_PAGES * PER_PAGE, 1000);
+        let mut calls = 0;
+        let out = read_pages(MAX_SEARCH_PAGES, |_| {
+            calls += 1;
+            Ok(Page {
+                nodes: (0..PER_PAGE).map(|n| json!({ "number": n })).collect(),
+                next: Some("more".into()),
+            })
+        })
+        .unwrap();
+        assert_eq!((calls, out.len()), (10, 1000));
+    }
+
+    #[test]
+    fn an_empty_search_is_an_empty_list() {
+        let mut calls = 0;
+        let out = read_pages(10, |_| {
+            calls += 1;
+            page(&[], None)
+        })
+        .unwrap();
+        assert_eq!((out.len(), calls), (0, 1));
+    }
+
+    #[test]
+    fn a_page_of_exactly_one_hundred_ends_when_the_next_is_empty() {
+        let full: Vec<u64> = (0..PER_PAGE as u64).collect();
+        let mut asked = 0;
+        let out = read_pages(10, |after| {
+            asked += 1;
+            match after {
+                None => page(&full, Some("c1")),
+                Some(_) => page(&[], None),
+            }
+        })
+        .unwrap();
+        assert_eq!((out.len(), asked), (100, 2));
+    }
 }

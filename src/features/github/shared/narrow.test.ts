@@ -57,3 +57,20 @@ test("an empty list names the filter", () => {
   assert.equal(emptyText("issues", "all", narrow({ labels: ["bug", "ui"] })), "No issues with all these labels.");
   assert.equal(emptyText("pulls", "open", narrow({ draft: true })), "No open draft pull requests.");
 });
+
+test("labels that hold the separators don't share a cache key with other picks", () => {
+  assert.notEqual(narrowKey(narrow({ labels: ["a,b"] })), narrowKey(narrow({ labels: ["a", "b"] })));
+  assert.notEqual(narrowKey(narrow({ labels: ["a|b"] })), narrowKey(narrow({ labels: ["a", "b"] })));
+  assert.notEqual(narrowKey(narrow({ labels: ["|draft|"] })), narrowKey(narrow({ draft: true, labels: [""] })));
+  // The list's own key ends in its page: a name ending like one mustn't read as the next page.
+  assert.notEqual(`pulls:origin:open:${narrowKey(narrow({ labels: ["x:1"] }))}:1`, `pulls:origin:open:${narrowKey(narrow({ labels: ["x"] }))}:1:1`);
+});
+
+test("labels with quotes, emoji and colons keep their own empty-list wording", () => {
+  assert.equal(emptyText("issues", "open", narrow({ labels: ['say "hi"', "🐛 crash", "type: bug"] })), "No open issues with all these labels.");
+});
+
+test("a draft flag that isn't a boolean is dropped, the scope beside it kept", () => {
+  assert.deepEqual(parseChoice({ pulls: { scope: "created", draft: "true" } }, "pulls"), { scope: "created", draft: null });
+  assert.deepEqual(parseChoice({ pulls: { scope: "created", draft: 1 } }, "pulls"), { scope: "created", draft: null });
+});
