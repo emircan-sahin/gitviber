@@ -93,6 +93,18 @@ fn unstaging_lines_of_a_renamed_file() {
     assert_eq!(index(&r, "b.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n");
 }
 
+/// One line of two changed side by side keeps its place among the other's.
+#[test]
+fn one_changed_line_of_an_adjacent_pair() {
+    let (_sb, r) = repo("lines-pair");
+    write_commit(&r, "a.txt", "1\n2\n3\n4\n", "base");
+    fs::write(r.join("a.txt"), "1\ntwo\nthree\n4\n").unwrap();
+    act(&r, "unstaged", "stage", "a.txt", &[2], &[2]);
+    assert_eq!(index(&r, "a.txt"), "1\ntwo\n3\n4\n");
+    act(&r, "unstaged", "discard", "a.txt", &[3], &[3]);
+    assert_eq!(disk(&r, "a.txt"), "1\ntwo\n3\n4\n");
+}
+
 #[test]
 fn some_added_lines_of_a_block() {
     let (_sb, r) = repo("lines-some");

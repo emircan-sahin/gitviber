@@ -346,9 +346,10 @@ fn partial_stash_of_a_whole_new_file_removes_it_and_a_deletion_stashes_as_a_dele
     assert_eq!(files.files[0].status, "D");
 }
 
-/// Renaming keeps the commit, moves it to the top and drops the old entry; never leaves it missing.
+/// Renaming moves the stash to the top under the new message, with the same changes, and drops
+/// the old entry; never leaves it missing. The top stash renames too.
 #[test]
-fn renaming_a_stash_keeps_its_commit() {
+fn renaming_a_stash_keeps_its_changes() {
     let sb = Sandbox::new("stash-rename");
     let r = sb.path("r");
     init(&r);
@@ -370,14 +371,21 @@ fn renaming_a_stash_keeps_its_commit() {
     stash_rename(&r, &first, "  better name ").unwrap();
     let now = stashes(&r).unwrap();
     assert_eq!(now.len(), 2);
-    assert_eq!(
-        (now[0].sha.as_str(), now[0].message.as_str()),
-        (first.as_str(), "On main: better name")
-    );
+    assert_eq!(now[0].message, "On main: better name");
     assert_eq!(now[1].sha, list[0].sha);
-    assert!(stash_rename(&r, &first, "  ").is_err());
+    let shown = run_text(&r, &["show", &format!("{}:a.txt", now[0].sha)]).unwrap();
+    assert_eq!(shown, "1\n");
+    assert!(now.iter().all(|s| s.sha != first), "the old entry is gone");
+    assert!(stash_rename(&r, &now[0].sha, "  ").is_err());
     assert!(stash_rename(&r, "deadbeef", "x").is_err());
     assert_eq!(stashes(&r).unwrap().len(), 2);
+
+    // The top stash: git's own store would do nothing for it.
+    let top = stashes(&r).unwrap()[0].sha.clone();
+    stash_rename(&r, &top, "newest").unwrap();
+    let now = stashes(&r).unwrap();
+    assert_eq!(now.len(), 2);
+    assert_eq!(now[0].message, "On main: newest");
 }
 
 /// One file taken out of a stash, an untracked one from its third parent, journaled: Undo puts

@@ -47,3 +47,45 @@ test("the folders a path sits in", () => {
   assert.deepEqual(foldersOf("a/b/c.ts"), ["a", "a/b"]);
   assert.deepEqual(foldersOf("c.ts"), []);
 });
+
+test("a chain with a file at each level keeps a row for every folder", () => {
+  assert.deepEqual(shape(pathTree(["a/b/c/d.ts", "a/x.ts", "a/b/y.ts", "a/b/c/e.ts"], id)), [
+    "a/ (4)",
+    "  b/ (3)",
+    "    c/ (2)",
+    "      d.ts",
+    "      e.ts",
+    "    y.ts",
+    "  x.ts",
+  ]);
+});
+
+test("only root files: no folder rows, and a closed folder that isn't there changes nothing", () => {
+  const rows = pathTree(["b.ts", "a.ts"], id, { closed: () => true });
+  assert.deepEqual(shape(rows), ["a.ts", "b.ts"]);
+});
+
+test("a closed compacted row hides its whole chain", () => {
+  const rows = pathTree(["a/b/c/d.ts", "z.ts"], id, { closed: (p) => p === "a/b/c" });
+  assert.deepEqual(shape(rows), ["a/b/c/ (1)", "z.ts"]);
+});
+
+test("files that all have no time (deleted) fall back to name order, and renamed ones rank by their new path", () => {
+  const time = new Map<string, number>([["new/name.ts", 7]]);
+  const rank = (p: string) => time.get(p) ?? -Infinity;
+  assert.deepEqual(shape(pathTree(["b/gone.ts", "a/gone.ts", "new/name.ts"], id, { rank })), ["new/ (1)", "  name.ts", "a/ (1)", "  gone.ts", "b/ (1)", "  gone.ts"]);
+});
+
+test("hundreds of folders stay quick and keep their order", () => {
+  const paths = Array.from({ length: 800 }, (_, i) => `d${i}/sub/f${i}.ts`);
+  const start = performance.now();
+  const rows = pathTree(paths, id);
+  assert.equal(rows.length, 800 * 2);
+  assert.ok(performance.now() - start < 1000);
+  assert.equal(rows[0].kind === "folder" && rows[0].label, "d0/sub");
+  assert.equal(rows[2].kind === "folder" && rows[2].label, "d1/sub");
+});
+
+test("a nested repository's path with a trailing slash sits in its folders", () => {
+  assert.deepEqual(foldersOf("vendor/lib/"), ["vendor"]);
+});
