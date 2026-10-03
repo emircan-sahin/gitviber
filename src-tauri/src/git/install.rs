@@ -69,6 +69,14 @@ fn classify_install(ran: Result<(bool, String, String), String>) -> GitInfo {
     }
 }
 
+/// Whether the git run in `repo` is `min` (major, minor) or newer, for a feature it brought.
+pub fn version_at_least(repo: &std::path::Path, min: (u32, u32)) -> bool {
+    super::run_text(repo, &["version"])
+        .ok()
+        .and_then(|v| parse_version(v.trim().trim_start_matches("git version ")))
+        .is_some_and(|v| v >= min)
+}
+
 /// Major and minor of "2.39.5 (Apple Git-154)" or "2.45.1.windows.1".
 fn parse_version(v: &str) -> Option<(u32, u32)> {
     let mut parts = v.split(|c: char| !c.is_ascii_digit());

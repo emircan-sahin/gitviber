@@ -36,7 +36,7 @@ fn multi_commit_rebase_with_skip() {
     write_commit(&r, "a.txt", "main\n", "main edit");
     switch_branch(&r, "feature", false).unwrap();
 
-    assert!(rebase(&r, "main", false).unwrap());
+    assert!(rebase(&r, "main", false, None).unwrap());
     let op = operation(&r).unwrap();
     assert_eq!((op.step, op.total), (Some(1), Some(2)));
     assert!(!rebase_skip(&r).unwrap(), "second commit applies cleanly");
@@ -413,12 +413,12 @@ fn merge_and_rebase_autostash_uncommitted_changes() {
     write_commit(&r, "b.txt", "b\n", "main moves on");
     switch_branch(&r, "feature", false).unwrap();
     fs::write(r.join("a.txt"), "one\n2\n3\n4\nfive\n").unwrap();
-    let e = rebase(&r, "main", false).unwrap_err();
+    let e = rebase(&r, "main", false, None).unwrap_err();
     assert!(
         e.contains("error: cannot rebase: You have unstaged changes."),
         "{e}"
     );
-    assert!(!rebase(&r, "main", true).unwrap());
+    assert!(!rebase(&r, "main", true, None).unwrap());
     assert!(r.join("b.txt").exists());
     assert_eq!(
         fs::read_to_string(r.join("a.txt")).unwrap(),
@@ -842,4 +842,109 @@ fn conflict_base_skips_huge_files_and_cleans_up() {
         assert!(t0.elapsed().as_secs() < 10, "scratch folders left behind");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+}
+
+/// Several commits are picked in the order given, one undo entry; one already there is left
+/// out; a conflict stops it for continue, skip or abort to take over.
+#[test]
+fn cherry_pick_many_in_order_with_conflicts() {
+    let sb = Sandbox::new("pick-many");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "base\n", "base");
+    run(&r, &["switch", "-q", "-c", "feat"]).unwrap();
+    write_commit(&r, "n1.txt", "1\n", "feat one");
+    write_commit(&r, "a.txt", "feat\n", "feat edits a");
+    write_commit(&r, "n3.txt", "3\n", "feat three");
+    let picks: Vec<String> = ["HEAD~2", "HEAD~1", "HEAD"]
+        .iter()
+        .map(|s| rev(&r, s))
+        .collect();
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    let before = rev(&r, "HEAD");
+    let j = Journal::default();
+    let action = || Action::new("Cherry-pick 3 commits", Mode::Keep);
+
+    assert!(!j
+        .record(&r, action(), |r| cherry_pick_many(r, &picks))
+        .unwrap());
+    let subjects: Vec<String> = log(&r, None, 0, 4)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.subject)
+        .collect();
+    assert_eq!(subjects, ["feat three", "feat edits a", "feat one", "base"]);
+    step(&j, &r, false).unwrap();
+    assert_eq!(rev(&r, "HEAD"), before);
+
+    // Again, with "two" conflicting: it stops on it, after one.
+    write_commit(&r, "a.txt", "main\n", "main edits a");
+    let before = rev(&r, "HEAD");
+    assert!(j
+        .record(&r, action(), |r| cherry_pick_many(r, &picks))
+        .unwrap());
+    assert_eq!(operation(&r).unwrap().kind, "cherry-pick");
+    assert!(!rev(&r, "HEAD").is_empty() && log(&r, None, 0, 1).unwrap()[0].subject == "feat one");
+    // Resolved, continuing picks the last one too, in one undo entry.
+    resolve_side(&r, "a.txt", Side::Theirs).unwrap();
+    assert!(!j.record(&r, action(), op_continue).unwrap());
+    assert!(operation(&r).is_none());
+    let subjects: Vec<String> = log(&r, None, 0, 3)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.subject)
+        .collect();
+    assert_eq!(subjects, ["feat three", "feat edits a", "feat one"]);
+    assert_eq!(j.view(&r).undo.len(), 1);
+    step(&j, &r, false).unwrap();
+    assert_eq!(rev(&r, "HEAD"), before);
+
+    // Called off: back where it started, nothing half-picked.
+    assert!(j
+        .record(&r, action(), |r| cherry_pick_many(r, &picks))
+        .unwrap());
+    op_abort(&r).unwrap();
+    assert!(operation(&r).is_none());
+    assert_eq!(rev(&r, "HEAD"), before);
+    assert!(!r.join("n1.txt").exists());
+
+    // Nothing new: refused, and none half-picked.
+    run(&r, &["cherry-pick", &picks[0]]).unwrap();
+    run(&r, &["reset", "-q", "--hard", &before]).unwrap();
+    let err = cherry_pick_many(&r, &[]).unwrap_err();
+    assert!(err.contains("No commits"), "{err}");
+    write_commit(&r, "n1.txt", "1\n", "same file");
+    let err = cherry_pick_many(&r, &picks[..1]).unwrap_err();
+    assert!(err.contains("already has"), "{err}");
+    assert!(operation(&r).is_none());
+}
+
+/// A rebase onto another branch moves the branches it passes along only when asked.
+#[test]
+fn rebase_moves_stacked_branches_when_asked() {
+    let setup = |name: &str| {
+        let sb = Sandbox::new(name);
+        let r = sb.path("r");
+        init(&r);
+        write_commit(&r, "a.txt", "a\n", "base");
+        run(&r, &["switch", "-q", "-c", "feat"]).unwrap();
+        write_commit(&r, "f1.txt", "1\n", "f1");
+        run(&r, &["branch", "stack"]).unwrap();
+        write_commit(&r, "f2.txt", "2\n", "f2");
+        run(&r, &["switch", "-q", "main"]).unwrap();
+        write_commit(&r, "m.txt", "m\n", "main moves");
+        run(&r, &["switch", "-q", "feat"]).unwrap();
+        (sb, r)
+    };
+    let (_sb, r) = setup("rebase-stack-off");
+    let offer = crate::rewrite::stacked_onto(&r, "main").unwrap();
+    assert_eq!(offer.branches, ["stack"]);
+    let old = rev(&r, "stack");
+    assert!(!rebase(&r, "main", false, Some(false)).unwrap());
+    assert_eq!(rev(&r, "stack"), old);
+
+    let (_sb, r) = setup("rebase-stack-on");
+    assert!(!rebase(&r, "main", false, Some(true)).unwrap());
+    assert_eq!(rev(&r, "stack"), rev(&r, "HEAD~1"));
+    assert_ne!(rev(&r, "stack"), "");
 }

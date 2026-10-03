@@ -72,7 +72,7 @@ pub(crate) fn validate_tree_rev(rev: &str) -> Result<(), String> {
 }
 
 /// Accepts a local or remote-tracking branch (or any commit-ish) that isn't an option.
-pub(super) fn validate_ref(repo: &Path, name: &str) -> Result<(), String> {
+pub(crate) fn validate_ref(repo: &Path, name: &str) -> Result<(), String> {
     let spec = format!("{name}^{{commit}}");
     if name.starts_with('-') || run(repo, &["rev-parse", "--verify", "-q", &spec]).is_err() {
         return Err(format!("unknown branch or commit: {name}"));

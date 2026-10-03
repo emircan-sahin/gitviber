@@ -62,6 +62,8 @@ pub struct Operation {
     /// Rebase progress (1-based step of total).
     pub step: Option<u32>,
     pub total: Option<u32>,
+    /// A rebase stopped on the commit a split took apart, for its pieces to be committed.
+    pub split: bool,
 }
 
 #[derive(Serialize)]

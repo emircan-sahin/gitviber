@@ -1,5 +1,10 @@
 use super::*;
-use crate::rewrite::{run as rewrite, Edit, Outcome};
+use crate::rewrite::{run as rewrite_with, Edit, Outcome};
+
+/// A rewrite that leaves the stacked branches where they are.
+fn rewrite(r: &Path, head: &str, edit: &Edit) -> Result<Outcome, String> {
+    rewrite_with(r, head, edit, false)
+}
 
 fn head(r: &Path) -> String {
     run_text(r, &["rev-parse", "HEAD"])
@@ -1306,39 +1311,318 @@ fn in_a_linked_worktree_and_on_a_detached_head() {
 }
 
 #[test]
-fn stacked_branches_follow_with_update_refs() {
-    let (_sb, r) = repo("rw-update-refs");
-    run(&r, &["branch", "at-three", "HEAD~1"]).unwrap();
-    run(&r, &["branch", "at-two", "HEAD~2"]).unwrap();
-    let squash = |r: &Path| {
-        let edit = Edit::Squash {
-            shas: vec![sha_of(r, "three")],
-            onto: sha_of(r, "two"),
-            message: Some("two and three".into()),
-        };
-        rewrite(r, &head(r), &edit).unwrap();
+fn stacked_branches_follow_when_asked() {
+    let setup = |name: &str, update_refs: bool| {
+        let (sb, r) = repo(name);
+        if update_refs {
+            run(&r, &["config", "rebase.updateRefs", "true"]).unwrap();
+        }
+        run(&r, &["branch", "at-three", "HEAD~1"]).unwrap();
+        run(&r, &["branch", "at-two", "HEAD~2"]).unwrap();
+        // Checked out elsewhere: git won't move it, so it isn't offered.
+        let wt = sb.path("wt");
+        run(
+            &r,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "busy",
+                wt.to_str().unwrap(),
+                "HEAD~1",
+            ],
+        )
+        .unwrap();
+        (sb, r)
     };
-    // Off: they stay on the old commits, as git leaves them.
+    let squash_of = |r: &Path| Edit::Squash {
+        shas: vec![sha_of(r, "three")],
+        onto: sha_of(r, "two"),
+        message: Some("two and three".into()),
+    };
+    let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+
+    // Offered, unchecked without rebase.updateRefs; left, they stay on the old commits.
+    let (_sb, r) = setup("rw-update-refs", false);
+    let edit = squash_of(&r);
+    let offer = crate::rewrite::stacked_for(&r, &edit).unwrap();
+    assert_eq!(offer.branches, names(&["at-three", "at-two"]));
+    assert!(!offer.update_refs);
     let old = git(&r, &["rev-parse", "at-three"]);
-    squash(&r);
+    rewrite(&r, &head(&r), &edit).unwrap();
+    assert_eq!(git(&r, &["rev-parse", "at-three"]), old);
+    // Nothing of the branch's own is replayed by an amend.
+    let amend = Edit::Reword {
+        sha: head(&r),
+        message: "new".into(),
+    };
+    assert!(crate::rewrite::stacked_for(&r, &amend)
+        .unwrap()
+        .branches
+        .is_empty());
+
+    // Set, but not chosen this time: git doesn't move them on its own either.
+    let (_sb, r) = setup("rw-update-refs-off", true);
+    let edit = squash_of(&r);
+    assert!(crate::rewrite::stacked_for(&r, &edit).unwrap().update_refs);
+    let old = git(&r, &["rev-parse", "at-three"]);
+    rewrite(&r, &head(&r), &edit).unwrap();
     assert_eq!(git(&r, &["rev-parse", "at-three"]), old);
 
-    let (_sb, r) = repo("rw-update-refs-on");
-    run(&r, &["config", "rebase.updateRefs", "true"]).unwrap();
-    run(&r, &["branch", "at-three", "HEAD~1"]).unwrap();
-    run(&r, &["branch", "at-two", "HEAD~2"]).unwrap();
-    squash(&r);
+    // Chosen: they follow, the busy one stays.
+    let (_sb, r) = setup("rw-update-refs-on", false);
+    let busy = git(&r, &["rev-parse", "busy"]);
+    rewrite_with(&r, &head(&r), &squash_of(&r), true).unwrap();
     let squashed = sha_of(&r, "two and three");
     assert_eq!(git(&r, &["rev-parse", "at-three"]).trim(), squashed);
     assert_eq!(git(&r, &["rev-parse", "at-two"]).trim(), squashed);
+    assert_eq!(git(&r, &["rev-parse", "busy"]), busy);
     // A dropped commit's branch goes to the one under it.
     run(&r, &["branch", "at-four"]).unwrap();
     let edit = Edit::Drop {
         shas: vec![head(&r)],
     };
-    rewrite(&r, &head(&r), &edit).unwrap();
+    rewrite_with(&r, &head(&r), &edit, true).unwrap();
     assert_eq!(git(&r, &["rev-parse", "at-four"]).trim(), squashed);
     assert!(idle(&r));
+}
+
+/// "both" changes a.txt and adds x.txt and y.txt; "five" comes after it.
+fn repo_to_split(name: &str) -> (Sandbox, PathBuf) {
+    let (sb, r) = repo(name);
+    fs::write(r.join("a.txt"), "a\nmore\n").unwrap();
+    fs::write(r.join("x.txt"), "x\n").unwrap();
+    fs::write(r.join("y.txt"), "y\n").unwrap();
+    run(&r, &["add", "a.txt", "x.txt", "y.txt"]).unwrap();
+    run(&r, &["commit", "-q", "-m", "both\n\nThe body."]).unwrap();
+    write_commit(&r, "e.txt", "e\n", "five");
+    (sb, r)
+}
+
+#[test]
+fn split_a_commit_into_pieces() {
+    let (_sb, r) = repo_to_split("rw-split");
+    let before = head(&r);
+    let whole = tree(&r);
+    let both = sha_of(&r, "both");
+    // A change of the user's own, set aside meanwhile.
+    fs::write(r.join("d.txt"), "mine\n").unwrap();
+
+    let j = Journal::default();
+    let action = || Action::new("Split", Mode::Keep);
+    let split = Edit::Split { sha: both.clone() };
+    let out = j
+        .record(&r, action(), |r| rewrite(r, &before, &split))
+        .unwrap();
+    assert_eq!(out, Outcome::Split);
+    // Exactly its changes, unstaged, on its parent; its message waits for the first piece.
+    let st = status(&r).unwrap();
+    assert!(st
+        .operation
+        .as_ref()
+        .is_some_and(|o| o.kind == "rebase" && o.split));
+    assert_eq!(head(&r), rev(&r, &format!("{both}^")));
+    assert!(st.staged.is_empty());
+    assert_eq!(git(&r, &["diff", "--name-only"]), "a.txt\n");
+    assert_eq!(
+        git(&r, &["ls-files", "--others", "--exclude-standard"]),
+        "x.txt\ny.txt\n"
+    );
+    assert_eq!(fs::read_to_string(r.join("d.txt")).unwrap(), "d\n");
+    assert_eq!(commit_template(&r).as_deref(), Some("both\n\nThe body."));
+
+    // Pieces: the first takes the message git kept, then it's gone for the second.
+    stage(&r, &["a.txt".into(), "x.txt".into()]).unwrap();
+    commit(
+        &r,
+        "both, part one",
+        &CommitOptions::default(),
+        &Net::default(),
+    )
+    .unwrap();
+    assert_eq!(commit_template(&r), None);
+    stage(&r, &["y.txt".into()]).unwrap();
+    commit(
+        &r,
+        "both, part two",
+        &CommitOptions::default(),
+        &Net::default(),
+    )
+    .unwrap();
+    assert!(!j
+        .record(&r, Action::new("Continue", Mode::Keep), op_continue)
+        .unwrap());
+    assert!(idle(&r));
+    assert_eq!(
+        log(&r),
+        [
+            "five",
+            "both, part two",
+            "both, part one",
+            "four",
+            "three",
+            "two",
+            "one"
+        ]
+    );
+    assert_eq!(tree(&r), whole);
+    assert_eq!(fs::read_to_string(r.join("d.txt")).unwrap(), "mine\n");
+    // The split, its pieces and the continue are one undo.
+    assert_eq!(j.view(&r).undo.len(), 1);
+    run(&r, &["checkout", "-q", "--", "d.txt"]).unwrap();
+    step(&j, &r, false).unwrap();
+    assert_eq!(head(&r), before);
+}
+
+#[test]
+fn a_split_aborted_or_refused() {
+    let (_sb, r) = repo_to_split("rw-split-abort");
+    let before = head(&r);
+    let both = sha_of(&r, "both");
+    let split = |sha: &str| Edit::Split { sha: sha.into() };
+    assert_eq!(rewrite(&r, &before, &split(&both)).unwrap(), Outcome::Split);
+    // Half done, then called off: the commit is back whole, nothing left over.
+    stage(&r, &["a.txt".into()]).unwrap();
+    commit(&r, "part", &CommitOptions::default(), &Net::default()).unwrap();
+    // The new files it took out would block the abort's reset: they go first.
+    crate::rewrite::before_abort(&r).unwrap();
+    op_abort(&r).unwrap();
+    crate::rewrite::after_abort(&r).unwrap();
+    assert!(idle(&r));
+    assert_eq!(head(&r), before);
+    assert!(status(&r).unwrap().unstaged.is_empty());
+    assert_eq!(fs::read_to_string(r.join("y.txt")).unwrap(), "y\n");
+
+    let err = rewrite(&r, &before, &split(&sha_of(&r, "one"))).unwrap_err();
+    assert!(err.contains("first commit"), "{err}");
+    run(&r, &["commit", "-q", "--allow-empty", "-m", "empty"]).unwrap();
+    let err = rewrite(&r, &head(&r), &split(&head(&r))).unwrap_err();
+    assert!(err.contains("no changes"), "{err}");
+    // A merge, and the stop of someone else's edit isn't taken for a split's.
+    run(&r, &["switch", "-q", "-c", "side", "HEAD~2"]).unwrap();
+    write_commit(&r, "s.txt", "s\n", "side");
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    run(&r, &["merge", "-q", "--no-ff", "-m", "merge side", "side"]).unwrap();
+    let err = rewrite(&r, &head(&r), &split(&head(&r))).unwrap_err();
+    assert!(err.contains("merge"), "{err}");
+    assert!(idle(&r));
+}
+
+#[test]
+fn fixup_staged_changes_into_an_older_commit() {
+    let sb = Sandbox::new("rw-fixup-staged");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "a\n", "one");
+    // "two" by someone else, written long ago.
+    fs::write(r.join("b.txt"), "b\n").unwrap();
+    stage(&r, &["b.txt".into()]).unwrap();
+    let by = [
+        "--author=Ada <ada@example.com>",
+        "--date=2001-02-03T04:05:06Z",
+    ];
+    run(
+        &r,
+        &["commit", "-q", by[0], by[1], "-m", "two\n\nIts body."],
+    )
+    .unwrap();
+    write_commit(&r, "c.txt", "c\n", "three");
+    let before = head(&r);
+    let two = sha_of(&r, "two");
+    let fix = |sha: &str| Edit::FixupStaged { sha: sha.into() };
+
+    assert!(rewrite(&r, &before, &fix(&two))
+        .unwrap_err()
+        .contains("no staged"));
+    // Staged goes into two; the unstaged change stays put.
+    fs::write(r.join("b.txt"), "b fixed\n").unwrap();
+    stage(&r, &["b.txt".into()]).unwrap();
+    fs::write(r.join("c.txt"), "c, mine\n").unwrap();
+    let j = Journal::default();
+    let out = j
+        .record(&r, Action::new("Fixup", Mode::Soft), |r| {
+            rewrite(r, &before, &fix(&two))
+        })
+        .unwrap();
+    assert_eq!(out, Outcome::Done);
+    assert_eq!(log(&r), ["three", "two", "one"]);
+    let two = sha_of(&r, "two");
+    assert_eq!(git(&r, &["show", &format!("{two}:b.txt")]), "b fixed\n");
+    assert_eq!(
+        git(&r, &["show", "-s", "--format=%an %ae %at%n%B", &two]),
+        "Ada ada@example.com 981173106\ntwo\n\nIts body.\n\n"
+    );
+    assert!(git(&r, &["diff", "--cached", "--name-only"]).is_empty());
+    assert_eq!(git(&r, &["diff", "--name-only"]), "c.txt\n");
+    // Undone, the change is staged again on the old history.
+    step(&j, &r, false).unwrap();
+    assert_eq!(head(&r), before);
+    assert_eq!(git(&r, &["diff", "--cached", "--name-only"]), "b.txt\n");
+
+    // Into HEAD: an amend.
+    run(&r, &["checkout", "-q", "--", "c.txt"]).unwrap();
+    let staged_b = git(&r, &["diff", "--cached"]);
+    assert!(!staged_b.is_empty());
+    run(&r, &["reset", "-q"]).unwrap();
+    run(&r, &["checkout", "-q", "--", "b.txt"]).unwrap();
+    fs::write(r.join("c.txt"), "c2\n").unwrap();
+    stage(&r, &["c.txt".into()]).unwrap();
+    rewrite(&r, &before, &fix(&before)).unwrap();
+    assert_eq!(log(&r), ["three", "two", "one"]);
+    assert_eq!(git(&r, &["show", "HEAD:c.txt"]), "c2\n");
+    assert!(idle(&r));
+}
+
+#[test]
+fn a_fixup_that_conflicts_then_aborts() {
+    let (_sb, r) = repo("rw-fixup-conflict");
+    write_commit(&r, "b.txt", "b5\n", "five");
+    let before = head(&r);
+    // Fixed from five's b.txt, which two doesn't have: it conflicts going into two.
+    fs::write(r.join("b.txt"), "b fixed\n").unwrap();
+    stage(&r, &["b.txt".into()]).unwrap();
+    let edit = Edit::FixupStaged {
+        sha: sha_of(&r, "two"),
+    };
+    assert_eq!(rewrite(&r, &before, &edit).unwrap(), Outcome::Conflicts);
+    assert!(operation(&r).is_some_and(|o| o.kind == "rebase" && !o.split));
+    // Called off: the history as it was, the change staged as it was.
+    op_abort(&r).unwrap();
+    crate::rewrite::after_abort(&r).unwrap();
+    assert!(idle(&r));
+    assert_eq!(head(&r), before);
+    assert_eq!(git(&r, &["diff", "--cached", "--name-only"]), "b.txt\n");
+    assert_eq!(fs::read_to_string(r.join("b.txt")).unwrap(), "b fixed\n");
+    // Refused with a merge in the way, before any commit is made.
+    run(&r, &["stash", "-q"]).unwrap();
+    run(&r, &["switch", "-q", "-c", "side", "HEAD~1"]).unwrap();
+    write_commit(&r, "s.txt", "s\n", "side");
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    run(&r, &["merge", "-q", "--no-ff", "-m", "merge side", "side"]).unwrap();
+    run(&r, &["stash", "pop", "-q", "--index"]).unwrap();
+    let merged = head(&r);
+    let err = rewrite(&r, &merged, &edit).unwrap_err();
+    assert!(err.contains("merges"), "{err}");
+    assert_eq!(head(&r), merged);
+
+    // Failing once its commit is made (a replayed commit would overwrite an untracked file):
+    // the commit goes, the changes are staged again.
+    let (_sb, r) = repo("rw-fixup-fail");
+    run(&r, &["rm", "-q", "c.txt"]).unwrap();
+    run(&r, &["commit", "-q", "-m", "no c"]).unwrap();
+    fs::write(r.join("c.txt"), "untracked\n").unwrap();
+    fs::write(r.join("b.txt"), "b fixed\n").unwrap();
+    stage(&r, &["b.txt".into()]).unwrap();
+    let before = head(&r);
+    let edit = Edit::FixupStaged {
+        sha: sha_of(&r, "two"),
+    };
+    assert!(rewrite(&r, &before, &edit).is_err());
+    assert!(idle(&r));
+    assert_eq!(head(&r), before);
+    assert_eq!(fs::read_to_string(r.join("c.txt")).unwrap(), "untracked\n");
+    assert_eq!(git(&r, &["diff", "--cached", "--name-only"]), "b.txt\n");
 }
 
 #[test]

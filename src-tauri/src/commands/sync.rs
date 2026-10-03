@@ -1,6 +1,6 @@
 use crate::journal::{Action, Mode};
 use crate::state::{in_repo, journaled, watch_network, with_index_lock, AppState, Res};
-use crate::{askpass, git, network};
+use crate::{askpass, git, network, rewrite};
 use tauri::ipc::Channel;
 use tauri::State;
 
@@ -75,12 +75,19 @@ pub async fn rebase(
     state: State<'_, AppState>,
     onto: String,
     autostash: Option<bool>,
+    update_refs: Option<bool>,
 ) -> Res<bool> {
     let label = format!("Rebase onto {onto}");
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        git::rebase(r, &onto, autostash.unwrap_or(false))
+        git::rebase(r, &onto, autostash.unwrap_or(false), update_refs)
     })
     .await
+}
+
+/// The local branches a rebase onto `onto` would replay commits of, to offer moving them along.
+#[tauri::command]
+pub async fn rebase_stacked(state: State<'_, AppState>, onto: String) -> Res<rewrite::Stacked> {
+    in_repo(&state, move |r| rewrite::stacked_onto(r, &onto)).await
 }
 
 // These finish (or call off) the action that stopped on conflicts; its entry is recorded then.
@@ -95,7 +102,12 @@ pub async fn op_continue(state: State<'_, AppState>) -> Res<bool> {
 
 #[tauri::command]
 pub async fn op_abort(state: State<'_, AppState>) -> Res<()> {
-    journaled(&state, Action::new("Abort", Mode::Keep), git::op_abort).await
+    journaled(&state, Action::new("Abort", Mode::Keep), |r| {
+        rewrite::before_abort(r)?;
+        git::op_abort(r)?;
+        rewrite::after_abort(r)
+    })
+    .await
 }
 
 #[tauri::command]
