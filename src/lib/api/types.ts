@@ -296,6 +296,32 @@ export interface LinesRequest {
   added: number[];
 }
 
+/** Some lines of a diff as a patch: the sides as shown, and the chosen lines as LinesRequest has them. */
+export interface LinesPatch {
+  path: string;
+  oldPath: string | null;
+  original: string | null;
+  modified: string | null;
+  removed: number[];
+  added: number[];
+}
+
+/** Some of a commit's changed lines to undo in the working tree, numbered as its diff shows them. */
+export interface RevertLines {
+  sha: string;
+  path: string;
+  oldPath: string | null;
+  removed: number[];
+  added: number[];
+}
+
+/** What a patch would do (patch.rs): its files, and whether it applies as it is ("clean"), only merged three ways ("merge"), or not (`error`). */
+export interface PatchPreview {
+  files: { path: string; oldPath: string | null; status: "A" | "D" | "R" | "M"; additions: number | null; deletions: number | null }[];
+  applies: "clean" | "merge" | null;
+  error: string | null;
+}
+
 export interface Entry {
   name: string;
   path: string;
@@ -364,6 +390,8 @@ export interface JournalEntry {
   time: number;
   /** The branch (or short commit) undoing it switches to, in the undo list; redoing it, in the redo list. Null: no switch. */
   switchTo: string | null;
+  /** Files a redo of a file action (a restore, a patch) left with conflict markers. */
+  conflicts: string[];
 }
 
 export interface Journal {
@@ -385,7 +413,7 @@ export interface OpenInApp {
   group: "editor" | "terminal" | "other";
 }
 
-export type DiffKind = "unstaged" | "staged" | "worktree" | "commit" | "range" | "base";
+export type DiffKind = "unstaged" | "staged" | "worktree" | "commit" | "range" | "base" | "files";
 
 export interface About {
   version: string;
