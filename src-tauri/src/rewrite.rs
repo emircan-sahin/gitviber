@@ -131,36 +131,14 @@ pub fn run(repo: &Path, head: &str, edit: &Edit, branches: bool) -> Result<Outco
         }
     }
     if let Edit::Split { sha } = edit {
-        let i = position(&line, sha)?;
-        if i + 1 == line.len() {
-            return Err("The first commit can't be split.".into());
-        }
-        if git::run(repo, &["rev-parse", "--verify", "-q", &format!("{sha}^2")]).is_ok() {
-            return Err("A merge can't be split.".into());
-        }
-        if git::run(repo, &["diff", "--quiet", &line[i + 1], sha]).is_ok() {
-            return Err("This commit has no changes to split.".into());
-        }
+        check_split(repo, &line, sha)?;
     }
     let mut fixup = None;
     if let Edit::FixupStaged { sha } = edit {
-        if git::run(repo, &["diff", "--cached", "--quiet"]).is_ok() {
-            return Err("There are no staged changes to fix up with.".into());
+        match fixup_commit(repo, &mut line, sha)? {
+            Some(made) => fixup = Some(made),
+            None => return Ok(Outcome::Done),
         }
-        let i = position(&line, sha)?;
-        // Into HEAD: an amend, which keeps its message, author and date.
-        if i == 0 {
-            git::run(repo, &["commit", "--amend", "--no-edit", "--no-verify"])?;
-            return Ok(Outcome::Done);
-        }
-        no_merges(repo, line.get(i + 1))?;
-        // Hooks are the rewrite's to skip: a commit-msg one could reject the "fixup!" subject.
-        git::run(repo, &["commit", "-q", "--no-verify", "--fixup", sha])?;
-        let made = git::run_text(repo, &["rev-parse", "HEAD"])?
-            .trim()
-            .to_string();
-        line.insert(0, made.clone());
-        fixup = Some(made);
     }
 
     let result = replay(repo, &line, edit, branches, fixup.as_deref());
@@ -169,6 +147,43 @@ pub fn run(repo: &Path, head: &str, edit: &Edit, branches: bool) -> Result<Outco
         let _ = git::run(repo, &["reset", "-q", "--soft", head]);
     }
     result
+}
+
+/// A split needs a parent to come back to and changes of its own to hand out.
+fn check_split(repo: &Path, line: &[String], sha: &str) -> Result<(), String> {
+    let i = position(line, sha)?;
+    if i + 1 == line.len() {
+        return Err("The first commit can't be split.".into());
+    }
+    if git::run(repo, &["rev-parse", "--verify", "-q", &format!("{sha}^2")]).is_ok() {
+        return Err("A merge can't be split.".into());
+    }
+    if git::run(repo, &["diff", "--quiet", &line[i + 1], sha]).is_ok() {
+        return Err("This commit has no changes to split.".into());
+    }
+    Ok(())
+}
+
+/// Commits the staged changes as a `--fixup` of `sha` and puts it on top of `line`; its id, or
+/// None when `sha` is HEAD, where they're amended in instead.
+fn fixup_commit(repo: &Path, line: &mut Vec<String>, sha: &str) -> Result<Option<String>, String> {
+    if git::run(repo, &["diff", "--cached", "--quiet"]).is_ok() {
+        return Err("There are no staged changes to fix up with.".into());
+    }
+    let i = position(line, sha)?;
+    // Into HEAD: an amend, which keeps its message, author and date.
+    if i == 0 {
+        git::run(repo, &["commit", "--amend", "--no-edit", "--no-verify"])?;
+        return Ok(None);
+    }
+    no_merges(repo, line.get(i + 1))?;
+    // Hooks are the rewrite's to skip: a commit-msg one could reject the "fixup!" subject.
+    git::run(repo, &["commit", "-q", "--no-verify", "--fixup", sha])?;
+    let made = git::run_text(repo, &["rev-parse", "HEAD"])?
+        .trim()
+        .to_string();
+    line.insert(0, made.clone());
+    Ok(Some(made))
 }
 
 fn no_merges(repo: &Path, base: Option<&String>) -> Result<(), String> {
@@ -244,17 +259,9 @@ fn replay(
     // git hands the todo it wrote to this "editor", which puts ours in its place.
     cmd.env("GIT_SEQUENCE_EDITOR", format!("cp {}", quote(&todo_file)));
     let mut result = git::stoppable(repo, process::exec(cmd, "git rebase", &[], None, None));
-    // Stopped on the split commit: its changes come out of it, unstaged, and its message waits
-    // in the commit box for the first piece (git commit clears MERGE_MSG once used).
     if let (Edit::Split { sha }, Ok(false)) = (edit, &result) {
         if git::operation(repo).is_some() {
-            let message = git::run(repo, &["log", "-1", "--format=%B", sha]);
-            result = git::run(repo, &["reset", "-q", "HEAD^"])
-                .and(message)
-                .and_then(|m| {
-                    std::fs::write(dir.with_file_name("MERGE_MSG"), m).map_err(|e| e.to_string())
-                })
-                .map(|_| false);
+            result = take_apart(repo, &dir, sha).map(|_| false);
         }
     }
     // A hook, signing, an untracked file in the way: nothing to resolve, so nothing to wait on.
@@ -269,6 +276,14 @@ fn replay(
         return Ok(Outcome::Split);
     }
     result.map(|stopped| Outcome::of(repo, stopped))
+}
+
+/// Stopped on the split commit: its changes come out of it, unstaged, and its message waits in
+/// the commit box for the first piece (git commit clears MERGE_MSG once used).
+fn take_apart(repo: &Path, dir: &Path, sha: &str) -> Result<(), String> {
+    let message = git::run(repo, &["log", "-1", "--format=%B", sha])?;
+    git::run(repo, &["reset", "-q", "HEAD^"])?;
+    std::fs::write(dir.with_file_name("MERGE_MSG"), message).map_err(|e| e.to_string())
 }
 
 /// Before a rebase is aborted: on a split's stop, the new files its commit added, which the
@@ -323,7 +338,7 @@ pub fn after_abort(repo: &Path) -> Result<(), String> {
 }
 
 /// The local branches a rewrite would replay commits of, which it can move along, and whether
-/// rebase.updateRefs asks for that by default. None before git 2.38, which has no update-ref.
+/// rebase.updateRefs asks for that by default. Empty before git 2.38, which has no update-ref.
 #[derive(Serialize, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Stacked {

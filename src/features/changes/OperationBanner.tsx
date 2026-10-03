@@ -49,7 +49,7 @@ export function OperationBanner({ status, refresh }: { status: RepoStatus; refre
       </div>
       <div className="mt-1 text-[11.5px] text-muted-foreground">
         {split
-          ? `Commit the pieces with line staging, then Continue.${uncommitted ? ` ${plural(uncommitted, "file")} not committed yet: Continue leaves them as changes.` : ""}`
+          ? `Commit the pieces with line staging, then Continue.${uncommitted ? ` ${plural(uncommitted, "file")} not committed yet.` : ""}`
           : left
             ? `${plural(left, "conflict")} left. Resolve them, then continue.`
             : "All conflicts resolved. Continue to finish."}

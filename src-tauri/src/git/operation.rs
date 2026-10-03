@@ -214,6 +214,10 @@ pub fn op_continue(repo: &Path) -> Result<bool, String> {
         "bisect" => Err("Mark the commit good or bad instead.".into()),
         // `merge --continue` refuses without an editor on some git versions; commit is equivalent.
         "merge" => run_stoppable(repo, &["commit", "--no-edit"]),
+        // git's own refusal over a split's leftover changes talks about merge conflicts.
+        "rebase" if op.split && run(repo, &["diff", "--quiet", "HEAD"]).is_err() => {
+            Err("Commit or discard the changes left in Changes first.".into())
+        }
         "rebase" => run_stoppable(repo, &["rebase", "--continue"]),
         "cherry-pick" => super::pick_continue(repo),
         "am" => run_stoppable(repo, &["am", "--continue"]),
