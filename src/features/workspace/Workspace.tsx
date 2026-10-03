@@ -59,7 +59,7 @@ interface Props {
   /** The main worktree; differs from root when a linked worktree is open. */
   main: string;
   recent: string[];
-  onOpenRepo: (path?: string) => Promise<void>;
+  onOpenRepo: (path?: string) => Promise<unknown>;
   onForgetRepo: (path: string) => void;
   onReorderRepos: (list: string[]) => void;
   onLocateRepo: (path: string) => void;

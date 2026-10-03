@@ -159,7 +159,7 @@ export function App() {
     };
   }, [openAsked]);
 
-  const onOpen = useCallback((p?: string) => openRepo(p).then(() => {}), [openRepo]);
+  const onOpen = useCallback((p?: string) => openRepo(p), [openRepo]);
   const onReorder = useCallback((list: string[]) => {
     setRepoOrder(list);
     setRecent(list);

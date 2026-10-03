@@ -82,7 +82,7 @@ interface Props {
   /** For a pull request's fetch: its progress shows in the top bar, with Cancel. */
   runNet: NetRun;
   /** Opens a worktree in this window. */
-  onOpen: (path: string) => Promise<void>;
+  onOpen: (path: string) => Promise<unknown>;
 }
 
 type Inner = Props & { onClose: () => void };
