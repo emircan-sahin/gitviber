@@ -32,8 +32,8 @@ export const withChoice = (saved: unknown, kind: ListKind, choice: Choice) => ({
 /** Whether anything narrows the list. */
 export const isNarrowed = (n: Narrow) => n.scope !== null || n.draft !== null || n.labels.length > 0;
 
-/** Tells one narrowing from another, for cache keys: "" for none, and the order labels were picked in doesn't matter. */
-export const narrowKey = (n: Narrow) => (isNarrowed(n) ? [n.scope ?? "", n.draft === null ? "" : n.draft ? "draft" : "ready", [...n.labels].sort().join(",")].join("|") : "");
+/** Tells one narrowing from another, for cache keys: "" for none, and the order labels were picked in doesn't matter. JSON: a label name may hold any separator. */
+export const narrowKey = (n: Narrow) => (isNarrowed(n) ? JSON.stringify([n.scope, n.draft, [...n.labels].sort()]) : "");
 
 /** What an empty list says: "No open pull requests assigned to you." */
 export function emptyText(kind: ListKind, state: "open" | "closed" | "all", n: Narrow): string {
