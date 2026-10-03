@@ -6,6 +6,44 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-10-03
+
+### Added
+
+- **A Compare screen.** Pick a base and a compare point (branches, remote branches, tags or a commit id) and see what's ahead and behind, the files that differ (three-dot, or direct) and a **Merge into** button that says first whether the merge would conflict. Open it from the branch picker, History or the command palette. In #115.
+- **Open All for a commit.** An expanded commit in History has an **Open All** button that shows every file of the commit in one scroll, like Changes does. In #112.
+- **Filters on the Pull requests and Issues tabs.** Chips for created by me, assigned to me, mentions me, review requested and draft or ready, plus labels, kept per repository. In #114.
+- **Compare a commit with the working tree or another commit,** from its right-click menu, or with two commits picked. Two files in the Explorer can be compared too.
+- **Restore a file from a past commit, or revert its change,** including only the lines you select, with Undo.
+- **Copy as Patch and Apply Patch from Clipboard.** Copy a file, selected lines, a commit or a stash as a patch, and apply one from the clipboard after a preview of what it changes.
+- **Split a commit, fix staged changes up into an older commit, and cherry-pick several commits** from History. A rewrite can also move the branches stacked on it along.
+- **Changes as a folder tree.** Switch Changes between a list and a tree, stage, unstage, discard or stash a whole folder, and sort by what changed most recently.
+- **Stash chosen lines, take one file out of a stash, and rename a stash.** Stashing lines never touches what you've staged.
+- **Edit the new side of an unstaged diff** and save it with ⌘S.
+- **How long each command took.** Hover a command's dot in the terminal for its duration and exit code. A switch in Settings → Notifications (off by default) notifies you when a long command finishes while you're elsewhere, naming only the program.
+- **Commit and pull request links in the terminal,** and a keyboard hint mode (⌃⇧Space) that labels every link on screen so you can open or copy one without the mouse.
+- **A worktree is named by its branch and its folder,** so a folder whose name no longer matches its branch is obvious.
+- **Move main back.** When a linked worktree holds the default branch while the main folder is on another, one confirmed step puts `main` back in the main folder, with Undo.
+
+### Changed
+
+- **Picking a branch another worktree holds** says what Enter will do, and offers to open that worktree or check the branch out detached. After the jump a notice names the folder and offers a way back.
+- **Creating a worktree for the default branch** warns once, and offers a new branch instead.
+- **Inside a linked worktree,** the project's row in the project list opens the project's main folder.
+- **The top bar's Back to the main worktree arrow is gone.** It landed on whatever branch the main folder held.
+- **Interface text uses macOS's own font smoothing,** so light text on dark themes is no thinner than in native apps.
+- **Clean up's notice says Undo brings back the branches,** not the worktree folders.
+
+### Fixed
+
+- **A Keychain dialog kept appearing on the Pull requests and Issues tabs** when `gh` wasn't signed in, even for repositories cloned over SSH. Those tabs now show a sign-in screen with how to sign in, and only the button you press looks in git's stored logins. In #113.
+- **Notification permission:** turning the switch off never asks macOS for anything, a missing permission is explained under the setting without a click, and Send Test always says what happened.
+- **Merge messages and Undo labels** name the branch, not `refs/heads/…`, and a branch and a tag of one name no longer swap.
+- **A conflict's merge base** shows again when git's default style joins two nearby conflicts.
+- **Staging one line of several adjacent changes** no longer shuffles the lines around it.
+- **Renaming the top stash** works, and a stash pushed meanwhile is never lost.
+- **A merge that brings nothing in** says "Nothing to merge" instead of announcing a squash that made no commit.
+
 ## [0.1.8] - 2026-10-02
 
 ### Added
@@ -451,7 +489,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/emircan-sahin/gitviber/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/emircan-sahin/gitviber/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/emircan-sahin/gitviber/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/emircan-sahin/gitviber/compare/v0.1.5...v0.1.6
