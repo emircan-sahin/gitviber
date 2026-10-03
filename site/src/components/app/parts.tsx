@@ -367,7 +367,7 @@ export function WorktreeMenu({ rows, current, highlighted }: { rows: WorktreeRow
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 items-center gap-1.5">
                   <span className="truncate font-mono text-[11.5px]">{row.branch}</span>
-                  {row.main && <Chip hot={hi}>main</Chip>}
+                  {row.main && <Chip hot={hi}>main folder</Chip>}
                   {row.calling && <NeedsYouDot className={hi ? "bg-primary-fg" : undefined} />}
                   {row.pull && <PullChip pull={row.pull} hot={hi} />}
                 </div>
