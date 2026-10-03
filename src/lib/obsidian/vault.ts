@@ -2,7 +2,8 @@ import { listen } from "@tauri-apps/api/event";
 import { useEffect, useState } from "react";
 import { type Vault, vaultApi } from "../api";
 import { claimEdits, openStore } from "../editor/edits";
-import { editPath } from "../repo/selection";
+import { basename } from "../path";
+import { editPath, vaultEditFile } from "../repo/selection";
 import { useSettings } from "../settings";
 import { readJson, writeJson } from "../storage";
 import { createStore } from "../store";
@@ -149,9 +150,9 @@ export function useVaultFiles(vault: string): string[] | null {
 
 /** The store a vault's unsaved edits are kept in (lib/editor/edits), apart from any repo's. */
 export function openVaultEdits(vault: string) {
-  const prefix = editPath({ kind: "vault", vault, path: "" })!;
-  const path = (key: string) => key.slice(prefix.length);
+  const path = (key: string) => vaultEditFile(vault, key);
   openStore(`obsidian:${vault}`, {
+    name: (key) => basename(path(key)),
     read: (key) => vaultApi.readFile(vault, path(key)),
     // Read again after a save: a vault no watcher covers wouldn't be, and the view would show the old text.
     write: (key, text) => vaultApi.writeFile(vault, path(key), text).then(() => bump(vault, false, [path(key)])),
