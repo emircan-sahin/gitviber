@@ -147,14 +147,16 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   const code = !media && !rendered && !!pair && !special;
   const blame = useBlame(isFile && code && s.blame ? sel.path : null, pair, status?.head ?? null);
   // Text the file view can't turn back into the file's bytes stays read-only.
-  const editable = isFile && !!pair && !pair.modified.lossy && keepsLineEndings(pair.modified.text);
-  const dirty = useEdited().has(selectionPath(sel)) && isFile;
+  // The new side of an unstaged diff is the file on disk too (not a deleted file or a submodule).
+  const onDiskDiff = sel.kind === "unstaged" && !!file && !file.nested && !file.submodule;
+  const editable = (isFile || onDiskDiff) && !!pair && pair.modified.exists && !pair.modified.lossy && keepsLineEndings(pair.modified.text);
+  const dirty = useEdited().has(selectionPath(sel)) && (isFile || onDiskDiff);
   const github = useMemo(() => githubSides(sel, webUrl), [sel, webUrl]);
   // Review notes go on local diffs and the file view (a PR has its own comments); not on a file
   // being typed into, whose lines are no longer the ones on disk.
   const notes = useMemo(
-    () => (sel.kind === "pr-file" || (isFile && dirty) ? null : { oldPath: file?.oldPath ?? selectionPath(sel), at: sel.kind === "commit" ? `commit ${sel.commit.shortSha}` : undefined }),
-    [sel, isFile, dirty, file],
+    () => (sel.kind === "pr-file" || dirty ? null : { oldPath: file?.oldPath ?? selectionPath(sel), at: sel.kind === "commit" ? `commit ${sel.commit.shortSha}` : undefined }),
+    [sel, dirty, file],
   );
   // An image or a preview has no lines to pick: the whole file.
   const onGitHub = (open: boolean) => () => (view.current ? view.current.gitHubLink(open) : github?.modified && void gitHubLink(github.modified, null, open));

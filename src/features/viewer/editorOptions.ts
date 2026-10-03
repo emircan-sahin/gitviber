@@ -39,9 +39,12 @@ function common(s: Settings, wrap: boolean): monaco.editor.IEditorOptions & mona
   };
 }
 
-export function diffOptions(s: Settings, mode: CodeMode, collapse: boolean, wrap: boolean): monaco.editor.IDiffEditorConstructionOptions {
+/** `editable`: the new side is the file on disk, typed into and saved like the file view's. */
+export function diffOptions(s: Settings, mode: CodeMode, collapse: boolean, wrap: boolean, editable = false): monaco.editor.IDiffEditorConstructionOptions {
   return {
     ...common(s, wrap),
+    readOnly: !editable,
+    matchBrackets: editable ? "always" : "never",
     renderSideBySide: mode === "split",
     // The layout is the user's choice, not the window width's.
     useInlineViewWhenSpaceIsLimited: false,

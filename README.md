@@ -74,6 +74,10 @@ word-level highlights, unchanged lines folded away until you want the whole file
 image shows side by side, as a swipe or as an onion skin. `J` / `K` walk the changed files and `V`
 marks one viewed; when the agent touches it again, the mark clears so you know to look again.
 
+Changes lists files flat or as a folder tree, by name or newest first, which helps when an agent
+touches many at once; a folder stages, discards or stashes everything under it. In an unstaged
+diff, edit the new side right there and save with `⌘S`, or stash just the lines you pick.
+
 ### Test it right there
 
 A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the tests, start the dev

@@ -54,7 +54,7 @@ interface Props {
   review?: Review | null;
   /** Review notes can be written here and show under their lines: the old side's path, and a commit's version (`at`). */
   notes?: { oldPath: string; at?: string } | null;
-  /** The file view of a file on disk that can be typed into and saved (lib/editor/edits). */
+  /** The file on disk (the file view, or the new side of an unstaged diff) can be typed into and saved (lib/editor/edits). */
   editable?: boolean;
   /** Where each side is on GitHub, for its permalinks; none: not there. */
   github?: { original: GitHubSide | null; modified: GitHubSide | null } | null;
@@ -110,7 +110,8 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
   onBlameClickRef.current = onBlameClick;
   const linksRef = useRef(links);
   const stagingRef = useRef(staging);
-  stagingRef.current = staging;
+  // Its lines are the file's saved ones: not once it has been typed into.
+  stagingRef.current = dirty ? null : staging;
   const reviewRef = useRef(review);
   reviewRef.current = review;
   const threads = useRef<ReturnType<typeof followReviewThreads> | null>(null);
@@ -244,7 +245,7 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
 
   useEffect(() => {
     const e = editor.current!;
-    if (isDiff(e)) e.updateOptions(diffOptions(s, mode, collapse, wrap));
+    if (isDiff(e)) e.updateOptions(diffOptions(s, mode, collapse, wrap, editable));
     else e.updateOptions(fileOptions(s, wrap, blameColumn, editable));
   }, [s, mode, collapse, wrap, diff, blameColumn, editable]);
 
@@ -277,12 +278,10 @@ export const MonacoView = forwardRef<CodeViewHandle, Props>(function MonacoView(
       // when it is, and the unified view's deleted lines came out uncolored.
       const oldPath = linksRef.current?.original?.path ?? path;
       // Typed into: the edit's model, or after a save the model on show, which still holds the file.
-      const edited = editable && !isDiff(e) ? editModel(path, lang, pair.modified.text, e.getModel()) : null;
-      const created = edited
-        ? { modified: edited, original: null, unit: unitOf(edited) }
-        : createModels(lang, path, pair.modified.text, diff ? { path: oldPath, text: pair.original.text, rows: pair.rows } : null);
+      const edited = editable ? editModel(path, lang, pair.modified.text, isDiff(e) ? e.getModifiedEditor().getModel() : e.getModel()) : null;
+      const created = createModels(lang, path, pair.modified.text, diff ? { path: oldPath, text: pair.original.text, rows: pair.rows } : null, edited);
       const { modified, original } = created;
-      if (editable && !isDiff(e)) track(modified, path, pair.modified.text);
+      if (editable) track(modified, path, pair.modified.text);
       models = original ? [original, modified] : [modified];
       const old = modelsOf(e).filter((m) => m !== modified && !holdsEdit(m));
       let diffed: Promise<unknown> = Promise.resolve();
