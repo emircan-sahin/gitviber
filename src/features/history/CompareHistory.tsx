@@ -1,13 +1,16 @@
-import { GitCompareArrows, X } from "lucide-react";
+import { GitCompareArrows, PanelTop, X } from "lucide-react";
 import { type ComponentProps, useEffect, useRef, useState } from "react";
 import { api, type Commit, errorMessage, type FileChange, LOG_PAGE } from "@/lib/api";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { shortRef } from "@/lib/git/refs";
+import { branchPoint, HEAD_POINT } from "@/lib/git/comparePoints";
+import { askCompare } from "@/lib/repo/compareRequest";
 import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import { RepoPanes } from "@/components/RepoPanes";
 import { cn } from "@/lib/utils";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
+import { SectionBtn } from "@/features/changes/ChangeRows";
 import { HistoryPanel } from "./HistoryPanel";
 
 type ListProps = Omit<ComponentProps<typeof HistoryPanel>, "commits" | "hasMore" | "loadMore">;
@@ -29,9 +32,17 @@ export function CompareHistory({ with: ref, current, ours, onClose, ...props }: 
           <span className="font-mono text-foreground">{current}</span> compared with <span className="font-mono text-foreground">{name}</span>
         </span>
         <button
+          aria-label="Open in the Compare screen"
+          title="Open in the Compare screen"
+          onClick={() => askCompare({ base: current === "HEAD" ? HEAD_POINT : branchPoint({ name: current, remote: false }), head: { ref, label: name } })}
+          className="ml-auto flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground"
+        >
+          <PanelTop className="size-3" />
+        </button>
+        <button
           aria-label="Stop comparing"
           onClick={onClose}
-          className="ml-auto flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground"
+          className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground"
         >
           <X className="size-3" />
         </button>
@@ -61,7 +72,14 @@ function CompareFiles({ with: ref, ours, activeKey, onOpen }: { with: string; ou
   if ("error" in found) return <div className="px-4 py-2 text-[11.5px] text-muted-foreground">{found.error}</div>;
   if (!found.files.length) return <div className="py-1 pl-4 text-[11.5px] text-subtle">No changes</div>;
   const range = { label: shortRef(ref), base: found.base, head: found.head };
-  return <FileList rows={found.files.map((file) => ({ kind: "pr-file", range, file }))} activeKey={activeKey} onOpen={onOpen} />;
+  return (
+    <>
+      <div className="flex h-6 items-center px-3">
+        <SectionBtn onClick={() => onOpen({ kind: "changes", list: "range", range }, true)}>Open All</SectionBtn>
+      </div>
+      <FileList rows={found.files.map((file) => ({ kind: "pr-file", range, file }))} activeKey={activeKey} onOpen={onOpen} />
+    </>
+  );
 }
 
 /** A comparison's changed files, each opening its diff. */

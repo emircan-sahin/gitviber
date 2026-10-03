@@ -21,11 +21,23 @@ export interface FileMemo {
 }
 
 const memos = new Map<string, FileMemo>();
+// Every commit or range opened adds its files' keys for good: past this the oldest go (not a note being written).
+const MAX_MEMOS = 50_000;
+const EVICT = 10_000;
 
 /** `key`: the worktree and the file's selection key. */
 export function fileMemo(key: string): FileMemo {
   let m = memos.get(key);
-  if (!m) memos.set(key, (m = {}));
+  if (!m) {
+    if (memos.size >= MAX_MEMOS) {
+      let left = EVICT;
+      for (const [k, old] of memos) {
+        if (left-- <= 0) break;
+        if (!old.draft) memos.delete(k);
+      }
+    }
+    memos.set(key, (m = {}));
+  }
   return m;
 }
 

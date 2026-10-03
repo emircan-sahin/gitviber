@@ -23,6 +23,7 @@ export function UnifiedDiff({
   oldPath,
   memo,
   onReveal,
+  notes: canNote,
 }: {
   pair: DiffPair;
   rows: (DiffRow | Gap)[];
@@ -31,6 +32,8 @@ export function UnifiedDiff({
   memo: FileMemo;
   /** Opens some of a fold's lines. */
   onReveal: (gap: Gap) => void;
+  /** Review notes can be written here (`at`: on a commit's version); null: none, as on a PR's files. */
+  notes: { at?: string } | null;
 }) {
   const s = useSettings();
   const box = useRef<HTMLDivElement>(null);
@@ -97,7 +100,7 @@ export function UnifiedDiff({
           const old = r.k === 2;
           return (
             <div key={`${r.o}:${r.n}`}>
-              <LineRow row={r} text={text} tokens={tokens} ranges={ranges} digits={digits} wrap={s.wordWrap} onNote={(stretch) => note(old, old ? r.o : r.n, stretch)} />
+              <LineRow row={r} text={text} tokens={tokens} ranges={ranges} digits={digits} wrap={s.wordWrap} onNote={canNote ? (stretch) => note(old, old ? r.o : r.n, stretch) : null} />
               {keys.flatMap((k) => placed.get(k) ?? []).map((n) => (
                 <div key={n.id} className="sticky left-0 max-w-3xl py-0.5">
                   <NoteCard note={n} />
@@ -111,7 +114,7 @@ export function UnifiedDiff({
                     onDraft={(body) => memo.draft && (memo.draft.body = body)}
                     onCancel={() => setDraft(null)}
                     onSubmit={async (body) => {
-                      addNote({ ...drafted.anchor, path: drafted.old ? oldPath : path, body: body.trim(), old: drafted.old || undefined });
+                      addNote({ ...drafted.anchor, path: drafted.old ? oldPath : path, body: body.trim(), old: drafted.old || undefined, at: canNote?.at });
                       setDraft(null);
                     }}
                   />
@@ -131,21 +134,23 @@ const TONES = {
   2: { line: "bg-del-bg", gutter: "bg-del-gutter text-muted-foreground", emph: "bg-del-emph", sign: "−" },
 } as const;
 
-function LineRow({ row, text, tokens, ranges, digits, wrap, onNote }: { row: DiffRow; text: string; tokens: TokenLine | undefined; ranges: [number, number][]; digits: string; wrap: boolean; onNote: (stretch: boolean) => void }) {
+function LineRow({ row, text, tokens, ranges, digits, wrap, onNote }: { row: DiffRow; text: string; tokens: TokenLine | undefined; ranges: [number, number][]; digits: string; wrap: boolean; onNote: ((stretch: boolean) => void) | null }) {
   const tone = TONES[row.k];
   return (
     <div data-line={row.k} className={cn("group/line relative flex min-h-[1lh]", tone.line)}>
       {/* Off the Tab order, as there's one per line: the keyboard's way is Add Review Note (C). */}
-      <button
-        data-add-note
-        tabIndex={-1}
-        aria-label="Add review note"
-        title="Add review note (⇧-click: through this line)"
-        onClick={(e) => onNote(e.shiftKey)}
-        className="absolute top-0 left-0 z-[1] flex h-[1lh] w-[2.2ch] items-center justify-center rounded-sm bg-primary text-primary-foreground opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100 [&_svg]:size-3"
-      >
-        <Plus />
-      </button>
+      {onNote && (
+        <button
+          data-add-note
+          tabIndex={-1}
+          aria-label="Add review note"
+          title="Add review note (⇧-click: through this line)"
+          onClick={(e) => onNote(e.shiftKey)}
+          className="absolute top-0 left-0 z-[1] flex h-[1lh] w-[2.2ch] items-center justify-center rounded-sm bg-primary text-primary-foreground opacity-0 group-hover/line:opacity-100 focus-visible:opacity-100 [&_svg]:size-3"
+        >
+          <Plus />
+        </button>
+      )}
       <span className={cn("shrink-0 pr-1 text-right select-none", tone.gutter)} style={{ width: digits }}>
         {row.k !== 1 ? row.o : ""}
       </span>

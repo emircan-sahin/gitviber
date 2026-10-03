@@ -1,6 +1,8 @@
 //! Merge, rebase and bisect, and finishing or calling off one stopped on conflicts.
 
-use super::{run, run_text, run_with, stage, validate_ref, validate_rev, with_paths, Operation};
+use super::{
+    run, run_text, run_with, stage, validate_ref, validate_rev, with_paths, Operation, REF_KINDS,
+};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -153,6 +155,26 @@ pub enum MergeKind {
     Squash,
 }
 
+/// A full ref by its short name, which is how git words a merge message ("Merge branch 'x'"). Kept
+/// whole when the short name would read as another ref: a tag named like the branch wins.
+fn merge_name(repo: &Path, name: &str) -> String {
+    let short = REF_KINDS
+        .iter()
+        .find_map(|(prefix, _)| name.strip_prefix(prefix))
+        .filter(|short| !short.starts_with('-'));
+    let tip = |n: &str| {
+        run_text(
+            repo,
+            &["rev-parse", "--verify", "-q", &format!("{n}^{{commit}}")],
+        )
+        .ok()
+    };
+    match short {
+        Some(short) if tip(short).is_some() && tip(short) == tip(name) => short.into(),
+        _ => name.into(),
+    }
+}
+
 /// `how`: "ff" (git's default, fast-forward when it can), "no-ff" (always a merge commit), or
 /// "squash": the branch's changes as one new commit, its subjects listed in the message.
 /// `autostash`, as for `pull`; not for a squash, whose changes the stash would come back onto
@@ -160,6 +182,7 @@ pub enum MergeKind {
 pub fn merge(repo: &Path, name: &str, how: MergeKind, autostash: bool) -> Result<bool, String> {
     ensure_idle(repo)?;
     validate_ref(repo, name)?;
+    let name = &merge_name(repo, name);
     // Only ever added: a merge.autoStash the user set applies either way.
     let stash = autostash.then_some("--autostash");
     match how {

@@ -1,4 +1,4 @@
-import { type Selection, selectionKey } from "./selection";
+import { isComparePoint, type Selection, selectionKey } from "./selection";
 import { getSettings } from "../settings";
 import { isRecord, putRecent, readJson, stringList, writeJson } from "../storage";
 import { folderName, joinPath } from "../path";
@@ -52,6 +52,8 @@ export function loadWorkspace(root: string): WorkspaceSnapshot | null {
   // would stop the list row matching its tab. A tab too malformed to key is dropped.
   const rekey = (sel: Selection) => {
     try {
+      // The key doesn't read a comparison's sides, but its tab and screen do.
+      if (sel.kind === "compare" && !(isComparePoint(sel.base) && isComparePoint(sel.head))) return null;
       return selectionKey(sel);
     } catch {
       return null;

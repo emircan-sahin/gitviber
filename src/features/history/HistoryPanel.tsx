@@ -114,6 +114,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
     reword,
     squash,
     refresh,
+    openAll: (c) => onOpen({ kind: "changes", list: "commit", commit: c, url: commitUrl(c, { webUrl: web ?? webUrl, everyOnWeb: !!web }) }, true),
     everyOnWeb: !!web,
     pickTargets: worktrees.filter((w) => !w.current && !w.bare && !w.prunable && w.branch),
     pickInto,

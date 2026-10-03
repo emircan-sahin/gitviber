@@ -250,6 +250,29 @@ pub fn log_range(repo: &Path, base: &str, head: &str, limit: u32) -> Result<Vec<
     Ok(list)
 }
 
+/// The commits `head` has that `base` doesn't, newest first, a page of them: the Compare screen's
+/// lists. Both are commit ids (its comparison names them).
+pub fn log_between(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    skip: u32,
+    limit: u32,
+) -> Result<Vec<Commit>, String> {
+    validate_rev(base)?;
+    validate_rev(head)?;
+    let range = format!("{base}..{head}");
+    commits(
+        repo,
+        &[&range],
+        false,
+        false,
+        skip,
+        limit,
+        &LogFilter::default(),
+    )
+}
+
 /// What `with` changed since it and HEAD parted, as a pull request of it would show: the
 /// merge base, `with`'s commit, and the files between them.
 #[derive(Serialize)]

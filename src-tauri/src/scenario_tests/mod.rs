@@ -4,6 +4,8 @@ mod branches;
 mod changes;
 mod clean_up;
 mod commits;
+mod compare;
+mod compare_edges;
 mod content;
 mod conversations;
 // `sh` recorders stand in for the credential helper and askpass.

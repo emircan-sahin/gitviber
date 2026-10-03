@@ -4,6 +4,7 @@ import { api, errorMessage, type FileChange } from "@/lib/api";
 import type { Selection } from "@/lib/repo/selection";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 import { sumLines } from "@/features/changes/changeList";
+import { SectionBtn } from "@/features/changes/ChangeRows";
 import { useReviewFiles } from "@/features/changes/BranchReview";
 import { FileList } from "./CompareHistory";
 import type { Points } from "@/lib/repo/compareMark";
@@ -69,6 +70,7 @@ export function ComparePoints({ points, revision, activeKey, onOpen, onSwap, onC
         <div className="flex h-6 shrink-0 items-center gap-2 border-b border-border px-4 text-[10.5px] text-subtle">
           <span className="font-semibold tracking-[0.08em] uppercase">Changed files</span>
           <span className="font-mono text-muted-foreground">{shown.rows.length}</span>
+          {head && <SectionBtn onClick={() => onOpen({ kind: "changes", list: "range", range: { label: `${base.label}..${head.label}`, base: base.sha, head: head.sha } }, true)}>Open All</SectionBtn>}
           <span className="ml-auto font-mono">
             <span className="text-added">+{add}</span> <span className="text-removed">-{del}</span>
           </span>

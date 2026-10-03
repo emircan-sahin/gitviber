@@ -1,17 +1,18 @@
 // A whole Changes list as one scroll of diffs, as GitHub's Files changed shows a pull request.
 // Monaco is one editor per view (MonacoView), so these are drawn as HTML: only the files near the
 // screen load, highlight and render, and a file scrolled far away keeps just its height.
+// Also a commit's files, or a range's (a comparison, a PR): they never change, so they're read once.
 import { Check, ChevronDown, ChevronsDownUp, ChevronsUpDown, Files } from "lucide-react";
 import { type RefObject, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
 import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusPill } from "@/components/StatusBadge";
-import type { RepoStatus } from "@/lib/api";
+import type { FileChange, RepoStatus } from "@/lib/api";
 import { type Gap, shownRows } from "@/lib/git/diffHunks";
 import { useCommands } from "@/lib/commands/keybindings";
 import { codeWantsFocus } from "@/lib/ui/panels";
-import { type ChangeList, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
+import { type ChangesSelection, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import { diffWhitespace, useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { sumLines } from "@/features/changes/changeList";
@@ -22,8 +23,9 @@ import { mediaKind } from "./MediaView";
 import { diffNote, placeholderFor } from "./placeholders";
 import { UnifiedDiff } from "./UnifiedDiff";
 import { type FileMemo, fileMemo, scrolls } from "./stackedMemo";
+import { useFixedFiles } from "./fixedFiles";
 
-type ListFile = Selection & { kind: "unstaged" | "staged" | "branch" };
+type ListFile = Selection & { kind: "unstaged" | "staged" | "branch" | "commit" | "pr-file" };
 
 /** More lines than this in one file wait for a click, as GitHub's large diffs do: a lockfile would hold up the rest. */
 const LARGE = 1500;
@@ -32,7 +34,7 @@ const AHEAD = "1200px 0px";
 const NONE: ReadonlySet<number> = new Set();
 
 interface Props {
-  list: ChangeList;
+  changes: ChangesSelection;
   status: RepoStatus | null;
   /** The branch review's files as last loaded; null while there's none. */
   branchRows: BranchChange[] | null;
@@ -42,7 +44,10 @@ interface Props {
   onOpen: (s: Selection) => void;
 }
 
-function filesOf(list: ChangeList, status: RepoStatus | null, branchRows: BranchChange[] | null): ListFile[] | null {
+function filesOf(changes: ChangesSelection, status: RepoStatus | null, branchRows: BranchChange[] | null, fixed: FileChange[] | null): ListFile[] | null {
+  const { list } = changes;
+  if (list === "commit") return fixed && fixed.map((file) => ({ kind: "commit", commit: changes.commit, file, url: changes.url }));
+  if (list === "range") return fixed && fixed.map((file) => ({ kind: "pr-file", range: changes.range, file }));
   if (list === "branch") return branchRows;
   if (!status) return null;
   // Nested repos have no diff, as in the list.
@@ -69,8 +74,10 @@ function topBlock(el: HTMLElement | null) {
   return all.length ? i : -1;
 }
 
-export function AllChanges({ list, status, branchRows, revision, viewed, toggleViewed, onOpen }: Props) {
-  const files = useMemo(() => filesOf(list, status, branchRows), [list, status, branchRows]);
+export function AllChanges({ changes, status, branchRows, revision, viewed, toggleViewed, onOpen }: Props) {
+  const { list } = changes;
+  const fixed = useFixedFiles(changes);
+  const files = useMemo(() => filesOf(changes, status, branchRows, fixed.files), [changes, status, branchRows, fixed.files]);
   const root = status?.root ?? "";
   const memo = (sel: ListFile) => fileMemo(`${root}\0${selectionKey(sel)}`);
   // Memos change outside React: this draws what they now say.
@@ -96,7 +103,7 @@ export function AllChanges({ list, status, branchRows, revision, viewed, toggleV
 
   // Back at the file that was at the top, as far into it, once the files are there; each keeps its
   // height from before, so it's the same place.
-  const scrollKey = `${root}\0${list}`;
+  const scrollKey = `${root}\0${selectionKey(changes)}`;
   const restored = useRef(false);
   useLayoutEffect(() => {
     const el = scroller.current;
@@ -160,7 +167,9 @@ export function AllChanges({ list, status, branchRows, revision, viewed, toggleV
       if (onShow === view) onShow = null;
     };
   }, []);
-  useCommands({ "review.addNote": files?.length ? () => keys.current.addNote() : undefined });
+  // A PR's or comparison's files take no notes, as in their own tab; a commit's are marked as on it.
+  const notes = list === "range" ? null : { at: list === "commit" ? `commit ${changes.commit.shortSha}` : undefined };
+  useCommands({ "review.addNote": files?.length && notes ? () => keys.current.addNote() : undefined });
   // Opened from the code view (a tab switch, quick open): it takes the keys, as a file would.
   useEffect(() => {
     if (codeWantsFocus()) scroller.current?.focus();
@@ -168,13 +177,22 @@ export function AllChanges({ list, status, branchRows, revision, viewed, toggleV
 
   const { add, del } = sumLines((files ?? []).map((f) => f.file));
   const reviewed = (files ?? []).filter(viewed).length;
-  const empty = !files ? (list === "branch" ? "Review the branch from Changes to see its files here." : "Loading…") : files.length ? null : list === "staged" ? "Nothing staged." : "No changes.";
+  const empty = !files
+    ? (fixed.error ?? (list === "branch" ? "Review the branch from Changes to see its files here." : "Loading…"))
+    : files.length
+      ? null
+      : list === "staged"
+        ? "Nothing staged."
+        : list === "commit"
+          ? "This commit changes no files."
+          : "No changes.";
 
   return (
     <>
       <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border pr-2 pl-3 text-[12px]">
         <Files className="size-4 shrink-0 text-subtle" />
-        <span className="truncate font-medium">{selectionPath({ kind: "changes", list })}</span>
+        <span className={cn("font-medium", list === "commit" ? "shrink-0" : "min-w-0 truncate")}>{selectionPath(changes)}</span>
+        {list === "commit" && <span className="min-w-0 truncate text-muted-foreground">{changes.commit.subject}</span>}
         {!!files?.length && (
           <>
             <span className="shrink-0 text-muted-foreground">{files.length === 1 ? "1 file" : `${files.length} files`}</span>
@@ -211,6 +229,7 @@ export function AllChanges({ list, status, branchRows, revision, viewed, toggleV
                 sel={sel}
                 memo={memo(sel)}
                 revision={revisionOf(sel)}
+                notes={notes}
                 open={open}
                 viewed={viewed(sel)}
                 onToggleOpen={() => {
@@ -245,6 +264,7 @@ function FileBlock({
   sel,
   memo,
   revision,
+  notes,
   open,
   viewed,
   onToggleOpen,
@@ -254,6 +274,7 @@ function FileBlock({
   sel: ListFile;
   memo: FileMemo;
   revision: number;
+  notes: { at?: string } | null;
   open: boolean;
   viewed: boolean;
   onToggleOpen: () => void;
@@ -305,7 +326,7 @@ function FileBlock({
       {open &&
         (shown ? (
           <div ref={body}>
-            <FileDiff sel={sel} memo={memo} revision={revision} estimate={memo.height ?? estimate} onOpen={onOpen} />
+            <FileDiff sel={sel} memo={memo} revision={revision} notes={notes} estimate={memo.height ?? estimate} onOpen={onOpen} />
           </div>
         ) : (
           <div style={{ height: memo.height ?? estimate }} />
@@ -314,7 +335,7 @@ function FileBlock({
   );
 }
 
-function FileDiff({ sel, memo, revision, estimate, onOpen }: { sel: ListFile; memo: FileMemo; revision: number; estimate: number; onOpen: () => void }) {
+function FileDiff({ sel, memo, revision, notes, estimate, onOpen }: { sel: ListFile; memo: FileMemo; revision: number; notes: { at?: string } | null; estimate: number; onOpen: () => void }) {
   const s = useSettings();
   const { pair, error } = usePair(sel, revision, diffWhitespace(s), false);
   const [large, setLarge] = useState(!!memo.large);
@@ -339,7 +360,7 @@ function FileDiff({ sel, memo, revision, estimate, onOpen }: { sel: ListFile; me
   return (
     <>
       {note && <div className="px-4 pt-1.5 text-[11.5px] text-subtle">{note}</div>}
-      <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} onReveal={reveal} />
+      <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} onReveal={reveal} notes={notes} />
     </>
   );
 }

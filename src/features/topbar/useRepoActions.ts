@@ -8,10 +8,27 @@ import { worktreeDir } from "@/lib/repo/session";
 import type { RepoData } from "@/lib/repo/useRepo";
 import { plural } from "@/lib/format";
 import { folderName } from "@/lib/path";
-import { useGitAction } from "@/hooks/useGitAction";
+import { type GitRun, useGitAction } from "@/hooks/useGitAction";
 import { undoCommit } from "@/features/history/commitActions";
 import { secretCommits } from "@/lib/git/gitErrors";
 import { defaultBranch, folderForBranch } from "@/lib/git/worktrees";
+
+// Autostashed changes wait out a stopped merge or rebase (MERGE_AUTOSTASH), and git keeps them
+// in the stash as well when they conflict coming back.
+const stashedFor = (autostash: boolean, what = "pull") =>
+  autostash
+    ? `Resolve them in Changes. Your uncommitted changes were set aside for the ${what} and come back when it finishes (Continue or Abort, if it's waiting on you). If they conflict coming back, they're kept in Stashes too: drop that stash once resolved.`
+    : undefined;
+const retryStashed = (again: () => Promise<boolean>) => [{ label: "Retry with autostash", run: () => void again() }];
+
+/** Merges `name` into HEAD's branch. A squash's changes would get the stash back before they're committed: no autostash for it. */
+export const mergeInto = (run: GitRun, name: string, how: "ff" | "no-ff" | "squash" = "ff", autostash = false): Promise<boolean> =>
+  how === "squash"
+    ? run("Squash merge", () => api.merge(name, how), `Squashed ${name} into one commit`)
+    : run("Merge", () => api.merge(name, how, autostash), `Merged ${name}`, undefined, {
+        fixes: { autostash: retryStashed(() => mergeInto(run, name, how, true)) },
+        conflicts: stashedFor(autostash, "merge"),
+      });
 
 /** The top bar's git actions: switching, merging, deleting branches, worktrees, pull, push and publish. */
 export function useRepoActions(repo: RepoData, root: string, main: string) {
@@ -78,13 +95,6 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
   const pushesUpstream = !status?.push?.branch || status.push.branch === status.upstream;
   const pulls = (["merge", "rebase"] as const).map((mode) => ({ label: `Pull (${mode})`, run: () => void pull(mode) }));
   const behind = pushesUpstream ? pulls : undefined;
-  // Autostashed changes wait out a stopped merge or rebase (MERGE_AUTOSTASH), and git keeps them
-  // in the stash as well when they conflict coming back.
-  const stashedFor = (autostash: boolean, what = "pull") =>
-    autostash
-      ? `Resolve them in Changes. Your uncommitted changes were set aside for the ${what} and come back when it finishes (Continue or Abort, if it's waiting on you). If they conflict coming back, they're kept in Stashes too: drop that stash once resolved.`
-      : undefined;
-  const retryStashed = (again: () => Promise<boolean>) => [{ label: "Retry with autostash", run: () => void again() }];
   // A push GitHub refused over a secret: when only the last commit has it, undoing that brings
   // the file back staged to fix. Only a plain commit not yet pushed, as History's Undo commit.
   const head = repo.commits[0];
@@ -109,14 +119,7 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
   const publish = (remote: string) => runNet("Publish", (op) => api.push(false, remote, op), `Branch published to ${remote}`, { fixes: { secret: undoLast } });
   // Where Publish goes without asking: the preferred remote, or the only one.
   const publishTo = status?.branch && status.head ? (status.publish ?? (status.remotes.length === 1 ? status.remotes[0] : null)) : null;
-  // A squash's changes would get the stash back before they're committed: no autostash for it.
-  const merge = (name: string, how: "ff" | "no-ff" | "squash" = "ff", autostash = false): Promise<boolean> =>
-    how === "squash"
-      ? run("Squash merge", () => api.merge(name, how), `Squashed ${name} into one commit`)
-      : run("Merge", () => api.merge(name, how, autostash), `Merged ${name}`, undefined, {
-          fixes: { autostash: retryStashed(() => merge(name, how, true)) },
-          conflicts: stashedFor(autostash, "merge"),
-        });
+  const merge = (name: string, how: "ff" | "no-ff" | "squash" = "ff", autostash = false) => mergeInto(run, name, how, autostash);
   // `updateRefs`: whether the branches on the replayed commits move along; unset, asked when there are any.
   const rebase = async (onto: string, autostash = false, updateRefs?: boolean): Promise<boolean> => {
     if (updateRefs === undefined) {

@@ -13,6 +13,15 @@ interface PullRange {
   head: string;
 }
 
+/** A side of a comparison: a full ref (refs/heads/…, refs/remotes/…, refs/tags/…) or a commit id, and what to call it. */
+export interface ComparePoint {
+  ref: string;
+  label: string;
+}
+
+/** A stored tab's point, which a build that wrote it may have shaped otherwise: the screen reads both sides' labels. */
+export const isComparePoint = (p: unknown): p is ComparePoint => typeof p === "object" && p !== null && typeof (p as ComparePoint).ref === "string" && typeof (p as ComparePoint).label === "string";
+
 export type Selection =
   | { kind: "unstaged" | "staged" | "conflict"; file: FileChange }
   // `url`: the commit's GitHub page, when it's there (History knows; a fork's original has it too).
@@ -26,10 +35,18 @@ export type Selection =
   | { kind: "branch"; base: string; label: string; file: FileChange; fixed?: true }
   // Every file of a Changes list in one scroll: uncommitted, staged, or the branch under review.
   | { kind: "changes"; list: ChangeList }
+  // Or of a commit (`url` as for its files), or of a range: a comparison's, a PR's.
+  | { kind: "changes"; list: "commit"; commit: Commit; url?: string }
+  | { kind: "changes"; list: "range"; range: PullRange }
+  // The Compare screen: `head` against `base`, from their merge base (what a PR shows) or as they stand.
+  | { kind: "compare"; base: ComparePoint; head: ComparePoint; mergeBase: boolean }
   // Two working-tree files side by side (the explorer's Compare Selected): `file.oldPath` against `file.path`.
   | { kind: "files"; file: FileChange }
   // A file in an Obsidian vault (`vault`: its folder), outside the repo; `path` is vault-relative.
   | { kind: "vault"; vault: string; path: string };
+
+/** A whole list of files in one scroll. */
+export type ChangesSelection = Extract<Selection, { kind: "changes" }>;
 
 /** The explorer's comparison of two working-tree files, `left` the old side. */
 export const filesSelection = (left: string, right: string): Selection => ({
@@ -42,12 +59,22 @@ export type ChangeList = "unstaged" | "staged" | "branch";
 
 const LIST_TITLES: Record<ChangeList, string> = { unstaged: "All Changes", staged: "All Staged Changes", branch: "All Branch Changes" };
 
+/** The files of a range, and the dots between its ends as git writes them. */
+export const rangeLabel = (range: PullRange) => range.label ?? `${range.base.slice(0, 7)}..${range.head.slice(0, 7)}`;
+
+/** A comparison's name: `base...head` from the merge base, `base..head` as they stand. */
+export const compareLabel = (s: { base: ComparePoint; head: ComparePoint; mergeBase: boolean }) => `${s.base.label}${s.mergeBase ? "..." : ".."}${s.head.label}`;
+
+/** A PR or comparison range's identity: a fork's #3 and its original's #3 differ, and so do the PR and one of its commits. */
+const rangeScope = (range: PullRange) => `${range.number ?? ""}@${range.base}..${range.head}`;
+
 /** File path for file-like tabs; for a PR or issue overview, a label. */
 export function selectionPath(s: Selection) {
   if (s.kind === "file" || s.kind === "vault") return s.path;
   if (s.kind === "pull") return `#${s.pull.number} ${s.pull.title}`;
   if (s.kind === "issue") return `#${s.issue.number} ${s.issue.title}`;
-  if (s.kind === "changes") return LIST_TITLES[s.list];
+  if (s.kind === "changes") return s.list === "commit" ? `Commit ${s.commit.shortSha}` : s.list === "range" ? `Compare ${rangeLabel(s.range)}` : LIST_TITLES[s.list];
+  if (s.kind === "compare") return "Compare";
   return s.file.path;
 }
 
@@ -73,8 +100,22 @@ export function selectionKey(s: Selection) {
   if (s.kind === "pull") return `pull:${s.pull.url}`;
   if (s.kind === "issue") return `issue:${s.issue.url}`;
   if (s.kind === "vault") return `vault:${s.vault}:${s.path}`;
-  // A PR file by its commits too: a fork's #3 and its original's #3 differ, and so do the PR and one of its commits.
+  // A PR file by its commits too, as its range's list is.
   const scope =
-    s.kind === "commit" ? s.commit.sha : s.kind === "pr-file" ? `${s.range.number ?? ""}@${s.range.base}..${s.range.head}` : s.kind === "branch" ? s.base : s.kind === "files" ? (s.file.oldPath ?? "") : "";
+    s.kind === "commit"
+      ? s.commit.sha
+      : s.kind === "pr-file"
+        ? rangeScope(s.range)
+        : s.kind === "changes"
+          ? s.list === "commit"
+            ? s.commit.sha
+            : s.list === "range"
+              ? rangeScope(s.range)
+              : ""
+          : s.kind === "branch"
+            ? s.base
+            : s.kind === "files"
+              ? (s.file.oldPath ?? "")
+              : "";
   return `${s.kind}:${scope}:${selectionPath(s)}`;
 }

@@ -38,6 +38,8 @@ export interface Actions {
   remotes: Set<string>;
   refMenu?: RefMenu;
   showRefs?: GraphRefs;
+  /** Opens every file of the commit in one scroll. */
+  openAll: (commit: Commit) => void;
   /** Lists that can show a comparison in their place. */
   comparePoints?: (points: Points) => void;
 }

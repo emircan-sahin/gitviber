@@ -1,4 +1,4 @@
-import { Diff, File, FileDiff, History, RotateCcw } from "lucide-react";
+import { Diff, File, FileDiff, Files, History, RotateCcw } from "lucide-react";
 import { ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import { api, type Commit, type FileChange } from "@/lib/api";
 import type { Selection } from "@/lib/repo/selection";
@@ -17,6 +17,9 @@ export function CommitFileMenu({ commit: c, file: f, sel, refresh, onOpen }: { c
       </ContextMenuItem>
       <ContextMenuItem onSelect={() => onOpen({ kind: "file", path: f.path }, true)}>
         <File /> Open File
+      </ContextMenuItem>
+      <ContextMenuItem onSelect={() => onOpen({ kind: "changes", list: "commit", commit: c, url: sel.kind === "commit" ? sel.url : undefined }, true)}>
+        <Files /> Open All Changes in Commit
       </ContextMenuItem>
       <ContextMenuSeparator />
       {/* Deleted there: nothing to take. */}
