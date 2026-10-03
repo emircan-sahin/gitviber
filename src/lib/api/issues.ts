@@ -23,6 +23,9 @@ export interface Issue {
   url: string;
 }
 
+/** The list item of a detail read, as toPull (api/github.ts) says of a pull request. */
+export const toIssue = ({ number, title, state, stateReason, author, labels, assignees, comments, createdAt, updatedAt, url }: Issue): Issue => ({ number, title, state, stateReason, author, labels, assignees, comments, createdAt, updatedAt, url });
+
 export interface IssueDetail extends Issue {
   body: string;
   thread: PullComment[];

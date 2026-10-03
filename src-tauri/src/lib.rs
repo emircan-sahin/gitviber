@@ -178,6 +178,7 @@ pub fn run() {
             commands::history::log_compare,
             commands::history::compare_counts,
             commands::history::find_commit,
+            commands::history::known_commits,
             commands::history::commit_files,
             commands::history::range_files,
             commands::files::diff_pair,

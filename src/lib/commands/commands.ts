@@ -151,6 +151,8 @@ export const COMMANDS = [
   // The prompts shell integration marks, as in VS Code (Ctrl+↑/↓ elsewhere, "cmd" there); a full-screen program keeps the keys.
   { id: "terminal.prevCommand", title: "Scroll to Previous Command", category: "Terminal", keys: ["cmd+up"], local: "the terminal" },
   { id: "terminal.nextCommand", title: "Scroll to Next Command", category: "Terminal", keys: ["cmd+down"], local: "the terminal" },
+  // WezTerm's QuickSelect key, Ctrl+Shift+Space on every platform (kitty's hints are Ctrl+Shift+E, the explorer's here).
+  { id: "terminal.hints", title: "Show Link Hints", category: "Terminal", keys: ["ctrl+shift+space"], keysOther: ["shift+cmd+space"], local: "the terminal", noRepeat: true },
   { id: "explorer.rename", title: "Rename File", category: "Explorer", keys: ["f2"], local: "the explorer" },
   { id: "explorer.delete", title: "Delete File", category: "Explorer", keys: ["cmd+backspace"], local: "the explorer" },
   { id: "git.switchBranch", title: "Switch Branch", category: "Git", keys: [] },

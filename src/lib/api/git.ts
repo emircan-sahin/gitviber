@@ -57,6 +57,8 @@ export const api = {
   compareCounts: (ref: string) => invoke<[number, number]>("compare_counts", { with: ref }),
   /** The commit a SHA or SHA prefix names, if exactly one, or a full ref's tip (refs/heads/…). */
   findCommit: (sha: string) => invoke<Commit | null>("find_commit", { sha }),
+  /** The full id of the commit each SHA or prefix names (null: none, or several); at most 500 at once. */
+  knownCommits: (shas: string[]) => invoke<(string | null)[]>("known_commits", { shas }),
   commitFiles: (sha: string) => invoke<FileChange[]>("commit_files", { sha }),
   /** Files changed from `from` to `to`, both commit ids: a run of a PR's commits, from the first one's parent. */
   rangeFiles: (from: string, to: string) => invoke<FileChange[]>("range_files", { from, to }),

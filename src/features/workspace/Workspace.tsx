@@ -178,6 +178,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     setListTab("history");
     listPanel.current?.expand();
   }, []);
+  // A commit's own page in History, with `path` open in it when it names one (blame, the terminal).
+  const showCommit = useCallback((sha: string, path = "") => showInHistory({ query: sha, scope: null, reveal: { sha, path, id: ++reveals.current } }), [showInHistory]);
   const showHistory = useCallback((path: string, file: boolean) => showInHistory({ ...NO_SEARCH, scope: { path, file } }), [showInHistory]);
   const layout = useDefaultLayout({ id: "gitviber-main-v4", storage: localStorage });
   const viewerLayout = useDefaultLayout({ id: "gitviber-viewer-v1", storage: localStorage, panelIds: terminalOpen ? ["editor", "terminal"] : ["editor"] });
@@ -366,8 +368,11 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         if (show) revealInExplorer(path);
         else if (!filesPanel.current?.isCollapsed()) fileTree.current?.reveal(path, false);
       },
+      github: webUrl,
+      showCommit,
+      openItem: (item) => open(item, true),
     });
-  }, [root, repo.worktrees, repo.revision, open, revealInExplorer]);
+  }, [root, repo.worktrees, repo.revision, open, revealInExplorer, webUrl, showCommit]);
   useEffect(() => () => setLinkHost(null), []);
 
   const changeCount = uncommitted.length;
@@ -534,7 +539,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     onOpen={(sel) => open(sel, true)}
                     onShowHistory={(path) => showHistory(path, true)}
                     onRevealInExplorer={revealInExplorer}
-                    onShowCommit={(sha, path) => showInHistory({ query: sha, scope: null, reveal: { sha, path, id: ++reveals.current } })}
+                    onShowCommit={showCommit}
                     webUrl={webUrl}
                   />
                 </div>

@@ -1,16 +1,23 @@
-import { useEffect } from "react";
+import { Fragment, type ReactNode, useEffect } from "react";
 import { Button } from "@/components/ui/button";
+import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
 import type { NotifyPermission } from "@/lib/api";
 import { enableNotifications, openNotificationSettings, refreshNotifyPermission, sendTestNotification, useAskingNotify, useNotifyPermission } from "@/lib/app/notify";
 import { IS_MAC } from "@/lib/platform";
-import { type NotifyEvent, updateSettings, useSettings } from "@/lib/settings";
+import { formatDuration } from "@/lib/terminal/commandMarks";
+import { LONG_COMMAND_SECONDS, type NotifyEvent, updateSettings, useSettings } from "@/lib/settings";
 import { Field, Group } from "@/features/settings/controls";
 
 const EVENTS: [NotifyEvent, string, string][] = [
   ["notifyAgentDone", "An agent finishes", "Claude Code, or another agent that reports its state, stops working in a terminal."],
   ["notifyAgentWaiting", "An agent asks for you", "It waits for an answer or a permission before it goes on."],
   ["notifyTerminal", "A terminal rings or notifies", "Any other program ringing the bell or sending a notification (OSC 9, 777 or 99). An agent that reports its state goes by the two switches above."],
+  [
+    "notifyLongCommand",
+    "A long command finishes",
+    "A command in a terminal you aren't looking at ends after running longer than the time below; its tab gets a dot too. Needs shell integration (zsh, bash 4.4+). An agent goes by the switches above.",
+  ],
   ["notifyGit", "A git command ends", "A push, pull, fetch, clone or commit finishes or fails."],
 ];
 
@@ -31,6 +38,19 @@ export function NotificationsSection() {
   // On but not allowed: the wish stays, and so does the way to grant it.
   const needed = IS_MAC && s.notify && !asking && (permission === "denied" || permission === "prompt");
   const status = !IS_MAC ? "Shows one now, to see how they look." : permission ? STATUS[permission] : "Checking with macOS…";
+  // Rows that go with a switch, shown while it's on.
+  const after: Partial<Record<NotifyEvent, ReactNode>> = {
+    notifyLongCommand: (
+      <Field label="Long means longer than">
+        <Segmented<string>
+          value={String(s.longCommandSeconds)}
+          onChange={(v) => updateSettings({ longCommandSeconds: Number(v) })}
+          options={LONG_COMMAND_SECONDS.map((n) => ({ value: String(n), label: formatDuration(n * 1000) }))}
+          variant="field"
+        />
+      </Field>
+    ),
+  };
   return (
     <>
       <Group>
@@ -71,9 +91,12 @@ export function NotificationsSection() {
       </Group>
       <Group title="Notify when">
         {EVENTS.map(([key, label, hint]) => (
-          <Field key={key} label={label} hint={hint}>
-            <Switch checked={s[key]} onChange={(v) => updateSettings({ [key]: v })} />
-          </Field>
+          <Fragment key={key}>
+            <Field label={label} hint={hint}>
+              <Switch checked={s[key]} onChange={(v) => updateSettings({ [key]: v })} />
+            </Field>
+            {s[key] && after[key]}
+          </Fragment>
         ))}
       </Group>
     </>
