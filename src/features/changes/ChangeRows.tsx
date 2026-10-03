@@ -8,6 +8,7 @@ import { toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED } from "@/lib/git/worktrees";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
+import { IndentGuides, indent } from "@/components/IndentGuides";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import type { BranchChange } from "./BranchReview";
 import type { Change } from "./changeList";
@@ -195,14 +196,6 @@ export function Row({
       {menuOpened && menu()}
     </ContextMenu>
   );
-}
-
-// As the explorer's tree.
-const INDENT = 12;
-const indent = (depth: number) => 8 + depth * INDENT;
-
-function IndentGuides({ depth }: { depth: number }) {
-  return Array.from({ length: depth }, (_, i) => <span key={i} className="absolute inset-y-0 w-px bg-border" style={{ left: 14 + i * INDENT }} />);
 }
 
 /**

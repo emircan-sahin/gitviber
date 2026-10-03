@@ -1,7 +1,7 @@
 import type { FileChange, RepoStatus } from "../../lib/api/types.ts";
 import { createStore } from "../../lib/store.ts";
 import { isRecord, readJson, writeJson } from "../../lib/storage.ts";
-import { treeOrder } from "../../lib/ui/pathTree.ts";
+import { pathTree, treeOrder } from "../../lib/ui/pathTree.ts";
 
 export type ChangeSort = "name" | "recent";
 
@@ -54,7 +54,6 @@ export function ordered(status: RepoStatus, view: ChangesView, mtimes: Mtimes | 
   };
 }
 
-
 /** Folders closed in the tree, as "<list>:<path>" (the deepest folder of a compacted row); for the session only. */
 export const closedFolders = createStore<ReadonlySet<string>>(new Set());
 
@@ -66,4 +65,24 @@ export function toggleFolder(key: string, open?: boolean) {
     next.delete(key);
     closedFolders.set(next);
   } else if (!now.has(key)) closedFolders.set(new Set(now).add(key));
+}
+
+type ListKind = "conflict" | "staged" | "unstaged";
+
+/** A row of a list: a file, or in the tree view a folder. */
+export type Item =
+  | { type: "file"; kind: ListKind; file: FileChange; depth?: number; name?: string }
+  | { type: "folder"; kind: ListKind; key: string; path: string; label: string; depth: number; open: boolean; files: FileChange[] };
+
+export const folderKey = (kind: ListKind, path: string) => `${kind}:${path}`;
+
+/** The rows one list shows: its files, or in the tree view its folders and the files of open ones. */
+export function itemsOf(kind: ListKind, list: FileChange[], view: ChangesView, mtimes: Mtimes | null, closed: ReadonlySet<string>): Item[] {
+  if (!view.tree) return list.map((file) => ({ type: "file", kind, file }));
+  const rank = rankFor(view, mtimes);
+  return pathTree(list, (f) => f.path, { rank, closed: (p) => closed.has(folderKey(kind, p)) }).map((r) =>
+    r.kind === "leaf"
+      ? { type: "file", kind, file: r.item, depth: r.depth, name: r.name }
+      : { type: "folder", kind, key: `folder:${folderKey(kind, r.path)}`, path: r.path, label: r.label, depth: r.depth, open: r.open, files: r.items },
+  );
 }

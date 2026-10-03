@@ -23,8 +23,8 @@ import { attempt, type Change, changeList, files, filtered, keptByRestore, leftO
 import { ChangeRowMenu, FolderRowMenu } from "./ChangeRowMenu";
 import { OperationBanner } from "./OperationBanner";
 import { AllCaughtUp, collapsedSections, FolderRow, NestedRow, ReviewSummary, Row, Section, SectionBtn } from "./ChangeRows";
-import { changesView, closedFolders, type Mtimes, ordered, rankFor, toggleFolder } from "./changesView";
-import { foldersOf, pathTree } from "@/lib/ui/pathTree";
+import { changesView, closedFolders, folderKey, type Item, itemsOf, type Mtimes, ordered, toggleFolder } from "./changesView";
+import { foldersOf } from "@/lib/ui/pathTree";
 import { CommitBox } from "./CommitBox";
 import { RowAction } from "@/components/RowAction";
 import { primaryKey } from "@/lib/platform";
@@ -57,13 +57,6 @@ interface Props {
 const ROW_HEIGHT = 26;
 
 const SECTION_OF: Record<Change["kind"], string> = { conflict: "Conflicts", staged: "Staged", unstaged: "Changes" };
-
-/** A row of a list: a file, or in the tree view a folder. */
-type Item =
-  | { type: "file"; kind: Change["kind"]; file: FileChange; depth?: number; name?: string }
-  | { type: "folder"; kind: Change["kind"]; key: string; path: string; label: string; depth: number; open: boolean; files: FileChange[] };
-
-const folderKey = (kind: Change["kind"], path: string) => `${kind}:${path}`;
 
 export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHover, refresh, viewed, setViewed, onRevealInExplorer, onShowHistory, mtimes }: Props) {
   // The list and its section actions (Stage all, Discard) cover the files the filter leaves, and
@@ -242,21 +235,13 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   const active = activeKey === null ? undefined : all[index.get(activeKey) ?? -1];
 
   // The rows each list shows: its files, or in the tree view its folders and the files of open ones.
-  const itemsOf = useMemo(() => {
-    const rank = rankFor(view, mtimes);
-    const of = (kind: Change["kind"], list: FileChange[]): Item[] =>
-      !view.tree
-        ? list.map((file) => ({ type: "file", kind, file }))
-        : pathTree(list, (f) => f.path, { rank, closed: (p) => closed.has(folderKey(kind, p)) }).map((r) =>
-            r.kind === "leaf"
-              ? { type: "file", kind, file: r.item, depth: r.depth, name: r.name }
-              : { type: "folder", kind, key: `folder:${folderKey(kind, r.path)}`, path: r.path, label: r.label, depth: r.depth, open: r.open, files: r.items },
-          );
+  const listed = useMemo(() => {
+    const of = (kind: Change["kind"], list: FileChange[]) => itemsOf(kind, list, view, mtimes, closed);
     return { conflict: of("conflict", status.conflicted), staged: of("staged", status.staged), unstaged: of("unstaged", status.unstaged) };
   }, [status, view, mtimes, closed]);
   const keyOf = (it: Item) => (it.type === "folder" ? it.key : selectionKey(it));
   // What ↑/↓ go along: the rows shown, but not nested repositories, which can't be picked.
-  const nav = (["conflict", "staged", "unstaged"] as const).flatMap((kind) => itemsOf[kind].filter((it) => it.type === "folder" || !it.file.nested));
+  const nav = (["conflict", "staged", "unstaged"] as const).flatMap((kind) => listed[kind].filter((it) => it.type === "folder" || !it.file.nested));
   const navKeys = nav.map(keyOf);
   const navIndex = new Map(navKeys.map((k, i) => [k, i]));
   const shownFiles = navKeys.flatMap((k) => (index.has(k) ? [all[index.get(k)!]] : []));
@@ -586,7 +571,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
 
   /** A section's rows; with thousands, only those near the screen (and the open, tab-stop and `reach` rows). */
   const rowsOf = (kind: Change["kind"], title: string) => {
-    const items = itemsOf[kind];
+    const items = listed[kind];
     const keep = [activeKey, tabStop, reach].map((k) => items.findIndex((it) => keyOf(it) === k));
     const render = (it: Item) => (it.type === "folder" ? folderRow(it) : it.file.nested ? <NestedRow key={it.file.path} file={it.file} depth={it.depth} label={it.name} /> : row(it));
     return (

@@ -19,6 +19,7 @@ import { gitHubLink } from "@/lib/github/url";
 import { basename, childPath, dirname } from "@/lib/path";
 import { MAX_MATCHES, matchingTree } from "@/lib/repo/matchingTree";
 import { FileIcon, FolderIcon } from "@/components/FileIcon";
+import { IndentGuides, indent } from "@/components/IndentGuides";
 import { NameInput } from "@/components/NameInput";
 import { OpenInMenuItem } from "@/features/workspace/OpenIn";
 import { statusInfo } from "@/components/StatusBadge";
@@ -48,9 +49,6 @@ interface Props {
 }
 
 type Editing = { mode: "rename"; entry: Entry } | { mode: "new"; parent: string; isDir: boolean };
-
-
-const INDENT = 12;
 
 const isInside = (path: string, dir: string) => path === dir || path.startsWith(`${dir}/`);
 
@@ -557,14 +555,11 @@ export function Row({ depth, path, className, children, ...props }: { depth: num
     <div
       role="treeitem"
       data-path={path}
-      style={{ paddingLeft: 8 + depth * INDENT }}
+      style={{ paddingLeft: indent(depth) }}
       className={cn("relative flex h-6 cursor-pointer items-center gap-1.5 pr-2 text-[12px]", className)}
       {...props}
     >
-      {/* indent guides */}
-      {Array.from({ length: depth }, (_, i) => (
-        <span key={i} className="absolute inset-y-0 w-px bg-border" style={{ left: 14 + i * INDENT }} />
-      ))}
+      <IndentGuides depth={depth} />
       {children}
     </div>
   );
