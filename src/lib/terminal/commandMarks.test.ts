@@ -71,8 +71,8 @@ test("how long a command took, as its mark and a notification say it", () => {
 test("a notification names the program and subcommand, never the arguments", () => {
   assert.equal(shortCommand("pnpm test"), "pnpm test");
   assert.equal(shortCommand("cargo build --release"), "cargo build");
-  assert.equal(shortCommand("git push origin main"), "git push origin");
-  assert.equal(shortCommand("git push origin main extra"), "git push origin");
+  assert.equal(shortCommand("git push origin main"), "git push");
+  assert.equal(shortCommand("vault login s.abc"), "vault login");
   assert.equal(shortCommand('curl -H "Authorization: Bearer abc" https://x.test'), "curl");
   assert.equal(shortCommand("curl https://x.test/a?token=1"), "curl");
   assert.equal(shortCommand("deploy prod user@host"), "deploy prod");
@@ -81,6 +81,13 @@ test("a notification names the program and subcommand, never the arguments", () 
   assert.equal(shortCommand("./scripts/build.sh fast"), "build.sh fast");
   assert.equal(shortCommand("make a_very_long_target_name_over_the_limit"), "make");
   assert.equal(shortCommand("TOKEN=abc"), undefined);
+  // Quoted words: a split mid-quote must not show its tail.
+  assert.equal(shortCommand("TOKEN='tok en' deploy"), undefined);
+  assert.equal(shortCommand('FOO="a b" cmd'), undefined);
+  assert.equal(shortCommand('echo "sekret words"'), "echo");
+  assert.equal(shortCommand("echo 'sekret words'"), "echo");
+  assert.equal(shortCommand('"curl" -x'), undefined);
+  assert.equal(shortCommand("echo a\\ b"), "echo");
   assert.equal(shortCommand(""), undefined);
   assert.equal(shortCommand(undefined), undefined);
   assert.equal(endText({ command: "curl -H 'X-Key: s3cret' x", ms: 45_000, exit: 0 }), "curl finished after 45s");

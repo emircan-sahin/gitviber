@@ -177,6 +177,8 @@ fn a_command_line_with_controls_in_it_reaches_the_terminal_whole() {
         &z.run(b": '\xc2\x9b2J\xc2\x9c\xc2\x9d0;x' tail\r"),
         ": ' 2J  0;x' tail",
     );
+    // UTF-8 whose continuation bytes are in 0x80..0x9F (日 本 are E6 97 A5, E6 9C AC) stays whole.
+    assert_whole(&z.run("echo 日本 ş\r".as_bytes()), "echo 日本 ş");
     let long = z.run(&[b"echo ".as_slice(), &[b'x'; 5000], b"\r"].concat());
     assert_whole(&long, &format!("echo {}", "x".repeat(195)));
     let wide = z.run(&[b"echo ".as_slice(), "ş".repeat(300).as_bytes(), b"\r"].concat());

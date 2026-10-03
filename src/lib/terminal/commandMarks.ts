@@ -64,22 +64,22 @@ export function endTitle({ ms, exit }: CommandEnd) {
 }
 
 /**
- * The program and its subcommand, for a notification: "pnpm test", "cargo build". Arguments can
- * hold tokens and passwords (`curl -H "Authorization: …"`), and Notification Center keeps what it
- * shows, so the words stop at the first that is a flag, an assignment, a path, a URL or an address,
- * or long; three at most. Leading `NAME=value` words are dropped, and a path is its file name.
+ * The program and one subcommand word, for a notification: "pnpm test", "cargo build". Arguments
+ * can hold tokens and passwords (`curl -H "Authorization: …"`), and Notification Center keeps what
+ * it shows, so the second word is kept only if it's plain: not a flag, an assignment, a path, a URL,
+ * an address, long, or anything quoted or escaped. A plain positional word can still show
+ * (`vault login s.abc` gives "vault login"), which is why it's one word. A quoted word before the
+ * program (`TOKEN='a b' cmd`, which splits mid-quote) names nothing; `NAME=value` words are dropped,
+ * and a path is its file name.
  */
 export function shortCommand(line: string | undefined) {
+  const quoted = (w: string) => /['"\\]/.test(w);
   const words = (line ?? "").split(/\s+/).filter(Boolean);
-  while (words[0]?.includes("=")) words.shift();
+  while (words[0]?.includes("=")) if (quoted(words.shift()!)) return undefined;
   const program = words.shift()?.split("/").pop();
-  if (!program || program.length > 24 || program.startsWith("-")) return undefined;
-  const out = [program];
-  for (const w of words) {
-    if (out.length === 3 || w.length > 24 || /^-|[=/:@]/.test(w)) break;
-    out.push(w);
-  }
-  return out.join(" ");
+  if (!program || program.length > 24 || program.startsWith("-") || quoted(program)) return undefined;
+  const next = words[0];
+  return next && next.length <= 24 && !/^-|[=/:@]/.test(next) && !quoted(next) ? `${program} ${next}` : program;
 }
 
 /** What a notification says of a long command: "pnpm test failed after 2m 3s (exit code 1)". */
@@ -89,7 +89,6 @@ export function endText({ command, ms, exit }: CommandEnd) {
   if (exit === undefined) return `${what} ended after ${took}`;
   return exit === 0 ? `${what} finished after ${took}` : `${what} failed after ${took} (exit code ${exit})`;
 }
-
 
 /**
  * What a full-screen program turns off on its way out: ?1000l ends any mouse tracking in xterm.js
@@ -189,7 +188,7 @@ export class CommandMarks {
     }
     this.last = c;
     const failed = exit !== undefined && exit !== 0;
-    const end: CommandEnd = { command: c.command, ms: performance.now() - c.started!, exit };
+    const end: CommandEnd | null = c.started === undefined ? null : { command: c.command, ms: performance.now() - c.started, exit };
     const mark = this.term.registerDecoration({ marker: c.prompt });
     mark?.onRender((el) => {
       if (el.firstChild) return;
@@ -198,10 +197,10 @@ export class CommandMarks {
       const dot = document.createElement("div");
       dot.className = "gv-command-mark";
       if (failed) dot.dataset.failed = "";
-      dot.title = endTitle(end);
+      dot.title = end ? endTitle(end) : exit === undefined ? "Command ended" : `Exit code ${exit}`;
       el.appendChild(dot);
     });
-    this.onEnd(end);
+    if (end) this.onEnd(end);
   }
 
   /**

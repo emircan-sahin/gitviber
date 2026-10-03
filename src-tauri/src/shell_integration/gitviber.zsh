@@ -56,6 +56,8 @@ _gitviber_preexec() {
   # The line as typed, for "pnpm test finished after 2m": cut short, controls made spaces, then
   # percent-encoded a byte at a time as fish's cmdline_url, so no byte of it can end the mark
   # (under LC_ALL=C a pasted C1 control isn't [[:cntrl:]]). Arithmetic, so nothing forks.
+  # Cut and cleaned by characters, then encoded by bytes: bytewise, [[:cntrl:]] takes the 0x80-0x9F
+  # of a UTF-8 sequence for controls and splits its characters.
   builtin local line=${${1:0:200}//[[:cntrl:]]/ } url= c
   builtin setopt no_multibyte
   for c in ${(s::)line}; do
