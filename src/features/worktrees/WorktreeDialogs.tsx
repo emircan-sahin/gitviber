@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -8,7 +8,7 @@ import { loadWorktreeDir, loadWorktreeRun, moveRoot, saveBranchIssue, saveWorktr
 import { issueBranchName, withIssue } from "@/lib/github/issueWork";
 import { folderMoved, openTerminal, terminalsIn } from "@/lib/terminal/terminals";
 import { localNames, refNameCheck, worktreeBase, worktreeBranch } from "@/lib/git/refs";
-import { type Cleanable, cleanable, shortPath, worktreeHues } from "@/lib/git/worktrees";
+import { type Cleanable, cleanable, defaultBranch, folderForBranch, shortPath, worktreeHues } from "@/lib/git/worktrees";
 import { keepColorOnRename, pickedColors } from "@/lib/git/worktreeColors";
 import { toast } from "@/lib/app/toast";
 import { plural } from "@/lib/format";
@@ -87,8 +87,7 @@ interface Props {
 
 type Inner = Props & { onClose: () => void };
 
-/** Worktree folders are named after their branch, "/" being a folder separator. */
-const folderFor = (branch: string) => branch.replaceAll("/", "-");
+const folderFor = folderForBranch;
 const isCommit = (base: string) => /^[0-9a-f]{40}([0-9a-f]{24})?$/i.test(base);
 
 export function WorktreeDialogs(props: Props) {
@@ -118,16 +117,30 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
   const [terminal, setTerminal] = useState(true);
   const [command, setCommand] = useState(() => loadWorktreeRun(main, !!issue));
   const [switchTo, setSwitchTo] = useState(false);
+  const nameInput = useRef<HTMLInputElement>(null);
+  // Asked once, when Create is pressed on the default branch (see `guarded`).
+  const [warned, setWarned] = useState(false);
   const includes = useAsyncValue(api.worktreeIncludes, [], 0);
   // An existing branch (local, or only on a remote) is checked out as it is; the base picked is for a new one.
   const picked = worktreeBranch(name, branches);
   const existing = picked.base !== undefined;
   const n = pull ? pull.branch : picked.name;
   const { pending, send } = useSubmit(onClose);
-  const ready = !!n && (!!pull || !picked.taken) && !pending;
+  // The default branch checked out here would be held by this folder, and git then refuses to
+  // switch to it anywhere else, the main folder included.
+  const guarded = !pull && existing && !picked.taken && n === defaultBranch(branches);
+  const warning = warned && guarded;
+  const ready = !!n && (!!pull || !picked.taken) && !pending && !warning;
   const choose = async () => {
     const picked = await open({ directory: true, defaultPath: dir, title: "Folder for new worktrees" });
     if (typeof picked === "string") setDir(picked);
+  };
+  // A new branch from the default one instead: the name is the only thing left to type.
+  const branchOff = () => {
+    setFrom(picked.base ?? `refs/heads/${n}`);
+    setName("");
+    setWarned(false);
+    nameInput.current?.focus();
   };
   const submit = () => {
     const where = dir === beside ? null : dir;
@@ -161,7 +174,8 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
     <form
       onSubmit={(e) => {
         e.preventDefault();
-        if (ready) submit();
+        if (guarded && !warned && !pending) setWarned(true);
+        else if (ready) submit();
       }}
     >
       <DialogTitle>{pull ? `Check out #${pull.number} in a new worktree` : issue ? `Start #${issue.number} in a new worktree` : "New worktree"}</DialogTitle>
@@ -176,7 +190,20 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
           "A new branch, checked out in its own folder, side by side with this one."
         )}
       </DialogDescription>
-      {!pull && <Input autoFocus className="mt-4 font-mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="Branch name" spellCheck={false} />}
+      {!pull && (
+        <Input
+          ref={nameInput}
+          autoFocus
+          className="mt-4 font-mono"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setWarned(false);
+          }}
+          placeholder="Branch name"
+          spellCheck={false}
+        />
+      )}
       {!pull && <NameHint {...picked} />}
       {!pull &&
         !existing &&
@@ -236,6 +263,19 @@ function NewWorktree({ base, pull, issue, branches, main, onClose, run, runNet, 
               <span className="font-mono">{"{issue}"}</span> is filled in only when starting from an issue.
             </>
           )}
+        </div>
+      )}
+      {warning && (
+        <div className="mt-3 rounded-md bg-removed/10 px-2.5 py-2 text-[11.5px]">
+          <span className="font-mono">{n}</span> is best kept in the main folder, <span className="font-mono">{folderName(main)}</span>: a worktree that holds it blocks switching to it there.
+          <div className="mt-2 flex justify-end gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={branchOff}>
+              Create from a new branch instead
+            </Button>
+            <Button type="button" variant="ghost" size="sm" onClick={submit}>
+              Create anyway
+            </Button>
+          </div>
         </div>
       )}
       <div className="mt-3 flex items-center gap-3">
