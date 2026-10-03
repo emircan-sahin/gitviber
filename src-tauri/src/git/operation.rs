@@ -29,6 +29,7 @@ pub(super) fn operation_in(dir: &Path) -> Option<Operation> {
             subject: None,
             step: None,
             total: None,
+            split: false,
         });
     }
     for rebase in ["rebase-merge", "rebase-apply"] {
@@ -46,6 +47,7 @@ pub(super) fn operation_in(dir: &Path) -> Option<Operation> {
                     .and_then(|h| h.strip_prefix("refs/heads/").map(str::to_string)),
                 step: read_trim(d.join(step)).and_then(|v| v.parse().ok()),
                 total: read_trim(d.join(total)).and_then(|v| v.parse().ok()),
+                split: split_stop(dir, &d),
             });
         }
     }
@@ -56,6 +58,7 @@ pub(super) fn operation_in(dir: &Path) -> Option<Operation> {
                 .and_then(|m| m.lines().next().map(str::to_string)),
             step: None,
             total: None,
+            split: false,
         })
     };
     simple("merge", "MERGE_HEAD")
@@ -67,6 +70,7 @@ pub(super) fn operation_in(dir: &Path) -> Option<Operation> {
                 subject: None,
                 step: None,
                 total: None,
+                split: false,
             })
         })
         .or_else(|| {
@@ -82,8 +86,26 @@ pub(super) fn operation_in(dir: &Path) -> Option<Operation> {
                 subject: None,
                 step: None,
                 total: None,
+                split: false,
             })
         })
+}
+
+/// Whether the rebase in `rebase` stands on the edit line a split wrote (rewrite.rs), whose
+/// commit it marked. git may shorten the line's command and id.
+fn split_stop(dir: &Path, rebase: &Path) -> bool {
+    let (Some(sha), Some(done)) = (
+        read_trim(dir.join("gitviber-rewrite/split")),
+        read_trim(rebase.join("done")),
+    ) else {
+        return false;
+    };
+    let last = done.lines().last().unwrap_or_default();
+    let mut words = last.split_whitespace();
+    matches!(words.next(), Some("edit" | "e"))
+        && words
+            .next()
+            .is_some_and(|c| c.len() >= 4 && sha.starts_with(c))
 }
 
 /// True when the index has unmerged paths.
@@ -166,11 +188,22 @@ pub fn merge(repo: &Path, name: &str, how: MergeKind, autostash: bool) -> Result
     }
 }
 
-pub fn rebase(repo: &Path, onto: &str, autostash: bool) -> Result<bool, String> {
+/// `update_refs`: move the local branches on the replayed commits along, or not, whatever
+/// rebase.updateRefs says; None leaves it to that.
+pub fn rebase(
+    repo: &Path,
+    onto: &str,
+    autostash: bool,
+    update_refs: Option<bool>,
+) -> Result<bool, String> {
     ensure_idle(repo)?;
     validate_ref(repo, onto)?;
     let mut args = vec!["rebase"];
     args.extend(autostash.then_some("--autostash"));
+    args.extend(update_refs.map(|on| match on {
+        true => "--update-refs",
+        false => "--no-update-refs",
+    }));
     args.push(onto);
     run_stoppable(repo, &args)
 }
@@ -181,8 +214,12 @@ pub fn op_continue(repo: &Path) -> Result<bool, String> {
         "bisect" => Err("Mark the commit good or bad instead.".into()),
         // `merge --continue` refuses without an editor on some git versions; commit is equivalent.
         "merge" => run_stoppable(repo, &["commit", "--no-edit"]),
+        // git's own refusal over a split's leftover changes talks about merge conflicts.
+        "rebase" if op.split && run(repo, &["diff", "--quiet", "HEAD"]).is_err() => {
+            Err("Commit or discard the changes left in Changes first.".into())
+        }
         "rebase" => run_stoppable(repo, &["rebase", "--continue"]),
-        "cherry-pick" => run_stoppable(repo, &["cherry-pick", "--continue"]),
+        "cherry-pick" => super::pick_continue(repo),
         "am" => run_stoppable(repo, &["am", "--continue"]),
         _ => run_stoppable(repo, &["revert", "--continue"]),
     }

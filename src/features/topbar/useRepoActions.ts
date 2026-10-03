@@ -1,3 +1,4 @@
+import { askStacked } from "@/features/history/StackedDialog";
 import { ask } from "@/lib/app/ask";
 import { api, type Branch, CANCELLED, errorMessage, type PullMode, type Worktree } from "@/lib/api";
 import { openTerminal, terminalsIn } from "@/lib/terminal/terminals";
@@ -111,11 +112,21 @@ export function useRepoActions(repo: RepoData, root: string, main: string) {
           fixes: { autostash: retryStashed(() => merge(name, how, true)) },
           conflicts: stashedFor(autostash, "merge"),
         });
-  const rebase = (onto: string, autostash = false): Promise<boolean> =>
-    run("Rebase", () => api.rebase(onto, autostash), `Rebased onto ${onto}`, undefined, {
-      fixes: { autostash: retryStashed(() => rebase(onto, true)) },
+  // `updateRefs`: whether the branches on the replayed commits move along; unset, asked when there are any.
+  const rebase = async (onto: string, autostash = false, updateRefs?: boolean): Promise<boolean> => {
+    if (updateRefs === undefined) {
+      const stacked = await api.rebaseStacked(onto).catch(() => null);
+      if (stacked?.branches.length) {
+        const move = await askStacked({ title: `Rebase onto ${onto}`, message: "", okLabel: "Rebase", branches: stacked.branches, checked: stacked.updateRefs });
+        if (move === null) return false;
+        updateRefs = move;
+      }
+    }
+    return run("Rebase", () => api.rebase(onto, autostash, updateRefs), `Rebased onto ${onto}`, undefined, {
+      fixes: { autostash: retryStashed(() => rebase(onto, true, updateRefs)) },
       conflicts: stashedFor(autostash, "rebase"),
     });
+  };
   // Rejected as non-fast-forward: when the remote's extra commits are this branch's own from
   // before a rebase or amend, replacing them is a force push, so it asks first. Anyone else's
   // (already fetched in the background, so not "fetch first") want a pull, which the error

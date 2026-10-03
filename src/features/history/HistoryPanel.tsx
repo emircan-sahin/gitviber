@@ -117,6 +117,10 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
     everyOnWeb: !!web,
     pickTargets: worktrees.filter((w) => !w.current && !w.bare && !w.prunable && w.branch),
     pickInto,
+    pickMany: (cs) => {
+      const target = status?.branch ?? "HEAD";
+      return run("Cherry-pick", () => api.cherryPickMany(cs.map((c) => c.sha).reverse()), `Cherry-picked ${cs.length} commits onto ${target}`);
+    },
     remotes,
     refMenu,
     showRefs,

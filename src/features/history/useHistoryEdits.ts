@@ -5,6 +5,7 @@ import { api, type Commit, type HistoryEdit } from "@/lib/api";
 import type { GitRun } from "@/hooks/useGitAction";
 import { dropsPushed, PUSHED_WARNING } from "./commitActions";
 import { editedShas, keptUpTo, type Messaging } from "./edits";
+import { askStacked } from "./StackedDialog";
 
 /**
  * History's rewrites of the branch: each warns first when it makes pushed commits again, then
@@ -20,18 +21,29 @@ export function useHistoryEdits({ commits, head, graph, run }: { commits: Commit
     const drops = await dropsPushed(keptUpTo(editedShas(edit, about), commits));
     if (drops === null) return;
     const [c, n] = [about[0], about.length];
-    const verb = { reword: "Reword", squash: edit.kind === "squash" && edit.message === null ? "Fixup" : "Squash", drop: "Drop", move: "Move", reorder: "Move" }[edit.kind];
+    const verb = { reword: "Reword", squash: edit.kind === "squash" && edit.message === null ? "Fixup" : "Squash", drop: "Drop", move: "Move", reorder: "Move", split: "Split", fixupStaged: "Fixup" }[edit.kind];
     const dropping = n === 1 ? `Drop "${c.subject}"? Its changes leave the branch.` : `Drop ${n} commits? Their changes leave the branch.`;
     const warnings = [...(edit.kind === "drop" ? [dropping] : []), ...(drops ? [PUSHED_WARNING] : [])];
-    if (warnings.length && !(await ask(warnings.join("\n\n"), { title: `${verb} commit${n === 1 ? "" : "s"}`, kind: "warning", okLabel: verb }))) return;
+    const title = `${verb} commit${n === 1 ? "" : "s"}`;
+    // Branches on the commits it replays can move along: asked in the same dialog as the warnings.
+    const stacked = await api.stackedBranches(edit).catch(() => null);
+    let branches = false;
+    if (stacked?.branches.length) {
+      const move = await askStacked({ title, message: warnings.join("\n\n"), okLabel: verb, branches: stacked.branches, checked: stacked.updateRefs });
+      if (move === null) return;
+      branches = move;
+    } else if (warnings.length && !(await ask(warnings.join("\n\n"), { title, kind: "warning", okLabel: verb }))) return;
     const what = n === 1 ? c.shortSha : `${n} commits`;
-    const done = edit.kind === "squash" ? squashed(edit, about) : { reword: "Commit reworded", drop: `Dropped ${what}`, move: `Moved ${what}`, reorder: `Moved ${what}` }[edit.kind];
+    const done = edit.kind === "squash" ? squashed(edit, about) : { reword: "Commit reworded", drop: `Dropped ${what}`, move: `Moved ${what}`, reorder: `Moved ${what}`, fixupStaged: `Fixed up ${c.shortSha} with the staged changes`, split: undefined }[edit.kind];
     let stashed = false;
+    let splitting = false;
     const ok = await run(verb, async () => {
-      const outcome = await api.rewrite(head, edit);
+      const outcome = await api.rewrite(head, edit, branches);
       stashed = outcome === "stashConflicts";
+      splitting = outcome === "split";
       return outcome === "conflicts";
     }, done);
+    if (ok && splitting) toast("info", `Splitting ${c.shortSha}`, "Its changes are unstaged in Changes. Commit them in pieces with line staging, then Continue.");
     // Done, but the uncommitted changes set aside for it didn't come back cleanly.
     if (ok && stashed) toast("info", "Your uncommitted changes conflict with the new history", "They're marked conflicted in Changes: resolve them there. git keeps a copy in Stashes too; drop it once resolved.");
   };

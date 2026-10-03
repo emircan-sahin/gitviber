@@ -122,12 +122,15 @@ pub async fn commit_details(state: State<'_, AppState>, sha: String) -> Res<git:
     in_repo(&state, move |r| git::commit_details(r, &sha)).await
 }
 
-/// Rewords, squashes, drops or moves commits of the branch, and says how that ended.
+/// Rewords, squashes, drops, moves or splits commits of the branch, or fixes staged changes up
+/// into one, and says how that ended. `branches`: the local branches on the commits it replays
+/// move along.
 #[tauri::command]
 pub async fn rewrite(
     state: State<'_, AppState>,
     head: String,
     edit: rewrite::Edit,
+    branches: bool,
 ) -> Res<rewrite::Outcome> {
     let what = |shas: &[String]| match shas {
         [sha] => short(sha).to_string(),
@@ -150,11 +153,27 @@ pub async fn rewrite(
         rewrite::Edit::Drop { shas } => format!("Drop {}", what(shas)),
         rewrite::Edit::Move { sha, .. } => format!("Move {}", short(sha)),
         rewrite::Edit::Reorder { shas, .. } => format!("Move {}", what(shas)),
+        rewrite::Edit::Split { sha } => format!("Split {}", short(sha)),
+        rewrite::Edit::FixupStaged { sha } => format!("Fixup staged changes into {}", short(sha)),
     };
-    journaled(&state, Action::new(label, Mode::Keep), move |r| {
-        rewrite::run(r, &head, &edit)
+    // Undone, a fixup's changes come back staged, as they were.
+    let mode = match edit {
+        rewrite::Edit::FixupStaged { .. } => Mode::Soft,
+        _ => Mode::Keep,
+    };
+    journaled(&state, Action::new(label, mode), move |r| {
+        rewrite::run(r, &head, &edit, branches)
     })
     .await
+}
+
+/// The local branches `edit` would replay commits of, to offer moving them along.
+#[tauri::command]
+pub async fn stacked_branches(
+    state: State<'_, AppState>,
+    edit: rewrite::Edit,
+) -> Res<rewrite::Stacked> {
+    in_repo(&state, move |r| rewrite::stacked_for(r, &edit)).await
 }
 
 #[tauri::command]
@@ -209,6 +228,16 @@ pub async fn cherry_pick(state: State<'_, AppState>, sha: String) -> Res<bool> {
     let label = format!("Cherry-pick {}", short(&sha));
     journaled(&state, Action::new(label, Mode::Keep), move |r| {
         git::cherry_pick(r, &sha)
+    })
+    .await
+}
+
+/// Picks `shas`, oldest first, onto HEAD.
+#[tauri::command]
+pub async fn cherry_pick_many(state: State<'_, AppState>, shas: Vec<String>) -> Res<bool> {
+    let label = format!("Cherry-pick {} commits", shas.len());
+    journaled(&state, Action::new(label, Mode::Keep), move |r| {
+        git::cherry_pick_many(r, &shas)
     })
     .await
 }

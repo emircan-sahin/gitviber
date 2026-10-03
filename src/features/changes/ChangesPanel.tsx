@@ -563,8 +563,8 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
         </div>
       )}
       {stashing && <StashDialog status={full} paths={stashing} onClose={() => setStashing(null)} refresh={refresh} />}
-      {status.operation ? (
-        // Committing by hand mid-rebase would splice an extra commit into the history.
+      {status.operation && !status.operation.split ? (
+        // Committing by hand mid-rebase would splice an extra commit into the history; a split's pieces are the point.
         <div className="shrink-0 border-t border-border bg-panel px-3 py-2.5 text-[11.5px] text-muted-foreground">
           A {status.operation.kind} is in progress. Resolve the conflicts, then use <span className="font-medium text-foreground">Continue</span> above.
         </div>

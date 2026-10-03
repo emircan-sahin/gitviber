@@ -196,11 +196,13 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
 
   // A merge/rebase that stopped on conflicts: bring the conflicts into view.
   const conflictCount = status?.conflicted.length ?? 0;
+  // A split's stop likewise: its pieces are committed from Changes.
+  const splitting = !!status?.operation?.split;
   useEffect(() => {
-    if (conflictCount === 0) return;
+    if (conflictCount === 0 && !splitting) return;
     setListTab("changes");
     setReview(null);
-  }, [conflictCount]);
+  }, [conflictCount, splitting]);
 
   const prefetch = useCallback((sel: Selection) => prefetchSelection(sel, repo.revision), [repo.revision]);
 

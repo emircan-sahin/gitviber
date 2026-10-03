@@ -218,7 +218,7 @@ fn undo_a_rebase_continued_after_conflicts() {
     let j = Journal::default();
     let action = || Action::new("Rebase onto main", Mode::Keep);
     assert!(j
-        .record(&r, action(), |r| rebase(r, "main", false))
+        .record(&r, action(), |r| rebase(r, "main", false, None))
         .unwrap());
     assert!(j.view(&r).undo.is_empty());
     fs::write(r.join("a.txt"), "both\n").unwrap();

@@ -1,8 +1,8 @@
 //! Commands that move a branch back or pick commits: reset, revert, cherry-pick.
 
 use super::{
-    commit_files, ensure_idle, listed_worktree, operation, pushed_base, run, run_text, status,
-    stoppable, toplevel, validate_branch, validate_rev,
+    commit_files, ensure_idle, git_dir, has_conflicts, listed_worktree, operation, pushed_base,
+    run, run_text, status, stoppable, toplevel, validate_branch, validate_rev,
 };
 use serde::Deserialize;
 use std::path::Path;
@@ -107,23 +107,63 @@ pub fn revert(repo: &Path, sha: &str) -> Result<bool, String> {
 
 /// `git cherry-pick` onto HEAD, returning true if it stopped on conflicts.
 pub fn cherry_pick(repo: &Path, sha: &str) -> Result<bool, String> {
-    validate_rev(sha)?;
+    cherry_pick_many(repo, &[sha.to_string()])
+}
+
+/// Picks `shas` in that order (oldest first, as GitHub Desktop sends them) onto HEAD, returning
+/// true if it stopped on conflicts. One whose changes HEAD already has is left out.
+pub fn cherry_pick_many(repo: &Path, shas: &[String]) -> Result<bool, String> {
+    if shas.is_empty() {
+        return Err("No commits picked.".into());
+    }
+    for sha in shas {
+        validate_rev(sha)?;
+    }
     ensure_idle(repo)?;
-    // Like revert: a merge is picked relative to its first parent.
-    let merge = run(repo, &["rev-parse", "--verify", "-q", &format!("{sha}^2")]).is_ok();
+    let before = run_text(repo, &["rev-parse", "HEAD"])?;
     let mut args = vec!["cherry-pick"];
-    if merge {
+    // Like revert: a merge is picked relative to its first parent. git takes -m for any commit
+    // since 2.21, as long as one of them is a merge.
+    let merge = |sha: &String| run(repo, &["rev-parse", "--verify", "-q", &format!("{sha}^2")]);
+    if shas.iter().any(|s| merge(s).is_ok()) {
         args.extend(["-m", "1"]);
     }
-    args.push(sha);
-    let result = stoppable(repo, run(repo, &args));
-    // Changes HEAD already has leave an empty pick in progress, with nothing to resolve.
-    if result.is_err()
-        && operation(repo).is_some_and(|op| op.kind == "cherry-pick")
-        && run(repo, &["diff", "--cached", "--quiet"]).is_ok()
-    {
+    args.extend(shas.iter().map(String::as_str));
+    let result = skip_empty(repo, stoppable(repo, run(repo, &args)));
+    // Refused part-way (a changed file in the way): nothing to resolve, so back to the start.
+    if result.is_err() && operation(repo).is_some_and(|op| op.kind == "cherry-pick") {
         let _ = run(repo, &["cherry-pick", "--abort"]);
+    }
+    if result.is_ok()
+        && operation(repo).is_none()
+        && run_text(repo, &["rev-parse", "HEAD"])? == before
+    {
         return Err("This branch already has these changes; nothing to cherry-pick.".into());
+    }
+    result
+}
+
+/// Continues a cherry-pick stopped on conflicts. Resolved to no change at all, the commit is
+/// left out instead, as for one whose changes were already there.
+pub fn pick_continue(repo: &Path) -> Result<bool, String> {
+    let result = match empty_pick(repo) {
+        true => stoppable(repo, run(repo, &["cherry-pick", "--skip"])),
+        false => stoppable(repo, run(repo, &["cherry-pick", "--continue"])),
+    };
+    skip_empty(repo, result)
+}
+
+/// A pick that would make an empty commit: git stops on it, with nothing to resolve.
+fn empty_pick(repo: &Path) -> bool {
+    !has_conflicts(repo)
+        && git_dir(repo).is_some_and(|d| d.join("CHERRY_PICK_HEAD").exists())
+        && run(repo, &["diff", "--cached", "--quiet"]).is_ok()
+}
+
+/// Skips the picks git stopped on as empty, as `--empty=drop` (git 2.45) would.
+fn skip_empty(repo: &Path, mut result: Result<bool, String>) -> Result<bool, String> {
+    while result.is_err() && empty_pick(repo) {
+        result = stoppable(repo, run(repo, &["cherry-pick", "--skip"]));
     }
     result
 }

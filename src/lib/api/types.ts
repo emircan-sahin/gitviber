@@ -74,6 +74,8 @@ export interface Operation {
   subject: string | null;
   step: number | null;
   total: number | null;
+  /** A rebase stopped on a commit Split Commit took apart: its pieces are the user's to commit. */
+  split: boolean;
 }
 
 export interface RepoStatus {
@@ -271,17 +273,26 @@ export interface DefinitionRequest {
 /**
  * A change to the branch's history (rewrite.rs): reword a commit; squash `shas` and `onto` into one
  * where `onto` is (fixup, keeping the oldest's message, without a message); drop commits; move one
- * past its neighbour, or several just under `before` (on top when null).
+ * past its neighbour, or several just under `before` (on top when null); split one into pieces
+ * to commit (the rebase stops on it); fix the staged changes up into one.
  */
 export type HistoryEdit =
   | { kind: "reword"; sha: string; message: string }
   | { kind: "squash"; shas: string[]; onto: string; message: string | null }
   | { kind: "drop"; shas: string[] }
   | { kind: "move"; sha: string; up: boolean }
-  | { kind: "reorder"; shas: string[]; before: string | null };
+  | { kind: "reorder"; shas: string[]; before: string | null }
+  | { kind: "split"; sha: string }
+  | { kind: "fixupStaged"; sha: string };
 
 /** How a rewrite ended: done, waiting on conflicts, or done with the uncommitted changes it set aside conflicting as they came back (kept in the stash too). */
-export type RewriteOutcome = "done" | "conflicts" | "stashConflicts";
+export type RewriteOutcome = "done" | "conflicts" | "stashConflicts" | "split";
+
+/** The local branches an edit or a rebase replays commits of, which can move along with them; `updateRefs`: rebase.updateRefs asks for that. */
+export interface StackedBranches {
+  branches: string[];
+  updateRefs: boolean;
+}
 
 export interface LinesRequest {
   path: string;

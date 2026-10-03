@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { ArrowDown, ArrowUp, Cherry, Combine, SearchCode, Copy, ExternalLink, Eye, EyeOff, FileDiff, FolderGit2, GitBranchPlus, GitCommitHorizontal, GitCompare, GitCompareArrows, History, Link, Pencil, RotateCcw, SquareDashedMousePointer, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
+import { ArrowDown, ArrowUp, Cherry, Combine, SearchCode, Scissors, GitCommitVertical, Copy, ExternalLink, Eye, EyeOff, FileDiff, FolderGit2, GitBranchPlus, GitCommitHorizontal, GitCompare, GitCompareArrows, History, Link, Pencil, RotateCcw, SquareDashedMousePointer, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { Fragment, useRef, useState } from "react";
 import {
   ContextMenuContent,
@@ -125,6 +125,14 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
           </ContextMenuItem>
           <ContextMenuItem disabled={!c.parents.length} onSelect={() => actions.squash([c], c.parents[0], false)}>
             Fixup into Parent <span className="ml-auto pl-4 text-[11px] opacity-70">keeps its message</span>
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          {/* Its changes come back unstaged on its parent, to commit in pieces; a merge or the first commit has none to take apart. */}
+          <ContextMenuItem disabled={c.parents.length !== 1} onSelect={() => void actions.rewrite({ kind: "split", sha: c.sha }, [c])}>
+            <Scissors /> Split Commit…
+          </ContextMenuItem>
+          <ContextMenuItem disabled={!status?.staged.length} onSelect={() => void actions.rewrite({ kind: "fixupStaged", sha: c.sha }, [c])}>
+            <GitCommitVertical /> Fixup Staged Changes into This Commit
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem disabled={head} onSelect={() => void actions.rewrite({ kind: "move", sha: c.sha, up: true }, [c])}>
@@ -265,9 +273,20 @@ export function PickedMenu({ commits, all, actions }: { commits: Commit[]; all: 
   const oldest = commits[n - 1];
   // Only the branch's own commits, as for one.
   const off = actions.locked || commits.some((c) => c.notInHead);
+  // Only commits HEAD lacks: picking one it has changes nothing.
+  const missing = commits.filter((c) => c.notInHead);
+  const target = actions.status?.branch ?? "HEAD";
   return (
     <ContextMenuContent>
       <ContextMenuLabel className="normal-case">{n} commits</ContextMenuLabel>
+      {missing.length > 0 && (
+        <>
+          <ContextMenuItem disabled={actions.locked} onSelect={() => void actions.pickMany(missing)}>
+            <Cherry /> Cherry-pick {missing.length} Commits onto {target}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+        </>
+      )}
       <ContextMenuItem disabled={off} onSelect={() => actions.squash(commits, oldest.sha, true)}>
         <Combine /> Squash {n} Commits…
       </ContextMenuItem>

@@ -14,6 +14,7 @@ import { CommandPalette, showCommands } from "@/features/palette/CommandPalette"
 import { IdentityDialog } from "@/features/app/IdentityDialog";
 import { NeedsGit } from "@/features/app/NeedsGit";
 import { PromptDialog } from "@/features/app/PromptDialog";
+import { StackedDialog } from "@/features/history/StackedDialog";
 import { openSettings, SettingsDialog } from "@/features/settings/SettingsDialog";
 import { ShortcutOverlay } from "@/features/app/ShortcutOverlay";
 import { Welcome } from "@/features/projects/Welcome";
@@ -209,6 +210,7 @@ export function App() {
       <SettingsDialog main={opened?.main ?? null} />
       <AboutDialog />
       <PromptDialog />
+      <StackedDialog />
       <UpdateDialog />
       <CommandPalette />
       <ShortcutOverlay />
