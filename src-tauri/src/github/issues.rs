@@ -1,6 +1,10 @@
 //! Issues: listing, counting, details, editing, labels and comments.
 
-use super::{all_pages, call, graphql, list_state, string, target, Comment, Method, Session, JSON};
+use super::search::{self, Kind};
+use super::{
+    all_pages, call, graphql, list_state, string, target, Comment, ListFilter, Method, Session,
+    JSON,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::Path;
@@ -66,14 +70,14 @@ fn issue_from(v: &Value) -> Issue {
     }
 }
 
-/// `state`: "open" | "closed" | "all"; `labels`: only issues carrying all of them. GitHub
-/// lists PRs as issues too; they're left out.
+/// `state`: "open" | "closed" | "all"; `narrow`: only issues carrying all of its labels, and
+/// (a search) those it names the account in. GitHub lists PRs as issues too; they're left out.
 pub fn issues(
     session: &Session,
     repo: &Path,
     to: Option<&str>,
     state: &str,
-    labels: &[String],
+    narrow: &ListFilter,
 ) -> Result<Vec<Issue>, String> {
     let r = target(session, repo, to)?;
     let state = list_state(state);
@@ -81,6 +85,10 @@ pub fn issues(
     // be nearly all PRs (a repo's "all" showed 3 issues). Read on until there are enough.
     const WANT: usize = 50;
     const PAGE: usize = 100;
+    if narrow.scope.is_some() {
+        return search::issues(session, repo, &r, state, narrow, WANT);
+    }
+    let labels = &narrow.labels;
     // GitHub splits the list on commas after decoding, so a name with a comma can't be asked for.
     let labels = if labels.is_empty() {
         String::new()
@@ -297,52 +305,34 @@ pub struct StateCounts {
     pub closed: u64,
 }
 
-/// How many issues are open and closed, carrying all of `labels`: the list holds only the 50
-/// most recent, so it can't be counted. GraphQL has both counts in one request (two with labels).
+/// How many issues are open and closed, narrowed as the list is: the list holds only the 50
+/// most recent, so it can't be counted. A repository's own totals are one GraphQL field;
+/// narrowed ones are a search (`issues(labels:)` counts issues with any label, search's
+/// `label:` qualifiers need all, as the list does).
 pub fn issue_counts(
     session: &Session,
     repo: &Path,
     to: Option<&str>,
-    labels: &[String],
+    narrow: &ListFilter,
 ) -> Result<StateCounts, String> {
     let r = target(session, repo, to)?;
+    if !narrow.is_empty(Kind::Issue) {
+        return search::counts(session, repo, &r, Kind::Issue, narrow);
+    }
     let count = |v: &Value| v.as_u64().unwrap_or_default();
     let v = graphql(
         session,
         repo,
         "query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {
-            nameWithOwner
             open: issues(states: OPEN) { totalCount }
             closed: issues(states: CLOSED) { totalCount }
         } }",
         json!({ "owner": r.owner, "name": r.name }),
     )?;
     let found = &v["repository"];
-    if labels.is_empty() {
-        return Ok(StateCounts {
-            open: count(&found["open"]["totalCount"]),
-            closed: count(&found["closed"]["totalCount"]),
-        });
-    }
-    // `issues(labels:)` counts issues with any of them; search's `label:` qualifiers need all,
-    // as the list does. Search finds nothing under a renamed repository's old name.
-    let full = found["nameWithOwner"]
-        .as_str()
-        .map_or_else(|| r.full(), str::to_string);
-    let labels: String = labels.iter().map(|l| format!(" label:\"{l}\"")).collect();
-    let q = |state: &str| format!("repo:{full} is:issue is:{state}{labels}");
-    let v = graphql(
-        session,
-        repo,
-        "query($open: String!, $closed: String!) {
-            open: search(query: $open, type: ISSUE) { issueCount }
-            closed: search(query: $closed, type: ISSUE) { issueCount }
-        }",
-        json!({ "open": q("open"), "closed": q("closed") }),
-    )?;
     Ok(StateCounts {
-        open: count(&v["open"]["issueCount"]),
-        closed: count(&v["closed"]["issueCount"]),
+        open: count(&found["open"]["totalCount"]),
+        closed: count(&found["closed"]["totalCount"]),
     })
 }
 

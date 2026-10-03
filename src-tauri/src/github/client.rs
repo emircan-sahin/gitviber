@@ -311,7 +311,7 @@ pub(super) fn call(
     request(session, repo, method, path, JSON)
 }
 
-const PER_PAGE: usize = 100;
+pub(super) const PER_PAGE: usize = 100;
 /// Caps a read of every page, so a runaway thread can't stall.
 pub(super) const MAX_PAGES: usize = 30;
 

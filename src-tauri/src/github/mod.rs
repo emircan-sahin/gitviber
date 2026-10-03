@@ -12,6 +12,7 @@ mod issues;
 mod live_tests;
 mod pulls;
 mod repo;
+mod search;
 
 pub use accounts::*;
 pub use attachments::*;
@@ -21,3 +22,4 @@ pub use client::*;
 pub use issues::*;
 pub use pulls::*;
 pub use repo::*;
+pub use search::ListFilter;

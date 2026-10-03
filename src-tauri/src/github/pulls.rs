@@ -1,8 +1,9 @@
 //! Pull requests: listing, details, files, creating, merging, reviews and line comments.
 
+use super::search::{self, Kind};
 use super::{
-    all_pages, call, fetch_remote, graphql, list_state, pages, repo_ref, string, target, Method,
-    Session, StateCounts, JSON, MAX_PAGES,
+    all_pages, call, fetch_remote, graphql, list_state, pages, repo_ref, string, target,
+    ListFilter, Method, Session, StateCounts, JSON, MAX_PAGES,
 };
 use crate::git;
 use crate::network::Net;
@@ -53,16 +54,21 @@ fn pull_from(v: &Value) -> Pull {
 }
 
 /// `state`: "open" | "closed" | "all"; `pages`: how many pages of PER_PAGE, most recently
-/// updated first ("Load more" asks for one more; the ones before come back as 304s).
+/// updated first ("Load more" asks for one more; the ones before come back as 304s, but a
+/// narrowed list is a search and has no ETags).
 pub fn list(
     session: &Session,
     repo: &Path,
     to: Option<&str>,
     state: &str,
     pages: usize,
+    narrow: &ListFilter,
 ) -> Result<Vec<Pull>, String> {
     let r = target(session, repo, to)?;
     let state = list_state(state);
+    if !narrow.is_empty(Kind::Pull) {
+        return search::pulls(session, repo, &r, state, narrow, pages);
+    }
     let list = self::pages(
         session,
         repo,
@@ -74,13 +80,18 @@ pub fn list(
     Ok(list.iter().map(pull_from).collect())
 }
 
-/// How many pull requests are open and closed: the list holds only the pages loaded so far.
+/// How many pull requests are open and closed, narrowed as the list is: the list holds only
+/// the pages loaded so far.
 pub fn pull_counts(
     session: &Session,
     repo: &Path,
     to: Option<&str>,
+    narrow: &ListFilter,
 ) -> Result<StateCounts, String> {
     let r = target(session, repo, to)?;
+    if !narrow.is_empty(Kind::Pull) {
+        return search::counts(session, repo, &r, Kind::Pull, narrow);
+    }
     let v = graphql(
         session,
         repo,

@@ -162,6 +162,20 @@ export interface StateCounts {
   closed: number;
 }
 
+/** Whose pull requests or issues a list shows, as the account says "me" (github/search.rs). */
+export type Scope = "created" | "assigned" | "mentioned" | "reviewRequested";
+
+/** What a list is narrowed to, on top of open/closed. */
+export interface Narrow {
+  scope: Scope | null;
+  /** Pull requests only: true drafts, false those ready for review. */
+  draft: boolean | null;
+  /** Carrying all of them. */
+  labels: string[];
+}
+
+export const NO_NARROW: Narrow = { scope: null, draft: null, labels: [] };
+
 export const github = {
   account: () => invoke<GitHubAccount>("gh_account"),
   /** Asks GitHub about every account's token, so only on demand. */
@@ -175,9 +189,9 @@ export const github = {
   /** Origin's branches under branch protection (names without "origin/"). */
   protectedBranches: () => invoke<string[]>("gh_protected_branches"),
   /** The most recently updated `pages` × PR_PAGE. */
-  list: (target: Target, filter: "open" | "closed" | "all", pages = 1) => invoke<Pull[]>("pr_list", { target, filter, pages }),
+  list: (target: Target, filter: "open" | "closed" | "all", pages = 1, narrow: Narrow = NO_NARROW) => invoke<Pull[]>("pr_list", { target, filter, pages, narrow }),
   /** All of them, not just the pages listed. */
-  counts: (target: Target) => invoke<StateCounts>("pr_counts", { target }),
+  counts: (target: Target, narrow: Narrow = NO_NARROW) => invoke<StateCounts>("pr_counts", { target, narrow }),
   detail: (target: Target, number: number) => invoke<PullDetail>("pr_detail", { target, number }),
   reviewComments: (target: Target, number: number) => invoke<ReviewComment[]>("pr_review_comments", { target, number }),
   /** On `line` of `path` at the PR's head `commit`, on `side`; with `replyTo`, an answer in that thread. */
