@@ -9,6 +9,8 @@ import { tracked, undoAction } from "@/lib/repo/undo";
 export interface RunExtras {
   fixes?: GitFixes;
   conflicts?: string;
+  /** Said instead of `done` when the action moved nothing, i.e. recorded no undo entry. */
+  nothing?: string;
 }
 
 /** Runs one action; resolves true when it went through. `done`: the success toast, none without it. */
@@ -58,6 +60,7 @@ export function useGitAction({ refresh, onDone, tracked: undoable = true, confli
     try {
       const [stopped, entry] = undoable ? await tracked(fn) : [await fn(), null];
       if (stopped === true) toast("info", `${label} stopped on conflicts`, extras.conflicts ?? conflicts);
+      else if (undoable && entry === null && extras.nothing) toast("info", extras.nothing);
       else if (done) toast("success", done, detail, undoAction(entry, refresh ?? (() => {})));
       await onDone?.();
       return true;

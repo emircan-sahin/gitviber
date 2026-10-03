@@ -23,13 +23,16 @@ const stashedFor = (autostash: boolean, what = "pull") =>
 const retryStashed = (again: () => Promise<boolean>) => [{ label: "Retry with autostash", run: () => void again() }];
 
 /** Merges `name` into HEAD's branch. A squash's changes would get the stash back before they're committed: no autostash for it. */
-export const mergeInto = (run: GitRun, name: string, how: "ff" | "no-ff" | "squash" = "ff", autostash = false): Promise<boolean> =>
-  how === "squash"
-    ? run("Squash merge", () => api.merge(name, how), `Squashed ${shortRef(name)} into one commit`)
+export const mergeInto = (run: GitRun, name: string, how: "ff" | "no-ff" | "squash" = "ff", autostash = false): Promise<boolean> => {
+  const nothing = `Nothing to merge: ${shortRef(name)}'s changes are already here`;
+  return how === "squash"
+    ? run("Squash merge", () => api.merge(name, how), `Squashed ${shortRef(name)} into one commit`, undefined, { nothing })
     : run("Merge", () => api.merge(name, how, autostash), `Merged ${shortRef(name)}`, undefined, {
         fixes: { autostash: retryStashed(() => mergeInto(run, name, how, true)) },
         conflicts: stashedFor(autostash, "merge"),
+        nothing,
       });
+};
 
 /** The top bar's git actions: switching, merging, deleting branches, worktrees, pull, push and publish. */
 export function useRepoActions(repo: RepoData, root: string, main: string) {
