@@ -76,7 +76,7 @@ pub(crate) fn reading<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
 
-fn read_timeout() -> Option<Duration> {
+pub(crate) fn read_timeout() -> Option<Duration> {
     READING.with(Cell::get).then_some(READ_TIMEOUT)
 }
 

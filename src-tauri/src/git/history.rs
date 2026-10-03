@@ -1,9 +1,10 @@
 //! The commit log, its filters and graph, reflog and branch comparisons.
 
 use super::{
-    has_head, has_origin, pushed_base, range_files, run, run_text, run_with, validate_branch,
-    validate_full_ref, validate_rev, FileChange, REF_KINDS,
+    command, has_head, has_origin, pushed_base, range_files, read_timeout, run, run_text,
+    validate_branch, validate_full_ref, validate_rev, FileChange, REF_KINDS,
 };
+use crate::process::exec;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -388,20 +389,29 @@ pub fn known_commits(repo: &Path, shas: &[String]) -> Result<Vec<Option<String>>
         return Err(format!("at most {MAX_KNOWN} commits at once"));
     }
     let hex = |s: &str| (7..=40).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit());
+    // A partial clone fetches a full id it lacks from its remote, twice per id; a prefix is only
+    // ever looked up here, so a full one is asked by 39 digits. GIT_NO_LAZY_FETCH (git 2.44+) for
+    // the rest, as peeling a tag to its commit could fetch too.
     let input: String = shas
         .iter()
         .filter(|s| hex(s))
-        .map(|s| format!("{s}^{{commit}}\n"))
+        .map(|s| format!("{}^{{commit}}\n", &s[..s.len().min(39)]))
         .collect();
     if input.is_empty() {
         return Ok(vec![None; shas.len()]);
     }
     // A line an answer, in order: `<id> commit`, or `<asked> missing` / `ambiguous`.
-    let out = run_with(
+    let mut cmd = command(
         repo,
         &["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+    );
+    cmd.env("GIT_NO_LAZY_FETCH", "1");
+    let out = exec(
+        cmd,
+        "git cat-file",
         &[],
         Some(input.as_bytes()),
+        read_timeout(),
     )?;
     let text = String::from_utf8_lossy(&out);
     let mut answers = text.lines();

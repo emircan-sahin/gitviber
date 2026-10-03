@@ -44,11 +44,28 @@ _gitviber_unmark() {
 }
 
 _gitviber_preexec() {
+  # zsh's own options here (ksh_arrays would count from 0), put back on return.
+  builtin emulate -L zsh
   _gitviber_unmark
   _gitviber_ran=1
-  # The line as typed, for "pnpm test finished after 2m": the rest of the mark, cut short, its
-  # control characters (an ESC or BEL would end the mark) made spaces. Raw, so no \ is read.
-  builtin print -rn -- $'\e]133;C;cmdline='"${${1[1,200]}//[[:cntrl:]]/ }"$'\a'
+  # A line kept out of the history (hist_ignore_space) isn't named either.
+  if [[ $1 == ' '* ]]; then
+    builtin print -n '\e]133;C\a'
+    builtin return
+  fi
+  # The line as typed, for "pnpm test finished after 2m": cut short, controls made spaces, then
+  # percent-encoded a byte at a time as fish's cmdline_url, so no byte of it can end the mark
+  # (under LC_ALL=C a pasted C1 control isn't [[:cntrl:]]). Arithmetic, so nothing forks.
+  builtin local line=${${1:0:200}//[[:cntrl:]]/ } url= c
+  builtin setopt no_multibyte
+  for c in ${(s::)line}; do
+    if [[ $c == [A-Za-z0-9._~/-] ]]; then
+      url+=$c
+    else
+      url+=%${(l:2::0:)$(( [##16] #c ))}
+    fi
+  done
+  builtin print -rn -- $'\e]133;C;cmdline_url='$url$'\a'
 }
 
 builtin autoload -Uz add-zsh-hook add-zle-hook-widget

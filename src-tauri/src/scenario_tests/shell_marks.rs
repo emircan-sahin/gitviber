@@ -1,4 +1,4 @@
-//! The zsh integration's command mark (OSC 133;C;cmdline=…) from a real `zsh -i` on a pty,
+//! The zsh integration's command mark (OSC 133;C;cmdline_url=…) from a real `zsh -i` on a pty,
 //! loaded as a pane loads it (ZDOTDIR), with a made-up HOME so no one's own rc files run.
 //! The mark must reach xterm.js whole: its parser ends or drops an OSC at BEL, ESC, CAN, SUB
 //! and every C1 control (U+0080..U+009F), and whatever follows is then printed or run.
@@ -104,7 +104,7 @@ impl Zsh {
         }
         self.prompts(before + 1);
         let text = self.text();
-        let from = text.rfind("\x1b]133;C;cmdline=").expect("a C mark") + "\x1b]133;C;".len();
+        let from = text.rfind("\x1b]133;C").expect("a C mark") + "\x1b]133;C".len();
         let len = text[from..].find('\x07').expect("a BEL");
         text[from..from + len].to_string()
     }
@@ -117,6 +117,24 @@ impl Drop for Zsh {
     }
 }
 
+/// The command line a mark's `;cmdline_url=…` carries, percent-decoded; None without one.
+fn decoded(mark: &str) -> Option<String> {
+    let url = mark.strip_prefix(";cmdline_url=")?.as_bytes();
+    let mut out = vec![];
+    let mut i = 0;
+    while i < url.len() {
+        if url[i] == b'%' {
+            let hex = std::str::from_utf8(&url[i + 1..i + 3]).unwrap();
+            out.push(u8::from_str_radix(hex, 16).unwrap());
+            i += 3;
+        } else {
+            out.push(url[i]);
+            i += 1;
+        }
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
 /// What would end or drop the OSC in xterm.js before its BEL.
 fn breaks_osc(c: char) -> bool {
     matches!(c as u32, 0x07 | 0x18 | 0x1a | 0x1b | 0x80..=0x9f)
@@ -127,17 +145,19 @@ fn assert_whole(mark: &str, want: &str) {
         !mark.chars().any(breaks_osc),
         "the mark would be cut short: {mark:?}"
     );
-    assert_eq!(mark, format!("cmdline={want}"));
+    assert_eq!(decoded(mark).as_deref(), Some(want));
 }
 
 /// Control characters typed into the line (^V ESC, ^V BEL, ^V ^X, a newline in a loop) are
-/// spaces; `;`, `\`, `%` and quotes go as typed.
+/// spaces; `;`, `\`, `%` and quotes go as typed, percent-encoded.
 #[test]
 fn a_command_line_with_controls_in_it_reaches_the_terminal_whole() {
     let Some(mut z) = Zsh::start("marks-controls", "", &[]) else {
         return;
     };
     assert_whole(&z.run(b"echo hi\r"), "echo hi");
+    // Kept out of the history, so out of the mark.
+    assert_eq!(z.run(b" echo secret\r"), "");
     assert_whole(&z.run(b"echo 'a;b=c' ; true\r"), "echo 'a;b=c' ; true");
     assert_whole(
         &z.run(b"echo '\x16\x1b]0;title\x16\x07' tail\r"),
