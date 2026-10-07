@@ -4,7 +4,7 @@ import type { Whitespace } from "./api";
 import { cleanOverrides } from "./commands/commands";
 import { IS_MAC, IS_WINDOWS } from "./platform";
 import { writeJson } from "./storage";
-import { SUGGEST_PRESETS, type SuggestPreset } from "./git/suggest";
+import { effortLevels, SUGGEST_PRESETS, type SuggestPreset } from "./git/suggest";
 import type { ResumeMode } from "./terminal/agentState";
 import { useSyncExternalStore } from "react";
 
@@ -241,6 +241,8 @@ export interface Settings {
   suggestCommand: string;
   /** Model ids typed per preset; a preset missing here runs its default, so a newer default reaches it. */
   suggestModels: Partial<Record<SuggestPreset, string>>;
+  /** Reasoning effort picked per preset, "" for the CLI's own; a preset missing here runs its default. */
+  suggestEfforts: Partial<Record<SuggestPreset, string>>;
   /** The app "Open in" runs on a click: a built-in id or a CustomApp's; "" until one is picked. */
   openInApp: string;
   openInCustom: CustomApp[];
@@ -325,6 +327,7 @@ const DEFAULTS: Settings = {
   suggestEnabled: true,
   suggestCommand: "claude -p",
   suggestModels: {},
+  suggestEfforts: {},
   openInApp: "",
   openInCustom: [],
   openInHideBuiltins: false,
@@ -393,6 +396,10 @@ function load(): Settings {
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;
     const models = s.suggestModels && typeof s.suggestModels === "object" ? s.suggestModels : {};
     s.suggestModels = Object.fromEntries(Object.keys(SUGGEST_PRESETS).filter((k) => typeof models[k] === "string").map((k) => [k, models[k]]));
+    const efforts = s.suggestEfforts && typeof s.suggestEfforts === "object" ? s.suggestEfforts : {};
+    s.suggestEfforts = Object.fromEntries(
+      (Object.keys(SUGGEST_PRESETS) as SuggestPreset[]).filter((k) => efforts[k] === "" || effortLevels(k).includes(efforts[k])).map((k) => [k, efforts[k]]),
+    );
     s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;
     if (!FETCH_INTERVALS.includes(s.backgroundFetch)) s.backgroundFetch = DEFAULTS.backgroundFetch;
     if (typeof s.cloneParent !== "string") s.cloneParent = null;

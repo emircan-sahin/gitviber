@@ -102,7 +102,7 @@ export function useCommitDraft(root: string, head: Commit | null, prepared: stri
  */
 export function useSuggestion(kind: SuggestKind) {
   const what = kind === "pull" ? "description" : "message";
-  const { suggestEnabled, suggestCommand, suggestModels } = useSettings();
+  const { suggestEnabled, suggestCommand, suggestModels, suggestEfforts } = useSettings();
   const [suggesting, setSuggesting] = useState(false);
   const running = useRef(false);
   useEffect(
@@ -126,7 +126,7 @@ export function useSuggestion(kind: SuggestKind) {
     running.current = true;
     setSuggesting(true);
     try {
-      const output = await ask(commandLine(suggestCommand, suggestModels));
+      const output = await ask(commandLine(suggestCommand, suggestModels, suggestEfforts));
       if (gen === generation.current && !land(output)) toast("error", `No ${what} suggested`, `${program} printed nothing.`, toSettings);
     } catch (e) {
       if (e !== SUGGEST_CANCELLED && gen === generation.current) toast("error", `Couldn't suggest a ${what}`, errorMessage(e), toSettings);

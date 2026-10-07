@@ -34,14 +34,19 @@ test("program of a template", () => {
   assert.equal(programOf("codex exec"), "codex");
 });
 
-test("a preset runs with its model", () => {
-  assert.equal(commandLine(" claude -p ", {}), "claude -p --model claude-sonnet-5");
-  assert.equal(commandLine("codex exec", { codex: "gpt-x" }), "codex exec -m gpt-x");
-  // Empty leaves the model to the CLI; a custom command carries its own.
-  assert.equal(commandLine("claude -p", { claude: " " }), "claude -p");
-  assert.equal(commandLine("pi -p --model a/b", { claude: "x" }), "pi -p --model a/b");
-  assert.equal(commandLine("pi -p --no-tools --no-session", {}), "pi -p --no-tools --no-session --model anthropic/claude-sonnet-5");
-  assert.equal(commandLine("opencode run --agent plan", { opencode: "zai/glm-5.3" }), "opencode run --agent plan -m zai/glm-5.3");
+test("a preset runs with its model and effort", () => {
+  assert.equal(commandLine(" claude -p ", {}, {}), "claude -p --model claude-sonnet-5 --effort medium");
+  assert.equal(commandLine("codex exec", { codex: "gpt-x" }, { codex: "high" }), "codex exec -m gpt-x -c model_reasoning_effort=high");
+  // Empty leaves the model or the effort to the CLI; a custom command carries its own.
+  assert.equal(commandLine("claude -p", { claude: " " }, { claude: "" }), "claude -p");
+  assert.equal(commandLine("pi -p --model a/b", { claude: "x" }, { pi: "high" }), "pi -p --model a/b");
+  assert.equal(commandLine("pi -p --no-tools --no-session", {}, { pi: "off" }), "pi -p --no-tools --no-session --model anthropic/claude-sonnet-5 --thinking off");
+  // opencode's variants are per model: none until one is picked.
+  assert.equal(commandLine("opencode run --agent plan", { opencode: "zai/glm-5.3" }, {}), "opencode run --agent plan -m zai/glm-5.3");
+  assert.equal(commandLine("opencode run --agent plan", {}, { opencode: "max" }), "opencode run --agent plan -m anthropic/claude-sonnet-5 --variant max");
+  // llm has no effort flag; a level the CLI doesn't take falls back to the default.
+  assert.equal(commandLine("llm", {}, { llm: "high" }), "llm -m gpt-6-luna");
+  assert.equal(commandLine("codex exec", { codex: "" }, { codex: "max" }), "codex exec -c model_reasoning_effort=medium");
 });
 
 test("a markdown description keeps its code blocks", () => {
