@@ -780,6 +780,60 @@
 .markdown .mermaid-error pre {
   margin: 0;
 }
+
+/* A guided review's flows (review/GuideDiagram). Labels' classes are unscoped: Mermaid measures
+   them outside the view. The !important outweighs the id-scoped colors Mermaid writes. */
+.gf-meta {
+  font-size: 10.5px;
+  color: var(--subtle);
+}
+.gf-code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.gf-badge {
+  padding: 0 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 3px;
+}
+.guide-flow .label-container,
+.guide-flow .label-container path {
+  fill: var(--panel) !important;
+  stroke: var(--border-strong) !important;
+}
+.guide-flow .gNew .label-container,
+.guide-flow .gNew .label-container path {
+  fill: var(--add-bg) !important;
+  stroke: var(--added) !important;
+}
+.guide-flow .gChanged .label-container,
+.guide-flow .gChanged .label-container path {
+  stroke: var(--modified) !important;
+}
+.guide-flow :is(.nodeLabel, .edgeLabel) {
+  color: var(--foreground) !important;
+}
+.guide-flow :is(.edgeLabel, .labelBkg, .edgeLabel p) {
+  background-color: var(--background) !important;
+}
+.guide-flow .flowchart-link {
+  stroke: var(--subtle) !important;
+}
+.guide-flow marker path {
+  fill: var(--subtle) !important;
+  stroke: var(--subtle) !important;
+}
+.guide-flow .node[data-section] {
+  cursor: pointer;
+  outline: none;
+}
+.guide-flow .node[data-section]:is(:hover, :focus-visible) .label-container,
+.guide-flow .node[data-section]:is(:hover, :focus-visible) .label-container path {
+  stroke: var(--ring) !important;
+  stroke-width: 2px !important;
+}
 .markdown .math-display {
   margin: 0 0 1em;
   overflow-x: auto;
