@@ -38,9 +38,14 @@ export function useListNav({ activeKey, loadMore, onMove }: { activeKey: string 
     syncStops();
   });
 
-  // Opened from elsewhere (a pinned tab, a new PR): bring the row into view.
+  // Opened from elsewhere (a pinned tab, a new PR): bring the row into view. Once per key: a kept
+  // panel runs its effects again on each show, and its scroll stays where it was left.
+  const scrolledTo = useRef<string | null>(null);
   useEffect(() => {
-    if (activeKey) rowsIn(ref.current).find((r) => r.dataset.row === activeKey)?.scrollIntoView({ block: "nearest" });
+    if (activeKey === scrolledTo.current) return;
+    scrolledTo.current = activeKey;
+    if (!activeKey) return;
+    rowsIn(ref.current).find((r) => r.dataset.row === activeKey)?.scrollIntoView({ block: "nearest" });
   }, [activeKey]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {

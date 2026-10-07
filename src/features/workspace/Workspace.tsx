@@ -2,6 +2,7 @@ import { ChevronsDownUp, ClipboardPaste, GitCompareArrows, Search } from "lucide
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
+import { KeptPanel } from "@/components/KeptPanel";
 import { find } from "@/lib/ui/find";
 import { resetGitHubCache, setGitHubOrigin } from "@/lib/github/githubCache";
 import { warmHighlighter } from "@/lib/editor/highlight";
@@ -120,6 +121,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // The full ref Changes reviews the branch against, in place of the uncommitted list; null: not reviewing.
   const [review, setReview] = useState<string | null>(() => (typeof saved?.review === "string" ? saved.review : null));
   const reviewing = listTab === "changes" && review !== null;
+  // The list tabs shown so far: each is kept once it was, but none is drawn before it's asked for.
+  const [seenTabs, setSeenTabs] = useState(() => new Set([listTab]));
+  if (!seenTabs.has(listTab)) setSeenTabs(new Set(seenTabs).add(listTab));
   // All Branch Changes on show reads the review too, with the list on another tab. It's known once
   // the tabs are, below: a change there renders this again before anything is drawn.
   const [branchOnShow, setBranchOnShow] = useState(false);
@@ -516,43 +520,53 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     onClose={() => setReview(null)}
                   />
                 )}
-                {listTab === "changes" && review === null && status && (
-                  <ChangesPanel status={status} head={repo.commits[0] ?? null} main={main} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} setViewed={setViewed} onRevealInExplorer={revealInExplorer} onShowHistory={(path) => showHistory(path, true)} mtimes={mtimes} />
+                {seenTabs.has("changes") && status && (
+                  <KeptPanel shown={listTab === "changes" && review === null}>
+                    <ChangesPanel status={status} head={repo.commits[0] ?? null} main={main} activeKey={activeKey} onOpen={open} onHover={prefetch} refresh={() => repo.refresh(false)} viewed={viewed} setViewed={setViewed} onRevealInExplorer={revealInExplorer} onShowHistory={(path) => showHistory(path, true)} mtimes={mtimes} />
+                  </KeptPanel>
                 )}
-                {listTab === "pulls" && (
-                  <PullsPanel
-                    status={status}
-                    branches={repo.branches}
-                    lastCommit={repo.commits[0] ?? null}
-                    repoKey={main}
-                    activeKey={activeKey}
-                    onOpen={open}
-                    refreshRepo={() => repo.refresh()}
-                  />
+                {seenTabs.has("pulls") && (
+                  <KeptPanel shown={listTab === "pulls"}>
+                    <PullsPanel
+                      status={status}
+                      branches={repo.branches}
+                      lastCommit={repo.commits[0] ?? null}
+                      repoKey={main}
+                      activeKey={activeKey}
+                      onOpen={open}
+                      refreshRepo={() => repo.refresh()}
+                    />
+                  </KeptPanel>
                 )}
-                {listTab === "issues" && <IssuesPanel repoKey={main} activeKey={activeKey} onOpen={open} />}
-                {listTab === "history" && (
-                  <SearchableHistory
-                    main={main}
-                    revision={repo.revision}
-                    search={historySearch}
-                    onSearch={setHistorySearch}
-                    focusRequested={searchFocus}
-                    onFocused={searchFocused}
-                    commits={repo.commits}
-                    branches={repo.branches}
-                    status={status}
-                    remotes={remoteNames}
-                    webUrl={webUrl}
-                    hasMore={repo.hasMore}
-                    loadMore={repo.loadMore}
-                    refresh={() => repo.refresh()}
-                    activeKey={activeKey}
-                    onOpen={open}
-                    onHover={prefetch}
-                    worktrees={repo.worktrees}
-                    onOpenRepo={onOpenRepo}
-                  />
+                {seenTabs.has("issues") && (
+                  <KeptPanel shown={listTab === "issues"}>
+                    <IssuesPanel repoKey={main} activeKey={activeKey} onOpen={open} />
+                  </KeptPanel>
+                )}
+                {seenTabs.has("history") && (
+                  <KeptPanel shown={listTab === "history"}>
+                    <SearchableHistory
+                      main={main}
+                      revision={repo.revision}
+                      search={historySearch}
+                      onSearch={setHistorySearch}
+                      focusRequested={searchFocus}
+                      onFocused={searchFocused}
+                      commits={repo.commits}
+                      branches={repo.branches}
+                      status={status}
+                      remotes={remoteNames}
+                      webUrl={webUrl}
+                      hasMore={repo.hasMore}
+                      loadMore={repo.loadMore}
+                      refresh={() => repo.refresh()}
+                      activeKey={activeKey}
+                      onOpen={open}
+                      onHover={prefetch}
+                      worktrees={repo.worktrees}
+                      onOpenRepo={onOpenRepo}
+                    />
+                  </KeptPanel>
                 )}
               </div>
             </div>

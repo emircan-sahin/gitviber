@@ -68,9 +68,12 @@ interface Props {
 
 export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, ciTarget, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs, onComparePoints, filterAuthor }: Props) {
   const [open, setOpen] = useState<string | null>(reveal?.sha ?? null);
-  useEffect(() => {
+  // On a new reveal only: an effect would run again each time the kept panel shows, reopening it.
+  const [revealed, setRevealed] = useState(reveal);
+  if (reveal !== revealed) {
+    setRevealed(reveal);
     if (reveal) setOpen(reveal.sha);
-  }, [reveal]);
+  }
   const scroller = useRef<HTMLDivElement>(null);
   const anchor = useRef<{ el: HTMLElement; top: number } | null>(null);
   const [naming, setNaming] = useState<{ kind: "branch" | "tag"; commit: Commit } | null>(null);
