@@ -1,5 +1,6 @@
 import { LoaderCircle, RotateCw, Sparkles, Square, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
+import { flushSync } from "react-dom";
 import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import type { RepoStatus } from "@/lib/api";
@@ -125,6 +126,8 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   // Its diffs; none to wait for once the files couldn't be read.
   const diffs = (paths: string[] | undefined) => (paths ? paths.map((p) => block(byPath.get(p)!, annotations.get(p))) : fixed.error ? [] : null);
   const goTo = (n: number) => {
+    // A section the filter hides (a diagram's link, Other changes): show them all first.
+    if (filter && guide?.sections[n - 1]?.category !== filter) flushSync(() => setFilter(null));
     const row = scroller.current?.querySelector(`[data-section="${n}"]`);
     row?.scrollIntoView({ block: "start" });
     row?.querySelector<HTMLElement>("h2")?.focus({ preventScroll: true });

@@ -310,15 +310,35 @@ function FileDiff({
   };
   if (error) return <Message text={`Could not load: ${error}`} />;
   if (!pair) return <div style={{ height: estimate }} />;
-  if (mediaKind(sel.file.path)) return <Message text="Open the file to compare its versions" action={{ label: "Open", run: onOpen }} />;
-  const special = placeholderFor(pair, false, sel.file);
-  if (special) return <Message text={special} />;
-  if (rows.length > LARGE && !large) return <Message text={`A large diff, ${rows.length} lines`} action={{ label: "Show", run: () => setLarge((memo.large = true)) }} />;
+  const media = mediaKind(sel.file.path);
+  const special = !media && placeholderFor(pair, false, sel.file);
+  const held = !media && !special && rows.length > LARGE && !large;
+  const drawn = !media && !special && !held;
+  // A guide's note on a line the diff doesn't draw, or doesn't have, shows above it with its line.
+  const inline = drawn ? (annotations ?? []).filter((a) => pair.rows.some((r) => (a.old ? r.k !== 1 && r.o : r.k !== 2 && r.n) === a.line)) : [];
+  const loose = (annotations ?? []).filter((a) => !inline.includes(a));
   const note = diffNote(pair, sel.file);
   return (
     <>
-      {note && <div className="px-4 pt-1.5 text-[11.5px] text-subtle">{note}</div>}
-      <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} onReveal={reveal} notes={notes} annotations={annotations} />
+      {loose.length > 0 && (
+        <div className="px-2 pt-1">
+          {loose.map((a, i) => (
+            <GuideNote key={i} text={`Line ${a.line}${a.old ? " (old)" : ""}: ${a.text}`} critical={a.critical} />
+          ))}
+        </div>
+      )}
+      {media ? (
+        <Message text="Open the file to compare its versions" action={{ label: "Open", run: onOpen }} />
+      ) : special ? (
+        <Message text={special} />
+      ) : held ? (
+        <Message text={`A large diff, ${rows.length} lines`} action={{ label: "Show", run: () => setLarge((memo.large = true)) }} />
+      ) : (
+        <>
+          {note && <div className="px-4 pt-1.5 text-[11.5px] text-subtle">{note}</div>}
+          <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} onReveal={reveal} notes={notes} annotations={inline} />
+        </>
+      )}
     </>
   );
 }
