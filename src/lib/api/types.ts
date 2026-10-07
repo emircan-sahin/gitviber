@@ -400,6 +400,16 @@ export interface Branch {
   remoteDefault: boolean;
 }
 
+/** A local branch ahead of, behind or gone from its upstream (only those are listed). */
+export interface BranchTracking {
+  name: string;
+  /** Commits it has that its upstream hasn't, and the other way round. */
+  ahead: number;
+  behind: number;
+  /** Its upstream is set but no longer exists (deleted on the remote, then pruned). */
+  gone: boolean;
+}
+
 export type PullMode = "ff" | "merge" | "rebase";
 
 /** The remote tags are pushed to, and the tags it has. */

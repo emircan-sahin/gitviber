@@ -14,6 +14,12 @@ pub async fn merged_upstream(state: State<'_, AppState>) -> Res<Vec<String>> {
     in_repo(&state, |r| Ok(git::merged_upstream(r))).await
 }
 
+/// Ahead, behind or gone from their upstreams: asked for when the branch picker opens.
+#[tauri::command]
+pub async fn branch_tracking(state: State<'_, AppState>) -> Res<Vec<git::Tracking>> {
+    read_repo(&state, git::branch_tracking).await
+}
+
 /// Where this worktree's HEAD went last, for the picker's Recent group; asked for when it opens.
 #[tauri::command]
 pub async fn recent_branches(state: State<'_, AppState>) -> Res<Vec<String>> {

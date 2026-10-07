@@ -2,9 +2,9 @@ import { Files } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { RelativeTime } from "@/components/RelativeTime";
 import { api, type Commit, errorMessage, LOG_PAGE } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
-import { relativeTime } from "@/lib/format";
 import type { Selection } from "@/lib/repo/selection";
 import { commitUrl } from "@/features/history/commitActions";
 import { arrows } from "./arrows";
@@ -61,13 +61,13 @@ export function CommitList({ base, head, count, empty, webUrl, onOpen }: { base:
               >
                 <span className="mt-[5px] size-[9px] shrink-0 rounded-full border-2 border-subtle bg-sidebar" />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[12px] leading-4 text-foreground/90">{c.subject}</div>
+                  <div className="truncate text-[12px] leading-4 text-foreground/90" title={c.subject}>
+                    {c.subject}
+                  </div>
                   <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] text-subtle">
                     <span className="min-w-0 truncate">{c.authorName}</span>
                     <span>·</span>
-                    <span className="shrink-0" title={new Date(c.committedAt * 1000).toLocaleString()}>
-                      {relativeTime(c.committedAt)}
-                    </span>
+                    <RelativeTime date={c.committedAt} className="shrink-0" />
                     <span className="ml-auto shrink-0 font-mono">{c.shortSha}</span>
                   </div>
                 </div>

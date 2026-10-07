@@ -13,6 +13,7 @@ import { gitFailed } from "@/lib/app/gitFailed";
 import { toast } from "@/lib/app/toast";
 import { withNetActivity } from "@/lib/repo/netActivity";
 import { tracked, undoAction } from "@/lib/repo/undo";
+import { createStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { NESTED_EXPLAINED, stageable } from "@/lib/git/worktrees";
 import { pasteMessage } from "@/lib/git/pasteMessage";
@@ -42,6 +43,14 @@ async function largeFilesConfirmed(autoStaged: boolean) {
   );
 }
 
+// When it was asked (0: not): taken by the box once it shows (Changes may be on another tab). Only
+// for a moment: with no box to show (a rebase's notice), one appearing later mustn't take focus.
+const focusAsked = createStore(0);
+const FOCUS_WAIT_MS = 1000;
+
+/** Focus Commit Message: the summary field takes focus as the commit box comes on screen. */
+export const focusCommitMessage = () => focusAsked.set(Date.now());
+
 /** `shown`: what the list's filter leaves, while it has text; the button says how many files it takes that the list hides. */
 export function CommitBox({ status, shown, head, main, refresh }: { status: RepoStatus; shown: RepoStatus | null; head: Commit | null; main: string; refresh: () => Promise<void> }) {
   const { draft, setDraft, amend, edited, startBody, toggleAmend, clear } = useCommitDraft(status.root, head, status.preparedMessage);
@@ -54,6 +63,13 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
   const [addingCoAuthor, setAddingCoAuthor] = useState(false);
   // Set by Add co-author: focus going back to the options button would steal it from the picker.
   const pickingCoAuthor = useRef(false);
+  const summaryField = useRef<HTMLInputElement>(null);
+  const asked = focusAsked.use();
+  useEffect(() => {
+    if (!asked) return;
+    focusAsked.set(0);
+    if (Date.now() - asked < FOCUS_WAIT_MS) summaryField.current?.focus();
+  }, [asked]);
 
   const onAmend = (on: boolean) => {
     dropSuggestion();
@@ -139,7 +155,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     else void latest.current.commit(then, true);
   };
 
-  const { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest } = useSuggestMessage({ draft, setDraft, startBody, amend: !!amend, hasStaged, hasAny, busy });
+  const { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest } = useSuggestMessage({ draft, setDraft, startBody, amend: !!amend, hasStaged, hasAny, busy, anchor: summaryField });
 
   useCommands({ "git.commit": canCommit ? commit : undefined, "git.suggestMessage": canSuggest ? suggest : undefined });
   const commitKey = useShortcut("git.commit");
@@ -165,7 +181,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
   return (
     <div className="shrink-0 border-t border-border bg-panel p-2">
       <div className="relative">
-        <Input placeholder="Summary" value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} onPaste={onSummaryPaste} onKeyDown={onKey} className={cn("font-medium", length > 50 && "pr-8")} />
+        <Input ref={summaryField} placeholder="Summary" value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value })} onPaste={onSummaryPaste} onKeyDown={onKey} className={cn("font-medium", length > 50 && "pr-8")} />
         {length > 50 && (
           <Tip label={`Summaries over ${SUMMARY_LIMIT} characters get cut off in git log and on GitHub`}>
             <span className={cn("absolute top-1/2 right-2 -translate-y-1/2 font-mono text-[10.5px]", length > SUMMARY_LIMIT ? "text-modified" : "text-subtle")}>{length}</span>

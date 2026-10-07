@@ -17,8 +17,11 @@ export function useListFilter(panel: Panel, placeholder: string) {
     setAsked((n) => n + 1);
   };
   useFind(panel, open);
+  // Once per request: a kept panel runs this again on each show, where focus belongs elsewhere.
+  const served = useRef(0);
   useEffect(() => {
-    if (!asked) return;
+    if (asked === served.current) return;
+    served.current = asked;
     input.current?.focus();
     input.current?.select();
   }, [asked]);

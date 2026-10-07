@@ -118,8 +118,12 @@ export function Row({
   const [menuOpened, setMenuOpened] = useState(false);
   // J/K can move the selection off-screen; follow it. ↑/↓ from a row also moves focus to it.
   // (scroll-mt-7 keeps a row scrolled to the top clear of its section's sticky h-7 header.)
+  // Once per activation: the kept panel runs this again on each show, where its scroll stays.
+  const followed = useRef(false);
   useEffect(() => {
-    if (!active) return;
+    if (!active) return void (followed.current = false);
+    if (followed.current) return;
+    followed.current = true;
     ref.current?.scrollIntoView({ block: "nearest" });
     if (document.activeElement instanceof HTMLElement && document.activeElement.dataset.row !== undefined) ref.current?.focus();
   }, [active]);

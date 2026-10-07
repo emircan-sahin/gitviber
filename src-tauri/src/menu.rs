@@ -224,6 +224,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &b.command("view.focusGitPanel", "Focus Git Panel")?,
             &b.command("view.focusCode", "Focus Code View")?,
             &b.command("view.showExplorer", "Focus Explorer")?,
+            &b.command("changes.focusMessage", "Focus Commit Message")?,
             &b.command("view.focusNextPanel", "Focus Next Panel")?,
             &b.command("view.focusPrevPanel", "Focus Previous Panel")?,
             &sep()?,

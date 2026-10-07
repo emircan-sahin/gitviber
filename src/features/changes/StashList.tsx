@@ -12,10 +12,10 @@ import { rewriteFiles } from "@/lib/repo/undo";
 import { copyLater } from "@/lib/app/clipboard";
 import { useListNav } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
-import { relativeTime } from "@/lib/format";
 import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import { RowAction } from "@/components/RowAction";
+import { RelativeTime } from "@/components/RelativeTime";
 import { useGitAction } from "@/hooks/useGitAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 
@@ -164,7 +164,7 @@ export function StashList({ stashes, activeKey, onOpen, onHover, refresh }: Prop
                   </span>
                   <span className="shrink-0 text-[10.5px] text-subtle group-focus-within/row:hidden group-hover/row:hidden">
                     {branch && <span className="font-mono">{branch} · </span>}
-                    {relativeTime(s.timestamp)}
+                    <RelativeTime date={s.timestamp} />
                   </span>
                   <div className="hidden items-center group-focus-within/row:flex group-hover/row:flex" onClick={(e) => e.stopPropagation()}>
                     <RowAction label="Apply (keep the stash)" disabled={!!busy} onClick={() => apply(s, false)}>

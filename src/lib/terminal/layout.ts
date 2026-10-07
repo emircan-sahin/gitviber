@@ -63,6 +63,19 @@ export function resize(l: Layout, path: number[], sizes: number[]): Layout {
   return { ...l, children: l.children.map((c, i) => (i === at ? resize(c, rest, sizes) : c)) };
 }
 
+/**
+ * The split at `path` with its children at equal sizes: a double-click on its divider. `deep`: every
+ * split under it too, Equalize Terminal Panes on a whole tab.
+ */
+export function equalize(l: Layout, path: number[] = [], deep = false): Layout {
+  if (typeof l === "number") return l;
+  if (path.length) {
+    const [at, ...rest] = path;
+    return { ...l, children: l.children.map((c, i) => (i === at ? equalize(c, rest, deep) : c)) };
+  }
+  return { ...l, children: deep ? l.children.map((c) => equalize(c, [], true)) : l.children, sizes: l.children.map(() => 100 / l.children.length) };
+}
+
 /** A pane's box on screen (a DOMRect will do). */
 export type Rect = { x: number; y: number; width: number; height: number };
 

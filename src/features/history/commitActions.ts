@@ -22,7 +22,7 @@ export interface Actions {
   runNet: NetRun;
   name: (kind: "branch" | "tag", commit: Commit) => void;
   /** Rewrites the branch's history (see HistoryEdit), after warning when it's pushed; `commits`: the ones it's about. `message` asks for a message first. */
-  rewrite: (edit: HistoryEdit, commits: Commit[]) => Promise<void>;
+  rewrite: (edit: HistoryEdit, commits: Commit[]) => Promise<boolean>;
   /** Asks for a new message for it. */
   reword: (commit: Commit) => void;
   /** Makes `commits` one with `onto`, where it is; `message` asks for the message, else the oldest one's stays. */

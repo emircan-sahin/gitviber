@@ -233,6 +233,7 @@ pub fn run() {
             commands::history::blame,
             commands::branches::branches,
             commands::branches::merged_upstream,
+            commands::branches::branch_tracking,
             commands::branches::recent_branches,
             commands::branches::delete_merged,
             commands::branches::switch_branch,

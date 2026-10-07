@@ -1,6 +1,7 @@
 import { ClipboardPaste, Columns2, Copy, Rows2, SquareTerminal, TextSelect, X } from "lucide-react";
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { useGroupRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { type Layout } from "@/lib/terminal/layout";
@@ -8,6 +9,7 @@ import {
   attachPane,
   copyLastOutput,
   copyPaneSelection,
+  equalizeSplit,
   focusActive,
   focusTerminalPane,
   killPane,
@@ -38,15 +40,39 @@ type PaneInfo = TerminalGroup["panes"][number];
  * `path` from the top. `dim`: how far the panes other than the focused one fade.
  */
 export function LayoutView({ group, node, focused, dim, path = [] }: { group: TerminalGroup; node: Layout; focused: number; dim: number; path?: number[] }) {
+  const id = (i: number) => `pane-${[...path, i].join("-")}`;
+  const groupRef = useGroupRef();
+  const box = useRef<HTMLDivElement>(null);
+  const sizes = typeof node === "number" ? "" : node.sizes.join();
+  // Sizes set from outside (equalized): the group was laid out from them only as it mounted. A drag's
+  // own sizes are already what it shows. With no size (the panel hidden), once it has one again.
+  useLayoutEffect(() => {
+    const g = groupRef.current;
+    const el = box.current;
+    if (!g || !el || typeof node === "number") return;
+    const apply = () => {
+      const now = g.getLayout();
+      if (node.sizes.some((s, i) => Math.abs((now[id(i)] ?? s) - s) > 0.1)) g.setLayout(Object.fromEntries(node.sizes.map((s, i) => [id(i), s])));
+    };
+    if (el.offsetWidth && el.offsetHeight) return apply();
+    const sized = new ResizeObserver(() => {
+      if (!el.offsetWidth || !el.offsetHeight) return;
+      sized.disconnect();
+      apply();
+    });
+    sized.observe(el);
+    return () => sized.disconnect();
+  }, [sizes]);
   if (typeof node === "number") {
     // A pane in a split gets a header, as in cmux: what runs in each, and which one has the keys.
     const pane = path.length ? group.panes.find((p) => p.id === node) : undefined;
     return <PaneView id={node} dim={node === focused ? 0 : dim} header={pane && { pane, focused: node === focused }} />;
   }
-  const id = (i: number) => `pane-${[...path, i].join("-")}`;
   const row = node.dir === "row";
   return (
     <ResizablePanelGroup
+      groupRef={groupRef}
+      elementRef={box}
       orientation={row ? "horizontal" : "vertical"}
       defaultLayout={Object.fromEntries(node.sizes.map((size, i) => [id(i), size]))}
       onLayoutChanged={(layout, { isUserInteraction }) => isUserInteraction && resizeSplit(group.id, path, node.children.map((_, i) => layout[id(i)]))}
@@ -56,7 +82,14 @@ export function LayoutView({ group, node, focused, dim, path = [] }: { group: Te
           {/* The library focuses a divider as it's grabbed, from a few px either side of it too, where the
               pointer's release lands on the pane: the keys go back to the pane on any release. */}
           {/* Stronger than --border, which all but vanishes against a dark terminal. */}
-          {i > 0 && <ResizableHandle className="bg-foreground/20" onFocus={() => window.addEventListener("pointerup", focusActive, { capture: true, once: true })} />}
+          {i > 0 && (
+            <ResizableHandle
+              className="bg-foreground/20"
+              onFocus={() => window.addEventListener("pointerup", focusActive, { capture: true, once: true })}
+              disableDoubleClick
+              onDoubleClick={() => equalizeSplit(group.id, path)}
+            />
+          )}
           <ResizablePanel id={id(i)} minSize={row ? 160 : 80}>
             <LayoutView group={group} node={c} focused={focused} dim={dim} path={[...path, i]} />
           </ResizablePanel>

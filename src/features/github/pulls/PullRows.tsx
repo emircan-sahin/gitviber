@@ -4,9 +4,9 @@ import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-m
 import { type GitHubAccount, type Narrow, PR_PAGE, type Pull, type Target } from "@/lib/api";
 import { CiBadge } from "@/components/CiBadge";
 import { RowFilter } from "@/components/RowFilter";
+import { RelativeTime } from "@/components/RelativeTime";
 import { useCi } from "@/lib/github/ci";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
-import { isoToUnix, relativeTime } from "@/lib/format";
 import { openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
 import { useListNav } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
@@ -108,7 +108,9 @@ export function PullRows({
             {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
             <PullStateIcon pull={p} className="mt-0.5" />
             <div className="min-w-0 flex-1">
-              <div className="truncate text-[12px] leading-4 text-foreground/90">{p.title}</div>
+              <div className="truncate text-[12px] leading-4 text-foreground/90" title={p.title}>
+                {p.title}
+              </div>
               <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-subtle">
                 <span className="font-mono">#{p.number}</span>
                 <span>·</span>
@@ -118,7 +120,7 @@ export function PullRows({
                 <span>·</span>
                 <span className="min-w-0 truncate font-mono">{p.headRef}</span>
                 <CiBadge state={p.state === "open" ? ci[p.headSha] : undefined} className="ml-auto" />
-                <span className={cn("shrink-0", !(p.state === "open" && ci[p.headSha]) && "ml-auto")}>{relativeTime(isoToUnix(p.updatedAt))}</span>
+                <RelativeTime date={p.updatedAt} className={cn("shrink-0", !(p.state === "open" && ci[p.headSha]) && "ml-auto")} />
               </div>
             </div>
           </div>

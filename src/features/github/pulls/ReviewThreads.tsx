@@ -2,10 +2,10 @@
 // a reply box, and "Add Comment on Line" in the context menu for a new one. The threads live in
 // Monaco view zones, each a small React root sized to what it holds.
 import { useCallback, useMemo, useState } from "react";
+import { RelativeTime } from "@/components/RelativeTime";
 import { type DiffRow, github, repoOf, type ReviewComment } from "@/lib/api";
 import { useGitHubData } from "@/lib/github/githubCache";
 import type { monaco } from "@/lib/editor/monaco";
-import { isoToUnix, relativeTime } from "@/lib/format";
 import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
 import { Composer } from "@/features/review/Composer";
 import { newLineBefore, zoneWidget } from "@/features/review/zones";
@@ -142,7 +142,7 @@ function Thread({ review, thread }: { review: Review; thread: ReviewComment[] })
         <div key={c.id} className="border-b border-border last:border-0">
           <div className="flex items-center gap-1.5 px-3 pt-2 text-[11.5px]">
             <span className="font-medium text-foreground">{c.author}</span>
-            <span className="text-subtle">{relativeTime(isoToUnix(c.createdAt))}</span>
+            <RelativeTime date={c.createdAt} className="text-subtle" />
             {c === root && root.side === "LEFT" && <span className="ml-auto text-[10.5px] text-subtle">on removed line {root.line}</span>}
           </div>
           <PullMarkdown pull={review.pull} idPrefix={`rc-${c.id}-`} text={c.body} className="pt-1" />

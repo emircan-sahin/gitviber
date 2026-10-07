@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, CleanUp, CleanedUp, Commit, CommitDetails, CommitOptions, Comparison, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, Guided, GuideTarget, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, MainBack, MergeCheck, NetOp, NotifyPermission, OpenInApp, Opened, OpenedRepo, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, StackedBranches, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, BranchTracking, CleanUp, CleanedUp, Commit, CommitDetails, CommitOptions, Comparison, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, Guided, GuideTarget, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, MainBack, MergeCheck, NetOp, NotifyPermission, OpenInApp, Opened, OpenedRepo, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, StackedBranches, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -111,6 +111,8 @@ export const api = {
   branches: () => invoke<Branch[]>("branches"),
   /** Local branches squash- or rebase-merged on the remote, which then deleted them. */
   mergedUpstream: () => invoke<string[]>("merged_upstream"),
+  /** Local branches ahead of, behind or gone from their upstreams; it walks history, so only as the picker opens. */
+  branchTracking: () => invoke<BranchTracking[]>("branch_tracking"),
   /** Where this worktree's HEAD went last (its reflog's checkouts), newest first; some may be gone or be commits. */
   recentBranches: () => invoke<string[]>("recent_branches"),
   /** Deletes `merged` branches (git branch -d) and `upstream` ones, checked again as they are now, with -D. One undo. */

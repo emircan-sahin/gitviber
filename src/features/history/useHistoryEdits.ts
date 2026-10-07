@@ -10,6 +10,7 @@ import { askStacked } from "./StackedDialog";
 /**
  * History's rewrites of the branch: each warns first when it makes pushed commits again, then
  * runs. `commits`: the list, newest first; `apart` is only judged on a whole one (`graph`).
+ * A rewrite resolves to whether it ran: false when a warning was cancelled or it failed.
  */
 export function useHistoryEdits({ commits, head, graph, run }: { commits: Commit[]; head: string; graph: boolean; run: GitRun }) {
   const [messaging, setMessaging] = useState<Messaging | null>(null);
@@ -19,7 +20,7 @@ export function useHistoryEdits({ commits, head, graph, run }: { commits: Commit
   const rewrite = async (edit: HistoryEdit, about: Commit[]) => {
     // null: from the root, where every commit is made again.
     const drops = await dropsPushed(keptUpTo(editedShas(edit, about), commits));
-    if (drops === null) return;
+    if (drops === null) return false;
     const [c, n] = [about[0], about.length];
     const verb = { reword: "Reword", squash: edit.kind === "squash" && edit.message === null ? "Fixup" : "Squash", drop: "Drop", move: "Move", reorder: "Move", split: "Split", fixupStaged: "Fixup" }[edit.kind];
     const dropping = n === 1 ? `Drop "${c.subject}"? Its changes leave the branch.` : `Drop ${n} commits? Their changes leave the branch.`;
@@ -30,9 +31,9 @@ export function useHistoryEdits({ commits, head, graph, run }: { commits: Commit
     let branches = false;
     if (stacked?.branches.length) {
       const move = await askStacked({ title, message: warnings.join("\n\n"), okLabel: verb, branches: stacked.branches, checked: stacked.updateRefs });
-      if (move === null) return;
+      if (move === null) return false;
       branches = move;
-    } else if (warnings.length && !(await ask(warnings.join("\n\n"), { title, kind: "warning", okLabel: verb }))) return;
+    } else if (warnings.length && !(await ask(warnings.join("\n\n"), { title, kind: "warning", okLabel: verb }))) return false;
     const what = n === 1 ? c.shortSha : `${n} commits`;
     const done = edit.kind === "squash" ? squashed(edit, about) : { reword: "Commit reworded", drop: `Dropped ${what}`, move: `Moved ${what}`, reorder: `Moved ${what}`, fixupStaged: `Fixed up ${c.shortSha} with the staged changes`, split: undefined }[edit.kind];
     let stashed = false;
@@ -46,6 +47,7 @@ export function useHistoryEdits({ commits, head, graph, run }: { commits: Commit
     if (ok && splitting) toast("info", `Splitting ${c.shortSha}`, "Its changes are unstaged in Changes. Commit them in pieces with line staging, then Continue.");
     // Done, but the uncommitted changes set aside for it didn't come back cleanly.
     if (ok && stashed) toast("info", "Your uncommitted changes conflict with the new history", "They're marked conflicted in Changes: resolve them there. git keeps a copy in Stashes too; drop it once resolved.");
+    return ok;
   };
 
   // As GitHub Desktop squashes: commits picked from elsewhere move to `onto` first, older ones

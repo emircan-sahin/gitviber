@@ -30,6 +30,18 @@ pub struct Branch {
     pub remote_default: bool,
 }
 
+/// How a local branch stands with its upstream, for the branch picker.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Tracking {
+    pub name: String,
+    /// Commits it has that its upstream hasn't, and the other way round.
+    pub ahead: u32,
+    pub behind: u32,
+    /// Its upstream is configured but no longer exists (deleted on the remote, pruned).
+    pub gone: bool,
+}
+
 pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
     let raw = run_text(
         repo,
@@ -85,6 +97,44 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
             })
         })
         .collect())
+}
+
+/// Local branches ahead of, behind or gone from their upstream. Asked for when the branch picker
+/// opens, never on a refresh: counting walks each branch's history to where it meets its upstream.
+pub fn branch_tracking(repo: &Path) -> Result<Vec<Tracking>, String> {
+    let raw = run_text(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:lstrip=2)%1f%(upstream:track,nobracket)",
+            "refs/heads",
+        ],
+    )?;
+    Ok(raw
+        .lines()
+        .filter_map(|l| l.split_once('\x1f'))
+        .map(|(name, t)| {
+            let (ahead, behind, gone) = track(t);
+            Tracking {
+                name: name.to_string(),
+                ahead,
+                behind,
+                gone,
+            }
+        })
+        .filter(|t| t.ahead > 0 || t.behind > 0 || t.gone)
+        .collect())
+}
+
+/// `%(upstream:track,nobracket)`: "ahead 3, behind 2", "gone", or nothing when even or untracked.
+/// git writes it in English here (cmd.rs sets the locale).
+fn track(t: &str) -> (u32, u32, bool) {
+    let count = |word: &str| {
+        t.split(", ")
+            .find_map(|p| p.strip_prefix(word)?.strip_prefix(' ')?.parse().ok())
+            .unwrap_or(0)
+    };
+    (count("ahead"), count("behind"), t == "gone")
 }
 
 /// Local branches squash- or rebase-merged on the remote, which then deleted them. Asked for
@@ -641,5 +691,16 @@ checkout: moving from main to feat-a
         );
         assert_eq!(recent_from_reflog(subjects, 2), ["main", "feat-b"]);
         assert!(recent_from_reflog("", 5).is_empty());
+    }
+
+    #[test]
+    fn upstream_track_counts() {
+        assert_eq!(track(""), (0, 0, false));
+        assert_eq!(track("ahead 3"), (3, 0, false));
+        assert_eq!(track("behind 12"), (0, 12, false));
+        assert_eq!(track("ahead 1, behind 40"), (1, 40, false));
+        assert_eq!(track("gone"), (0, 0, true));
+        // Anything else counts as nothing rather than a guess.
+        assert_eq!(track("aheadish 3, behind x"), (0, 0, false));
     }
 }

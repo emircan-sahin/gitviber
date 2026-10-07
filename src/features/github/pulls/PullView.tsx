@@ -8,7 +8,7 @@ import { listIsBehind, useGitHubData } from "@/lib/github/githubCache";
 import { pickLabel } from "@/lib/github/pullCommits";
 import type { Selection } from "@/lib/repo/selection";
 import { cn } from "@/lib/utils";
-import { isoToUnix, plural, relativeTime } from "@/lib/format";
+import { plural } from "@/lib/format";
 import { openOnGitHub } from "@/lib/github/url";
 import { FileIcon } from "@/components/FileIcon";
 import { pullSource } from "./pullSource";
@@ -17,6 +17,7 @@ import { notifyPullsChanged } from "@/features/github/shared/changed";
 import { CopyLinkButton } from "@/features/github/shared/LinkMenu";
 import { offerWorktreeRemoval, openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
+import { RelativeTime } from "@/components/RelativeTime";
 import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
 import { Section } from "@/features/github/shared/Section";
 import { useGitAction } from "@/hooks/useGitAction";
@@ -284,7 +285,7 @@ export function PullView({ pull, onOpen }: { pull: Pull; onOpen: (s: Selection) 
                 <div className="flex items-center gap-2 text-[11.5px]">
                   <span className="font-semibold text-foreground">{c.author}</span>
                   {c.review && <ReviewBadge state={c.review} />}
-                  <span className="text-subtle">{relativeTime(isoToUnix(c.createdAt))}</span>
+                  <RelativeTime date={c.createdAt} className="text-subtle" />
                 </div>
                 {c.body && <PullMarkdown pull={pull} idPrefix={`pr-c${i}-`} text={c.body} className="mt-1.5 px-0 py-0" />}
               </div>

@@ -41,6 +41,9 @@ export const COMMANDS = [
   { id: "view.toggleExplorer", title: "Toggle Explorer", category: "View", keys: ["alt+cmd+b"] },
   { id: "view.focusGitPanel", title: "Focus Git Panel", category: "View", keys: ["shift+cmd+g"] },
   { id: "view.focusCode", title: "Focus Code View", category: "View", keys: ["cmd+e"] },
+  // GitHub Desktop's Go to Commit Message. Not its ⌘G, macOS's Find Next: ⌃⌘, as fetch, pull and push,
+  // which neither macOS, Monaco nor the terminal uses with C. Elsewhere ⌃ is the Super key: unbound.
+  { id: "changes.focusMessage", title: "Focus Commit Message", category: "View", keys: ["ctrl+cmd+c"], keysOther: [] },
   // The id is from when it only showed the panel; kept so a user's binding for it still applies.
   { id: "view.showExplorer", title: "Focus Explorer", category: "View", keys: ["shift+cmd+e"] },
   { id: "view.focusNextPanel", title: "Focus Next Panel", category: "View", keys: ["f6"] },
@@ -146,6 +149,8 @@ export const COMMANDS = [
   { id: "terminal.zoomPane", title: "Zoom Terminal Pane", category: "Terminal", keys: ["shift+cmd+enter"], keysOther: ["shift+cmd+enter"], local: "the terminal", noRepeat: true },
   // Only a split's panes show a name; the tab shows the repo and branch. Unbound elsewhere: Ctrl+R is
   // the shell's history search, and Ctrl+Shift+R reloads.
+  // Every split of the open tab at even sizes; one split's divider does it with a double-click.
+  { id: "terminal.equalizePanes", title: "Equalize Terminal Panes", category: "Terminal", keys: [] },
   { id: "terminal.renamePane", title: "Rename Terminal Pane", category: "Terminal", keys: ["cmd+r"], keysOther: [], local: "the terminal" },
   // The window's zoom keys size the terminal's font while it has focus, as in terminal apps.
   { id: "terminal.fontZoomIn", title: "Increase Terminal Font Size", category: "Terminal", keys: ["cmd+=", "shift+cmd+="], local: "the terminal" },
@@ -164,9 +169,11 @@ export const COMMANDS = [
   { id: "git.compareBranches", title: "Compare Branches…", category: "Git", keys: [] },
   { id: "git.switchWorktree", title: "Switch Worktree", category: "Git", keys: [] },
   { id: "git.newWorktree", title: "New Worktree", category: "Git", keys: [] },
-  { id: "git.fetch", title: "Fetch", category: "Git", keys: [] },
-  { id: "git.pull", title: "Pull", category: "Git", keys: [] },
-  { id: "git.push", title: "Push", category: "Git", keys: [] },
+  // GitHub Desktop's keys with ⌃ added: ⇧⌘T, ⇧⌘P and ⌘P reopen a tab, open the palette and a file here.
+  // Elsewhere "ctrl" is the Super key, which the OS takes: unbound there.
+  { id: "git.fetch", title: "Fetch", category: "Git", keys: ["ctrl+shift+cmd+t"], keysOther: [] },
+  { id: "git.pull", title: "Pull", category: "Git", keys: ["ctrl+shift+cmd+p"], keysOther: [] },
+  { id: "git.push", title: "Push", category: "Git", keys: ["ctrl+cmd+p"], keysOther: [] },
   // VS Code's Sync Changes: what the remote has, then what's here.
   { id: "git.sync", title: "Sync (Pull, then Push)", category: "Git", keys: [] },
   // A patch from Copy as Patch, a mail or a chat: previewed first, then applied to the working tree.

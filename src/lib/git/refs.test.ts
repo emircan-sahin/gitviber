@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { refNameCheck, reviewBase, sanitizedRefName, worktreeBase, worktreeBranch } from "./refs.ts";
+import { branchTracking, refNameCheck, reviewBase, sanitizedRefName, worktreeBase, worktreeBranch } from "./refs.ts";
 
 test("a review starts from origin's default branch, else the local one", () => {
   const b = (name: string, remote = false, remoteDefault = false) => ({ name, remote, remoteDefault });
@@ -92,4 +92,16 @@ test("a new worktree starts from the current branch, else the default one", () =
   assert.equal(worktreeBase([row("origin/dev", { remote: true, remoteDefault: true })]), "refs/remotes/origin/dev");
   assert.equal(worktreeBase([row("main")]), "refs/heads/main");
   assert.equal(worktreeBase([]), "HEAD");
+});
+
+test("a local branch's standing with its upstream, in a few characters and in words", () => {
+  const b = (t?: { ahead?: number; behind?: number; gone?: boolean }, upstream: string | null = "origin/feat", remote = false) =>
+    branchTracking({ remote, upstream }, t && { ahead: 0, behind: 0, gone: false, ...t });
+  assert.equal(b(), null);
+  assert.deepEqual(b({ ahead: 2 }), { text: "↑2", label: "Compared with origin/feat: 2 commits ahead" });
+  assert.deepEqual(b({ ahead: 1, behind: 3 }), { text: "↑1 ↓3", label: "Compared with origin/feat: 1 commit ahead, 3 commits behind" });
+  assert.deepEqual(b({ behind: 1 }), { text: "↓1", label: "Compared with origin/feat: 1 commit behind" });
+  assert.deepEqual(b(undefined, null), { text: "local only", label: "Not published: it has no upstream" });
+  assert.deepEqual(b({ gone: true }), { text: "upstream gone", label: "Its upstream origin/feat is gone from the remote" });
+  assert.equal(b(undefined, null, true), null);
 });

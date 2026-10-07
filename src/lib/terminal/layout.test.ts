@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Direction, type Layout, leaves, mapPanes, neighbor, type Rect, removePane, resize, row, savedLayout, splitPane, type Split } from "./layout.ts";
+import { type Direction, equalize, type Layout, leaves, mapPanes, neighbor, type Rect, removePane, resize, row, savedLayout, splitPane, type Split } from "./layout.ts";
 
 /** Where each pane is drawn in a 1200×800 tab with 1px dividers, as the panel lays them out. */
 function drawn(l: Layout, box: Rect = { x: 0, y: 0, width: 1200, height: 800 }, out = new Map<number, Rect>()) {
@@ -153,4 +153,16 @@ test("with panes a few pixels wide, focus never goes the other way", () => {
   // Hidden panes all measure nothing.
   const hidden = new Map([[1, box(0, 0)], [2, box(0, 0)]]);
   assert.equal(neighbor(hidden, 1, "right"), undefined);
+});
+
+test("equalizing gives a split's children equal sizes, and with deep every split below it too", () => {
+  const inner: Split = { dir: "col", children: [2, 3, 4], sizes: [10, 30, 60] };
+  const l: Layout = { dir: "row", children: [1, inner], sizes: [70, 30] };
+  assert.deepEqual(equalize(l), { dir: "row", children: [1, inner], sizes: [50, 50] });
+  const third = 100 / 3;
+  assert.deepEqual(equalize(l, [1]), { dir: "row", children: [1, { dir: "col", children: [2, 3, 4], sizes: [third, third, third] }], sizes: [70, 30] });
+  assert.deepEqual(equalize(l, [], true), { dir: "row", children: [1, { dir: "col", children: [2, 3, 4], sizes: [third, third, third] }], sizes: [50, 50] });
+  // A lone pane, or a path past a leaf, stays as it is.
+  assert.equal(equalize(5, [], true), 5);
+  assert.deepEqual(equalize(l, [0, 1]), l);
 });

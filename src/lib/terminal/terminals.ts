@@ -32,7 +32,7 @@ import { paneKeys } from "./keys";
 import { forgetFind, watchFind } from "./find";
 import { endHints, toggleHints } from "./hints";
 import { copyFromProgram, pasteInto, pasteText } from "./pasteInput";
-import { type Direction, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
+import { type Direction, equalize, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
 
 export { dismissRestore, restoreSession, resumable } from "./session";
 export { usePaneLooks } from "./agents";
@@ -802,6 +802,11 @@ export function focusToward(dir: Direction) {
 /** A divider dragged: the new sizes of the split at `path` (layout.ts resize), kept for the session save. */
 export function resizeSplit(group: number, path: number[], sizes: number[]) {
   set({ groups: state.groups.map((g) => (g.id === group ? { ...g, layout: resize(g.layout, path, sizes) } : g)) });
+}
+
+/** A divider's double-click: the split at `path` evenly; no `path`, the tab's whole layout. Kept as a drag's sizes are. */
+export function equalizeSplit(group: number, path?: number[]) {
+  set({ groups: state.groups.map((g) => (g.id === group ? { ...g, layout: equalize(g.layout, path, !path) } : g)) });
 }
 
 /** The panel over the whole workspace, or back in its place; opened first (with a terminal in `cwd`) when hidden. */
