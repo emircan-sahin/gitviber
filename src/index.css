@@ -429,6 +429,8 @@
 @theme inline {
   --color-sidebar: var(--sidebar);
   --color-panel: var(--panel);
+  --color-solid-panel: var(--solid-panel);
+  --color-solid-background: var(--solid-background);
   --color-background: var(--background);
   --color-elevated: var(--elevated);
   --color-hover: var(--hover);
@@ -533,6 +535,16 @@
   --glass-background: color-mix(in srgb, var(--background) var(--glass), transparent);
   --glass-panel-step: color-mix(in srgb, var(--panel) var(--glass-step), transparent);
   --glass-sidebar-step: color-mix(in srgb, var(--sidebar) var(--glass-step), transparent);
+  --glass-add-bg: color-mix(in srgb, var(--add-bg) var(--glass), transparent);
+  --glass-del-bg: color-mix(in srgb, var(--del-bg) var(--glass), transparent);
+  --glass-add-gutter: color-mix(in srgb, var(--add-gutter) var(--glass), transparent);
+  --glass-del-gutter: color-mix(in srgb, var(--del-gutter) var(--glass), transparent);
+}
+/* The colors as :root has them, inside a part too: for what covers what's under it (a canvas's
+   cards and edge labels, an image's handle). The same colors with the window solid. */
+:root {
+  --solid-panel: var(--panel);
+  --solid-background: var(--background);
 }
 :root[data-translucency] body {
   background: transparent;
@@ -557,6 +569,11 @@
 :root[data-translucency] .glass-background {
   --background: transparent;
   --panel: var(--glass-panel-step);
+  /* Changed lines tint over the code's own, rather than standing solid in it. */
+  --add-bg: var(--glass-add-bg);
+  --del-bg: var(--glass-del-bg);
+  --add-gutter: var(--glass-add-gutter);
+  --del-gutter: var(--glass-del-gutter);
   --glass-part: var(--glass-background);
   background-color: var(--glass-background);
 }
@@ -565,6 +582,10 @@
   --vscode-editor-background: transparent;
   --vscode-editorGutter-background: transparent;
   --vscode-diffEditor-unchangedRegionBackground: var(--panel);
+  --vscode-diffEditor-insertedLineBackground: var(--add-bg);
+  --vscode-diffEditor-removedLineBackground: var(--del-bg);
+  --vscode-diffEditorGutter-insertedLineBackground: var(--add-gutter);
+  --vscode-diffEditorGutter-removedLineBackground: var(--del-gutter);
 }
 /* A label on a diagram's edge covers the line under it. */
 :root[data-translucency] .glass-background .guide-flow :is(.edgeLabel, .labelBkg, .edgeLabel p) {

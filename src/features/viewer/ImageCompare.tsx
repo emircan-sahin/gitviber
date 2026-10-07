@@ -159,7 +159,7 @@ function Divider({ at, onMove }: { at: number; onMove: (at: number) => void }) {
       style={{ left: `${at * 100}%` }}
     >
       <div className="mx-auto h-full w-px bg-primary" />
-      <div className="absolute top-1/2 left-1/2 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-primary bg-background group-focus-visible:ring-2 group-focus-visible:ring-ring" />
+      <div className="absolute top-1/2 left-1/2 size-4 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-primary bg-solid-background group-focus-visible:ring-2 group-focus-visible:ring-ring" />
     </div>
   );
 }
