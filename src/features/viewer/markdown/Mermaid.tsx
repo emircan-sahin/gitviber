@@ -8,6 +8,9 @@ import { useSettings } from "@/lib/settings";
 // Rendered diagrams by theme and source: a tab switch or a re-render shows them at once.
 const drawn = new Map<string, string>();
 let queue: Promise<unknown> = Promise.resolve();
+
+/** A diagram already drawn in this theme, to show at once; undefined until it is. */
+export const drawnSvg = (code: string, dark: boolean) => drawn.get(`${dark}\0${code}`);
 let ids = 0;
 
 /**
@@ -42,7 +45,7 @@ export function draw(code: string, dark: boolean): Promise<string> {
 export function Mermaid({ code, fallback }: { code: string; fallback: React.ReactNode }) {
   const { dark } = useSettings();
   const [state, setState] = useState<{ key: string; svg?: string; error?: string } | null>(() => {
-    const svg = drawn.get(`${dark}\0${code}`);
+    const svg = drawnSvg(code, dark);
     return svg ? { key: `${dark}\0${code}`, svg } : null;
   });
   const [source, setSource] = useState(false);

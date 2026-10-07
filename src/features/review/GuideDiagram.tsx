@@ -4,7 +4,7 @@ import { errorMessage } from "@/lib/api";
 import { describeFlow, type Flow, flowSource, type Model, type PartStatus, sectionBadge, statusWord } from "@/lib/review/guide";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
-import { draw } from "@/features/viewer/markdown/Mermaid";
+import { draw, drawnSvg } from "@/features/viewer/markdown/Mermaid";
 
 interface Links {
   /** The sections' titles, for the names of the links to them. */
@@ -111,7 +111,11 @@ function FlowDiagram({ flow, titles, onSection }: { flow: Flow } & Links) {
   const { dark } = useSettings();
   const code = useMemo(() => flowSource(flow), [flow]);
   const key = `${dark}\0${code}`;
-  const [drawn, setDrawn] = useState<{ key: string; svg?: string; error?: string } | null>(null);
+  // Drawn before (a tab switch, a theme back): shown at once, not after a "Drawing" flash.
+  const [drawn, setDrawn] = useState<{ key: string; svg?: string; error?: string } | null>(() => {
+    const svg = drawnSvg(code, dark);
+    return svg ? { key, svg } : null;
+  });
   useEffect(() => {
     let live = true;
     draw(code, dark).then(
@@ -131,9 +135,10 @@ function FlowDiagram({ flow, titles, onSection }: { flow: Flow } & Links) {
     // At its own size, scrolling sideways when wider: scaled to fit, a long flow's labels are unreadable.
     const width = el.viewBox.baseVal?.width;
     if (width) Object.assign(el.style, { maxWidth: "none", width: `${width}px` });
-    // Mermaid names a step's node after its id (flowSource's s0, s1…): "<diagram>-flowchart-s3-<n>".
+    // Mermaid names a step's node after its id (flowSource's s0, s1…): "flowchart-s3-<n>", after
+    // the diagram's id and a dash in some 11.x releases.
     for (const g of el.querySelectorAll<SVGGElement>("g.node")) {
-      const step = flow.steps[Number(/-flowchart-s(\d+)-\d+$/.exec(g.id)?.[1])];
+      const step = flow.steps[Number(/(?:^|-)flowchart-s(\d+)-\d+$/.exec(g.id)?.[1])];
       if (!step?.section) continue;
       g.dataset.section = String(step.section);
       g.setAttribute("tabindex", "0");
