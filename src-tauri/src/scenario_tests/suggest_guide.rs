@@ -73,10 +73,9 @@ fn guide_of_merges_renames_binaries_and_paths_with_spaces() {
 }
 
 /// git quotes a non-ASCII path in a diff (`"caf\303\251.txt"`) unless core.quotePath is off,
-/// while History's file list (diff-tree -z) has it as UTF-8: the model names the escaped form and
-/// the guide's file links for it never match.
+/// while History's file list (diff-tree -z) has it as UTF-8: the model must see that form, or the
+/// guide's file links for it never match.
 #[test]
-#[ignore = "bug: the guide's diff quotes non-ASCII paths"]
 fn guide_names_non_ascii_paths_as_the_file_list_does() {
     let sb = Sandbox::new("guide-unicode");
     let r = sb.path("r");
@@ -107,10 +106,9 @@ fn guide_of_a_huge_commit_is_cut_and_says_so() {
     assert!(g.text.contains("The commit's message:\nBig\n"));
 }
 
-/// The cut note tells the model the file list is whole; past ~1,300 files the list alone is over
-/// MAX_DIFF and is cut too, so files are missing that the model is told aren't.
+/// Past ~1,300 files the list alone is over MAX_DIFF: it's kept whole all the same, as the cut
+/// note tells the model.
 #[test]
-#[ignore = "bug: the cut note claims a whole file list it doesn't have"]
 fn guide_of_2000_files_keeps_the_whole_file_list_it_promises() {
     let sb = Sandbox::new("guide-many");
     let r = sb.path("r");
@@ -182,14 +180,14 @@ fn guide_agents_that_ignore_stdin_flood_stdout_or_print_garbage() {
     assert_eq!(g.text, "{}\n");
     assert!(t.elapsed() < Duration::from_secs(5), "{:?}", t.elapsed());
 
-    // 50 MB on stdout comes back whole.
-    let g = guide(
+    // 50 MB on stdout is read to its end, so the command doesn't block, and refused.
+    let err = guide(
         &r,
         "sh -c 'cat >/dev/null; head -c 52428800 /dev/zero | tr \"\\0\" x'",
         of(head.clone()),
     )
-    .unwrap();
-    assert_eq!(g.text.len(), 50 * 1024 * 1024);
+    .unwrap_err();
+    assert!(err.contains("over 1 MB"), "{err}");
 
     // Bytes that aren't UTF-8 read lossily rather than failing.
     let g = guide(&r, "sh -c 'printf \"\\377\\376{\\n\"'", of(head.clone())).unwrap();
@@ -242,12 +240,10 @@ fn starting_a_second_guide_cancels_the_first_and_kills_its_children() {
     assert!(!alive(marker));
 }
 
-/// An agent that leaves a background child holding stdout and exits: the run waits for stdout's
-/// end with no deadline, so neither Cancel nor the 300 s timeout ends it (the child here lives
-/// 6 s; a daemon would hang the guide for good).
+/// An agent that leaves a background child holding stdout and exits: the run doesn't wait for
+/// stdout's end past a Cancel (the child here lives 6 s; a daemon would hang the guide for good).
 #[cfg(unix)]
 #[test]
-#[ignore = "bug: a child holding stdout after the agent exits hangs the run past cancel"]
 fn cancel_ends_a_guide_whose_agent_left_a_child_on_the_pipe() {
     let sb = Sandbox::new("guide-straggler");
     let r = sb.path("r");

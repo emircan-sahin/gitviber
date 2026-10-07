@@ -184,7 +184,7 @@ pub fn kill_group(child: &mut Child, grace: Duration) {
 
 /// Whether the child has exited, without reaping it. try_wait would reap it, and a reaped
 /// leader's pid (the group's id) can go to another process before the SIGKILL that follows.
-fn exited(child: &mut Child) -> bool {
+pub fn exited(child: &mut Child) -> bool {
     #[cfg(unix)]
     {
         // Zeroed: with WNOHANG and nothing to report, the kernel may leave it untouched.
