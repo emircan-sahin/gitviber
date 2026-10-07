@@ -247,11 +247,15 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
   const shownFiles = navKeys.flatMap((k) => (index.has(k) ? [all[index.get(k)!]] : []));
   const folderRows = (it: Item & { type: "folder" }): Change[] => it.files.filter((f) => !f.nested).map((file) => ({ kind: it.kind, file }));
 
-  // Opening a file in a closed folder (J/K, a tab) opens the folders around it.
+  // Opening a file in a closed folder (J/K, a tab) opens the folders around it. Once per file and
+  // view: the panel runs this again on each show, and a folder closed around the open file stays closed.
+  const opened = useRef("");
   useEffect(() => {
-    if (!view.tree || !active) return;
+    const at = `${activeKey}\0${view.tree}`;
+    if (!view.tree || !active || opened.current === at) return;
+    opened.current = at;
     for (const p of foldersOf(active.file.path)) toggleFolder(folderKey(active.kind, p), true);
-    // Not on `active`, a new object each status: a folder closed around the open file stays closed.
+    // Not on `active`, a new object each status.
   }, [activeKey, view.tree]);
 
   // Rows picked with ⌘/⇧ around `focus`, the file the open tab was on. Once the tab moves to

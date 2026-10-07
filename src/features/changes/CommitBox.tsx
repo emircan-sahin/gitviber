@@ -43,11 +43,13 @@ async function largeFilesConfirmed(autoStaged: boolean) {
   );
 }
 
-// A request, not a count: taken by the box once it shows (Changes may be on another tab, or hidden).
-const focusAsked = createStore(false);
+// When it was asked (0: not): taken by the box once it shows (Changes may be on another tab). Only
+// for a moment: with no box to show (a rebase's notice), one appearing later mustn't take focus.
+const focusAsked = createStore(0);
+const FOCUS_WAIT_MS = 1000;
 
-/** Focus Commit Message: the summary field takes focus once the commit box is on screen. */
-export const focusCommitMessage = () => focusAsked.set(true);
+/** Focus Commit Message: the summary field takes focus as the commit box comes on screen. */
+export const focusCommitMessage = () => focusAsked.set(Date.now());
 
 /** `shown`: what the list's filter leaves, while it has text; the button says how many files it takes that the list hides. */
 export function CommitBox({ status, shown, head, main, refresh }: { status: RepoStatus; shown: RepoStatus | null; head: Commit | null; main: string; refresh: () => Promise<void> }) {
@@ -65,8 +67,8 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
   const asked = focusAsked.use();
   useEffect(() => {
     if (!asked) return;
-    focusAsked.set(false);
-    summaryField.current?.focus();
+    focusAsked.set(0);
+    if (Date.now() - asked < FOCUS_WAIT_MS) summaryField.current?.focus();
   }, [asked]);
 
   const onAmend = (on: boolean) => {
@@ -153,7 +155,7 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
     else void latest.current.commit(then, true);
   };
 
-  const { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest } = useSuggestMessage({ draft, setDraft, startBody, amend: !!amend, hasStaged, hasAny, busy });
+  const { suggesting, program, canSuggest, cancelSuggest, dropSuggestion, suggest } = useSuggestMessage({ draft, setDraft, startBody, amend: !!amend, hasStaged, hasAny, busy, anchor: summaryField });
 
   useCommands({ "git.commit": canCommit ? commit : undefined, "git.suggestMessage": canSuggest ? suggest : undefined });
   const commitKey = useShortcut("git.commit");

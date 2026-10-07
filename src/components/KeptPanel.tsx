@@ -1,4 +1,4 @@
-import { Activity, type ReactNode, useLayoutEffect, useRef } from "react";
+import { Activity, type ReactNode, useLayoutEffect, useRef, useState } from "react";
 
 /**
  * A panel kept while another shows in its place (the sidebar's tabs): its state stays (filters,
@@ -15,7 +15,7 @@ export function KeptPanel({ shown, children }: { shown: boolean; children: React
 /** Puts the panel's scrollers back where they were: WebKit drops a scroller's offset under display: none. */
 function KeepScroll({ children }: { children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
-  const tops = useRef(new Map<Element, number>()).current;
+  const [tops] = useState(() => new Map<Element, number>());
   // Recorded as it scrolls, not on hiding: by then the offset may already be gone.
   useLayoutEffect(() => {
     const el = box.current;

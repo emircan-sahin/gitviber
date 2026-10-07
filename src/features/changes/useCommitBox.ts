@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 import { api, type Commit, errorMessage, SUGGEST_CANCELLED, type SuggestKind } from "@/lib/api";
 import { type CommitDraft, loadDraft, saveDraft } from "@/lib/repo/session";
 import { useSettings } from "@/lib/settings";
@@ -99,18 +99,21 @@ export function useCommitDraft(root: string, head: Commit | null, prepared: stri
  * The configured agent CLI, run for a suggestion: `suggest(ask, land)` hands `ask` the command
  * line and `land` what it printed (false: nothing usable), unless `drop` came in between. Leaving
  * stops the command rather than orphan it. `kind`: the commit box's, or the pull request dialog's.
+ * `anchor`: an element of the view, for one kept while hidden (Changes on another tab), where a
+ * suggestion still lands; only once that element left the page did the view go.
  */
-export function useSuggestion(kind: SuggestKind) {
+export function useSuggestion(kind: SuggestKind, anchor?: RefObject<HTMLElement | null>) {
   const what = kind === "pull" ? "description" : "message";
   const { suggestEnabled, suggestCommand, suggestModels } = useSettings();
   const [suggesting, setSuggesting] = useState(false);
   const running = useRef(false);
-  useEffect(
-    () => () => {
-      if (running.current) api.suggestCancel(kind).catch(() => {});
-    },
-    [],
-  );
+  useEffect(() => {
+    const el = anchor?.current;
+    // An unmount's cleanup runs after its nodes left the page; a hide's, with them still in it.
+    return () => {
+      if (running.current && !el?.isConnected) api.suggestCancel(kind).catch(() => {});
+    };
+  }, []);
   const program = programOf(suggestCommand);
   const cancel = () => api.suggestCancel(kind).catch(() => {});
   // Bumped by `drop`: a suggestion still on its way describes what was there before.
@@ -145,6 +148,7 @@ export function useSuggestMessage({
   hasStaged,
   hasAny,
   busy,
+  anchor,
 }: {
   draft: CommitDraft;
   setDraft: (d: CommitDraft) => void;
@@ -153,8 +157,9 @@ export function useSuggestMessage({
   hasStaged: boolean;
   hasAny: boolean;
   busy: boolean;
+  anchor: RefObject<HTMLElement | null>;
 }) {
-  const { enabled, suggesting, program, suggest: run, cancel, drop } = useSuggestion("message");
+  const { enabled, suggesting, program, suggest: run, cancel, drop } = useSuggestion("message", anchor);
   const latest = useRef(draft);
   useEffect(() => {
     latest.current = draft;
