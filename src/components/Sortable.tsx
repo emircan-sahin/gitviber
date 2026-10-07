@@ -1,14 +1,40 @@
-import { closestCenter, DndContext, type DragEndEvent, PointerSensor, useSensor, useSensors } from "@dnd-kit/core";
+import { closestCenter, DndContext, type DragEndEvent, PointerSensor, type PointerSensorProps, useSensor, useSensors } from "@dnd-kit/core";
 import { restrictToHorizontalAxis, restrictToParentElement, restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { horizontalListSortingStrategy, SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { createContext, useContext, useRef } from "react";
+import { buttonLost } from "@/lib/ui/held";
 
 // The pointerup that ends a drag also clicks the item under it; items ask this before acting.
 const DragGuard = createContext<() => boolean>(() => false);
 
+/**
+ * dnd-kit's pointer sensor, but a drag whose pointerup the window never saw (Mission Control, the
+ * screen locking) ends at the next move without a button. It followed the pointer until the next
+ * click, which dropped it: a commit moved or squashed by a plain click.
+ */
+class Sensor extends PointerSensor {
+  constructor(props: PointerSensorProps) {
+    // pointercancel on the document is the sensor's own way out: it detaches and cancels the drag.
+    const move = (e: PointerEvent) => buttonLost(e) && document.dispatchEvent(new PointerEvent("pointercancel"));
+    const stop = () => document.removeEventListener("pointermove", move, true);
+    super({
+      ...props,
+      onEnd: () => {
+        stop();
+        props.onEnd();
+      },
+      onCancel: () => {
+        stop();
+        props.onCancel();
+      },
+    });
+    document.addEventListener("pointermove", move, true);
+  }
+}
+
 /** A press only becomes a drag after 5px, so clicks still work. */
-export const useDragSensors = () => useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+export const useDragSensors = () => useSensors(useSensor(Sensor, { activationConstraint: { distance: 5 } }));
 
 /** Call `ended` when a drag ends; `justDragged` then tells the click that came with it apart. */
 export function useDragGuard() {

@@ -6,6 +6,8 @@
  * draw their own) and `data-scrollbar="none"` are left alone.
  */
 
+import { buttonLost } from "../ui/held";
+
 type Axis = "x" | "y";
 
 interface Bar {
@@ -215,7 +217,8 @@ function ratio(bar: Bar, axis: Axis) {
 }
 
 function moveDrag(e: PointerEvent) {
-  if (!drag) return;
+  // Letting go of the capture ends it (lostpointercapture).
+  if (!drag || buttonLost(e)) return;
   const { bar, axis, from, scroll } = drag;
   bar.el[axis === "y" ? "scrollTop" : "scrollLeft"] = scroll + ((axis === "y" ? e.clientY : e.clientX) - from) * ratio(bar, axis);
 }
