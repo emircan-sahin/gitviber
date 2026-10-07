@@ -32,6 +32,7 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import type { BranchChange } from "@/features/changes/BranchReview";
 import { AllChanges } from "./AllChanges";
 import { CompareView } from "@/features/compare/CompareView";
+import { GuideView } from "@/features/review/GuideView";
 import { VaultView } from "@/features/obsidian/VaultView";
 import { diffNote, placeholderFor } from "./placeholders";
 import { FileHeaderPath, Placeholder } from "./FileHeader";
@@ -89,6 +90,8 @@ export function Viewer(props: ViewerProps) {
             <AllChanges changes={active.sel} {...props} />
           ) : active.sel.kind === "compare" ? (
             <CompareView sel={active.sel} branches={props.branches} status={props.status} webUrl={props.webUrl} onChange={props.onOpen} onOpen={props.onOpen} refresh={props.refresh} />
+          ) : active.sel.kind === "guide" ? (
+            <GuideView sel={active.sel} status={props.status} onOpen={props.onOpen} />
           ) : active.sel.kind === "vault" ? (
             <VaultView tab={active} sel={active.sel} onOpen={props.onOpen} />
           ) : (

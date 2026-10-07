@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { segmentClass } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
 import { Field, Group } from "@/features/settings/controls";
+import { GUIDE_PROMPT } from "@/lib/review/guide";
 
 function ModelsLink({ label, url }: { label: string; url: string }) {
   return (
@@ -69,7 +70,7 @@ export function CommitSection() {
       <Group title="Suggestions">
         <Field
           label="Suggest commit messages"
-          hint="Adds a ✦ button to the commit box that asks your own agent CLI to write the message, and one to New pull request for its title and description. GitViber sends nothing itself and keeps no keys: the command runs on this Mac, and it decides where the diff goes."
+          hint="Adds a ✦ button to the commit box that asks your own agent CLI to write the message, one to New pull request for its title and description, and Explain Commit (History) and Guided Review (branch review) for a guided review of a change. GitViber sends nothing itself and keeps no keys: the command runs on this Mac, and it decides where the diff goes."
         >
           <Switch checked={s.suggestEnabled} onChange={(v) => updateSettings({ suggestEnabled: v })} />
         </Field>
@@ -122,7 +123,7 @@ export function CommitSection() {
       </Group>
       <Group title="What the command gets">
         <div className="py-3.5">
-          <div className="text-[11.5px] leading-relaxed text-muted-foreground">Only when you click ✦, and nothing else from the app:</div>
+          <div className="text-[11.5px] leading-relaxed text-muted-foreground">Only when you click ✦, Explain Commit or Guided Review, and nothing else from the app:</div>
           <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
             {SUGGEST_PROMPT}
             {"\n\n"}
@@ -137,6 +138,14 @@ export function CommitSection() {
             {"\n\n"}
             <span className="text-subtle">
               [the subjects of the branch's commits, the repository's pull request template if it has one, and the branch's diff since it left the base; up to {SUGGEST_LIMIT_KB} KB in all]
+            </span>
+          </pre>
+          <div className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">For a guided review:</div>
+          <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
+            {GUIDE_PROMPT}
+            {"\n\n"}
+            <span className="text-subtle">
+              [a commit's message and its diff, or the subjects of the branch's commits and their diff since it left the base, without uncommitted changes; up to {SUGGEST_LIMIT_KB} KB in all]
             </span>
           </pre>
         </div>

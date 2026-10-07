@@ -1,4 +1,4 @@
-import { Files, GitCompareArrows, History, ListTree, X } from "lucide-react";
+import { Files, GitCompareArrows, History, ListTree, Sparkles, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { compareLabel, editPath, onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
@@ -27,7 +27,7 @@ interface Props {
 }
 
 function tabLabel(sel: Selection) {
-  if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes") return selectionPath(sel);
+  if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes" || sel.kind === "guide") return selectionPath(sel);
   if (sel.kind === "compare") return `Compare ${compareLabel(sel)}`;
   // A note by its name, as Obsidian's tabs have it.
   if (sel.kind === "vault") return noteName(sel.path);
@@ -73,7 +73,7 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
   };
 
   // As VS Code: two open files of one name show their folders too.
-  const folders = distinctFolders(tabs.filter((t) => t.sel.kind !== "pull" && t.sel.kind !== "issue" && t.sel.kind !== "changes" && t.sel.kind !== "compare").map((t) => selectionPath(t.sel)));
+  const folders = distinctFolders(tabs.filter((t) => t.sel.kind !== "pull" && t.sel.kind !== "issue" && t.sel.kind !== "changes" && t.sel.kind !== "compare" && t.sel.kind !== "guide").map((t) => selectionPath(t.sel)));
 
   return (
     <div
@@ -180,6 +180,8 @@ function TabItem({
         <Files className="size-4 shrink-0 text-subtle" />
       ) : t.sel.kind === "compare" ? (
         <GitCompareArrows className="size-4 shrink-0 text-subtle" />
+      ) : t.sel.kind === "guide" ? (
+        <Sparkles className="size-4 shrink-0 text-subtle" />
       ) : (
         <FileIcon path={selectionPath(t.sel)} />
       )}
