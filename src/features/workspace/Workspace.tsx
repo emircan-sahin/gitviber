@@ -1,5 +1,5 @@
-import { ChevronsDownUp, ClipboardPaste, GitCompareArrows, PanelLeftClose, PanelRightClose, Search } from "lucide-react";
-import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChevronsDownUp, ClipboardPaste, GitCompareArrows, Search } from "lucide-react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { find } from "@/lib/ui/find";
@@ -13,9 +13,7 @@ import { type ChangeList, type ComparePoint, onDisk, type Selection, selectionKe
 import { useCompareAsk } from "@/lib/repo/compareRequest";
 import { defaultPoints } from "@/lib/git/comparePoints";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
-import { headerWidth } from "@/lib/ui/panelSizes";
 import { usePanelSizes } from "@/lib/ui/usePanelSizes";
-import { useTabStrip } from "@/lib/ui/useTabStrip";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen, useTerminalTabCount } from "@/lib/terminal/terminals";
@@ -41,6 +39,8 @@ import { selectedText } from "@/features/viewer/activeEditor";
 import { StatusBar } from "./StatusBar";
 import { useTabs } from "./useTabs";
 import { useViewed } from "./useViewed";
+import { CollapseButton, ListTabButton, PanelHeader } from "./PanelHeader";
+import { headerWidth } from "./headerWidth";
 import { PullsPanel } from "@/features/github/pulls/PullsPanel";
 import { SearchView } from "@/features/explorer/SearchView";
 import { ExplorerPanes } from "@/features/obsidian/VaultSection";
@@ -53,14 +53,18 @@ import { stackedView } from "@/features/viewer/AllChanges";
 import { openEdits } from "@/lib/editor/edits";
 import { openNotes, useNoteCheck } from "@/lib/review/noteStore";
 import { copyNotes, pendingNotes, sendNotes } from "@/features/review/ReviewNotes";
-import { CountBadge } from "@/components/CountBadge";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
 type ListTab = (typeof LIST_TABS)[number];
-// The sidebars' widths and the terminal's height until the user sets them.
-const SIDES = { list: 320, files: 260 };
+// The sidebars and the terminal: their sizes until the user sets them, and their bounds.
+const SIDES = { list: { base: 320, min: 240, max: "45", collapsible: true }, files: { base: 260, min: 200, max: "40", collapsible: true } };
 type Side = keyof typeof SIDES;
-const BOTTOM = { terminal: "35" };
+const VIEWER_MIN = 360;
+const BOTTOM = { terminal: { base: "35", min: 100 } };
+const EDITOR_MIN = 120;
+// Up to 0.1.10 the layouts were kept as shares of the window, under these.
+const OLD_SIDES = ["react-resizable-panels:gitviber-main-v4"];
+const OLD_BOTTOM = ["react-resizable-panels:gitviber-viewer-v1:editor:terminal", "react-resizable-panels:gitviber-viewer-v1:editor"];
 
 interface Props {
   root: string;
@@ -134,7 +138,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useNoteCheck(repo.revision);
   useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap], review }), [root, tabs, activeKey, listTab, viewedMap, review]);
   // Git work on the left, files on the right; both collapse to give code the room.
-  const sides = usePanelSizes("gitviber-sides-v1", "horizontal", SIDES);
+  const sidebars = usePanelSizes("gitviber-sides-v1", "horizontal", SIDES, { flexMin: VIEWER_MIN, legacy: OLD_SIDES });
+  const bottom = usePanelSizes("gitviber-bottom-v1", "vertical", BOTTOM, { flexMin: EDITOR_MIN, legacy: OLD_BOTTOM });
   useTerminalSetup(root);
   // Where a terminal can start besides this repo's worktrees, without switching the window there.
   const projects = recent.filter((p) => p !== main);
@@ -156,20 +161,20 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   }, [focusTo]);
   const show = useCallback(
     (side: Side, name: Panel) => {
-      sides.expand(side);
+      sidebars.expand(side);
       setFocusTo({ panel: name });
     },
-    [sides],
+    [sidebars],
   );
   // Opening a panel focuses it, as in VS Code; closing the one holding focus leaves it to the code view.
   const toggle = useCallback(
     (side: Side, name: Panel) => {
-      if (sides.isCollapsed(side)) return show(side, name);
+      if (sidebars.isCollapsed(side)) return show(side, name);
       const had = focusedPanel() === name;
-      sides.collapse(side);
+      sidebars.collapse(side);
       if (had) focusPanel("code");
     },
-    [sides, show],
+    [sidebars, show],
   );
   const showList = (tab: ListTab) => {
     setListTab(tab);
@@ -181,7 +186,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     focusPanel(open[at < 0 ? (dir > 0 ? 0 : open.length - 1) : (at + dir + open.length) % open.length]);
   };
   const revealInExplorer = useCallback((path: string) => {
-    sides.expand("files");
+    sidebars.expand("files");
     setExplorerView("files");
     // Once the tree shows: a hidden one can't take focus.
     requestAnimationFrame(() => fileTree.current?.reveal(path));
@@ -189,16 +194,17 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const showInHistory = useCallback((search: HistorySearch) => {
     setHistorySearch(search);
     setListTab("history");
-    sides.expand("list");
+    sidebars.expand("list");
   }, []);
   // A commit's own page in History, with `path` open in it when it names one (blame, the terminal).
   const showCommit = useCallback((sha: string, path = "") => showInHistory({ query: sha, scope: null, reveal: { sha, path, id: ++reveals.current } }), [showInHistory]);
   const showHistory = useCallback((path: string, file: boolean) => showInHistory({ ...NO_SEARCH, scope: { path, file } }), [showInHistory]);
-  const bottom = usePanelSizes("gitviber-bottom-v1", "vertical", BOTTOM);
   const listHeader = useRef<HTMLDivElement>(null);
   const filesHeader = useRef<HTMLDivElement>(null);
   // Double-clicking a sidebar's edge sizes it to show its header whole, never under its default.
-  const fit = (side: Side, header: RefObject<HTMLDivElement | null>) => header.current && sides.resize(side, Math.max(SIDES[side], headerWidth(header.current)));
+  const fit = (side: Side, header: RefObject<HTMLDivElement | null>) => {
+    if (header.current) sidebars.resize(side, Math.max(SIDES[side].base, headerWidth(header.current)));
+  };
 
   const changeView = changesView.use();
   const mtimes = useMtimes(status);
@@ -316,7 +322,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "editor.find": find,
     "search.findInFiles": () => {
       setExplorerView("search");
-      sides.expand("files");
+      sidebars.expand("files");
       setSearchAsk((a) => ({ id: a.id + 1, seed: selectedText() }));
     },
     "view.changes": () => showList("changes"),
@@ -325,7 +331,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.issues": () => showList("issues"),
     "history.search": () => {
       setListTab("history");
-      sides.expand("list");
+      sidebars.expand("list");
       setSearchFocus(true);
     },
     "view.toggleGitPanel": () => toggle("list", "git"),
@@ -407,7 +413,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       // A file opened from the terminal is picked in the explorer too; a closed explorer stays closed.
       reveal: (path, show) => {
         if (show) revealInExplorer(path);
-        else if (!sides.isCollapsed("files")) fileTree.current?.reveal(path, false);
+        else if (!sidebars.isCollapsed("files")) fileTree.current?.reveal(path, false);
       },
       github: webUrl,
       showCommit,
@@ -438,14 +444,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       />
       <div className="relative min-h-0 flex-1">
         {/* The library finds a divider by where the pointer is: under the maximized terminal, the hidden ones would still drag. */}
-        <ResizablePanelGroup {...sides.group} disabled={terminalMaximized}>
+        <ResizablePanelGroup {...sidebars.group} disabled={terminalMaximized}>
           <ResizablePanel
             id="list"
-            {...sides.panel("list")}
-            minSize={240}
-            maxSize="45"
-            collapsible
-            collapsedSize={0}
+            {...sidebars.panel("list")}
             onResize={(size) => setLeftOpen(size.inPixels > 0)}
           >
             <div data-panel="git" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel glass-panel outline-none">
@@ -554,9 +556,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
             </div>
           </ResizablePanel>
           <ResizableHandle className="bg-border" disableDoubleClick onDoubleClick={() => fit("list", listHeader)} />
-          <ResizablePanel id="viewer" minSize={360}>
+          <ResizablePanel id="viewer" {...sidebars.flex}>
             <ResizablePanelGroup {...bottom.group} disabled={terminalMaximized}>
-              <ResizablePanel id="editor" minSize={120}>
+              <ResizablePanel id="editor" {...bottom.flex}>
                 {/* Esc from the view itself (a PR, an image) or the code, when Monaco had no use for it. */}
                 <div
                   data-panel="code"
@@ -594,8 +596,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
               {/* Rendered only while open, so the viewer keeps its state when the panel toggles. */}
               {terminalOpen && (
                 <>
-                  <ResizableHandle className="bg-border" disableDoubleClick onDoubleClick={() => bottom.resize("terminal", BOTTOM.terminal)} />
-                  <ResizablePanel id="terminal" {...bottom.panel("terminal")} minSize={100}>
+                  <ResizableHandle className="bg-border" disableDoubleClick onDoubleClick={() => bottom.resize("terminal", BOTTOM.terminal.base)} />
+                  <ResizablePanel id="terminal" {...bottom.panel("terminal")}>
                     {/* Maximized, it covers the workspace, which stays mounted beneath: nothing reloads on the way back. */}
                     <div data-panel="terminal" className={cn("group/panel h-full", terminalMaximized ? "absolute inset-0 z-40" : "relative")}>
                       <FocusLine />
@@ -609,11 +611,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
           <ResizableHandle className="bg-border" disableDoubleClick onDoubleClick={() => fit("files", filesHeader)} />
           <ResizablePanel
             id="files"
-            {...sides.panel("files")}
-            minSize={200}
-            maxSize="40"
-            collapsible
-            collapsedSize={0}
+            {...sidebars.panel("files")}
             onResize={(size) => setRightOpen(size.inPixels > 0)}
           >
             <div data-panel="explorer" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel glass-panel outline-none">
@@ -688,55 +686,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   );
 }
 
-/**
- * A sidebar's header: its tabs scroll sideways when the panel is too narrow for them, rather than
- * the whole panel, and its buttons stay put on the right.
- */
-function PanelHeader({ ref, selected, tabs, children }: { ref: RefObject<HTMLDivElement | null>; selected: string; tabs: ReactNode; children: ReactNode }) {
-  const strip = useTabStrip<HTMLDivElement>(selected);
-  return (
-    <div ref={ref} className="flex h-9 shrink-0 items-center border-b border-border pr-1 pl-2">
-      <div ref={strip.ref} onWheel={strip.onWheel} data-scrollbar="none" className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
-        {tabs}
-      </div>
-      {/* One group: CollapseButton's own ml-auto would split the free space. Padded, not a gap:
-          headerWidth measures from its edge. */}
-      <div className="ml-auto flex shrink-0 items-center gap-0.5 pl-0.5">{children}</div>
-    </div>
-  );
-}
-
 /** Marks the panel the keys go to: a thin accent along its top while focus is inside. */
 function FocusLine() {
   return <span aria-hidden className="pointer-events-none absolute inset-x-0 top-0 z-20 h-px bg-primary opacity-0 group-focus-within/panel:opacity-100" />;
-}
-
-function CollapseButton({ side, onClick }: { side: "left" | "right"; onClick: () => void }) {
-  const Icon = side === "left" ? PanelLeftClose : PanelRightClose;
-  const shortcut = useShortcut(side === "left" ? "view.toggleGitPanel" : "view.toggleExplorer");
-  return (
-    <Tip label={side === "left" ? "Hide panel" : "Hide explorer"} shortcut={shortcut}>
-      <button onClick={onClick} className="ml-auto flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
-        <Icon className="size-3.5" />
-      </button>
-    </Tip>
-  );
-}
-
-function ListTabButton({ active, onClick, count, children }: { active: boolean; onClick: () => void; count?: number; children: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-pressed={active}
-      className={cn(
-        "flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] font-medium",
-        active ? "bg-active text-foreground" : "text-subtle hover:text-foreground focus-visible:text-foreground",
-      )}
-    >
-      {children}
-      {!!count && <CountBadge active={active}>{count}</CountBadge>}
-    </button>
-  );
 }
 
 /** The open file's working copy (a vault file's too), else the repository's folder (a PR or an issue has no file). */

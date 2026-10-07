@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { headerWidth, initialSize, openSize, type PanelSizes, remembered, toPixels } from "./panelSizes.ts";
+import { initialSize, openSize, type PanelSizes, remembered, toPixels } from "./panelSizes.ts";
 
 function random(seed: number) {
   return () => {
@@ -69,29 +69,5 @@ test("pixels to share and back round-trip within a pixel at any group size", () 
     // The library keeps shares to 3 decimals.
     const share = Number(((px / total) * 100).toFixed(3));
     assert.ok(Math.abs(toPixels(share, total) - px) <= 1, `${px}px of ${total}`);
-  }
-});
-
-const rect = (left: number, width: number) => ({ left, right: left + width, width });
-
-test("1,000 random headers: the fit width holds the tabs unscrolled and the buttons, as a whole pixel", () => {
-  const r = random(3);
-  for (let i = 0; i < 1000; i++) {
-    const left = r() * 2000;
-    const width = r() < 0.1 ? 0 : 150 + r() * 500;
-    const pad = 8 * (0.8 + r());
-    const tabsWidth = 80 + r() * 400;
-    const buttons = 24 + r() * 120;
-    const tabsShown = Math.max(0, Math.min(tabsWidth, width - pad - buttons - 4));
-    const after = width ? 4 : 0;
-    const header = {
-      getBoundingClientRect: () => rect(left, width),
-      firstElementChild: { getBoundingClientRect: () => rect(left + pad, tabsShown), scrollWidth: Math.ceil(tabsWidth) },
-      lastElementChild: { getBoundingClientRect: () => rect(width ? left + width - after - buttons : left + pad, buttons) },
-    } as unknown as Element;
-    const fit = headerWidth(header);
-    assert.ok(Number.isInteger(fit));
-    assert.ok(fit >= pad + Math.ceil(tabsWidth) + buttons, `${fit} for ${pad} + ${tabsWidth} + ${buttons}`);
-    assert.ok(fit <= pad + Math.ceil(tabsWidth) + buttons + after + 1);
   }
 });

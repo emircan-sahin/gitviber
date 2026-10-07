@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { headerWidth, initialSize, openSize, remembered } from "./panelSizes.ts";
+import { initialSize, openSize, remembered, settle } from "./panelSizes.ts";
 
 test("a layout is remembered in pixels, a closed panel with the size it reopens at", () => {
   const ids = ["list", "files"];
@@ -26,18 +26,18 @@ test("a panel opens as it was left, else at its base", () => {
   assert.equal(openSize({ size: 0 }, 320), 320);
 });
 
-const rect = (left: number, width: number) => ({ left, right: left + width, width });
-
-test("a header fits its tabs unscrolled beside its buttons", () => {
-  // At 260px: 8px padding, a 300px row of tabs scrolled into 150px, 96px of buttons and 4px after them.
-  const tabs = { getBoundingClientRect: () => rect(108, 150), scrollWidth: 300 };
-  const buttons = { getBoundingClientRect: () => rect(260, 96) };
-  const header = { getBoundingClientRect: () => rect(100, 260), firstElementChild: tabs, lastElementChild: buttons } as unknown as Element;
-  assert.equal(headerWidth(header), 8 + 300 + 96 + 4);
-  // Wider than it needs: the free space between tabs and buttons isn't counted.
-  const wide = { getBoundingClientRect: () => rect(100, 600), firstElementChild: { getBoundingClientRect: () => rect(108, 300), scrollWidth: 300 }, lastElementChild: { getBoundingClientRect: () => rect(600, 96) } } as unknown as Element;
-  assert.equal(headerWidth(wide), 408);
-  // Collapsed to nothing, the buttons overflowing it: all but the right padding.
-  const closed = { getBoundingClientRect: () => rect(100, 0), firstElementChild: { getBoundingClientRect: () => rect(108, 0), scrollWidth: 300 }, lastElementChild: { getBoundingClientRect: () => rect(108, 96) } } as unknown as Element;
-  assert.equal(headerWidth(closed), 404);
+test("settling moves each sidebar toward its size with the code view's room, never the other's", () => {
+  const limits = { list: { min: 240, max: 600, collapsible: true }, files: { min: 200, max: 500, collapsible: true } };
+  // Both squeezed, 100px spare in the code view: the list takes it, the explorer waits.
+  assert.deepEqual(settle({ list: 240, files: 200 }, { list: 320, files: 260 }, limits, 100), { list: 320, files: 220 });
+  // No room: nothing moves, so neither wins it back from the other.
+  assert.deepEqual(settle({ list: 240, files: 200 }, { list: 320, files: 260 }, limits, 0), { list: 240, files: 200 });
+  assert.deepEqual(settle({ list: 240, files: 200 }, { list: 320, files: 260 }, limits, -40), { list: 240, files: 200 });
+  // One the user closed closes again, and what it gives up goes to the other.
+  assert.deepEqual(settle({ list: 240, files: 200 }, { list: 0, files: 260 }, limits, 0), { list: 0, files: 260 });
+  // A closed one opens only when it can reach its min.
+  assert.deepEqual(settle({ list: 0, files: 260 }, { list: 320, files: 260 }, limits, 200), { list: 0, files: 260 });
+  assert.deepEqual(settle({ list: 0, files: 260 }, { list: 320, files: 260 }, limits, 300), { list: 300, files: 260 });
+  // Within its max, and a size over what it was left at gives the room back.
+  assert.deepEqual(settle({ list: 300, files: 400 }, { list: 900, files: 260 }, limits, 1000), { list: 600, files: 260 });
 });

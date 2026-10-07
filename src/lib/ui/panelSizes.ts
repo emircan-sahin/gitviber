@@ -33,16 +33,37 @@ export function remembered(sizes: PanelSizes, layout: Record<string, number>, to
   return next;
 }
 
+/** A fixed panel's bounds in pixels; a collapsible one may also be 0. */
+export interface Limits {
+  min: number;
+  max: number;
+  collapsible?: boolean;
+}
+
 /**
- * The width a panel header needs to show all of itself: its first child, a row of tabs that scrolls
- * when it doesn't fit, unscrolled; its last, the buttons pinned to the right; no room to spare.
+ * The fixed panels' sizes moved toward `want` (0: closed), in order, with what the flexible panel
+ * has above its min (`room`) and what the others give up; never by taking from another fixed
+ * panel, so two squeezed sidebars can't win room back from each other forever. A closed panel
+ * opens only when it can reach its min.
  */
-export function headerWidth(header: Element): number {
-  const box = header.getBoundingClientRect();
-  const tabs = header.firstElementChild;
-  const buttons = header.lastElementChild;
-  if (!tabs || !buttons) return box.width;
-  const b = buttons.getBoundingClientRect();
-  // The padding either side; on the right only while the buttons fit (in a collapsed panel they don't).
-  return Math.ceil(tabs.getBoundingClientRect().left - box.left + tabs.scrollWidth + b.width + Math.max(0, box.right - b.right));
+export function settle(current: Record<string, number>, want: Record<string, number>, limits: Record<string, Limits>, room: number): Record<string, number> {
+  const ids = Object.keys(want);
+  const target = (id: string) => (want[id] <= 0 && limits[id].collapsible ? 0 : Math.min(Math.max(want[id], limits[id].min), limits[id].max));
+  const next = { ...current };
+  let spare = Math.max(0, room);
+  // Shrinks first: what they give up is room for the rest.
+  for (const id of ids) {
+    if (target(id) < current[id]) {
+      spare += current[id] - target(id);
+      next[id] = target(id);
+    }
+  }
+  for (const id of ids) {
+    if (target(id) <= current[id]) continue;
+    const size = current[id] + Math.min(target(id) - current[id], spare);
+    if (size < limits[id].min) continue;
+    spare -= size - current[id];
+    next[id] = size;
+  }
+  return next;
 }

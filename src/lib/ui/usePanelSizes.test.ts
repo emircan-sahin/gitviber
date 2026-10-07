@@ -35,7 +35,7 @@ const L = (p: string) => import(pathToFileURL(join(lib, "lib/global", p)).href);
 
 const g = globalThis as Record<string, any>;
 const store = new Map<string, string>();
-g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) };
+g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) };
 class El {
   w = 0;
   get offsetWidth() {
@@ -55,13 +55,14 @@ const { renderToString } = await import("react-dom/server");
 // Its "@/" imports are beyond this tsconfig: the part of its type used here.
 type Ref = { current: unknown };
 interface Sides {
-  group: { elementRef: Ref; onLayoutChanged(layout: Record<string, number>, meta: { isUserInteraction: boolean }): void };
+  group: { elementRef: Ref; groupRef: Ref; onLayoutChanged(layout: Record<string, number>, meta: { isUserInteraction: boolean }): void };
   panel(id: string): { panelRef: Ref; defaultSize: number | string; groupResizeBehavior: string };
+  flex: { minSize: number; onResize(): void };
   isCollapsed(id: string): boolean;
   expand(id: string): void;
   collapse(id: string): void;
 }
-const { usePanelSizes } = (await import(`${SRC}lib/ui/usePanelSizes.ts`)) as { usePanelSizes: (key: string, orientation: string, bases: Record<string, number | string>) => Sides };
+const { usePanelSizes } = (await import(`${SRC}lib/ui/usePanelSizes.ts`)) as { usePanelSizes: (key: string, orientation: string, fixed: object, options: { flexMin: number; legacy?: string[] }) => Sides };
 const { openSize } = await import("./panelSizes.ts");
 const groups = await L("mutable-state/groups.ts");
 const { calculatePanelConstraints } = await L("dom/calculatePanelConstraints.ts");
@@ -71,9 +72,11 @@ const { validatePanelGroupLayout } = await L("utils/validatePanelGroupLayout.ts"
 const { layoutsEqual } = await L("utils/layoutsEqual.ts");
 const { adjustLayoutByDelta } = await L("utils/adjustLayoutByDelta.ts");
 const { getImperativePanelMethods } = await L("utils/getImperativePanelMethods.ts");
+const { getImperativeGroupMethods } = await L("utils/getImperativeGroupMethods.ts");
 
 // As Workspace has them.
 const SIDES = { list: 320, files: 260 };
+const FIXED = { list: { base: 320, min: 240, max: "45", collapsible: true }, files: { base: 260, min: 200, max: "40", collapsible: true } };
 const IDS = ["list", "viewer", "files"] as const;
 const MIN = { list: 240, viewer: 360, files: 200 };
 const MAX = { list: 0.45, files: 0.4 };
@@ -89,15 +92,16 @@ function workspace(width: number, saved?: unknown) {
   store.clear();
   if (saved) store.set("sides", JSON.stringify(saved));
   let api!: Sides;
-  renderToString(createElement(() => ((api = usePanelSizes("sides", "horizontal", SIDES)), null)));
+  renderToString(createElement(() => ((api = usePanelSizes("sides", "horizontal", FIXED, { flexMin: 360 })), null)));
   const id = `g${++groupId}`;
   const els = IDS.map(() => new El());
   const panels = IDS.map((pid, i) => {
-    const own = pid === "viewer" ? {} : api.panel(pid);
+    const own = pid === "viewer" ? api.flex : api.panel(pid);
     return { element: els[i], id: pid, idIsStable: true, mutableValues: {}, panelConstraints: { ...CONSTRAINTS[pid], ...own } };
   });
   const group = { disabled: false, element: { children: els }, id, mutableState: { defaultLayout: undefined, disableCursor: false, expandedPanelSizes: {}, layouts: {} }, orientation: "horizontal", panels, separators: [] };
   api.group.elementRef.current = group.element;
+  api.group.groupRef.current = getImperativeGroupMethods({ groupId: id });
   for (const pid of ["list", "files"]) api.panel(pid).panelRef.current = getImperativePanelMethods({ groupId: id, panelId: pid });
 
   let W = width;
@@ -169,6 +173,8 @@ function workspace(width: number, saved?: unknown) {
         const c = calculatePanelConstraints(group);
         const layout = validatePanelGroupLayout({ layout: preserveFixedPanelSizes({ group, nextGroupSize: w, prevGroupSize: s.groupSize, prevLayout: s.layout }), panelConstraints: c });
         if (!layoutsEqual(s.layout, layout) || s.groupSize !== w) groups.updateMountedGroup(group, { ...s, derivedPanelConstraints: c, groupSize: w, layout });
+        // The code view's own ResizeObserver, which the library calls onResize with.
+        api.flex.onResize();
       });
     },
     /** A drag of the divider after panel `at` (0: list|viewer, 1: viewer|files) by `dx` pixels. */
@@ -195,7 +201,8 @@ test("a sidebar collapsed by a drag reopens, and relaunches, at the width it had
   const w = workspace(1480);
   assert.deepEqual(w.px(), { list: 320, viewer: 900, files: 260 });
   w.drag(0, 60);
-  assert.deepEqual(w.saved(), { list: { size: 380 }, files: { size: 260 } });
+  // Only what the drag moved.
+  assert.deepEqual(w.saved(), { list: { size: 380 } });
   w.drag(0, -300);
   assert.equal(w.px().list, 0);
   assert.deepEqual(w.saved().list, { size: 380, collapsed: true });
@@ -205,6 +212,23 @@ test("a sidebar collapsed by a drag reopens, and relaunches, at the width it had
   const again = workspace(1480, { list: { size: 380 }, files: { size: 260 } });
   assert.equal(again.px().list, 380);
   again.dispose();
+});
+
+test("a layout an older build kept as shares of the window is read once, in pixels", () => {
+  store.clear();
+  store.set("old", JSON.stringify({ list: 20, viewer: 80, files: 0 }));
+  store.set("older", "not json");
+  g.innerWidth = 1500;
+  let api!: Sides;
+  const mount = () => renderToString(createElement(() => ((api = usePanelSizes("sides", "horizontal", FIXED, { flexMin: 360, legacy: ["older", "old"] })), null)));
+  mount();
+  assert.equal(api.panel("list").defaultSize, 300);
+  assert.equal(api.panel("files").defaultSize, 0);
+  assert.deepEqual(JSON.parse(store.get("sides") ?? ""), { list: { size: 300 }, files: { collapsed: true } });
+  assert.deepEqual([...store.keys()], ["sides"]);
+  // The next launch reads its own.
+  mount();
+  assert.equal(api.panel("list").defaultSize, 300);
 });
 
 test("stored garbage opens the sidebars at their defaults", () => {
@@ -218,7 +242,7 @@ test("stored garbage opens the sidebars at their defaults", () => {
 });
 
 // JSON.stringify writes a NaN size as null.
-test("a null saved width is ignored", { todo: "usePanelSizes.ts: the restore loop passes null to resize(), which throws in a microtask" }, () => {
+test("a null saved width is ignored", () => {
   const w = workspace(1280, { files: { size: null } });
   w.resizeWindow(1300);
   assert.equal(w.px().files, 260);
@@ -232,14 +256,14 @@ test("a width saved on a bigger display opens clamped to the max, and stays save
   w.dispose();
 });
 
-test("a negative saved width is ignored, not taken as closed", { todo: "usePanelSizes.ts: the restore loop resizes to saved.size without openSize's > 0 check" }, () => {
+test("a negative saved width is ignored, not taken as closed", () => {
   const w = workspace(1280, { list: { size: -50 } });
   w.resizeWindow(1300);
   assert.equal(w.px().list, 320);
   w.dispose();
 });
 
-test("the layout settles at every window width", { todo: "usePanelSizes.ts: restoring one squeezed sidebar takes from the other, which restores back: an endless microtask loop" }, () => {
+test("the layout settles at every window width", () => {
   const failures: string[] = [];
   for (const saved of [undefined, LEFT_ALONE, { list: { size: 400 }, files: { size: 300 } }, { list: { size: 2000 }, files: { size: 1800 } }]) {
     for (let width = 560; width <= 1600; width += 20) {
@@ -254,7 +278,7 @@ test("the layout settles at every window width", { todo: "usePanelSizes.ts: rest
   assert.deepEqual(failures, []);
 });
 
-test("a squeeze undone by the window coming back restores the sidebars", { todo: "usePanelSizes.ts: nothing saved yet means nothing restored; a sidebar the squeeze closed stays closed" }, () => {
+test("a squeeze undone by the window coming back restores the sidebars", () => {
   const w = workspace(1480);
   w.resizeWindow(900);
   w.resizeWindow(1480);
@@ -265,7 +289,7 @@ test("a squeeze undone by the window coming back restores the sidebars", { todo:
   w.dispose();
 });
 
-test("only what the user resized is saved", { todo: "usePanelSizes.ts: remembered() saves every sidebar in the layout, squeezed or squeeze-closed ones included" }, () => {
+test("only what the user resized is saved", () => {
   // The window closed the list; dragging the explorer doesn't make that the user's choice.
   const a = workspace(720, LEFT_ALONE);
   assert.equal(a.px().list, 0);
@@ -282,7 +306,7 @@ test("only what the user resized is saved", { todo: "usePanelSizes.ts: remembere
   b.dispose();
 });
 
-test("a sidebar the user closed stays closed when the window shrinks", { todo: "the library pours what a %-max explorer gives up into the first panel, the closed list; the restore loop skips closed panels" }, () => {
+test("a sidebar the user closed stays closed when the window shrinks", () => {
   const w = workspace(1480, { list: { size: 320, collapsed: true }, files: { size: 600 } });
   assert.equal(w.px().list, 0);
   w.resizeWindow(1000);
@@ -311,7 +335,7 @@ const check = (ok: boolean, kind: string, detail: string) => {
   if (!ok) throw new Broken(kind, detail);
 };
 
-test("1,000 random sequences of window resizes, drags and toggles keep the invariants", { todo: "fails on the bugs above; each broken invariant names its first seed" }, () => {
+test("1,000 random sequences of window resizes, drags and toggles keep the invariants", () => {
   const broken = new Map<string, { count: number; first: string }>();
   for (let seed = 1; seed <= 1000; seed++) {
     const r = random(seed);
@@ -363,7 +387,8 @@ test("1,000 random sequences of window resizes, drags and toggles keep the invar
       const saved = w.saved();
       for (const id of ["list", "files"] as const) {
         if (saved[id]?.collapsed) continue;
-        const want = Math.min(Number(openSize(saved[id], SIDES[id])), Math.round(2560 * MAX[id]));
+        // A width saved under the min (randomly made here) shows at the min.
+        const want = Math.min(Math.max(Number(openSize(saved[id], SIDES[id])), MIN[id]), Math.round(2560 * MAX[id]));
         check(Math.abs(back[id] - want) <= 1, "not restored with room", `${id} at ${back[id]}px, left at ${want}px`);
       }
       // And no drift: a squeeze and back, ten times over, lands on the same widths.
