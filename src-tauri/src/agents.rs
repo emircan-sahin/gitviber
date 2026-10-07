@@ -909,6 +909,39 @@ mod tests {
     }
 
     #[test]
+    fn a_pid_file_reads_each_status_as_its_state() {
+        let Session::PidFile {
+            status: Some(s), ..
+        } = &claude().session
+        else {
+            panic!("claude has a status");
+        };
+        // No value in two lists: the order `state` checks them in would decide it.
+        let all: Vec<&String> = s.working.iter().chain(&s.waiting).chain(&s.idle).collect();
+        let unique: HashSet<&String> = all.iter().copied().collect();
+        assert_eq!(all.len(), unique.len(), "a status in two lists");
+        let dir = temp("status");
+        let file = dir.join("4242.json");
+        for (value, state) in [
+            ("busy", Some("working")),
+            ("shell", Some("idle")),
+            ("waiting", Some("waiting")),
+            ("idle", Some("idle")),
+            ("compacting", None),
+        ] {
+            let body = format!(r#"{{"pid":4242,"sessionId":"{ID}","status":"{value}"}}"#);
+            std::fs::write(&file, body).unwrap();
+            assert_eq!(read_state(&file, s), state, "{value}");
+        }
+        // No field, a field that isn't a string, or a broken file: no state.
+        for body in [r#"{"pid":4242}"#, r#"{"status":1}"#, "{"] {
+            std::fs::write(&file, body).unwrap();
+            assert_eq!(read_state(&file, s), None, "{body}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn claude_is_resumed_from_its_pid_file() {
         let home = temp("claude");
         let dir = home.join(".claude/sessions");
@@ -1031,6 +1064,8 @@ mod tests {
         let next = || rx.recv_timeout(Duration::from_secs(5)).unwrap();
         write("idle");
         assert_eq!(next(), (5, Some("idle")));
+        // A background shell started after the turn: still idle, not a second finish.
+        write("shell");
         // Unknown to the table: no change told, the last state stands.
         write("compacting");
         write("waiting");
