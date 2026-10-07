@@ -45,10 +45,10 @@ mod shell_integration;
 mod state;
 mod suggest;
 mod titlebar;
+mod translucency;
 #[cfg(target_os = "linux")]
 mod trash;
 mod updates;
-mod vibrancy;
 mod watch;
 #[cfg(desktop)]
 mod window_state;
@@ -72,6 +72,7 @@ fn show_eventually(window: tauri::WebviewWindow) {
 /// Shows a window its page kept hidden until the theme applied.
 fn show(window: &tauri::WebviewWindow) {
     let _ = window.show();
+    translucency::shown(window);
     #[cfg(desktop)]
     window_state::shown(window);
 }
@@ -144,7 +145,7 @@ pub fn run() {
                     quit::reset();
                 }
                 if let Some(window) = webview.get_webview_window(webview.label()) {
-                    vibrancy::reset(&window);
+                    translucency::reset(&window);
                 }
             }
         })

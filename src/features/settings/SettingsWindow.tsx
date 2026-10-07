@@ -64,7 +64,7 @@ export function SettingsWindow() {
   });
   return (
     <TooltipProvider>
-      <div className="flex h-full bg-elevated">
+      <div className="flex h-full bg-elevated glass-elevated">
         <SettingsPanel section={section} onSection={setSection} main={main} recording={recording} setRecording={setRecording} Title={Title} titleBar />
       </div>
       <Toaster />

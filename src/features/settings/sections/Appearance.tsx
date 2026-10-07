@@ -1,6 +1,7 @@
 import { IS_MAC } from "@/lib/platform";
 import {
   type Appearance,
+  BACKGROUND_BLUR,
   DARK_THEMES,
   type DarkTheme,
   LIGHT_SYNTAX_THEMES,
@@ -10,8 +11,6 @@ import {
   SYNTAX_THEMES,
   type SyntaxTheme,
   THEMES,
-  TRANSLUCENCY,
-  type Translucency,
   UI_SCALES,
   type UiFont,
   UI_FONT_WEIGHTS,
@@ -19,9 +18,10 @@ import {
   uiFontChoices,
   updateSettings,
   useSettings,
+  WINDOW_OPACITY,
 } from "@/lib/settings";
 import { Segmented } from "@/components/ui/segmented";
-import { Field, FontPicker, Group, OptionSelect } from "@/features/settings/controls";
+import { Field, FontPicker, Group, OptionSelect, Slider } from "@/features/settings/controls";
 
 // What the System theme follows.
 const DESKTOP = IS_MAC ? "macOS" : "your desktop";
@@ -58,19 +58,26 @@ export function AppearanceSection() {
             />
           </Field>
         )}
-        {/* macOS's own material: elsewhere there's nothing to show through. */}
+        {/* macOS only: elsewhere the window can't be made clear this way. */}
         {IS_MAC && (
-          <Field
-            label="Translucency"
-            hint="The desktop shows through the title bar, side panels and status bar, blurred. Code and the terminal stay solid, as does the window in the background or with Reduce transparency on."
-          >
-            <Segmented<Translucency>
-              value={s.translucency}
-              onChange={(v) => updateSettings({ translucency: v })}
-              options={Object.entries(TRANSLUCENCY).map(([value, label]) => ({ value: value as Translucency, label }))}
-              variant="field"
-            />
-          </Field>
+          <>
+            <Field
+              label="Window opacity"
+              hint="Below 100%, the desktop shows through the whole window. Text, dialogs, menus and the terminal stay solid, as does the window in full screen or with Reduce transparency on."
+            >
+              <Slider {...WINDOW_OPACITY} value={s.windowOpacity} fallback={100} format={(v) => `${v}%`} onChange={(v) => updateSettings({ windowOpacity: v })} />
+            </Field>
+            <Field label="Background blur" hint="How much the desktop behind a see-through window is blurred. 0 leaves it sharp.">
+              <Slider
+                {...BACKGROUND_BLUR}
+                value={s.backgroundBlur}
+                fallback={0}
+                format={String}
+                disabled={s.windowOpacity === 100}
+                onChange={(v) => updateSettings({ backgroundBlur: v })}
+              />
+            </Field>
+          </>
         )}
       </Group>
       {/* Each appearance keeps its own syntax theme, so switching back restores it. */}

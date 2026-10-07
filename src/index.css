@@ -519,36 +519,60 @@
     cursor: default;
   }
 }
-/* Translucency (translucency.ts, macOS): the window's material (vibrancy.rs) shows through the
-   chrome around the code, each part tinted once with its own color. What sits in it on that same
-   color goes clear rather than stacking a second tint; the other token stays solid (the history's
-   hollow dots are --sidebar in a panel). Code, diffs, the terminal, Monaco and dialogs keep the
-   solid tokens: they sit outside these parts, or read the colors from :root. */
+/* Window opacity (translucency.ts, macOS): the window is clear (translucency.rs) and each part of
+   the page paints its own color once: the code at --glass, the bars and panels around it at
+   --glass-chrome, a step more opaque. What sits in a part on that same color goes clear rather
+   than stacking a second tint; other colors stay solid (the history's hollow dots are --sidebar in
+   a panel), but for a panel's color in the code: tabs, file headers and cards tint once more, by
+   --glass-step, to the bars' level. Dialogs, menus and the terminal sit outside the parts, on the
+   solid colors. */
 :root[data-translucency] {
-  --glass-sidebar: color-mix(in srgb, var(--sidebar) var(--glass), transparent);
-  --glass-panel: color-mix(in srgb, var(--panel) var(--glass), transparent);
-}
-:root[data-translucency="subtle"] {
-  --glass: 80%;
-}
-/* Not lower: over a white wallpaper, --subtle text comes to about 4.5:1 here (estimated). */
-:root[data-translucency="strong"] {
-  --glass: 65%;
+  --glass-sidebar: color-mix(in srgb, var(--sidebar) var(--glass-chrome), transparent);
+  --glass-panel: color-mix(in srgb, var(--panel) var(--glass-chrome), transparent);
+  --glass-elevated: color-mix(in srgb, var(--elevated) var(--glass-chrome), transparent);
+  --glass-background: color-mix(in srgb, var(--background) var(--glass), transparent);
+  --glass-panel-step: color-mix(in srgb, var(--panel) var(--glass-step), transparent);
+  --glass-sidebar-step: color-mix(in srgb, var(--sidebar) var(--glass-step), transparent);
 }
 :root[data-translucency] body {
   background: transparent;
 }
 :root[data-translucency] .glass-sidebar {
   --sidebar: transparent;
+  --glass-part: var(--glass-sidebar);
   background-color: var(--glass-sidebar);
 }
 :root[data-translucency] .glass-panel {
   --panel: transparent;
+  --glass-part: var(--glass-panel);
   background-color: var(--glass-panel);
 }
+/* The settings window's page, in a dialog's colors; its section list tints once more. */
+:root[data-translucency] .glass-elevated {
+  --elevated: transparent;
+  --sidebar: var(--glass-sidebar-step);
+  --glass-part: var(--glass-elevated);
+  background-color: var(--glass-elevated);
+}
+:root[data-translucency] .glass-background {
+  --background: transparent;
+  --panel: var(--glass-panel-step);
+  --glass-part: var(--glass-background);
+  background-color: var(--glass-background);
+}
+/* Monaco's theme takes its colors from :root (lib/editor/monaco.ts); here they follow the part. */
+:root[data-translucency] .glass-background :is(.monaco-editor, .monaco-diff-editor) {
+  --vscode-editor-background: transparent;
+  --vscode-editorGutter-background: transparent;
+  --vscode-diffEditor-unchangedRegionBackground: var(--panel);
+}
+/* A label on a diagram's edge covers the line under it. */
+:root[data-translucency] .glass-background .guide-flow :is(.edgeLabel, .labelBkg, .edgeLabel p) {
+  background-color: var(--glass-background) !important;
+}
 /* A header rows scroll under keeps covering them: the tint again, over a blur, as native ones do. */
-:root[data-translucency] .glass-panel .glass-header {
-  background-color: var(--glass-panel);
+:root[data-translucency] :is(.glass-sidebar, .glass-panel, .glass-elevated, .glass-background) .glass-header {
+  background-color: var(--glass-part);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
 }

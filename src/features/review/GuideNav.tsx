@@ -48,7 +48,7 @@ export function GuideNav({ items, onGo }: { items: Item[]; onGo: (n: number) => 
           <NavItem key={i.n} {...i} chip={false} onGo={onGo} />
         ))}
       </nav>
-      <nav aria-label="Sections" className="sticky top-0 z-20 -mx-6 flex h-[var(--stick)] items-center gap-1.5 overflow-x-auto border-b border-border bg-background px-6 @6xl:hidden">
+      <nav aria-label="Sections" className="glass-header sticky top-0 z-20 -mx-6 flex h-[var(--stick)] items-center gap-1.5 overflow-x-auto border-b border-border bg-background px-6 @6xl:hidden">
         {items.map((i) => (
           <NavItem key={i.n} {...i} chip onGo={onGo} />
         ))}

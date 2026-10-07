@@ -227,7 +227,7 @@ function FileBlock({
   const estimate = (Math.min(LARGE, (file.additions ?? 0) + (file.deletions ?? 0)) + 2 * CONTEXT + 1) * line;
   return (
     <section ref={box} data-file={selectionKey(sel)} aria-label={file.path} className="border-b border-border">
-      <div className="sticky top-[var(--stick,0px)] z-10 flex h-8 items-center gap-2 border-b border-border bg-panel pr-2 pl-1.5 text-[12px]">
+      <div className="glass-header sticky top-[var(--stick,0px)] z-10 flex h-8 items-center gap-2 border-b border-border bg-panel pr-2 pl-1.5 text-[12px]">
         <button aria-expanded={open} aria-label={open ? `Collapse ${file.path}` : `Expand ${file.path}`} onClick={onToggleOpen} className="flex size-5 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground">
           <ChevronDown className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
         </button>

@@ -24,8 +24,8 @@ export const api = {
   setRepoIdentity: (identity: { name: string; email: string } | null) => invoke<void>("set_repo_identity", identity ?? { name: null, email: null }),
   status: () => invoke<RepoStatus>("status"),
   about: () => invoke<About>("about"),
-  /** macOS's material behind the window (the Translucency setting). */
-  setTranslucent: (on: boolean) => invoke<void>("set_translucent", { on }),
+  /** macOS: the window clear with `blur` behind it, or solid (Window opacity, Background blur). */
+  setTranslucent: (on: boolean, blur: number) => invoke<void>("set_translucent", { on, blur }),
   /** macOS's Reduce transparency accessibility setting; false elsewhere. */
   reduceTransparency: () => invoke<boolean>("reduce_transparency"),
   /**
