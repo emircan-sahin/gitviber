@@ -7,6 +7,8 @@ test("paths are escaped as Ghostty does", () => {
   assert.equal(shellPath("/tmp/a'b\"c$d&e;f|g*h?i!j#k`l"), "/tmp/a\\'b\\\"c\\$d\\&e\\;f\\|g\\*h\\?i\\!j\\#k\\`l");
   assert.equal(shellPath("/tmp/[x]{y}<z>\\w\tv"), "/tmp/\\[x\\]\\{y\\}\\<z\\>\\\\w\\\tv");
   assert.equal(shellPath("/tmp/plain-name_1.txt"), "/tmp/plain-name_1.txt");
+  // Letters outside ASCII are left as they are; zsh and bash take them so.
+  assert.equal(shellPath("/Users/me/Ekran Görüntüsü 😀/şçğ.png"), "/Users/me/Ekran\\ Görüntüsü\\ 😀/şçğ.png");
 });
 
 test("a name with a control character is left out", () => {

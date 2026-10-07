@@ -1148,6 +1148,17 @@
   pointer-events: none;
 }
 
+/* Files dragged over the window away from the panes (lib/app/drop): a folder opens as a project, a file of the repo in the code view. */
+body.gv-drop-window::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  border: 2px solid var(--primary);
+  background: color-mix(in srgb, var(--primary) 4%, transparent);
+  pointer-events: none;
+}
+
 /* A command shell integration marked (lib/terminal/commandMarks), beside its prompt in the pane's
    left padding: xterm's decoration sits on the first cell, so the dot is pulled out of it. */
 .gv-command-mark {

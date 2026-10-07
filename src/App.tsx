@@ -19,7 +19,7 @@ import { openSettings, SettingsDialog } from "@/features/settings/SettingsDialog
 import { ShortcutOverlay } from "@/features/app/ShortcutOverlay";
 import { Welcome } from "@/features/projects/Welcome";
 import { Workspace } from "@/features/workspace/Workspace";
-import { api, errorMessage, type GitInfo, NOT_A_REPO, type OpenedRepo } from "@/lib/api";
+import { api, errorMessage, type GitInfo, NOT_A_REPO, type OpenedRepo, pty } from "@/lib/api";
 import { useCommands } from "@/lib/commands/keybindings";
 import { useRecentMenu } from "@/lib/commands/menu";
 import { stepUiScale } from "@/lib/settings";
@@ -30,6 +30,8 @@ import { gitFailed } from "@/lib/app/gitFailed";
 import { failed, toast } from "@/lib/app/toast";
 import { openTargetIn } from "@/lib/links/linkHost";
 import { folderName } from "@/lib/path";
+import { filesIn, takeDrops } from "@/lib/app/drop";
+import { plural } from "@/lib/format";
 import { IS_MAC } from "@/lib/platform";
 
 export function App() {
@@ -159,6 +161,26 @@ export function App() {
       void unlisten?.then((stop) => stop()).catch(() => {});
     };
   }, [openAsked]);
+
+  // Dropped from Finder away from the terminal panes (lib/app/drop): a folder opens as a project, as
+  // `gitviber <folder>` does; files of the open repo open in the code view.
+  useEffect(
+    () =>
+      takeDrops(async (paths) => {
+        await booted.current;
+        const dirs = await pty.foldersLeft(paths).catch(() => []);
+        const folder = paths.filter((_, i) => dirs[i]).at(-1);
+        if (folder) return void openRepo(folder);
+        const root = shown.current;
+        if (!root) return toast("info", "Drop a folder to open it as a project");
+        const { inside, outside } = filesIn(paths, root);
+        for (const path of inside) openTargetIn(root, { path });
+        if (!outside.length) return;
+        const what = outside.length === 1 ? `${folderName(outside[0])} isn't` : `${plural(outside.length, "file")} aren't`;
+        toast("info", `${what} in this repository`, "Drop a folder to open it as a project, or a file onto a terminal to paste its path.");
+      }),
+    [openRepo],
+  );
 
   const onOpen = useCallback((p?: string) => openRepo(p), [openRepo]);
   const onReorder = useCallback((list: string[]) => {
