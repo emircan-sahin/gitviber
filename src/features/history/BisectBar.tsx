@@ -4,6 +4,7 @@ import { ask } from "@/lib/app/ask";
 import { SearchCode } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
 import { createStore } from "@/lib/store";
@@ -15,6 +16,12 @@ const useSaid = said.use;
 
 /** Starts looking for the first bad commit between `good` and HEAD (bad). */
 export async function startBisect(good: string, refresh: () => unknown) {
+  // It checks out other commits in this folder: a stray click shouldn't do that unasked.
+  const ok = await ask(
+    `Find the commit that broke something since ${good.slice(0, 7)}, which still worked. Git checks out commits between it and HEAD in this folder, one at a time: test each one and mark it Good (no problem) or Bad (has the problem). Stop takes you back to your branch.`,
+    { title: "Find the bad commit", okLabel: "Start" },
+  );
+  if (!ok) return;
   try {
     tell(await api.bisectStart(good));
     toast("info", "Bisecting", "Test the commit checked out, then mark it good or bad.");
@@ -57,26 +64,34 @@ export function BisectBar({ refresh }: { refresh: () => unknown }) {
         <SearchCode className="size-3.5 shrink-0 text-primary" />
         <span className="font-semibold">Bisecting</span>
         <span className="min-w-0 truncate text-muted-foreground" title={last?.message}>
-          {last?.firstBad ? `The first bad commit is ${last.firstBad.slice(0, 7)}.` : (last?.message ?? "Test the commit checked out, then say how it is.")}
+          {last?.firstBad ? `The first bad commit is ${last.firstBad.slice(0, 7)}.` : (last?.message ?? "Does the commit checked out have the problem?")}
         </span>
       </div>
       <div className="mt-2 flex gap-1">
         {!last?.firstBad && (
           <>
-            <Button size="sm" className="flex-1" disabled={busy} onClick={() => void mark("good")}>
-              Good
-            </Button>
-            <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => void mark("bad")}>
-              Bad
-            </Button>
-            <Button size="sm" variant="secondary" disabled={busy} onClick={() => void mark("skip")}>
-              Skip
-            </Button>
+            <Tip label="This commit doesn't have the problem">
+              <Button size="sm" className="flex-1" disabled={busy} onClick={() => void mark("good")}>
+                Good
+              </Button>
+            </Tip>
+            <Tip label="This commit has the problem">
+              <Button size="sm" variant="destructive" className="flex-1" disabled={busy} onClick={() => void mark("bad")}>
+                Bad
+              </Button>
+            </Tip>
+            <Tip label="Can't test this one: try a commit next to it">
+              <Button size="sm" variant="secondary" disabled={busy} onClick={() => void mark("skip")}>
+                Skip
+              </Button>
+            </Tip>
           </>
         )}
-        <Button size="sm" variant="secondary" className={last?.firstBad ? "flex-1" : undefined} disabled={busy} onClick={() => void stop()}>
-          Stop
-        </Button>
+        <Tip label="Stop and go back to your branch">
+          <Button size="sm" variant="secondary" className={last?.firstBad ? "flex-1" : undefined} disabled={busy} onClick={() => void stop()}>
+            Stop
+          </Button>
+        </Tip>
       </div>
     </div>
   );
