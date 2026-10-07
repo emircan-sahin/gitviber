@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { api, errorMessage, type Guided, type GuideTarget, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
-import { commandLine, programOf } from "@/lib/git/suggest";
+import { commandLine, programOf, runDetails } from "@/lib/git/suggest";
 import { type GuideSelection, type Selection, selectionPath } from "@/lib/repo/selection";
 import { GUIDE_PROMPT } from "@/lib/review/guide";
 import { getSettings } from "@/lib/settings";
@@ -15,9 +15,11 @@ const KEY = "gitviber.guides";
 const MAX = 12;
 const MAX_SIZE = 64 * 1024;
 
-/** A guide as kept: the answer as printed (parsed when shown), the range it read, who wrote it and when, the sections marked done. */
+/** A guide as kept: the answer as printed (parsed when shown), the range it read, who wrote it (with the model and effort its command named) and when, the sections marked done. */
 interface SavedGuide extends Guided {
   program: string;
+  /** Missing on guides from before it was kept. */
+  details?: string[];
   at: number;
   done: number[];
 }
@@ -30,7 +32,8 @@ const isSaved = (v: unknown): v is SavedGuide =>
   typeof v.program === "string" &&
   typeof v.at === "number" &&
   Array.isArray(v.done) &&
-  v.done.every(Number.isInteger);
+  v.done.every(Number.isInteger) &&
+  (v.details === undefined || (Array.isArray(v.details) && v.details.every((d) => typeof d === "string")));
 
 /** Where a guide is kept: per worktree, then per commit, or per branch (`branch`: HEAD's, null detached) and base. */
 export const guideId = (root: string, sel: GuideSelection, branch: string | null) => (sel.of === "commit" ? `${root}\0${sel.commit.sha}` : `${root}\0${branch ?? "HEAD"}\0${sel.base}`);
@@ -87,6 +90,7 @@ export function useGuide(id: string) {
 export async function generateGuide(id: string, sel: GuideSelection) {
   const { suggestCommand, suggestModels, suggestEfforts } = getSettings();
   const program = programOf(suggestCommand);
+  const line = commandLine(suggestCommand, suggestModels, suggestEfforts);
   const token = {};
   latest.set(id, token);
   const set = (run: Run | null) => latest.get(id) === token && setRun(id, run);
@@ -99,10 +103,10 @@ export async function generateGuide(id: string, sel: GuideSelection) {
   active = { sel, token };
   set("running");
   try {
-    const guided = await api.suggestGuide(commandLine(suggestCommand, suggestModels, suggestEfforts), GUIDE_PROMPT, guideTarget(sel));
+    const guided = await api.suggestGuide(line, GUIDE_PROMPT, guideTarget(sel));
     if (!guided.text.trim()) fail("No guided review written", `${program} printed nothing.`);
     else if (latest.get(id) === token) {
-      save(id, { ...guided, program, at: Date.now(), done: [] });
+      save(id, { ...guided, program, details: runDetails(line), at: Date.now(), done: [] });
       set(null);
     }
   } catch (e) {

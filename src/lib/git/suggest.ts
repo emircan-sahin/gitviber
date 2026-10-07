@@ -6,8 +6,9 @@
 /**
  * `model` is only the default: new models come out every few months, so Settings takes any id
  * and links `models`, a list of current ones. `effort` is the reasoning effort flag and its levels
- * (from each CLI's --help), passed only once the user picks one; null where the CLI has no general one.
- * `other` ones sit under Others. Each reads the prompt and the diff from stdin (tried by hand);
+ * (from each CLI's --help) with the level a preset runs at until the user picks one (CLI default
+ * passes none); null where the CLI has no general one. `lean`: flags every run gets, for a faster
+ * start. `other` ones sit under Others. Each reads the prompt and the diff from stdin (tried by hand);
  * Gemini CLI (individual sign-in retired), Copilot CLI (ignores stdin) and Ollama (pulls a
  * mistyped model unasked) are left to Custom.
  */
@@ -18,7 +19,10 @@ export const SUGGEST_PRESETS = {
     modelFlag: "--model",
     model: "claude-sonnet-5",
     models: { label: "Anthropic's model list", url: "https://platform.claude.com/docs/en/about-claude/models/overview" },
-    effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"] },
+    effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"], default: "medium" },
+    // Measured on a 5-line commit: 50 s and 6 turns with the user's MCP servers, skills and xhigh
+    // effort; 8 s and 1 turn with these and medium. Read is all a guided review needs.
+    lean: "--strict-mcp-config --no-session-persistence --disable-slash-commands --tools Read,Grep,Glob",
     other: false,
   },
   codex: {
@@ -28,7 +32,7 @@ export const SUGGEST_PRESETS = {
     model: "gpt-6-luna",
     models: { label: "OpenAI's Codex models", url: "https://developers.openai.com/codex/models" },
     // A config override, one argument: suggest.rs runs argv without a shell.
-    effort: { flag: "-c model_reasoning_effort=", levels: ["minimal", "low", "medium", "high", "xhigh"] },
+    effort: { flag: "-c model_reasoning_effort=", levels: ["minimal", "low", "medium", "high", "xhigh"], default: "medium" },
     other: false,
   },
   // The plan agent can't edit files; the default build agent can.
@@ -38,7 +42,7 @@ export const SUGGEST_PRESETS = {
     modelFlag: "-m",
     model: "anthropic/claude-sonnet-5",
     models: { label: "models.dev", url: "https://models.dev" },
-    effort: { flag: "--variant", levels: ["minimal", "low", "medium", "high", "xhigh", "max"] },
+    effort: { flag: "--variant", levels: ["minimal", "low", "medium", "high", "xhigh", "max"], default: "" },
     other: true,
   },
   pi: {
@@ -47,7 +51,7 @@ export const SUGGEST_PRESETS = {
     modelFlag: "--model",
     model: "anthropic/claude-sonnet-5",
     models: { label: "pi's model list", url: "https://pi.dev/models" },
-    effort: { flag: "--thinking", levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
+    effort: { flag: "--thinking", levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], default: "medium" },
     other: true,
   },
   llm: {
@@ -75,8 +79,14 @@ export const modelOf = (preset: SuggestPreset, models: Partial<Record<SuggestPre
 /** The levels a preset's effort takes; none when it has no flag. */
 export const effortLevels = (preset: SuggestPreset): readonly string[] => SUGGEST_PRESETS[preset].effort?.levels ?? [];
 
-/** The effort a preset runs with (settings.ts checks it's one of its levels); "" is the CLI's own default. */
-export const effortOf = (preset: SuggestPreset, efforts: Partial<Record<SuggestPreset, string>>) => (SUGGEST_PRESETS[preset].effort ? (efforts[preset] ?? "") : "");
+/** The effort a preset runs with (settings.ts checks it's one of its levels): the user's, or its default until they pick one; "" is the CLI's own default. */
+export const effortOf = (preset: SuggestPreset, efforts: Partial<Record<SuggestPreset, string>>) => {
+  const effort = SUGGEST_PRESETS[preset].effort;
+  return effort ? (efforts[preset] ?? effort.default) : "";
+};
+
+/** The flags a preset adds to every run; "" for none. */
+export const leanFlags = (preset: SuggestPreset): string => ("lean" in SUGGEST_PRESETS[preset] ? (SUGGEST_PRESETS[preset] as { lean: string }).lean : "");
 
 /** `--effort high`, or `-c model_reasoning_effort=high` for a flag that takes its value joined. */
 export function effortArg(preset: SuggestPreset, level: string) {
@@ -84,13 +94,28 @@ export function effortArg(preset: SuggestPreset, level: string) {
   return flag.endsWith("=") ? flag + level : `${flag} ${level}`;
 }
 
-/** The command as run: a preset's with its model and effort flags; a custom one carries its own. */
+/** The command as run: a preset's with its lean, model and effort flags; a custom one carries its own. */
 export function commandLine(command: string, models: Partial<Record<SuggestPreset, string>>, efforts: Partial<Record<SuggestPreset, string>>) {
   const preset = presetOf(command);
   if (!preset) return command;
   const model = modelOf(preset, models);
   const effort = effortOf(preset, efforts);
-  return [command.trim(), model && `${SUGGEST_PRESETS[preset].modelFlag} ${model}`, effort && effortArg(preset, effort)].filter(Boolean).join(" ");
+  return [command.trim(), leanFlags(preset), model && `${SUGGEST_PRESETS[preset].modelFlag} ${model}`, effort && effortArg(preset, effort)].filter(Boolean).join(" ");
+}
+
+/** The model and effort a command line names, as each preset's flags (or `--model=x`) write them, for "written by claude (x, medium)". */
+export function runDetails(line: string) {
+  const words = line.trim().split(/\s+/);
+  const value = (flags: string[]) => {
+    for (const [i, w] of words.entries()) {
+      if (flags.includes(w) && words[i + 1] && !words[i + 1].startsWith("-")) return words[i + 1];
+      const joined = flags.find((f) => f.startsWith("--") && w.startsWith(`${f}=`));
+      if (joined) return w.slice(joined.length + 1);
+      if (w.startsWith("model_reasoning_effort=") && flags.includes("--effort")) return w.slice("model_reasoning_effort=".length);
+    }
+    return "";
+  };
+  return [value(["--model", "-m"]), value(["--effort", "--thinking", "--variant"])].filter(Boolean);
 }
 
 /** Sent ahead of the diff, word for word; Settings shows it. */

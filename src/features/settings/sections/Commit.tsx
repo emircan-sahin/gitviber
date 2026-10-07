@@ -4,7 +4,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenu
 import { Input } from "@/components/ui/input";
 import { github } from "@/lib/api";
 import { updateSettings, useSettings } from "@/lib/settings";
-import { ALL_MODELS, effortArg, effortLevels, effortOf, modelOf, presetOf, PULL_PROMPT, SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT, type SuggestPreset as Preset } from "@/lib/git/suggest";
+import { ALL_MODELS, effortArg, effortLevels, effortOf, leanFlags, modelOf, presetOf, PULL_PROMPT, SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT, type SuggestPreset as Preset } from "@/lib/git/suggest";
 import { failed } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { segmentClass } from "@/components/ui/segmented";
@@ -70,8 +70,9 @@ function EffortField({ preset }: { preset: Preset }) {
       label="Effort"
       hint={
         <>
-          Passed as <code className="font-mono text-foreground">{effortArg(preset, "<level>")}</code>; CLI default passes none. More effort writes more considered messages, slower and
-          at a higher cost.{preset === "opencode" && " Levels are per model, and not every model has every one."}
+          Passed as <code className="font-mono text-foreground">{effortArg(preset, "<level>")}</code>
+          {SUGGEST_PRESETS[preset].effort?.default ? `, ${SUGGEST_PRESETS[preset].effort?.default} until you pick another` : ""}; CLI default passes none, leaving it to the CLI's own settings. More
+          effort writes more considered answers, slower and at a higher cost.{preset === "opencode" && " Levels are per model, and not every model has every one."}
         </>
       }
     >
@@ -123,6 +124,13 @@ export function CommitSection() {
             hint={
               <>
                 Passed as <code className="font-mono text-foreground">{`${SUGGEST_PRESETS[preset].modelFlag} ${SUGGEST_PRESETS[preset].model}`}</code>; empty uses the CLI's own default. New models come out often, and <ModelsLink {...SUGGEST_PRESETS[preset].models} /> has the current IDs.
+                {leanFlags(preset) && (
+                  <>
+                    {" "}
+                    Every run also gets <code className="font-mono text-foreground">{leanFlags(preset)}</code>: no MCP servers, skills or saved session, and only tools that read files, so it starts and
+                    answers faster.
+                  </>
+                )}
               </>
             }
           >

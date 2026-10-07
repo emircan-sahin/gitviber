@@ -141,7 +141,8 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
             )}
             {saved && (
               <span>
-                · written by {saved.program}, {relativeTime(saved.at / 1000)}
+                · written by {saved.program}
+                {saved.details?.length ? ` (${saved.details.join(", ")})` : ""}, {relativeTime(saved.at / 1000)}
               </span>
             )}
             {guide && guide.sections.length > 0 && (
