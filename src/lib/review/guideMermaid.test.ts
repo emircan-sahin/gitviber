@@ -76,14 +76,17 @@ async function drawnText(src: string) {
 const step = (label: string, i: number, file = ""): Flow["steps"][number] => ({ id: `${i}`, label, file, status: "changed", kind: i % 3 === 2 ? "decision" : "step", section: i % 2 ? 1 : null });
 const meta = (s: Flow["steps"][number]) => `${s.section ? "01 " : ""}${[s.kind === "decision" ? "Decision" : "Changed", s.file.slice(s.file.lastIndexOf("/") + 1)].filter(Boolean).join(" · ")}`;
 
+// A label as drawn: one line, without the bidi controls that would reorder it.
+const asDrawn = (label: string) => label.replace(/[\u202A-\u202E\u2066-\u2069]/g, "").replace(/\s+/g, " ");
+
 /** Each label, as a step and as an edge's label, draws as its own statement and reads back as written. */
 async function roundTrips(labels: string[], files: string[] = []) {
   const steps = labels.map((l, i) => step(l, i, files[i % (files.length || 1)] ?? ""));
   const edges = steps.slice(1).map((s, i) => ({ from: `${i}`, to: s.id, label: labels[(i + 3) % labels.length] }));
   const { calls, nodes, edges: drawn } = await drawnText(flowSource({ title: "", steps, edges }));
   assert.deepEqual([...new Set(calls.map(([name]) => name))].sort(), edges.length ? ["addLink", "addVertex", "destructLink", "setClass", "setDirection"] : ["addVertex", "setClass", "setDirection"]);
-  assert.deepEqual(nodes, steps.map((s, i) => [`s${i}`, meta(s) + s.label.replace(/\s+/g, " ")]));
-  assert.deepEqual(drawn, edges.map((e) => e.label.replace(/\s+/g, " ")));
+  assert.deepEqual(nodes, steps.map((s, i) => [`s${i}`, meta(s) + asDrawn(s.label)]));
+  assert.deepEqual(drawn, edges.map((e) => asDrawn(e.label)));
 }
 
 const lookalikes = [
@@ -122,12 +125,12 @@ test("random labels draw as written, as one statement each", { skip: !chunk && "
 
 // Mermaid's encodeEntities cuts the last ";" off a line matching /style.*:\S*#.*;/ (meant for
 // `style a fill:#fff;`), so a "style" word, then a colon and an escaped character, loses one.
-test("a label with a colon in a step of style.css draws as written", { todo: "mermaidText leaves ':' as is; escape it (#58;) so Mermaid's style/classDef rewrite never matches" }, async () => {
+test("a label with a colon in a step of style.css draws as written", async () => {
   await roundTrips(["color:#fff <b>", "classDef:#x>"], ["src/style.css"]);
 });
 
 // Mermaid's lexer reads any line holding "direction TB" (or BT, RL, LR, TD) as a direction
 // statement, quotes or not: the step, or the edge, on that line is dropped without an error.
-test("a label naming a direction draws as written", { todo: "mermaidText leaves the space in 'direction LR'; escape it (direction#32;LR) so the line stays a step" }, async () => {
+test("a label naming a direction draws as written", async () => {
   await roundTrips(["direction TB", "flex direction RL", "next"]);
 });

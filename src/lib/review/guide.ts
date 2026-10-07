@@ -67,8 +67,8 @@ export interface Guide {
   sections: GuideSection[];
 }
 
-/** How much of a diagram is drawn, as the prompt asks: past this a diagram stops explaining. */
-export const LIMITS = { models: 6, fields: 12, flows: 2, steps: 12, edges: 24 };
+/** How much of a diagram is drawn, as the prompt asks (past this it stops explaining), and how many sections. */
+export const LIMITS = { models: 6, fields: 12, flows: 2, steps: 12, edges: 24, sections: 50 };
 
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
@@ -194,7 +194,8 @@ export function parseGuide(output: string): Guide | null {
       files: [...new Set((Array.isArray(s.files) ? s.files : []).map((f) => text(f).replace(/^\.\//, "")).filter(Boolean))],
       risk: text(s.risk),
     }))
-    .filter((s) => s.title || s.summary || s.files.length);
+    .filter((s) => s.title || s.summary || s.files.length)
+    .slice(0, LIMITS.sections);
   const diagram = isRecord(v.diagram) ? v.diagram : {};
   const guide = {
     title: text(v.title),
@@ -246,8 +247,16 @@ const baseName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
  * A model's text as Mermaid label text: whatever could end the quoted string, start a directive
  * (`%%{`), math (`$$`), an entity or markup is written as a character code (`#60;`), which Mermaid
  * prints as that character. Newlines go, so nothing can start a statement (`click`, `style`).
+ * Mermaid also reads its own syntax inside quotes: any line with "direction LR" (or TB…) as a
+ * direction, dropping the step, and a "style…:…#…;" line loses its last ";". So ":" and the space
+ * after "direction" are codes too. Bidi controls go: they'd reorder the label's text on screen.
  */
-export const mermaidText = (s: string) => s.replace(/\s+/g, " ").replace(/[^\p{L}\p{N} .,:_\-+*/=!?'()]/gu, (c) => `#${c.codePointAt(0)};`);
+export const mermaidText = (s: string) =>
+  s
+    .replace(/[\u202A-\u202E\u2066-\u2069]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[^\p{L}\p{N} .,_\-+*/=!?'()]/gu, (c) => `#${c.codePointAt(0)};`)
+    .replace(/direction /g, "direction#32;");
 
 /**
  * A flow as a Mermaid flowchart, left to right: each step a box (a hexagon for a decision) with

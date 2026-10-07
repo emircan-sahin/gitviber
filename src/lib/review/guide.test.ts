@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { describeFlow, flowSource, mermaidText, parseGuide, placeFiles } from "./guide.ts";
+import { describeFlow, flowSource, LIMITS, mermaidText, parseGuide, placeFiles } from "./guide.ts";
 
 const unplaced = (g: Parameters<typeof placeFiles>[0], paths: string[]) => placeFiles(g, paths).rest;
 
@@ -323,9 +323,9 @@ test("a hostile 5 MB answer parses fast, with its diagram capped", () => {
   assert.deepEqual(placed.shown.slice(0, 2), [["src/f0.ts", "src/f1.ts"], ["src/f2.ts"]]);
 });
 
-test("a hostile answer's sections are capped too", { todo: "sections have no cap: 10,000 render 10,000 rows of Markdown; cap them as the diagram is" }, () => {
+test("a hostile answer's sections are capped too", () => {
   const g = parseGuide(JSON.stringify({ title: "T", sections: Array.from({ length: 10_000 }, (_, i) => ({ title: `S${i}` })) }))!;
-  assert.ok(g.sections.length <= 100, String(g.sections.length));
+  assert.equal(g.sections.length, LIMITS.sections);
 });
 
 test("a file in three sections, and a guide of no sections", () => {
@@ -353,4 +353,10 @@ test("a file in three sections, and a guide of no sections", () => {
   });
   const none = parseGuide(JSON.stringify({ title: "T", overview: "o", sections: [] }))!;
   assert.deepEqual(placeFiles(none, ["x.ts", "y.ts"]), { shown: [], named: [], rest: ["x.ts", "y.ts"] });
+});
+
+test("labels Mermaid would read as its own syntax, and bidi controls", () => {
+  assert.equal(mermaidText("flex direction LR"), "flex direction#32;LR");
+  assert.equal(mermaidText("style a fill:#fff;"), "style a fill#58;#35;fff#59;");
+  assert.equal(mermaidText("a‮b⁦c⁩ d"), "abc d");
 });
