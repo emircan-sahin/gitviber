@@ -3,7 +3,6 @@ import { restrictToHorizontalAxis, restrictToParentElement, restrictToVerticalAx
 import { horizontalListSortingStrategy, SortableContext, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { createContext, useContext, useRef } from "react";
-import { buttonLost } from "@/lib/ui/held";
 
 // The pointerup that ends a drag also clicks the item under it; items ask this before acting.
 const DragGuard = createContext<() => boolean>(() => false);
@@ -16,7 +15,13 @@ const DragGuard = createContext<() => boolean>(() => false);
 class Sensor extends PointerSensor {
   constructor(props: PointerSensorProps) {
     // pointercancel on the document is the sensor's own way out: it detaches and cancels the drag.
-    const move = (e: PointerEvent) => buttonLost(e) && document.dispatchEvent(new PointerEvent("pointercancel"));
+    // The move itself is the drag's no more: a listener after this one (commitDrag's drop marker)
+    // would take it for one and mark a spot after the cancel cleared it.
+    const move = (e: PointerEvent) => {
+      if (e.buttons) return;
+      document.dispatchEvent(new PointerEvent("pointercancel"));
+      e.stopPropagation();
+    };
     const stop = () => document.removeEventListener("pointermove", move, true);
     super({
       ...props,
