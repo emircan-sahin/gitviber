@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { Narrow } from "../../../lib/api/github.ts";
 import { emptyText, isNarrowed, narrowKey, NO_CHOICE, parseChoice, scopesFor, withChoice } from "./narrow.ts";
 
-const narrow = (n: Partial<Narrow>): Narrow => ({ scope: null, draft: null, labels: [], ...n });
+const narrow = (n: Partial<Narrow>): Narrow => ({ scope: null, draft: null, labels: [], author: null, ...n });
 
 test("pull requests offer a review chip, issues don't", () => {
   assert.deepEqual(scopesFor("pulls").map((s) => s.id), ["created", "assigned", "mentioned", "reviewRequested"]);
@@ -46,6 +46,7 @@ test("a narrowing is anything that cuts the list", () => {
   assert.equal(isNarrowed(narrow({})), false);
   assert.equal(isNarrowed(narrow({ draft: false })), true);
   assert.equal(isNarrowed(narrow({ labels: ["bug"] })), true);
+  assert.equal(isNarrowed(narrow({ author: "mona" })), true);
 });
 
 test("an empty list names the filter", () => {
@@ -56,6 +57,16 @@ test("an empty list names the filter", () => {
   assert.equal(emptyText("issues", "open", narrow({ scope: "mentioned", labels: ["bug"] })), "No open issues that mention you with this label.");
   assert.equal(emptyText("issues", "all", narrow({ labels: ["bug", "ui"] })), "No issues with all these labels.");
   assert.equal(emptyText("pulls", "open", narrow({ draft: true })), "No open draft pull requests.");
+});
+
+test("an author narrows on its own and beside the rest", () => {
+  assert.notEqual(narrowKey(narrow({ author: "mona" })), "");
+  assert.notEqual(narrowKey(narrow({ author: "mona" })), narrowKey(narrow({ author: "octo" })));
+  assert.notEqual(narrowKey(narrow({ author: "mona", labels: ["bug"] })), narrowKey(narrow({ labels: ["bug"] })));
+  // A login can't pass for a label.
+  assert.notEqual(narrowKey(narrow({ author: "bug" })), narrowKey(narrow({ labels: ["bug"] })));
+  assert.equal(emptyText("pulls", "open", narrow({ author: "buildbot[bot]" })), "No open pull requests by buildbot[bot].");
+  assert.equal(emptyText("issues", "all", narrow({ author: "mona", scope: "assigned", labels: ["bug"] })), "No issues by mona assigned to you with this label.");
 });
 
 test("labels that hold the separators don't share a cache key with other picks", () => {

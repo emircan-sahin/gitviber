@@ -11,7 +11,7 @@ const saved = (repoKey: string | undefined, kind: ListKind) => parseChoice(repoK
 
 /**
  * What a PR or issue list is narrowed to: the chips' choice, kept per repository (`repoKey` is
- * its main worktree, as every worktree of it lists the same PRs), and the labels picked. The chips
+ * its main worktree, as every worktree of it lists the same PRs), and the labels and author picked. The chips
  * that name the account wait on it, but not for it: the saved one lists at once. Once it can't be
  * read (`meReason` says why) everyone's are listed, and the choice stays for when it can.
  */
@@ -21,15 +21,25 @@ export function useNarrow(kind: ListKind, repoKey: string | undefined, account: 
   const [state, setState] = useState(() => ({ repoKey, choice: saved(repoKey, kind) }));
   const choice = state.repoKey === repoKey ? state.choice : saved(repoKey, kind);
   const [labels, setLabels] = useState<IssueLabel[]>([]);
-  const setChoice = (next: Choice) => {
+  const [author, setAuthorOnly] = useState<string | null>(null);
+  const saveChoice = (next: Choice) => {
     setState({ repoKey, choice: next });
     if (!repoKey) return;
     const all = readJson<Record<string, unknown>>(KEY, {});
     putRecent(KEY, repoKey, withChoice(all[repoKey], kind, next), MAX_REPOS);
   };
+  // "Created by me" and an author both say who opened it: picking one lets the other go.
+  const setChoice = (next: Choice) => {
+    if (next.scope === "created") setAuthorOnly(null);
+    saveChoice(next);
+  };
+  const setAuthor = (login: string | null) => {
+    setAuthorOnly(login);
+    if (login !== null && choice.scope === "created") saveChoice({ ...choice, scope: null });
+  };
   const names = labels.map((l) => l.name);
-  const key = narrowKey({ scope: meUsable ? choice.scope : null, draft: choice.draft, labels: names });
-  // Stable while nothing changed, as the lists' loaders depend on it (`key` stands for the three).
-  const narrow = useMemo<Narrow>(() => ({ scope: meUsable ? choice.scope : null, draft: choice.draft, labels: names }), [key]);
-  return { choice, setChoice, labels, setLabels, narrow, meReason };
+  const key = narrowKey({ scope: meUsable ? choice.scope : null, draft: choice.draft, labels: names, author });
+  // Stable while nothing changed, as the lists' loaders depend on it (`key` stands for the four).
+  const narrow = useMemo<Narrow>(() => ({ scope: meUsable ? choice.scope : null, draft: choice.draft, labels: names, author }), [key]);
+  return { choice, setChoice, labels, setLabels, author, setAuthor, narrow, meReason };
 }

@@ -52,7 +52,7 @@ export function PullsPanel({ status, branches, lastCommit, repoKey, activeKey, o
   const [creating, setCreating] = useState<GitHubAccess | null>(null);
   const acct = useGitHubAccount();
   const { account, origin, upstream } = acct;
-  const { choice, setChoice, labels, setLabels, narrow, meReason } = useNarrow("pulls", repoKey, account, acct.error);
+  const { choice, setChoice, labels, setLabels, author, setAuthor, narrow, meReason } = useNarrow("pulls", repoKey, account, acct.error);
   const firstPages = () => setPages({ origin: 1, parent: 1 });
   const pickChoice = (c: Choice) => {
     setChoice(c);
@@ -60,6 +60,10 @@ export function PullsPanel({ status, branches, lastCommit, repoKey, activeKey, o
   };
   const pickLabels = (l: IssueLabel[]) => {
     setLabels(l);
+    firstPages();
+  };
+  const pickAuthor = (login: string | null) => {
+    setAuthor(login);
     firstPages();
   };
   // Origin's list loads alongside the account; a fork's parent is only known after it.
@@ -94,9 +98,10 @@ export function PullsPanel({ status, branches, lastCommit, repoKey, activeKey, o
 
   const clearNarrow = () => {
     setChoice(NO_CHOICE);
+    setAuthor(null);
     pickLabels([]);
   };
-  const ownRows = <PullRows pulls={own.data ?? null} match={find.needle ? match : null} error={error} filter={filter} narrow={narrow} onClearNarrow={clearNarrow} activeKey={activeKey} onOpen={onOpen} account={account} roomy={!upstream} target={null} {...more("origin", own)} />;
+  const ownRows = <PullRows pulls={own.data ?? null} match={find.needle ? match : null} error={error} filter={filter} narrow={narrow} onClearNarrow={clearNarrow} onAuthor={pickAuthor} activeKey={activeKey} onOpen={onOpen} account={account} roomy={!upstream} target={null} {...more("origin", own)} />;
 
   return (
     <div className="flex h-full flex-col">
@@ -141,6 +146,8 @@ export function PullsPanel({ status, branches, lastCommit, repoKey, activeKey, o
         kind="pulls"
         choice={choice}
         onChange={pickChoice}
+        author={author}
+        onAuthor={pickAuthor}
         meReason={meReason}
       />
       <SelectedLabels labels={labels} onChange={pickLabels} />
@@ -172,6 +179,7 @@ export function PullsPanel({ status, branches, lastCommit, repoKey, activeKey, o
                     filter={filter}
                     narrow={narrow}
                     onClearNarrow={clearNarrow}
+                    onAuthor={pickAuthor}
                     activeKey={activeKey}
                     onOpen={onOpen}
                     account={account}

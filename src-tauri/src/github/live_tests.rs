@@ -111,6 +111,27 @@ fn live_label_filter() {
     }
 }
 
+/// Read-only, against this checkout's origin: `cargo test -- --ignored live_author_filter`.
+/// Each author on the first page, an app's ("[bot]") too, narrows to their own.
+#[test]
+#[ignore = "talks to GitHub"]
+fn live_author_filter() {
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let session = Session::default();
+    let all = list(&session, repo, None, "all", 1, &ListFilter::default()).unwrap();
+    let mut authors: Vec<&str> = all.iter().map(|p| p.author.as_str()).collect();
+    authors.dedup();
+    for author in authors.into_iter().take(5) {
+        let by = ListFilter {
+            author: Some(author.to_string()),
+            ..Default::default()
+        };
+        let theirs = list(&session, repo, None, "all", 1, &by).unwrap();
+        println!("{author}: {} pull requests", theirs.len());
+        assert!(!theirs.is_empty() && theirs.iter().all(|p| p.author == author));
+    }
+}
+
 /// Read-only, against a clone of a fork: `GITVIBER_GH_FORK=/path/to/clone cargo test -- --ignored`.
 #[test]
 #[ignore = "talks to GitHub"]

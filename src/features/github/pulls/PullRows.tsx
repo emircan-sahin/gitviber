@@ -1,8 +1,9 @@
-import { FolderGit2 } from "lucide-react";
+import { FolderGit2, ListFilter } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import { type GitHubAccount, type Narrow, PR_PAGE, type Pull, type Target } from "@/lib/api";
 import { CiBadge } from "@/components/CiBadge";
+import { RowFilter } from "@/components/RowFilter";
 import { useCi } from "@/lib/github/ci";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { isoToUnix, relativeTime } from "@/lib/format";
@@ -27,6 +28,7 @@ export function PullRows({
   filter,
   narrow,
   onClearNarrow,
+  onAuthor,
   activeKey,
   onOpen,
   account,
@@ -43,6 +45,8 @@ export function PullRows({
   filter: Filter;
   narrow: Narrow;
   onClearNarrow: () => void;
+  /** Narrows the list to the pull requests this login opened. */
+  onAuthor: (login: string) => void;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   /** For where a PR would be checked out; null until it loads. */
@@ -77,10 +81,15 @@ export function PullRows({
         const key = selectionKey(sel);
         const active = activeKey === key;
         const source = p.state === "open" ? pullSource(p, account) : null;
-        const extra = source && (
+        const extra = (
           <>
-            <ContextMenuItem onSelect={() => openWorktreeDialog({ kind: "new", pull: source })}>
-              <FolderGit2 /> Check out in new worktree…
+            {source && (
+              <ContextMenuItem onSelect={() => openWorktreeDialog({ kind: "new", pull: source })}>
+                <FolderGit2 /> Check out in new worktree…
+              </ContextMenuItem>
+            )}
+            <ContextMenuItem disabled={narrow.author === p.author} onSelect={() => onAuthor(p.author)}>
+              <ListFilter /> Filter by author {p.author}
             </ContextMenuItem>
             <ContextMenuSeparator />
           </>
@@ -103,7 +112,9 @@ export function PullRows({
               <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-subtle">
                 <span className="font-mono">#{p.number}</span>
                 <span>·</span>
-                <span className="truncate">{p.author}</span>
+                <RowFilter title={`Filter by author ${p.author}`} onFilter={() => onAuthor(p.author)}>
+                  {p.author}
+                </RowFilter>
                 <span>·</span>
                 <span className="min-w-0 truncate font-mono">{p.headRef}</span>
                 <CiBadge state={p.state === "open" ? ci[p.headSha] : undefined} className="ml-auto" />
