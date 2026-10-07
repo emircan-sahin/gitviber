@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
-import { ALL_MODELS, effortLevels, effortOf, GUIDE_LIMIT_KB, modelOf, presetOf, programOf, reviewAgent, SUGGEST_PRESETS, type SuggestPreset as Preset } from "@/lib/git/suggest";
+import { effortLevels, effortOf, GUIDE_LIMIT_KB, modelOf, presetOf, programOf, reviewAgent, SUGGEST_PRESETS, type SuggestPreset as Preset } from "@/lib/git/suggest";
 import { guidePrompt } from "@/lib/review/guide";
 import { updateSettings, useSettings } from "@/lib/settings";
 import { Field, Group, OptionSelect } from "@/features/settings/controls";
-import { CommandPicker, ModelsLink } from "./Commit";
+import { CommandPicker, CustomModelField, ModelsLink } from "./Commit";
 
 /** Languages by the name the prompt gives, each shown in its own. */
 const LANGUAGES: Record<string, string> = {
@@ -23,6 +23,9 @@ const LANGUAGES: Record<string, string> = {
 const CUSTOM = "custom";
 // Not an effort level of any preset.
 const SAME = "same";
+
+// The last command of its own, back when "Same as" is undone, until GitViber quits.
+let lastOwn: string | null = null;
 
 /** A preset's entry with `key` taken out: Commit Messages' then applies again. */
 const without = (entries: Partial<Record<Preset, string>>, key: Preset) => Object.fromEntries(Object.entries(entries).filter(([k]) => k !== key));
@@ -47,8 +50,11 @@ export function ReviewSection() {
             className="w-80"
             value={s.reviewCommand === null ? SAME : "own"}
             options={{ [SAME]: same, own: "Its own command" }}
-            // Its own starts from Commit Messages' command, to change from there.
-            onChange={(v) => updateSettings({ reviewCommand: v === SAME ? null : s.suggestCommand })}
+            // Its own starts from the one it had, else Commit Messages' command, to change from there.
+            onChange={(v) => {
+              if (s.reviewCommand !== null) lastOwn = s.reviewCommand;
+              updateSettings({ reviewCommand: v === SAME ? null : (lastOwn ?? s.suggestCommand) });
+            }}
           />
         </Field>
         {s.reviewCommand !== null && (
@@ -78,16 +84,7 @@ export function ReviewSection() {
             />
           </Field>
         ) : (
-          <Field
-            label="Model"
-            hint={
-              <>
-                Goes in the command itself. <ModelsLink {...ALL_MODELS} /> lists every provider's current model IDs.
-              </>
-            }
-          >
-            {null}
-          </Field>
+          <CustomModelField />
         )}
         {preset && levels.length > 0 && (
           <Field label="Effort" hint="A guided review reads the whole change: more effort can catch more, slower and at a higher cost.">

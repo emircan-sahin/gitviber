@@ -58,6 +58,22 @@ function AgentPicker({ value, onChange }: { value: Preset | "custom"; onChange: 
   );
 }
 
+/** A custom command's model, which goes in the command itself. */
+export function CustomModelField() {
+  return (
+    <Field
+      label="Model"
+      hint={
+        <>
+          Goes in the command itself. <ModelsLink {...ALL_MODELS} /> lists every provider's current model IDs.
+        </>
+      }
+    >
+      {null}
+    </Field>
+  );
+}
+
 /** A preset's command picked, or one typed (Custom). */
 export function CommandPicker({ command, onChange }: { command: string; onChange: (command: string) => void }) {
   const preset = presetOf(command);
@@ -150,16 +166,7 @@ export function CommitSection() {
             />
           </Field>
         ) : (
-          <Field
-            label="Model"
-            hint={
-              <>
-                Goes in the command itself. <ModelsLink {...ALL_MODELS} /> lists every provider's current model IDs.
-              </>
-            }
-          >
-            {null}
-          </Field>
+          <CustomModelField />
         )}
         {preset && <EffortField preset={preset} />}
       </Group>
