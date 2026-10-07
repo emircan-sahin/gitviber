@@ -9,8 +9,6 @@ import { readJson, writeJson } from "../storage";
 import { createStore } from "../store";
 import { refreshVaults, vaultList } from "./vaultList";
 
-export { refreshVaults, vaultList };
-
 // Unsaved edits of their notes come back as the list is read, with their tabs' dots.
 vaultList.subscribe(() => vaultList.get()?.forEach((v) => openVaultEdits(v.path)));
 
