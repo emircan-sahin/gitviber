@@ -387,4 +387,211 @@ mod tests {
                    \u{1b}(Bplain\u{1b}]8;;https://x.y\u{1b}\\link\u{1b}]8;;\u{7} end";
         assert_eq!(log_tail(log, false, 200), "100%\nplainlink end");
     }
+
+    #[test]
+    fn a_sha_that_is_not_forty_hex_characters_is_refused_before_any_request() {
+        let session = Session::default();
+        let repo = Path::new("/nonexistent/acme-widgets");
+        for sha in [
+            "",
+            "1a2b3c4",
+            &"g".repeat(40),
+            // A SHA-256 repository's id: GitHub has none, so it's not asked for.
+            &"ab".repeat(32),
+            "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b/../x",
+        ] {
+            let err = commit_checks(&session, repo, None, sha).err().unwrap();
+            assert!(err.ends_with("is not a commit id."), "{sha}: {err}");
+        }
+    }
+
+    #[test]
+    fn every_check_run_conclusion_maps_to_its_own_state() {
+        for conclusion in [
+            "success",
+            "failure",
+            "neutral",
+            "cancelled",
+            "skipped",
+            "timed_out",
+            "action_required",
+            "stale",
+            "startup_failure",
+        ] {
+            let c = check_run(&serde_json::json!({
+                "id": 7001, "name": "build", "status": "completed", "conclusion": conclusion
+            }));
+            assert_eq!((c.state.as_str(), c.status.as_str()), (conclusion, ""));
+        }
+        for status in ["queued", "in_progress", "waiting", "requested", "pending"] {
+            let c = check_run(&serde_json::json!({ "name": "build", "status": status }));
+            assert_eq!((c.state.as_str(), c.status.as_str()), ("pending", status));
+        }
+    }
+
+    #[test]
+    fn a_completed_run_without_a_conclusion_and_a_bare_object_read_as_empty() {
+        let c = check_run(&serde_json::json!({
+            "id": 7002, "name": "odd", "status": "completed", "conclusion": null
+        }));
+        assert_eq!((c.state.as_str(), c.status.as_str()), ("", ""));
+        let bare = check_run(&serde_json::json!({}));
+        assert_eq!(
+            (
+                bare.name.as_str(),
+                bare.state.as_str(),
+                bare.status.as_str()
+            ),
+            ("", "pending", "")
+        );
+        assert_eq!((bare.id, bare.url, bare.started_at), (None, None, None));
+        // A negative or fractional id isn't a check run's.
+        assert_eq!(check_run(&serde_json::json!({ "id": -1 })).id, None);
+        assert_eq!(check_run(&serde_json::json!({ "id": 1.5 })).id, None);
+    }
+
+    #[test]
+    fn a_status_with_every_field_null_is_a_pending_one_with_no_name() {
+        let s = status(&serde_json::json!({
+            "context": null, "state": null, "description": null,
+            "target_url": null, "created_at": null
+        }));
+        assert_eq!(
+            (s.name.as_str(), s.state.as_str(), s.status.as_str()),
+            ("", "pending", "pending")
+        );
+        assert_eq!(
+            (s.description.as_str(), s.url, s.started_at),
+            ("", None, None)
+        );
+        let ok = status(&serde_json::json!({ "context": "ci", "state": "success" }));
+        assert_eq!((ok.state.as_str(), ok.status.as_str()), ("success", ""));
+    }
+
+    #[test]
+    fn five_hundred_runs_with_unicode_names_keep_their_order_and_names() {
+        let names: Vec<String> = (0..500)
+            .map(|i| format!("테스트 ✅ ビルド/{i} — \u{1F680}"))
+            .collect();
+        let runs: Vec<Check> = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                check_run(&serde_json::json!({
+                    "id": 10_000 + i as u64, "name": n, "status": "completed",
+                    "conclusion": if i % 7 == 0 { "failure" } else { "success" },
+                    "html_url": format!("https://github.com/acme/widgets/runs/{}", 10_000 + i)
+                }))
+            })
+            .collect();
+        assert_eq!(runs.len(), 500);
+        assert!(runs.iter().zip(&names).all(|(c, n)| &c.name == n));
+        assert_eq!(runs.iter().filter(|c| c.state == "failure").count(), 72);
+        let json = serde_json::to_string(&CommitChecks {
+            checks: runs,
+            checks_error: None,
+        })
+        .unwrap();
+        let back: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(back["checks"][499]["name"], names[499].as_str());
+    }
+
+    #[test]
+    fn the_pull_detail_keeps_checks_and_checks_error_at_its_top_level() {
+        use crate::github::{Pull, PullDetail};
+        let d = PullDetail {
+            pull: Pull {
+                number: 42,
+                title: "Fix the parser".into(),
+                state: "open".into(),
+                draft: false,
+                author: "octo".into(),
+                head_ref: "fix/parser".into(),
+                head_sha: "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b".into(),
+                head_repo: None,
+                base_ref: "main".into(),
+                base_sha: "0f9e8d7c6b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e".into(),
+                created_at: "2024-05-01T12:00:00Z".into(),
+                updated_at: "2024-05-01T12:00:00Z".into(),
+                url: "https://github.com/acme/widgets/pull/42".into(),
+            },
+            body: String::new(),
+            additions: 1,
+            deletions: 2,
+            changed_files: 1,
+            commits: 1,
+            mergeable: None,
+            mergeable_state: "unknown".into(),
+            checks: CommitChecks {
+                checks: vec![status(&serde_json::json!({
+                    "context": "ci/legacy", "state": "error", "target_url": "https://ci.example.com/b/7"
+                }))],
+                checks_error: Some("Resource not accessible by integration".into()),
+            },
+            comments: vec![],
+            closed_by: None,
+            merged_by: None,
+        };
+        let v = serde_json::to_value(&d).unwrap();
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "additions",
+                "author",
+                "baseRef",
+                "baseSha",
+                "body",
+                "changedFiles",
+                "checks",
+                "checksError",
+                "closedBy",
+                "comments",
+                "commits",
+                "createdAt",
+                "deletions",
+                "draft",
+                "headRef",
+                "headRepo",
+                "headSha",
+                "mergeable",
+                "mergeableState",
+                "mergedBy",
+                "number",
+                "state",
+                "title",
+                "updatedAt",
+                "url"
+            ]
+        );
+        assert_eq!(v["checksError"], "Resource not accessible by integration");
+        // The fields main's PR view read are unchanged; the rest are new.
+        let c = &v["checks"][0];
+        assert_eq!(
+            (&c["name"], &c["state"], &c["url"], &c["id"]),
+            (
+                &Value::from("ci/legacy"),
+                &Value::from("failure"),
+                &Value::from("https://ci.example.com/b/7"),
+                &Value::Null
+            )
+        );
+        let mut fields: Vec<&str> = c.as_object().unwrap().keys().map(String::as_str).collect();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            [
+                "app",
+                "completedAt",
+                "description",
+                "id",
+                "name",
+                "startedAt",
+                "state",
+                "status",
+                "url"
+            ]
+        );
+    }
 }
