@@ -238,6 +238,24 @@ test("guided review settings changed in the settings window reach main, null inc
   assert.equal(stored().reviewCommand, null);
 });
 
+test("a guided review's model or effort taken back to Commit Messages' in the settings window is gone in main too", async () => {
+  reset();
+  const main = await boot("main");
+  const win = await boot("settings");
+  win.updateSettings({ reviewModels: { claude: "opus", codex: "gpt-x" }, reviewEfforts: { claude: "", codex: "high" } });
+  await deliver();
+  // Review.tsx's without(): the whole object goes, a key left out is Same as again.
+  win.updateSettings({ reviewModels: { codex: "gpt-x" }, reviewEfforts: { claude: "" } });
+  await deliver();
+  assert.deepEqual(main.getSettings().reviewModels, { codex: "gpt-x" });
+  // "" (CLI default) stays apart from a key left out (Same as), across a reload too.
+  assert.deepEqual(main.getSettings().reviewEfforts, { claude: "" });
+  assert.deepEqual((await boot("main")).getSettings().reviewEfforts, { claude: "" });
+  main.resetSettings();
+  await deliver();
+  assert.deepEqual(win.getSettings().reviewEfforts, {});
+});
+
 test("patches from both windows before either hears the other converge", async () => {
   reset();
   const main = await boot("main");

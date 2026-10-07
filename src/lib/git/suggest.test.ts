@@ -79,6 +79,15 @@ test("a guided review runs Commit Messages' agent, model and effort, unless it h
   assert.deepEqual(runDetails(line({ reviewEfforts: { codex: "low" } })), ["gpt-x", "low"]);
 });
 
+test("a guided review's model or effort for another preset doesn't reach the one it runs", () => {
+  // Left from when its own command was Claude Code; it's back to Commit Messages' codex.
+  const s = { suggestCommand: "codex exec", suggestModels: {}, suggestEfforts: {}, reviewCommand: null, reviewModels: { claude: "opus" }, reviewEfforts: { claude: "max" } };
+  const { command, models, efforts } = reviewAgent(s);
+  assert.equal(commandLine(command, models, efforts, true), commandLine("codex exec", {}, {}, true));
+  // Its own command "" is its own, not Commit Messages'.
+  assert.equal(reviewAgent({ ...s, reviewCommand: "" }).command, "");
+});
+
 test("a markdown description keeps its code blocks", () => {
   const answer = "Add x\n\n## Why\nBecause.\n\n```ts\nx();\n```";
   assert.deepEqual(parseSuggestion(answer, true), { summary: "Add x", body: "## Why\nBecause.\n\n```ts\nx();\n```" });
