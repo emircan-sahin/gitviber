@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { Switch } from "@/components/ui/switch";
 import { Field, Group } from "@/features/settings/controls";
-import { refreshVaults, vaultList } from "@/lib/obsidian/vault";
+import { refreshVaults, vaultList } from "@/lib/obsidian/vaultList";
 import { IS_MAC, IS_WINDOWS } from "@/lib/platform";
 import { updateSettings, useSettings } from "@/lib/settings";
 

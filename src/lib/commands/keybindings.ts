@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
-import { bindingsFor, type Command, type CommandId, commandFor, eventChords, formatChord, runsInEditor, runsInTerminal, runsWhileTyping, takenFromTerminal } from "./commands";
+import { bindingsFor, type Command, type CommandId, commandFor, eventChord, eventChords, formatChord, runsInEditor, runsInTerminal, runsWhileTyping, takenFromTerminal } from "./commands";
 import { getSettings, useSettings } from "../settings";
+import { IN_SETTINGS_WINDOW, runInMain } from "../app/settingsWindow";
 
 export { bindingsFor, COMMANDS, type Command, type CommandId, eventChord, formatChord, isReserved } from "./commands";
 
@@ -109,6 +110,17 @@ function handlerFor(id: Action) {
 export function runCommand(id: Action) {
   handlerFor(id)?.();
 }
+
+/** A workspace command Settings runs: from the settings window, in the main window, brought forward when `raise` (it shows its result). */
+export const runInWorkspace = (id: Action, raise = false) => (IN_SETTINGS_WINDOW ? runInMain(id, raise) : runCommand(id));
+
+// A key the page lets through reaches the menu as that item's key equivalent. The page has
+// already decided the key does nothing here (typing, a local shortcut like ⌘↵ outside the
+// commit message), so the menu mustn't run it anyway.
+let passed: { e: KeyboardEvent; at: number } | null = null;
+window.addEventListener("keydown", (e) => eventChord(e) && (passed = { e, at: performance.now() }), true);
+/** Whether a menu item comes from a key this page let through rather than a click. */
+export const fromPassedKey = () => !!passed && !passed.e.defaultPrevented && performance.now() - passed.at < 500;
 
 /**
  * Whether a chord runs its command where it's typed. Text owns most keys (see runsWhileTyping), and

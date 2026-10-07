@@ -85,7 +85,7 @@ export function useGuide(id: string) {
  * starting this one stops one still running, and says so.
  */
 export async function generateGuide(id: string, sel: GuideSelection) {
-  const { suggestCommand, suggestModels } = getSettings();
+  const { suggestCommand, suggestModels, suggestEfforts } = getSettings();
   const program = programOf(suggestCommand);
   const token = {};
   latest.set(id, token);
@@ -99,7 +99,7 @@ export async function generateGuide(id: string, sel: GuideSelection) {
   active = { sel, token };
   set("running");
   try {
-    const guided = await api.suggestGuide(commandLine(suggestCommand, suggestModels), GUIDE_PROMPT, guideTarget(sel));
+    const guided = await api.suggestGuide(commandLine(suggestCommand, suggestModels, suggestEfforts), GUIDE_PROMPT, guideTarget(sel));
     if (!guided.text.trim()) fail("No guided review written", `${program} printed nothing.`);
     else if (latest.get(id) === token) {
       save(id, { ...guided, program, at: Date.now(), done: [] });

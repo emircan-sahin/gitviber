@@ -38,6 +38,7 @@ mod rewrite;
 #[cfg(test)]
 mod scenario_tests;
 mod scratch;
+mod settings_window;
 mod shell;
 mod shell_integration;
 mod state;
@@ -51,6 +52,17 @@ mod watch;
 
 use state::AppState;
 use tauri::{Emitter, Manager};
+
+/// The page shows its window once its theme is applied (main.tsx, settings.tsx); if it never gets that far, a
+/// visible window beats one that seems not to open.
+fn show_eventually(window: tauri::WebviewWindow) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if !window.is_visible().unwrap_or(true) {
+            let _ = window.show();
+        }
+    });
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -88,12 +100,19 @@ pub fn run() {
             if event.id() == menu::QUIT {
                 return menu::quit(app);
             }
-            let _ = app.emit("menu", event.id().as_ref());
+            let _ = app.emit_to(
+                settings_window::menu_target(app),
+                "menu",
+                event.id().as_ref(),
+            );
         })
-        // Closing the only window ends the app: the page saves first, as on ⌘Q.
+        // Closing the main window ends the app: the page saves first, as on ⌘Q.
         .on_window_event(|window, event| {
+            if window.label() == settings_window::LABEL {
+                settings_window::on_event(window, event);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if !menu::quitting() {
+                if window.label() == "main" && !menu::quitting() {
                     api.prevent_close();
                     menu::quit(tauri::Manager::app_handle(window));
                 }
@@ -101,9 +120,12 @@ pub fn run() {
         })
         .on_page_load(|webview, payload| {
             if payload.event() == tauri::webview::PageLoadEvent::Started {
-                webview.state::<AppState>().ptys.kill_all();
-                webview.state::<AppState>().agents.forget_all();
-                askpass::decline_all();
+                // What the workspace started goes with its page; the settings window starts none.
+                if webview.label() == "main" {
+                    webview.state::<AppState>().ptys.kill_all();
+                    webview.state::<AppState>().agents.forget_all();
+                    askpass::decline_all();
+                }
                 if let Some(window) = webview.get_webview_window(webview.label()) {
                     vibrancy::reset(&window);
                 }
@@ -132,15 +154,7 @@ pub fn run() {
             if let Some(webview) = app.get_webview_window("main") {
                 display::unlock_high_refresh_rate(&webview);
                 titlebar::setup(&webview);
-                // The page shows the window once its theme is applied (main.tsx); if it
-                // never gets that far, a visible window beats an app with none.
-                let w = webview.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-                    if !w.is_visible().unwrap_or(true) {
-                        let _ = w.show();
-                    }
-                });
+                show_eventually(webview);
             }
             Ok(())
         })
@@ -362,6 +376,8 @@ pub fn run() {
             commands::app::open_url,
             commands::app::about,
             commands::app::set_menu,
+            commands::app::settings_window,
+            commands::app::settings_window_menu,
             commands::app::pty_spawn,
             commands::app::pty_cwd,
             commands::app::pty_write,

@@ -28,6 +28,8 @@ export default defineConfig({
   worker: { format: "es" },
   build: {
     target: "safari16",
+    // The settings window's page (settings_window.rs) is an entry of its own.
+    rolldownOptions: { input: { main: path.resolve(import.meta.dirname, "index.html"), settings: path.resolve(import.meta.dirname, "settings.html") } },
     chunkSizeWarningLimit: 1500,
     // Keep the ~1200 icon SVGs as separate files instead of base64 inside the JS bundle.
     assetsInlineLimit: (file) => (file.includes("material-icon-theme") ? false : undefined),

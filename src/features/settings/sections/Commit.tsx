@@ -4,12 +4,12 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenu
 import { Input } from "@/components/ui/input";
 import { github } from "@/lib/api";
 import { updateSettings, useSettings } from "@/lib/settings";
-import { ALL_MODELS, modelOf, presetOf, PULL_PROMPT, SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT, type SuggestPreset as Preset } from "@/lib/git/suggest";
+import { ALL_MODELS, effortArg, effortLevels, effortOf, modelOf, presetOf, PULL_PROMPT, SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT, type SuggestPreset as Preset } from "@/lib/git/suggest";
 import { failed } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { segmentClass } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
-import { Field, Group } from "@/features/settings/controls";
+import { Field, Group, OptionSelect } from "@/features/settings/controls";
 import { GUIDE_PROMPT } from "@/lib/review/guide";
 
 function ModelsLink({ label, url }: { label: string; url: string }) {
@@ -56,6 +56,32 @@ function AgentPicker({ value, onChange }: { value: Preset | "custom"; onChange: 
         Custom
       </button>
     </div>
+  );
+}
+
+/** How long the model thinks, for a preset whose CLI has a flag for it. */
+function EffortField({ preset }: { preset: Preset }) {
+  const { suggestEfforts } = useSettings();
+  const levels = effortLevels(preset);
+  if (!levels.length) return null;
+  const effort = effortOf(preset, suggestEfforts);
+  return (
+    <Field
+      label="Effort"
+      hint={
+        <>
+          Passed as <code className="font-mono text-foreground">{effortArg(preset, "<level>")}</code>; CLI default passes none. More effort writes more considered messages, slower and
+          at a higher cost.{preset === "opencode" && " Levels are per model, and not every model has every one."}
+        </>
+      }
+    >
+      <OptionSelect
+        className="w-80"
+        value={effort}
+        options={{ "": "CLI default", ...Object.fromEntries(levels.map((l) => [l, l])) }}
+        onChange={(v) => updateSettings({ suggestEfforts: { ...suggestEfforts, [preset]: v } })}
+      />
+    </Field>
   );
 }
 
@@ -120,6 +146,7 @@ export function CommitSection() {
             {null}
           </Field>
         )}
+        {preset && <EffortField preset={preset} />}
       </Group>
       <Group title="What the command gets">
         <div className="py-3.5">

@@ -1,9 +1,11 @@
+import { emitTo } from "@tauri-apps/api/event";
 import { useEffect, useMemo } from "react";
 import { api, type OpenInApp } from "../api";
 import { IS_MAC, REVEAL_FAILED } from "../platform";
 import { getSettings, type Settings, updateSettings, useSettings } from "../settings";
 import { readJson, writeJson } from "../storage";
 import { createStore } from "../store";
+import { listenHere, OTHER_WINDOW } from "./settingsWindow";
 import { failed } from "./toast";
 
 /** A built-in app found on this machine, or one of the user's own (with its command). */
@@ -31,6 +33,9 @@ export const GROUPS: [OpenApp["group"], string][] = [
 const KEY = "gitviber.openInApps";
 const installed = createStore(readJson<OpenInApp[]>(KEY, [], Array.isArray));
 export const subscribeOpenApps = installed.subscribe;
+// Found by the other window (Settings → Open In in the settings window): this one's menu and lists follow.
+const FOUND = "open-in-apps-found";
+listenHere<OpenInApp[]>(FOUND, ({ payload }) => installed.set(payload)).catch(() => {});
 
 export function refreshOpenApps() {
   api
@@ -40,6 +45,7 @@ export function refreshOpenApps() {
       // Not kept when storage fails: detected again next time.
       writeJson(KEY, list);
       installed.set(list);
+      emitTo(OTHER_WINDOW, FOUND, list).catch(() => {});
     })
     .catch(() => {});
 }

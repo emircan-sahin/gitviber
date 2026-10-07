@@ -8,7 +8,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, errorMessage, type GhAccount, type GitIdentity, github } from "@/lib/api";
 import { pickAccount } from "@/lib/github/account";
 import { loadGitHubAccount } from "@/lib/repo/session";
-import { runCommand } from "@/lib/commands/keybindings";
+import { runInWorkspace } from "@/lib/commands/keybindings";
 import { FETCH_INTERVALS, updateSettings, useSettings } from "@/lib/settings";
 import { failed, toast } from "@/lib/app/toast";
 import { Segmented } from "@/components/ui/segmented";
@@ -99,7 +99,7 @@ function RemotesField() {
       toast("error", "Could not change the remote", errorMessage(e));
     }
     await load();
-    runCommand("repo.refresh");
+    runInWorkspace("repo.refresh");
   };
   const save = () =>
     act(async () => {

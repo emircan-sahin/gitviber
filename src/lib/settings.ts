@@ -1,10 +1,12 @@
+import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow, type Theme as WindowTheme } from "@tauri-apps/api/window";
 import type { Whitespace } from "./api";
 import { cleanOverrides } from "./commands/commands";
+import { listenHere, OTHER_WINDOW } from "./app/settingsWindow";
 import { IS_MAC, IS_WINDOWS } from "./platform";
 import { writeJson } from "./storage";
-import { SUGGEST_PRESETS, type SuggestPreset } from "./git/suggest";
+import { effortLevels, SUGGEST_PRESETS, type SuggestPreset } from "./git/suggest";
 import type { ResumeMode } from "./terminal/agentState";
 import { useSyncExternalStore } from "react";
 
@@ -241,6 +243,8 @@ export interface Settings {
   suggestCommand: string;
   /** Model ids typed per preset; a preset missing here runs its default, so a newer default reaches it. */
   suggestModels: Partial<Record<SuggestPreset, string>>;
+  /** Reasoning effort picked per preset, "" for the CLI's own; a preset missing here runs its default. */
+  suggestEfforts: Partial<Record<SuggestPreset, string>>;
   /** The app "Open in" runs on a click: a built-in id or a CustomApp's; "" until one is picked. */
   openInApp: string;
   openInCustom: CustomApp[];
@@ -325,6 +329,7 @@ const DEFAULTS: Settings = {
   suggestEnabled: true,
   suggestCommand: "claude -p",
   suggestModels: {},
+  suggestEfforts: {},
   openInApp: "",
   openInCustom: [],
   openInHideBuiltins: false,
@@ -393,6 +398,10 @@ function load(): Settings {
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;
     const models = s.suggestModels && typeof s.suggestModels === "object" ? s.suggestModels : {};
     s.suggestModels = Object.fromEntries(Object.keys(SUGGEST_PRESETS).filter((k) => typeof models[k] === "string").map((k) => [k, models[k]]));
+    const efforts = s.suggestEfforts && typeof s.suggestEfforts === "object" ? s.suggestEfforts : {};
+    s.suggestEfforts = Object.fromEntries(
+      (Object.keys(SUGGEST_PRESETS) as SuggestPreset[]).filter((k) => efforts[k] === "" || effortLevels(k).includes(efforts[k])).map((k) => [k, efforts[k]]),
+    );
     s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;
     if (!FETCH_INTERVALS.includes(s.backgroundFetch)) s.backgroundFetch = DEFAULTS.backgroundFetch;
     if (typeof s.cloneParent !== "string") s.cloneParent = null;
@@ -504,7 +513,7 @@ applyScale();
 applyUiFont();
 systemDark.addEventListener("change", () => current.appearance === "system" && emit());
 
-export function updateSettings(patch: Partial<Settings>) {
+function apply(patch: Partial<Settings>) {
   current = { ...current, ...patch };
   current.codeFontSize = clampCodeFont(current.codeFontSize);
   current.terminalFontSize = clampTerminalFont(current.terminalFontSize);
@@ -514,6 +523,35 @@ export function updateSettings(patch: Partial<Settings>) {
   // Settings still apply for this session when they can't be stored.
   writeJson(KEY, current);
   emit();
+}
+
+// Each of the two windows (settingsWindow.ts) applies and stores the other's changes as they
+// happen: a Tauri event, as the `storage` event isn't promised between two web views on every
+// platform. Only the patch goes, so changes to different settings in both at once both stay;
+// applied, not passed on. Sends can land out of order, so each setting keeps the newest.
+const CHANGED = "settings-changed";
+const heard = new Map<string, number>();
+listenHere<{ at: number; patch: Partial<Settings> }>(CHANGED, ({ payload: { at, patch } }) => {
+  const newer = Object.entries(patch).filter(([key]) => at > (heard.get(key) ?? 0));
+  newer.forEach(([key]) => heard.set(key, at));
+  if (newer.length) apply(Object.fromEntries(newer));
+})
+  // What the other window changed before this one listened is in storage by now.
+  .then(() => {
+    const stored = load();
+    if (JSON.stringify(stored) === JSON.stringify(current)) return;
+    current = stored;
+    emit();
+  })
+  .catch(() => {});
+
+export function updateSettings(patch: Partial<Settings>) {
+  apply(patch);
+  // Rises across reloads too, unlike a counter. Kept here too: an older patch from the other
+  // window that lands later mustn't take this change back.
+  const at = performance.timeOrigin + performance.now();
+  Object.keys(patch).forEach((key) => heard.set(key, at));
+  emitTo(OTHER_WINDOW, CHANGED, { at, patch }).catch(() => {});
 }
 
 /**
