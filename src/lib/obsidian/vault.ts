@@ -7,26 +7,12 @@ import { editPath, vaultEditFile } from "../repo/selection";
 import { useSettings } from "../settings";
 import { readJson, writeJson } from "../storage";
 import { createStore } from "../store";
+import { refreshVaults, vaultList } from "./vaultList";
 
-/** Obsidian's vaults, as last read (null before the first read). */
-export const vaultList = createStore<Vault[] | null>(null);
+export { refreshVaults, vaultList };
 
-let reading: Promise<Vault[]> | null = null;
-/** Reads Obsidian's vault list again: a vault opened, added or removed in Obsidian shows up. */
-export function refreshVaults(): Promise<Vault[]> {
-  reading ??= vaultApi
-    .vaults()
-    .catch(() => [])
-    .then((vaults) => {
-      const was = vaultList.get();
-      if (!was || JSON.stringify(was) !== JSON.stringify(vaults)) vaultList.set(vaults);
-      // Unsaved edits of their notes come back, with their tabs' dots.
-      vaults.forEach((v) => openVaultEdits(v.path));
-      return vaults;
-    })
-    .finally(() => (reading = null));
-  return reading;
-}
+// Unsaved edits of their notes come back as the list is read, with their tabs' dots.
+vaultList.subscribe(() => vaultList.get()?.forEach((v) => openVaultEdits(v.path)));
 
 const PICKED_KEY = "gitviber.obsidian.vault";
 const picked = createStore<string | null>(readJson<string | null>(PICKED_KEY, null, (v): v is string => typeof v === "string"));
