@@ -1,25 +1,29 @@
 import { LoaderCircle, RotateCw, Sparkles, Square, TriangleAlert } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import type { RepoStatus } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { programOf } from "@/lib/git/suggest";
 import type { ChangesSelection, GuideSelection, Selection } from "@/lib/repo/selection";
-import { parseGuide, placeFiles } from "@/lib/review/guide";
+import { type Category, type GuideSection, matchPath, parseGuide, placeFiles } from "@/lib/review/guide";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import type { BranchChange } from "@/features/changes/BranchReview";
 import { Mermaid } from "@/features/viewer/markdown/Mermaid";
-import { type ListFile, useStackedFiles } from "@/features/viewer/StackedFiles";
+import { type Annotations, type ListFile, useStackedFiles } from "@/features/viewer/StackedFiles";
 import { useFixedFiles } from "@/features/viewer/fixedFiles";
 import { openSettings } from "@/features/settings/SettingsDialog";
 import { cancelGuide, generateGuide, guideId, markDone, useGuide } from "./guides";
 import { GuideDiagram } from "./GuideDiagram";
+import { CategoryFilter, GuideNav } from "./GuideNav";
 import { GuideMarkdown, Notice, SectionRow } from "./GuideSection";
 
 // No files to read before a branch's guide says which range it read: a list useFixedFiles leaves be.
 const NO_FILES: ChangesSelection = { kind: "changes", list: "unstaged" };
+const OTHER: GuideSection = { title: "Other changes", category: "other", summary: "In no section of the guide.", files: [], check: "", risk: "", critical: false, fileNotes: [], lineNotes: [] };
+// The category each guide shows, by guide id, until GitViber quits.
+const filters = new Map<string, Category>();
 
 interface Props {
   sel: GuideSelection;
@@ -70,6 +74,34 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   }, [fixed.files, changes]);
   const placed = useMemo(() => (guide && fixed.files ? placeFiles(guide, [...byPath.keys()]) : null), [guide, fixed.files, byPath]);
   const titles = useMemo(() => guide?.sections.map((s) => s.title) ?? [], [guide]);
+  // The agent's notes, by the changed file they're on.
+  const annotations = useMemo(() => {
+    const at = new Map<string, Annotations>();
+    const all = new Set(byPath.keys());
+    const of = (p: string) => {
+      const path = matchPath(p, all);
+      if (path && !at.has(path)) at.set(path, { file: [], lines: [] });
+      return path ? at.get(path)! : null;
+    };
+    for (const s of guide?.sections ?? []) {
+      for (const n of s.fileNotes) of(n.path)?.file.push({ text: n.text, critical: n.critical });
+      for (const n of s.lineNotes) of(n.path)?.lines.push({ old: n.side === "old", line: n.line, text: n.text, critical: n.critical });
+    }
+    return at;
+  }, [guide, byPath]);
+  const counts = useMemo(() => {
+    const at = new Map<Category, number>();
+    for (const s of guide?.sections ?? []) at.set(s.category, (at.get(s.category) ?? 0) + 1);
+    return at;
+  }, [guide]);
+  const [picked, setPicked] = useState(() => filters.get(id) ?? null);
+  // One the regenerated guide has none of shows them all.
+  const filter = picked && counts.has(picked) ? picked : null;
+  const setFilter = (c: Category | null) => {
+    if (c) filters.set(id, c);
+    else filters.delete(id);
+    setPicked(c);
+  };
 
   // Branch Review's own row for a file, while it reads the same commits and the file has no
   // uncommitted change: the same diff, so one viewed mark for both. Other files keep this guide's.
@@ -91,7 +123,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
     onOpen,
   });
   // Its diffs; none to wait for once the files couldn't be read.
-  const diffs = (paths: string[] | undefined) => (paths ? paths.map((p) => block(byPath.get(p)!)) : fixed.error ? [] : null);
+  const diffs = (paths: string[] | undefined) => (paths ? paths.map((p) => block(byPath.get(p)!, annotations.get(p))) : fixed.error ? [] : null);
   const goTo = (n: number) => {
     const row = scroller.current?.querySelector(`[data-section="${n}"]`);
     row?.scrollIntoView({ block: "start" });
@@ -103,12 +135,15 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   const done = guide && saved ? guide.sections.filter((_, i) => saved.done.includes(i)).length : 0;
   const filesViewed = [...byPath.values()].filter(isViewed).length;
   const drawn = !!guide && (guide.models.length > 0 || guide.flows.length > 0 || !!guide.diagram);
+  const shown = (guide?.sections ?? []).flatMap((section, i) => (!filter || section.category === filter ? [{ n: i + 1, section, done: !!saved?.done.includes(i) }] : []));
+  const nav = shown.length > 1;
 
   return (
     // Focusable so the keyboard can scroll it (focusPanel("code") lands here); diffs load as they near its view.
     <div ref={scroller} data-code-scroll tabIndex={0} className="@container relative h-full overflow-auto outline-none">
       <PageFind />
-      <div className="mx-auto max-w-[1440px] px-6 py-5">
+      {/* --stick: the narrow navigator's height, which the files' sticky headers keep below. */}
+      <div className={cn("mx-auto max-w-[1440px] px-6 py-5", nav && "[--stick:36px] @6xl:[--stick:0px]")}>
         <header className="mb-5">
           <div className="flex items-start gap-3">
             <h1 className="min-w-0 flex-1 text-[20px] leading-snug font-semibold select-text">{guide?.title || (sel.of === "commit" ? sel.commit.subject : `${branch ?? "HEAD"} since ${sel.label}`)}</h1>
@@ -192,7 +227,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
         {!saved ? (
           !running && (
             <p className="text-[13px] text-muted-foreground">
-              {program} reads {sel.of === "commit" ? "the commit's message and diff" : "the branch's commits and their diff (not uncommitted changes)"} and explains it as sections in the order to review them, with a diagram of what changed.
+              {program} reads {sel.of === "commit" ? "the commit's message and diff" : "the branch's commits and their diff (not uncommitted changes)"} and explains it as sections in the order to review them, by category, with a diagram when a flow or data model changes.
             </p>
           )
         ) : !guide ? (
@@ -201,49 +236,61 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
             <GuideMarkdown text={saved.text} />
           </>
         ) : (
-          <>
-            <div className={cn("mb-6 grid gap-5", drawn && "@4xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>
-              {guide.summary && (
-                <div className="min-w-0">
-                  <h2 className="mb-2 text-[13px] font-semibold">Overview</h2>
-                  <GuideMarkdown text={guide.summary} />
-                </div>
+          <div className={cn(nav && "@6xl:grid @6xl:grid-cols-[220px_minmax(0,1fr)] @6xl:gap-6")}>
+            {nav && <GuideNav items={shown} onGo={goTo} />}
+            <div className="min-w-0">
+              <div className={cn("mb-6 grid gap-5", nav && "mt-4 @6xl:mt-0", drawn && "@4xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]")}>
+                {guide.summary && (
+                  <div className="min-w-0">
+                    <h2 className="mb-2 text-[13px] font-semibold">Overview</h2>
+                    <GuideMarkdown text={guide.summary} />
+                  </div>
+                )}
+                {drawn && (
+                  <div className="min-w-0 rounded-lg border border-border p-3">
+                    <h2 className="mb-3 text-[13px] font-semibold">Before / after</h2>
+                    <GuideDiagram models={guide.models} flows={guide.flows} titles={titles} onSection={goTo} />
+                    {guide.diagram && (
+                      // A guide from before structured diagrams.
+                      <div className="markdown">
+                        <Mermaid
+                          code={guide.diagram}
+                          fallback={
+                            <pre>
+                              <code>{guide.diagram}</code>
+                            </pre>
+                          }
+                        />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+              {counts.size > 1 && <CategoryFilter counts={counts} total={guide.sections.length} value={filter} onChange={setFilter} />}
+              {!!placed?.rest.length && !filter && (
+                <Notice icon={<TriangleAlert />}>
+                  {placed.rest.length === 1 ? "1 file wasn't" : `${placed.rest.length} files weren't`} placed in a section by {saved.program}.{" "}
+                  <button className="text-primary hover:underline" onClick={() => goTo(0)}>
+                    See them under Other changes
+                  </button>
+                </Notice>
               )}
-              {drawn && (
-                <div className="min-w-0 rounded-lg border border-border p-3">
-                  <h2 className="mb-3 text-[13px] font-semibold">Before / after</h2>
-                  <GuideDiagram models={guide.models} flows={guide.flows} titles={titles} onSection={goTo} />
-                  {guide.diagram && (
-                    // A guide from before structured diagrams.
-                    <div className="markdown">
-                      <Mermaid
-                        code={guide.diagram}
-                        fallback={
-                          <pre>
-                            <code>{guide.diagram}</code>
-                          </pre>
-                        }
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
+              {shown.map(({ n, section, done }) => (
+                <SectionRow
+                  key={n}
+                  n={n}
+                  total={guide.sections.length}
+                  section={section}
+                  done={done}
+                  onDone={(on) => markDone(id, n - 1, on)}
+                  files={diffs(placed?.shown[n - 1])}
+                  named={placed?.named[n - 1]}
+                  onSection={goTo}
+                />
+              ))}
+              {!!placed?.rest.length && !filter && <SectionRow n={0} section={OTHER} files={diffs(placed.rest)} />}
             </div>
-            {guide.sections.map((s, i) => (
-              <SectionRow
-                key={i}
-                n={i + 1}
-                total={guide.sections.length}
-                section={s}
-                done={saved.done.includes(i)}
-                onDone={(on) => markDone(id, i, on)}
-                files={diffs(placed?.shown[i])}
-                named={placed?.named[i]}
-                onSection={goTo}
-              />
-            ))}
-            {!!placed?.rest.length && <SectionRow section={{ title: "Other changes", summary: "In no section of the guide.", files: [], risk: "" }} files={diffs(placed.rest)} />}
-          </>
+          </div>
         )}
       </div>
     </div>

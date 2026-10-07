@@ -10,9 +10,11 @@ import { addNote, useNotes } from "@/lib/review/noteStore";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { Composer } from "@/features/review/Composer";
+import { GuideNote } from "@/features/review/GuideNote";
 import { NoteCard } from "@/features/review/NoteThreads";
 import { Tokens, useCodeStyle } from "./codeLines";
 import { FOLD_REVEAL } from "./editorOptions";
+import type { Annotations } from "./StackedFiles";
 import type { FileMemo } from "./stackedMemo";
 
 /** A file's changes in unified form: old and new line numbers, then the line, colored as the code view colors it. */
@@ -24,6 +26,7 @@ export function UnifiedDiff({
   memo,
   onReveal,
   notes: canNote,
+  annotations,
 }: {
   pair: DiffPair;
   rows: (DiffRow | Gap)[];
@@ -34,6 +37,8 @@ export function UnifiedDiff({
   onReveal: (gap: Gap) => void;
   /** Review notes can be written here (`at`: on a commit's version); null: none, as on a PR's files. */
   notes: { at?: string } | null;
+  /** A guided review's notes on lines, shown under them. */
+  annotations?: Annotations["lines"];
 }) {
   const s = useSettings();
   const box = useRef<HTMLDivElement>(null);
@@ -63,6 +68,14 @@ export function UnifiedDiff({
     }
     return at;
   }, [notes, path, oldPath, oldLines, newLines, a.exists, b.exists]);
+  const annotated = useMemo(() => {
+    const at = new Map<string, Annotations["lines"]>();
+    for (const a of annotations ?? []) {
+      const key = `${a.old ? "o" : "n"}:${a.line}`;
+      at.set(key, [...(at.get(key) ?? []), a]);
+    }
+    return at;
+  }, [annotations]);
   // A note being written: its lines as picked, followed as the file changes. Kept in the file's
   // memo, so scrolling far away or switching tabs doesn't lose it.
   const [draft, setDraftState] = useState(memo.draft ?? null);
@@ -101,6 +114,11 @@ export function UnifiedDiff({
           return (
             <div key={`${r.o}:${r.n}`}>
               <LineRow row={r} text={text} tokens={tokens} ranges={ranges} digits={digits} wrap={s.wordWrap} onNote={canNote ? (stretch) => note(old, old ? r.o : r.n, stretch) : null} />
+              {keys.flatMap((k) => annotated.get(k) ?? []).map((a, i) => (
+                <div key={`a${i}`} className="sticky left-0 px-2">
+                  <GuideNote text={a.text} critical={a.critical} />
+                </div>
+              ))}
               {keys.flatMap((k) => placed.get(k) ?? []).map((n) => (
                 <div key={n.id} className="sticky left-0 max-w-3xl py-0.5">
                   <NoteCard note={n} />
