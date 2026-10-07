@@ -26,6 +26,13 @@ const stale = (target: Target, sha: string, now: number) => {
   return !k || now - k.at > (k.state === "pending" ? RUNNING : SETTLED);
 };
 
+/** A commit's verdict from a newer read of all its checks (commitChecks.ts), so its badges agree. */
+export function noteCi(target: Target, sha: string, state: CiState) {
+  if (known.get(key(target, sha))?.state === state) return;
+  known.set(key(target, sha), { state, at: Date.now() });
+  version.set(version.get() + 1);
+}
+
 let asking = new Set<string>();
 async function ask(target: Target, shas: string[]) {
   const now = Date.now();

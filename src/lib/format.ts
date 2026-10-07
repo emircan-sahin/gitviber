@@ -36,8 +36,10 @@ export function formatBytes(n: number) {
   return `${v.toFixed(v < 9.95 ? 1 : 0)} ${units[i]}`;
 }
 
-/** How long something has lasted, as a glance needs it: "<1m", "42m", "3h 5m", "2d". */
+/** How long something has lasted, as a glance needs it: "<1m", "42m", "3h 5m", "2d"; "" for NaN. */
 export function shortDuration(seconds: number) {
+  // An unreadable time (Date.parse's NaN) says nothing rather than "NaNd".
+  if (!Number.isFinite(seconds)) return "";
   const m = Math.floor(Math.max(0, seconds) / 60);
   if (m < 1) return "<1m";
   if (m < 60) return `${m}m`;

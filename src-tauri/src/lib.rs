@@ -196,6 +196,7 @@ pub fn run() {
             commands::history::stacked_branches,
             commands::github::ci_states,
             commands::github::check_failure,
+            commands::github::commit_checks,
             commands::history::compare_files,
             commands::history::compare,
             commands::history::log_between,
