@@ -31,7 +31,10 @@ export async function resolve(spec, ctx, next) {
 
 type Settings = typeof import("../settings.ts");
 // Not `typeof import`: that would type-check translucency.ts here, without Vite's import.meta.hot.
-type Translucency = { glassLevels: (opacity: number) => { glass: string; chrome: string; step: string } };
+type Translucency = {
+  glassLevels: (opacity: number) => { glass: string; chrome: string; step: string };
+  previewTranslucency: (next: { windowOpacity?: number; backgroundBlur?: number }) => void;
+};
 type Ask = { on: boolean; blur: number };
 type Pending = Ask & { resolve: () => void; reject: (e: unknown) => void };
 
@@ -60,6 +63,17 @@ async function boot({
     light: { "--foreground": "#1d1d1f", "--background": "#ffffff" },
   };
   g.getComputedStyle = () => ({ getPropertyValue: (name: string) => colors[root.dataset.theme]?.[name] ?? "" });
+  // index.css's palette rules, as appearanceFloor reads both themes' colors from them.
+  g.CSSStyleRule = class {
+    selectorText: string;
+    style: { getPropertyValue: (name: string) => string };
+    constructor(selectorText: string, style: { getPropertyValue: (name: string) => string }) {
+      this.selectorText = selectorText;
+      this.style = style;
+    }
+  };
+  const rule = (selector: string, theme: string) => new g.CSSStyleRule(selector, { getPropertyValue: (name: string) => colors[theme][name] });
+  (g.document as Record<string, unknown>).styleSheets = [{ cssRules: [rule(":root", "dark"), rule(':root[data-theme="light"]', "light")] }];
   g.window = g;
   g.location = { search: "" };
   g.matchMedia = () => ({ matches: true, addEventListener() {} });
@@ -216,16 +230,28 @@ test("lowered, the window goes clear with its blur before the page turns see-thr
   assert.equal(w.style.get("--glass-chrome"), "85%");
 });
 
-test("the theme's floor holds the page up; the setting keeps its value for a theme that allows it", async () => {
+test("the light and dark themes share the higher floor; the setting keeps its value", async () => {
   const w = await boot({ focused: true, stored: { windowOpacity: 50 } });
   await w.drain();
-  assert.equal(w.look, "55%", "Dark stays readable down to 55%");
+  assert.equal(w.look, "55%", "Dark stays readable down to 55%, Light to 50%: both stop at 55%");
   w.settings.updateSettings({ appearance: "light" });
-  assert.equal(w.look, "50%");
+  assert.equal(w.look, "55%", "the system's appearance switching doesn't move it");
   w.settings.updateSettings({ appearance: "dark" });
   assert.equal(w.look, "55%");
   assert.equal(w.settings.getSettings().windowOpacity, 50);
   assert.deepEqual(w.asked, [on(0)]);
+});
+
+test("a dragged opacity is previewed without saving, and the drop saves it", async () => {
+  const w = await boot({ focused: true, stored: { windowOpacity: 90 } });
+  await w.drain();
+  const saved = () => JSON.parse(globalThis.localStorage.getItem("gitviber.settings.v2")!).windowOpacity;
+  for (const windowOpacity of [85, 80, 75]) w.translucency.previewTranslucency({ windowOpacity });
+  assert.equal(w.look, "75%");
+  assert.equal(saved(), 90, "nothing saved while dragging");
+  w.settings.updateSettings({ windowOpacity: 75 });
+  assert.equal(w.look, "75%");
+  assert.equal(saved(), 75);
 });
 
 test("more opacity changes, and theme switches, only restyle the page", async () => {

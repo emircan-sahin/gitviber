@@ -60,7 +60,10 @@ export function SizeStepper({
   );
 }
 
-/** A range with its value and a reset; each step is applied as it's dragged. `name` labels the reset. */
+/**
+ * A range with its value and a reset. `name` labels the reset. With `onPreview`, a drag only
+ * previews each step and `onChange` gets the value once, when it's let go (or a key is released).
+ */
 export function Slider({
   name,
   value,
@@ -71,6 +74,7 @@ export function Slider({
   format,
   disabled,
   onChange,
+  onPreview,
 }: {
   name: string;
   value: number;
@@ -81,10 +85,17 @@ export function Slider({
   format: (v: number) => string;
   disabled?: boolean;
   onChange: (v: number) => void;
+  onPreview?: (v: number) => void;
 }) {
   const { labelledBy, describedBy } = useFieldLabel();
+  const [draft, setDraft] = useState<number | null>(null);
   // A value under `min` stays as chosen (the opacity a theme can't go down to): shown at `min`.
-  const shown = Math.max(value, min);
+  const shown = Math.max(draft ?? value, min);
+  const commit = () => {
+    if (draft === null) return;
+    setDraft(null);
+    onChange(draft);
+  };
   return (
     <div className="flex items-center gap-2">
       <input
@@ -97,7 +108,15 @@ export function Slider({
         aria-labelledby={labelledBy}
         aria-describedby={describedBy}
         aria-valuetext={format(shown)}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          if (!onPreview) return onChange(v);
+          setDraft(v);
+          onPreview(v);
+        }}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onBlur={commit}
         className="w-40 accent-primary disabled:opacity-40"
       />
       <span className={cn("w-12 text-right font-mono text-[12px]", disabled && "text-subtle")}>{format(shown)}</span>

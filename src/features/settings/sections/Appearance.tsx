@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { themeFloor } from "@/lib/app/translucency";
+import { appearanceFloor, previewTranslucency } from "@/lib/app/translucency";
 import { IS_MAC } from "@/lib/platform";
 import {
   type Appearance,
@@ -30,8 +30,7 @@ const DESKTOP = IS_MAC ? "macOS" : "your desktop";
 
 export function AppearanceSection() {
   const s = useSettings();
-  // The theme's colors are on the root by the time a change renders here (settings.ts).
-  const floor = useMemo(themeFloor, [s.theme]);
+  const floor = useMemo(appearanceFloor, [s.lightTheme, s.darkTheme]);
   return (
     <>
       <Group title="Theme">
@@ -67,7 +66,7 @@ export function AppearanceSection() {
           <>
             <Field
               label="Window opacity"
-              hint={`Below 100%, the desktop shows through the whole window, down to ${floor}%, the lowest this theme stays readable at. Text, dialogs, menus and the terminal stay solid, as does the window in full screen or with Reduce transparency on.`}
+              hint={`Below 100%, the desktop shows through the whole window, down to ${floor}%, the lowest the chosen light and dark themes both stay readable at. Text, dialogs, menus and the terminal stay solid, as does the window in full screen or with Reduce transparency on.`}
             >
               <Slider
                 name="Window opacity"
@@ -77,6 +76,7 @@ export function AppearanceSection() {
                 fallback={100}
                 format={(v) => `${v}%`}
                 onChange={(v) => updateSettings({ windowOpacity: v })}
+                onPreview={(v) => previewTranslucency({ windowOpacity: v })}
               />
             </Field>
             <Field label="Background blur" hint="How much the desktop behind a see-through window is blurred. 0 leaves it sharp.">
@@ -88,6 +88,7 @@ export function AppearanceSection() {
                 format={(v) => `${v} px`}
                 disabled={s.windowOpacity === 100}
                 onChange={(v) => updateSettings({ backgroundBlur: v })}
+                onPreview={(v) => previewTranslucency({ backgroundBlur: v })}
               />
             </Field>
           </>
