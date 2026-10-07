@@ -51,6 +51,7 @@ import { stackedView } from "@/features/viewer/AllChanges";
 import { openEdits } from "@/lib/editor/edits";
 import { openNotes, useNoteCheck } from "@/lib/review/noteStore";
 import { copyNotes, pendingNotes, sendNotes } from "@/features/review/ReviewNotes";
+import { openGuide } from "@/features/review/guides";
 import { CountBadge } from "@/components/CountBadge";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
@@ -495,6 +496,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     viewed={viewed}
                     setViewed={setViewed}
                     onBase={setReview}
+                    onGuide={s.suggestEnabled ? (base) => openGuide({ kind: "guide", of: "branch", base, label: shortRef(base) }, status, open) : undefined}
                     onClose={() => setReview(null)}
                   />
                 )}

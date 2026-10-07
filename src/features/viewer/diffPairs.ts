@@ -9,10 +9,10 @@ import { type GitHubSide, repoOfCommitUrl } from "@/lib/github/permalink";
 import { type Selection, selectionPath } from "@/lib/repo/selection";
 import { diffWhitespace, getSettings } from "@/lib/settings";
 
-/** Tabs whose content is a diff of one repo file (everything except PR and issue overviews, whole lists, comparisons and vault files). */
-export type FileSelection = Exclude<Selection, { kind: "pull" | "issue" | "changes" | "compare" | "vault" }>;
+/** Tabs whose content is a diff of one repo file: those of a `file`, and the file view (not a vault's, outside the repo). */
+export type FileSelection = Extract<Selection, { file: unknown } | { kind: "file" }>;
 
-export const isFileSelection = (s: Selection): s is FileSelection => s.kind !== "pull" && s.kind !== "issue" && s.kind !== "changes" && s.kind !== "compare" && s.kind !== "vault";
+export const isFileSelection = (s: Selection): s is FileSelection => "file" in s || s.kind === "file";
 
 export function pairArgs(sel: FileSelection, revision: number, whitespace: Whitespace | null = null) {
   const kind: DiffKind =

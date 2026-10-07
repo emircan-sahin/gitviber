@@ -300,6 +300,12 @@ pub fn compare_files(repo: &Path, with: &str) -> Result<CompareFiles, String> {
 /// Where HEAD and `with` (a full ref) parted: their merge base. A branch that isn't here (not
 /// fetched, or deleted) says so, rather than that they share no commit.
 pub(super) fn parted_at(repo: &Path, with: &str) -> Result<String, String> {
+    parted(repo, "HEAD", with)
+}
+
+/// Where `head` (a commit) and `with` parted, as `parted_at`: for a `head` resolved beforehand,
+/// which a commit made meanwhile doesn't move.
+pub fn parted(repo: &Path, head: &str, with: &str) -> Result<String, String> {
     validate_full_ref(repo, with)?;
     if run(
         repo,
@@ -315,7 +321,7 @@ pub(super) fn parted_at(repo: &Path, with: &str) -> Result<String, String> {
     if !has_head(repo) {
         return Err("There are no commits yet.".into());
     }
-    run_text(repo, &["merge-base", "HEAD", with])
+    run_text(repo, &["merge-base", head, with])
         .map(|s| s.trim().to_string())
         .map_err(|_| "They have no commit in common.".to_string())
 }

@@ -1,4 +1,4 @@
-import { Files, GitCompareArrows, X } from "lucide-react";
+import { Files, GitCompareArrows, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Select } from "@/components/ui/select";
 import { Windowed } from "@/components/Windowed";
@@ -77,11 +77,13 @@ interface Props {
   viewed: (s: Selection) => boolean;
   setViewed: (s: Selection[], on: boolean) => void;
   onBase: (ref: string) => void;
+  /** A guided review of the branch's commits since `base`; none while suggestions are off. */
+  onGuide?: (base: string) => void;
   onClose: () => void;
 }
 
 /** Changes in place of the uncommitted list: what the branch changed since it left `base`, committed or not. */
-export function BranchReview({ base, data, branches, activeKey, onOpen, onHover, viewed, setViewed, onBase, onClose }: Props) {
+export function BranchReview({ base, data, branches, activeKey, onOpen, onHover, viewed, setViewed, onBase, onGuide, onClose }: Props) {
   const nav = useListNav({ activeKey });
   const hasNotes = useNotes().length > 0;
   const { rows, error, loading } = data;
@@ -100,6 +102,16 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
           {!listed && <option value={base}>{base ? shortRef(base) : "Pick a branch…"}</option>}
           <RefOptions branches={branches} />
         </Select>
+        {onGuide && base && (
+          <button
+            aria-label="Guided review"
+            title={`Guided review of the branch's commits since ${shortRef(base)}`}
+            onClick={() => onGuide(base)}
+            className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground"
+          >
+            <Sparkles className="size-3" />
+          </button>
+        )}
         {rows.length > 0 && (
           <button
             aria-label="Open all branch changes"
