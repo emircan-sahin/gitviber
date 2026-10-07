@@ -157,8 +157,15 @@ export const GUIDE_PROMPT = [
 
 /** GUIDE_PROMPT with the language the guide's prose is written in (Settings → Guided Review); empty reads as English. */
 export function guidePrompt(language: string) {
-  // One line of the user's own text: a newline in it can't start a paragraph of its own.
-  const lang = language.replace(/\s+/g, " ").trim().slice(0, 40) || "English";
+  // A name, not an instruction: letters of any script (with their marks), spaces and '()- only,
+  // on one line, so ". Ignore the schema" can't become a sentence of the prompt.
+  const lang =
+    language
+      .replace(/[^\p{L}\p{M}\s'()-]/gu, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 40)
+      .trim() || "English";
   return `${GUIDE_PROMPT}\n\nWrite all prose (the title, overview, summaries, checks, risks and notes) in ${lang}; keep the JSON keys and the values picked from a list (category, importance, side, status, kind), code, identifiers, paths and quoted strings as they are.`;
 }
 

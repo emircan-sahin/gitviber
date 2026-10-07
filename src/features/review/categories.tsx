@@ -53,11 +53,11 @@ export const IMPORTANCE_UI: Record<Importance, { label: string; icon: LucideIcon
   low: { label: "Low", icon: SignalLow, tone: "text-subtle", tip: "Mechanical, docs or style: a skim is enough" },
 };
 
-/** Always its word (only to screen readers and in the tooltip when `short`), the color only on top. */
+/** Always its word (only to screen readers when `short`, which leaves the tooltip to its row), the color only on top. */
 export function ImportanceTag({ importance, short = false }: { importance: Importance; short?: boolean }) {
   const { label, icon: Icon, tone, tip } = IMPORTANCE_UI[importance];
   return (
-    <span title={`${label} importance. ${tip}`} className={cn("inline-flex shrink-0 items-center gap-1 text-[11.5px]", tone)}>
+    <span title={short ? undefined : `${label} importance. ${tip}`} className={cn("inline-flex shrink-0 items-center gap-1 text-[11.5px]", tone)}>
       <Icon aria-hidden className="size-3.5 shrink-0" />
       {short ? <span className="sr-only">, {label} importance</span> : (
         <>

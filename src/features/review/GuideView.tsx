@@ -104,9 +104,10 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   }, [guide]);
   const highs = useMemo(() => guide?.sections.filter((s) => s.importance === "high").length ?? 0, [guide]);
   const [picked, setPicked] = useState(() => filters.get(id) ?? ALL);
-  // One the regenerated guide has none of shows them all.
-  const filter = picked.category && counts.has(picked.category) ? picked.category : null;
-  const highOnly = picked.high && highs > 0;
+  // Only while its button shows: a regenerated guide that has none to pick shows them all.
+  const filter = counts.size > 1 && picked.category && counts.has(picked.category) ? picked.category : null;
+  const total = guide?.sections.length ?? 0;
+  const highOnly = picked.high && highs > 0 && highs < total;
   const filtered = !!filter || highOnly;
   const fits = (s: GuideSection) => (!filter || s.category === filter) && (!highOnly || s.importance === "high");
   const setFilter = (f: Filter) => {
@@ -281,13 +282,13 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
                   </div>
                 )}
               </div>
-              {(counts.size > 1 || (highs > 0 && highs < guide.sections.length)) && (
+              {(counts.size > 1 || (highs > 0 && highs < total)) && (
                 <CategoryFilter
                   counts={counts}
-                  total={guide.sections.length}
+                  total={total}
                   value={filter}
                   onChange={(category) => setFilter({ ...picked, category })}
-                  high={highs > 0 && highs < guide.sections.length ? { count: highs, on: highOnly, onChange: (high) => setFilter({ ...picked, high }) } : null}
+                  high={highs > 0 && highs < total ? { count: highs, on: highOnly, onChange: (high) => setFilter({ ...picked, high }) } : null}
                 />
               )}
               {!!placed?.rest.length && !filtered && (
