@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { commandLine, parseSuggestion, programOf } from "./suggest.ts";
+import { commandLine, effortArg, effortLevels, effortOf, parseSuggestion, programOf, type SuggestPreset } from "./suggest.ts";
 
 test("summary and body", () => {
   assert.deepEqual(parseSuggestion("Fix the thing\n\nIt was broken.\nNow it isn't.\n"), { summary: "Fix the thing", body: "It was broken.\nNow it isn't." });
@@ -60,4 +60,25 @@ test("a markdown description keeps its code blocks", () => {
   assert.deepEqual(parseSuggestion(inner + "\n\nLet me know if you want changes.", true), parseSuggestion(answer, true));
   assert.deepEqual(parseSuggestion("Here it is:\n" + inner + "\nAnything else?", true), parseSuggestion(answer, true));
   assert.deepEqual(parseSuggestion("Add x\n\n```\nx();\n```", true), { summary: "Add x", body: "```\nx();\n```" });
+});
+
+test("no effort until one is picked", () => {
+  // settings.ts drops a stored level the preset doesn't take as it loads.
+  assert.equal(effortOf("claude", {}), "");
+  assert.equal(effortOf("claude", { claude: "high" }), "high");
+  assert.equal(effortOf("llm", { llm: "high" }), "");
+  assert.deepEqual(effortLevels("llm"), []);
+});
+
+test("effort flags split into the argv the CLI expects", () => {
+  // suggest.rs splits on whitespace without a shell: codex's override must stay one key=value word.
+  const words = (preset: SuggestPreset, level: string) => effortArg(preset, level).split(/\s+/);
+  assert.deepEqual(words("codex", "xhigh"), ["-c", "model_reasoning_effort=xhigh"]);
+  assert.deepEqual(words("claude", "max"), ["--effort", "max"]);
+  assert.deepEqual(words("pi", "off"), ["--thinking", "off"]);
+  assert.deepEqual(words("opencode", "minimal"), ["--variant", "minimal"]);
+  // A custom command carries its own flags, whatever was picked for the presets.
+  assert.equal(commandLine("claude -p --effort low", {}, { claude: "max" }), "claude -p --effort low");
+  // Effort without a model.
+  assert.equal(commandLine("pi -p --no-tools --no-session", { pi: "" }, { pi: "xhigh" }), "pi -p --no-tools --no-session --thinking xhigh");
 });
