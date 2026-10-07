@@ -1,34 +1,31 @@
 import { LoaderCircle, RotateCw, Sparkles, Square, TriangleAlert } from "lucide-react";
-import { type ReactNode, useMemo, useReducer, useRef } from "react";
-import type { Components } from "react-markdown";
+import { useMemo } from "react";
 import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
-import { FileIcon } from "@/components/FileIcon";
 import type { RepoStatus } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { programOf } from "@/lib/git/suggest";
-import { markdownLink } from "@/lib/github/markdown";
-import { type ChangesSelection, type GuideSelection, type Selection, selectionKey } from "@/lib/repo/selection";
-import { type GuideSection, parseGuide, placeFiles, sectionBadge } from "@/lib/review/guide";
+import type { ChangesSelection, GuideSelection, Selection } from "@/lib/repo/selection";
+import { parseGuide, placeFiles } from "@/lib/review/guide";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
-import { followLink, MarkdownBody } from "@/features/viewer/MarkdownView";
+import type { BranchChange } from "@/features/changes/BranchReview";
 import { Mermaid } from "@/features/viewer/markdown/Mermaid";
-import { FileBlock, fileRevision, type ListFile } from "@/features/viewer/AllChanges";
+import { type ListFile, useStackedFiles } from "@/features/viewer/StackedFiles";
 import { useFixedFiles } from "@/features/viewer/fixedFiles";
-import { fileMemo } from "@/features/viewer/stackedMemo";
 import { openSettings } from "@/features/settings/SettingsDialog";
 import { cancelGuide, generateGuide, guideId, markDone, useGuide } from "./guides";
 import { GuideDiagram } from "./GuideDiagram";
+import { GuideMarkdown, Notice, SectionRow } from "./GuideSection";
 
-const PREFIX = "guide-";
-const components: Components = { a: markdownLink((href) => followLink(href, () => {}, PREFIX)) };
 // No files to read before a branch's guide says which range it read: a list useFixedFiles leaves be.
 const NO_FILES: ChangesSelection = { kind: "changes", list: "unstaged" };
 
 interface Props {
   sel: GuideSelection;
   status: RepoStatus | null;
+  /** The branch review's files as last loaded; null while there's none. */
+  branchRows: BranchChange[] | null;
   revision: number;
   viewed: (sel: Selection) => boolean;
   toggleViewed: (sel: Selection) => void;
@@ -38,9 +35,9 @@ interface Props {
 /**
  * A commit or branch explained by the user's agent CLI, kept once written: an overview and a
  * diagram of the changed parts, then a row a section in reading order, its prose beside its files'
- * diffs (drawn as Open All draws them, only near the screen), each with a reviewed mark.
+ * diffs (a stacked diff, drawn only near the screen), each with a reviewed mark.
  */
-export function GuideView({ sel, status, revision, viewed, toggleViewed, onOpen }: Props) {
+export function GuideView({ sel, status, branchRows, revision, viewed, toggleViewed, onOpen }: Props) {
   const { suggestEnabled, suggestCommand } = useSettings();
   const program = programOf(suggestCommand);
   const branch = status?.branch ?? null;
@@ -48,6 +45,8 @@ export function GuideView({ sel, status, revision, viewed, toggleViewed, onOpen 
   const id = guideId(root, sel, branch);
   const { saved, run } = useGuide(id);
   const guide = useMemo(() => (saved ? parseGuide(saved.text) : null), [saved]);
+  // status.head is HEAD's short id.
+  const moved = sel.of === "branch" && saved && status?.head && !saved.head.startsWith(status.head);
 
   // The files as Open All reads them: the commit's, or the range the guide read.
   const base = saved?.base;
@@ -72,61 +71,42 @@ export function GuideView({ sel, status, revision, viewed, toggleViewed, onOpen 
   const placed = useMemo(() => (guide && fixed.files ? placeFiles(guide, [...byPath.keys()]) : null), [guide, fixed.files, byPath]);
   const titles = useMemo(() => guide?.sections.map((s) => s.title) ?? [], [guide]);
 
-  const page = useRef<HTMLDivElement>(null);
-  // A file's memo is Open All's, so it opens as far, and as tall, as it was there.
-  const memo = (f: ListFile) => fileMemo(`${root}\0${selectionKey(f)}`);
-  const [, redraw] = useReducer((n: number) => n + 1, 0);
-  const isOpen = (f: ListFile) => !(memo(f).shut ?? viewed(f));
-  const markViewed = (f: ListFile) => {
-    delete memo(f).shut;
-    toggleViewed(f);
-    // Closing the file being read would leave the view somewhere in the next one: keep its header in view.
-    const el = page.current?.querySelector(`[data-file="${CSS.escape(selectionKey(f))}"]`);
-    requestAnimationFrame(() => {
-      const top = page.current?.getBoundingClientRect().top;
-      if (el && top !== undefined && el.getBoundingClientRect().top < top) el.scrollIntoView({ block: "start" });
-    });
-  };
+  // Branch Review's own row for a file, while it reads the same commits and the file has no
+  // uncommitted change: the same diff, so one viewed mark for both. Other files keep this guide's.
+  const shared = useMemo(() => {
+    if (sel.of !== "branch" || !saved || !status?.head || moved) return new Map<string, BranchChange>();
+    const dirty = new Set([...status.staged, ...status.unstaged].map((f) => f.path));
+    return new Map((branchRows ?? []).filter((r) => r.base === saved.base && !dirty.has(r.file.path)).map((r) => [r.file.path, r]));
+  }, [sel.of, saved, status, moved, branchRows]);
+  const markOf = (f: ListFile) => shared.get(f.file.path) ?? f;
+  const isViewed = (f: ListFile) => viewed(markOf(f));
+  const { scroller, block } = useStackedFiles({
+    root,
+    status,
+    revision,
+    viewed: isViewed,
+    toggleViewed: (f) => toggleViewed(markOf(f)),
+    // A range's files take no notes, as in Open All; a commit's are marked as on it.
+    notes: sel.of === "commit" && byPath.size ? { at: `commit ${sel.commit.shortSha}` } : null,
+    onOpen,
+  });
+  // Its diffs; none to wait for once the files couldn't be read.
+  const diffs = (paths: string[] | undefined) => (paths ? paths.map((p) => block(byPath.get(p)!)) : fixed.error ? [] : null);
   const goTo = (n: number) => {
-    page.current?.querySelector(`[data-section="${n}"]`)?.scrollIntoView({ block: "start" });
-    document.getElementById(`${PREFIX}section-${n}`)?.focus({ preventScroll: true });
+    const row = scroller.current?.querySelector(`[data-section="${n}"]`);
+    row?.scrollIntoView({ block: "start" });
+    row?.querySelector<HTMLElement>("h2")?.focus({ preventScroll: true });
   };
-  // A PR's or comparison's files take no notes, as in Open All; a commit's are marked as on it.
-  const notes = sel.of === "commit" ? { at: `commit ${sel.commit.shortSha}` } : null;
-  const diffs = (paths: string[]) =>
-    paths.map((path) => {
-      const f = byPath.get(path)!;
-      const open = isOpen(f);
-      return (
-        <FileBlock
-          key={path}
-          sel={f}
-          memo={memo(f)}
-          revision={fileRevision(f, memo(f), status, revision)}
-          notes={notes}
-          open={open}
-          viewed={viewed(f)}
-          onToggleOpen={() => {
-            memo(f).shut = open;
-            redraw();
-          }}
-          onToggleViewed={() => markViewed(f)}
-          onOpen={() => onOpen(f)}
-        />
-      );
-    });
 
   const running = run === "running";
   const generate = () => void generateGuide(id, sel);
-  // status.head is HEAD's short id.
-  const moved = sel.of === "branch" && saved && status?.head && !saved.head.startsWith(status.head);
   const done = guide && saved ? guide.sections.filter((_, i) => saved.done.includes(i)).length : 0;
-  const filesViewed = [...byPath.values()].filter(viewed).length;
+  const filesViewed = [...byPath.values()].filter(isViewed).length;
   const drawn = !!guide && (guide.models.length > 0 || guide.flows.length > 0 || !!guide.diagram);
 
   return (
     // Focusable so the keyboard can scroll it (focusPanel("code") lands here); diffs load as they near its view.
-    <div ref={page} data-code-scroll tabIndex={0} className="@container h-full overflow-auto outline-none">
+    <div ref={scroller} data-code-scroll tabIndex={0} className="@container relative h-full overflow-auto outline-none">
       <PageFind />
       <div className="mx-auto max-w-[1440px] px-6 py-5">
         <header className="mb-5">
@@ -170,7 +150,7 @@ export function GuideView({ sel, status, revision, viewed, toggleViewed, onOpen 
               </span>
             )}
             {byPath.size > 0 && (
-              <span>
+              <span title={sel.of === "branch" ? "Shared with Branch Review while it reads these same commits and the file has no uncommitted change; otherwise this review's own." : undefined}>
                 · <Count n={filesViewed} of={byPath.size} /> files viewed
               </span>
             )}
@@ -217,9 +197,7 @@ export function GuideView({ sel, status, revision, viewed, toggleViewed, onOpen 
         ) : !guide ? (
           <>
             <Notice icon={<TriangleAlert />}>The answer wasn't in the shape asked for; here it is as written.</Notice>
-            <div className="markdown select-text">
-              <MarkdownBody text={saved.text} components={components} idPrefix={PREFIX} />
-            </div>
+            <GuideMarkdown text={saved.text} />
           </>
         ) : (
           <>
@@ -227,9 +205,7 @@ export function GuideView({ sel, status, revision, viewed, toggleViewed, onOpen 
               {guide.summary && (
                 <div className="min-w-0">
                   <h2 className="mb-2 text-[13px] font-semibold">Overview</h2>
-                  <div className="markdown select-text">
-                    <MarkdownBody text={guide.summary} components={components} idPrefix={PREFIX} />
-                  </div>
+                  <GuideMarkdown text={guide.summary} />
                 </div>
               )}
               {drawn && (
@@ -253,23 +229,17 @@ export function GuideView({ sel, status, revision, viewed, toggleViewed, onOpen 
               )}
             </div>
             {guide.sections.map((s, i) => (
-              <SectionRow key={i} n={i + 1} total={guide.sections.length} section={s} done={saved.done.includes(i)} onDone={(on) => markDone(id, i, on)} files={placed && diffs(placed.shown[i])}>
-                {placed?.named[i].map(({ path, at }) => (
-                  <div key={path} className="flex min-w-0 items-center gap-1.5 text-[12px]">
-                    <FileIcon path={path} />
-                    <span className="min-w-0 truncate font-mono text-subtle" title={path}>
-                      {path}
-                    </span>
-                    {at ? (
-                      <button className="shrink-0 text-primary hover:underline" onClick={() => goTo(at)}>
-                        in section {sectionBadge(at)}
-                      </button>
-                    ) : (
-                      <span className="shrink-0 text-subtle">not in this diff</span>
-                    )}
-                  </div>
-                ))}
-              </SectionRow>
+              <SectionRow
+                key={i}
+                n={i + 1}
+                total={guide.sections.length}
+                section={s}
+                done={saved.done.includes(i)}
+                onDone={(on) => markDone(id, i, on)}
+                files={diffs(placed?.shown[i])}
+                named={placed?.named[i]}
+                onSection={goTo}
+              />
             ))}
             {!!placed?.rest.length && <SectionRow section={{ title: "Other changes", summary: "In no section of the guide.", files: [], risk: "" }} files={diffs(placed.rest)} />}
           </>
@@ -284,87 +254,5 @@ function Count({ n, of }: { n: number; of: number }) {
     <>
       <span className={cn("font-semibold", n === of ? "text-added" : "text-foreground")}>{n}</span> / {of}
     </>
-  );
-}
-
-function Notice({ icon, role, className, children }: { icon: ReactNode; role?: "status" | "alert"; className?: string; children: ReactNode }) {
-  return (
-    <div role={role} className={cn("mb-4 flex items-start gap-2 rounded-md border border-border bg-panel px-3 py-2 text-[12.5px] [&>svg]:mt-0.5 [&>svg]:size-3.5 [&>svg]:shrink-0", className)}>
-      {icon}
-      <div className="min-w-0">{children}</div>
-    </div>
-  );
-}
-
-/**
- * One part of the change: its prose (held in view while its diffs scroll by), beside its files'
- * diffs; one column when the tab is narrow. Marked reviewed, it folds to its title. Without `n`,
- * the files no section has.
- */
-function SectionRow({
-  n,
-  total,
-  section: s,
-  done = false,
-  onDone,
-  files,
-  children,
-}: {
-  n?: number;
-  total?: number;
-  section: GuideSection;
-  done?: boolean;
-  onDone?: (on: boolean) => void;
-  /** Null while the files load. */
-  files: ReactNode[] | null;
-  children?: ReactNode;
-}) {
-  const heading = `${PREFIX}section-${n ?? "other"}`;
-  const title = s.title || "Untitled";
-  return (
-    <section data-section={n} aria-labelledby={heading} className={cn("grid gap-x-6 gap-y-3 border-t border-border py-5 @4xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]", done && "opacity-60")}>
-      <div className="min-w-0 @4xl:sticky @4xl:top-0 @4xl:self-start @4xl:pt-1">
-        <div className="flex items-baseline gap-2">
-          <h2 id={heading} tabIndex={-1} className="min-w-0 flex-1 text-[15px] font-semibold outline-none select-text">
-            {title}
-          </h2>
-          {n && total && (
-            <span className="shrink-0 font-mono text-[11px] text-subtle">
-              {sectionBadge(n)} / {sectionBadge(total)}
-            </span>
-          )}
-        </div>
-        {onDone && (
-          <label className="mt-1.5 inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
-            <input type="checkbox" checked={done} onChange={(e) => onDone(e.target.checked)} aria-label={`Reviewed: ${title}`} />
-            Reviewed
-          </label>
-        )}
-        {!done && (
-          <div className="mt-3 flex flex-col gap-2">
-            {s.summary && (
-              <div className="markdown select-text">
-                <MarkdownBody text={s.summary} components={components} idPrefix={`${PREFIX}${n ?? "other"}-`} />
-              </div>
-            )}
-            {s.risk && (
-              <Notice icon={<TriangleAlert />} className="text-modified">
-                {s.risk}
-              </Notice>
-            )}
-            {children}
-          </div>
-        )}
-      </div>
-      {!done && (
-        <div className="min-w-0">
-          {files === null ? (
-            <div className="text-[12px] text-subtle">Loading files…</div>
-          ) : (
-            files.length > 0 && <div className="overflow-clip rounded-md border border-border [&>section:last-child]:border-b-0">{files}</div>
-          )}
-        </div>
-      )}
-    </section>
   );
 }
