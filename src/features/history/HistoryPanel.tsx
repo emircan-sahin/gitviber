@@ -60,9 +60,11 @@ interface Props {
   showRefs?: GraphRefs;
   /** Shows what changed between two commits, or one and the working tree, in place of the list. */
   onComparePoints?: (points: Points) => void;
+  /** Narrows the history to an author's commits (the search box). */
+  onAuthor?: (name: string) => void;
 }
 
-export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, ciTarget, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs, onComparePoints }: Props) {
+export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, ciTarget, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs, onComparePoints, onAuthor }: Props) {
   const [open, setOpen] = useState<string | null>(reveal?.sha ?? null);
   useEffect(() => {
     if (reveal) setOpen(reveal.sha);
@@ -126,6 +128,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
     refMenu,
     showRefs,
     comparePoints: onComparePoints,
+    filterAuthor: onAuthor,
   };
 
   // Opening a commit collapses the one above it; WebKit has no scroll anchoring, so without
@@ -240,6 +243,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
                   if (!justDragged() && !click(c, e)) toggle(c.sha, e.currentTarget);
                 }}
                 onMenu={() => !pickedSet.has(c.sha) && clear()}
+                onAuthor={onAuthor && (() => onAuthor(c.authorName))}
                 activeKey={activeKey}
                 onOpen={onOpen}
                 onHover={onHover}

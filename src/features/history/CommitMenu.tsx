@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { ArrowDown, ArrowUp, Cherry, Combine, Files, SearchCode, Scissors, GitCommitVertical, Copy, ExternalLink, Eye, EyeOff, FileDiff, FolderGit2, GitBranchPlus, GitCommitHorizontal, GitCompare, GitCompareArrows, History, Link, Pencil, RotateCcw, SquareDashedMousePointer, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
+import { ArrowDown, ArrowUp, Cherry, Combine, Files, SearchCode, Scissors, GitCommitVertical, Copy, ExternalLink, Eye, EyeOff, FileDiff, FolderGit2, GitBranchPlus, GitCommitHorizontal, GitCompare, GitCompareArrows, History, Link, ListFilter, Pencil, RotateCcw, SquareDashedMousePointer, Tag, Trash2, Undo2, UploadCloud } from "lucide-react";
 import { Fragment, useRef, useState } from "react";
 import {
   ContextMenuContent,
@@ -248,6 +248,14 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
               )}
             </Fragment>
           ))}
+        </>
+      )}
+      {actions.filterAuthor && c.authorName && (
+        <>
+          <ContextMenuSeparator />
+          <ContextMenuItem onSelect={() => actions.filterAuthor?.(c.authorName)}>
+            <ListFilter /> Filter by author {c.authorName}
+          </ContextMenuItem>
         </>
       )}
       <ContextMenuSeparator />

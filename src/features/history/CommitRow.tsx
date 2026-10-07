@@ -3,6 +3,7 @@ import { useDraggable } from "@dnd-kit/core";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { CiBadge } from "@/components/CiBadge";
+import { RowFilter } from "@/components/RowFilter";
 import { api, type CiState, type Commit, errorMessage, type FileChange, type GraphRefs } from "@/lib/api";
 import type { GraphRow, Lane } from "@/lib/git/commitGraph";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
@@ -38,6 +39,7 @@ export function CommitRow({
   reveal,
   onClick,
   onMenu,
+  onAuthor,
   activeKey,
   onOpen,
   onHover,
@@ -61,6 +63,8 @@ export function CommitRow({
   reveal: Reveal | null;
   onClick: (e: React.MouseEvent<HTMLElement>) => void;
   onMenu: () => void;
+  /** Narrows the history to this commit's author. */
+  onAuthor?: () => void;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
@@ -153,7 +157,13 @@ export function CommitRow({
               <div className="min-w-0 flex-1">
                 <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
                 <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] text-subtle">
-                  <span className="min-w-0 truncate">{commit.authorName}</span>
+                  {onAuthor && commit.authorName ? (
+                    <RowFilter title={`Filter by author ${commit.authorName}`} onFilter={onAuthor}>
+                      {commit.authorName}
+                    </RowFilter>
+                  ) : (
+                    <span className="min-w-0 truncate">{commit.authorName}</span>
+                  )}
                   <span>·</span>
                   <CommitTime commit={commit} />
                   <CiBadge state={ci} className="ml-auto" />

@@ -212,6 +212,8 @@ function OriginalHistory({
       headSha={headSha}
       web={`https://github.com/${original}`}
       ciTarget={original}
+      // The search box looks through your history, not the original's.
+      onAuthor={undefined}
     />
   );
   if (!missing || !into) return list;

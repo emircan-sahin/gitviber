@@ -4,7 +4,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage, type GraphRefs, LOG_PAGE } from "@/lib/api";
 import { useFind } from "@/lib/ui/find";
 import { isTyping, matchesCommand, useShortcut } from "@/lib/commands/keybindings";
-import { isEmptyFilter, parseLogQuery } from "@/lib/git/logQuery";
+import { isEmptyFilter, parseLogQuery, withAuthor } from "@/lib/git/logQuery";
 import { toast } from "@/lib/app/toast";
 import { BisectBar } from "./BisectBar";
 import { ForkHistory } from "./ForkHistory";
@@ -58,7 +58,11 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
   const [comparing, setComparing] = useState<{ ref: string } | { points: Points } | null>(null);
   const compare = comparing && "ref" in comparing ? comparing.ref : null;
   const points = comparing && "points" in comparing ? comparing.points : null;
-  const list = { ...props, onComparePoints: (p: Points) => setComparing({ points: p }) };
+  const list = {
+    ...props,
+    onComparePoints: (p: Points) => setComparing({ points: p }),
+    onAuthor: (name: string) => onSearch({ ...search, query: withAuthor(query, name), reveal: null }),
+  };
   const showAll = allBranches && !active && !compare && !points;
   // What a search covers: HEAD, and with all branches every branch's tip. A refresh that moved
   // none of them (a focus, a staged file) doesn't search again.

@@ -152,6 +152,8 @@ function CompareList({ with: ref, incoming, ours, ...props }: ListProps & { with
       loadMore={loadMore}
       empty={log ? (incoming ? "Nothing here that your branch lacks." : "Nothing here that it lacks.") : "Loading…"}
       graph={false}
+      // The search box looks through your history, which needn't have these commits.
+      onAuthor={undefined}
     />
   );
 }

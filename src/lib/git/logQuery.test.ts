@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isEmptyFilter, parseLogQuery } from "./logQuery.ts";
+import { isEmptyFilter, parseLogQuery, withAuthor } from "./logQuery.ts";
 
 test("words match the message, prefixes narrow", () => {
   const { filter } = parseLogQuery("  fix auth  author:ada path:./src/lib/ code:useState ");
@@ -24,4 +24,21 @@ test("an empty or blank search is no filter", () => {
   assert.ok(isEmptyFilter(parseLogQuery("").filter));
   assert.ok(isEmptyFilter(parseLogQuery('  "" ').filter));
   assert.ok(!isEmptyFilter(parseLogQuery("x").filter));
+});
+
+test("a clicked author replaces the author terms and keeps the rest", () => {
+  assert.equal(withAuthor("", "ada"), "author:ada");
+  assert.equal(withAuthor("fix path:src author:bob Author:\"Bo B\"", "Ada Lovelace"), 'fix path:src author:"Ada Lovelace"');
+  // Clicking the one already there changes nothing.
+  assert.equal(withAuthor("author:ada", "ada"), "author:ada");
+  assert.equal(withAuthor(withAuthor('"fix login"', "Ada Lovelace"), "Ada Lovelace"), '"fix login" author:"Ada Lovelace"');
+});
+
+test("whatever the name, the parser reads it back as one author", () => {
+  for (const name of ["ada", "Ada Lovelace", "  Grace  Hopper ", "Jean-Luc O'Brien", 'Kim "KJ" Lee', "Zoë Çelik", "path:src", "dev@example.com"]) {
+    const { filter } = parseLogQuery(withAuthor("code:x", name));
+    assert.deepEqual(filter.author, [name.replaceAll('"', "").trim()], name);
+    assert.equal(filter.code, "x");
+    assert.deepEqual(filter.grep, []);
+  }
 });
