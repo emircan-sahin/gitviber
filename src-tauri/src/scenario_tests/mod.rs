@@ -34,6 +34,7 @@ mod shell_marks;
 mod stash;
 mod stash_edges;
 mod suggest;
+mod suggest_guide;
 mod sync;
 mod terminal_links;
 mod watcher;
