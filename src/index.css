@@ -729,7 +729,8 @@
   font-size: 0.85em;
   padding: 0.15em 0.4em;
   border-radius: var(--radius-md);
-  background: var(--elevated);
+  /* A tint of the text color: light themes' --elevated is the page's own white. */
+  background: color-mix(in srgb, var(--foreground) 8%, var(--elevated));
 }
 .markdown pre {
   padding: 12px 16px;
