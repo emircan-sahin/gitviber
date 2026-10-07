@@ -136,9 +136,10 @@ fn the_users_own_command_comes_first() {
             continue;
         };
         assert_eq!(found, "$SANDBOX/own/gitviber", "{shell}");
-        // What's between is the system's (a Debian /etc/profile sets its own for bash).
+        // What's around is the system's: a Debian /etc/profile sets its own for bash, and snapd's
+        // profile.d appends /snap/bin after ours.
         assert!(path.starts_with("$SANDBOX/own:"), "{shell}: {path}");
-        assert!(path.ends_with(":$SANDBOX/bin"), "{shell}: {path}");
+        assert!(path.contains(":$SANDBOX/bin"), "{shell}: {path}");
         assert_eq!(path.matches("$SANDBOX/bin").count(), 1, "{shell}: {path}");
     }
 }
@@ -161,8 +162,9 @@ fn an_app_path_with_spaces_and_brackets_goes_on_path_once() {
                 found, "$SANDBOX/My Apps [1]/bin/gitviber",
                 "{shell} kept={kept}"
             );
+            // Not necessarily last: snapd's profile.d appends /snap/bin after it.
             assert!(
-                path.ends_with(":$SANDBOX/My Apps [1]/bin"),
+                path.contains(":$SANDBOX/My Apps [1]/bin"),
                 "{shell}: {path}"
             );
             assert_eq!(path.matches("My Apps").count(), 1, "{shell}: {path}");
