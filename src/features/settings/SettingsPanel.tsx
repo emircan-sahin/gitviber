@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { Bell, CircleArrowUp, Code2, Gem, GitBranch, GitCompareArrows, Keyboard, Palette, RotateCcw, Sparkles, SquareArrowOutUpRight, SquareTerminal } from "lucide-react";
+import { Bell, CircleArrowUp, Code2, Gem, GitBranch, GitCompareArrows, Keyboard, Palette, RotateCcw, ScanSearch, Sparkles, SquareArrowOutUpRight, SquareTerminal } from "lucide-react";
 import { IS_MAC } from "@/lib/platform";
 import { resetSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
@@ -9,6 +9,7 @@ import { EditorSection } from "./sections/Editor";
 import { DiffSection } from "./sections/Diff";
 import { GitSection } from "./sections/Git";
 import { CommitSection } from "./sections/Commit";
+import { ReviewSection } from "./sections/Review";
 import { OpenInSection } from "./sections/OpenIn";
 import { NotificationsSection } from "./sections/Notifications";
 import { type Recording, ShortcutsSection } from "./sections/Shortcuts";
@@ -28,6 +29,7 @@ const SECTIONS = [
   { id: "obsidian", label: "Obsidian", icon: Gem, group: "Workspace" },
   { id: "git", label: "Git", icon: GitBranch, group: "Git" },
   { id: "commit", label: "Commit Messages", icon: Sparkles, group: "Git" },
+  { id: "review", label: "Guided Review", icon: ScanSearch, group: "Git" },
 ] as const;
 export type Section = (typeof SECTIONS)[number]["id"];
 const GROUPS = [...new Set(SECTIONS.map((s) => s.group))];
@@ -105,6 +107,7 @@ export function SettingsPanel({
           {/* Keyed: the settings window stays open as the workspace opens another project. */}
           {section === "git" && <GitSection key={main} main={main} />}
           {section === "commit" && <CommitSection />}
+          {section === "review" && <ReviewSection />}
           {section === "openIn" && <OpenInSection />}
           {section === "notifications" && <NotificationsSection />}
           {section === "shortcuts" && <ShortcutsSection recording={recording} setRecording={setRecording} />}

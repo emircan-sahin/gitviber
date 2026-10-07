@@ -6,7 +6,7 @@ import { markdownLink } from "@/lib/github/markdown";
 import { type GuideSection, sectionBadge } from "@/lib/review/guide";
 import { cn } from "@/lib/utils";
 import { followLink, MarkdownBody } from "@/features/viewer/MarkdownView";
-import { CarefulBadge, CategoryTag } from "./categories";
+import { CategoryTag, ImportanceTag } from "./categories";
 
 // The guide's Markdown ids all start with this, so none can take a section row's heading id.
 const MD = "guide-md-";
@@ -102,7 +102,7 @@ export function SectionRow({
         {!!n && (
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
             <CategoryTag category={s.category} />
-            {s.critical && <CarefulBadge />}
+            <ImportanceTag importance={s.importance} />
             {onDone && (
               <label className="inline-flex items-center gap-1.5 text-[12px] text-muted-foreground">
                 <input type="checkbox" checked={done} onChange={(e) => onDone(e.target.checked)} aria-label={`Reviewed: ${title}`} />

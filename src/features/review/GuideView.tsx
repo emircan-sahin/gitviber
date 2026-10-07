@@ -5,7 +5,7 @@ import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import type { RepoStatus } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
-import { programOf } from "@/lib/git/suggest";
+import { programOf, reviewAgent } from "@/lib/git/suggest";
 import type { ChangesSelection, GuideSelection, Selection } from "@/lib/repo/selection";
 import { type Category, type GuideSection, matchPath, parseGuide, placeFiles } from "@/lib/review/guide";
 import { useSettings } from "@/lib/settings";
@@ -17,14 +17,20 @@ import { useFixedFiles } from "@/features/viewer/fixedFiles";
 import { openSettings } from "@/features/settings/SettingsDialog";
 import { cancelGuide, generateGuide, guideId, markDone, useGuide } from "./guides";
 import { GuideDiagram } from "./GuideDiagram";
+import { CATEGORY_UI } from "./categories";
 import { CategoryFilter, GuideNav } from "./GuideNav";
 import { GuideMarkdown, Notice, SectionRow } from "./GuideSection";
 
 // No files to read before a branch's guide says which range it read: a list useFixedFiles leaves be.
 const NO_FILES: ChangesSelection = { kind: "changes", list: "unstaged" };
-const OTHER: GuideSection = { title: "Other changes", category: "other", summary: "In no section of the guide.", files: [], check: "", risk: "", critical: false, fileNotes: [], lineNotes: [] };
-// The category each guide shows, by guide id, until GitViber quits.
-const filters = new Map<string, Category>();
+const OTHER: GuideSection = { title: "Other changes", category: "other", summary: "In no section of the guide.", files: [], check: "", risk: "", importance: "medium", fileNotes: [], lineNotes: [] };
+// The category each guide shows, and whether only its high importance sections, by guide id, until GitViber quits.
+interface Filter {
+  category: Category | null;
+  high: boolean;
+}
+const ALL: Filter = { category: null, high: false };
+const filters = new Map<string, Filter>();
 
 interface Props {
   sel: GuideSelection;
@@ -43,8 +49,9 @@ interface Props {
  * diffs (a stacked diff, drawn only near the screen), each with a reviewed mark.
  */
 export function GuideView({ sel, status, branchRows, revision, viewed, toggleViewed, onOpen }: Props) {
-  const { suggestEnabled, suggestCommand } = useSettings();
-  const program = programOf(suggestCommand);
+  const settings = useSettings();
+  const { suggestEnabled } = settings;
+  const program = programOf(reviewAgent(settings).command);
   const branch = status?.branch ?? null;
   const root = status?.root ?? "";
   const id = guideId(root, sel, branch);
@@ -95,13 +102,18 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
     for (const s of guide?.sections ?? []) at.set(s.category, (at.get(s.category) ?? 0) + 1);
     return at;
   }, [guide]);
-  const [picked, setPicked] = useState(() => filters.get(id) ?? null);
-  // One the regenerated guide has none of shows them all.
-  const filter = picked && counts.has(picked) ? picked : null;
-  const setFilter = (c: Category | null) => {
-    if (c) filters.set(id, c);
+  const highs = useMemo(() => guide?.sections.filter((s) => s.importance === "high").length ?? 0, [guide]);
+  const [picked, setPicked] = useState(() => filters.get(id) ?? ALL);
+  // Only while its button shows: a regenerated guide that has none to pick shows them all.
+  const filter = counts.size > 1 && picked.category && counts.has(picked.category) ? picked.category : null;
+  const total = guide?.sections.length ?? 0;
+  const highOnly = picked.high && highs > 0 && highs < total;
+  const filtered = !!filter || highOnly;
+  const fits = (s: GuideSection) => (!filter || s.category === filter) && (!highOnly || s.importance === "high");
+  const setFilter = (f: Filter) => {
+    if (f.category || f.high) filters.set(id, f);
     else filters.delete(id);
-    setPicked(c);
+    setPicked(f);
   };
 
   // Branch Review's own row for a file, while it reads the same commits and the file has no
@@ -127,7 +139,8 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   const diffs = (paths: string[] | undefined) => (paths ? paths.map((p) => block(byPath.get(p)!, annotations.get(p))) : fixed.error ? [] : null);
   const goTo = (n: number) => {
     // A section the filter hides (a diagram's link, Other changes): show them all first.
-    if (filter && guide?.sections[n - 1]?.category !== filter) flushSync(() => setFilter(null));
+    const s = guide?.sections[n - 1];
+    if (filtered && (!s || !fits(s))) flushSync(() => setFilter(ALL));
     const row = scroller.current?.querySelector(`[data-section="${n}"]`);
     row?.scrollIntoView({ block: "start" });
     row?.querySelector<HTMLElement>("h2")?.focus({ preventScroll: true });
@@ -138,7 +151,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   const done = guide && saved ? guide.sections.filter((_, i) => saved.done.includes(i)).length : 0;
   const filesViewed = [...byPath.values()].filter(isViewed).length;
   const drawn = !!guide && (guide.models.length > 0 || guide.flows.length > 0 || !!guide.diagram);
-  const shown = (guide?.sections ?? []).flatMap((section, i) => (!filter || section.category === filter ? [{ n: i + 1, section, done: !!saved?.done.includes(i) }] : []));
+  const shown = (guide?.sections ?? []).flatMap((section, i) => (fits(section) ? [{ n: i + 1, section, done: !!saved?.done.includes(i) }] : []));
   const nav = shown.length > 1;
 
   return (
@@ -269,8 +282,16 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
                   </div>
                 )}
               </div>
-              {counts.size > 1 && <CategoryFilter counts={counts} total={guide.sections.length} value={filter} onChange={setFilter} />}
-              {!!placed?.rest.length && !filter && (
+              {(counts.size > 1 || (highs > 0 && highs < total)) && (
+                <CategoryFilter
+                  counts={counts}
+                  total={total}
+                  value={filter}
+                  onChange={(category) => setFilter({ ...picked, category })}
+                  high={highs > 0 && highs < total ? { count: highs, on: highOnly, onChange: (high) => setFilter({ ...picked, high }) } : null}
+                />
+              )}
+              {!!placed?.rest.length && !filtered && (
                 <Notice icon={<TriangleAlert />}>
                   {placed.rest.length === 1 ? "1 file wasn't" : `${placed.rest.length} files weren't`} placed in a section by {saved.program}.{" "}
                   <button className="text-primary hover:underline" onClick={() => goTo(0)}>
@@ -291,7 +312,15 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
                   onSection={goTo}
                 />
               ))}
-              {!!placed?.rest.length && !filter && <SectionRow n={0} section={OTHER} files={diffs(placed.rest)} />}
+              {filtered && !shown.length && (
+                <p className="text-[13px] text-muted-foreground">
+                  No {filter && CATEGORY_UI[filter].label} section is high importance.{" "}
+                  <button className="text-primary hover:underline" onClick={() => setFilter(ALL)}>
+                    Show all
+                  </button>
+                </p>
+              )}
+              {!!placed?.rest.length && !filtered && <SectionRow n={0} section={OTHER} files={diffs(placed.rest)} />}
             </div>
           </div>
         )}

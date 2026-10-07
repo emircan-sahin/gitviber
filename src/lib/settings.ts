@@ -247,6 +247,13 @@ export interface Settings {
   suggestModels: Partial<Record<SuggestPreset, string>>;
   /** Reasoning effort picked per preset, "" for the CLI's own; a preset missing here runs its default. */
   suggestEfforts: Partial<Record<SuggestPreset, string>>;
+  /** Guided reviews' own agent CLI; null runs `suggestCommand`. */
+  reviewCommand: string | null;
+  /** Guided reviews' own model and effort per preset; a preset missing here runs Commit Messages' (reviewAgent). */
+  reviewModels: Partial<Record<SuggestPreset, string>>;
+  reviewEfforts: Partial<Record<SuggestPreset, string>>;
+  /** The language guided reviews are written in, by name; commit messages and pull requests stay English. */
+  reviewLanguage: string;
   /** The app "Open in" runs on a click: a built-in id or a CustomApp's; "" until one is picked. */
   openInApp: string;
   openInCustom: CustomApp[];
@@ -333,6 +340,10 @@ const DEFAULTS: Settings = {
   suggestCommand: "claude -p",
   suggestModels: {},
   suggestEfforts: {},
+  reviewCommand: null,
+  reviewModels: {},
+  reviewEfforts: {},
+  reviewLanguage: "English",
   openInApp: "",
   openInCustom: [],
   openInHideBuiltins: false,
@@ -340,6 +351,18 @@ const DEFAULTS: Settings = {
 
 // v2: the Monaco-era settings had different fonts and sizes.
 const KEY = "gitviber.settings.v2";
+
+/** Model ids typed per preset, the presets there are only. */
+function validModels(v: unknown) {
+  const models = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(SUGGEST_PRESETS).filter((k) => typeof models[k] === "string").map((k) => [k, models[k]]));
+}
+
+/** Efforts picked per preset, each one of its preset's levels or "" (the CLI's own). */
+function validEfforts(v: unknown) {
+  const efforts = (v && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  return Object.fromEntries((Object.keys(SUGGEST_PRESETS) as SuggestPreset[]).filter((k) => efforts[k] === "" || effortLevels(k).includes(efforts[k] as string)).map((k) => [k, efforts[k]]));
+}
 
 function load(): Settings {
   try {
@@ -399,12 +422,12 @@ function load(): Settings {
     if (typeof s.autoUpdate !== "boolean") s.autoUpdate = DEFAULTS.autoUpdate;
     if (typeof s.suggestEnabled !== "boolean") s.suggestEnabled = DEFAULTS.suggestEnabled;
     if (typeof s.suggestCommand !== "string") s.suggestCommand = DEFAULTS.suggestCommand;
-    const models = s.suggestModels && typeof s.suggestModels === "object" ? s.suggestModels : {};
-    s.suggestModels = Object.fromEntries(Object.keys(SUGGEST_PRESETS).filter((k) => typeof models[k] === "string").map((k) => [k, models[k]]));
-    const efforts = s.suggestEfforts && typeof s.suggestEfforts === "object" ? s.suggestEfforts : {};
-    s.suggestEfforts = Object.fromEntries(
-      (Object.keys(SUGGEST_PRESETS) as SuggestPreset[]).filter((k) => efforts[k] === "" || effortLevels(k).includes(efforts[k])).map((k) => [k, efforts[k]]),
-    );
+    s.suggestModels = validModels(s.suggestModels);
+    s.suggestEfforts = validEfforts(s.suggestEfforts);
+    if (typeof s.reviewCommand !== "string") s.reviewCommand = null;
+    s.reviewModels = validModels(s.reviewModels);
+    s.reviewEfforts = validEfforts(s.reviewEfforts);
+    if (typeof s.reviewLanguage !== "string") s.reviewLanguage = DEFAULTS.reviewLanguage;
     s.signOffRepos = Array.isArray(s.signOffRepos) ? s.signOffRepos.filter((p: unknown) => typeof p === "string") : DEFAULTS.signOffRepos;
     if (!FETCH_INTERVALS.includes(s.backgroundFetch)) s.backgroundFetch = DEFAULTS.backgroundFetch;
     if (typeof s.cloneParent !== "string") s.cloneParent = null;

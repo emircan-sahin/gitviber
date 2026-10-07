@@ -69,6 +69,8 @@ export const SUGGEST_PRESETS = {
 } as const;
 
 export type SuggestPreset = keyof typeof SUGGEST_PRESETS;
+/** A value per preset, as Settings keeps models and efforts. */
+type Models = Partial<Record<SuggestPreset, string>>;
 
 /** Every provider's current model ids on one page, for a Custom command. */
 export const ALL_MODELS = { label: "models.dev", url: "https://models.dev" };
@@ -76,13 +78,13 @@ export const ALL_MODELS = { label: "models.dev", url: "https://models.dev" };
 export const presetOf = (command: string) => (Object.keys(SUGGEST_PRESETS) as SuggestPreset[]).find((k) => SUGGEST_PRESETS[k].command === command.trim());
 
 /** The model a preset runs with: the user's id, or the default until they type one. "" is the CLI's own default. */
-export const modelOf = (preset: SuggestPreset, models: Partial<Record<SuggestPreset, string>>) => (models[preset] ?? SUGGEST_PRESETS[preset].model).trim();
+export const modelOf = (preset: SuggestPreset, models: Models) => (models[preset] ?? SUGGEST_PRESETS[preset].model).trim();
 
 /** The levels a preset's effort takes; none when it has no flag. */
 export const effortLevels = (preset: SuggestPreset): readonly string[] => SUGGEST_PRESETS[preset].effort?.levels ?? [];
 
 /** The effort a preset runs with (settings.ts checks it's one of its levels): the user's, or its default until they pick one; "" is the CLI's own default. */
-export const effortOf = (preset: SuggestPreset, efforts: Partial<Record<SuggestPreset, string>>) => {
+export const effortOf = (preset: SuggestPreset, efforts: Models) => {
   const effort = SUGGEST_PRESETS[preset].effort;
   return effort ? (efforts[preset] ?? effort.default) : "";
 };
@@ -100,12 +102,17 @@ export function effortArg(preset: SuggestPreset, level: string) {
 }
 
 /** The command as run: a preset's with its lean (`reads`: a guided review's), model and effort flags; a custom one carries its own. */
-export function commandLine(command: string, models: Partial<Record<SuggestPreset, string>>, efforts: Partial<Record<SuggestPreset, string>>, reads = false, lean = true) {
+export function commandLine(command: string, models: Models, efforts: Models, reads = false, lean = true) {
   const preset = presetOf(command);
   if (!preset) return command;
   const model = modelOf(preset, models);
   const effort = effortOf(preset, efforts);
   return [command.trim(), lean && leanFlags(preset, reads), model && `${SUGGEST_PRESETS[preset].modelFlag} ${model}`, effort && effortArg(preset, effort)].filter(Boolean).join(" ");
+}
+
+/** What a guided review runs: its own command, models and efforts, or Commit Messages' where it has none. */
+export function reviewAgent(s: { suggestCommand: string; suggestModels: Models; suggestEfforts: Models; reviewCommand: string | null; reviewModels: Models; reviewEfforts: Models }) {
+  return { command: s.reviewCommand ?? s.suggestCommand, models: { ...s.suggestModels, ...s.reviewModels }, efforts: { ...s.suggestEfforts, ...s.reviewEfforts } };
 }
 
 /**
@@ -116,8 +123,8 @@ export function commandLine(command: string, models: Partial<Record<SuggestPrese
  */
 export async function withLeanFallback<T>(
   command: string,
-  models: Partial<Record<SuggestPreset, string>>,
-  efforts: Partial<Record<SuggestPreset, string>>,
+  models: Models,
+  efforts: Models,
   reads: boolean,
   ask: (line: string, lean: boolean) => Promise<T>,
 ): Promise<{ value: T; old: boolean }> {
