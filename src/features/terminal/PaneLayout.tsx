@@ -42,14 +42,26 @@ type PaneInfo = TerminalGroup["panes"][number];
 export function LayoutView({ group, node, focused, dim, path = [] }: { group: TerminalGroup; node: Layout; focused: number; dim: number; path?: number[] }) {
   const id = (i: number) => `pane-${[...path, i].join("-")}`;
   const groupRef = useGroupRef();
+  const box = useRef<HTMLDivElement>(null);
   const sizes = typeof node === "number" ? "" : node.sizes.join();
   // Sizes set from outside (equalized): the group was laid out from them only as it mounted. A drag's
-  // own sizes are already what it shows.
+  // own sizes are already what it shows. With no size (the panel hidden), once it has one again.
   useLayoutEffect(() => {
     const g = groupRef.current;
-    if (!g || typeof node === "number") return;
-    const now = g.getLayout();
-    if (node.sizes.some((s, i) => Math.abs((now[id(i)] ?? s) - s) > 0.1)) g.setLayout(Object.fromEntries(node.sizes.map((s, i) => [id(i), s])));
+    const el = box.current;
+    if (!g || !el || typeof node === "number") return;
+    const apply = () => {
+      const now = g.getLayout();
+      if (node.sizes.some((s, i) => Math.abs((now[id(i)] ?? s) - s) > 0.1)) g.setLayout(Object.fromEntries(node.sizes.map((s, i) => [id(i), s])));
+    };
+    if (el.offsetWidth && el.offsetHeight) return apply();
+    const sized = new ResizeObserver(() => {
+      if (!el.offsetWidth || !el.offsetHeight) return;
+      sized.disconnect();
+      apply();
+    });
+    sized.observe(el);
+    return () => sized.disconnect();
   }, [sizes]);
   if (typeof node === "number") {
     // A pane in a split gets a header, as in cmux: what runs in each, and which one has the keys.
@@ -60,6 +72,7 @@ export function LayoutView({ group, node, focused, dim, path = [] }: { group: Te
   return (
     <ResizablePanelGroup
       groupRef={groupRef}
+      elementRef={box}
       orientation={row ? "horizontal" : "vertical"}
       defaultLayout={Object.fromEntries(node.sizes.map((size, i) => [id(i), size]))}
       onLayoutChanged={(layout, { isUserInteraction }) => isUserInteraction && resizeSplit(group.id, path, node.children.map((_, i) => layout[id(i)]))}
