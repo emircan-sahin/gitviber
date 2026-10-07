@@ -9,6 +9,7 @@ import { openOnGitHub } from "@/lib/github/url";
 import { copyText } from "@/lib/app/clipboard";
 import { CopyLinkButton } from "@/features/github/shared/LinkMenu";
 import { SignatureBadge, TrailerChips, useCommitDetails } from "@/features/history/commitDetails";
+import { CommitChecks } from "./CommitChecks";
 
 const Link = markdownLink(openOnGitHub);
 
@@ -32,7 +33,7 @@ export function CommitBar({ commit, url, web }: { commit: import("@/lib/api").Co
   const details = useCommitDetails(commit.sha);
   const repo = url ? repoOfCommitUrl(url) : web;
   return (
-    <div className="shrink-0 border-b border-border bg-panel px-3 py-2">
+    <div className="@container shrink-0 border-b border-border bg-panel px-3 py-2">
       <div className="flex items-center gap-2">
         <GitCommitHorizontal className="size-3.5 shrink-0 text-primary" />
         <span className="truncate text-[12.5px] font-semibold select-text">
@@ -52,6 +53,7 @@ export function CommitBar({ commit, url, web }: { commit: import("@/lib/api").Co
               </span>
             </>
           )}
+          {url && <CommitChecks commit={commit} url={url} web={web} />}
           {details && <SignatureBadge details={details} />}
           <button className="rounded-sm bg-elevated px-1.5 py-px font-mono text-[11px] hover:text-foreground focus-visible:text-foreground" onClick={() => copyText(commit.sha, "Commit SHA copied")}>
             {commit.shortSha}
