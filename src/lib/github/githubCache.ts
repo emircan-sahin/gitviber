@@ -23,17 +23,25 @@ const EMPTY: Entry = { at: 0 };
 
 let entries = new Map<string, Entry>();
 const listeners = new Set<() => void>();
-/** Bumped on every write, for views that read across entries (useGitHubCacheVersion). */
+/** Bumped when an answer changes, for views that read across entries (useGitHubCacheVersion). */
 let version = 0;
 
 function put(map: Map<string, Entry>, key: string, e: Entry) {
   // A reply that lands after a reset belongs to the previous repo.
   if (map !== entries) return;
+  const old = map.get(key);
+  // A recheck that brings the same answer (a 304, mostly) keeps the old copy: what reads it, or
+  // every entry (the workspace's tabs), doesn't re-render every half minute for nothing.
+  if (old?.data !== undefined && e.data !== old.data && JSON.stringify(e.data) === JSON.stringify(old.data)) e = { ...e, data: old.data };
   map.delete(key);
   map.set(key, e);
+  let changed = e.data !== old?.data || e.error !== old?.error;
   // Maps iterate in insertion order and a write re-inserts, so the first key is the stalest.
-  if (map.size > MAX_ENTRIES) map.delete(map.keys().next().value!);
-  version++;
+  if (map.size > MAX_ENTRIES) {
+    map.delete(map.keys().next().value!);
+    changed = true;
+  }
+  if (changed) version++;
   listeners.forEach((l) => l());
 }
 
