@@ -1,13 +1,14 @@
 import { open as pickFolder } from "@tauri-apps/plugin-dialog";
 import { ChevronDown, Columns2, FolderGit2, FolderOpen, History, Maximize2, Minimize2, Plus, Rows2, Trash2, ZoomIn, ZoomOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tip } from "@/components/ui/tooltip";
 import { api, type Worktree } from "@/lib/api";
 import { COMMANDS, commandIn, runCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { stepTerminalFont, useSettings } from "@/lib/settings";
 import { focusMovedTab, focusTab, tabMove } from "@/lib/ui/useListNav";
+import { useTabStrip } from "@/lib/ui/useTabStrip";
 import { focusedPanel, focusPanel } from "@/lib/ui/panels";
 import {
   activateGroup,
@@ -172,8 +173,8 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
     } else return;
     e.preventDefault();
   };
+  const { ref: tablist, onWheel } = useTabStrip<HTMLDivElement>(active);
   // ⌘1–⌘9 or the next tab, pressed on the tabs: focus goes to the tab they opened.
-  const tablist = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     if (tablist.current?.contains(document.activeElement)) tablist.current.querySelector<HTMLElement>('[aria-selected="true"]')?.focus();
   }, [active]);
@@ -181,7 +182,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
   return (
     <div className="flex h-full flex-col bg-background" onKeyDown={onKeyDown}>
       <div className="flex h-9 shrink-0 items-stretch border-b border-border bg-panel">
-        <div ref={tablist} role="tablist" aria-label="Terminals" onKeyDown={onTabKey} data-scrollbar="none" className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
+        <div ref={tablist} role="tablist" aria-label="Terminals" onKeyDown={onTabKey} onWheel={onWheel} data-scrollbar="none" className="flex min-w-0 flex-1 items-stretch overflow-x-auto overflow-y-hidden">
           {groups.map((g) => (
             <GroupTab key={g.id} group={g} active={g.id === active} here={g.panes[0].cwd === root} branch={branchOf(g)} hue={hueOf(g)} alone={groups.length === 1} />
           ))}

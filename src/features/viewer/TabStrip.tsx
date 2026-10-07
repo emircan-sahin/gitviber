@@ -6,6 +6,7 @@ import { noteName } from "@/lib/obsidian/links";
 import { isFileSelection } from "./diffPairs";
 import { useShortcut } from "@/lib/commands/keybindings";
 import { focusMovedTab, focusTab, isMenuKey, openRowMenu, tabMove } from "@/lib/ui/useListNav";
+import { useTabStrip } from "@/lib/ui/useTabStrip";
 import { cn } from "@/lib/utils";
 import { useEdited } from "@/lib/editor/edits";
 import { basename, distinctFolders } from "@/lib/path";
@@ -39,7 +40,7 @@ function tabLabel(sel: Selection) {
  * preview tab, ⌫ closes, ⌥←/⌥→ reorder (tab.moveLeft / tab.moveRight), ⇧F10 opens the tab's menu.
  */
 export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin, onMoveTab, onShowHistory, onRevealInExplorer }: Props) {
-  const strip = useRef<HTMLDivElement>(null);
+  const { ref: strip, onWheel } = useTabStrip<HTMLDivElement>(active?.key);
   // Set when a tab holding focus closes: focus goes on to the tab that opens in its place.
   const lostFocus = useRef(false);
   useLayoutEffect(() => {
@@ -81,6 +82,7 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
       role="tablist"
       aria-label="Open tabs"
       onKeyDown={onKeyDown}
+      onWheel={onWheel}
       data-tauri-drag-region
       data-scrollbar="none"
       className="flex h-9 shrink-0 items-stretch overflow-x-auto overflow-y-hidden border-b border-border bg-panel"
