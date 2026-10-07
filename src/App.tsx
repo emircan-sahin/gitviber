@@ -93,7 +93,8 @@ export function App() {
     } catch (e) {
       if (!latest()) return;
       if (quiet) return false;
-      if (e === NOT_A_REPO && (await initAsked(target))) return openRepo(target, quiet, replacing);
+      // Cancel leaves the window as it was, with no error after it; a failed init said why itself.
+      if (e === NOT_A_REPO) return (await initAsked(target)) ? openRepo(target, quiet, replacing) : false;
       gitFailed("Could not open repository", e, { "safe-directory": [{ label: "Trust this folder", run: () => void api.trustFolder(target).then(() => openRepo(target, quiet, replacing), failed("Could not trust the folder")) }] });
       return false;
     }
