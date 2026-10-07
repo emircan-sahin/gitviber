@@ -1,6 +1,7 @@
 import type { Terminal } from "@xterm/xterm";
 import { appRunsFromTerminal, appTakesFromTerminal, type CommandId, commandIn } from "../commands/keybindings";
 import { getSettings } from "../settings";
+import { untilReleased } from "../ui/held";
 import { IS_LINUX, IS_MAC } from "../platform";
 import { pasteInto } from "./pasteInput";
 import { hintKey } from "./hints";
@@ -9,9 +10,10 @@ import { copyPaneSelection, type Pane, TERMINAL_COMMANDS } from "./terminals";
 // A pane's keys: the app's, the line editing and scrolling done here, and the shell's.
 // Imported through terminals.ts only: the two import each other.
 
-/** Whether the left ⌥ is held, for the left-only Meta setting. Its release may go to another window. */
+/** Whether the left ⌥ is held, for the left-only Meta setting. */
 let leftOptionDown = false;
-window.addEventListener("blur", () => (leftOptionDown = false));
+// Its release may go elsewhere (another window, Mission Control), and the right ⌥ then typed as Meta.
+let stopWatchingOption = () => {};
 
 /**
  * macOS line editing, as in VS Code's terminal. xterm.js sends ⌥← / ⌥→ / ⌥⌦ as
@@ -64,8 +66,11 @@ export function paneKeys(p: Pane) {
     // xterm's Meta ⌥ can't tell left from right: for the left one only, it's set as a key is typed
     // with ⌥ (xterm reads it after this), and only when the side changed, as a change redraws.
     if (getSettings().optionAsMeta === "left") {
-      if (e.code === "AltLeft") leftOptionDown = e.type === "keydown";
-      else if (e.altKey && e.key !== "Alt" && term.options.macOptionIsMeta !== leftOptionDown) term.options.macOptionIsMeta = leftOptionDown;
+      if (e.code === "AltLeft") {
+        stopWatchingOption();
+        leftOptionDown = e.type === "keydown";
+        if (leftOptionDown) stopWatchingOption = untilReleased("Alt", () => (leftOptionDown = false));
+      } else if (e.altKey && e.key !== "Alt" && term.options.macOptionIsMeta !== leftOptionDown) term.options.macOptionIsMeta = leftOptionDown;
     }
     // Linux terminals copy and paste with Ctrl+Shift+C/V: Ctrl+C and Ctrl+V belong to the shell.
     // The letter as typed (Dvorak's C isn't on the C key), or the key's place on a non-Latin layout.
