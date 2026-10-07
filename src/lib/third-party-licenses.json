@@ -7444,6 +7444,18 @@
    ]
   },
   {
+   "name": "tauri-plugin-window-state",
+   "version": "2.4.1",
+   "license": "Apache-2.0 OR MIT",
+   "url": "https://github.com/tauri-apps/plugins-workspace",
+   "source": "cargo",
+   "texts": [
+    16,
+    14,
+    15
+   ]
+  },
+  {
    "name": "tauri-runtime",
    "version": "2.11.3",
    "license": "Apache-2.0 OR MIT",

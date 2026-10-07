@@ -183,6 +183,8 @@ export interface Settings {
   shellIntegration: boolean;
   /** A restored terminal an agent was running in: its resume command typed at the prompt, run, or neither (agentState.ts). */
   resumeAgents: ResumeMode;
+  /** ⌘Q and closing the window ask first while an agent is working, a command runs, or a push or pull is on its way (lib/app/quit). */
+  askBeforeQuit: boolean;
   /** How far a split tab's panes other than the focused one fade (one of DIM_LEVELS). */
   terminalInactiveDim: number;
   terminalFont: TerminalFont;
@@ -291,6 +293,7 @@ const DEFAULTS: Settings = {
   optionAsMeta: "off",
   shellIntegration: true,
   resumeAgents: "type",
+  askBeforeQuit: true,
   terminalInactiveDim: 20,
   terminalFont: "Editor",
   customTerminalFont: "",

@@ -3,7 +3,7 @@ import "@fontsource-variable/geist-mono";
 import "@fontsource-variable/jetbrains-mono";
 import "./index.css";
 import { StrictMode } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { CrashScreen } from "./components/CrashScreen";
@@ -31,7 +31,7 @@ createRoot(document.getElementById("root")!, {
 // The window starts hidden (tauri.conf.json) so a light theme doesn't flash the native dark
 // background first; settings.ts has applied the theme by now. lib.rs shows it anyway after a delay.
 try {
-  getCurrentWindow().show().catch(() => {});
+  invoke("show_window").catch(() => {});
 } catch {
   // Not in a Tauri window (the browser-only dev fixture).
 }

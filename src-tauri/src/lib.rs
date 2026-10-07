@@ -33,6 +33,7 @@ mod patch;
 mod process;
 mod procinfo;
 mod pty;
+mod quit;
 mod revert;
 mod rewrite;
 #[cfg(test)]
@@ -49,19 +50,30 @@ mod trash;
 mod updates;
 mod vibrancy;
 mod watch;
+#[cfg(desktop)]
+mod window_state;
 
 use state::AppState;
 use tauri::{Emitter, Manager};
 
 /// The page shows its window once its theme is applied (main.tsx, settings.tsx); if it never gets that far, a
-/// visible window beats one that seems not to open.
+/// visible window beats one that seems not to open. Called once the window is built, hidden.
 fn show_eventually(window: tauri::WebviewWindow) {
+    #[cfg(desktop)]
+    window_state::restored(&window);
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(3));
         if !window.is_visible().unwrap_or(true) {
-            let _ = window.show();
+            show(&window);
         }
     });
+}
+
+/// Shows a window its page kept hidden until the theme applied.
+fn show(window: &tauri::WebviewWindow) {
+    let _ = window.show();
+    #[cfg(desktop)]
+    window_state::shown(window);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -89,6 +101,10 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init());
     #[cfg(desktop)]
+    {
+        builder = builder.plugin(window_state::plugin());
+    }
+    #[cfg(desktop)]
     if updates::enabled(context.config()) {
         builder = builder
             .plugin(tauri_plugin_updater::Builder::new().build())
@@ -98,7 +114,7 @@ pub fn run() {
         .menu(menu::build)
         .on_menu_event(|app, event| {
             if event.id() == menu::QUIT {
-                return menu::quit(app);
+                return quit::request(app);
             }
             let _ = app.emit_to(
                 settings_window::menu_target(app),
@@ -112,9 +128,9 @@ pub fn run() {
                 settings_window::on_event(window, event);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" && !menu::quitting() {
+                if window.label() == "main" && !quit::quitting() {
                     api.prevent_close();
-                    menu::quit(tauri::Manager::app_handle(window));
+                    quit::request(tauri::Manager::app_handle(window));
                 }
             }
         })
@@ -125,6 +141,7 @@ pub fn run() {
                     webview.state::<AppState>().ptys.kill_all();
                     webview.state::<AppState>().agents.forget_all();
                     askpass::decline_all();
+                    quit::reset();
                 }
                 if let Some(window) = webview.get_webview_window(webview.label()) {
                     vibrancy::reset(&window);
@@ -394,6 +411,9 @@ pub fn run() {
             commands::app::agent_conversations,
             commands::app::folders_left,
             commands::app::quit,
+            commands::app::quit_answer,
+            commands::app::show_window,
+            commands::app::open_dropped,
             commands::app::update_mode,
             commands::app::take_opened,
             commands::app::install_cli,

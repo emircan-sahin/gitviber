@@ -70,7 +70,7 @@ export function App() {
    * `replacing`: a saved project whose folder moved; this repo takes its place in the list. Its root
    * once open; false: it failed; undefined: nothing to do (no folder picked, or a later open took over).
    */
-  const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string): Promise<string | false | undefined> => {
+  const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string, offerInit = true): Promise<string | false | undefined> => {
     const target = path ?? (await open({ directory: true, title: "Open a git repository" }));
     if (typeof target !== "string") return;
     // Before the workspace shows: its first GitHub calls go out as the project's account.
@@ -94,6 +94,10 @@ export function App() {
       if (!latest()) return;
       if (quiet) return false;
       // Cancel leaves the window as it was, with no error after it; a failed init said why itself.
+      if (e === NOT_A_REPO && !offerInit) {
+        toast("info", `${folderName(target)} isn't in a git repository`);
+        return false;
+      }
       if (e === NOT_A_REPO) return (await initAsked(target)) ? openRepo(target, quiet, replacing) : false;
       gitFailed("Could not open repository", e, { "safe-directory": [{ label: "Trust this folder", run: () => void api.trustFolder(target).then(() => openRepo(target, quiet, replacing), failed("Could not trust the folder")) }] });
       return false;
@@ -106,8 +110,10 @@ export function App() {
     for (const path of missing) toast("error", "No such file or folder", path);
     const asked = targets.at(-1);
     if (!asked) return false;
-    const root = await openRepo(asked.folder);
+    // A file's folder isn't one to make a repository of: a file dropped from the desktop would ask to.
+    const root = await openRepo(asked.folder, false, undefined, !asked.file);
     if (root && asked.file) openTargetIn(root, { path: asked.file, line: asked.line ?? undefined, column: asked.column ?? undefined });
+    if (root && targets.length > 1) toast("info", `Opened ${folderName(asked.file ?? asked.folder)}`, `The last of the ${targets.length} given: one opens at a time.`);
     return root !== false;
   }, [openRepo]);
 

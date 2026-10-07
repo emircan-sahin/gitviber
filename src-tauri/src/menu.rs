@@ -3,37 +3,13 @@
 //! applies right now (src/lib/commands/menu.ts), so the menu follows the user's key bindings.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::menu::{
     CheckMenuItem, IsMenuItem, Menu, MenuItem, MenuItemKind, PredefinedMenuItem, Submenu,
 };
-use tauri::{AppHandle, Emitter, Manager, Wry};
+use tauri::{AppHandle, Manager, Wry};
 
 pub const QUIT: &str = "app.quit";
-
-static QUITTING: AtomicBool = AtomicBool::new(false);
-
-/// Whether `quit` already asked the page to save: the window may close then.
-pub fn quitting() -> bool {
-    QUITTING.load(Ordering::SeqCst)
-}
-
-/// Quit from the menu. The page isn't unloaded on the way out, so what it saves on pagehide (the
-/// terminals' output, unsaved edits) was lost: it's told first, and ends the app itself once
-/// saved (commands::app::quit). A page that doesn't answer still lets the app go after a moment.
-pub fn quit(app: &AppHandle) {
-    if QUITTING.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    // The workspace's page only: the settings window's (lib/app/quit) would end the app before it saved.
-    let _ = app.emit_to("main", "quit", ());
-    let app = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        app.exit(0);
-    });
-}
 
 /// The items the page updates, by id.
 pub struct Handles {
@@ -145,7 +121,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &native(PredefinedMenuItem::hide_others)?,
             &native(PredefinedMenuItem::show_all)?,
             &sep()?,
-            // Not the predefined Quit, which ends the app at once: see quit().
+            // Not the predefined Quit, which ends the app at once: see quit.rs.
             &MenuItem::with_id(app, QUIT, "Quit GitViber", true, Some("CmdOrCtrl+Q"))?,
         ],
     )?;

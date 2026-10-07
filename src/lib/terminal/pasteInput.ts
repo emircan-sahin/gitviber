@@ -1,6 +1,7 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { errorMessage, pty } from "../api";
+import { api, errorMessage, pty } from "../api";
 import { ask } from "../app/ask";
+import { IN_SETTINGS_WINDOW } from "../app/settingsWindow";
 import { failed, toast } from "../app/toast";
 import { IS_WINDOWS } from "../platform";
 import { getSettings } from "../settings";
@@ -51,30 +52,43 @@ function pastePaths(p: Pane, paths: string[]) {
 }
 
 // Files dropped on a pane paste their paths into it (Tauri hands over the paths, the page only
-// their names). The pane under the pointer is outlined while they're dragged.
-let dropTarget: Pane | null = null;
-function paneAt(pos: { x: number; y: number }) {
+// their names). The pane under the pointer is outlined while they're dragged. Away from the panes
+// the window is: they open as `gitviber <path>` opens them (opened.rs), a folder as a project and
+// a file in its repository. Not in the settings window, nor under a dialog.
+type DropTarget = Pane | "window" | null;
+let dropTarget: DropTarget = null;
+function targetAt(pos: { x: number; y: number }): DropTarget {
   // Typed physical, but on macOS and Linux wry hands over window points unscaled (drag_drop.rs):
   // halved on Retina, the point landed in the sidebar. Page zoom (the UI scale) makes a CSS pixel
   // bigger than a point. Windows' pixels are physical, and Chromium's ratio includes the zoom.
   const scale = IS_WINDOWS ? devicePixelRatio : getSettings().uiScale;
   const el = document.elementFromPoint(pos.x / scale, pos.y / scale);
-  return el ? ([...panes.values()].find((p) => p.host.contains(el)) ?? null) : null;
+  const pane = el && [...panes.values()].find((p) => p.host.contains(el));
+  return pane || (IN_SETTINGS_WINDOW || document.querySelector('[role="dialog"], [role="alertdialog"]') ? null : "window");
 }
-function markDropTarget(p: Pane | null) {
-  if (p === dropTarget) return;
-  dropTarget?.host.classList.remove("gv-drop-target");
-  p?.host.classList.add("gv-drop-target");
-  dropTarget = p;
+function outline(t: DropTarget, on: boolean) {
+  if (t === "window") document.body.classList.toggle("gv-drop-window", on);
+  else t?.host.classList.toggle("gv-drop-target", on);
 }
+function markDropTarget(t: DropTarget) {
+  if (t === dropTarget) return;
+  outline(dropTarget, false);
+  outline(t, true);
+  dropTarget = t;
+}
+// Tauri reports drags from inside the page too (text in the editor), without paths: no outline.
+let carriesFiles = false;
 const dropListener = getCurrentWebview().onDragDropEvent(async ({ payload }) => {
   if (payload.type === "leave") return markDropTarget(null);
-  const p = paneAt(payload.position);
-  if (payload.type !== "drop") return markDropTarget(p);
+  if (payload.type !== "over") carriesFiles = payload.paths.length > 0;
+  if (!carriesFiles) return markDropTarget(null);
+  const t = targetAt(payload.position);
+  if (payload.type !== "drop") return markDropTarget(t);
   markDropTarget(null);
-  if (!p) return;
-  pastePaths(p, await pty.keepDropped(payload.paths).catch(() => payload.paths));
-  p.term.focus();
+  if (t === "window") return void api.openDropped(payload.paths).catch(failed("Could not open what was dropped"));
+  if (!t) return;
+  pastePaths(t, await pty.keepDropped(payload.paths).catch(() => payload.paths));
+  t.term.focus();
 });
 dropListener.catch(() => {});
 // A hot reload re-runs this module: the old listener goes, or each drop would paste twice.

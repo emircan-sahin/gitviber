@@ -3,10 +3,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useMemo, useSyncExternalStore } from "react";
 import { pty } from "../api";
 import { enableNotifications } from "../app/notify";
+import { stoppedByQuit } from "../app/quit";
 import { toast } from "../app/toast";
 import { getSettings } from "../settings";
 import { readJson, writeJson } from "../storage";
-import { type AgentEntry, agentsWaiting, type AgentState, byUrgency, nextAgent, type PaneAgent } from "./agentState";
+import { type AgentEntry, agentsWaiting, type AgentState, byUrgency, nextAgent, type PaneAgent, quitStops } from "./agentState";
 import { type Look, paneLook, shownState } from "./agentLook";
 import { lookedAt, needsYou } from "./needsYou";
 import { panes, type Pane, state, subscribe, update } from "./terminals";
@@ -48,6 +49,13 @@ export async function refreshAgents(only?: Pane[]) {
   if (!running) return;
   for (const p of list) if (panes.has(p.id) && p.pty !== null) apply(p, running[p.pty] ?? null);
 }
+
+// Asked pane by pane: an agent done with its turn runs in the foreground too, and isn't asked about.
+stoppedByQuit(async () => {
+  const list = [...panes.values()].filter((p) => p.pty !== null);
+  const busy = await Promise.all(list.map((p) => pty.busy([p.pty!]).catch(() => 0)));
+  return quitStops(list.map((p, i) => ({ busy: busy[i] > 0, agent: info(p)?.agent })));
+});
 
 /** The shell prompts again: the agent there exited, and isn't one to resume. */
 export function agentPrompted(p: Pane) {

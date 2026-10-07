@@ -186,10 +186,29 @@ pub fn folders_left(paths: Vec<String>) -> Vec<bool> {
     paths.iter().map(|p| Path::new(p).is_dir()).collect()
 }
 
-/// The page saved what it keeps on the way out (menu::quit).
+/// The page saved what it keeps on the way out (quit.rs).
 #[tauri::command]
 pub fn quit(app: AppHandle) {
     app.exit(0);
+}
+
+/// Files and folders dropped on the window away from the terminal panes: opened as `gitviber
+/// <path>` opens them (lib/terminal/pasteInput).
+#[tauri::command]
+pub fn open_dropped(app: AppHandle, paths: Vec<String>) {
+    crate::opened::push(&app, paths.into_iter().map(Into::into).collect());
+}
+
+/// The page applied its theme: its window shows (lib.rs).
+#[tauri::command]
+pub fn show_window(window: tauri::WebviewWindow) {
+    crate::show(&window);
+}
+
+/// Whether the page lets a ⌘Q go, asks about it, or keeps the app (quit.rs).
+#[tauri::command]
+pub fn quit_answer(app: AppHandle, answer: crate::quit::Answer) {
+    crate::quit::answer(&app, answer);
 }
 
 /// See updates.rs.

@@ -1,5 +1,6 @@
 // A pane's coding agent (agents.rs): what it is, how to resume it, and what a change of its state
 // is worth telling the user. Pure, so it runs under `node --test`.
+import { plural } from "../format.ts";
 import { isNews, lookOf, LOOKS } from "./agentLook.ts";
 
 /** "working" is Claude Code's busy; "idle" covers its shell (the turn is over, a background shell runs on); "waiting" is its asking. */
@@ -94,3 +95,22 @@ export const byUrgency = (a: AgentEntry, b: AgentEntry) => rank(a) - rank(b) || 
 
 /** How many agents wait for the user, for the Dock badge: the ones whose dot is a question or news. */
 export const agentsWaiting = (list: AgentEntry[]) => list.filter((e) => isNews(lookOf(e.state, e.unseen))).length;
+
+/**
+ * What quitting stops that's worth asking about, from each pane's `busy` (a program in the
+ * foreground, pty.busy) and agent: an agent mid-turn, or a command. Not an agent done with its
+ * turn, which the next run resumes; one that doesn't say its state counts as a command.
+ */
+export function quitStops(panes: { busy: boolean; agent?: PaneAgent }[]): string[] {
+  let agents = 0;
+  let commands = 0;
+  for (const { busy, agent } of panes) {
+    if (!busy || agent?.state === "idle") continue;
+    if (agent?.state) agents++;
+    else commands++;
+  }
+  const stops: string[] = [];
+  if (agents) stops.push(`${plural(agents, "agent")} working`);
+  if (commands) stops.push(`${plural(commands, "command")} running`);
+  return stops;
+}

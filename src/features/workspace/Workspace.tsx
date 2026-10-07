@@ -1,5 +1,6 @@
 import { ChevronsDownUp, ClipboardPaste, GitCompareArrows, Search } from "lucide-react";
 import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { KeptPanel } from "@/components/KeptPanel";
@@ -25,6 +26,7 @@ import { REVEAL_FAILED } from "@/lib/platform";
 import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
 import { revealPath } from "@/lib/app/openIn";
+import { windowTitle } from "@/lib/app/windowTitle";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
 import { ApplyPatchDialog, openApplyPatch } from "@/features/changes/ApplyPatchDialog";
 import { focusCommitMessage } from "@/features/changes/CommitBox";
@@ -97,6 +99,14 @@ function useFreshCaches(root: string) {
   openNotes(root);
 }
 
+function setWindowTitle(title: string) {
+  try {
+    void getCurrentWindow().setTitle(title).catch(() => {});
+  } catch {
+    // Not in Tauri (the browser-only dev fixture).
+  }
+}
+
 export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReorderRepos, onLocateRepo, onRepoGone }: Props) {
   useFreshCaches(root);
   const repo = useRepo(root, () => onRepoGone({ root, main }));
@@ -109,6 +119,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     if (origin !== undefined) setGitHubOrigin(origin);
     if (web !== undefined) setWebUrl(web);
   }, [origin, web]);
+  const title = windowTitle(root, status?.branch ?? null, status?.head ?? null);
+  useEffect(() => setWindowTitle(title), [title]);
+  useEffect(() => () => setWindowTitle(windowTitle(null, null, null)), []);
   const s = useSettings();
   const [saved] = useState(() => loadWorkspace(root));
   const [listTab, setListTab] = useState<ListTab>(() => LIST_TABS.find((t) => t === saved?.listTab) ?? "changes");

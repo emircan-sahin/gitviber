@@ -2,13 +2,11 @@ import { getVersion } from "@tauri-apps/api/app";
 import { ask } from "./ask";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { api, errorMessage, pty } from "../api";
-import { plural } from "../format";
-import { netActivity } from "../repo/netActivity";
+import { api, errorMessage } from "../api";
 import { getSettings } from "../settings";
 import { createStore } from "../store";
 import { logError } from "./errorLog";
-import { saveNow } from "./quit";
+import { saveNow, stoppedByLeaving } from "./quit";
 import { toast } from "./toast";
 import { checked, downloaded, due, INITIAL, isExpectedFailure, percent, type UpdateState } from "./updateState";
 
@@ -126,9 +124,7 @@ export async function restartToUpdate() {
 }
 
 async function restartAsked() {
-  const net = netActivity();
-  const terminals = await pty.busy().catch(() => 0);
-  const running = [net?.label, terminals ? `${plural(terminals, "terminal")} running a command` : null].filter(Boolean);
+  const running = await stoppedByLeaving();
   if (!running.length) return true;
   return ask(`Restarting GitViber stops what's still running: ${running.join(", ")}.`, { title: "Restart to update", kind: "warning", okLabel: "Restart" });
 }

@@ -121,6 +121,12 @@ export function TerminalSection() {
             variant="field"
           />
         </Field>
+        <Field
+          label="Ask before quitting while agents are working"
+          hint="Quitting GitViber or closing its window asks first while an agent is working or a command runs in a terminal, or a push, pull or commit is on its way. An agent done with its turn is resumed on the next run, so it isn't asked about. Quitting again while it asks quits at once."
+        >
+          <Switch checked={s.askBeforeQuit} onChange={(v) => updateSettings({ askBeforeQuit: v })} />
+        </Field>
         {IS_MAC && (
           <Field
             label="Option as Meta"
