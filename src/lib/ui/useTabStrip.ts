@@ -1,9 +1,9 @@
 import { useLayoutEffect, useRef, type WheelEvent } from "react";
 
 /**
- * A row of tabs that scrolls sideways, with no bar (`data-scrollbar="none"`), when it doesn't fit.
- * A mouse wheel scrolls it too, where only a trackpad would, and the tab on show (aria-selected or
- * aria-pressed) is scrolled into view as `selected` changes.
+ * A row of tabs that scrolls sideways, with no bar (`data-scrollbar="none"`), when it doesn't fit,
+ * a mouse wheel too, and keeps the tab on show (aria-selected or aria-pressed) in view as
+ * `selected` changes.
  */
 export function useTabStrip<T extends HTMLElement>(selected: unknown) {
   const ref = useRef<T>(null);
@@ -17,8 +17,10 @@ export function useTabStrip<T extends HTMLElement>(selected: unknown) {
     if (t.left < s.left) strip.scrollLeft -= s.left - t.left;
     else if (t.right > s.right) strip.scrollLeft += Math.min(t.right - s.right, t.left - s.left);
   }, [selected]);
-  const onWheel = (e: WheelEvent<T>) => {
-    if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
-  };
-  return { ref, onWheel };
+  return { ref, onWheel: scrollSideways };
+}
+
+/** A row that scrolls sideways: a mouse wheel scrolls it too, where only a trackpad would. */
+export function scrollSideways(e: WheelEvent<HTMLElement>) {
+  if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
 }
