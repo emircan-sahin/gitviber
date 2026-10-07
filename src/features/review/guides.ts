@@ -1,13 +1,13 @@
 import { useMemo } from "react";
 import { api, errorMessage, type GuideAgent, type Guided, type GuideTarget, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
-import { commandLine, presetOf, programOf, runDetails, withLeanFallback } from "@/lib/git/suggest";
+import { presetOf, programOf, reviewAgent, runDetails, withLeanFallback } from "@/lib/git/suggest";
 import { type GuideSelection, type Selection, selectionPath } from "@/lib/repo/selection";
-import { GUIDE_PROMPT, GUIDE_SCHEMA } from "@/lib/review/guide";
+import { GUIDE_SCHEMA, guidePrompt } from "@/lib/review/guide";
 import { getSettings } from "@/lib/settings";
 import { isRecord, putRecent, readJson } from "@/lib/storage";
 import { createStore } from "@/lib/store";
-import { toSuggestSettings, warnOldClaude } from "@/features/settings/SettingsDialog";
+import { toReviewSettings, warnOldClaude } from "@/features/settings/SettingsDialog";
 
 const KEY = "gitviber.guides";
 // localStorage is one quota for the whole app: a dozen guides of the usual 5-30 KB, and one
@@ -100,28 +100,33 @@ export function useGuide(id: string) {
  * starting this one stops one still running, and says so.
  */
 export async function generateGuide(id: string, sel: GuideSelection) {
-  const { suggestCommand, suggestModels, suggestEfforts } = getSettings();
-  const program = programOf(suggestCommand);
+  const settings = getSettings();
+  const { command, models, efforts } = reviewAgent(settings);
+  const prompt = guidePrompt(settings.reviewLanguage);
+  const program = programOf(command);
+  // The line that answered, for the model and effort it names.
+  let ran = "";
   const token = {};
   latest.set(id, token);
   const set = (run: Run | null) => latest.get(id) === token && setRun(id, run);
   const fail = (title: string, why: string) => {
     if (latest.get(id) !== token) return;
     setRun(id, { error: why });
-    toast("error", title, why, toSuggestSettings);
+    toast("error", title, why, toReviewSettings);
   };
   if (active) toast("info", "Stopped a guided review", `${selectionPath(active.sel)} was still being written; one is written at a time.`);
   active = { sel, token };
   set("running");
   try {
-    const { value: guided, old } = await withLeanFallback(suggestCommand, suggestModels, suggestEfforts, true, (line, lean) =>
+    const { value: guided, old } = await withLeanFallback(command, models, efforts, true, (line, lean) => {
+      ran = line;
       // A second try started after another guide would stop that one.
-      !lean && active?.token !== token ? Promise.reject(SUGGEST_CANCELLED) : api.suggestGuide(line, GUIDE_PROMPT, guideTarget(sel), guideAgent(suggestCommand, lean)),
-    );
+      return !lean && active?.token !== token ? Promise.reject(SUGGEST_CANCELLED) : api.suggestGuide(line, prompt, guideTarget(sel), guideAgent(command, lean));
+    });
     if (old) warnOldClaude();
     if (!guided.text.trim()) fail("No guided review written", `${program} printed nothing.`);
     else if (latest.get(id) === token) {
-      save(id, { ...guided, program, details: runDetails(commandLine(suggestCommand, suggestModels, suggestEfforts)), at: Date.now(), done: [] });
+      save(id, { ...guided, program, details: runDetails(ran), at: Date.now(), done: [] });
       set(null);
     }
   } catch (e) {

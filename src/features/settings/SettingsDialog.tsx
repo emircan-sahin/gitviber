@@ -25,6 +25,7 @@ export function openSettings(section?: Section) {
 
 /** A suggestion's error toast's way out: a missing CLI or a stale model id is fixed there. */
 export const toSuggestSettings: ToastAction = { label: "Open Settings", run: () => openSettings("commit") };
+export const toReviewSettings: ToastAction = { label: "Open Settings", run: () => openSettings("review") };
 
 let toldOld = false;
 /** After a suggestion that worked only without the flags for a faster run: once until GitViber quits. */
