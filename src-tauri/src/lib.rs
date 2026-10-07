@@ -89,6 +89,18 @@ pub fn run() {
         .plugin(navigation::guard(dev_url))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init());
+    // Each window opens where and as large as it was left; a position on a monitor that's gone
+    // is left to the OS. Never its visibility: the page shows the window once its theme applies.
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_window_state::StateFlags;
+        let flags = StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED;
+        builder = builder.plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(flags)
+                .build(),
+        );
+    }
     #[cfg(desktop)]
     if updates::enabled(context.config()) {
         builder = builder
