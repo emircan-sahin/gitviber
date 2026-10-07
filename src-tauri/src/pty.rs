@@ -4,6 +4,7 @@
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -170,6 +171,21 @@ fn start_dir(cwd: &Path) -> Option<PathBuf> {
         })
 }
 
+/// `path` with `dir` last, unless it's on it already: a `gitviber` of the user's own comes first.
+fn with_last(path: &OsStr, dir: &Path) -> OsString {
+    // An empty PATH splits into one empty entry, which would put the current folder on it.
+    if path.is_empty() {
+        return dir.into();
+    }
+    let mut dirs: Vec<PathBuf> = std::env::split_paths(path).collect();
+    if dirs.iter().any(|d| d == dir) {
+        return path.to_owned();
+    }
+    dirs.push(dir.to_owned());
+    // A folder with the separator in its name can't go on PATH.
+    std::env::join_paths(dirs).unwrap_or_else(|_| path.to_owned())
+}
+
 impl Ptys {
     /// Starts the user's login shell in `cwd`, with the shell integration's scripts from
     /// `integration` if given. `exit` gets how it ended once it's gone.
@@ -211,6 +227,13 @@ impl Ptys {
         cmd.env_clear();
         for (key, value) in crate::shell::clean_env() {
             cmd.env(key, value);
+        }
+        // `gitviber .` with nothing installed. The integration adds it again after the user's rc
+        // files, should one of them set PATH afresh.
+        if let Some(bin) = crate::cli::bin_dir() {
+            let path = with_last(cmd.get_env("PATH").unwrap_or_default(), &bin);
+            cmd.env("PATH", path);
+            cmd.env("GITVIBER_BIN_DIR", bin);
         }
         // Else portable-pty takes passwd's shell while the PATH probe took $SHELL (shell.rs).
         #[cfg(unix)]
@@ -354,7 +377,7 @@ impl Ptys {
 
 #[cfg(test)]
 mod tests {
-    use super::{input_bytes, start_dir, Flow, ACK_WAIT, HIGH_WATER, LOW_WATER};
+    use super::{input_bytes, start_dir, with_last, Flow, ACK_WAIT, HIGH_WATER, LOW_WATER};
     use std::io::Write;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -463,5 +486,17 @@ mod tests {
         assert_eq!(start_dir(&tmp), Some(tmp.clone()));
         let gone = tmp.join("gitviber-gone-worktree").join("sub");
         assert_eq!(start_dir(&gone), Some(tmp));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_command_folder_goes_last_on_path_and_only_once() {
+        let bin = std::path::Path::new("/Applications/GitViber.app/Contents/Resources/bin");
+        let path = with_last("/usr/bin:/bin".as_ref(), bin);
+        assert_eq!(path, *format!("/usr/bin:/bin:{}", bin.display()));
+        assert_eq!(with_last(&path, bin), path);
+        assert_eq!(with_last("".as_ref(), bin), bin.as_os_str());
+        // Can't be written on PATH; left off it.
+        assert_eq!(with_last("/usr/bin".as_ref(), "/a:b".as_ref()), *"/usr/bin");
     }
 }

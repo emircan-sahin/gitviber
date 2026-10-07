@@ -2,6 +2,8 @@
 //! Homebrew bin folder, never asking for a password (Homebrew's cask links it too); .deb and
 //! .rpm already put the binary on PATH, and an AppImage gets a small launcher in ~/.local/bin.
 
+use std::path::{Path, PathBuf};
+
 /// Where Homebrew puts commands (Apple silicon, then Intel), in order. Both are on a Homebrew
 /// user's PATH and theirs to write; nothing asks for an administrator's password.
 #[cfg(target_os = "macos")]
@@ -10,15 +12,9 @@ const BIN_DIRS: [&str; 2] = ["/opt/homebrew/bin", "/usr/local/bin"];
 /// Installs the command; returns where it is.
 #[cfg(target_os = "macos")]
 pub fn install() -> Result<String, String> {
-    use std::path::Path;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    // Contents/MacOS/gitviber → Contents/Resources/bin/gitviber (tauri.conf.json's macOS files).
-    let script = exe
-        .parent()
-        .and_then(Path::parent)
-        .map(|contents| contents.join("Resources/bin/gitviber"))
-        .filter(|p| p.is_file())
-        .ok_or("The command comes with the installed app, not a development build")?;
+    let script =
+        script(&exe).ok_or("The command comes with the installed app, not a development build")?;
     // Run from Downloads (macOS moves it to a random read-only place) or from the disk image, the
     // link would point somewhere gone by tomorrow.
     let place = script.to_string_lossy();
@@ -50,6 +46,25 @@ pub fn install() -> Result<String, String> {
         "No folder on your PATH takes it without a password. Add GitViber's to your shell \
          instead, e.g. in ~/.zprofile: export PATH=\"$PATH:{folder}\""
     ))
+}
+
+/// The folder of the bundled script, which the terminal's shells get on PATH (pty.rs); None in
+/// a development build, which has none. Never Contents/MacOS: its `gitviber` is the app itself.
+pub fn bin_dir() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    script(&std::env::current_exe().ok()?)?
+        .parent()
+        .map(Path::to_path_buf)
+}
+
+/// Contents/MacOS/gitviber → Contents/Resources/bin/gitviber (tauri.conf.json's macOS files).
+fn script(exe: &Path) -> Option<PathBuf> {
+    exe.parent()
+        .and_then(Path::parent)
+        .map(|contents| contents.join("Resources/bin/gitviber"))
+        .filter(|p| p.is_file())
 }
 
 #[cfg(target_os = "linux")]
@@ -91,4 +106,24 @@ pub fn install() -> Result<String, String> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn install() -> Result<String, String> {
     Err("Installing the command isn't supported on this platform yet".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::script;
+
+    #[test]
+    fn the_script_is_found_beside_the_bundles_executable_only() {
+        let dir = std::env::temp_dir().join(format!("gitviber-cli-{}", std::process::id()));
+        let exe = dir.join("GitViber.app/Contents/MacOS/gitviber");
+        std::fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        std::fs::write(&exe, "").unwrap();
+        // Nothing bundled, as in a development build.
+        assert_eq!(script(&exe), None);
+        let bundled = dir.join("GitViber.app/Contents/Resources/bin/gitviber");
+        std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, "").unwrap();
+        assert_eq!(script(&exe), Some(bundled));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
