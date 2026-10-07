@@ -270,7 +270,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
         </div>
       )}
       {naming && <NameDialog {...naming} onClose={() => setNaming(null)} run={run} />}
-      {messaging && <MessageDialog messaging={messaging} onClose={closeMessage} onSubmit={(message) => void submit(messaging, message)} />}
+      {messaging && <MessageDialog messaging={messaging} onClose={closeMessage} onSubmit={(message) => submit(messaging, message)} />}
     </div>
   );
 }

@@ -14,12 +14,13 @@ import type { Messaging } from "./edits";
 const fullMessage = (c: Commit) => (c.body.trim() ? `${c.subject}\n\n${c.body.trim()}` : c.subject);
 
 /** The message for a reworded commit, or for commits squashed into one (theirs to start with, oldest first). */
-export function MessageDialog({ messaging: m, onClose, onSubmit }: { messaging: Messaging; onClose: () => void; onSubmit: (message: string) => void }) {
+export function MessageDialog({ messaging: m, onClose, onSubmit }: { messaging: Messaging; onClose: () => void; onSubmit: (message: string) => Promise<boolean> }) {
   const [message, setMessage] = useState(() => (m.kind === "reword" ? [m.commit] : m.commits).map(fullMessage).join("\n\n"));
+  // Closes once the rewrite went through: Cancel on its warning, or a failure, leaves the message here.
+  const { pending, send } = useSubmit(onClose);
+  const ready = !!message.trim() && !pending;
   const submit = () => {
-    if (!message.trim()) return;
-    onClose();
-    onSubmit(message);
+    if (ready) void send(() => onSubmit(message));
   };
   const count = m.kind === "squash" ? new Set([...m.shas, m.onto]).size : 1;
   return (
@@ -64,9 +65,8 @@ export function MessageDialog({ messaging: m, onClose, onSubmit }: { messaging: 
             }}
             rows={8}
             className="font-mono text-[12px]"
-            spellCheck={false}
           />
-          <Button type="submit" className="self-end" disabled={!message.trim()}>
+          <Button type="submit" className="self-end" disabled={!ready}>
             {m.kind === "reword" ? "Reword" : "Squash"}
           </Button>
         </form>
