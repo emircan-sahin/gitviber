@@ -6,16 +6,177 @@ import { isRecord } from "../storage.ts";
  * parser runs under node:test.
  */
 
-/** Sent ahead of the commit's message or the branch's commits, and the diff; Settings shows it. */
-export const GUIDE_PROMPT =
-  'Explain this change to a reviewer and guide them through it. Answer with only a JSON object, with no code fences or other text, shaped like this: {"title": "what the change does, under 72 characters", "overview": "what changed and why in a short paragraph of Markdown, then a numbered list of the change\'s parts", "diagram": {"models": [{"name": "a type, table, schema or config the change adds or alters", "file": "its path", "status": "new, changed or same", "note": "what changed in it, in a few words", "section": 1, "fields": [{"name": "a field or member", "status": "new, changed or same", "note": "a few words, if it changed", "section": 1}]}], "flows": [{"title": "a path through the code the change adds or alters", "steps": [{"id": "a short id", "label": "the function or call, as code; for a decision, the question", "file": "its path", "status": "new, changed or same", "kind": "step, or decision for a branch", "section": 1}], "edges": [{"from": "a step id", "to": "a step id", "label": "yes or no after a decision; leave it out otherwise"}]}]}, "sections": [{"title": "one part of the change", "summary": "what it does and what to check, in Markdown", "files": ["the paths of its files, as the diff names them"], "risk": "what could break, if anything; leave it out otherwise"}]}. Each "section" is the number of the section that covers that part, 1 for the first. Keep the diagram small: at most 6 models of at most 12 fields, and at most 2 flows of at most 12 steps; leave out "models" or "flows" when the change has none worth drawing. Order the sections the way a reviewer should read them, and put every changed file in one of them.';
+/** What a section is about, each with the line the prompt explains it by. */
+export const CATEGORIES = {
+  ui: "screens, components and styles",
+  api: "endpoints, commands and the interfaces between parts",
+  core: "the logic and state the rest relies on",
+  data: "schemas, models, migrations and storage",
+  cli: "command-line commands and flags",
+  security: "auth, permissions, secrets, input checks and sandboxing",
+  tests: "tests and their fixtures",
+  docs: "docs, READMEs, changelogs and comments",
+  examples: "examples and demos",
+  deps: "dependencies and lockfiles",
+  build: "build, packaging and CI",
+  scripts: "development and maintenance scripts",
+  config: "settings and configuration files",
+  i18n: "translations and locale strings",
+  assets: "images, fonts, icons and media",
+  other: "anything else",
+} as const;
+
+export type Category = keyof typeof CATEGORIES;
+
+const str = (description: string) => ({ type: "string", description });
+const STATUS = { type: "string", enum: ["new", "changed", "same"] };
+const SECTION = { type: "integer", description: "the number of the section that covers it, 1 for the first", examples: [1] };
+const CRITICAL = { type: "boolean", description: "true only for security, data loss or a change that's hard to revert", examples: [false] };
+const note = (extra: Record<string, object>, required: string[]) => ({
+  type: "array",
+  items: {
+    type: "object",
+    required: ["path", ...required, "text"],
+    properties: { path: str("one of the section's files"), ...extra, text: str("what to know there, in a sentence"), critical: CRITICAL },
+  },
+});
+
+/**
+ * The answer's shape: sent as a JSON Schema to a CLI that enforces one (Claude Code's
+ * --json-schema), and drawn from it as the example in GUIDE_PROMPT for the rest, so the two
+ * can't drift. Only what every guide has is required; the parser takes any of the rest.
+ */
+export const GUIDE_SCHEMA = {
+  type: "object",
+  required: ["title", "overview", "sections"],
+  properties: {
+    title: str("what the change does, under 72 characters"),
+    overview: str("why the change was made, in 1-2 sentences of Markdown; a numbered list of its parts after them only when it has 3 or more separate ones"),
+    diagram: {
+      type: "object",
+      description: "only for a change to a real flow or data model; left out for style, text, config or docs changes",
+      properties: {
+        models: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["name"],
+            properties: {
+              name: str("a type, table, schema or config the change adds or alters"),
+              file: str("its path"),
+              status: STATUS,
+              note: str("what changed in it, in a few words"),
+              section: SECTION,
+              fields: { type: "array", items: { type: "object", required: ["name"], properties: { name: str("a field or member"), status: STATUS, note: str("a few words, if it changed"), section: SECTION } } },
+            },
+          },
+        },
+        flows: {
+          type: "array",
+          items: {
+            type: "object",
+            required: ["steps"],
+            properties: {
+              title: str("a path through the code the change adds or alters"),
+              steps: {
+                type: "array",
+                items: {
+                  type: "object",
+                  required: ["id", "label"],
+                  properties: {
+                    id: str("a short id"),
+                    label: str("the function or call, as code; for a decision, the question"),
+                    file: str("its path"),
+                    status: STATUS,
+                    kind: { type: "string", enum: ["step", "decision"] },
+                    section: SECTION,
+                  },
+                },
+              },
+              edges: { type: "array", items: { type: "object", required: ["from", "to"], properties: { from: str("a step id"), to: str("a step id"), label: str("yes or no after a decision; left out otherwise") } } },
+            },
+          },
+        },
+      },
+    },
+    sections: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["title", "category", "summary", "files"],
+        properties: {
+          title: str("a label of at most 4 words"),
+          category: { type: "string", enum: Object.keys(CATEGORIES), description: "one of the categories below" },
+          summary: str("1-3 sentences of Markdown: why, and what isn't obvious from the diff"),
+          files: { type: "array", items: str("a path, as the list of changed files names it") },
+          check: str("one line on how to verify it, only when there's something specific to check"),
+          risk: str("what could break, only when something really could"),
+          critical: CRITICAL,
+          fileNotes: note({}, []),
+          lineNotes: note({ side: { type: "string", enum: ["new", "old"] }, line: { type: "integer", description: "the line's number on that side", examples: [12] } }, ["side", "line"]),
+        },
+      },
+    },
+  },
+};
+
+interface Schema {
+  type?: string;
+  description?: string;
+  enum?: string[];
+  examples?: unknown[];
+  properties?: Record<string, Schema>;
+  items?: Schema;
+}
+
+/** `schema` as an example of itself: each value its description (or example, or choices). */
+function exampleOf(schema: Schema): string {
+  if (schema.properties)
+    return `{${Object.entries(schema.properties)
+      .map(([k, v]) => `"${k}": ${exampleOf(v)}`)
+      .join(", ")}}`;
+  if (schema.items) return `[${exampleOf(schema.items)}]`;
+  if (schema.examples) return JSON.stringify(schema.examples[0]);
+  return JSON.stringify(schema.description ?? schema.enum?.join(" or ") ?? "");
+}
+
+/** Sent ahead of the commit's message or the branch's commits, the changed files and their diffs; Settings shows it. */
+export const GUIDE_PROMPT = [
+  `Explain this change to a reviewer so they can read it quickly. Answer with only a JSON object, with no code fences or other text, shaped like this: ${exampleOf(GUIDE_SCHEMA)}.`,
+  "Size the guide to the change: one section for a small change (1-3 files, or under about 150 changed lines) unless it has truly separate concerns, and more only for separate concerns. Put mechanical edits (docs, changelog, formatting, renames) together in the last section, never in one of their own for a line. Order the sections the way a reviewer should read them, and put every path of the list of changed files in exactly one section.",
+  "Write for a developer who scans: never restate what the diff shows (values, strings, numbers, styles); say why, and point at what isn't obvious. Most sections have no check or risk; critical is true only for security, data loss or a change that's hard to revert. Add a fileNote or lineNote only where it saves the reviewer real time, a few in the whole guide at most; a lineNote's side is new for an added or unchanged line and old for a removed one, and its line is the line's number on that side.",
+  "Draw the diagram only when the change alters a real flow or data model, and leave it out for style, text, config or docs changes. Each of its parts' \"section\" is the number of the section that covers it, 1 for the first. Keep it small: at most 6 models of at most 12 fields, and at most 2 flows of at most 12 steps; leave out models or flows the change has none of.",
+  `Categories: ${Object.entries(CATEGORIES)
+    .map(([k, v]) => `${k} (${v})`)
+    .join(", ")}.`,
+].join("\n\n");
+
+export interface FileNote {
+  /** As the section names it. */
+  path: string;
+  text: string;
+  critical: boolean;
+}
+
+export interface LineNote extends FileNote {
+  side: "new" | "old";
+  line: number;
+}
 
 export interface GuideSection {
   title: string;
+  /** "other" for a guide written before categories. */
+  category: Category;
   summary: string;
   files: string[];
+  /** How to verify it, one line; "" for none. */
+  check: string;
   /** "" when the model saw none. */
   risk: string;
+  /** Review carefully: security, data loss, hard to revert. */
+  critical: boolean;
+  fileNotes: FileNote[];
+  lineNotes: LineNote[];
 }
 
 export type PartStatus = "new" | "changed" | "same";
@@ -67,8 +228,8 @@ export interface Guide {
   sections: GuideSection[];
 }
 
-/** How much of a diagram is drawn, as the prompt asks (past this it stops explaining), and how many sections. */
-export const LIMITS = { models: 6, fields: 12, flows: 2, steps: 12, edges: 24, sections: 50 };
+/** How much of a diagram is drawn, as the prompt asks (past this it stops explaining), how many sections, and their notes. */
+export const LIMITS = { models: 6, fields: 12, flows: 2, steps: 12, edges: 24, sections: 50, notes: 40, note: 500 };
 
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
@@ -126,9 +287,12 @@ function partStatus(v: unknown): PartStatus {
   return s === "new" || s === "added" ? "new" : s === "changed" || s === "modified" ? "changed" : "same";
 }
 
+/** A number as written, or in a string; NaN for anything else. */
+const whole = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN);
+
 /** A part's section number, when it names one of the `count` there are. */
 function sectionRef(v: unknown, count: number): SectionRef {
-  const n = typeof v === "number" ? v : typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN;
+  const n = whole(v);
   return Number.isInteger(n) && n >= 1 && n <= count ? n : null;
 }
 
@@ -178,6 +342,28 @@ function parseFlows(v: unknown, count: number): Flow[] {
     .slice(0, LIMITS.flows);
 }
 
+const flag = (v: unknown) => v === true || text(v).toLowerCase() === "true";
+const category = (v: unknown): Category => {
+  const c = text(v).toLowerCase();
+  return c in CATEGORIES ? (c as Category) : "other";
+};
+
+/** A section, with notes only on its own files and lines that can be, at most LIMITS.notes of them. */
+function parseSection(s: Record<string, unknown>): GuideSection {
+  const files = [...new Set((Array.isArray(s.files) ? s.files : []).map((f) => text(f).replace(/^\.\//, "")).filter(Boolean))];
+  const own = new Set(files);
+  const note = (n: Record<string, unknown>) => ({ path: matchPath(text(n.path).replace(/^\.\//, ""), own) ?? "", text: clip(text(n.text), LIMITS.note), critical: flag(n.critical) });
+  const fileNotes = records(s.fileNotes)
+    .map(note)
+    .filter((n) => n.path && n.text)
+    .slice(0, LIMITS.notes);
+  const lineNotes = records(s.lineNotes)
+    .map((n) => ({ ...note(n), side: text(n.side).toLowerCase() === "old" ? ("old" as const) : ("new" as const), line: whole(n.line) }))
+    .filter((n) => n.path && n.text && Number.isSafeInteger(n.line) && n.line > 0)
+    .slice(0, LIMITS.notes - fileNotes.length);
+  return { title: text(s.title), category: category(s.category), summary: text(s.summary), files, check: clip(text(s.check).replace(/\s+/g, " "), LIMITS.note), risk: text(s.risk), critical: flag(s.critical), fileNotes, lineNotes };
+}
+
 /**
  * A model's answer as a guide; null when it isn't the JSON asked for (the view then shows it
  * as Markdown). Fields it left out or mistyped read as empty, parts of a diagram it got wrong
@@ -188,12 +374,7 @@ export function parseGuide(output: string): Guide | null {
   const v = jsonOf(output.replace(/\r\n?/g, "\n").trim());
   if (!isRecord(v)) return null;
   const sections = records(v.sections)
-    .map((s) => ({
-      title: text(s.title),
-      summary: text(s.summary),
-      files: [...new Set((Array.isArray(s.files) ? s.files : []).map((f) => text(f).replace(/^\.\//, "")).filter(Boolean))],
-      risk: text(s.risk),
-    }))
+    .map(parseSection)
     .filter((s) => s.title || s.summary || s.files.length)
     .slice(0, LIMITS.sections);
   const diagram = isRecord(v.diagram) ? v.diagram : {};
