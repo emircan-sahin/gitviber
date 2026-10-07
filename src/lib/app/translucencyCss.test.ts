@@ -60,3 +60,13 @@ test("at its floor, each theme's code text keeps 3:1 over a black or white deskt
   // The slider's own minimum isn't out of every theme's reach.
   assert.ok(Object.values(themes()).some((v) => opacityFloor(v.foreground, v.background, WINDOW_OPACITY) === WINDOW_OPACITY.min));
 });
+
+// index.html paints html in the theme's color against a flash at startup; left solid, it covered
+// the whole see-through window, the page's own parts clear or not.
+test("html itself goes clear when the window is see-through", () => {
+  const pages = ["index.html", "settings.html"].map((f) => readFileSync(join(SRC, "..", f), "utf8"));
+  assert.ok(pages.every((p) => /html\s*\{\s*background:/.test(p)), "the pages paint html at startup");
+  const rule = /([^{}]*)\{\s*background:\s*transparent;\s*\}/g;
+  const clear = [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(rule)].some((m) => m[1].split(",").some((s) => s.trim() === ":root[data-translucency]"));
+  assert.ok(clear, ":root[data-translucency] clears html's background");
+});

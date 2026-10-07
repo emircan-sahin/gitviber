@@ -546,6 +546,9 @@
   --solid-panel: var(--panel);
   --solid-background: var(--background);
 }
+/* index.html paints html in the theme's color so a starting window doesn't flash: see-through, it
+   would cover the desktop. :root[...] outranks its html[data-theme]. */
+:root[data-translucency],
 :root[data-translucency] body {
   background: transparent;
 }
