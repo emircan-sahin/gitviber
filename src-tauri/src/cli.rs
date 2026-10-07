@@ -54,9 +54,13 @@ pub fn bin_dir() -> Option<PathBuf> {
     if !cfg!(target_os = "macos") {
         return None;
     }
-    script(&std::env::current_exe().ok()?)?
-        .parent()
-        .map(Path::to_path_buf)
+    command_dir(&std::env::current_exe().ok()?)
+}
+
+/// None under a folder with a `:` in its name: PATH would split it in two.
+fn command_dir(exe: &Path) -> Option<PathBuf> {
+    let dir = script(exe)?.parent()?.to_path_buf();
+    (!dir.to_string_lossy().contains(':')).then_some(dir)
 }
 
 /// Contents/MacOS/gitviber → Contents/Resources/bin/gitviber (tauri.conf.json's macOS files).
@@ -110,7 +114,7 @@ pub fn install() -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::script;
+    use super::{command_dir, script};
 
     #[test]
     fn the_script_is_found_beside_the_bundles_executable_only() {
@@ -124,6 +128,24 @@ mod tests {
         std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
         std::fs::write(&bundled, "").unwrap();
         assert_eq!(script(&exe), Some(bundled));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_colon_in_the_apps_folder_keeps_it_off_path() {
+        let dir = std::env::temp_dir().join(format!("gitviber-cli-colon-{}", std::process::id()));
+        for (folder, on_path) in [("Apps", true), ("a:b", false)] {
+            let contents = dir.join(folder).join("GitViber.app/Contents");
+            std::fs::create_dir_all(contents.join("MacOS")).unwrap();
+            std::fs::create_dir_all(contents.join("Resources/bin")).unwrap();
+            std::fs::write(contents.join("Resources/bin/gitviber"), "").unwrap();
+            let found = command_dir(&contents.join("MacOS/gitviber"));
+            assert_eq!(
+                found,
+                on_path.then(|| contents.join("Resources/bin")),
+                "{folder}"
+            );
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 }

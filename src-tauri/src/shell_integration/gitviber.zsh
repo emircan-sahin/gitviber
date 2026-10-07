@@ -75,10 +75,12 @@ _gitviber_preexec() {
 _gitviber_path() {
   builtin emulate -L zsh
   add-zsh-hook -d precmd _gitviber_path
-  [[ -z $GITVIBER_BIN_DIR || :$PATH: == *:"$GITVIBER_BIN_DIR":* ]] || PATH+=:$GITVIBER_BIN_DIR
+  [[ -z $GITVIBER_BIN_DIR || :$PATH: == *:"$GITVIBER_BIN_DIR":* ]] ||
+    PATH=${PATH:+$PATH:}$GITVIBER_BIN_DIR
 }
 
 builtin autoload -Uz add-zsh-hook add-zle-hook-widget
+# Before _gitviber_precmd, which marks PS1 itself only while it's the last precmd hook.
+add-zsh-hook precmd _gitviber_path
 add-zsh-hook precmd _gitviber_precmd
 add-zsh-hook preexec _gitviber_preexec
-add-zsh-hook precmd _gitviber_path

@@ -172,18 +172,18 @@ fn start_dir(cwd: &Path) -> Option<PathBuf> {
 }
 
 /// `path` with `dir` last, unless it's on it already: a `gitviber` of the user's own comes first.
+/// `dir` has no `:` in it (cli::bin_dir).
 fn with_last(path: &OsStr, dir: &Path) -> OsString {
-    // An empty PATH splits into one empty entry, which would put the current folder on it.
-    if path.is_empty() {
-        return dir.into();
-    }
-    let mut dirs: Vec<PathBuf> = std::env::split_paths(path).collect();
-    if dirs.iter().any(|d| d == dir) {
+    if std::env::split_paths(path).any(|d| d == dir) {
         return path.to_owned();
     }
-    dirs.push(dir.to_owned());
-    // A folder with the separator in its name can't go on PATH.
-    std::env::join_paths(dirs).unwrap_or_else(|_| path.to_owned())
+    // Not after an empty PATH: ":dir" would put the current folder on it.
+    let mut out = path.to_owned();
+    if !out.is_empty() {
+        out.push(":");
+    }
+    out.push(dir);
+    out
 }
 
 impl Ptys {
@@ -377,7 +377,7 @@ impl Ptys {
 
 #[cfg(test)]
 mod tests {
-    use super::{input_bytes, start_dir, with_last, Flow, ACK_WAIT, HIGH_WATER, LOW_WATER};
+    use super::{input_bytes, start_dir, Flow, ACK_WAIT, HIGH_WATER, LOW_WATER};
     use std::io::Write;
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -491,13 +491,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn the_command_folder_goes_last_on_path_and_only_once() {
+        use super::with_last;
         let bin = std::path::Path::new("/Applications/GitViber.app/Contents/Resources/bin");
         let path = with_last("/usr/bin:/bin".as_ref(), bin);
         assert_eq!(path, *format!("/usr/bin:/bin:{}", bin.display()));
         assert_eq!(with_last(&path, bin), path);
         assert_eq!(with_last("".as_ref(), bin), bin.as_os_str());
-        // Can't be written on PATH; left off it.
-        assert_eq!(with_last("/usr/bin".as_ref(), "/a:b".as_ref()), *"/usr/bin");
     }
 
     /// 5,000 entries (~200 KB) with duplicates and empty ones (the current folder) kept as they
@@ -505,6 +504,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_huge_path_keeps_every_entry_as_it_was() {
+        use super::with_last;
         let bin = std::path::Path::new("/Applications/My Apps/GitViber.app/Contents/Resources/bin");
         let entries: Vec<String> = (0..5000)
             .map(|i| match i % 100 {

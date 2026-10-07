@@ -21,7 +21,7 @@ builtin unset __gitviber_file
 # GitViber's `gitviber` command, last on PATH (pty.rs). Again here, after the user's files: one of
 # them may have set PATH afresh.
 if [[ -n ${GITVIBER_BIN_DIR-} && :$PATH: != *:"$GITVIBER_BIN_DIR":* ]]; then
-  PATH=$PATH:$GITVIBER_BIN_DIR
+  PATH=${PATH:+$PATH:}$GITVIBER_BIN_DIR
 fi
 
 if ((BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4))); then
