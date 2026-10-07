@@ -15,6 +15,7 @@ import {
   clearFocused,
   closeFocused,
   closeGroup,
+  equalizeSplit,
   focusToward,
   moveGroup,
   openTerminal,
@@ -103,6 +104,7 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
     "terminal.focusUp": () => focusToward("up"),
     "terminal.focusDown": () => focusToward("down"),
     "terminal.hints": showLinkHints,
+    "terminal.equalizePanes": group && group.panes.length > 1 ? () => equalizeSplit(group.id) : undefined,
     // Only a pane with a header on screen: a split, not zoomed.
     "terminal.renamePane": () => group && group.panes.length > 1 && !zoomed && renamingPane.set(group.focused),
   });

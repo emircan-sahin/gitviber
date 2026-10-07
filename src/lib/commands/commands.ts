@@ -149,6 +149,8 @@ export const COMMANDS = [
   { id: "terminal.zoomPane", title: "Zoom Terminal Pane", category: "Terminal", keys: ["shift+cmd+enter"], keysOther: ["shift+cmd+enter"], local: "the terminal", noRepeat: true },
   // Only a split's panes show a name; the tab shows the repo and branch. Unbound elsewhere: Ctrl+R is
   // the shell's history search, and Ctrl+Shift+R reloads.
+  // Every split of the open tab at even sizes; one split's divider does it with a double-click.
+  { id: "terminal.equalizePanes", title: "Equalize Terminal Panes", category: "Terminal", keys: [] },
   { id: "terminal.renamePane", title: "Rename Terminal Pane", category: "Terminal", keys: ["cmd+r"], keysOther: [], local: "the terminal" },
   // The window's zoom keys size the terminal's font while it has focus, as in terminal apps.
   { id: "terminal.fontZoomIn", title: "Increase Terminal Font Size", category: "Terminal", keys: ["cmd+=", "shift+cmd+="], local: "the terminal" },
