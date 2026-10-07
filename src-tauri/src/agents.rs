@@ -1025,6 +1025,7 @@ mod tests {
             Some("opencode --model x/y --continue")
         );
         assert!(seen.status.is_none());
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     #[test]

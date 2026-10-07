@@ -893,43 +893,38 @@ mod tests {
         use super::*;
         use std::os::unix::fs::PermissionsExt;
 
-        fn gh(name: &str, body: &str) -> String {
-            let dir =
-                std::env::temp_dir().join(format!("gitviber-gh-{name}-{}", std::process::id()));
-            std::fs::create_dir_all(&dir).unwrap();
-            let path = dir.join("gh");
+        fn gh(body: &str) -> (crate::scratch::ScratchDir, String) {
+            let dir = crate::scratch::ScratchDir::new("gh-test").unwrap();
+            let path = dir.path().join("gh");
             std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            path.display().to_string()
+            (dir, path.display().to_string())
         }
 
         const TEN: Duration = Duration::from_secs(10);
 
         #[test]
         fn whitespace_around_the_token_is_dropped() {
-            let g = gh("blank", "printf '  tok-1234 \\r\\n\\n\\n'");
+            let (_dir, g) = gh("printf '  tok-1234 \\r\\n\\n\\n'");
             assert_eq!(gh_auth_token(&g, None, TEN).as_deref(), Some("tok-1234"));
         }
 
         #[test]
         fn an_empty_answer_is_no_token() {
-            let g = gh("empty", "printf '\\n'");
+            let (_dir, g) = gh("printf '\\n'");
             assert_eq!(gh_auth_token(&g, None, TEN), None);
         }
 
         /// Installed, not signed in: gh exits 1 with its message on stderr.
         #[test]
         fn gh_without_a_login_is_no_token() {
-            let g = gh(
-                "out",
-                "echo 'no oauth token found for github.com' >&2; exit 1",
-            );
+            let (_dir, g) = gh("echo 'no oauth token found for github.com' >&2; exit 1");
             assert_eq!(gh_auth_token(&g, None, TEN), None);
         }
 
         #[test]
         fn a_token_is_never_asked_of_another_host() {
-            let g = gh("args", "echo \"$*\"");
+            let (_dir, g) = gh("echo \"$*\"");
             assert_eq!(
                 gh_auth_token(&g, Some("octo-one"), TEN).as_deref(),
                 Some("auth token --hostname github.com --user octo-one")
@@ -943,7 +938,7 @@ mod tests {
         /// A gh that never answers is cut off, and its children with it.
         #[test]
         fn a_hanging_gh_is_cut_off() {
-            let g = gh("hang", "sleep 30");
+            let (_dir, g) = gh("sleep 30");
             let started = Instant::now();
             assert_eq!(gh_auth_token(&g, None, Duration::from_millis(300)), None);
             assert!(started.elapsed() < Duration::from_secs(5));
