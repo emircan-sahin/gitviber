@@ -10,7 +10,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } 
 import { copyFiles } from "@/lib/app/clipboard";
 import { failed } from "@/lib/app/toast";
 import { IS_MAC } from "@/lib/platform";
-import { buttonLost } from "@/lib/ui/held";
+import { releaseIfButtonLost } from "@/lib/ui/held";
 
 type MediaKind = "image" | "video" | "audio" | "pdf";
 
@@ -290,7 +290,7 @@ export function SvgSide({ text, label, tone = "added", zoom, onZoom, backdrop, l
   const drag = useRef<{ x: number; y: number } | null>(null);
   const pan = (e: React.PointerEvent) => {
     const from = drag.current;
-    if (!from || buttonLost(e.nativeEvent)) return void (drag.current = null);
+    if (!from || releaseIfButtonLost(e.nativeEvent)) return void (drag.current = null);
     drag.current = { x: e.clientX, y: e.clientY };
     panBy(e.clientX - from.x, e.clientY - from.y);
   };

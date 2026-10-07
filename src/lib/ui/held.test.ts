@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buttonLost, untilReleased } from "./held.ts";
+import { releaseIfButtonLost, untilReleased } from "./held.ts";
 
 // The page's window and document, as far as untilReleased uses them.
 const g = globalThis as Record<string, unknown>;
@@ -87,8 +87,8 @@ test("only its own modifier counts", () => {
 
 test("a drag's move with no button down is a lost pointerup", () => {
   const move = (buttons: number) => Object.assign(new Event("pointermove"), { buttons, pointerId: 1 }) as unknown as PointerEvent;
-  assert.equal(buttonLost(move(1)), false);
-  assert.equal(buttonLost(move(0)), true);
+  assert.equal(releaseIfButtonLost(move(1)), false);
+  assert.equal(releaseIfButtonLost(move(0)), true);
 });
 
 const MODIFIERS = ["Meta", "Control", "Alt", "Shift"] as const;
@@ -185,6 +185,16 @@ test("off macOS the held key is Control: ⌘'s flag says nothing about it", () =
   assert.equal(listening(), 0);
 });
 
+test("on Linux Ctrl's own keyup still says ctrlKey (GTK's flags are from before it): it releases anyway", () => {
+  let released = 0;
+  untilReleased("Control", () => released++);
+  win.dispatchEvent(Object.assign(new Event("keyup"), { key: "Shift", ctrlKey: true }));
+  assert.equal(released, 0);
+  win.dispatchEvent(Object.assign(new Event("keyup"), { key: "Control", ctrlKey: true }));
+  assert.equal(released, 1);
+  assert.equal(listening(), 0);
+});
+
 test("a pen, an eraser or a finger on the glass isn't a lost button; a captured element lets go only when it holds the capture", () => {
   const released: number[] = [];
   class Captor extends (g.Element as new () => object) {
@@ -198,12 +208,12 @@ test("a pen, an eraser or a finger on the glass isn't a lost button; a captured 
   }
   const move = (buttons: number, target: unknown, pointerId = 7) => ({ buttons, target, pointerId }) as unknown as PointerEvent;
   // Pen tip and touch contact are 1, the eraser 32, a barrel button 2.
-  for (const buttons of [1, 2, 32, 33]) assert.equal(buttonLost(move(buttons, new Captor(true))), false, `buttons ${buttons}`);
+  for (const buttons of [1, 2, 32, 33]) assert.equal(releaseIfButtonLost(move(buttons, new Captor(true))), false, `buttons ${buttons}`);
   assert.deepEqual(released, []);
-  assert.equal(buttonLost(move(0, new Captor(false))), true);
+  assert.equal(releaseIfButtonLost(move(0, new Captor(false))), true);
   assert.deepEqual(released, []);
-  assert.equal(buttonLost(move(0, new Captor(true), 9)), true);
+  assert.equal(releaseIfButtonLost(move(0, new Captor(true), 9)), true);
   assert.deepEqual(released, [9]);
   // Not an element (the document, the window): nothing to let go of.
-  assert.equal(buttonLost(move(0, doc)), true);
+  assert.equal(releaseIfButtonLost(move(0, doc)), true);
 });

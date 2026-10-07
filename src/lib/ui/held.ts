@@ -4,7 +4,7 @@
  * locking take it too. What the next event says about the keys and buttons is the truth.
  */
 
-export type Modifier = "Meta" | "Control" | "Alt" | "Shift";
+type Modifier = "Meta" | "Control" | "Alt" | "Shift";
 
 const FLAG = { Meta: "metaKey", Control: "ctrlKey", Alt: "altKey", Shift: "shiftKey" } as const;
 
@@ -17,8 +17,9 @@ const INPUT = ["keydown", "keyup", "mousemove", "mousedown", "wheel"] as const;
  * a stop.
  */
 export function untilReleased(key: Modifier, released: () => void): () => void {
-  // Every key and mouse event carries the modifiers' state.
-  const check = (e: Event) => !(e as MouseEvent | KeyboardEvent)[FLAG[key]] && done();
+  // Every key and mouse event carries the modifiers' state. Its own keyup counts whatever that says:
+  // GTK's flags are from before the event, so Ctrl's keyup comes with ctrlKey still set.
+  const check = (e: Event) => (!(e as MouseEvent | KeyboardEvent)[FLAG[key]] || (e.type === "keyup" && (e as KeyboardEvent).key === key)) && done();
   const done = () => {
     stop();
     released();
@@ -35,11 +36,11 @@ export function untilReleased(key: Modifier, released: () => void): () => void {
 }
 
 /**
- * For a drag's pointermove: whether its button went up out of the window's sight, which ends the
- * drag here instead of at the next click. Lets go of the pointer capture, which would otherwise
- * keep every hover elsewhere off until then.
+ * For a captured drag's pointermove: whether its button went up out of the window's sight, which
+ * ends the drag here instead of at the next click. If so, lets go of the pointer capture too, which
+ * would otherwise keep every hover elsewhere off until then.
  */
-export function buttonLost(e: PointerEvent): boolean {
+export function releaseIfButtonLost(e: PointerEvent): boolean {
   if (e.buttons) return false;
   if (e.target instanceof Element && e.target.hasPointerCapture(e.pointerId)) e.target.releasePointerCapture(e.pointerId);
   return true;

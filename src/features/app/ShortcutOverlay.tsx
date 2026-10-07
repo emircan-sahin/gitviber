@@ -145,6 +145,8 @@ export function ShortcutOverlay() {
         const alone = !e.altKey && !e.shiftKey && !(IS_MAC ? e.ctrlKey : e.metaKey);
         // The other ⌘ going down restarts it.
         cancel();
+        // A chord's ⌘ ends the hold. Not the other ⌘ alone: a held overlay still waits for ⌘ to go up.
+        if (!alone) stopWaiting();
         if (alone && !shown.get() && getSettings().shortcutOverlay) {
           timer = window.setTimeout(() => !overLink() && set("held"), HOLD_MS);
           // Its keyup, or the next event without it: Mission Control takes the keyup and leaves no blur.

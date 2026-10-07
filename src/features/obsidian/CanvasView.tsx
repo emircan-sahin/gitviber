@@ -6,7 +6,7 @@ import { matchesCommand } from "@/lib/commands/keybindings";
 import { type Canvas, canvasColor, type CanvasEdge, type CanvasNode, edgePath, fitBox, parseCanvas } from "@/lib/obsidian/canvas";
 import type { Selection } from "@/lib/repo/selection";
 import { useSettings } from "@/lib/settings";
-import { buttonLost } from "@/lib/ui/held";
+import { releaseIfButtonLost } from "@/lib/ui/held";
 import { followLink } from "@/features/viewer/MarkdownView";
 import { useSize } from "@/features/viewer/MediaView";
 import { NoteFile, NoteScope, NoteText } from "./VaultMarkdown";
@@ -133,7 +133,7 @@ function Board({ canvas }: { canvas: Canvas }) {
       }}
       onPointerMove={(e) => {
         const from = drag.current;
-        if (!from || buttonLost(e.nativeEvent)) return void (drag.current = null);
+        if (!from || releaseIfButtonLost(e.nativeEvent)) return void (drag.current = null);
         drag.current = { x: e.clientX, y: e.clientY };
         panBy(e.clientX - from.x, e.clientY - from.y);
       }}
