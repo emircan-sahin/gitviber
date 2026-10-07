@@ -98,13 +98,34 @@ export function effortArg(preset: SuggestPreset, level: string) {
   return flag.endsWith("=") ? flag + level : `${flag} ${level}`;
 }
 
-/** The command as run: a preset's with its lean, model and effort flags (`reads`: for a guided review); a custom one carries its own. */
-export function commandLine(command: string, models: Partial<Record<SuggestPreset, string>>, efforts: Partial<Record<SuggestPreset, string>>, reads = false) {
+/** The command as run: a preset's with its lean (`reads`: a guided review's), model and effort flags; a custom one carries its own. */
+export function commandLine(command: string, models: Partial<Record<SuggestPreset, string>>, efforts: Partial<Record<SuggestPreset, string>>, reads = false, lean = true) {
   const preset = presetOf(command);
   if (!preset) return command;
   const model = modelOf(preset, models);
   const effort = effortOf(preset, efforts);
-  return [command.trim(), leanFlags(preset, reads), model && `${SUGGEST_PRESETS[preset].modelFlag} ${model}`, effort && effortArg(preset, effort)].filter(Boolean).join(" ");
+  return [command.trim(), lean && leanFlags(preset, reads), model && `${SUGGEST_PRESETS[preset].modelFlag} ${model}`, effort && effortArg(preset, effort)].filter(Boolean).join(" ");
+}
+
+/**
+ * `ask` with the command line as run; when a Claude Code preset's run fails on a flag its CLI is
+ * too old to know (commander's "unknown option '--…'"), once more without the lean flags
+ * (`lean` false: leave out other new flags too), keeping the model and effort. `old`: it took
+ * the second try.
+ */
+export async function withLeanFallback<T>(
+  command: string,
+  models: Partial<Record<SuggestPreset, string>>,
+  efforts: Partial<Record<SuggestPreset, string>>,
+  reads: boolean,
+  ask: (line: string, lean: boolean) => Promise<T>,
+): Promise<{ value: T; old: boolean }> {
+  try {
+    return { value: await ask(commandLine(command, models, efforts, reads), true), old: false };
+  } catch (e) {
+    if (presetOf(command) !== "claude" || !/unknown option '--/.test(String(e))) throw e;
+    return { value: await ask(commandLine(command, models, efforts, reads, false), false), old: true };
+  }
 }
 
 /** The model and effort a command line names, as each preset's flags (or `--model=x`) write them, for "written by claude (x, medium)". */

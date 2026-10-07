@@ -1,13 +1,13 @@
 import { useMemo } from "react";
 import { api, errorMessage, type GuideAgent, type Guided, type GuideTarget, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
-import { commandLine, presetOf, programOf, runDetails } from "@/lib/git/suggest";
+import { commandLine, presetOf, programOf, runDetails, withLeanFallback } from "@/lib/git/suggest";
 import { type GuideSelection, type Selection, selectionPath } from "@/lib/repo/selection";
 import { GUIDE_PROMPT, GUIDE_SCHEMA } from "@/lib/review/guide";
 import { getSettings } from "@/lib/settings";
 import { isRecord, putRecent, readJson } from "@/lib/storage";
 import { createStore } from "@/lib/store";
-import { toSuggestSettings } from "@/features/settings/SettingsDialog";
+import { toSuggestSettings, warnOldClaude } from "@/features/settings/SettingsDialog";
 
 const KEY = "gitviber.guides";
 // localStorage is one quota for the whole app: a dozen guides of the usual 5-30 KB, and one
@@ -43,9 +43,10 @@ export const guideId = (root: string, sel: GuideSelection, branch: string | null
  * file. Others get the shape in the prompt: codex exec's --output-schema takes a file and OpenAI's
  * strict mode, which wants every field required, so it isn't used.
  */
-function guideAgent(command: string): GuideAgent {
+function guideAgent(command: string, lean: boolean): GuideAgent {
   const preset = presetOf(command);
-  if (preset === "claude") return { args: ["--json-schema", JSON.stringify(GUIDE_SCHEMA)], reads: "claude" };
+  // --json-schema is as new as the lean flags: an older Claude Code goes without both.
+  if (preset === "claude") return { args: lean ? ["--json-schema", JSON.stringify(GUIDE_SCHEMA)] : [], reads: "claude" };
   return { args: [], reads: preset === "opencode" ? "opencode" : null };
 }
 
@@ -101,7 +102,6 @@ export function useGuide(id: string) {
 export async function generateGuide(id: string, sel: GuideSelection) {
   const { suggestCommand, suggestModels, suggestEfforts } = getSettings();
   const program = programOf(suggestCommand);
-  const line = commandLine(suggestCommand, suggestModels, suggestEfforts, true);
   const token = {};
   latest.set(id, token);
   const set = (run: Run | null) => latest.get(id) === token && setRun(id, run);
@@ -114,10 +114,14 @@ export async function generateGuide(id: string, sel: GuideSelection) {
   active = { sel, token };
   set("running");
   try {
-    const guided = await api.suggestGuide(line, GUIDE_PROMPT, guideTarget(sel), guideAgent(suggestCommand));
+    const { value: guided, old } = await withLeanFallback(suggestCommand, suggestModels, suggestEfforts, true, (line, lean) =>
+      // A second try started after another guide would stop that one.
+      !lean && active?.token !== token ? Promise.reject(SUGGEST_CANCELLED) : api.suggestGuide(line, GUIDE_PROMPT, guideTarget(sel), guideAgent(suggestCommand, lean)),
+    );
+    if (old) warnOldClaude();
     if (!guided.text.trim()) fail("No guided review written", `${program} printed nothing.`);
     else if (latest.get(id) === token) {
-      save(id, { ...guided, program, details: runDetails(line), at: Date.now(), done: [] });
+      save(id, { ...guided, program, details: runDetails(commandLine(suggestCommand, suggestModels, suggestEfforts)), at: Date.now(), done: [] });
       set(null);
     }
   } catch (e) {

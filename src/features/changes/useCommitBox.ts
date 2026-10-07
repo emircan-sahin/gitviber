@@ -2,9 +2,9 @@ import { type RefObject, useEffect, useRef, useState } from "react";
 import { api, type Commit, errorMessage, SUGGEST_CANCELLED, type SuggestKind } from "@/lib/api";
 import { type CommitDraft, loadDraft, saveDraft } from "@/lib/repo/session";
 import { useSettings } from "@/lib/settings";
-import { commandLine, parseSuggestion, programOf, SUGGEST_PROMPT } from "@/lib/git/suggest";
+import { parseSuggestion, programOf, SUGGEST_PROMPT, withLeanFallback } from "@/lib/git/suggest";
 import { toast } from "@/lib/app/toast";
-import { toSuggestSettings } from "@/features/settings/SettingsDialog";
+import { toSuggestSettings, warnOldClaude } from "@/features/settings/SettingsDialog";
 
 const EMPTY_DRAFT: CommitDraft = { summary: "", body: "", coAuthors: [] };
 const messageOf = (c: Commit): CommitDraft => ({ summary: c.subject, body: c.body, coAuthors: [] });
@@ -127,7 +127,10 @@ export function useSuggestion(kind: SuggestKind, anchor?: RefObject<HTMLElement 
     running.current = true;
     setSuggesting(true);
     try {
-      const output = await ask(commandLine(suggestCommand, suggestModels, suggestEfforts));
+      // No second try for what's been dropped meanwhile.
+      const once = (line: string, lean: boolean) => (!lean && gen !== generation.current ? Promise.reject(SUGGEST_CANCELLED) : ask(line));
+      const { value: output, old } = await withLeanFallback(suggestCommand, suggestModels, suggestEfforts, false, once);
+      if (old) warnOldClaude();
       if (gen === generation.current && !land(output)) toast("error", `No ${what} suggested`, `${program} printed nothing.`, toSuggestSettings);
     } catch (e) {
       if (e !== SUGGEST_CANCELLED && gen === generation.current) toast("error", `Couldn't suggest a ${what}`, errorMessage(e), toSuggestSettings);

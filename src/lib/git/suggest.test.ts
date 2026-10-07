@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { commandLine, effortArg, effortLevels, effortOf, parseSuggestion, programOf, runDetails, type SuggestPreset } from "./suggest.ts";
+import { commandLine, effortArg, effortLevels, effortOf, parseSuggestion, programOf, runDetails, type SuggestPreset, withLeanFallback } from "./suggest.ts";
 
 const LEAN = '--strict-mcp-config --no-session-persistence --disable-slash-commands --tools ""';
 
@@ -101,4 +101,20 @@ test("the model and effort a command line names", () => {
   assert.deepEqual(runDetails("pi -p --model=x --thinking off"), ["x", "off"]);
   assert.deepEqual(runDetails("~/bin/claude -p"), []);
   assert.deepEqual(runDetails("llm -m"), []);
+});
+
+test("an older Claude Code runs again without the lean flags, keeping model and effort", async () => {
+  const lines: string[] = [];
+  const failing = (line: string, lean: boolean) => {
+    lines.push(line);
+    return lean ? Promise.reject("\"claude\" failed with code 1:\nerror: unknown option '--strict-mcp-config'") : Promise.resolve("ok");
+  };
+  assert.deepEqual(await withLeanFallback("claude -p", {}, {}, true, failing), { value: "ok", old: true });
+  assert.deepEqual(lines, [`claude -p ${LEAN.replace('""', "Read,Grep,Glob")} --model claude-sonnet-5 --effort medium`, "claude -p --model claude-sonnet-5 --effort medium"]);
+  // Any other failure, or another CLI's, is the error as it was.
+  await assert.rejects(withLeanFallback("claude -p", {}, {}, false, () => Promise.reject("not logged in")), /not logged in/);
+  lines.length = 0;
+  await assert.rejects(withLeanFallback("codex exec", {}, {}, false, failing), /unknown option/);
+  assert.equal(lines.length, 1);
+  assert.deepEqual(await withLeanFallback("claude -p", {}, {}, false, () => Promise.resolve(1)), { value: 1, old: false });
 });
