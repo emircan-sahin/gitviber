@@ -15,7 +15,7 @@ export function UpdatesSection() {
   const { release, checking, checkedAt } = useUpdates();
   // The main window checks and keeps the updater's state; it shows what a check finds.
   const status = IN_SETTINGS_WINDOW
-    ? "Checked by the main window, which shows what it finds."
+    ? "Checked by the main window, which comes forward to show what it finds."
     : !mode
       ? "Updates are off in development builds."
       : checking
@@ -36,7 +36,7 @@ export function UpdatesSection() {
             What's New…
           </Button>
         ) : (
-          <Button variant="outline" size="sm" disabled={!IN_SETTINGS_WINDOW && (!mode || checking)} onClick={() => runInWorkspace("app.checkForUpdates")}>
+          <Button variant="outline" size="sm" disabled={!IN_SETTINGS_WINDOW && (!mode || checking)} onClick={() => runInWorkspace("app.checkForUpdates", true)}>
             Check Now
           </Button>
         )}

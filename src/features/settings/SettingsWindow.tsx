@@ -3,8 +3,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/Toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { listenHere, runInMain, SETTINGS_WINDOW, SETTINGS_WINDOW_SECTION } from "@/lib/app/settingsWindow";
-import { fromPassedKey, useCommands } from "@/lib/commands/keybindings";
+import { listenHere, SETTINGS_WINDOW, SETTINGS_WINDOW_SECTION, showInMain } from "@/lib/app/settingsWindow";
+import { type Action, fromPassedKey, hasHandler, runCommand, useCommands } from "@/lib/commands/keybindings";
 import { stepUiScale } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import type { Recording } from "./sections/Shortcuts";
@@ -38,9 +38,14 @@ export function SettingsWindow() {
     const unlisten = [
       // ⌘, or a "Settings" button in the main window, once this one is open.
       listenHere<string>("settings-section", ({ payload }) => isSection(payload) && setSection(payload)),
-      // The menu bar's items while this window is in front (settings_window.rs): a click acts on the
-      // workspace as ever; a key this page let through is nothing here.
-      listenHere<string>("menu", ({ payload }) => fromPassedKey() || runInMain(payload)),
+      // The menu bar's items while this window is in front (settings_window.rs): one it has a command
+      // for (below) runs here, any other in the main window, brought forward. A key this page let
+      // through is nothing here.
+      listenHere<string>("menu", ({ payload: id }) => {
+        if (fromPassedKey()) return;
+        if (hasHandler(id as Action)) runCommand(id as Action);
+        else showInMain(id);
+      }),
       listenHere<string | null>(MAIN, ({ payload }) => setMain(payload)).then((f) => {
         emitTo("main", ASK).catch(() => {});
         return f;
@@ -50,6 +55,9 @@ export function SettingsWindow() {
   }, []);
   useCommands({
     "tab.close": () => getCurrentWindow().close(),
+    "window.reload": () => location.reload(),
+    "workbench.openSettings": () => {},
+    "help.shortcuts": () => setSection("shortcuts"),
     "view.zoomIn": () => stepUiScale(1),
     "view.zoomOut": () => stepUiScale(-1),
     "view.zoomReset": () => stepUiScale(0),

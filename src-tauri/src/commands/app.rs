@@ -308,6 +308,12 @@ pub async fn settings_window(app: AppHandle, section: Option<String>, open: bool
     crate::settings_window::show(&app, section.as_deref(), open)
 }
 
+/// A menu item the settings window passes on (settings_window.rs).
+#[tauri::command]
+pub fn settings_window_menu(app: AppHandle, id: String) {
+    crate::settings_window::run_in_main(&app, &id);
+}
+
 #[tauri::command]
 pub fn set_menu(
     app: AppHandle,

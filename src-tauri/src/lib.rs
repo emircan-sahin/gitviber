@@ -108,6 +108,9 @@ pub fn run() {
         })
         // Closing the main window ends the app: the page saves first, as on ⌘Q.
         .on_window_event(|window, event| {
+            if window.label() == settings_window::LABEL {
+                settings_window::on_event(window, event);
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" && !menu::quitting() {
                     api.prevent_close();
@@ -372,6 +375,7 @@ pub fn run() {
             commands::app::about,
             commands::app::set_menu,
             commands::app::settings_window,
+            commands::app::settings_window_menu,
             commands::app::pty_spawn,
             commands::app::pty_cwd,
             commands::app::pty_write,

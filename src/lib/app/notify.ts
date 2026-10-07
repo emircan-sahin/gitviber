@@ -5,6 +5,7 @@
 import { api, errorMessage, type NotifyPermission } from "../api";
 import { getSettings, type NotifyEvent, updateSettings } from "../settings";
 import { createStore } from "../store";
+import { listenHere } from "./settingsWindow";
 import { testPlan } from "./notifyState";
 import { failed, toast } from "./toast";
 
@@ -22,6 +23,10 @@ const asking = createStore(false);
 export const useAskingNotify = asking.use;
 // Each flip of the switch; an answer to an older one is let go.
 let turns = 0;
+
+// The settings window in front is the app in front too (settings_window.rs says as it changes).
+let settingsFocused = false;
+listenHere<boolean>("settings-window-focused", ({ payload }) => (settingsFocused = payload)).catch(() => {});
 
 /** Whether one can show now: granted (with banners or into Notification Center only), or a dev build that can't be asked. */
 const allowed = (state: NotifyPermission | null) => state === "granted" || state === "quiet" || state === "unbundled";
@@ -63,7 +68,7 @@ export async function enableNotifications(on: boolean) {
 export function notifyIfAway(event: NotifyEvent, title: string, body?: string, target?: string) {
   const s = getSettings();
   const state = permission.get();
-  if (!s.notify || !s[event] || document.hasFocus() || (state !== null && !allowed(state))) return false;
+  if (!s.notify || !s[event] || document.hasFocus() || settingsFocused || (state !== null && !allowed(state))) return false;
   api.notify(title, body ?? "", target).catch(() => {});
   return true;
 }

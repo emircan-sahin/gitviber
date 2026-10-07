@@ -1,3 +1,4 @@
+import { invoke } from "@tauri-apps/api/core";
 import { emitTo, type EventCallback, listen } from "@tauri-apps/api/event";
 
 // Settings in a window of its own beside the workspace (settings_window.rs, SettingsWindow.tsx).
@@ -17,3 +18,6 @@ export const listenHere = <T>(event: string, handler: EventCallback<T>) => liste
 
 /** Has the main window run a menu bar item as if picked there: the workspace and its commands live in it. */
 export const runInMain = (id: string) => void emitTo("main", "menu", id).catch(() => {});
+
+/** The same, with the main window brought forward first (settings_window.rs), for what shows there. */
+export const showInMain = (id: string) => void invoke("settings_window_menu", { id }).catch(() => {});
