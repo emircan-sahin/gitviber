@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { emitTo, type EventCallback, listen } from "@tauri-apps/api/event";
+import { type EventCallback, listen } from "@tauri-apps/api/event";
 
 // Settings in a window of its own beside the workspace (settings_window.rs, SettingsWindow.tsx).
 // Its page is settings.html?settings=<section>.
@@ -16,8 +16,8 @@ export const OTHER_WINDOW = IN_SETTINGS_WINDOW ? "main" : SETTINGS_WINDOW;
 /** Listens for what is sent to this window: Tauri hands an `emitTo` to every plain `listen`, in any window. */
 export const listenHere = <T>(event: string, handler: EventCallback<T>) => listen(event, handler, { target: { kind: "WebviewWindow", label: HERE } });
 
-/** Has the main window run a menu bar item as if picked there: the workspace and its commands live in it. */
-export const runInMain = (id: string) => void emitTo("main", "menu", id).catch(() => {});
-
-/** The same, with the main window brought forward first (settings_window.rs), for what shows there. */
-export const showInMain = (id: string) => void invoke("settings_window_menu", { id }).catch(() => {});
+/**
+ * Has the main window run a menu bar item as if picked there: the workspace and its commands live
+ * in it. `raise`: it comes forward first (settings_window.rs), for what shows there.
+ */
+export const runInMain = (id: string, raise = false) => void invoke("settings_window_menu", { id, raise }).catch(() => {});

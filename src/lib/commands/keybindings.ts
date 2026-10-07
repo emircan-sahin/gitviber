@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { bindingsFor, type Command, type CommandId, commandFor, eventChord, eventChords, formatChord, runsInEditor, runsInTerminal, runsWhileTyping, takenFromTerminal } from "./commands";
 import { getSettings, useSettings } from "../settings";
-import { IN_SETTINGS_WINDOW, runInMain, showInMain } from "../app/settingsWindow";
+import { IN_SETTINGS_WINDOW, runInMain } from "../app/settingsWindow";
 
 export { bindingsFor, COMMANDS, type Command, type CommandId, eventChord, formatChord, isReserved } from "./commands";
 
@@ -111,8 +111,8 @@ export function runCommand(id: Action) {
   handlerFor(id)?.();
 }
 
-/** A workspace command Settings runs: from the settings window, in the main window, brought forward when `visibly` (it shows its result). */
-export const runInWorkspace = (id: Action, visibly = false) => (!IN_SETTINGS_WINDOW ? runCommand(id) : visibly ? showInMain(id) : runInMain(id));
+/** A workspace command Settings runs: from the settings window, in the main window, brought forward when `raise` (it shows its result). */
+export const runInWorkspace = (id: Action, raise = false) => (IN_SETTINGS_WINDOW ? runInMain(id, raise) : runCommand(id));
 
 // A key the page lets through reaches the menu as that item's key equivalent. The page has
 // already decided the key does nothing here (typing, a local shortcut like ⌘↵ outside the

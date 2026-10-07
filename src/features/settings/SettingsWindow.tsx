@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/Toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { listenHere, SETTINGS_WINDOW, SETTINGS_WINDOW_SECTION, showInMain } from "@/lib/app/settingsWindow";
+import { listenHere, runInMain, SETTINGS_WINDOW, SETTINGS_WINDOW_SECTION } from "@/lib/app/settingsWindow";
 import { type Action, fromPassedKey, hasHandler, runCommand, useCommands } from "@/lib/commands/keybindings";
 import { stepUiScale } from "@/lib/settings";
 import { cn } from "@/lib/utils";
@@ -44,7 +44,7 @@ export function SettingsWindow() {
       listenHere<string>("menu", ({ payload: id }) => {
         if (fromPassedKey()) return;
         if (hasHandler(id as Action)) runCommand(id as Action);
-        else showInMain(id);
+        else runInMain(id, true);
       }),
       listenHere<string | null>(MAIN, ({ payload }) => setMain(payload)).then((f) => {
         emitTo("main", ASK).catch(() => {});

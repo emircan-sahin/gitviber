@@ -52,10 +52,12 @@ pub fn show(app: &AppHandle, section: Option<&str>, open: bool) -> Res<bool> {
     Ok(true)
 }
 
-/// A menu item the settings window hands to the workspace (SettingsWindow.tsx): the main window
-/// comes forward to run it, so what it does is in sight.
-pub fn run_in_main(app: &AppHandle, id: &str) {
-    crate::opened::raise(app);
+/// A menu item the settings window hands to the workspace (lib/app/settingsWindow.ts). `raise`:
+/// the main window comes forward to run it, so what it does is in sight.
+pub fn run_in_main(app: &AppHandle, id: &str, raise: bool) {
+    if raise {
+        crate::opened::raise(app);
+    }
     let _ = app.emit_to("main", "menu", id);
 }
 

@@ -538,15 +538,20 @@ listenHere<{ at: number; patch: Partial<Settings> }>(CHANGED, ({ payload: { at, 
 })
   // What the other window changed before this one listened is in storage by now.
   .then(() => {
-    current = load();
+    const stored = load();
+    if (JSON.stringify(stored) === JSON.stringify(current)) return;
+    current = stored;
     emit();
   })
   .catch(() => {});
 
 export function updateSettings(patch: Partial<Settings>) {
   apply(patch);
-  // Rises across reloads too, unlike a counter.
-  emitTo(OTHER_WINDOW, CHANGED, { at: performance.timeOrigin + performance.now(), patch }).catch(() => {});
+  // Rises across reloads too, unlike a counter. Kept here too: an older patch from the other
+  // window that lands later mustn't take this change back.
+  const at = performance.timeOrigin + performance.now();
+  Object.keys(patch).forEach((key) => heard.set(key, at));
+  emitTo(OTHER_WINDOW, CHANGED, { at, patch }).catch(() => {});
 }
 
 /**

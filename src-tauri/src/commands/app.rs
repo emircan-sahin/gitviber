@@ -310,8 +310,8 @@ pub async fn settings_window(app: AppHandle, section: Option<String>, open: bool
 
 /// A menu item the settings window passes on (settings_window.rs).
 #[tauri::command]
-pub fn settings_window_menu(app: AppHandle, id: String) {
-    crate::settings_window::run_in_main(&app, &id);
+pub fn settings_window_menu(app: AppHandle, id: String, raise: bool) {
+    crate::settings_window::run_in_main(&app, &id, raise);
 }
 
 #[tauri::command]
