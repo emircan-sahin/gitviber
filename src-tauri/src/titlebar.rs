@@ -88,8 +88,9 @@ pub fn setup<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     ];
     for (name, fullscreen) in steps {
         let window = window.clone();
+        // To this window's page only: the settings window's (translucency.ts) listens too.
         let block = RcBlock::new(move |_note: NonNull<AnyObject>| {
-            let _ = window.emit("fullscreen", fullscreen);
+            let _ = window.emit_to(window.label(), "fullscreen", fullscreen);
         });
         unsafe {
             let center: *mut AnyObject = msg_send![class!(NSNotificationCenter), defaultCenter];
