@@ -85,3 +85,31 @@ test("a draft flag that isn't a boolean is dropped, the scope beside it kept", (
   assert.deepEqual(parseChoice({ pulls: { scope: "created", draft: "true" } }, "pulls"), { scope: "created", draft: null });
   assert.deepEqual(parseChoice({ pulls: { scope: "created", draft: 1 } }, "pulls"), { scope: "created", draft: null });
 });
+
+test("choices saved before authors existed still read, and an author is never saved", () => {
+  assert.deepEqual(parseChoice({ pulls: { scope: "created", draft: true } }, "pulls"), { scope: "created", draft: true });
+  assert.deepEqual(parseChoice({ issues: { scope: "assigned", draft: null, author: "mona" } }, "issues"), { scope: "assigned", draft: null });
+  assert.deepEqual(withChoice({ pulls: { scope: null, draft: null } }, "issues", { scope: "mentioned", draft: null }), {
+    pulls: { scope: null, draft: null },
+    issues: { scope: "mentioned", draft: null },
+  });
+});
+
+test("50 labels and an author make one key, whatever order the labels came in", () => {
+  const labels = Array.from({ length: 50 }, (_, i) => `label ${i}, "q" | ${"🏷".repeat(i % 3)}`);
+  const a = narrowKey(narrow({ labels, author: "app-bot[bot]" }));
+  const b = narrowKey(narrow({ labels: [...labels].reverse(), author: "app-bot[bot]" }));
+  assert.equal(a, b);
+  assert.notEqual(a, narrowKey(narrow({ labels })));
+  assert.notEqual(a, narrowKey(narrow({ labels, author: "app-bot" })));
+  assert.equal(emptyText("pulls", "closed", narrow({ labels, author: "app-bot[bot]", draft: true })), "No closed draft pull requests by app-bot[bot] with all these labels.");
+});
+
+test("odd logins keep keys apart and the empty text whole", () => {
+  const long = "a".repeat(10_000);
+  assert.equal(emptyText("issues", "open", narrow({ author: long })), `No open issues by ${long}.`);
+  // An author that looks like the key's own JSON can't collide with another narrowing.
+  assert.notEqual(narrowKey(narrow({ author: '"],null' })), narrowKey(narrow({ labels: ['"],null'] })));
+  assert.notEqual(narrowKey(narrow({ author: "null" })), narrowKey(narrow({ author: null, scope: "created" })));
+  assert.notEqual(narrowKey(narrow({ author: "mona" })), narrowKey(narrow({ author: "Mona" })));
+});

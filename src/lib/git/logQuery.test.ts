@@ -42,3 +42,72 @@ test("whatever the name, the parser reads it back as one author", () => {
     assert.deepEqual(filter.grep, []);
   }
 });
+
+test("a clicked author keeps every other kind of term, in order", () => {
+  const before = 'fix "login flow" path:"src/a b" code:useState abc1234 AUTHOR:old author:"Old Name"';
+  const after = withAuthor(before, "Ada");
+  assert.equal(after, 'fix "login flow" path:"src/a b" code:useState abc1234 author:Ada');
+  const { filter, shas } = parseLogQuery(after);
+  assert.deepEqual(filter.grep, ["fix", "login flow", "abc1234"]);
+  assert.deepEqual(filter.paths, ["src/a b"]);
+  assert.equal(filter.code, "useState");
+  assert.deepEqual(filter.author, ["Ada"]);
+  assert.deepEqual(shas, ["abc1234"]);
+});
+
+test("names made of syntax read back as one author, never as another term", () => {
+  const names = [
+    "author:mallory",
+    "path:src code:x",
+    "-n",
+    "--all",
+    "a.b*",
+    "Ada (bot)",
+    "[^a]+$",
+    "C:\\Users\\ada",
+    "\\",
+    "!@#$%^&*()[]{}|;:',.<>?/~`=+",
+    "🦀 Ferris the Crab",
+    "李 小龍",
+    "Ada\tLovelace",
+    "x".repeat(10_000),
+    "Ada Lovelace ".repeat(1_000).trim(),
+  ];
+  for (const name of names) {
+    const { filter, shas } = parseLogQuery(withAuthor("fix", name));
+    assert.deepEqual(filter.author, [name], name.slice(0, 40));
+    assert.deepEqual(filter.grep, ["fix"], name.slice(0, 40));
+    assert.deepEqual(filter.paths, []);
+    assert.equal(filter.code, null);
+    assert.deepEqual(shas, []);
+  }
+});
+
+test("clicking authors one after another keeps one author term", () => {
+  let q = "fix";
+  for (let i = 0; i < 200; i++) q = withAuthor(q, i % 2 ? `Dev ${i}` : `dev${i}`);
+  assert.equal(q, 'fix author:"Dev 199"');
+});
+
+test("a long pathological search parses quickly", () => {
+  const start = performance.now();
+  for (const text of ['"'.repeat(20_000), 'a"'.repeat(10_000), "a ".repeat(10_000), `author:"${"x ".repeat(10_000)}`]) {
+    parseLogQuery(withAuthor(text, "Ada"));
+  }
+  assert.ok(performance.now() - start < 1_000);
+});
+
+// Bug repro: an unclosed quote in the box swallows the author term appended after it.
+test("an unclosed quote before a clicked author doesn't swallow it", { todo: "withAuthor appends after an open quote" }, () => {
+  const { filter } = parseLogQuery(withAuthor('"fix login', "Ada"));
+  assert.deepEqual(filter.author, ["Ada"]);
+});
+
+// Bug repro: git matches --author as a fixed substring of "Name <email>"; a name that loses its
+// quotes ("Kim KJ Lee") is no longer in "Kim \"KJ\" Lee <...>", so the list goes empty.
+test("a name holding quotes still matches its own commits", { todo: "quotes are stripped from the name" }, () => {
+  for (const name of ['Kim "KJ" Lee', 'O"Neil']) {
+    const [author] = parseLogQuery(withAuthor("", name)).filter.author;
+    assert.ok(name.includes(author), `${name} -> ${author}`);
+  }
+});
