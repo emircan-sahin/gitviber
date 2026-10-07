@@ -250,6 +250,7 @@ pub fn run() {
             commands::changes::recent_authors,
             commands::changes::suggest_message,
             commands::changes::suggest_pull,
+            commands::changes::suggest_guide,
             commands::changes::suggest_cancel,
             commands::history::commit_details,
             commands::sync::push,

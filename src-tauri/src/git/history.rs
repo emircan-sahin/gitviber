@@ -294,7 +294,7 @@ pub fn compare_files(repo: &Path, with: &str) -> Result<CompareFiles, String> {
 
 /// Where HEAD and `with` (a full ref) parted: their merge base. A branch that isn't here (not
 /// fetched, or deleted) says so, rather than that they share no commit.
-pub(super) fn parted_at(repo: &Path, with: &str) -> Result<String, String> {
+pub fn parted_at(repo: &Path, with: &str) -> Result<String, String> {
     validate_full_ref(repo, with)?;
     if run(
         repo,

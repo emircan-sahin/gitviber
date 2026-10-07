@@ -1,9 +1,10 @@
-//! Commit messages and pull request descriptions from the user's own agent CLI (`claude -p`, `codex exec`, …).
+//! Commit messages, pull request descriptions and guided reviews from the user's own agent CLI
+//! (`claude -p`, `codex exec`, …).
 //! GitViber itself sends nothing anywhere: it runs the command the user picked, in the repo,
 //! with the prompt and the diff on stdin. Where that goes is up to the command.
 
 use crate::{git, process};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -14,6 +15,8 @@ use std::time::{Duration, Instant};
 /// Enough for a focused change; past it the model gets the file list and the start of the diff.
 pub const MAX_DIFF: usize = 100 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(90);
+/// A guide is a much longer answer than a commit message: a section per part of the change.
+const GUIDE_TIMEOUT: Duration = Duration::from_secs(300);
 /// A pull request's commit subjects past this many go: the newest are kept, and room for the diff.
 const MAX_SUBJECTS: usize = 200;
 /// How every diff sent is written: a file list first, then the patch.
@@ -31,12 +34,14 @@ pub enum Scope {
     Amend,
 }
 
-/// Which suggestion a run is for: the commit box's and the pull request dialog's run side by side.
+/// Which suggestion a run is for: the commit box's, the pull request dialog's and a guided
+/// review's run side by side.
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Message,
     Pull,
+    Guide,
 }
 
 /// The run in progress of each kind, so Cancel (or starting another of that kind) can stop it.
@@ -44,6 +49,7 @@ pub enum Kind {
 pub struct Suggester {
     message: Mutex<Option<Arc<AtomicBool>>>,
     pull: Mutex<Option<Arc<AtomicBool>>>,
+    guide: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl Suggester {
@@ -51,6 +57,7 @@ impl Suggester {
         match kind {
             Kind::Message => &self.message,
             Kind::Pull => &self.pull,
+            Kind::Guide => &self.guide,
         }
         .lock()
         .unwrap()
@@ -132,12 +139,28 @@ fn cut(mut text: String) -> (String, bool) {
     (text, true)
 }
 
-/// What a pull request from HEAD into `base` (a remote-tracking branch) brings: its commits'
-/// subjects, the repository's PR template if it has one, then the diff from where the branch
-/// left `base`. Cut to MAX_DIFF like a commit's diff; true when it was.
+/// What a pull request from HEAD into `base` (a remote-tracking branch) brings: see
+/// `range_input`, with the repository's PR template if it has one.
 fn pull_input(repo: &Path, base: &str) -> Result<(String, bool), String> {
     git::check_pull_base(repo, base)?;
-    let range = format!("{base}..HEAD");
+    let template = pull_template(repo, base).map(|t| {
+        format!(
+            "The repository's pull request template; follow its sections:\n{}\n\n",
+            t.trim_end()
+        )
+    });
+    range_input(repo, base, "HEAD", template.as_deref())
+}
+
+/// What `to` brings over `from`: its commits' subjects, `extra`, then the diff from where it
+/// left `from`. Cut to MAX_DIFF like a commit's diff; true when it was.
+fn range_input(
+    repo: &Path,
+    from: &str,
+    to: &str,
+    extra: Option<&str>,
+) -> Result<(String, bool), String> {
+    let range = format!("{from}..{to}");
     // One past the cap, to tell a branch of exactly MAX_SUBJECTS from a longer one.
     let n = format!("-n{}", MAX_SUBJECTS + 1);
     let subjects = git::run_text(
@@ -154,19 +177,60 @@ fn pull_input(repo: &Path, base: &str) -> Result<(String, bool), String> {
     } else {
         "Commits, oldest first:".to_string()
     };
-    let mut text = format!("{heading}\n{}\n\n", subjects.join("\n"));
-    if let Some(t) = pull_template(repo, base) {
-        text.push_str(&format!(
-            "The repository's pull request template; follow its sections:\n{}\n\n",
-            t.trim_end()
-        ));
-    }
-    let merged = format!("{base}...HEAD");
+    let mut text = format!(
+        "{heading}\n{}\n\n{}",
+        subjects.join("\n"),
+        extra.unwrap_or("")
+    );
+    let merged = format!("{from}...{to}");
     text.push_str(&git::run_text(
         repo,
         &[&["diff"], &DIFF_OPTS[..], &[&merged, "--"]].concat(),
     )?);
     Ok(cut(text))
+}
+
+/// What a guided review is of: a commit, or HEAD's branch since it left `base` (a full ref).
+#[derive(Deserialize)]
+#[serde(tag = "of", rename_all = "lowercase")]
+pub enum Target {
+    Commit { sha: String },
+    Branch { base: String },
+}
+
+/// A guided review as the command wrote it, and the range it read: `base..head`, a commit's
+/// parent (or the empty tree) and the commit, or the merge base and HEAD.
+#[derive(Serialize, Debug)]
+pub struct Guided {
+    pub text: String,
+    pub base: String,
+    pub head: String,
+}
+
+/// What `target` gets: a commit's message and diff, or the branch's commits and diff (only
+/// what's committed, so the range read names it exactly).
+fn guide_input(repo: &Path, target: &Target) -> Result<(String, String, (String, bool)), String> {
+    match target {
+        Target::Commit { sha } => {
+            git::validate_rev(sha)?;
+            let base = git::parent_or_empty(repo, sha)?;
+            let message = git::run_text(repo, &["log", "-1", "--format=%B", sha, "--"])?;
+            let diff = git::run_text(
+                repo,
+                &[&["diff"], &DIFF_OPTS[..], &[&base, sha, "--"]].concat(),
+            )?;
+            let text = format!("The commit's message:\n{}\n\n{diff}", message.trim_end());
+            Ok((base, sha.clone(), cut(text)))
+        }
+        Target::Branch { base } => {
+            let from = git::parted_at(repo, base)?;
+            let head = git::run_text(repo, &["rev-parse", "HEAD"])?
+                .trim()
+                .to_string();
+            let input = range_input(repo, &from, &head, None)?;
+            Ok((from, head, input))
+        }
+    }
 }
 
 /// The PR template GitHub would use from `base`: in .github/, the root or docs/, any case.
@@ -227,7 +291,7 @@ pub fn run(
 ) -> Result<String, String> {
     let (diff, cut) = diff(repo, scope)?;
     let note = cut.then_some("the file list at its top is complete");
-    ask(repo, template, prompt, &diff, note, cancel)
+    ask(repo, template, prompt, &diff, note, TIMEOUT, cancel)
 }
 
 /// A pull request's title and description, for HEAD into `base`: see `ask`.
@@ -240,11 +304,25 @@ pub fn run_pull(
 ) -> Result<String, String> {
     let (input, cut) = pull_input(repo, base)?;
     let note = cut.then_some("the commits and the diff's file list come before it, in full");
-    ask(repo, template, prompt, &input, note, cancel)
+    ask(repo, template, prompt, &input, note, TIMEOUT, cancel)
+}
+
+/// A guided review of `target`: see `ask`.
+pub fn run_guide(
+    repo: &Path,
+    template: &str,
+    prompt: &str,
+    target: &Target,
+    cancel: &AtomicBool,
+) -> Result<Guided, String> {
+    let (base, head, (input, cut)) = guide_input(repo, target)?;
+    let note = cut.then_some("what comes before the diff and its file list are in full");
+    let text = ask(repo, template, prompt, &input, note, GUIDE_TIMEOUT, cancel)?;
+    Ok(Guided { text, base, head })
 }
 
 /// Runs the template with the prompt and the diff, returning what it printed; `cut`: the diff
-/// was cut, and what of it is whole. Stops on `cancel` or after TIMEOUT, killing the command
+/// was cut, and what of it is whole. Stops on `cancel` or after `timeout`, killing the command
 /// and anything it started.
 fn ask(
     repo: &Path,
@@ -252,6 +330,7 @@ fn ask(
     prompt: &str,
     diff: &str,
     cut: Option<&str>,
+    timeout: Duration,
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let prompt = match cut {
@@ -315,7 +394,7 @@ fn ask(
             .map(|s| Box::new(s) as Box<dyn Read + Send>),
     );
 
-    let deadline = Instant::now() + TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(st) = child.try_wait().map_err(|e| e.to_string())? {
             break st;
@@ -330,7 +409,7 @@ fn ask(
                 format!(
                     "\"{}\" gave no answer within {} seconds.",
                     argv[0],
-                    TIMEOUT.as_secs()
+                    timeout.as_secs()
                 )
             });
         }
@@ -366,10 +445,11 @@ mod tests {
         let s = Suggester::default();
         let message = s.start(Kind::Message);
         let pull = s.start(Kind::Pull);
+        let guide = s.start(Kind::Guide);
         assert!(!message.load(Ordering::Relaxed));
         s.cancel(Kind::Pull);
         assert!(pull.load(Ordering::Relaxed));
-        assert!(!message.load(Ordering::Relaxed));
+        assert!(!message.load(Ordering::Relaxed) && !guide.load(Ordering::Relaxed));
         // A second of the same kind stops the first.
         s.start(Kind::Message);
         assert!(message.load(Ordering::Relaxed));

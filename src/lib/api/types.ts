@@ -526,8 +526,18 @@ export interface AskPrompt {
 
 export type ResetMode = "soft" | "mixed" | "hard";
 
-/** Which suggestion a run is for: the commit box's message, or the pull request dialog's; each runs and cancels apart. */
-export type SuggestKind = "message" | "pull";
+/** Which suggestion a run is for: the commit box's message, the pull request dialog's, or a guided review; each runs and cancels apart. */
+export type SuggestKind = "message" | "pull" | "guide";
+
+/** What a guided review is of: a commit, or HEAD's branch since it left `base` (a full ref). */
+export type GuideTarget = { of: "commit"; sha: string } | { of: "branch"; base: string };
+
+/** A guided review as the command printed it, and the range it read (`base..head`: a commit's parent and the commit, or the merge base and HEAD). */
+export interface Guided {
+  text: string;
+  base: string;
+  head: string;
+}
 
 /** Two points compared (the Compare screen): the commit ids they name, and what lies between them. */
 export interface Comparison {

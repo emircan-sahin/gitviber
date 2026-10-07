@@ -150,6 +150,24 @@ pub async fn suggest_pull(
     out
 }
 
+/// The same, for a guided review of a commit or of the branch since it left its base.
+#[tauri::command]
+pub async fn suggest_guide(
+    state: State<'_, AppState>,
+    command: String,
+    prompt: String,
+    target: suggest::Target,
+) -> Res<suggest::Guided> {
+    let cancel = state.suggest.start(suggest::Kind::Guide);
+    let flag = cancel.clone();
+    let out = in_repo(&state, move |r| {
+        suggest::run_guide(r, &command, &prompt, &target, &flag)
+    })
+    .await;
+    state.suggest.finish(suggest::Kind::Guide, &cancel);
+    out
+}
+
 #[tauri::command]
 pub fn suggest_cancel(state: State<'_, AppState>, kind: suggest::Kind) {
     state.suggest.cancel(kind)
