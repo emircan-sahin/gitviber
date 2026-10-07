@@ -4,7 +4,7 @@ import { type CommitDraft, loadDraft, saveDraft } from "@/lib/repo/session";
 import { useSettings } from "@/lib/settings";
 import { commandLine, parseSuggestion, programOf, SUGGEST_PROMPT } from "@/lib/git/suggest";
 import { toast } from "@/lib/app/toast";
-import { openSettings } from "@/features/settings/SettingsDialog";
+import { toSuggestSettings } from "@/features/settings/SettingsDialog";
 
 const EMPTY_DRAFT: CommitDraft = { summary: "", body: "", coAuthors: [] };
 const messageOf = (c: Commit): CommitDraft => ({ summary: c.subject, body: c.body, coAuthors: [] });
@@ -113,8 +113,6 @@ export function useSuggestion(kind: SuggestKind) {
   );
   const program = programOf(suggestCommand);
   const cancel = () => api.suggestCancel(kind).catch(() => {});
-  // A missing CLI or a stale model id is fixed there.
-  const toSettings = { label: "Open Settings", run: () => openSettings("commit") };
   // Bumped by `drop`: a suggestion still on its way describes what was there before.
   const generation = useRef(0);
   const drop = () => {
@@ -127,9 +125,9 @@ export function useSuggestion(kind: SuggestKind) {
     setSuggesting(true);
     try {
       const output = await ask(commandLine(suggestCommand, suggestModels));
-      if (gen === generation.current && !land(output)) toast("error", `No ${what} suggested`, `${program} printed nothing.`, toSettings);
+      if (gen === generation.current && !land(output)) toast("error", `No ${what} suggested`, `${program} printed nothing.`, toSuggestSettings);
     } catch (e) {
-      if (e !== SUGGEST_CANCELLED && gen === generation.current) toast("error", `Couldn't suggest a ${what}`, errorMessage(e), toSettings);
+      if (e !== SUGGEST_CANCELLED && gen === generation.current) toast("error", `Couldn't suggest a ${what}`, errorMessage(e), toSuggestSettings);
     } finally {
       running.current = false;
       setSuggesting(false);

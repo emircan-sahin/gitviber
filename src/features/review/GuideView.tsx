@@ -10,13 +10,13 @@ import { relativeTime } from "@/lib/format";
 import { programOf } from "@/lib/git/suggest";
 import { markdownLink } from "@/lib/github/markdown";
 import type { GuideSelection, Selection } from "@/lib/repo/selection";
-import { type GuideSection, parseGuide, unplaced } from "@/lib/review/guide";
+import { type GuideSection, matchPath, parseGuide, unplaced } from "@/lib/review/guide";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import { followLink, MarkdownBody, MarkdownPage } from "@/features/viewer/MarkdownView";
 import { Mermaid } from "@/features/viewer/markdown/Mermaid";
 import { openSettings } from "@/features/settings/SettingsDialog";
-import { cancelGuide, generateGuide, guideId, guideTarget, markDone, useGuide } from "./guides";
+import { cancelGuide, generateGuide, guideId, markDone, useGuide } from "./guides";
 
 const PREFIX = "guide-";
 const components: Components = { a: markdownLink((href) => followLink(href, () => {}, PREFIX)) };
@@ -38,21 +38,22 @@ export function GuideView({ sel, status, onOpen }: Props) {
   const id = guideId(status?.root ?? "", sel, branch);
   const { saved, run } = useGuide(id);
   const guide = useMemo(() => (saved ? parseGuide(saved.text) : null), [saved]);
-  // The files of the range the guide read, as the diff names them.
   const files = useAsyncValue(
     saved ? () => (sel.of === "commit" ? api.commitFiles(sel.commit.sha) : api.rangeFiles(saved.base, saved.head)) : null,
     [saved?.base, saved?.head],
     [] as FileChange[],
   );
   const byPath = useMemo(() => new Map(files.map((f) => [f.path, f])), [files]);
-  const open = (file: FileChange) =>
-    onOpen(sel.of === "commit" ? { kind: "commit", commit: sel.commit, file } : { kind: "pr-file", range: { base: saved!.base, head: saved!.head, label: `${sel.label}...${saved!.head.slice(0, 7)}` }, file });
+  const open =
+    saved &&
+    ((file: FileChange) =>
+      onOpen(sel.of === "commit" ? { kind: "commit", commit: sel.commit, file } : { kind: "pr-file", range: { base: saved.base, head: saved.head, label: `${sel.label}...${saved.head.slice(0, 7)}` }, file }));
 
   const running = run === "running";
-  const generate = () => void generateGuide(id, guideTarget(sel));
+  const generate = () => void generateGuide(id, sel);
   // status.head is HEAD's short id.
   const moved = sel.of === "branch" && saved && status?.head && !saved.head.startsWith(status.head);
-  const done = guide ? guide.sections.filter((_, i) => saved!.done.includes(i)).length : 0;
+  const done = guide && saved ? guide.sections.filter((_, i) => saved.done.includes(i)).length : 0;
   const rest = guide && files.length ? unplaced(guide, files.map((f) => f.path)) : [];
 
   return (
@@ -92,12 +93,13 @@ export function GuideView({ sel, status, onOpen }: Props) {
       </div>
 
       {running && (
-        <Notice icon={<LoaderCircle className="animate-spin" />}>
+        <Notice role="status" icon={<LoaderCircle className="animate-spin" />}>
           Asking {program} to explain {sel.of === "commit" ? "this commit" : "this branch"}. It can take a few minutes, and it goes on while you look at other tabs.
         </Notice>
       )}
-      {!running && typeof run === "object" && run && (
-        <Notice icon={<TriangleAlert />} className="text-destructive">
+      {run === "stopped" && <Notice icon={<Square />}>Stopped before {program} was done{saved ? ": this is the guided review from before." : "."}</Notice>}
+      {typeof run === "object" && run && (
+        <Notice role="alert" icon={<TriangleAlert />} className="text-destructive">
           <span className="whitespace-pre-wrap">Couldn't write a guided review: {run.error}</span>
         </Notice>
       )}
@@ -148,7 +150,7 @@ export function GuideView({ sel, status, onOpen }: Props) {
           ))}
           {rest.length > 0 && (
             <>
-              <h3>In no section</h3>
+              <h2>In no section</h2>
               <FileList paths={rest} byPath={byPath} open={open} />
             </>
           )}
@@ -158,9 +160,9 @@ export function GuideView({ sel, status, onOpen }: Props) {
   );
 }
 
-function Notice({ icon, className, children }: { icon: ReactNode; className?: string; children: ReactNode }) {
+function Notice({ icon, role, className, children }: { icon: ReactNode; role?: "status" | "alert"; className?: string; children: ReactNode }) {
   return (
-    <div className={cn("mb-4 flex items-start gap-2 rounded-md border border-border bg-panel px-3 py-2 text-[12.5px] [&>svg]:mt-0.5 [&>svg]:size-3.5 [&>svg]:shrink-0", className)}>
+    <div role={role} className={cn("mb-4 flex items-start gap-2 rounded-md border border-border bg-panel px-3 py-2 text-[12.5px] [&>svg]:mt-0.5 [&>svg]:size-3.5 [&>svg]:shrink-0", className)}>
       {icon}
       <div className="min-w-0">{children}</div>
     </div>
@@ -171,12 +173,13 @@ function Notice({ icon, className, children }: { icon: ReactNode; className?: st
 function Section({ n, section: s, done, onDone, children }: { n: number; section: GuideSection; done: boolean; onDone: (on: boolean) => void; children: ReactNode }) {
   return (
     <section className={cn(done && "opacity-60")}>
-      <h2 className="flex items-baseline gap-2">
-        <input type="checkbox" checked={done} onChange={(e) => onDone(e.target.checked)} aria-label={`Done with section ${n}`} />
-        <span className="min-w-0">
+      <div className="flex items-baseline gap-2">
+        {/* Named by the section's title, outside the heading, so the heading reads as a title alone. */}
+        <input type="checkbox" checked={done} onChange={(e) => onDone(e.target.checked)} aria-labelledby={`${PREFIX}section-${n}`} />
+        <h2 id={`${PREFIX}section-${n}`} className="min-w-0 flex-1">
           {n}. {s.title || "Untitled"}
-        </span>
-      </h2>
+        </h2>
+      </div>
       {!done && (
         <>
           {s.summary && <MarkdownBody text={s.summary} components={components} idPrefix={`${PREFIX}${n}-`} />}
@@ -193,16 +196,19 @@ function Section({ n, section: s, done, onDone, children }: { n: number; section
 }
 
 /** Each path opens its diff; one the diff doesn't have (the model misnamed it) shows as text. */
-function FileList({ paths, byPath, open }: { paths: string[]; byPath: Map<string, FileChange>; open: (f: FileChange) => void }) {
-  if (!paths.length) return null;
+function FileList({ paths, byPath, open }: { paths: string[]; byPath: Map<string, FileChange>; open: ((f: FileChange) => void) | null }) {
+  // As the diff names them: a model's `b/src/x.ts` and `src/x.ts` are one file.
+  const known = new Set(byPath.keys());
+  const shown = [...new Set(paths.map((p) => matchPath(p, known) ?? p))];
+  if (!shown.length) return null;
   return (
     <div className="mb-4 flex flex-col gap-0.5 text-[12.5px]">
-      {paths.map((p) => {
+      {shown.map((p) => {
         const file = byPath.get(p);
         return (
           <div key={p} className="flex min-w-0 items-center gap-1.5">
             <FileIcon path={p} />
-            {file ? (
+            {file && open ? (
               <button className="min-w-0 truncate font-mono text-primary hover:underline" title={`Open the diff of ${p}`} onClick={() => open(file)}>
                 {p}
               </button>

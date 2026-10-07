@@ -27,11 +27,10 @@ interface Props {
 }
 
 function tabLabel(sel: Selection) {
-  if (sel.kind === "pull" || sel.kind === "issue" || sel.kind === "changes" || sel.kind === "guide") return selectionPath(sel);
   if (sel.kind === "compare") return `Compare ${compareLabel(sel)}`;
   // A note by its name, as Obsidian's tabs have it.
   if (sel.kind === "vault") return noteName(sel.path);
-  return basename(selectionPath(sel));
+  return isFileSelection(sel) ? basename(selectionPath(sel)) : selectionPath(sel);
 }
 
 /**
@@ -73,7 +72,7 @@ export function TabStrip({ tabs, active, onActivate, onClose, onCloseTabs, onPin
   };
 
   // As VS Code: two open files of one name show their folders too.
-  const folders = distinctFolders(tabs.filter((t) => t.sel.kind !== "pull" && t.sel.kind !== "issue" && t.sel.kind !== "changes" && t.sel.kind !== "compare" && t.sel.kind !== "guide").map((t) => selectionPath(t.sel)));
+  const folders = distinctFolders(tabs.filter((t) => isFileSelection(t.sel) || t.sel.kind === "vault").map((t) => selectionPath(t.sel)));
 
   return (
     <div

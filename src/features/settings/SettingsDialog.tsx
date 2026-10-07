@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { resetSettings } from "@/lib/settings";
+import type { ToastAction } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { createStore } from "@/lib/store";
 import { GroupLabel } from "./controls";
@@ -46,6 +47,9 @@ function setOpen(s: Section | null) {
 export function openSettings(section: Section = lastSection) {
   setOpen(section);
 }
+
+/** A suggestion's error toast's way out: a missing CLI or a stale model id is fixed there. */
+export const toSuggestSettings: ToastAction = { label: "Open Settings", run: () => openSettings("commit") };
 
 /** `main`: the open project's main worktree, for its own settings; null with none open. */
 export function SettingsDialog({ main }: { main: string | null }) {

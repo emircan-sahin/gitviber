@@ -115,7 +115,7 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
       <ContextMenuItem onSelect={() => actions.openAll(c)}>
         <Files /> Open All Changes
       </ContextMenuItem>
-      {/* The agent CLI set up for commit messages: off with them. */}
+      {/* Hidden while suggestions are off. */}
       {suggestEnabled && (
         <ContextMenuItem onSelect={() => actions.explain(c)}>
           <Sparkles /> Explain Commit
