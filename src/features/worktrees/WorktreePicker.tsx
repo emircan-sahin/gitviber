@@ -13,11 +13,12 @@ import { plural, relativeTime } from "@/lib/format";
 import { cleanable, type Hue, hueColor, mainBackOffer, shortPath, worktreeHues, worktreeName, worktreeOf } from "@/lib/git/worktrees";
 import { useWorktreeColors } from "@/lib/git/worktreeColors";
 import { folderName } from "@/lib/path";
-import { terminalsIn, useAgentsWorking, useNeedsYou } from "@/lib/terminal/terminals";
+import { terminalsIn, usePaneLooks } from "@/lib/terminal/terminals";
+import { isNews, LOOK_LABEL, type Look, mostUrgent } from "@/lib/terminal/agentLook";
 import { copyText } from "@/lib/app/clipboard";
 import { revealProject } from "@/lib/app/openIn";
 import { RowAction } from "@/components/RowAction";
-import { NeedsYouDot, WorkingDot } from "@/components/NeedsYouDot";
+import { StatusDot } from "@/components/StatusDot";
 import { CiBadge, ciLabel } from "@/components/CiBadge";
 import { PullStateIcon } from "@/features/github/shared/StateBadges";
 import { type BranchPull, useWorktreePulls } from "./useWorktreePulls";
@@ -51,12 +52,12 @@ interface Props {
   onOpenPull: (p: Pull) => void;
 }
 
-/** The worktrees of the terminals in `cwds` (ones that need the user, or whose agent works). */
-function needing(worktrees: Worktree[], cwds: string[]) {
-  const out = new Set<string>();
-  for (const cwd of cwds) {
+/** Each worktree's most urgent look of the terminals in it, by its path. */
+function looksIn(worktrees: Worktree[], panes: [string, Look][]) {
+  const out = new Map<string, Look>();
+  for (const [cwd, look] of panes) {
     const w = worktreeOf(cwd, worktrees);
-    if (w) out.add(w.path);
+    if (w) out.set(w.path, mostUrgent([out.get(w.path), look])!);
   }
   return out;
 }
@@ -69,8 +70,7 @@ function needing(worktrees: Worktree[], cwds: string[]) {
  */
 export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerge, onRemove, onRename, onLock, onUnlock, onNew, onMainBack, onGitHub, onOpenPull }: Props) {
   const [open, setOpen] = useState(false);
-  const calling = useNeedsYou();
-  const agentsWorking = useAgentsWorking();
+  const paneLooks = usePaneLooks();
   const [list, setList] = useState(worktrees);
   const { index, setIndex, move } = usePickerIndex(list.length);
   const listId = useId();
@@ -135,9 +135,9 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const offer = mainBackOffer(list, branches);
   const hues = worktreeHues(list, colors);
   const hue = current ? (hues.get(current.path) ?? null) : null;
-  const needy = needing(list, calling);
-  const busy = needing(list, agentsWorking);
-  const elsewhere = list.some((w) => !w.current && needy.has(w.path)) ? " · a terminal in another worktree needs you" : "";
+  const looks = looksIn(list, paneLooks);
+  const away = mostUrgent(list.filter((w) => !w.current).map((w) => looks.get(w.path)));
+  const elsewhere = isNews(away) ? " · a terminal in another worktree needs you" : "";
   const usable = (w: Worktree) => !w.current && !w.prunable && !w.bare;
   const then = (fn: (w: Worktree) => void) => (w: Worktree) => {
     setOpen(false);
@@ -217,7 +217,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 </span>
               )}
               <ChevronsUpDown className="size-3 shrink-0 text-subtle" />
-              {elsewhere && <NeedsYouDot className="absolute top-1 right-1" />}
+              {isNews(away) && <StatusDot look={away} className="absolute top-1 right-1" />}
             </button>
           </PopoverTrigger>
         </Tip>
@@ -261,8 +261,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
                 time={states[w.path]?.updated ?? branches.find((b) => !b.remote && b.name === w.branch)?.timestamp}
                 state={states[w.path]}
                 hue={hues.get(w.path) ?? null}
-                calling={needy.has(w.path)}
-                agentWorking={busy.has(w.path)}
+                look={looks.get(w.path) ?? null}
                 pull={pullOf(w.branch)}
                 onOpenPull={openPull}
                 into={current?.branch ?? null}
@@ -355,8 +354,7 @@ function WorktreeRow({
   time,
   state,
   hue,
-  calling,
-  agentWorking,
+  look,
   pull,
   onOpenPull,
   into,
@@ -374,10 +372,8 @@ function WorktreeRow({
   time: number | undefined;
   state: WorktreeState | undefined;
   hue: Hue | null;
-  /** A terminal in it needs the user. */
-  calling: boolean;
-  /** An agent in a terminal in it is working. */
-  agentWorking: boolean;
+  /** The most urgent look of the terminals in it. */
+  look: Look | null;
   /** Its branch's pull request, when a cached PR list has one. */
   pull: BranchPull | undefined;
   onOpenPull: (p: Pull) => void;
@@ -428,16 +424,10 @@ function WorktreeRow({
           <span className={cn("truncate font-mono text-[11.5px]", !w.branch && "opacity-70")}>{branch}</span>
           {/* "main" alone read as the branch: the main folder can be on any. */}
           {w.main && <Chip hot={hot}>main folder</Chip>}
-          {calling ? (
-            <Tip label="A terminal here needs you">
-              <NeedsYouDot className={cn(hot && "bg-primary-foreground")} />
+          {look && (
+            <Tip label={`${LOOK_LABEL[look]} · in a terminal here`}>
+              <StatusDot look={look} className={cn(hot && "text-primary-foreground")} />
             </Tip>
-          ) : (
-            agentWorking && (
-              <Tip label="An agent in a terminal here is working">
-                <WorkingDot className={cn(hot && "border-primary-foreground")} />
-              </Tip>
-            )
           )}
           {w.inUse ? (
             <Tip label={w.lockReason ?? "Locked by a running process"}>

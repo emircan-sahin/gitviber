@@ -1,11 +1,10 @@
 import { listen } from "@tauri-apps/api/event";
-import { useMemo, useSyncExternalStore } from "react";
 import { notifyIfAway } from "../app/notify";
 import { getSettings, type NotifyEvent } from "../settings";
 import { folderName } from "../path";
 import { kittyNotes, type Note, osc777Note, osc9Note } from "./attention";
 import { type CommandEnd, endText } from "./commandMarks";
-import { panes, type Pane, revealPane, state, subscribe, update } from "./terminals";
+import { panes, type Pane, revealPane, state, update } from "./terminals";
 
 /**
  * A bell, or a notification escape (OSC 9, 777, 99: Claude Code, Codex), from a pane not being
@@ -81,16 +80,3 @@ try {
 window.addEventListener("focus", () => {
   for (const p of panes.values()) if (document.activeElement === p.term.textarea) lookedAt(p.id);
 });
-
-/** Folders of the panes that need the user, "\0"-joined: a string, so a hook re-renders only when it changes. */
-const needing = () =>
-  state.groups
-    .flatMap((g) => g.panes.filter((p) => p.needsYou).map((p) => p.cwd))
-    .sort()
-    .join("\0");
-
-/** The folders of panes that need the user (needsYou), for the worktree picker's marks. */
-export function useNeedsYou() {
-  const key = useSyncExternalStore(subscribe, needing);
-  return useMemo(() => (key ? key.split("\0") : []), [key]);
-}

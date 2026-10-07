@@ -6,7 +6,8 @@ import { enableNotifications } from "../app/notify";
 import { toast } from "../app/toast";
 import { getSettings } from "../settings";
 import { readJson, writeJson } from "../storage";
-import { type AgentEntry, agentsWaiting, type AgentState, byUrgency, nextAgent, type PaneAgent } from "./agentState";
+import { type AgentEntry, agentsWaiting, type AgentState, byUrgency, nextAgent, type PaneAgent, shownState } from "./agentState";
+import { type Look, paneLook } from "./agentLook";
 import { needsYou } from "./needsYou";
 import { panes, type Pane, state, subscribe, update } from "./terminals";
 
@@ -76,17 +77,13 @@ function suggestNotifications(name: string) {
   });
 }
 
-/** Folders of the panes whose agent is working, "\0"-joined, as useNeedsYou's. */
-const working = () =>
-  state.groups
-    .flatMap((g) => g.panes.filter((p) => p.agent?.state === "working").map((p) => p.cwd))
-    .sort()
-    .join("\0");
+/** Each pane's look (agentLook) with its folder, for the marks outside the panel. */
+const looks = () => JSON.stringify(state.groups.flatMap((g) => g.panes.map((p) => [p.cwd, paneLook(p)]).filter(([, look]) => look)));
 
-/** The folders of panes whose agent is working, for the worktree picker. */
-export function useAgentsWorking() {
-  const key = useSyncExternalStore(subscribe, working);
-  return useMemo(() => (key ? key.split("\0") : []), [key]);
+/** [folder, look] of every pane that shows a dot, re-rendering only when one changes. */
+export function usePaneLooks() {
+  const key = useSyncExternalStore(subscribe, looks);
+  return useMemo(() => JSON.parse(key) as [string, Look][], [key]);
 }
 
 /** Every pane's agent, in every tab: the ones that need the user first, longest waiting first within each. */
@@ -94,9 +91,7 @@ export function agentList(): AgentEntry[] {
   const list = state.groups.flatMap((g) =>
     g.panes.flatMap((p): AgentEntry[] => {
       if (!p.agent) return [];
-      const s = p.agent.state;
-      const shown = s === "idle" ? "finished" : (s ?? "running");
-      return [{ pane: p.id, name: p.agent.name, state: shown, unseen: !!p.needsYou, cwd: p.cwd, since: since.get(p.id) ?? 0 }];
+      return [{ pane: p.id, name: p.agent.name, state: shownState(p.agent.state), unseen: !!p.needsYou, cwd: p.cwd, since: since.get(p.id) ?? 0 }];
     }),
   );
   return list.sort(byUrgency);

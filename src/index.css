@@ -28,6 +28,8 @@
   --modified: #e2b84c;
   --renamed: #b392f0;
   --conflict: #ff6b8b;
+  /* News not looked at (StatusDot): blue, apart from the accent, which some themes make purple. */
+  --info: #4a9ff5;
   /* Solid status chips (badges, counts, the viewed check): bright fill, dark ink. */
   --added-fill: var(--added);
   --removed-fill: var(--removed);
@@ -85,6 +87,7 @@
   --modified: #d6b155;
   --renamed: #ad94e8;
   --conflict: #f27593;
+  --info: #539bf5;
   --hatch: #ffffff08;
 
   /* 11% and 16% of the status color on --background, like dark's. */
@@ -119,6 +122,7 @@
   --modified: #bc4c00;
   --renamed: #8250df;
   --conflict: #bf3989;
+  --info: #0969da;
   --added-fill: #4ac26b;
   --removed-fill: #ff7b72;
   --modified-fill: #f5a524;
@@ -163,6 +167,7 @@
   --modified: #ebcb8b;
   --renamed: #ba97b4;
   --conflict: #d5937e;
+  --info: #88c0d0;
   --hatch: #ffffff08;
 
   --add-bg: #3b4348;
@@ -194,6 +199,7 @@
   --modified: #f9e2af;
   --renamed: #89b4fa;
   --conflict: #fab387;
+  --info: #89b4fa;
   --hatch: #ffffff08;
 
   --add-bg: #2d343b;
@@ -225,6 +231,7 @@
   --modified: #e0af68;
   --renamed: #bb9af7;
   --conflict: #ff9e64;
+  --info: #7aa2f7;
   --hatch: #ffffff08;
 
   --add-bg: #292f2d;
@@ -256,6 +263,7 @@
   --modified: #ebbcba;
   --renamed: #c4a7e7;
   --conflict: #f6c177;
+  --info: #9ccfd8;
   --hatch: #ffffff08;
 
   --add-bg: #272b38;
@@ -287,6 +295,7 @@
   --modified: #bc951a;
   --renamed: #8f93d2;
   --conflict: #e176aa;
+  --info: #4da0da;
   --hatch: #ffffff08;
 
   --add-bg: #103832;
@@ -318,6 +327,7 @@
   --modified: #8a5812;
   --renamed: #1a5ad8;
   --conflict: #b33641;
+  --info: #1a5ad8;
   --added-fill: #40a02b;
   --removed-fill: #d20f39;
   --modified-fill: #df8e1d;
@@ -357,6 +367,7 @@
   --modified: #925856;
   --renamed: #736287;
   --conflict: #8c5e1f;
+  --info: #286983;
   --added-fill: #56949f;
   --removed-fill: #b4637a;
   --modified-fill: #d7827e;
@@ -396,6 +407,7 @@
   --modified: #826300;
   --renamed: #5d61a9;
   --conflict: #ba3072;
+  --info: #1e6ca4;
   --added-fill: #859900;
   --removed-fill: #dc322f;
   --modified-fill: #b58900;
@@ -435,6 +447,7 @@
   --color-modified: var(--modified);
   --color-renamed: var(--renamed);
   --color-conflict: var(--conflict);
+  --color-info: var(--info);
   --color-added-fill: var(--added-fill);
   --color-removed-fill: var(--removed-fill);
   --color-modified-fill: var(--modified-fill);
@@ -973,7 +986,22 @@
     transform: translateY(6px);
   }
 }
+/* A working agent's dot (StatusDot). Opacity alone, which the compositor animates without a
+   repaint; the cost is a small layer per working dot redrawn each frame, so it holds still in a
+   hidden window and under reduced motion. */
+.agent-working {
+  animation: agent-working 1.6s ease-in-out infinite;
+}
+:root[data-window-hidden] .agent-working {
+  animation-play-state: paused;
+}
+@keyframes agent-working {
+  50% {
+    opacity: 0.35;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
+  .agent-working,
   .logo-draw,
   .logo-draw *,
   .splash-text,

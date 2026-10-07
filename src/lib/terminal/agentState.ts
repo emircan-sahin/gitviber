@@ -1,7 +1,7 @@
 // A pane's coding agent (agents.rs): what it is, how to resume it, and what a change of its state
 // is worth telling the user. Pure, so it runs under `node --test`.
 
-/** "working" covers Claude Code's busy and its running a shell command; "waiting" is its asking. */
+/** "working" is Claude Code's busy; "idle" covers its shell (the turn is over, a background shell runs on); "waiting" is its asking. */
 export type AgentState = "working" | "waiting" | "idle";
 
 export interface PaneAgent {
@@ -83,6 +83,9 @@ export interface AgentEntry {
   /** Since when it's been in `state` (ms); 0 when not known. */
   since: number;
 }
+
+/** A state as the agents list says it: idle is finished, an agent that doesn't say is running. */
+export const shownState = (s: AgentState | null): AgentEntry["state"] => (s === "idle" ? "finished" : (s ?? "running"));
 
 const RANK: Record<AgentEntry["state"], number> = { waiting: 0, working: 2, running: 2, finished: 3 };
 // A finish not looked at yet waits for the user too, after the questions.
