@@ -99,21 +99,24 @@ function workspace(width: number, saved?: unknown) {
     const own = pid === "viewer" ? api.flex : api.panel(pid);
     return { element: els[i], id: pid, idIsStable: true, mutableValues: {}, panelConstraints: { ...CONSTRAINTS[pid], ...own } };
   });
-  const group = { disabled: false, element: { children: els }, id, mutableState: { defaultLayout: undefined, disableCursor: false, expandedPanelSizes: {}, layouts: {} }, orientation: "horizontal", panels, separators: [] };
+  let W = width;
+  const element = {
+    children: els,
+    get offsetWidth() {
+      return W;
+    },
+  };
+  const group = { disabled: false, element, id, mutableState: { defaultLayout: undefined, disableCursor: false, expandedPanelSizes: {}, layouts: {} }, orientation: "horizontal", panels, separators: [] };
   api.group.elementRef.current = group.element;
   api.group.groupRef.current = getImperativeGroupMethods({ groupId: id });
   for (const pid of ["list", "files"]) api.panel(pid).panelRef.current = getImperativePanelMethods({ groupId: id, panelId: pid });
 
-  let W = width;
   // Each panel's offsetWidth: its flex-grow's part of the group (a layout below the mins adds up to
-  // over 100), snapped as WebKit does, from its rounded left edge to its rounded right one.
+  // over 100), rounded on its own as WebKit's Element::offsetWidth does, so the sum can be a pixel off.
   const flow = (layout: Record<string, number>) => {
     const sum = IDS.reduce((a, pid) => a + layout[pid], 0);
-    let edge = 0;
     IDS.forEach((pid, i) => {
-      const end = edge + (layout[pid] / sum) * W;
-      els[i].w = Math.round(end) - Math.round(edge);
-      edge = end;
+      els[i].w = Math.round((layout[pid] / sum) * W);
     });
   };
   let tasks: (() => void)[] = [];
@@ -180,16 +183,28 @@ function workspace(width: number, saved?: unknown) {
         api.flex.onResize();
       });
     },
-    /** A drag of the divider after panel `at` (0: list|viewer, 1: viewer|files) by `dx` pixels. */
+    /**
+     * A drag of the divider after panel `at` (0: list|viewer, 1: viewer|files) by `dx` pixels, a
+     * pixel a move, each move its own task. Throws when anything else moves the layout mid-drag.
+     */
     drag(at: number, dx: number) {
-      act(() => {
-        const s = state();
-        const layout = adjustLayoutByDelta({ delta: (dx / W) * 100, initialLayout: s.layout, panelConstraints: s.derivedPanelConstraints, pivotIndices: [at, at + 1], prevLayout: s.layout, trigger: "mouse-or-touch" });
-        dragging = true;
-        if (!layoutsEqual(s.layout, layout)) groups.updateMountedGroup(group, { ...s, layout });
+      const s = state();
+      dragging = true;
+      try {
+        for (let i = 1; i <= Math.abs(dx); i++) {
+          const prev = state();
+          const layout = adjustLayoutByDelta({ delta: ((Math.sign(dx) * i) / W) * 100, initialLayout: s.layout, panelConstraints: s.derivedPanelConstraints, pivotIndices: [at, at + 1], prevLayout: prev.layout, trigger: "mouse-or-touch" });
+          act(() => {
+            if (!layoutsEqual(prev.layout, layout)) groups.updateMountedGroup(group, { ...prev, layout });
+            // The code view's ResizeObserver, with the move's widths.
+            api.flex.onResize();
+          });
+          if (!layoutsEqual(state().layout, layout)) throw new Error(`moved mid-drag at ${i}px: ${JSON.stringify(layout)} became ${JSON.stringify(state().layout)}`);
+        }
+      } finally {
         dragging = false;
-        groups.updateMountedGroup(group, state(), { isUserInteraction: true });
-      });
+      }
+      act(() => groups.updateMountedGroup(group, state(), { isUserInteraction: true }));
     },
     dispose() {
       unsubscribe();
@@ -450,7 +465,9 @@ test("1,000 random sequences of window resizes, drags and toggles keep the invar
         w.resizeWindow(int(560, 1200));
         w.resizeWindow(2560);
       }
-      check(JSON.stringify(w.px()) === JSON.stringify(back), "drifts over squeeze cycles", `${JSON.stringify(back)} became ${JSON.stringify(w.px())}`);
+      // The sidebars to the pixel; the code view within the one its rounded offsetWidth can be off.
+      const after = w.px();
+      check(after.list === back.list && after.files === back.files && Math.abs(after.viewer - back.viewer) <= 1, "drifts over squeeze cycles", `${JSON.stringify(back)} became ${JSON.stringify(after)}`);
     } catch (e) {
       const kind = e instanceof Broken ? e.kind : e instanceof Unsettled ? "never settles" : "throws";
       const seen = broken.get(kind) ?? { count: 0, first: `seed ${seed}: ${(e as Error).message}\n    ${log.join("\n    ")}` };

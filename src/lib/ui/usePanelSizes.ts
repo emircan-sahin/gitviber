@@ -38,6 +38,9 @@ export function usePanelSizes(key: string, orientation: Orientation, fixed: Reco
     let restoring = false;
     // The group's length at the last layout: a window resize changes it, a drag doesn't.
     let seen = 0;
+    // Not measure()'s sum: WebKit rounds each panel's offsetWidth on its own, so the sum wobbles by
+    // a pixel mid-drag, and a restore then pulled the sidebar back to its saved width under the pointer.
+    const length = () => (orientation === "horizontal" ? element.current?.offsetWidth : element.current?.offsetHeight) ?? 0;
 
     const measure = () => {
       let total = 0;
@@ -54,7 +57,8 @@ export function usePanelSizes(key: string, orientation: Orientation, fixed: Reco
     const restore = () => {
       restoring = false;
       const layout = groupRef.current?.getLayout() ?? {};
-      const total = (seen = measure());
+      const total = measure();
+      seen = length();
       const flex = Object.keys(layout).find((id) => !(id in fixed));
       if (!total || !flex) return;
       const shown = ids.filter((id) => id in layout);
@@ -99,7 +103,8 @@ export function usePanelSizes(key: string, orientation: Orientation, fixed: Reco
         onLayoutChanged(layout: Layout, meta: LayoutChangedMeta) {
           const before = last;
           last = layout;
-          const total = (seen = measure());
+          const total = measure();
+          seen = length();
           if (!total || asking) return;
           const moved = (id: string) => id in layout && (!(id in before) || toPixels(layout[id], total) !== toPixels(before[id], total));
           if (meta.isUserInteraction) return save(layout, total, ids.filter(moved));
@@ -114,7 +119,7 @@ export function usePanelSizes(key: string, orientation: Orientation, fixed: Reco
       flex: {
         minSize: flexMin,
         onResize: () => {
-          if (measure() !== seen) scheduleRestore();
+          if (length() !== seen) scheduleRestore();
         },
       },
       /** A fixed panel's props: its ref, limits, the size it mounts at, and its pixels kept on a window resize. */
