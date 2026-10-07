@@ -1,3 +1,5 @@
+import { isRecord } from "../storage.ts";
+
 /**
  * Guided reviews: the user's agent CLI explains a commit or a branch as ordered sections, the
  * way a reviewer should read it (suggest.rs runs it, as for commit messages). Pure, so the
@@ -25,22 +27,49 @@ export interface Guide {
 }
 
 const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
-const isObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 
-/** The JSON in an answer: all of it, a fenced block's, or what lies between its first `{` and last `}` (a "Here's the review:" before it). */
-function jsonOf(answer: string): unknown {
-  const fence = /^(`{3,}|~{3,})[^\n]*\n([\s\S]*?)\n\1\s*$/m.exec(answer);
-  const open = answer.indexOf("{");
-  const braces = open < 0 ? "" : answer.slice(open, answer.lastIndexOf("}") + 1);
-  for (const candidate of [answer, fence?.[2], braces]) {
-    if (!candidate) continue;
+/** `answer` read as JSON, then with the trailing commas models write taken out; undefined for neither. */
+function parse(answer: string): unknown {
+  for (const candidate of [answer, answer.replace(/,(\s*[}\]])/g, "$1")])
     try {
       return JSON.parse(candidate);
     } catch {
       // The next way of reading it.
     }
+}
+
+/**
+ * The JSON in an answer: all of it, or the first `{…}` with a guide's fields, wherever it is (a
+ * fence, a "Here's the review:" or a `{ retries }` in the words around it). One pass that pairs
+ * the braces outside strings, so a brace in a string or a long answer costs no more.
+ */
+function jsonOf(answer: string): unknown {
+  const whole = parse(answer);
+  if (whole !== undefined) return whole;
+  let depth = 0;
+  let start = 0;
+  let quoted = false;
+  for (let i = 0; i < answer.length; i++) {
+    const c = answer[i];
+    // Strings count only inside an object: the words around it have quotes and apostrophes of their own.
+    if (quoted) {
+      if (c === "\\") i++;
+      else if (c === '"') quoted = false;
+    } else if (c === '"' && depth) quoted = true;
+    else if (c === "{" && !depth++) start = i;
+    else if (c === "}" && depth && !--depth) {
+      const v = parse(answer.slice(start, i + 1));
+      if (isRecord(v) && ("title" in v || "summary" in v || "sections" in v)) return v;
+    }
   }
   return null;
+}
+
+/** The changed file (of `paths`) a model's path names: as written, or without git's a/ or b/. */
+export function matchPath(path: string, paths: Set<string>) {
+  if (paths.has(path)) return path;
+  const bare = path.replace(/^[ab]\//, "");
+  return paths.has(bare) ? bare : null;
 }
 
 /**
@@ -50,11 +79,11 @@ function jsonOf(answer: string): unknown {
  */
 export function parseGuide(output: string): Guide | null {
   const v = jsonOf(output.replace(/\r\n?/g, "\n").trim());
-  if (!isObject(v)) return null;
-  const sections = (Array.isArray(v.sections) ? v.sections : []).filter(isObject).map((s) => ({
+  if (!isRecord(v)) return null;
+  const sections = (Array.isArray(v.sections) ? v.sections : []).filter(isRecord).map((s) => ({
     title: text(s.title),
     summary: text(s.summary),
-    files: (Array.isArray(s.files) ? s.files : []).map((f) => text(f).replace(/^\.\//, "")).filter(Boolean),
+    files: [...new Set((Array.isArray(s.files) ? s.files : []).map((f) => text(f).replace(/^\.\//, "")).filter(Boolean))],
     risk: text(s.risk),
   }));
   const guide = {
@@ -71,6 +100,7 @@ export function parseGuide(output: string): Guide | null {
 
 /** The changed files (`paths`) no section names, so none is left out of the review. */
 export const unplaced = (guide: Guide, paths: string[]) => {
-  const named = new Set(guide.sections.flatMap((s) => s.files));
+  const all = new Set(paths);
+  const named = new Set(guide.sections.flatMap((s) => s.files.map((f) => matchPath(f, all))));
   return paths.filter((p) => !named.has(p));
 };

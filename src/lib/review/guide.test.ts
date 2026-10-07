@@ -89,17 +89,20 @@ test("empty and misnamed parts", () => {
   assert.deepEqual(unplaced(named, ["docs/my notes/über.md"]), []);
 });
 
-// Real model output that falls back to raw text today; each is a bug report, not the contract yet.
-test("a brace in the prose before the JSON", { todo: "jsonOf takes the first `{` of the answer" }, () => {
+// Real model output.
+test("a brace in the prose before the JSON", () => {
   assert.deepEqual(parseGuide("I looked at the `{ retries }` option first. Here it is:\n" + pretty), guide);
 });
-test("a brace in the prose after the JSON", { todo: "jsonOf takes the last `}` of the answer" }, () => {
+test("a brace in the prose after the JSON", () => {
   assert.deepEqual(parseGuide(pretty + "\nAsk if you want more on `{ retries }`."), guide);
 });
-test("a trailing comma", { todo: "JSON.parse rejects it; models write it" }, () => {
+test("an object in the prose that isn't the guide", () => {
+  assert.deepEqual(parseGuide('Options like `{}` or `{"retries": 3}` stay. Here it is:\n' + pretty), guide);
+});
+test("a trailing comma", () => {
   assert.deepEqual(parseGuide(pretty.replace('"src/retry.ts"\n', '"src/retry.ts",\n')), guide);
 });
-test("a file named with git's a/ or b/ prefix", { todo: "only ./ is stripped" }, () => {
+test("a file named with git's a/ or b/ prefix", () => {
   const g = parseGuide(JSON.stringify({ sections: [{ title: "x", files: ["b/src/retry.ts"] }] }))!;
   assert.deepEqual(unplaced(g, ["src/retry.ts"]), []);
 });
