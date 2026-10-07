@@ -32,7 +32,8 @@ pub fn raise(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
     };
-    if window.is_visible().unwrap_or(false) {
+    // Minimized counts as shown: macOS calls a window in the Dock not visible.
+    if window.is_visible().unwrap_or(false) || window.is_minimized().unwrap_or(false) {
         let _ = window.unminimize();
         let _ = window.set_focus();
     }

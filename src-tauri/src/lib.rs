@@ -138,6 +138,7 @@ pub fn run() {
                     webview.state::<AppState>().ptys.kill_all();
                     webview.state::<AppState>().agents.forget_all();
                     askpass::decline_all();
+                    quit::reset();
                 }
                 if let Some(window) = webview.get_webview_window(webview.label()) {
                     vibrancy::reset(&window);

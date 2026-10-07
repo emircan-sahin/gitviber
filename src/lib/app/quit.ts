@@ -1,4 +1,5 @@
 import { api } from "../api";
+import { netActivity } from "../repo/netActivity";
 import { getSettings } from "../settings";
 import { ask } from "./ask";
 import { listenHere } from "./settingsWindow";
@@ -14,16 +15,23 @@ export const beforeQuit = (work: () => Promise<unknown>) => void before.push(wor
 const BEFORE_QUIT_MS = 1000;
 
 const stops: (() => Promise<string[]>)[] = [];
-/** What quitting would stop that's worth asking about ("2 agents working"), for Settings → Terminal's ask. */
+/** What leaving would stop in the terminals ("2 agents working"), registered by them. */
 export const stoppedByQuit = (what: () => Promise<string[]>) => void stops.push(what);
+
+/** What leaving the app now stops that's worth asking about: a push or pull on its way, the terminals' commands. A quit and an update's restart ask it. */
+export async function stoppedByLeaving() {
+  const terminals = (await Promise.all(stops.map((what) => what().catch(() => [])))).flat();
+  const net = netActivity()?.label;
+  return net ? [net, ...terminals] : terminals;
+}
 
 /** Whether the user lets the quit go: asked only while something runs. quit.rs ends the app if this hangs. */
 async function letGo() {
   if (!getSettings().askBeforeQuit) return true;
-  const stopped = (await Promise.all(stops.map((what) => what().catch(() => [])))).flat();
-  if (!stopped.length) return true;
+  const running = await stoppedByLeaving();
+  if (!running.length) return true;
   await api.quitAnswer("asking");
-  return ask(`Quitting GitViber stops ${stopped.join(" and ")}.`, { title: "Quit GitViber", kind: "warning", okLabel: "Quit" });
+  return ask(`Quitting GitViber stops what's still running: ${running.join(", ")}.`, { title: "Quit GitViber", kind: "warning", okLabel: "Quit" });
 }
 
 let leaving = false;
