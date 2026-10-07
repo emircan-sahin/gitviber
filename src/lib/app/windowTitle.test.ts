@@ -12,3 +12,15 @@ test("the window is named after its repo and branch", () => {
   // Not read yet.
   assert.equal(windowTitle("/w/demo-app", null, null), "demo-app");
 });
+
+test("a title keeps names as they are, whatever their letters or length", () => {
+  assert.equal(windowTitle("/Users/ada/Projeler/çalışma 😀", "özellik/giriş", null), "çalışma 😀 — özellik/giriş");
+  const long = "x".repeat(300);
+  assert.equal(windowTitle(`/w/${long}`, long, null), `${long} — ${long}`);
+  // A share on Windows, and a root git printed with a trailing separator.
+  assert.equal(windowTitle("\\\\server\\share\\demo", "main", null), "demo — main");
+  assert.equal(windowTitle("C:\\code\\demo\\", "main", null), "demo — main");
+  // The branch wins over the commit; an unborn branch has a name and no commit yet.
+  assert.equal(windowTitle("/w/demo", "main", "abcdef0"), "demo — main");
+  assert.equal(windowTitle("/w/new", "main", null), "new — main");
+});

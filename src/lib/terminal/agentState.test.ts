@@ -106,3 +106,11 @@ test("a quit asks about agents mid-turn and running commands, not about agents d
   // One that doesn't say its state may be mid-turn.
   assert.deepEqual(quitStops([{ busy: true, agent: claude(null) }, { busy: true }, { busy: true, agent: claude("working") }, { busy: true, agent: claude("idle") }]), ["1 agent working", "2 commands running"]);
 });
+
+test("a quit counts each pane once, agents before commands", () => {
+  const quiet = { busy: false };
+  assert.deepEqual(quitStops([quiet, quiet, { busy: false, agent: claude(null) }]), []);
+  // An agent asking for permission is mid-turn: quitting stops it.
+  assert.deepEqual(quitStops([{ busy: true, agent: claude("waiting") }]), ["1 agent working"]);
+  assert.deepEqual(quitStops([{ busy: true }, { busy: true }, { busy: true, agent: claude("working") }, { busy: true, agent: claude("working") }, { busy: true, agent: claude("working") }]), ["3 agents working", "2 commands running"]);
+});
