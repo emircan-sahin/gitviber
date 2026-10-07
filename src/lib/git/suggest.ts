@@ -18,7 +18,8 @@ export const SUGGEST_PRESETS = {
     label: "Claude Code",
     command: "claude -p",
     modelFlag: "--model",
-    model: "claude-sonnet-5",
+    // The alias follows the newest Sonnet; a pinned id ("claude-sonnet-5") stayed on the older one.
+    model: "sonnet",
     models: { label: "Anthropic's model list", url: "https://platform.claude.com/docs/en/about-claude/models/overview" },
     effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"], default: "medium" },
     // Measured on a 5-line commit: 50 s and 6 turns with the user's MCP servers, skills and xhigh

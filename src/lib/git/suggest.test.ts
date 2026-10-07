@@ -39,10 +39,10 @@ test("program of a template", () => {
 
 test("a preset runs with its model and effort", () => {
   // Medium until another is picked; Claude Code's runs are lean.
-  assert.equal(commandLine(" claude -p ", {}, {}), `claude -p ${LEAN} --model claude-sonnet-5 --effort medium`);
-  assert.equal(commandLine("claude -p", {}, { claude: "high" }), `claude -p ${LEAN} --model claude-sonnet-5 --effort high`);
+  assert.equal(commandLine(" claude -p ", {}, {}), `claude -p ${LEAN} --model sonnet --effort medium`);
+  assert.equal(commandLine("claude -p", {}, { claude: "high" }), `claude -p ${LEAN} --model sonnet --effort high`);
   // A guided review reads the patch file, and nothing else needs a tool.
-  assert.equal(commandLine("claude -p", {}, {}, true), `claude -p ${LEAN.replace('""', "Read,Grep,Glob")} --model claude-sonnet-5 --effort medium`);
+  assert.equal(commandLine("claude -p", {}, {}, true), `claude -p ${LEAN.replace('""', "Read,Grep,Glob")} --model sonnet --effort medium`);
   assert.equal(commandLine("codex exec", {}, {}, true), commandLine("codex exec", {}, {}));
   assert.equal(commandLine("codex exec", { codex: "gpt-x" }, { codex: "high" }), "codex exec -m gpt-x -c model_reasoning_effort=high");
   assert.equal(commandLine("codex exec", {}, {}), "codex exec -m gpt-6-luna -c model_reasoning_effort=medium");
@@ -95,7 +95,7 @@ test("effort flags split into the argv the CLI expects", () => {
 });
 
 test("the model and effort a command line names", () => {
-  assert.deepEqual(runDetails(commandLine("claude -p", {}, {})), ["claude-sonnet-5", "medium"]);
+  assert.deepEqual(runDetails(commandLine("claude -p", {}, {})), ["sonnet", "medium"]);
   assert.deepEqual(runDetails(commandLine("codex exec", { codex: "" }, { codex: "high" })), ["high"]);
   assert.deepEqual(runDetails("opencode run --agent plan -m a/b --variant max"), ["a/b", "max"]);
   assert.deepEqual(runDetails("pi -p --model=x --thinking off"), ["x", "off"]);
@@ -110,7 +110,7 @@ test("an older Claude Code runs again without the lean flags, keeping model and 
     return lean ? Promise.reject("\"claude\" failed with code 1:\nerror: unknown option '--strict-mcp-config'") : Promise.resolve("ok");
   };
   assert.deepEqual(await withLeanFallback("claude -p", {}, {}, true, failing), { value: "ok", old: true });
-  assert.deepEqual(lines, [`claude -p ${LEAN.replace('""', "Read,Grep,Glob")} --model claude-sonnet-5 --effort medium`, "claude -p --model claude-sonnet-5 --effort medium"]);
+  assert.deepEqual(lines, [`claude -p ${LEAN.replace('""', "Read,Grep,Glob")} --model sonnet --effort medium`, "claude -p --model sonnet --effort medium"]);
   // Any other failure, or another CLI's, is the error as it was.
   await assert.rejects(withLeanFallback("claude -p", {}, {}, false, () => Promise.reject("not logged in")), /not logged in/);
   lines.length = 0;
