@@ -1,4 +1,5 @@
 import type { IssueLabel } from "@/lib/api";
+import { RowFilter } from "@/components/RowFilter";
 import { cn } from "@/lib/utils";
 
 /** A label's color is whatever its author typed; only a plain hex reaches the style. */
@@ -7,29 +8,19 @@ export function LabelDot({ label, className }: { label: Pick<IssueLabel, "color"
   return <span className={cn("size-1.5 shrink-0 rounded-full bg-subtle", className)} style={color ? { backgroundColor: color } : undefined} />;
 }
 
-/** With `onClick`, a button: the issue list filters by the label. */
+/** With `onClick`, the issue list filters by the label. */
 export function LabelChip({ label, onClick }: { label: IssueLabel; onClick?: () => void }) {
-  const El = onClick ? "button" : "span";
-  return (
-    <El
-      {...(onClick && {
-        title: "Filter by this label",
-        // Not a tab stop in every row: the Label filter above does the same from the keyboard.
-        tabIndex: -1,
-        onClick: (e: React.MouseEvent) => {
-          e.stopPropagation();
-          onClick();
-        },
-        // The row opens and pins its issue on a double-click.
-        onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
-      })}
-      className={cn(
-        "inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 text-[10.5px] leading-4 text-muted-foreground",
-        onClick && "hover:border-border-strong hover:text-foreground focus-visible:text-foreground",
-      )}
-    >
+  const look = "inline-flex max-w-40 items-center gap-1 rounded-full border border-border px-1.5 text-[10.5px] leading-4 text-muted-foreground";
+  const content = (
+    <>
       <LabelDot label={label} />
       <span className="truncate">{label.name}</span>
-    </El>
+    </>
+  );
+  if (!onClick) return <span className={look}>{content}</span>;
+  return (
+    <RowFilter title={`Filter by label ${label.name}`} onFilter={onClick} className={cn(look, "hover:border-border-strong hover:text-foreground")}>
+      {content}
+    </RowFilter>
   );
 }

@@ -172,9 +172,11 @@ export interface Narrow {
   draft: boolean | null;
   /** Carrying all of them. */
   labels: string[];
+  /** Opened by this login, as the lists show it. */
+  author: string | null;
 }
 
-export const NO_NARROW: Narrow = { scope: null, draft: null, labels: [] };
+export const NO_NARROW: Narrow = { scope: null, draft: null, labels: [], author: null };
 
 export const github = {
   account: () => invoke<GitHubAccount>("gh_account"),

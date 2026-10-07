@@ -1,7 +1,9 @@
-import { MessageSquare, Plus, RefreshCw } from "lucide-react";
+import { ListFilter, MessageSquare, Plus, RefreshCw } from "lucide-react";
 import { useCallback, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Button } from "@/components/ui/button";
+import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
+import { RowFilter } from "@/components/RowFilter";
 import { Tip } from "@/components/ui/tooltip";
 import { errorMessage, fullName, type Issue, type IssueLabel, isNotConnected, issues, type Narrow, type Target } from "@/lib/api";
 import { useGitHubData } from "@/lib/github/githubCache";
@@ -34,7 +36,7 @@ export function IssuesPanel({ repoKey, activeKey, onOpen }: { repoKey: string | 
   const [creating, setCreating] = useState<{ target: Target } | null>(null);
   const acct = useGitHubAccount();
   const { account, origin, parent, upstream } = acct;
-  const { choice, setChoice, labels, setLabels, narrow, meReason } = useNarrow("issues", repoKey, account, acct.error);
+  const { choice, setChoice, labels, setLabels, author, setAuthor, narrow, meReason } = useNarrow("issues", repoKey, account, acct.error);
   const addLabel = (label: IssueLabel) => setLabels((l) => (l.some((m) => m.name === label.name) ? l : [...l, label]));
   // Forks start with issues off: nothing is listed where they are.
   const tag = narrowKey(narrow);
@@ -59,9 +61,10 @@ export function IssuesPanel({ repoKey, activeKey, onOpen }: { repoKey: string | 
 
   const clearNarrow = () => {
     setChoice(NO_CHOICE);
+    setAuthor(null);
     setLabels([]);
   };
-  const rowProps = { match: find.needle ? match : null, filter, narrow, onLabel: addLabel, onClearNarrow: clearNarrow, activeKey, onOpen };
+  const rowProps = { match: find.needle ? match : null, filter, narrow, onLabel: addLabel, onAuthor: setAuthor, onClearNarrow: clearNarrow, activeKey, onOpen };
   const ownRows = (roomy: boolean) => <IssueRows items={own.data ?? null} error={error} roomy={roomy} {...rowProps} />;
 
   return (
@@ -87,7 +90,7 @@ export function IssuesPanel({ repoKey, activeKey, onOpen }: { repoKey: string | 
           )}
         </div>
       </div>
-      <NarrowBar kind="issues" choice={choice} onChange={setChoice} meReason={meReason} />
+      <NarrowBar kind="issues" choice={choice} onChange={setChoice} author={author} onAuthor={setAuthor} meReason={meReason} />
       <SelectedLabels labels={labels} onChange={setLabels} />
       {find.bar}
       {parent && upstream ? (
@@ -149,6 +152,7 @@ function IssueRows({
   filter,
   narrow,
   onLabel,
+  onAuthor,
   onClearNarrow,
   activeKey,
   onOpen,
@@ -161,6 +165,7 @@ function IssueRows({
   filter: Filter;
   narrow: Narrow;
   onLabel: (label: IssueLabel) => void;
+  onAuthor: (login: string) => void;
   onClearNarrow: () => void;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
@@ -184,8 +189,22 @@ function IssueRows({
         const sel: Selection = { kind: "issue", issue: i };
         const key = selectionKey(sel);
         const active = activeKey === key;
+        // The keyboard's way to what the author and label chips do on a click.
+        const extra = (
+          <>
+            <ContextMenuItem disabled={narrow.author === i.author} onSelect={() => onAuthor(i.author)}>
+              <ListFilter /> Filter by author {i.author}
+            </ContextMenuItem>
+            {i.labels.map((l) => (
+              <ContextMenuItem key={l.name} disabled={narrow.labels.includes(l.name)} onSelect={() => onLabel(l)}>
+                <ListFilter /> Filter by label {l.name}
+              </ContextMenuItem>
+            ))}
+            <ContextMenuSeparator />
+          </>
+        );
         return (
-          <LinkMenu key={i.number} url={i.url}>
+          <LinkMenu key={i.number} url={i.url} extra={extra}>
           <div
             role="option"
             aria-selected={active}
@@ -209,7 +228,9 @@ function IssueRows({
               <div className="mt-0.5 flex items-center gap-1.5 text-[10.5px] text-subtle">
                 <span className="font-mono">#{i.number}</span>
                 <span>·</span>
-                <span className="truncate">{i.author}</span>
+                <RowFilter title={`Filter by author ${i.author}`} onFilter={() => onAuthor(i.author)}>
+                  {i.author}
+                </RowFilter>
                 {i.comments > 0 && (
                   <span className="flex shrink-0 items-center gap-0.5">
                     <MessageSquare className="size-2.5" />

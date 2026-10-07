@@ -19,13 +19,14 @@ type Props = ComponentProps<typeof HistoryPanel> & { branches: Branch[] };
 /**
  * History, and for a fork a second pane under it: the original's default branch, with what
  * your branch doesn't have yet marked. Without GitHub, or for any other repo, just the history.
+ * `filterAuthor` is your branch's only: the search box doesn't look through the original's.
  */
-export function ForkHistory(props: Props) {
+export function ForkHistory({ filterAuthor, ...props }: Props) {
   const { parent, origin } = useGitHubAccount();
   // Bumped by the pane's refresh button: fetch the original again.
   const [fetches, setFetches] = useState(0);
   const [loading, setLoading] = useState(false);
-  if (!parent) return <HistoryPanel {...props} />;
+  if (!parent) return <HistoryPanel {...props} filterAuthor={filterAuthor} />;
   const forkBranch = origin?.defaultBranch ?? null;
 
   // GitHub's "Sync fork": origin's default branch catches up with the original, on GitHub.
@@ -47,7 +48,7 @@ export function ForkHistory(props: Props) {
     <RepoPanes
       id="history"
       panes={[
-        { id: "origin", title: "Your branch", detail: props.status?.branch ?? "", scrolls: true, children: <HistoryPanel {...props} /> },
+        { id: "origin", title: "Your branch", detail: props.status?.branch ?? "", scrolls: true, children: <HistoryPanel {...props} filterAuthor={filterAuthor} /> },
         {
           id: "parent",
           title: "Original",

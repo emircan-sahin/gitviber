@@ -59,6 +59,11 @@ impl LogFilter {
     fn args(&self) -> Vec<String> {
         let mut out: Vec<String> = self.grep.iter().map(|g| format!("--grep={g}")).collect();
         out.extend(self.author.iter().map(|a| format!("--author={a}")));
+        // The list shows authors as committed (%an <%ae>); with a .mailmap, git would match the
+        // mapped ones instead, and a listed author could find nothing.
+        if !self.author.is_empty() {
+            out.push("--no-use-mailmap".into());
+        }
         if !out.is_empty() {
             out.extend(["--regexp-ignore-case".into(), "--fixed-strings".into()]);
         }

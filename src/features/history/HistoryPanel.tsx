@@ -18,6 +18,7 @@ import { type DropAt, firstParentLine, reorderBefore } from "./edits";
 import { useHistoryEdits } from "./useHistoryEdits";
 import { usePickedCommits } from "./usePickedCommits";
 import type { Points } from "@/lib/repo/compareMark";
+import type { AuthorFilter } from "./commitActions";
 import { CommitRow, type Reveal } from "./CommitRow";
 
 interface Props {
@@ -60,9 +61,11 @@ interface Props {
   showRefs?: GraphRefs;
   /** Shows what changed between two commits, or one and the working tree, in place of the list. */
   onComparePoints?: (points: Points) => void;
+  /** Narrows the history to a commit's author; only for the lists the search box looks through. */
+  filterAuthor?: AuthorFilter;
 }
 
-export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, ciTarget, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs, onComparePoints }: Props) {
+export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMore, refresh, activeKey, onOpen, onHover, headSha, web, ciTarget, empty = "No commits yet.", graph = true, reveal = null, worktrees = [], onOpenRepo, pinHead = false, jump = null, onJumped, refMenu, showRefs, onComparePoints, filterAuthor }: Props) {
   const [open, setOpen] = useState<string | null>(reveal?.sha ?? null);
   useEffect(() => {
     if (reveal) setOpen(reveal.sha);
@@ -126,6 +129,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
     refMenu,
     showRefs,
     comparePoints: onComparePoints,
+    filterAuthor,
   };
 
   // Opening a commit collapses the one above it; WebKit has no scroll anchoring, so without
@@ -240,6 +244,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
                   if (!justDragged() && !click(c, e)) toggle(c.sha, e.currentTarget);
                 }}
                 onMenu={() => !pickedSet.has(c.sha) && clear()}
+                filterAuthor={filterAuthor && (() => filterAuthor.set(c))}
                 activeKey={activeKey}
                 onOpen={onOpen}
                 onHover={onHover}

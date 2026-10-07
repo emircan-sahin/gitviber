@@ -4,7 +4,7 @@ import { Tip } from "@/components/ui/tooltip";
 import { api, type Commit, errorMessage, type GraphRefs, LOG_PAGE } from "@/lib/api";
 import { useFind } from "@/lib/ui/find";
 import { isTyping, matchesCommand, useShortcut } from "@/lib/commands/keybindings";
-import { isEmptyFilter, parseLogQuery } from "@/lib/git/logQuery";
+import { authorTerm, isEmptyFilter, parseLogQuery, withAuthor } from "@/lib/git/logQuery";
 import { toast } from "@/lib/app/toast";
 import { BisectBar } from "./BisectBar";
 import { ForkHistory } from "./ForkHistory";
@@ -15,7 +15,7 @@ import { GraphMenu, GraphNotice } from "./GraphMenu";
 import { useAllBranches } from "./useAllBranches";
 import { hideRefs, useAllBranchesSetting, useGraphRefs } from "./useGraphRefs";
 import { HistoryPanel } from "./HistoryPanel";
-import type { RefMenu } from "./commitActions";
+import type { AuthorFilter, RefMenu } from "./commitActions";
 import type { Reveal } from "./CommitRow";
 
 const SYNTAX = "Words match the message (all of them, any case).\nauthor:name  path:src/app  code:text a commit added or removed\nA SHA or prefix finds that commit. Quotes keep spaces.";
@@ -49,7 +49,8 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
   const { query, scope, reveal } = search;
   const input = useRef<HTMLInputElement>(null);
   const shortcut = useShortcut("history.search");
-  const active = !!scope || !isEmptyFilter(parseLogQuery(query).filter);
+  const { filter } = parseLogQuery(query);
+  const active = !!scope || !isEmptyFilter(filter);
   const head = props.commits[0]?.sha ?? "";
   const [allBranches, setAllBranches] = useAllBranchesSetting();
   const [refs, setRefs] = useGraphRefs(main);
@@ -59,6 +60,11 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
   const compare = comparing && "ref" in comparing ? comparing.ref : null;
   const points = comparing && "points" in comparing ? comparing.points : null;
   const list = { ...props, onComparePoints: (p: Points) => setComparing({ points: p }) };
+  // Given to the lists this search looks through, not a comparison's.
+  const filterAuthor: AuthorFilter = {
+    set: (c) => onSearch({ ...search, query: withAuthor(query, c.authorName, c.authorEmail), reveal: null }),
+    has: (c) => filter.author.length === 1 && filter.author[0] === authorTerm(c.authorName, c.authorEmail),
+  };
   const showAll = allBranches && !active && !compare && !points;
   // What a search covers: HEAD, and with all branches every branch's tip. A refresh that moved
   // none of them (a focus, a staged file) doesn't search again.
@@ -172,6 +178,7 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
               empty={found.commits ? "No commits match." : "Searching…"}
               graph={false}
               reveal={reveal}
+              filterAuthor={filterAuthor}
             />
           )
         ) : compare ? (
@@ -186,7 +193,7 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
             onClose={() => setComparing(null)}
           />
         ) : !allBranches ? (
-          <ForkHistory {...list} />
+          <ForkHistory {...list} filterAuthor={filterAuthor} />
         ) : all.error && !all.commits?.length ? (
           <div className="px-4 py-6 text-center text-[12px] text-muted-foreground">{all.error}</div>
         ) : (
@@ -202,6 +209,7 @@ export function SearchableHistory({ search, onSearch, focusRequested, onFocused,
             onJumped={jumped}
             refMenu={refMenu}
             showRefs={refs}
+            filterAuthor={filterAuthor}
             empty={all.commits ? "No commits yet." : "Loading…"}
           />
         )}

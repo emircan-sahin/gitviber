@@ -13,7 +13,7 @@ export const SCOPES: { id: Scope; label: string; kinds: ListKind[]; phrase: stri
 
 export const scopesFor = (kind: ListKind) => SCOPES.filter((s) => s.kinds.includes(kind));
 
-/** What the chips choose, kept for each repository; labels are picked apart and not kept. */
+/** What the chips choose, kept for each repository; labels and an author are picked apart and not kept. */
 export type Choice = Pick<Narrow, "scope" | "draft">;
 
 export const NO_CHOICE: Choice = { scope: null, draft: null };
@@ -30,15 +30,16 @@ export function parseChoice(saved: unknown, kind: ListKind): Choice {
 export const withChoice = (saved: unknown, kind: ListKind, choice: Choice) => ({ ...(isRecord(saved) ? saved : {}), [kind]: choice });
 
 /** Whether anything narrows the list. */
-export const isNarrowed = (n: Narrow) => n.scope !== null || n.draft !== null || n.labels.length > 0;
+export const isNarrowed = (n: Narrow) => n.scope !== null || n.draft !== null || n.labels.length > 0 || n.author !== null;
 
 /** Tells one narrowing from another, for cache keys: "" for none, and the order labels were picked in doesn't matter. JSON: a label name may hold any separator. */
-export const narrowKey = (n: Narrow) => (isNarrowed(n) ? JSON.stringify([n.scope, n.draft, [...n.labels].sort()]) : "");
+export const narrowKey = (n: Narrow) => (isNarrowed(n) ? JSON.stringify([n.scope, n.draft, [...n.labels].sort(), n.author]) : "");
 
-/** What an empty list says: "No open pull requests assigned to you." */
+/** What an empty list says: "No open pull requests by mona assigned to you." */
 export function emptyText(kind: ListKind, state: "open" | "closed" | "all", n: Narrow): string {
   const adjectives = [state === "all" ? "" : state, n.draft === null ? "" : n.draft ? "draft" : "non-draft"];
   const scope = SCOPES.find((s) => s.id === n.scope)?.phrase;
   const label = n.labels.length === 0 ? "" : n.labels.length === 1 ? "with this label" : "with all these labels";
-  return `No ${[...adjectives, kind === "pulls" ? "pull requests" : "issues"].filter(Boolean).join(" ")}${[scope, label].filter(Boolean).map((t) => ` ${t}`).join("")}.`;
+  const author = n.author === null ? "" : `by ${n.author}`;
+  return `No ${[...adjectives, kind === "pulls" ? "pull requests" : "issues"].filter(Boolean).join(" ")}${[author, scope, label].filter(Boolean).map((t) => ` ${t}`).join("")}.`;
 }

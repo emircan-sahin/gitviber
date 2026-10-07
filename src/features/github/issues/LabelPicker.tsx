@@ -1,10 +1,11 @@
-import { Check, ChevronDown, Search, Tag, X } from "lucide-react";
+import { Check, ChevronDown, Search, Tag } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { errorMessage, type IssueLabel, issues, type Target } from "@/lib/api";
 import { useGitHubData } from "@/lib/github/githubCache";
 import { pointerMoved } from "@/lib/ui/pointer";
 import { cn } from "@/lib/utils";
+import { RemovableChip } from "@/features/github/shared/RemovableChip";
 import { LabelDot } from "./IssueBadges";
 
 /**
@@ -63,17 +64,10 @@ export function SelectedLabels({ labels, onChange }: { labels: IssueLabel[]; onC
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border px-2 py-1.5">
       {labels.map((l) => (
-        <span key={l.name} className="inline-flex max-w-48 items-center gap-1 rounded-full border border-border-strong bg-active pr-0.5 pl-1.5 text-[10.5px] leading-4">
+        <RemovableChip key={l.name} label={l.name} onRemove={() => onChange(labels.filter((m) => m.name !== l.name))}>
           <LabelDot label={l} />
           <span className="truncate">{l.name}</span>
-          <button
-            aria-label={`Remove ${l.name}`}
-            onClick={() => onChange(labels.filter((m) => m.name !== l.name))}
-            className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
-          >
-            <X className="size-2.5" />
-          </button>
-        </span>
+        </RemovableChip>
       ))}
       {labels.length > 1 && (
         <button onClick={() => onChange([])} className="ml-auto px-1 text-[10.5px] text-subtle hover:text-foreground focus-visible:text-foreground">

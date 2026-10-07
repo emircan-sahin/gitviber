@@ -3,7 +3,7 @@ import { test } from "node:test";
 import type { Narrow } from "../../../lib/api/github.ts";
 import { emptyText, isNarrowed, narrowKey, NO_CHOICE, parseChoice, scopesFor, withChoice } from "./narrow.ts";
 
-const narrow = (n: Partial<Narrow>): Narrow => ({ scope: null, draft: null, labels: [], ...n });
+const narrow = (n: Partial<Narrow>): Narrow => ({ scope: null, draft: null, labels: [], author: null, ...n });
 
 test("pull requests offer a review chip, issues don't", () => {
   assert.deepEqual(scopesFor("pulls").map((s) => s.id), ["created", "assigned", "mentioned", "reviewRequested"]);
@@ -46,6 +46,7 @@ test("a narrowing is anything that cuts the list", () => {
   assert.equal(isNarrowed(narrow({})), false);
   assert.equal(isNarrowed(narrow({ draft: false })), true);
   assert.equal(isNarrowed(narrow({ labels: ["bug"] })), true);
+  assert.equal(isNarrowed(narrow({ author: "mona" })), true);
 });
 
 test("an empty list names the filter", () => {
@@ -56,6 +57,16 @@ test("an empty list names the filter", () => {
   assert.equal(emptyText("issues", "open", narrow({ scope: "mentioned", labels: ["bug"] })), "No open issues that mention you with this label.");
   assert.equal(emptyText("issues", "all", narrow({ labels: ["bug", "ui"] })), "No issues with all these labels.");
   assert.equal(emptyText("pulls", "open", narrow({ draft: true })), "No open draft pull requests.");
+});
+
+test("an author narrows on its own and beside the rest", () => {
+  assert.notEqual(narrowKey(narrow({ author: "mona" })), "");
+  assert.notEqual(narrowKey(narrow({ author: "mona" })), narrowKey(narrow({ author: "octo" })));
+  assert.notEqual(narrowKey(narrow({ author: "mona", labels: ["bug"] })), narrowKey(narrow({ labels: ["bug"] })));
+  // A login can't pass for a label.
+  assert.notEqual(narrowKey(narrow({ author: "bug" })), narrowKey(narrow({ labels: ["bug"] })));
+  assert.equal(emptyText("pulls", "open", narrow({ author: "buildbot[bot]" })), "No open pull requests by buildbot[bot].");
+  assert.equal(emptyText("issues", "all", narrow({ author: "mona", scope: "assigned", labels: ["bug"] })), "No issues by mona assigned to you with this label.");
 });
 
 test("labels that hold the separators don't share a cache key with other picks", () => {
@@ -73,4 +84,32 @@ test("labels with quotes, emoji and colons keep their own empty-list wording", (
 test("a draft flag that isn't a boolean is dropped, the scope beside it kept", () => {
   assert.deepEqual(parseChoice({ pulls: { scope: "created", draft: "true" } }, "pulls"), { scope: "created", draft: null });
   assert.deepEqual(parseChoice({ pulls: { scope: "created", draft: 1 } }, "pulls"), { scope: "created", draft: null });
+});
+
+test("choices saved before authors existed still read, and an author is never saved", () => {
+  assert.deepEqual(parseChoice({ pulls: { scope: "created", draft: true } }, "pulls"), { scope: "created", draft: true });
+  assert.deepEqual(parseChoice({ issues: { scope: "assigned", draft: null, author: "mona" } }, "issues"), { scope: "assigned", draft: null });
+  assert.deepEqual(withChoice({ pulls: { scope: null, draft: null } }, "issues", { scope: "mentioned", draft: null }), {
+    pulls: { scope: null, draft: null },
+    issues: { scope: "mentioned", draft: null },
+  });
+});
+
+test("50 labels and an author make one key, whatever order the labels came in", () => {
+  const labels = Array.from({ length: 50 }, (_, i) => `label ${i}, "q" | ${"🏷".repeat(i % 3)}`);
+  const a = narrowKey(narrow({ labels, author: "app-bot[bot]" }));
+  const b = narrowKey(narrow({ labels: [...labels].reverse(), author: "app-bot[bot]" }));
+  assert.equal(a, b);
+  assert.notEqual(a, narrowKey(narrow({ labels })));
+  assert.notEqual(a, narrowKey(narrow({ labels, author: "app-bot" })));
+  assert.equal(emptyText("pulls", "closed", narrow({ labels, author: "app-bot[bot]", draft: true })), "No closed draft pull requests by app-bot[bot] with all these labels.");
+});
+
+test("odd logins keep keys apart and the empty text whole", () => {
+  const long = "a".repeat(10_000);
+  assert.equal(emptyText("issues", "open", narrow({ author: long })), `No open issues by ${long}.`);
+  // An author that looks like the key's own JSON can't collide with another narrowing.
+  assert.notEqual(narrowKey(narrow({ author: '"],null' })), narrowKey(narrow({ labels: ['"],null'] })));
+  assert.notEqual(narrowKey(narrow({ author: "null" })), narrowKey(narrow({ author: null, scope: "created" })));
+  assert.notEqual(narrowKey(narrow({ author: "mona" })), narrowKey(narrow({ author: "Mona" })));
 });

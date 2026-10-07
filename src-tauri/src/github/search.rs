@@ -20,6 +20,8 @@ pub struct ListFilter {
     pub draft: Option<bool>,
     /// Carrying all of them.
     pub labels: Vec<String>,
+    /// Opened by this login, as the lists spell it (an app's ends in "[bot]").
+    pub author: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Copy, PartialEq, Debug)]
@@ -42,6 +44,7 @@ impl ListFilter {
     /// Nothing narrows the list: the plain endpoints answer, and the ETag cache with them.
     pub(super) fn is_empty(&self, kind: Kind) -> bool {
         self.scope.is_none()
+            && self.author.is_none()
             && self.labels.is_empty()
             && (kind == Kind::Issue || self.draft.is_none())
     }
@@ -74,16 +77,37 @@ pub(super) fn search_query(
         (Some(Scope::ReviewRequested), Kind::Pull) => q += &format!(" review-requested:{login}"),
         (Some(Scope::ReviewRequested), Kind::Issue) | (None, _) => {}
     }
+    if let Some(author) = &filter.author {
+        q += &format!(" author:{}", author_term(author));
+    }
     if let (Some(draft), Kind::Pull) = (filter.draft, kind) {
         q += &format!(" draft:{draft}");
     }
     for label in &filter.labels {
-        q += &format!(
-            " label:\"{}\"",
-            label.replace('\\', "\\\\").replace('"', "\\\"")
-        );
+        q += &format!(" label:{}", quoted(label));
     }
     q + " sort:updated-desc"
+}
+
+/// Search names an app `app/name`, not by the "name[bot]" login REST gives it. A real login
+/// never needs quotes; anything else is quoted, so it can't read as a qualifier of its own.
+fn author_term(login: &str) -> String {
+    let who = login
+        .strip_suffix("[bot]")
+        .map_or_else(|| login.to_string(), |app| format!("app/{app}"));
+    let plain = !who.is_empty()
+        && who
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_/".contains(c));
+    if plain {
+        who
+    } else {
+        quoted(&who)
+    }
+}
+
+fn quoted(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// The signed-in account's login. A 304 when it hasn't changed, so it costs nothing.
@@ -138,10 +162,12 @@ fn read_pages(
     Ok(out)
 }
 
-const PULL_FIELDS: &str = "... on PullRequest { number title state isDraft author { login }
+const PULL_FIELDS: &str =
+    "... on PullRequest { number title state isDraft author { login __typename }
     headRefName headRefOid headRepository { nameWithOwner } baseRefName baseRefOid
     createdAt updatedAt url }";
-const ISSUE_FIELDS: &str = "... on Issue { number title state stateReason author { login }
+const ISSUE_FIELDS: &str =
+    "... on Issue { number title state stateReason author { login __typename }
     labels(first: 20) { nodes { name color description } } assignees(first: 10) { nodes { login } }
     comments { totalCount } createdAt updatedAt url }";
 
@@ -240,9 +266,15 @@ pub(super) fn counts(
     })
 }
 
-/// A deleted account is "ghost" in REST; GraphQL has no author at all.
+/// A deleted account is "ghost" in REST; GraphQL has no author at all. An app's login gets the
+/// "[bot]" REST gives it, so a list reads the same narrowed or not, and narrows by it again.
 fn login_of(v: &Value) -> String {
-    v["login"].as_str().unwrap_or("ghost").to_string()
+    let login = v["login"].as_str().unwrap_or("ghost");
+    if v["__typename"] == "Bot" {
+        format!("{login}[bot]")
+    } else {
+        login.to_string()
+    }
 }
 
 fn pull_from_node(v: &Value) -> Pull {
@@ -310,6 +342,14 @@ mod tests {
             scope,
             draft,
             labels: labels.iter().map(|l| l.to_string()).collect(),
+            author: None,
+        }
+    }
+
+    fn by(author: &str) -> ListFilter {
+        ListFilter {
+            author: Some(author.to_string()),
+            ..filter(None, None, &[])
         }
     }
 
@@ -370,6 +410,160 @@ mod tests {
         assert!(!filter(None, None, &["bug"]).is_empty(Kind::Pull));
         assert!(!filter(None, Some(true), &[]).is_empty(Kind::Pull));
         assert!(filter(None, Some(true), &[]).is_empty(Kind::Issue));
+        assert!(!by("mona").is_empty(Kind::Issue));
+    }
+
+    #[test]
+    fn an_author_is_a_qualifier_of_its_own() {
+        assert_eq!(
+            search_query("a/b", Kind::Pull, "open", &by("mona-lisa"), ""),
+            "repo:a/b is:pr is:open author:mona-lisa sort:updated-desc"
+        );
+        // Search spells an app's account `app/name`.
+        assert!(
+            search_query("a/b", Kind::Issue, "all", &by("buildbot[bot]"), "")
+                .contains(" author:app/buildbot ")
+        );
+        // Whatever comes in stays one qualifier, never two.
+        assert!(
+            search_query("a/b", Kind::Pull, "open", &by("x is:closed"), "")
+                .contains(r#" author:"x is:closed" "#)
+        );
+        assert!(search_query("a/b", Kind::Pull, "open", &by(r#"a"b"#), "")
+            .contains(r#" author:"a\"b" "#));
+        assert!(search_query("a/b", Kind::Pull, "open", &by(""), "").contains(r#" author:"" "#));
+        // Beside a scope that isn't the account's own work.
+        let f = ListFilter {
+            author: Some("mona".into()),
+            ..filter(Some(Scope::Assigned), None, &["bug"])
+        };
+        assert_eq!(
+            search_query("a/b", Kind::Issue, "open", &f, "octo"),
+            r#"repo:a/b is:issue is:open assignee:octo author:mona label:"bug" sort:updated-desc"#
+        );
+    }
+
+    #[test]
+    fn an_app_author_keeps_the_bot_suffix_rest_gives_it() {
+        let p = pull_from_node(&json!({
+            "number": 3, "state": "OPEN", "author": { "login": "buildbot", "__typename": "Bot" }
+        }));
+        assert_eq!(p.author, "buildbot[bot]");
+        let i = issue_from_node(&json!({
+            "number": 4, "state": "OPEN", "author": { "login": "mona", "__typename": "User" }
+        }));
+        assert_eq!(i.author, "mona");
+    }
+
+    /// Splits a search the way GitHub does: on spaces outside quotes, `\"` staying in a quote.
+    fn terms(q: &str) -> Vec<String> {
+        let (mut out, mut cur, mut quoted, mut escaped) = (vec![], String::new(), false, false);
+        for c in q.chars() {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' if quoted => escaped = true,
+                '"' => quoted = !quoted,
+                ' ' if !quoted => {
+                    out.extend((!cur.is_empty()).then(|| std::mem::take(&mut cur)));
+                    continue;
+                }
+                _ => {}
+            }
+            cur.push(c);
+        }
+        assert!(!quoted, "an open quote: {q}");
+        out.extend((!cur.is_empty()).then_some(cur));
+        out
+    }
+
+    #[test]
+    fn an_older_ui_without_an_author_still_lists() {
+        let f: ListFilter =
+            serde_json::from_value(json!({ "scope": "created", "draft": null, "labels": [] }))
+                .unwrap();
+        assert_eq!(f.author, None);
+        let q = search_query("a/b", Kind::Issue, "open", &f, "octo");
+        assert_eq!(q.matches(" author:").count(), 1, "{q}");
+    }
+
+    #[test]
+    fn any_author_stays_one_qualifier() {
+        let long = "x".repeat(10_000);
+        let specials = r#"!@#$%^&*()[]{}|\;:'",.<>?/~`=+"#.repeat(300);
+        let names = [
+            long.as_str(),
+            specials.as_str(),
+            r#"""#,
+            r"\",
+            r#"\""#,
+            r#"x" label:"y"#,
+            r#"x\" is:closed \"#,
+            "mona OR author:octo",
+            "-mona",
+            "-author:mona",
+            "zoë-çelik",
+            "🦀 ferris",
+            "a\tb",
+            "build bot[bot]",
+            "x[bot][bot]",
+            "app/evil",
+        ];
+        for name in names {
+            let q = search_query("a/b", Kind::Pull, "open", &by(name), "");
+            let t = terms(&q);
+            let short: String = name.chars().take(40).collect();
+            assert_eq!(t.len(), 5, "{short}: {q:.200}");
+            assert_eq!(t[..3], ["repo:a/b", "is:pr", "is:open"], "{short}");
+            assert!(t[3].starts_with("author:"), "{short}");
+            assert_eq!(t[4], "sort:updated-desc", "{short}");
+        }
+        // Plain logins go as they are; a 10,000 character one too.
+        assert!(search_query("a/b", Kind::Issue, "all", &by(&long), "")
+            .contains(&format!(" author:{long} ")));
+    }
+
+    #[test]
+    fn an_app_author_is_named_as_search_spells_it() {
+        let q = |login: &str| search_query("a/b", Kind::Issue, "all", &by(login), "");
+        assert!(q("ci-helper[bot]").contains(" author:app/ci-helper "));
+        assert!(q("Ci_Helper2[bot]").contains(" author:app/Ci_Helper2 "));
+        // Only the last "[bot]" is the app's mark.
+        assert!(q("x[bot][bot]").contains(r#" author:"app/x[bot]" "#));
+        // "[bot]" mid-name isn't one.
+        assert!(q("x[bot]y").contains(r#" author:"x[bot]y" "#));
+        assert!(q("x[BOT]").contains(r#" author:"x[BOT]" "#));
+    }
+
+    #[test]
+    fn fifty_labels_and_an_author_narrow_together() {
+        let labels: Vec<String> = (0..50).map(|i| format!("area: {i} \"q\"")).collect();
+        let names: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let f = ListFilter {
+            author: Some("ci-helper[bot]".into()),
+            ..filter(Some(Scope::Mentioned), Some(false), &names)
+        };
+        let q = search_query("a/b", Kind::Pull, "closed", &f, "octo");
+        let t = terms(&q);
+        assert_eq!(t.len(), 3 + 1 + 1 + 1 + 50 + 1, "{q:.200}");
+        assert_eq!(t.iter().filter(|t| t.starts_with("author:")).count(), 1);
+        assert_eq!(t.iter().filter(|t| t.starts_with("label:")).count(), 50);
+        assert!(t.contains(&"author:app/ci-helper".to_string()));
+        assert!(t.contains(&r#"label:"area: 7 \"q\"""#.to_string()));
+    }
+
+    #[test]
+    fn a_deleted_or_odd_author_still_reads() {
+        assert_eq!(
+            pull_from_node(&json!({ "number": 1, "author": null })).author,
+            "ghost"
+        );
+        let bot = json!({ "number": 2, "author": { "__typename": "Bot" } });
+        assert_eq!(pull_from_node(&bot).author, "ghost[bot]");
+        let org =
+            json!({ "number": 3, "author": { "login": "acme", "__typename": "Organization" } });
+        assert_eq!(issue_from_node(&org).author, "acme");
+        let assigned = json!({ "number": 4, "assignees": { "nodes": [{ "login": "helper", "__typename": "Bot" }] } });
+        assert_eq!(issue_from_node(&assigned).assignees, ["helper[bot]"]);
     }
 
     #[test]
