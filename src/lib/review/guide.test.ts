@@ -287,3 +287,70 @@ test("a flow in words", () => {
     "claim() (changed)",
   ]);
 });
+
+test("a hostile 5 MB answer parses fast, with its diagram capped", () => {
+  const many = (n: number, f: (i: number) => object) => Array.from({ length: n }, (_, i) => f(i));
+  const word = "x".repeat(200);
+  const hostile = {
+    title: "T",
+    overview: "o",
+    diagram: {
+      models: many(2_000, (i) => ({ name: `M${i}`, section: i, fields: many(5, (j) => ({ name: `f${j} ${word}`, section: "1" })) })),
+      flows: many(10, () => ({ steps: many(1_000, (i) => ({ id: `s${i % 900}`, label: word, kind: "decision", section: 2 })), edges: many(1_000, (i) => ({ from: `s${i}`, to: `s${i + 1}` })) })),
+    },
+    sections: many(10_000, (i) => ({ title: `S${i}`, summary: "s", files: [`src/f${i % 40}.ts`, `src/f${(i + 1) % 40}.ts`] })),
+  };
+  const json = JSON.stringify(hostile);
+  assert.ok(json.length > 5_000_000, String(json.length));
+  let t = performance.now();
+  const g = parseGuide(json)!;
+  assert.ok(performance.now() - t < 1500, `parsed in ${performance.now() - t} ms`);
+  assert.equal(g.models.length, 6);
+  assert.ok(g.models.every((m) => m.fields.length === 5 && m.fields.every((f) => f.name.length === 80 && f.section === 1)));
+  // Section 0 isn't one; the rest name sections that exist.
+  assert.deepEqual(
+    g.models.map((m) => m.section),
+    [null, 1, 2, 3, 4, 5],
+  );
+  assert.equal(g.flows.length, 2);
+  assert.ok(g.flows.every((f) => f.steps.length === 12 && f.edges.length === 11));
+  // 40 files over 10,000 sections: each shows once, in the first section naming it.
+  t = performance.now();
+  const placed = placeFiles(g, Array.from({ length: 40 }, (_, i) => `src/f${i}.ts`));
+  assert.ok(performance.now() - t < 500, `placed in ${performance.now() - t} ms`);
+  assert.equal(placed.shown.flat().length, 40);
+  assert.deepEqual(placed.rest, []);
+  assert.deepEqual(placed.shown.slice(0, 2), [["src/f0.ts", "src/f1.ts"], ["src/f2.ts"]]);
+});
+
+test("a hostile answer's sections are capped too", { todo: "sections have no cap: 10,000 render 10,000 rows of Markdown; cap them as the diagram is" }, () => {
+  const g = parseGuide(JSON.stringify({ title: "T", sections: Array.from({ length: 10_000 }, (_, i) => ({ title: `S${i}` })) }))!;
+  assert.ok(g.sections.length <= 100, String(g.sections.length));
+});
+
+test("a file in three sections, and a guide of no sections", () => {
+  const g = parseGuide(
+    JSON.stringify({
+      title: "T",
+      sections: [
+        { title: "a", files: ["b/x.ts"] },
+        { title: "b", files: ["x.ts", "y.ts"] },
+        { title: "c", files: ["a/x.ts", "gone.ts"] },
+      ],
+    }),
+  )!;
+  assert.deepEqual(placeFiles(g, ["x.ts", "y.ts", "z.ts"]), {
+    shown: [["x.ts"], ["y.ts"], []],
+    named: [
+      [],
+      [{ path: "x.ts", at: 1 }],
+      [
+        { path: "x.ts", at: 1 },
+        { path: "gone.ts", at: null },
+      ],
+    ],
+    rest: ["z.ts"],
+  });
+  const none = parseGuide(JSON.stringify({ title: "T", overview: "o", sections: [] }))!;
+  assert.deepEqual(placeFiles(none, ["x.ts", "y.ts"]), { shown: [], named: [], rest: ["x.ts", "y.ts"] });
+});
