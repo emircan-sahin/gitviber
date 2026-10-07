@@ -92,7 +92,7 @@ export function Viewer(props: ViewerProps) {
           ) : active.sel.kind === "compare" ? (
             <CompareView sel={active.sel} branches={props.branches} status={props.status} webUrl={props.webUrl} onChange={props.onOpen} onOpen={props.onOpen} refresh={props.refresh} />
           ) : active.sel.kind === "guide" ? (
-            <GuideView sel={active.sel} status={props.status} onOpen={props.onOpen} />
+            <GuideView sel={active.sel} {...props} />
           ) : active.sel.kind === "vault" ? (
             <VaultView tab={active} sel={active.sel} onOpen={props.onOpen} />
           ) : (

@@ -49,7 +49,7 @@ import { TerminalRestoreOffer } from "@/features/terminal/TerminalFind";
 import { TopBar } from "@/features/topbar/TopBar";
 import { Viewer } from "@/features/viewer/Viewer";
 import { prefetchSelection, resetPairCache } from "@/features/viewer/diffPairs";
-import { stackedView } from "@/features/viewer/AllChanges";
+import { stackedView } from "@/features/viewer/StackedFiles";
 import { openEdits } from "@/lib/editor/edits";
 import { openNotes, useNoteCheck } from "@/lib/review/noteStore";
 import { copyNotes, pendingNotes, sendNotes } from "@/features/review/ReviewNotes";
@@ -249,9 +249,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   }, [changes, activeKey, repo.revision]);
 
   // J/K walk the changed files, the core loop of reviewing an agent's work; in a stacked view of
-  // them, its files.
+  // them (Open All, a guided review), its files.
   const step = (dir: 1 | -1) => {
-    if (active?.sel.kind === "changes") return stackedView()?.step(dir);
+    if (active?.sel.kind === "changes" || active?.sel.kind === "guide") return stackedView()?.step(dir);
     if (!changes.length) return;
     const i = changes.findIndex((c) => selectionKey(c) === activeKey);
     open(changes[i < 0 ? 0 : Math.min(changes.length - 1, Math.max(0, i + dir))]);
@@ -308,7 +308,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "review.sendNotes": () => sendNotes(pendingNotes()),
     "review.toggleViewed": () => {
       const t = tabs.find((x) => x.key === activeKey);
-      if (t?.sel.kind === "changes") return stackedView()?.toggleViewed();
+      if (t?.sel.kind === "changes" || t?.sel.kind === "guide") return stackedView()?.toggleViewed();
       // On a staged file this would unstage it; too much for a stray single key.
       if (t && t.sel.kind !== "staged") toggleViewed(t.sel);
     },
