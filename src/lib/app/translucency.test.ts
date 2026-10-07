@@ -45,6 +45,7 @@ async function boot({ stored, platform = "MacIntel", focused = false, reduce = f
   const root = { dataset: {} as Record<string, string>, style: { setProperty() {} } };
   g.document = { documentElement: root };
   g.window = g;
+  g.location = { search: "" };
   g.matchMedia = () => ({ matches: true, addEventListener() {} });
   let frames: (() => void)[] = [];
   g.requestAnimationFrame = (cb: () => void) => frames.push(cb);

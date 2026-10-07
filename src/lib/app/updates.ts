@@ -9,6 +9,7 @@ import { getSettings } from "../settings";
 import { createStore } from "../store";
 import { logError } from "./errorLog";
 import { saveNow } from "./quit";
+import { IN_SETTINGS_WINDOW, runInMain } from "./settingsWindow";
 import { toast } from "./toast";
 import { checked, downloaded, due, INITIAL, isExpectedFailure, percent, type UpdateState } from "./updateState";
 
@@ -37,7 +38,14 @@ export const useUpdateMode = mode.use;
 
 const shown = createStore(false);
 export const useUpdateShown = shown.use;
-export const showUpdate = (open = true) => shown.set(open);
+// The settings window has no update dialog: the main window's check opens its own on a release.
+export const showUpdate = (open = true) => (IN_SETTINGS_WINDOW ? runInMain("app.checkForUpdates") : shown.set(open));
+
+/** The settings window shows the main window's updater (SettingsWindow.tsx), which does all the work. */
+export function mirrorUpdates(m: UpdateMode, s: UpdateState) {
+  mode.set(m);
+  state.set(s);
+}
 
 /** The plugin's handle on the release in `state`: what downloads and installs. */
 let pending: Update | null = null;
@@ -63,6 +71,7 @@ async function runCheck(): Promise<string | null> {
 
 /** `manual` (the menu, Settings) says how it went; an automatic check only logs what's unexpected. */
 export async function checkForUpdates(manual: boolean) {
+  if (IN_SETTINGS_WINDOW) return runInMain("app.checkForUpdates");
   if (!mode.get()) return;
   inflight ??= runCheck().finally(() => (inflight = null));
   const error = await inflight;

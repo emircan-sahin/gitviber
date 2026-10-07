@@ -1,5 +1,5 @@
-import { listen } from "@tauri-apps/api/event";
 import { api } from "../api";
+import { listenHere } from "./settingsWindow";
 
 // ⌘Q (menu.rs) ends the app without unloading the page: what saves on the way out (the terminals'
 // output, unsaved edits) runs as for a reload, then the app goes.
@@ -12,7 +12,7 @@ export const beforeQuit = (work: () => Promise<unknown>) => void before.push(wor
 const BEFORE_QUIT_MS = 1000;
 
 try {
-  listen("quit", async () => {
+  listenHere("quit", async () => {
     await Promise.race([Promise.allSettled(before.map((work) => work())), new Promise((done) => setTimeout(done, BEFORE_QUIT_MS))]);
     saveNow();
     void api.quit().catch(() => {});

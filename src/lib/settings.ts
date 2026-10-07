@@ -1,7 +1,9 @@
+import { emitTo } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { getCurrentWindow, type Theme as WindowTheme } from "@tauri-apps/api/window";
 import type { Whitespace } from "./api";
 import { cleanOverrides } from "./commands/commands";
+import { listenHere, OTHER_WINDOW } from "./app/settingsWindow";
 import { IS_MAC, IS_WINDOWS } from "./platform";
 import { writeJson } from "./storage";
 import { effortLevels, SUGGEST_PRESETS, type SuggestPreset } from "./git/suggest";
@@ -511,6 +513,15 @@ applyScale();
 applyUiFont();
 systemDark.addEventListener("change", () => current.appearance === "system" && emit());
 
+// Each of the two windows (settingsWindow.ts) applies what the other changed and stored, as it
+// happens: a Tauri event, as the `storage` event isn't promised between two web views on every
+// platform. Applied, not passed on, so nothing echoes back.
+const CHANGED = "settings-changed";
+listenHere<Settings>(CHANGED, ({ payload }) => {
+  current = payload;
+  emit();
+}).catch(() => {});
+
 export function updateSettings(patch: Partial<Settings>) {
   current = { ...current, ...patch };
   current.codeFontSize = clampCodeFont(current.codeFontSize);
@@ -521,6 +532,7 @@ export function updateSettings(patch: Partial<Settings>) {
   // Settings still apply for this session when they can't be stored.
   writeJson(KEY, current);
   emit();
+  emitTo(OTHER_WINDOW, CHANGED, current).catch(() => {});
 }
 
 /**

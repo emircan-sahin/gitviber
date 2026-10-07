@@ -26,7 +26,8 @@ pub fn quit(app: &AppHandle) {
     if QUITTING.swap(true, Ordering::SeqCst) {
         return;
     }
-    let _ = app.emit("quit", ());
+    // The workspace's page only: the settings window's (lib/app/quit) would end the app before it saved.
+    let _ = app.emit_to("main", "quit", ());
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(2));

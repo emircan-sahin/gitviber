@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "Settings window (settings_window.rs): core IPC, showing the window once the page has its theme, window theme and webview zoom (the Light/Dark and Interface scale settings apply to it too), dragging it by its title bar, closing it (⌘W), and the native open-folder / confirm dialogs its sections use (one folder for all worktrees, removing a remote, resetting every setting). The notification plugin's page script only reads whether notifications are allowed, at load (allow-is-permission-granted). Updates are checked and installed by the main window; file, git and notification work goes through our own commands, as there.",
+  "windows": ["settings"],
+  "permissions": ["core:default", "core:window:allow-start-dragging", "core:window:allow-set-theme", "core:window:allow-show", "core:window:allow-close", "core:webview:allow-set-webview-zoom", "dialog:allow-open", "dialog:allow-ask", "notification:allow-is-permission-granted"]
+}

@@ -1,11 +1,11 @@
-import { listen } from "@tauri-apps/api/event";
 import { useEffect } from "react";
-import { bindingsFor, COMMANDS, eventChord, isCommandId, menuAccelerator } from "./commands";
-import { type Action, hasHandler, MENU_ACTIONS, onHandlersChange, runCommand } from "./keybindings";
+import { bindingsFor, COMMANDS, isCommandId, menuAccelerator } from "./commands";
+import { type Action, fromPassedKey, hasHandler, MENU_ACTIONS, onHandlersChange, runCommand } from "./keybindings";
 import { lastOpenApp, subscribeOpenApps } from "../app/openIn";
 import { getSettings, type Settings, subscribeSettings } from "../settings";
 import { folderName } from "../path";
 import { api } from "../api";
+import { listenHere } from "../app/settingsWindow";
 import { IS_MAC } from "../platform";
 
 /**
@@ -73,13 +73,6 @@ function update() {
   setTimeout(send);
 }
 
-// A key the page lets through reaches the menu as that item's key equivalent. The page has
-// already decided the key does nothing here (typing, a local shortcut like ⌘↵ outside the
-// commit message), so the menu mustn't run it anyway.
-let passed: { e: KeyboardEvent; at: number } | null = null;
-window.addEventListener("keydown", (e) => eventChord(e) && (passed = { e, at: performance.now() }), true);
-const fromPassedKey = () => !!passed && !passed.e.defaultPrevented && performance.now() - passed.at < 500;
-
 function onMenu(id: string) {
   if (fromPassedKey()) return;
   if (id.startsWith("recent:")) recent?.open(id.slice("recent:".length));
@@ -88,7 +81,7 @@ function onMenu(id: string) {
 }
 
 try {
-  listen<string>("menu", (e) => onMenu(e.payload)).catch(() => {});
+  listenHere<string>("menu", (e) => onMenu(e.payload)).catch(() => {});
 } catch {
   // Not in Tauri (the browser-only dev fixture).
 }

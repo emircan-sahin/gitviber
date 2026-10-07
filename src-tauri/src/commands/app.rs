@@ -301,6 +301,13 @@ pub async fn log_error(source: String, message: String) {
     errors::write(&source, &message);
 }
 
+/// Settings in a window of its own (settings_window.rs). Async: a window built in a sync command
+/// deadlocks on Windows.
+#[tauri::command]
+pub async fn settings_window(app: AppHandle, section: Option<String>, open: bool) -> Res<bool> {
+    crate::settings_window::show(&app, section.as_deref(), open)
+}
+
 #[tauri::command]
 pub fn set_menu(
     app: AppHandle,
