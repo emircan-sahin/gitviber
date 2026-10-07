@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isNews, type Look, LOOKS, mostUrgent, paneLook } from "./agentLook.ts";
-import { type AgentEntry, agentsWaiting, type AgentState, byUrgency, nextAgent, type PaneAgent, shownState } from "./agentState.ts";
+import { isNews, type Look, LOOKS, mostUrgent, paneLook, shownState } from "./agentLook.ts";
+import { type AgentEntry, agentsWaiting, type AgentState, byUrgency, nextAgent, type PaneAgent } from "./agentState.ts";
 
 // 10,000 random events across 50 panes in 10 tabs, applied as agents.ts and needsYou.ts apply
 // them: an agent's state file changing, a bell, the pane looked at, the agent exiting or starting.
@@ -77,7 +77,7 @@ test("a tab's and a worktree's dot is never calmer than any of its panes", () =>
 test("the Dock badge counts the agents whose dot is a question or news", () => {
   run(2, (panes) => {
     const shown = panes.filter((p) => p.agent && isNews(paneLook(p)));
-    const counted = entries(panes).filter((e) => e.state === "waiting" || e.unseen);
+    const counted = entries(panes).filter((e) => agentsWaiting([e]) === 1);
     assert.deepEqual(
       counted.map((e) => e.pane),
       shown.map((p) => p.id),

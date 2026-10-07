@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isNews, LOOKS, lookOf, mostUrgent, paneLook } from "./agentLook.ts";
-import { agentsWaiting, nextAgent, type PaneAgent, shownState } from "./agentState.ts";
+import { isNews, lookLabel, LOOKS, lookOf, mostUrgent, paneLook, shownState } from "./agentLook.ts";
+import { agentsWaiting, nextAgent, type PaneAgent } from "./agentState.ts";
 
 const claude = (state: PaneAgent["state"]): PaneAgent => ({ name: "Claude Code", command: "claude --resume a-1", session: "a-1", cwd: "/w", state });
 
@@ -91,4 +91,12 @@ test("an agent its background shell wakes before its finish is looked at is coun
   const entry = { pane: 1, name: "Claude Code", state: shownState(pane.agent.state), unseen: pane.needsYou, cwd: "/w", since: 0 };
   // The Dock badge, the Agents button's summary and the list's order all read this one.
   assert.equal(agentsWaiting([entry]), isNews(paneLook(pane)) ? 1 : 0);
+});
+
+test("a label names the agent only in the agent's own looks", () => {
+  assert.equal(lookLabel("working", "Claude Code"), "Claude Code working");
+  assert.equal(lookLabel("done", "Claude Code"), "Claude Code finished");
+  assert.equal(lookLabel("unread", "Claude Code"), "Not viewed");
+  assert.equal(lookLabel("needs", "Claude Code"), "Needs you");
+  assert.equal(lookLabel("working"), "Agent working");
 });

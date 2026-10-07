@@ -1,5 +1,6 @@
 // A pane's coding agent (agents.rs): what it is, how to resume it, and what a change of its state
 // is worth telling the user. Pure, so it runs under `node --test`.
+import { isNews, lookOf, LOOKS } from "./agentLook.ts";
 
 /** "working" is Claude Code's busy; "idle" covers its shell (the turn is over, a background shell runs on); "waiting" is its asking. */
 export type AgentState = "working" | "waiting" | "idle";
@@ -84,15 +85,12 @@ export interface AgentEntry {
   since: number;
 }
 
-/** A state as the agents list says it: idle is finished, an agent that doesn't say is running. */
-export const shownState = (s: AgentState | null): AgentEntry["state"] => (s === "idle" ? "finished" : (s ?? "running"));
-
-const RANK: Record<AgentEntry["state"], number> = { waiting: 0, working: 2, running: 2, finished: 3 };
-// A finish not looked at yet waits for the user too, after the questions.
-const rank = (e: AgentEntry) => (e.unseen ? Math.min(RANK[e.state], 1) : RANK[e.state]);
+// In the order of their dots (agentLook), so the list, its button and the badge can't disagree.
+// An agent that doesn't say its state ranks with the working ones.
+const rank = (e: AgentEntry) => LOOKS.indexOf(lookOf(e.state, e.unseen) ?? "working");
 
 /** The agents that need the user first, then the working ones, then the finished; the longest in its state first. */
 export const byUrgency = (a: AgentEntry, b: AgentEntry) => rank(a) - rank(b) || a.since - b.since;
 
-/** How many agents wait for the user, for the Dock badge: asked, or finished and not looked at. */
-export const agentsWaiting = (list: AgentEntry[]) => list.filter((e) => e.state === "waiting" || e.unseen).length;
+/** How many agents wait for the user, for the Dock badge: the ones whose dot is a question or news. */
+export const agentsWaiting = (list: AgentEntry[]) => list.filter((e) => isNews(lookOf(e.state, e.unseen))).length;

@@ -6,9 +6,9 @@ import { enableNotifications } from "../app/notify";
 import { toast } from "../app/toast";
 import { getSettings } from "../settings";
 import { readJson, writeJson } from "../storage";
-import { type AgentEntry, agentsWaiting, type AgentState, byUrgency, nextAgent, type PaneAgent, shownState } from "./agentState";
-import { type Look, paneLook } from "./agentLook";
-import { needsYou } from "./needsYou";
+import { type AgentEntry, agentsWaiting, type AgentState, byUrgency, nextAgent, type PaneAgent } from "./agentState";
+import { type Look, paneLook, shownState } from "./agentLook";
+import { lookedAt, needsYou } from "./needsYou";
 import { panes, type Pane, state, subscribe, update } from "./terminals";
 
 // The coding agents in the panes (agents.rs): looked up for the panes a session save round
@@ -32,6 +32,9 @@ function apply(p: Pane, read: PaneAgent | null, live = false) {
     if (agent.name !== i.agent?.name || agent.state !== i.agent.state) since.set(p.id, Date.now());
   }
   if (agent !== i.agent) update(p.id, (x) => ({ ...x, agent }));
+  // Woken (its background shell exited) before its finish was seen: that news is old, and its
+  // next finish must be told again.
+  if (live && agent?.state === "working" && i.agent?.state !== "working") lookedAt(p.id);
   if (note) needsYou(p, { body: note }, agent?.state === "waiting" ? "notifyAgentWaiting" : "notifyAgentDone");
   if (first && agent) suggestNotifications(agent.name);
 }

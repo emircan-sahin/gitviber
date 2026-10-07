@@ -1,13 +1,16 @@
 // The dot a pane, a tab, a worktree or a row of the agents list shows (StatusDot): one mapping, so
 // every place reads the same. Pure, so it runs under `node --test`.
-import { type AgentEntry, type PaneAgent, shownState } from "./agentState.ts";
+import type { AgentEntry, AgentState, PaneAgent } from "./agentState.ts";
 
 /** Most urgent first: it asked, news not looked at, working, done and looked at. */
 export const LOOKS = ["needs", "unread", "working", "done"] as const;
 export type Look = (typeof LOOKS)[number];
 
 /** For a screen reader and a tooltip: the color is never the only telling. */
-export const LOOK_LABEL: Record<Look, string> = { needs: "Needs you", unread: "Finished, not viewed", working: "Agent working", done: "Agent finished" };
+export const LOOK_LABEL: Record<Look, string> = { needs: "Needs you", unread: "Not viewed", working: "Agent working", done: "Agent finished" };
+
+/** LOOK_LABEL with the agent's name in its own looks: "Claude Code working". */
+export const lookLabel = (look: Look, agent?: string) => LOOK_LABEL[look].replace(/^Agent/, agent ?? "Agent");
 
 /**
  * `state` as the agents list says it (undefined: no agent), `unseen` its pane's needsYou. A
@@ -20,6 +23,9 @@ export function lookOf(state: AgentEntry["state"] | undefined, unseen: boolean):
   if (unseen) return "unread";
   return state === "finished" ? "done" : null;
 }
+
+/** A state as the agents list says it: idle is finished, an agent that doesn't say is running. */
+export const shownState = (s: AgentState | null): AgentEntry["state"] => (s === "idle" ? "finished" : (s ?? "running"));
 
 /** A pane's look, from its agent's state file and its needsYou. */
 export const paneLook = (p: { agent?: PaneAgent; needsYou?: boolean }) => lookOf(p.agent && shownState(p.agent.state), !!p.needsYou);
