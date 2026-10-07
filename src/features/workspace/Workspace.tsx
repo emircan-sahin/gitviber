@@ -1,6 +1,5 @@
 import { ChevronsDownUp, ClipboardPaste, GitCompareArrows, PanelLeftClose, PanelRightClose, Search } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
+import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Tip } from "@/components/ui/tooltip";
 import { find } from "@/lib/ui/find";
@@ -14,6 +13,9 @@ import { type ChangeList, type ComparePoint, onDisk, type Selection, selectionKe
 import { useCompareAsk } from "@/lib/repo/compareRequest";
 import { defaultPoints } from "@/lib/git/comparePoints";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
+import { headerWidth } from "@/lib/ui/panelSizes";
+import { usePanelSizes } from "@/lib/ui/usePanelSizes";
+import { useTabStrip } from "@/lib/ui/useTabStrip";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen, useTerminalTabCount } from "@/lib/terminal/terminals";
@@ -55,6 +57,10 @@ import { CountBadge } from "@/components/CountBadge";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
 type ListTab = (typeof LIST_TABS)[number];
+// The sidebars' widths and the terminal's height until the user sets them.
+const SIDES = { list: 320, files: 260 };
+type Side = keyof typeof SIDES;
+const BOTTOM = { terminal: "35" };
 
 interface Props {
   root: string;
@@ -128,8 +134,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useNoteCheck(repo.revision);
   useEffect(() => saveWorkspace(root, { tabs, active: activeKey, listTab, viewed: [...viewedMap], review }), [root, tabs, activeKey, listTab, viewedMap, review]);
   // Git work on the left, files on the right; both collapse to give code the room.
-  const listPanel = usePanelRef();
-  const filesPanel = usePanelRef();
+  const sides = usePanelSizes("gitviber-sides-v1", "horizontal", SIDES);
   useTerminalSetup(root);
   // Where a terminal can start besides this repo's worktrees, without switching the window there.
   const projects = recent.filter((p) => p !== main);
@@ -149,23 +154,26 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useEffect(() => {
     if (focusTo) focusPanel(focusTo.panel);
   }, [focusTo]);
-  const show = useCallback((panel: typeof listPanel, name: Panel) => {
-    panel.current?.expand();
-    setFocusTo({ panel: name });
-  }, []);
+  const show = useCallback(
+    (side: Side, name: Panel) => {
+      sides.expand(side);
+      setFocusTo({ panel: name });
+    },
+    [sides],
+  );
   // Opening a panel focuses it, as in VS Code; closing the one holding focus leaves it to the code view.
   const toggle = useCallback(
-    (panel: typeof listPanel, name: Panel) => {
-      if (panel.current?.isCollapsed()) return show(panel, name);
+    (side: Side, name: Panel) => {
+      if (sides.isCollapsed(side)) return show(side, name);
       const had = focusedPanel() === name;
-      panel.current?.collapse();
+      sides.collapse(side);
       if (had) focusPanel("code");
     },
-    [show],
+    [sides, show],
   );
   const showList = (tab: ListTab) => {
     setListTab(tab);
-    show(listPanel, "git");
+    show("list", "git");
   };
   const cycle = (dir: 1 | -1) => {
     const open = PANELS.filter((p) => (p === "git" ? leftOpen : p === "explorer" ? rightOpen : p === "terminal" ? terminalOpen : true));
@@ -173,7 +181,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     focusPanel(open[at < 0 ? (dir > 0 ? 0 : open.length - 1) : (at + dir + open.length) % open.length]);
   };
   const revealInExplorer = useCallback((path: string) => {
-    filesPanel.current?.expand();
+    sides.expand("files");
     setExplorerView("files");
     // Once the tree shows: a hidden one can't take focus.
     requestAnimationFrame(() => fileTree.current?.reveal(path));
@@ -181,13 +189,16 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const showInHistory = useCallback((search: HistorySearch) => {
     setHistorySearch(search);
     setListTab("history");
-    listPanel.current?.expand();
+    sides.expand("list");
   }, []);
   // A commit's own page in History, with `path` open in it when it names one (blame, the terminal).
   const showCommit = useCallback((sha: string, path = "") => showInHistory({ query: sha, scope: null, reveal: { sha, path, id: ++reveals.current } }), [showInHistory]);
   const showHistory = useCallback((path: string, file: boolean) => showInHistory({ ...NO_SEARCH, scope: { path, file } }), [showInHistory]);
-  const layout = useDefaultLayout({ id: "gitviber-main-v4", storage: localStorage });
-  const viewerLayout = useDefaultLayout({ id: "gitviber-viewer-v1", storage: localStorage, panelIds: terminalOpen ? ["editor", "terminal"] : ["editor"] });
+  const bottom = usePanelSizes("gitviber-bottom-v1", "vertical", BOTTOM);
+  const listHeader = useRef<HTMLDivElement>(null);
+  const filesHeader = useRef<HTMLDivElement>(null);
+  // Double-clicking a sidebar's edge sizes it to show its header whole, never under its default.
+  const fit = (side: Side, header: RefObject<HTMLDivElement | null>) => header.current && sides.resize(side, Math.max(SIDES[side], headerWidth(header.current)));
 
   const changeView = changesView.use();
   const mtimes = useMtimes(status);
@@ -305,7 +316,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "editor.find": find,
     "search.findInFiles": () => {
       setExplorerView("search");
-      filesPanel.current?.expand();
+      sides.expand("files");
       setSearchAsk((a) => ({ id: a.id + 1, seed: selectedText() }));
     },
     "view.changes": () => showList("changes"),
@@ -314,15 +325,15 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.issues": () => showList("issues"),
     "history.search": () => {
       setListTab("history");
-      listPanel.current?.expand();
+      sides.expand("list");
       setSearchFocus(true);
     },
-    "view.toggleGitPanel": () => toggle(listPanel, "git"),
-    "view.toggleExplorer": () => toggle(filesPanel, "explorer"),
-    "view.focusGitPanel": () => show(listPanel, "git"),
+    "view.toggleGitPanel": () => toggle("list", "git"),
+    "view.toggleExplorer": () => toggle("files", "explorer"),
+    "view.focusGitPanel": () => show("list", "git"),
     "view.showExplorer": () => {
       setExplorerView("files");
-      show(filesPanel, "explorer");
+      show("files", "explorer");
     },
     "view.focusCode": () => void focusPanel("code"),
     "view.focusNextPanel": () => cycle(1),
@@ -396,7 +407,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       // A file opened from the terminal is picked in the explorer too; a closed explorer stays closed.
       reveal: (path, show) => {
         if (show) revealInExplorer(path);
-        else if (!filesPanel.current?.isCollapsed()) fileTree.current?.reveal(path, false);
+        else if (!sides.isCollapsed("files")) fileTree.current?.reveal(path, false);
       },
       github: webUrl,
       showCommit,
@@ -422,16 +433,15 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
         onOpenPull={(pull) => open({ kind: "pull", pull }, true)}
         leftOpen={leftOpen}
         rightOpen={rightOpen}
-        onToggleLeft={() => toggle(listPanel, "git")}
-        onToggleRight={() => toggle(filesPanel, "explorer")}
+        onToggleLeft={() => toggle("list", "git")}
+        onToggleRight={() => toggle("files", "explorer")}
       />
       <div className="relative min-h-0 flex-1">
         {/* The library finds a divider by where the pointer is: under the maximized terminal, the hidden ones would still drag. */}
-        <ResizablePanelGroup orientation="horizontal" defaultLayout={layout.defaultLayout} onLayoutChanged={layout.onLayoutChanged} disabled={terminalMaximized}>
+        <ResizablePanelGroup {...sides.group} disabled={terminalMaximized}>
           <ResizablePanel
             id="list"
-            panelRef={listPanel}
-            defaultSize={320}
+            {...sides.panel("list")}
             minSize={240}
             maxSize="45"
             collapsible
@@ -440,49 +450,53 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
           >
             <div data-panel="git" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel glass-panel outline-none">
               <FocusLine />
-              <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border pr-1 pl-2">
-                <ListTabButton active={listTab === "changes"} onClick={() => setListTab("changes")} count={changeCount}>
-                  Changes
-                </ListTabButton>
-                <ListTabButton active={listTab === "history"} onClick={() => setListTab("history")}>
-                  History
-                </ListTabButton>
-                <ListTabButton active={listTab === "pulls"} onClick={() => setListTab("pulls")}>
-                  PRs
-                </ListTabButton>
-                <ListTabButton active={listTab === "issues"} onClick={() => setListTab("issues")}>
-                  Issues
-                </ListTabButton>
-                {/* One group: two ml-autos split the free space. */}
-                <div className="ml-auto flex items-center gap-0.5">
-                  {listTab === "changes" && !reviewing && <ChangesViewMenu />}
-                  {listTab === "changes" && !reviewing && (
-                    <Tip label="Apply patch from clipboard">
-                      <button
-                        aria-label="Apply patch from clipboard"
-                        onClick={() => void openApplyPatch()}
-                        className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
-                      >
-                        <ClipboardPaste className="size-3.5" />
-                      </button>
-                    </Tip>
-                  )}
-                  <Tip label={reviewing ? "Back to uncommitted changes" : `Review branch against ${reviewLabel}`}>
+              <PanelHeader
+                ref={listHeader}
+                selected={listTab}
+                tabs={
+                  <>
+                    <ListTabButton active={listTab === "changes"} onClick={() => setListTab("changes")} count={changeCount}>
+                      Changes
+                    </ListTabButton>
+                    <ListTabButton active={listTab === "history"} onClick={() => setListTab("history")}>
+                      History
+                    </ListTabButton>
+                    <ListTabButton active={listTab === "pulls"} onClick={() => setListTab("pulls")}>
+                      PRs
+                    </ListTabButton>
+                    <ListTabButton active={listTab === "issues"} onClick={() => setListTab("issues")}>
+                      Issues
+                    </ListTabButton>
+                  </>
+                }
+              >
+                {listTab === "changes" && !reviewing && <ChangesViewMenu />}
+                {listTab === "changes" && !reviewing && (
+                  <Tip label="Apply patch from clipboard">
                     <button
-                      aria-label={reviewing ? "Back to uncommitted changes" : "Review branch"}
-                      aria-pressed={reviewing}
-                      onClick={reviewing ? () => setReview(null) : startReview}
-                      className={cn(
-                        "flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
-                        reviewing && "bg-active text-foreground",
-                      )}
+                      aria-label="Apply patch from clipboard"
+                      onClick={() => void openApplyPatch()}
+                      className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
                     >
-                      <GitCompareArrows className="size-3.5" />
+                      <ClipboardPaste className="size-3.5" />
                     </button>
                   </Tip>
-                  <CollapseButton side="left" onClick={() => toggle(listPanel, "git")} />
-                </div>
-              </div>
+                )}
+                <Tip label={reviewing ? "Back to uncommitted changes" : `Review branch against ${reviewLabel}`}>
+                  <button
+                    aria-label={reviewing ? "Back to uncommitted changes" : "Review branch"}
+                    aria-pressed={reviewing}
+                    onClick={reviewing ? () => setReview(null) : startReview}
+                    className={cn(
+                      "flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
+                      reviewing && "bg-active text-foreground",
+                    )}
+                  >
+                    <GitCompareArrows className="size-3.5" />
+                  </button>
+                </Tip>
+                <CollapseButton side="left" onClick={() => toggle("list", "git")} />
+              </PanelHeader>
               <div className="min-h-0 flex-1">
                 {reviewing && (
                   <BranchReview
@@ -539,9 +553,9 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
               </div>
             </div>
           </ResizablePanel>
-          <ResizableHandle className="bg-border" />
+          <ResizableHandle className="bg-border" disableDoubleClick onDoubleClick={() => fit("list", listHeader)} />
           <ResizablePanel id="viewer" minSize={360}>
-            <ResizablePanelGroup orientation="vertical" defaultLayout={viewerLayout.defaultLayout} onLayoutChanged={viewerLayout.onLayoutChanged} disabled={terminalMaximized}>
+            <ResizablePanelGroup {...bottom.group} disabled={terminalMaximized}>
               <ResizablePanel id="editor" minSize={120}>
                 {/* Esc from the view itself (a PR, an image) or the code, when Monaco had no use for it. */}
                 <div
@@ -580,8 +594,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
               {/* Rendered only while open, so the viewer keeps its state when the panel toggles. */}
               {terminalOpen && (
                 <>
-                  <ResizableHandle className="bg-border" />
-                  <ResizablePanel id="terminal" defaultSize="35" minSize={100}>
+                  <ResizableHandle className="bg-border" disableDoubleClick onDoubleClick={() => bottom.resize("terminal", BOTTOM.terminal)} />
+                  <ResizablePanel id="terminal" {...bottom.panel("terminal")} minSize={100}>
                     {/* Maximized, it covers the workspace, which stays mounted beneath: nothing reloads on the way back. */}
                     <div data-panel="terminal" className={cn("group/panel h-full", terminalMaximized ? "absolute inset-0 z-40" : "relative")}>
                       <FocusLine />
@@ -592,11 +606,10 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
               )}
             </ResizablePanelGroup>
           </ResizablePanel>
-          <ResizableHandle className="bg-border" />
+          <ResizableHandle className="bg-border" disableDoubleClick onDoubleClick={() => fit("files", filesHeader)} />
           <ResizablePanel
             id="files"
-            panelRef={filesPanel}
-            defaultSize={260}
+            {...sides.panel("files")}
             minSize={200}
             maxSize="40"
             collapsible
@@ -605,38 +618,42 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
           >
             <div data-panel="explorer" tabIndex={-1} className="group/panel relative flex h-full flex-col bg-panel glass-panel outline-none">
               <FocusLine />
-              <div className="flex h-9 shrink-0 items-center gap-0.5 border-b border-border pr-1 pl-2">
-                <ListTabButton active={explorerView === "files"} onClick={() => setExplorerView("files")}>
-                  Explorer
-                </ListTabButton>
-                <ListTabButton
-                  active={explorerView === "search"}
-                  onClick={() => {
-                    setExplorerView("search");
-                    setSearchAsk((a) => ({ id: a.id + 1, seed: "" }));
-                  }}
-                >
-                  Search
-                </ListTabButton>
-                {/* One group: two ml-autos split the free space, leaving Collapse folders mid-header. */}
-                <div className="ml-auto flex items-center gap-0.5">
-                  {explorerView === "files" && (
+              <PanelHeader
+                ref={filesHeader}
+                selected={explorerView}
+                tabs={
                   <>
-                  <Tip label="Filter files" shortcut={findKey}>
-                    <button aria-label="Filter files" onClick={() => fileTree.current?.filter()} className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
-                      <Search className="size-3.5" />
-                    </button>
-                  </Tip>
-                  <Tip label="Collapse folders">
-                    <button aria-label="Collapse folders" onClick={() => fileTree.current?.collapseAll()} className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
-                      <ChevronsDownUp className="size-3.5" />
-                    </button>
-                  </Tip>
+                    <ListTabButton active={explorerView === "files"} onClick={() => setExplorerView("files")}>
+                      Explorer
+                    </ListTabButton>
+                    <ListTabButton
+                      active={explorerView === "search"}
+                      onClick={() => {
+                        setExplorerView("search");
+                        setSearchAsk((a) => ({ id: a.id + 1, seed: "" }));
+                      }}
+                    >
+                      Search
+                    </ListTabButton>
                   </>
-                  )}
-                  <CollapseButton side="right" onClick={() => toggle(filesPanel, "explorer")} />
-                </div>
-              </div>
+                }
+              >
+                {explorerView === "files" && (
+                  <>
+                    <Tip label="Filter files" shortcut={findKey}>
+                      <button aria-label="Filter files" onClick={() => fileTree.current?.filter()} className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
+                        <Search className="size-3.5" />
+                      </button>
+                    </Tip>
+                    <Tip label="Collapse folders">
+                      <button aria-label="Collapse folders" onClick={() => fileTree.current?.collapseAll()} className="flex size-6 items-center justify-center rounded-sm text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground">
+                        <ChevronsDownUp className="size-3.5" />
+                      </button>
+                    </Tip>
+                  </>
+                )}
+                <CollapseButton side="right" onClick={() => toggle("files", "explorer")} />
+              </PanelHeader>
               {/* Both stay mounted, so each keeps its state (open folders, results) while the other shows. */}
               <div className={cn("min-h-0 flex-1", explorerView !== "search" && "hidden")}>
                 <SearchView active={explorerView === "search"} ask={searchAsk} onOpen={open} />
@@ -667,6 +684,24 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
       <StatusBar repo={repo} reviewed={uncommitted.filter(viewed).length} active={active?.sel} />
       <TerminalRestoreOffer />
       <ApplyPatchDialog refresh={() => repo.refresh(false)} />
+    </div>
+  );
+}
+
+/**
+ * A sidebar's header: its tabs scroll sideways when the panel is too narrow for them, rather than
+ * the whole panel, and its buttons stay put on the right.
+ */
+function PanelHeader({ ref, selected, tabs, children }: { ref: RefObject<HTMLDivElement | null>; selected: string; tabs: ReactNode; children: ReactNode }) {
+  const strip = useTabStrip<HTMLDivElement>(selected);
+  return (
+    <div ref={ref} className="flex h-9 shrink-0 items-center border-b border-border pr-1 pl-2">
+      <div ref={strip.ref} onWheel={strip.onWheel} data-scrollbar="none" className="flex min-w-0 items-center gap-0.5 overflow-x-auto">
+        {tabs}
+      </div>
+      {/* One group: CollapseButton's own ml-auto would split the free space. Padded, not a gap:
+          headerWidth measures from its edge. */}
+      <div className="ml-auto flex shrink-0 items-center gap-0.5 pl-0.5">{children}</div>
     </div>
   );
 }
