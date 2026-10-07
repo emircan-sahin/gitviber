@@ -27,7 +27,7 @@ import { folderName } from "@/lib/path";
 import { IS_MAC } from "@/lib/platform";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { openTerminal, togglePanel, usePaneLooks, useTerminalsOpen } from "@/lib/terminal/terminals";
-import { isNews, mostUrgent } from "@/lib/terminal/agentLook";
+import { isNews, LOOK_LABEL, mostUrgent } from "@/lib/terminal/agentLook";
 import { useNetActivity } from "@/lib/repo/netActivity";
 import { forgetRemoteTags } from "@/lib/repo/remoteTags";
 import { cn } from "@/lib/utils";
@@ -282,7 +282,7 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
       <AgentsMenu worktrees={worktrees} />
-      <Tip label={terminalOpen ? "Hide terminal" : calling ? "Show terminal · a terminal needs you" : "Show terminal"} shortcut={useShortcut("terminal.toggle")}>
+      <Tip label={terminalOpen ? "Hide terminal" : isNews(look) ? `Show terminal · a terminal: ${LOOK_LABEL[look].toLowerCase()}` : "Show terminal"} shortcut={useShortcut("terminal.toggle")}>
         <Button variant="ghost" size="icon" onClick={() => togglePanel(root)} className={cn("relative", terminalOpen && "text-foreground")}>
           <SquareTerminal />
           {calling && <StatusDot look={look} className="absolute top-1 right-1" />}

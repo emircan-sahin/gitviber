@@ -17,7 +17,7 @@ import { folderName } from "@/lib/path";
 import { type Hue, hueColor } from "@/lib/git/worktrees";
 import { NameInput } from "@/components/NameInput";
 import { StatusDot } from "@/components/StatusDot";
-import { LOOK_LABEL, mostUrgent, paneLook } from "@/lib/terminal/agentLook";
+import { lookLabel, mostUrgent, paneLook } from "@/lib/terminal/agentLook";
 
 // Memoized: every title a program sets re-renders the panel, and the other tabs keep their group object.
 export const GroupTab = memo(function GroupTab({
@@ -42,7 +42,8 @@ export const GroupTab = memo(function GroupTab({
   const where = title ? `${cwd} · ${title}` : cwd;
   // The tab's tooltip says the dot's state too.
   const look = mostUrgent(g.panes.map(paneLook));
-  const label = (g.name ? `${g.name} · ${where}` : where) + (look ? ` · ${LOOK_LABEL[look].toLowerCase()}` : "");
+  const agent = g.panes.find((p) => look && paneLook(p) === look)?.agent?.name;
+  const label = (g.name ? `${g.name} · ${where}` : where) + (look ? ` · ${lookLabel(look, agent)}` : "");
   // "/" has no name of its own.
   const shown = g.name ?? (folderName(cwd) || cwd);
   const [splitKey, splitDownKey, clearKey] = [useShortcut("terminal.split"), useShortcut("terminal.splitDown"), useShortcut("terminal.clear")];

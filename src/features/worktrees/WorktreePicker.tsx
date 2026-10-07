@@ -137,7 +137,7 @@ export function WorktreePicker({ worktrees, branches, onOpen, onTerminal, onMerg
   const hue = current ? (hues.get(current.path) ?? null) : null;
   const looks = looksIn(list, paneLooks);
   const away = mostUrgent(list.filter((w) => !w.current).map((w) => looks.get(w.path)));
-  const elsewhere = isNews(away) ? " · a terminal in another worktree needs you" : "";
+  const elsewhere = isNews(away) ? ` · a terminal in another worktree: ${LOOK_LABEL[away].toLowerCase()}` : "";
   const usable = (w: Worktree) => !w.current && !w.prunable && !w.bare;
   const then = (fn: (w: Worktree) => void) => (w: Worktree) => {
     setOpen(false);
@@ -425,7 +425,7 @@ function WorktreeRow({
           {/* "main" alone read as the branch: the main folder can be on any. */}
           {w.main && <Chip hot={hot}>main folder</Chip>}
           {look && (
-            <Tip label={`${LOOK_LABEL[look]} · in a terminal here`}>
+            <Tip label={`A terminal here: ${LOOK_LABEL[look].toLowerCase()}`}>
               <StatusDot look={look} className={cn(hot && "text-primary-foreground")} />
             </Tip>
           )}

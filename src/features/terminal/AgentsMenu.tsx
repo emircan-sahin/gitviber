@@ -11,7 +11,7 @@ import { plural, shortDuration } from "@/lib/format";
 import { folderName } from "@/lib/path";
 import { worktreeOf } from "@/lib/git/worktrees";
 import { useAgentList } from "@/lib/terminal/agents";
-import { isNews, lookOf, mostUrgent } from "@/lib/terminal/agentLook";
+import { isNews, LOOK_LABEL, lookOf, mostUrgent } from "@/lib/terminal/agentLook";
 import { type AgentEntry, agentsWaiting } from "@/lib/terminal/agentState";
 import { revealPane } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
@@ -92,7 +92,7 @@ export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
                   <span className="truncate font-medium">{e.name}</span>
                   <span className={cn("ml-auto shrink-0 text-[10.5px] tabular-nums", isNews(look) ? [LOOK_TEXT[look], "in-data-[highlighted]:text-primary-foreground"] : "opacity-70")}>
                     {LABEL[e.state]}
-                    {look === "unread" && ", not viewed"}
+                    {look === "unread" && `, ${LOOK_LABEL.unread.toLowerCase()}`}
                     {e.since > 0 && ` · ${shortDuration((now - e.since) / 1000)}`}
                   </span>
                 </span>
