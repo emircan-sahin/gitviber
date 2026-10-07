@@ -69,18 +69,13 @@ function EffortField({ preset }: { preset: Preset }) {
       label="Effort"
       hint={
         <>
-          {effort ? (
-            <>
-              Passed as <code className="font-mono text-foreground">{effortArg(preset, effort)}</code>.
-            </>
-          ) : (
-            "Not passed: the CLI uses its own default."
-          )}{" "}
-          More effort writes more considered messages, slower and at a higher cost.{preset === "opencode" && " Levels are per model, and not every model has every one."}
+          Passed as <code className="font-mono text-foreground">{effortArg(preset, "<level>")}</code>; CLI default passes none. More effort writes more considered messages, slower and
+          at a higher cost.{preset === "opencode" && " Levels are per model, and not every model has every one."}
         </>
       }
     >
       <OptionSelect
+        className="w-80"
         value={effort}
         options={{ "": "CLI default", ...Object.fromEntries(levels.map((l) => [l, l])) }}
         onChange={(v) => updateSettings({ suggestEfforts: { ...suggestEfforts, [preset]: v } })}

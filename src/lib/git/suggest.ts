@@ -5,8 +5,8 @@
 
 /**
  * `model` is only the default: new models come out every few months, so Settings takes any id
- * and links `models`, a list of current ones. `effort` is the reasoning effort flag, its levels
- * (from each CLI's --help) and the level it runs with; null where the CLI has no general one.
+ * and links `models`, a list of current ones. `effort` is the reasoning effort flag and its levels
+ * (from each CLI's --help), passed only once the user picks one; null where the CLI has no general one.
  * `other` ones sit under Others. Each reads the prompt and the diff from stdin (tried by hand);
  * Gemini CLI (individual sign-in retired), Copilot CLI (ignores stdin) and Ollama (pulls a
  * mistyped model unasked) are left to Custom.
@@ -18,7 +18,7 @@ export const SUGGEST_PRESETS = {
     modelFlag: "--model",
     model: "claude-sonnet-5",
     models: { label: "Anthropic's model list", url: "https://platform.claude.com/docs/en/about-claude/models/overview" },
-    effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"], level: "medium" },
+    effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"] },
     other: false,
   },
   codex: {
@@ -28,7 +28,7 @@ export const SUGGEST_PRESETS = {
     model: "gpt-6-luna",
     models: { label: "OpenAI's Codex models", url: "https://developers.openai.com/codex/models" },
     // A config override, one argument: suggest.rs runs argv without a shell.
-    effort: { flag: "-c model_reasoning_effort=", levels: ["minimal", "low", "medium", "high", "xhigh"], level: "medium" },
+    effort: { flag: "-c model_reasoning_effort=", levels: ["minimal", "low", "medium", "high", "xhigh"] },
     other: false,
   },
   // The plan agent can't edit files; the default build agent can.
@@ -38,8 +38,7 @@ export const SUGGEST_PRESETS = {
     modelFlag: "-m",
     model: "anthropic/claude-sonnet-5",
     models: { label: "models.dev", url: "https://models.dev" },
-    // Its variants differ per provider and model, so none unless picked.
-    effort: { flag: "--variant", levels: ["minimal", "low", "medium", "high", "xhigh", "max"], level: "" },
+    effort: { flag: "--variant", levels: ["minimal", "low", "medium", "high", "xhigh", "max"] },
     other: true,
   },
   pi: {
@@ -48,7 +47,7 @@ export const SUGGEST_PRESETS = {
     modelFlag: "--model",
     model: "anthropic/claude-sonnet-5",
     models: { label: "pi's model list", url: "https://pi.dev/models" },
-    effort: { flag: "--thinking", levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], level: "medium" },
+    effort: { flag: "--thinking", levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] },
     other: true,
   },
   llm: {
@@ -76,11 +75,8 @@ export const modelOf = (preset: SuggestPreset, models: Partial<Record<SuggestPre
 /** The levels a preset's effort takes; none when it has no flag. */
 export const effortLevels = (preset: SuggestPreset): readonly string[] => SUGGEST_PRESETS[preset].effort?.levels ?? [];
 
-/** The effort a preset runs with: the user's pick, or the default until they make one. "" is the CLI's own default. */
-export function effortOf(preset: SuggestPreset, efforts: Partial<Record<SuggestPreset, string>>) {
-  const picked = efforts[preset];
-  return picked !== undefined && (picked === "" || effortLevels(preset).includes(picked)) ? picked : (SUGGEST_PRESETS[preset].effort?.level ?? "");
-}
+/** The effort a preset runs with (settings.ts checks it's one of its levels); "" is the CLI's own default. */
+export const effortOf = (preset: SuggestPreset, efforts: Partial<Record<SuggestPreset, string>>) => (SUGGEST_PRESETS[preset].effort ? (efforts[preset] ?? "") : "");
 
 /** `--effort high`, or `-c model_reasoning_effort=high` for a flag that takes its value joined. */
 export function effortArg(preset: SuggestPreset, level: string) {

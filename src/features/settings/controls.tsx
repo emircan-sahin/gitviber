@@ -88,9 +88,9 @@ export function Field({ label, hint, commands, children }: { label: string; hint
   );
 }
 
-export function OptionSelect({ value, options, onChange }: { value: string; options: Record<string, string>; onChange: (v: string) => void }) {
+export function OptionSelect({ value, options, onChange, className }: { value: string; options: Record<string, string>; onChange: (v: string) => void; className?: string }) {
   return (
-    <Select value={value} onChange={(e) => onChange(e.target.value)} className="w-52">
+    <Select value={value} onChange={(e) => onChange(e.target.value)} className={cn("w-52", className)}>
       {Object.entries(options).map(([id, label]) => (
         <option key={id} value={id}>
           {label}
