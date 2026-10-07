@@ -454,7 +454,7 @@ test("line numbers past what a file can have are still whole lines; unsafe ones 
   assert.deepEqual(s.lineNotes.map((n) => n.line), [1e6, 7, 9]);
 });
 
-test("a category named like an Object property reads as other", { todo: "category() uses `in`, which sees Object.prototype: CATEGORY_UI[c] is then undefined and the view throws" }, () => {
+test("a category named like an Object property reads as other", () => {
   const sections = ["constructor", "__proto__", "toString", "hasOwnProperty"].map((category) => ({ title: category, category, files: [] }));
   const g = parseGuide(JSON.stringify({ title: "T", sections }))!;
   assert.deepEqual(g.sections.map((s) => s.category), ["other", "other", "other", "other"]);

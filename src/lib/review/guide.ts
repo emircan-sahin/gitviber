@@ -345,7 +345,7 @@ function parseFlows(v: unknown, count: number): Flow[] {
 const flag = (v: unknown) => v === true || text(v).toLowerCase() === "true";
 const category = (v: unknown): Category => {
   const c = text(v).toLowerCase();
-  return c in CATEGORIES ? (c as Category) : "other";
+  return Object.hasOwn(CATEGORIES, c) ? (c as Category) : "other";
 };
 
 /** A section, with notes only on its own files and lines that can be, at most LIMITS.notes of them. */
