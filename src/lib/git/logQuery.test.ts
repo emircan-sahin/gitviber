@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isEmptyFilter, parseLogQuery, withAuthor } from "./logQuery.ts";
+import { authorTerm, isEmptyFilter, parseLogQuery, withAuthor } from "./logQuery.ts";
 
 test("words match the message, prefixes narrow", () => {
   const { filter } = parseLogQuery("  fix auth  author:ada path:./src/lib/ code:useState ");
@@ -35,9 +35,9 @@ test("a clicked author replaces the author terms and keeps the rest", () => {
 });
 
 test("whatever the name, the parser reads it back as one author", () => {
-  for (const name of ["ada", "Ada Lovelace", "  Grace  Hopper ", "Jean-Luc O'Brien", 'Kim "KJ" Lee', "Zoë Çelik", "path:src", "dev@example.com"]) {
+  for (const name of ["ada", "Ada Lovelace", "  Grace  Hopper ", "Jean-Luc O'Brien", "Zoë Çelik", "path:src", "dev@example.com"]) {
     const { filter } = parseLogQuery(withAuthor("code:x", name));
-    assert.deepEqual(filter.author, [name.replaceAll('"', "").trim()], name);
+    assert.deepEqual(filter.author, [name.trim()], name);
     assert.equal(filter.code, "x");
     assert.deepEqual(filter.grep, []);
   }
@@ -98,16 +98,24 @@ test("a long pathological search parses quickly", () => {
 });
 
 // Bug repro: an unclosed quote in the box swallows the author term appended after it.
-test("an unclosed quote before a clicked author doesn't swallow it", { todo: "withAuthor appends after an open quote" }, () => {
+test("an unclosed quote before a clicked author doesn't swallow it", () => {
   const { filter } = parseLogQuery(withAuthor('"fix login', "Ada"));
   assert.deepEqual(filter.author, ["Ada"]);
 });
 
 // Bug repro: git matches --author as a fixed substring of "Name <email>"; a name that loses its
 // quotes ("Kim KJ Lee") is no longer in "Kim \"KJ\" Lee <...>", so the list goes empty.
-test("a name holding quotes still matches its own commits", { todo: "quotes are stripped from the name" }, () => {
+test("a name holding quotes still matches its own commits", () => {
   for (const name of ['Kim "KJ" Lee', 'O"Neil']) {
     const [author] = parseLogQuery(withAuthor("", name)).filter.author;
     assert.ok(name.includes(author), `${name} -> ${author}`);
   }
+});
+
+test("with the email, the author term is that one person", () => {
+  assert.equal(withAuthor("fix", "Ada Lovelace", "ada@example.com"), 'fix author:"Ada Lovelace <ada@example.com>"');
+  assert.deepEqual(parseLogQuery(withAuthor("", "Ada", "ada@example.com")).filter.author, ["Ada <ada@example.com>"]);
+  // A quote in the name: what's after it still holds the email.
+  assert.equal(authorTerm('Kim "KJ" Lee', "kim@example.com"), "Lee <kim@example.com>");
+  assert.equal(authorTerm("", "ada@example.com"), "<ada@example.com>");
 });

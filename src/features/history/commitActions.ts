@@ -42,8 +42,14 @@ export interface Actions {
   openAll: (commit: Commit) => void;
   /** Lists that can show a comparison in their place. */
   comparePoints?: (points: Points) => void;
-  /** Lists under the search box: narrows them to an author's commits. */
-  filterAuthor?: (name: string) => void;
+  filterAuthor?: AuthorFilter;
+}
+
+/** Narrowing History to a commit's author, through the search box: only lists it searches have one. */
+export interface AuthorFilter {
+  set: (c: Commit) => void;
+  /** The search is that author already. */
+  has: (c: Commit) => boolean;
 }
 
 /** GitHub only has commits that reached one of origin's branches (or all, for a fork's original). */

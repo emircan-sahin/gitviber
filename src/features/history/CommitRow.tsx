@@ -39,7 +39,7 @@ export function CommitRow({
   reveal,
   onClick,
   onMenu,
-  onAuthor,
+  filterAuthor,
   activeKey,
   onOpen,
   onHover,
@@ -64,7 +64,7 @@ export function CommitRow({
   onClick: (e: React.MouseEvent<HTMLElement>) => void;
   onMenu: () => void;
   /** Narrows the history to this commit's author. */
-  onAuthor?: () => void;
+  filterAuthor?: () => void;
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
   onHover: (s: Selection) => void;
@@ -157,8 +157,8 @@ export function CommitRow({
               <div className="min-w-0 flex-1">
                 <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
                 <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] text-subtle">
-                  {onAuthor && commit.authorName ? (
-                    <RowFilter title={`Filter by author ${commit.authorName}`} onFilter={onAuthor}>
+                  {filterAuthor && commit.authorName ? (
+                    <RowFilter title={`Filter by author ${commit.authorName}`} onFilter={filterAuthor}>
                       {commit.authorName}
                     </RowFilter>
                   ) : (

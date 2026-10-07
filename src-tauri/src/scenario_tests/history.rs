@@ -82,6 +82,51 @@ fn blame_attributes_lines() {
     assert!(lfs.unavailable.is_some() && lfs.lines.is_empty());
 }
 
+/// A listed commit's "Name <email>" as the author filter finds that person's commits only, also
+/// when a .mailmap maps them to someone else.
+#[test]
+fn log_search_by_a_listed_author_is_exact() {
+    let sb = Sandbox::new("logauthor");
+    let r = sb.path("r");
+    init(&r);
+    let by = |name: &str, email: &str, msg: &str| {
+        let (n, e) = (format!("user.name={name}"), format!("user.email={email}"));
+        run(
+            &r,
+            &[
+                "-c",
+                &n,
+                "-c",
+                &e,
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                msg,
+            ],
+        )
+        .unwrap();
+    };
+    by("Ada", "ada@example.com", "one");
+    by("Adam Smith", "adam@example.com", "two");
+    by("Ada", "ada@work.example", "three");
+    fs::write(
+        r.join(".mailmap"),
+        "Someone Else <else@example.com> <ada@example.com>\n",
+    )
+    .unwrap();
+    let listed = log(&r, None, 0, 10).unwrap();
+    let one = listed.iter().find(|c| c.subject == "one").unwrap();
+    assert_eq!(one.author_name, "Ada");
+    let author = LogFilter {
+        author: vec![format!("{} <{}>", one.author_name, one.author_email)],
+        ..Default::default()
+    };
+    let found = log_filtered(&r, None, 0, 10, &author).unwrap();
+    let subjects: Vec<_> = found.iter().map(|c| c.subject.as_str()).collect();
+    assert_eq!(subjects, ["one"]);
+}
+
 /// History search: words, author, pickaxe, a path, a file followed through a rename, a SHA.
 #[test]
 fn log_search_narrows_and_pages() {

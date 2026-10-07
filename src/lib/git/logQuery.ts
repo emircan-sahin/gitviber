@@ -37,12 +37,23 @@ export function parseLogQuery(text: string): { filter: LogFilter; shas: string[]
 }
 
 /**
- * `text` narrowed to one author, as a click on a commit's author name asks: the `author:` terms
- * there were go, the rest stays. Quotes can't be inside a term, so a name loses its own.
+ * The `author:` value that finds one author: git matches a fixed part of "Name <email>", so with
+ * the email it is that person alone. A term can't hold a quote: then the longest stretch without
+ * one, which is still a part of it.
  */
-export function withAuthor(text: string, name: string): string {
-  const kept = [...text.matchAll(TOKEN)].map(([t]) => t).filter((t) => !/^author:/i.test(t.replaceAll('"', "")));
-  const who = name.replaceAll('"', "").trim();
+export function authorTerm(name: string, email?: string): string {
+  const parts = (email ? `${name} <${email}>` : name).split('"').map((s) => s.trim());
+  return parts.reduce((a, b) => (b.length > a.length ? b : a));
+}
+
+/** `text` narrowed to one author, as a click on a commit's author asks: the `author:` terms there were go, the rest stays. */
+export function withAuthor(text: string, name: string, email?: string): string {
+  const kept = [...text.matchAll(TOKEN)]
+    .map(([t]) => t)
+    .filter((t) => !/^author:/i.test(t.replaceAll('"', "")))
+    // An unclosed quote would take in the author term after it.
+    .map((t) => (t.split('"').length % 2 === 0 ? `${t}"` : t));
+  const who = authorTerm(name, email);
   return [...kept, /\s/.test(who) ? `author:"${who}"` : `author:${who}`].join(" ");
 }
 

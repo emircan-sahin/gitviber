@@ -253,7 +253,7 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
       {actions.filterAuthor && c.authorName && (
         <>
           <ContextMenuSeparator />
-          <ContextMenuItem onSelect={() => actions.filterAuthor?.(c.authorName)}>
+          <ContextMenuItem disabled={actions.filterAuthor.has(c)} onSelect={() => actions.filterAuthor?.set(c)}>
             <ListFilter /> Filter by author {c.authorName}
           </ContextMenuItem>
         </>
