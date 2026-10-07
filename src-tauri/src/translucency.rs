@@ -171,6 +171,40 @@ pub fn shown<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
     }
 }
 
+/// A closed window's entry goes, with the color it held.
+#[cfg(target_os = "macos")]
+pub fn forget(label: &str) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    if let Some(was) = clear().remove(label) {
+        let _: () = unsafe { msg_send![was.color as *mut AnyObject, release] };
+    }
+}
+
+/// Reduce transparency switched while a window is in front: the pages ask again
+/// (translucency.ts). One observer, kept for the app's lifetime.
+#[cfg(target_os = "macos")]
+pub fn watch_reduce_transparency(app: &tauri::AppHandle) {
+    use block2::RcBlock;
+    use objc2::runtime::AnyObject;
+    use objc2::{class, msg_send};
+    use std::ptr::NonNull;
+    use tauri::Emitter;
+
+    let app = app.clone();
+    let block = RcBlock::new(move |_note: NonNull<AnyObject>| {
+        let _ = app.emit("reduce-transparency", ());
+    });
+    unsafe {
+        let workspace: *mut AnyObject = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let center: *mut AnyObject = msg_send![workspace, notificationCenter];
+        let name =
+            crate::objc::ns_string(c"NSWorkspaceAccessibilityDisplayOptionsDidChangeNotification");
+        let _: *mut AnyObject = msg_send![center, addObserverForName: name, object: std::ptr::null_mut::<AnyObject>(), queue: std::ptr::null_mut::<AnyObject>(), usingBlock: &*block];
+    }
+}
+
 /// macOS's Reduce transparency (System Settings → Accessibility → Display).
 #[cfg(target_os = "macos")]
 pub fn reduce_transparency() -> bool {
@@ -198,6 +232,9 @@ pub fn reset<R: tauri::Runtime>(_window: &tauri::WebviewWindow<R>) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn shown<R: tauri::Runtime>(_window: &tauri::WebviewWindow<R>) {}
+
+#[cfg(not(target_os = "macos"))]
+pub fn forget(_label: &str) {}
 
 #[cfg(not(target_os = "macos"))]
 pub fn reduce_transparency() -> bool {

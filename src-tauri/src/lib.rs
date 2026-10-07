@@ -128,6 +128,9 @@ pub fn run() {
             if window.label() == settings_window::LABEL {
                 settings_window::on_event(window, event);
             }
+            if let tauri::WindowEvent::Destroyed = event {
+                translucency::forget(window.label());
+            }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" && !quit::quitting() {
                     api.prevent_close();
@@ -165,6 +168,8 @@ pub fn run() {
             notifications::setup(app.handle());
             #[cfg(target_os = "macos")]
             menu::keep_typed_key_equivalents();
+            #[cfg(target_os = "macos")]
+            translucency::watch_reduce_transparency(app.handle());
             #[cfg(target_os = "linux")]
             menu::free_f10();
             #[cfg(debug_assertions)]
