@@ -150,26 +150,24 @@ pub fn stash_rename(repo: &Path, sha: &str, message: &str) -> Result<(), String>
     args.extend(["-m", &full]);
     let copy = run_text(repo, &args)?;
     run(repo, &["stash", "store", "-m", &full, copy.trim()])?;
-    // Stashes pushed since moved it down, and one can land between looking and dropping: git's
-    // answer says which commit it dropped, and one that isn't ours goes back where it was named.
+    // Stashes pushed since moved it down, and one can land between looking and dropping. git's
+    // "Dropped (<sha>)" names the stash it looked up before taking the lock, not the one it
+    // dropped (a push in between lost the user's stash), so the list says what went, and one
+    // that isn't ours is put back.
     for _ in 0..3 {
         let list = stashes(repo)?;
         let at = list
             .iter()
             .find(|s| s.sha == sha)
             .ok_or("The old stash went away while renaming; the renamed one is there.")?;
-        let dropped = run_text(repo, &["stash", "drop", &format!("stash@{{{}}}", at.index)])?;
-        let Some(wrong) = dropped
-            .split(|c: char| !c.is_ascii_hexdigit())
-            .find(|w| w.len() >= 40 && *w != sha)
-        else {
+        run(repo, &["stash", "drop", &format!("stash@{{{}}}", at.index)])?;
+        let after = stashes(repo)?;
+        if !after.iter().any(|s| s.sha == sha) {
             return Ok(());
-        };
-        let message = list
-            .iter()
-            .find(|s| s.sha == wrong)
-            .map_or("stash", |s| &s.message);
-        run(repo, &["stash", "store", "-m", message, wrong])?;
+        }
+        if let Some(wrong) = list.iter().find(|s| !after.iter().any(|a| a.sha == s.sha)) {
+            run(repo, &["stash", "store", "-m", &wrong.message, &wrong.sha])?;
+        }
     }
     Err("The stashes kept changing while renaming; the old name is still there.".into())
 }
