@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type AgentEntry, agentsWaiting, byUrgency, nextAgent, type PaneAgent, restoredAgent, resumeOf, savedAgents } from "./agentState.ts";
+import { type AgentEntry, agentsWaiting, byUrgency, nextAgent, type PaneAgent, quitStops, restoredAgent, resumeOf, savedAgents } from "./agentState.ts";
 
 const claude = (state: PaneAgent["state"], command: string | null = "claude --resume a-1", session: string | null = "a-1"): PaneAgent => ({ name: "Claude Code", command, session, cwd: "/w", state });
 /** A change of state as the state file's watch tells it. */
@@ -92,4 +92,17 @@ test("the badge counts each agent once, and drops to 0 as panes close", () => {
   const many = Array.from({ length: 500 }, (_, i) => e(i, i % 2 ? "waiting" : "working", i % 3 === 0));
   // A working one's news is old: its dot is working, and it isn't counted.
   assert.equal(agentsWaiting(many), many.filter((x) => x.state === "waiting").length);
+});
+
+test("a quit asks about agents mid-turn and running commands, not about agents done with their turn", () => {
+  assert.deepEqual(quitStops([]), []);
+  // Shells at their prompt.
+  assert.deepEqual(quitStops([{ busy: false }, { busy: false, agent: claude("working") }]), []);
+  // Resumed on the next run.
+  assert.deepEqual(quitStops([{ busy: true, agent: claude("idle") }]), []);
+  assert.deepEqual(quitStops([{ busy: true, agent: claude("working") }]), ["1 agent working"]);
+  assert.deepEqual(quitStops([{ busy: true, agent: claude("waiting") }, { busy: true, agent: claude("working") }]), ["2 agents working"]);
+  assert.deepEqual(quitStops([{ busy: true }]), ["1 command running"]);
+  // One that doesn't say its state may be mid-turn.
+  assert.deepEqual(quitStops([{ busy: true, agent: claude(null) }, { busy: true }, { busy: true, agent: claude("working") }, { busy: true, agent: claude("idle") }]), ["1 agent working", "2 commands running"]);
 });

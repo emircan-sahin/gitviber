@@ -186,10 +186,16 @@ pub fn folders_left(paths: Vec<String>) -> Vec<bool> {
     paths.iter().map(|p| Path::new(p).is_dir()).collect()
 }
 
-/// The page saved what it keeps on the way out (menu::quit).
+/// The page saved what it keeps on the way out (quit.rs).
 #[tauri::command]
 pub fn quit(app: AppHandle) {
     app.exit(0);
+}
+
+/// Whether the page lets a ⌘Q go, asks about it, or keeps the app (quit.rs).
+#[tauri::command]
+pub fn quit_answer(app: AppHandle, answer: crate::quit::Answer) {
+    crate::quit::answer(&app, answer);
 }
 
 /// See updates.rs.

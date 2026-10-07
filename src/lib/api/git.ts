@@ -80,6 +80,8 @@ export const api = {
   installCli: () => invoke<string>("install_cli"),
   /** Ends the app, once the page saved what it keeps (lib/app/quit). */
   quit: () => invoke<void>("quit"),
+  /** After a ⌘Q: the page asks the user first, they cancelled, or it saves now (quit.rs). */
+  quitAnswer: (answer: "asking" | "stay" | "go") => invoke<void>("quit_answer", { answer }),
   /** Brings the settings window forward, on `section` if given, opening it when `open`; false when there's none to bring. */
   settingsWindow: (section: string | null, open: boolean) => invoke<boolean>("settings_window", { section, open }),
   /** Paths opened from outside the window (a CLI, the Dock, a second launch) since last asked. */

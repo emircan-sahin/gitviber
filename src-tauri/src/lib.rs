@@ -33,6 +33,7 @@ mod patch;
 mod process;
 mod procinfo;
 mod pty;
+mod quit;
 mod revert;
 mod rewrite;
 #[cfg(test)]
@@ -98,7 +99,7 @@ pub fn run() {
         .menu(menu::build)
         .on_menu_event(|app, event| {
             if event.id() == menu::QUIT {
-                return menu::quit(app);
+                return quit::request(app);
             }
             let _ = app.emit_to(
                 settings_window::menu_target(app),
@@ -112,9 +113,9 @@ pub fn run() {
                 settings_window::on_event(window, event);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" && !menu::quitting() {
+                if window.label() == "main" && !quit::quitting() {
                     api.prevent_close();
-                    menu::quit(tauri::Manager::app_handle(window));
+                    quit::request(tauri::Manager::app_handle(window));
                 }
             }
         })
@@ -393,6 +394,7 @@ pub fn run() {
             commands::app::agent_conversations,
             commands::app::folders_left,
             commands::app::quit,
+            commands::app::quit_answer,
             commands::app::update_mode,
             commands::app::take_opened,
             commands::app::install_cli,
