@@ -1,4 +1,5 @@
 import { ListFilter, MessageSquare, Plus, RefreshCw } from "lucide-react";
+import { RelativeTime } from "@/components/RelativeTime";
 import { useCallback, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Button } from "@/components/ui/button";
@@ -10,7 +11,6 @@ import { useGitHubData } from "@/lib/github/githubCache";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { useListNav } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
-import { isoToUnix, relativeTime } from "@/lib/format";
 import { NewButton } from "@/features/github/shared/NewButton";
 import { LinkMenu } from "@/features/github/shared/LinkMenu";
 import { type Filter, filterCounts, FilterTabs } from "@/features/github/shared/FilterTabs";
@@ -217,7 +217,9 @@ function IssueRows({
             {active && <span className="absolute inset-y-0 left-0 w-0.5 bg-primary" />}
             <IssueStateIcon issue={i} className="mt-0.5" />
             <div className="min-w-0 flex-1">
-              <div className="truncate text-[12px] leading-4 text-foreground/90">{i.title}</div>
+              <div className="truncate text-[12px] leading-4 text-foreground/90" title={i.title}>
+                {i.title}
+              </div>
               {i.labels.length > 0 && (
                 <div className="mt-1 flex flex-wrap gap-1">
                   {i.labels.map((l) => (
@@ -237,7 +239,7 @@ function IssueRows({
                     {i.comments}
                   </span>
                 )}
-                <span className="ml-auto shrink-0">{relativeTime(isoToUnix(i.updatedAt))}</span>
+                <RelativeTime date={i.updatedAt} className="ml-auto shrink-0" />
               </div>
             </div>
           </div>

@@ -9,7 +9,8 @@ import type { GraphRow, Lane } from "@/lib/git/commitGraph";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
-import { fullDate, relativeTime } from "@/lib/format";
+import { fullDate } from "@/lib/format";
+import { RelativeTime, useRelativeTime } from "@/components/RelativeTime";
 import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import { sumLines } from "@/features/changes/changeList";
@@ -155,7 +156,9 @@ export function CommitRow({
                 }}
               />
               <div className="min-w-0 flex-1">
-                <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")}>{commit.subject}</div>
+                <div className={cn("truncate text-[12px] leading-4", open ? "font-medium text-foreground" : "text-foreground/90")} title={commit.subject}>
+                  {commit.subject}
+                </div>
                 <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] text-subtle">
                   {filterAuthor && commit.authorName ? (
                     <RowFilter title={`Filter by author ${commit.authorName}`} onFilter={filterAuthor}>
@@ -276,15 +279,10 @@ function GraphLines({ row }: { row: GraphRow }) {
  * keeps the date it was written, which then reads out of order: that one is in the tooltip.
  */
 export function CommitTime({ commit: c }: { commit: Commit }) {
-  const moved = relativeTime(c.timestamp) !== relativeTime(c.committedAt);
-  const title = moved
-    ? `Committed ${relativeTime(c.committedAt)} by ${c.committerName} (${fullDate(c.committedAt)})\nAuthored ${relativeTime(c.timestamp)} by ${c.authorName} (${fullDate(c.timestamp)})`
-    : fullDate(c.committedAt);
-  return (
-    <span className={cn("shrink-0", moved && "underline decoration-subtle/60 decoration-dotted underline-offset-2")} title={title}>
-      {relativeTime(c.committedAt)}
-    </span>
-  );
+  const [committed, authored] = [useRelativeTime(c.committedAt), useRelativeTime(c.timestamp)];
+  const moved = authored !== committed;
+  const title = moved ? `Committed ${committed} by ${c.committerName} (${fullDate(c.committedAt)})\nAuthored ${authored} by ${c.authorName} (${fullDate(c.timestamp)})` : undefined;
+  return <RelativeTime date={c.committedAt} title={title} className={cn("shrink-0", moved && "underline decoration-subtle/60 decoration-dotted underline-offset-2")} />;
 }
 
 function RefBadges({ refs, remotes, show }: { refs: string[]; remotes: Set<string>; show?: GraphRefs }) {

@@ -1,4 +1,5 @@
 import { ask } from "@/lib/app/ask";
+import { RelativeTime } from "@/components/RelativeTime";
 import { ChevronDown, CircleCheck, CircleDot, CircleSlash, ExternalLink, FolderGit2, Loader2, Pencil, RefreshCw, Tag, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { PageFind } from "@/components/FindBox";
@@ -10,7 +11,6 @@ import { listIsBehind, useGitHubData } from "@/lib/github/githubCache";
 import { matchesCommand } from "@/lib/commands/keybindings";
 import { toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
-import { isoToUnix, relativeTime } from "@/lib/format";
 import { openOnGitHub } from "@/lib/github/url";
 import { LabelChip } from "./IssueBadges";
 import { LabelPicker } from "./LabelPicker";
@@ -153,7 +153,9 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
               <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-muted-foreground">
                 <IssueStatePill issue={i} />
                 <span className="text-foreground/85">{i.author}</span>
-                <span>opened {relativeTime(isoToUnix(i.createdAt))}</span>
+                <span>
+                  opened <RelativeTime date={i.createdAt} />
+                </span>
                 {i.assignees.length > 0 && (
                   <>
                     <span className="text-subtle">·</span>
@@ -245,7 +247,7 @@ export function IssueView({ issue, onDeleted }: { issue: Issue; onDeleted: () =>
               <div key={n} className="border-b border-border px-3 py-2.5 last:border-0">
                 <div className="flex items-center gap-2 text-[11.5px]">
                   <span className="font-semibold text-foreground">{c.author}</span>
-                  <span className="text-subtle">{relativeTime(isoToUnix(c.createdAt))}</span>
+                  <RelativeTime date={c.createdAt} className="text-subtle" />
                 </div>
                 {c.body && <PullMarkdown pull={issue} idPrefix={`is-c${n}-`} text={c.body} className="mt-1.5 px-0 py-0" />}
               </div>
