@@ -3,6 +3,7 @@ import { bindingsFor, COMMANDS, commandFor, type Overrides } from "@/lib/command
 import { IS_MAC } from "@/lib/platform";
 import { canRun, eventChord, matchesCommand, runsAt, useCommands } from "@/lib/commands/keybindings";
 import { focusedPanel, type Panel } from "@/lib/ui/panels";
+import { untilReleased } from "@/lib/ui/held";
 import { pointerMoved } from "@/lib/ui/pointer";
 import { getSettings, useSettings } from "@/lib/settings";
 import { createStore } from "@/lib/store";
@@ -121,6 +122,9 @@ export function ShortcutOverlay() {
 
   useEffect(() => {
     let timer = 0;
+    let stopWaiting = () => {};
+    // Where the pointer last moved, for the link check.
+    let at: { x: number; y: number } | null = null;
     const cancel = () => {
       clearTimeout(timer);
       timer = 0;
@@ -129,14 +133,29 @@ export function ShortcutOverlay() {
       cancel();
       set(null);
     };
+    // Held over a link (the code view's underline, the terminal's pointer), it's a ⌘-click about to happen.
+    // Only the one under the pointer: an editor elsewhere can keep its underline after ⌘ is up (Monaco
+    // draws it when a slow definition lookup answers late, and clears it on its own keyup or a move over it).
+    const overLink = () => !!at && !!document.elementFromPoint(at.x, at.y)?.closest(".goto-definition-link, .detected-link-active, .xterm-cursor-pointer");
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === HOLD_KEY) {
-        // Alone: with ⇧ or ⌥ it's the start of a chord. Macs don't repeat modifiers; other systems do.
+        // Macs don't repeat modifiers; other systems do, and a repeat cancelling the timer kept it from showing.
+        if (e.repeat) return;
+        // Alone: with ⇧ or ⌥ it's the start of a chord.
         const alone = !e.altKey && !e.shiftKey && !(IS_MAC ? e.ctrlKey : e.metaKey);
-        // The other ⌘ going down restarts it: one timer, which the first keyup cancels.
+        // The other ⌘ going down restarts it.
         cancel();
-        // Held over a link (the code view's underline, the terminal's pointer), it's a ⌘-click about to happen.
-        if (alone && !e.repeat && !shown.get() && getSettings().shortcutOverlay) timer = window.setTimeout(() => !document.querySelector(".goto-definition-link, .detected-link-active, .xterm-cursor-pointer") && set("held"), HOLD_MS);
+        // A chord's ⌘ ends the hold. Not the other ⌘ alone: a held overlay still waits for ⌘ to go up.
+        if (!alone) stopWaiting();
+        if (alone && !shown.get() && getSettings().shortcutOverlay) {
+          timer = window.setTimeout(() => !overLink() && set("held"), HOLD_MS);
+          // Its keyup, or the next event without it: Mission Control takes the keyup and leaves no blur.
+          stopWaiting();
+          stopWaiting = untilReleased(HOLD_KEY, () => {
+            cancel();
+            if (shown.get() === "held") set(null);
+          });
+        }
         return;
       }
       cancel();
@@ -150,24 +169,21 @@ export function ShortcutOverlay() {
         e.stopPropagation();
       }
     };
-    const onKeyUp = (e: KeyboardEvent) => {
-      if (e.key !== HOLD_KEY) return;
-      cancel();
-      if (shown.get() === "held") set(null);
-    };
     // ⌘ held while the pointer travels is a ⌘-click on its way, which the overlay would swallow.
     // Capture runs before pointer.ts's own listener, so pointerMoved still sees the last position.
-    const onMouseMove = (e: MouseEvent) => timer && pointerMoved(e) && cancel();
+    const onMouseMove = (e: MouseEvent) => {
+      at = { x: e.clientX, y: e.clientY };
+      if (timer && pointerMoved(e)) cancel();
+    };
     window.addEventListener("keydown", onKeyDown, true);
-    window.addEventListener("keyup", onKeyUp, true);
     window.addEventListener("mousemove", onMouseMove, true);
     window.addEventListener("pointerdown", cancel, true);
-    // ⌘Tab leaves without a keyup.
+    // ⌘Tab leaves without a keyup; a shown-by-key overlay goes too.
     window.addEventListener("blur", hide);
     return () => {
+      stopWaiting();
       hide();
       window.removeEventListener("keydown", onKeyDown, true);
-      window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("mousemove", onMouseMove, true);
       window.removeEventListener("pointerdown", cancel, true);
       window.removeEventListener("blur", hide);

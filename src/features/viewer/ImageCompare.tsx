@@ -5,6 +5,7 @@ import { type ReactElement, type ReactNode, useEffect, useState } from "react";
 import type { ImageCompare } from "@/lib/settings";
 import { ImageMenu, type MediaSource, PAD, SvgSide, type SvgProps, useMediaUrl, useSize } from "./MediaView";
 import { formatBytes } from "@/lib/format";
+import { releaseIfButtonLost } from "@/lib/ui/held";
 
 export type Overlaid = Exclude<ImageCompare, "side">;
 
@@ -147,7 +148,7 @@ function Divider({ at, onMove }: { at: number; onMove: (at: number) => void }) {
         e.currentTarget.setPointerCapture(e.pointerId);
         drag(e);
       }}
-      onPointerMove={(e) => e.currentTarget.hasPointerCapture(e.pointerId) && drag(e)}
+      onPointerMove={(e) => e.currentTarget.hasPointerCapture(e.pointerId) && !releaseIfButtonLost(e.nativeEvent) && drag(e)}
       onKeyDown={(e) => {
         const step = e.key === "ArrowLeft" ? -0.05 : e.key === "ArrowRight" ? 0.05 : 0;
         if (!step) return;
