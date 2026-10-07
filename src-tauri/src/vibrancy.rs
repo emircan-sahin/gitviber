@@ -5,14 +5,20 @@
 //! Only the webview stops drawing its background, and only while the material is on, so nothing
 //! changes for anyone who never turns it on.
 
-/// Whether the material is on now, for `reset` on a page load.
+/// The windows (labels) the material is on in now, for `reset` on a page load: each window's
+/// page asks for its own (the main one, the settings one).
 #[cfg(target_os = "macos")]
-static ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static ON: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
+
+#[cfg(target_os = "macos")]
+fn on() -> std::sync::MutexGuard<'static, std::collections::BTreeSet<String>> {
+    ON.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// On the main thread, which apply_vibrancy insists on.
 #[cfg(target_os = "macos")]
 pub fn set<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, on: bool) -> Result<(), String> {
-    use std::sync::atomic::Ordering;
     use window_vibrancy::{
         apply_vibrancy, clear_vibrancy, NSVisualEffectMaterial, NSVisualEffectState,
     };
@@ -20,7 +26,7 @@ pub fn set<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, on: bool) -> Res
     // Directly rather than through tauri's set_effects: its clear does nothing on macOS, and each
     // apply stacks one more effect view.
     clear_vibrancy(window).map_err(|e| e.to_string())?;
-    ON.store(false, Ordering::Relaxed);
+    self::on().remove(window.label());
     if on {
         // Inactive, the material turns solid by itself, as the page does (translucency.ts).
         apply_vibrancy(
@@ -30,7 +36,7 @@ pub fn set<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>, on: bool) -> Res
             None,
         )
         .map_err(|e| e.to_string())?;
-        ON.store(true, Ordering::Relaxed);
+        self::on().insert(window.label().to_string());
     }
     draw_background(window, !on)
 }
@@ -62,7 +68,7 @@ fn draw_background<R: tauri::Runtime>(
 /// it, and one turned off just before the reload doesn't stay behind.
 #[cfg(target_os = "macos")]
 pub fn reset<R: tauri::Runtime>(window: &tauri::WebviewWindow<R>) {
-    if ON.load(std::sync::atomic::Ordering::Relaxed) {
+    if on().contains(window.label()) {
         let w = window.clone();
         let _ = window.run_on_main_thread(move || {
             let _ = set(&w, false);
