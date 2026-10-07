@@ -32,6 +32,7 @@ test("nothing to use", () => {
 test("program of a template", () => {
   assert.equal(programOf("  claude -p"), "claude");
   assert.equal(programOf("codex exec"), "codex");
+  assert.equal(programOf("~/.local/bin/claude -p"), "claude");
 });
 
 test("a preset runs with its model and effort", () => {

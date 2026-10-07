@@ -104,8 +104,8 @@ export const PULL_PROMPT =
 /** suggest.rs MAX_DIFF. */
 export const SUGGEST_LIMIT_KB = 100;
 
-/** The program a template runs, for messages ("claude" from "claude -p"). */
-export const programOf = (command: string) => command.trim().split(/\s+/)[0] ?? "";
+/** The program a template runs, by name, for messages ("claude" from "~/.local/bin/claude -p"). */
+export const programOf = (command: string) => command.trim().split(/\s+/)[0]?.split("/").at(-1) ?? "";
 
 /**
  * A Markdown answer inside a fence that wraps it: the first fence (after at most a "Here's the PR:"
