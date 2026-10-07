@@ -62,20 +62,20 @@ test("a start in the future (clock skew) reads as under a minute, a multi-day ru
   assert.equal(checkNote(backwards), "<1m");
 });
 
-test("a timestamp that doesn't parse leaves the duration out", { todo: "checkNote prints \"NaNd\" for an unparsable startedAt/completedAt" }, () => {
+test("a timestamp that doesn't parse leaves the duration out", () => {
   const now = Date.parse("2024-05-01T12:00:00Z");
   assert.equal(checkNote(check("build", "pending", { status: "queued", startedAt: "not a date" }), now), "Queued");
   assert.equal(checkNote(check("lint", "failure", { startedAt: "2024-05-01T12:00:00Z", completedAt: "" + "garbage" })), "");
 });
 
-test("startup_failure is a failure, as GitHub's rollup counts it", { todo: "FAILED lacks startup_failure: verdict says success, summary drops it" }, () => {
+test("startup_failure is a failure, as GitHub's rollup counts it", () => {
   const checks = [check("a", "success"), check("workflow", "startup_failure")];
   assert.equal(checksVerdict(checks), "failure");
   assert.equal(checksSummary(checks), "1/2 passed · 1 failing");
   assert.deepEqual(sortChecks(checks).map((c) => c.name), ["workflow", "a"]);
 });
 
-test("every check is counted somewhere in the summary", { todo: "a completed run with a null conclusion (state \"\") is counted in no bucket" }, () => {
+test("every check is counted somewhere in the summary", () => {
   const checks = [check("a", "success"), check("b", "")];
   const summary = checksSummary(checks);
   const counted = [...summary.matchAll(/(\d+) (?:failing|running|skipped|neutral)/g)].reduce((n, m) => n + Number(m[1]), Number(summary.split("/")[0]));

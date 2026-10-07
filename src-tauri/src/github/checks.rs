@@ -2,7 +2,9 @@
 //! annotations and, for a GitHub Actions job, its log's tail (the job log `gh run view
 //! --log-failed` falls back to). Asked for one check at a time.
 
-use super::{call, pages, string, target, text_tail, Method, Session, JSON, MAX_PAGES};
+use super::{
+    call, is_sha, pages, string, target, text_tail, Method, RepoRef, Session, JSON, MAX_PAGES,
+};
 use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
@@ -20,7 +22,7 @@ pub struct Check {
     pub description: String,
     /// The app that ran a check run ("GitHub Actions"); "" for a status.
     pub app: String,
-    /// A status's is when it was posted, so only a check run has a duration.
+    /// For a status, when it was posted; only a check run has a duration.
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
     pub url: Option<String>,
@@ -43,24 +45,24 @@ pub fn commit_checks(
     to: Option<&str>,
     sha: &str,
 ) -> Result<CommitChecks, String> {
-    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+    if !is_sha(sha) {
         return Err(format!("{sha} is not a commit id."));
     }
     let r = target(session, repo, to)?;
-    Ok(read_checks(session, repo, &r.api(""), sha))
+    Ok(read_checks(session, repo, &r, sha))
 }
 
-/// `base`: the repository's API path. Unchanged lists come back as 304s from the ETag cache,
-/// which is what lets a running commit be asked again every half minute.
-pub(super) fn read_checks(session: &Session, repo: &Path, base: &str, sha: &str) -> CommitChecks {
+/// Unchanged lists come back as 304s from the ETag cache, which is what lets a running commit
+/// be asked again every half minute.
+pub(super) fn read_checks(session: &Session, repo: &Path, r: &RepoRef, sha: &str) -> CommitChecks {
     let mut checks = vec![];
     let mut checks_error = None;
-    let runs = format!("{base}/commits/{sha}/check-runs");
+    let runs = r.api(&format!("/commits/{sha}/check-runs"));
     match pages(session, repo, &runs, JSON, Some("check_runs"), MAX_PAGES) {
         Ok(runs) => checks.extend(runs.iter().map(check_run)),
         Err(e) => checks_error = Some(e),
     }
-    let statuses = format!("{base}/commits/{sha}/status");
+    let statuses = r.api(&format!("/commits/{sha}/status"));
     match pages(session, repo, &statuses, JSON, Some("statuses"), MAX_PAGES) {
         Ok(statuses) => checks.extend(statuses.iter().map(status)),
         Err(e) => {
@@ -522,7 +524,7 @@ mod tests {
             commits: 1,
             mergeable: None,
             mergeable_state: "unknown".into(),
-            checks: CommitChecks {
+            ci: CommitChecks {
                 checks: vec![status(&serde_json::json!({
                     "context": "ci/legacy", "state": "error", "target_url": "https://ci.example.com/b/7"
                 }))],

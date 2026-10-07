@@ -16,5 +16,5 @@ export function failureReport(check: string, where: string, f: CheckFailure) {
   return parts.join("\n\n");
 }
 
-/** A commit as the report names it: its id for git, its subject and page for the reader. */
-export const commitPlace = (sha: string, subject: string, url: string) => `commit ${sha} "${subject}" (${url})`;
+/** A commit as the report names it: its id for git, its subject and page for the reader; last, so the subject needs no quoting. */
+export const commitPlace = (sha: string, subject: string, url: string) => `commit ${sha} (${url}): ${subject}`;

@@ -1,7 +1,7 @@
 import type { CiCheck, CiState } from "../api/github.ts";
 import { shortDuration } from "../format.ts";
 
-export const FAILED = new Set(["failure", "cancelled", "timed_out", "action_required"]);
+export const FAILING = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure"]);
 
 const WAITS: Record<string, string> = {
   queued: "Queued",
@@ -14,14 +14,14 @@ const WAITS: Record<string, string> = {
 
 /** Failing first, then running, then the rest, each in GitHub's order: what needs a look leads. */
 export function sortChecks(checks: CiCheck[]) {
-  const rank = (c: CiCheck) => (FAILED.has(c.state) ? 0 : c.state === "pending" ? 1 : 2);
+  const rank = (c: CiCheck) => (FAILING.has(c.state) ? 0 : c.state === "pending" ? 1 : 2);
   return [...checks].sort((a, b) => rank(a) - rank(b));
 }
 
 /** The commit's verdict as these checks give it; undefined with none. */
 export function checksVerdict(checks: CiCheck[]): CiState | undefined {
   if (!checks.length) return undefined;
-  if (checks.some((c) => FAILED.has(c.state))) return "failure";
+  if (checks.some((c) => FAILING.has(c.state))) return "failure";
   return checks.some((c) => c.state === "pending") ? "pending" : "success";
 }
 
@@ -30,10 +30,11 @@ export function checksSummary(checks: CiCheck[]) {
   const count = (test: (c: CiCheck) => boolean) => checks.filter(test).length;
   const parts = [`${count((c) => c.state === "success")}/${checks.length} passed`];
   const rest: [number, string][] = [
-    [count((c) => FAILED.has(c.state)), "failing"],
+    [count((c) => FAILING.has(c.state)), "failing"],
     [count((c) => c.state === "pending"), "running"],
     [count((c) => c.state === "skipped"), "skipped"],
-    [count((c) => c.state === "neutral" || c.state === "stale"), "neutral"],
+    // Neutral and stale, and whatever else GitHub says (a run done without a conclusion: "").
+    [count((c) => !["success", "pending", "skipped"].includes(c.state) && !FAILING.has(c.state)), "neutral"],
   ];
   for (const [n, word] of rest) if (n) parts.push(`${n} ${word}`);
   return parts.join(" · ");

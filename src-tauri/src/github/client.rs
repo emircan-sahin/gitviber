@@ -558,6 +558,11 @@ pub(super) fn list_state(state: &str) -> &str {
     }
 }
 
+/// A full commit id, as GitHub has them: anything else isn't asked for (it goes into a path).
+pub(super) fn is_sha(s: &str) -> bool {
+    s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// A string field of a response, "" when it's missing or null.
 pub(super) fn string(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()

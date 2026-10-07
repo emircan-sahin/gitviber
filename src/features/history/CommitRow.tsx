@@ -156,7 +156,7 @@ export function CommitRow({
                   <span className="min-w-0 truncate">{commit.authorName}</span>
                   <span>·</span>
                   <CommitTime commit={commit} />
-                  <CiBadge state={ci} url={url} className="ml-auto" />
+                  <CiBadge state={ci} className="ml-auto" />
                   <span className={cn("shrink-0 font-mono", !ci && "ml-auto")}>{commit.shortSha}</span>
                 </div>
                 <RefBadges refs={commit.refs} remotes={remotes} show={showRefs} />

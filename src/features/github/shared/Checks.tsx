@@ -1,10 +1,10 @@
 import { Check, CircleDashed, ClipboardCopy, Loader2, MinusCircle, RefreshCw, X } from "lucide-react";
 import { Fragment, useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { type CiCheck, errorMessage, github, repoOf } from "@/lib/api";
+import { type CiCheck, type CommitChecks, errorMessage, github, repoOf } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
 import { failureReport } from "@/lib/github/checkFailure";
-import { checkNote, FAILED, sortChecks } from "@/lib/github/checks";
+import { checkNote, FAILING, sortChecks } from "@/lib/github/checks";
 import { useGitHubData } from "@/lib/github/githubCache";
 import { openTarget } from "@/lib/links/linkHost";
 import { cn } from "@/lib/utils";
@@ -15,7 +15,7 @@ import { type MarkdownHome, PullMarkdown } from "@/features/github/shared/GitHub
  * reads why a check run failed. `home`: the PR, or the commit's repository, its output's links
  * are relative to; `where`: how "Copy for agent" names it (a PR's url, or commitPlace).
  */
-export function CheckRows({ checks, home, where }: { checks: CiCheck[]; home: MarkdownHome; where: string }) {
+export function CheckRows({ ci: { checks, checksError }, home, where }: { ci: CommitChecks; home: MarkdownHome; where: string }) {
   // The check run whose failure shows: read only when asked, one at a time.
   const [shown, setShown] = useState<number | null>(null);
   // A running check's time goes on without a new read.
@@ -26,7 +26,7 @@ export function CheckRows({ checks, home, where }: { checks: CiCheck[]; home: Ma
     const timer = window.setInterval(tick, 30_000);
     return () => window.clearInterval(timer);
   }, [running]);
-  return sortChecks(checks).map((c, i) => {
+  const rows = sortChecks(checks).map((c, i) => {
     const open = c.id !== null && shown === c.id;
     const note = checkNote(c);
     const started = c.startedAt && `${c.state === "pending" ? "Since" : "Started"} ${new Date(c.startedAt).toLocaleString()}`;
@@ -42,7 +42,7 @@ export function CheckRows({ checks, home, where }: { checks: CiCheck[]; home: Ma
           )}
           <span className="ml-auto flex shrink-0 items-center gap-3">
             {/* Statuses have no output to show; only check runs do. */}
-            {FAILED.has(c.state) && c.id !== null && (
+            {FAILING.has(c.state) && c.id !== null && (
               <button onClick={() => setShown(open ? null : c.id)} aria-expanded={open} className="text-[11px] text-subtle hover:text-foreground focus-visible:text-foreground">
                 {open ? "Hide failure" : "Show failure"}
               </button>
@@ -58,6 +58,12 @@ export function CheckRows({ checks, home, where }: { checks: CiCheck[]; home: Ma
       </Fragment>
     );
   });
+  return (
+    <>
+      {checksError && <div className="px-3 py-2 text-[12px] text-removed">Could not load all checks: {checksError}</div>}
+      {rows}
+    </>
+  );
 }
 
 /** A finished check run doesn't change (a re-run is a new one), so it's read once a session; Retry reads a part that failed again. */
@@ -139,6 +145,6 @@ function CheckIcon({ state }: { state: string }) {
   const label = { "aria-label": state === "pending" ? "running" : state.replace(/_/g, " "), role: "img" };
   if (state === "success") return <Check {...label} className="size-3.5 shrink-0 text-added" />;
   if (state === "pending") return <CircleDashed {...label} className="size-3.5 shrink-0 animate-spin text-modified [animation-duration:3s]" />;
-  if (FAILED.has(state)) return <X {...label} className="size-3.5 shrink-0 text-removed" />;
+  if (FAILING.has(state)) return <X {...label} className="size-3.5 shrink-0 text-removed" />;
   return <MinusCircle {...label} className="size-3.5 shrink-0 text-subtle" />;
 }

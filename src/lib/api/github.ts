@@ -86,7 +86,7 @@ export interface CiCheck {
   description: string;
   /** The app that ran a check run; "" for a status. */
   app: string;
-  /** A status's is when it was posted, so only a check run has a duration. */
+  /** For a status, when it was posted; only a check run has a duration. */
   startedAt: string | null;
   completedAt: string | null;
   url: string | null;

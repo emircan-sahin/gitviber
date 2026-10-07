@@ -3,7 +3,7 @@
 use super::checks::read_checks;
 use super::search::{self, Kind};
 use super::{
-    all_pages, call, fetch_remote, graphql, list_state, pages, repo_ref, string, target,
+    all_pages, call, fetch_remote, graphql, is_sha, list_state, pages, repo_ref, string, target,
     CommitChecks, ListFilter, Method, Session, StateCounts, JSON, MAX_PAGES,
 };
 use crate::git;
@@ -118,11 +118,7 @@ pub fn ci_states(
     shas: &[String],
 ) -> Result<std::collections::HashMap<String, String>, String> {
     let r = target(session, repo, to)?;
-    let shas: Vec<&String> = shas
-        .iter()
-        .filter(|s| s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit()))
-        .take(100)
-        .collect();
+    let shas: Vec<&String> = shas.iter().filter(|s| is_sha(s)).take(100).collect();
     let mut out = std::collections::HashMap::new();
     if shas.is_empty() {
         return Ok(out);
@@ -180,7 +176,7 @@ pub struct PullDetail {
     pub mergeable: Option<bool>,
     pub mergeable_state: String,
     #[serde(flatten)]
-    pub checks: CommitChecks,
+    pub ci: CommitChecks,
     pub comments: Vec<Comment>,
     /// Who closed it, if closed: an author may reopen only what they closed themselves
     pub closed_by: Option<String>,
@@ -217,7 +213,7 @@ pub fn detail(
         None
     };
 
-    let checks = read_checks(session, repo, &base, &pull.head_sha);
+    let ci = read_checks(session, repo, &r, &pull.head_sha);
 
     // A failure here is an error, not "no comments": an empty thread would be a lie.
     let mut comments = vec![];
@@ -263,7 +259,7 @@ pub fn detail(
         commits: v["commits"].as_u64().unwrap_or_default(),
         mergeable: v["mergeable"].as_bool(),
         mergeable_state: string(&v["mergeable_state"]),
-        checks,
+        ci,
         comments,
         pull,
     })

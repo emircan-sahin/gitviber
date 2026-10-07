@@ -26,10 +26,10 @@ test("what a check doesn't have is left out", () => {
   assert.equal(failureReport("vercel", URL, { title: "", summary: "", annotations: [], annotationsError: null, log: null, logError: "gone" }), `CI check "vercel" failed on ${URL}`);
 });
 
-test("a commit's failure names the commit, by id and subject", () => {
-  const where = commitPlace("1a2b3c4", "Fix the parser", "https://github.com/acme/widgets/commit/1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b");
+test("a commit's failure names the commit, by id and subject, quotes and all", () => {
+  const where = commitPlace("1a2b3c4", 'Fix the "parser"', "https://github.com/acme/widgets/commit/1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b");
   assert.equal(
     failureReport("test", where, { title: "", summary: "", annotations: [], annotationsError: null, log: "boom", logError: null }),
-    'CI check "test" failed on commit 1a2b3c4 "Fix the parser" (https://github.com/acme/widgets/commit/1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b)\n\nJob log, its last lines up to the error:\nboom',
+    'CI check "test" failed on commit 1a2b3c4 (https://github.com/acme/widgets/commit/1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b): Fix the "parser"\n\nJob log, its last lines up to the error:\nboom',
   );
 });

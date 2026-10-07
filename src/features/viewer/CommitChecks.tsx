@@ -4,7 +4,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tip } from "@/components/ui/tooltip";
 import { type Commit, errorMessage } from "@/lib/api";
 import { commitPlace } from "@/lib/github/checkFailure";
-import { checksSummary, checksVerdict } from "@/lib/github/checks";
+import { checksSummary } from "@/lib/github/checks";
 import { useCommitChecks } from "@/lib/github/commitChecks";
 import { repoOfCommitUrl } from "@/lib/github/permalink";
 import { CheckRows } from "@/features/github/shared/Checks";
@@ -15,11 +15,9 @@ import { CheckRows } from "@/features/github/shared/Checks";
  * `url`: the commit's GitHub page; `web`: origin's.
  */
 export function CommitChecks({ commit, url, web }: { commit: Commit; url: string; web: string | null }) {
-  const { rollup, data, error } = useCommitChecks(url, web);
-  if (!rollup) return null;
+  const { state, data, error } = useCommitChecks(commit.sha, url, web);
+  if (!state) return null;
   const checks = data?.checks ?? [];
-  // The list is newer than the rollup while it's asked for every half minute.
-  const state = checksVerdict(checks) ?? rollup;
   const summary = checks.length ? checksSummary(checks) : ciLabel(state);
   return (
     <Popover>
@@ -43,9 +41,8 @@ export function CommitChecks({ commit, url, web }: { commit: Commit; url: string
         <div className="min-h-0 overflow-auto py-1">
           {data ? (
             <>
-              {data.checksError && <div className="px-3 py-2 text-[12px] text-removed">Could not load all checks: {data.checksError}</div>}
               {!checks.length && !data.checksError && <div className="px-3 py-2 text-[12px] text-subtle">GitHub lists no checks on this commit.</div>}
-              <CheckRows checks={checks} home={{ url: repoOfCommitUrl(url), number: null }} where={commitPlace(commit.shortSha, commit.subject, url)} />
+              <CheckRows ci={data} home={{ url: repoOfCommitUrl(url), number: null }} where={commitPlace(commit.shortSha, commit.subject, url)} />
             </>
           ) : error !== undefined ? (
             <div className="px-3 py-2 text-[12px] text-removed">Could not read the checks: {errorMessage(error)}</div>
