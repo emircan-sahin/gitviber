@@ -60,8 +60,9 @@ export function SizeStepper({
   );
 }
 
-/** A range with its value and a reset; each step is applied as it's dragged. */
+/** A range with its value and a reset; each step is applied as it's dragged. `name` labels the reset. */
 export function Slider({
+  name,
   value,
   min,
   max,
@@ -71,6 +72,7 @@ export function Slider({
   disabled,
   onChange,
 }: {
+  name: string;
   value: number;
   min: number;
   max: number;
@@ -81,6 +83,8 @@ export function Slider({
   onChange: (v: number) => void;
 }) {
   const { labelledBy, describedBy } = useFieldLabel();
+  // A value under `min` stays as chosen (the opacity a theme can't go down to): shown at `min`.
+  const shown = Math.max(value, min);
   return (
     <div className="flex items-center gap-2">
       <input
@@ -88,17 +92,17 @@ export function Slider({
         min={min}
         max={max}
         step={step}
-        value={value}
+        value={shown}
         disabled={disabled}
         aria-labelledby={labelledBy}
         aria-describedby={describedBy}
-        aria-valuetext={format(value)}
+        aria-valuetext={format(shown)}
         onChange={(e) => onChange(Number(e.target.value))}
         className="w-40 accent-primary disabled:opacity-40"
       />
-      <span className={cn("w-10 text-right font-mono text-[12px]", disabled && "text-subtle")}>{format(value)}</span>
+      <span className={cn("w-12 text-right font-mono text-[12px]", disabled && "text-subtle")}>{format(shown)}</span>
       <Tip label="Reset">
-        <Button variant="ghost" size="icon-sm" disabled={disabled || value === fallback} onClick={() => onChange(fallback)}>
+        <Button variant="ghost" size="icon-sm" aria-label={`Reset ${name}`} disabled={disabled || value === fallback} onClick={() => onChange(fallback)}>
           <RotateCcw />
         </Button>
       </Tip>

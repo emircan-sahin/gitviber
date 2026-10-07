@@ -131,9 +131,9 @@ export const OPTION_KEYS = { off: "Off", left: "Left ⌥", both: "Both ⌥" } as
 export type OptionKey = keyof typeof OPTION_KEYS;
 
 /**
- * The window's opacity in percent, 100 solid; macOS only (translucency.ts). Not below 50: there,
- * over a white wallpaper, the dark theme's code text keeps about 3:1 and its side panels' 4.7:1
- * (at 40, 2.2:1).
+ * The window's opacity in percent, 100 solid; macOS only (translucency.ts). Each theme stops
+ * higher, where its text keeps 3:1 over any desktop (opacityFloor): 50 for Light, 55 to 70 for
+ * the rest.
  */
 export const WINDOW_OPACITY = { min: 50, max: 100, step: 5 } as const;
 /** The radius the desktop behind a see-through window is blurred by; 0 leaves it sharp. */

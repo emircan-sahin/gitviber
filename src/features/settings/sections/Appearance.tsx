@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+import { themeFloor } from "@/lib/app/translucency";
 import { IS_MAC } from "@/lib/platform";
 import {
   type Appearance,
@@ -28,6 +30,8 @@ const DESKTOP = IS_MAC ? "macOS" : "your desktop";
 
 export function AppearanceSection() {
   const s = useSettings();
+  // The theme's colors are on the root by the time a change renders here (settings.ts).
+  const floor = useMemo(themeFloor, [s.theme]);
   return (
     <>
       <Group title="Theme">
@@ -63,16 +67,25 @@ export function AppearanceSection() {
           <>
             <Field
               label="Window opacity"
-              hint="Below 100%, the desktop shows through the whole window. Text, dialogs, menus and the terminal stay solid, as does the window in full screen or with Reduce transparency on."
+              hint={`Below 100%, the desktop shows through the whole window, down to ${floor}%, the lowest this theme stays readable at. Text, dialogs, menus and the terminal stay solid, as does the window in full screen or with Reduce transparency on.`}
             >
-              <Slider {...WINDOW_OPACITY} value={s.windowOpacity} fallback={100} format={(v) => `${v}%`} onChange={(v) => updateSettings({ windowOpacity: v })} />
+              <Slider
+                name="Window opacity"
+                {...WINDOW_OPACITY}
+                min={floor}
+                value={s.windowOpacity}
+                fallback={100}
+                format={(v) => `${v}%`}
+                onChange={(v) => updateSettings({ windowOpacity: v })}
+              />
             </Field>
             <Field label="Background blur" hint="How much the desktop behind a see-through window is blurred. 0 leaves it sharp.">
               <Slider
+                name="Background blur"
                 {...BACKGROUND_BLUR}
                 value={s.backgroundBlur}
                 fallback={0}
-                format={String}
+                format={(v) => `${v} px`}
                 disabled={s.windowOpacity === 100}
                 onChange={(v) => updateSettings({ backgroundBlur: v })}
               />

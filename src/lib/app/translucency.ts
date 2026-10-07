@@ -1,7 +1,9 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api } from "../api";
 import { IS_MAC } from "../platform";
-import { getSettings, subscribeSettings } from "../settings";
+import { getSettings, subscribeSettings, WINDOW_OPACITY } from "../settings";
+import { cssVar } from "../ui/color";
+import { opacityFloor } from "./opacityFloor";
 
 // Window opacity and Background blur on the window: clear and blurred behind (translucency.rs),
 // then the page's surfaces see-through at that opacity (index.css, through data-translucency and
@@ -35,7 +37,11 @@ let blurSent = 0;
 let blurDue = false;
 let setting = getSettings();
 
-const opacity = () => (IS_MAC && !reduce && !fullscreen ? setting.windowOpacity : 100);
+/** The current theme's lowest opacity (opacityFloor), read from its colors on the root. */
+export const themeFloor = () => opacityFloor(cssVar("--foreground"), cssVar("--background"), WINDOW_OPACITY);
+
+// Never below the theme's floor; the setting keeps what was chosen, for a theme that allows it.
+const opacity = () => (IS_MAC && !reduce && !fullscreen && setting.windowOpacity < 100 ? Math.max(setting.windowOpacity, themeFloor()) : 100);
 
 function apply() {
   const shown = opacity();
@@ -125,6 +131,10 @@ if (IS_MAC) {
     stops = [
       win.onFocusChanged(({ payload }) => {
         if (payload && setting.windowOpacity < 100) check();
+      }),
+      // Switched in System Settings while this window is in front (translucency.rs).
+      win.listen("reduce-transparency", () => {
+        if (setting.windowOpacity < 100) check();
       }),
       // titlebar.rs, as each transition starts; the main window's only.
       win.listen<boolean>("fullscreen", ({ payload }) => {

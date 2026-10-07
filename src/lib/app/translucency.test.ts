@@ -54,6 +54,12 @@ async function boot({
   const style = new Map<string, string>();
   const root = { dataset: {} as Record<string, string>, style: { setProperty: (k: string, v: string) => style.set(k, v) } };
   g.document = { documentElement: root };
+  // Each theme's text and background: Dark's floor is 55%, Light's 50% (opacityFloor).
+  const colors: Record<string, Record<string, string>> = {
+    dark: { "--foreground": "#ececee", "--background": "#171718" },
+    light: { "--foreground": "#1d1d1f", "--background": "#ffffff" },
+  };
+  g.getComputedStyle = () => ({ getPropertyValue: (name: string) => colors[root.dataset.theme]?.[name] ?? "" });
   g.window = g;
   g.location = { search: "" };
   g.matchMedia = () => ({ matches: true, addEventListener() {} });
@@ -142,6 +148,7 @@ async function boot({
         await settle();
       }
     },
+    fire,
     focus: (on: boolean) => fire(on ? "tauri://focus" : "tauri://blur", null),
     fullscreen: (on: boolean) => fire("fullscreen", on),
   };
@@ -207,6 +214,18 @@ test("lowered, the window goes clear with its blur before the page turns see-thr
   assert.deepEqual(w.native, on(12));
   assert.equal(w.look, "80%");
   assert.equal(w.style.get("--glass-chrome"), "85%");
+});
+
+test("the theme's floor holds the page up; the setting keeps its value for a theme that allows it", async () => {
+  const w = await boot({ focused: true, stored: { windowOpacity: 50 } });
+  await w.drain();
+  assert.equal(w.look, "55%", "Dark stays readable down to 55%");
+  w.settings.updateSettings({ appearance: "light" });
+  assert.equal(w.look, "50%");
+  w.settings.updateSettings({ appearance: "dark" });
+  assert.equal(w.look, "55%");
+  assert.equal(w.settings.getSettings().windowOpacity, 50);
+  assert.deepEqual(w.asked, [on(0)]);
 });
 
 test("more opacity changes, and theme switches, only restyle the page", async () => {
@@ -391,6 +410,22 @@ test("Reduce transparency turned on while away: solid on return, the window too,
   await w.focus(true);
   await w.drain();
   assert.equal(w.native.on, true);
+  assert.equal(w.look, "85%");
+});
+
+test("Reduce transparency switched while the window is in front is applied at once", async () => {
+  let reduce = false;
+  const w = await boot({ focused: true, stored: { windowOpacity: 85 }, reduce: async () => reduce });
+  await w.drain();
+  reduce = true;
+  await w.fire("reduce-transparency", null);
+  assert.equal(w.look, undefined);
+  await w.frame(2);
+  await w.drain();
+  assert.equal(w.native.on, false);
+  reduce = false;
+  await w.fire("reduce-transparency", null);
+  await w.drain();
   assert.equal(w.look, "85%");
 });
 
