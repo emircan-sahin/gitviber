@@ -26,6 +26,11 @@ pub async fn open_repo(
     })
     .await?;
     let root_path = PathBuf::from(&root);
+    let open = state.repo.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    // Already open (`gitviber .` in its own terminal): its watcher and GitHub account stay.
+    if open.as_ref() == Some(&root_path) {
+        return Ok(OpenedRepo { root, main });
+    }
     let watcher = watch::start(app, root_path.clone())?;
     *state.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher);
     // gh's active account until the page sends this project's own (gh_use_account): one
