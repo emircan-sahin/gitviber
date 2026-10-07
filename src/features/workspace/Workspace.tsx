@@ -488,6 +488,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                   <BranchReview
                     base={review}
                     data={branchReview}
+                    status={status}
                     branches={repo.branches}
                     activeKey={activeKey}
                     onOpen={open}

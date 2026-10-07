@@ -19,6 +19,7 @@ import { useHistoryEdits } from "./useHistoryEdits";
 import { usePickedCommits } from "./usePickedCommits";
 import type { Points } from "@/lib/repo/compareMark";
 import { CommitRow, type Reveal } from "./CommitRow";
+import { openGuide } from "@/features/review/guides";
 
 interface Props {
   commits: Commit[];
@@ -115,6 +116,7 @@ export function HistoryPanel({ commits, status, remotes, webUrl, hasMore, loadMo
     squash,
     refresh,
     openAll: (c) => onOpen({ kind: "changes", list: "commit", commit: c, url: commitUrl(c, { webUrl: web ?? webUrl, everyOnWeb: !!web }) }, true),
+    explain: (c) => openGuide({ kind: "guide", of: "commit", commit: c }, status, onOpen),
     everyOnWeb: !!web,
     pickTargets: worktrees.filter((w) => !w.current && !w.bare && !w.prunable && w.branch),
     pickInto,

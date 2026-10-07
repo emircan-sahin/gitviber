@@ -1,8 +1,8 @@
-import { Files, GitCompareArrows, X } from "lucide-react";
+import { Files, GitCompareArrows, Sparkles, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Select } from "@/components/ui/select";
 import { Windowed } from "@/components/Windowed";
-import { api, type Branch, errorMessage, type FileChange } from "@/lib/api";
+import { api, type Branch, errorMessage, type FileChange, type RepoStatus } from "@/lib/api";
 import { shortRef } from "@/lib/git/refs";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { useListNav } from "@/lib/ui/useListNav";
@@ -11,6 +11,8 @@ import { sumLines } from "./changeList";
 import { ReviewSummary, Row } from "./ChangeRows";
 import { useNotes } from "@/lib/review/noteStore";
 import { ReviewNotes } from "@/features/review/ReviewNotes";
+import { openGuide } from "@/features/review/guides";
+import { useSettings } from "@/lib/settings";
 
 export type BranchChange = Selection & { kind: "branch" };
 
@@ -70,6 +72,8 @@ interface Props {
   /** The full ref reviewed against; "" until one is picked. */
   base: string;
   data: ReturnType<typeof useBranchReview>;
+  /** For the guided review: kept per worktree and branch. */
+  status: RepoStatus | null;
   branches: Branch[];
   activeKey: string | null;
   onOpen: (s: Selection, pin?: boolean) => void;
@@ -81,9 +85,10 @@ interface Props {
 }
 
 /** Changes in place of the uncommitted list: what the branch changed since it left `base`, committed or not. */
-export function BranchReview({ base, data, branches, activeKey, onOpen, onHover, viewed, setViewed, onBase, onClose }: Props) {
+export function BranchReview({ base, data, status, branches, activeKey, onOpen, onHover, viewed, setViewed, onBase, onClose }: Props) {
   const nav = useListNav({ activeKey });
   const hasNotes = useNotes().length > 0;
+  const { suggestEnabled } = useSettings();
   const { rows, error, loading } = data;
   const { add, del } = sumLines(rows.map((r) => r.file));
   const reviewed = rows.filter(viewed).length;
@@ -100,6 +105,16 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
           {!listed && <option value={base}>{base ? shortRef(base) : "Pick a branch…"}</option>}
           <RefOptions branches={branches} />
         </Select>
+        {suggestEnabled && base && (
+          <button
+            aria-label="Guided review"
+            title={`Guided review of the branch's commits since ${shortRef(base)}`}
+            onClick={() => openGuide({ kind: "guide", of: "branch", base, label: shortRef(base) }, status, onOpen)}
+            className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground"
+          >
+            <Sparkles className="size-3" />
+          </button>
+        )}
         {rows.length > 0 && (
           <button
             aria-label="Open all branch changes"
