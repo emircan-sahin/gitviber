@@ -33,9 +33,8 @@ export function usePanelSizes(key: string, orientation: Orientation, fixed: Reco
     const size = (id: string) => openSize(saved[id], fixed[id].base);
     // The layout last reported, to tell which panels a drag moved.
     let last: Layout = {};
-    // The panel a call through here resizes (the library reports those as not the user's), or
-    // true while a restore applies.
-    let asking: string | true | null = null;
+    // While a call through here or a restore resizes: not a change to save or restore after.
+    let asking = false;
     let restoring = false;
     // The group's length at the last layout: a window resize changes it, a drag doesn't.
     let seen = 0;
@@ -46,11 +45,11 @@ export function usePanelSizes(key: string, orientation: Orientation, fixed: Reco
       for (const c of element.current?.children ?? []) if (c instanceof HTMLElement && c.hasAttribute("data-panel")) total += orientation === "horizontal" ? c.offsetWidth : c.offsetHeight;
       return total;
     };
-    const save = (layout: Layout, total: number, which: string[]) => {
-      if (!which.length) return;
-      saved = remembered(saved, layout, total, which);
+    const keep = (next: PanelSizes) => {
+      saved = next;
       writeJson(key, saved);
     };
+    const save = (layout: Layout, total: number, which: string[]) => which.length > 0 && keep(remembered(saved, layout, total, which));
     // Back to the sizes the user left, as far as the room allows: one layout, applied once.
     const restore = () => {
       restoring = false;
@@ -72,7 +71,7 @@ export function usePanelSizes(key: string, orientation: Orientation, fixed: Reco
       try {
         groupRef.current?.setLayout(target);
       } finally {
-        asking = null;
+        asking = false;
       }
     };
     // After the library's update is through.
@@ -80,14 +79,15 @@ export function usePanelSizes(key: string, orientation: Orientation, fixed: Reco
       if (!restoring) queueMicrotask(restore);
       restoring = true;
     };
+    // A call through here saves what it was asked for itself: the library reports it as not the user's.
     const ask = (id: string, resize: (p: PanelImperativeHandle) => void) => {
       const p = panel(id);
       if (!p) return;
-      asking = id;
+      asking = true;
       try {
         resize(p);
       } finally {
-        asking = null;
+        asking = false;
       }
     };
 
@@ -100,8 +100,7 @@ export function usePanelSizes(key: string, orientation: Orientation, fixed: Reco
           const before = last;
           last = layout;
           const total = (seen = measure());
-          if (!total || asking === true) return;
-          if (asking) return save(layout, total, [asking]);
+          if (!total || asking) return;
           const moved = (id: string) => id in layout && (!(id in before) || toPixels(layout[id], total) !== toPixels(before[id], total));
           if (meta.isUserInteraction) return save(layout, total, ids.filter(moved));
           // The window resized, or the group (re)mounted.
@@ -133,9 +132,26 @@ export function usePanelSizes(key: string, orientation: Orientation, fixed: Reco
       },
       isCollapsed: (id: string) => panel(id)?.isCollapsed() ?? false,
       /** Opens it at the size it was left at; the library's own expand knows only this run's. */
-      expand: (id: string) => ask(id, (p) => p.isCollapsed() && p.resize(size(id))),
-      collapse: (id: string) => ask(id, (p) => p.collapse()),
-      resize: (id: string, to: number | string) => ask(id, (p) => p.resize(to)),
+      expand: (id: string) =>
+        ask(id, (p) => {
+          if (!p.isCollapsed()) return;
+          const to = size(id);
+          p.resize(to);
+          // The width asked for, though a narrow window opened it narrower: the room gives it back.
+          if (!p.isCollapsed()) keep({ ...saved, [id]: typeof to === "number" ? { size: to } : {} });
+        }),
+      collapse: (id: string) =>
+        ask(id, (p) => {
+          p.collapse();
+          // Under the sum of the mins the library only rescales: nothing closed, nothing to save.
+          if (p.isCollapsed()) keep({ ...saved, [id]: { ...saved[id], collapsed: true } });
+        }),
+      resize: (id: string, to: number | string) =>
+        ask(id, (p) => {
+          p.resize(to);
+          const total = measure();
+          if (total) save(groupRef.current?.getLayout() ?? {}, total, [id]);
+        }),
     };
   });
   return api;

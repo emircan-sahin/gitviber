@@ -317,7 +317,7 @@ test("a sidebar the user closed stays closed when the window shrinks", () => {
   w.dispose();
 });
 
-test("closing a sidebar in a window under the sum of the mins saves nothing it didn't do", { todo: "usePanelSizes.ts: in a layout that doesn't add up to 100% the library's collapse only rescales it, and the ask branch saves the list's rescaled width" }, () => {
+test("closing a sidebar in a window under the sum of the mins saves nothing it didn't do", () => {
   // Under 800px the library's layout needn't add up to 100%: a collapse there only rescales it.
   const w = workspace(1176, { list: { size: 303 }, files: { size: 200 } });
   w.resizeWindow(681);
@@ -326,7 +326,7 @@ test("closing a sidebar in a window under the sum of the mins saves nothing it d
   w.dispose();
 });
 
-test("opening a closed sidebar in a narrow window keeps the width it was left at", { todo: "usePanelSizes.ts: expand() saves the width the room allowed as the user's" }, () => {
+test("opening a closed sidebar in a narrow window keeps the width it was left at", () => {
   const w = workspace(1480, { list: { size: 400, collapsed: true }, files: { size: 260 } });
   w.resizeWindow(900);
   w.act(() => w.api.expand("list"));
