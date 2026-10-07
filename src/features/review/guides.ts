@@ -1,13 +1,13 @@
 import { useMemo } from "react";
-import { api, errorMessage, type Guided, type GuideTarget, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
+import { api, errorMessage, type GuideAgent, type Guided, type GuideTarget, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
-import { commandLine, programOf } from "@/lib/git/suggest";
+import { commandLine, presetOf, programOf, runDetails, withLeanFallback } from "@/lib/git/suggest";
 import { type GuideSelection, type Selection, selectionPath } from "@/lib/repo/selection";
-import { GUIDE_PROMPT } from "@/lib/review/guide";
+import { GUIDE_PROMPT, GUIDE_SCHEMA } from "@/lib/review/guide";
 import { getSettings } from "@/lib/settings";
 import { isRecord, putRecent, readJson } from "@/lib/storage";
 import { createStore } from "@/lib/store";
-import { toSuggestSettings } from "@/features/settings/SettingsDialog";
+import { toSuggestSettings, warnOldClaude } from "@/features/settings/SettingsDialog";
 
 const KEY = "gitviber.guides";
 // localStorage is one quota for the whole app: a dozen guides of the usual 5-30 KB, and one
@@ -15,9 +15,11 @@ const KEY = "gitviber.guides";
 const MAX = 12;
 const MAX_SIZE = 64 * 1024;
 
-/** A guide as kept: the answer as printed (parsed when shown), the range it read, who wrote it and when, the sections marked done. */
+/** A guide as kept: the answer as printed (parsed when shown), the range it read, who wrote it (with the model and effort its command named) and when, the sections marked done. */
 interface SavedGuide extends Guided {
   program: string;
+  /** Missing on guides from before it was kept. */
+  details?: string[];
   at: number;
   done: number[];
 }
@@ -30,10 +32,23 @@ const isSaved = (v: unknown): v is SavedGuide =>
   typeof v.program === "string" &&
   typeof v.at === "number" &&
   Array.isArray(v.done) &&
-  v.done.every(Number.isInteger);
+  v.done.every(Number.isInteger) &&
+  (v.details === undefined || (Array.isArray(v.details) && v.details.every((d) => typeof d === "string")));
 
 /** Where a guide is kept: per worktree, then per commit, or per branch (`branch`: HEAD's, null detached) and base. */
 export const guideId = (root: string, sel: GuideSelection, branch: string | null) => (sel.of === "commit" ? `${root}\0${sel.commit.sha}` : `${root}\0${branch ?? "HEAD"}\0${sel.base}`);
+
+/**
+ * Claude Code checks its answer against the guide's schema; it and opencode are let read the patch
+ * file. Others get the shape in the prompt: codex exec's --output-schema takes a file and OpenAI's
+ * strict mode, which wants every field required, so it isn't used.
+ */
+function guideAgent(command: string, lean: boolean): GuideAgent {
+  const preset = presetOf(command);
+  // --json-schema is as new as the lean flags: an older Claude Code goes without both.
+  if (preset === "claude") return { args: lean ? ["--json-schema", JSON.stringify(GUIDE_SCHEMA)] : [], reads: "claude" };
+  return { args: [], reads: preset === "opencode" ? "opencode" : null };
+}
 
 const guideTarget = (sel: GuideSelection): GuideTarget => (sel.of === "commit" ? { of: "commit", sha: sel.commit.sha } : { of: "branch", base: sel.base });
 
@@ -99,10 +114,14 @@ export async function generateGuide(id: string, sel: GuideSelection) {
   active = { sel, token };
   set("running");
   try {
-    const guided = await api.suggestGuide(commandLine(suggestCommand, suggestModels, suggestEfforts), GUIDE_PROMPT, guideTarget(sel));
+    const { value: guided, old } = await withLeanFallback(suggestCommand, suggestModels, suggestEfforts, true, (line, lean) =>
+      // A second try started after another guide would stop that one.
+      !lean && active?.token !== token ? Promise.reject(SUGGEST_CANCELLED) : api.suggestGuide(line, GUIDE_PROMPT, guideTarget(sel), guideAgent(suggestCommand, lean)),
+    );
+    if (old) warnOldClaude();
     if (!guided.text.trim()) fail("No guided review written", `${program} printed nothing.`);
     else if (latest.get(id) === token) {
-      save(id, { ...guided, program, at: Date.now(), done: [] });
+      save(id, { ...guided, program, details: runDetails(commandLine(suggestCommand, suggestModels, suggestEfforts)), at: Date.now(), done: [] });
       set(null);
     }
   } catch (e) {

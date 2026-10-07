@@ -2,13 +2,20 @@
 //! that misbehave: they never read stdin, flood stdout, or leave a child holding the pipe.
 
 use super::*;
-use crate::suggest::{self, Target, CANCELLED};
+use crate::suggest::{self, Agent, Target, CANCELLED};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 fn guide(repo: &Path, agent: &str, target: Target) -> Result<suggest::Guided, String> {
-    suggest::run_guide(repo, agent, "PROMPT", &target, &AtomicBool::new(false))
+    suggest::run_guide(
+        repo,
+        agent,
+        "PROMPT",
+        &target,
+        &Agent::default(),
+        &AtomicBool::new(false),
+    )
 }
 
 fn commit_all(repo: &Path, msg: &str) {
@@ -65,7 +72,9 @@ fn guide_of_merges_renames_binaries_and_paths_with_spaces() {
         "{}",
         g.text
     );
-    assert!(g.text.contains("Binary files"), "{}", g.text);
+    // A binary file is listed, and has no diff to send.
+    assert!(g.text.contains("A binary logo.bin [binary]"), "{}", g.text);
+    assert!(!g.text.contains("Binary files"), "{}", g.text);
     // Short ids are taken; names are not.
     assert!(guide(&r, "cat", of(rev(&r, "HEAD")[..7].into())).is_ok());
     assert!(guide(&r, "cat", of("main".into())).is_err());
@@ -101,13 +110,18 @@ fn guide_of_a_huge_commit_is_cut_and_says_so() {
     let t = Instant::now();
     let g = guide(&r, "cat", of(rev(&r, "HEAD"))).unwrap();
     assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
-    assert!(g.text.len() <= suggest::MAX_DIFF + 2000, "{}", g.text.len());
-    assert!(g.text.contains("cut off at 100 KB"));
+    assert!(g.text.len() <= suggest::MAX_GUIDE_INPUT, "{}", g.text.len());
+    // Too big to send: listed, and in the patch file only.
+    assert!(
+        g.text.contains("A +71820 -0 big.txt [file only]"),
+        "{}",
+        g.text
+    );
+    assert!(!g.text.contains("+abcdef") && g.text.contains("changes.patch"));
     assert!(g.text.contains("The commit's message:\nBig\n"));
 }
 
-/// Past ~1,300 files the list alone is over MAX_DIFF: it's kept whole all the same, as the cut
-/// note tells the model.
+/// 2,000 files: every one is listed, and as many diffs as fit are sent whole.
 #[test]
 fn guide_of_2000_files_keeps_the_whole_file_list_it_promises() {
     let sb = Sandbox::new("guide-many");
@@ -123,10 +137,21 @@ fn guide_of_2000_files_keeps_the_whole_file_list_it_promises() {
     let t = Instant::now();
     let g = guide(&r, "cat", of(rev(&r, "HEAD"))).unwrap();
     assert!(t.elapsed() < Duration::from_secs(20), "{:?}", t.elapsed());
-    assert!(g.text.contains("cut off at 100 KB"));
+    assert!(g.text.len() <= suggest::MAX_GUIDE_INPUT, "{}", g.text.len());
+    assert!(g.text.contains("Changed files (2000):"));
+    for i in [0, 999, 1999] {
+        let path = format!("packages/module-{:02}/src/component_file_{i:04}.ts", i % 40);
+        assert!(g.text.contains(&format!("A +1 -0 {path}")), "{path}");
+    }
+    let whole = g.text.matches("diff --git ").count();
+    let file_only = g
+        .text
+        .lines()
+        .filter(|l| l.ends_with("[file only]"))
+        .count();
     assert!(
-        g.text.contains("2000 files changed"),
-        "the stat's last line"
+        whole > 1000 && whole + file_only == 2000,
+        "{whole} {file_only}"
     );
 }
 
@@ -213,7 +238,7 @@ fn starting_a_second_guide_cancels_the_first_and_kills_its_children() {
     let second = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(300));
         let flag = s2.start(Kind::Guide);
-        let out = suggest::run_guide(&r2, "cat", "P", &of(h2), &flag);
+        let out = suggest::run_guide(&r2, "cat", "P", &of(h2), &Agent::default(), &flag);
         s2.finish(Kind::Guide, &flag);
         out
     });
@@ -224,6 +249,7 @@ fn starting_a_second_guide_cancels_the_first_and_kills_its_children() {
         &format!("sh -c '{marker} & {marker}'"),
         "P",
         &of(head),
+        &Agent::default(),
         &first,
     )
     .unwrap_err();
@@ -261,8 +287,248 @@ fn cancel_ends_a_guide_whose_agent_left_a_child_on_the_pipe() {
         "sh -c '(sleep 6.3 &); echo \"{}\"'",
         "P",
         &of(rev(&r, "HEAD")),
+        &Agent::default(),
         &cancel,
     );
     let took = t.elapsed();
     assert!(took < Duration::from_secs(3), "{took:?} {out:?}");
+}
+
+/// A commit too big to send whole: a small file and a 2 MB one, whose diff goes only in the
+/// patch file. `agent.sh` in the sandbox is the fake agent.
+#[cfg(unix)]
+fn big_commit(sb: &Sandbox, script: &str) -> (PathBuf, String, String) {
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "one\n", "root");
+    fs::write(r.join("small.txt"), "tiny change\n").unwrap();
+    fs::write(r.join("huge_only_in_file.txt"), "zz\n".repeat(700 * 1024)).unwrap();
+    commit_all(&r, "Big");
+    let agent = sb.path("agent.sh");
+    fs::write(&agent, script).unwrap();
+    let head = rev(&r, "HEAD");
+    (r, format!("sh {}", agent.display()), head)
+}
+
+/// The patch file's path, as the prompt on stdin names it.
+const FIND_PATCH: &str = "f=$(grep -o '/[^ `]*changes[.]patch' | head -1)\n";
+
+#[cfg(unix)]
+#[test]
+fn an_agent_reads_what_isnt_inline_from_the_patch_file_which_then_goes() {
+    let sb = Sandbox::new("guide-patch-file");
+    let script = format!(
+        "{FIND_PATCH}echo \"$f\"\nls -l \"$f\" | cut -c1-10\necho \"{{\\\"sections\\\": [{{\\\"files\\\": [\\\"$(grep -o 'b/huge_only_in_file.txt' \"$f\" | head -1 | cut -c3-)\\\"]}}]}}\"\n"
+    );
+    let (r, agent, head) = big_commit(&sb, &script);
+    // What a tool-less agent gets: the small file's diff, not the big one's.
+    let sent = guide(&r, "cat", of(head.clone())).unwrap().text;
+    assert!(
+        sent.contains("+tiny change"),
+        "{}",
+        &sent[..sent.len().min(3000)]
+    );
+    assert!(sent.contains("huge_only_in_file.txt [file only]") && !sent.contains("+zz"));
+
+    let g = guide(&r, &agent, of(head)).unwrap();
+    let mut lines = g.text.lines();
+    let file = PathBuf::from(lines.next().unwrap());
+    assert!(file.ends_with("changes.patch"), "{}", g.text);
+    // Only the user can read it, and it's gone with its folder once the run is over.
+    assert_eq!(lines.next(), Some("-rw-------"), "{}", g.text);
+    assert_eq!(
+        lines.next(),
+        Some(r#"{"sections": [{"files": ["huge_only_in_file.txt"]}]}"#),
+        "{}",
+        g.text
+    );
+    assert!(!file.exists() && !file.parent().unwrap().exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn the_patch_file_goes_when_the_agent_fails_is_cancelled_or_times_out() {
+    let sb = Sandbox::new("guide-patch-gone");
+    let record = sb.path("record");
+    let script = format!(
+        "{FIND_PATCH}echo \"$f\" > {}\n[ \"$1\" = fail ] && exit 3\nsleep 30\n",
+        record.display()
+    );
+    let (r, agent, head) = big_commit(&sb, &script);
+    let recorded = || {
+        let file = PathBuf::from(fs::read_to_string(&record).unwrap().trim());
+        let _ = fs::remove_file(&record);
+        assert!(file.ends_with("changes.patch"), "{}", file.display());
+        file
+    };
+    let run = |agent: &str, cancel: &AtomicBool, timeout| {
+        suggest::guide_within(
+            &r,
+            agent,
+            "P",
+            &of(head.clone()),
+            &Agent::default(),
+            cancel,
+            timeout,
+        )
+    };
+
+    let err = run(&format!("{agent} fail"), &AtomicBool::new(false), None).unwrap_err();
+    assert!(err.contains("code 3"), "{err}");
+    assert!(!recorded().exists());
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let c = cancel.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(800));
+        c.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    assert_eq!(run(&agent, &cancel, None).unwrap_err(), CANCELLED);
+    assert!(!recorded().exists());
+
+    let err = run(
+        &agent,
+        &AtomicBool::new(false),
+        Some(Duration::from_secs(1)),
+    )
+    .unwrap_err();
+    assert!(err.contains("within 1 seconds"), "{err}");
+    assert!(!recorded().exists());
+}
+
+/// Claude Code is told of the patch's folder with --add-dir, opencode with its permission
+/// config; a change sent whole has no patch file, so neither.
+#[cfg(unix)]
+#[test]
+fn the_agent_is_let_read_the_patch_folder_only_when_there_is_one() {
+    use crate::suggest::Reads;
+    let sb = Sandbox::new("guide-patch-reads");
+    let script = "cat >/dev/null\nprintf '%s\\n' \"$@\"\necho \"env:$OPENCODE_PERMISSION\"\n";
+    let (r, agent, head) = big_commit(&sb, script);
+    let go = |reads, target: Target| {
+        let agent_args = Agent {
+            args: vec!["--json-schema".into(), "{\"type\": \"object\"}".into()],
+            reads,
+        };
+        suggest::run_guide(
+            &r,
+            &agent,
+            "P",
+            &target,
+            &agent_args,
+            &AtomicBool::new(false),
+        )
+        .unwrap()
+        .text
+    };
+    let out = go(Some(Reads::Claude), of(head.clone()));
+    let mut lines = out.lines();
+    assert_eq!(lines.next(), Some("--json-schema"));
+    assert_eq!(lines.next(), Some("{\"type\": \"object\"}"));
+    let dir = lines.next().unwrap().strip_prefix("--add-dir=").unwrap();
+    assert!(
+        dir.contains("gitviber-guide-") && !Path::new(dir).exists(),
+        "{out}"
+    );
+    assert_eq!(lines.next(), Some("env:"));
+
+    let out = go(Some(Reads::Opencode), of(head.clone()));
+    let env = out.lines().find_map(|l| l.strip_prefix("env:")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(env).unwrap();
+    let rules = v["external_directory"].as_object().unwrap();
+    assert!(
+        rules
+            .keys()
+            .all(|k| k.contains("gitviber-guide-") && k.ends_with("/*"))
+            && rules.len() == 1
+    );
+    assert_eq!(rules.values().next().unwrap(), "allow");
+
+    // A small commit goes whole: no file, no grant.
+    write_commit(&r, "small.txt", "another\n", "Small");
+    let out = go(Some(Reads::Claude), of(rev(&r, "HEAD")));
+    assert!(!out.contains("--add-dir"), "{out}");
+}
+
+/// The user's diff settings can't change the patch's shape: without a/ b/ prefixes or in an
+/// order file's order, its diffs still pair with the file list and go whole, with hunk names.
+#[test]
+fn user_diff_settings_dont_turn_a_small_guide_into_the_patch_start() {
+    let sb = Sandbox::new("guide-diff-config");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.rs", "fn alpha() {\n    1;\n}\n", "root");
+    fs::write(r.join("a.rs"), "fn alpha() {\n    2;\n}\n").unwrap();
+    fs::write(r.join("z.txt"), "zed\n").unwrap();
+    commit_all(&r, "Two files");
+    let head = rev(&r, "HEAD");
+    fs::write(sb.path("order"), "z.txt\na.rs\n").unwrap();
+    for (key, value) in [
+        ("diff.noprefix", "true".to_string()),
+        ("diff.orderFile", sb.path("order").display().to_string()),
+    ] {
+        run(&r, &["config", key, &value]).unwrap();
+        let sent = guide(&r, "cat", of(head.clone())).unwrap().text;
+        assert!(!sent.contains("the start of the patch"), "{key}: {sent}");
+        assert!(!sent.contains("is in the file"), "{key}: {sent}");
+        run(&r, &["config", "--unset", key]).unwrap();
+    }
+}
+
+/// Two guides running at once, each with a patch file: their own folders, both gone after.
+#[cfg(unix)]
+#[test]
+fn two_guides_at_once_each_have_their_own_patch_folder() {
+    let sb = Sandbox::new("guide-two-at-once");
+    let script = format!("{FIND_PATCH}sleep 1\necho \"$f\"\n");
+    let (r, agent, head) = big_commit(&sb, &script);
+    let one = {
+        let (r, agent, head) = (r.clone(), agent.clone(), head.clone());
+        std::thread::spawn(move || guide(&r, &agent, of(head)).unwrap().text)
+    };
+    let two = guide(&r, &agent, of(head)).unwrap().text;
+    let one = one.join().unwrap();
+    let (one, two) = (PathBuf::from(one.trim()), PathBuf::from(two.trim()));
+    assert!(one.ends_with("changes.patch") && two.ends_with("changes.patch"));
+    assert_ne!(one.parent(), two.parent());
+    assert!(!one.parent().unwrap().exists() && !two.parent().unwrap().exists());
+}
+
+/// Arguments reach the agent as they are: `--tools ""` from a command line is one empty
+/// argument, and a schema with spaces and quotes is one argument, never split again.
+#[cfg(unix)]
+#[test]
+fn an_empty_tools_value_and_a_quoted_schema_each_stay_one_argument() {
+    let sb = Sandbox::new("guide-argv");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "one\n", "root");
+    let agent = sb.path("agent.sh");
+    fs::write(&agent, "cat >/dev/null\nprintf '[%s]\\n' \"$@\"\n").unwrap();
+    let schema = r#"{"description": "a \"quoted\" word's value", "x": "{prompt}"}"#;
+    let out = suggest::run_guide(
+        &r,
+        &format!("sh {} --tools \"\" --model m", agent.display()),
+        "P",
+        &of(rev(&r, "HEAD")),
+        &Agent {
+            args: vec!["--json-schema".into(), schema.into()],
+            reads: None,
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+    .text;
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        [
+            "[--tools]".to_string(),
+            "[]".into(),
+            "[--model]".into(),
+            "[m]".into(),
+            "[--json-schema]".into(),
+            format!("[{schema}]"),
+        ],
+        "{out}"
+    );
 }

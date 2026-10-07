@@ -116,7 +116,7 @@ export function AllChanges({ changes, status, branchRows, revision, viewed, togg
         {empty ? (
           <div className="flex h-full items-center justify-center p-6 text-[12.5px] text-muted-foreground">{empty}</div>
         ) : (
-          files!.map(block)
+          files!.map((f) => block(f))
         )}
       </div>
     </>

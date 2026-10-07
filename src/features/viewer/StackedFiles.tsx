@@ -19,8 +19,15 @@ import { mediaKind } from "./MediaView";
 import { diffNote, placeholderFor } from "./placeholders";
 import { UnifiedDiff } from "./UnifiedDiff";
 import { type FileMemo, fileMemo } from "./stackedMemo";
+import { GuideNote } from "@/features/review/GuideNote";
 
 export type ListFile = Selection & { kind: "unstaged" | "staged" | "branch" | "commit" | "pr-file" };
+
+/** A guided review's notes on a file: on the whole of it, and on lines (`old`: the old side's numbering). */
+export interface Annotations {
+  file: { text: string; critical: boolean }[];
+  lines: { old: boolean; line: number; text: string; critical: boolean }[];
+}
 
 /** More lines than this in one file wait for a click, as GitHub's large diffs do: a lockfile would hold up the rest. */
 const LARGE = 1500;
@@ -39,10 +46,13 @@ export const stackedView = () => onShow;
 /** The files' sections in `el`, the stacked view's scroller. */
 export const blocksIn = (el: HTMLElement | null) => [...(el?.querySelectorAll<HTMLElement>("[data-file]") ?? [])];
 
+/** How far down a bar pinned over the view (a guide's narrow navigator, `--stick` on a file's block) holds the sticky headers. */
+const stickOf = (block: HTMLElement | undefined) => (block && parseFloat(getComputedStyle(block).getPropertyValue("--stick"))) || 0;
+
 /** The index of the file whose header is at the top of `el`'s view; -1: none. */
 export function topBlock(el: HTMLElement | null) {
   const all = blocksIn(el);
-  const top = (el?.scrollTop ?? 0) + 1;
+  const top = (el?.scrollTop ?? 0) + stickOf(all[0]) + 1;
   let i = 0;
   while (i + 1 < all.length && all[i + 1].offsetTop <= top) i++;
   return all.length ? i : -1;
@@ -93,7 +103,7 @@ export function useStackedFiles({ root, status, revision, viewed, toggleViewed, 
 
   const blocks = () => blocksIn(scroller.current);
   const scrollTo = (el: HTMLElement | undefined) => {
-    if (el && scroller.current) scroller.current.scrollTop = el.offsetTop;
+    if (el && scroller.current) scroller.current.scrollTop = el.offsetTop - stickOf(el);
   };
   const markViewed = (sel: ListFile) => {
     const key = selectionKey(sel);
@@ -101,7 +111,7 @@ export function useStackedFiles({ root, status, revision, viewed, toggleViewed, 
     toggleViewed(sel);
     // Closing the file being read would leave the view somewhere in the next one: keep its header in view.
     const el = blocks().find((b) => b.dataset.file === key);
-    requestAnimationFrame(() => el && scroller.current && el.offsetTop < scroller.current.scrollTop && scrollTo(el));
+    requestAnimationFrame(() => el && scroller.current && el.offsetTop < scroller.current.scrollTop + stickOf(el) && scrollTo(el));
   };
   const setAll = (sels: ListFile[], open: boolean) => {
     for (const f of sels) memo(f).shut = !open;
@@ -137,7 +147,7 @@ export function useStackedFiles({ root, status, revision, viewed, toggleViewed, 
   }, []);
   useCommands({ "review.addNote": notes ? () => keys.current.addNote() : undefined });
 
-  const block = (sel: ListFile) => {
+  const block = (sel: ListFile, annotations?: Annotations) => {
     const key = selectionKey(sel);
     const open = isOpen(sel);
     drawn.set(key, sel);
@@ -148,6 +158,7 @@ export function useStackedFiles({ root, status, revision, viewed, toggleViewed, 
         memo={memo(sel)}
         revision={fileRevision(sel, memo(sel), status, revision)}
         notes={notes}
+        annotations={annotations}
         open={open}
         viewed={viewed(sel)}
         onToggleOpen={() => {
@@ -181,6 +192,7 @@ function FileBlock({
   memo,
   revision,
   notes,
+  annotations,
   open,
   viewed,
   onToggleOpen,
@@ -191,6 +203,7 @@ function FileBlock({
   memo: FileMemo;
   revision: number;
   notes: { at?: string } | null;
+  annotations?: Annotations;
   open: boolean;
   viewed: boolean;
   onToggleOpen: () => void;
@@ -214,7 +227,7 @@ function FileBlock({
   const estimate = (Math.min(LARGE, (file.additions ?? 0) + (file.deletions ?? 0)) + 2 * CONTEXT + 1) * line;
   return (
     <section ref={box} data-file={selectionKey(sel)} aria-label={file.path} className="border-b border-border">
-      <div className="sticky top-0 z-10 flex h-8 items-center gap-2 border-b border-border bg-panel pr-2 pl-1.5 text-[12px]">
+      <div className="sticky top-[var(--stick,0px)] z-10 flex h-8 items-center gap-2 border-b border-border bg-panel pr-2 pl-1.5 text-[12px]">
         <button aria-expanded={open} aria-label={open ? `Collapse ${file.path}` : `Expand ${file.path}`} onClick={onToggleOpen} className="flex size-5 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground">
           <ChevronDown className={cn("size-3.5 transition-transform", !open && "-rotate-90")} />
         </button>
@@ -239,10 +252,17 @@ function FileBlock({
           </Button>
         </Tip>
       </div>
+      {open && !!annotations?.file.length && (
+        <div className="px-2 pt-1">
+          {annotations.file.map((n, i) => (
+            <GuideNote key={i} {...n} />
+          ))}
+        </div>
+      )}
       {open &&
         (shown ? (
           <div ref={body}>
-            <FileDiff sel={sel} memo={memo} revision={revision} notes={notes} estimate={memo.height ?? estimate} onOpen={onOpen} />
+            <FileDiff sel={sel} memo={memo} revision={revision} notes={notes} annotations={annotations?.lines} estimate={memo.height ?? estimate} onOpen={onOpen} />
           </div>
         ) : (
           <div style={{ height: memo.height ?? estimate }} />
@@ -251,7 +271,23 @@ function FileBlock({
   );
 }
 
-function FileDiff({ sel, memo, revision, notes, estimate, onOpen }: { sel: ListFile; memo: FileMemo; revision: number; notes: { at?: string } | null; estimate: number; onOpen: () => void }) {
+function FileDiff({
+  sel,
+  memo,
+  revision,
+  notes,
+  annotations,
+  estimate,
+  onOpen,
+}: {
+  sel: ListFile;
+  memo: FileMemo;
+  revision: number;
+  notes: { at?: string } | null;
+  annotations?: Annotations["lines"];
+  estimate: number;
+  onOpen: () => void;
+}) {
   const s = useSettings();
   const { pair, error } = usePair(sel, revision, diffWhitespace(s), false);
   const [large, setLarge] = useState(!!memo.large);
@@ -259,7 +295,13 @@ function FileDiff({ sel, memo, revision, notes, estimate, onOpen }: { sel: ListF
   // What's open lives in the memo, which forgets it once the file changes.
   const [, redraw] = useReducer((n: number) => n + 1, 0);
   const revealed = memo.revealed ?? NONE;
-  const rows = useMemo(() => (pair ? shownRows(pair.rows, CONTEXT, FOLD_MIN, revealed) : []), [pair, revealed]);
+  const rows = useMemo(() => {
+    if (!pair) return [];
+    // An unchanged line with a guide's note on it stays unfolded.
+    const noted = new Set(revealed);
+    for (const a of annotations ?? []) for (const r of pair.rows) if (r.k === 0 && (a.old ? r.o : r.n) === a.line) noted.add(r.n);
+    return shownRows(pair.rows, CONTEXT, FOLD_MIN, noted);
+  }, [pair, revealed, annotations]);
   const reveal = (gap: Gap) => {
     const next = new Set(revealed);
     for (let n = gap.n; n < gap.n + Math.min(gap.gap, FOLD_REVEAL); n++) next.add(n);
@@ -268,15 +310,35 @@ function FileDiff({ sel, memo, revision, notes, estimate, onOpen }: { sel: ListF
   };
   if (error) return <Message text={`Could not load: ${error}`} />;
   if (!pair) return <div style={{ height: estimate }} />;
-  if (mediaKind(sel.file.path)) return <Message text="Open the file to compare its versions" action={{ label: "Open", run: onOpen }} />;
-  const special = placeholderFor(pair, false, sel.file);
-  if (special) return <Message text={special} />;
-  if (rows.length > LARGE && !large) return <Message text={`A large diff, ${rows.length} lines`} action={{ label: "Show", run: () => setLarge((memo.large = true)) }} />;
+  const media = mediaKind(sel.file.path);
+  const special = !media && placeholderFor(pair, false, sel.file);
+  const held = !media && !special && rows.length > LARGE && !large;
+  const drawn = !media && !special && !held;
+  // A guide's note on a line the diff doesn't draw, or doesn't have, shows above it with its line.
+  const inline = drawn ? (annotations ?? []).filter((a) => pair.rows.some((r) => (a.old ? r.k !== 1 && r.o : r.k !== 2 && r.n) === a.line)) : [];
+  const loose = (annotations ?? []).filter((a) => !inline.includes(a));
   const note = diffNote(pair, sel.file);
   return (
     <>
-      {note && <div className="px-4 pt-1.5 text-[11.5px] text-subtle">{note}</div>}
-      <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} onReveal={reveal} notes={notes} />
+      {loose.length > 0 && (
+        <div className="px-2 pt-1">
+          {loose.map((a, i) => (
+            <GuideNote key={i} text={`Line ${a.line}${a.old ? " (old)" : ""}: ${a.text}`} critical={a.critical} />
+          ))}
+        </div>
+      )}
+      {media ? (
+        <Message text="Open the file to compare its versions" action={{ label: "Open", run: onOpen }} />
+      ) : special ? (
+        <Message text={special} />
+      ) : held ? (
+        <Message text={`A large diff, ${rows.length} lines`} action={{ label: "Show", run: () => setLarge((memo.large = true)) }} />
+      ) : (
+        <>
+          {note && <div className="px-4 pt-1.5 text-[11.5px] text-subtle">{note}</div>}
+          <UnifiedDiff pair={pair} rows={rows} path={sel.file.path} oldPath={sel.file.oldPath ?? sel.file.path} memo={memo} onReveal={reveal} notes={notes} annotations={inline} />
+        </>
+      )}
     </>
   );
 }

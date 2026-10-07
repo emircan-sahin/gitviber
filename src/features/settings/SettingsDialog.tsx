@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Tip } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
-import { failed, type ToastAction } from "@/lib/app/toast";
+import { failed, toast, type ToastAction } from "@/lib/app/toast";
 import { createStore } from "@/lib/store";
 import type { Recording } from "./sections/Shortcuts";
 import { type Section, SettingsPanel } from "./SettingsPanel";
@@ -25,6 +25,14 @@ export function openSettings(section?: Section) {
 
 /** A suggestion's error toast's way out: a missing CLI or a stale model id is fixed there. */
 export const toSuggestSettings: ToastAction = { label: "Open Settings", run: () => openSettings("commit") };
+
+let toldOld = false;
+/** After a suggestion that worked only without the flags for a faster run: once until GitViber quits. */
+export function warnOldClaude() {
+  if (toldOld) return;
+  toldOld = true;
+  toast("info", "Claude Code is out of date", "It doesn't know the flags that make suggestions faster, so it ran without them. Run `claude update` in Terminal to get them.");
+}
 
 /** `main`: the open project's main worktree, for its own settings; null with none open. */
 export function SettingsDialog({ main }: { main: string | null }) {

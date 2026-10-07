@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { describeFlow, flowSource, LIMITS, mermaidText, parseGuide, placeFiles } from "./guide.ts";
+import { CATEGORIES, describeFlow, flowSource, GUIDE_PROMPT, GUIDE_SCHEMA, type GuideSection, LIMITS, mermaidText, parseGuide, placeFiles } from "./guide.ts";
+
+// What a section from before categories and notes reads as.
+const PLAIN: Pick<GuideSection, "category" | "check" | "critical" | "fileNotes" | "lineNotes"> = { category: "other", check: "", critical: false, fileNotes: [], lineNotes: [] };
 
 const unplaced = (g: Parameters<typeof placeFiles>[0], paths: string[]) => placeFiles(g, paths).rest;
 
@@ -18,8 +21,8 @@ const guide = {
   models: [],
   flows: [],
   sections: [
-    { title: "The retry helper", summary: "Backoff math.", files: ["src/retry.ts"], risk: "A wrong delay." },
-    { title: "Uploader", summary: "Calls it.", files: ["src/upload.ts"], risk: "" },
+    { title: "The retry helper", summary: "Backoff math.", files: ["src/retry.ts"], risk: "A wrong delay.", ...PLAIN },
+    { title: "Uploader", summary: "Calls it.", files: ["src/upload.ts"], risk: "", ...PLAIN },
   ],
 };
 
@@ -46,7 +49,7 @@ test("missing or mistyped fields read as empty", () => {
     diagram: "",
     models: [],
     flows: [],
-    sections: [{ title: "T", summary: "", files: ["a.ts"], risk: "" }],
+    sections: [{ title: "T", summary: "", files: ["a.ts"], risk: "", ...PLAIN }],
   });
 });
 
@@ -359,4 +362,100 @@ test("labels Mermaid would read as its own syntax, and bidi controls", () => {
   assert.equal(mermaidText("flex direction LR"), "flex direction#32;LR");
   assert.equal(mermaidText("style a fill:#fff;"), "style a fill#58;#35;fff#59;");
   assert.equal(mermaidText("a‮b⁦c⁩ d"), "abc d");
+});
+
+test("categories, critical, check and notes", () => {
+  const answer = {
+    title: "T",
+    sections: [
+      {
+        title: "Token check",
+        category: "Security",
+        summary: "Why.",
+        files: ["src/auth.ts", "src/token.ts"],
+        check: "Sign in with\n an expired token.",
+        critical: true,
+        fileNotes: [{ path: "./src/auth.ts", text: "Read first." }, { path: "elsewhere.ts", text: "Not its file." }, { path: "src/token.ts", text: " " }],
+        lineNotes: [
+          { path: "b/src/token.ts", side: "OLD", line: "12", text: "Was the only check.", critical: "true" },
+          { path: "src/token.ts", line: 3, text: "New side by default." },
+          { path: "src/token.ts", line: 0, text: "No line 0." },
+          { path: "src/token.ts", line: -2, text: "Negative." },
+          { path: "src/token.ts", line: 1.5, text: "Not whole." },
+          { path: "src/token.ts", line: "x", text: "Not a number." },
+          { path: "src/token.ts", line: [4], text: "Not one either." },
+        ],
+      },
+      { title: "Odd", category: "frontend", critical: "no", files: ["a.ts"] },
+    ],
+  };
+  const [s, odd] = parseGuide(JSON.stringify(answer))!.sections;
+  assert.equal(s.category, "security");
+  assert.equal(s.check, "Sign in with an expired token.");
+  assert.equal(s.critical, true);
+  assert.deepEqual(s.fileNotes, [{ path: "src/auth.ts", text: "Read first.", critical: false }]);
+  assert.deepEqual(s.lineNotes, [
+    { path: "src/token.ts", text: "Was the only check.", critical: true, side: "old", line: 12 },
+    { path: "src/token.ts", text: "New side by default.", critical: false, side: "new", line: 3 },
+  ]);
+  // A category the prompt doesn't have reads as other; anything but true isn't critical.
+  assert.equal(odd.category, "other");
+  assert.equal(odd.critical, false);
+});
+
+test("notes are clamped", () => {
+  const many = Array.from({ length: 30 }, (_, i) => ({ path: "a.ts", text: `n${i}` }));
+  const long = "x".repeat(2000);
+  const g = parseGuide(JSON.stringify({ title: "T", sections: [{ files: ["a.ts"], fileNotes: [...many, { path: "a.ts", text: long }], lineNotes: many.map((n, i) => ({ ...n, line: i + 1 })) }] }))!;
+  const [s] = g.sections;
+  assert.equal(s.fileNotes.length + s.lineNotes.length, LIMITS.notes);
+  assert.equal(s.fileNotes.length, 30 + 1);
+  assert.equal(s.fileNotes[30].text.length, LIMITS.note);
+  assert.ok(s.fileNotes[30].text.endsWith("…"));
+});
+
+test("the prompt draws its shape from the schema it's checked against", () => {
+  const sections = GUIDE_SCHEMA.properties.sections.items;
+  assert.deepEqual(sections.properties.category.enum, Object.keys(CATEGORIES));
+  // Only what every guide has is required.
+  assert.deepEqual(GUIDE_SCHEMA.required, ["title", "overview", "sections"]);
+  assert.deepEqual(sections.required, ["title", "category", "summary", "files"]);
+  for (const key of Object.keys(sections.properties)) assert.ok(GUIDE_PROMPT.includes(`"${key}": `), key);
+  for (const key of Object.keys(CATEGORIES)) assert.ok(GUIDE_PROMPT.includes(`${key} (`), key);
+  // The example is valid JSON with every part the schema has.
+  const shape = GUIDE_PROMPT.slice(GUIDE_PROMPT.indexOf("{"), GUIDE_PROMPT.indexOf("}.\n\n") + 1);
+  const example = JSON.parse(shape);
+  assert.equal(example.sections[0].lineNotes[0].line, 12);
+  assert.equal(example.sections[0].critical, false);
+  assert.ok(parseGuide(shape));
+  // Small enough to pass as one argument.
+  assert.ok(JSON.stringify(GUIDE_SCHEMA).length < 8000);
+});
+
+test("10,000 notes on a section parse fast and keep only its own files' first 40", () => {
+  const notes = Array.from({ length: 10_000 }, (_, i) => ({ path: i % 2 ? "src/own.ts" : "src/other.ts", line: i + 1, text: `n${i}` }));
+  const sections = [
+    { title: "Own", files: ["src/own.ts"], fileNotes: notes, lineNotes: notes },
+    { title: "Other", files: ["src/other.ts"] },
+  ];
+  const start = performance.now();
+  const [own, other] = parseGuide(JSON.stringify({ title: "T", sections }))!.sections;
+  assert.ok(performance.now() - start < 500);
+  // A note on a changed file of another section isn't this section's to make.
+  assert.ok([...own.fileNotes, ...own.lineNotes].every((n) => n.path === "src/own.ts"));
+  assert.equal(own.fileNotes.length, LIMITS.notes);
+  assert.equal(own.lineNotes.length, 0);
+  assert.deepEqual([other.fileNotes, other.lineNotes], [[], []]);
+});
+
+test("line numbers past what a file can have are still whole lines; unsafe ones go", () => {
+  const lineNotes = [1e6, 2 ** 53, 1e300, "007", " 9 ", "1e3"].map((line) => ({ path: "a.ts", line, text: "x" }));
+  const [s] = parseGuide(JSON.stringify({ title: "T", sections: [{ files: ["a.ts"], lineNotes }] }))!.sections;
+  assert.deepEqual(s.lineNotes.map((n) => n.line), [1e6, 7, 9]);
+});
+
+test("a category named like an Object property reads as other", () => {
+  const sections = ["constructor", "__proto__", "toString", "hasOwnProperty"].map((category) => ({ title: category, category, files: [] }));
+  const g = parseGuide(JSON.stringify({ title: "T", sections }))!;
+  assert.deepEqual(g.sections.map((s) => s.category), ["other", "other", "other", "other"]);
 });

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { commandLine, effortArg, effortLevels, effortOf, parseSuggestion, programOf, type SuggestPreset } from "./suggest.ts";
+import { commandLine, effortArg, effortLevels, effortOf, parseSuggestion, programOf, runDetails, type SuggestPreset, withLeanFallback } from "./suggest.ts";
+
+const LEAN = '--strict-mcp-config --no-session-persistence --disable-slash-commands --tools ""';
 
 test("summary and body", () => {
   assert.deepEqual(parseSuggestion("Fix the thing\n\nIt was broken.\nNow it isn't.\n"), { summary: "Fix the thing", body: "It was broken.\nNow it isn't." });
@@ -36,14 +38,19 @@ test("program of a template", () => {
 });
 
 test("a preset runs with its model and effort", () => {
-  // No effort until one is picked: the CLI's own default.
-  assert.equal(commandLine(" claude -p ", {}, {}), "claude -p --model claude-sonnet-5");
-  assert.equal(commandLine("claude -p", {}, { claude: "high" }), "claude -p --model claude-sonnet-5 --effort high");
+  // Medium until another is picked; Claude Code's runs are lean.
+  assert.equal(commandLine(" claude -p ", {}, {}), `claude -p ${LEAN} --model claude-sonnet-5 --effort medium`);
+  assert.equal(commandLine("claude -p", {}, { claude: "high" }), `claude -p ${LEAN} --model claude-sonnet-5 --effort high`);
+  // A guided review reads the patch file, and nothing else needs a tool.
+  assert.equal(commandLine("claude -p", {}, {}, true), `claude -p ${LEAN.replace('""', "Read,Grep,Glob")} --model claude-sonnet-5 --effort medium`);
+  assert.equal(commandLine("codex exec", {}, {}, true), commandLine("codex exec", {}, {}));
   assert.equal(commandLine("codex exec", { codex: "gpt-x" }, { codex: "high" }), "codex exec -m gpt-x -c model_reasoning_effort=high");
+  assert.equal(commandLine("codex exec", {}, {}), "codex exec -m gpt-6-luna -c model_reasoning_effort=medium");
   // Empty leaves the model or the effort to the CLI; a custom command carries its own.
-  assert.equal(commandLine("claude -p", { claude: " " }, { claude: "" }), "claude -p");
+  assert.equal(commandLine("claude -p", { claude: " " }, { claude: "" }), `claude -p ${LEAN}`);
   assert.equal(commandLine("pi -p --model a/b", { claude: "x" }, { pi: "high" }), "pi -p --model a/b");
   assert.equal(commandLine("pi -p --no-tools --no-session", {}, { pi: "off" }), "pi -p --no-tools --no-session --model anthropic/claude-sonnet-5 --thinking off");
+  // opencode's levels are per model: none until one is picked.
   assert.equal(commandLine("opencode run --agent plan", { opencode: "zai/glm-5.3" }, {}), "opencode run --agent plan -m zai/glm-5.3");
   assert.equal(commandLine("opencode run --agent plan", {}, { opencode: "max" }), "opencode run --agent plan -m anthropic/claude-sonnet-5 --variant max");
   // llm has no effort flag.
@@ -63,9 +70,12 @@ test("a markdown description keeps its code blocks", () => {
   assert.deepEqual(parseSuggestion("Add x\n\n```\nx();\n```", true), { summary: "Add x", body: "```\nx();\n```" });
 });
 
-test("no effort until one is picked", () => {
+test("medium until another effort is picked", () => {
   // settings.ts drops a stored level the preset doesn't take as it loads.
-  assert.equal(effortOf("claude", {}), "");
+  assert.equal(effortOf("claude", {}), "medium");
+  assert.equal(effortOf("pi", {}), "medium");
+  assert.equal(effortOf("opencode", {}), "");
+  assert.equal(effortOf("claude", { claude: "" }), "");
   assert.equal(effortOf("claude", { claude: "high" }), "high");
   assert.equal(effortOf("llm", { llm: "high" }), "");
   assert.deepEqual(effortLevels("llm"), []);
@@ -82,4 +92,29 @@ test("effort flags split into the argv the CLI expects", () => {
   assert.equal(commandLine("claude -p --effort low", {}, { claude: "max" }), "claude -p --effort low");
   // Effort without a model.
   assert.equal(commandLine("pi -p --no-tools --no-session", { pi: "" }, { pi: "xhigh" }), "pi -p --no-tools --no-session --thinking xhigh");
+});
+
+test("the model and effort a command line names", () => {
+  assert.deepEqual(runDetails(commandLine("claude -p", {}, {})), ["claude-sonnet-5", "medium"]);
+  assert.deepEqual(runDetails(commandLine("codex exec", { codex: "" }, { codex: "high" })), ["high"]);
+  assert.deepEqual(runDetails("opencode run --agent plan -m a/b --variant max"), ["a/b", "max"]);
+  assert.deepEqual(runDetails("pi -p --model=x --thinking off"), ["x", "off"]);
+  assert.deepEqual(runDetails("~/bin/claude -p"), []);
+  assert.deepEqual(runDetails("llm -m"), []);
+});
+
+test("an older Claude Code runs again without the lean flags, keeping model and effort", async () => {
+  const lines: string[] = [];
+  const failing = (line: string, lean: boolean) => {
+    lines.push(line);
+    return lean ? Promise.reject("\"claude\" failed with code 1:\nerror: unknown option '--strict-mcp-config'") : Promise.resolve("ok");
+  };
+  assert.deepEqual(await withLeanFallback("claude -p", {}, {}, true, failing), { value: "ok", old: true });
+  assert.deepEqual(lines, [`claude -p ${LEAN.replace('""', "Read,Grep,Glob")} --model claude-sonnet-5 --effort medium`, "claude -p --model claude-sonnet-5 --effort medium"]);
+  // Any other failure, or another CLI's, is the error as it was.
+  await assert.rejects(withLeanFallback("claude -p", {}, {}, false, () => Promise.reject("not logged in")), /not logged in/);
+  lines.length = 0;
+  await assert.rejects(withLeanFallback("codex exec", {}, {}, false, failing), /unknown option/);
+  assert.equal(lines.length, 1);
+  assert.deepEqual(await withLeanFallback("claude -p", {}, {}, false, () => Promise.resolve(1)), { value: 1, old: false });
 });

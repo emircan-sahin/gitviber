@@ -542,6 +542,15 @@ export type SuggestKind = "message" | "pull" | "guide";
 /** What a guided review is of: a commit, or HEAD's branch since it left `base` (a full ref). */
 export type GuideTarget = { of: "commit"; sha: string } | { of: "branch"; base: string };
 
+/**
+ * What a guide's command gets besides its line: `args` added as they are (no splitting), and the
+ * CLI that must be let read the patch file outside the repository (suggest.rs).
+ */
+export interface GuideAgent {
+  args: string[];
+  reads: "claude" | "opencode" | null;
+}
+
 /** A guided review as the command printed it, and the range it read (`base..head`: a commit's parent and the commit, or the merge base and HEAD). */
 export interface Guided {
   text: string;

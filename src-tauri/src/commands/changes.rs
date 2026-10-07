@@ -157,11 +157,12 @@ pub async fn suggest_guide(
     command: String,
     prompt: String,
     target: suggest::Target,
+    agent: suggest::Agent,
 ) -> Res<suggest::Guided> {
     let cancel = state.suggest.start(suggest::Kind::Guide);
     let flag = cancel.clone();
     let out = in_repo(&state, move |r| {
-        suggest::run_guide(r, &command, &prompt, &target, &flag)
+        suggest::run_guide(r, &command, &prompt, &target, &agent, &flag)
     })
     .await;
     state.suggest.finish(suggest::Kind::Guide, &cancel);

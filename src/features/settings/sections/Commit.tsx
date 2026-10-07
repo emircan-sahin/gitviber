@@ -4,7 +4,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenu
 import { Input } from "@/components/ui/input";
 import { github } from "@/lib/api";
 import { updateSettings, useSettings } from "@/lib/settings";
-import { ALL_MODELS, effortArg, effortLevels, effortOf, modelOf, presetOf, PULL_PROMPT, SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT, type SuggestPreset as Preset } from "@/lib/git/suggest";
+import { ALL_MODELS, effortArg, GUIDE_LIMIT_KB, effortLevels, effortOf, leanFlags, modelOf, presetOf, PULL_PROMPT, SUGGEST_LIMIT_KB, SUGGEST_PRESETS, SUGGEST_PROMPT, type SuggestPreset as Preset } from "@/lib/git/suggest";
 import { failed } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { segmentClass } from "@/components/ui/segmented";
@@ -70,8 +70,9 @@ function EffortField({ preset }: { preset: Preset }) {
       label="Effort"
       hint={
         <>
-          Passed as <code className="font-mono text-foreground">{effortArg(preset, "<level>")}</code>; CLI default passes none. More effort writes more considered messages, slower and
-          at a higher cost.{preset === "opencode" && " Levels are per model, and not every model has every one."}
+          Passed as <code className="font-mono text-foreground">{effortArg(preset, "<level>")}</code>
+          {SUGGEST_PRESETS[preset].effort?.default ? `, ${SUGGEST_PRESETS[preset].effort?.default} until you pick another` : ""}; CLI default passes none, leaving it to the CLI's own settings. More
+          effort writes more considered answers, slower and at a higher cost.{preset === "opencode" && " Levels are per model, and not every model has every one."}
         </>
       }
     >
@@ -123,6 +124,13 @@ export function CommitSection() {
             hint={
               <>
                 Passed as <code className="font-mono text-foreground">{`${SUGGEST_PRESETS[preset].modelFlag} ${SUGGEST_PRESETS[preset].model}`}</code>; empty uses the CLI's own default. New models come out often, and <ModelsLink {...SUGGEST_PRESETS[preset].models} /> has the current IDs.
+                {leanFlags(preset, false) && (
+                  <>
+                    {" "}
+                    Every run also gets <code className="font-mono text-foreground">{leanFlags(preset, false)}</code> (a guided review <code className="font-mono text-foreground">--tools Read,Grep,Glob</code>, to read
+                    the patch): no MCP servers, skills, saved session or tools beyond reading files, so it starts and answers faster.
+                  </>
+                )}
               </>
             }
           >
@@ -172,7 +180,9 @@ export function CommitSection() {
             {GUIDE_PROMPT}
             {"\n\n"}
             <span className="text-subtle">
-              [a commit's message and its diff, or the subjects of the branch's commits and their diff since it left the base, without uncommitted changes; up to {SUGGEST_LIMIT_KB} KB in all]
+              [a commit's message, or the subjects of the branch's commits since it left the base (not uncommitted changes); a list of every changed file; then as many whole diffs as fit
+              in {GUIDE_LIMIT_KB} KB, lockfiles and generated files left out. When any diff is left out, the whole patch goes in a temporary file only you can read, named in the prompt and
+              deleted when the run ends. Claude Code also gets the answer's shape as <span className="font-mono">--json-schema</span>, and it and opencode are let read that file.]
             </span>
           </pre>
         </div>
