@@ -1,4 +1,4 @@
-import type { CiCheck, CiState } from "../api/github.ts";
+import type { CiCheck, CiState, CommitChecks } from "../api/github.ts";
 import { shortDuration } from "../format.ts";
 
 export const FAILING = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure"]);
@@ -38,6 +38,15 @@ export function checksSummary(checks: CiCheck[]) {
   ];
   for (const [n, word] of rest) if (n) parts.push(`${n} ${word}`);
   return parts.join(" · ");
+}
+
+/**
+ * A commit's badge text: the count from a read that saw every check, else `label` (the rollup's
+ * "Checks failed"); a partial read can't say "2/2 passed".
+ */
+export function commitSummary(ci: CommitChecks | undefined, label: string) {
+  if (ci?.checksError) return `${label} · some couldn't be read`;
+  return ci?.checks.length ? checksSummary(ci.checks) : label;
 }
 
 /**

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { CiCheck } from "../api/github.ts";
-import { checkNote, checksSummary, checksVerdict, sortChecks } from "./checks.ts";
+import { checkNote, checksSummary, checksVerdict, commitSummary, sortChecks } from "./checks.ts";
 
 const check = (name: string, state: string, more: Partial<CiCheck> = {}): CiCheck => ({
   name,
@@ -109,4 +109,12 @@ test("a partial list (checksError) still yields a verdict that can contradict th
   // read_checks returns the statuses alone when the check runs failed to load; the header then
   // shows their verdict over the rollup's. Documented here, not asserted as right.
   assert.equal(checksVerdict([check("ci/legacy", "success")]), "success");
+});
+
+test("a commit's badge counts only a complete read; a partial one keeps the rollup's word", () => {
+  const two = [check("a", "success"), check("b", "success")];
+  assert.equal(commitSummary({ checks: two, checksError: null }, "Checks passed"), "2/2 passed");
+  assert.equal(commitSummary({ checks: two, checksError: "Resource not accessible by integration" }, "Checks failed"), "Checks failed · some couldn't be read");
+  assert.equal(commitSummary({ checks: [], checksError: null }, "Checks running"), "Checks running");
+  assert.equal(commitSummary(undefined, "Checks running"), "Checks running");
 });

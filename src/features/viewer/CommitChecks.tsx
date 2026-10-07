@@ -4,7 +4,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Tip } from "@/components/ui/tooltip";
 import { type Commit, errorMessage } from "@/lib/api";
 import { commitPlace } from "@/lib/github/checkFailure";
-import { checksSummary } from "@/lib/github/checks";
+import { commitSummary } from "@/lib/github/checks";
 import { useCommitChecks } from "@/lib/github/commitChecks";
 import { repoOfCommitUrl } from "@/lib/github/permalink";
 import { CheckRows } from "@/features/github/shared/Checks";
@@ -17,8 +17,7 @@ import { CheckRows } from "@/features/github/shared/Checks";
 export function CommitChecks({ commit, url, web }: { commit: Commit; url: string; web: string | null }) {
   const { state, data, error } = useCommitChecks(commit.sha, url, web);
   if (!state) return null;
-  const checks = data?.checks ?? [];
-  const summary = checks.length ? checksSummary(checks) : ciLabel(state);
+  const summary = commitSummary(data, ciLabel(state));
   return (
     <Popover>
       <Tip label={`Checks: ${summary}`}>
@@ -41,7 +40,7 @@ export function CommitChecks({ commit, url, web }: { commit: Commit; url: string
         <div className="min-h-0 overflow-auto py-1">
           {data ? (
             <>
-              {!checks.length && !data.checksError && <div className="px-3 py-2 text-[12px] text-subtle">GitHub lists no checks on this commit.</div>}
+              {!data.checks.length && !data.checksError && <div className="px-3 py-2 text-[12px] text-subtle">GitHub lists no checks on this commit.</div>}
               <CheckRows ci={data} home={{ url: repoOfCommitUrl(url), number: null }} where={commitPlace(commit.shortSha, commit.subject, url)} />
             </>
           ) : error !== undefined ? (
