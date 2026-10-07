@@ -28,6 +28,10 @@ export const CATEGORIES = {
 
 export type Category = keyof typeof CATEGORIES;
 
+/** How carefully a section wants reading, most first. */
+export const IMPORTANCE = ["high", "medium", "low"] as const;
+export type Importance = (typeof IMPORTANCE)[number];
+
 const str = (description: string) => ({ type: "string", description });
 const STATUS = { type: "string", enum: ["new", "changed", "same"] };
 const SECTION = { type: "integer", description: "the number of the section that covers it, 1 for the first", examples: [1] };
@@ -111,7 +115,7 @@ export const GUIDE_SCHEMA = {
           files: { type: "array", items: str("a path, as the list of changed files names it") },
           check: str("one line on how to verify it, only when there's something specific to check"),
           risk: str("what could break, only when something really could"),
-          critical: CRITICAL,
+          importance: { type: "string", enum: [...IMPORTANCE], description: "high, medium or low" },
           fileNotes: note({}, []),
           lineNotes: note({ side: { type: "string", enum: ["new", "old"] }, line: { type: "integer", description: "the line's number on that side", examples: [12] } }, ["side", "line"]),
         },
@@ -144,12 +148,19 @@ function exampleOf(schema: Schema): string {
 export const GUIDE_PROMPT = [
   `Explain this change to a reviewer so they can read it quickly. Answer with only a JSON object, with no code fences or other text, shaped like this: ${exampleOf(GUIDE_SCHEMA)}.`,
   "Size the guide to the change: one section for a small change (1-3 files, or under about 150 changed lines) unless it has truly separate concerns, and more only for separate concerns. Put mechanical edits (docs, changelog, formatting, renames) together in the last section, never in one of their own for a line. Order the sections the way a reviewer should read them, and put every path of the list of changed files in exactly one section.",
-  "Write for a developer who scans: never restate what the diff shows (values, strings, numbers, styles); say why, and point at what isn't obvious. Most sections have no check or risk; critical is true only for security, data loss or a change that's hard to revert. Add a fileNote or lineNote only where it saves the reviewer real time, a few in the whole guide at most; a lineNote's side is new for an added or unchanged line and old for a removed one, and its line is the line's number on that side.",
+  "Write for a developer who scans: never restate what the diff shows (values, strings, numbers, styles); say why, and point at what isn't obvious. Most sections have no check or risk. Give importance sparingly, most sections medium or low: high only for security, data loss, or a change that breaks things, is hard to revert or is easy to get wrong; medium for a change in behavior worth a careful read; low for mechanical edits, docs or style. A note's critical is true only for security, data loss or a change that's hard to revert. Add a fileNote or lineNote only where it saves the reviewer real time, a few in the whole guide at most; a lineNote's side is new for an added or unchanged line and old for a removed one, and its line is the line's number on that side.",
   "Draw the diagram only when the change alters a real flow or data model, and leave it out for style, text, config or docs changes. Each of its parts' \"section\" is the number of the section that covers it, 1 for the first. Keep it small: at most 6 models of at most 12 fields, and at most 2 flows of at most 12 steps; leave out models or flows the change has none of.",
   `Categories: ${Object.entries(CATEGORIES)
     .map(([k, v]) => `${k} (${v})`)
     .join(", ")}.`,
 ].join("\n\n");
+
+/** GUIDE_PROMPT with the language the guide's prose is written in (Settings → Guided Review); empty reads as English. */
+export function guidePrompt(language: string) {
+  // One line of the user's own text: a newline in it can't start a paragraph of its own.
+  const lang = language.replace(/\s+/g, " ").trim().slice(0, 40) || "English";
+  return `${GUIDE_PROMPT}\n\nWrite all prose (the title, overview, summaries, checks, risks and notes) in ${lang}; keep the JSON keys and the values picked from a list (category, importance, side, status, kind), code, identifiers, paths and quoted strings as they are.`;
+}
 
 export interface FileNote {
   /** As the section names it. */
@@ -173,8 +184,8 @@ export interface GuideSection {
   check: string;
   /** "" when the model saw none. */
   risk: string;
-  /** Review carefully: security, data loss, hard to revert. */
-  critical: boolean;
+  /** High: review carefully (security, data loss, hard to revert). */
+  importance: Importance;
   fileNotes: FileNote[];
   lineNotes: LineNote[];
 }
@@ -343,6 +354,11 @@ function parseFlows(v: unknown, count: number): Flow[] {
 }
 
 const flag = (v: unknown) => v === true || text(v).toLowerCase() === "true";
+/** As the model gave it; a guide from before importance was asked: high when it was critical, else medium, the neutral one. */
+const importance = (v: unknown, critical: unknown): Importance => {
+  const i = text(v).toLowerCase();
+  return (IMPORTANCE as readonly string[]).includes(i) ? (i as Importance) : flag(critical) ? "high" : "medium";
+};
 const category = (v: unknown): Category => {
   const c = text(v).toLowerCase();
   return Object.hasOwn(CATEGORIES, c) ? (c as Category) : "other";
@@ -361,7 +377,7 @@ function parseSection(s: Record<string, unknown>): GuideSection {
     .map((n) => ({ ...note(n), side: text(n.side).toLowerCase() === "old" ? ("old" as const) : ("new" as const), line: whole(n.line) }))
     .filter((n) => n.path && n.text && Number.isSafeInteger(n.line) && n.line > 0)
     .slice(0, LIMITS.notes - fileNotes.length);
-  return { title: text(s.title), category: category(s.category), summary: text(s.summary), files, check: clip(text(s.check).replace(/\s+/g, " "), LIMITS.note), risk: text(s.risk), critical: flag(s.critical), fileNotes, lineNotes };
+  return { title: text(s.title), category: category(s.category), summary: text(s.summary), files, check: clip(text(s.check).replace(/\s+/g, " "), LIMITS.note), risk: text(s.risk), importance: importance(s.importance, s.critical), fileNotes, lineNotes };
 }
 
 /**

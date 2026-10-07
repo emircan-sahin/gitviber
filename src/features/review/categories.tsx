@@ -1,5 +1,5 @@
-import { BookOpen, Cpu, Database, FlaskConical, Hammer, Image, Languages, Lightbulb, type LucideIcon, Package, Palette, Plug, ScrollText, Settings2, Shapes, ShieldAlert, SquareTerminal } from "lucide-react";
-import type { Category } from "@/lib/review/guide";
+import { BookOpen, Cpu, Database, FlaskConical, Hammer, Image, Languages, Lightbulb, type LucideIcon, Package, Palette, Plug, ScrollText, Settings2, Shapes, ShieldAlert, Signal, SignalLow, SignalMedium, SquareTerminal } from "lucide-react";
+import type { Category, Importance } from "@/lib/review/guide";
 import { cn } from "@/lib/utils";
 
 /** How a guide's section categories show: always an icon and a name, the color only on top. */
@@ -36,12 +36,35 @@ export function CategoryTag({ category }: { category: Category }) {
   );
 }
 
-/** A section or note to review carefully: security, data loss, hard to revert. */
-export function CarefulBadge({ short = false }: { short?: boolean }) {
+/** A note to review carefully: security, data loss, hard to revert. */
+export function CarefulBadge() {
   return (
-    <span title="Review carefully" className="inline-flex shrink-0 items-center gap-1 text-[11.5px] font-medium text-destructive">
+    <span className="inline-flex shrink-0 items-center gap-1 text-[11.5px] font-medium text-destructive">
       <ShieldAlert aria-hidden className="size-3.5 shrink-0" />
-      {short ? <span className="sr-only">Review carefully</span> : "Review carefully"}
+      Review carefully
+    </span>
+  );
+}
+
+/** How carefully a section wants reading, as the guide shows it. */
+export const IMPORTANCE_UI: Record<Importance, { label: string; icon: LucideIcon; tone: string; tip: string }> = {
+  high: { label: "High", icon: Signal, tone: "font-medium text-destructive", tip: "Review carefully: security, data loss, or hard to revert or get right" },
+  medium: { label: "Medium", icon: SignalMedium, tone: "text-muted-foreground", tip: "A change in behavior worth a careful read" },
+  low: { label: "Low", icon: SignalLow, tone: "text-subtle", tip: "Mechanical, docs or style: a skim is enough" },
+};
+
+/** Always its word (only to screen readers and in the tooltip when `short`), the color only on top. */
+export function ImportanceTag({ importance, short = false }: { importance: Importance; short?: boolean }) {
+  const { label, icon: Icon, tone, tip } = IMPORTANCE_UI[importance];
+  return (
+    <span title={`${label} importance. ${tip}`} className={cn("inline-flex shrink-0 items-center gap-1 text-[11.5px]", tone)}>
+      <Icon aria-hidden className="size-3.5 shrink-0" />
+      {short ? <span className="sr-only">, {label} importance</span> : (
+        <>
+          {label}
+          <span className="sr-only"> importance</span>
+        </>
+      )}
     </span>
   );
 }

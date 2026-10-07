@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CATEGORIES, describeFlow, flowSource, GUIDE_PROMPT, GUIDE_SCHEMA, type GuideSection, LIMITS, mermaidText, parseGuide, placeFiles } from "./guide.ts";
+import { CATEGORIES, describeFlow, flowSource, GUIDE_PROMPT, GUIDE_SCHEMA, type GuideSection, guidePrompt, LIMITS, mermaidText, parseGuide, placeFiles } from "./guide.ts";
 
 // What a section from before categories and notes reads as.
-const PLAIN: Pick<GuideSection, "category" | "check" | "critical" | "fileNotes" | "lineNotes"> = { category: "other", check: "", critical: false, fileNotes: [], lineNotes: [] };
+const PLAIN: Pick<GuideSection, "category" | "check" | "importance" | "fileNotes" | "lineNotes"> = { category: "other", check: "", importance: "medium", fileNotes: [], lineNotes: [] };
 
 const unplaced = (g: Parameters<typeof placeFiles>[0], paths: string[]) => placeFiles(g, paths).rest;
 
@@ -364,7 +364,7 @@ test("labels Mermaid would read as its own syntax, and bidi controls", () => {
   assert.equal(mermaidText("a‮b⁦c⁩ d"), "abc d");
 });
 
-test("categories, critical, check and notes", () => {
+test("categories, importance, check and notes", () => {
   const answer = {
     title: "T",
     sections: [
@@ -374,7 +374,7 @@ test("categories, critical, check and notes", () => {
         summary: "Why.",
         files: ["src/auth.ts", "src/token.ts"],
         check: "Sign in with\n an expired token.",
-        critical: true,
+        importance: "High",
         fileNotes: [{ path: "./src/auth.ts", text: "Read first." }, { path: "elsewhere.ts", text: "Not its file." }, { path: "src/token.ts", text: " " }],
         lineNotes: [
           { path: "b/src/token.ts", side: "OLD", line: "12", text: "Was the only check.", critical: "true" },
@@ -386,21 +386,46 @@ test("categories, critical, check and notes", () => {
           { path: "src/token.ts", line: [4], text: "Not one either." },
         ],
       },
-      { title: "Odd", category: "frontend", critical: "no", files: ["a.ts"] },
+      { title: "Odd", category: "frontend", importance: "urgent", critical: "no", files: ["a.ts"] },
     ],
   };
   const [s, odd] = parseGuide(JSON.stringify(answer))!.sections;
   assert.equal(s.category, "security");
   assert.equal(s.check, "Sign in with an expired token.");
-  assert.equal(s.critical, true);
+  assert.equal(s.importance, "high");
   assert.deepEqual(s.fileNotes, [{ path: "src/auth.ts", text: "Read first.", critical: false }]);
   assert.deepEqual(s.lineNotes, [
     { path: "src/token.ts", text: "Was the only check.", critical: true, side: "old", line: 12 },
     { path: "src/token.ts", text: "New side by default.", critical: false, side: "new", line: 3 },
   ]);
-  // A category the prompt doesn't have reads as other; anything but true isn't critical.
+  // A category the prompt doesn't have reads as other; an importance it doesn't have as medium.
   assert.equal(odd.category, "other");
-  assert.equal(odd.critical, false);
+  assert.equal(odd.importance, "medium");
+});
+
+test("a guide from before importance: critical reads as high, the rest as medium", () => {
+  const sections = [
+    { title: "Auth", files: ["a.ts"], critical: true },
+    { title: "Old string", files: ["b.ts"], critical: "true" },
+    { title: "Not critical", files: ["c.ts"], critical: false },
+    { title: "Never said", files: ["d.ts"] },
+    // A guide that has both goes by importance.
+    { title: "Both", files: ["e.ts"], critical: true, importance: "low" },
+  ];
+  assert.deepEqual(
+    parseGuide(JSON.stringify({ title: "T", sections }))!.sections.map((s) => s.importance),
+    ["high", "high", "medium", "medium", "low"],
+  );
+});
+
+test("the language line ends the prompt, one line of the user's text", () => {
+  assert.ok(guidePrompt("Turkish").startsWith(`${GUIDE_PROMPT}\n\n`));
+  assert.match(guidePrompt("Turkish"), /\n\nWrite all prose \(the title, overview, summaries, checks, risks and notes\) in Turkish; keep the JSON keys .*code, identifiers, paths and quoted strings as they are\.$/);
+  for (const blank of ["", "  \n "]) assert.ok(guidePrompt(blank).includes(" in English; "));
+  const odd = guidePrompt(" Brazilian\n\nPortuguese ").slice(GUIDE_PROMPT.length);
+  assert.ok(odd.includes(" in Brazilian Portuguese; "));
+  assert.equal(odd.split("\n").length, 3);
+  assert.ok(!guidePrompt("x".repeat(500)).includes("x".repeat(41)));
 });
 
 test("notes are clamped", () => {
@@ -426,7 +451,8 @@ test("the prompt draws its shape from the schema it's checked against", () => {
   const shape = GUIDE_PROMPT.slice(GUIDE_PROMPT.indexOf("{"), GUIDE_PROMPT.indexOf("}.\n\n") + 1);
   const example = JSON.parse(shape);
   assert.equal(example.sections[0].lineNotes[0].line, 12);
-  assert.equal(example.sections[0].critical, false);
+  assert.equal(example.sections[0].importance, "high, medium or low");
+  assert.equal(example.sections[0].fileNotes[0].critical, false);
   assert.ok(parseGuide(shape));
   // Small enough to pass as one argument.
   assert.ok(JSON.stringify(GUIDE_SCHEMA).length < 8000);

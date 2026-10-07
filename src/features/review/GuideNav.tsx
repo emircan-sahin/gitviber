@@ -1,7 +1,7 @@
-import { Check } from "lucide-react";
+import { Check, Signal } from "lucide-react";
 import { type Category, type GuideSection, sectionBadge } from "@/lib/review/guide";
 import { cn } from "@/lib/utils";
-import { CarefulBadge, CATEGORY_UI, CategoryIcon } from "./categories";
+import { CATEGORY_UI, CategoryIcon, IMPORTANCE_UI, ImportanceTag } from "./categories";
 
 interface Item {
   n: number;
@@ -9,12 +9,12 @@ interface Item {
   done: boolean;
 }
 
-/** One section in the navigator: its category, number and title, flagged when it needs care and checked once reviewed. */
+/** One section in the navigator: its category, number, title and importance, checked once reviewed. */
 function NavItem({ n, section: s, done, chip, onGo }: Item & { chip: boolean; onGo: (n: number) => void }) {
   return (
     <button
       onClick={() => onGo(n)}
-      title={`${CATEGORY_UI[s.category].label}: ${s.title || "Untitled"}${done ? " (reviewed)" : ""}`}
+      title={`${CATEGORY_UI[s.category].label}: ${s.title || "Untitled"}. ${IMPORTANCE_UI[s.importance].label} importance${done ? " (reviewed)" : ""}`}
       className={cn(
         "flex min-w-0 items-center gap-1.5 text-left text-[12px] outline-none hover:bg-hover focus-visible:ring-1 focus-visible:ring-ring",
         chip ? "h-6 shrink-0 rounded-full border border-border px-2" : "w-full rounded-sm px-1.5 py-1",
@@ -25,7 +25,7 @@ function NavItem({ n, section: s, done, chip, onGo }: Item & { chip: boolean; on
       <span className="shrink-0 font-mono text-[11px] text-subtle">{sectionBadge(n)}</span>
       <span className={cn("min-w-0 truncate", chip && "max-w-40")}>{s.title || "Untitled"}</span>
       <span className="sr-only">, {CATEGORY_UI[s.category].label}</span>
-      {s.critical && <CarefulBadge short />}
+      <ImportanceTag importance={s.importance} short />
       {done && (
         <>
           <Check aria-hidden className="size-3.5 shrink-0 text-added" />
@@ -57,18 +57,31 @@ export function GuideNav({ items, onGo }: { items: Item[]; onGo: (n: number) => 
   );
 }
 
-/** "All · Security 2 · Tests 3": a button a category, the one picked showing only its sections. */
-export function CategoryFilter({ counts, total, value, onChange }: { counts: Map<Category, number>; total: number; value: Category | null; onChange: (c: Category | null) => void }) {
+const chipClass = (on: boolean) =>
+  cn(
+    "flex h-6 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring",
+    on ? "border-border-strong bg-active text-foreground" : "border-border text-muted-foreground hover:bg-hover hover:text-foreground",
+  );
+
+/**
+ * "All · Security 2 · Tests 3": a button a category, the one picked showing only its sections; with
+ * `high` (the high importance sections' count, when some but not all are), a toggle for only those too.
+ */
+export function CategoryFilter({
+  counts,
+  total,
+  value,
+  onChange,
+  high,
+}: {
+  counts: Map<Category, number>;
+  total: number;
+  value: Category | null;
+  onChange: (c: Category | null) => void;
+  high: { count: number; on: boolean; onChange: (on: boolean) => void } | null;
+}) {
   const button = (c: Category | null, label: string, n: number) => (
-    <button
-      key={c ?? "all"}
-      aria-pressed={value === c}
-      onClick={() => onChange(c)}
-      className={cn(
-        "flex h-6 shrink-0 items-center gap-1.5 rounded-md border px-2 text-[12px] outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        value === c ? "border-border-strong bg-active text-foreground" : "border-border text-muted-foreground hover:bg-hover hover:text-foreground",
-      )}
-    >
+    <button key={c ?? "all"} aria-pressed={value === c} onClick={() => onChange(c)} className={chipClass(value === c)}>
       {c && <CategoryIcon category={c} />}
       {label}
       <span className="text-subtle">{n}</span>
@@ -76,8 +89,19 @@ export function CategoryFilter({ counts, total, value, onChange }: { counts: Map
   );
   return (
     <div role="group" aria-label="Show sections of" className="mb-3 flex flex-wrap items-center gap-1.5">
-      {button(null, "All", total)}
-      {[...counts].map(([c, n]) => button(c, CATEGORY_UI[c].label, n))}
+      {counts.size > 1 && (
+        <>
+          {button(null, "All", total)}
+          {[...counts].map(([c, n]) => button(c, CATEGORY_UI[c].label, n))}
+        </>
+      )}
+      {high && (
+        <button aria-pressed={high.on} onClick={() => high.onChange(!high.on)} className={cn(chipClass(high.on), counts.size > 1 && "ml-2")}>
+          <Signal aria-hidden className="size-3.5 shrink-0 text-destructive" />
+          High<span className="sr-only"> importance</span>
+          <span className="text-subtle">{high.count}</span>
+        </button>
+      )}
     </div>
   );
 }
