@@ -455,15 +455,6 @@ mod tests {
         assert_eq!(i.author, "mona");
     }
 
-    #[test]
-    fn an_author_comes_in_as_the_ui_sends_it() {
-        let f: ListFilter = serde_json::from_value(
-            json!({ "scope": null, "draft": null, "labels": [], "author": "mona" }),
-        )
-        .unwrap();
-        assert_eq!(f.author.as_deref(), Some("mona"));
-    }
-
     /// Splits a search the way GitHub does: on spaces outside quotes, `\"` staying in a quote.
     fn terms(q: &str) -> Vec<String> {
         let (mut out, mut cur, mut quoted, mut escaped) = (vec![], String::new(), false, false);

@@ -119,8 +119,7 @@ fn live_author_filter() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let session = Session::default();
     let all = list(&session, repo, None, "all", 1, &ListFilter::default()).unwrap();
-    let mut authors: Vec<&str> = all.iter().map(|p| p.author.as_str()).collect();
-    authors.dedup();
+    let authors: std::collections::BTreeSet<&str> = all.iter().map(|p| p.author.as_str()).collect();
     for author in authors.into_iter().take(5) {
         let by = ListFilter {
             author: Some(author.to_string()),

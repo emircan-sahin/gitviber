@@ -1,7 +1,7 @@
-import { X } from "lucide-react";
 import { DisabledTip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { type Choice, type ListKind, scopesFor } from "./narrow";
+import { RemovableChip } from "./RemovableChip";
 
 /**
  * The chips under a list's header: All, then whose work it is (the account's, or the `author` a
@@ -55,16 +55,9 @@ export function NarrowBar({
       })}
       {scopesFor(kind).map((s) => chip(s.label, choice.scope === s.id, () => onChange({ ...choice, scope: s.id }), meReason))}
       {author !== null && (
-        <span className="inline-flex h-5 max-w-48 shrink-0 items-center gap-1 rounded-full border border-primary/50 bg-primary/15 pr-0.5 pl-2 text-[11px] leading-4 text-foreground">
+        <RemovableChip label={`author ${author}`} onRemove={() => onAuthor(null)}>
           <span className="truncate">Author: {author}</span>
-          <button
-            aria-label={`Remove author ${author}`}
-            onClick={() => onAuthor(null)}
-            className="flex size-3.5 shrink-0 items-center justify-center rounded-full text-subtle hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground"
-          >
-            <X className="size-2.5" />
-          </button>
-        </span>
+        </RemovableChip>
       )}
       {kind === "pulls" && (
         <>

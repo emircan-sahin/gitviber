@@ -1,9 +1,10 @@
 import { cn } from "@/lib/utils";
 
 /**
- * A part of a list row (an author's name) that narrows the list to it, as GitHub's lists do.
+ * A part of a list row (an author, a label) that narrows the list to it, as GitHub's lists do.
  * Not a tab stop and no aria-label: the row's menu does the same from the keyboard, and the row
- * still reads as its plain text. A press never drags the row; a ⌘, ⇧ or ⌥ click is the row's (it picks).
+ * still reads as its plain text. A press never drags the row, and a click with a modifier key is
+ * left to the row. `className` replaces the default link look.
  */
 export function RowFilter({ title, onFilter, className, children }: { title: string; onFilter: () => void; className?: string; children: React.ReactNode }) {
   return (
@@ -19,7 +20,7 @@ export function RowFilter({ title, onFilter, className, children }: { title: str
       }}
       // The row opens and keeps its item on a double-click.
       onDoubleClick={(e) => e.stopPropagation()}
-      className={cn("min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline", className)}
+      className={cn("text-left", className ?? "min-w-0 truncate underline-offset-2 hover:text-foreground hover:underline")}
     >
       {children}
     </button>

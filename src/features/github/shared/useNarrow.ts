@@ -21,7 +21,7 @@ export function useNarrow(kind: ListKind, repoKey: string | undefined, account: 
   const [state, setState] = useState(() => ({ repoKey, choice: saved(repoKey, kind) }));
   const choice = state.repoKey === repoKey ? state.choice : saved(repoKey, kind);
   const [labels, setLabels] = useState<IssueLabel[]>([]);
-  const [author, setAuthorOnly] = useState<string | null>(null);
+  const [author, setAuthorState] = useState<string | null>(null);
   const saveChoice = (next: Choice) => {
     setState({ repoKey, choice: next });
     if (!repoKey) return;
@@ -30,11 +30,11 @@ export function useNarrow(kind: ListKind, repoKey: string | undefined, account: 
   };
   // "Created by me" and an author both say who opened it: picking one lets the other go.
   const setChoice = (next: Choice) => {
-    if (next.scope === "created") setAuthorOnly(null);
+    if (next.scope === "created") setAuthorState(null);
     saveChoice(next);
   };
   const setAuthor = (login: string | null) => {
-    setAuthorOnly(login);
+    setAuthorState(login);
     if (login !== null && choice.scope === "created") saveChoice({ ...choice, scope: null });
   };
   const names = labels.map((l) => l.name);
