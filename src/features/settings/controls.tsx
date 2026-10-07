@@ -5,7 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Tip } from "@/components/ui/tooltip";
 import { bindingsFor, type CommandId } from "@/lib/commands/commands";
 import { cleanFontName, useSettings } from "@/lib/settings";
-import { FieldLabel } from "@/lib/ui/fieldLabel";
+import { FieldLabel, useFieldLabel } from "@/lib/ui/fieldLabel";
 import { Select } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Keycaps } from "@/components/ui/kbd";
@@ -60,6 +60,56 @@ export function SizeStepper({
   );
 }
 
+/** A range with its value and a reset; each step is applied as it's dragged. `name` labels the reset. */
+export function Slider({
+  name,
+  value,
+  min,
+  max,
+  step,
+  fallback,
+  format,
+  disabled,
+  onChange,
+}: {
+  name: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  fallback: number;
+  format: (v: number) => string;
+  disabled?: boolean;
+  onChange: (v: number) => void;
+}) {
+  const { labelledBy, describedBy } = useFieldLabel();
+  // A value under `min` stays as chosen (the opacity a theme can't go down to): shown at `min`.
+  const shown = Math.max(value, min);
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={shown}
+        disabled={disabled}
+        aria-labelledby={labelledBy}
+        aria-describedby={describedBy}
+        aria-valuetext={format(shown)}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-40 accent-primary disabled:opacity-40"
+      />
+      <span className={cn("w-12 text-right font-mono text-[12px]", disabled && "text-subtle")}>{format(shown)}</span>
+      <Tip label="Reset">
+        <Button variant="ghost" size="icon-sm" aria-label={`Reset ${name}`} disabled={disabled || value === fallback} onClick={() => onChange(fallback)}>
+          <RotateCcw />
+        </Button>
+      </Tip>
+    </div>
+  );
+}
+
 export function Field({ label, hint, commands, children }: { label: string; hint?: React.ReactNode; commands?: CommandId[]; children: React.ReactNode }) {
   const { keybindings } = useSettings();
   const keys = commands?.map((id) => bindingsFor(id, keybindings)[0]).filter(Boolean) ?? [];
@@ -67,7 +117,7 @@ export function Field({ label, hint, commands, children }: { label: string; hint
   const ids = { labelledBy: `${id}label`, describedBy: hint ? `${id}hint` : undefined };
   // A lone Switch or Select (FontPicker's custom name field has its placeholder) takes the label and
   // hint itself; any other row is a group named by them. Never both, or each is read twice.
-  const lone = isValidElement(children) && ([Switch, OptionSelect, FontPicker] as unknown[]).includes(children.type);
+  const lone = isValidElement(children) && ([Switch, OptionSelect, FontPicker, Slider] as unknown[]).includes(children.type);
   return (
     <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border py-3.5 last:border-0">
       <div className="min-w-48 flex-1">

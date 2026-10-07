@@ -48,8 +48,36 @@ pub fn show(app: &AppHandle, section: Option<&str>, open: bool) -> Res<bool> {
         .hidden_title(true);
     // Linux and Windows give it the app's menu bar too, which keeps Ctrl+Q there; its items go
     // to the page as macOS's do while it's in front (menu_target).
-    crate::show_eventually(builder.build().map_err(err)?);
+    let window = builder.build().map_err(err)?;
+    #[cfg(target_os = "macos")]
+    {
+        let w = window.clone();
+        let _ = window.run_on_main_thread(move || no_full_screen(&w));
+    }
+    crate::show_eventually(window);
     Ok(true)
+}
+
+/// Kept beside the workspace, it has no use for full screen, where a see-through window would
+/// show gray (translucency.ts): the green button zooms it instead.
+#[cfg(target_os = "macos")]
+fn no_full_screen(window: &tauri::WebviewWindow) {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+
+    // NSWindowCollectionBehaviorFullScreenPrimary, …Auxiliary, …None.
+    const PRIMARY: usize = 1 << 7;
+    const AUXILIARY: usize = 1 << 8;
+    const NONE: usize = 1 << 9;
+    let Ok(ns_window) = window.ns_window() else {
+        return;
+    };
+    let ns_window = ns_window as *mut AnyObject;
+    unsafe {
+        let behavior: usize = msg_send![ns_window, collectionBehavior];
+        let _: () =
+            msg_send![ns_window, setCollectionBehavior: (behavior & !(PRIMARY | AUXILIARY)) | NONE];
+    }
 }
 
 /// A menu item the settings window hands to the workspace (lib/app/settingsWindow.ts). `raise`:

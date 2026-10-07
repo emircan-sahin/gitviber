@@ -132,8 +132,8 @@ and description. No API key, no extra account: it uses the CLI you're already si
 ### Good-looking, and yours
 
 Eleven color themes for the whole app, from Nord and Catppuccin to Solarized, 24 syntax themes,
-your own code font, terminal font and interface scale, and on macOS a translucent window that lets
-the desktop show through, blurred, if you like. Every action has a shortcut, every shortcut
+your own code font, terminal font and interface scale, and on macOS a see-through window, with
+its opacity and the desktop's blur behind it yours to set. Every action has a shortcut, every shortcut
 can be rebound in Settings, and holding `⌘` shows them all.
 
 <table>

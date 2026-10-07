@@ -194,7 +194,7 @@ function Card({ node, dark }: { node: CanvasNode; dark: boolean }) {
   return (
     <div
       data-canvas-node
-      className="absolute flex flex-col overflow-hidden rounded-xl border-2 bg-panel shadow-sm"
+      className="absolute flex flex-col overflow-hidden rounded-xl border-2 bg-solid-panel shadow-sm"
       style={{ ...place(node), borderColor: color ?? "var(--border-strong)", backgroundImage: color ? `linear-gradient(${canvasColor(node.color, dark, 0.08)}, ${canvasColor(node.color, dark, 0.08)})` : undefined }}
     >
       <div data-canvas-scroll className="markdown min-h-0 flex-1 overflow-auto px-4 py-3 select-text">
@@ -242,7 +242,7 @@ function Arrow({ at: [x, y], angle }: { at: [number, number]; angle: number }) {
 function EdgeLabel({ edge, from, to }: { edge: CanvasEdge; from: CanvasNode; to: CanvasNode }) {
   const { mid } = edgePath(from, to, edge.fromSide, edge.toSide);
   return (
-    <div className="absolute max-w-60 -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-background px-2 py-0.5 text-center text-[13px] text-muted-foreground" style={{ left: mid[0], top: mid[1] }}>
+    <div className="absolute max-w-60 -translate-x-1/2 -translate-y-1/2 rounded-md border border-border bg-solid-background px-2 py-0.5 text-center text-[13px] text-muted-foreground" style={{ left: mid[0], top: mid[1] }}>
       {edge.label}
     </div>
   );

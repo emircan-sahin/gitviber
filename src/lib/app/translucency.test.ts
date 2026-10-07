@@ -30,20 +30,36 @@ export async function resolve(spec, ctx, next) {
 );
 
 type Settings = typeof import("../settings.ts");
-type Pending = { on: boolean; resolve: () => void; reject: (e: unknown) => void };
+// Not `typeof import`: that would type-check translucency.ts here, without Vite's import.meta.hot.
+type Translucency = { glassLevels: (opacity: number) => { glass: string; chrome: string; step: string } };
+type Ask = { on: boolean; blur: number };
+type Pending = Ask & { resolve: () => void; reject: (e: unknown) => void };
 
 /**
  * A fresh translucency.ts (and settings.ts) in a fake macOS window: set_translucent calls wait in `pending` (in the
  * order the main thread would run them) until drained, as a busy main thread would hold them.
  */
-async function boot({ stored, platform = "MacIntel", focused = false, reduce = false }: { stored?: object; platform?: string; focused?: boolean; reduce?: boolean | (() => Promise<boolean>) } = {}) {
+async function boot({
+  stored,
+  platform = "MacIntel",
+  focused = false,
+  fullscreen = false,
+  reduce = false,
+}: { stored?: object; platform?: string; focused?: boolean; fullscreen?: boolean; reduce?: boolean | (() => Promise<boolean>) } = {}) {
   const g = globalThis as Record<string, any>;
   Object.defineProperty(g, "navigator", { value: { platform, userAgent: "" }, configurable: true, writable: true });
   const store = new Map<string, string>();
   if (stored) store.set("gitviber.settings.v2", JSON.stringify(stored));
   g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v) };
-  const root = { dataset: {} as Record<string, string>, style: { setProperty() {} } };
+  const style = new Map<string, string>();
+  const root = { dataset: {} as Record<string, string>, style: { setProperty: (k: string, v: string) => style.set(k, v) } };
   g.document = { documentElement: root };
+  // Each theme's text and background: Dark's floor is 55%, Light's 50% (opacityFloor).
+  const colors: Record<string, Record<string, string>> = {
+    dark: { "--foreground": "#ececee", "--background": "#171718" },
+    light: { "--foreground": "#1d1d1f", "--background": "#ffffff" },
+  };
+  g.getComputedStyle = () => ({ getPropertyValue: (name: string) => colors[root.dataset.theme]?.[name] ?? "" });
   g.window = g;
   g.location = { search: "" };
   g.matchMedia = () => ({ matches: true, addEventListener() {} });
@@ -51,8 +67,8 @@ async function boot({ stored, platform = "MacIntel", focused = false, reduce = f
   g.requestAnimationFrame = (cb: () => void) => frames.push(cb);
 
   const pending: Pending[] = [];
-  const asked: boolean[] = [];
-  let native = false;
+  const asked: Ask[] = [];
+  let native: Ask = { on: false, blur: 0 };
   const callbacks = new Map<number, (e: unknown) => void>();
   const listeners = new Map<string, number[]>();
   let nextId = 1;
@@ -64,12 +80,13 @@ async function boot({ stored, platform = "MacIntel", focused = false, reduce = f
     },
     invoke: async (cmd: string, args: Record<string, any>) => {
       if (cmd === "set_translucent") {
-        asked.push(args.on);
+        const ask = { on: args.on, blur: args.blur };
+        asked.push(ask);
         return new Promise<void>((resolve, reject) =>
           pending.push({
-            on: args.on,
+            ...ask,
             resolve: () => {
-              native = args.on;
+              native = ask;
               resolve();
             },
             reject,
@@ -78,6 +95,7 @@ async function boot({ stored, platform = "MacIntel", focused = false, reduce = f
       }
       if (cmd === "reduce_transparency") return typeof reduce === "function" ? reduce() : reduce;
       if (cmd === "plugin:window|is_focused") return focused;
+      if (cmd === "plugin:window|is_fullscreen") return fullscreen;
       if (cmd === "plugin:event|listen") {
         listeners.set(args.event, [...(listeners.get(args.event) ?? []), args.handler]);
         return args.handler;
@@ -87,7 +105,7 @@ async function boot({ stored, platform = "MacIntel", focused = false, reduce = f
   };
 
   const query = `?boot=${Math.random()}`;
-  await import(`./translucency.ts${query}`);
+  const translucency: Translucency = await import(`./translucency.ts${query}`);
   // The same URL as translucency.ts's own import: the same module.
   const settings: Settings = await import(`../settings.ts${query}`);
   await settle();
@@ -95,22 +113,27 @@ async function boot({ stored, platform = "MacIntel", focused = false, reduce = f
   async function settle() {
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
   }
+  async function fire(event: string, payload: unknown) {
+    for (const id of listeners.get(event) ?? []) callbacks.get(id)!({ event, id: 0, payload });
+    await settle();
+  }
   return {
     settings,
-    root,
+    translucency,
     asked,
     pending,
     settle,
     get native() {
       return native;
     },
-    /** The page's look: the translucency level it shows, or undefined when solid. */
+    /** The page's look: the code's opacity it shows, or undefined when solid. */
     get look() {
-      return root.dataset.translucency;
+      return "translucency" in root.dataset ? style.get("--glass") : undefined;
     },
+    style,
     /** Runs the main thread's queued set_translucent calls, in order, and the ones they lead to. */
     async drain() {
-      // Turning it on asks Reduce transparency first, so the call can still be on its way.
+      // Lowering it asks Reduce transparency first, so the call can still be on its way.
       await settle();
       while (pending.length) {
         while (pending.length) pending.shift()!.resolve();
@@ -125,26 +148,42 @@ async function boot({ stored, platform = "MacIntel", focused = false, reduce = f
         await settle();
       }
     },
-    async focus(on: boolean) {
-      for (const id of listeners.get(on ? "tauri://focus" : "tauri://blur") ?? []) callbacks.get(id)!({ event: "", id: 0, payload: null });
-      await settle();
-    },
+    fire,
+    focus: (on: boolean) => fire(on ? "tauri://focus" : "tauri://blur", null),
+    fullscreen: (on: boolean) => fire("fullscreen", on),
   };
 }
 
-test("off, macOS asks nothing of the window and the page stays as it was", async () => {
+const on = (blur: number) => ({ on: true, blur });
+const off = { on: false, blur: 0 };
+
+test("the levels: the code at the opacity, the bars a step more opaque, both solid at 100%", async () => {
+  const { glassLevels } = (await boot()).translucency;
+  assert.deepEqual(glassLevels(1), { glass: "100%", chrome: "100%", step: "25%" });
+  assert.deepEqual(glassLevels(0.5), { glass: "50%", chrome: "62.5%", step: "25%" });
+  assert.deepEqual(glassLevels(0.7), { glass: "70%", chrome: "77.5%", step: "25%" });
+  // The code's tint and one step over it come to the bars' level: tabs and headers match them.
+  for (let o = 0.5; o <= 1; o += 0.05) {
+    const { glass, chrome, step } = glassLevels(o);
+    const [g, c, s] = [glass, chrome, step].map((v) => parseFloat(v) / 100);
+    assert.ok(Math.abs(1 - (1 - g) * (1 - s) - c) < 0.001, `at ${o}`);
+    assert.ok(c >= g);
+  }
+});
+
+test("at 100%, macOS asks nothing of the window and the page stays as it was", async () => {
   const w = await boot({ focused: true });
   await w.focus(false);
   await w.focus(true);
-  w.settings.updateSettings({ appearance: "light" });
+  w.settings.updateSettings({ appearance: "light", backgroundBlur: 30 });
   await w.frame(3);
-  assert.equal(w.settings.getSettings().translucency, "off");
+  assert.equal(w.settings.getSettings().windowOpacity, 100);
   assert.deepEqual(w.asked, []);
   assert.equal(w.look, undefined);
-  assert.equal("translucency" in w.root.dataset, false);
+  assert.deepEqual([...w.style.keys()].filter((k) => k.startsWith("--glass")), []);
 });
 
-test("Reduce transparency is asked only while it's on: once when turned on, then on each return", async () => {
+test("Reduce transparency is asked only below 100%: once when lowered, then on each return", async () => {
   let asks = 0;
   const w = await boot({
     focused: true,
@@ -155,89 +194,141 @@ test("Reduce transparency is asked only while it's on: once when turned on, then
   });
   await w.focus(false);
   await w.focus(true);
-  assert.equal(asks, 0, "off");
-  w.settings.updateSettings({ translucency: "subtle" });
+  assert.equal(asks, 0, "solid");
+  w.settings.updateSettings({ windowOpacity: 85 });
   await w.drain();
   assert.equal(asks, 1);
-  w.settings.updateSettings({ translucency: "strong" });
+  w.settings.updateSettings({ windowOpacity: 70 });
   await w.focus(false);
   await w.focus(true);
   assert.equal(asks, 2);
 });
 
-test("turned on, the material goes in before the page turns clear", async () => {
-  const w = await boot({ focused: true });
-  w.settings.updateSettings({ translucency: "subtle" });
+test("lowered, the window goes clear with its blur before the page turns see-through", async () => {
+  const w = await boot({ focused: true, stored: { backgroundBlur: 12 } });
+  w.settings.updateSettings({ windowOpacity: 80 });
   await w.settle();
-  assert.deepEqual(w.asked, [true]);
-  assert.equal(w.look, undefined, "clear before the window has the material");
+  assert.deepEqual(w.asked, [on(12)]);
+  assert.equal(w.look, undefined, "solid before the window is clear");
   await w.drain();
-  assert.equal(w.native, true);
-  assert.equal(w.look, "subtle");
+  assert.deepEqual(w.native, on(12));
+  assert.equal(w.look, "80%");
+  assert.equal(w.style.get("--glass-chrome"), "85%");
 });
 
-test("Subtle to Strong, and a theme switch, only retint the page", async () => {
-  const w = await boot({ focused: true });
-  w.settings.updateSettings({ translucency: "subtle" });
+test("the theme's floor holds the page up; the setting keeps its value for a theme that allows it", async () => {
+  const w = await boot({ focused: true, stored: { windowOpacity: 50 } });
   await w.drain();
-  w.settings.updateSettings({ translucency: "strong" });
+  assert.equal(w.look, "55%", "Dark stays readable down to 55%");
+  w.settings.updateSettings({ appearance: "light" });
+  assert.equal(w.look, "50%");
+  w.settings.updateSettings({ appearance: "dark" });
+  assert.equal(w.look, "55%");
+  assert.equal(w.settings.getSettings().windowOpacity, 50);
+  assert.deepEqual(w.asked, [on(0)]);
+});
+
+test("more opacity changes, and theme switches, only restyle the page", async () => {
+  const w = await boot({ focused: true });
+  w.settings.updateSettings({ windowOpacity: 85 });
+  await w.drain();
+  for (const windowOpacity of [80, 75, 70, 50, 95]) w.settings.updateSettings({ windowOpacity });
   w.settings.updateSettings({ appearance: "dark", darkTheme: "dim" });
   w.settings.updateSettings({ appearance: "light" });
   await w.frame(3);
-  assert.deepEqual(w.asked, [true]);
-  assert.equal(w.look, "strong");
+  assert.deepEqual(w.asked, [on(0)]);
+  assert.equal(w.look, "95%");
 });
 
-test("turned off, the page goes solid at once and the material leaves two frames later", async () => {
+test("a dragged blur goes to the window once a frame, the newest value", async () => {
   const w = await boot({ focused: true });
-  w.settings.updateSettings({ translucency: "strong" });
+  w.settings.updateSettings({ windowOpacity: 70 });
   await w.drain();
-  w.settings.updateSettings({ translucency: "off" });
-  assert.equal(w.look, undefined);
+  for (const backgroundBlur of [1, 2, 3, 4]) w.settings.updateSettings({ backgroundBlur });
   await w.frame(1);
-  assert.deepEqual(w.asked, [true], "still on after one frame");
+  for (const backgroundBlur of [5, 6]) w.settings.updateSettings({ backgroundBlur });
   await w.frame(1);
-  await w.drain();
-  assert.deepEqual(w.asked, [true, false]);
-  assert.equal(w.native, false);
-});
-
-test("on, off and on again within a frame ends with the material on and the page clear", async () => {
-  const w = await boot({ focused: true });
-  w.settings.updateSettings({ translucency: "subtle" });
-  w.settings.updateSettings({ translucency: "off" });
-  w.settings.updateSettings({ translucency: "strong" });
-  await w.frame(3);
-  await w.drain();
-  assert.equal(w.asked.at(-1), true);
-  assert.equal(w.native, true);
-  assert.equal(w.look, "strong");
-});
-
-test("off, on and off again within a frame ends solid with the material gone", async () => {
-  const w = await boot({ focused: true, stored: { translucency: "subtle" } });
-  await w.drain();
-  w.settings.updateSettings({ translucency: "off" });
-  w.settings.updateSettings({ translucency: "subtle" });
-  w.settings.updateSettings({ translucency: "off" });
-  await w.drain();
-  assert.equal(w.look, undefined, "a late answer to the 'on' must not clear the page");
-  await w.frame(3);
-  await w.drain();
-  assert.equal(w.native, false);
-  assert.equal(w.look, undefined);
-});
-
-test("with the main thread held up, a stale answer never shows a clear page over a window without the material", async () => {
-  const w = await boot({ focused: true });
-  // Subtle, Off, Subtle while the main thread runs something else: the first answer comes back
-  // after the 'off' and the second 'on' are already queued behind it.
-  w.settings.updateSettings({ translucency: "subtle" });
-  // Past the Reduce transparency question, so the 'on' is asked of the window.
-  await w.settle();
-  w.settings.updateSettings({ translucency: "off" });
   await w.frame(2);
-  w.settings.updateSettings({ translucency: "subtle" });
+  await w.drain();
+  assert.deepEqual(w.asked, [on(0), on(4), on(6)]);
+  assert.deepEqual(w.native, on(6));
+});
+
+test("a blur changed while the window is solid waits for it to go clear, and goes with it", async () => {
+  const w = await boot({ focused: true });
+  w.settings.updateSettings({ backgroundBlur: 25 });
+  await w.frame(2);
+  assert.deepEqual(w.asked, []);
+  w.settings.updateSettings({ windowOpacity: 60 });
+  await w.drain();
+  await w.frame(2);
+  assert.deepEqual(w.asked, [on(25)]);
+});
+
+test("a blur changed while the clear ask is on its way is sent once it's answered", async () => {
+  const w = await boot({ focused: true });
+  w.settings.updateSettings({ windowOpacity: 60 });
+  await w.settle();
+  w.settings.updateSettings({ backgroundBlur: 18 });
+  await w.frame(1);
+  assert.deepEqual(w.asked, [on(0)]);
+  await w.drain();
+  await w.frame(1);
+  await w.drain();
+  assert.deepEqual(w.asked, [on(0), on(18)]);
+  assert.deepEqual(w.native, on(18));
+});
+
+test("back to 100%, the page goes solid at once and the window two frames later", async () => {
+  const w = await boot({ focused: true });
+  w.settings.updateSettings({ windowOpacity: 70 });
+  await w.drain();
+  w.settings.updateSettings({ windowOpacity: 100 });
+  assert.equal(w.look, undefined);
+  await w.frame(1);
+  assert.deepEqual(w.asked, [on(0)], "still clear after one frame");
+  await w.frame(1);
+  await w.drain();
+  assert.deepEqual(w.asked, [on(0), off]);
+  assert.deepEqual(w.native, off);
+});
+
+test("down, up and down again within a frame ends with the window clear and the page see-through", async () => {
+  const w = await boot({ focused: true });
+  w.settings.updateSettings({ windowOpacity: 85 });
+  w.settings.updateSettings({ windowOpacity: 100 });
+  w.settings.updateSettings({ windowOpacity: 70 });
+  await w.frame(3);
+  await w.drain();
+  assert.equal(w.asked.at(-1)!.on, true);
+  assert.equal(w.native.on, true);
+  assert.equal(w.look, "70%");
+});
+
+test("up, down and up again within a frame ends solid, the window too", async () => {
+  const w = await boot({ focused: true, stored: { windowOpacity: 85 } });
+  await w.drain();
+  w.settings.updateSettings({ windowOpacity: 100 });
+  w.settings.updateSettings({ windowOpacity: 85 });
+  w.settings.updateSettings({ windowOpacity: 100 });
+  await w.drain();
+  assert.equal(w.look, undefined, "a late answer to the clear ask must not make the page see-through");
+  await w.frame(3);
+  await w.drain();
+  assert.equal(w.native.on, false);
+  assert.equal(w.look, undefined);
+});
+
+test("with the main thread held up, a stale answer never shows a see-through page over a solid window", async () => {
+  const w = await boot({ focused: true });
+  // 85, 100, 85 while the main thread runs something else: the first answer comes back after the
+  // solid ask and the second clear one are already queued behind it.
+  w.settings.updateSettings({ windowOpacity: 85 });
+  // Past the Reduce transparency question, so the clear ask is sent.
+  await w.settle();
+  w.settings.updateSettings({ windowOpacity: 100 });
+  await w.frame(2);
+  w.settings.updateSettings({ windowOpacity: 85 });
   await w.settle();
   assert.deepEqual(
     w.pending.map((p) => p.on),
@@ -246,141 +337,203 @@ test("with the main thread held up, a stale answer never shows a clear page over
   while (w.pending.length) {
     w.pending.shift()!.resolve();
     await w.settle();
-    if (w.look) assert.equal(w.native, true, `clear page with the material ${w.native ? "on" : "off"}, ${w.pending.length} call(s) still queued`);
+    if (w.look) assert.equal(w.native.on, true, `see-through page over a ${w.native.on ? "clear" : "solid"} window, ${w.pending.length} call(s) still queued`);
   }
-  assert.equal(w.look, "subtle");
+  assert.equal(w.look, "85%");
 });
 
-test("clicking through the levels while the main thread is busy settles on the last one", async () => {
+test("dragging across 100% while the main thread is busy settles on the last value", async () => {
   const w = await boot({ focused: true });
-  for (const level of ["subtle", "off", "strong", "off", "subtle", "strong", "off", "subtle"] as const) {
-    w.settings.updateSettings({ translucency: level });
+  for (const windowOpacity of [95, 100, 70, 100, 85, 60, 100, 75]) {
+    w.settings.updateSettings({ windowOpacity });
     await w.frame(1);
   }
   await w.frame(3);
   await w.drain();
-  assert.equal(w.native, true);
-  assert.equal(w.look, "subtle");
-  for (const level of ["off", "strong", "off"] as const) {
-    w.settings.updateSettings({ translucency: level });
+  assert.equal(w.native.on, true);
+  assert.equal(w.look, "75%");
+  for (const windowOpacity of [100, 60, 100]) {
+    w.settings.updateSettings({ windowOpacity });
     await w.frame(1);
   }
   await w.frame(3);
   await w.drain();
-  assert.equal(w.native, false);
+  assert.equal(w.native.on, false);
   assert.equal(w.look, undefined);
 });
 
-test("in the background the page is solid; the material stays, so nothing is asked of the window", async () => {
-  const w = await boot({ focused: true, stored: { translucency: "subtle" } });
+test("in the background the window stays see-through, and nothing is asked of it", async () => {
+  const w = await boot({ focused: true, stored: { windowOpacity: 85 } });
   await w.drain();
-  assert.equal(w.look, "subtle");
   await w.focus(false);
-  assert.equal(w.look, undefined);
+  assert.equal(w.look, "85%");
   await w.focus(true);
-  assert.equal(w.look, "subtle");
-  assert.deepEqual(w.asked, [true]);
+  await w.drain();
+  assert.equal(w.look, "85%");
+  assert.deepEqual(w.asked, [on(0)]);
 });
 
-test("a focus storm ends the way the window ends, whatever order Reduce transparency answers in", async () => {
+test("a focus storm ends the way the last answer says, whatever order Reduce transparency answers in", async () => {
   const answers: ((v: boolean) => void)[] = [];
-  const w = await boot({ stored: { translucency: "strong" }, reduce: () => new Promise<boolean>((r) => answers.push(r)) });
+  const w = await boot({ stored: { windowOpacity: 70 }, reduce: () => new Promise<boolean>((r) => answers.push(r)) });
+  answers.shift()!(false);
   await w.drain();
   for (let i = 0; i < 10; i++) {
     await w.focus(true);
     await w.focus(false);
   }
   await w.focus(true);
-  // The latest answer first, the stale ones after.
-  answers.reverse().forEach((r) => r(false));
-  await w.settle();
-  assert.equal(w.look, "strong");
-  await w.focus(false);
-  await w.focus(true);
-  await w.focus(false);
+  // The latest answer (Reduce transparency now on) first, the stale ones after.
+  answers.pop()!(true);
   answers.splice(0).forEach((r) => r(false));
   await w.settle();
-  assert.equal(w.look, undefined, "blurred last: solid even though answers came after");
-  assert.deepEqual(w.asked, [true]);
+  assert.equal(w.look, undefined);
+  await w.frame(2);
+  await w.drain();
+  assert.equal(w.native.on, false);
 });
 
-test("Reduce transparency turned on while away: solid on return and the material leaves", async () => {
+test("Reduce transparency turned on while away: solid on return, the window too, and clear again once it's off", async () => {
   let reduce = false;
-  const w = await boot({ stored: { translucency: "subtle" }, reduce: async () => reduce });
+  const w = await boot({ stored: { windowOpacity: 85 }, reduce: async () => reduce });
   await w.drain();
-  await w.focus(true);
-  assert.equal(w.look, "subtle");
+  assert.equal(w.look, "85%");
   await w.focus(false);
   reduce = true;
   await w.focus(true);
   assert.equal(w.look, undefined);
   await w.frame(2);
   await w.drain();
-  assert.equal(w.native, false);
+  assert.equal(w.native.on, false);
   await w.focus(false);
   reduce = false;
   await w.focus(true);
   await w.drain();
-  assert.equal(w.native, true);
-  assert.equal(w.look, "subtle");
+  assert.equal(w.native.on, true);
+  assert.equal(w.look, "85%");
 });
 
-test("Reduce transparency failing to answer still lets focus show the setting", async () => {
-  const w = await boot({ stored: { translucency: "subtle" }, reduce: () => Promise.reject(new Error("gone")) });
+test("Reduce transparency switched while the window is in front is applied at once", async () => {
+  let reduce = false;
+  const w = await boot({ focused: true, stored: { windowOpacity: 85 }, reduce: async () => reduce });
   await w.drain();
-  await w.focus(true);
-  assert.equal(w.look, "subtle");
-});
-
-test("launched with it on: the material is asked for once, the page stays solid until the window comes forward", async () => {
-  const w = await boot({ stored: { translucency: "strong" } });
-  assert.deepEqual(w.asked, [true]);
+  reduce = true;
+  await w.fire("reduce-transparency", null);
+  assert.equal(w.look, undefined);
+  await w.frame(2);
   await w.drain();
-  assert.equal(w.look, undefined, "starts hidden: solid");
-  await w.focus(true);
-  assert.equal(w.look, "strong");
-  assert.deepEqual(w.asked, [true]);
+  assert.equal(w.native.on, false);
+  reduce = false;
+  await w.fire("reduce-transparency", null);
+  await w.drain();
+  assert.equal(w.look, "85%");
 });
 
-test("a set_translucent that fails leaves the page solid, and picking the setting again retries", async () => {
+test("Reduce transparency failing to answer still applies the setting", async () => {
+  const w = await boot({ stored: { windowOpacity: 85 }, reduce: () => Promise.reject(new Error("gone")) });
+  await w.drain();
+  assert.equal(w.look, "85%");
+});
+
+test("launched below 100%: the window is asked once, and the page turns see-through when it's answered", async () => {
+  const w = await boot({ stored: { windowOpacity: 70, backgroundBlur: 30 } });
+  assert.deepEqual(w.asked, [on(30)]);
+  assert.equal(w.look, undefined);
+  await w.drain();
+  assert.equal(w.look, "70%");
+  assert.deepEqual(w.asked, [on(30)]);
+});
+
+test("full screen is solid, the window too, and see-through again on the way out", async () => {
+  const w = await boot({ focused: true, stored: { windowOpacity: 70 } });
+  await w.drain();
+  await w.fullscreen(true);
+  assert.equal(w.look, undefined);
+  await w.frame(2);
+  await w.drain();
+  assert.deepEqual(w.native, off);
+  w.settings.updateSettings({ windowOpacity: 60 });
+  await w.frame(2);
+  assert.equal(w.asked.length, 2, "nothing asked while in full screen");
+  await w.fullscreen(false);
+  await w.drain();
+  assert.equal(w.native.on, true);
+  assert.equal(w.look, "60%");
+});
+
+test("launched or reloaded in full screen, the window is never made clear", async () => {
+  const w = await boot({ focused: true, fullscreen: true, stored: { windowOpacity: 70 } });
+  await w.frame(3);
+  await w.drain();
+  assert.equal(w.look, undefined);
+  assert.equal(w.native.on, false);
+});
+
+test("a set_translucent that fails leaves the page solid, and moving the slider through 100% retries", async () => {
   const w = await boot({ focused: true });
-  w.settings.updateSettings({ translucency: "subtle" });
+  w.settings.updateSettings({ windowOpacity: 85 });
   await w.settle();
   w.pending.shift()!.reject(new Error("no main thread"));
   await w.settle();
   assert.equal(w.look, undefined);
-  w.settings.updateSettings({ translucency: "off" });
+  w.settings.updateSettings({ windowOpacity: 100 });
   await w.frame(2);
-  w.settings.updateSettings({ translucency: "subtle" });
+  w.settings.updateSettings({ windowOpacity: 85 });
   await w.drain();
-  assert.equal(w.look, "subtle");
+  assert.equal(w.look, "85%");
 });
 
-test("stored values from older builds or hand edits fall back to Off; valid ones are kept", async () => {
-  for (const translucency of [undefined, null, true, 1, "on", "STRONG", "toString", "__proto__", { level: "strong" }]) {
+test("Translucency from before the sliders becomes an opacity and a blur", async () => {
+  const cases = [
+    ["off", 100, 0],
+    ["subtle", 85, 20],
+    ["strong", 70, 30],
+  ] as const;
+  for (const [translucency, windowOpacity, backgroundBlur] of cases) {
     const w = await boot({ stored: { appearance: "dark", translucency } });
-    assert.equal(w.settings.getSettings().translucency, "off", `stored ${JSON.stringify(translucency)}`);
+    const s = w.settings.getSettings();
+    assert.deepEqual([s.windowOpacity, s.backgroundBlur], [windowOpacity, backgroundBlur], translucency);
+    assert.equal("translucency" in s, false);
+  }
+  // The sliders, once set, win over a leftover level.
+  const w = await boot({ stored: { translucency: "strong", windowOpacity: 90, backgroundBlur: 4 } });
+  assert.deepEqual([w.settings.getSettings().windowOpacity, w.settings.getSettings().backgroundBlur], [90, 4]);
+});
+
+test("stored values from older builds or hand edits fall back or snap into range", async () => {
+  for (const bad of [undefined, null, true, "70", NaN, { v: 70 }, "__proto__"]) {
+    const w = await boot({ stored: { translucency: bad, windowOpacity: bad, backgroundBlur: bad } });
+    const s = w.settings.getSettings();
+    assert.deepEqual([s.windowOpacity, s.backgroundBlur], [100, 0], `stored ${String(bad)}`);
     assert.deepEqual(w.asked, []);
   }
-  const w = await boot({ stored: { translucency: "strong" } });
-  assert.equal(w.settings.getSettings().translucency, "strong");
+  const cases = [
+    [10, -5, 50, 0],
+    [72, 12.4, 70, 12],
+    [73, 99, 75, 40],
+    [140, 40, 100, 40],
+  ];
+  for (const [windowOpacity, backgroundBlur, opacityAfter, blurAfter] of cases) {
+    const s = (await boot({ stored: { windowOpacity, backgroundBlur } })).settings.getSettings();
+    assert.deepEqual([s.windowOpacity, s.backgroundBlur], [opacityAfter, blurAfter], `${windowOpacity}, ${backgroundBlur}`);
+  }
 });
 
-test("Reset settings turns it off", async () => {
-  const w = await boot({ focused: true, stored: { translucency: "strong" } });
+test("Reset settings makes the window solid again", async () => {
+  const w = await boot({ focused: true, stored: { windowOpacity: 70, backgroundBlur: 30 } });
   await w.drain();
   w.settings.resetSettings();
   await w.frame(3);
   await w.drain();
-  assert.equal(w.settings.getSettings().translucency, "off");
-  assert.equal(w.native, false);
+  assert.deepEqual([w.settings.getSettings().windowOpacity, w.settings.getSettings().backgroundBlur], [100, 0]);
+  assert.deepEqual(w.native, off);
   assert.equal(w.look, undefined);
 });
 
-test("off macOS a stored level does nothing: no window calls, the page stays solid", async () => {
+test("off macOS a stored opacity does nothing: no window calls, the page stays solid", async () => {
   for (const platform of ["Linux x86_64", "Win32"]) {
-    const w = await boot({ platform, focused: true, stored: { translucency: "strong" } });
-    w.settings.updateSettings({ translucency: "subtle" });
+    const w = await boot({ platform, focused: true, stored: { windowOpacity: 70 } });
+    w.settings.updateSettings({ windowOpacity: 60, backgroundBlur: 10 });
     await w.frame(3);
     assert.deepEqual(w.asked, [], platform);
     assert.equal(w.look, undefined, platform);

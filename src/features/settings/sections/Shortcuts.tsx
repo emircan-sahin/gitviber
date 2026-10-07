@@ -67,7 +67,7 @@ export function ShortcutsSection({ recording, setRecording }: { recording: Recor
       >
         <Switch checked={shortcutOverlay} onChange={(v) => updateSettings({ shortcutOverlay: v })} />
       </Field>
-      <div className="sticky top-0 z-10 -mx-5 flex flex-col gap-2.5 bg-elevated px-5 pt-4 pb-3">
+      <div className="glass-header sticky top-0 z-10 -mx-5 flex flex-col gap-2.5 bg-elevated px-5 pt-4 pb-3">
         <div className="flex items-center gap-2">
           <div className="relative flex-1">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle" />

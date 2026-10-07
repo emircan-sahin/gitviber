@@ -69,7 +69,7 @@ interface ViewerProps {
 export function Viewer(props: ViewerProps) {
   const { tabs, active } = props;
   return (
-    <div className="flex h-full min-w-0 flex-col bg-background">
+    <div className="flex h-full min-w-0 flex-col bg-background glass-background">
       <TabStrip {...props} />
       {active ? (
         // A render error in one file's view stays in that tab instead of blanking the app.

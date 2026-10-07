@@ -84,7 +84,7 @@ export function PullCommits({ pull, commits, total, pick, busy, act }: { pull: P
       <div ref={nav.ref} onKeyDown={onKeyDown} onFocus={nav.onFocus} data-list-nav="" role="listbox" aria-label="Commits" aria-multiselectable className="max-h-[360px] overflow-y-auto outline-none">
         {days.map(({ day, list }) => (
           <Fragment key={list[0].sha}>
-            <div className="sticky top-0 z-10 flex h-6 items-center border-b border-border bg-panel px-3 text-[11px] text-subtle">Commits on {day}</div>
+            <div className="glass-header sticky top-0 z-10 flex h-6 items-center border-b border-border bg-panel px-3 text-[11px] text-subtle">Commits on {day}</div>
             {list.map((c) => {
               const on = !!picked?.includes(c);
               const body = open.has(c.sha);

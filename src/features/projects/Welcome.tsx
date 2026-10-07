@@ -19,7 +19,7 @@ export function Welcome({
 }) {
   const openKey = useShortcut("file.openRepo");
   return (
-    <div data-tauri-drag-region className="flex h-full items-center justify-center bg-background">
+    <div data-tauri-drag-region className="flex h-full items-center justify-center bg-background glass-background">
       <div className="w-[400px]">
         <div className="flex items-center gap-3">
           <img src="/icon.svg" alt="" className="size-11" />

@@ -130,9 +130,25 @@ export const LIGHT_THEMES = Object.fromEntries(Object.entries(THEMES).filter(([,
 export const OPTION_KEYS = { off: "Off", left: "Left ⌥", both: "Both ⌥" } as const;
 export type OptionKey = keyof typeof OPTION_KEYS;
 
-/** How much of the desktop shows through the window's chrome, blurred; macOS only (translucency.ts). */
-export const TRANSLUCENCY = { off: "Off", subtle: "Subtle", strong: "Strong" } as const;
-export type Translucency = keyof typeof TRANSLUCENCY;
+/**
+ * The window's opacity in percent, 100 solid; macOS only (translucency.ts). Each theme stops
+ * higher, where its text keeps 3:1 over any desktop (opacityFloor): 50 for Light, 55 to 70 for
+ * the rest.
+ */
+export const WINDOW_OPACITY = { min: 50, max: 100, step: 5 } as const;
+/** The radius the desktop behind a see-through window is blurred by; 0 leaves it sharp. */
+export const BACKGROUND_BLUR = { min: 0, max: 40, step: 1 } as const;
+/** Translucency before the sliders, as the opacity and blur it becomes. */
+const TRANSLUCENCY_LEVELS: Record<string, { windowOpacity: number; backgroundBlur: number }> = {
+  off: { windowOpacity: 100, backgroundBlur: 0 },
+  subtle: { windowOpacity: 85, backgroundBlur: 20 },
+  strong: { windowOpacity: 70, backgroundBlur: 30 },
+};
+/** `v` on `range`'s steps, inside it; `fallback` when it isn't a number. */
+function inRange(v: unknown, range: { min: number; max: number; step: number }, fallback: number) {
+  if (typeof v !== "number" || !Number.isFinite(v)) return fallback;
+  return Math.min(range.max, Math.max(range.min, range.min + Math.round((v - range.min) / range.step) * range.step));
+}
 
 /** Minutes between background fetches; 0 is off. */
 export const FETCH_INTERVALS = [0, 5, 15, 30];
@@ -161,8 +177,9 @@ export interface Settings {
   appearance: Appearance;
   darkTheme: DarkTheme;
   lightTheme: LightTheme;
-  /** One of TRANSLUCENCY; applied on macOS only, and only while the window is in front. */
-  translucency: Translucency;
+  /** WINDOW_OPACITY's percent and BACKGROUND_BLUR's radius; applied on macOS only. */
+  windowOpacity: number;
+  backgroundBlur: number;
   uiFont: UiFont;
   customUiFont: string;
   uiFontWeight: UiFontWeight;
@@ -284,7 +301,8 @@ const DEFAULTS: Settings = {
   appearance: "system",
   darkTheme: "dark",
   lightTheme: "light",
-  translucency: "off",
+  windowOpacity: 100,
+  backgroundBlur: 0,
   uiFont: "System",
   customUiFont: "",
   uiFontWeight: 500,
@@ -390,7 +408,12 @@ function load(): Settings {
     if (!["system", "light", "dark"].includes(s.appearance)) s.appearance = DEFAULTS.appearance;
     if (!Object.hasOwn(DARK_THEMES, s.darkTheme)) s.darkTheme = DEFAULTS.darkTheme;
     if (!Object.hasOwn(LIGHT_THEMES, s.lightTheme)) s.lightTheme = DEFAULTS.lightTheme;
-    if (!Object.hasOwn(TRANSLUCENCY, s.translucency)) s.translucency = DEFAULTS.translucency;
+    // Translucency was Off, Subtle or Strong before the sliders.
+    const level = (s as { translucency?: unknown }).translucency;
+    if (!Object.hasOwn(stored ?? {}, "windowOpacity") && typeof level === "string" && Object.hasOwn(TRANSLUCENCY_LEVELS, level)) Object.assign(s, TRANSLUCENCY_LEVELS[level]);
+    delete (s as { translucency?: unknown }).translucency;
+    s.windowOpacity = inRange(s.windowOpacity, WINDOW_OPACITY, DEFAULTS.windowOpacity);
+    s.backgroundBlur = inRange(s.backgroundBlur, BACKGROUND_BLUR, DEFAULTS.backgroundBlur);
     if (!UI_SCALES.includes(s.uiScale)) s.uiScale = DEFAULTS.uiScale;
     if (!Object.hasOwn(OPTION_KEYS, s.optionAsMeta)) s.optionAsMeta = DEFAULTS.optionAsMeta;
     if (typeof s.shellIntegration !== "boolean") s.shellIntegration = DEFAULTS.shellIntegration;
