@@ -28,11 +28,18 @@ pub struct Branch {
     pub merged: bool,
     /// What its remote's HEAD points at (origin/main): never offered for deletion.
     pub remote_default: bool,
-    /// Commits it has that its upstream hasn't, and the other way round; 0 without one.
+}
+
+/// How a local branch stands with its upstream, for the branch picker.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Tracking {
+    pub name: String,
+    /// Commits it has that its upstream hasn't, and the other way round.
     pub ahead: u32,
     pub behind: u32,
-    /// It has an upstream configured that no longer exists (deleted on the remote, pruned).
-    pub upstream_gone: bool,
+    /// Its upstream is configured but no longer exists (deleted on the remote, pruned).
+    pub gone: bool,
 }
 
 pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
@@ -41,7 +48,7 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         &[
             "for-each-ref",
             "--sort=-committerdate",
-            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)%1f%(symref)%1f%(objectname)%1f%(upstream:track,nobracket)",
+            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)%1f%(symref)%1f%(objectname)",
             "refs/heads",
             "refs/remotes",
         ],
@@ -76,9 +83,8 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\x1f').collect();
             let elsewhere =
-                f.len() == 9 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
-            let (ahead, behind, upstream_gone) = f.get(8).map_or((0, 0, false), |t| track(t));
-            (f.len() == 9 && !f[0].ends_with("/HEAD")).then(|| Branch {
+                f.len() == 8 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
+            (f.len() == 8 && !f[0].ends_with("/HEAD")).then(|| Branch {
                 name: f[1].to_string(),
                 remote: f[0].starts_with("refs/remotes/"),
                 current: f[2] == "*",
@@ -88,11 +94,35 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
                 worktree: elsewhere.then(|| f[5].to_string()),
                 merged: f[2] != "*" && f[1] != default && merged.contains(&f[0]),
                 remote_default: remote_heads.contains(&f[0]),
-                ahead,
-                behind,
-                upstream_gone,
             })
         })
+        .collect())
+}
+
+/// Local branches ahead of, behind or gone from their upstream. Asked for when the branch picker
+/// opens, never on a refresh: counting walks each branch's history to where it meets its upstream.
+pub fn branch_tracking(repo: &Path) -> Result<Vec<Tracking>, String> {
+    let raw = run_text(
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:lstrip=2)%1f%(upstream:track,nobracket)",
+            "refs/heads",
+        ],
+    )?;
+    Ok(raw
+        .lines()
+        .filter_map(|l| l.split_once('\x1f'))
+        .map(|(name, t)| {
+            let (ahead, behind, gone) = track(t);
+            Tracking {
+                name: name.to_string(),
+                ahead,
+                behind,
+                gone,
+            }
+        })
+        .filter(|t| t.ahead > 0 || t.behind > 0 || t.gone)
         .collect())
 }
 

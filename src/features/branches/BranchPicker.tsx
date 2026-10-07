@@ -3,7 +3,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "re
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tip } from "@/components/ui/tooltip";
-import { api, type Branch, fullName, github, type Worktree } from "@/lib/api";
+import { api, type Branch, type BranchTracking, fullName, github, type Worktree } from "@/lib/api";
 import { matchesCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { pointerMoved } from "@/lib/ui/pointer";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
@@ -218,6 +218,19 @@ export function BranchPicker({ main, label, current, branches, worktrees, onSwit
       live = false;
     };
   }, [open]);
+  // Counted as it opens, as above: on every refresh it walked each stale branch's history.
+  const [tracks, setTracks] = useState<Map<string, BranchTracking>>(new Map());
+  useEffect(() => {
+    if (!open) return;
+    let live = true;
+    api.branchTracking().then(
+      (list) => live && setTracks(new Map(list.map((t) => [t.name, t]))),
+      () => {},
+    );
+    return () => {
+      live = false;
+    };
+  }, [open]);
   const upstream = (b: Branch) => !b.remote && !b.merged && !!landed?.has(b.name);
   // Merged and held by no worktree, this one included: deleting them loses nothing.
   const stale = branches.filter((b) => b.merged && !b.worktree).map((b) => b.name);
@@ -364,7 +377,7 @@ export function BranchPicker({ main, label, current, branches, worktrees, onSwit
   // Text, not colour: ↑2 ↓1, "local only", "upstream gone"; a screen reader hears it in words.
   // A branch merged upstream says so in its hint, which covers its gone upstream.
   const tracking = (b: Branch, hot: boolean) => {
-    const t = upstream(b) ? null : branchTracking(b);
+    const t = upstream(b) ? null : branchTracking(b, tracks.get(b.name));
     return (
       t && (
         <span title={t.label} className={cn("shrink-0 text-[10.5px] tabular-nums", hot ? "opacity-80" : "text-subtle")}>

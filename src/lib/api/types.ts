@@ -398,11 +398,16 @@ export interface Branch {
   merged: boolean;
   /** What its remote's HEAD points at (origin/main). */
   remoteDefault: boolean;
-  /** Commits it has that its upstream hasn't, and the other way round; 0 without one. */
+}
+
+/** A local branch ahead of, behind or gone from its upstream (only those are listed). */
+export interface BranchTracking {
+  name: string;
+  /** Commits it has that its upstream hasn't, and the other way round. */
   ahead: number;
   behind: number;
   /** Its upstream is set but no longer exists (deleted on the remote, then pruned). */
-  upstreamGone: boolean;
+  gone: boolean;
 }
 
 export type PullMode = "ff" | "merge" | "rebase";

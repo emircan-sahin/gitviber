@@ -46,33 +46,21 @@ fn branches_read_how_they_track_their_upstream() {
     run(b, &["push", "-q", "origin", "drift", ":vanish"]).unwrap();
     run(a, &["fetch", "-q", "--prune"]).unwrap();
 
-    let all = branches(a).unwrap();
-    let get = |n: &str| all.iter().find(|x| x.name == n).unwrap();
-    let drift = get("drift");
-    assert_eq!(
-        (drift.ahead, drift.behind, drift.upstream_gone),
-        (2, 1, false)
-    );
-    let vanish = get("vanish");
-    assert!(vanish.upstream_gone);
+    let tracked = branch_tracking(a).unwrap();
+    let get = |n: &str| tracked.iter().find(|x| x.name == n);
+    let drift = get("drift").unwrap();
+    assert_eq!((drift.ahead, drift.behind, drift.gone), (2, 1, false));
+    assert!(get("vanish").unwrap().gone);
+    // Its upstream is still named, for the picker to say which one went.
+    let vanish = branches(a)
+        .unwrap()
+        .into_iter()
+        .find(|x| x.name == "vanish")
+        .unwrap();
     assert_eq!(vanish.upstream.as_deref(), Some("origin/vanish"));
-    let sketch = get("sketch");
-    assert_eq!(
-        (
-            sketch.upstream.as_deref(),
-            sketch.ahead,
-            sketch.behind,
-            sketch.upstream_gone
-        ),
-        (None, 0, 0, false)
-    );
-    let main = get("main");
-    assert_eq!((main.ahead, main.behind, main.upstream_gone), (0, 0, false));
-    // Remote branches track nothing.
-    assert!(all
-        .iter()
-        .filter(|x| x.remote)
-        .all(|x| x.ahead == 0 && x.behind == 0 && !x.upstream_gone));
+    // Even with its upstream, or without one (never published): nothing to say.
+    assert!(get("main").is_none() && get("sketch").is_none());
+    assert_eq!(tracked.len(), 2, "{tracked:?}");
 }
 
 /// A terminal tab in another project names its branch; nothing when detached or outside a repo.
