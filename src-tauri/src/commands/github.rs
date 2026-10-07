@@ -197,6 +197,19 @@ pub async fn ci_states(
     .await
 }
 
+/// Commit `sha`'s check runs and statuses, for its header in the viewer.
+#[tauri::command]
+pub async fn commit_checks(
+    app: AppHandle,
+    target: Option<String>,
+    sha: String,
+) -> Res<github::CommitChecks> {
+    with_github(app, move |gh, r| {
+        github::commit_checks(gh, r, target.as_deref(), &sha)
+    })
+    .await
+}
+
 /// Why check run `id` failed: its output, annotations and job log's tail. Asked for from its row.
 #[tauri::command]
 pub async fn check_failure(

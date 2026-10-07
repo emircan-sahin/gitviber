@@ -75,12 +75,29 @@ export interface Pull {
  */
 export const toPull = ({ number, title, state, draft, author, headRef, headSha, headRepo, baseRef, baseSha, createdAt, updatedAt, url }: Pull): Pull => ({ number, title, state, draft, author, headRef, headSha, headRepo, baseRef, baseSha, createdAt, updatedAt, url });
 
-export interface PullCheck {
+/** A check run or commit status on a commit (github/checks.rs). */
+export interface CiCheck {
   name: string;
+  /** "success" | "failure" | "pending" | "neutral" | "skipped" | "cancelled" | … */
   state: string;
+  /** What a pending one waits on: "queued" | "in_progress" | "waiting" | "requested" | "pending"; "" once done. */
+  status: string;
+  /** A check run's output title, a status's description: often why it failed. */
+  description: string;
+  /** The app that ran a check run; "" for a status. */
+  app: string;
+  /** A status's is when it was posted, so only a check run has a duration. */
+  startedAt: string | null;
+  completedAt: string | null;
   url: string | null;
   /** A check run's id, for checkFailure; a commit status has none. */
   id: number | null;
+}
+
+export interface CommitChecks {
+  checks: CiCheck[];
+  /** Checks couldn't be read (a token without access to them, say); `checks` is then partial. */
+  checksError: string | null;
 }
 
 export interface CheckAnnotation {
@@ -109,7 +126,7 @@ export interface PullComment {
   review: string | null;
 }
 
-export interface PullDetail extends Pull {
+export interface PullDetail extends Pull, CommitChecks {
   body: string;
   additions: number;
   deletions: number;
@@ -117,9 +134,6 @@ export interface PullDetail extends Pull {
   commits: number;
   mergeable: boolean | null;
   mergeableState: string;
-  checks: PullCheck[];
-  /** Checks couldn't be read (a token without access to them, say); `checks` is then partial. */
-  checksError: string | null;
   comments: PullComment[];
   /** Who closed it, if closed: an author may reopen only what they closed themselves. */
   closedBy: string | null;
@@ -201,6 +215,8 @@ export const github = {
   ownRepos: () => invoke<{ fullName: string; description: string; private: boolean; cloneUrl: string; updatedAt: string }[]>("gh_own_repos"),
   /** CI's rollup per commit, for those GitHub has checks on (up to 100 at once). */
   ciStates: (target: Target, shas: string[]) => invoke<Record<string, CiState>>("ci_states", { target, shas }),
+  /** A commit's check runs and statuses (`sha`: all 40 characters). */
+  commitChecks: (target: Target, sha: string) => invoke<CommitChecks>("commit_checks", { target, sha }),
   /** A check run's output, annotations and job log tail. */
   checkFailure: (target: Target, id: number) => invoke<CheckFailure>("check_failure", { target, id }),
   /** Signed image links for a private repo's attachments, by attachment id. */

@@ -235,7 +235,7 @@ fn live_pull_request_flow() {
         d.pull.title,
         d.pull.state,
         d.mergeable,
-        d.checks.len(),
+        d.checks.checks.len(),
         d.comments.len()
     );
     assert_eq!(d.pull.head_ref, "feature/review");

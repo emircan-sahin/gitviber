@@ -1,9 +1,119 @@
-//! Why a check failed: its output, its annotations and, for a GitHub Actions job, its log's tail
-//! (the job log `gh run view --log-failed` falls back to). Asked for one check at a time.
+//! A commit's checks, for its PR and its History entry, and why one failed: its output, its
+//! annotations and, for a GitHub Actions job, its log's tail (the job log `gh run view
+//! --log-failed` falls back to). Asked for one check at a time.
 
-use super::{call, pages, string, target, text_tail, Method, Session, JSON};
+use super::{call, pages, string, target, text_tail, Method, Session, JSON, MAX_PAGES};
 use serde::Serialize;
+use serde_json::Value;
 use std::path::Path;
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Check {
+    pub name: String,
+    /// "success" | "failure" | "pending" | "neutral" | "skipped" | "cancelled" | ...
+    pub state: String,
+    /// What a pending one waits on: "queued" | "in_progress" | "waiting" | "requested" |
+    /// "pending"; "" once done.
+    pub status: String,
+    /// A check run's output title, a status's description: often why it failed.
+    pub description: String,
+    /// The app that ran a check run ("GitHub Actions"); "" for a status.
+    pub app: String,
+    /// A status's is when it was posted, so only a check run has a duration.
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    pub url: Option<String>,
+    /// A check run's id, for why it failed (check_failure); a commit status has none.
+    pub id: Option<u64>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitChecks {
+    pub checks: Vec<Check>,
+    /// Checks that couldn't be read (a token without access to them, say): not "no checks".
+    pub checks_error: Option<String>,
+}
+
+/// Commit `sha`'s check runs and statuses, the latest of each, as GitHub lists them on it.
+pub fn commit_checks(
+    session: &Session,
+    repo: &Path,
+    to: Option<&str>,
+    sha: &str,
+) -> Result<CommitChecks, String> {
+    if sha.len() != 40 || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("{sha} is not a commit id."));
+    }
+    let r = target(session, repo, to)?;
+    Ok(read_checks(session, repo, &r.api(""), sha))
+}
+
+/// `base`: the repository's API path. Unchanged lists come back as 304s from the ETag cache,
+/// which is what lets a running commit be asked again every half minute.
+pub(super) fn read_checks(session: &Session, repo: &Path, base: &str, sha: &str) -> CommitChecks {
+    let mut checks = vec![];
+    let mut checks_error = None;
+    let runs = format!("{base}/commits/{sha}/check-runs");
+    match pages(session, repo, &runs, JSON, Some("check_runs"), MAX_PAGES) {
+        Ok(runs) => checks.extend(runs.iter().map(check_run)),
+        Err(e) => checks_error = Some(e),
+    }
+    let statuses = format!("{base}/commits/{sha}/status");
+    match pages(session, repo, &statuses, JSON, Some("statuses"), MAX_PAGES) {
+        Ok(statuses) => checks.extend(statuses.iter().map(status)),
+        Err(e) => {
+            checks_error.get_or_insert(e);
+        }
+    }
+    CommitChecks {
+        checks,
+        checks_error,
+    }
+}
+
+fn check_run(c: &Value) -> Check {
+    let done = c["status"] == "completed";
+    Check {
+        name: string(&c["name"]),
+        state: if done {
+            string(&c["conclusion"])
+        } else {
+            "pending".to_string()
+        },
+        status: if done {
+            String::new()
+        } else {
+            string(&c["status"])
+        },
+        description: string(&c["output"]["title"]),
+        app: string(&c["app"]["name"]),
+        started_at: c["started_at"].as_str().map(str::to_string),
+        completed_at: c["completed_at"].as_str().map(str::to_string),
+        url: c["html_url"].as_str().map(str::to_string),
+        id: c["id"].as_u64(),
+    }
+}
+
+/// A commit status: "pending", "success", "failure" or "error", which reads as a failure.
+fn status(c: &Value) -> Check {
+    let state = match c["state"].as_str() {
+        Some("error") => "failure",
+        other => other.unwrap_or("pending"),
+    };
+    Check {
+        name: string(&c["context"]),
+        state: state.to_string(),
+        status: if state == "pending" { state } else { "" }.to_string(),
+        description: string(&c["description"]),
+        app: String::new(),
+        started_at: c["created_at"].as_str().map(str::to_string),
+        completed_at: None,
+        url: c["target_url"].as_str().map(str::to_string),
+        id: None,
+    }
+}
 
 /// The log read, from its end: enough for the lines before the error, on any job.
 const LOG_BYTES: usize = 256 * 1024;
@@ -89,7 +199,7 @@ pub fn check_failure(
     })
 }
 
-fn annotation(a: &serde_json::Value) -> Annotation {
+fn annotation(a: &Value) -> Annotation {
     Annotation {
         path: string(&a["path"]),
         line: a["start_line"].as_u64().unwrap_or(0),
@@ -178,6 +288,65 @@ fn clean_line(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_running_check_run_says_what_it_waits_on_and_a_done_one_how_it_ended() {
+        let waiting = check_run(&serde_json::json!({
+            "id": 901, "name": "deploy", "status": "waiting", "conclusion": null,
+            "started_at": "2024-05-01T12:00:00Z", "completed_at": null,
+            "html_url": "https://github.com/acme/widgets/runs/901",
+            "app": { "name": "GitHub Actions", "slug": "github-actions" },
+            "output": { "title": null }
+        }));
+        assert_eq!(
+            (
+                waiting.state.as_str(),
+                waiting.status.as_str(),
+                waiting.app.as_str()
+            ),
+            ("pending", "waiting", "GitHub Actions")
+        );
+        assert_eq!(waiting.started_at.as_deref(), Some("2024-05-01T12:00:00Z"));
+        assert_eq!((waiting.id, waiting.description.as_str()), (Some(901), ""));
+
+        let failed = check_run(&serde_json::json!({
+            "id": 902, "name": "lint", "status": "completed", "conclusion": "failure",
+            "started_at": "2024-05-01T12:00:00Z", "completed_at": "2024-05-01T12:02:10Z",
+            "output": { "title": "Process completed with exit code 1." }
+        }));
+        assert_eq!(
+            (failed.state.as_str(), failed.status.as_str()),
+            ("failure", "")
+        );
+        assert_eq!(failed.description, "Process completed with exit code 1.");
+        assert_eq!(failed.completed_at.as_deref(), Some("2024-05-01T12:02:10Z"));
+        assert_eq!(failed.url, None);
+    }
+
+    #[test]
+    fn a_status_error_is_a_failure_and_only_a_pending_one_waits() {
+        let errored = status(&serde_json::json!({
+            "context": "ci/legacy", "state": "error", "description": "Build crashed",
+            "target_url": "https://ci.example.com/b/7", "created_at": "2024-05-01T12:00:00Z"
+        }));
+        assert_eq!(
+            (errored.state.as_str(), errored.status.as_str(), errored.id),
+            ("failure", "", None)
+        );
+        assert_eq!(errored.description, "Build crashed");
+        assert_eq!(errored.url.as_deref(), Some("https://ci.example.com/b/7"));
+
+        let pending = status(&serde_json::json!({
+            "context": "deploy/preview", "state": "pending", "description": null,
+            "created_at": "2024-05-01T12:05:00Z"
+        }));
+        assert_eq!(
+            (pending.state.as_str(), pending.status.as_str()),
+            ("pending", "pending")
+        );
+        assert_eq!(pending.started_at.as_deref(), Some("2024-05-01T12:05:00Z"));
+        assert_eq!(pending.completed_at, None);
+    }
 
     #[test]
     fn the_tail_ends_at_the_last_error_without_timestamps_or_colors() {

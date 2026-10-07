@@ -1,9 +1,10 @@
 //! Pull requests: listing, details, files, creating, merging, reviews and line comments.
 
+use super::checks::read_checks;
 use super::search::{self, Kind};
 use super::{
     all_pages, call, fetch_remote, graphql, list_state, pages, repo_ref, string, target,
-    ListFilter, Method, Session, StateCounts, JSON, MAX_PAGES,
+    CommitChecks, ListFilter, Method, Session, StateCounts, JSON, MAX_PAGES,
 };
 use crate::git;
 use crate::network::Net;
@@ -157,17 +158,6 @@ pub fn ci_states(
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Check {
-    pub name: String,
-    /// "success" | "failure" | "pending" | "neutral" | "skipped" | "cancelled"
-    pub state: String,
-    pub url: Option<String>,
-    /// A check run's id, for why it failed (check_failure); a commit status has none.
-    pub id: Option<u64>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Comment {
     pub author: String,
     pub body: String,
@@ -189,9 +179,8 @@ pub struct PullDetail {
     /// null while GitHub is still computing it
     pub mergeable: Option<bool>,
     pub mergeable_state: String,
-    pub checks: Vec<Check>,
-    /// Checks that couldn't be read (a token without access to them, say): not "no checks".
-    pub checks_error: Option<String>,
+    #[serde(flatten)]
+    pub checks: CommitChecks,
     pub comments: Vec<Comment>,
     /// Who closed it, if closed: an author may reopen only what they closed themselves
     pub closed_by: Option<String>,
@@ -228,60 +217,7 @@ pub fn detail(
         None
     };
 
-    let mut checks = vec![];
-    let mut checks_error = None;
-    let sha = &pull.head_sha;
-    match pages(
-        session,
-        repo,
-        &format!("{base}/commits/{sha}/check-runs"),
-        JSON,
-        Some("check_runs"),
-        MAX_PAGES,
-    ) {
-        Ok(runs) => {
-            for c in runs {
-                let state = if c["status"] != "completed" {
-                    "pending".to_string()
-                } else {
-                    string(&c["conclusion"])
-                };
-                checks.push(Check {
-                    name: string(&c["name"]),
-                    state,
-                    url: c["html_url"].as_str().map(str::to_string),
-                    id: c["id"].as_u64(),
-                });
-            }
-        }
-        Err(e) => checks_error = Some(e),
-    }
-    match pages(
-        session,
-        repo,
-        &format!("{base}/commits/{sha}/status"),
-        JSON,
-        Some("statuses"),
-        MAX_PAGES,
-    ) {
-        Ok(statuses) => {
-            for c in statuses {
-                let state = match c["state"].as_str() {
-                    Some("error") => "failure".to_string(),
-                    other => other.unwrap_or("pending").to_string(),
-                };
-                checks.push(Check {
-                    name: string(&c["context"]),
-                    state,
-                    url: c["target_url"].as_str().map(str::to_string),
-                    id: None,
-                });
-            }
-        }
-        Err(e) => {
-            checks_error.get_or_insert(e);
-        }
-    }
+    let checks = read_checks(session, repo, &base, &pull.head_sha);
 
     // A failure here is an error, not "no comments": an empty thread would be a lie.
     let mut comments = vec![];
@@ -328,7 +264,6 @@ pub fn detail(
         mergeable: v["mergeable"].as_bool(),
         mergeable_state: string(&v["mergeable_state"]),
         checks,
-        checks_error,
         comments,
         pull,
     })
