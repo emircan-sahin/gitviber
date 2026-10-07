@@ -6,6 +6,12 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-10-08
+
+### Fixed
+
+- **Dragging a sidebar's edge follows the pointer.** After a sidebar was closed and reopened, a drag could pull it back to its old width mid-move, so it jumped left and right. In #118.
+
 ## [0.1.11] - 2026-10-08
 
 ### Added
@@ -534,7 +540,9 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/emircan-sahin/gitviber/compare/v0.1.11...v0.1.12
+[0.1.11]: https://github.com/emircan-sahin/gitviber/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/emircan-sahin/gitviber/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/emircan-sahin/gitviber/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/emircan-sahin/gitviber/compare/v0.1.7...v0.1.8
