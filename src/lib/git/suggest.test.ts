@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { commandLine, effortArg, effortLevels, effortOf, parseSuggestion, programOf, runDetails, type SuggestPreset, withLeanFallback } from "./suggest.ts";
+import { commandLine, effortArg, effortLevels, effortOf, parseSuggestion, programOf, reviewAgent, runDetails, type SuggestPreset, withLeanFallback } from "./suggest.ts";
 
 const LEAN = '--strict-mcp-config --no-session-persistence --disable-slash-commands --tools ""';
 
@@ -55,6 +55,28 @@ test("a preset runs with its model and effort", () => {
   assert.equal(commandLine("opencode run --agent plan", {}, { opencode: "max" }), "opencode run --agent plan -m anthropic/claude-sonnet-5 --variant max");
   // llm has no effort flag.
   assert.equal(commandLine("llm", {}, { llm: "high" }), "llm -m gpt-6-luna");
+});
+
+test("a guided review runs Commit Messages' agent, model and effort, unless it has its own", () => {
+  const commit = { suggestCommand: "codex exec", suggestModels: { codex: "gpt-x", claude: "opus" }, suggestEfforts: { codex: "high" } };
+  const line = (own: Partial<Parameters<typeof reviewAgent>[0]>) => {
+    const { command, models, efforts } = reviewAgent({ ...commit, reviewCommand: null, reviewModels: {}, reviewEfforts: {}, ...own });
+    return commandLine(command, models, efforts, true);
+  };
+  // All the same.
+  assert.equal(line({}), "codex exec -m gpt-x -c model_reasoning_effort=high");
+  // Its own effort, Commit Messages' model; and the other way round.
+  assert.equal(line({ reviewEfforts: { codex: "xhigh" } }), "codex exec -m gpt-x -c model_reasoning_effort=xhigh");
+  assert.equal(line({ reviewModels: { codex: "gpt-y" } }), "codex exec -m gpt-y -c model_reasoning_effort=high");
+  // Its own effort "", the CLI's default, passes none.
+  assert.equal(line({ reviewEfforts: { codex: "" } }), "codex exec -m gpt-x");
+  // Its own command takes Commit Messages' model for that preset, and the preset's default effort.
+  assert.equal(line({ reviewCommand: "claude -p" }), `claude -p ${LEAN.replace('""', "Read,Grep,Glob")} --model opus --effort medium`);
+  assert.equal(line({ reviewCommand: "claude -p", reviewEfforts: { claude: "max" }, reviewModels: { claude: "sonnet" } }), `claude -p ${LEAN.replace('""', "Read,Grep,Glob")} --model sonnet --effort max`);
+  // A custom one carries its own; the same-as entries of other presets don't reach it.
+  assert.equal(line({ reviewCommand: "my-agent --fast", reviewModels: { codex: "z" } }), "my-agent --fast");
+  // The model and effort the guide's header shows are the ones that ran.
+  assert.deepEqual(runDetails(line({ reviewEfforts: { codex: "low" } })), ["gpt-x", "low"]);
 });
 
 test("a markdown description keeps its code blocks", () => {

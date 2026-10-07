@@ -200,6 +200,44 @@ test("saved efforts are checked as they load", async () => {
   }
 });
 
+test("guided review settings are checked as they load, and reset to Commit Messages'", async () => {
+  reset();
+  store.set(
+    "gitviber.settings.v2",
+    JSON.stringify({ reviewCommand: "codex exec", reviewModels: { claude: "opus", codex: 5, gemini: "x" }, reviewEfforts: { claude: "max", codex: "max", pi: "" }, reviewLanguage: "Turkish" }),
+  );
+  const s = await boot("main");
+  assert.deepEqual(
+    (({ reviewCommand, reviewModels, reviewEfforts, reviewLanguage }) => ({ reviewCommand, reviewModels, reviewEfforts, reviewLanguage }))(s.getSettings()),
+    { reviewCommand: "codex exec", reviewModels: { claude: "opus" }, reviewEfforts: { claude: "max", pi: "" }, reviewLanguage: "Turkish" },
+  );
+  s.resetSettings();
+  assert.equal(s.getSettings().reviewCommand, null);
+  assert.deepEqual(s.getSettings().reviewModels, {});
+  assert.equal(s.getSettings().reviewLanguage, "English");
+  for (const bad of [{ reviewCommand: 3, reviewModels: "x", reviewEfforts: ["high"], reviewLanguage: null }, {}]) {
+    reset();
+    store.set("gitviber.settings.v2", JSON.stringify({ ...bad, wordWrap: true }));
+    const { reviewCommand, reviewModels, reviewEfforts, reviewLanguage, wordWrap } = (await boot("main")).getSettings();
+    assert.deepEqual({ reviewCommand, reviewModels, reviewEfforts, reviewLanguage, wordWrap }, { reviewCommand: null, reviewModels: {}, reviewEfforts: {}, reviewLanguage: "English", wordWrap: true });
+  }
+});
+
+test("guided review settings changed in the settings window reach main, null included", async () => {
+  reset();
+  const main = await boot("main");
+  const win = await boot("settings");
+  win.updateSettings({ reviewCommand: "claude -p", reviewEfforts: { claude: "high" }, reviewLanguage: "日本語" });
+  await deliver();
+  assert.equal(main.getSettings().reviewCommand, "claude -p");
+  assert.deepEqual(main.getSettings().reviewEfforts, { claude: "high" });
+  assert.equal(main.getSettings().reviewLanguage, "日本語");
+  win.updateSettings({ reviewCommand: null });
+  await deliver();
+  assert.equal(main.getSettings().reviewCommand, null);
+  assert.equal(stored().reviewCommand, null);
+});
+
 test("patches from both windows before either hears the other converge", async () => {
   reset();
   const main = await boot("main");

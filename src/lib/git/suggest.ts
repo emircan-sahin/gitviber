@@ -108,6 +108,13 @@ export function commandLine(command: string, models: Partial<Record<SuggestPrese
   return [command.trim(), lean && leanFlags(preset, reads), model && `${SUGGEST_PRESETS[preset].modelFlag} ${model}`, effort && effortArg(preset, effort)].filter(Boolean).join(" ");
 }
 
+type Models = Partial<Record<SuggestPreset, string>>;
+
+/** What a guided review runs: its own command, models and efforts, or Commit Messages' where it has none. */
+export function reviewAgent(s: { suggestCommand: string; suggestModels: Models; suggestEfforts: Models; reviewCommand: string | null; reviewModels: Models; reviewEfforts: Models }) {
+  return { command: s.reviewCommand ?? s.suggestCommand, models: { ...s.suggestModels, ...s.reviewModels }, efforts: { ...s.suggestEfforts, ...s.reviewEfforts } };
+}
+
 /**
  * `ask` with the command line as run; when a Claude Code preset's run fails on a flag its CLI is
  * too old to know (commander's "unknown option '--…'"), once more without the lean flags
