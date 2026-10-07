@@ -25,7 +25,7 @@ import { UnifiedDiff } from "./UnifiedDiff";
 import { type FileMemo, fileMemo, scrolls } from "./stackedMemo";
 import { useFixedFiles } from "./fixedFiles";
 
-type ListFile = Selection & { kind: "unstaged" | "staged" | "branch" | "commit" | "pr-file" };
+export type ListFile = Selection & { kind: "unstaged" | "staged" | "branch" | "commit" | "pr-file" };
 
 /** More lines than this in one file wait for a click, as GitHub's large diffs do: a lockfile would hold up the rest. */
 const LARGE = 1500;
@@ -74,6 +74,22 @@ function topBlock(el: HTMLElement | null) {
   return all.length ? i : -1;
 }
 
+/**
+ * The revision `sel`'s diff is read at. What it depends on: its own content (a submodule's: its
+ * commit and whether it's dirty), and the index under unstaged changes or HEAD under staged ones.
+ * Each file is read again only when that changes, not on every change on disk.
+ */
+export function fileRevision(sel: ListFile, m: FileMemo, status: RepoStatus | null, revision: number) {
+  const { file } = sel;
+  const sig = [file.status, file.oid ?? `${file.additions}:${file.deletions}`, file.submodule, sel.kind === "unstaged" ? file.indexOid : sel.kind === "staged" ? status?.head : ""].join(":");
+  if (m.sig !== sig) {
+    Object.assign(m, { sig, rev: revision });
+    // Line numbers of the version before: unfolding them in this one opens other lines.
+    delete m.revealed;
+  }
+  return m.rev!;
+}
+
 export function AllChanges({ changes, status, branchRows, revision, viewed, toggleViewed, onOpen }: Props) {
   const { list } = changes;
   const fixed = useFixedFiles(changes);
@@ -86,20 +102,7 @@ export function AllChanges({ changes, status, branchRows, revision, viewed, togg
   const isOpen = (sel: ListFile) => !(memo(sel).shut ?? (sel.kind !== "staged" && viewed(sel)));
   const scroller = useRef<HTMLDivElement>(null);
 
-  // What a file's diff depends on: its own content (a submodule's: its commit and whether it's
-  // dirty), and the index under unstaged changes or HEAD under staged ones. Each file is read again
-  // only when that changes, not on every change on disk.
-  const revisionOf = (sel: ListFile) => {
-    const { file } = sel;
-    const sig = [file.status, file.oid ?? `${file.additions}:${file.deletions}`, file.submodule, sel.kind === "unstaged" ? file.indexOid : sel.kind === "staged" ? status?.head : ""].join(":");
-    const m = memo(sel);
-    if (m.sig !== sig) {
-      Object.assign(m, { sig, rev: revision });
-      // Line numbers of the version before: unfolding them in this one opens other lines.
-      delete m.revealed;
-    }
-    return m.rev!;
-  };
+  const revisionOf = (sel: ListFile) => fileRevision(sel, memo(sel), status, revision);
 
   // Back at the file that was at the top, as far into it, once the files are there; each keeps its
   // height from before, so it's the same place.
@@ -260,7 +263,8 @@ function useNear(el: RefObject<HTMLElement | null>) {
   return near;
 }
 
-function FileBlock({
+/** One file of a stacked diff: its header, and its diff while it's open and near the screen (else just its height). */
+export function FileBlock({
   sel,
   memo,
   revision,

@@ -15,7 +15,7 @@ let ids = 0;
  * diagrams draw one at a time, each with the theme it asked for. `strict` runs no click handlers
  * and sanitizes labels (as GitHub and VS Code's preview do).
  */
-function draw(code: string, dark: boolean): Promise<string> {
+export function draw(code: string, dark: boolean): Promise<string> {
   const key = `${dark}\0${code}`;
   const hit = drawn.get(key);
   if (hit) return Promise.resolve(hit);
