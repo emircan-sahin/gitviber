@@ -6,6 +6,45 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-10-08
+
+### Added
+
+- **Explain Commit and Guided Review.** Right-click a commit in History, or press ✦ in a branch review, and your own agent CLI writes a guide to the change: an overview, a diagram of the data and flow it touches when there is one, then sections in reading order, each with its category (UI, API, security, tests…), its importance and a one-line check, beside its diffs. Mark sections and files reviewed as you go; notes from the agent sit on the files and lines they're about. Big changes work too: every changed file reaches the agent. In #117.
+- **A Guided Review page in Settings,** to run reviews with their own agent, model and effort, and in your language. Commit messages and pull requests stay in English.
+- **Reasoning effort for suggestions.** Commit messages, pull request descriptions and guided reviews take an effort level (medium by default) next to the model.
+- **Settings in a window of its own.** Open it from the Settings dialog, park it beside the app and every change applies live.
+- **Window opacity and Background blur,** in Settings → Appearance: the whole window turns see-through over the desktop, sharp or blurred, while text, dialogs and the terminal stay solid. Each theme stops where its text stays readable.
+- **CI in the commit header.** A badge sums up a commit's checks, and a click lists each one: what a running check waits on and since when, and why a failed one failed.
+- **Click an author or label in a row to filter by it,** in History, pull requests and issues. The row's menu does the same from the keyboard.
+- **Agent dots in color.** A working agent pulses orange, one that finished while you were away is blue, one asking a question is red, on terminal tabs, panes, the agents list and the worktree picker.
+- **`gitviber .` in the built-in terminal** works with nothing installed (macOS).
+- **Ahead and behind in the branch picker,** plus "local only" and "upstream gone" for each local branch.
+- **Keys for Git:** Focus Commit Message (⌃⌘C), Fetch (⌃⇧⌘T), Pull (⌃⇧⌘P) and Push (⌃⌘P).
+- **Equalize terminal panes** by double-clicking a divider, or from the command palette.
+- **Drop a folder on the window** to open it as a project, or a file from a repository to open it there.
+- **The window keeps its size and place,** and its title names the repository and branch.
+
+### Changed
+
+- **Quitting asks first while an agent is working or a command is running,** naming what would stop. A second ⌘Q quits; a switch in Settings → Terminal turns the question off.
+- **Suggestions from Claude Code start faster:** they skip MCP servers, skills and the saved session, run Sonnet by default, and get only read-only tools.
+- **The sidebar's tabs keep their place.** Switching between Changes, History, pull requests and issues keeps each one's filters, loaded pages, open commit and scroll.
+- **Relative times stay current,** and show the full date on hover; long titles show in full on hover.
+- **Find the Bad Commit asks before it checks out commits,** and the bisect buttons say what each one means.
+- **Projects whose folder is gone sink to the bottom** of the project list.
+
+### Fixed
+
+- **The sidebars no longer shrink by themselves.** They and the terminal keep their width in pixels through window resizes, display changes and restarts; double-clicking a sidebar's edge fits it to its header, and a narrow sidebar scrolls only its tab row. In #118.
+- **The ⌘ shortcuts overlay** no longer stays up after the Mission Control gesture, and opens again afterwards.
+- **A drag cut short by Mission Control or ⌘Tab** ends at the next mouse move instead of dropping on the next click.
+- **Squash and Reword keep your message** when a warning is cancelled or the rewrite fails.
+- **Renaming a stash while another is being stashed** can no longer drop the other one.
+- **Move main back run twice at once** can no longer undo itself.
+- **An agent that left a background shell running** shows as finished, not working, and its finish is notified.
+- **Inline code in documents and descriptions** is visible on light themes.
+
 ## [0.1.10] - 2026-10-03
 
 ### Changed
