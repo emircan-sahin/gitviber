@@ -28,6 +28,11 @@ pub struct Branch {
     pub merged: bool,
     /// What its remote's HEAD points at (origin/main): never offered for deletion.
     pub remote_default: bool,
+    /// Commits it has that its upstream hasn't, and the other way round; 0 without one.
+    pub ahead: u32,
+    pub behind: u32,
+    /// It has an upstream configured that no longer exists (deleted on the remote, pruned).
+    pub upstream_gone: bool,
 }
 
 pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
@@ -36,7 +41,7 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         &[
             "for-each-ref",
             "--sort=-committerdate",
-            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)%1f%(symref)%1f%(objectname)",
+            "--format=%(refname)%1f%(refname:short)%1f%(HEAD)%1f%(upstream:short)%1f%(committerdate:unix)%1f%(worktreepath)%1f%(symref)%1f%(objectname)%1f%(upstream:track,nobracket)",
             "refs/heads",
             "refs/remotes",
         ],
@@ -71,8 +76,9 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\x1f').collect();
             let elsewhere =
-                f.len() == 8 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
-            (f.len() == 8 && !f[0].ends_with("/HEAD")).then(|| Branch {
+                f.len() == 9 && f[2] != "*" && !f[5].is_empty() && !bare.iter().any(|b| b == f[5]);
+            let (ahead, behind, upstream_gone) = f.get(8).map_or((0, 0, false), |t| track(t));
+            (f.len() == 9 && !f[0].ends_with("/HEAD")).then(|| Branch {
                 name: f[1].to_string(),
                 remote: f[0].starts_with("refs/remotes/"),
                 current: f[2] == "*",
@@ -82,9 +88,23 @@ pub fn branches(repo: &Path) -> Result<Vec<Branch>, String> {
                 worktree: elsewhere.then(|| f[5].to_string()),
                 merged: f[2] != "*" && f[1] != default && merged.contains(&f[0]),
                 remote_default: remote_heads.contains(&f[0]),
+                ahead,
+                behind,
+                upstream_gone,
             })
         })
         .collect())
+}
+
+/// `%(upstream:track,nobracket)`: "ahead 3, behind 2", "gone", or nothing when even or untracked.
+/// git writes it in English here (cmd.rs sets the locale).
+fn track(t: &str) -> (u32, u32, bool) {
+    let count = |word: &str| {
+        t.split(", ")
+            .find_map(|p| p.strip_prefix(word)?.strip_prefix(' ')?.parse().ok())
+            .unwrap_or(0)
+    };
+    (count("ahead"), count("behind"), t == "gone")
 }
 
 /// Local branches squash- or rebase-merged on the remote, which then deleted them. Asked for
@@ -641,5 +661,16 @@ checkout: moving from main to feat-a
         );
         assert_eq!(recent_from_reflog(subjects, 2), ["main", "feat-b"]);
         assert!(recent_from_reflog("", 5).is_empty());
+    }
+
+    #[test]
+    fn upstream_track_counts() {
+        assert_eq!(track(""), (0, 0, false));
+        assert_eq!(track("ahead 3"), (3, 0, false));
+        assert_eq!(track("behind 12"), (0, 12, false));
+        assert_eq!(track("ahead 1, behind 40"), (1, 40, false));
+        assert_eq!(track("gone"), (0, 0, true));
+        // Anything else counts as nothing rather than a guess.
+        assert_eq!(track("aheadish 3, behind x"), (0, 0, false));
     }
 }

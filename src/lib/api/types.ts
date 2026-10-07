@@ -398,6 +398,11 @@ export interface Branch {
   merged: boolean;
   /** What its remote's HEAD points at (origin/main). */
   remoteDefault: boolean;
+  /** Commits it has that its upstream hasn't, and the other way round; 0 without one. */
+  ahead: number;
+  behind: number;
+  /** Its upstream is set but no longer exists (deleted on the remote, then pruned). */
+  upstreamGone: boolean;
 }
 
 export type PullMode = "ff" | "merge" | "rebase";

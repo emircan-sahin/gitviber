@@ -1,4 +1,5 @@
 import type { Branch } from "../api/types.ts";
+import { plural } from "../format.ts";
 import { folderName } from "../path.ts";
 import { IS_MAC, IS_WINDOWS } from "../platform.ts";
 
@@ -86,4 +87,17 @@ export function worktreeBase(branches: Pick<Branch, "name" | "remote" | "current
   const name = remote ? remote.name.slice("origin/".length) : "main";
   if (branches.some((b) => !b.remote && b.name === name)) return `refs/heads/${name}`;
   return remote ? `refs/remotes/${remote.name}` : "HEAD";
+}
+
+/**
+ * How a local branch stands with its upstream, for the branch picker: `text` to show ("↑2 ↓1",
+ * "local only", "upstream gone"), `label` for a screen reader and the tooltip. Null when even, or remote.
+ */
+export function branchTracking(b: Pick<Branch, "remote" | "upstream" | "ahead" | "behind" | "upstreamGone">): { text: string; label: string } | null {
+  if (b.remote) return null;
+  if (b.upstreamGone) return { text: "upstream gone", label: ["Its upstream", b.upstream, "is gone from the remote"].filter(Boolean).join(" ") };
+  if (!b.upstream) return { text: "local only", label: "Not published: it has no upstream" };
+  const parts = [b.ahead && [`↑${b.ahead}`, `${plural(b.ahead, "commit")} ahead`], b.behind && [`↓${b.behind}`, `${plural(b.behind, "commit")} behind`]].filter((p): p is string[] => !!p);
+  if (!parts.length) return null;
+  return { text: parts.map((p) => p[0]).join(" "), label: `Compared with ${b.upstream}: ${parts.map((p) => p[1]).join(", ")}` };
 }

@@ -23,6 +23,58 @@ fn switching_to_a_remote_branch_tracks_that_remote() {
     assert!(switch_tracking(b, "main").is_err());
 }
 
+/// The branch picker's tracking: ahead and behind its upstream, never pushed, or upstream gone.
+#[test]
+fn branches_read_how_they_track_their_upstream() {
+    let sb = Sandbox::new("tracking");
+    let c = sb.remote_with_clones(2);
+    let (a, b) = (&c[0], &c[1]);
+    for name in ["drift", "vanish"] {
+        run(a, &["switch", "-q", "-c", name, "main"]).unwrap();
+        write_commit(a, &format!("{name}.txt"), "1\n", name);
+        run(a, &["push", "-q", "-u", "origin", name]).unwrap();
+    }
+    run(a, &["switch", "-q", "-c", "sketch", "main"]).unwrap();
+    write_commit(a, "sketch.txt", "s\n", "sketch");
+    // drift: two commits here, one there.
+    run(a, &["switch", "-q", "drift"]).unwrap();
+    write_commit(a, "drift.txt", "2\n", "drift 2");
+    write_commit(a, "drift-b.txt", "3\n", "drift 3");
+    run(b, &["fetch", "-q"]).unwrap();
+    run(b, &["switch", "-q", "drift"]).unwrap();
+    write_commit(b, "other.txt", "o\n", "other");
+    run(b, &["push", "-q", "origin", "drift", ":vanish"]).unwrap();
+    run(a, &["fetch", "-q", "--prune"]).unwrap();
+
+    let all = branches(a).unwrap();
+    let get = |n: &str| all.iter().find(|x| x.name == n).unwrap();
+    let drift = get("drift");
+    assert_eq!(
+        (drift.ahead, drift.behind, drift.upstream_gone),
+        (2, 1, false)
+    );
+    let vanish = get("vanish");
+    assert!(vanish.upstream_gone);
+    assert_eq!(vanish.upstream.as_deref(), Some("origin/vanish"));
+    let sketch = get("sketch");
+    assert_eq!(
+        (
+            sketch.upstream.as_deref(),
+            sketch.ahead,
+            sketch.behind,
+            sketch.upstream_gone
+        ),
+        (None, 0, 0, false)
+    );
+    let main = get("main");
+    assert_eq!((main.ahead, main.behind, main.upstream_gone), (0, 0, false));
+    // Remote branches track nothing.
+    assert!(all
+        .iter()
+        .filter(|x| x.remote)
+        .all(|x| x.ahead == 0 && x.behind == 0 && !x.upstream_gone));
+}
+
 /// A terminal tab in another project names its branch; nothing when detached or outside a repo.
 #[test]
 fn current_branch_of_any_folder() {

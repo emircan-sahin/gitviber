@@ -9,7 +9,7 @@ import { pointerMoved } from "@/lib/ui/pointer";
 import { isMenuKey, openRowMenu } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
-import { sameRef, sanitizedRefName } from "@/lib/git/refs";
+import { branchTracking, sameRef, sanitizedRefName } from "@/lib/git/refs";
 import { mainBackOffer } from "@/lib/git/worktrees";
 import { folderName } from "@/lib/path";
 import { loadPinnedBranches, savePinnedBranches } from "@/lib/repo/session";
@@ -361,6 +361,20 @@ export function BranchPicker({ main, label, current, branches, worktrees, onSwit
     </ContextMenuContent>
   );
 
+  // Text, not colour: ↑2 ↓1, "local only", "upstream gone"; a screen reader hears it in words.
+  // A branch merged upstream says so in its hint, which covers its gone upstream.
+  const tracking = (b: Branch, hot: boolean) => {
+    const t = upstream(b) ? null : branchTracking(b);
+    return (
+      t && (
+        <span title={t.label} className={cn("shrink-0 text-[10.5px] tabular-nums", hot ? "opacity-80" : "text-subtle")}>
+          <span aria-hidden>{t.text}</span>
+          <span className="sr-only">{t.label}</span>
+        </span>
+      )
+    );
+  };
+
   const optionRow = (o: Option, i: number) => {
     const hot = i === index;
     const row = (
@@ -423,6 +437,7 @@ export function BranchPicker({ main, label, current, branches, worktrees, onSwit
                   </RowAction>
                 )}
               </span>
+              {tracking(o.branch, hot)}
               {heldIn(o.branch) ? (
                 <Tip label={`${localName(o.branch)} is checked out in ${heldIn(o.branch)}. git keeps a branch in one worktree, so ↵ opens that one. Right-click for other ways.`}>
                   <span className={cn("max-w-40 truncate text-[10.5px]", hot ? "opacity-80" : "text-subtle")}>{heldHint(o.branch)}</span>
