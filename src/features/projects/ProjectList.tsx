@@ -48,7 +48,10 @@ function useProjectInfo(paths: string[]) {
  */
 export function ProjectList({ recent, current, away, onOpen, onForget, onReorder, onLocate, onTerminal }: ProjectListProps) {
   const info = useProjectInfo(recent);
-  const tabStop = current && recent.includes(current) ? current : recent[0];
+  // Folders that are gone sink below the rest, each group in the user's own order.
+  const gone = (p: string) => info.get(p)?.exists === false;
+  const shown = [...recent.filter((p) => !gone(p)), ...recent.filter(gone)];
+  const tabStop = current && shown.includes(current) ? current : shown[0];
 
   const onKey = (e: React.KeyboardEvent) => {
     const row = e.target instanceof HTMLElement && e.target.dataset.project !== undefined ? e.target : null;
@@ -76,8 +79,8 @@ export function ProjectList({ recent, current, away, onOpen, onForget, onReorder
 
   return (
     <div data-project-list onKeyDown={onKey}>
-      <SortableList ids={recent} axis="y" onMove={(from, to) => onReorder(arrayMove(recent, from, to))}>
-        {recent.map((p, i) => (
+      <SortableList ids={shown} axis="y" onMove={(from, to) => onReorder(arrayMove(shown, from, to))}>
+        {shown.map((p, i) => (
           <ProjectRow
             key={p}
             path={p}
