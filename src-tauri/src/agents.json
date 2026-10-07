@@ -1,7 +1,7 @@
 [
   {
     "name": "Claude Code",
-    "note": "2.1.287, native (argv[0] \"claude\"). ~/.claude/sessions/<pid>.json holds sessionId and status (busy|shell|waiting|idle), rewritten as they change. An npm install runs `node …/cli.js` and sets process.title, which overwrites its argv: its flags read as empty and aren't kept. Past conversations: ~/.claude/projects/<its folder's path, every char but [A-Za-z0-9] a \"-\">/<sessionId>.jsonl, one JSON record a line (conversations.rs).",
+    "note": "2.1.287, native (argv[0] \"claude\"). ~/.claude/sessions/<pid>.json holds sessionId and status (busy|shell|waiting|idle), rewritten as they change; shell is idle with a background shell still running (a dev server), which wakes it when it exits. An npm install runs `node …/cli.js` and sets process.title, which overwrites its argv: its flags read as empty and aren't kept. Past conversations: ~/.claude/projects/<its folder's path, every char but [A-Za-z0-9] a \"-\">/<sessionId>.jsonl, one JSON record a line (conversations.rs).",
     "programs": ["claude"],
     "scripts": ["@anthropic-ai/claude-code/cli.js"],
     "session": {
@@ -9,7 +9,7 @@
       "path": "~/.claude/sessions/{pid}.json",
       "id": "sessionId",
       "uuid": true,
-      "status": { "field": "status", "working": ["busy", "shell"], "waiting": ["waiting"], "idle": ["idle"] }
+      "status": { "field": "status", "working": ["busy"], "waiting": ["waiting"], "idle": ["idle", "shell"] }
     },
     "resume": ["claude", "--resume", "{id}", "{flags}"],
     "history": { "kind": "claudeProjects", "dir": "~/.claude/projects" },

@@ -903,6 +903,8 @@ mod tests {
         };
         assert_eq!(s.state("busy"), Some("working"));
         assert_eq!(s.state("idle"), Some("idle"));
+        // Its turn over, a background shell left running: done until that wakes it.
+        assert_eq!(s.state("shell"), Some("idle"));
         assert_eq!(s.state("compacting"), None);
     }
 
