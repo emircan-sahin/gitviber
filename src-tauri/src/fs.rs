@@ -417,7 +417,12 @@ pub fn trash_copy(root: &Path, rel: &str, name: &str) -> Result<PathBuf, String>
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let src = resolve_entry(root, rel)?;
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("gitviber-{}-{n}", std::process::id()));
+    // Under test the copy stays for `put_back`: beside the repo, in the sandbox that removes it.
+    let tmp = match root.parent() {
+        Some(sandbox) if cfg!(test) => sandbox.to_path_buf(),
+        _ => std::env::temp_dir(),
+    };
+    let dir = tmp.join(format!("gitviber-{}-{n}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let copy = dir.join(name);
     let trashed = copy_entry(&src, &copy).and_then(|()| stash(&copy));
