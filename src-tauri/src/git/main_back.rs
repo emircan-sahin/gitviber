@@ -7,6 +7,11 @@ use super::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::Mutex;
+
+/// One move or undo at a time: a second run that lost index.lock to the first put both folders
+/// "back", undoing the move that had gone through (a double click, or both windows).
+static MOVING: Mutex<()> = Mutex::new(());
 
 /// Who held what: what a move changed, and what Undo needs to put back.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -129,6 +134,7 @@ pub fn main_back_plan(repo: &Path, branch: &str) -> Result<MainBack, String> {
 /// Detaches the worktree holding `branch` at its tip (its files stay as they are), then switches
 /// the main folder to it. If the switch fails, the other folder gets its branch back.
 pub fn move_main_back(repo: &Path, branch: &str) -> Result<MainBack, String> {
+    let _one = MOVING.lock().unwrap_or_else(|e| e.into_inner());
     let plan = main_back_plan(repo, branch)?;
     let (main, holder) = (Path::new(&plan.main), Path::new(&plan.holder));
     let moved = run(holder, &["switch", "--detach"]).and_then(|_| run(main, &["switch", branch]));
@@ -144,6 +150,7 @@ pub fn move_main_back(repo: &Path, branch: &str) -> Result<MainBack, String> {
 /// The reverse of `move_main_back`, while nothing has moved on: the main folder is still on the
 /// branch, the other one still detached at its tip.
 pub fn undo_main_back(repo: &Path, plan: &MainBack) -> Result<(), String> {
+    let _one = MOVING.lock().unwrap_or_else(|e| e.into_inner());
     validate_branch(repo, &plan.branch)?;
     validate_branch(repo, &plan.main_branch)?;
     let list = worktrees(repo)?;
