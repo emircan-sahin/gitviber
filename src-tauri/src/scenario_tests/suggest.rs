@@ -138,13 +138,15 @@ fn cancelling_a_suggestion_stops_the_command_and_its_children() {
 
 #[test]
 fn guide_gets_a_commit_or_the_branch_and_names_the_range() {
-    use crate::suggest::{self, Target};
+    use crate::suggest::{self, Agent, Target};
     use std::sync::atomic::AtomicBool;
     let sb = Sandbox::new("suggest-guide");
     let r = sb.path("r");
     init(&r);
-    let go =
-        |target: Target| suggest::run_guide(&r, "cat", "PROMPT", &target, &AtomicBool::new(false));
+    let go = |target: Target| {
+        let none = Agent::default();
+        suggest::run_guide(&r, "cat", "PROMPT", &target, &none, &AtomicBool::new(false))
+    };
     let sha = |rev: &str| {
         run_text(&r, &["rev-parse", rev])
             .unwrap()
@@ -156,8 +158,10 @@ fn guide_gets_a_commit_or_the_branch_and_names_the_range() {
     let root = sha("HEAD");
     let g = go(Target::Commit { sha: root.clone() }).unwrap();
     assert!(
-        g.text
-            .starts_with("PROMPT\n\nThe commit's message:\nAdd a\n\nWhy it's here.\n\n"),
+        g.text.starts_with("PROMPT\n\nBelow are the commit's message")
+            && g.text.contains(
+                "\n\nThe commit's message:\nAdd a\n\nWhy it's here.\n\nChanged files (1):\nA +1 -0 a.txt\n\n"
+            ),
         "{}",
         g.text
     );
@@ -183,7 +187,7 @@ fn guide_gets_a_commit_or_the_branch_and_names_the_range() {
     .unwrap();
     assert!(
         g.text
-            .starts_with("PROMPT\n\nCommits, oldest first:\n- Add b\n- Change a\n\n"),
+            .contains("\n\nCommits, oldest first:\n- Add b\n- Change a\n\nChanged files (2):\n"),
         "{}",
         g.text
     );

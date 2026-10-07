@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { network } from "./network";
-import type { About, Blame, Branch, BranchTracking, CleanUp, CleanedUp, Commit, CommitDetails, CommitOptions, Comparison, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, Guided, GuideTarget, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, MainBack, MergeCheck, NetOp, NotifyPermission, OpenInApp, Opened, OpenedRepo, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, StackedBranches, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
+import type { About, Blame, Branch, BranchTracking, CleanUp, CleanedUp, Commit, CommitDetails, CommitOptions, Comparison, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, GuideAgent, Guided, GuideTarget, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, MainBack, MergeCheck, NetOp, NotifyPermission, OpenInApp, Opened, OpenedRepo, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, StackedBranches, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
 /** Commits per history page: every list asks for this many, and a full page means there may be more. */
 export const LOG_PAGE = 200;
@@ -214,7 +214,7 @@ export const api = {
   /** The same for a pull request from HEAD into `base` (refs/remotes/…): its commits, PR template and diff. */
   suggestPull: (command: string, prompt: string, base: string) => invoke<string>("suggest_pull", { command, prompt, base }),
   /** The same for a guided review of `target` (only what's committed), with the range it read. */
-  suggestGuide: (command: string, prompt: string, target: GuideTarget) => invoke<Guided>("suggest_guide", { command, prompt, target }),
+  suggestGuide: (command: string, prompt: string, target: GuideTarget, agent: GuideAgent) => invoke<Guided>("suggest_guide", { command, prompt, target, agent }),
   /** Stops the run of `kind`, leaving the others. */
   suggestCancel: (kind: SuggestKind) => invoke<void>("suggest_cancel", { kind }),
   /** Signature status and trailers of one commit (verifying runs gpg/ssh, so one at a time). */

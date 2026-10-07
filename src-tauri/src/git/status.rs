@@ -105,7 +105,7 @@ pub struct RepoStatus {
     pub prepared_message: Option<String>,
 }
 
-pub(super) fn change(path: &str, old_path: Option<&str>, status: char) -> FileChange {
+pub(crate) fn change(path: &str, old_path: Option<&str>, status: char) -> FileChange {
     FileChange {
         path: path.to_string(),
         old_path: old_path.map(str::to_string),

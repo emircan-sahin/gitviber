@@ -3,6 +3,9 @@
 //! GitViber itself sends nothing anywhere: it runs the command the user picked, in the repo,
 //! with the prompt and the diff on stdin. Where that goes is up to the command.
 
+mod manifest;
+
+use crate::scratch::ScratchDir;
 use crate::{git, process};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -17,7 +20,13 @@ use std::time::{Duration, Instant};
 pub const MAX_DIFF: usize = 100 * 1024;
 const TIMEOUT: Duration = Duration::from_secs(90);
 /// A guide is a much longer answer than a commit message: a section per part of the change.
+/// An agent reading a big change's patch file takes longer: a second more per 4 KB of it, up to
+/// MAX_GUIDE_TIMEOUT.
 const GUIDE_TIMEOUT: Duration = Duration::from_secs(300);
+const MAX_GUIDE_TIMEOUT: Duration = Duration::from_secs(600);
+/// What a guide's prompt gets of the change, its file list included: about 100k tokens, room
+/// in any current model's context for the answer and for what an agent reads besides.
+pub const MAX_GUIDE_INPUT: usize = 400 * 1024;
 /// A pull request's commit subjects past this many go: the newest are kept, and room for the diff.
 const MAX_SUBJECTS: usize = 200;
 /// The file list kept whole past MAX_DIFF, when it alone is: about 3,000 files.
@@ -197,6 +206,13 @@ fn range_input(
     to: &str,
     extra: &str,
 ) -> Result<(String, Option<&'static str>), String> {
+    let mut text = format!("{}\n\n{extra}", subjects(repo, from, to)?);
+    text.push_str(&git_diff(repo, &[&format!("{from}...{to}"), "--"])?);
+    Ok(cut(text))
+}
+
+/// The subjects of the commits `to` has over `from`, oldest first, under a heading.
+fn subjects(repo: &Path, from: &str, to: &str) -> Result<String, String> {
     let range = format!("{from}..{to}");
     // One past the cap, to tell a branch of exactly MAX_SUBJECTS from a longer one.
     let n = format!("-n{}", MAX_SUBJECTS + 1);
@@ -214,9 +230,7 @@ fn range_input(
     } else {
         "Commits, oldest first:".to_string()
     };
-    let mut text = format!("{heading}\n{}\n\n{extra}", subjects.join("\n"));
-    text.push_str(&git_diff(repo, &[&format!("{from}...{to}"), "--"])?);
-    Ok(cut(text))
+    Ok(format!("{heading}\n{}", subjects.join("\n")))
 }
 
 /// What a guided review is of: a commit, or HEAD's branch since it left `base` (a full ref).
@@ -236,33 +250,115 @@ pub struct Guided {
     pub head: String,
 }
 
-/// What `target` gets, as (base, head, input, what of a cut input is whole): a commit's message
-/// and diff, or the branch's commits and diff (only what's committed, so `base..head` names it).
-type GuideInput = (String, String, String, Option<&'static str>);
+/// What a guide's agent gets besides its command line: arguments to add as they are (the
+/// guide's JSON schema), and the CLI to let read the patch file outside the repository.
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Agent {
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub reads: Option<Reads>,
+}
 
-fn guide_input(repo: &Path, target: &Target) -> Result<GuideInput, String> {
+/// CLIs that read only inside the repository until told of another folder: Claude Code (its
+/// working directories) and opencode (`external_directory`, which `opencode run` rejects).
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum Reads {
+    Claude,
+    Opencode,
+}
+
+/// What `target` covers, as (base, head, the commit's message or the branch's subjects, the
+/// base's and head's object ids): a commit from its first parent (or the empty tree), or the
+/// branch's commits since it left `base` (only what's committed, so `base..head` names it).
+fn guide_range(
+    repo: &Path,
+    target: &Target,
+) -> Result<(String, String, String, String, String), String> {
+    let oid = |rev: &str| {
+        git::run_text(repo, &["rev-parse", "--verify", "-q", rev]).map(|s| s.trim().to_string())
+    };
     match target {
         Target::Commit { sha } => {
             git::validate_rev(sha)?;
             let base = git::parent_or_empty(repo, sha)?;
             let message = git::run_text(repo, &["log", "-1", "--format=%B", sha, "--"])?;
-            let diff = git_diff(repo, &[&base, sha, "--"])?;
-            let (text, whole) = cut(format!(
-                "The commit's message:\n{}\n\n{diff}",
-                message.trim_end()
-            ));
-            Ok((base, sha.clone(), text, whole))
+            let header = format!("The commit's message:\n{}", message.trim_end());
+            let (from, to) = (oid(&base)?, oid(sha)?);
+            Ok((base, sha.clone(), header, from, to))
         }
         Target::Branch { base } => {
-            let head = git::run_text(repo, &["rev-parse", "--verify", "-q", "HEAD"])
-                .map_err(|_| "There are no commits yet.".to_string())?
-                .trim()
-                .to_string();
+            let head = oid("HEAD").map_err(|_| "There are no commits yet.".to_string())?;
             let from = git::parted(repo, &head, base)?;
-            let (text, whole) = range_input(repo, &from, &head, "")?;
-            Ok((from, head, text, whole))
+            let header = subjects(repo, &from, &head)?;
+            Ok((from.clone(), head.clone(), header, from, head))
         }
     }
+}
+
+/// The prompt's input for a guide: the header, the list of changed files, and the diffs that fit;
+/// with the note for the prompt and, when some diff isn't inline, the whole patch to put in a file.
+struct GuideInput {
+    base: String,
+    head: String,
+    text: String,
+    note: String,
+    patch: Option<String>,
+    timeout: Duration,
+}
+
+/// `PATCH` stands for the patch file's path in `note`, unknown until it's written.
+const PATCH: &str = "{patch}";
+
+fn guide_input(repo: &Path, target: &Target) -> Result<GuideInput, String> {
+    let (base, head, header, from, to) = guide_range(repo, target)?;
+    let files = git::range_files(repo, &from, &to)?;
+    let diff = ["-c", "core.quotePath=false", "diff"];
+    let patch = git::run_text(repo, &[&diff[..], &DIFF_OPTS, &[&from, &to, "--"]].concat())?;
+    let m = manifest::build(&files, &patch, MAX_GUIDE_INPUT.saturating_sub(header.len()));
+    let mut note = "Below are the commit's message or the branch's commits, then a list of every changed file, a line each: its status letter, lines added and removed, its path (after \"←\", the path it was renamed from), tags, and after \"@@\" the functions or sections its changes are in".to_string();
+    note.push_str(if m.prefix {
+        "; then the start of the patch, cut at a line's end."
+    } else if m.file_only > 0 {
+        "; then the whole diffs of the files not tagged [file only], [generated] or [binary] (binary files have none)."
+    } else {
+        "; then every file's whole diff, except for [generated] and [binary] files."
+    });
+    if m.listed < files.len() {
+        note.push_str(&format!(
+            " The list stops after {} of the {} files, at {} KB.",
+            m.listed,
+            files.len(),
+            manifest::MAX_LIST / 1024
+        ));
+    }
+    let generated = files
+        .iter()
+        .any(|f| f.additions.is_some() && manifest::is_generated(&f.path));
+    let patch = (m.prefix || m.file_only > 0 || generated).then(|| {
+        note.push_str(&format!(
+            " The whole patch, `git diff {from} {to}` ({} KB), is in the file {PATCH}. If you can read files, read the diffs you need from it and open the repository's files for context, but never modify anything. If you can't, work from the list and the diffs here.",
+            patch.len().div_ceil(1024)
+        ));
+        patch
+    });
+    let extra = Duration::from_secs((m.reading / 4096) as u64);
+    let text = format!(
+        "{header}\n\nChanged files ({}):\n{}\n\n{}",
+        files.len(),
+        m.list,
+        m.inline
+    );
+    Ok(GuideInput {
+        base,
+        head,
+        text,
+        note,
+        patch,
+        timeout: (GUIDE_TIMEOUT + extra).min(MAX_GUIDE_TIMEOUT),
+    })
 }
 
 /// The PR template GitHub would use from `base`: in .github/, the root or docs/, any case.
@@ -322,7 +418,16 @@ pub fn run(
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let (diff, whole) = diff(repo, scope)?;
-    ask(repo, template, prompt, &diff, whole, TIMEOUT, cancel)
+    ask(
+        repo,
+        template,
+        prompt,
+        &diff,
+        whole,
+        TIMEOUT,
+        cancel,
+        &Extra::default(),
+    )
 }
 
 /// A pull request's title and description, for HEAD into `base`: see `ask`.
@@ -334,7 +439,16 @@ pub fn run_pull(
     cancel: &AtomicBool,
 ) -> Result<String, String> {
     let (input, whole) = pull_input(repo, base)?;
-    ask(repo, template, prompt, &input, whole, TIMEOUT, cancel)
+    ask(
+        repo,
+        template,
+        prompt,
+        &input,
+        whole,
+        TIMEOUT,
+        cancel,
+        &Extra::default(),
+    )
 }
 
 /// A guided review of `target`: see `ask`.
@@ -343,16 +457,93 @@ pub fn run_guide(
     template: &str,
     prompt: &str,
     target: &Target,
+    agent: &Agent,
     cancel: &AtomicBool,
 ) -> Result<Guided, String> {
-    let (base, head, input, whole) = guide_input(repo, target)?;
-    let text = ask(repo, template, prompt, &input, whole, GUIDE_TIMEOUT, cancel)?;
-    Ok(Guided { text, base, head })
+    guide_within(repo, template, prompt, target, agent, cancel, None)
+}
+
+/// `run_guide`, stopped after `timeout` instead of the one the change's size gives.
+pub(crate) fn guide_within(
+    repo: &Path,
+    template: &str,
+    prompt: &str,
+    target: &Target,
+    agent: &Agent,
+    cancel: &AtomicBool,
+    timeout: Option<Duration>,
+) -> Result<Guided, String> {
+    let input = guide_input(repo, target)?;
+    let mut extra = Extra {
+        args: agent.args.clone(),
+        env: vec![],
+    };
+    // Removed with the patch in it however the run ends: answered, failed, cancelled or timed out.
+    let mut scratch = None;
+    let mut note = input.note;
+    if let Some(patch) = &input.patch {
+        let dir = ScratchDir::new("guide")?;
+        // As the agent's tools resolve it: /var is a link to /private/var on macOS.
+        let path = dir.path().canonicalize().map_err(|e| e.to_string())?;
+        let file = path.join("changes.patch");
+        write_private(&file, patch)?;
+        let shown = file.to_string_lossy();
+        note = note.replace(PATCH, &format!("`{shown}`"));
+        match agent.reads {
+            Some(Reads::Claude) => extra
+                .args
+                .push(format!("--add-dir={}", path.to_string_lossy())),
+            Some(Reads::Opencode) => extra.env.push((
+                "OPENCODE_PERMISSION",
+                serde_json::json!({ "external_directory": { format!("{}/*", path.to_string_lossy()): "allow" } }).to_string(),
+            )),
+            None => {}
+        }
+        scratch = Some(dir);
+    }
+    let prompt = format!("{prompt}\n\n{note}");
+    let timeout = timeout.unwrap_or(input.timeout);
+    let text = ask(
+        repo,
+        template,
+        &prompt,
+        &input.text,
+        None,
+        timeout,
+        cancel,
+        &extra,
+    );
+    drop(scratch);
+    Ok(Guided {
+        text: text?,
+        base: input.base,
+        head: input.head,
+    })
+}
+
+/// `text` in a new file at `path` only the user can read.
+fn write_private(path: &Path, text: &str) -> Result<(), String> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options
+        .open(path)
+        .and_then(|mut f| f.write_all(text.as_bytes()))
+        .map_err(|e| format!("Couldn't write the patch for the agent: {e}"))
+}
+
+/// What a run adds to its template: arguments after the template's own, and environment.
+#[derive(Default)]
+struct Extra {
+    args: Vec<String>,
+    env: Vec<(&'static str, String)>,
 }
 
 /// Runs the template with the prompt and the diff, returning what it printed; `cut`: the diff
 /// was cut, and what of it is whole. Stops on `cancel` or after `timeout`, killing the command
 /// and anything it started.
+#[allow(clippy::too_many_arguments)]
 fn ask(
     repo: &Path,
     template: &str,
@@ -361,6 +552,7 @@ fn ask(
     cut: Option<&str>,
     timeout: Duration,
     cancel: &AtomicBool,
+    extra: &Extra,
 ) -> Result<String, String> {
     let prompt = match cut {
         Some(whole) => format!(
@@ -373,6 +565,8 @@ fn ask(
     let program = expand_home(&argv[0]);
     let mut cmd = Command::new(&program);
     cmd.args(&argv[1..])
+        .args(&extra.args)
+        .envs(extra.env.iter().map(|(k, v)| (k, v)))
         .current_dir(repo)
         // The same PATH git runs with; a Finder-launched app's own is bare.
         .env("PATH", process::search_path())

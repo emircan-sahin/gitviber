@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { commandLine, effortArg, effortLevels, effortOf, parseSuggestion, programOf, runDetails, type SuggestPreset } from "./suggest.ts";
 
-const LEAN = "--strict-mcp-config --no-session-persistence --disable-slash-commands --tools Read,Grep,Glob";
+const LEAN = '--strict-mcp-config --no-session-persistence --disable-slash-commands --tools ""';
 
 test("summary and body", () => {
   assert.deepEqual(parseSuggestion("Fix the thing\n\nIt was broken.\nNow it isn't.\n"), { summary: "Fix the thing", body: "It was broken.\nNow it isn't." });
@@ -41,6 +41,9 @@ test("a preset runs with its model and effort", () => {
   // Medium until another is picked; Claude Code's runs are lean.
   assert.equal(commandLine(" claude -p ", {}, {}), `claude -p ${LEAN} --model claude-sonnet-5 --effort medium`);
   assert.equal(commandLine("claude -p", {}, { claude: "high" }), `claude -p ${LEAN} --model claude-sonnet-5 --effort high`);
+  // A guided review reads the patch file, and nothing else needs a tool.
+  assert.equal(commandLine("claude -p", {}, {}, true), `claude -p ${LEAN.replace('""', "Read,Grep,Glob")} --model claude-sonnet-5 --effort medium`);
+  assert.equal(commandLine("codex exec", {}, {}, true), commandLine("codex exec", {}, {}));
   assert.equal(commandLine("codex exec", { codex: "gpt-x" }, { codex: "high" }), "codex exec -m gpt-x -c model_reasoning_effort=high");
   assert.equal(commandLine("codex exec", {}, {}), "codex exec -m gpt-6-luna -c model_reasoning_effort=medium");
   // Empty leaves the model or the effort to the CLI; a custom command carries its own.

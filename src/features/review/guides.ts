@@ -1,9 +1,9 @@
 import { useMemo } from "react";
-import { api, errorMessage, type Guided, type GuideTarget, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
+import { api, errorMessage, type GuideAgent, type Guided, type GuideTarget, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
-import { commandLine, programOf, runDetails } from "@/lib/git/suggest";
+import { commandLine, presetOf, programOf, runDetails } from "@/lib/git/suggest";
 import { type GuideSelection, type Selection, selectionPath } from "@/lib/repo/selection";
-import { GUIDE_PROMPT } from "@/lib/review/guide";
+import { GUIDE_PROMPT, GUIDE_SCHEMA } from "@/lib/review/guide";
 import { getSettings } from "@/lib/settings";
 import { isRecord, putRecent, readJson } from "@/lib/storage";
 import { createStore } from "@/lib/store";
@@ -37,6 +37,17 @@ const isSaved = (v: unknown): v is SavedGuide =>
 
 /** Where a guide is kept: per worktree, then per commit, or per branch (`branch`: HEAD's, null detached) and base. */
 export const guideId = (root: string, sel: GuideSelection, branch: string | null) => (sel.of === "commit" ? `${root}\0${sel.commit.sha}` : `${root}\0${branch ?? "HEAD"}\0${sel.base}`);
+
+/**
+ * Claude Code checks its answer against the guide's schema; it and opencode are let read the patch
+ * file. Others get the shape in the prompt: codex exec's --output-schema takes a file and OpenAI's
+ * strict mode, which wants every field required, so it isn't used.
+ */
+function guideAgent(command: string): GuideAgent {
+  const preset = presetOf(command);
+  if (preset === "claude") return { args: ["--json-schema", JSON.stringify(GUIDE_SCHEMA)], reads: "claude" };
+  return { args: [], reads: preset === "opencode" ? "opencode" : null };
+}
 
 const guideTarget = (sel: GuideSelection): GuideTarget => (sel.of === "commit" ? { of: "commit", sha: sel.commit.sha } : { of: "branch", base: sel.base });
 
@@ -90,7 +101,7 @@ export function useGuide(id: string) {
 export async function generateGuide(id: string, sel: GuideSelection) {
   const { suggestCommand, suggestModels, suggestEfforts } = getSettings();
   const program = programOf(suggestCommand);
-  const line = commandLine(suggestCommand, suggestModels, suggestEfforts);
+  const line = commandLine(suggestCommand, suggestModels, suggestEfforts, true);
   const token = {};
   latest.set(id, token);
   const set = (run: Run | null) => latest.get(id) === token && setRun(id, run);
@@ -103,7 +114,7 @@ export async function generateGuide(id: string, sel: GuideSelection) {
   active = { sel, token };
   set("running");
   try {
-    const guided = await api.suggestGuide(line, GUIDE_PROMPT, guideTarget(sel));
+    const guided = await api.suggestGuide(line, GUIDE_PROMPT, guideTarget(sel), guideAgent(suggestCommand));
     if (!guided.text.trim()) fail("No guided review written", `${program} printed nothing.`);
     else if (latest.get(id) === token) {
       save(id, { ...guided, program, details: runDetails(line), at: Date.now(), done: [] });

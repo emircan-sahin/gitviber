@@ -8,7 +8,8 @@
  * and links `models`, a list of current ones. `effort` is the reasoning effort flag and its levels
  * (from each CLI's --help) with the level a preset runs at until the user picks one (CLI default
  * passes none); null where the CLI has no general one. `lean`: flags every run gets, for a faster
- * start. `other` ones sit under Others. Each reads the prompt and the diff from stdin (tried by hand);
+ * start, with the tools it may use (`tools`: for a guided review, which reads a patch file; `none`:
+ * for the rest). `other` ones sit under Others. Each reads the prompt and the diff from stdin (tried by hand);
  * Gemini CLI (individual sign-in retired), Copilot CLI (ignores stdin) and Ollama (pulls a
  * mistyped model unasked) are left to Custom.
  */
@@ -22,7 +23,7 @@ export const SUGGEST_PRESETS = {
     effort: { flag: "--effort", levels: ["low", "medium", "high", "xhigh", "max"], default: "medium" },
     // Measured on a 5-line commit: 50 s and 6 turns with the user's MCP servers, skills and xhigh
     // effort; 8 s and 1 turn with these and medium. Read is all a guided review needs.
-    lean: "--strict-mcp-config --no-session-persistence --disable-slash-commands --tools Read,Grep,Glob",
+    lean: { flags: "--strict-mcp-config --no-session-persistence --disable-slash-commands", tools: "--tools Read,Grep,Glob", none: '--tools ""' },
     other: false,
   },
   codex: {
@@ -85,8 +86,11 @@ export const effortOf = (preset: SuggestPreset, efforts: Partial<Record<SuggestP
   return effort ? (efforts[preset] ?? effort.default) : "";
 };
 
-/** The flags a preset adds to every run; "" for none. */
-export const leanFlags = (preset: SuggestPreset): string => ("lean" in SUGGEST_PRESETS[preset] ? (SUGGEST_PRESETS[preset] as { lean: string }).lean : "");
+/** The flags a preset adds to every run (`reads`: a guided review's, which may read files); "" for none. */
+export function leanFlags(preset: SuggestPreset, reads: boolean) {
+  const p = SUGGEST_PRESETS[preset];
+  return "lean" in p ? `${p.lean.flags} ${reads ? p.lean.tools : p.lean.none}` : "";
+}
 
 /** `--effort high`, or `-c model_reasoning_effort=high` for a flag that takes its value joined. */
 export function effortArg(preset: SuggestPreset, level: string) {
@@ -94,13 +98,13 @@ export function effortArg(preset: SuggestPreset, level: string) {
   return flag.endsWith("=") ? flag + level : `${flag} ${level}`;
 }
 
-/** The command as run: a preset's with its lean, model and effort flags; a custom one carries its own. */
-export function commandLine(command: string, models: Partial<Record<SuggestPreset, string>>, efforts: Partial<Record<SuggestPreset, string>>) {
+/** The command as run: a preset's with its lean, model and effort flags (`reads`: for a guided review); a custom one carries its own. */
+export function commandLine(command: string, models: Partial<Record<SuggestPreset, string>>, efforts: Partial<Record<SuggestPreset, string>>, reads = false) {
   const preset = presetOf(command);
   if (!preset) return command;
   const model = modelOf(preset, models);
   const effort = effortOf(preset, efforts);
-  return [command.trim(), leanFlags(preset), model && `${SUGGEST_PRESETS[preset].modelFlag} ${model}`, effort && effortArg(preset, effort)].filter(Boolean).join(" ");
+  return [command.trim(), leanFlags(preset, reads), model && `${SUGGEST_PRESETS[preset].modelFlag} ${model}`, effort && effortArg(preset, effort)].filter(Boolean).join(" ");
 }
 
 /** The model and effort a command line names, as each preset's flags (or `--model=x`) write them, for "written by claude (x, medium)". */
@@ -128,6 +132,8 @@ export const PULL_PROMPT =
 
 /** suggest.rs MAX_DIFF. */
 export const SUGGEST_LIMIT_KB = 100;
+/** suggest.rs MAX_GUIDE_INPUT. */
+export const GUIDE_LIMIT_KB = 400;
 
 /** The program a template runs, by name, for messages ("claude" from "~/.local/bin/claude -p"). */
 export const programOf = (command: string) => command.trim().split(/\s+/)[0]?.split("/").at(-1) ?? "";
