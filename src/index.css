@@ -1148,7 +1148,7 @@
   pointer-events: none;
 }
 
-/* Files dragged over the window away from the panes (lib/app/drop): a folder opens as a project, a file of the repo in the code view. */
+/* Files dragged over the window away from the panes (lib/terminal/pasteInput): they open as `gitviber <path>` opens them. */
 body.gv-drop-window::after {
   content: "";
   position: fixed;

@@ -412,6 +412,7 @@ pub fn run() {
             commands::app::quit,
             commands::app::quit_answer,
             commands::app::show_window,
+            commands::app::open_dropped,
             commands::app::update_mode,
             commands::app::take_opened,
             commands::app::install_cli,

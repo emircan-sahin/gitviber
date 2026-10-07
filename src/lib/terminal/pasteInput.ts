@@ -1,7 +1,7 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { errorMessage, pty } from "../api";
+import { api, errorMessage, pty } from "../api";
 import { ask } from "../app/ask";
-import { dropElsewhere, takesDrops } from "../app/drop";
+import { IN_SETTINGS_WINDOW } from "../app/settingsWindow";
 import { failed, toast } from "../app/toast";
 import { IS_WINDOWS } from "../platform";
 import { getSettings } from "../settings";
@@ -52,8 +52,9 @@ function pastePaths(p: Pane, paths: string[]) {
 }
 
 // Files dropped on a pane paste their paths into it (Tauri hands over the paths, the page only
-// their names). The pane under the pointer is outlined while they're dragged; away from the panes,
-// the window is, when the workspace takes them (lib/app/drop).
+// their names). The pane under the pointer is outlined while they're dragged. Away from the panes
+// the window is: they open as `gitviber <path>` opens them (opened.rs), a folder as a project and
+// a file in its repository. Not in the settings window, nor under a dialog.
 type DropTarget = Pane | "window" | null;
 let dropTarget: DropTarget = null;
 function targetAt(pos: { x: number; y: number }): DropTarget {
@@ -63,7 +64,7 @@ function targetAt(pos: { x: number; y: number }): DropTarget {
   const scale = IS_WINDOWS ? devicePixelRatio : getSettings().uiScale;
   const el = document.elementFromPoint(pos.x / scale, pos.y / scale);
   const pane = el && [...panes.values()].find((p) => p.host.contains(el));
-  return pane || (takesDrops() ? "window" : null);
+  return pane || (IN_SETTINGS_WINDOW || document.querySelector('[role="dialog"], [role="alertdialog"]') ? null : "window");
 }
 function outline(t: DropTarget, on: boolean) {
   if (t === "window") document.body.classList.toggle("gv-drop-window", on);
@@ -84,7 +85,7 @@ const dropListener = getCurrentWebview().onDragDropEvent(async ({ payload }) => 
   const t = targetAt(payload.position);
   if (payload.type !== "drop") return markDropTarget(t);
   markDropTarget(null);
-  if (t === "window") return dropElsewhere(payload.paths);
+  if (t === "window") return void api.openDropped(payload.paths).catch(failed("Could not open what was dropped"));
   if (!t) return;
   pastePaths(t, await pty.keepDropped(payload.paths).catch(() => payload.paths));
   t.term.focus();

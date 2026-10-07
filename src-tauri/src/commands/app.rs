@@ -192,6 +192,13 @@ pub fn quit(app: AppHandle) {
     app.exit(0);
 }
 
+/// Files and folders dropped on the window away from the terminal panes: opened as `gitviber
+/// <path>` opens them (lib/terminal/pasteInput).
+#[tauri::command]
+pub fn open_dropped(app: AppHandle, paths: Vec<String>) {
+    crate::opened::push(&app, paths.into_iter().map(Into::into).collect());
+}
+
 /// The page applied its theme: its window shows (lib.rs).
 #[tauri::command]
 pub fn show_window(window: tauri::WebviewWindow) {

@@ -19,7 +19,7 @@ import { openSettings, SettingsDialog } from "@/features/settings/SettingsDialog
 import { ShortcutOverlay } from "@/features/app/ShortcutOverlay";
 import { Welcome } from "@/features/projects/Welcome";
 import { Workspace } from "@/features/workspace/Workspace";
-import { api, errorMessage, type GitInfo, NOT_A_REPO, type OpenedRepo, pty } from "@/lib/api";
+import { api, errorMessage, type GitInfo, NOT_A_REPO, type OpenedRepo } from "@/lib/api";
 import { useCommands } from "@/lib/commands/keybindings";
 import { useRecentMenu } from "@/lib/commands/menu";
 import { stepUiScale } from "@/lib/settings";
@@ -30,8 +30,6 @@ import { gitFailed } from "@/lib/app/gitFailed";
 import { failed, toast } from "@/lib/app/toast";
 import { openTargetIn } from "@/lib/links/linkHost";
 import { folderName } from "@/lib/path";
-import { filesIn, takeDrops } from "@/lib/app/drop";
-import { plural } from "@/lib/format";
 import { IS_MAC } from "@/lib/platform";
 
 export function App() {
@@ -72,7 +70,7 @@ export function App() {
    * `replacing`: a saved project whose folder moved; this repo takes its place in the list. Its root
    * once open; false: it failed; undefined: nothing to do (no folder picked, or a later open took over).
    */
-  const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string): Promise<string | false | undefined> => {
+  const openRepo = useCallback(async (path?: string, quiet = false, replacing?: string, offerInit = true): Promise<string | false | undefined> => {
     const target = path ?? (await open({ directory: true, title: "Open a git repository" }));
     if (typeof target !== "string") return;
     // Before the workspace shows: its first GitHub calls go out as the project's account.
@@ -96,6 +94,10 @@ export function App() {
       if (!latest()) return;
       if (quiet) return false;
       // Cancel leaves the window as it was, with no error after it; a failed init said why itself.
+      if (e === NOT_A_REPO && !offerInit) {
+        toast("info", `${folderName(target)} isn't in a git repository`);
+        return false;
+      }
       if (e === NOT_A_REPO) return (await initAsked(target)) ? openRepo(target, quiet, replacing) : false;
       gitFailed("Could not open repository", e, { "safe-directory": [{ label: "Trust this folder", run: () => void api.trustFolder(target).then(() => openRepo(target, quiet, replacing), failed("Could not trust the folder")) }] });
       return false;
@@ -108,8 +110,10 @@ export function App() {
     for (const path of missing) toast("error", "No such file or folder", path);
     const asked = targets.at(-1);
     if (!asked) return false;
-    const root = await openRepo(asked.folder);
+    // A file's folder isn't one to make a repository of: a file dropped from the desktop would ask to.
+    const root = await openRepo(asked.folder, false, undefined, !asked.file);
     if (root && asked.file) openTargetIn(root, { path: asked.file, line: asked.line ?? undefined, column: asked.column ?? undefined });
+    if (root && targets.length > 1) toast("info", `Opened ${folderName(asked.file ?? asked.folder)}`, `The last of the ${targets.length} given: one opens at a time.`);
     return root !== false;
   }, [openRepo]);
 
@@ -161,26 +165,6 @@ export function App() {
       void unlisten?.then((stop) => stop()).catch(() => {});
     };
   }, [openAsked]);
-
-  // Dropped from Finder away from the terminal panes (lib/app/drop): a folder opens as a project, as
-  // `gitviber <folder>` does; files of the open repo open in the code view.
-  useEffect(
-    () =>
-      takeDrops(async (paths) => {
-        await booted.current;
-        const dirs = await pty.foldersLeft(paths).catch(() => []);
-        const folder = paths.filter((_, i) => dirs[i]).at(-1);
-        if (folder) return void openRepo(folder);
-        const root = shown.current;
-        if (!root) return toast("info", "Drop a folder to open it as a project");
-        const { inside, outside } = filesIn(paths, root);
-        for (const path of inside) openTargetIn(root, { path });
-        if (!outside.length) return;
-        const what = outside.length === 1 ? `${folderName(outside[0])} isn't` : `${plural(outside.length, "file")} aren't`;
-        toast("info", `${what} in this repository`, "Drop a folder to open it as a project, or a file onto a terminal to paste its path.");
-      }),
-    [openRepo],
-  );
 
   const onOpen = useCallback((p?: string) => openRepo(p), [openRepo]);
   const onReorder = useCallback((list: string[]) => {
