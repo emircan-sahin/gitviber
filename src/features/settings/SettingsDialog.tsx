@@ -30,8 +30,7 @@ export function SettingsDialog({ main }: { main: string | null }) {
   const content = useRef<HTMLDivElement>(null);
   useShareWithSettingsWindow(main);
 
-  const toWindow = () => {
-    if (!section) return;
+  const toWindow = (section: Section) => {
     setOpen(null);
     api.settingsWindow(section, true).catch(failed("Could not open the settings window"));
   };
@@ -63,7 +62,7 @@ export function SettingsDialog({ main }: { main: string | null }) {
             actions={
               <>
                 <Tip label="Open in window">
-                  <Button variant="ghost" size="icon" onClick={toWindow}>
+                  <Button variant="ghost" size="icon" onClick={() => toWindow(section)}>
                     <AppWindow />
                   </Button>
                 </Tip>

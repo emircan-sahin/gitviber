@@ -29,7 +29,7 @@ pub fn show(app: &AppHandle, section: Option<&str>, open: bool) -> Res<bool> {
     if !open {
         return Ok(false);
     }
-    let url = WebviewUrl::App(format!("index.html?settings={section}").into());
+    let url = WebviewUrl::App(format!("settings.html?settings={section}").into());
     let builder = WebviewWindowBuilder::new(app, LABEL, url)
         .title("Settings")
         .inner_size(880.0, 620.0)

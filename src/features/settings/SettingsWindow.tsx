@@ -4,36 +4,27 @@ import { useEffect, useRef, useState } from "react";
 import { Toaster } from "@/components/Toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { listenHere, runInMain, SETTINGS_WINDOW, SETTINGS_WINDOW_SECTION } from "@/lib/app/settingsWindow";
-import { mirrorUpdates, type UpdateMode, useUpdateMode, useUpdates } from "@/lib/app/updates";
-import type { UpdateState } from "@/lib/app/updateState";
 import { fromPassedKey, useCommands } from "@/lib/commands/keybindings";
 import { stepUiScale } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import type { Recording } from "./sections/Shortcuts";
 import { isSection, type Section, SettingsPanel } from "./SettingsPanel";
 
-/** What of the workspace the settings window shows: the open project, and the updater's state. */
-interface Shared {
-  main: string | null;
-  mode: UpdateMode;
-  updates: UpdateState;
-}
-const SHARED = "settings-window-shared";
+// The project the workspace has open, for the Git section; null with none.
+const MAIN = "settings-window-main";
 const ASK = "settings-window-ask";
 
 const stop = (unlisten: Promise<UnlistenFn>) => void unlisten.then((f) => f()).catch(() => {});
 
-/** In the main window: tells the settings window what it shows of the workspace, as that changes and when it asks. */
+/** In the main window: tells the settings window the open project, as it changes and when it asks. */
 export function useShareWithSettingsWindow(main: string | null) {
-  const mode = useUpdateMode();
-  const updates = useUpdates();
-  const shared = useRef<Shared>({ main, mode, updates });
+  const latest = useRef(main);
   useEffect(() => {
-    shared.current = { main, mode, updates };
-    emitTo(SETTINGS_WINDOW, SHARED, shared.current).catch(() => {});
-  }, [main, mode, updates]);
+    latest.current = main;
+    emitTo(SETTINGS_WINDOW, MAIN, main).catch(() => {});
+  }, [main]);
   useEffect(() => {
-    const unlisten = listenHere(ASK, () => void emitTo(SETTINGS_WINDOW, SHARED, shared.current).catch(() => {}));
+    const unlisten = listenHere(ASK, () => void emitTo(SETTINGS_WINDOW, MAIN, latest.current).catch(() => {}));
     return () => stop(unlisten);
   }, []);
 }
@@ -50,10 +41,7 @@ export function SettingsWindow() {
       // The menu bar's items while this window is in front (settings_window.rs): a click acts on the
       // workspace as ever; a key this page let through is nothing here.
       listenHere<string>("menu", ({ payload }) => fromPassedKey() || runInMain(payload)),
-      listenHere<Shared>(SHARED, ({ payload }) => {
-        setMain(payload.main);
-        mirrorUpdates(payload.mode, payload.updates);
-      }).then((f) => {
+      listenHere<string | null>(MAIN, ({ payload }) => setMain(payload)).then((f) => {
         emitTo("main", ASK).catch(() => {});
         return f;
       }),

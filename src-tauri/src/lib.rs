@@ -53,7 +53,7 @@ mod watch;
 use state::AppState;
 use tauri::{Emitter, Manager};
 
-/// The page shows its window once its theme is applied (main.tsx); if it never gets that far, a
+/// The page shows its window once its theme is applied (main.tsx, settings.tsx); if it never gets that far, a
 /// visible window beats one that seems not to open.
 fn show_eventually(window: tauri::WebviewWindow) {
     std::thread::spawn(move || {

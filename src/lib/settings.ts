@@ -513,16 +513,7 @@ applyScale();
 applyUiFont();
 systemDark.addEventListener("change", () => current.appearance === "system" && emit());
 
-// Each of the two windows (settingsWindow.ts) applies what the other changed and stored, as it
-// happens: a Tauri event, as the `storage` event isn't promised between two web views on every
-// platform. Applied, not passed on, so nothing echoes back.
-const CHANGED = "settings-changed";
-listenHere<Settings>(CHANGED, ({ payload }) => {
-  current = payload;
-  emit();
-}).catch(() => {});
-
-export function updateSettings(patch: Partial<Settings>) {
+function apply(patch: Partial<Settings>) {
   current = { ...current, ...patch };
   current.codeFontSize = clampCodeFont(current.codeFontSize);
   current.terminalFontSize = clampTerminalFont(current.terminalFontSize);
@@ -532,7 +523,30 @@ export function updateSettings(patch: Partial<Settings>) {
   // Settings still apply for this session when they can't be stored.
   writeJson(KEY, current);
   emit();
-  emitTo(OTHER_WINDOW, CHANGED, current).catch(() => {});
+}
+
+// Each of the two windows (settingsWindow.ts) applies and stores the other's changes as they
+// happen: a Tauri event, as the `storage` event isn't promised between two web views on every
+// platform. Only the patch goes, so changes to different settings in both at once both stay;
+// applied, not passed on. Sends can land out of order, so each setting keeps the newest.
+const CHANGED = "settings-changed";
+const heard = new Map<string, number>();
+listenHere<{ at: number; patch: Partial<Settings> }>(CHANGED, ({ payload: { at, patch } }) => {
+  const newer = Object.entries(patch).filter(([key]) => at > (heard.get(key) ?? 0));
+  newer.forEach(([key]) => heard.set(key, at));
+  if (newer.length) apply(Object.fromEntries(newer));
+})
+  // What the other window changed before this one listened is in storage by now.
+  .then(() => {
+    current = load();
+    emit();
+  })
+  .catch(() => {});
+
+export function updateSettings(patch: Partial<Settings>) {
+  apply(patch);
+  // Rises across reloads too, unlike a counter.
+  emitTo(OTHER_WINDOW, CHANGED, { at: performance.timeOrigin + performance.now(), patch }).catch(() => {});
 }
 
 /**

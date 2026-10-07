@@ -1,7 +1,7 @@
 import { emitTo, type EventCallback, listen } from "@tauri-apps/api/event";
 
 // Settings in a window of its own beside the workspace (settings_window.rs, SettingsWindow.tsx).
-// Its page is index.html?settings=<section>.
+// Its page is settings.html?settings=<section>.
 
 /** The section the settings window opened on; null in the main window. */
 export const SETTINGS_WINDOW_SECTION = new URLSearchParams(location.search).get("settings");
