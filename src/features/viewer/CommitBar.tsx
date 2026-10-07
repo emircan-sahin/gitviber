@@ -7,6 +7,7 @@ import { githubRefs, markdownLink } from "@/lib/github/markdown";
 import { repoOfCommitUrl } from "@/lib/github/permalink";
 import { openOnGitHub } from "@/lib/github/url";
 import { copyText } from "@/lib/app/clipboard";
+import { scrollSideways } from "@/lib/ui/useTabStrip";
 import { CopyLinkButton } from "@/features/github/shared/LinkMenu";
 import { SignatureBadge, TrailerChips, useCommitDetails } from "@/features/history/commitDetails";
 import { CommitChecks } from "./CommitChecks";
@@ -34,7 +35,8 @@ export function CommitBar({ commit, url, web }: { commit: import("@/lib/api").Co
   const repo = url ? repoOfCommitUrl(url) : web;
   return (
     <div className="@container shrink-0 border-b border-border bg-panel px-3 py-2">
-      <div className="flex items-center gap-2">
+      {/* Who and when don't give way to the subject: past them the row scrolls, not the whole viewer. */}
+      <div onWheel={scrollSideways} data-scrollbar="none" className="flex items-center gap-2 overflow-x-auto overflow-y-hidden">
         <GitCommitHorizontal className="size-3.5 shrink-0 text-primary" />
         <span className="truncate text-[12.5px] font-semibold select-text">
           <Refs text={commit.subject} repo={repo} />

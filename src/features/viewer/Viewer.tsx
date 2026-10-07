@@ -36,6 +36,7 @@ import { GuideView } from "@/features/review/GuideView";
 import { VaultView } from "@/features/obsidian/VaultView";
 import { diffNote, placeholderFor } from "./placeholders";
 import { FileHeaderPath, Placeholder } from "./FileHeader";
+import { scrollSideways } from "@/lib/ui/useTabStrip";
 
 interface ViewerProps {
   tabs: Tab[];
@@ -185,7 +186,8 @@ function Pane({ tab, sel, status, revision, viewed, toggleViewed, onOpen, onShow
   return (
     <>
       {sel.kind === "commit" && <CommitBar commit={sel.commit} url={sel.url} web={webUrl} />}
-      <div className="flex h-9 shrink-0 items-center gap-2 border-b border-border pr-2 pl-3">
+      {/* At the viewer's narrowest the buttons don't fit: the bar scrolls, not the whole viewer. */}
+      <div onWheel={scrollSideways} data-scrollbar="none" className="flex h-9 shrink-0 items-center gap-2 overflow-x-auto overflow-y-hidden border-b border-border pr-2 pl-3">
         <FileHeaderPath path={selectionPath(sel)} />
         {file?.oldPath && <span className="truncate text-[11.5px] text-subtle">← {file.oldPath}</span>}
         {file && <LineCounts file={file} />}

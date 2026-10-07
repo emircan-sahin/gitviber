@@ -78,7 +78,8 @@ export function SettingsDialog({ main }: { main: string | null }) {
         }}
         className="top-1/2 flex outline-none h-[min(620px,calc(100vh-64px))] w-[calc(100vw-48px)] max-w-[880px] -translate-y-1/2 overflow-hidden p-0"
       >
-        <nav className="flex w-48 shrink-0 flex-col gap-0.5 border-r border-border bg-sidebar p-2">
+        {/* At the smallest window the sections and Reset all only just fit: past that, the list scrolls. */}
+        <nav className="flex w-48 shrink-0 flex-col gap-0.5 overflow-y-auto border-r border-border bg-sidebar p-2">
           <DialogTitle className="px-2 pt-1.5 pb-2.5">Settings</DialogTitle>
           <DialogDescription className="sr-only">Appearance, keyboard shortcut, Open in, notification, update, editor, diff, terminal, Obsidian, git and commit message preferences.</DialogDescription>
           {GROUPS.map((group) => (

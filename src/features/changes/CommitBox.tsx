@@ -243,10 +243,11 @@ export function CommitBox({ status, shown, head, main, refresh }: { status: Repo
           label={blocked ?? [target, skipped && leftOut(all.skipped).toLowerCase(), hidden && `including ${files(hidden)} the filter hides`].filter(Boolean).join(", ")}
           shortcut={canCommit ? commitKey : undefined}
           disabled={!canCommit}
-          className="ml-auto flex flex-1"
+          className="ml-auto flex min-w-0 flex-1"
         >
-          <Button className="flex-1" disabled={!canCommit} onClick={() => commit()}>
-            {busy ? "Committing…" : hidden ? `${label} · ${hidden} hidden` : label}
+          {/* Truncates in a narrow panel (the filter's count makes it long); the tip has it whole. */}
+          <Button className="min-w-0 flex-1 shrink" disabled={!canCommit} onClick={() => commit()}>
+            <span className="truncate">{busy ? "Committing…" : hidden ? `${label} · ${hidden} hidden` : label}</span>
           </Button>
         </DisabledTip>
       </div>
