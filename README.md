@@ -323,7 +323,9 @@ Reopening a closed tab and closing the other tabs have no default there either, 
 | `⌘=` `⌘−` `⌘0` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too) |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |
+| `⌘G` | Focus the commit message, from anywhere |
 | `⌘↵` | Commit (in the commit message) |
+| `⌃⇧⌘T` `⌃⇧⌘P` `⌃⌘P` | Fetch, pull, push |
 | `⇧⌘R` | Reload the window, which ends every terminal |
 | `⌘O` | Open repository |
 

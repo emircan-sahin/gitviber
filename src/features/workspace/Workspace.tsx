@@ -27,6 +27,7 @@ import { cn } from "@/lib/utils";
 import { revealPath } from "@/lib/app/openIn";
 import { ChangesPanel } from "@/features/changes/ChangesPanel";
 import { ApplyPatchDialog, openApplyPatch } from "@/features/changes/ApplyPatchDialog";
+import { focusCommitMessage } from "@/features/changes/CommitBox";
 import { changeList } from "@/features/changes/changeList";
 import { changesView, ordered } from "@/features/changes/changesView";
 import { ChangesViewMenu } from "@/features/changes/ChangesViewMenu";
@@ -342,6 +343,12 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "view.toggleGitPanel": () => toggle("list", "git"),
     "view.toggleExplorer": () => toggle("files", "explorer"),
     "view.focusGitPanel": () => show("list", "git"),
+    "changes.focusMessage": () => {
+      setListTab("changes");
+      setReview(null);
+      sidebars.expand("list");
+      focusCommitMessage();
+    },
     "view.showExplorer": () => {
       setExplorerView("files");
       show("files", "explorer");

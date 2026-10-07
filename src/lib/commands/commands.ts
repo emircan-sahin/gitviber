@@ -41,6 +41,9 @@ export const COMMANDS = [
   { id: "view.toggleExplorer", title: "Toggle Explorer", category: "View", keys: ["alt+cmd+b"] },
   { id: "view.focusGitPanel", title: "Focus Git Panel", category: "View", keys: ["shift+cmd+g"] },
   { id: "view.focusCode", title: "Focus Code View", category: "View", keys: ["cmd+e"] },
+  // GitHub Desktop's Go to Commit Message. In the code view it takes ⌘G from Monaco's Find Next
+  // (↵ and F3 still go on), as ⇧⌘G does Find Previous. Elsewhere Ctrl+G is Monaco's Go to Line.
+  { id: "changes.focusMessage", title: "Focus Commit Message", category: "View", keys: ["cmd+g"], keysOther: [] },
   // The id is from when it only showed the panel; kept so a user's binding for it still applies.
   { id: "view.showExplorer", title: "Focus Explorer", category: "View", keys: ["shift+cmd+e"] },
   { id: "view.focusNextPanel", title: "Focus Next Panel", category: "View", keys: ["f6"] },
@@ -164,9 +167,11 @@ export const COMMANDS = [
   { id: "git.compareBranches", title: "Compare Branches…", category: "Git", keys: [] },
   { id: "git.switchWorktree", title: "Switch Worktree", category: "Git", keys: [] },
   { id: "git.newWorktree", title: "New Worktree", category: "Git", keys: [] },
-  { id: "git.fetch", title: "Fetch", category: "Git", keys: [] },
-  { id: "git.pull", title: "Pull", category: "Git", keys: [] },
-  { id: "git.push", title: "Push", category: "Git", keys: [] },
+  // GitHub Desktop's keys with ⌃ added: ⇧⌘T, ⇧⌘P and ⌘P reopen a tab, open the palette and a file here.
+  // Elsewhere "ctrl" is the Super key, which the OS takes: unbound there.
+  { id: "git.fetch", title: "Fetch", category: "Git", keys: ["ctrl+shift+cmd+t"], keysOther: [] },
+  { id: "git.pull", title: "Pull", category: "Git", keys: ["ctrl+shift+cmd+p"], keysOther: [] },
+  { id: "git.push", title: "Push", category: "Git", keys: ["ctrl+cmd+p"], keysOther: [] },
   // VS Code's Sync Changes: what the remote has, then what's here.
   { id: "git.sync", title: "Sync (Pull, then Push)", category: "Git", keys: [] },
   // A patch from Copy as Patch, a mail or a chat: previewed first, then applied to the working tree.
