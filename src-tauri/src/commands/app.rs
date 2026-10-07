@@ -192,6 +192,12 @@ pub fn quit(app: AppHandle) {
     app.exit(0);
 }
 
+/// The page applied its theme: its window shows (lib.rs).
+#[tauri::command]
+pub fn show_window(window: tauri::WebviewWindow) {
+    crate::show(&window);
+}
+
 /// Whether the page lets a ⌘Q go, asks about it, or keeps the app (quit.rs).
 #[tauri::command]
 pub fn quit_answer(app: AppHandle, answer: crate::quit::Answer) {

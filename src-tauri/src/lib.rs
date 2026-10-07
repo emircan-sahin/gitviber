@@ -50,19 +50,30 @@ mod trash;
 mod updates;
 mod vibrancy;
 mod watch;
+#[cfg(desktop)]
+mod window_state;
 
 use state::AppState;
 use tauri::{Emitter, Manager};
 
 /// The page shows its window once its theme is applied (main.tsx, settings.tsx); if it never gets that far, a
-/// visible window beats one that seems not to open.
+/// visible window beats one that seems not to open. Called once the window is built, hidden.
 fn show_eventually(window: tauri::WebviewWindow) {
+    #[cfg(desktop)]
+    window_state::restored(&window);
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_secs(3));
         if !window.is_visible().unwrap_or(true) {
-            let _ = window.show();
+            show(&window);
         }
     });
+}
+
+/// Shows a window its page kept hidden until the theme applied.
+fn show(window: &tauri::WebviewWindow) {
+    let _ = window.show();
+    #[cfg(desktop)]
+    window_state::shown(window);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -89,17 +100,9 @@ pub fn run() {
         .plugin(navigation::guard(dev_url))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init());
-    // Each window opens where and as large as it was left; a position on a monitor that's gone
-    // is left to the OS. Never its visibility: the page shows the window once its theme applies.
     #[cfg(desktop)]
     {
-        use tauri_plugin_window_state::StateFlags;
-        let flags = StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED;
-        builder = builder.plugin(
-            tauri_plugin_window_state::Builder::new()
-                .with_state_flags(flags)
-                .build(),
-        );
+        builder = builder.plugin(window_state::plugin());
     }
     #[cfg(desktop)]
     if updates::enabled(context.config()) {
@@ -408,6 +411,7 @@ pub fn run() {
             commands::app::folders_left,
             commands::app::quit,
             commands::app::quit_answer,
+            commands::app::show_window,
             commands::app::update_mode,
             commands::app::take_opened,
             commands::app::install_cli,

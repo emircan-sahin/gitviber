@@ -5,7 +5,7 @@ import "@fontsource-variable/geist-mono";
 import "@fontsource-variable/jetbrains-mono";
 import "./index.css";
 import { StrictMode } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { createRoot } from "react-dom/client";
 import { CrashScreen } from "./components/CrashScreen";
 import { SettingsWindow } from "./features/settings/SettingsWindow";
@@ -28,6 +28,4 @@ createRoot(document.getElementById("root")!, {
 );
 
 // Hidden until now, as the main window (main.tsx): settings.ts has applied the theme.
-getCurrentWindow()
-  .show()
-  .catch(() => {});
+invoke("show_window").catch(() => {});
