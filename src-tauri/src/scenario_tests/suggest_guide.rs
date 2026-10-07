@@ -453,7 +453,6 @@ fn the_agent_is_let_read_the_patch_folder_only_when_there_is_one() {
 /// The user's diff settings can't change the patch's shape: without a/ b/ prefixes or in an
 /// order file's order, its diffs still pair with the file list and go whole, with hunk names.
 #[test]
-#[ignore = "guide_input's `git diff` doesn't pin diff.noprefix / diff.orderFile (git::PINS)"]
 fn user_diff_settings_dont_turn_a_small_guide_into_the_patch_start() {
     let sb = Sandbox::new("guide-diff-config");
     let r = sb.path("r");

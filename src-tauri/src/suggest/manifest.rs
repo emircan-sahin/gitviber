@@ -50,11 +50,16 @@ pub fn is_generated(path: &str) -> bool {
             .any(|end| name.ends_with(end))
         || name.contains(".min.")
         || name.contains(".generated.")
+        // A top-level dist/ or vendor/ is build output or third-party code; deeper, it's as likely
+        // a part of the app named so.
+        || path
+            .split_once('/')
+            .is_some_and(|(top, _)| matches!(top, "dist" | "vendor"))
         || path
             .split('/')
             .rev()
             .skip(1)
-            .any(|dir| matches!(dir, "dist" | "__snapshots__" | "node_modules" | "vendor"))
+            .any(|dir| matches!(dir, "__snapshots__" | "node_modules"))
 }
 
 /// Where each file's diff starts in `patch`: at each "diff --git" line.
@@ -429,7 +434,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "a `vendor` or `dist` folder anywhere in the path tags hand-written app code [generated]"]
     fn app_code_in_a_vendor_or_dist_folder_is_not_generated() {
         for p in [
             "src/pages/vendor/Profile.tsx",

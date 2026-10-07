@@ -101,11 +101,17 @@ impl Suggester {
     }
 }
 
-/// `git diff` as sent, file list first: paths unquoted, as the app's own file lists have them,
-/// so the names the model writes back match.
+/// `git diff` as sent: paths unquoted, as the app's own file lists have them, so the names the
+/// model writes back match; none of the user's diff settings (PINS, an order file) shaping it,
+/// so a guide's diffs line up with its file list.
+fn pinned_diff(repo: &Path, args: &[&str]) -> Result<String, String> {
+    let diff = ["-c", "core.quotePath=false", "diff", "-O/dev/null"];
+    git::run_text(repo, &[&git::PINS[..], &diff, &DIFF_OPTS, args].concat())
+}
+
+/// `pinned_diff` with the file list first.
 fn git_diff(repo: &Path, args: &[&str]) -> Result<String, String> {
-    let diff = ["-c", "core.quotePath=false", "diff"];
-    git::run_text(repo, &[&diff[..], &DIFF_OPTS, &WITH_STAT, args].concat())
+    pinned_diff(repo, &[&WITH_STAT[..], args].concat())
 }
 
 /// The diff to describe, cut as `cut` does.
@@ -270,13 +276,20 @@ pub enum Reads {
     Opencode,
 }
 
-/// What `target` covers, as (base, head, the commit's message or the branch's subjects, the
-/// base's and head's object ids): a commit from its first parent (or the empty tree), or the
-/// branch's commits since it left `base` (only what's committed, so `base..head` names it).
-fn guide_range(
-    repo: &Path,
-    target: &Target,
-) -> Result<(String, String, String, String, String), String> {
+/// What a guide covers: a commit from its first parent (or the empty tree), or the branch's
+/// commits since it left its base (only what's committed, so `base..head` names it).
+struct Range {
+    /// As the view reads them back: a commit's `sha^`, or the merge base, and the head.
+    base: String,
+    head: String,
+    /// The commit's message, or the branch's subjects.
+    header: String,
+    /// `base` and `head` as object ids, for the diff and the note.
+    from: String,
+    to: String,
+}
+
+fn guide_range(repo: &Path, target: &Target) -> Result<Range, String> {
     let oid = |rev: &str| {
         git::run_text(repo, &["rev-parse", "--verify", "-q", rev]).map(|s| s.trim().to_string())
     };
@@ -287,13 +300,25 @@ fn guide_range(
             let message = git::run_text(repo, &["log", "-1", "--format=%B", sha, "--"])?;
             let header = format!("The commit's message:\n{}", message.trim_end());
             let (from, to) = (oid(&base)?, oid(sha)?);
-            Ok((base, sha.clone(), header, from, to))
+            Ok(Range {
+                base,
+                head: sha.clone(),
+                header,
+                from,
+                to,
+            })
         }
         Target::Branch { base } => {
             let head = oid("HEAD").map_err(|_| "There are no commits yet.".to_string())?;
             let from = git::parted(repo, &head, base)?;
             let header = subjects(repo, &from, &head)?;
-            Ok((from.clone(), head.clone(), header, from, head))
+            Ok(Range {
+                base: from.clone(),
+                head: head.clone(),
+                header,
+                from,
+                to: head,
+            })
         }
     }
 }
@@ -309,22 +334,34 @@ struct GuideInput {
     timeout: Duration,
 }
 
-/// `PATCH` stands for the patch file's path in `note`, unknown until it's written.
+/// What the prompt says of a guide's input, ahead of what its diffs are (one of the next three).
+const LIST_NOTE: &str = "Below are the commit's message or the branch's commits, then a list of every changed file, a line each: its status letter, lines added and removed, its path (after \"←\", the path it was renamed from), tags, and after \"@@\" the functions or sections its changes are in";
+const PREFIX_NOTE: &str = "; then the start of the patch, cut at a line's end.";
+const SOME_NOTE: &str = "; then the whole diffs of the files not tagged [file only], [generated] or [binary] (binary files have none).";
+const ALL_NOTE: &str = "; then every file's whole diff, except for [generated] and [binary] files.";
+/// After those when there's a patch file: its range, its size in KB and PATCH, its path.
+const PATCH_NOTE: &str = " The whole patch, `git diff {range}` ({size} KB), is in the file {patch}. If you can read files, read the diffs you need from it and open the repository's files for context, but never modify anything. If you can't, work from the list and the diffs here.";
+/// The patch file's path in the note, unknown until it's written.
 const PATCH: &str = "{patch}";
 
 fn guide_input(repo: &Path, target: &Target) -> Result<GuideInput, String> {
-    let (base, head, header, from, to) = guide_range(repo, target)?;
+    let Range {
+        base,
+        head,
+        header,
+        from,
+        to,
+    } = guide_range(repo, target)?;
     let files = git::range_files(repo, &from, &to)?;
-    let diff = ["-c", "core.quotePath=false", "diff"];
-    let patch = git::run_text(repo, &[&diff[..], &DIFF_OPTS, &[&from, &to, "--"]].concat())?;
+    let patch = pinned_diff(repo, &[&from, &to, "--"])?;
     let m = manifest::build(&files, &patch, MAX_GUIDE_INPUT.saturating_sub(header.len()));
-    let mut note = "Below are the commit's message or the branch's commits, then a list of every changed file, a line each: its status letter, lines added and removed, its path (after \"←\", the path it was renamed from), tags, and after \"@@\" the functions or sections its changes are in".to_string();
+    let mut note = LIST_NOTE.to_string();
     note.push_str(if m.prefix {
-        "; then the start of the patch, cut at a line's end."
+        PREFIX_NOTE
     } else if m.file_only > 0 {
-        "; then the whole diffs of the files not tagged [file only], [generated] or [binary] (binary files have none)."
+        SOME_NOTE
     } else {
-        "; then every file's whole diff, except for [generated] and [binary] files."
+        ALL_NOTE
     });
     if m.listed < files.len() {
         note.push_str(&format!(
@@ -338,10 +375,11 @@ fn guide_input(repo: &Path, target: &Target) -> Result<GuideInput, String> {
         .iter()
         .any(|f| f.additions.is_some() && manifest::is_generated(&f.path));
     let patch = (m.prefix || m.file_only > 0 || generated).then(|| {
-        note.push_str(&format!(
-            " The whole patch, `git diff {from} {to}` ({} KB), is in the file {PATCH}. If you can read files, read the diffs you need from it and open the repository's files for context, but never modify anything. If you can't, work from the list and the diffs here.",
-            patch.len().div_ceil(1024)
-        ));
+        note.push_str(
+            &PATCH_NOTE
+                .replace("{range}", &format!("{from} {to}"))
+                .replace("{size}", &patch.len().div_ceil(1024).to_string()),
+        );
         patch
     });
     let extra = Duration::from_secs((m.reading / 4096) as u64);
@@ -423,10 +461,8 @@ pub fn run(
         template,
         prompt,
         &diff,
-        whole,
-        TIMEOUT,
         cancel,
-        &Extra::default(),
+        &Options::new(TIMEOUT, whole),
     )
 }
 
@@ -444,10 +480,8 @@ pub fn run_pull(
         template,
         prompt,
         &input,
-        whole,
-        TIMEOUT,
         cancel,
-        &Extra::default(),
+        &Options::new(TIMEOUT, whole),
     )
 }
 
@@ -474,14 +508,17 @@ pub(crate) fn guide_within(
     timeout: Option<Duration>,
 ) -> Result<Guided, String> {
     let input = guide_input(repo, target)?;
-    let mut extra = Extra {
-        args: agent.args.clone(),
-        env: vec![],
-    };
+    let mut options = Options::new(timeout.unwrap_or(input.timeout), None);
+    options.args = agent.args.clone();
     // Removed with the patch in it however the run ends: answered, failed, cancelled or timed out.
     let mut scratch = None;
     let mut note = input.note;
     if let Some(patch) = &input.patch {
+        // A run cut short by quitting left its folder: none lasts past the longest run. On its
+        // own thread, as reading a crowded temp folder takes a while.
+        std::thread::spawn(|| {
+            crate::scratch::sweep("guide", MAX_GUIDE_TIMEOUT + Duration::from_secs(60))
+        });
         let dir = ScratchDir::new("guide")?;
         // As the agent's tools resolve it: /var is a link to /private/var on macOS.
         let path = dir.path().canonicalize().map_err(|e| e.to_string())?;
@@ -490,35 +527,45 @@ pub(crate) fn guide_within(
         let shown = file.to_string_lossy();
         note = note.replace(PATCH, &format!("`{shown}`"));
         match agent.reads {
-            Some(Reads::Claude) => extra
+            Some(Reads::Claude) => options
                 .args
                 .push(format!("--add-dir={}", path.to_string_lossy())),
-            Some(Reads::Opencode) => extra.env.push((
-                "OPENCODE_PERMISSION",
-                serde_json::json!({ "external_directory": { format!("{}/*", path.to_string_lossy()): "allow" } }).to_string(),
-            )),
+            Some(Reads::Opencode) => {
+                let own = std::env::var("OPENCODE_PERMISSION").ok();
+                let rules = opencode_reads(own.as_deref(), &path.to_string_lossy());
+                options.env.push(("OPENCODE_PERMISSION", rules));
+            }
             None => {}
         }
         scratch = Some(dir);
     }
     let prompt = format!("{prompt}\n\n{note}");
-    let timeout = timeout.unwrap_or(input.timeout);
-    let text = ask(
-        repo,
-        template,
-        &prompt,
-        &input.text,
-        None,
-        timeout,
-        cancel,
-        &extra,
-    );
+    let text = ask(repo, template, &prompt, &input.text, cancel, &options);
     drop(scratch);
     Ok(Guided {
         text: text?,
         base: input.base,
         head: input.head,
     })
+}
+
+/// opencode's permission rules (`own`: the user's OPENCODE_PERMISSION, which ours would replace)
+/// with reads under `dir` allowed: an `external_directory` of one action keeps it for the rest.
+fn opencode_reads(own: Option<&str>, dir: &str) -> String {
+    use serde_json::{json, Value};
+    let mut rules = own
+        .and_then(|o| serde_json::from_str::<Value>(o).ok())
+        .filter(Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let external = &mut rules["external_directory"];
+    if !external.is_object() {
+        *external = match external.take() {
+            Value::String(action) => json!({ "*": action }),
+            _ => json!({}),
+        };
+    }
+    external[format!("{dir}/*")] = json!("allow");
+    rules.to_string()
 }
 
 /// `text` in a new file at `path` only the user can read.
@@ -533,28 +580,38 @@ fn write_private(path: &Path, text: &str) -> Result<(), String> {
         .map_err(|e| format!("Couldn't write the patch for the agent: {e}"))
 }
 
-/// What a run adds to its template: arguments after the template's own, and environment.
-#[derive(Default)]
-struct Extra {
+/// How a run goes: stopped after `timeout`; `cut`: the diff was cut, and what of it is whole;
+/// `args` after the template's own, `env` added to its environment.
+struct Options {
+    timeout: Duration,
+    cut: Option<&'static str>,
     args: Vec<String>,
     env: Vec<(&'static str, String)>,
 }
 
-/// Runs the template with the prompt and the diff, returning what it printed; `cut`: the diff
-/// was cut, and what of it is whole. Stops on `cancel` or after `timeout`, killing the command
-/// and anything it started.
-#[allow(clippy::too_many_arguments)]
+impl Options {
+    fn new(timeout: Duration, cut: Option<&'static str>) -> Self {
+        Options {
+            timeout,
+            cut,
+            args: vec![],
+            env: vec![],
+        }
+    }
+}
+
+/// Runs the template with the prompt and the diff, returning what it printed. Stops on `cancel`
+/// or after the timeout, killing the command and anything it started.
 fn ask(
     repo: &Path,
     template: &str,
     prompt: &str,
     diff: &str,
-    cut: Option<&str>,
-    timeout: Duration,
     cancel: &AtomicBool,
-    extra: &Extra,
+    options: &Options,
 ) -> Result<String, String> {
-    let prompt = match cut {
+    let timeout = options.timeout;
+    let prompt = match options.cut {
         Some(whole) => format!(
             "{prompt}\n\nThe diff was cut off at {} KB; {whole}.",
             MAX_DIFF / 1024
@@ -565,8 +622,8 @@ fn ask(
     let program = expand_home(&argv[0]);
     let mut cmd = Command::new(&program);
     cmd.args(&argv[1..])
-        .args(&extra.args)
-        .envs(extra.env.iter().map(|(k, v)| (k, v)))
+        .args(&options.args)
+        .envs(options.env.iter().map(|(k, v)| (k, v)))
         .current_dir(repo)
         // The same PATH git runs with; a Finder-launched app's own is bare.
         .env("PATH", process::search_path())
@@ -705,6 +762,28 @@ mod tests {
         // A second of the same kind stops the first.
         s.start(Kind::Message);
         assert!(message.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn opencode_reads_keep_the_users_own_rules() {
+        use serde_json::{json, Value};
+        let read = |own: Option<&str>| {
+            serde_json::from_str::<Value>(&opencode_reads(own, "/t/g")).unwrap()
+        };
+        assert_eq!(
+            read(None),
+            json!({ "external_directory": { "/t/g/*": "allow" } })
+        );
+        assert_eq!(read(Some("not json")), read(None));
+        assert_eq!(read(Some("[1]")), read(None));
+        assert_eq!(
+            read(Some(r#"{"bash": "deny", "external_directory": "deny"}"#)),
+            json!({ "bash": "deny", "external_directory": { "*": "deny", "/t/g/*": "allow" } })
+        );
+        assert_eq!(
+            read(Some(r#"{"external_directory": {"~/src/*": "allow"}}"#)),
+            json!({ "external_directory": { "~/src/*": "allow", "/t/g/*": "allow" } })
+        );
     }
 
     #[test]
