@@ -61,3 +61,27 @@ test("no subscribers: showing the window starts nothing", () => {
   ticker.visibilityChanged();
   assert.equal(env.started, 0);
 });
+
+test("a window shown again while its timer runs ticks once and keeps the one timer", () => {
+  const { env, ticker } = fake();
+  let n = 0;
+  ticker.subscribe(() => n++);
+  ticker.visibilityChanged();
+  ticker.visibilityChanged();
+  assert.equal(n, 2);
+  assert.equal(env.timers.size, 1);
+  assert.equal(env.started, 1);
+});
+
+test("a time that leaves during a tick stops the timer once it was the last", () => {
+  const { env, ticker, fire } = fake();
+  let n = 0;
+  const off = ticker.subscribe(() => {
+    n++;
+    off();
+  });
+  fire();
+  fire();
+  assert.equal(n, 1);
+  assert.equal(env.timers.size, 0);
+});
