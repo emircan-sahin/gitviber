@@ -41,9 +41,9 @@ export const COMMANDS = [
   { id: "view.toggleExplorer", title: "Toggle Explorer", category: "View", keys: ["alt+cmd+b"] },
   { id: "view.focusGitPanel", title: "Focus Git Panel", category: "View", keys: ["shift+cmd+g"] },
   { id: "view.focusCode", title: "Focus Code View", category: "View", keys: ["cmd+e"] },
-  // GitHub Desktop's Go to Commit Message. In the code view it takes ⌘G from Monaco's Find Next
-  // (↵ and F3 still go on), as ⇧⌘G does Find Previous. Elsewhere Ctrl+G is Monaco's Go to Line.
-  { id: "changes.focusMessage", title: "Focus Commit Message", category: "View", keys: ["cmd+g"], keysOther: [] },
+  // GitHub Desktop's Go to Commit Message. Not its ⌘G, macOS's Find Next: ⌃⌘, as fetch, pull and push,
+  // which neither macOS, Monaco nor the terminal uses with C. Elsewhere ⌃ is the Super key: unbound.
+  { id: "changes.focusMessage", title: "Focus Commit Message", category: "View", keys: ["ctrl+cmd+c"], keysOther: [] },
   // The id is from when it only showed the panel; kept so a user's binding for it still applies.
   { id: "view.showExplorer", title: "Focus Explorer", category: "View", keys: ["shift+cmd+e"] },
   { id: "view.focusNextPanel", title: "Focus Next Panel", category: "View", keys: ["f6"] },
