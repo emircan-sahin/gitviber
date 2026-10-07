@@ -431,3 +431,31 @@ test("the prompt draws its shape from the schema it's checked against", () => {
   // Small enough to pass as one argument.
   assert.ok(JSON.stringify(GUIDE_SCHEMA).length < 8000);
 });
+
+test("10,000 notes on a section parse fast and keep only its own files' first 40", () => {
+  const notes = Array.from({ length: 10_000 }, (_, i) => ({ path: i % 2 ? "src/own.ts" : "src/other.ts", line: i + 1, text: `n${i}` }));
+  const sections = [
+    { title: "Own", files: ["src/own.ts"], fileNotes: notes, lineNotes: notes },
+    { title: "Other", files: ["src/other.ts"] },
+  ];
+  const start = performance.now();
+  const [own, other] = parseGuide(JSON.stringify({ title: "T", sections }))!.sections;
+  assert.ok(performance.now() - start < 500);
+  // A note on a changed file of another section isn't this section's to make.
+  assert.ok([...own.fileNotes, ...own.lineNotes].every((n) => n.path === "src/own.ts"));
+  assert.equal(own.fileNotes.length, LIMITS.notes);
+  assert.equal(own.lineNotes.length, 0);
+  assert.deepEqual([other.fileNotes, other.lineNotes], [[], []]);
+});
+
+test("line numbers past what a file can have are still whole lines; unsafe ones go", () => {
+  const lineNotes = [1e6, 2 ** 53, 1e300, "007", " 9 ", "1e3"].map((line) => ({ path: "a.ts", line, text: "x" }));
+  const [s] = parseGuide(JSON.stringify({ title: "T", sections: [{ files: ["a.ts"], lineNotes }] }))!.sections;
+  assert.deepEqual(s.lineNotes.map((n) => n.line), [1e6, 7, 9]);
+});
+
+test("a category named like an Object property reads as other", { todo: "category() uses `in`, which sees Object.prototype: CATEGORY_UI[c] is then undefined and the view throws" }, () => {
+  const sections = ["constructor", "__proto__", "toString", "hasOwnProperty"].map((category) => ({ title: category, category, files: [] }));
+  const g = parseGuide(JSON.stringify({ title: "T", sections }))!;
+  assert.deepEqual(g.sections.map((s) => s.category), ["other", "other", "other", "other"]);
+});

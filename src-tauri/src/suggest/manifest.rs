@@ -415,4 +415,28 @@ mod tests {
         assert!(m.list.len() <= MAX_LIST && m.listed < 9000);
         assert!(m.file_only >= 9000 - m.listed);
     }
+
+    #[test]
+    fn source_folders_named_like_build_output_are_not_generated() {
+        for p in [
+            "src/generated-ui/Button.tsx",
+            "src/codegen/emit.rs",
+            "web/src/minimap.ts",
+            "src/lockscreen/View.swift",
+        ] {
+            assert!(!is_generated(p), "{p}");
+        }
+    }
+
+    #[test]
+    #[ignore = "a `vendor` or `dist` folder anywhere in the path tags hand-written app code [generated]"]
+    fn app_code_in_a_vendor_or_dist_folder_is_not_generated() {
+        for p in [
+            "src/pages/vendor/Profile.tsx",
+            "app/services/vendor/payout.rb",
+            "src/features/dist/Calculator.ts",
+        ] {
+            assert!(!is_generated(p), "{p}");
+        }
+    }
 }

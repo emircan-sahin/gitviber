@@ -449,3 +449,87 @@ fn the_agent_is_let_read_the_patch_folder_only_when_there_is_one() {
     let out = go(Some(Reads::Claude), of(rev(&r, "HEAD")));
     assert!(!out.contains("--add-dir"), "{out}");
 }
+
+/// The user's diff settings can't change the patch's shape: without a/ b/ prefixes or in an
+/// order file's order, its diffs still pair with the file list and go whole, with hunk names.
+#[test]
+#[ignore = "guide_input's `git diff` doesn't pin diff.noprefix / diff.orderFile (git::PINS)"]
+fn user_diff_settings_dont_turn_a_small_guide_into_the_patch_start() {
+    let sb = Sandbox::new("guide-diff-config");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.rs", "fn alpha() {\n    1;\n}\n", "root");
+    fs::write(r.join("a.rs"), "fn alpha() {\n    2;\n}\n").unwrap();
+    fs::write(r.join("z.txt"), "zed\n").unwrap();
+    commit_all(&r, "Two files");
+    let head = rev(&r, "HEAD");
+    fs::write(sb.path("order"), "z.txt\na.rs\n").unwrap();
+    for (key, value) in [
+        ("diff.noprefix", "true".to_string()),
+        ("diff.orderFile", sb.path("order").display().to_string()),
+    ] {
+        run(&r, &["config", key, &value]).unwrap();
+        let sent = guide(&r, "cat", of(head.clone())).unwrap().text;
+        assert!(!sent.contains("the start of the patch"), "{key}: {sent}");
+        assert!(!sent.contains("is in the file"), "{key}: {sent}");
+        run(&r, &["config", "--unset", key]).unwrap();
+    }
+}
+
+/// Two guides running at once, each with a patch file: their own folders, both gone after.
+#[cfg(unix)]
+#[test]
+fn two_guides_at_once_each_have_their_own_patch_folder() {
+    let sb = Sandbox::new("guide-two-at-once");
+    let script = format!("{FIND_PATCH}sleep 1\necho \"$f\"\n");
+    let (r, agent, head) = big_commit(&sb, &script);
+    let one = {
+        let (r, agent, head) = (r.clone(), agent.clone(), head.clone());
+        std::thread::spawn(move || guide(&r, &agent, of(head)).unwrap().text)
+    };
+    let two = guide(&r, &agent, of(head)).unwrap().text;
+    let one = one.join().unwrap();
+    let (one, two) = (PathBuf::from(one.trim()), PathBuf::from(two.trim()));
+    assert!(one.ends_with("changes.patch") && two.ends_with("changes.patch"));
+    assert_ne!(one.parent(), two.parent());
+    assert!(!one.parent().unwrap().exists() && !two.parent().unwrap().exists());
+}
+
+/// Arguments reach the agent as they are: `--tools ""` from a command line is one empty
+/// argument, and a schema with spaces and quotes is one argument, never split again.
+#[cfg(unix)]
+#[test]
+fn an_empty_tools_value_and_a_quoted_schema_each_stay_one_argument() {
+    let sb = Sandbox::new("guide-argv");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "one\n", "root");
+    let agent = sb.path("agent.sh");
+    fs::write(&agent, "cat >/dev/null\nprintf '[%s]\\n' \"$@\"\n").unwrap();
+    let schema = r#"{"description": "a \"quoted\" word's value", "x": "{prompt}"}"#;
+    let out = suggest::run_guide(
+        &r,
+        &format!("sh {} --tools \"\" --model m", agent.display()),
+        "P",
+        &of(rev(&r, "HEAD")),
+        &Agent {
+            args: vec!["--json-schema".into(), schema.into()],
+            reads: None,
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap()
+    .text;
+    assert_eq!(
+        out.lines().collect::<Vec<_>>(),
+        [
+            "[--tools]".to_string(),
+            "[]".into(),
+            "[--model]".into(),
+            "[m]".into(),
+            "[--json-schema]".into(),
+            format!("[{schema}]"),
+        ],
+        "{out}"
+    );
+}
