@@ -1,8 +1,8 @@
 // A PR's line comments in its file diffs, as on GitHub: each thread under the line it's on, with
-import { RelativeTime } from "@/components/RelativeTime";
 // a reply box, and "Add Comment on Line" in the context menu for a new one. The threads live in
 // Monaco view zones, each a small React root sized to what it holds.
 import { useCallback, useMemo, useState } from "react";
+import { RelativeTime } from "@/components/RelativeTime";
 import { type DiffRow, github, repoOf, type ReviewComment } from "@/lib/api";
 import { useGitHubData } from "@/lib/github/githubCache";
 import type { monaco } from "@/lib/editor/monaco";

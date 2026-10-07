@@ -1,5 +1,4 @@
 import { ListFilter, MessageSquare, Plus, RefreshCw } from "lucide-react";
-import { RelativeTime } from "@/components/RelativeTime";
 import { useCallback, useState } from "react";
 import { useListFilter } from "@/components/ListFilter";
 import { Button } from "@/components/ui/button";
@@ -16,6 +15,7 @@ import { LinkMenu } from "@/features/github/shared/LinkMenu";
 import { type Filter, filterCounts, FilterTabs } from "@/features/github/shared/FilterTabs";
 import { ConnectGitHub } from "@/features/github/shared/ConnectGitHub";
 import { RepoPanes } from "@/components/RepoPanes";
+import { RelativeTime } from "@/components/RelativeTime";
 import { IssueStateIcon } from "@/features/github/shared/StateBadges";
 import { issuesChanged } from "@/features/github/shared/changed";
 import { useGitHubAccount, useReloadAll } from "@/features/github/shared/useGitHubAccount";

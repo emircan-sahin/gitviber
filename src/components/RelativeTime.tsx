@@ -2,9 +2,9 @@ import { useSyncExternalStore } from "react";
 import { fullDate, isoToUnix, relativeTime } from "@/lib/format";
 import { minute } from "@/lib/ui/minute";
 
-/** relativeTime that keeps itself current: re-rendered only when its text changes. */
-export function useRelativeTime(unixSeconds: number) {
-  return useSyncExternalStore(minute.subscribe, () => relativeTime(unixSeconds));
+/** relativeTime of each, kept current by one subscription: re-rendered only when a text changes. */
+export function useRelativeTimes(...unixSeconds: number[]) {
+  return useSyncExternalStore(minute.subscribe, () => unixSeconds.map(relativeTime).join("\0")).split("\0");
 }
 
 /**
@@ -13,7 +13,12 @@ export function useRelativeTime(unixSeconds: number) {
  */
 export function RelativeTime({ date, title, className }: { date: number | string; title?: string; className?: string }) {
   const unix = typeof date === "string" ? isoToUnix(date) : date;
-  const text = useRelativeTime(unix);
+  const [text] = useRelativeTimes(unix);
+  return <TimeText unix={unix} text={text} title={title} className={className} />;
+}
+
+/** The element itself, for a caller that worked out `text` already (CommitTime). */
+export function TimeText({ unix, text, title, className }: { unix: number; text: string; title?: string; className?: string }) {
   const valid = Number.isFinite(unix);
   return (
     <time dateTime={valid ? new Date(unix * 1000).toISOString() : undefined} title={title ?? (valid ? fullDate(unix) : undefined)} className={className}>

@@ -1,11 +1,11 @@
 import { ask } from "@/lib/app/ask";
-import { RelativeTime } from "@/components/RelativeTime";
 import { ChevronDown, CircleCheck, CircleDot, CircleSlash, ExternalLink, FolderGit2, Loader2, Pencil, RefreshCw, Tag, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { RelativeTime } from "@/components/RelativeTime";
 import { accessFor, type CloseReason, errorMessage, fullName, type Issue, type IssueLabel, issues, repoOf } from "@/lib/api";
 import { listIsBehind, useGitHubData } from "@/lib/github/githubCache";
 import { matchesCommand } from "@/lib/commands/keybindings";

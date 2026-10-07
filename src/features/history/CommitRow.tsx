@@ -10,7 +10,7 @@ import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { toast } from "@/lib/app/toast";
 import { cn } from "@/lib/utils";
 import { fullDate } from "@/lib/format";
-import { RelativeTime, useRelativeTime } from "@/components/RelativeTime";
+import { TimeText, useRelativeTimes } from "@/components/RelativeTime";
 import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import { sumLines } from "@/features/changes/changeList";
@@ -279,10 +279,10 @@ function GraphLines({ row }: { row: GraphRow }) {
  * keeps the date it was written, which then reads out of order: that one is in the tooltip.
  */
 export function CommitTime({ commit: c }: { commit: Commit }) {
-  const [committed, authored] = [useRelativeTime(c.committedAt), useRelativeTime(c.timestamp)];
+  const [committed, authored] = useRelativeTimes(c.committedAt, c.timestamp);
   const moved = authored !== committed;
   const title = moved ? `Committed ${committed} by ${c.committerName} (${fullDate(c.committedAt)})\nAuthored ${authored} by ${c.authorName} (${fullDate(c.timestamp)})` : undefined;
-  return <RelativeTime date={c.committedAt} title={title} className={cn("shrink-0", moved && "underline decoration-subtle/60 decoration-dotted underline-offset-2")} />;
+  return <TimeText unix={c.committedAt} text={committed} title={title} className={cn("shrink-0", moved && "underline decoration-subtle/60 decoration-dotted underline-offset-2")} />;
 }
 
 function RefBadges({ refs, remotes, show }: { refs: string[]; remotes: Set<string>; show?: GraphRefs }) {

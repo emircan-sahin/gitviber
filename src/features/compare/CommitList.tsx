@@ -1,8 +1,8 @@
 import { Files } from "lucide-react";
-import { RelativeTime } from "@/components/RelativeTime";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "@/components/ui/context-menu";
+import { RelativeTime } from "@/components/RelativeTime";
 import { api, type Commit, errorMessage, LOG_PAGE } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
 import type { Selection } from "@/lib/repo/selection";

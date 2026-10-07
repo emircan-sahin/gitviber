@@ -1,5 +1,4 @@
 import { ask } from "@/lib/app/ask";
-import { RelativeTime } from "@/components/RelativeTime";
 import { Archive, ArchiveRestore, ChevronRight, FileDiff, FileDown, GitBranchPlus, PackageOpen, Pencil, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -16,6 +15,7 @@ import { cn } from "@/lib/utils";
 import { FileIcon } from "@/components/FileIcon";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
 import { RowAction } from "@/components/RowAction";
+import { RelativeTime } from "@/components/RelativeTime";
 import { useGitAction } from "@/hooks/useGitAction";
 import { useAsyncValue } from "@/hooks/useAsyncValue";
 

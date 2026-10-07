@@ -1,5 +1,4 @@
 import { ask } from "@/lib/app/ask";
-import { RelativeTime } from "@/components/RelativeTime";
 import { ExternalLink, FolderGit2, GitBranch, GitPullRequest, GitPullRequestClosed, Loader2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef } from "react";
 import { PageFind } from "@/components/FindBox";
@@ -18,6 +17,7 @@ import { notifyPullsChanged } from "@/features/github/shared/changed";
 import { CopyLinkButton } from "@/features/github/shared/LinkMenu";
 import { offerWorktreeRemoval, openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
 import { LineCounts, PathLabel, StatusLetter } from "@/components/StatusBadge";
+import { RelativeTime } from "@/components/RelativeTime";
 import { PullMarkdown } from "@/features/github/shared/GitHubMarkdown";
 import { Section } from "@/features/github/shared/Section";
 import { useGitAction } from "@/hooks/useGitAction";

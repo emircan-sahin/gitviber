@@ -1,10 +1,10 @@
 import { FolderGit2, ListFilter } from "lucide-react";
-import { RelativeTime } from "@/components/RelativeTime";
 import { Button } from "@/components/ui/button";
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
 import { type GitHubAccount, type Narrow, PR_PAGE, type Pull, type Target } from "@/lib/api";
 import { CiBadge } from "@/components/CiBadge";
 import { RowFilter } from "@/components/RowFilter";
+import { RelativeTime } from "@/components/RelativeTime";
 import { useCi } from "@/lib/github/ci";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
