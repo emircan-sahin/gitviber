@@ -26,7 +26,8 @@ import { toast } from "@/lib/app/toast";
 import { folderName } from "@/lib/path";
 import { IS_MAC } from "@/lib/platform";
 import { useCommands, useShortcut } from "@/lib/commands/keybindings";
-import { openTerminal, togglePanel, useNeedsYou, useTerminalsOpen } from "@/lib/terminal/terminals";
+import { openTerminal, togglePanel, usePaneLooks, useTerminalsOpen } from "@/lib/terminal/terminals";
+import { isNews, LOOK_LABEL, mostUrgent } from "@/lib/terminal/agentLook";
 import { useNetActivity } from "@/lib/repo/netActivity";
 import { forgetRemoteTags } from "@/lib/repo/remoteTags";
 import { cn } from "@/lib/utils";
@@ -40,7 +41,7 @@ import { useRepoActions } from "./useRepoActions";
 import { openSettings } from "@/features/settings/SettingsDialog";
 import { openWorktreeDialog, WorktreeDialogs } from "@/features/worktrees/WorktreeDialogs";
 import { WorktreePicker } from "@/features/worktrees/WorktreePicker";
-import { NeedsYouDot } from "@/components/NeedsYouDot";
+import { StatusDot } from "@/components/StatusDot";
 import { AgentsMenu } from "@/features/terminal/AgentsMenu";
 
 type Props = ProjectSwitcherProps & {
@@ -90,8 +91,8 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
   const net = useNetActivity();
   const terminalOpen = useTerminalsOpen();
   // The panel hidden, its tabs can't show that a terminal needs the user: its button does.
-  const needing = useNeedsYou().length > 0;
-  const calling = !terminalOpen && needing;
+  const look = mostUrgent(usePaneLooks().map(([, l]) => l));
+  const calling = !terminalOpen && isNews(look);
   const fullscreen = useFullscreen();
 
   // A branch another worktree holds can't be switched to here, so the pick opens that worktree.
@@ -281,10 +282,10 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
       <AgentsMenu worktrees={worktrees} />
-      <Tip label={terminalOpen ? "Hide terminal" : calling ? "Show terminal · a terminal needs you" : "Show terminal"} shortcut={useShortcut("terminal.toggle")}>
+      <Tip label={terminalOpen ? "Hide terminal" : isNews(look) ? `Show terminal · a terminal: ${LOOK_LABEL[look].toLowerCase()}` : "Show terminal"} shortcut={useShortcut("terminal.toggle")}>
         <Button variant="ghost" size="icon" onClick={() => togglePanel(root)} className={cn("relative", terminalOpen && "text-foreground")}>
           <SquareTerminal />
-          {calling && <NeedsYouDot className="absolute top-1 right-1" />}
+          {calling && <StatusDot look={look} className="absolute top-1 right-1" />}
         </Button>
       </Tip>
       <Tip label={leftOpen ? "Hide git panel" : "Show git panel"} shortcut={useShortcut("view.toggleGitPanel")}>

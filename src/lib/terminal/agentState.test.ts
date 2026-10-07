@@ -90,5 +90,6 @@ test("the badge counts each agent once, and drops to 0 as panes close", () => {
   assert.equal(agentsWaiting(all.slice(2, 3)), 0);
   // Many agents across tabs and projects: still one count each.
   const many = Array.from({ length: 500 }, (_, i) => e(i, i % 2 ? "waiting" : "working", i % 3 === 0));
-  assert.equal(agentsWaiting(many), many.filter((x) => x.state === "waiting" || x.unseen).length);
+  // A working one's news is old: its dot is working, and it isn't counted.
+  assert.equal(agentsWaiting(many), many.filter((x) => x.state === "waiting").length);
 });

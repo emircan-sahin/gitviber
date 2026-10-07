@@ -16,7 +16,8 @@ import { cn } from "@/lib/utils";
 import { folderName } from "@/lib/path";
 import { type Hue, hueColor } from "@/lib/git/worktrees";
 import { NameInput } from "@/components/NameInput";
-import { NeedsYouDot, WorkingDot } from "@/components/NeedsYouDot";
+import { StatusDot } from "@/components/StatusDot";
+import { lookLabel, mostUrgent, paneLook } from "@/lib/terminal/agentLook";
 
 // Memoized: every title a program sets re-renders the panel, and the other tabs keep their group object.
 export const GroupTab = memo(function GroupTab({
@@ -39,9 +40,10 @@ export const GroupTab = memo(function GroupTab({
   const cwd = g.panes[0].cwd;
   const title = g.panes.find((p) => p.id === g.focused)?.title;
   const where = title ? `${cwd} · ${title}` : cwd;
-  const calling = g.panes.some((p) => p.needsYou);
-  const working = calling ? undefined : g.panes.find((p) => p.agent?.state === "working")?.agent;
-  const label = (g.name ? `${g.name} · ${where}` : where) + (calling ? " · needs you" : working ? ` · ${working.name} working` : "");
+  // The tab's tooltip says the dot's state too.
+  const look = mostUrgent(g.panes.map(paneLook));
+  const agent = g.panes.find((p) => look && paneLook(p) === look)?.agent?.name;
+  const label = (g.name ? `${g.name} · ${where}` : where) + (look ? ` · ${lookLabel(look, agent)}` : "");
   // "/" has no name of its own.
   const shown = g.name ?? (folderName(cwd) || cwd);
   const [splitKey, splitDownKey, clearKey] = [useShortcut("terminal.split"), useShortcut("terminal.splitDown"), useShortcut("terminal.clear")];
@@ -83,8 +85,7 @@ export const GroupTab = memo(function GroupTab({
         <span className="truncate">{shown}</span>
       )}
       {branch && <span className="min-w-0 truncate font-mono text-[10.5px] text-subtle">{branch}</span>}
-      {calling && <NeedsYouDot />}
-      {working && <WorkingDot />}
+      <StatusDot look={look} />
       {g.panes.length > 1 && <span className="rounded-sm bg-elevated px-1 font-mono text-[10px] leading-4 text-muted-foreground">{g.panes.length}</span>}
       <button
         aria-label="Kill terminal"

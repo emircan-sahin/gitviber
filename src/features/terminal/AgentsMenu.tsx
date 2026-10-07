@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tip } from "@/components/ui/tooltip";
-import { NeedsYouDot, WorkingDot } from "@/components/NeedsYouDot";
+import { LOOK_TEXT, StatusDot } from "@/components/StatusDot";
 import type { Worktree } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
 import { useCommands } from "@/lib/commands/keybindings";
@@ -11,6 +11,7 @@ import { plural, shortDuration } from "@/lib/format";
 import { folderName } from "@/lib/path";
 import { worktreeOf } from "@/lib/git/worktrees";
 import { useAgentList } from "@/lib/terminal/agents";
+import { isNews, LOOK_LABEL, lookOf, mostUrgent } from "@/lib/terminal/agentLook";
 import { type AgentEntry, agentsWaiting } from "@/lib/terminal/agentState";
 import { revealPane } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
@@ -48,6 +49,8 @@ export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
   const waiting = agentsWaiting(list);
   const working = list.filter((e) => e.state === "working").length;
   const summary = [waiting && `${waiting} ${waiting === 1 ? "needs" : "need"} you`, working && `${working} working`].filter(Boolean).join(" · ");
+  // Every agent at rest and looked at: nothing on the button.
+  const loudest = mostUrgent(list.map((e) => lookOf(e.state, e.unseen)));
   const now = Date.now();
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -55,7 +58,7 @@ export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
         <DropdownMenuTrigger asChild>
           <Button variant="ghost" size="icon" aria-label={`Agents: ${plural(list.length, "agent")}${summary ? `, ${summary}` : ""}`} className="relative">
             <Bot />
-            {waiting > 0 ? <NeedsYouDot className="absolute top-1 right-1" /> : working > 0 && <WorkingDot className="absolute top-1 right-1" />}
+            {loudest !== "done" && <StatusDot look={loudest} className="absolute top-1 right-1" />}
           </Button>
         </DropdownMenuTrigger>
       </Tip>
@@ -71,7 +74,7 @@ export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
       >
         <DropdownMenuLabel>Agents</DropdownMenuLabel>
         {list.map((e) => {
-          const calling = e.state === "waiting" || e.unseen;
+          const look = lookOf(e.state, e.unseen);
           return (
             <DropdownMenuItem
               key={e.pane}
@@ -82,13 +85,14 @@ export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
               className="items-start py-1.5"
             >
               <span className="flex h-4 w-1.5 shrink-0 items-center">
-                {calling ? <NeedsYouDot className="in-data-[highlighted]:bg-primary-foreground" /> : e.state === "working" && <WorkingDot className="in-data-[highlighted]:border-primary-foreground" />}
+                <StatusDot look={look} className="in-data-[highlighted]:text-primary-foreground" />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="truncate font-medium">{e.name}</span>
-                  <span className={cn("ml-auto shrink-0 text-[10.5px] tabular-nums", calling ? "text-primary in-data-[highlighted]:text-primary-foreground" : "opacity-70")}>
+                  <span className={cn("ml-auto shrink-0 text-[10.5px] tabular-nums", isNews(look) ? [LOOK_TEXT[look], "in-data-[highlighted]:text-primary-foreground"] : "opacity-70")}>
                     {LABEL[e.state]}
+                    {look === "unread" && `, ${LOOK_LABEL.unread.toLowerCase()}`}
                     {e.since > 0 && ` · ${shortDuration((now - e.since) / 1000)}`}
                   </span>
                 </span>

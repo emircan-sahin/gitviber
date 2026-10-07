@@ -35,8 +35,7 @@ import { copyFromProgram, pasteInto, pasteText } from "./pasteInput";
 import { type Direction, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
 
 export { dismissRestore, restoreSession, resumable } from "./session";
-export { useNeedsYou } from "./needsYou";
-export { useAgentsWorking } from "./agents";
+export { usePaneLooks } from "./agents";
 export { clearFind, endFind, findInTerminal } from "./find";
 
 /**

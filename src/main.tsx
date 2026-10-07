@@ -11,6 +11,7 @@ import { installErrorLog, logError } from "./lib/app/errorLog";
 import { installScrollbars } from "./lib/app/scrollbars";
 import "./lib/app/quit";
 import "./lib/app/translucency";
+import "./lib/app/windowHidden";
 
 import { Fixture } from "./dev-fixture";
 
