@@ -4,6 +4,7 @@
 use portable_pty::{native_pty_system, ChildKiller, CommandBuilder, MasterPty, PtySize};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -170,6 +171,21 @@ fn start_dir(cwd: &Path) -> Option<PathBuf> {
         })
 }
 
+/// `path` with `dir` last, unless it's on it already: a `gitviber` of the user's own comes first.
+/// `dir` has no `:` in it (cli::bin_dir).
+fn with_last(path: &OsStr, dir: &Path) -> OsString {
+    if std::env::split_paths(path).any(|d| d == dir) {
+        return path.to_owned();
+    }
+    // Not after an empty PATH: ":dir" would put the current folder on it.
+    let mut out = path.to_owned();
+    if !out.is_empty() {
+        out.push(":");
+    }
+    out.push(dir);
+    out
+}
+
 impl Ptys {
     /// Starts the user's login shell in `cwd`, with the shell integration's scripts from
     /// `integration` if given. `exit` gets how it ended once it's gone.
@@ -211,6 +227,13 @@ impl Ptys {
         cmd.env_clear();
         for (key, value) in crate::shell::clean_env() {
             cmd.env(key, value);
+        }
+        // `gitviber .` with nothing installed. The integration adds it again after the user's rc
+        // files, should one of them set PATH afresh.
+        if let Some(bin) = crate::cli::bin_dir() {
+            let path = with_last(cmd.get_env("PATH").unwrap_or_default(), &bin);
+            cmd.env("PATH", path);
+            cmd.env("GITVIBER_BIN_DIR", bin);
         }
         // Else portable-pty takes passwd's shell while the PATH probe took $SHELL (shell.rs).
         #[cfg(unix)]
@@ -463,5 +486,39 @@ mod tests {
         assert_eq!(start_dir(&tmp), Some(tmp.clone()));
         let gone = tmp.join("gitviber-gone-worktree").join("sub");
         assert_eq!(start_dir(&gone), Some(tmp));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_command_folder_goes_last_on_path_and_only_once() {
+        use super::with_last;
+        let bin = std::path::Path::new("/Applications/GitViber.app/Contents/Resources/bin");
+        let path = with_last("/usr/bin:/bin".as_ref(), bin);
+        assert_eq!(path, *format!("/usr/bin:/bin:{}", bin.display()));
+        assert_eq!(with_last(&path, bin), path);
+        assert_eq!(with_last("".as_ref(), bin), bin.as_os_str());
+    }
+
+    /// 5,000 entries (~200 KB) with duplicates and empty ones (the current folder) kept as they
+    /// were, the folder once at the end; already on it anywhere, nothing changes.
+    #[cfg(unix)]
+    #[test]
+    fn a_huge_path_keeps_every_entry_as_it_was() {
+        use super::with_last;
+        let bin = std::path::Path::new("/Applications/My Apps/GitViber.app/Contents/Resources/bin");
+        let entries: Vec<String> = (0..5000)
+            .map(|i| match i % 100 {
+                0 => String::new(),
+                1 => "/usr/bin".into(),
+                _ => format!("/opt/tools/a-rather-long-folder-name/{i:05}/bin"),
+            })
+            .collect();
+        let path = entries.join(":");
+        assert!(path.len() > 200_000);
+        let out = with_last(path.as_ref(), bin);
+        assert_eq!(out, *format!("{path}:{}", bin.display()));
+        assert_eq!(with_last(&out, bin), out);
+        let middle = format!("{}:{}:{}", &path[..1000], bin.display(), &path[1000..]);
+        assert_eq!(with_last(middle.as_ref(), bin), *middle);
     }
 }

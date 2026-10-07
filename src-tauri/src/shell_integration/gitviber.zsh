@@ -70,6 +70,17 @@ _gitviber_preexec() {
   builtin print -rn -- $'\e]133;C;cmdline_url='$url$'\a'
 }
 
+# GitViber's `gitviber` command, last on PATH (pty.rs). Again at the first prompt, after .zshrc and
+# .zlogin: one of them may have set PATH afresh.
+_gitviber_path() {
+  builtin emulate -L zsh
+  add-zsh-hook -d precmd _gitviber_path
+  [[ -z $GITVIBER_BIN_DIR || :$PATH: == *:"$GITVIBER_BIN_DIR":* ]] ||
+    PATH=${PATH:+$PATH:}$GITVIBER_BIN_DIR
+}
+
 builtin autoload -Uz add-zsh-hook add-zle-hook-widget
+# Before _gitviber_precmd, which marks PS1 itself only while it's the last precmd hook.
+add-zsh-hook precmd _gitviber_path
 add-zsh-hook precmd _gitviber_precmd
 add-zsh-hook preexec _gitviber_preexec

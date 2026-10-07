@@ -178,9 +178,11 @@ chmod +x GitViber_*.AppImage && ./GitViber_*.AppImage
 ```
 
 To open a repository from a terminal, run `gitviber .` (or any path inside one); a file opens in
-the code view, at a line with `gitviber src/app.ts:42` or `:42:7`. Homebrew and
-the Linux packages put the command on your `PATH`; otherwise use **Install 'gitviber' Command**
-in the app menu (File on Linux). A folder dropped on the Dock icon opens too.
+the code view, at a line with `gitviber src/app.ts:42` or `:42:7`. On macOS, GitViber's own
+terminal has the command with nothing to install. Homebrew and the Linux packages put it on your
+`PATH` for every terminal; otherwise use **Install 'gitviber' Command** in the app menu (File on
+Linux). A folder dropped on the Dock icon opens too, and one outside a repository offers to
+initialize one.
 
 GitViber tells you when a new version is out. The macOS app and the AppImage update in place;
 a `.deb` or `.rpm` install gets a link to the release to download it from. What changed is in the [changelog](CHANGELOG.md), and every release lists SHA-256

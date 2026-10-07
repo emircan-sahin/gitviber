@@ -31,6 +31,9 @@ mod search;
 // zsh on a pty.
 #[cfg(unix)]
 mod shell_marks;
+// zsh and bash with the integration.
+#[cfg(unix)]
+mod shell_path;
 mod stash;
 mod stash_edges;
 mod suggest;

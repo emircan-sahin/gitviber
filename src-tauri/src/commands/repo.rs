@@ -26,11 +26,17 @@ pub async fn open_repo(
     })
     .await?;
     let root_path = PathBuf::from(&root);
+    // A new watcher even for the open repo: one deleted and made again at its path left the old
+    // one watching nothing (inotify).
     let watcher = watch::start(app, root_path.clone())?;
     *state.watcher.lock().unwrap_or_else(|e| e.into_inner()) = Some(watcher);
     // gh's active account until the page sends this project's own (gh_use_account): one
     // project's pick never carries into the next. Before the repo switches, so none goes out as both.
-    github::use_account(&state.github, None)?;
+    // Already open (`gitviber .` in its own terminal), it keeps its account.
+    let open = state.repo.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if open.as_ref() != Some(&root_path) {
+        github::use_account(&state.github, None)?;
+    }
     *state.repo.lock().unwrap_or_else(|e| e.into_inner()) = Some(root_path);
     Ok(OpenedRepo { root, main })
 }
