@@ -1,4 +1,5 @@
 import { getVersion } from "@tauri-apps/api/app";
+import { emitTo } from "@tauri-apps/api/event";
 import { ask } from "./ask";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
@@ -7,6 +8,7 @@ import { getSettings } from "../settings";
 import { createStore } from "../store";
 import { logError } from "./errorLog";
 import { saveNow, stoppedByLeaving } from "./quit";
+import { listenHere, SETTINGS_WINDOW } from "./settingsWindow";
 import { toast } from "./toast";
 import { checked, downloaded, due, INITIAL, isExpectedFailure, percent, type UpdateState } from "./updateState";
 
@@ -127,6 +129,39 @@ async function restartAsked() {
   const running = await stoppedByLeaving();
   if (!running.length) return true;
   return ask(`Restarting GitViber stops what's still running: ${running.join(", ")}.`, { title: "Restart to update", kind: "warning", okLabel: "Restart" });
+}
+
+// The settings window has no updater of its own (capabilities/settings.json): the main window's
+// state is mirrored there, and a check asked from there runs here.
+const SHARED = "updates-shared";
+const ASK = "updates-ask";
+type Shared = { state: UpdateState; mode: UpdateMode };
+
+/** In the main window: tells the settings window the updater's state as it changes and when asked; `true` asks for a quiet check too. */
+export function shareUpdates() {
+  const send = () => void emitTo(SETTINGS_WINDOW, SHARED, { state: state.get(), mode: mode.get() } satisfies Shared).catch(() => {});
+  const offs = [state.subscribe(send), mode.subscribe(send)];
+  const unlisten = listenHere<boolean>(ASK, ({ payload: check }) => {
+    send();
+    if (check) void checkForUpdates(false);
+  });
+  return () => {
+    offs.forEach((off) => off());
+    void unlisten.then((f) => f()).catch(() => {});
+  };
+}
+
+const shared = createStore<Shared | null>(null);
+/** In the settings window: the main window's updater state; null until it answers. */
+export const useSharedUpdates = shared.use;
+
+/** In the settings window: mirrors the main window's updater state while it runs, `check` asking it to check first. Returns a stop. */
+export function mirrorUpdates(check: boolean) {
+  const unlisten = listenHere<Shared>(SHARED, ({ payload }) => shared.set(payload)).then((f) => {
+    emitTo("main", ASK, check).catch(() => {});
+    return f;
+  });
+  return () => void unlisten.then((f) => f()).catch(() => {});
 }
 
 /** Asks how this install updates, then checks at launch and every few hours while Settings allows. */

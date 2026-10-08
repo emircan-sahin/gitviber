@@ -8,7 +8,7 @@ import { github } from "@/lib/api";
 import { useCommands } from "@/lib/commands/keybindings";
 import { failed } from "@/lib/app/toast";
 import { percent } from "@/lib/app/updateState";
-import { checkForUpdates, downloadUpdate, RELEASES_URL, restartToUpdate, showUpdate, startUpdates, useUpdateMode, useUpdates, useUpdateShown } from "@/lib/app/updates";
+import { checkForUpdates, downloadUpdate, RELEASES_URL, restartToUpdate, shareUpdates, showUpdate, startUpdates, useUpdateMode, useUpdates, useUpdateShown } from "@/lib/app/updates";
 import { followLink, MarkdownBody } from "@/features/viewer/MarkdownView";
 import { markdownLink } from "@/lib/github/markdown";
 import { REPO } from "./AboutDialog";
@@ -23,6 +23,7 @@ export function UpdateDialog() {
   const { release, download, restarting } = useUpdates();
 
   useEffect(() => startUpdates(), []);
+  useEffect(() => shareUpdates(), []);
   // Greyed out in the menu where the app doesn't update itself (dev builds).
   useCommands({ "app.checkForUpdates": mode ? () => void checkForUpdates(true) : undefined });
 
