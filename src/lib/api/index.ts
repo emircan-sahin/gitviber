@@ -1,4 +1,5 @@
 // Every Tauri command, typed: the page reaches the backend only through here.
+export * from "./browser";
 export * from "./errors";
 export * from "./git";
 export * from "./github";

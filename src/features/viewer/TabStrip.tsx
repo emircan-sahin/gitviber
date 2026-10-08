@@ -1,4 +1,4 @@
-import { Files, GitCompareArrows, History, ListTree, Sparkles, X } from "lucide-react";
+import { ExternalLink, Files, GitCompareArrows, Globe, History, ListTree, RotateCw, Sparkles, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { compareLabel, editPath, onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
@@ -13,6 +13,10 @@ import { basename, distinctFolders } from "@/lib/path";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { IssueStateIcon, PullStateIcon } from "@/features/github/shared/StateBadges";
 import { FileIcon } from "@/components/FileIcon";
+import { browserApi, github } from "@/lib/api";
+import { failed } from "@/lib/app/toast";
+import { pageHost, pageLabel } from "@/lib/browser/url";
+import { useBrowserState } from "@/features/browser/store";
 import { type Tab, type TabGroup, tabGroup } from "./tabs";
 
 interface Props {
@@ -31,6 +35,7 @@ function tabLabel(sel: Selection) {
   if (sel.kind === "compare") return `Compare ${compareLabel(sel)}`;
   // A note by its name, as Obsidian's tabs have it.
   if (sel.kind === "vault") return noteName(sel.path);
+  if (sel.kind === "browser") return sel.title || pageLabel(sel.url);
   return isFileSelection(sel) ? basename(selectionPath(sel)) : selectionPath(sel);
 }
 
@@ -143,6 +148,9 @@ function TabItem({
   const unsaved = useEdited().has(editPath(t.sel) ?? "");
   const closeKey = useShortcut("tab.close");
   const closeOthersKey = useShortcut("tab.closeOthers");
+  // A page's title as it changes, before the tab keeps it.
+  const page = useBrowserState(t.sel.kind === "browser" ? t.sel.id : null);
+  const label = page?.title || tabLabel(t.sel);
   const el = useRef<HTMLDivElement | null>(null);
   // Runs before the node leaves the page, while it can still say whether it had focus.
   useLayoutEffect(
@@ -183,10 +191,12 @@ function TabItem({
         <GitCompareArrows className="size-4 shrink-0 text-subtle" />
       ) : t.sel.kind === "guide" ? (
         <Sparkles className="size-4 shrink-0 text-subtle" />
+      ) : t.sel.kind === "browser" ? (
+        <Globe className="size-4 shrink-0 text-subtle" />
       ) : (
         <FileIcon path={selectionPath(t.sel)} />
       )}
-      <span className={cn("truncate", t.preview && "italic")}>{tabLabel(t.sel)}</span>
+      <span className={cn("truncate", t.preview && "italic")}>{label}</span>
       {folder && <span className="min-w-0 shrink-[2] truncate text-[11px] text-subtle">{folder}</span>}
       <TabKind sel={t.sel} />
       <button
@@ -235,6 +245,7 @@ function TabItem({
             <ContextMenuItem onSelect={() => onPin(t.key)}>Keep Open</ContextMenuItem>
           </>
         )}
+        {t.sel.kind === "browser" && <BrowserItems id={t.sel.id} url={page?.url || t.sel.url} />}
         {file && (
           <>
             <ContextMenuSeparator />
@@ -251,9 +262,25 @@ function TabItem({
   );
 }
 
+/** A page's tab: reloaded where it stands (a tab not shown yet has nothing to reload), or opened in the system browser. */
+function BrowserItems({ id, url }: { id: string; url: string }) {
+  return (
+    <>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={() => void browserApi.go(id, "reload").catch(() => {})}>
+        <RotateCw /> Reload
+      </ContextMenuItem>
+      <ContextMenuItem disabled={!pageHost(url)} onSelect={() => void github.openUrl(url).catch(failed("Could not open the link"))}>
+        <ExternalLink /> Open in System Browser
+      </ContextMenuItem>
+    </>
+  );
+}
+
 function TabKind({ sel }: { sel: Selection }) {
   const labels: Partial<Record<Selection["kind"], string>> = { staged: "staged", unstaged: "diff", conflict: "conflict", vault: "vault" };
   const label =
-    sel.kind === "commit" ? sel.commit.shortSha : sel.kind === "pr-file" ? [sel.range.number && `#${sel.range.number}`, sel.range.label].filter(Boolean).join(" ") || "compare" : sel.kind === "branch" ? `vs ${sel.label}` : sel.kind === "files" ? `vs ${basename(sel.file.oldPath ?? "")}` : labels[sel.kind];
+    // A page by its title shows its host beside it.
+    sel.kind === "browser" ? (sel.title ? pageHost(sel.url) : undefined) : sel.kind === "commit" ? sel.commit.shortSha : sel.kind === "pr-file" ? [sel.range.number && `#${sel.range.number}`, sel.range.label].filter(Boolean).join(" ") || "compare" : sel.kind === "branch" ? `vs ${sel.label}` : sel.kind === "files" ? `vs ${basename(sel.file.oldPath ?? "")}` : labels[sel.kind];
   return label ? <span className="shrink-0 font-mono text-[10px] text-subtle">{label}</span> : null;
 }

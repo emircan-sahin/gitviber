@@ -1,4 +1,5 @@
 import type { Commit, FileChange, Issue, Pull, Target } from "../api";
+import { pageLabel } from "../browser/url.ts";
 
 /**
  * A PR's diff range, as computed locally (merge base → head), or a branch's in a comparison (no
@@ -48,7 +49,10 @@ export type Selection =
   // `base` (a full ref, `label` its short name), or of a pull request (`target`: the repo it's on).
   | { kind: "guide"; of: "commit"; commit: Commit }
   | { kind: "guide"; of: "branch"; base: string; label: string }
-  | { kind: "guide"; of: "pull"; pull: Pull; target: Target };
+  | { kind: "guide"; of: "pull"; pull: Pull; target: Target }
+  // A web page (features/browser): `id` names the tab's native view, whatever it loads; no `file`,
+  // so nothing takes it for a repo file. `title` is the page's last, for a tab not loaded yet.
+  | { kind: "browser"; id: string; url: string; title?: string };
 
 export type GuideSelection = Extract<Selection, { kind: "guide" }>;
 
@@ -83,6 +87,7 @@ export function selectionPath(s: Selection) {
   if (s.kind === "changes") return s.list === "commit" ? `Commit ${s.commit.shortSha}` : s.list === "range" ? `All Changes · ${rangeLabel(s.range)}` : LIST_TITLES[s.list];
   if (s.kind === "compare") return "Compare";
   if (s.kind === "guide") return s.of === "commit" ? `Explain ${s.commit.shortSha}` : `Guided Review · ${s.of === "pull" ? `#${s.pull.number}` : s.label}`;
+  if (s.kind === "browser") return pageLabel(s.url);
   return s.file.path;
 }
 
@@ -111,6 +116,8 @@ export function selectionKey(s: Selection) {
   if (s.kind === "pull") return `pull:${s.pull.url}`;
   if (s.kind === "issue") return `issue:${s.issue.url}`;
   if (s.kind === "vault") return `vault:${s.vault}:${s.path}`;
+  // The same tab as its page moves on.
+  if (s.kind === "browser") return `browser::${s.id}`;
   // A PR file by its commits too, as its range's list is.
   const scope =
     s.kind === "commit"

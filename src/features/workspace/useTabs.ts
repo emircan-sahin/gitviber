@@ -1,6 +1,6 @@
 import { arrayMove } from "@dnd-kit/sortable";
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RepoStatus } from "@/lib/api";
+import { browserApi, type RepoStatus } from "@/lib/api";
 import { newerCopy, useGitHubCacheVersion } from "@/lib/github/githubCache";
 import { editPath, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import type { loadWorkspace } from "@/lib/repo/session";
@@ -38,6 +38,8 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     const gone = new Set(keys);
     const shut = tabsNow.current.flatMap((t, index) => (gone.has(t.key) ? [{ sel: t.sel, index }] : []));
     if (!shut.length) return;
+    // A closed browser tab's page goes with it; reopened, it loads again.
+    for (const { sel } of shut) if (sel.kind === "browser") void browserApi.close(sel.id).catch(() => {});
     // The leftmost comes back first, so each returns to its own place.
     setClosed((c) => [...c.filter((t) => !gone.has(selectionKey(t.sel))), ...shut.reverse()].slice(-20));
     setTabState(({ tabs: prev, active }) => {
@@ -82,6 +84,9 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
   const goTab = (i: number) => (tabs[i] ? () => setActiveKey(tabs[i].key) : undefined);
   const stepTab = (dir: 1 | -1) =>
     tabs.length > 1 ? () => setActiveKey(tabs[(tabs.findIndex((t) => t.key === activeKey) + dir + tabs.length) % tabs.length].key) : undefined;
+
+  // A tab whose page moved on (a browser tab's address): the same tab, showing where it is now.
+  const update = useCallback((key: string, sel: Selection) => setTabState((st) => ({ ...st, tabs: st.tabs.map((t) => (t.key === key ? { ...t, sel } : t)) })), []);
 
   const pin = useCallback((key: string) => setTabState((st) => ({ ...st, tabs: st.tabs.map((t) => (t.key === key ? { ...t, preview: false } : t)) })), []);
 
@@ -178,5 +183,5 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     });
   }, [gitHubVersion]);
 
-  return { tabs, activeKey, setActiveKey, open, closeTabs, close, closeAround, reopen, canReopen: closed.length > 0, moveTab, goTab, stepTab, pin, onPathMoved };
+  return { tabs, activeKey, setActiveKey, open, update, closeTabs, close, closeAround, reopen, canReopen: closed.length > 0, moveTab, goTab, stepTab, pin, onPathMoved };
 }

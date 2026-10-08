@@ -16,6 +16,7 @@ import { useCompareAsk } from "@/lib/repo/compareRequest";
 import { defaultPoints } from "@/lib/git/comparePoints";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { usePanelSizes } from "@/lib/ui/usePanelSizes";
+import { BLANK } from "@/lib/browser/url";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen, useTerminalTabCount } from "@/lib/terminal/terminals";
@@ -142,7 +143,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // the tabs are, below: a change there renders this again before anything is drawn.
   const [branchOnShow, setBranchOnShow] = useState(false);
   const branchReview = useBranchReview(review, repo.revision, reviewing || branchOnShow);
-  const { tabs, activeKey, setActiveKey, open: openTab, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
+  const { tabs, activeKey, setActiveKey, open: openTab, update, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
   const branchTab = activeKey === selectionKey({ kind: "changes", list: "branch" });
   if (branchTab !== branchOnShow) setBranchOnShow(branchTab);
   // A file opened while the terminal covers the code view (⌘P, a path clicked in the terminal) comes into view.
@@ -313,6 +314,11 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   const ofRange = shown?.kind === "pr-file" ? shown.range : null;
   useCommands({
     "git.compareBranches": () => openCompare(),
+    // A new tab each time, as a browser's ⌘T: its page is its own.
+    "browser.open": () => {
+      focusPanel("code");
+      open({ kind: "browser", id: crypto.randomUUID(), url: BLANK }, true);
+    },
     "review.openAllCommit": ofCommit ? () => openAll({ kind: "changes", list: "commit", commit: ofCommit.commit, url: ofCommit.url }) : undefined,
     "review.openAllComparison": ofRange ? () => openAll({ kind: "changes", list: "range", range: ofRange }) : undefined,
     "review.nextFile": () => step(1),
@@ -607,6 +613,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                 >
                   <FocusLine />
                   <Viewer
+                    root={root}
                     tabs={tabs}
                     active={active}
                     status={status}
@@ -622,6 +629,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     onPin={pin}
                     onMoveTab={moveTab}
                     onOpen={(sel, pin = true) => open(sel, pin)}
+                    onUpdate={update}
                     onShowHistory={(path) => showHistory(path, true)}
                     onRevealInExplorer={revealInExplorer}
                     onShowCommit={showCommit}

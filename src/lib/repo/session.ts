@@ -4,6 +4,7 @@ import { isRecord, putRecent, readJson, stringList, writeJson } from "../storage
 import { folderName, joinPath } from "../path";
 import { isNote, type ReviewNote } from "../review/notes";
 import { type HueChoice, isHueChoice } from "../git/worktrees";
+import { isPageUrl } from "../browser/url";
 
 /** What a worktree's window looked like, so reopening the app picks up where it was. */
 interface WorkspaceSnapshot {
@@ -54,6 +55,8 @@ export function loadWorkspace(root: string): WorkspaceSnapshot | null {
     try {
       // The key doesn't read a comparison's sides, but its tab and screen do.
       if (sel.kind === "compare" && !(isComparePoint(sel.base) && isComparePoint(sel.head))) return null;
+      // A page loads again as it opens: only a web page's address.
+      if (sel.kind === "browser" && !(typeof sel.id === "string" && isPageUrl(sel.url))) return null;
       return selectionKey(sel);
     } catch {
       return null;

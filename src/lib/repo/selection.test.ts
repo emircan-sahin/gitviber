@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Commit } from "../api/types.ts";
-import { editPath, filesSelection, isComparePoint, onDisk, selectionKey, selectionPath, vaultEditFile } from "./selection.ts";
+import { editPath, filesSelection, isComparePoint, onDisk, type Selection, selectionKey, selectionPath, vaultEditFile } from "./selection.ts";
 
 test("two working-tree files compared make one tab per pair, the right one's path its own", () => {
   const ab = filesSelection("src/a.ts", "src/b.ts");
@@ -60,4 +60,15 @@ test("a vault note's path comes back out of its edit key, at the vault's root or
       assert.equal(vaultEditFile(vault, key), path);
     }
   }
+});
+
+test("a browser tab is one tab wherever its page goes, and no file", () => {
+  const at = (url: string): Selection => ({ kind: "browser", id: "tab-1", url });
+  assert.equal(selectionKey(at("http://localhost:5173/")), selectionKey(at("http://localhost:5173/docs")));
+  assert.notEqual(selectionKey(at("http://localhost:5173/")), selectionKey({ kind: "browser", id: "tab-2", url: "http://localhost:5173/" }));
+  assert.equal(selectionPath(at("http://localhost:5173/")), "localhost:5173");
+  // What diffPairs' isFileSelection reads.
+  assert.equal("file" in at("http://localhost:5173/"), false);
+  assert.equal(editPath(at("http://localhost:5173/")), null);
+  assert.equal(onDisk(at("http://localhost:5173/")), false);
 });
