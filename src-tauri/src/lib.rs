@@ -1,5 +1,6 @@
 mod agents;
 pub mod askpass;
+mod browser;
 mod cli;
 mod clipboard;
 mod commands;
@@ -146,6 +147,7 @@ pub fn run() {
                     webview.state::<AppState>().agents.forget_all();
                     askpass::decline_all();
                     quit::reset();
+                    let _ = webview.run_on_main_thread(browser::close_all);
                 }
                 if let Some(window) = webview.get_webview_window(webview.label()) {
                     translucency::reset(&window);
@@ -424,7 +426,17 @@ pub fn run() {
             commands::app::take_opened,
             commands::app::install_cli,
             commands::app::set_translucent,
-            commands::app::reduce_transparency
+            commands::app::reduce_transparency,
+            commands::browser::browser_create,
+            commands::browser::browser_place,
+            commands::browser::browser_hide,
+            commands::browser::browser_close,
+            commands::browser::browser_close_root,
+            commands::browser::browser_navigate,
+            commands::browser::browser_go,
+            commands::browser::browser_focus,
+            commands::browser::browser_list,
+            commands::browser::browser_snapshot
         ])
         .build(context)
         .expect("error while building GitViber")

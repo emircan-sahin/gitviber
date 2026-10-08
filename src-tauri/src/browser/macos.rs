@@ -1,0 +1,853 @@
+//! The browser tab's native view (see mod.rs): a host view laid over the app page, holding a
+//! WKWebView, and the delegate that keeps the page to web URLs and tells the app page its state.
+//! Everything here runs on the main thread, where AppKit's views belong: the registry is that
+//! thread's own, and no callback takes a borrow of it, as WebKit calls back from within calls.
+
+use super::keys::{self, Key, Route};
+use super::{is_loopback, loadable, policy, Failed, Go, Policy, Rect, Registry, State};
+use crate::state::Res;
+use block2::{DynBlock, RcBlock};
+use objc2::encode::{Encoding, RefEncode};
+use objc2::rc::{Retained, Weak};
+use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject};
+use objc2::{
+    available, define_class, msg_send, sel, ClassType, DefinedClass, MainThreadMarker,
+    MainThreadOnly,
+};
+use objc2_app_kit::{
+    NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSBitmapImageFileType,
+    NSBitmapImageRep, NSColor, NSEvent, NSEventModifierFlags, NSImage, NSImageCompressionFactor,
+    NSModalResponse, NSModalResponseOK, NSOpenPanel, NSView, NSWindow, NSWindowOrderingMode,
+    NSWorkspace,
+};
+use objc2_foundation::{
+    ns_string, NSArray, NSDataBase64EncodingOptions, NSDictionary, NSError, NSKeyValueChangeKey,
+    NSKeyValueObservingOptions, NSNumber, NSObjectNSDelayedPerforming,
+    NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
+    NSURLAuthenticationChallenge, NSURLAuthenticationMethodServerTrust, NSURLCredential,
+    NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition, NSURL, NSUUID,
+};
+use objc2_web_kit::{
+    WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
+    WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType, WKOpenPanelParameters,
+    WKUIDelegate, WKUserContentController, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore,
+    WKWindowFeatures,
+};
+use serde::Serialize;
+use std::cell::{Cell, OnceCell, RefCell};
+use std::collections::HashSet;
+use std::ffi::c_void;
+use tauri::{AppHandle, Emitter, Manager, Url};
+
+/// The browser's website data, apart from the app page's own (WebKit's default store), so
+/// clearing it can't touch the app's settings. A made-up id; macOS 14 keeps the store by it.
+const STORE: [u8; 16] = [
+    0x6f, 0x1d, 0x2a, 0x93, 0x5c, 0x4e, 0x4b, 0x7a, 0x9e, 0x31, 0x0b, 0x8d, 0x52, 0xc6, 0xa4, 0x17,
+];
+
+/// What the address bar and buttons show, observed on the web view.
+const OBSERVED: [&str; 6] = [
+    "URL",
+    "title",
+    "loading",
+    "estimatedProgress",
+    "canGoBack",
+    "canGoForward",
+];
+
+/// A burst of changes (progress ticks during a load) goes to the page as one event.
+const COALESCE_SECS: f64 = 0.1;
+
+const GONE: &str = "This browser tab is closed.";
+
+#[derive(Clone)]
+struct View {
+    host: Retained<GVHost>,
+    web: Retained<GVWebView>,
+    delegate: Retained<GVDelegate>,
+}
+
+thread_local! {
+    static VIEWS: RefCell<Registry<View>> = const { RefCell::new(Registry::new()) };
+    /// macOS 13 has no store by id: one in memory for every tab, gone when the app quits.
+    static EPHEMERAL: OnceCell<Retained<WKWebsiteDataStore>> = const { OnceCell::new() };
+}
+
+fn view(id: &str) -> Option<View> {
+    VIEWS.with_borrow(|r| r.get(id).cloned())
+}
+
+fn main_thread() -> Res<MainThreadMarker> {
+    MainThreadMarker::new().ok_or_else(|| "The browser runs on the main thread.".into())
+}
+
+fn emit<T: Serialize + Clone>(app: &AppHandle, event: &str, payload: T) {
+    let _ = app.emit_to("main", event, payload);
+}
+
+#[derive(Serialize, Clone)]
+struct Id<'a> {
+    id: &'a str,
+}
+
+#[derive(Serialize, Clone)]
+struct Download<'a> {
+    id: &'a str,
+    url: &'a str,
+}
+
+/// SecTrustRef, which only the Security framework's crate types; passed through as is.
+#[repr(C)]
+struct SecTrust {
+    _private: [u8; 0],
+}
+
+unsafe impl RefEncode for SecTrust {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("__SecTrust", &[]));
+}
+
+/// CGColorRef, for the host's layer.
+#[repr(C)]
+struct CGColor {
+    _private: [u8; 0],
+}
+
+unsafe impl RefEncode for CGColor {
+    const ENCODING_REF: Encoding = Encoding::Pointer(&Encoding::Struct("CGColor", &[]));
+}
+
+define_class!(
+    /// Holds the web view over the app page. Opaque: a see-through window would otherwise show
+    /// the desktop behind a page that hasn't painted yet.
+    #[unsafe(super(NSView))]
+    struct GVHost;
+
+    impl GVHost {
+        /// Keys the page didn't use would go on up to the window's content view, which hands
+        /// them to the menu bar: a plain J on a page would run Next Changed File.
+        #[unsafe(method(keyDown:))]
+        fn key_down(&self, _event: &NSEvent) {}
+    }
+);
+
+impl GVHost {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
+        this.setWantsLayer(true);
+        unsafe {
+            let color: *mut CGColor = msg_send![&*NSColor::windowBackgroundColor(), CGColor];
+            let layer: *mut AnyObject = msg_send![&*this, layer];
+            if !layer.is_null() {
+                let _: () = msg_send![layer, setBackgroundColor: color];
+            }
+        }
+        this
+    }
+}
+
+struct WebIvars {
+    id: String,
+    app: AppHandle,
+}
+
+define_class!(
+    /// The page's view: its ⌘ keys go to the app (see keys.rs), and taking focus says so.
+    #[unsafe(super(WKWebView))]
+    #[ivars = WebIvars]
+    struct GVWebView;
+
+    impl GVWebView {
+        /// AppKit offers every ⌘ key to each view in the window; only the focused page answers.
+        #[unsafe(method(performKeyEquivalent:))]
+        fn perform_key_equivalent(&self, event: &NSEvent) -> Bool {
+            if !self.focused() {
+                return Bool::NO;
+            }
+            let key = key_of(&self.ivars().id, event);
+            match keys::route(&key) {
+                Route::Page => unsafe { msg_send![super(self), performKeyEquivalent: event] },
+                Route::System => Bool::NO,
+                Route::App => {
+                    emit(&self.ivars().app, "browser-key", key);
+                    Bool::YES
+                }
+            }
+        }
+
+        #[unsafe(method(becomeFirstResponder))]
+        fn become_first_responder(&self) -> Bool {
+            let took: Bool = unsafe { msg_send![super(self), becomeFirstResponder] };
+            if took.as_bool() {
+                emit(&self.ivars().app, "browser-focus", Id { id: &self.ivars().id });
+            }
+            took
+        }
+    }
+);
+
+impl GVWebView {
+    fn focused(&self) -> bool {
+        let responder = self.window().and_then(|w| w.firstResponder());
+        responder.is_some_and(|r| std::ptr::eq(Retained::as_ptr(&r).cast(), self))
+    }
+}
+
+fn key_of(id: &str, event: &NSEvent) -> Key {
+    let flags = event.modifierFlags();
+    let typed = event
+        .charactersIgnoringModifiers()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    Key {
+        id: id.into(),
+        key: keys::name(&typed),
+        code: keys::code(event.keyCode()),
+        meta_key: flags.contains(NSEventModifierFlags::Command),
+        ctrl_key: flags.contains(NSEventModifierFlags::Control),
+        alt_key: flags.contains(NSEventModifierFlags::Option),
+        shift_key: flags.contains(NSEventModifierFlags::Shift),
+        repeat: event.isARepeat(),
+    }
+}
+
+struct DelegateIvars {
+    id: String,
+    app: AppHandle,
+    web: Weak<GVWebView>,
+    /// A `browser-state` is on its way (COALESCE_SECS).
+    pending: Cell<bool>,
+    /// Loopback hosts whose self-signed certificate was let through.
+    trusted: RefCell<HashSet<String>>,
+    /// Where the page is going, kept while it loads: a failed load doesn't leave it in `URL`.
+    going: RefCell<String>,
+    failed: RefCell<Option<Failed>>,
+}
+
+define_class!(
+    /// Navigation, UI and state for one page: keeps it to web URLs, answers its dialogs, and
+    /// reports what the address bar shows.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = DelegateIvars]
+    struct GVDelegate;
+
+    impl GVDelegate {
+        #[unsafe(method(observeValueForKeyPath:ofObject:change:context:))]
+        fn observe(
+            &self,
+            _key: Option<&NSString>,
+            _object: Option<&AnyObject>,
+            _change: Option<&NSDictionary<NSKeyValueChangeKey, AnyObject>>,
+            _context: *mut c_void,
+        ) {
+            self.changed();
+        }
+
+        #[unsafe(method(gvSendState))]
+        fn send_state(&self) {
+            self.ivars().pending.set(false);
+            if let Some(web) = self.ivars().web.load() {
+                emit(&self.ivars().app, "browser-state", self.state(&web));
+            }
+        }
+    }
+
+    unsafe impl NSObjectProtocol for GVDelegate {}
+
+    unsafe impl WKNavigationDelegate for GVDelegate {
+        #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
+        fn decide_action(
+            &self,
+            _web: &WKWebView,
+            action: &WKNavigationAction,
+            decide: &DynBlock<dyn Fn(WKNavigationActionPolicy)>,
+        ) {
+            let url = url_text(unsafe { action.request().URL() });
+            // A link with `download`: nothing here saves files.
+            if unsafe { action.shouldPerformDownload() } {
+                self.download(&url);
+                return decide.call((WKNavigationActionPolicy::Cancel,));
+            }
+            let main = unsafe { action.targetFrame() }.is_none_or(|f| unsafe { f.isMainFrame() });
+            let clicked = unsafe { action.navigationType() } == WKNavigationType::LinkActivated;
+            let decision = match policy(&url, main, clicked) {
+                Policy::Allow => WKNavigationActionPolicy::Allow,
+                Policy::External => {
+                    open_external(&url);
+                    WKNavigationActionPolicy::Cancel
+                }
+                Policy::Cancel => WKNavigationActionPolicy::Cancel,
+            };
+            decide.call((decision,));
+        }
+
+        /// A file the page can't show (a zip, a dmg) would download: left to the system browser.
+        #[unsafe(method(webView:decidePolicyForNavigationResponse:decisionHandler:))]
+        fn decide_response(
+            &self,
+            _web: &WKWebView,
+            response: &WKNavigationResponse,
+            decide: &DynBlock<dyn Fn(WKNavigationResponsePolicy)>,
+        ) {
+            if unsafe { response.canShowMIMEType() } {
+                return decide.call((WKNavigationResponsePolicy::Allow,));
+            }
+            if unsafe { response.isForMainFrame() } {
+                self.download(&url_text(unsafe { response.response().URL() }));
+            }
+            decide.call((WKNavigationResponsePolicy::Cancel,));
+        }
+
+        #[unsafe(method(webView:didStartProvisionalNavigation:))]
+        fn did_start(&self, web: &WKWebView, _navigation: Option<&WKNavigation>) {
+            *self.ivars().going.borrow_mut() = url_text(unsafe { web.URL() });
+            self.ivars().failed.take();
+            self.changed();
+        }
+
+        #[unsafe(method(webView:didCommitNavigation:))]
+        fn did_commit(&self, _web: &WKWebView, _navigation: Option<&WKNavigation>) {
+            self.ivars().failed.take();
+            self.changed();
+        }
+
+        #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
+        fn did_fail(&self, _web: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
+            // Cancelled: a new load replaced it, or the policy above stopped it.
+            const CANCELLED: isize = -999;
+            const STOPPED_BY_POLICY: isize = 102;
+            if matches!(error.code(), CANCELLED | STOPPED_BY_POLICY) {
+                return;
+            }
+            let url = self.ivars().going.borrow().clone();
+            let message = error.localizedDescription().to_string();
+            *self.ivars().failed.borrow_mut() = Some(Failed { url, message });
+            self.changed();
+        }
+
+        /// A dev server's self-signed certificate passes on this machine only, marked insecure.
+        #[unsafe(method(webView:didReceiveAuthenticationChallenge:completionHandler:))]
+        fn challenge(
+            &self,
+            _web: &WKWebView,
+            challenge: &NSURLAuthenticationChallenge,
+            answer: &DynBlock<dyn Fn(Disposition, *mut NSURLCredential)>,
+        ) {
+            match self.trust(challenge) {
+                Some(credential) => answer.call((Disposition::UseCredential, credential)),
+                None => answer.call((Disposition::PerformDefaultHandling, std::ptr::null_mut())),
+            }
+        }
+
+        /// The page's process crashed or was reclaimed: load it again rather than stay blank.
+        #[unsafe(method(webViewWebContentProcessDidTerminate:))]
+        fn process_ended(&self, web: &WKWebView) {
+            unsafe { web.reload() };
+        }
+    }
+
+    unsafe impl WKUIDelegate for GVDelegate {
+        /// A link to a new window (target=_blank, window.open) opens here: tabs come from the app.
+        #[unsafe(method_id(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
+        fn new_window(
+            &self,
+            web: &WKWebView,
+            _configuration: &WKWebViewConfiguration,
+            action: &WKNavigationAction,
+            _features: &WKWindowFeatures,
+        ) -> Option<Retained<WKWebView>> {
+            unsafe { web.loadRequest(&action.request()) };
+            None
+        }
+
+        #[unsafe(method(webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:))]
+        fn alert(
+            &self,
+            web: &WKWebView,
+            message: &NSString,
+            frame: &WKFrameInfo,
+            done: &DynBlock<dyn Fn()>,
+        ) {
+            let done = done.copy();
+            sheet(web, message, frame, false, move |_| done.call(()));
+        }
+
+        #[unsafe(method(webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:))]
+        fn confirm(
+            &self,
+            web: &WKWebView,
+            message: &NSString,
+            frame: &WKFrameInfo,
+            done: &DynBlock<dyn Fn(Bool)>,
+        ) {
+            let done = done.copy();
+            sheet(web, message, frame, true, move |ok| done.call((Bool::new(ok),)));
+        }
+
+        /// prompt() answers as if cancelled: a text field in a sheet isn't worth it here.
+        #[unsafe(method(webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:))]
+        fn prompt(
+            &self,
+            _web: &WKWebView,
+            _prompt: &NSString,
+            _default: Option<&NSString>,
+            _frame: &WKFrameInfo,
+            done: &DynBlock<dyn Fn(*mut NSString)>,
+        ) {
+            done.call((std::ptr::null_mut(),));
+        }
+
+        /// An <input type=file>: the open panel, as a sheet on the app's window.
+        #[unsafe(method(webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:))]
+        fn open_panel(
+            &self,
+            web: &WKWebView,
+            parameters: &WKOpenPanelParameters,
+            _frame: &WKFrameInfo,
+            done: &DynBlock<dyn Fn(*mut NSArray<NSURL>)>,
+        ) {
+            let Some(window) = web.window() else {
+                return done.call((std::ptr::null_mut(),));
+            };
+            let panel = NSOpenPanel::openPanel(self.mtm());
+            panel.setCanChooseFiles(true);
+            panel.setAllowsMultipleSelection(unsafe { parameters.allowsMultipleSelection() });
+            panel.setCanChooseDirectories(unsafe { parameters.allowsDirectories() });
+            let done = done.copy();
+            let chosen = panel.clone();
+            let block = RcBlock::new(move |response: NSModalResponse| {
+                let urls = (response == NSModalResponseOK).then(|| chosen.URLs());
+                let urls = urls.map_or(std::ptr::null_mut(), |u| Retained::as_ptr(&u).cast_mut());
+                done.call((urls,));
+            });
+            panel.beginSheetModalForWindow_completionHandler(&window, &block);
+        }
+    }
+);
+
+impl GVDelegate {
+    fn new(mtm: MainThreadMarker, id: &str, app: AppHandle, web: &GVWebView) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(DelegateIvars {
+            id: id.into(),
+            app,
+            web: Weak::new(web),
+            pending: Cell::new(false),
+            trusted: RefCell::default(),
+            going: RefCell::default(),
+            failed: RefCell::default(),
+        });
+        unsafe { msg_send![super(this), init] }
+    }
+
+    fn changed(&self) {
+        if !self.ivars().pending.replace(true) {
+            unsafe {
+                self.performSelector_withObject_afterDelay(sel!(gvSendState), None, COALESCE_SECS)
+            };
+        }
+    }
+
+    /// The credential that lets a loopback server's own certificate through, remembering it.
+    fn trust(&self, challenge: &NSURLAuthenticationChallenge) -> Option<*mut NSURLCredential> {
+        let space = challenge.protectionSpace();
+        let host = space.host().to_string();
+        let server_trust = unsafe { NSURLAuthenticationMethodServerTrust };
+        if !space.authenticationMethod().isEqualToString(server_trust) || !is_loopback(&host) {
+            return None;
+        }
+        let trust: *mut SecTrust = unsafe { msg_send![&*space, serverTrust] };
+        if trust.is_null() {
+            return None;
+        }
+        self.ivars()
+            .trusted
+            .borrow_mut()
+            .insert(host.to_ascii_lowercase());
+        self.changed();
+        Some(unsafe { msg_send![NSURLCredential::class(), credentialForTrust: trust] })
+    }
+
+    fn download(&self, url: &str) {
+        emit(
+            &self.ivars().app,
+            "browser-download",
+            Download {
+                id: &self.ivars().id,
+                url,
+            },
+        );
+    }
+
+    fn state(&self, web: &WKWebView) -> State {
+        let url = url_text(unsafe { web.URL() });
+        let insecure = Url::parse(&url).is_ok_and(|u| {
+            u.scheme() == "https"
+                && u.host_str().is_some_and(|h| {
+                    let h = h.trim_start_matches('[').trim_end_matches(']');
+                    self.ivars()
+                        .trusted
+                        .borrow()
+                        .contains(&h.to_ascii_lowercase())
+                })
+        });
+        unsafe {
+            State {
+                id: self.ivars().id.clone(),
+                title: web.title().map(|t| t.to_string()).unwrap_or_default(),
+                url,
+                loading: web.isLoading(),
+                progress: web.estimatedProgress(),
+                can_back: web.canGoBack(),
+                can_forward: web.canGoForward(),
+                insecure,
+                failed: self.ivars().failed.borrow().clone(),
+            }
+        }
+    }
+}
+
+fn url_text(url: Option<Retained<NSURL>>) -> String {
+    url.and_then(|u| u.absoluteString())
+        .map(|s| s.to_string())
+        .unwrap_or_default()
+}
+
+fn ns_url(url: &str) -> Option<Retained<NSURL>> {
+    NSURL::URLWithString(&NSString::from_str(url))
+}
+
+fn open_external(url: &str) {
+    if let Some(url) = ns_url(url) {
+        NSWorkspace::sharedWorkspace().openURL(&url);
+    }
+}
+
+/// alert() and confirm() as a sheet on the app's window, named for the page's host.
+fn sheet(
+    web: &WKWebView,
+    message: &NSString,
+    frame: &WKFrameInfo,
+    cancel: bool,
+    done: impl Fn(bool) + 'static,
+) {
+    let (Some(window), Some(mtm)) = (web.window(), MainThreadMarker::new()) else {
+        return done(false);
+    };
+    let host = unsafe { frame.request().URL() }
+        .and_then(|u| u.host())
+        .map_or_else(|| "This page".into(), |h| h.to_string());
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(&format!("{host} says")));
+    alert.setInformativeText(message);
+    alert.addButtonWithTitle(ns_string!("OK"));
+    if cancel {
+        alert.addButtonWithTitle(ns_string!("Cancel"));
+    }
+    let block =
+        RcBlock::new(move |response: NSModalResponse| done(response == NSAlertFirstButtonReturn));
+    alert.beginSheetModalForWindow_completionHandler(&window, Some(&block));
+}
+
+fn data_store(mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore> {
+    if available!(macos = 14.0) {
+        unsafe { WKWebsiteDataStore::dataStoreForIdentifier(&NSUUID::from_bytes(STORE), mtm) }
+    } else {
+        EPHEMERAL.with(|s| {
+            s.get_or_init(|| unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) })
+                .clone()
+        })
+    }
+}
+
+/// The app page's own web view, beside the hosts in the window's content view.
+fn app_page(host: &NSView) -> Option<Retained<NSView>> {
+    let parent = unsafe { host.superview() }?;
+    let found = parent
+        .subviews()
+        .iter()
+        .find(|v| v.isKindOfClass(WKWebView::class()));
+    found
+}
+
+/// Focus back to the app page, when it was in this view's page.
+fn release_focus(view: &View) {
+    if view.web.focused() {
+        if let (Some(window), Some(page)) = (view.web.window(), app_page(&view.host)) {
+            window.makeFirstResponder(Some(&page));
+        }
+    }
+}
+
+fn load(web: &WKWebView, url: &str) -> Res<()> {
+    let url = ns_url(url).ok_or("Not a URL.")?;
+    unsafe { web.loadRequest(&NSURLRequest::requestWithURL(&url)) };
+    Ok(())
+}
+
+/// The view for tab `id` of worktree `root`, loading `url`; hidden until placed. One that is
+/// already open stays as it is.
+pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) -> Res<State> {
+    let mtm = main_thread()?;
+    if let Some(v) = view(id) {
+        return Ok(v.delegate.state(&v.web));
+    }
+    if !loadable(url) {
+        return Err(format!("Not a web page: {url}"));
+    }
+    let ns_window = window
+        .ns_window()
+        .map_err(|e| e.to_string())?
+        .cast::<NSWindow>();
+    let content = unsafe { ns_window.as_ref() }
+        .and_then(|w| w.contentView())
+        .ok_or("The window isn't ready.")?;
+
+    let config = unsafe { WKWebViewConfiguration::new(mtm) };
+    unsafe {
+        config.setWebsiteDataStore(&data_store(mtm));
+        // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
+        config.setUserContentController(&WKUserContentController::new(mtm));
+        config
+            .preferences()
+            .setJavaScriptCanOpenWindowsAutomatically(false);
+    }
+    let web = GVWebView::alloc(mtm).set_ivars(WebIvars {
+        id: id.into(),
+        app: window.app_handle().clone(),
+    });
+    let web: Retained<GVWebView> =
+        unsafe { msg_send![super(web), initWithFrame: NSRect::ZERO, configuration: &*config] };
+    if available!(macos = 13.3) {
+        unsafe { web.setInspectable(true) };
+    }
+    web.setAutoresizingMask(
+        NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
+    );
+    let delegate = GVDelegate::new(mtm, id, window.app_handle().clone(), &web);
+    unsafe {
+        web.setNavigationDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        web.setUIDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+        for key in OBSERVED {
+            web.addObserver_forKeyPath_options_context(
+                &delegate,
+                &NSString::from_str(key),
+                NSKeyValueObservingOptions::empty(),
+                std::ptr::null_mut(),
+            );
+        }
+    }
+
+    let host = GVHost::new(mtm);
+    host.setHidden(true);
+    // Kept to the top as the window resizes, until the page places it again.
+    host.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
+    host.addSubview(&web);
+    content.addSubview_positioned_relativeTo(&host, NSWindowOrderingMode::Above, None);
+    load(&web, url)?;
+
+    let state = delegate.state(&web);
+    VIEWS.with_borrow_mut(|r| {
+        r.insert(
+            id,
+            root,
+            View {
+                host,
+                web,
+                delegate,
+            },
+        )
+    });
+    Ok(state)
+}
+
+/// Shows the view at `rect`, in the app page's points.
+pub fn place(id: &str, rect: Rect) -> Res<()> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    let page = app_page(&v.host).ok_or(GONE)?;
+    let parent = unsafe { v.host.superview() }.ok_or(GONE)?;
+    // From the page's top left, in its own coordinates whichever way up they run.
+    let y = if page.isFlipped() {
+        rect.y
+    } else {
+        page.bounds().size.height - rect.y - rect.h
+    };
+    let rect = NSRect::new(NSPoint::new(rect.x, y), NSSize::new(rect.w, rect.h));
+    let frame = page.convertRect_toView(rect, Some(&parent));
+    if v.host.frame() != frame {
+        v.host.setFrame(frame);
+    }
+    v.host.setHidden(false);
+    Ok(())
+}
+
+/// Hidden, WebKit slows its timers and animation frames.
+pub fn hide(id: &str) {
+    if let (Ok(_), Some(v)) = (main_thread(), view(id)) {
+        release_focus(&v);
+        v.host.setHidden(true);
+    }
+}
+
+pub fn close(id: &str) {
+    if main_thread().is_ok() {
+        if let Some(v) = VIEWS.with_borrow_mut(|r| r.remove(id)) {
+            destroy(v);
+        }
+    }
+}
+
+/// A worktree removed: its pages go with it.
+pub fn close_root(root: &str) {
+    if main_thread().is_ok() {
+        VIEWS
+            .with_borrow_mut(|r| r.remove_root(root))
+            .into_iter()
+            .for_each(destroy);
+    }
+}
+
+/// The app page reloaded: its tabs come back as new views.
+pub fn close_all() {
+    if main_thread().is_ok() {
+        VIEWS
+            .with_borrow_mut(|r| r.take_all())
+            .into_iter()
+            .for_each(destroy);
+    }
+}
+
+/// In this order: a page left loading, observed, with a message handler (they're held strongly)
+/// or a delegate would keep its web content process alive.
+fn destroy(v: View) {
+    unsafe {
+        v.web.stopLoading();
+        NSObject::cancelPreviousPerformRequestsWithTarget(&v.delegate);
+        for key in OBSERVED {
+            v.web
+                .removeObserver_forKeyPath(&v.delegate, &NSString::from_str(key));
+        }
+        v.web
+            .configuration()
+            .userContentController()
+            .removeAllScriptMessageHandlers();
+        v.web.setNavigationDelegate(None);
+        v.web.setUIDelegate(None);
+    }
+    release_focus(&v);
+    v.host.removeFromSuperview();
+}
+
+pub fn navigate(id: &str, url: &str) -> Res<()> {
+    main_thread()?;
+    if !loadable(url) {
+        return Err(format!("Not a web page: {url}"));
+    }
+    load(&view(id).ok_or(GONE)?.web, url)
+}
+
+pub fn go(id: &str, to: Go) -> Res<()> {
+    main_thread()?;
+    let web = view(id).ok_or(GONE)?.web;
+    unsafe {
+        match to {
+            Go::Back => drop(web.goBack()),
+            Go::Forward => drop(web.goForward()),
+            Go::Reload => drop(web.reload()),
+            Go::HardReload => drop(web.reloadFromOrigin()),
+            Go::Stop => web.stopLoading(),
+        }
+    }
+    Ok(())
+}
+
+/// Focus to the page (`page`) or back to the app page, as ⌘L does for the address bar.
+pub fn focus(id: &str, page: bool) {
+    let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
+        return;
+    };
+    if page {
+        if let Some(window) = v.web.window() {
+            window.makeFirstResponder(Some(&v.web));
+        }
+    } else {
+        release_focus(&v);
+    }
+}
+
+/// The open views of a worktree, as their tabs would show them.
+pub fn list(root: &str) -> Vec<State> {
+    if main_thread().is_err() {
+        return Vec::new();
+    }
+    let views: Vec<View> = VIEWS.with_borrow(|r| r.in_root(root).map(|v| v.1.clone()).collect());
+    views.iter().map(|v| v.delegate.state(&v.web)).collect()
+}
+
+/// The page as it shows, as a JPEG data URL: stands in for the view while something of the app
+/// page's covers it. None when the view is gone or WebKit had none. Waits on the main thread.
+pub fn snapshot(app: &AppHandle, id: String) -> Res<Option<String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let Some(v) = view(&id) else {
+            let _ = tx.send(None);
+            return;
+        };
+        let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+            let _ = tx.send(unsafe { image.as_ref() }.and_then(jpeg));
+        });
+        unsafe {
+            v.web
+                .takeSnapshotWithConfiguration_completionHandler(None, &block)
+        };
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .ok()
+        .flatten())
+}
+
+fn jpeg(image: &NSImage) -> Option<String> {
+    let tiff = image.TIFFRepresentation()?;
+    let bitmap = NSBitmapImageRep::imageRepWithData(&tiff)?;
+    let quality = NSNumber::new_f64(0.7);
+    let properties = NSDictionary::<NSString, AnyObject>::from_slices(
+        &[unsafe { NSImageCompressionFactor }],
+        &[&*quality],
+    );
+    let data = unsafe {
+        bitmap.representationUsingType_properties(NSBitmapImageFileType::JPEG, &properties)
+    }?;
+    let base64 = data.base64EncodedStringWithOptions(NSDataBase64EncodingOptions::empty());
+    Some(format!("data:image/jpeg;base64,{base64}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use objc2::runtime::AnyClass;
+    use objc2_foundation::NSURLProtectionSpace;
+
+    /// Each would only fail on the main thread with a page open: registering a class checks its
+    /// methods against their protocols (debug builds), and raw messages are checked here.
+    #[test]
+    fn classes_and_raw_messages_match_their_declarations() {
+        let _ = (GVHost::class(), GVWebView::class(), GVDelegate::class());
+        let layer = AnyClass::get(c"CALayer").unwrap();
+        layer
+            .verify_sel::<(*mut CGColor,), ()>(sel!(setBackgroundColor:))
+            .unwrap();
+        NSColor::class()
+            .verify_sel::<(), *mut CGColor>(sel!(CGColor))
+            .unwrap();
+        NSURLProtectionSpace::class()
+            .verify_sel::<(), *mut SecTrust>(sel!(serverTrust))
+            .unwrap();
+        NSURLCredential::class()
+            .metaclass()
+            .verify_sel::<(*mut SecTrust,), *mut NSURLCredential>(sel!(credentialForTrust:))
+            .unwrap();
+    }
+}

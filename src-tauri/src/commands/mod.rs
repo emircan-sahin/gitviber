@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod branches;
+pub mod browser;
 pub mod changes;
 pub mod files;
 pub mod github;
