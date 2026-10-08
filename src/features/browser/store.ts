@@ -34,8 +34,14 @@ listenHere<BrowserKey>("browser-key", ({ payload: { id, ...key } }) => {
   if (!keyHandlers.get(id)?.(e)) window.dispatchEvent(e);
 }).catch(() => {});
 
+// The page whose view has the keys, until this page takes them back (its window gets focus).
+let focusedPage: string | null = null;
+export const pageHasFocus = (id: string) => focusedPage === id;
+window.addEventListener("focus", () => (focusedPage = null));
+
 // A page took focus: keys now go to it, so nothing in this page should look focused.
-listenHere("browser-focus", () => {
+listenHere<{ id: string }>("browser-focus", ({ payload: { id } }) => {
+  focusedPage = id;
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }).catch(() => {});
 

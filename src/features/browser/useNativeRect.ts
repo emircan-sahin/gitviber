@@ -2,7 +2,8 @@ import { type RefObject, useEffect, useState } from "react";
 import { browserApi } from "@/lib/api";
 import { useSettings } from "@/lib/settings";
 import { useTerminalsMaximized } from "@/lib/terminal/terminals";
-import { covered, watchOverlays } from "./overlays";
+import { coveredBy, watchOverlays } from "./overlays";
+import { pageHasFocus } from "./store";
 
 /** Points to the half, as AppKit lays views out on a 2x screen. */
 const half = (v: number) => Math.round(v * 2) / 2;
@@ -10,7 +11,8 @@ const half = (v: number) => Math.round(v * 2) / 2;
 /**
  * Keeps tab `id`'s native view over `area` while `live`: placed as the area moves or resizes,
  * hidden while it's too small or the maximized terminal covers it. While this page draws over it
- * (a menu, a dialog, a toast) the view steps aside, and the picture it returns stands in.
+ * (a menu, a dialog, a toast) the view steps aside, and the picture it returns stands in. `area`
+ * takes focus meanwhile (tabIndex -1) and keeps what's typed there to itself.
  */
 export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, live: boolean): string | null {
   // The interface scale is the app page's zoom: its CSS pixels are that many points.
@@ -28,6 +30,8 @@ export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, l
     // The rect last placed at, "" while hidden.
     let placed = "";
     let aside = false;
+    // The page had the keys when it stepped aside for a toast or a menu: they go back to it after.
+    let refocus = false;
     let gone = false;
     const hide = () => {
       placed = "";
@@ -40,9 +44,15 @@ export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, l
         if (placed) hide();
         return;
       }
-      if (covered(r)) {
+      const over = coveredBy(r);
+      if (over) {
         if (aside) return;
         aside = true;
+        refocus = over === "overlay" && pageHasFocus(id);
+        // A dialog (⌘P's field) gets the keys right away, not once the view is hidden. Typed
+        // under a toast they land on the area, not on the app's one-key commands (J, S).
+        if (over === "dialog") void browserApi.focus(id, false).catch(() => {});
+        else if (refocus) el.focus();
         // The picture first: hidden, the view would have none to give.
         void browserApi
           .snapshot(id)
@@ -60,7 +70,12 @@ export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, l
       if (key === placed) return;
       placed = key;
       browserApi.place(id, rect).then(
-        () => !gone && setCover(null),
+        () => {
+          if (gone) return;
+          setCover(null);
+          if (refocus && document.activeElement === el) void browserApi.focus(id, true).catch(() => {});
+          refocus = false;
+        },
         () => (placed = ""),
       );
     };

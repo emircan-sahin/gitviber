@@ -6,14 +6,15 @@ const OVERLAYS = "[data-radix-popper-content-wrapper],[data-modal],[role=dialog]
 /** A dialog (⌘P, a confirm) owns the keys and the eye wherever it sits. */
 const ALWAYS = "[data-modal],[role=dialog]";
 
-/** Whether anything drawn over this page reaches into `r`, a rect in the page's coordinates. */
-export function covered(r: DOMRect): boolean {
+/** What's drawn over this page and reaches into `r` (a rect in its coordinates): a dialog, anything else, or nothing. */
+export function coveredBy(r: DOMRect): "dialog" | "overlay" | null {
+  let found: "overlay" | null = null;
   for (const el of document.querySelectorAll(OVERLAYS)) {
-    if (el.matches(ALWAYS)) return true;
+    if (el.matches(ALWAYS)) return "dialog";
     const o = el.getBoundingClientRect();
-    if (o.width > 0 && o.height > 0 && o.left < r.right && o.right > r.left && o.top < r.bottom && o.bottom > r.top) return true;
+    if (o.width > 0 && o.height > 0 && o.left < r.right && o.right > r.left && o.top < r.bottom && o.bottom > r.top) found = "overlay";
   }
-  return false;
+  return found;
 }
 
 const listeners = new Set<() => void>();

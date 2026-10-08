@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { browserApi, errorMessage } from "@/lib/api";
-import { pageLabel } from "@/lib/browser/url";
+import { BLANK, pageLabel } from "@/lib/browser/url";
 import { commandIn } from "@/lib/commands/keybindings";
 import type { Selection } from "@/lib/repo/selection";
 import { Placeholder } from "@/features/viewer/FileHeader";
@@ -36,7 +36,7 @@ export function BrowserView({ tab, sel, root, onUpdate }: { tab: Tab; sel: Brows
         setBrowserState(s);
         setMade(true);
         // A new tab starts at its address bar.
-        if (s.url === "" || s.url === "about:blank") field.current?.focus();
+        if (sel.url === BLANK) field.current?.focus();
       },
       (e) => live && setError(errorMessage(e)),
     );
@@ -83,13 +83,15 @@ export function BrowserView({ tab, sel, root, onUpdate }: { tab: Tab; sel: Brows
     <div
       className="flex min-h-0 flex-1 flex-col"
       onKeyDown={(e) => {
-        if (!runOwn(e.nativeEvent)) return;
+        // Typed while the page steps aside (useNativeRect): the page's, so no app command runs.
+        const forPage = e.target === area.current && !e.metaKey && !e.ctrlKey;
+        if (!runOwn(e.nativeEvent) && !forPage) return;
         e.preventDefault();
         e.stopPropagation();
       }}
     >
       <AddressBar id={id} url={sel.url} state={state} field={field} />
-      <div ref={area} className="relative min-h-0 flex-1 bg-background">
+      <div ref={area} tabIndex={-1} className="relative min-h-0 flex-1 bg-background outline-none">
         {error ? (
           <Placeholder title="The browser can't open here" detail={error} />
         ) : failed ? (
