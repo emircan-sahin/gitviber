@@ -274,4 +274,251 @@ mod tests {
         assert_eq!(r.take_all(), [4]);
         assert_eq!(r.get("d"), None);
     }
+
+    /// A cheap generator, so the fuzz below is the same on every run.
+    fn lcg(seed: &mut u64) -> usize {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (*seed >> 33) as usize
+    }
+
+    #[test]
+    fn no_spelling_of_a_scheme_gets_a_page_past_the_policy() {
+        for no in [
+            "JavaScript:alert(1)",
+            "JAVASCRIPT:alert(1)",
+            " javascript:alert(1)",
+            "javascript://example.com/%0aalert(1)",
+            "vbscript:msgbox(1)",
+            "FILE:///etc/hosts",
+            "file:/etc/hosts",
+            "file://localhost/etc/hosts",
+            "view-source:http://example.com/",
+            "about:BLANK",
+            "about:blank#x",
+            "about:blank?x",
+            "about:",
+            "applewebdata://x/",
+            "webkit-fake-url://x/",
+            "x-apple.systempreferences:com.apple.preference",
+            "vscode://file/tmp/x",
+            "tauri://localhost/",
+            "TAURI://localhost/",
+            "ipc://localhost/",
+            "asset://localhost/x",
+            "ftp://example.com/",
+            "ws://localhost:3000/",
+            "wss://localhost:3000/",
+            "",
+            "http://",
+            "https://",
+            "http://[::1",
+        ] {
+            assert_eq!(policy(no, true, true), Policy::Cancel, "{no}");
+            assert!(!loadable(no), "{no}");
+        }
+        for ok in [
+            "HTTP://EXAMPLE.COM/",
+            "https://[::1]:8443/",
+            "http://user:pw@localhost:3000/",
+            "http:example.com",
+        ] {
+            assert!(loadable(ok), "{ok}");
+        }
+        // A frame may hold what its page builds, never script or files.
+        for no in [
+            "javascript:1",
+            "file:///tmp/x",
+            "tauri://localhost/",
+            "mailto:a@example.com",
+        ] {
+            assert_ne!(policy(no, false, true), Policy::Allow, "{no}");
+        }
+        assert_eq!(policy("about:srcdoc", false, false), Policy::Allow);
+        // Mail and phone leave from the page itself only, clicked.
+        for (url, main, clicked) in [
+            ("mailto:a@example.com", false, true),
+            ("MAILTO:a@example.com", true, false),
+            ("tel:+15550100", false, false),
+        ] {
+            assert_eq!(policy(url, main, clicked), Policy::Cancel, "{url}");
+        }
+        assert_eq!(policy("MAILTO:a@example.com", true, true), Policy::External);
+    }
+
+    #[test]
+    fn whatever_the_policy_allows_in_a_page_is_http_https_or_the_blank_one() {
+        let parts = [
+            "http",
+            "https",
+            "javascript",
+            "file",
+            "data",
+            "blob",
+            "about",
+            "mailto",
+            "tauri",
+            ":",
+            "//",
+            "/",
+            "blank",
+            "srcdoc",
+            "localhost",
+            "[::1]",
+            "@",
+            "%0a",
+            "#",
+            "?",
+            "ü",
+            " ",
+            "\t",
+            "\0",
+            "A",
+            "1",
+        ];
+        let mut seed = 42;
+        for _ in 0..20_000 {
+            let mut url = String::new();
+            for _ in 0..=lcg(&mut seed) % 7 {
+                url.push_str(parts[lcg(&mut seed) % parts.len()]);
+            }
+            let main = lcg(&mut seed).is_multiple_of(2);
+            let clicked = lcg(&mut seed).is_multiple_of(2);
+            let got = policy(&url, main, clicked);
+            let Ok(parsed) = Url::parse(&url) else {
+                assert_eq!(got, Policy::Cancel, "{url:?}");
+                continue;
+            };
+            match got {
+                Policy::Allow if main => assert!(
+                    matches!(parsed.scheme(), "http" | "https") || parsed.as_str() == "about:blank",
+                    "{url:?}"
+                ),
+                Policy::Allow => assert!(
+                    matches!(
+                        parsed.scheme(),
+                        "http" | "https" | "about" | "data" | "blob"
+                    ),
+                    "{url:?}"
+                ),
+                Policy::External => assert!(
+                    main && clicked && matches!(parsed.scheme(), "mailto" | "tel" | "sms"),
+                    "{url:?}"
+                ),
+                Policy::Cancel => {}
+            }
+        }
+    }
+
+    #[test]
+    fn only_this_machine_counts_as_loopback() {
+        for ok in [
+            "LOCALHOST",
+            "Foo.LocalHost",
+            "a.b.localhost",
+            "127.0.0.1",
+            "127.255.255.254",
+            "[::1]",
+            "0:0:0:0:0:0:0:1",
+        ] {
+            assert!(is_loopback(ok), "{ok}");
+        }
+        for no in [
+            "localhost.evil.example",
+            "localhost.example.com",
+            "127.0.0.1.nip.io",
+            "evil-localhost",
+            "xlocalhost",
+            "localhostx",
+            "localhost.",
+            "localhost:3000",
+            "127.0.0.1:3000",
+            ".localhost.example",
+            "0.0.0.0",
+            "::",
+            "[::]",
+            "::ffff:127.0.0.1",
+            "2130706433",
+            "0x7f.0.0.1",
+            "127.1",
+            "192.168.1.1",
+            "fe80::1",
+            " localhost",
+            "localhost ",
+            "",
+        ] {
+            assert!(!is_loopback(no), "{no}");
+        }
+        // Nothing on the internet ends up loopback by what it's prefixed with.
+        let mut seed = 9;
+        let tail = [
+            "evil.example",
+            "nip.io",
+            "com",
+            "localhost.example",
+            "127.0.0.1.example",
+        ];
+        for _ in 0..2000 {
+            let head = ["localhost", "127.0.0.1", "[::1]", "::1"][lcg(&mut seed) % 4];
+            let sep = [".", "-", "", "_"][lcg(&mut seed) % 4];
+            let host = format!("{head}{sep}{}", tail[lcg(&mut seed) % tail.len()]);
+            assert!(!is_loopback(&host), "{host}");
+        }
+    }
+
+    #[test]
+    fn the_registry_matches_a_plain_model_through_random_opens_and_closes() {
+        let mut r = Registry::new();
+        let mut model: Vec<(String, String, u32)> = Vec::new();
+        let mut seed = 3;
+        for n in 0..5000u32 {
+            let id = format!("t{}", lcg(&mut seed) % 40);
+            let root = format!("/w/{}", lcg(&mut seed) % 4);
+            match lcg(&mut seed) % 5 {
+                // create() opens an id once: one already open stays as it is.
+                0 | 1 => {
+                    if r.get(&id).is_none() {
+                        r.insert(&id, &root, n);
+                        model.push((id, root, n));
+                    }
+                }
+                2 => {
+                    let at = model.iter().position(|v| v.0 == id);
+                    assert_eq!(r.remove(&id), at.map(|at| model.remove(at).2));
+                }
+                3 => {
+                    let gone: Vec<u32> =
+                        model.iter().filter(|v| v.1 == root).map(|v| v.2).collect();
+                    model.retain(|v| v.1 != root);
+                    assert_eq!(r.remove_root(&root), gone);
+                }
+                _ => {
+                    let open: Vec<&str> = model
+                        .iter()
+                        .filter(|v| v.1 == root)
+                        .map(|v| v.0.as_str())
+                        .collect();
+                    assert_eq!(r.in_root(&root).map(|v| v.0).collect::<Vec<_>>(), open);
+                }
+            }
+            for v in &model {
+                assert_eq!(r.get(&v.0), Some(&v.2));
+            }
+        }
+        assert_eq!(r.take_all(), model.iter().map(|v| v.2).collect::<Vec<_>>());
+        assert_eq!(r.in_root("/w/0").count(), 0);
+    }
+
+    #[test]
+    fn closing_a_root_leaves_other_roots_with_the_same_prefix() {
+        let mut r = Registry::new();
+        r.insert("a", "/w/one", 1);
+        r.insert("b", "/w/one-two", 2);
+        r.insert("c", "/w/one/", 3);
+        assert_eq!(r.remove_root("/w/one"), [1]);
+        assert_eq!(r.get("b"), Some(&2));
+        assert_eq!(r.get("c"), Some(&3));
+        assert_eq!(r.remove_root("/w/missing"), Vec::<i32>::new());
+    }
 }

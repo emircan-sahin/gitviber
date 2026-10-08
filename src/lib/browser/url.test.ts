@@ -61,3 +61,93 @@ test("a page is named by its address without the scheme", () => {
   assert.equal(pageHost("http://localhost:5173/a"), "localhost:5173");
   assert.equal(pageHost(BLANK), "");
 });
+
+test("odd but valid addresses: IPv6, unicode hosts, case, stray spaces", () => {
+  const cases: [string, string][] = [
+    ["LOCALHOST", "http://localhost/"],
+    ["App.LocalHost:3000", "http://app.localhost:3000/"],
+    ["[::1]", "http://[::1]/"],
+    ["[::1]:3000/a?b#c", "http://[::1]:3000/a?b#c"],
+    ["0.0.0.0:3000", "http://0.0.0.0:3000/"],
+    ["10.0.0.1", "http://10.0.0.1/"],
+    ["00080", "http://localhost:80/"],
+    ["65535", "http://localhost:65535/"],
+    ["\tlocalhost:5173\n", "http://localhost:5173/"],
+    ["bücher.example", "https://xn--bcher-kva.example/"],
+    ["Example.COM/Path", "https://example.com/Path"],
+    ["example.com?q=1", "https://example.com/?q=1"],
+    ["example.com#top", "https://example.com/#top"],
+    ["HTTP://LOCALHOST:3000", "http://localhost:3000/"],
+    ["http://example.com\\@evil.example", "http://example.com/@evil.example"],
+  ];
+  for (const [typed, url] of cases) assert.equal(normalizeUrl(typed), url, typed);
+});
+
+test("nothing that isn't a web page gets through, however it's spelled", () => {
+  for (const typed of [
+    "JavaScript:alert(1)",
+    "javascript://example.com/%0aalert(1)",
+    "JAVASCRIPT:alert(1)",
+    "vbscript:msgbox(1)",
+    "view-source:http://example.com",
+    "blob:https://example.com/1",
+    "data:,x",
+    "file:/etc/hosts",
+    "FILE:///etc/hosts",
+    "x-apple.systempreferences:com.apple.preference",
+    "vscode://file/tmp/x",
+    "ABOUT:BLANK",
+    "about:blank#x",
+    "http:",
+    "https://",
+    "http:///",
+    "http:example.com",
+    "//example.com",
+    "/path",
+    "?q",
+    "#x",
+    "::1",
+    "example.com:abc",
+    "example.com:8443:1",
+    "localhost:",
+    "localhost:99999",
+    "1.2.3.4.5",
+    "[fe80::1%en0]:3000",
+    "127.0.0.1:8080/a b",
+  ]) {
+    assert.equal(normalizeUrl(typed), null, typed);
+  }
+});
+
+// A cheap fuzz: whatever comes out loads as typed again and is a page a stored tab may reopen.
+test("what normalizeUrl returns is a web page, and normalizing it again changes nothing", () => {
+  const parts = ["localhost", "127.0.0.1", "[::1]", "example.com", "a.b", ":", "5173", "/", "?", "#", "@", ".", "-", "_", "%", "\\", "http://", "https://", "javascript:", "file:", "data:", "ü", "例", " ", "\t", "0", "65536", "user:pw@", "about:blank"];
+  let seed = 7;
+  const rand = (n: number) => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff), seed % n);
+  for (let i = 0; i < 5000; i++) {
+    let typed = "";
+    for (let j = rand(6) + 1; j > 0; j--) typed += parts[rand(parts.length)];
+    const url = normalizeUrl(typed);
+    if (url === null) continue;
+    assert.ok(isPageUrl(url), `${JSON.stringify(typed)} -> ${url}`);
+    assert.equal(normalizeUrl(url), url, JSON.stringify(typed));
+    assert.ok(url === BLANK || /^https?:\/\/[^/]/.test(url), `${JSON.stringify(typed)} -> ${url}`);
+  }
+});
+
+test("a stored tab's address is refused unless it's exactly as the parser writes it", () => {
+  for (const url of ["http://localhost", "HTTP://localhost/", "about:blank#x", " http://localhost/", "", "about:srcdoc", "data:text/html,x"]) {
+    assert.equal(isPageUrl(url), false, url);
+  }
+  for (const url of [null, undefined, {}, [], 0, true, new URL("http://localhost/")]) assert.equal(isPageUrl(url), false, String(url));
+  assert.equal(isPageUrl("http://[::1]:3000/"), true);
+});
+
+test("labels and hosts of unusual pages", () => {
+  assert.equal(pageLabel(""), "New Tab");
+  assert.equal(pageLabel("http://[::1]:3000/"), "[::1]:3000");
+  assert.equal(pageLabel("https://example.com//"), "example.com//");
+  assert.equal(pageHost("http://[::1]:3000/a"), "[::1]:3000");
+  assert.equal(pageHost("not a url"), "");
+  assert.equal(pageHost(""), "");
+});

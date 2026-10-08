@@ -170,4 +170,150 @@ mod tests {
         assert_eq!(code(53), "Escape");
         assert_eq!(code(200), "");
     }
+
+    #[test]
+    fn keys_without_cmd_or_ctrl_always_stay_in_the_page() {
+        for k in [
+            "a", "J", "s", "Escape", "Enter", "Tab", "ArrowUp", "F5", "é", "ı", "", " ",
+        ] {
+            for mods in ["", "shift", "alt", "alt+shift"] {
+                assert_eq!(route(&key(k, mods)), Route::Page, "{mods}+{k}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_system_keeps_its_own_chords_and_nothing_else() {
+        for (k, mods) in [("`", "cmd"), ("Q", "cmd"), ("H", "cmd"), ("M", "cmd")] {
+            assert_eq!(route(&key(k, mods)), Route::System, "{mods}+{k}");
+        }
+        // ⇧ or ⌃ makes them another chord: Quit and Hide only as macOS binds them.
+        for (k, mods) in [
+            ("q", "ctrl+cmd"),
+            ("Q", "shift+cmd"),
+            ("H", "alt+shift+cmd"),
+            ("m", "alt+cmd"),
+        ] {
+            assert_ne!(route(&key(k, mods)), Route::System, "{mods}+{k}");
+        }
+    }
+
+    #[test]
+    fn ctrl_with_a_letter_is_the_text_fields_and_with_anything_else_the_apps() {
+        for k in ["a", "E", "k", "z"] {
+            assert_eq!(route(&key(k, "ctrl")), Route::Page, "ctrl+{k}");
+            assert_eq!(route(&key(k, "ctrl+shift")), Route::Page, "ctrl+shift+{k}");
+        }
+        for k in ["1", "Tab", "`", "[", "ArrowLeft", "Enter", " ", ""] {
+            assert_eq!(route(&key(k, "ctrl")), Route::App, "ctrl+{k}");
+        }
+        // ⌃⌘ is never typing.
+        for k in ["a", "c", "v", "z", "q"] {
+            assert_eq!(route(&key(k, "ctrl+cmd")), Route::App, "ctrl+cmd+{k}");
+        }
+    }
+
+    /// A cheap generator, so the fuzz below is the same on every run.
+    fn lcg(seed: &mut u64) -> usize {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (*seed >> 33) as usize
+    }
+
+    #[test]
+    fn any_key_and_modifiers_route_without_panicking() {
+        let keys = [
+            "a",
+            "Z",
+            "ü",
+            "ş",
+            "ı",
+            "с",
+            "ß",
+            "😀",
+            "",
+            "ArrowLeft",
+            "Backspace",
+            "Escape",
+            "`",
+            "1",
+            "\u{f700}",
+            "\u{0}",
+            "İ",
+            "ǅ",
+        ];
+        let mut seed = 5;
+        for _ in 0..20_000 {
+            let k = keys[lcg(&mut seed) % keys.len()];
+            let m = lcg(&mut seed);
+            let ev = Key {
+                meta_key: m & 1 != 0,
+                ctrl_key: m & 2 != 0,
+                alt_key: m & 4 != 0,
+                shift_key: m & 8 != 0,
+                ..key(k, "")
+            };
+            let to = route(&ev);
+            if !(ev.meta_key || ev.ctrl_key) {
+                assert_eq!(to, Route::Page, "{ev:?}");
+            }
+            if to == Route::System {
+                assert!(ev.meta_key && !ev.ctrl_key && !ev.shift_key, "{ev:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn every_function_key_character_has_its_dom_name() {
+        for n in 0..12u32 {
+            let c = char::from_u32(0xf704 + n).unwrap();
+            assert_eq!(name(&c.to_string()), format!("F{}", n + 1));
+        }
+        for (typed, named) in [
+            ("\u{f700}", "ArrowUp"),
+            ("\u{f701}", "ArrowDown"),
+            ("\u{f703}", "ArrowRight"),
+            ("\u{f728}", "Delete"),
+            ("\u{f729}", "Home"),
+            ("\u{f72b}", "End"),
+            ("\u{f72c}", "PageUp"),
+            ("\u{f72d}", "PageDown"),
+            ("\u{7f}", "Backspace"),
+            ("\u{3}", "Enter"),
+            ("\u{1b}", "Escape"),
+            ("\t", "Tab"),
+        ] {
+            assert_eq!(name(typed), named, "{typed:?}");
+        }
+        // Two characters (a dead key's), or none, pass through as typed.
+        for typed in ["", "ab", "\u{f700}\u{f701}", "´e"] {
+            assert_eq!(name(typed), typed, "{typed:?}");
+        }
+    }
+
+    #[test]
+    fn every_virtual_key_code_up_to_escape_has_a_dom_code() {
+        for c in 0..=53u16 {
+            assert_eq!(code(c).is_empty(), c == 52, "{c}");
+        }
+        let all: Vec<_> = (0..=53u16).map(code).filter(|c| !c.is_empty()).collect();
+        let distinct: std::collections::HashSet<_> = all.iter().collect();
+        assert_eq!(all.len(), distinct.len());
+        for (c, dom) in [
+            (13, "KeyW"),
+            (35, "KeyP"),
+            (37, "KeyL"),
+            (38, "KeyJ"),
+            (12, "KeyQ"),
+            (51, "Backspace"),
+            (36, "Enter"),
+            (48, "Tab"),
+        ] {
+            assert_eq!(code(c), dom, "{c}");
+        }
+        for c in [54, 123, 126, u16::MAX] {
+            assert_eq!(code(c), "", "{c}");
+        }
+    }
 }

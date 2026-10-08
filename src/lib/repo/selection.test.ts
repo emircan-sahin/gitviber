@@ -72,3 +72,17 @@ test("a browser tab is one tab wherever its page goes, and no file", () => {
   assert.equal(editPath(at("http://localhost:5173/")), null);
   assert.equal(onDisk(at("http://localhost:5173/")), false);
 });
+
+test("a browser tab's key is its own, whatever its id or the other tabs' paths hold", () => {
+  const ids = ["tab-1", "", ":", "::x", "browser::tab-1", "vault:a:b", "a/b", "ü"];
+  const keys = ids.map((id) => selectionKey({ kind: "browser", id, url: "about:blank" }));
+  assert.equal(new Set(keys).size, ids.length);
+  const others: Selection[] = [
+    { kind: "vault", vault: "browser", path: ":tab-1" },
+    { kind: "vault", vault: "", path: "tab-1" },
+  ];
+  for (const s of others) assert.equal(keys.includes(selectionKey(s)), false, selectionKey(s));
+  // The title is the page's last, and isn't part of who the tab is.
+  assert.equal(selectionKey({ kind: "browser", id: "tab-1", url: "about:blank", title: "Docs" }), keys[0]);
+  assert.equal(selectionPath({ kind: "browser", id: "tab-1", url: "about:blank" }), "New Tab");
+});
