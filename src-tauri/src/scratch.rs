@@ -24,6 +24,22 @@ impl ScratchDir {
     pub(crate) fn path(&self) -> &Path {
         &self.0
     }
+
+    /// The folder, left in place: for a file a program reads after this returns, which `sweep`
+    /// removes once it's older than that program could still want it.
+    pub(crate) fn keep(mut self) -> PathBuf {
+        std::mem::take(&mut self.0)
+    }
+}
+
+/// `text` in a new file at `path` only the user can read.
+pub(crate) fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(text.as_bytes())
 }
 
 /// Removes `purpose`'s folders older than `age`: left by a run the app quit during, which never
@@ -50,7 +66,10 @@ pub(crate) fn sweep(purpose: &str, age: Duration) {
 
 impl Drop for ScratchDir {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        // Empty once kept.
+        if !self.0.as_os_str().is_empty() {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }
 

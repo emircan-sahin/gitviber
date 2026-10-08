@@ -62,7 +62,7 @@
       "--mcp-config": "*",
       "--tools": "*"
     },
-    "drop": ["-c", "--continue", "-r", "--resume", "--session-id", "--fork-session", "--from-pr", "--teleport", "--cloud", "-n", "--name", "-w", "--worktree", "--tmux"],
+    "drop": ["-c", "--continue", "-r", "--resume", "--session-id", "--fork-session", "--from-pr", "--teleport", "--cloud", "-n", "--name", "-w", "--worktree", "--tmux", "--append-system-prompt-file"],
     "skip": [
       "-p", "--print", "--bg", "--background", "--desktop", "-h", "--help", "-v", "--version",
       "agents", "attach", "auth", "auto-mode", "doctor", "gateway", "import", "install", "kill", "logs", "mcp",

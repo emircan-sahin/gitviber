@@ -706,6 +706,12 @@ export function pasteToWorktree(cwd: string, text: string) {
   return id !== undefined && pasteIn(id, text);
 }
 
+/** The agent `pasteToAgent` would paste into in `cwd`'s worktree, as last looked up (refreshAgents); undefined for none. */
+export function worktreeAgent(cwd: string) {
+  const id = agentPane(cwd);
+  return id === undefined ? undefined : state.groups.flatMap((g) => g.panes).find((p) => p.id === id)?.agent;
+}
+
 /** `pasteToWorktree`, only into a pane an agent runs in: false when none does. */
 export function pasteToAgent(cwd: string, text: string) {
   const id = agentPane(cwd);

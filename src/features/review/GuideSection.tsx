@@ -68,6 +68,7 @@ export function SectionRow({
   files,
   named = [],
   onSection,
+  action,
 }: {
   n?: number;
   total?: number;
@@ -79,6 +80,8 @@ export function SectionRow({
   /** The files it names that another section shows (`at`), or that the diff doesn't have. */
   named?: { path: string; at: number | null }[];
   onSection?: (n: number) => void;
+  /** Its way to the agent (Ask Agent), at the end of its tags. */
+  action?: ReactNode;
 }) {
   const heading = `guide-section-${n ?? "other"}`;
   const title = s.title || "Untitled";
@@ -109,6 +112,7 @@ export function SectionRow({
                 Reviewed
               </label>
             )}
+            {action && <div className="ml-auto">{action}</div>}
           </div>
         )}
         {!done && (

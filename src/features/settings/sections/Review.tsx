@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { effortLevels, effortOf, GUIDE_LIMIT_KB, modelOf, presetOf, programOf, reviewAgent, SUGGEST_PRESETS, type SuggestPreset as Preset } from "@/lib/git/suggest";
 import { guidePrompt } from "@/lib/review/guide";
+import { risksPrompt } from "@/lib/review/risks";
 import { updateSettings, useSettings } from "@/lib/settings";
 import { Field, Group, OptionSelect } from "@/features/settings/controls";
 import { CommandPicker, CustomModelField, ModelsLink } from "./Commit";
@@ -98,7 +99,7 @@ export function ReviewSection() {
         )}
       </Group>
       <Group title="Writing">
-        <Field label="Language" hint="The guide's prose is written in it; code, paths and names stay as they are. Commit messages and pull requests stay in English.">
+        <Field label="Language" hint="The guide's and the risks' prose is written in it, and Ask Agent asks the agent to reply in it; code, paths and names stay as they are. Commit messages and pull requests stay in English.">
           <OptionSelect
             className="w-80"
             value={customLanguage ? CUSTOM : s.reviewLanguage}
@@ -117,7 +118,7 @@ export function ReviewSection() {
       </Group>
       <Group title="What the command gets">
         <div className="py-3.5">
-          <div className="text-[11.5px] leading-relaxed text-muted-foreground">Only when you click Explain Commit or Guided Review, and nothing else from the app:</div>
+          <div className="text-[11.5px] leading-relaxed text-muted-foreground">Only when you click Explain Commit, Guided Review or Find Risks, and nothing else from the app:</div>
           <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">
             {guidePrompt(s.reviewLanguage)}
             {"\n\n"}
@@ -127,6 +128,12 @@ export function ReviewSection() {
               deleted when the run ends. Claude Code also gets the answer's shape as <span className="font-mono">--json-schema</span>, and it and opencode are let read that file.]
             </span>
           </pre>
+          <div className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground">Find Risks sends the same change after this instead:</div>
+          <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">{risksPrompt(s.reviewLanguage)}</pre>
+          <div className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground">
+            Ask Agent and Send to Agent start an interactive session in a new terminal tab: Claude Code with the review's part as context, in a temporary file only you can read, kept for a day; it runs with this page's model and effort, and your own settings, servers and
+            skills. Another agent gets it on the clipboard to paste. From the button's menu it goes into the agent already running in the worktree's terminal instead, without pressing Enter.
+          </div>
         </div>
       </Group>
     </>
