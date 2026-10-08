@@ -56,7 +56,7 @@ export function loadWorkspace(root: string): WorkspaceSnapshot | null {
       // The key doesn't read a comparison's sides, but its tab and screen do.
       if (sel.kind === "compare" && !(isComparePoint(sel.base) && isComparePoint(sel.head))) return null;
       // A page loads again as it opens: only a web page's address.
-      if (sel.kind === "browser" && !(typeof sel.id === "string" && isPageUrl(sel.url))) return null;
+      if (sel.kind === "browser" && !(typeof sel.id === "string" && isPageUrl(sel.url) && (sel.title === undefined || typeof sel.title === "string"))) return null;
       return selectionKey(sel);
     } catch {
       return null;

@@ -4,14 +4,19 @@
 export const BLANK = "about:blank";
 
 const PORT = /^:?(\d{1,5})$/;
-// This machine and the LAN, which dev servers listen on without a certificate.
-const PLAIN_HOST = /^(?:localhost|[\w-]+\.localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[\da-f:.]+\])(?::\d{1,5})?$/i;
+// This machine (127.1 too, as ping takes it) and the LAN, which dev servers serve without a certificate.
+const PLAIN_HOST = /^(?:localhost|[\w-]+\.localhost|\d{1,3}(?:\.\d{1,3}){3}|127(?:\.\d{1,3}){1,2}|\[[\da-f:.]+\])(?::\d{1,5})?$/i;
 
-/** A web page's address as the URL parser writes it; null for anything else (javascript:, file:, mailto:). */
+/**
+ * A web page's address as the URL parser writes it; null for anything else (javascript:, file:,
+ * mailto:), for port 0, and for one with a user name, which only serves to dress up its host
+ * (`localhost:3000@evil.example` is evil.example).
+ */
 function webUrl(text: string): string | null {
   try {
     const url = new URL(text);
-    return url.protocol === "http:" || url.protocol === "https:" ? url.href : null;
+    const web = url.protocol === "http:" || url.protocol === "https:";
+    return web && !url.username && !url.password && url.port !== "0" ? url.href : null;
   } catch {
     return null;
   }

@@ -151,3 +151,13 @@ test("labels and hosts of unusual pages", () => {
   assert.equal(pageHost("not a url"), "");
   assert.equal(pageHost(""), "");
 });
+
+test("no user name in an address, no port 0, and 127.x shorthand is this machine", () => {
+  for (const typed of ["localhost:3000@evil.example", "user:pw@example.com", "http://user:pw@localhost:3000/", "https://user@example.com/", "localhost:0", ":0", "http://localhost:0/"]) {
+    assert.equal(normalizeUrl(typed), null, typed);
+  }
+  assert.equal(isPageUrl("http://user:pw@localhost:3000/"), false);
+  assert.equal(normalizeUrl("127.1"), "http://127.0.0.1/");
+  assert.equal(normalizeUrl("127.1:5173/a"), "http://127.0.0.1:5173/a");
+  assert.equal(normalizeUrl("127.0.1"), "http://127.0.0.1/");
+});
