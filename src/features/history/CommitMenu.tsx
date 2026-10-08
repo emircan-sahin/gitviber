@@ -20,7 +20,6 @@ import { startBisect } from "./BisectBar";
 import { type Actions, checkoutDetached, commitUrl, dropsPushed, MERGE_WARNING, PUSHED_WARNING, undoCommit } from "./commitActions";
 import { groupRefs } from "./groupRefs";
 import { commitMark } from "@/lib/repo/compareMark";
-import { useSettings } from "@/lib/settings";
 
 /** The remote tags are pushed to and the ones it has, while asking it, or why that failed. */
 type TagsThere = RemoteTags | { error: string } | "loading" | null;
@@ -78,7 +77,6 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
   const mark = commitMark.use(root);
   const point = { sha: c.sha, label: short };
   const compare = actions.comparePoints;
-  const { suggestEnabled } = useSettings();
 
   const undo = async () => {
     const drops = await dropsPushed(c.parents[0]);
@@ -115,12 +113,9 @@ export function CommitMenu({ commit: c, head, actions }: { commit: Commit; head:
       <ContextMenuItem onSelect={() => actions.openAll(c)}>
         <Files /> Open All Changes
       </ContextMenuItem>
-      {/* Hidden while suggestions are off. */}
-      {suggestEnabled && (
-        <ContextMenuItem onSelect={() => actions.explain(c)}>
-          <Sparkles /> Explain Commit
-        </ContextMenuItem>
-      )}
+      <ContextMenuItem onSelect={() => actions.explain(c)}>
+        <Sparkles /> Explain Commit
+      </ContextMenuItem>
       <ContextMenuSeparator />
       <ContextMenuItem disabled={locked || !head || !c.parents.length} onSelect={undo}>
         <Undo2 /> Undo commit

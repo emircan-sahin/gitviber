@@ -78,7 +78,7 @@ interface Props {
   setViewed: (s: Selection[], on: boolean) => void;
   onBase: (ref: string) => void;
   /** A guided review of the branch's commits since `base`; none while suggestions are off. */
-  onGuide?: (base: string) => void;
+  onGuide: (base: string) => void;
   onClose: () => void;
 }
 
@@ -102,7 +102,7 @@ export function BranchReview({ base, data, branches, activeKey, onOpen, onHover,
           {!listed && <option value={base}>{base ? shortRef(base) : "Pick a branch…"}</option>}
           <RefOptions branches={branches} />
         </Select>
-        {onGuide && base && (
+        {base && (
           <button
             aria-label="Guided review"
             title={`Guided review of the branch's commits since ${shortRef(base)}`}

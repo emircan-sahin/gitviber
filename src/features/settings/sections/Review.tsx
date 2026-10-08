@@ -44,7 +44,7 @@ export function ReviewSection() {
       <Group title="Agent">
         <Field
           label="Run with"
-          hint={`The agent CLI that writes Explain Commit (History) and Guided Review (branch review).${s.suggestEnabled ? "" : " Both are off while Suggest commit messages is, under Commit Messages."}`}
+          hint="The agent CLI that writes Explain Commit (History) and Guided Review (branch review)."
         >
           <OptionSelect
             className="w-80"

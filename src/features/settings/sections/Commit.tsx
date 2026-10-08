@@ -130,7 +130,7 @@ export function CommitSection() {
       <Group title="Suggestions">
         <Field
           label="Suggest commit messages"
-          hint="Adds a ✦ button to the commit box that asks your own agent CLI to write the message, one to New pull request for its title and description, and Explain Commit (History) and Guided Review (branch review) for a guided review of a change (its own agent and language are under Guided Review). GitViber sends nothing itself and keeps no keys: the command runs on this Mac, and it decides where the diff goes."
+          hint="Adds a ✦ button to the commit box that asks your own agent CLI to write the message, and one to New pull request for its title and description. GitViber sends nothing itself and keeps no keys: the command runs on this Mac, and it decides where the diff goes."
         >
           <Switch checked={s.suggestEnabled} onChange={(v) => updateSettings({ suggestEnabled: v })} />
         </Field>
