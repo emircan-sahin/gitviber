@@ -1,4 +1,4 @@
-import type { Commit, FileChange, Issue, Pull } from "../api";
+import type { Commit, FileChange, Issue, Pull, Target } from "../api";
 
 /**
  * A PR's diff range, as computed locally (merge base → head), or a branch's in a comparison (no
@@ -44,10 +44,11 @@ export type Selection =
   | { kind: "files"; file: FileChange }
   // A file in an Obsidian vault (`vault`: its folder), outside the repo; `path` is vault-relative.
   | { kind: "vault"; vault: string; path: string }
-  // An agent's guided review (features/review/GuideView) of a commit, or of HEAD's branch since
-  // `base` (a full ref, `label` its short name).
+  // An agent's guided review (features/review/GuideView) of a commit, of HEAD's branch since
+  // `base` (a full ref, `label` its short name), or of a pull request (`target`: the repo it's on).
   | { kind: "guide"; of: "commit"; commit: Commit }
-  | { kind: "guide"; of: "branch"; base: string; label: string };
+  | { kind: "guide"; of: "branch"; base: string; label: string }
+  | { kind: "guide"; of: "pull"; pull: Pull; target: Target };
 
 export type GuideSelection = Extract<Selection, { kind: "guide" }>;
 
@@ -81,7 +82,7 @@ export function selectionPath(s: Selection) {
   if (s.kind === "issue") return `#${s.issue.number} ${s.issue.title}`;
   if (s.kind === "changes") return s.list === "commit" ? `Commit ${s.commit.shortSha}` : s.list === "range" ? `All Changes · ${rangeLabel(s.range)}` : LIST_TITLES[s.list];
   if (s.kind === "compare") return "Compare";
-  if (s.kind === "guide") return s.of === "commit" ? `Explain ${s.commit.shortSha}` : `Guided Review · ${s.label}`;
+  if (s.kind === "guide") return s.of === "commit" ? `Explain ${s.commit.shortSha}` : `Guided Review · ${s.of === "pull" ? `#${s.pull.number}` : s.label}`;
   return s.file.path;
 }
 
@@ -129,7 +130,9 @@ export function selectionKey(s: Selection) {
               : s.kind === "guide"
                 ? s.of === "commit"
                   ? s.commit.sha
-                  : s.base
+                  : s.of === "pull"
+                    ? s.pull.url
+                    : s.base
                 : "";
   return `${s.kind}:${scope}:${selectionPath(s)}`;
 }

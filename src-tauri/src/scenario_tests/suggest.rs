@@ -196,10 +196,30 @@ fn guide_gets_a_commit_or_the_branch_and_names_the_range() {
         "{}",
         g.text
     );
-    assert_eq!((g.base, g.head), (root, sha("HEAD")));
+    assert_eq!((g.base, g.head), (root.clone(), sha("HEAD")));
     let err = go(Target::Branch {
         base: "refs/heads/feat".into(),
     })
     .unwrap_err();
     assert!(err.contains("no commits"), "{err}");
+
+    // A pull request: its head since it left its base, titled, whatever HEAD is.
+    let feat = sha("feat");
+    run(&r, &["checkout", "-q", "--", "b.txt"]).unwrap();
+    run(&r, &["switch", "-q", "main"]).unwrap();
+    write_commit(&r, "c.txt", "sea\n", "Add c");
+    let g = go(Target::Pull {
+        base: sha("main"),
+        head: feat.clone(),
+        title: "Add b, change a".into(),
+    })
+    .unwrap();
+    assert!(
+        g.text.contains("\n\nThe pull request's title: Add b, change a\n\nCommits, oldest first:\n- Add b\n- Change a\n\n")
+            && g.text.contains("+bee")
+            && !g.text.contains("+sea"),
+        "{}",
+        g.text
+    );
+    assert_eq!((g.base, g.head), (root, feat));
 }

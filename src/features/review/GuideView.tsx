@@ -14,7 +14,6 @@ import type { BranchChange } from "@/features/changes/BranchReview";
 import { Mermaid } from "@/features/viewer/markdown/Mermaid";
 import { type Annotations, type ListFile, useStackedFiles } from "@/features/viewer/StackedFiles";
 import { useFixedFiles } from "@/features/viewer/fixedFiles";
-import { openSettings } from "@/features/settings/SettingsDialog";
 import { cancelGuide, generateGuide, guideId, markDone, useGuide } from "./guides";
 import { GuideDiagram } from "./GuideDiagram";
 import { CATEGORY_UI } from "./categories";
@@ -50,15 +49,15 @@ interface Props {
  */
 export function GuideView({ sel, status, branchRows, revision, viewed, toggleViewed, onOpen }: Props) {
   const settings = useSettings();
-  const { suggestEnabled } = settings;
   const program = programOf(reviewAgent(settings).command);
   const branch = status?.branch ?? null;
   const root = status?.root ?? "";
   const id = guideId(root, sel, branch);
   const { saved, run } = useGuide(id);
   const guide = useMemo(() => (saved ? parseGuide(saved.text) : null), [saved]);
-  // status.head is HEAD's short id.
-  const moved = sel.of === "branch" && saved && status?.head && !saved.head.startsWith(status.head);
+  // status.head is HEAD's short id; a pull request's head is as its list last read it.
+  const moved = saved && (sel.of === "branch" ? !!status?.head && !saved.head.startsWith(status.head) : sel.of === "pull" && saved.head !== sel.pull.headSha);
+  const what = sel.of === "commit" ? "this commit" : sel.of === "pull" ? "this pull request" : "this branch";
 
   // The files as Open All reads them: the commit's, or the range the guide read.
   const base = saved?.base;
@@ -69,7 +68,10 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
         ? NO_FILES
         : sel.of === "commit"
           ? { kind: "changes", list: "commit", commit: sel.commit }
-          : { kind: "changes", list: "range", range: { base, head, label: `${sel.label}...${head.slice(0, 7)}` } },
+          : sel.of === "pull"
+            ? // As the PR's page opens its files, so they share its tabs and viewed marks.
+              { kind: "changes", list: "range", range: { number: sel.pull.number, pullUrl: sel.pull.url, base, head } }
+            : { kind: "changes", list: "range", range: { base, head, label: `${sel.label}...${head.slice(0, 7)}` } },
     [sel, base, head],
   );
   const fixed = useFixedFiles(changes);
@@ -162,13 +164,13 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
       <div className={cn("mx-auto max-w-[1440px] px-6 py-5", nav && "[--stick:36px] @6xl:[--stick:0px]")}>
         <header className="mb-5">
           <div className="flex items-start gap-3">
-            <h1 className="min-w-0 flex-1 text-[20px] leading-snug font-semibold select-text">{guide?.title || (sel.of === "commit" ? sel.commit.subject : `${branch ?? "HEAD"} since ${sel.label}`)}</h1>
+            <h1 className="min-w-0 flex-1 text-[20px] leading-snug font-semibold select-text">{guide?.title || (sel.of === "commit" ? sel.commit.subject : sel.of === "pull" ? sel.pull.title : `${branch ?? "HEAD"} since ${sel.label}`)}</h1>
             {running ? (
               <Button size="sm" variant="secondary" onClick={cancelGuide}>
                 <Square /> Cancel
               </Button>
             ) : (
-              <Button size="sm" variant="secondary" disabled={!suggestEnabled} onClick={generate}>
+              <Button size="sm" variant="secondary" onClick={generate}>
                 {saved ? <RotateCw /> : <Sparkles />} {saved ? "Regenerate" : `Ask ${program}`}
               </Button>
             )}
@@ -178,6 +180,16 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
             {sel.of === "commit" ? (
               <span>
                 <span className="font-mono">{sel.commit.shortSha}</span> by {sel.commit.authorName}, {relativeTime(sel.commit.timestamp)}
+              </span>
+            ) : sel.of === "pull" ? (
+              <span>
+                #{sel.pull.number} by {sel.pull.author}: <span className="font-mono">{sel.pull.headRef}</span> into <span className="font-mono">{sel.pull.baseRef}</span>
+                {saved && (
+                  <>
+                    {" "}
+                    at <span className="font-mono">{saved.head.slice(0, 7)}</span>
+                  </>
+                )}
               </span>
             ) : (
               <span>
@@ -211,7 +223,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
 
         {running && (
           <Notice role="status" icon={<LoaderCircle className="animate-spin" />}>
-            Asking {program} to explain {sel.of === "commit" ? "this commit" : "this branch"}. It can take a few minutes, and it goes on while you look at other tabs.
+            Asking {program} to explain {what}. It can take a few minutes, and it goes on while you look at other tabs.
           </Notice>
         )}
         {run === "stopped" && <Notice icon={<Square />}>Stopped before {program} was done{saved ? ": this is the guided review from before." : "."}</Notice>}
@@ -220,18 +232,9 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
             <span className="whitespace-pre-wrap">Couldn't write a guided review: {run.error}</span>
           </Notice>
         )}
-        {!suggestEnabled && !running && (
-          <Notice icon={<TriangleAlert />}>
-            Suggestions are off.{" "}
-            <button className="text-primary hover:underline" onClick={() => openSettings("commit")}>
-              Turn them on in Settings → Commit Messages
-            </button>{" "}
-            to ask your agent CLI for one.
-          </Notice>
-        )}
         {moved && !running && (
           <Notice icon={<TriangleAlert />} className="text-modified">
-            Outdated: {branch ?? "HEAD"} has moved since this review read it at <span className="font-mono">{saved.head.slice(0, 7)}</span>. Regenerate to review where it is now.
+            Outdated: {sel.of === "pull" ? `#${sel.pull.number}` : (branch ?? "HEAD")} has moved since this review read it at <span className="font-mono">{saved.head.slice(0, 7)}</span>. Regenerate to review where it is now.
           </Notice>
         )}
         {fixed.error && (
@@ -243,7 +246,11 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
         {!saved ? (
           !running && (
             <p className="text-[13px] text-muted-foreground">
-              {program} reads {sel.of === "commit" ? "the commit's message and diff" : "the branch's commits and their diff (not uncommitted changes)"} and explains it as sections in the order to review them, by category, with a diagram when a flow or data model changes.
+              {program} reads {sel.of === "commit"
+                ? "the commit's message and diff"
+                : sel.of === "pull"
+                  ? "the pull request's commits and their diff, fetching them first when they're missing,"
+                  : "the branch's commits and their diff (not uncommitted changes)"} and explains it as sections in the order to review them, by category, with a diagram when a flow or data model changes.
             </p>
           )
         ) : !guide ? (

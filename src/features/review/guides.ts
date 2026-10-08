@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { api, errorMessage, type GuideAgent, type Guided, type GuideTarget, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
+import { api, errorMessage, github, type GuideAgent, type Guided, type GuideTarget, type RepoStatus, SUGGEST_CANCELLED } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
 import { presetOf, programOf, reviewAgent, runDetails, withLeanFallback } from "@/lib/git/suggest";
 import { type GuideSelection, type Selection, selectionPath } from "@/lib/repo/selection";
@@ -35,8 +35,9 @@ const isSaved = (v: unknown): v is SavedGuide =>
   v.done.every(Number.isInteger) &&
   (v.details === undefined || (Array.isArray(v.details) && v.details.every((d) => typeof d === "string")));
 
-/** Where a guide is kept: per worktree, then per commit, or per branch (`branch`: HEAD's, null detached) and base. */
-export const guideId = (root: string, sel: GuideSelection, branch: string | null) => (sel.of === "commit" ? `${root}\0${sel.commit.sha}` : `${root}\0${branch ?? "HEAD"}\0${sel.base}`);
+/** Where a guide is kept: per worktree, then per commit, per pull request, or per branch (`branch`: HEAD's, null detached) and base. */
+export const guideId = (root: string, sel: GuideSelection, branch: string | null) =>
+  sel.of === "commit" ? `${root}\0${sel.commit.sha}` : sel.of === "pull" ? `${root}\0${sel.pull.url}` : `${root}\0${branch ?? "HEAD"}\0${sel.base}`;
 
 /**
  * Claude Code checks its answer against the guide's schema; it and opencode are let read the patch
@@ -50,7 +51,13 @@ function guideAgent(command: string, lean: boolean): GuideAgent {
   return { args: [], reads: preset === "opencode" ? "opencode" : null };
 }
 
-const guideTarget = (sel: GuideSelection): GuideTarget => (sel.of === "commit" ? { of: "commit", sha: sel.commit.sha } : { of: "branch", base: sel.base });
+// A pull request's commits are fetched first when they're missing (pr_files), as its page does.
+async function guideTarget(sel: GuideSelection): Promise<GuideTarget> {
+  if (sel.of === "commit") return { of: "commit", sha: sel.commit.sha };
+  if (sel.of === "branch") return { of: "branch", base: sel.base };
+  const { base, head } = await github.files(sel.target, sel.pull);
+  return { of: "pull", base, head, title: sel.pull.title };
+}
 
 // What storage couldn't take (full, turned off, too big) lasts until GitViber quits.
 const unsaved = new Map<string, SavedGuide>();
@@ -118,10 +125,13 @@ export async function generateGuide(id: string, sel: GuideSelection) {
   active = { sel, token };
   set("running");
   try {
+    const target = await guideTarget(sel);
+    // Cancelled, or another guide started, while the commits were fetched.
+    if (active?.token !== token) throw SUGGEST_CANCELLED;
     const { value: guided, old } = await withLeanFallback(command, models, efforts, true, (line, lean) => {
       ran = line;
       // A second try started after another guide would stop that one.
-      return !lean && active?.token !== token ? Promise.reject(SUGGEST_CANCELLED) : api.suggestGuide(line, prompt, guideTarget(sel), guideAgent(command, lean));
+      return !lean && active?.token !== token ? Promise.reject(SUGGEST_CANCELLED) : api.suggestGuide(line, prompt, target, guideAgent(command, lean));
     });
     if (old) warnOldClaude();
     if (!guided.text.trim()) fail("No guided review written", `${program} printed nothing.`);
@@ -144,7 +154,11 @@ export function openGuide(sel: GuideSelection, status: RepoStatus | null, onOpen
   onOpen(sel, true);
 }
 
-export const cancelGuide = () => api.suggestCancel("guide").catch(() => {});
+export const cancelGuide = () => {
+  // One still fetching a pull request's commits has no run in the backend to stop yet.
+  active = null;
+  return api.suggestCancel("guide").catch(() => {});
+};
 
 /** Marks section `i` of the guide under `id` done, or not. */
 export function markDone(id: string, i: number, done: boolean) {

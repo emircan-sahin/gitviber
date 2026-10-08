@@ -1,13 +1,14 @@
-import { FolderGit2, ListFilter } from "lucide-react";
+import { FolderGit2, ListFilter, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ContextMenuItem, ContextMenuSeparator } from "@/components/ui/context-menu";
-import { type GitHubAccount, type Narrow, PR_PAGE, type Pull, type Target } from "@/lib/api";
+import { type GitHubAccount, type Narrow, PR_PAGE, type Pull, type RepoStatus, type Target } from "@/lib/api";
 import { CiBadge } from "@/components/CiBadge";
 import { RowFilter } from "@/components/RowFilter";
 import { RelativeTime } from "@/components/RelativeTime";
 import { useCi } from "@/lib/github/ci";
 import { type Selection, selectionKey } from "@/lib/repo/selection";
 import { openWorktreeDialog } from "@/features/worktrees/WorktreeDialogs";
+import { openGuide } from "@/features/review/guides";
 import { useListNav } from "@/lib/ui/useListNav";
 import { cn } from "@/lib/utils";
 import type { Filter } from "@/features/github/shared/FilterTabs";
@@ -37,6 +38,7 @@ export function PullRows({
   loading,
   onMore,
   target,
+  status,
 }: {
   pulls: Pull[] | null;
   /** The list filter's test, while it has text. */
@@ -57,8 +59,10 @@ export function PullRows({
   shown: number;
   loading: boolean;
   onMore: () => void;
-  /** The repository the PRs are on, for their checks. */
+  /** The repository the PRs are on, for their checks and a guided review's fetch. */
   target: Target;
+  /** The worktree a guided review is kept in. */
+  status: RepoStatus | null;
 }) {
   const narrowed = isNarrowed(narrow);
   const maxPages = narrowed ? MAX_SEARCH_PAGES : MAX_PAGES;
@@ -83,6 +87,9 @@ export function PullRows({
         const source = p.state === "open" ? pullSource(p, account) : null;
         const extra = (
           <>
+            <ContextMenuItem onSelect={() => openGuide({ kind: "guide", of: "pull", pull: p, target }, status, onOpen)}>
+              <Sparkles /> Guided Review
+            </ContextMenuItem>
             {source && (
               <ContextMenuItem onSelect={() => openWorktreeDialog({ kind: "new", pull: source })}>
                 <FolderGit2 /> Check out in new worktree…

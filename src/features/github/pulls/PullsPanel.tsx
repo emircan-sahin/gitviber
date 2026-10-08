@@ -101,7 +101,7 @@ export function PullsPanel({ status, branches, lastCommit, repoKey, activeKey, o
     setAuthor(null);
     pickLabels([]);
   };
-  const ownRows = <PullRows pulls={own.data ?? null} match={find.needle ? match : null} error={error} filter={filter} narrow={narrow} onClearNarrow={clearNarrow} onAuthor={pickAuthor} activeKey={activeKey} onOpen={onOpen} account={account} roomy={!upstream} target={null} {...more("origin", own)} />;
+  const ownRows = <PullRows pulls={own.data ?? null} match={find.needle ? match : null} error={error} filter={filter} narrow={narrow} onClearNarrow={clearNarrow} onAuthor={pickAuthor} activeKey={activeKey} onOpen={onOpen} account={account} roomy={!upstream} target={null} status={status} {...more("origin", own)} />;
 
   return (
     <div className="flex h-full flex-col">
@@ -185,6 +185,7 @@ export function PullsPanel({ status, branches, lastCommit, repoKey, activeKey, o
                     account={account}
                     roomy={false}
                     target={upstream}
+                    status={status}
                     {...more("parent", up)}
                   />
                 ),

@@ -239,12 +239,22 @@ fn subjects(repo: &Path, from: &str, to: &str) -> Result<String, String> {
     Ok(format!("{heading}\n{}", subjects.join("\n")))
 }
 
-/// What a guided review is of: a commit, or HEAD's branch since it left `base` (a full ref).
+/// What a guided review is of: a commit, HEAD's branch since it left `base` (a full ref), or a
+/// pull request's commits (fetched already) since its head left `base`, whatever HEAD is.
 #[derive(Deserialize)]
 #[serde(tag = "of", rename_all = "lowercase")]
 pub enum Target {
-    Commit { sha: String },
-    Branch { base: String },
+    Commit {
+        sha: String,
+    },
+    Branch {
+        base: String,
+    },
+    Pull {
+        base: String,
+        head: String,
+        title: String,
+    },
 }
 
 /// A guided review as the command wrote it, and the range it read: `base..head`, a commit's
@@ -320,6 +330,23 @@ fn guide_range(repo: &Path, target: &Target) -> Result<Range, String> {
                 to: head,
             })
         }
+        Target::Pull { base, head, title } => {
+            git::validate_rev(base)?;
+            git::validate_rev(head)?;
+            let to = oid(head)?;
+            let from = git::merge_base(repo, base, &to)?;
+            let header = format!(
+                "The pull request's title: {title}\n\n{}",
+                subjects(repo, &from, &to)?
+            );
+            Ok(Range {
+                base: from.clone(),
+                head: to.clone(),
+                header,
+                from,
+                to,
+            })
+        }
     }
 }
 
@@ -335,7 +362,7 @@ struct GuideInput {
 }
 
 /// What the prompt says of a guide's input, ahead of what its diffs are (one of the next three).
-const LIST_NOTE: &str = "Below are the commit's message or the branch's commits, then a list of every changed file, a line each: its status letter, lines added and removed, its path (after \"←\", the path it was renamed from), tags, and after \"@@\" the functions or sections its changes are in";
+const LIST_NOTE: &str = "Below are the commit's message, or the branch's or pull request's commits, then a list of every changed file, a line each: its status letter, lines added and removed, its path (after \"←\", the path it was renamed from), tags, and after \"@@\" the functions or sections its changes are in";
 const PREFIX_NOTE: &str = "; then the start of the patch, cut at a line's end.";
 const SOME_NOTE: &str = "; then the whole diffs of the files not tagged [file only], [generated] or [binary] (binary files have none).";
 const ALL_NOTE: &str = "; then every file's whole diff, except for [generated] and [binary] files.";
