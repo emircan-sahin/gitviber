@@ -161,6 +161,12 @@ export const COMMANDS = [
   { id: "terminal.nextCommand", title: "Scroll to Next Command", category: "Terminal", keys: ["cmd+down"], local: "the terminal" },
   // WezTerm's QuickSelect key, Ctrl+Shift+Space on every platform (kitty's hints are Ctrl+Shift+E, the explorer's here).
   { id: "terminal.hints", title: "Show Link Hints", category: "Terminal", keys: ["ctrl+shift+space"], keysOther: ["shift+cmd+space"], local: "the terminal", noRepeat: true },
+  // A browser tab (features/browser), new each time; in it ⌘L, ⌘R, ⌘[ and ⌘] are a browser's, as typed in its page too.
+  { id: "browser.open", title: "Open Browser", category: "Browser", keys: ["shift+cmd+b"] },
+  { id: "browser.focusAddress", title: "Focus Address Bar", category: "Browser", keys: ["cmd+l"], local: "the browser" },
+  { id: "browser.reload", title: "Reload Page", category: "Browser", keys: ["cmd+r"], local: "the browser" },
+  { id: "browser.back", title: "Go Back", category: "Browser", keys: ["cmd+["], local: "the browser" },
+  { id: "browser.forward", title: "Go Forward", category: "Browser", keys: ["cmd+]"], local: "the browser" },
   { id: "explorer.rename", title: "Rename File", category: "Explorer", keys: ["f2"], local: "the explorer" },
   { id: "explorer.delete", title: "Delete File", category: "Explorer", keys: ["cmd+backspace"], local: "the explorer" },
   { id: "git.switchBranch", title: "Switch Branch", category: "Git", keys: [] },
