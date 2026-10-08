@@ -44,15 +44,22 @@ pub fn route_now(k: &Key) -> Route {
 
 /// Who a key goes to: a chord bound to one of the app's commands goes to the app, anything else
 /// stays the page's. Editing stays the page's even when bound (⌘Z is also Undo Git Action), and
-/// a letter counts by its key too, so ⌘C on a Cyrillic layout is still copy.
+/// on a layout that doesn't type ASCII a key counts by where it sits, so ⌘C on Cyrillic is still
+/// copy. Bindings match as commands.ts's eventChords does: by what's typed, and punctuation by
+/// its key too; a letter matched by its key alone would leave the app with a key it can't run.
 pub fn route(k: &Key, app: &HashSet<String>) -> Route {
     let (cmd, ctrl, alt, shift) = (k.meta_key, k.ctrl_key, k.alt_key, k.shift_key);
     if !(cmd || ctrl) {
         return Route::Page;
     }
     let typed = token(&k.key);
-    let physical = physical(k.code);
-    let is = |t: &str| typed.as_deref() == Some(t) || physical.as_deref() == Some(t);
+    let at = position(k.code);
+    let punctuation = punctuation(k.code);
+    let not_ascii = !k.key.is_ascii();
+    let is = |t: &str| {
+        typed.as_deref() == Some(t)
+            || not_ascii && (at.as_deref() == Some(t) || punctuation == Some(t))
+    };
     let system = cmd
         && !shift
         && (!ctrl && !alt && (is("q") || is("h") || is("m") || is("`"))
@@ -83,7 +90,7 @@ pub fn route(k: &Key, app: &HashSet<String>) -> Route {
     .into_iter()
     .filter_map(|(held, m)| held.then_some(m))
     .collect();
-    let bound = [typed, physical]
+    let bound = [typed.as_deref(), punctuation]
         .into_iter()
         .flatten()
         .any(|t| app.contains(&format!("{mods}{t}")));
@@ -126,15 +133,17 @@ fn token(key: &str) -> Option<String> {
     Some(named.into())
 }
 
-/// The key a US keyboard has where this one was pressed, for a letter, digit or punctuation key.
-fn physical(code: &str) -> Option<String> {
-    if let Some(letter) = code.strip_prefix("Key").filter(|l| l.len() == 1) {
-        return Some(letter.to_ascii_lowercase());
-    }
-    if let Some(digit) = code.strip_prefix("Digit").filter(|d| d.len() == 1) {
-        return Some(digit.into());
-    }
-    let named = match code {
+/// The letter or digit a US keyboard has where this key was pressed.
+fn position(code: &str) -> Option<String> {
+    let at = code
+        .strip_prefix("Key")
+        .or_else(|| code.strip_prefix("Digit"));
+    at.filter(|c| c.len() == 1).map(str::to_ascii_lowercase)
+}
+
+/// A punctuation key by what a US keyboard types there: commands.ts's CODE_KEYS.
+fn punctuation(code: &str) -> Option<&'static str> {
+    Some(match code {
         "Equal" => "=",
         "Minus" => "-",
         "Comma" => ",",
@@ -146,14 +155,9 @@ fn physical(code: &str) -> Option<String> {
         "BracketLeft" => "[",
         "BracketRight" => "]",
         "Backquote" => "`",
-        "Enter" => "enter",
-        "Tab" => "tab",
-        "Space" => "space",
-        "Backspace" => "backspace",
-        "Escape" => "escape",
+        "IntlBackslash" => "§",
         _ => return None,
-    };
-    Some(named.into())
+    })
 }
 
 /// AppKit's function-key characters (NSUpArrowFunctionKey…) by their DOM names.
@@ -298,16 +302,45 @@ mod tests {
         let rebound: HashSet<String> = ["alt+cmd+w".to_string()].into();
         assert_eq!(route(&key("w", "alt+cmd"), &rebound), Route::App);
         assert_eq!(route(&w, &rebound), Route::Page);
-        // By the key a US keyboard has there, when the layout types another letter.
+        // The app matches a letter by what's typed (eventChords), so a Cyrillic ⌘W (ц) is the
+        // page's: sent to the app it would find no command. Punctuation counts by its key.
+        let cyrillic_w = Key {
+            code: "KeyW",
+            ..key("ц", "cmd")
+        };
+        assert_eq!(route(&cyrillic_w, &defaults()), Route::Page);
+        let german_bracket = Key {
+            code: "BracketLeft",
+            ..key("ü", "cmd")
+        };
+        assert_eq!(route(&german_bracket, &defaults()), Route::App);
+        // Dvorak's ⌘U sits where QWERTY has F: bound to cmd+f, it's still the page's U.
+        let find: HashSet<String> = ["cmd+f".to_string()].into();
+        let dvorak_u = Key {
+            code: "KeyF",
+            ..key("u", "cmd")
+        };
+        assert_eq!(route(&dvorak_u, &find), Route::Page);
         assert_eq!(
             route(
                 &Key {
-                    code: "KeyW",
-                    ..key("ц", "cmd")
+                    code: "KeyU",
+                    ..key("f", "cmd")
+                },
+                &find
+            ),
+            Route::App
+        );
+        // And Dvorak's ⌘C (on QWERTY's I) copies, its key's I notwithstanding.
+        assert_eq!(
+            route(
+                &Key {
+                    code: "KeyI",
+                    ..key("c", "cmd")
                 },
                 &defaults()
             ),
-            Route::App
+            Route::Page
         );
     }
 
