@@ -6,7 +6,7 @@ const OVERLAYS = "[data-radix-popper-content-wrapper],[data-modal],[role=dialog]
 /** A dialog (⌘P, a confirm) owns the keys and the eye wherever it sits. */
 const ALWAYS = "[data-modal],[role=dialog]";
 
-/** What's drawn over this page and reaches into `r` (a rect in its coordinates): a dialog, anything else, or nothing. */
+/** What's drawn over this page and reaches into `r` (the page's rect): a dialog, anything else, or nothing. */
 export function coveredBy(r: DOMRect): "dialog" | "overlay" | null {
   let found: "overlay" | null = null;
   for (const el of document.querySelectorAll(OVERLAYS)) {
@@ -20,13 +20,21 @@ export function coveredBy(r: DOMRect): "dialog" | "overlay" | null {
 const listeners = new Set<() => void>();
 let observer: MutationObserver | null = null;
 
-/** Calls `changed` as this page's elements come and go; watched only while someone listens. */
+/** For an overlay that isn't a portal of the body's (a toast, the shortcut overlay): it came or went. */
+export function overlaysChanged() {
+  listeners.forEach((l) => l());
+}
+
+const isOverlay = (n: Node) => n instanceof Element && (n.matches(OVERLAYS) || !!n.querySelector(OVERLAYS));
+
+/** Calls `changed` as overlays come and go; watched only while someone listens. */
 export function watchOverlays(changed: () => void) {
   listeners.add(changed);
-  if (!observer) {
-    observer = new MutationObserver(() => listeners.forEach((l) => l()));
-    observer.observe(document.body, { childList: true, subtree: true });
-  }
+  // Portals (Radix's menus and dialogs) mount as the body's children: only those are watched.
+  observer ??= new MutationObserver((records) => {
+    if (records.some((r) => [...r.addedNodes, ...r.removedNodes].some(isOverlay))) overlaysChanged();
+  });
+  observer.observe(document.body, { childList: true });
   return () => {
     listeners.delete(changed);
     if (listeners.size) return;

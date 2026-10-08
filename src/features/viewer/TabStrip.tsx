@@ -16,7 +16,7 @@ import { FileIcon } from "@/components/FileIcon";
 import { browserApi, github } from "@/lib/api";
 import { failed } from "@/lib/app/toast";
 import { pageHost, pageLabel } from "@/lib/browser/url";
-import { useBrowserState } from "@/features/browser/store";
+import { useBrowserState } from "@/lib/browser/store";
 import { type Tab, type TabGroup, tabGroup } from "./tabs";
 
 interface Props {
@@ -35,7 +35,6 @@ function tabLabel(sel: Selection) {
   if (sel.kind === "compare") return `Compare ${compareLabel(sel)}`;
   // A note by its name, as Obsidian's tabs have it.
   if (sel.kind === "vault") return noteName(sel.path);
-  if (sel.kind === "browser") return sel.title || pageLabel(sel.url);
   return isFileSelection(sel) ? basename(selectionPath(sel)) : selectionPath(sel);
 }
 
@@ -148,9 +147,6 @@ function TabItem({
   const unsaved = useEdited().has(editPath(t.sel) ?? "");
   const closeKey = useShortcut("tab.close");
   const closeOthersKey = useShortcut("tab.closeOthers");
-  // A page's title as it changes, before the tab keeps it.
-  const page = useBrowserState(t.sel.kind === "browser" ? t.sel.id : null);
-  const label = page?.title || tabLabel(t.sel);
   const el = useRef<HTMLDivElement | null>(null);
   // Runs before the node leaves the page, while it can still say whether it had focus.
   useLayoutEffect(
@@ -196,9 +192,15 @@ function TabItem({
       ) : (
         <FileIcon path={selectionPath(t.sel)} />
       )}
-      <span className={cn("truncate", t.preview && "italic")}>{label}</span>
-      {folder && <span className="min-w-0 shrink-[2] truncate text-[11px] text-subtle">{folder}</span>}
-      <TabKind sel={t.sel} />
+      {t.sel.kind === "browser" ? (
+        <PageTitle sel={t.sel} />
+      ) : (
+        <>
+          <span className={cn("truncate", t.preview && "italic")}>{tabLabel(t.sel)}</span>
+          {folder && <span className="min-w-0 shrink-[2] truncate text-[11px] text-subtle">{folder}</span>}
+          <TabKind sel={t.sel} />
+        </>
+      )}
       <button
         aria-label={unsaved ? "Close tab (unsaved changes)" : "Close tab"}
         // Off the Tab order: the tab closes with ⌫, and one stop per tab would crowd it.
@@ -245,7 +247,7 @@ function TabItem({
             <ContextMenuItem onSelect={() => onPin(t.key)}>Keep Open</ContextMenuItem>
           </>
         )}
-        {t.sel.kind === "browser" && <BrowserItems id={t.sel.id} url={page?.url || t.sel.url} />}
+        {t.sel.kind === "browser" && <BrowserItems sel={t.sel} />}
         {file && (
           <>
             <ContextMenuSeparator />
@@ -262,12 +264,28 @@ function TabItem({
   );
 }
 
+type PageSelection = Extract<Selection, { kind: "browser" }>;
+
+/** A page's tab by its title as it changes (the tab keeps the last), with its host beside it; by its address until it has one. */
+function PageTitle({ sel }: { sel: PageSelection }) {
+  const page = useBrowserState(sel.id);
+  const title = page?.title || sel.title;
+  const url = page?.url || sel.url;
+  return (
+    <>
+      <span className="truncate">{title || pageLabel(url)}</span>
+      {title && pageHost(url) && <span className="shrink-0 font-mono text-[10px] text-subtle">{pageHost(url)}</span>}
+    </>
+  );
+}
+
 /** A page's tab: reloaded where it stands (a tab not shown yet has nothing to reload), or opened in the system browser. */
-function BrowserItems({ id, url }: { id: string; url: string }) {
+function BrowserItems({ sel }: { sel: PageSelection }) {
+  const url = useBrowserState(sel.id)?.url || sel.url;
   return (
     <>
       <ContextMenuSeparator />
-      <ContextMenuItem onSelect={() => void browserApi.go(id, "reload").catch(() => {})}>
+      <ContextMenuItem onSelect={() => void browserApi.go(sel.id, "reload").catch(failed("Could not reload the page"))}>
         <RotateCw /> Reload
       </ContextMenuItem>
       <ContextMenuItem disabled={!pageHost(url)} onSelect={() => void github.openUrl(url).catch(failed("Could not open the link"))}>
@@ -280,7 +298,6 @@ function BrowserItems({ id, url }: { id: string; url: string }) {
 function TabKind({ sel }: { sel: Selection }) {
   const labels: Partial<Record<Selection["kind"], string>> = { staged: "staged", unstaged: "diff", conflict: "conflict", vault: "vault" };
   const label =
-    // A page by its title shows its host beside it.
-    sel.kind === "browser" ? (sel.title ? pageHost(sel.url) : undefined) : sel.kind === "commit" ? sel.commit.shortSha : sel.kind === "pr-file" ? [sel.range.number && `#${sel.range.number}`, sel.range.label].filter(Boolean).join(" ") || "compare" : sel.kind === "branch" ? `vs ${sel.label}` : sel.kind === "files" ? `vs ${basename(sel.file.oldPath ?? "")}` : labels[sel.kind];
+    sel.kind === "commit" ? sel.commit.shortSha : sel.kind === "pr-file" ? [sel.range.number && `#${sel.range.number}`, sel.range.label].filter(Boolean).join(" ") || "compare" : sel.kind === "branch" ? `vs ${sel.label}` : sel.kind === "files" ? `vs ${basename(sel.file.oldPath ?? "")}` : labels[sel.kind];
   return label ? <span className="shrink-0 font-mono text-[10px] text-subtle">{label}</span> : null;
 }

@@ -1,25 +1,25 @@
 import { useEffect, useRef, useState } from "react";
-import { browserApi, errorMessage } from "@/lib/api";
+import { browserApi, type BrowserGo, errorMessage } from "@/lib/api";
+import { onBrowserKey, setBrowserState, useBrowserState } from "@/lib/browser/store";
 import { BLANK, pageLabel } from "@/lib/browser/url";
 import { commandIn } from "@/lib/commands/keybindings";
 import type { Selection } from "@/lib/repo/selection";
 import { Placeholder } from "@/features/viewer/FileHeader";
-import type { Tab } from "@/features/viewer/tabs";
 import { AddressBar } from "./AddressBar";
-import { onBrowserKey, setBrowserState, useBrowserState } from "./store";
 import { useNativeRect } from "./useNativeRect";
 
 type BrowserSelection = Extract<Selection, { kind: "browser" }>;
 
-/** The tab's own keys, in its address bar or its page. */
-const OWN = ["browser.focusAddress", "browser.reload", "browser.back", "browser.forward"] as const;
+/** The tab's own keys, in its address bar or its page; all but the first go to the page. */
+const GO = { "browser.reload": "reload", "browser.back": "back", "browser.forward": "forward" } as const satisfies Record<string, BrowserGo>;
+const OWN = ["browser.focusAddress", ...(Object.keys(GO) as (keyof typeof GO)[])] as const;
 
 /**
  * A web page in a tab: the address bar here, the page a native view of its own laid over the area
  * below (browser/macos.rs). It's made as the tab first shows and lives on hidden while another
  * does; closing the tab closes it (useTabs).
  */
-export function BrowserView({ tab, sel, root, onUpdate }: { tab: Tab; sel: BrowserSelection; root: string; onUpdate: (key: string, sel: Selection) => void }) {
+export function BrowserView({ tabKey, sel, root, onUpdate }: { tabKey: string; sel: BrowserSelection; root: string; onUpdate: (key: string, sel: Selection) => void }) {
   const { id } = sel;
   const state = useBrowserState(id);
   const [made, setMade] = useState(false);
@@ -53,30 +53,30 @@ export function BrowserView({ tab, sel, root, onUpdate }: { tab: Tab; sel: Brows
   const title = state?.title;
   useEffect(() => {
     if (!url || (url === sel.url && (title || undefined) === sel.title)) return;
-    const timer = setTimeout(() => onUpdate(tab.key, { ...sel, url, title: title || undefined }), 1000);
+    const timer = setTimeout(() => onUpdate(tabKey, { ...sel, url, title: title || undefined }), 1000);
     return () => clearTimeout(timer);
-  }, [url, title, sel, tab.key, onUpdate]);
+  }, [url, title, sel, tabKey, onUpdate]);
 
-  const run = (command: (typeof OWN)[number]) => {
-    if (command === "browser.focusAddress") {
-      // Keys come back to this page first, or they'd still go to the page's view.
-      void browserApi
-        .focus(id, false)
-        .catch(() => {})
-        .then(() => {
-          field.current?.focus();
-          field.current?.select();
-        });
-    } else {
-      void browserApi.go(id, command === "browser.reload" ? "reload" : command === "browser.back" ? "back" : "forward").catch(() => {});
-    }
-  };
+  /** One of the tab's own keys, run; false for any other key. */
   const runOwn = (e: KeyboardEvent) => {
     const command = commandIn(OWN, e);
-    if (command) run(command);
-    return !!command;
+    if (!command) return false;
+    if (command !== "browser.focusAddress") {
+      void browserApi.go(id, GO[command]).catch(() => {});
+      return true;
+    }
+    // Keys come back to this page first, or they'd still go to the page's view.
+    void browserApi
+      .focus(id, false)
+      .catch(() => {})
+      .then(() => {
+        field.current?.focus();
+        field.current?.select();
+      });
+    return true;
   };
-  useEffect(() => onBrowserKey(id, runOwn));
+  // runOwn reads only the id and refs.
+  useEffect(() => onBrowserKey(id, runOwn), [id]);
 
   const failed = state?.failed;
   return (

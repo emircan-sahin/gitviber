@@ -1,5 +1,7 @@
 import { CheckCircle2, Info, X, XCircle } from "lucide-react";
+import { useEffect } from "react";
 import { dismissToast, holdToast, type ToastAction, useToasts } from "@/lib/app/toast";
+import { overlaysChanged } from "@/lib/ui/overlays";
 import { cn } from "@/lib/utils";
 
 const ICONS = { error: XCircle, success: CheckCircle2, info: Info };
@@ -22,13 +24,14 @@ const buttons = (id: number, actions: ToastAction[]) =>
 
 export function Toaster() {
   const toasts = useToasts();
+  // Over a browser tab's page, a toast has it step aside (lib/ui/overlays).
+  useEffect(overlaysChanged, [toasts]);
   return (
     // Always mounted, so screen readers announce what's added; errors interrupt (role=alert).
     <div aria-live="polite" aria-label="Notifications" role="region" className="pointer-events-none fixed right-4 bottom-4 z-[60] flex w-96 flex-col gap-2">
       {toasts.map((t) => {
         const Icon = ICONS[t.kind];
         return (
-          // data-overlay: a browser tab's page steps aside while a toast is over it (features/browser).
           <div
             key={t.id}
             data-overlay

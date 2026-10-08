@@ -38,20 +38,30 @@ export interface BrowserKey {
   repeat: boolean;
 }
 
+// A create still on its way, by tab: a close waits for it, or the view it makes would stay open.
+const creating = new Map<string, Promise<unknown>>();
+
 /** The browser tab's native view (commands/browser.rs); macOS only for now, the rest fail elsewhere. */
 export const browserApi = {
   /** Tab `id`'s view in worktree `root`, loading `url`, hidden until placed; one already open stays as it is. */
-  create: (id: string, root: string, url: string) => invoke<BrowserState>("browser_create", { id, root, url }),
+  create: (id: string, root: string, url: string) => {
+    const made = invoke<BrowserState>("browser_create", { id, root, url });
+    creating.set(id, made);
+    void made.catch(() => {}).finally(() => creating.get(id) === made && creating.delete(id));
+    return made;
+  },
   place: (id: string, rect: NativeRect) => invoke<void>("browser_place", { id, rect }),
   hide: (id: string) => invoke<void>("browser_hide", { id }),
-  close: (id: string) => invoke<void>("browser_close", { id }),
-  /** A removed worktree's pages. */
-  closeRoot: (root: string) => invoke<void>("browser_close_root", { root }),
+  close: (id: string) =>
+    (creating.get(id) ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => invoke<void>("browser_close", { id })),
   navigate: (id: string, url: string) => invoke<void>("browser_navigate", { id, url }),
   go: (id: string, to: BrowserGo) => invoke<void>("browser_go", { id, to }),
   /** Keys to the page (`page`), or back to the app page. */
   focus: (id: string, page: boolean) => invoke<void>("browser_focus", { id, page }),
-  list: (root: string) => invoke<BrowserState[]>("browser_list", { root }),
   /** The page as it shows, a JPEG data URL; null when there's none. */
   snapshot: (id: string) => invoke<string | null>("browser_snapshot", { id }),
+  /** The chords bound to the app's commands: only these leave a page (keys.rs). */
+  setAppKeys: (chords: string[]) => invoke<void>("browser_set_app_keys", { chords }),
 };

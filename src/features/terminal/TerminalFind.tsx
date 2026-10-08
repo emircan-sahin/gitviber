@@ -7,6 +7,7 @@ import { clearFind, dismissRestore, endFind, findInTerminal, restoreSession, res
 import { useSettings } from "@/lib/settings";
 import { folderName } from "@/lib/path";
 import { plural } from "@/lib/format";
+import { overlaysChanged } from "@/lib/ui/overlays";
 
 /** Find (⌘F with focus in the terminal): the focused pane's text, its scrollback included. */
 export function TerminalFind() {
@@ -31,6 +32,7 @@ export function TerminalFind() {
   }, [pane]);
   // The panel hidden: no marks left behind, nothing reporting to this box.
   useEffect(() => clearFind, []);
+  useEffect(overlaysChanged, [box.open]);
   if (!box.open) return null;
   return (
     <div data-overlay className="absolute top-2 right-5 z-10">
@@ -63,6 +65,7 @@ export function TerminalRestoreOffer() {
   const { restorable } = useTerminals();
   // What the restore does with agents follows the setting.
   useSettings();
+  useEffect(overlaysChanged, [restorable]);
   if (!restorable) return null;
   const cwds = restorable.groups.flatMap((g) => g.panes.map((p) => p.cwd));
   const agents = resumable(restorable).size;

@@ -1,18 +1,17 @@
 import { type RefObject, useEffect, useState } from "react";
 import { browserApi } from "@/lib/api";
+import { pageHasFocus } from "@/lib/browser/store";
 import { useSettings } from "@/lib/settings";
 import { useTerminalsMaximized } from "@/lib/terminal/terminals";
-import { coveredBy, watchOverlays } from "./overlays";
-import { pageHasFocus } from "./store";
+import { coveredBy, watchOverlays } from "@/lib/ui/overlays";
 
 /** Points to the half, as AppKit lays views out on a 2x screen. */
 const half = (v: number) => Math.round(v * 2) / 2;
 
 /**
- * Keeps tab `id`'s native view over `area` while `live`: placed as the area moves or resizes,
- * hidden while it's too small or the maximized terminal covers it. While this page draws over it
- * (a menu, a dialog, a toast) the view steps aside, and the picture it returns stands in. `area`
- * takes focus meanwhile (tabIndex -1) and keeps what's typed there to itself.
+ * Keeps tab `id`'s native view over `area` while `live`. This page can't draw over a native
+ * view, so while a menu, dialog or toast reaches into it, the view steps aside and the picture it
+ * returns (the hook's value) stands in.
  */
 export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, live: boolean): string | null {
   // The interface scale is the app page's zoom: its CSS pixels are that many points.
@@ -50,7 +49,7 @@ export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, l
         aside = true;
         refocus = over === "overlay" && pageHasFocus(id);
         // A dialog (⌘P's field) gets the keys right away, not once the view is hidden. Typed
-        // under a toast they land on the area, not on the app's one-key commands (J, S).
+        // under a toast they land on the area, which keeps them from the app's one-key commands.
         if (over === "dialog") void browserApi.focus(id, false).catch(() => {});
         else if (refocus) el.focus();
         // The picture first: hidden, the view would have none to give.
@@ -64,17 +63,23 @@ export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, l
           });
         return;
       }
+      // Back from aside: placed again even where it was (the overlay may have left before the
+      // view did), and the keys go back.
+      const back = aside;
       aside = false;
       const rect = { x: half(r.left * scale), y: half(r.top * scale), w: half(r.width * scale), h: half(r.height * scale) };
       const key = `${rect.x} ${rect.y} ${rect.w} ${rect.h}`;
-      if (key === placed) return;
+      if (key === placed && !back) return;
       placed = key;
       browserApi.place(id, rect).then(
         () => {
           if (gone) return;
           setCover(null);
-          if (refocus && document.activeElement === el) void browserApi.focus(id, true).catch(() => {});
+          if (!back || !refocus) return;
           refocus = false;
+          if (document.activeElement !== el) return;
+          el.blur();
+          void browserApi.focus(id, true).catch(() => {});
         },
         () => (placed = ""),
       );

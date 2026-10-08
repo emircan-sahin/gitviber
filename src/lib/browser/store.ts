@@ -1,9 +1,11 @@
-import { type BrowserKey, type BrowserState, github } from "@/lib/api";
-import { listenHere } from "@/lib/app/settingsWindow";
-import { failed, toast } from "@/lib/app/toast";
-import { createStore } from "@/lib/store";
+import { browserApi, type BrowserKey, type BrowserState, github } from "../api";
+import { listenHere } from "../app/settingsWindow";
+import { failed, toast } from "../app/toast";
+import { bindingsFor, COMMANDS } from "../commands/commands";
+import { getSettings, subscribeSettings } from "../settings";
+import { createStore } from "../store";
 
-// What the browser tabs' native views report (browser/macos.rs), for the tabs and their toolbars.
+// What the browser tabs' native views report (browser/macos.rs), and the keys they hand back.
 
 const states = createStore<ReadonlyMap<string, BrowserState>>(new Map());
 
@@ -19,8 +21,22 @@ export function useBrowserState(id: string | null): BrowserState | null {
 
 listenHere<BrowserState>("browser-state", ({ payload }) => setBrowserState(payload)).catch(() => {});
 
-// Keys typed into a page that the app takes: its tab's own (⌘L, ⌘R) first, then the app's
-// commands, as if typed into this page.
+// Only the chords bound to the app's commands, and the tab's own (⌘L, ⌘R), leave a page
+// (keys.rs); the rest are the page's. Sent again as the user rebinds them.
+let sentKeys = "";
+function sendAppKeys() {
+  const { keybindings } = getSettings();
+  const chords = COMMANDS.filter((c) => !("local" in c) || c.local === "the browser").flatMap((c) => bindingsFor(c.id, keybindings));
+  const key = chords.join(" ");
+  if (key === sentKeys) return;
+  sentKeys = key;
+  void browserApi.setAppKeys(chords).catch(() => {});
+}
+subscribeSettings(sendAppKeys);
+sendAppKeys();
+
+// Keys typed into a page that the app takes: its tab's own first, then the app's commands, as
+// if typed into this page.
 const keyHandlers = new Map<string, (e: KeyboardEvent) => boolean>();
 
 /** `handle` sees tab `id`'s keys first; true when it took one. */

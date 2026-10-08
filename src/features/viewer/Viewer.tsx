@@ -101,7 +101,7 @@ export function Viewer(props: ViewerProps) {
           ) : active.sel.kind === "vault" ? (
             <VaultView tab={active} sel={active.sel} onOpen={props.onOpen} />
           ) : active.sel.kind === "browser" ? (
-            <BrowserView tab={active} sel={active.sel} root={props.root} onUpdate={props.onUpdate} />
+            <BrowserView tabKey={active.key} sel={active.sel} root={props.root} onUpdate={props.onUpdate} />
           ) : (
             <Pane tab={active} sel={active.sel} {...props} />
           )}

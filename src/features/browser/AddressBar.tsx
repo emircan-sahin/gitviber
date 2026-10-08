@@ -30,6 +30,8 @@ export function AddressBar({ id, url, state, field }: Props) {
   const go = (to: BrowserGo) => void browserApi.go(id, to).catch(failed("The page didn't respond"));
   const toPage = () => {
     setTyped(null);
+    // A page that never loaded is hidden under its message: the keys stay here.
+    if (state?.failed) return;
     field.current?.blur();
     void browserApi.focus(id, true).catch(() => {});
   };
