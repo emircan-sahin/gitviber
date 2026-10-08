@@ -594,6 +594,10 @@
 :root[data-translucency] .glass-background .guide-flow :is(.edgeLabel, .labelBkg, .edgeLabel p) {
   background-color: var(--glass-background) !important;
 }
+/* Inline code tints over what's under it: its --elevated stays solid in a part, a white chip on light themes. */
+:root[data-translucency] .markdown :not(pre) > code {
+  background: color-mix(in srgb, var(--foreground) 8%, transparent);
+}
 /* A header rows scroll under keeps covering them: the tint again, over a blur, as native ones do. */
 :root[data-translucency] :is(.glass-sidebar, .glass-panel, .glass-elevated, .glass-background) .glass-header {
   background-color: var(--glass-part);
