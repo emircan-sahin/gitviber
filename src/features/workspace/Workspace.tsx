@@ -536,7 +536,7 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
                     viewed={viewed}
                     setViewed={setViewed}
                     onBase={setReview}
-                    onGuide={s.suggestEnabled ? (base) => openGuide({ kind: "guide", of: "branch", base, label: shortRef(base) }, status, open) : undefined}
+                    onGuide={(base) => openGuide({ kind: "guide", of: "branch", base, label: shortRef(base) }, status, open)}
                     onClose={() => setReview(null)}
                   />
                 )}
@@ -690,7 +690,16 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
               </PanelHeader>
               {/* Both stay mounted, so each keeps its state (open folders, results) while the other shows. */}
               <div className={cn("min-h-0 flex-1", explorerView !== "search" && "hidden")}>
-                <SearchView active={explorerView === "search"} ask={searchAsk} onOpen={open} />
+                <SearchView
+                  active={explorerView === "search"}
+                  ask={searchAsk}
+                  onOpen={open}
+                  onLeave={() => {
+                    setExplorerView("files");
+                    // After the render that shows the tree: focusPanel skips a hidden one.
+                    requestAnimationFrame(() => focusPanel("explorer"));
+                  }}
+                />
               </div>
               <div className={cn("min-h-0 flex-1", explorerView !== "files" && "hidden")}>
                 <ExplorerPanes

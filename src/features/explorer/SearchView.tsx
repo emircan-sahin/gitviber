@@ -21,13 +21,15 @@ interface Props {
   /** Find in Files asked for the box: `seed` is the code view's selection, if any. */
   ask: { id: number; seed: string };
   onOpen: (s: Selection, pin?: boolean) => void;
+  /** Esc in an empty box: back to the files. */
+  onLeave: () => void;
 }
 
 /**
  * Search in files, VS Code's: the worktree's text through `git grep` (grep.rs), matches grouped
  * by file. Picking one opens the file at its line with the match selected.
  */
-export function SearchView({ active, ask, onOpen }: Props) {
+export function SearchView({ active, ask, onOpen, onLeave }: Props) {
   const [text, setText] = useState("");
   const [options, setOptions] = useState<FindOptions>(NO_OPTIONS);
   const [include, setInclude] = useState("");
@@ -110,7 +112,10 @@ export function SearchView({ active, ask, onOpen }: Props) {
     if (e.key === "ArrowDown") {
       if (!focusPanel("explorer")) return;
     } else if (e.key === "Enter") setAgain((n) => n + 1);
-    else if (e.key === "Escape" && text) setText("");
+    else if (e.key === "Escape") {
+      if (text) setText("");
+      else onLeave();
+    }
     else return;
     e.preventDefault();
   };
