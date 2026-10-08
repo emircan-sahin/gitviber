@@ -536,8 +536,8 @@ export interface AskPrompt {
 
 export type ResetMode = "soft" | "mixed" | "hard";
 
-/** Which suggestion a run is for: the commit box's message, the pull request dialog's, or a guided review; each runs and cancels apart. */
-export type SuggestKind = "message" | "pull" | "guide";
+/** Which suggestion a run is for: the commit box's message, the pull request dialog's, a guided review or its risks; each runs and cancels apart. */
+export type SuggestKind = "message" | "pull" | "guide" | "risks";
 
 /** What a guided review is of: a commit, HEAD's branch since it left `base` (a full ref), or a pull request's fetched commits. */
 export type GuideTarget = { of: "commit"; sha: string } | { of: "branch"; base: string } | { of: "pull"; base: string; head: string; title: string };

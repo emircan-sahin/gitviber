@@ -214,7 +214,9 @@ export const api = {
   /** The same for a pull request from HEAD into `base` (refs/remotes/…): its commits, PR template and diff. */
   suggestPull: (command: string, prompt: string, base: string) => invoke<string>("suggest_pull", { command, prompt, base }),
   /** The same for a guided review of `target` (only what's committed), with the range it read. */
-  suggestGuide: (command: string, prompt: string, target: GuideTarget, agent: GuideAgent) => invoke<Guided>("suggest_guide", { command, prompt, target, agent }),
+  suggestGuide: (command: string, prompt: string, target: GuideTarget, agent: GuideAgent, kind: "guide" | "risks") => invoke<Guided>("suggest_guide", { command, prompt, target, agent, kind }),
+  /** Writes a guided review's context to a private file and returns the line that starts Claude Code with it (handoff.rs). */
+  handoffCommand: (h: { command: string; model: string | null; effort: string | null; name: string; context: string; prompt: string | null }) => invoke<string>("handoff_command", h),
   /** Stops the run of `kind`, leaving the others. */
   suggestCancel: (kind: SuggestKind) => invoke<void>("suggest_cancel", { kind }),
   /** Signature status and trailers of one commit (verifying runs gpg/ssh, so one at a time). */

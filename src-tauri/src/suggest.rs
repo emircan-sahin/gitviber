@@ -50,14 +50,15 @@ pub enum Scope {
     Amend,
 }
 
-/// Which suggestion a run is for: the commit box's, the pull request dialog's and a guided
-/// review's run side by side.
+/// Which suggestion a run is for: the commit box's, the pull request dialog's, a guided review's
+/// and its risks' run side by side.
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     Message,
     Pull,
     Guide,
+    Risks,
 }
 
 /// The run in progress of each kind, so Cancel (or starting another of that kind) can stop it.
@@ -66,6 +67,7 @@ pub struct Suggester {
     message: Mutex<Option<Arc<AtomicBool>>>,
     pull: Mutex<Option<Arc<AtomicBool>>>,
     guide: Mutex<Option<Arc<AtomicBool>>>,
+    risks: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 impl Suggester {
@@ -74,6 +76,7 @@ impl Suggester {
             Kind::Message => &self.message,
             Kind::Pull => &self.pull,
             Kind::Guide => &self.guide,
+            Kind::Risks => &self.risks,
         }
         .lock()
         .unwrap()
@@ -467,7 +470,7 @@ fn prepare(template: &str, prompt: &str, diff: &str) -> Result<(Vec<String>, Str
 }
 
 /// `~/bin/claude` as typed in Settings; no shell expands it for us.
-fn expand_home(program: &str) -> String {
+pub(crate) fn expand_home(program: &str) -> String {
     match (program.strip_prefix("~/"), std::env::var("HOME")) {
         (Some(rest), Ok(home)) => format!("{home}/{rest}"),
         _ => program.to_string(),
@@ -541,16 +544,11 @@ pub(crate) fn guide_within(
     let mut scratch = None;
     let mut note = input.note;
     if let Some(patch) = &input.patch {
-        // A run cut short by quitting left its folder: none lasts past the longest run. On its
-        // own thread, as reading a crowded temp folder takes a while.
-        std::thread::spawn(|| {
-            crate::scratch::sweep("guide", MAX_GUIDE_TIMEOUT + Duration::from_secs(60))
-        });
-        let dir = ScratchDir::new("guide")?;
-        // As the agent's tools resolve it: /var is a link to /private/var on macOS.
-        let path = dir.path().canonicalize().map_err(|e| e.to_string())?;
+        // A run cut short by quitting left its folder: none lasts past the longest run.
+        let (dir, path) = ScratchDir::fresh("guide", MAX_GUIDE_TIMEOUT + Duration::from_secs(60))?;
         let file = path.join("changes.patch");
-        write_private(&file, patch)?;
+        crate::scratch::write_private(&file, patch)
+            .map_err(|e| format!("Couldn't write the patch for the agent: {e}"))?;
         let shown = file.to_string_lossy();
         note = note.replace(PATCH, &format!("`{shown}`"));
         match agent.reads {
@@ -593,18 +591,6 @@ fn opencode_reads(own: Option<&str>, dir: &str) -> String {
     }
     external[format!("{dir}/*")] = json!("allow");
     rules.to_string()
-}
-
-/// `text` in a new file at `path` only the user can read.
-fn write_private(path: &Path, text: &str) -> Result<(), String> {
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options
-        .open(path)
-        .and_then(|mut f| f.write_all(text.as_bytes()))
-        .map_err(|e| format!("Couldn't write the patch for the agent: {e}"))
 }
 
 /// How a run goes: stopped after `timeout`; `cut`: the diff was cut, and what of it is whole;
@@ -782,10 +768,14 @@ mod tests {
         let message = s.start(Kind::Message);
         let pull = s.start(Kind::Pull);
         let guide = s.start(Kind::Guide);
+        let risks = s.start(Kind::Risks);
         assert!(!message.load(Ordering::Relaxed));
         s.cancel(Kind::Pull);
         assert!(pull.load(Ordering::Relaxed));
         assert!(!message.load(Ordering::Relaxed) && !guide.load(Ordering::Relaxed));
+        // A guide's risks run beside it.
+        s.cancel(Kind::Risks);
+        assert!(risks.load(Ordering::Relaxed) && !guide.load(Ordering::Relaxed));
         // A second of the same kind stops the first.
         s.start(Kind::Message);
         assert!(message.load(Ordering::Relaxed));

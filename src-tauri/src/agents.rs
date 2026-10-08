@@ -209,7 +209,7 @@ fn detect(leader: Process) -> Option<Found> {
 
 /// `word` as zsh, bash and fish all read it back: bare when it's plain, else in single quotes,
 /// with `'` and `\` outside them (fish reads `\'` and `\\` inside quotes as escapes).
-fn quote(word: &str) -> String {
+pub(crate) fn quote(word: &str) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "_-.,/:@%+=".contains(c);
     // zsh expands a word that starts with `=` to a command's path.
     if !word.is_empty() && !word.starts_with('=') && word.chars().all(plain) {
@@ -771,6 +771,18 @@ mod tests {
                 Some(r"claude --resume abc-123 --append-system-prompt 'be brief, it'\''s late'"),
             ),
             (&["--", "--not-a-flag"], Some("claude --resume abc-123")),
+            // A guided review's hand-off (handoff.rs): its file is swept a day later, and the
+            // conversation keeps the prompt it was given.
+            (
+                &[
+                    "-n",
+                    "Review: PR #42",
+                    "--append-system-prompt-file",
+                    "/tmp/gitviber-handoff-x/context.md",
+                    "Look into it",
+                ],
+                Some("claude --resume abc-123"),
+            ),
             // npm's process.title blanks argv: nothing is kept, nothing breaks.
             (&["", "", ""], Some("claude --resume abc-123")),
             (&["-p", "explain"], None),

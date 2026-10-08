@@ -1,9 +1,9 @@
 use crate::journal::{files_label, Action, Mode};
 use crate::state::{
-    in_repo, indexed, indexed_once, journaled, read_repo, watch_network, with_index_lock, AppState,
-    Res,
+    blocking, in_repo, indexed, indexed_once, journaled, read_repo, watch_network, with_index_lock,
+    AppState, Res,
 };
-use crate::{git, github, lines, network, suggest};
+use crate::{git, github, handoff, lines, network, suggest};
 use std::path::Path;
 use tauri::ipc::Channel;
 use tauri::State;
@@ -150,7 +150,8 @@ pub async fn suggest_pull(
     out
 }
 
-/// The same, for a guided review of a commit or of the branch since it left its base.
+/// The same, for a guided review of a commit, a pull request or the branch since it left its
+/// base, or for its risks (`kind`): the two run side by side, on the same range.
 #[tauri::command]
 pub async fn suggest_guide(
     state: State<'_, AppState>,
@@ -158,15 +159,42 @@ pub async fn suggest_guide(
     prompt: String,
     target: suggest::Target,
     agent: suggest::Agent,
+    kind: suggest::Kind,
 ) -> Res<suggest::Guided> {
-    let cancel = state.suggest.start(suggest::Kind::Guide);
+    if !matches!(kind, suggest::Kind::Guide | suggest::Kind::Risks) {
+        return Err("not a guided review's run".into());
+    }
+    let cancel = state.suggest.start(kind);
     let flag = cancel.clone();
     let out = in_repo(&state, move |r| {
         suggest::run_guide(r, &command, &prompt, &target, &agent, &flag)
     })
     .await;
-    state.suggest.finish(suggest::Kind::Guide, &cancel);
+    state.suggest.finish(kind, &cancel);
     out
+}
+
+/// A guided review handed to Claude Code in a terminal: the line to type at the shell's prompt.
+#[tauri::command]
+pub async fn handoff_command(
+    command: String,
+    model: Option<String>,
+    effort: Option<String>,
+    name: String,
+    context: String,
+    prompt: Option<String>,
+) -> Res<String> {
+    blocking(move || {
+        handoff::command(&handoff::Handoff {
+            command: &command,
+            model: model.as_deref(),
+            effort: effort.as_deref(),
+            name: &name,
+            context: &context,
+            prompt: prompt.as_deref(),
+        })
+    })
+    .await
 }
 
 #[tauri::command]

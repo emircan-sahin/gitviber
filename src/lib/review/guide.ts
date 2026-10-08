@@ -1,4 +1,5 @@
 import { isRecord } from "../storage.ts";
+import { clip, exampleOf, jsonOf, languageName, records, text, whole } from "./answer.ts";
 
 /**
  * Guided reviews: the user's agent CLI explains a commit or a branch as ordered sections, the
@@ -124,26 +125,6 @@ export const GUIDE_SCHEMA = {
   },
 };
 
-interface Schema {
-  type?: string;
-  description?: string;
-  enum?: string[];
-  examples?: unknown[];
-  properties?: Record<string, Schema>;
-  items?: Schema;
-}
-
-/** `schema` as an example of itself: each value its description (or example, or choices). */
-function exampleOf(schema: Schema): string {
-  if (schema.properties)
-    return `{${Object.entries(schema.properties)
-      .map(([k, v]) => `"${k}": ${exampleOf(v)}`)
-      .join(", ")}}`;
-  if (schema.items) return `[${exampleOf(schema.items)}]`;
-  if (schema.examples) return JSON.stringify(schema.examples[0]);
-  return JSON.stringify(schema.description ?? schema.enum?.join(" or ") ?? "");
-}
-
 /** Sent ahead of the commit's message or the branch's commits, the changed files and their diffs; Settings shows it. */
 export const GUIDE_PROMPT = [
   `Explain this change to a reviewer so they can read it quickly. Answer with only a JSON object, with no code fences or other text, shaped like this: ${exampleOf(GUIDE_SCHEMA)}.`,
@@ -155,17 +136,9 @@ export const GUIDE_PROMPT = [
     .join(", ")}.`,
 ].join("\n\n");
 
-/** GUIDE_PROMPT with the language the guide's prose is written in (Settings → Guided Review); empty reads as English. */
+/** GUIDE_PROMPT with the language the guide's prose is written in. */
 export function guidePrompt(language: string) {
-  // A name, not an instruction: letters of any script (with their marks), spaces and '()- only,
-  // on one line, so ". Ignore the schema" can't become a sentence of the prompt.
-  const lang =
-    language
-      .replace(/[^\p{L}\p{M}\s'()-]/gu, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 40)
-      .trim() || "English";
+  const lang = languageName(language);
   return `${GUIDE_PROMPT}\n\nWrite all prose (the title, overview, summaries, checks, risks and notes) in ${lang}; keep the JSON keys and the values picked from a list (category, importance, side, status, kind), code, identifiers, paths and quoted strings as they are.`;
 }
 
@@ -249,45 +222,6 @@ export interface Guide {
 /** How much of a diagram is drawn, as the prompt asks (past this it stops explaining), how many sections, and their notes. */
 export const LIMITS = { models: 6, fields: 12, flows: 2, steps: 12, edges: 24, sections: 50, notes: 40, note: 500 };
 
-const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
-
-/** `answer` read as JSON, then with the trailing commas models write taken out; undefined for neither. */
-function parse(answer: string): unknown {
-  for (const candidate of [answer, answer.replace(/,(\s*[}\]])/g, "$1")])
-    try {
-      return JSON.parse(candidate);
-    } catch {
-      // The next way of reading it.
-    }
-}
-
-/**
- * The JSON in an answer: all of it, or the first `{…}` with a guide's fields, wherever it is (a
- * fence, a "Here's the review:" or a `{ retries }` in the words around it). One pass that pairs
- * the braces outside strings, so a brace in a string or a long answer costs no more.
- */
-function jsonOf(answer: string): unknown {
-  const whole = parse(answer);
-  if (whole !== undefined) return whole;
-  let depth = 0;
-  let start = 0;
-  let quoted = false;
-  for (let i = 0; i < answer.length; i++) {
-    const c = answer[i];
-    // Strings count only inside an object: the words around it have quotes and apostrophes of their own.
-    if (quoted) {
-      if (c === "\\") i++;
-      else if (c === '"') quoted = false;
-    } else if (c === '"' && depth) quoted = true;
-    else if (c === "{" && !depth++) start = i;
-    else if (c === "}" && depth && !--depth) {
-      const v = parse(answer.slice(start, i + 1));
-      if (isRecord(v) && ("title" in v || "summary" in v || "overview" in v || "sections" in v)) return v;
-    }
-  }
-  return null;
-}
-
 /** The changed file (of `paths`) a model's path names: as written, or without git's a/ or b/. */
 export function matchPath(path: string, paths: Set<string>) {
   if (paths.has(path)) return path;
@@ -295,18 +229,14 @@ export function matchPath(path: string, paths: Set<string>) {
   return paths.has(bare) ? bare : null;
 }
 
-const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
 /** One line of text, as long as a diagram's box can hold. */
 const line = (v: unknown, max: number) => clip(text(v).replace(/\s+/g, " "), max);
-const records = (v: unknown) => (Array.isArray(v) ? v.filter(isRecord) : []);
 
 function partStatus(v: unknown): PartStatus {
   const s = text(v).toLowerCase();
   return s === "new" || s === "added" ? "new" : s === "changed" || s === "modified" ? "changed" : "same";
 }
 
-/** A number as written, or in a string; NaN for anything else. */
-const whole = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN);
 
 /** A part's section number, when it names one of the `count` there are. */
 function sectionRef(v: unknown, count: number): SectionRef {
@@ -394,7 +324,7 @@ function parseSection(s: Record<string, unknown>): GuideSection {
  * source (unwrapped if it fenced it anyway), and its summary stands for the overview.
  */
 export function parseGuide(output: string): Guide | null {
-  const v = jsonOf(output.replace(/\r\n?/g, "\n").trim());
+  const v = jsonOf(output.replace(/\r\n?/g, "\n").trim(), ["title", "summary", "overview", "sections"]);
   if (!isRecord(v)) return null;
   const sections = records(v.sections)
     .map(parseSection)

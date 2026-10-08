@@ -1,4 +1,4 @@
-import { LoaderCircle, RotateCw, Sparkles, Square, TriangleAlert } from "lucide-react";
+import { Bug, LoaderCircle, RotateCw, Sparkles, Square, TriangleAlert } from "lucide-react";
 import { useMemo, useState } from "react";
 import { flushSync } from "react-dom";
 import { PageFind } from "@/components/FindBox";
@@ -6,15 +6,20 @@ import { Button } from "@/components/ui/button";
 import type { RepoStatus } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { programOf, reviewAgent } from "@/lib/git/suggest";
-import type { ChangesSelection, GuideSelection, Selection } from "@/lib/repo/selection";
+import { type ChangesSelection, type GuideSelection, type Selection, selectionKey } from "@/lib/repo/selection";
 import { type Category, type GuideSection, matchPath, parseGuide, placeFiles } from "@/lib/review/guide";
+import { type HandoffAbout, isCheckedOut } from "@/lib/review/handoff";
+import { parseRisks, type Risk } from "@/lib/review/risks";
 import { useSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
 import type { BranchChange } from "@/features/changes/BranchReview";
 import { Mermaid } from "@/features/viewer/markdown/Mermaid";
 import { type Annotations, type ListFile, useStackedFiles } from "@/features/viewer/StackedFiles";
 import { useFixedFiles } from "@/features/viewer/fixedFiles";
-import { cancelGuide, generateGuide, guideId, markDone, useGuide } from "./guides";
+import type { Ask } from "./askAgent";
+import { AskAgentButton } from "./AskAgentButton";
+import { cancelGuide, cancelRisks, findRisks, generateGuide, guideId, markDone, useGuide, useRisks } from "./guides";
+import { GuideRisks, RisksRun } from "./GuideRisks";
 import { GuideDiagram } from "./GuideDiagram";
 import { CATEGORY_UI } from "./categories";
 import { CategoryFilter, GuideNav } from "./GuideNav";
@@ -55,8 +60,11 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   const id = guideId(root, sel, branch);
   const { saved, run } = useGuide(id);
   const guide = useMemo(() => (saved ? parseGuide(saved.text) : null), [saved]);
-  // status.head is HEAD's short id; a pull request's head is as its list last read it.
-  const moved = saved && (sel.of === "branch" ? !!status?.head && !saved.head.startsWith(status.head) : sel.of === "pull" && saved.head !== sel.pull.headSha);
+  const risksOf = useRisks(id);
+  const risks = useMemo(() => (risksOf.saved ? parseRisks(risksOf.saved.text) : null), [risksOf.saved]);
+  // Whether what was read at `head` is behind: status.head is HEAD's short id; a pull request's head is as its list last read it.
+  const movedFrom = (head: string) => (sel.of === "branch" ? !!status?.head && !head.startsWith(status.head) : sel.of === "pull" && head !== sel.pull.headSha);
+  const moved = saved && movedFrom(saved.head);
   const what = sel.of === "commit" ? "this commit" : sel.of === "pull" ? "this pull request" : "this branch";
 
   // The files as Open All reads them: the commit's, or the range the guide read.
@@ -97,8 +105,16 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
       for (const n of s.fileNotes) of(n.path)?.file.push({ text: n.text, critical: n.critical });
       for (const n of s.lineNotes) of(n.path)?.lines.push({ old: n.side === "old", line: n.line, text: n.text, critical: n.critical });
     }
+    // Risks found on the files shown: read at another head, their lines would be off.
+    if (risks && risksOf.saved?.head === saved?.head)
+      for (const r of risks) {
+        const text = `Risk: ${r.title}${r.why ? `. ${r.why}` : ""}`;
+        const critical = r.severity === "high";
+        if (r.line) of(r.path)?.lines.push({ old: r.side === "old", line: r.line, text, critical });
+        else of(r.path)?.file.push({ text, critical });
+      }
     return at;
-  }, [guide, byPath]);
+  }, [guide, byPath, risks, risksOf.saved, saved]);
   const counts = useMemo(() => {
     const at = new Map<Category, number>();
     for (const s of guide?.sections ?? []) at.set(s.category, (at.get(s.category) ?? 0) + 1);
@@ -150,6 +166,41 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
 
   const running = run === "running";
   const generate = () => void generateGuide(id, sel);
+  const findingRisks = risksOf.run === "running";
+  const find = () => void findRisks(id, sel);
+  // What the agent is handed: the range a run read (the guide's, or the risks'), and the part asked about.
+  const askOf = (range: { base: string; head: string }, about: HandoffAbout): Ask => ({
+    sel,
+    branch,
+    base: range.base,
+    head: range.head,
+    guide,
+    about,
+    checkedOut: isCheckedOut(sel, status?.head, range.head),
+    moved: movedFrom(range.head),
+  });
+  // A risk's file, where the guide shows its diff; else in a tab of its own.
+  const goToRisk = (r: Risk) => {
+    const path = matchPath(r.path, new Set(byPath.keys()));
+    const f = path ? byPath.get(path) : undefined;
+    if (!f) return;
+    if (filtered) flushSync(() => setFilter(ALL));
+    const block = scroller.current?.querySelector(`[data-file="${CSS.escape(selectionKey(f))}"]`);
+    if (block) block.scrollIntoView({ block: "start" });
+    else onOpen(f, true);
+  };
+  const found = risksOf.saved;
+  const risksBlock = found && (
+    <GuideRisks
+      risks={risks}
+      saved={found}
+      outdated={movedFrom(found.head)}
+      running={findingRisks}
+      onFind={find}
+      onGo={goToRisk}
+      action={(r) => <AskAgentButton root={root} ask={() => askOf(found, { risk: r })} label="Send to Agent" what="this risk" />}
+    />
+  );
   const done = guide && saved ? guide.sections.filter((_, i) => saved.done.includes(i)).length : 0;
   const filesViewed = [...byPath.values()].filter(isViewed).length;
   const drawn = !!guide && (guide.models.length > 0 || guide.flows.length > 0 || !!guide.diagram);
@@ -165,8 +216,14 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
         <header className="mb-5">
           <div className="flex items-start gap-3">
             <h1 className="min-w-0 flex-1 text-[20px] leading-snug font-semibold select-text">{guide?.title || (sel.of === "commit" ? sel.commit.subject : sel.of === "pull" ? sel.pull.title : `${branch ?? "HEAD"} since ${sel.label}`)}</h1>
+            {saved && <AskAgentButton root={root} ask={() => askOf(saved, null)} what="this review" />}
+            {!risksOf.saved && !findingRisks && (
+              <Button size="sm" variant="secondary" onClick={find}>
+                <Bug /> Find Risks
+              </Button>
+            )}
             {running ? (
-              <Button size="sm" variant="secondary" onClick={cancelGuide}>
+              <Button size="sm" variant="secondary" onClick={() => cancelGuide(id)}>
                 <Square /> Cancel
               </Button>
             ) : (
@@ -242,19 +299,25 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
             Couldn't read the files: {fixed.error}
           </Notice>
         )}
+        <RisksRun program={program} run={risksOf.run} onCancel={() => cancelRisks(id)} />
 
         {!saved ? (
-          !running && (
-            <p className="text-[13px] text-muted-foreground">
-              {program} reads {sel.of === "commit"
-                ? "the commit's message and diff"
-                : sel.of === "pull"
-                  ? "the pull request's commits and their diff, fetching them first when they're missing,"
-                  : "the branch's commits and their diff (not uncommitted changes)"} and explains it as sections in the order to review them, by category, with a diagram when a flow or data model changes.
-            </p>
-          )
+          <>
+            {/* Risks found while the guide isn't there (stopped, failed, or dropped from storage). */}
+            {risksBlock}
+            {!running && (
+              <p className="text-[13px] text-muted-foreground">
+                {program} reads {sel.of === "commit"
+                  ? "the commit's message and diff"
+                  : sel.of === "pull"
+                    ? "the pull request's commits and their diff, fetching them first when they're missing,"
+                    : "the branch's commits and their diff (not uncommitted changes)"} and explains it as sections in the order to review them, by category, with a diagram when a flow or data model changes.
+              </p>
+            )}
+          </>
         ) : !guide ? (
           <>
+            {risksBlock}
             <Notice icon={<TriangleAlert />}>The answer wasn't in the shape asked for; here it is as written.</Notice>
             <GuideMarkdown text={saved.text} />
           </>
@@ -289,6 +352,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
                   </div>
                 )}
               </div>
+              {risksBlock}
               {(counts.size > 1 || (highs > 0 && highs < total)) && (
                 <CategoryFilter
                   counts={counts}
@@ -317,6 +381,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
                   files={diffs(placed?.shown[n - 1])}
                   named={placed?.named[n - 1]}
                   onSection={goTo}
+                  action={<AskAgentButton root={root} ask={() => askOf(saved, { section, n, total: guide.sections.length })} what="this section" />}
                 />
               ))}
               {filtered && !shown.length && (

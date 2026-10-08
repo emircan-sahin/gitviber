@@ -36,6 +36,8 @@ export const SUGGEST_PRESETS = {
     // A config override, one argument: suggest.rs runs argv without a shell.
     effort: { flag: "-c model_reasoning_effort=", levels: ["minimal", "low", "medium", "high", "xhigh"], default: "medium" },
     other: false,
+    // Its bare program is an interactive session of its own (Ask Agent opens it).
+    session: true,
   },
   // The plan agent can't edit files; the default build agent can.
   opencode: {
@@ -46,6 +48,7 @@ export const SUGGEST_PRESETS = {
     models: { label: "models.dev", url: "https://models.dev" },
     effort: { flag: "--variant", levels: ["minimal", "low", "medium", "high", "xhigh", "max"], default: "" },
     other: true,
+    session: true,
   },
   pi: {
     label: "pi",
@@ -55,6 +58,7 @@ export const SUGGEST_PRESETS = {
     models: { label: "pi's model list", url: "https://pi.dev/models" },
     effort: { flag: "--thinking", levels: ["off", "minimal", "low", "medium", "high", "xhigh", "max"], default: "medium" },
     other: true,
+    session: true,
   },
   llm: {
     label: "llm",
