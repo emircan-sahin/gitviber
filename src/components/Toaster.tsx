@@ -28,8 +28,10 @@ export function Toaster() {
       {toasts.map((t) => {
         const Icon = ICONS[t.kind];
         return (
+          // data-overlay: a browser tab's page steps aside while a toast is over it (features/browser).
           <div
             key={t.id}
+            data-overlay
             role={t.kind === "error" ? "alert" : "status"}
             onMouseEnter={() => holdToast(t.id, true)}
             onMouseLeave={() => holdToast(t.id, false)}

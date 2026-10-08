@@ -195,6 +195,7 @@ export function ShortcutOverlay() {
   // Above the scrollbar layer (index.css .sb-layer, z-index 70). No backdrop-filter: over the terminal's WebGL canvas it isn't safe in WebKit.
   return (
     <div
+      data-overlay
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => set(null)}
       onContextMenu={(e) => {
