@@ -3,23 +3,34 @@ import { type FormEvent, type RefObject, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DisabledTip, Tip } from "@/components/ui/tooltip";
-import { browserApi, type BrowserGo, type BrowserState, github } from "@/lib/api";
+import { type BrowserGo, type BrowserState, github } from "@/lib/api";
 import { failed } from "@/lib/app/toast";
 import { BLANK, normalizeUrl } from "@/lib/browser/url";
 import { useShortcut } from "@/lib/commands/keybindings";
 import { cn } from "@/lib/utils";
+import { PortsMenu } from "./PortsMenu";
+
+/** What the bar drives: the page's native view (macOS), or its frame (Linux). */
+export interface PageControl {
+  navigate: (url: string) => void;
+  go: (to: BrowserGo) => void;
+  /** Keys to the page. */
+  focus: () => void;
+}
 
 interface Props {
-  id: string;
   /** Where the tab is, while its page hasn't said yet. */
   url: string;
   state: BrowserState | null;
+  page: PageControl;
+  /** The worktree, whose terminals' ports the ports menu lists. */
+  root: string;
   /** The address field, for ⌘L. */
   field: RefObject<HTMLInputElement | null>;
 }
 
-/** Back, forward, reload, the address (a port, a host or a URL; Enter loads it), and the system browser. */
-export function AddressBar({ id, url, state, field }: Props) {
+/** Back, forward, reload, the address (a port, a host or a URL; Enter loads it), the terminals' ports, and the system browser. */
+export function AddressBar({ url, state, page, root, field }: Props) {
   const current = state?.url || url;
   // What's typed while the field has focus; otherwise it shows where the page is.
   const [typed, setTyped] = useState<string | null>(null);
@@ -27,21 +38,24 @@ export function AddressBar({ id, url, state, field }: Props) {
   const backKey = useShortcut("browser.back");
   const forwardKey = useShortcut("browser.forward");
   const reloadKey = useShortcut("browser.reload");
-  const go = (to: BrowserGo) => void browserApi.go(id, to).catch(failed("The page didn't respond"));
+  const go = page.go;
   const toPage = () => {
     setTyped(null);
     // A page that never loaded is hidden under its message: the keys stay here.
     if (state?.failed) return;
     field.current?.blur();
-    void browserApi.focus(id, true).catch(() => {});
+    page.focus();
+  };
+  const open = (next: string) => {
+    toPage();
+    page.navigate(next);
   };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     const next = normalizeUrl(typed ?? current);
     if (!next) return setInvalid(true);
-    toPage();
-    void browserApi.navigate(id, next).catch(failed("Could not open the page"));
+    open(next);
   };
 
   return (
@@ -105,6 +119,7 @@ export function AddressBar({ id, url, state, field }: Props) {
           </span>
         </Tip>
       )}
+      <PortsMenu root={root} onOpen={open} />
       <DisabledTip label="Open in Browser" disabled={current === BLANK}>
         <Button type="button" variant="ghost" size="icon-sm" disabled={current === BLANK} onClick={() => void github.openUrl(current).catch(failed("Could not open the link"))}>
           <ExternalLink />

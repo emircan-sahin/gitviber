@@ -4,6 +4,7 @@ import { failed, toast } from "../app/toast";
 import { bindingsFor, COMMANDS } from "../commands/commands";
 import { getSettings, subscribeSettings } from "../settings";
 import { createStore } from "../store";
+import { onAgentFinished } from "../terminal/agents";
 
 // What the browser tabs' native views report (browser/macos.rs), and the keys they hand back.
 
@@ -20,6 +21,41 @@ export function useBrowserState(id: string | null): BrowserState | null {
 }
 
 listenHere<BrowserState>("browser-state", ({ payload }) => setBrowserState(payload)).catch(() => {});
+
+// Parked to save memory (registry.rs): its view is gone, and what it last said with it. A tab
+// on show (parked as it came back) makes it again.
+const parks = createStore<ReadonlyMap<string, number>>(new Map());
+listenHere<{ id: string }>("browser-parked", ({ payload: { id } }) => {
+  const all = new Map(states.get());
+  if (all.delete(id)) states.set(all);
+  parks.set(new Map(parks.get()).set(id, (parks.get().get(id) ?? 0) + 1));
+}).catch(() => {});
+
+/** How many times tab `id`'s view has parked: a new view is due each time. */
+export const useParks = (id: string) => parks.use().get(id) ?? 0;
+
+/** A page to open in a browser tab, from somewhere that doesn't hold the tabs (a terminal's menu). New per ask. */
+const asked = createStore<{ id: number; url: string } | null>(null);
+let asks = 0;
+export const askOpenPage = (url: string) => asked.set({ id: ++asks, url });
+export const usePageAsk = asked.use;
+
+// Settings → Browser: how many pages out of sight stay alive, and for how long.
+let sentPolicy = "";
+function sendPolicy() {
+  const { browserLiveHidden, browserParkAfterMin } = getSettings();
+  const key = `${browserLiveHidden} ${browserParkAfterMin}`;
+  if (key === sentPolicy) return;
+  sentPolicy = key;
+  void browserApi.configure(browserLiveHidden, browserParkAfterMin).catch(() => {});
+}
+subscribeSettings(sendPolicy);
+sendPolicy();
+
+// An agent done with its turn: its worktree's pages show what it changed (Settings → Browser).
+onAgentFinished((dir) => {
+  if (getSettings().browserReloadOnAgentDone) void browserApi.agentDone(dir).catch(() => {});
+});
 
 // Only the chords bound to the app's commands, and the tab's own (⌘L, ⌘R), leave a page
 // (keys.rs); the rest are the page's. Sent again as the user rebinds them.

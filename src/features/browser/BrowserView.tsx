@@ -1,39 +1,58 @@
 import { useEffect, useRef, useState } from "react";
-import { browserApi, type BrowserGo, errorMessage } from "@/lib/api";
-import { onBrowserKey, setBrowserState, useBrowserState } from "@/lib/browser/store";
-import { BLANK, pageLabel } from "@/lib/browser/url";
-import { commandIn } from "@/lib/commands/keybindings";
+import { browserApi, type BrowserGo, errorMessage, github } from "@/lib/api";
+import { failed as failedTo, toast } from "@/lib/app/toast";
+import { onBrowserKey, setBrowserState, useBrowserState, useParks } from "@/lib/browser/store";
+import { BLANK, isFrameable, pageLabel } from "@/lib/browser/url";
+import { commandIn, useCommands } from "@/lib/commands/keybindings";
+import { IS_LINUX } from "@/lib/platform";
 import type { Selection } from "@/lib/repo/selection";
 import { Placeholder } from "@/features/viewer/FileHeader";
-import { AddressBar } from "./AddressBar";
+import { AddressBar, type PageControl } from "./AddressBar";
 import { useNativeRect } from "./useNativeRect";
 
 type BrowserSelection = Extract<Selection, { kind: "browser" }>;
 
-/** The tab's own keys, in its address bar or its page; all but the first go to the page. */
+interface Props {
+  tabKey: string;
+  sel: BrowserSelection;
+  root: string;
+  onUpdate: (key: string, sel: Selection) => void;
+}
+
+/** The tab's own keys, in its address bar or its page; the GO ones go to the page. */
 const GO = { "browser.reload": "reload", "browser.back": "back", "browser.forward": "forward" } as const satisfies Record<string, BrowserGo>;
-const OWN = ["browser.focusAddress", ...(Object.keys(GO) as (keyof typeof GO)[])] as const;
+const OWN = ["browser.focusAddress", "browser.inspect", ...(Object.keys(GO) as (keyof typeof GO)[])] as const;
+
+/** A web page in a tab: a browser view of its own on macOS, a frame of this page's on Linux. */
+export function BrowserView(props: Props) {
+  return IS_LINUX ? <FramePage {...props} /> : <NativePage {...props} />;
+}
 
 /**
- * A web page in a tab: the address bar here, the page a native view of its own laid over the area
- * below (browser/macos.rs). It's made as the tab first shows and lives on hidden while another
- * does; closing the tab closes it (useTabs).
+ * The address bar here, the page a native view laid over the area below (browser/macos.rs). It's
+ * made as the tab first shows and lives on hidden while another does, until it parks (Settings →
+ * Browser); closing the tab closes it (useTabs).
  */
-export function BrowserView({ tabKey, sel, root, onUpdate }: { tabKey: string; sel: BrowserSelection; root: string; onUpdate: (key: string, sel: Selection) => void }) {
+function NativePage({ tabKey, sel, root, onUpdate }: Props) {
   const { id } = sel;
   const state = useBrowserState(id);
+  const parks = useParks(id);
   const [made, setMade] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A parked page's picture, standing in until it has loaded again.
+  const [restoring, setRestoring] = useState<string | null>(null);
   const area = useRef<HTMLDivElement>(null);
   const field = useRef<HTMLInputElement>(null);
 
-  // Only on the first show and on its own id: where it loads next is the page's business.
+  // On the first show and after each park, on its own id: where it loads next is the page's business.
   useEffect(() => {
     let live = true;
+    setMade(false);
     browserApi.create(id, root, sel.url).then(
-      (s) => {
+      ({ snapshot, ...s }) => {
         if (!live) return;
         setBrowserState(s);
+        setRestoring(snapshot);
         setMade(true);
         // A new tab starts at its address bar.
         if (sel.url === BLANK) field.current?.focus();
@@ -42,11 +61,16 @@ export function BrowserView({ tabKey, sel, root, onUpdate }: { tabKey: string; s
     );
     return () => {
       live = false;
-      void browserApi.hide(id).catch(() => {});
+      void browserApi.hide(id, false).catch(() => {});
     };
-  }, [id]);
+  }, [id, parks]);
 
-  const cover = useNativeRect(area, id, made && !state?.failed);
+  const loaded = !!state && (!state.loading || !!state.failed);
+  useEffect(() => {
+    if (restoring && loaded) setRestoring(null);
+  }, [restoring, loaded]);
+
+  const cover = useNativeRect(area, id, made && !state?.failed && !restoring);
 
   // The tab keeps where the page went, for the next launch: once it settles, not every redirect.
   const url = state?.url;
@@ -57,28 +81,40 @@ export function BrowserView({ tabKey, sel, root, onUpdate }: { tabKey: string; s
     return () => clearTimeout(timer);
   }, [url, title, sel, tabKey, onUpdate]);
 
+  const inspect = () =>
+    void browserApi
+      .inspect(id)
+      .then((shown) => shown || toast("info", "Web Inspector", "Right-click the page and choose Inspect Element."))
+      .catch(failedTo("Could not open Web Inspector"));
+  useCommands({ "browser.inspect": made ? inspect : undefined });
+
   /** One of the tab's own keys, run; false for any other key. */
   const runOwn = (e: KeyboardEvent) => {
     const command = commandIn(OWN, e);
     if (!command) return false;
-    if (command !== "browser.focusAddress") {
-      void browserApi.go(id, GO[command]).catch(() => {});
-      return true;
-    }
+    if (command === "browser.inspect") inspect();
+    else if (command !== "browser.focusAddress") void browserApi.go(id, GO[command]).catch(() => {});
     // Keys come back to this page first, or they'd still go to the page's view.
-    void browserApi
-      .focus(id, false)
-      .catch(() => {})
-      .then(() => {
-        field.current?.focus();
-        field.current?.select();
-      });
+    else
+      void browserApi
+        .focus(id, false)
+        .catch(() => {})
+        .then(() => {
+          field.current?.focus();
+          field.current?.select();
+        });
     return true;
   };
   // runOwn reads only the id and refs.
   useEffect(() => onBrowserKey(id, runOwn), [id]);
 
+  const page: PageControl = {
+    navigate: (next) => void browserApi.navigate(id, next).catch(failedTo("Could not open the page")),
+    go: (to) => void browserApi.go(id, to).catch(failedTo("The page didn't respond")),
+    focus: () => void browserApi.focus(id, true).catch(() => {}),
+  };
   const failed = state?.failed;
+  const picture = restoring ?? cover;
   return (
     <div
       className="flex min-h-0 flex-1 flex-col"
@@ -90,14 +126,56 @@ export function BrowserView({ tabKey, sel, root, onUpdate }: { tabKey: string; s
         e.stopPropagation();
       }}
     >
-      <AddressBar id={id} url={sel.url} state={state} field={field} />
+      <AddressBar url={sel.url} state={state} page={page} root={root} field={field} />
       <div ref={area} tabIndex={-1} className="relative min-h-0 flex-1 bg-background outline-none">
         {error ? (
           <Placeholder title="The browser can't open here" detail={error} />
         ) : failed ? (
-          <Placeholder title={`Can't open ${pageLabel(failed.url)}`} detail={failed.message} action={{ label: "Try Again", run: () => void browserApi.navigate(id, failed.url).catch(() => {}) }} />
+          <Placeholder title={`Can't open ${pageLabel(failed.url)}`} detail={failed.message} action={{ label: "Try Again", run: () => page.navigate(failed.url) }} />
         ) : (
-          cover && <img src={cover} alt="" className="absolute inset-0 size-full object-cover select-none" />
+          picture && <img src={picture} alt="" className="absolute inset-0 size-full object-cover select-none" />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Linux: the page in a frame of this page's, for this machine's pages only (the CSP's frame-src).
+ * A frame's page can't be followed from here: no back or forward, and its links don't show in
+ * the address bar.
+ */
+function FramePage({ tabKey, sel, root, onUpdate }: Props) {
+  const [url, setUrl] = useState(sel.url);
+  const [loads, setLoads] = useState(0);
+  const frame = useRef<HTMLIFrameElement>(null);
+  const field = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (sel.url === BLANK) field.current?.focus();
+  }, []);
+  useEffect(() => {
+    if (url !== sel.url) onUpdate(tabKey, { ...sel, url, title: undefined });
+  }, [url, sel, tabKey, onUpdate]);
+  const page: PageControl = {
+    navigate: (next) => {
+      setUrl(next);
+      setLoads((n) => n + 1);
+    },
+    go: (to) => (to === "reload" || to === "hardReload") && setLoads((n) => n + 1),
+    focus: () => frame.current?.focus(),
+  };
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <AddressBar url={url} state={null} page={page} root={root} field={field} />
+      <div className="relative min-h-0 flex-1 bg-background">
+        {url === BLANK ? null : isFrameable(url) ? (
+          <iframe key={loads} ref={frame} src={url} title={pageLabel(url)} className="size-full border-0 bg-white" />
+        ) : (
+          <Placeholder
+            title="On Linux, a browser tab shows pages on this machine only"
+            detail={url}
+            action={{ label: "Open in Browser", run: () => void github.openUrl(url).catch(failedTo("Could not open the link")) }}
+          />
         )}
       </div>
     </div>

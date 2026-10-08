@@ -243,7 +243,7 @@ export function createPane(cwd: string, restored?: { history: string; savedAt: n
     void shellDir(p);
     agentPrompted(p);
   };
-  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, ptySize: "", marks: new CommandMarks(term, prompted, (end) => commandEnded(p, end)) };
+  const p: Pane = { id, cwd, dir, term, fit, serialize, saved: restored?.history ?? null, serializedAt: 0, dirty: false, wroteAt: 0, search, gl: null, glContext: null, host, pty: null, started: false, pending: [], writing: false, unacked: 0, ptySize: "", marks: new CommandMarks(term, prompted, (end) => commandEnded(p, end), () => commandStarted(p)) };
   panes.set(id, p);
   if (restored?.history) term.write(`${restored.history}\x1b[0m\r\n\x1b[2m── Restored from ${new Date(restored.savedAt).toLocaleString()} ──\x1b[0m\r\n`);
   if (restored?.resume) {
@@ -847,6 +847,24 @@ const within = (cwd: string, dir: string) => cwd === dir || isInside(cwd, dir);
 
 /** How many terminals were started in `dir` or below it. */
 export const terminalsIn = (dir: string) => state.groups.reduce((n, g) => n + g.panes.filter((p) => within(p.cwd, dir)).length, 0);
+
+/** The sessions (pty ids) of the terminals started in `dir` or below it. */
+export const ptysIn = (dir: string) => [...panes.values()].flatMap((p) => (p.pty !== null && within(p.cwd, dir) ? [p.pty] : []));
+
+export const panePty = (id: number) => panes.get(id)?.pty ?? null;
+
+// Shell integration's mark that a command starts (a dev server, say): the browser's ports menu
+// looks for what it listens on a little after.
+const starts = new Set<(pty: number) => void>();
+
+export function onCommandStarted(l: (pty: number) => void) {
+  starts.add(l);
+  return () => void starts.delete(l);
+}
+
+function commandStarted(p: Pane) {
+  if (p.pty !== null) for (const l of starts) l(p.pty);
+}
 
 /** A folder was moved. Its shells went along (a cwd is the folder, not its path), so splits and restores follow. */
 export function folderMoved(from: string, to: string) {

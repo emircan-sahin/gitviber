@@ -167,6 +167,10 @@ export const COMMANDS = [
   { id: "browser.reload", title: "Reload Page", category: "Browser", keys: ["cmd+r"], local: "the browser" },
   { id: "browser.back", title: "Go Back", category: "Browser", keys: ["cmd+["], local: "the browser" },
   { id: "browser.forward", title: "Go Forward", category: "Browser", keys: ["cmd+]"], local: "the browser" },
+  // As Safari's; where WebKit can't open it from here, the page's menu has Inspect Element.
+  { id: "browser.inspect", title: "Show Web Inspector", category: "Browser", keys: ["alt+cmd+i"], local: "the browser" },
+  // Cookies, storage and cache of the browser tabs; the app's own are apart.
+  { id: "browser.clearData", title: "Clear Browsing Data…", category: "Browser", keys: [] },
   { id: "explorer.rename", title: "Rename File", category: "Explorer", keys: ["f2"], local: "the explorer" },
   { id: "explorer.delete", title: "Delete File", category: "Explorer", keys: ["cmd+backspace"], local: "the explorer" },
   { id: "git.switchBranch", title: "Switch Branch", category: "Git", keys: [] },

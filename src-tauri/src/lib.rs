@@ -435,6 +435,11 @@ pub fn run() {
             commands::browser::browser_go,
             commands::browser::browser_focus,
             commands::browser::browser_set_app_keys,
+            commands::browser::browser_configure,
+            commands::browser::browser_agent_done,
+            commands::browser::browser_inspect,
+            commands::browser::browser_clear_data,
+            commands::browser::browser_ports,
             commands::browser::browser_snapshot
         ])
         .build(context)

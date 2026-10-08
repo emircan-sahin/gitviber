@@ -27,12 +27,29 @@ export function overlaysChanged() {
 
 const isOverlay = (n: Node) => n instanceof Element && (n.matches(OVERLAYS) || !!n.querySelector(OVERLAYS));
 
+const POPPER = "[data-radix-popper-content-wrapper]";
+
 /** Calls `changed` as overlays come and go; watched only while someone listens. */
 export function watchOverlays(changed: () => void) {
   listeners.add(changed);
   // Portals (Radix's menus and dialogs) mount as the body's children: only those are watched.
+  // A popper mounts off-screen and moves into place by its style a frame or two later, so its
+  // style is watched too, and it's measured again the next frame.
   observer ??= new MutationObserver((records) => {
-    if (records.some((r) => [...r.addedNodes, ...r.removedNodes].some(isOverlay))) overlaysChanged();
+    let moved = false;
+    for (const r of records) {
+      if (r.type === "attributes") moved = true;
+      for (const n of r.addedNodes) {
+        if (!isOverlay(n)) continue;
+        moved = true;
+        const poppers = n instanceof Element ? [...(n.matches(POPPER) ? [n] : []), ...n.querySelectorAll(POPPER)] : [];
+        for (const p of poppers) observer?.observe(p, { attributes: true, attributeFilter: ["style"] });
+      }
+      if ([...r.removedNodes].some(isOverlay)) moved = true;
+    }
+    if (!moved) return;
+    overlaysChanged();
+    requestAnimationFrame(overlaysChanged);
   });
   observer.observe(document.body, { childList: true });
   return () => {

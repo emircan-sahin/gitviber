@@ -5,8 +5,8 @@
 
 use super::keys::{self, Key, Route};
 use super::{
-    host_key, is_loopback, loadable, policy, root_key, Failed, Go, PageState, Policy, Rect,
-    Registry,
+    host_key, is_loopback, loadable, policy, root_key, Created, Failed, Go, PageState, Parked,
+    Policy, Rect, Registry,
 };
 use crate::state::Res;
 use block2::{DynBlock, RcBlock};
@@ -24,8 +24,8 @@ use objc2_app_kit::{
     NSWorkspace,
 };
 use objc2_foundation::{
-    ns_string, NSArray, NSDataBase64EncodingOptions, NSDictionary, NSError, NSKeyValueChangeKey,
-    NSKeyValueObservingOptions, NSNumber, NSObjectNSDelayedPerforming,
+    ns_string, NSArray, NSDataBase64EncodingOptions, NSDate, NSDictionary, NSError,
+    NSKeyValueChangeKey, NSKeyValueObservingOptions, NSNumber, NSObjectNSDelayedPerforming,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
     NSURLAuthenticationChallenge, NSURLAuthenticationMethodServerTrust, NSURLCredential,
     NSURLRequest, NSURLSessionAuthChallengeDisposition as Disposition, NSURL, NSUUID,
@@ -40,6 +40,7 @@ use serde::Serialize;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashSet;
 use std::ffi::c_void;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Url};
 
 /// The browser's website data, apart from the app page's own (WebKit's default store), so
@@ -61,9 +62,16 @@ const OBSERVED: [&str; 6] = [
 /// A burst of changes (progress ticks during a load) goes to the page as one event.
 const COALESCE_SECS: f64 = 0.1;
 
-/// alert() and confirm() a page may show per load; past them they answer by themselves, so
-/// `while (true) alert()` can't hold the window.
-const DIALOGS_PER_LOAD: u32 = 3;
+/// alert() and confirm() a page may show in DIALOG_WINDOW; past them they answer by themselves,
+/// so `while (true) alert()` can't hold the window. A window, not a load: an app that routes
+/// with pushState never loads again.
+const DIALOGS: usize = 3;
+const DIALOG_WINDOW: Duration = Duration::from_secs(10);
+
+/// Asked once a page loads: whether a dev server reloads it on a change by itself (Vite,
+/// webpack's hot client, Next's React Refresh). A page that does isn't reloaded when an agent
+/// finishes, which would lose its state for nothing.
+const HMR_PROBE: &str = r#"!!(document.querySelector('script[src*="/@vite/client"],script[src*="react-refresh"],script[src*="webpack-dev-server"],script[src*="hot-update"]') || window.__vite_plugin_react_preamble_installed__ || Object.keys(window).some((k) => k.startsWith("webpackHotUpdate")))"#;
 
 const GONE: &str = "This browser tab is closed.";
 
@@ -78,6 +86,8 @@ thread_local! {
     static VIEWS: RefCell<Registry<View>> = const { RefCell::new(Registry::new()) };
     /// macOS 13 has no store by id: one in memory for every tab, gone when the app quits.
     static EPHEMERAL: OnceCell<Retained<WKWebsiteDataStore>> = const { OnceCell::new() };
+    /// A hidden view parks after this many minutes (browserParkAfterMin); 0 never.
+    static PARK_AFTER: Cell<u32> = const { Cell::new(10) };
 }
 
 fn view(id: &str) -> Option<View> {
@@ -241,8 +251,10 @@ struct DelegateIvars {
     /// Where the page is going, kept while it loads: a failed load doesn't leave it in `URL`.
     going: RefCell<String>,
     failed: RefCell<Option<Failed>>,
-    /// alert() and confirm() shown since the page last loaded.
-    dialogs: Cell<u32>,
+    /// When the last few alert() and confirm() showed.
+    dialogs: RefCell<Vec<Instant>>,
+    /// The page has a dev server's hot reload (HMR_PROBE), as of its last load.
+    hmr: Cell<bool>,
     /// The page's process ended once since the user last sent it somewhere: the next time it
     /// stays down, or a page that kills it on load would reload forever.
     crashed: Cell<bool>,
@@ -268,6 +280,15 @@ define_class!(
             _context: *mut c_void,
         ) {
             self.changed();
+        }
+
+        /// A park timer (`hide`): `since` is the hide that set it.
+        #[unsafe(method(gvParkDue:))]
+        fn park_due(&self, since: &NSNumber) {
+            let (id, since) = (&self.ivars().id, since.unsignedLongLongValue());
+            if VIEWS.with_borrow(|r| r.still_hidden(id, since)) {
+                begin_park(id, since);
+            }
         }
 
         #[unsafe(method(gvSendState))]
@@ -340,8 +361,22 @@ define_class!(
         #[unsafe(method(webView:didCommitNavigation:))]
         fn did_commit(&self, _web: &WKWebView, _navigation: Option<&WKNavigation>) {
             self.ivars().failed.take();
-            self.ivars().dialogs.set(0);
+            self.ivars().hmr.set(false);
             self.changed();
+        }
+
+        #[unsafe(method(webView:didFinishNavigation:))]
+        fn did_finish(&self, web: &WKWebView, _navigation: Option<&WKNavigation>) {
+            let delegate = Weak::new(self);
+            let block = RcBlock::new(move |found: *mut AnyObject, _error: *mut NSError| {
+                // A JS boolean comes back as an NSNumber.
+                let found: Option<&AnyObject> = unsafe { found.as_ref() };
+                let yes = found.and_then(|f| f.downcast_ref::<NSNumber>()).is_some_and(|n| n.boolValue());
+                if let Some(d) = delegate.load() {
+                    d.ivars().hmr.set(yes);
+                }
+            });
+            unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(HMR_PROBE), Some(&block)) };
         }
 
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
@@ -478,7 +513,8 @@ impl Delegate {
             trusted: RefCell::default(),
             going: RefCell::default(),
             failed: RefCell::default(),
-            dialogs: Cell::new(0),
+            dialogs: RefCell::default(),
+            hmr: Cell::new(false),
             crashed: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
@@ -497,12 +533,17 @@ impl Delegate {
         self.changed();
     }
 
-    /// A dialog only from the page on show, and only a few per load; the rest answer at once.
+    /// A dialog only from the page on show, and only a few at a time; the rest answer at once.
     fn may_ask(&self, web: &WKWebView) -> bool {
-        let shown = self.ivars().dialogs.get();
-        let ok = shown < DIALOGS_PER_LOAD && !web.isHiddenOrHasHiddenAncestor();
+        if web.isHiddenOrHasHiddenAncestor() {
+            return false;
+        }
+        let now = Instant::now();
+        let mut shown = self.ivars().dialogs.borrow_mut();
+        shown.retain(|&at| now.duration_since(at) < DIALOG_WINDOW);
+        let ok = shown.len() < DIALOGS;
         if ok {
-            self.ivars().dialogs.set(shown + 1);
+            shown.push(now);
         }
         ok
     }
@@ -639,13 +680,21 @@ fn load(web: &WKWebView, url: &NSURL) {
 }
 
 /// The view for tab `id` of worktree `root`, loading `url`; hidden until placed. One that is
-/// already open stays as it is.
-pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) -> Res<PageState> {
+/// already open stays as it is; a parked one opens again where it was, its picture returned.
+pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) -> Res<Created> {
     let mtm = main_thread()?;
     if let Some(v) = view(id) {
-        return Ok(v.delegate.state(&v.web));
+        let page = v.delegate.state(&v.web);
+        return Ok(Created {
+            page,
+            snapshot: None,
+        });
     }
-    let page = web_page(url)?;
+    let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
+    let page = match parked.as_ref().map(|p| web_page(&p.url)) {
+        Some(Ok(page)) => page,
+        _ => web_page(url)?,
+    };
     let ns_window = window
         .ns_window()
         .map_err(|e| e.to_string())?
@@ -659,9 +708,12 @@ pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) ->
         config.setWebsiteDataStore(&data_store(mtm));
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         config.setUserContentController(&WKUserContentController::new(mtm));
-        config
-            .preferences()
-            .setJavaScriptCanOpenWindowsAutomatically(false);
+        let preferences = config.preferences();
+        preferences.setJavaScriptCanOpenWindowsAutomatically(false);
+        // Inspect Element in the page's menu; private, so only where WebKit still has it.
+        if preferences.respondsToSelector(sel!(_setDeveloperExtrasEnabled:)) {
+            let _: () = msg_send![&*preferences, _setDeveloperExtrasEnabled: Bool::YES];
+        }
     }
     let web = WebView::alloc(mtm).set_ivars(WebIvars {
         id: id.into(),
@@ -696,6 +748,8 @@ pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) ->
     host.addSubview(&web);
     content.addSubview_positioned_relativeTo(&host, NSWindowOrderingMode::Above, None);
     load(&web, &page);
+    #[cfg(debug_assertions)]
+    log_process(&web, "made");
 
     let state = delegate.state(&web);
     let view = View {
@@ -704,7 +758,19 @@ pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) ->
         delegate,
     };
     VIEWS.with_borrow_mut(|r| r.insert(id, &root_key(root), view));
-    Ok(state)
+    Ok(Created {
+        page: state,
+        snapshot: parked.and_then(|p| p.snapshot),
+    })
+}
+
+/// The WebContent process behind a view, so a debug build shows each one going with its view.
+#[cfg(debug_assertions)]
+fn log_process(web: &WKWebView, what: &str) {
+    if web.respondsToSelector(sel!(_webProcessIdentifier)) {
+        let pid: i32 = unsafe { msg_send![web, _webProcessIdentifier] };
+        eprintln!("browser: view {what}, web content process {pid}");
+    }
 }
 
 /// Shows the view at `rect`, in the app page's points.
@@ -725,15 +791,69 @@ pub fn place(id: &str, rect: Rect) -> Res<()> {
         v.host.setFrame(frame);
     }
     v.host.setHidden(false);
+    VIEWS.with_borrow_mut(|r| r.show(id));
     Ok(())
 }
 
-/// Hidden, WebKit slows its timers and animation frames.
-pub fn hide(id: &str) {
-    if let (Ok(_), Some(v)) = (main_thread(), view(id)) {
-        release_focus(&v);
-        v.host.setHidden(true);
+/// Hidden, WebKit slows its timers and animation frames. Out of its tab's sight (not just
+/// `aside` for something drawn over it), it parks past the cap or once its timer is up.
+pub fn hide(id: &str, aside: bool) {
+    let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
+        return;
+    };
+    release_focus(&v);
+    v.host.setHidden(true);
+    if aside {
+        return;
     }
+    let Some((since, over)) = VIEWS.with_borrow_mut(|r| r.hide(id)) else {
+        return;
+    };
+    let minutes = PARK_AFTER.get();
+    if minutes > 0 {
+        // One timer for this hide, never a poll; a later show or hide makes it moot (park_due).
+        let since = NSNumber::new_u64(since);
+        let delay = f64::from(minutes) * 60.0;
+        unsafe {
+            v.delegate
+                .performSelector_withObject_afterDelay(sel!(gvParkDue:), Some(&since), delay)
+        };
+    }
+    for (id, since) in over {
+        begin_park(&id, since);
+    }
+}
+
+/// How many hidden views stay alive, and after how many minutes one parks (0: never).
+pub fn configure(live_hidden: u32, park_after_min: u32) {
+    if main_thread().is_err() {
+        return;
+    }
+    PARK_AFTER.set(park_after_min);
+    let live_hidden = usize::try_from(live_hidden.min(4)).unwrap_or(4);
+    for (id, since) in VIEWS.with_borrow_mut(|r| r.set_live_hidden(live_hidden)) {
+        begin_park(&id, since);
+    }
+}
+
+/// Parks a hidden view: its picture taken, then the view closed, unless it showed meanwhile.
+fn begin_park(id: &str, since: u64) {
+    let Some(v) = view(id) else {
+        return;
+    };
+    let url = url_text(unsafe { v.web.URL() });
+    let app = v.delegate.ivars().app.clone();
+    let id = id.to_string();
+    take_snapshot(&v.web, move |snapshot| {
+        let parked = Parked {
+            url: url.clone(),
+            snapshot,
+        };
+        if let Some(v) = VIEWS.with_borrow_mut(|r| r.park(&id, since, parked)) {
+            destroy(v);
+            emit(&app, "browser-parked", Id { id: &id });
+        }
+    });
 }
 
 pub fn close(id: &str) {
@@ -779,6 +899,8 @@ fn destroy(v: View) {
     }
     release_focus(&v);
     v.host.removeFromSuperview();
+    #[cfg(debug_assertions)]
+    log_process(&v.web, "closed");
 }
 
 /// The user sends the page somewhere: a crash after this may reload it again.
@@ -812,6 +934,64 @@ pub fn go(id: &str, to: Go) -> Res<()> {
     Ok(())
 }
 
+/// An agent finished in `dir`: the pages of its worktree load again, but for one a dev server
+/// already reloads by itself, or one that never loaded.
+pub fn agent_done(dir: &str) {
+    if main_thread().is_err() {
+        return;
+    }
+    let root = root_key(dir);
+    let views: Vec<View> = VIEWS.with_borrow(|r| r.within(&root).into_iter().cloned().collect());
+    for v in views {
+        let d = v.delegate.ivars();
+        if !d.hmr.get() && d.failed.borrow().is_none() {
+            unsafe { drop(v.web.reload()) };
+        }
+    }
+}
+
+/// Opens Web Inspector for the page; false where WebKit has no private way to (the page's
+/// menu still has Inspect Element).
+pub fn inspect(id: &str) -> Res<bool> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    if !v.web.respondsToSelector(sel!(_inspector)) {
+        return Ok(false);
+    }
+    let inspector: *mut AnyObject = unsafe { msg_send![&*v.web, _inspector] };
+    let Some(inspector) = (unsafe { inspector.as_ref() }) else {
+        return Ok(false);
+    };
+    if !inspector.class().responds_to(sel!(show)) {
+        return Ok(false);
+    }
+    let _: () = unsafe { msg_send![inspector, show] };
+    Ok(true)
+}
+
+/// Every cookie, cache and storage of the browser's own data store; the app page's is another.
+pub fn clear_data(app: &AppHandle) -> Res<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    app.run_on_main_thread(move || {
+        let Some(mtm) = MainThreadMarker::new() else {
+            return;
+        };
+        let done = RcBlock::new(move || {
+            let _ = tx.send(());
+        });
+        unsafe {
+            data_store(mtm).removeDataOfTypes_modifiedSince_completionHandler(
+                &WKWebsiteDataStore::allWebsiteDataTypes(mtm),
+                &NSDate::distantPast(),
+                &done,
+            )
+        };
+    })
+    .map_err(|e| e.to_string())?;
+    rx.recv_timeout(Duration::from_secs(30))
+        .map_err(|_| "Clearing the browser's data took too long.".to_string())
+}
+
 /// Focus to the page (`page`) or back to the app page, as ⌘L does for the address bar.
 pub fn focus(id: &str, page: bool) {
     let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
@@ -830,24 +1010,19 @@ pub fn focus(id: &str, page: bool) {
 /// page's covers it. None when the view is gone or WebKit had none. Waits on the main thread.
 pub fn snapshot(app: &AppHandle, id: String) -> Res<Option<String>> {
     let (tx, rx) = std::sync::mpsc::channel();
-    app.run_on_main_thread(move || {
-        let Some(v) = view(&id) else {
-            let _ = tx.send(None);
-            return;
-        };
-        let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
-            let _ = tx.send(unsafe { image.as_ref() }.and_then(jpeg));
-        });
-        unsafe {
-            v.web
-                .takeSnapshotWithConfiguration_completionHandler(None, &block)
-        };
+    app.run_on_main_thread(move || match view(&id) {
+        Some(v) => take_snapshot(&v.web, move |shot| drop(tx.send(shot))),
+        None => drop(tx.send(None)),
     })
     .map_err(|e| e.to_string())?;
-    Ok(rx
-        .recv_timeout(std::time::Duration::from_secs(2))
-        .ok()
-        .flatten())
+    Ok(rx.recv_timeout(Duration::from_secs(2)).ok().flatten())
+}
+
+fn take_snapshot(web: &WKWebView, done: impl Fn(Option<String>) + 'static) {
+    let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+        done(unsafe { image.as_ref() }.and_then(jpeg));
+    });
+    unsafe { web.takeSnapshotWithConfiguration_completionHandler(None, &block) };
 }
 
 fn jpeg(image: &NSImage) -> Option<String> {

@@ -59,3 +59,13 @@ export function pageHost(url: string): string {
     return "";
   }
 }
+
+/** On Linux a tab frames only pages on this machine over http: what the app's CSP (frame-src) lets in. */
+export function isFrameable(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1");
+  } catch {
+    return false;
+  }
+}

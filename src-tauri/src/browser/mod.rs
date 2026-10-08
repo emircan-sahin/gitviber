@@ -8,13 +8,22 @@
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod ports;
+mod registry;
 
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
-pub use macos::{close, close_all, close_root, create, focus, go, hide, navigate, place, snapshot};
+pub use macos::{
+    agent_done, clear_data, close, close_all, close_root, configure, create, focus, go, hide,
+    inspect, navigate, place, snapshot,
+};
 #[cfg(not(target_os = "macos"))]
-pub use other::{close, close_all, close_root, create, focus, go, hide, navigate, place, snapshot};
+pub use other::{
+    agent_done, clear_data, close, close_all, close_root, configure, create, focus, go, hide,
+    inspect, navigate, place, snapshot,
+};
 
+pub use registry::{Parked, Registry};
 use serde::{Deserialize, Serialize};
 use tauri::Url;
 
@@ -34,6 +43,15 @@ pub struct PageState {
     pub insecure: bool,
     /// The page that never loaded (no server on that port, say), shown by the app page instead.
     pub failed: Option<Failed>,
+}
+
+/// A view made, or found open: its page, and the picture from when it parked, which stands in
+/// until it loads again.
+#[derive(Serialize, Clone, Debug)]
+pub struct Created {
+    #[serde(flatten)]
+    pub page: PageState,
+    pub snapshot: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -117,74 +135,25 @@ pub fn root_key(path: &str) -> String {
     )
 }
 
-/// An open view, with the tab and the worktree it belongs to.
-struct Entry<V> {
-    id: String,
-    root: String,
-    view: V,
-}
-
-/// The open views.
-pub struct Registry<V> {
-    views: Vec<Entry<V>>,
-}
-
-impl<V> Registry<V> {
-    pub const fn new() -> Self {
-        Self { views: Vec::new() }
-    }
-
-    pub fn get(&self, id: &str) -> Option<&V> {
-        self.views.iter().find(|e| e.id == id).map(|e| &e.view)
-    }
-
-    pub fn insert(&mut self, id: &str, root: &str, view: V) {
-        self.views.push(Entry {
-            id: id.into(),
-            root: root.into(),
-            view,
-        });
-    }
-
-    pub fn remove(&mut self, id: &str) -> Option<V> {
-        let at = self.views.iter().position(|e| e.id == id)?;
-        Some(self.views.remove(at).view)
-    }
-
-    /// Every view of a worktree, out of the registry.
-    pub fn remove_root(&mut self, root: &str) -> Vec<V> {
-        let (gone, kept) = std::mem::take(&mut self.views)
-            .into_iter()
-            .partition(|e| e.root == root);
-        self.views = kept;
-        gone.into_iter().map(|e| e.view).collect()
-    }
-
-    pub fn take_all(&mut self) -> Vec<V> {
-        std::mem::take(&mut self.views)
-            .into_iter()
-            .map(|e| e.view)
-            .collect()
-    }
-}
-
 #[cfg(not(target_os = "macos"))]
 mod other {
-    use super::{Go, PageState, Rect};
+    use super::{Created, Go, Rect};
     use crate::state::Res;
 
     const UNSUPPORTED: &str = "The browser tab needs macOS for now.";
 
-    pub fn create(_: &tauri::WebviewWindow, _: &str, _: &str, _: &str) -> Res<PageState> {
+    pub fn create(_: &tauri::WebviewWindow, _: &str, _: &str, _: &str) -> Res<Created> {
         Err(UNSUPPORTED.into())
     }
     pub fn place(_: &str, _: Rect) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
-    pub fn hide(_: &str) {}
+    pub fn hide(_: &str, _: bool) {}
     pub fn close(_: &str) {}
     pub fn close_root(_: &str) {}
     pub fn close_all() {}
+    pub fn configure(_: u32, _: u32) {}
+    pub fn agent_done(_: &str) {}
     pub fn navigate(_: &str, _: &str) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
@@ -192,6 +161,12 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn focus(_: &str, _: bool) {}
+    pub fn inspect(_: &str) -> Res<bool> {
+        Ok(false)
+    }
+    pub fn clear_data(_: &tauri::AppHandle) -> Res<()> {
+        Ok(())
+    }
     pub fn snapshot(_: &tauri::AppHandle, _: String) -> Res<Option<String>> {
         Ok(None)
     }

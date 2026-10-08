@@ -353,6 +353,11 @@ impl Ptys {
         self.with(id, |s| Ok(s.job_leader())).ok()?
     }
 
+    /// A session's shell, whose process tree the browser's ports menu looks through.
+    pub fn shell(&self, id: u32) -> Option<u32> {
+        self.with(id, |s| Ok(s.shell)).ok()?
+    }
+
     /// The folder a session's shell is in now, asked of the process as VS Code does for a split
     /// (its own, not the foreground job's): once, on a split or a save, never polled.
     pub fn cwd(&self, id: u32) -> Option<PathBuf> {

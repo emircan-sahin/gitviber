@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BLANK, isPageUrl, normalizeUrl, pageHost, pageLabel } from "./url.ts";
+import { BLANK, isFrameable, isPageUrl, normalizeUrl, pageHost, pageLabel } from "./url.ts";
 
 test("a port, this machine and the LAN load over http; a name with a dot over https", () => {
   const cases: [string, string][] = [
@@ -160,4 +160,9 @@ test("no user name in an address, no port 0, and 127.x shorthand is this machine
   assert.equal(normalizeUrl("127.1"), "http://127.0.0.1/");
   assert.equal(normalizeUrl("127.1:5173/a"), "http://127.0.0.1:5173/a");
   assert.equal(normalizeUrl("127.0.1"), "http://127.0.0.1/");
+});
+
+test("a frame on Linux holds only this machine's http pages, as the app's CSP allows", () => {
+  for (const url of ["http://localhost:5173/", "http://127.0.0.1:3000/a"]) assert.equal(isFrameable(url), true, url);
+  for (const url of ["https://localhost:5173/", "http://[::1]:3000/", "http://app.localhost/", "http://example.com/", BLANK, "nonsense"]) assert.equal(isFrameable(url), false, url);
 });

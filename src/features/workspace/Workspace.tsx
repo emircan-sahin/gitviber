@@ -17,6 +17,8 @@ import { defaultPoints } from "@/lib/git/comparePoints";
 import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS } from "@/lib/ui/panels";
 import { usePanelSizes } from "@/lib/ui/usePanelSizes";
 import { BLANK } from "@/lib/browser/url";
+import { clearBrowsingData } from "@/lib/browser/clearData";
+import { usePageAsk } from "@/lib/browser/store";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen, useTerminalTabCount } from "@/lib/terminal/terminals";
@@ -300,6 +302,18 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     focusPanel("code");
     open({ kind: "compare", base: sides.base ?? start.base, head: sides.head ?? start.head, mergeBase: true }, true);
   };
+  const openPage = (url: string) => {
+    focusPanel("code");
+    open({ kind: "browser", id: crypto.randomUUID(), url }, true);
+  };
+  // A port opened from a terminal's menu, which doesn't hold the tabs.
+  const pageAsk = usePageAsk();
+  const pageHandled = useRef(pageAsk?.id ?? 0);
+  useEffect(() => {
+    if (!pageAsk || pageAsk.id === pageHandled.current) return;
+    pageHandled.current = pageAsk.id;
+    openPage(pageAsk.url);
+  });
   const ask = useCompareAsk();
   const handled = useRef(ask?.id ?? 0);
   useEffect(() => {
@@ -315,10 +329,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   useCommands({
     "git.compareBranches": () => openCompare(),
     // A new tab each time, as a browser's ⌘T: its page is its own.
-    "browser.open": () => {
-      focusPanel("code");
-      open({ kind: "browser", id: crypto.randomUUID(), url: BLANK }, true);
-    },
+    "browser.open": () => openPage(BLANK),
+    "browser.clearData": () => void clearBrowsingData(),
     "review.openAllCommit": ofCommit ? () => openAll({ kind: "changes", list: "commit", commit: ofCommit.commit, url: ofCommit.url }) : undefined,
     "review.openAllComparison": ofRange ? () => openAll({ kind: "changes", list: "range", range: ofRange }) : undefined,
     "review.nextFile": () => step(1),

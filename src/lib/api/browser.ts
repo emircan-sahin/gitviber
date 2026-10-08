@@ -38,30 +38,52 @@ export interface BrowserKey {
   repeat: boolean;
 }
 
-// A create still on its way, by tab: a close waits for it, or the view it makes would stay open.
-const creating = new Map<string, Promise<unknown>>();
+/** A tab's view as made, or found open: a parked one's picture (`snapshot`) stands in until it loads again. */
+export type BrowserCreated = BrowserState & { snapshot: string | null };
+
+/** A program in a terminal listening on a port (browser/ports.rs). */
+export interface ListeningPort {
+  port: number;
+  pid: number;
+  process: string;
+  /** On loopback only, not every interface. */
+  loopback: boolean;
+}
+
+// A tab's view is made and closed in the order asked: a close right after a create, then a
+// reopen (⇧⌘T), must reach the backend as create, close, create, or the reopened tab has none.
+const lifecycle = new Map<string, Promise<unknown>>();
+function inOrder<T>(id: string, run: () => Promise<T>): Promise<T> {
+  const next = (lifecycle.get(id) ?? Promise.resolve()).catch(() => {}).then(run);
+  lifecycle.set(id, next);
+  void next.catch(() => {}).finally(() => lifecycle.get(id) === next && lifecycle.delete(id));
+  return next;
+}
 
 /** The browser tab's native view (commands/browser.rs); macOS only for now, the rest fail elsewhere. */
 export const browserApi = {
   /** Tab `id`'s view in worktree `root`, loading `url`, hidden until placed; one already open stays as it is. */
-  create: (id: string, root: string, url: string) => {
-    const made = invoke<BrowserState>("browser_create", { id, root, url });
-    creating.set(id, made);
-    void made.catch(() => {}).finally(() => creating.get(id) === made && creating.delete(id));
-    return made;
-  },
+  create: (id: string, root: string, url: string) => inOrder(id, () => invoke<BrowserCreated>("browser_create", { id, root, url })),
   place: (id: string, rect: NativeRect) => invoke<void>("browser_place", { id, rect }),
-  hide: (id: string) => invoke<void>("browser_hide", { id }),
-  close: (id: string) =>
-    (creating.get(id) ?? Promise.resolve())
-      .catch(() => {})
-      .then(() => invoke<void>("browser_close", { id })),
+  /** `aside`: only while something of this page's is drawn over it; otherwise its tab is out of sight, and it may park. */
+  hide: (id: string, aside: boolean) => invoke<void>("browser_hide", { id, aside }),
+  close: (id: string) => inOrder(id, () => invoke<void>("browser_close", { id })),
   navigate: (id: string, url: string) => invoke<void>("browser_navigate", { id, url }),
   go: (id: string, to: BrowserGo) => invoke<void>("browser_go", { id, to }),
   /** Keys to the page (`page`), or back to the app page. */
   focus: (id: string, page: boolean) => invoke<void>("browser_focus", { id, page }),
   /** The page as it shows, a JPEG data URL; null when there's none. */
   snapshot: (id: string) => invoke<string | null>("browser_snapshot", { id }),
+  /** Web Inspector for the page; false where it can't be opened from here. */
+  inspect: (id: string) => invoke<boolean>("browser_inspect", { id }),
   /** The chords bound to the app's commands: only these leave a page (keys.rs). */
   setAppKeys: (chords: string[]) => invoke<void>("browser_set_app_keys", { chords }),
+  /** Hidden views kept alive, and the minutes until one parks (0: never). */
+  configure: (liveHidden: number, parkAfterMin: number) => invoke<void>("browser_configure", { liveHidden, parkAfterMin }),
+  /** An agent in `dir` finished: its worktree's pages load again, but those a dev server reloads itself. */
+  agentDone: (dir: string) => invoke<void>("browser_agent_done", { dir }),
+  /** Cookies, storage and cache of the browser tabs; the app's own are apart. */
+  clearData: () => invoke<void>("browser_clear_data"),
+  /** What the terminals `ptys` listen on. */
+  ports: (ptys: number[]) => invoke<ListeningPort[]>("browser_ports", { ptys }),
 };

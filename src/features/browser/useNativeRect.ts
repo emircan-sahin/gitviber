@@ -22,7 +22,7 @@ export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, l
   useEffect(() => {
     const el = area.current;
     if (!live || maximized || !el) {
-      void browserApi.hide(id).catch(() => {});
+      void browserApi.hide(id, true).catch(() => {});
       return;
     }
     let frame = 0;
@@ -34,7 +34,7 @@ export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, l
     let gone = false;
     const hide = () => {
       placed = "";
-      void browserApi.hide(id).catch(() => {});
+      void browserApi.hide(id, true).catch(() => {});
     };
     const measure = () => {
       frame = 0;

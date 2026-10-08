@@ -134,15 +134,17 @@ export class CommandMarks {
   private term: Terminal;
   private onPrompt: () => void;
   private onEnd: (end: CommandEnd) => void;
+  private onStart: () => void;
   private prompted = () => {};
   /** The shell's first prompt is up: it reads what's typed now. */
   readonly ready = new Promise<void>((resolve) => (this.prompted = resolve));
 
-  /** `onPrompt`: each prompt, where a `cd` has settled. `onEnd`: each command that ends. */
-  constructor(term: Terminal, onPrompt = () => {}, onEnd: (end: CommandEnd) => void = () => {}) {
+  /** `onPrompt`: each prompt, where a `cd` has settled. `onEnd`: each command that ends; `onStart`, each that starts. */
+  constructor(term: Terminal, onPrompt = () => {}, onEnd: (end: CommandEnd) => void = () => {}, onStart = () => {}) {
     this.term = term;
     this.onPrompt = onPrompt;
     this.onEnd = onEnd;
+    this.onStart = onStart;
     term.parser.registerOscHandler(133, (data) => {
       const mark = parseMark(data);
       // To xterm, not the shell: as if the program had turned them off.
@@ -173,6 +175,7 @@ export class CommandMarks {
       this.commands.push(this.current);
       // Its mark goes with its marker.
       if (this.commands.length > MAX_COMMANDS) this.commands.shift()!.prompt.dispose();
+      this.onStart();
     } else if (kind === "D" && this.current?.output && !this.current.end) {
       this.ended(this.current, exit);
       this.current = null;
