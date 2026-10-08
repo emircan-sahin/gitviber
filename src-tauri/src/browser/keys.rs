@@ -2,6 +2,8 @@
 //! how AppKit's key events read as DOM ones, so keybindings.ts handles them unchanged.
 
 use serde::Serialize;
+use std::collections::HashSet;
+use std::sync::{LazyLock, Mutex};
 
 /// A key event as a DOM KeyboardEvent names it: `key` what it types ignoring ⌥ and ⌃, `code`
 /// the physical key, from which the page reads ⌥ chords.
@@ -20,43 +22,138 @@ pub struct Key {
 
 #[derive(Debug, PartialEq)]
 pub enum Route {
-    /// WebKit's: typing, editing, the page's own shortcuts.
+    /// WebKit's: typing, editing, the page's own shortcuts (⌘B in an editor, ⌘↵ to send).
     Page,
-    /// The app's commands, re-run in the app page.
+    /// One of the app's commands, run again in the app page.
     App,
-    /// Left to the menu bar: macOS's own keys (Quit, Hide, Minimize, cycle windows).
+    /// Left to the menu bar: macOS's own keys (Quit, Hide, Minimize, cycle windows, full screen).
     System,
 }
 
-/// Who a key goes to. Every ⌘ chord is the app's but editing, which the page needs; ⌃ with a
-/// letter stays the page's too, as text fields read it (⌃A, ⌃E, ⌃K).
-pub fn route(k: &Key) -> Route {
-    if !(k.meta_key || k.ctrl_key) {
+/// The chords the app's commands are bound to (keybindings.ts sends them as they change), as
+/// commands.ts writes them: `shift+cmd+[`. Only these leave a page.
+static APP_KEYS: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(Mutex::default);
+
+pub fn set_app_keys(chords: Vec<String>) {
+    *APP_KEYS.lock().unwrap_or_else(|e| e.into_inner()) = chords.into_iter().collect();
+}
+
+pub fn route_now(k: &Key) -> Route {
+    route(k, &APP_KEYS.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// Who a key goes to: a chord bound to one of the app's commands goes to the app, anything else
+/// stays the page's. Editing stays the page's even when bound (⌘Z is also Undo Git Action), and
+/// a letter counts by its key too, so ⌘C on a Cyrillic layout is still copy.
+pub fn route(k: &Key, app: &HashSet<String>) -> Route {
+    let (cmd, ctrl, alt, shift) = (k.meta_key, k.ctrl_key, k.alt_key, k.shift_key);
+    if !(cmd || ctrl) {
         return Route::Page;
     }
-    let lower = k.key.to_lowercase();
-    if k.ctrl_key && !k.meta_key {
-        let letter = lower.len() == 1 && lower.as_bytes()[0].is_ascii_lowercase();
-        return if letter { Route::Page } else { Route::App };
+    let typed = token(&k.key);
+    let physical = physical(k.code);
+    let is = |t: &str| typed.as_deref() == Some(t) || physical.as_deref() == Some(t);
+    let system = cmd
+        && !shift
+        && (!ctrl && !alt && (is("q") || is("h") || is("m") || is("`"))
+            || !ctrl && alt && is("h")
+            || ctrl && !alt && is("f"));
+    if system {
+        return Route::System;
     }
-    if k.ctrl_key {
-        return Route::App;
-    }
-    let plain = !k.alt_key && !k.shift_key;
-    // ⌘←/→ move to a line's ends in a page's text field.
-    let editing = matches!(lower.as_str(), "c" | "v" | "x" | "a") && plain
-        || lower == "z" && !k.alt_key
-        || matches!(k.key.as_str(), "ArrowLeft" | "ArrowRight") && plain;
+    let arrow = is("left") || is("right") || is("up") || is("down");
+    let editing = cmd
+        && !ctrl
+        && (!alt
+            && !shift
+            && ["c", "v", "x", "a", "backspace", "delete", "enter"]
+                .into_iter()
+                .any(is)
+            || !alt && is("z")
+            || arrow);
     if editing {
         return Route::Page;
     }
-    let system = matches!(lower.as_str(), "q" | "h" | "m" | "`") && plain
-        || lower == "h" && k.alt_key && !k.shift_key;
-    if system {
-        Route::System
-    } else {
+    let mods: String = [
+        (ctrl, "ctrl+"),
+        (alt, "alt+"),
+        (shift, "shift+"),
+        (cmd, "cmd+"),
+    ]
+    .into_iter()
+    .filter_map(|(held, m)| held.then_some(m))
+    .collect();
+    let bound = [typed, physical]
+        .into_iter()
+        .flatten()
+        .any(|t| app.contains(&format!("{mods}{t}")));
+    if bound {
         Route::App
+    } else {
+        Route::Page
     }
+}
+
+/// A key as commands.ts names it in a chord (its keyToken).
+fn token(key: &str) -> Option<String> {
+    let named = match key {
+        "ArrowUp" => "up",
+        "ArrowDown" => "down",
+        "ArrowLeft" => "left",
+        "ArrowRight" => "right",
+        "Enter" => "enter",
+        "Escape" => "escape",
+        "Tab" => "tab",
+        " " => "space",
+        "Backspace" => "backspace",
+        "Delete" => "delete",
+        "Home" => "home",
+        "End" => "end",
+        "PageUp" => "pageup",
+        "PageDown" => "pagedown",
+        "+" => "=",
+        "{" => "[",
+        "}" => "]",
+        _ => {
+            let mut chars = key.chars();
+            let one = chars.next().filter(|_| chars.next().is_none());
+            let f_key = key.len() > 1
+                && key.starts_with('F')
+                && key[1..].bytes().all(|b| b.is_ascii_digit());
+            return (one.is_some() || f_key).then(|| key.to_lowercase());
+        }
+    };
+    Some(named.into())
+}
+
+/// The key a US keyboard has where this one was pressed, for a letter, digit or punctuation key.
+fn physical(code: &str) -> Option<String> {
+    if let Some(letter) = code.strip_prefix("Key").filter(|l| l.len() == 1) {
+        return Some(letter.to_ascii_lowercase());
+    }
+    if let Some(digit) = code.strip_prefix("Digit").filter(|d| d.len() == 1) {
+        return Some(digit.into());
+    }
+    let named = match code {
+        "Equal" => "=",
+        "Minus" => "-",
+        "Comma" => ",",
+        "Period" => ".",
+        "Slash" => "/",
+        "Backslash" => "\\",
+        "Semicolon" => ";",
+        "Quote" => "'",
+        "BracketLeft" => "[",
+        "BracketRight" => "]",
+        "Backquote" => "`",
+        "Enter" => "enter",
+        "Tab" => "tab",
+        "Space" => "space",
+        "Backspace" => "backspace",
+        "Escape" => "escape",
+        _ => return None,
+    };
+    Some(named.into())
 }
 
 /// AppKit's function-key characters (NSUpArrowFunctionKey…) by their DOM names.
@@ -105,6 +202,39 @@ pub fn code(key_code: u16) -> &'static str {
 mod tests {
     use super::*;
 
+    /// Chords the app binds by default (commands.ts), some of them editing keys too.
+    fn defaults() -> HashSet<String> {
+        [
+            "cmd+w",
+            "cmd+p",
+            "cmd+l",
+            "cmd+r",
+            "cmd+[",
+            "cmd+]",
+            "cmd+1",
+            "shift+cmd+]",
+            "ctrl+1",
+            "ctrl+tab",
+            "ctrl+`",
+            "ctrl+cmd+c",
+            "ctrl+shift+cmd+t",
+            "alt+cmd+b",
+            "cmd+z",
+            "shift+cmd+z",
+            "cmd+backspace",
+            "cmd+enter",
+            "cmd+right",
+            "cmd+left",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    }
+
+    fn to(k: &Key) -> Route {
+        route(k, &defaults())
+    }
+
     fn key(key: &str, mods: &str) -> Key {
         Key {
             id: "b1".into(),
@@ -126,12 +256,17 @@ mod tests {
             ("z", "cmd"),
             ("Z", "shift+cmd"),
             ("ArrowLeft", "cmd"),
+            ("Enter", "cmd"),
             ("j", ""),
             ("Escape", ""),
             ("a", "ctrl"),
             ("e", "ctrl"),
+            // Unbound: the page's own (bold in an editor, a search field's shortcut).
+            ("b", "cmd"),
+            ("i", "cmd"),
+            ("k", "cmd"),
         ] {
-            assert_eq!(route(&key(k, mods)), Route::Page, "{mods}+{k}");
+            assert_eq!(to(&key(k, mods)), Route::Page, "{mods}+{k}");
         }
         for (k, mods) in [
             ("w", "cmd"),
@@ -140,19 +275,77 @@ mod tests {
             ("r", "cmd"),
             ("[", "cmd"),
             ("1", "cmd"),
-            ("C", "shift+cmd"),
-            ("i", "alt+cmd"),
-            ("a", "alt+cmd"),
+            ("}", "shift+cmd"),
+            ("b", "alt+cmd"),
             ("1", "ctrl"),
             ("Tab", "ctrl"),
             ("`", "ctrl"),
             ("t", "ctrl+shift+cmd"),
         ] {
-            assert_eq!(route(&key(k, mods)), Route::App, "{mods}+{k}");
+            assert_eq!(to(&key(k, mods)), Route::App, "{mods}+{k}");
         }
         for (k, mods) in [("q", "cmd"), ("h", "cmd"), ("h", "alt+cmd"), ("m", "cmd")] {
-            assert_eq!(route(&key(k, mods)), Route::System, "{mods}+{k}");
+            assert_eq!(to(&key(k, mods)), Route::System, "{mods}+{k}");
         }
+    }
+
+    #[test]
+    fn a_chord_goes_to_the_app_only_while_a_command_has_it() {
+        let w = key("w", "cmd");
+        assert_eq!(route(&w, &defaults()), Route::App);
+        assert_eq!(route(&w, &HashSet::new()), Route::Page);
+        // Rebound: the new chord leaves the page, the old one stays in it.
+        let rebound: HashSet<String> = ["alt+cmd+w".to_string()].into();
+        assert_eq!(route(&key("w", "alt+cmd"), &rebound), Route::App);
+        assert_eq!(route(&w, &rebound), Route::Page);
+        // By the key a US keyboard has there, when the layout types another letter.
+        assert_eq!(
+            route(
+                &Key {
+                    code: "KeyW",
+                    ..key("ц", "cmd")
+                },
+                &defaults()
+            ),
+            Route::App
+        );
+    }
+
+    #[test]
+    fn cmd_backspace_deletes_in_the_page() {
+        assert_eq!(to(&key("Backspace", "cmd")), Route::Page);
+    }
+
+    #[test]
+    fn cmd_shift_arrows_select_in_the_page() {
+        for k in ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"] {
+            assert_eq!(to(&key(k, "shift+cmd")), Route::Page, "{k}");
+        }
+    }
+
+    #[test]
+    fn copy_paste_on_a_cyrillic_layout_stays_in_the_page() {
+        for (k, code) in [
+            ("с", "KeyC"),
+            ("м", "KeyV"),
+            ("ч", "KeyX"),
+            ("ф", "KeyA"),
+            ("я", "KeyZ"),
+        ] {
+            assert_eq!(
+                to(&Key {
+                    code,
+                    ..key(k, "cmd")
+                }),
+                Route::Page,
+                "{k}"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_cmd_f_full_screen_is_the_systems() {
+        assert_eq!(to(&key("f", "ctrl+cmd")), Route::System);
     }
 
     #[test]
@@ -177,7 +370,7 @@ mod tests {
             "a", "J", "s", "Escape", "Enter", "Tab", "ArrowUp", "F5", "é", "ı", "", " ",
         ] {
             for mods in ["", "shift", "alt", "alt+shift"] {
-                assert_eq!(route(&key(k, mods)), Route::Page, "{mods}+{k}");
+                assert_eq!(to(&key(k, mods)), Route::Page, "{mods}+{k}");
             }
         }
     }
@@ -185,7 +378,7 @@ mod tests {
     #[test]
     fn the_system_keeps_its_own_chords_and_nothing_else() {
         for (k, mods) in [("`", "cmd"), ("Q", "cmd"), ("H", "cmd"), ("M", "cmd")] {
-            assert_eq!(route(&key(k, mods)), Route::System, "{mods}+{k}");
+            assert_eq!(to(&key(k, mods)), Route::System, "{mods}+{k}");
         }
         // ⇧ or ⌃ makes them another chord: Quit and Hide only as macOS binds them.
         for (k, mods) in [
@@ -194,22 +387,26 @@ mod tests {
             ("H", "alt+shift+cmd"),
             ("m", "alt+cmd"),
         ] {
-            assert_ne!(route(&key(k, mods)), Route::System, "{mods}+{k}");
+            assert_ne!(to(&key(k, mods)), Route::System, "{mods}+{k}");
         }
     }
 
     #[test]
     fn ctrl_with_a_letter_is_the_text_fields_and_with_anything_else_the_apps() {
         for k in ["a", "E", "k", "z"] {
-            assert_eq!(route(&key(k, "ctrl")), Route::Page, "ctrl+{k}");
-            assert_eq!(route(&key(k, "ctrl+shift")), Route::Page, "ctrl+shift+{k}");
+            assert_eq!(to(&key(k, "ctrl")), Route::Page, "ctrl+{k}");
+            assert_eq!(to(&key(k, "ctrl+shift")), Route::Page, "ctrl+shift+{k}");
         }
-        for k in ["1", "Tab", "`", "[", "ArrowLeft", "Enter", " ", ""] {
-            assert_eq!(route(&key(k, "ctrl")), Route::App, "ctrl+{k}");
+        for k in ["1", "Tab", "`"] {
+            assert_eq!(to(&key(k, "ctrl")), Route::App, "ctrl+{k}");
         }
-        // ⌃⌘ is never typing.
-        for k in ["a", "c", "v", "z", "q"] {
-            assert_eq!(route(&key(k, "ctrl+cmd")), Route::App, "ctrl+cmd+{k}");
+        // Not bound to anything: the page's.
+        for k in ["[", "ArrowLeft", "Enter", " ", ""] {
+            assert_eq!(to(&key(k, "ctrl")), Route::Page, "ctrl+{k}");
+        }
+        assert_eq!(to(&key("c", "ctrl+cmd")), Route::App);
+        for k in ["a", "v", "z", "q"] {
+            assert_eq!(to(&key(k, "ctrl+cmd")), Route::Page, "ctrl+cmd+{k}");
         }
     }
 
@@ -254,12 +451,12 @@ mod tests {
                 shift_key: m & 8 != 0,
                 ..key(k, "")
             };
-            let to = route(&ev);
+            let to = self::to(&ev);
             if !(ev.meta_key || ev.ctrl_key) {
                 assert_eq!(to, Route::Page, "{ev:?}");
             }
             if to == Route::System {
-                assert!(ev.meta_key && !ev.ctrl_key && !ev.shift_key, "{ev:?}");
+                assert!(ev.meta_key && !ev.shift_key, "{ev:?}");
             }
         }
     }

@@ -1,13 +1,18 @@
 //! The browser tab's native view (browser/). Sync, so they run on the main thread, where
 //! AppKit's views belong; the snapshot waits on WebKit, so it's async.
 
-use crate::browser::{self, Go, Rect, State};
+use crate::browser::{self, Go, PageState, Rect};
 use crate::state::{blocking, Res};
 use tauri::{AppHandle, WebviewWindow};
 
 /// Only the workspace has browser tabs; the settings window places nothing.
 #[tauri::command]
-pub fn browser_create(window: WebviewWindow, id: String, root: String, url: String) -> Res<State> {
+pub fn browser_create(
+    window: WebviewWindow,
+    id: String,
+    root: String,
+    url: String,
+) -> Res<PageState> {
     if window.label() != "main" {
         return Err("Browser tabs open in the main window.".into());
     }
@@ -30,11 +35,6 @@ pub fn browser_close(id: String) {
 }
 
 #[tauri::command]
-pub fn browser_close_root(root: String) {
-    browser::close_root(&root);
-}
-
-#[tauri::command]
 pub fn browser_navigate(id: String, url: String) -> Res<()> {
     browser::navigate(&id, &url)
 }
@@ -50,9 +50,10 @@ pub fn browser_focus(id: String, page: bool) {
     browser::focus(&id, page);
 }
 
+/// The chords the app's commands are bound to (keybindings.ts): only these leave a page.
 #[tauri::command]
-pub fn browser_list(root: String) -> Vec<State> {
-    browser::list(&root)
+pub fn browser_set_app_keys(chords: Vec<String>) {
+    browser::set_app_keys(chords);
 }
 
 #[tauri::command]

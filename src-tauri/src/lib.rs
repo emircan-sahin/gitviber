@@ -431,11 +431,10 @@ pub fn run() {
             commands::browser::browser_place,
             commands::browser::browser_hide,
             commands::browser::browser_close,
-            commands::browser::browser_close_root,
             commands::browser::browser_navigate,
             commands::browser::browser_go,
             commands::browser::browser_focus,
-            commands::browser::browser_list,
+            commands::browser::browser_set_app_keys,
             commands::browser::browser_snapshot
         ])
         .build(context)

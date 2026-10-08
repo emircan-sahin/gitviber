@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { browserApi } from "./browser";
 import { network } from "./network";
 import type { About, Blame, Branch, BranchTracking, CleanUp, CleanedUp, Commit, CommitDetails, CommitOptions, Comparison, Definition, DefinitionRequest, DiffKind, DiffPair, Entry, FileChange, FileText, GitIdentity, GitInfo, GraphRefs, GuideAgent, Guided, GuideTarget, HistoryEdit, IgnoredFiles, Journal, JournalEntry, LargeFile, LinesPatch, LinesRequest, LogFilter, MainBack, MergeCheck, NetOp, NotifyPermission, OpenInApp, Opened, OpenedRepo, PatchPreview, ProjectInfo, PullMode, RemoteTags, RepoStatus, ResetMode, RevertLines, RewriteOutcome, SearchQuery, SearchResult, StackedBranches, Stash, StashFiles, SuggestKind, Whitespace, Worktree, WorktreeState } from "./types";
 
@@ -162,16 +161,12 @@ export const api = {
   /** Keeps a worktree from being pruned, moved or removed; `reason` shows on its row. */
   lockWorktree: (path: string, reason: string | null) => invoke<void>("lock_worktree", { path, reason }),
   unlockWorktree: (path: string) => invoke<void>("unlock_worktree", { path }),
-  /** Deletes a linked worktree's folder (its branch stays); `force` drops uncommitted files and overrides a lock. Its browser pages close. */
-  removeWorktree: (path: string, force: boolean) => invoke<void>("remove_worktree", { path, force }).then(() => browserApi.closeRoot(path).catch(() => {})),
+  /** Deletes a linked worktree's folder (its branch stays); `force` drops uncommitted files and overrides a lock. */
+  removeWorktree: (path: string, force: boolean) => invoke<void>("remove_worktree", { path, force }),
   /** What removing a worktree deletes that git doesn't count as a change: its ignored files, sized, largest first. */
   worktreeIgnored: (path: string) => invoke<IgnoredFiles>("worktree_ignored", { path }),
   /** Removes merged worktrees, each checked again, and the branches known merged (Undo brings those back). */
-  cleanUpWorktrees: (list: CleanUp[]) =>
-    invoke<CleanedUp>("clean_up_worktrees", { list }).then((out) => {
-      for (const path of out.removed) void browserApi.closeRoot(path).catch(() => {});
-      return out;
-    }),
+  cleanUpWorktrees: (list: CleanUp[]) => invoke<CleanedUp>("clean_up_worktrees", { list }),
   /** Nested repositories are refused unless `allowNested`: git would stage only a gitlink. */
   stage: (paths: string[], allowNested = false) => invoke<void>("stage", { paths, allowNested }),
   /**

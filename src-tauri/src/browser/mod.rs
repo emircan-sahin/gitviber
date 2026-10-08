@@ -9,14 +9,11 @@ mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
 
+pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
-pub use macos::{
-    close, close_all, close_root, create, focus, go, hide, list, navigate, place, snapshot,
-};
+pub use macos::{close, close_all, close_root, create, focus, go, hide, navigate, place, snapshot};
 #[cfg(not(target_os = "macos"))]
-pub use other::{
-    close, close_all, close_root, create, focus, go, hide, list, navigate, place, snapshot,
-};
+pub use other::{close, close_all, close_root, create, focus, go, hide, navigate, place, snapshot};
 
 use serde::{Deserialize, Serialize};
 use tauri::Url;
@@ -24,7 +21,7 @@ use tauri::Url;
 /// What the tab's address bar and buttons show; sent as `browser-state` while it changes.
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct State {
+pub struct PageState {
     pub id: String,
     pub url: String,
     pub title: String,
@@ -94,10 +91,16 @@ pub fn loadable(url: &str) -> bool {
     policy(url, true, false) == Policy::Allow
 }
 
+/// A host as a URL and a certificate challenge both name it: IPv6 without brackets, lowercase.
+pub fn host_key(host: &str) -> String {
+    host.trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase()
+}
+
 /// This machine, where a dev server's self-signed certificate is let through.
 pub fn is_loopback(host: &str) -> bool {
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    let host = host.to_ascii_lowercase();
+    let host = host_key(host);
     host == "localhost"
         || host.ends_with(".localhost")
         || host
@@ -105,9 +108,25 @@ pub fn is_loopback(host: &str) -> bool {
             .is_ok_and(|ip| ip.is_loopback())
 }
 
-/// The open views by id, each with the worktree it belongs to.
+/// A worktree's folder as the views are kept by it: the page and git may spell one folder two
+/// ways (a symlink, a trailing slash). Resolved while the folder is still there.
+pub fn root_key(path: &str) -> String {
+    std::fs::canonicalize(path).map_or_else(
+        |_| path.trim_end_matches('/').to_string(),
+        |p| p.to_string_lossy().into_owned(),
+    )
+}
+
+/// An open view, with the tab and the worktree it belongs to.
+struct Entry<V> {
+    id: String,
+    root: String,
+    view: V,
+}
+
+/// The open views.
 pub struct Registry<V> {
-    views: Vec<(String, String, V)>,
+    views: Vec<Entry<V>>,
 }
 
 impl<V> Registry<V> {
@@ -116,50 +135,47 @@ impl<V> Registry<V> {
     }
 
     pub fn get(&self, id: &str) -> Option<&V> {
-        self.views.iter().find(|v| v.0 == id).map(|v| &v.2)
+        self.views.iter().find(|e| e.id == id).map(|e| &e.view)
     }
 
     pub fn insert(&mut self, id: &str, root: &str, view: V) {
-        self.views.push((id.into(), root.into(), view));
+        self.views.push(Entry {
+            id: id.into(),
+            root: root.into(),
+            view,
+        });
     }
 
     pub fn remove(&mut self, id: &str) -> Option<V> {
-        let at = self.views.iter().position(|v| v.0 == id)?;
-        Some(self.views.remove(at).2)
+        let at = self.views.iter().position(|e| e.id == id)?;
+        Some(self.views.remove(at).view)
     }
 
     /// Every view of a worktree, out of the registry.
     pub fn remove_root(&mut self, root: &str) -> Vec<V> {
         let (gone, kept) = std::mem::take(&mut self.views)
             .into_iter()
-            .partition(|v| v.1 == root);
+            .partition(|e| e.root == root);
         self.views = kept;
-        gone.into_iter().map(|v| v.2).collect()
+        gone.into_iter().map(|e| e.view).collect()
     }
 
     pub fn take_all(&mut self) -> Vec<V> {
         std::mem::take(&mut self.views)
             .into_iter()
-            .map(|v| v.2)
+            .map(|e| e.view)
             .collect()
-    }
-
-    pub fn in_root<'a>(&'a self, root: &'a str) -> impl Iterator<Item = (&'a str, &'a V)> {
-        self.views
-            .iter()
-            .filter(move |v| v.1 == root)
-            .map(|v| (v.0.as_str(), &v.2))
     }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod other {
-    use super::{Go, Rect, State};
+    use super::{Go, PageState, Rect};
     use crate::state::Res;
 
     const UNSUPPORTED: &str = "The browser tab needs macOS for now.";
 
-    pub fn create(_: &tauri::WebviewWindow, _: &str, _: &str, _: &str) -> Res<State> {
+    pub fn create(_: &tauri::WebviewWindow, _: &str, _: &str, _: &str) -> Res<PageState> {
         Err(UNSUPPORTED.into())
     }
     pub fn place(_: &str, _: Rect) -> Res<()> {
@@ -176,9 +192,6 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn focus(_: &str, _: bool) {}
-    pub fn list(_: &str) -> Vec<State> {
-        Vec::new()
-    }
     pub fn snapshot(_: &tauri::AppHandle, _: String) -> Res<Option<String>> {
         Ok(None)
     }
@@ -256,15 +269,25 @@ mod tests {
     }
 
     #[test]
+    fn hosts_and_folders_are_named_one_way() {
+        assert_eq!(host_key("[::1]"), "::1");
+        assert_eq!(host_key("LocalHost"), "localhost");
+        // Gone already: as written, less a trailing slash.
+        assert_eq!(root_key("/no/such/worktree/"), "/no/such/worktree");
+        let here = std::env::temp_dir();
+        let resolved = std::fs::canonicalize(&here).unwrap();
+        assert_eq!(
+            root_key(&format!("{}/", here.display())),
+            resolved.to_string_lossy()
+        );
+    }
+
+    #[test]
     fn a_worktree_closes_with_its_views() {
         let mut r = Registry::new();
         r.insert("a", "/w/one", 1);
         r.insert("b", "/w/two", 2);
         r.insert("c", "/w/one", 3);
-        assert_eq!(
-            r.in_root("/w/one").map(|v| v.0).collect::<Vec<_>>(),
-            ["a", "c"]
-        );
         assert_eq!(r.remove_root("/w/one"), [1, 3]);
         assert_eq!(r.get("a"), None);
         assert_eq!(r.get("b"), Some(&2));
@@ -493,21 +516,14 @@ mod tests {
                     model.retain(|v| v.1 != root);
                     assert_eq!(r.remove_root(&root), gone);
                 }
-                _ => {
-                    let open: Vec<&str> = model
-                        .iter()
-                        .filter(|v| v.1 == root)
-                        .map(|v| v.0.as_str())
-                        .collect();
-                    assert_eq!(r.in_root(&root).map(|v| v.0).collect::<Vec<_>>(), open);
-                }
+                _ => {}
             }
             for v in &model {
                 assert_eq!(r.get(&v.0), Some(&v.2));
             }
         }
         assert_eq!(r.take_all(), model.iter().map(|v| v.2).collect::<Vec<_>>());
-        assert_eq!(r.in_root("/w/0").count(), 0);
+        assert_eq!(r.remove_root("/w/0"), Vec::<u32>::new());
     }
 
     #[test]
