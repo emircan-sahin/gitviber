@@ -124,7 +124,7 @@ export const GUIDE_SCHEMA = {
   },
 };
 
-interface Schema {
+export interface Schema {
   type?: string;
   description?: string;
   enum?: string[];
@@ -134,7 +134,7 @@ interface Schema {
 }
 
 /** `schema` as an example of itself: each value its description (or example, or choices). */
-function exampleOf(schema: Schema): string {
+export function exampleOf(schema: Schema): string {
   if (schema.properties)
     return `{${Object.entries(schema.properties)
       .map(([k, v]) => `"${k}": ${exampleOf(v)}`)
@@ -155,17 +155,22 @@ export const GUIDE_PROMPT = [
     .join(", ")}.`,
 ].join("\n\n");
 
-/** GUIDE_PROMPT with the language the guide's prose is written in (Settings → Guided Review); empty reads as English. */
+/**
+ * The language reviews are written in (Settings → Guided Review), as a name and not an instruction:
+ * letters of any script (with their marks), spaces and '()- only, on one line, so ". Ignore the
+ * schema" can't become a sentence of a prompt. Empty reads as English.
+ */
+export const languageName = (language: string) =>
+  language
+    .replace(/[^\p{L}\p{M}\s'()-]/gu, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 40)
+    .trim() || "English";
+
+/** GUIDE_PROMPT with the language the guide's prose is written in. */
 export function guidePrompt(language: string) {
-  // A name, not an instruction: letters of any script (with their marks), spaces and '()- only,
-  // on one line, so ". Ignore the schema" can't become a sentence of the prompt.
-  const lang =
-    language
-      .replace(/[^\p{L}\p{M}\s'()-]/gu, "")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 40)
-      .trim() || "English";
+  const lang = languageName(language);
   return `${GUIDE_PROMPT}\n\nWrite all prose (the title, overview, summaries, checks, risks and notes) in ${lang}; keep the JSON keys and the values picked from a list (category, importance, side, status, kind), code, identifiers, paths and quoted strings as they are.`;
 }
 
@@ -249,7 +254,7 @@ export interface Guide {
 /** How much of a diagram is drawn, as the prompt asks (past this it stops explaining), how many sections, and their notes. */
 export const LIMITS = { models: 6, fields: 12, flows: 2, steps: 12, edges: 24, sections: 50, notes: 40, note: 500 };
 
-const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+export const text = (v: unknown) => (typeof v === "string" ? v.trim() : "");
 
 /** `answer` read as JSON, then with the trailing commas models write taken out; undefined for neither. */
 function parse(answer: string): unknown {
@@ -262,11 +267,12 @@ function parse(answer: string): unknown {
 }
 
 /**
- * The JSON in an answer: all of it, or the first `{…}` with a guide's fields, wherever it is (a
- * fence, a "Here's the review:" or a `{ retries }` in the words around it). One pass that pairs
- * the braces outside strings, so a brace in a string or a long answer costs no more.
+ * The JSON in an answer: all of it, or the first `{…}` with one of `keys` (a guide's fields by
+ * default), wherever it is (a fence, a "Here's the review:" or a `{ retries }` in the words around
+ * it). One pass that pairs the braces outside strings, so a brace in a string or a long answer
+ * costs no more.
  */
-function jsonOf(answer: string): unknown {
+export function jsonOf(answer: string, keys = ["title", "summary", "overview", "sections"]): unknown {
   const whole = parse(answer);
   if (whole !== undefined) return whole;
   let depth = 0;
@@ -282,7 +288,7 @@ function jsonOf(answer: string): unknown {
     else if (c === "{" && !depth++) start = i;
     else if (c === "}" && depth && !--depth) {
       const v = parse(answer.slice(start, i + 1));
-      if (isRecord(v) && ("title" in v || "summary" in v || "overview" in v || "sections" in v)) return v;
+      if (isRecord(v) && keys.some((k) => k in v)) return v;
     }
   }
   return null;
@@ -295,10 +301,10 @@ export function matchPath(path: string, paths: Set<string>) {
   return paths.has(bare) ? bare : null;
 }
 
-const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
+export const clip = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 1).trimEnd()}…` : s);
 /** One line of text, as long as a diagram's box can hold. */
 const line = (v: unknown, max: number) => clip(text(v).replace(/\s+/g, " "), max);
-const records = (v: unknown) => (Array.isArray(v) ? v.filter(isRecord) : []);
+export const records = (v: unknown) => (Array.isArray(v) ? v.filter(isRecord) : []);
 
 function partStatus(v: unknown): PartStatus {
   const s = text(v).toLowerCase();
@@ -306,7 +312,7 @@ function partStatus(v: unknown): PartStatus {
 }
 
 /** A number as written, or in a string; NaN for anything else. */
-const whole = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN);
+export const whole = (v: unknown) => (typeof v === "number" ? v : typeof v === "string" && /^\s*\d+\s*$/.test(v) ? Number(v) : NaN);
 
 /** A part's section number, when it names one of the `count` there are. */
 function sectionRef(v: unknown, count: number): SectionRef {
