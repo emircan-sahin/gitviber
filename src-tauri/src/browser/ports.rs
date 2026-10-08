@@ -478,4 +478,148 @@ mod tests {
             "{found:?}"
         );
     }
+
+    fn v6(text: &str) -> [u8; 16] {
+        text.parse::<Ipv6Addr>().unwrap().octets()
+    }
+
+    fn v4(a: [u8; 4]) -> [u8; 16] {
+        let mut bytes = [0; 16];
+        bytes[12..].copy_from_slice(&a);
+        bytes
+    }
+
+    #[test]
+    fn only_this_machine_counts_as_loopback_in_either_family() {
+        assert!(loopback(false, v4([127, 0, 0, 1])));
+        assert!(loopback(false, v4([127, 9, 8, 7])));
+        for no in [
+            [0, 0, 0, 0],
+            [10, 0, 0, 1],
+            [192, 168, 1, 2],
+            [128, 0, 0, 1],
+        ] {
+            assert!(!loopback(false, v4(no)), "{no:?}");
+        }
+        assert!(loopback(true, v6("::1")));
+        assert!(loopback(true, v6("::ffff:127.0.0.1")));
+        assert!(loopback(true, v6("::ffff:127.1.2.3")));
+        for no in [
+            "::",
+            "::ffff:0.0.0.0",
+            "::ffff:10.0.0.1",
+            "fe80::1",
+            "::2",
+            "::127.0.0.1",
+        ] {
+            assert!(!loopback(true, v6(no)), "{no}");
+        }
+    }
+
+    #[test]
+    fn rows_the_tables_never_list_as_listening_are_no_rows() {
+        let header = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n";
+        for row in [
+            // Not listening: established, time-wait, close.
+            "   0: 0100007F:1435 0100007F:C350 01 00000000:00000000 00:00000000 00000000  1000 0 41003",
+            "   0: 0100007F:1435 0100007F:C350 06 00000000:00000000 00:00000000 00000000  1000 0 41004",
+            "   0: 0100007F:1435 00000000:0000 0a 00000000:00000000 00:00000000 00000000  1000 0 41005",
+            // Malformed: no port, a bad port, no inode, a bad inode, an address of the other family.
+            "   0: 0100007F 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 41006",
+            "   0: 0100007F:XYZ 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 41007",
+            "   0: 0100007F:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0",
+            "   0: 0100007F:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 -1",
+            "   0: 0100007F0100007F:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 41008",
+            "   0: 0100007G:1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 41009",
+            "   0: :1435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 41010",
+            "   0: 0100007F:11435 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000 0 41011",
+            "",
+            "0A",
+        ] {
+            assert!(parse_proc_net_tcp(&format!("{header}{row}\n"), false).is_empty(), "{row}");
+        }
+        // The header itself is never a row, even when it's all there is.
+        assert!(parse_proc_net_tcp(header, false).is_empty());
+        // A listener on the IPv6 table's every-interface address with lowercase hex.
+        let any = format!("{header}   0: 00000000000000000000000000000000:1f90 00000000000000000000000000000000:0000 0A 0 0 0 1000 0 7\n");
+        assert_eq!(
+            parse_proc_net_tcp(&any, true),
+            [Listen {
+                inode: 7,
+                port: 8080,
+                loopback: false
+            }]
+        );
+    }
+
+    #[test]
+    fn a_big_table_with_garbage_mixed_in_parses_without_panicking() {
+        let mut table = String::from("header\n");
+        let mut seed: u64 = 1;
+        let mut expect = 0;
+        for i in 0..5000u32 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let port = (seed >> 40) as u16;
+            if seed.is_multiple_of(3) {
+                table.push_str(&format!(
+                    "{i}: 0100007F:{port:04X} 00000000:0000 0A 0 0 0 1 0 {i}\n"
+                ));
+                expect += 1;
+            } else {
+                let junk: String = (0..(seed % 40) as usize)
+                    .map(|k| char::from(b"0A: x\t\xff"[(k + i as usize) % 7].min(0x7e)))
+                    .collect();
+                table.push_str(&junk);
+                table.push('\n');
+            }
+        }
+        let rows = parse_proc_net_tcp(&table, false);
+        assert!(rows.len() >= expect, "{} < {expect}", rows.len());
+        assert!(rows
+            .iter()
+            .all(|r| r.loopback || r.port == 0 || r.inode > 0));
+    }
+
+    /// A program a shell started, two levels down, listening: found through the tree. macOS
+    /// only: its nc takes `-l host port`, which netcat on Linux spells differently.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn finds_a_grandchilds_port_and_nothing_once_it_ends() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        // `; true` keeps the shell from exec'ing nc in its place.
+        let Ok(mut shell) = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("nc -l 127.0.0.1 {port} >/dev/null 2>&1; true"))
+            .stdin(std::process::Stdio::null())
+            .spawn()
+        else {
+            return;
+        };
+        let found = (0..50).find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            listening(&[shell.id()])
+                .into_iter()
+                .find(|p| p.port == port)
+        });
+        let _ = shell.kill();
+        let _ = std::process::Command::new("pkill")
+            .args(["-f", &format!("nc -l 127.0.0.1 {port}")])
+            .status();
+        let _ = shell.wait();
+        let Some(found) = found else {
+            panic!("nc's port {port} not found under the shell");
+        };
+        assert!(found.loopback && found.pid != shell.id(), "{found:?}");
+        assert_eq!(found.process, "nc");
+        // A process tree that isn't there any more lists nothing, and a pid of none either.
+        assert!(listening(&[shell.id()]).iter().all(|p| p.port != port));
+        assert!(listening(&[]).is_empty());
+        assert!(listening(&[u32::MAX, 0]).iter().all(|p| p.pid != 0));
+    }
 }

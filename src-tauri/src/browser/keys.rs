@@ -546,4 +546,105 @@ mod tests {
             assert_eq!(code(c), "", "{c}");
         }
     }
+
+    fn at(k: &str, code: &'static str, mods: &str) -> Key {
+        Key {
+            code,
+            ..key(k, mods)
+        }
+    }
+
+    #[test]
+    fn a_latin_layout_counts_by_what_it_types_wherever_the_key_sits() {
+        // AZERTY: A and Q, Z and W trade places.
+        assert_eq!(
+            to(&at("a", "KeyQ", "cmd")),
+            Route::Page,
+            "AZERTY ⌘A selects all"
+        );
+        assert_eq!(
+            to(&at("q", "KeyA", "cmd")),
+            Route::System,
+            "AZERTY ⌘Q quits"
+        );
+        assert_eq!(
+            to(&at("w", "KeyZ", "cmd")),
+            Route::App,
+            "AZERTY ⌘W closes the tab"
+        );
+        assert_eq!(to(&at("z", "KeyW", "cmd")), Route::Page, "AZERTY ⌘Z undoes");
+        // QWERTZ: Y and Z.
+        assert_eq!(to(&at("z", "KeyY", "cmd")), Route::Page);
+        assert_eq!(to(&at("y", "KeyZ", "cmd")), Route::Page, "unbound ⌘Y stays");
+        // Dvorak: an unbound letter on a bound key's spot stays the page's.
+        assert_eq!(to(&at("u", "KeyW", "cmd")), Route::Page);
+        assert_eq!(to(&at("p", "KeyR", "cmd")), Route::App, "Dvorak ⌘P is ⌘P");
+        assert_eq!(to(&at("j", "KeyC", "cmd")), Route::Page, "not copy");
+    }
+
+    #[test]
+    fn a_layout_without_ascii_counts_by_where_the_key_sits_for_editing_and_the_system() {
+        // Cyrillic: editing and macOS's keys by position; a binding never, as the app page
+        // can't run a letter it doesn't see typed: ⌘W is left to the menu bar's own matching.
+        assert_eq!(to(&at("й", "KeyQ", "cmd")), Route::System);
+        assert_eq!(to(&at("р", "KeyH", "cmd")), Route::System);
+        assert_eq!(to(&at("ц", "KeyW", "cmd")), Route::Page);
+        assert_eq!(to(&at("з", "KeyP", "cmd")), Route::Page);
+        assert_eq!(to(&at("я", "KeyZ", "shift+cmd")), Route::Page, "redo");
+        // Greek, Hebrew.
+        assert_eq!(to(&at("ψ", "KeyC", "cmd")), Route::Page);
+        assert_eq!(to(&at("ב", "KeyC", "cmd")), Route::Page);
+        // Punctuation counts by its key on any layout, as commands.ts's CODE_KEYS does.
+        assert_eq!(to(&at("х", "BracketLeft", "cmd")), Route::App, "⌘[ is Back");
+        assert_eq!(to(&at("ъ", "BracketRight", "shift+cmd")), Route::App);
+        assert_eq!(to(&at("ö", "Semicolon", "cmd")), Route::Page, "unbound");
+        // German ⌥⌘L types @; AppKit names it by its letter, as bound.
+        let alt_b = at("b", "KeyB", "alt+cmd");
+        assert_eq!(to(&alt_b), Route::App);
+    }
+
+    #[test]
+    fn shifted_punctuation_is_named_as_commands_ts_names_its_key() {
+        assert_eq!(to(&at("}", "BracketRight", "shift+cmd")), Route::App);
+        assert_eq!(
+            to(&at("{", "BracketLeft", "shift+cmd")),
+            Route::Page,
+            "⇧⌘[ unbound here"
+        );
+        let plus: HashSet<String> = ["shift+cmd+=".to_string()].into();
+        assert_eq!(route(&at("+", "Equal", "shift+cmd"), &plus), Route::App);
+        // Function keys and named keys.
+        let named: HashSet<String> = ["cmd+f5", "ctrl+space", "ctrl+cmd+escape"]
+            .map(String::from)
+            .into();
+        assert_eq!(route(&key("F5", "cmd"), &named), Route::App);
+        assert_eq!(route(&key(" ", "ctrl"), &named), Route::App);
+        assert_eq!(route(&key("Escape", "ctrl+cmd"), &named), Route::App);
+        assert_eq!(
+            route(&key("F", "cmd"), &named),
+            Route::Page,
+            "a letter isn't F-key"
+        );
+    }
+
+    #[test]
+    fn an_empty_or_odd_binding_set_never_takes_editing_or_panics() {
+        let odd: HashSet<String> = ["", "cmd+", "+", "cmd+c", "cmd+v", "cmd+backspace", "cmd+z"]
+            .map(String::from)
+            .into();
+        for (k, mods) in [
+            ("c", "cmd"),
+            ("v", "cmd"),
+            ("Backspace", "cmd"),
+            ("z", "cmd"),
+        ] {
+            assert_eq!(route(&key(k, mods), &odd), Route::Page, "{mods}+{k}");
+            assert_eq!(
+                route(&key(k, mods), &HashSet::new()),
+                Route::Page,
+                "{mods}+{k}"
+            );
+        }
+        assert_eq!(route(&key("", "cmd"), &odd), Route::Page);
+    }
 }

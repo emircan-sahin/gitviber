@@ -323,4 +323,185 @@ mod tests {
         assert_eq!(r.within("/w/one-two"), [&2]);
         assert!(r.within("/w").is_empty());
     }
+
+    /// A cheap generator, so the fuzz below is the same on every run.
+    fn lcg(seed: &mut u64) -> usize {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (*seed >> 33) as usize
+    }
+
+    /// What a view is in the model the fuzz checks the registry against.
+    #[derive(Clone, Copy, PartialEq, Debug)]
+    enum Is {
+        Shown,
+        Hidden(u64),
+        Parked,
+    }
+
+    #[test]
+    fn random_shows_hides_parks_and_closes_keep_to_the_cap_and_the_latest_hide() {
+        let mut r = Registry::new();
+        let mut model: Vec<(String, String, u32, Is)> = Vec::new();
+        // Park timers set and not yet run: (id, the hide that set it).
+        let mut timers: Vec<(String, u64)> = Vec::new();
+        let mut cap = LIVE_HIDDEN;
+        let mut seed = 11;
+        let park_now = |r: &mut Registry<u32>,
+                        model: &mut Vec<(String, String, u32, Is)>,
+                        id: &str,
+                        since: u64| {
+            let expected = model
+                .iter()
+                .position(|m| m.0 == id && m.3 == Is::Hidden(since));
+            let got = r.park(id, since, parked("http://localhost:5173/"));
+            match expected {
+                Some(at) => {
+                    assert_eq!(got, Some(model[at].2), "{id} hidden since {since}");
+                    model[at].3 = Is::Parked;
+                }
+                None => assert_eq!(got, None, "{id}: a stale hide ({since}) parks nothing"),
+            }
+        };
+        for n in 0..20_000u32 {
+            let id = format!("t{}", lcg(&mut seed) % 12);
+            let root = format!("/w/{}", lcg(&mut seed) % 3);
+            match lcg(&mut seed) % 9 {
+                // A tab shows: its view made, or a parked one made again, or the live one shown.
+                0 | 1 => match model.iter().position(|m| m.0 == id) {
+                    Some(at) if model[at].3 == Is::Parked => {
+                        assert!(r.unpark(&id).is_some());
+                        model.remove(at);
+                        r.insert(&id, &root, n);
+                        model.push((id, root, n, Is::Shown));
+                    }
+                    Some(at) => {
+                        assert_eq!(r.unpark(&id), None, "a live view isn't parked");
+                        r.show(&id);
+                        model[at].3 = Is::Shown;
+                    }
+                    None => {
+                        r.insert(&id, &root, n);
+                        model.push((id, root, n, Is::Shown));
+                    }
+                },
+                // Out of sight: the cap parks the longest hidden at once.
+                2 | 3 => {
+                    let got = r.hide(&id);
+                    let at = model.iter().position(|m| m.0 == id);
+                    match at {
+                        Some(at) if model[at].3 != Is::Parked => {
+                            let (since, over) = got.expect("a live view hides");
+                            model[at].3 = Is::Hidden(since);
+                            timers.push((id.clone(), since));
+                            for (gone, since) in over {
+                                park_now(&mut r, &mut model, &gone, since);
+                            }
+                        }
+                        _ => assert_eq!(got, None, "{id} isn't live"),
+                    }
+                }
+                // A park timer runs, maybe long after a later show or hide.
+                4 | 5 if !timers.is_empty() => {
+                    let (id, since) = timers.swap_remove(lcg(&mut seed) % timers.len());
+                    let stands = model.iter().any(|m| m.0 == id && m.3 == Is::Hidden(since));
+                    assert_eq!(r.still_hidden(&id, since), stands);
+                    park_now(&mut r, &mut model, &id, since);
+                }
+                6 => {
+                    let at = model.iter().position(|m| m.0 == id);
+                    let live = at.and_then(|at| (model[at].3 != Is::Parked).then(|| model[at].2));
+                    if let Some(at) = at {
+                        model.remove(at);
+                    }
+                    assert_eq!(r.remove(&id), live);
+                }
+                7 => {
+                    cap = lcg(&mut seed) % 5;
+                    for (gone, since) in r.set_live_hidden(cap) {
+                        park_now(&mut r, &mut model, &gone, since);
+                    }
+                }
+                _ => {
+                    let live: Vec<u32> = model
+                        .iter()
+                        .filter(|m| m.1 == root && m.3 != Is::Parked)
+                        .map(|m| m.2)
+                        .collect();
+                    model.retain(|m| m.1 != root);
+                    assert_eq!(r.remove_root(&root), live);
+                }
+            }
+            // Never more hidden and alive than the cap, and every live one where the model says.
+            let hidden = model
+                .iter()
+                .filter(|m| matches!(m.3, Is::Hidden(_)))
+                .count();
+            assert!(hidden <= cap, "{hidden} hidden past a cap of {cap}");
+            for m in &model {
+                let live = (m.3 != Is::Parked).then_some(&m.2);
+                assert_eq!(r.get(&m.0), live, "{m:?}");
+            }
+        }
+        let live: Vec<u32> = model
+            .iter()
+            .filter(|m| m.3 != Is::Parked)
+            .map(|m| m.2)
+            .collect();
+        assert_eq!(r.take_all(), live);
+    }
+
+    #[test]
+    fn hiding_again_restarts_the_clock_and_keeps_the_most_recent() {
+        let mut r = Registry::new();
+        for id in ["a", "b", "c"] {
+            r.insert(id, "/w", id);
+        }
+        let (a1, _) = r.hide("a").unwrap();
+        r.hide("b").unwrap();
+        // a hidden once more (a second hide while out of sight): now the most recent.
+        let (a2, over) = r.hide("a").unwrap();
+        assert!(a2 > a1 && over.is_empty());
+        assert!(!r.still_hidden("a", a1));
+        let (_, over) = r.hide("c").unwrap();
+        assert_eq!(over.iter().map(|o| o.0.as_str()).collect::<Vec<_>>(), ["b"]);
+        // A cap of none parks even the one just hidden.
+        let mut r = Registry::new();
+        r.insert("x", "/w", 1);
+        assert!(r.set_live_hidden(0).is_empty(), "shown views never park");
+        let (since, over) = r.hide("x").unwrap();
+        assert_eq!(over, [("x".to_string(), since)]);
+    }
+
+    #[test]
+    fn a_reopened_id_replaces_its_parked_entry_and_unknown_ids_do_nothing() {
+        let mut r = Registry::new();
+        r.insert("a", "/w", 1);
+        let (since, _) = r.hide("a").unwrap();
+        r.park("a", since, parked("http://localhost:1/"));
+        r.insert("a", "/w", 2);
+        assert_eq!(r.get("a"), Some(&2));
+        assert_eq!(r.unpark("a"), None);
+        assert_eq!(r.remove("a"), Some(2));
+        assert_eq!(r.remove("a"), None);
+        assert_eq!(r.hide("nope"), None);
+        assert!(!r.still_hidden("nope", 1));
+        assert_eq!(r.park("nope", 1, parked("http://x.test/")), None);
+        r.show("nope");
+        assert!(r.within("/w").is_empty());
+    }
+
+    #[test]
+    fn a_worktree_holds_its_subfolders_but_not_its_namesakes() {
+        let mut r = Registry::new();
+        r.insert("a", "/w/app", 1);
+        r.insert("b", "/w/app-2", 2);
+        r.insert("c", "/w/app/nested", 3);
+        assert_eq!(r.within("/w/app/"), [&1]);
+        assert_eq!(r.within("/w/app/nested/src"), [&1, &3]);
+        assert_eq!(r.within("/w/app-2/x"), [&2]);
+        assert!(r.within("/w/ap").is_empty());
+        assert!(r.within("").is_empty());
+    }
 }

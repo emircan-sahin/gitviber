@@ -166,3 +166,32 @@ test("a frame on Linux holds only this machine's http pages, as the app's CSP al
   for (const url of ["http://localhost:5173/", "http://127.0.0.1:3000/a"]) assert.equal(isFrameable(url), true, url);
   for (const url of ["https://localhost:5173/", "http://[::1]:3000/", "http://app.localhost/", "http://example.com/", BLANK, "nonsense"]) assert.equal(isFrameable(url), false, url);
 });
+
+test("a Linux frame takes what the CSP's frame-src lets in, however the address is spelled", () => {
+  // frame-src http://localhost:* http://127.0.0.1:*: any port, the default one too.
+  for (const url of ["http://localhost/", "http://LOCALHOST:3000/a?b#c", "http://127.0.0.1/", "http://127.1:8080/", "http://0x7f.0.0.1:5173/"]) {
+    assert.equal(isFrameable(url), true, url);
+  }
+  for (const url of [
+    "http://localhost.:3000/",
+    "http://127.0.0.2:3000/",
+    "http://127.0.0.1.nip.io/",
+    "http://localhost.example.com/",
+    "http://0.0.0.0:3000/",
+    "http://[::ffff:127.0.0.1]:3000/",
+    "ws://localhost:3000/",
+    "file:///tmp/x.html",
+    "javascript:alert(1)",
+    "data:text/html,x",
+    "",
+  ]) {
+    assert.equal(isFrameable(url), false, url);
+  }
+});
+
+test("what the address bar makes of a port is always framable on Linux", () => {
+  for (const typed of ["3000", ":5173", "localhost:8080/docs", "127.0.0.1:4000", "65535"]) {
+    const url = normalizeUrl(typed);
+    assert.ok(url && isFrameable(url), `${typed} -> ${url}`);
+  }
+});
