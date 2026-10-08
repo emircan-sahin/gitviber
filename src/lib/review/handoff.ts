@@ -1,5 +1,6 @@
 import type { GuideSelection } from "../repo/selection.ts";
-import { clip, type Guide, type GuideSection, languageName } from "./guide.ts";
+import { clip, languageName } from "./answer.ts";
+import type { Guide, GuideSection } from "./guide.ts";
 import { forTerminal } from "./notes.ts";
 import type { Risk } from "./risks.ts";
 
@@ -34,7 +35,10 @@ const MAX_PART = 1500;
 const MAX_FILES = 40;
 
 const short = (sha: string) => sha.slice(0, 7);
+// Long enough for git to find in a big repository; a commit's base (`sha^`, the empty tree) as it is.
+const rev = (r: string) => (/^[0-9a-f]{40,64}$/i.test(r) ? r.slice(0, 12) : r);
 const quote = (s: string) => `"${s.replace(/\s+/g, " ").trim()}"`;
+const pathArg = (p: string) => (/^[\w./@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`);
 
 /** Whether the worktree has the change's head checked out: a branch's always; a commit or a PR's when HEAD is it (`statusHead`: HEAD's short id). */
 export const isCheckedOut = (sel: GuideSelection, statusHead: string | null | undefined, head: string) => sel.of === "branch" || (!!statusHead && head.startsWith(statusHead));
@@ -47,9 +51,10 @@ function what(sel: GuideSelection, branch: string | null, base: string, head: st
 }
 
 function reading(i: HandoffInput, files: string[]) {
-  const paths = files.length && files.length <= MAX_FILES ? ` -- ${files.join(" ")}` : "";
-  const diff = `\`git diff ${short(i.base)} ${short(i.head)}${paths}\``;
-  if (!i.checkedOut) return `It isn't checked out here: the files on disk are another version. Read it with ${diff} and \`git show ${short(i.head)}:<path>\`, and don't edit files for it.`;
+  const paths = files.length && files.length <= MAX_FILES ? ` -- ${files.map(pathArg).join(" ")}` : "";
+  // A commit's diff from the commit alone: its root's base, the empty tree, isn't a revision git finds.
+  const diff = i.sel.of === "commit" ? `\`git show ${rev(i.head)}${paths}\`` : `\`git diff ${rev(i.base)} ${rev(i.head)}${paths}\``;
+  if (!i.checkedOut) return `It isn't checked out here: the files on disk are another version. Read it with ${diff} and \`git show ${rev(i.head)}:<path>\`, and don't edit files for it.`;
   const head = i.sel.of === "branch" ? "the files on disk are its head, plus any uncommitted changes, which the review didn't read" : "the files on disk are its head";
   const moved = i.moved ? ` The branch has moved since the review read it at ${short(i.head)}: line numbers in the review may be off.` : "";
   return `It's checked out here: ${head}. Its diff: ${diff}.${moved}`;
@@ -115,10 +120,9 @@ export const riskPrompt = (checkedOut: boolean) =>
     ? "Look into the risk GitViber described: say whether it's real and why, then fix it if it is."
     : "Look into the risk GitViber described: say whether it's real and why. Don't edit files: the change isn't checked out here.";
 
-/** The session's name in the agent (its prompt box, resume list and terminal title): one line of at most 60 characters. */
+/** The session's name in the agent (its prompt box, resume list and terminal title); handoff.rs makes it one short line. */
 export function handoffName(sel: GuideSelection, about: HandoffAbout) {
   const of = sel.of === "commit" ? short(sel.commit.sha) : sel.of === "pull" ? `PR #${sel.pull.number}` : sel.label;
   const part = !about ? "" : "section" in about ? about.section.title : about.risk.title;
-  const name = `${about && "risk" in about ? "Risk" : "Review"}: ${of}${part ? ` · ${part}` : ""}`;
-  return clip(name.replace(/[\x00-\x1f\x7f]/g, " ").replace(/\s+/g, " ").trim(), 60);
+  return `${about && "risk" in about ? "Risk" : "Review"}: ${of}${part ? ` · ${part}` : ""}`;
 }

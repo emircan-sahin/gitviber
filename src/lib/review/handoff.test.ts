@@ -44,11 +44,20 @@ test("each kind says what the change is, and the review is framed as data", () =
 test("checked out, the files on disk are the head; not, it's read with git and left unedited", () => {
   const here = handoffContext(input({ about: { section, n: 1, total: 2 } }));
   assert.match(here, /It's checked out here: the files on disk are its head, plus any uncommitted changes/);
-  assert.match(here, /`git diff 1111111 2222222 -- src\/retry\.ts src\/upload\.ts`/);
+  assert.match(here, /`git diff 1111111aaaaa 2222222bbbbb -- src\/retry\.ts src\/upload\.ts`/);
   const away = handoffContext(input({ sel: SELS.pull, checkedOut: false, about: { risk } }));
-  assert.match(away, /It isn't checked out here.*`git show 2222222:<path>`, and don't edit files for it\./);
-  assert.match(away, /`git diff 1111111 2222222 -- src\/retry\.ts`/);
+  assert.match(away, /It isn't checked out here.*`git show 2222222bbbbb:<path>`, and don't edit files for it\./);
+  assert.match(away, /`git diff 1111111aaaaa 2222222bbbbb -- src\/retry\.ts`/);
+  // A commit's base is `sha^`, or the empty tree for a root: its diff comes from the commit alone.
+  const one = handoffContext(input({ sel: SELS.commit, base: `${HEAD}^`, checkedOut: false, about: { section: { ...section, files: ["a b.ts", "it's.ts"] }, n: 1, total: 1 } }));
+  assert.match(one, /`git show 2222222bbbbb -- 'a b\.ts' 'it'\\''s\.ts'`/);
+  assert.ok(!one.includes("git diff"));
+  // Past MAX_FILES the diff names no paths.
+  const many = handoffContext(input({ about: { section: { ...section, files: Array.from({ length: 41 }, (_, i) => `f${i}.ts`) }, n: 1, total: 1 } }));
+  assert.match(many, /`git diff 1111111aaaaa 2222222bbbbb`/);
   assert.match(handoffContext(input({ moved: true })), /The branch has moved since the review read it at 2222222/);
+  // A commit or PR checked out has no uncommitted changes to warn of.
+  assert.match(handoffContext(input({ sel: SELS.pull })), /It's checked out here: the files on disk are its head\. Its diff/);
 });
 
 test("a section brings its summary, check, risk and notes; a risk its place and why; the whole change its sections", () => {
@@ -60,6 +69,8 @@ test("a section brings its summary, check, risk and notes; a risk its place and 
   assert.match(r, /The risk asked about \(high\): "Retries forever"\n\nAt: src\/retry\.ts:12\n\nWhy: No cap on attempts\./);
   const whole = handoffContext(input({}));
   assert.match(whole, /Its sections, in reading order:\n1\. Retry helper \(src\/retry\.ts, src\/upload\.ts\)\n2\. Docs \(README\.md\)/);
+  const wide = { ...guide, sections: [{ ...section, files: Array.from({ length: 9 }, (_, i) => `f${i}.ts`) }] };
+  assert.match(handoffContext(input({ guide: wide })), /1\. Retry helper \(f0\.ts, .*f7\.ts, …\)/);
   assert.ok(whole.endsWith("Reply in Türkçe."));
 });
 
@@ -79,11 +90,10 @@ test("checked out: a branch always; a commit or PR only while HEAD is its head",
   assert.equal(isCheckedOut(SELS.commit, undefined, HEAD), false);
 });
 
-test("the session's name is one short line", () => {
+test("the session's name says what's asked about", () => {
   assert.equal(handoffName(SELS.pull, { section, n: 1, total: 2 }), "Review: PR #42 · Retry helper");
   assert.equal(handoffName(SELS.commit, null), "Review: 2222222");
-  assert.equal(handoffName(SELS.branch, { risk: { ...risk, title: "Two\nlines\tand\x1b more" } }), "Risk: main · Two lines and more");
-  assert.ok(handoffName(SELS.branch, { risk: { ...risk, title: "y".repeat(100) } }).length <= 60);
+  assert.equal(handoffName(SELS.branch, { risk }), "Risk: main · Retries forever");
 });
 
 test("a risk is only fixed where the change is checked out", () => {

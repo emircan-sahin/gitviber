@@ -30,8 +30,12 @@ test("a bad field reads as empty, an unknown severity as medium, and a risk with
   ]);
 });
 
-test("an empty list is an answer; anything that isn't the JSON asked for isn't", () => {
+test("an empty list is an answer, as is a bare list; anything that isn't the JSON asked for isn't", () => {
   assert.deepEqual(parseRisks('{"risks": []}'), []);
+  assert.deepEqual(
+    parseRisks('[{"title": "Bare", "severity": "low", "path": "a.ts"}]')?.map((r) => [r.title, r.side]),
+    [["Bare", "new"]],
+  );
   assert.equal(parseRisks("No risks found."), null);
   assert.equal(parseRisks('{"title": "a guide"}'), null);
 });

@@ -544,14 +544,8 @@ pub(crate) fn guide_within(
     let mut scratch = None;
     let mut note = input.note;
     if let Some(patch) = &input.patch {
-        // A run cut short by quitting left its folder: none lasts past the longest run. On its
-        // own thread, as reading a crowded temp folder takes a while.
-        std::thread::spawn(|| {
-            crate::scratch::sweep("guide", MAX_GUIDE_TIMEOUT + Duration::from_secs(60))
-        });
-        let dir = ScratchDir::new("guide")?;
-        // As the agent's tools resolve it: /var is a link to /private/var on macOS.
-        let path = dir.path().canonicalize().map_err(|e| e.to_string())?;
+        // A run cut short by quitting left its folder: none lasts past the longest run.
+        let (dir, path) = ScratchDir::fresh("guide", MAX_GUIDE_TIMEOUT + Duration::from_secs(60))?;
         let file = path.join("changes.patch");
         crate::scratch::write_private(&file, patch)
             .map_err(|e| format!("Couldn't write the patch for the agent: {e}"))?;

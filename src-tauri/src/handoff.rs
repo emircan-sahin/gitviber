@@ -4,7 +4,7 @@
 //! a word of what a model wrote.
 
 use crate::agents::quote;
-use crate::scratch::{self, write_private, ScratchDir};
+use crate::scratch::{write_private, ScratchDir};
 use std::path::Path;
 use std::time::Duration;
 
@@ -29,15 +29,8 @@ pub struct Handoff<'a> {
 
 /// Writes the context to its file and returns the line that starts Claude Code with it.
 pub fn command(h: &Handoff) -> Result<String, String> {
-    // Older hand-offs; on its own thread, as reading a crowded temp folder takes a while.
-    std::thread::spawn(|| scratch::sweep("handoff", KEEP));
-    let dir = ScratchDir::new("handoff")?;
-    // As Claude Code resolves it: /var is a link to /private/var on macOS.
-    let file = dir
-        .path()
-        .canonicalize()
-        .map_err(|e| e.to_string())?
-        .join("context.md");
+    let (dir, path) = ScratchDir::fresh("handoff", KEEP)?;
+    let file = path.join("context.md");
     write_private(&file, h.context)
         .map_err(|e| format!("Couldn't write the review for the agent: {e}"))?;
     dir.keep();
@@ -140,7 +133,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn the_context_is_kept_private_until_swept() {
+    fn the_context_is_written_where_only_the_user_can_read_it() {
         use std::os::unix::fs::PermissionsExt;
         let out = command(&handoff("claude -p", None)).unwrap();
         let path = out

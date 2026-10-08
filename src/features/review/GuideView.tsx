@@ -189,15 +189,16 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
     if (block) block.scrollIntoView({ block: "start" });
     else onOpen(f, true);
   };
-  const risksBlock = risksOf.saved && (
+  const found = risksOf.saved;
+  const risksBlock = found && (
     <GuideRisks
       risks={risks}
-      saved={risksOf.saved}
-      outdated={movedFrom(risksOf.saved.head)}
+      saved={found}
+      outdated={movedFrom(found.head)}
       running={findingRisks}
       onFind={find}
       onGo={goToRisk}
-      action={(r) => <AskAgentButton root={root} ask={() => askOf(risksOf.saved!, { risk: r })} label="Send to Agent" what="this risk" />}
+      action={(r) => <AskAgentButton root={root} ask={() => askOf(found, { risk: r })} label="Send to Agent" what="this risk" />}
     />
   );
   const done = guide && saved ? guide.sections.filter((_, i) => saved.done.includes(i)).length : 0;
@@ -222,7 +223,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
               </Button>
             )}
             {running ? (
-              <Button size="sm" variant="secondary" onClick={cancelGuide}>
+              <Button size="sm" variant="secondary" onClick={() => cancelGuide(id)}>
                 <Square /> Cancel
               </Button>
             ) : (
@@ -298,18 +299,22 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
             Couldn't read the files: {fixed.error}
           </Notice>
         )}
-        <RisksRun program={program} run={risksOf.run} onCancel={cancelRisks} />
+        <RisksRun program={program} run={risksOf.run} onCancel={() => cancelRisks(id)} />
 
         {!saved ? (
-          !running && (
-            <p className="text-[13px] text-muted-foreground">
-              {program} reads {sel.of === "commit"
-                ? "the commit's message and diff"
-                : sel.of === "pull"
-                  ? "the pull request's commits and their diff, fetching them first when they're missing,"
-                  : "the branch's commits and their diff (not uncommitted changes)"} and explains it as sections in the order to review them, by category, with a diagram when a flow or data model changes.
-            </p>
-          )
+          <>
+            {/* Risks found while the guide isn't there (stopped, failed, or dropped from storage). */}
+            {risksBlock}
+            {!running && (
+              <p className="text-[13px] text-muted-foreground">
+                {program} reads {sel.of === "commit"
+                  ? "the commit's message and diff"
+                  : sel.of === "pull"
+                    ? "the pull request's commits and their diff, fetching them first when they're missing,"
+                    : "the branch's commits and their diff (not uncommitted changes)"} and explains it as sections in the order to review them, by category, with a diagram when a flow or data model changes.
+              </p>
+            )}
+          </>
         ) : !guide ? (
           <>
             {risksBlock}

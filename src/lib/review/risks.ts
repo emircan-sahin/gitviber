@@ -1,4 +1,4 @@
-import { clip, exampleOf, jsonOf, languageName, records, text, whole } from "./guide.ts";
+import { clip, exampleOf, jsonOf, languageName, records, text, whole } from "./answer.ts";
 
 /**
  * Find Risks: the user's agent CLI hunts a change for bugs and lists them most severe first, beside

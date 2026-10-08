@@ -1,7 +1,7 @@
 import { api, errorMessage } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
 import { toast } from "@/lib/app/toast";
-import { effortOf, modelOf, presetOf, programOf, reviewAgent, type SuggestPreset } from "@/lib/git/suggest";
+import { effortOf, modelOf, presetOf, programOf, reviewAgent, SUGGEST_PRESETS } from "@/lib/git/suggest";
 import { handoffContext, type HandoffInput, handoffName, riskPrompt } from "@/lib/review/handoff";
 import { getSettings } from "@/lib/settings";
 import { refreshAgents } from "@/lib/terminal/agents";
@@ -15,9 +15,6 @@ import { openTerminal, pasteToAgent, worktreeAgent } from "@/lib/terminal/termin
  */
 
 export type Ask = Omit<HandoffInput, "language">;
-
-// The CLIs whose bare program is their own interactive session; llm and a custom command have none known.
-const SESSION: Partial<Record<SuggestPreset, string>> = { codex: "codex", opencode: "opencode", pi: "pi" };
 
 function handoff(a: Ask) {
   const s = getSettings();
@@ -33,8 +30,9 @@ export async function askAgent(root: string, a: Ask) {
   const { settings, context, prompt } = handoff(a);
   const { command, models, efforts } = reviewAgent(settings);
   const preset = presetOf(command);
-  if (programOf(command) !== "claude") {
-    const program = preset && SESSION[preset];
+  if (programOf(command).toLowerCase() !== "claude") {
+    // A preset's own session; llm and a custom command have none known.
+    const program = preset && "session" in SUGGEST_PRESETS[preset] ? programOf(command) : null;
     void copyText(asPrompt(context, prompt), "Review copied for the agent", program ? `Paste it into ${program}, starting in the terminal.` : "Paste it into your agent.");
     if (program) openTerminal(root, program);
     return;

@@ -57,7 +57,7 @@ async function guideTarget(sel: GuideSelection): Promise<GuideTarget> {
 }
 
 /** A run on its way, stopped before it was written, or why it failed. */
-type Run = "running" | "stopped" | { error: string };
+export type Run = "running" | "stopped" | { error: string };
 
 /** What a kind of run over a guide's range is: where it's kept, and what the agent is asked. */
 interface RunKind<T extends SavedRun> {
@@ -113,7 +113,7 @@ function keptRuns<T extends SavedRun>(k: RunKind<T>) {
   };
 
   /** The answer kept under `id`, and its run. */
-  const use = (id: string) => {
+  const useKept = (id: string) => {
     const version = saves.use();
     const saved = useMemo(() => load(id), [id, version]);
     return { saved, run: runs.use()[id] ?? null };
@@ -161,13 +161,14 @@ function keptRuns<T extends SavedRun>(k: RunKind<T>) {
     }
   };
 
-  const cancel = () => {
-    // One still fetching a pull request's commits has no run in the backend to stop yet.
-    active = null;
+  /** Stops `id`'s run: one still fetching a pull request's commits has none in the backend to stop yet. */
+  const cancel = (id: string) => {
+    // Another tab's run, started since, goes on.
+    if (active && latest.get(id) === active.token) active = null;
     return api.suggestCancel(k.kind).catch(() => {});
   };
 
-  return { load, save, use, generate, cancel, running: (id: string) => runs.get()[id] === "running" };
+  return { load, save, useKept, generate, cancel, running: (id: string) => runs.get()[id] === "running" };
 }
 
 const guides = keptRuns<SavedGuide>({
@@ -179,18 +180,29 @@ const guides = keptRuns<SavedGuide>({
   noun: "guided review",
   schema: GUIDE_SCHEMA,
   prompt: guidePrompt,
-  isSaved: (v): v is SavedGuide => isRun(v) && Array.isArray((v as SavedGuide).done) && (v as SavedGuide).done.every(Number.isInteger),
+  isSaved: (v): v is SavedGuide => isRun(v) && "done" in v && Array.isArray(v.done) && v.done.every(Number.isInteger),
   kept: (run) => ({ ...run, done: [] }),
 });
 
 // Under the guide's own id, so a guide and its risks come and go together in the tab.
-const risks = keptRuns<SavedRun>({ key: "gitviber.guideRisks", max: 12, maxSize: 32 * 1024, kind: "risks", noun: "risk list", schema: RISKS_SCHEMA, prompt: risksPrompt, isSaved: isRun, kept: (run) => run });
+const risks = keptRuns<SavedRun>({
+  key: "gitviber.guideRisks",
+  max: 12,
+  // At most eight risks of a few sentences: past this, it isn't the short list asked for.
+  maxSize: 32 * 1024,
+  kind: "risks",
+  noun: "risk list",
+  schema: RISKS_SCHEMA,
+  prompt: risksPrompt,
+  isSaved: isRun,
+  kept: (run) => run,
+});
 
-export const useGuide = guides.use;
+export const useGuide = guides.useKept;
 export const generateGuide = guides.generate;
 export const cancelGuide = guides.cancel;
 
-export const useRisks = risks.use;
+export const useRisks = risks.useKept;
 export const findRisks = risks.generate;
 export const cancelRisks = risks.cancel;
 

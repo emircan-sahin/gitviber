@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// Readable only by the user (it can hold the repo's content), under a name no one can guess, and
-/// removed with everything in it when dropped.
-pub(crate) struct ScratchDir(PathBuf);
+/// removed with everything in it when dropped, unless kept.
+pub(crate) struct ScratchDir(Option<PathBuf>);
 
 impl ScratchDir {
     pub(crate) fn new(purpose: &str) -> Result<Self, String> {
@@ -18,17 +18,29 @@ impl ScratchDir {
         builder
             .create(&dir)
             .map_err(|e| format!("could not make a temporary folder: {e}"))?;
-        Ok(ScratchDir(dir))
+        Ok(ScratchDir(Some(dir)))
+    }
+
+    /// A new one, with `purpose`'s folders older than `age` swept (on their own thread, as reading
+    /// a crowded temp folder takes a while), and its path as an agent's tools resolve it: /var is a
+    /// link to /private/var on macOS.
+    pub(crate) fn fresh(purpose: &'static str, age: Duration) -> Result<(Self, PathBuf), String> {
+        std::thread::spawn(move || sweep(purpose, age));
+        let dir = Self::new(purpose)?;
+        let path = dir.path().canonicalize().map_err(|e| e.to_string())?;
+        Ok((dir, path))
     }
 
     pub(crate) fn path(&self) -> &Path {
-        &self.0
+        self.0
+            .as_deref()
+            .expect("a ScratchDir has its folder until it's kept or dropped")
     }
 
-    /// The folder, left in place: for a file a program reads after this returns, which `sweep`
+    /// Leaves the folder in place: for a file a program reads after this returns, which `sweep`
     /// removes once it's older than that program could still want it.
-    pub(crate) fn keep(mut self) -> PathBuf {
-        std::mem::take(&mut self.0)
+    pub(crate) fn keep(mut self) {
+        self.0 = None;
     }
 }
 
@@ -66,9 +78,8 @@ pub(crate) fn sweep(purpose: &str, age: Duration) {
 
 impl Drop for ScratchDir {
     fn drop(&mut self) {
-        // Empty once kept.
-        if !self.0.as_os_str().is_empty() {
-            let _ = std::fs::remove_dir_all(&self.0);
+        if let Some(dir) = &self.0 {
+            let _ = std::fs::remove_dir_all(dir);
         }
     }
 }
@@ -92,5 +103,16 @@ mod tests {
         sweep("sweep-test", Duration::from_secs(3600));
         assert!(!old.path().exists());
         assert!(new.path().exists() && other.path().exists());
+    }
+
+    #[test]
+    fn a_kept_folder_outlives_its_scratch_dir() {
+        let dir = ScratchDir::new("keep-test").unwrap();
+        let path = dir.path().to_path_buf();
+        dir.keep();
+        assert!(path.is_dir());
+        std::fs::remove_dir_all(path).unwrap();
+        let gone = ScratchDir::new("keep-test").unwrap().path().to_path_buf();
+        assert!(!gone.exists());
     }
 }

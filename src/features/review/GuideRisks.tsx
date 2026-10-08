@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { relativeTime } from "@/lib/format";
 import type { Risk, Severity } from "@/lib/review/risks";
 import { cn } from "@/lib/utils";
+import type { Run } from "./guides";
 import { GuideMarkdown, Notice } from "./GuideSection";
 
 const SEVERITY_UI: Record<Severity, { label: string; dot: string }> = {
@@ -86,7 +87,7 @@ export function GuideRisks({ risks, saved, outdated, running, onFind, onGo, acti
 }
 
 /** While risks are being found, stopped before, or failed: its own notices, beside the guide's. */
-export function RisksRun({ program, run, onCancel }: { program: string; run: "running" | "stopped" | { error: string } | null; onCancel: () => void }) {
+export function RisksRun({ program, run, onCancel }: { program: string; run: Run | null; onCancel: () => void }) {
   if (run === "running")
     return (
       <Notice role="status" icon={<LoaderCircle className="animate-spin" />}>

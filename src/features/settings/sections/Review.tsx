@@ -99,7 +99,7 @@ export function ReviewSection() {
         )}
       </Group>
       <Group title="Writing">
-        <Field label="Language" hint="The guide's and the risks' prose is written in it, and Ask Agent asks the agent to reply in it; code, paths and names stay as they are. Commit messages and pull requests stay in English.">
+        <Field label="Language" hint="Guides and risks are written in it, and Ask Agent asks for replies in it; code, paths and names stay as they are. Commit messages and pull requests stay in English.">
           <OptionSelect
             className="w-80"
             value={customLanguage ? CUSTOM : s.reviewLanguage}
@@ -131,8 +131,8 @@ export function ReviewSection() {
           <div className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground">Find Risks sends the same change after this instead:</div>
           <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">{risksPrompt(s.reviewLanguage)}</pre>
           <div className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground">
-            Ask Agent and Send to Agent start an interactive session in a new terminal tab: Claude Code with the review's part as context, in a temporary file only you can read, kept for a day; it runs with this page's model and effort, and your own settings, servers and
-            skills. Another agent gets it on the clipboard to paste. From the button's menu it goes into the agent already running in the worktree's terminal instead, without pressing Enter.
+            Ask Agent and Send to Agent open a new terminal tab: Claude Code starts with that part of the review as context (from a file only you can read, kept for a day) and this page's model and effort; codex, opencode and pi start with it on the clipboard. Their menu pastes it into
+            the agent already running in the worktree instead, without pressing Enter.
           </div>
         </div>
       </Group>
