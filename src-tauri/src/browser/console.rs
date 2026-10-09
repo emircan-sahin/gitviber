@@ -160,4 +160,85 @@ mod tests {
             }
         );
     }
+
+    #[test]
+    fn the_ring_keeps_load_marks_in_line_and_the_newest_five_hundred_of_anything() {
+        let mut log = Log::default();
+        for i in 0..2 * KEEP {
+            if i % 7 == 0 {
+                log.loaded(&format!("http://localhost:5173/{i}"), i as f64);
+            } else {
+                assert!(log.add(&line(
+                    if i % 2 == 0 { "error" } else { "warn" },
+                    &i.to_string()
+                )));
+            }
+        }
+        let entries = log.entries();
+        assert_eq!(entries.len(), KEEP);
+        // Oldest first, without a gap: each entry is the next number, by its message or its mark.
+        let order: Vec<usize> = entries
+            .iter()
+            .map(|e| {
+                let n = if e.level == "load" {
+                    e.url.rsplit('/').next().unwrap()
+                } else {
+                    &e.msg
+                };
+                n.parse().unwrap()
+            })
+            .collect();
+        assert!(order.windows(2).all(|w| w[1] == w[0] + 1), "{order:?}");
+        assert_eq!(*order.last().unwrap(), 2 * KEEP - 1);
+        let counted = log.counts();
+        assert_eq!(
+            counted.errors + counted.warnings,
+            (2 * KEEP - (2 * KEEP).div_ceil(7)) as u32
+        );
+        // A mark's url is cut like a line's.
+        log.loaded(&"x".repeat(5 * MAX_TEXT), 0.0);
+        assert_eq!(log.entries().last().unwrap().url.len(), MAX_TEXT);
+    }
+
+    #[test]
+    fn whatever_a_page_posts_is_at_most_one_bounded_entry() {
+        let mut log = Log::default();
+        for no in [
+            r#"{"level":"ERROR","msg":"x","url":"u","ts":1}"#,
+            r#"{"level":"error","msg":1,"url":"u","ts":1}"#,
+            r#"{"level":"error","msg":"x","url":"u","ts":"1"}"#,
+            r#"{"level":"error","msg":"x","ts":1}"#,
+            r#"{"level":"error","msg":"x","url":"u","ts":1e400}"#,
+            r#"["error","x"]"#,
+            "null",
+            r#"{"level":"error","msg":"x","url":"u","ts":1"#,
+        ] {
+            assert!(!log.add(no), "{no}");
+        }
+        assert_eq!(log.counts(), Counts::default());
+        // Extra fields are ignored; a page's own huge line is held to the limit, on a char edge.
+        let emoji = "😀".repeat(MAX_TEXT);
+        let big = serde_json::json!({ "level": "error", "msg": emoji, "stack": emoji, "url": emoji, "ts": 1.0, "extra": [1, 2] }).to_string();
+        assert!(log.add(&big));
+        let e = &log.entries()[0];
+        for text in [&e.msg, &e.stack, &e.url] {
+            assert!(
+                text.len() <= MAX_TEXT
+                    && text.len() > MAX_TEXT - 4
+                    && text.chars().all(|c| c == '😀')
+            );
+        }
+        // Random bytes never panic.
+        let mut seed: u64 = 3;
+        for _ in 0..5000 {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let n = (seed >> 58) as usize;
+            let junk: String = (0..n)
+                .map(|k| char::from(b"{}\":,levrmsgu1 \\"[((seed >> (k % 50)) as usize + k) % 16]))
+                .collect();
+            let _ = log.add(&junk);
+        }
+    }
 }

@@ -665,4 +665,53 @@ mod tests {
         assert_eq!(s.zoom(0.0), None);
         assert_eq!(s.zoom(f64::INFINITY), None);
     }
+
+    #[test]
+    fn every_placed_width_lays_out_the_viewport_whole_even_floored() {
+        let corners = Corners {
+            top_left: true,
+            top_right: true,
+            bottom_right: true,
+            bottom_left: true,
+        };
+        for (width, height) in [
+            (402.0, 778.0),
+            (393.0, 793.0),
+            (1032.0, 1352.0),
+            (200.0, 3000.0),
+            (3000.0, 200.0),
+        ] {
+            let s = Screen {
+                width,
+                height,
+                radius: 0.0,
+                corners,
+                dpr: None,
+            };
+            let mut w = 20.0;
+            while w <= 4000.0 {
+                let Some(zoom) = s.zoom(w) else {
+                    w += 0.5;
+                    continue;
+                };
+                let placed = s.fit(Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w,
+                    h: 1.0,
+                });
+                // WebKit takes the layout size in whole CSS px: a hair under is a pixel short.
+                assert!(
+                    placed.w / zoom >= width - 1e-9 && (placed.w / zoom).round() == width,
+                    "{width} at {w}"
+                );
+                assert!(
+                    (placed.h / zoom).round() == height,
+                    "{height} at {w}: {}",
+                    placed.h / zoom
+                );
+                w += 0.5;
+            }
+        }
+    }
 }

@@ -236,4 +236,104 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn a_message_that_says_both_or_bends_the_shape_is_a_cancel_or_nothing() {
+        // Cancelled wins over a pick sent with it.
+        let both = PICK.replacen('{', r#"{"cancelled":true,"#, 1);
+        assert_eq!(read(&both), Ok(None));
+        for no in [
+            r#"{"pick":{"selector":"a","tag":"a","html":"","text":"","box":{"x":1e400,"y":0,"w":1,"h":1},"styles":{},"nonce":"n"}}"#,
+            r#"{"pick":{"selector":"a","tag":"a","html":"","text":"","box":{"x":0,"y":0,"w":1},"styles":{},"nonce":"n"}}"#,
+            r#"{"pick":{"selector":"a","tag":"a","html":"","text":"","box":{"x":0,"y":0,"w":1,"h":1},"styles":{"a":1},"nonce":"n"}}"#,
+            r#"{"cancelled":"yes"}"#,
+            "[]",
+        ] {
+            assert!(read(no).is_err(), "{no}");
+        }
+        // Every field bounded, on a char edge, and odd style names dropped.
+        let wide = "界".repeat(2000);
+        let message = serde_json::json!({ "pick": {
+            "selector": wide, "tag": wide, "html": wide, "text": wide,
+            "box": { "x": -1e9, "y": 1e9, "w": 0, "h": -5 },
+            "styles": { "color": wide, "x".repeat(41): "dropped" },
+            "nonce": "n", "components": ["ignored-from-the-page"], "screenshot": "/etc/passwd"
+        }});
+        let pick = read(&message.to_string()).unwrap().unwrap();
+        for (text, max) in [
+            (&pick.selector, 1000),
+            (&pick.tag, 64),
+            (&pick.html, 610),
+            (&pick.text, 210),
+        ] {
+            assert!(
+                text.len() <= max && text.chars().all(|c| c == '界'),
+                "{max}"
+            );
+        }
+        assert_eq!(pick.styles.len(), 1);
+        assert!(pick.styles["color"].len() <= 200);
+        // An empty or inside-out box shows nowhere.
+        assert_eq!(picture_rect(pick.bounds, 1.0, (1000.0, 1000.0)), None);
+    }
+
+    #[test]
+    fn a_picture_never_leaves_the_view_at_any_zoom() {
+        let mut seed: u64 = 17;
+        let mut next = |span: f64| {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 11) as f64 / (1u64 << 53) as f64) * span
+        };
+        for _ in 0..20_000 {
+            let b = Bounds {
+                x: next(3000.0) - 1000.0,
+                y: next(3000.0) - 1000.0,
+                w: next(1500.0),
+                h: next(1500.0),
+            };
+            let zoom = 0.05 + next(3.0);
+            let size = (1.0 + next(2000.0), 1.0 + next(2000.0));
+            if let Some(r) = picture_rect(b, zoom, size) {
+                assert!(r.x >= 0.0 && r.y >= 0.0 && r.w > 0.0 && r.h > 0.0, "{r:?}");
+                assert!(
+                    r.x + r.w <= size.0 + 1e-9 && r.y + r.h <= size.1 + 1e-9,
+                    "{r:?} in {size:?}"
+                );
+                // It holds the element's part that shows.
+                assert!(r.x <= (b.x * zoom).max(0.0) + 1e-9 && r.y <= (b.y * zoom).max(0.0) + 1e-9);
+            }
+        }
+        assert_eq!(
+            picture_rect(
+                Bounds {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 10.0,
+                    h: 10.0
+                },
+                0.0,
+                (100.0, 100.0)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn pruning_a_missing_or_odd_folder_leaves_the_rest() {
+        let dir = std::env::temp_dir().join(format!("gitviber-picks-odd-{}", std::process::id()));
+        prune(&dir, SystemTime::now());
+        std::fs::create_dir_all(dir.join("pick-dir.png")).unwrap();
+        let later = SystemTime::now() + KEEP * 2;
+        prune(&dir, later);
+        assert!(
+            dir.join("pick-dir.png").is_dir(),
+            "a folder named like a picture stays"
+        );
+        assert_eq!(folder(&dir), dir.join("browser-picks"));
+        let at = SystemTime::UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
+        assert_eq!(picture_path(&dir, at), dir.join("pick-1700000000123.png"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
