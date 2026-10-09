@@ -58,7 +58,7 @@ export function DeviceFrame({ device, rotated, fitted, page, resize, children }:
             <div className="rounded-full bg-black" style={{ width: screen.w * 0.35, height: Math.max(1, 5 * scale) }} />
           </div>
         )}
-        <div ref={page} tabIndex={-1} className="absolute overflow-hidden bg-background outline-none" style={inScreen(fitted.page)}>
+        <div ref={page} tabIndex={-1} className="absolute overflow-hidden bg-white outline-none" style={inScreen(fitted.page)}>
           {children}
         </div>
       </div>
