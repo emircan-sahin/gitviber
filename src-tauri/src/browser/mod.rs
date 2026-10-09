@@ -33,7 +33,9 @@ pub use other::{
     set_agent, snapshot, zoom,
 };
 
-pub use registry::{Parked, Registry};
+#[cfg(target_os = "macos")]
+pub use registry::Parked;
+pub use registry::Registry;
 use serde::{Deserialize, Serialize};
 use tauri::Url;
 
