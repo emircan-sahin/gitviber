@@ -30,8 +30,9 @@ import { folderName } from "@/lib/path";
 import { NameInput } from "@/components/NameInput";
 import { StatusDot } from "@/components/StatusDot";
 import { lookLabel, paneLook } from "@/lib/terminal/agentLook";
-import { portUrl, scanPorts, usePorts } from "@/lib/browser/ports";
-import { askOpenPage } from "@/lib/browser/store";
+import { portUrl } from "@/lib/browser/url";
+import { askOpenPage } from "@/lib/browser/pageRequest";
+import { usePortsOnOpen } from "@/features/browser/PortsMenu";
 
 /** A split's structure without its sizes: what a tab re-lays out on (a split or close), not a drag. */
 export const shape = (l: Layout): string => (typeof l === "number" ? String(l) : `${l.dir}(${l.children.map(shape).join()})`);
@@ -110,8 +111,10 @@ function PaneView({ id, dim, header }: { id: number; dim: number; header?: { pan
   // Read as the menu opens: the selection and the last command change under it.
   const [can, setCan] = useState(() => paneMenuState(id));
   // What the pane's programs serve (a dev server): read again as the menu opens.
-  const pty = panePty(id);
-  const ports = usePorts(pty === null ? [] : [pty]);
+  const { ports, read: readPorts } = usePortsOnOpen(() => {
+    const pty = panePty(id);
+    return pty === null ? [] : [pty];
+  });
   return (
     <div className="flex h-full flex-col">
       {header && <PaneHeader pane={header.pane} focused={header.focused} />}
@@ -119,7 +122,7 @@ function PaneView({ id, dim, header }: { id: number; dim: number; header?: { pan
         onOpenChange={(open) => {
           if (!open) return;
           setCan(paneMenuState(id));
-          if (pty !== null) void scanPorts([pty]);
+          readPorts();
         }}
       >
         <ContextMenuTrigger asChild>

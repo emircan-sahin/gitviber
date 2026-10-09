@@ -38,7 +38,6 @@ export function AddressBar({ url, state, page, root, field }: Props) {
   const backKey = useShortcut("browser.back");
   const forwardKey = useShortcut("browser.forward");
   const reloadKey = useShortcut("browser.reload");
-  const go = page.go;
   const toPage = () => {
     setTyped(null);
     // A page that never loaded is hidden under its message: the keys stay here.
@@ -61,24 +60,24 @@ export function AddressBar({ url, state, page, root, field }: Props) {
   return (
     <form onSubmit={submit} className="relative flex h-9 shrink-0 items-center gap-0.5 border-b border-border px-1.5">
       <DisabledTip label="Back" shortcut={backKey} disabled={!state?.canBack}>
-        <Button type="button" variant="ghost" size="icon-sm" disabled={!state?.canBack} onClick={() => go("back")}>
+        <Button type="button" variant="ghost" size="icon-sm" disabled={!state?.canBack} onClick={() => page.go("back")}>
           <ArrowLeft />
         </Button>
       </DisabledTip>
       <DisabledTip label="Forward" shortcut={forwardKey} disabled={!state?.canForward}>
-        <Button type="button" variant="ghost" size="icon-sm" disabled={!state?.canForward} onClick={() => go("forward")}>
+        <Button type="button" variant="ghost" size="icon-sm" disabled={!state?.canForward} onClick={() => page.go("forward")}>
           <ArrowRight />
         </Button>
       </DisabledTip>
       {state?.loading ? (
         <Tip label="Stop">
-          <Button type="button" variant="ghost" size="icon-sm" onClick={() => go("stop")}>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={() => page.go("stop")}>
             <X />
           </Button>
         </Tip>
       ) : (
         <Tip label="Reload" shortcut={reloadKey}>
-          <Button type="button" variant="ghost" size="icon-sm" onClick={(e) => go(e.shiftKey ? "hardReload" : "reload")}>
+          <Button type="button" variant="ghost" size="icon-sm" onClick={(e) => page.go(e.shiftKey ? "hardReload" : "reload")}>
             <RotateCw />
           </Button>
         </Tip>

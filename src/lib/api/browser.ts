@@ -14,6 +14,8 @@ export interface BrowserState {
   insecure: boolean;
   /** A page that never loaded (no server on that port, say), shown in its place. */
   failed: { url: string; message: string } | null;
+  /** It has loaded something since its view was made: a parked page's picture can go. */
+  committed: boolean;
 }
 
 export type BrowserGo = "back" | "forward" | "reload" | "hardReload" | "stop";

@@ -12,9 +12,11 @@ export function BrowserSection() {
   const s = useSettings();
   if (IS_LINUX) {
     return (
-      <div className="py-3.5 text-[11.5px] leading-relaxed text-muted-foreground">
-        On Linux a browser tab shows pages on this machine only (localhost and 127.0.0.1), in a frame of the app's own page. The settings here are for macOS, where each tab has a browser of its own.
-      </div>
+      <Group>
+        <div className="py-3.5 text-[11.5px] leading-relaxed text-muted-foreground">
+          On Linux a browser tab opens localhost and 127.0.0.1 only, in a frame of the app's own page, with nothing of its own to keep or clear. The settings here are for macOS, where each tab has a browser of its own.
+        </div>
+      </Group>
     );
   }
   return (

@@ -1,8 +1,9 @@
 // What this page draws over a browser tab's page. The page is a native view above this one, so
 // a menu, a dialog or a toast there would show under it: while one does, the page steps aside.
 
+const POPPER = "[data-radix-popper-content-wrapper]";
 /** Radix menus, popovers and tooltips; dialogs; and the rest that mark themselves (Toaster, ShortcutOverlay). */
-const OVERLAYS = "[data-radix-popper-content-wrapper],[data-modal],[role=dialog],[data-overlay]";
+const OVERLAYS = `${POPPER},[data-modal],[role=dialog],[data-overlay]`;
 /** A dialog (⌘P, a confirm) owns the keys and the eye wherever it sits. */
 const ALWAYS = "[data-modal],[role=dialog]";
 
@@ -27,33 +28,32 @@ export function overlaysChanged() {
 
 const isOverlay = (n: Node) => n instanceof Element && (n.matches(OVERLAYS) || !!n.querySelector(OVERLAYS));
 
-const POPPER = "[data-radix-popper-content-wrapper]";
 
-/** Calls `changed` as overlays come and go; watched only while someone listens. */
-export function watchOverlays(changed: () => void) {
-  listeners.add(changed);
+/** Calls `onChange` as overlays come and go; watched only while someone listens. */
+export function watchOverlays(onChange: () => void) {
+  listeners.add(onChange);
   // Portals (Radix's menus and dialogs) mount as the body's children: only those are watched.
   // A popper mounts off-screen and moves into place by its style a frame or two later, so its
   // style is watched too, and it's measured again the next frame.
   observer ??= new MutationObserver((records) => {
-    let moved = false;
+    let changed = false;
     for (const r of records) {
-      if (r.type === "attributes") moved = true;
+      if (r.type === "attributes") changed = true;
       for (const n of r.addedNodes) {
         if (!isOverlay(n)) continue;
-        moved = true;
+        changed = true;
         const poppers = n instanceof Element ? [...(n.matches(POPPER) ? [n] : []), ...n.querySelectorAll(POPPER)] : [];
         for (const p of poppers) observer?.observe(p, { attributes: true, attributeFilter: ["style"] });
       }
-      if ([...r.removedNodes].some(isOverlay)) moved = true;
+      if ([...r.removedNodes].some(isOverlay)) changed = true;
     }
-    if (!moved) return;
+    if (!changed) return;
     overlaysChanged();
     requestAnimationFrame(overlaysChanged);
   });
   observer.observe(document.body, { childList: true });
   return () => {
-    listeners.delete(changed);
+    listeners.delete(onChange);
     if (listeners.size) return;
     observer?.disconnect();
     observer = null;

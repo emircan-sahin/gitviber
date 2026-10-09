@@ -34,11 +34,6 @@ listenHere<{ id: string }>("browser-parked", ({ payload: { id } }) => {
 /** How many times tab `id`'s view has parked: a new view is due each time. */
 export const useParks = (id: string) => parks.use().get(id) ?? 0;
 
-/** A page to open in a browser tab, from somewhere that doesn't hold the tabs (a terminal's menu). New per ask. */
-const asked = createStore<{ id: number; url: string } | null>(null);
-let asks = 0;
-export const askOpenPage = (url: string) => asked.set({ id: ++asks, url });
-export const usePageAsk = asked.use;
 
 // Settings → Browser: how many pages out of sight stay alive, and for how long.
 let sentPolicy = "";
@@ -53,8 +48,18 @@ subscribeSettings(sendPolicy);
 sendPolicy();
 
 // An agent done with its turn: its worktree's pages show what it changed (Settings → Browser).
+// Agents in one worktree often finish together: one reload for them.
+const finishing = new Map<string, ReturnType<typeof setTimeout>>();
 onAgentFinished((dir) => {
-  if (getSettings().browserReloadOnAgentDone) void browserApi.agentDone(dir).catch(() => {});
+  if (!getSettings().browserReloadOnAgentDone) return;
+  clearTimeout(finishing.get(dir));
+  finishing.set(
+    dir,
+    setTimeout(() => {
+      finishing.delete(dir);
+      void browserApi.agentDone(dir).catch(() => {});
+    }, 1000),
+  );
 });
 
 // Only the chords bound to the app's commands, and the tab's own (⌘L, ⌘R), leave a page

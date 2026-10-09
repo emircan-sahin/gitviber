@@ -18,14 +18,14 @@ import { codeWantsFocus, focusedPanel, focusList, focusPanel, type Panel, PANELS
 import { usePanelSizes } from "@/lib/ui/usePanelSizes";
 import { BLANK } from "@/lib/browser/url";
 import { clearBrowsingData } from "@/lib/browser/clearData";
-import { usePageAsk } from "@/lib/browser/store";
+import { usePageAsk } from "@/lib/browser/pageRequest";
 import { loadWorkspace, saveWorkspace } from "@/lib/repo/session";
 import { DEFAULT_FONT_SIZE, updateSettings, useSettings } from "@/lib/settings";
 import { goGroup, stepGroup, unmaximize, useTerminalsMaximized, useTerminalsOpen, useTerminalTabCount } from "@/lib/terminal/terminals";
 import { useRepo } from "@/lib/repo/useRepo";
 import { type OpenedRepo, vaultApi } from "@/lib/api";
 import { failed } from "@/lib/app/toast";
-import { REVEAL_FAILED } from "@/lib/platform";
+import { IS_LINUX, REVEAL_FAILED } from "@/lib/platform";
 import { reviewBase, shortRef } from "@/lib/git/refs";
 import { cn } from "@/lib/utils";
 import { revealPath } from "@/lib/app/openIn";
@@ -330,7 +330,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "git.compareBranches": () => openCompare(),
     // A new tab each time, as a browser's ⌘T: its page is its own.
     "browser.open": () => openPage(BLANK),
-    "browser.clearData": () => void clearBrowsingData(),
+    // Linux tabs are frames of this page's: no data of their own to clear.
+    "browser.clearData": IS_LINUX ? undefined : () => void clearBrowsingData(),
     "review.openAllCommit": ofCommit ? () => openAll({ kind: "changes", list: "commit", commit: ofCommit.commit, url: ofCommit.url }) : undefined,
     "review.openAllComparison": ofRange ? () => openAll({ kind: "changes", list: "range", range: ofRange }) : undefined,
     "review.nextFile": () => step(1),

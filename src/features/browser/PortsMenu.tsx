@@ -1,15 +1,30 @@
 import { Network } from "lucide-react";
+import { useState } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tip } from "@/components/ui/tooltip";
-import { portUrl, scanPorts, usePorts } from "@/lib/browser/ports";
+import { browserApi, type ListeningPort } from "@/lib/api";
+import { portUrl } from "@/lib/browser/url";
 import { ptysIn } from "@/lib/terminal/terminals";
 
-/** What this worktree's terminals serve (a dev server's port), read again as the menu opens; picking one opens it here. */
+/** What a terminal session serves, read as a menu opens; the list on show stays while nothing changed. */
+export function usePortsOnOpen(ptys: () => number[]) {
+  const [ports, setPorts] = useState<ListeningPort[]>([]);
+  const read = () => {
+    const sessions = ptys();
+    if (!sessions.length) return setPorts([]);
+    void browserApi
+      .ports(sessions)
+      .then((next) => setPorts((was) => (JSON.stringify(was) === JSON.stringify(next) ? was : next)))
+      .catch(() => {});
+  };
+  return { ports, read };
+}
+
+/** What this worktree's terminals serve (a dev server's port); picking one opens it here. */
 export function PortsMenu({ root, onOpen }: { root: string; onOpen: (url: string) => void }) {
-  const ptys = ptysIn(root);
-  const ports = usePorts(ptys);
+  const { ports, read } = usePortsOnOpen(() => ptysIn(root));
   return (
-    <DropdownMenu onOpenChange={(open) => open && void scanPorts(ptysIn(root))}>
+    <DropdownMenu onOpenChange={(open) => open && read()}>
       <Tip label="Ports the terminals serve">
         <DropdownMenuTrigger asChild>
           <button

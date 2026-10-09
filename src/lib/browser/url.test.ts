@@ -162,13 +162,13 @@ test("no user name in an address, no port 0, and 127.x shorthand is this machine
   assert.equal(normalizeUrl("127.0.1"), "http://127.0.0.1/");
 });
 
-test("a frame on Linux holds only this machine's http pages, as the app's CSP allows", () => {
-  for (const url of ["http://localhost:5173/", "http://127.0.0.1:3000/a"]) assert.equal(isFrameable(url), true, url);
-  for (const url of ["https://localhost:5173/", "http://[::1]:3000/", "http://app.localhost/", "http://example.com/", BLANK, "nonsense"]) assert.equal(isFrameable(url), false, url);
+test("a frame on Linux holds only localhost and 127.0.0.1, as the app's CSP allows", () => {
+  for (const url of ["http://localhost:5173/", "http://127.0.0.1:3000/a", "https://localhost:5173/", "https://127.0.0.1:8443/"]) assert.equal(isFrameable(url), true, url);
+  for (const url of ["http://[::1]:3000/", "http://app.localhost/", "http://example.com/", BLANK, "nonsense"]) assert.equal(isFrameable(url), false, url);
 });
 
 test("a Linux frame takes what the CSP's frame-src lets in, however the address is spelled", () => {
-  // frame-src http://localhost:* http://127.0.0.1:*: any port, the default one too.
+  // frame-src http(s)://localhost:* http(s)://127.0.0.1:*: any port, the default one too.
   for (const url of ["http://localhost/", "http://LOCALHOST:3000/a?b#c", "http://127.0.0.1/", "http://127.1:8080/", "http://0x7f.0.0.1:5173/"]) {
     assert.equal(isFrameable(url), true, url);
   }

@@ -41,7 +41,7 @@ function apply(p: Pane, read: PaneAgent | null, live = false) {
     if (agent.name !== i.agent?.name || agent.state !== i.agent.state) since.set(p.id, Date.now());
   }
   if (agent !== i.agent) update(p.id, (x) => ({ ...x, agent }));
-  if (i.agent?.state === "working" && agent?.state === "idle") for (const l of finishes) l(p.dir);
+  if (note && agent?.state === "idle") for (const l of finishes) l(p.dir);
   // Woken (its background shell exited) before its finish was seen: that news is old, and its
   // next finish must be told again.
   if (live && agent?.state === "working" && i.agent?.state !== "working") lookedAt(p.id);

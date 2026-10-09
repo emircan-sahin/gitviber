@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { browserApi, type BrowserGo, errorMessage, github } from "@/lib/api";
-import { failed as failedTo, toast } from "@/lib/app/toast";
+import { failed, toast } from "@/lib/app/toast";
 import { onBrowserKey, setBrowserState, useBrowserState, useParks } from "@/lib/browser/store";
 import { BLANK, isFrameable, pageLabel } from "@/lib/browser/url";
 import { commandIn, useCommands } from "@/lib/commands/keybindings";
@@ -65,7 +65,8 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
     };
   }, [id, parks]);
 
-  const loaded = !!state && (!state.loading || !!state.failed);
+  // Its first load has committed (or failed): the page paints from here.
+  const loaded = !!state && (state.committed || !!state.failed);
   useEffect(() => {
     if (restoring && loaded) setRestoring(null);
   }, [restoring, loaded]);
@@ -85,7 +86,7 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
     void browserApi
       .inspect(id)
       .then((shown) => shown || toast("info", "Web Inspector", "Right-click the page and choose Inspect Element."))
-      .catch(failedTo("Could not open Web Inspector"));
+      .catch(failed("Could not open Web Inspector"));
   useCommands({ "browser.inspect": made ? inspect : undefined });
 
   /** One of the tab's own keys, run; false for any other key. */
@@ -94,8 +95,8 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
     if (!command) return false;
     if (command === "browser.inspect") inspect();
     else if (command !== "browser.focusAddress") void browserApi.go(id, GO[command]).catch(() => {});
-    // Keys come back to this page first, or they'd still go to the page's view.
-    else
+    else {
+      // Keys come back to this page first, or they'd still go to the page's view.
       void browserApi
         .focus(id, false)
         .catch(() => {})
@@ -103,17 +104,18 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
           field.current?.focus();
           field.current?.select();
         });
+    }
     return true;
   };
   // runOwn reads only the id and refs.
   useEffect(() => onBrowserKey(id, runOwn), [id]);
 
   const page: PageControl = {
-    navigate: (next) => void browserApi.navigate(id, next).catch(failedTo("Could not open the page")),
-    go: (to) => void browserApi.go(id, to).catch(failedTo("The page didn't respond")),
+    navigate: (next) => void browserApi.navigate(id, next).catch(failed("Could not open the page")),
+    go: (to) => void browserApi.go(id, to).catch(failed("The page didn't respond")),
     focus: () => void browserApi.focus(id, true).catch(() => {}),
   };
-  const failed = state?.failed;
+  const notLoaded = state?.failed;
   const picture = restoring ?? cover;
   return (
     <div
@@ -130,8 +132,8 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
       <div ref={area} tabIndex={-1} className="relative min-h-0 flex-1 bg-background outline-none">
         {error ? (
           <Placeholder title="The browser can't open here" detail={error} />
-        ) : failed ? (
-          <Placeholder title={`Can't open ${pageLabel(failed.url)}`} detail={failed.message} action={{ label: "Try Again", run: () => page.navigate(failed.url) }} />
+        ) : notLoaded ? (
+          <Placeholder title={`Can't open ${pageLabel(notLoaded.url)}`} detail={notLoaded.message} action={{ label: "Try Again", run: () => page.navigate(notLoaded.url) }} />
         ) : (
           picture && <img src={picture} alt="" className="absolute inset-0 size-full object-cover select-none" />
         )}
@@ -141,9 +143,9 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
 }
 
 /**
- * Linux: the page in a frame of this page's, for this machine's pages only (the CSP's frame-src).
- * A frame's page can't be followed from here: no back or forward, and its links don't show in
- * the address bar.
+ * Linux: the page in a frame of this page's, for http(s) on localhost and 127.0.0.1 only (the
+ * CSP's frame-src). A frame's page can't be followed from here: no back or forward, and its links
+ * don't show in the address bar. Sandboxed: it can't navigate this page away.
  */
 function FramePage({ tabKey, sel, root, onUpdate }: Props) {
   const [url, setUrl] = useState(sel.url);
@@ -169,12 +171,19 @@ function FramePage({ tabKey, sel, root, onUpdate }: Props) {
       <AddressBar url={url} state={null} page={page} root={root} field={field} />
       <div className="relative min-h-0 flex-1 bg-background">
         {url === BLANK ? null : isFrameable(url) ? (
-          <iframe key={loads} ref={frame} src={url} title={pageLabel(url)} className="size-full border-0 bg-white" />
+          <iframe
+            key={loads}
+            ref={frame}
+            src={url}
+            title={pageLabel(url)}
+            sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads"
+            className="size-full border-0 bg-white"
+          />
         ) : (
           <Placeholder
-            title="On Linux, a browser tab shows pages on this machine only"
+            title="On Linux, a browser tab opens localhost and 127.0.0.1 only"
             detail={url}
-            action={{ label: "Open in Browser", run: () => void github.openUrl(url).catch(failedTo("Could not open the link")) }}
+            action={{ label: "Open in Browser", run: () => void github.openUrl(url).catch(failed("Could not open the link")) }}
           />
         )}
       </div>

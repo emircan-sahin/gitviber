@@ -60,12 +60,15 @@ export function pageHost(url: string): string {
   }
 }
 
-/** On Linux a tab frames only pages on this machine over http: what the app's CSP (frame-src) lets in. */
+/** On Linux a tab frames only localhost and 127.0.0.1: what the app's CSP (frame-src) lets in. */
 export function isFrameable(url: string): boolean {
   try {
     const u = new URL(url);
-    return u.protocol === "http:" && (u.hostname === "localhost" || u.hostname === "127.0.0.1");
+    return (u.protocol === "http:" || u.protocol === "https:") && (u.hostname === "localhost" || u.hostname === "127.0.0.1");
   } catch {
     return false;
   }
 }
+
+/** A port's page on this machine. */
+export const portUrl = (port: number) => `http://localhost:${port}/`;
