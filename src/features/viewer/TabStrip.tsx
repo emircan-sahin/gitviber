@@ -1,4 +1,4 @@
-import { ExternalLink, Files, GitCompareArrows, Globe, History, ListTree, RotateCw, Sparkles, X } from "lucide-react";
+import { Bot, ExternalLink, Files, GitCompareArrows, Globe, History, ListTree, RotateCw, Sparkles, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { compareLabel, editPath, onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
@@ -17,6 +17,7 @@ import { browserApi, github } from "@/lib/api";
 import { failed } from "@/lib/app/toast";
 import { pageHost, pageLabel } from "@/lib/browser/url";
 import { useBrowserState } from "@/lib/browser/store";
+import { agentTabTitle } from "@/lib/browser/agentTabs";
 import { type Tab, type TabGroup, tabGroup } from "./tabs";
 
 interface Props {
@@ -164,7 +165,7 @@ function TabItem({
       }}
       role="tab"
       aria-selected={isActive}
-      title={selectionPath(t.sel)}
+      title={t.sel.kind === "browser" && t.sel.agent ? agentTabTitle(t.sel.agent.pty, selectionPath(t.sel)) : selectionPath(t.sel)}
       tabIndex={tabStop ? 0 : -1}
       onClick={guard(() => onActivate(t.key))}
       onDoubleClick={() => onPin(t.key)}
@@ -188,7 +189,11 @@ function TabItem({
       ) : t.sel.kind === "guide" ? (
         <Sparkles className="size-4 shrink-0 text-subtle" />
       ) : t.sel.kind === "browser" ? (
-        <Globe className="size-4 shrink-0 text-subtle" />
+        t.sel.agent ? (
+          <Bot className="size-4 shrink-0 text-subtle" aria-label="Opened by an agent" />
+        ) : (
+          <Globe className="size-4 shrink-0 text-subtle" />
+        )
       ) : (
         <FileIcon path={selectionPath(t.sel)} />
       )}

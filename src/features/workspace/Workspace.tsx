@@ -61,6 +61,7 @@ import { openEdits } from "@/lib/editor/edits";
 import { openNotes, useNoteCheck } from "@/lib/review/noteStore";
 import { copyNotes, pendingNotes, sendNotes } from "@/features/review/ReviewNotes";
 import { openGuide } from "@/features/review/guides";
+import { useAgentTabs } from "@/lib/browser/agentTabs";
 
 const LIST_TABS = ["changes", "history", "pulls", "issues"] as const;
 type ListTab = (typeof LIST_TABS)[number];
@@ -145,7 +146,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // the tabs are, below: a change there renders this again before anything is drawn.
   const [branchOnShow, setBranchOnShow] = useState(false);
   const branchReview = useBranchReview(review, repo.revision, reviewing || branchOnShow);
-  const { tabs, activeKey, setActiveKey, open: openTab, update, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
+  const { tabs, activeKey, setActiveKey, open: openTab, add, update, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
+  useAgentTabs(root, tabs, add, update);
   const branchTab = activeKey === selectionKey({ kind: "changes", list: "branch" });
   if (branchTab !== branchOnShow) setBranchOnShow(branchTab);
   // A file opened while the terminal covers the code view (⌘P, a path clicked in the terminal) comes into view.

@@ -31,6 +31,12 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     });
   }, []);
 
+  /** A tab at the end, the active one left as it is: one an agent opened (agentTabs.ts). */
+  const add = useCallback((sel: Selection) => {
+    const key = selectionKey(sel);
+    setTabState(({ tabs: prev, active }) => (prev.some((t) => t.key === key) ? { tabs: prev, active } : { tabs: [...prev, { key, sel, preview: false }], active }));
+  }, []);
+
   // Closed tabs, the latest last, where they were: ⇧⌘T brings them back as browsers do.
   const [closed, setClosed] = useState<{ sel: Selection; index: number }[]>([]);
   const tabsNow = useRef(tabs);
@@ -188,5 +194,5 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     });
   }, [gitHubVersion]);
 
-  return { tabs, activeKey, setActiveKey, open, update, closeTabs, close, closeAround, reopen, canReopen: closed.length > 0, moveTab, goTab, stepTab, pin, onPathMoved };
+  return { tabs, activeKey, setActiveKey, open, add, update, closeTabs, close, closeAround, reopen, canReopen: closed.length > 0, moveTab, goTab, stepTab, pin, onPathMoved };
 }

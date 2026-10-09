@@ -53,8 +53,9 @@ export type Selection =
   | { kind: "guide"; of: "pull"; pull: Pull; target: Target }
   // A web page (features/browser): `id` names the tab's native view, whatever it loads; no `file`,
   // so nothing takes it for a repo file. `title` is the page's last, for a tab not loaded yet;
-  // `device`, the one it shows its page as (device mode).
-  | { kind: "browser"; id: string; url: string; title?: string; device?: DeviceChoice };
+  // `device`, the one it shows its page as (device mode); `agent`, the terminal (pty) whose agent
+  // opened it with `gitviber browser`.
+  | { kind: "browser"; id: string; url: string; title?: string; device?: DeviceChoice; agent?: { pty: number } };
 
 export type GuideSelection = Extract<Selection, { kind: "guide" }>;
 
