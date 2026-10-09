@@ -53,7 +53,8 @@ export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
   const loudest = mostUrgent(list.map((e) => lookOf(e.state, e.unseen)));
   const now = Date.now();
   const tabs = byTab(list);
-  // One agent in one tab says where on its own row.
+  // Headers say where once for a tab's agents, in place of each row's own line. One agent alone
+  // keeps its line instead; several in one tab get a header too, which their rows' numbers go with.
   const headed = tabs.length > 1 || tabs[0].length > 1;
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
@@ -107,7 +108,7 @@ export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
                         {/* Its pane's number, as the pane's header and the tab's dots count them. */}
                         {e.of > 1 && (
                           <span className="shrink-0 font-mono text-[10px] tabular-nums opacity-70">
-                            {e.at}/{e.of}
+                            {e.at} / {e.of}
                           </span>
                         )}
                         {e.paneName && <span className="min-w-0 truncate text-[10.5px] opacity-70">{e.paneName}</span>}
