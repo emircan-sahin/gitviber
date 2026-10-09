@@ -142,19 +142,96 @@ fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
     (argv.len() == argc).then_some(argv)
 }
 
+/// sys/proc_info.h's proc_listpids kinds; libc doesn't name them.
+#[cfg(target_os = "macos")]
+const PROC_PGRP_ONLY: u32 = 2;
+#[cfg(target_os = "macos")]
+const PROC_PPID_ONLY: u32 = 6;
+
+/// The pids proc_listpids gives for `kind` and its argument, all of them: the buffer grows
+/// while a reply fills it.
+#[cfg(target_os = "macos")]
+fn listpids(kind: u32, arg: u32) -> Vec<u32> {
+    let mut len = 64;
+    loop {
+        let mut pids = vec![0 as libc::c_int; len];
+        let size = libc::c_int::try_from(std::mem::size_of_val(pids.as_slice())).unwrap_or(0);
+        // SAFETY: the buffer holds `size` bytes, which is all the kernel writes.
+        let got = unsafe { libc::proc_listpids(kind, arg, pids.as_mut_ptr().cast(), size) };
+        let n = usize::try_from(got).unwrap_or(0) / std::mem::size_of::<libc::c_int>();
+        if n < len || len >= 1 << 16 {
+            return pids[..n.min(len)]
+                .iter()
+                .filter_map(|&p| u32::try_from(p).ok().filter(|&p| p > 0))
+                .collect();
+        }
+        len *= 4;
+    }
+}
+
 /// The processes in a process group: what a launcher (npx) started under it.
 #[cfg(target_os = "macos")]
 pub fn job(pgid: u32) -> Vec<u32> {
-    /// sys/proc_info.h; libc doesn't name it.
-    const PROC_PGRP_ONLY: u32 = 2;
-    let mut pids = vec![0 as libc::c_int; 64];
-    let size = std::mem::size_of_val(pids.as_slice()) as libc::c_int;
-    let got = unsafe { libc::proc_listpids(PROC_PGRP_ONLY, pgid, pids.as_mut_ptr().cast(), size) };
-    let n = usize::try_from(got).unwrap_or(0) / std::mem::size_of::<libc::c_int>();
-    pids[..n.min(pids.len())]
-        .iter()
-        .filter_map(|&p| u32::try_from(p).ok().filter(|&p| p > 0))
-        .collect()
+    listpids(PROC_PGRP_ONLY, pgid)
+}
+
+/// `roots` and every process under them, down the tree: what a terminal's shell runs.
+pub fn tree(roots: &[u32]) -> Vec<u32> {
+    let children = children();
+    let mut all: Vec<u32> = roots.to_vec();
+    let mut at = 0;
+    while let Some(&pid) = all.get(at) {
+        for child in children(pid) {
+            if !all.contains(&child) {
+                all.push(child);
+            }
+        }
+        at += 1;
+    }
+    all
+}
+
+/// A process's children, asked of the kernel a parent at a time.
+#[cfg(target_os = "macos")]
+fn children() -> impl Fn(u32) -> Vec<u32> {
+    |ppid| listpids(PROC_PPID_ONLY, ppid)
+}
+
+/// Every process's children, from one read of /proc.
+#[cfg(target_os = "linux")]
+fn children() -> impl Fn(u32) -> Vec<u32> {
+    let mut by_parent: std::collections::HashMap<u32, Vec<u32>> = Default::default();
+    for (pid, stat) in stats() {
+        if let Some(ppid) = stat_field(&stat, 4).and_then(|f| f.parse().ok()) {
+            by_parent.entry(ppid).or_default().push(pid);
+        }
+    }
+    move |pid| by_parent.get(&pid).cloned().unwrap_or_default()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn children() -> impl Fn(u32) -> Vec<u32> {
+    |_| Vec::new()
+}
+
+/// Field `n` of a /proc/<pid>/stat line, counted as proc(5) counts them (3 is the state, 4 the
+/// parent): read past the command's ")", which may hold spaces and parentheses itself.
+#[cfg(any(target_os = "linux", test))]
+fn stat_field(stat: &str, n: usize) -> Option<&str> {
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(n.checked_sub(3)?)
+}
+
+/// Every process's pid and stat line.
+#[cfg(target_os = "linux")]
+fn stats() -> impl Iterator<Item = (u32, String)> {
+    let dir = std::fs::read_dir("/proc").into_iter().flatten().flatten();
+    dir.filter_map(|e| {
+        let pid = e.file_name().to_str()?.parse::<u32>().ok()?;
+        Some((pid, std::fs::read_to_string(e.path().join("stat")).ok()?))
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -184,13 +261,7 @@ pub fn process(pid: u32) -> Option<Process> {
 #[cfg(target_os = "linux")]
 pub fn started(pid: u32) -> Option<u64> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let ticks: u64 = stat
-        .rsplit_once(')')?
-        .1
-        .split_whitespace()
-        .nth(19)?
-        .parse()
-        .ok()?;
+    let ticks: u64 = stat_field(&stat, 22)?.parse().ok()?;
     let boot: u64 = std::fs::read_to_string("/proc/stat")
         .ok()?
         .lines()
@@ -204,17 +275,9 @@ pub fn started(pid: u32) -> Option<u64> {
 
 #[cfg(target_os = "linux")]
 pub fn job(pgid: u32) -> Vec<u32> {
-    let Ok(dir) = std::fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    dir.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
-        .filter(|pid| {
-            std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
-                s.rsplit_once(')')
-                    .and_then(|(_, rest)| rest.split_whitespace().nth(2)?.parse().ok())
-                    == Some(pgid)
-            })
-        })
+    stats()
+        .filter(|(_, stat)| stat_field(stat, 5).and_then(|f| f.parse().ok()) == Some(pgid))
+        .map(|(pid, _)| pid)
         .collect()
 }
 
@@ -236,6 +299,29 @@ pub fn job(_pgid: u32) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stat_fields_count_past_the_command_whatever_it_holds() {
+        assert_eq!(stat_field("41 (node) S 40 41 40 0", 4), Some("40"));
+        assert_eq!(stat_field("42 (my (odd) name) R 7 42", 4), Some("7"));
+        assert_eq!(stat_field("42 (a) R 7 42", 3), Some("R"));
+        assert_eq!(stat_field("42 (a) R 7 42", 2), None);
+        assert_eq!(stat_field("garbage", 4), None);
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_process_tree_holds_its_children() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let tree = tree(&[std::process::id()]);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert_eq!(tree.first(), Some(&std::process::id()));
+        assert!(tree.contains(&child.id()), "{tree:?}");
+    }
 
     fn procargs(argc: i32, rest: &[u8]) -> Vec<u8> {
         [&argc.to_ne_bytes()[..], rest].concat()

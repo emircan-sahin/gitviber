@@ -1,7 +1,7 @@
 //! The ports the programs in a terminal listen on (a dev server started in a pane), for the
 //! browser's ports menu. Read from the kernel, as procinfo.rs reads processes: the shell's
-//! process tree, then each process's listening TCP sockets. No lsof, and nothing polls: the page
-//! asks when its menu opens and a little after a pane starts a command.
+//! process tree (procinfo::tree), then each process's listening TCP sockets. No lsof, and
+//! nothing polls: a menu asks as it opens.
 
 use serde::Serialize;
 use std::net::{Ipv4Addr, Ipv6Addr};
@@ -18,7 +18,7 @@ pub struct Port {
 
 /// What the process trees under `shells` listen on: one entry a port, the lowest first.
 pub fn listening(shells: &[u32]) -> Vec<Port> {
-    let mut ports: Vec<Port> = sockets(&tree(shells))
+    let mut ports: Vec<Port> = sockets(&crate::procinfo::tree(shells))
         .into_iter()
         .map(|(pid, port, loopback)| Port {
             port,
@@ -45,22 +45,6 @@ fn name(pid: u32) -> String {
     path.rsplit('/').next().unwrap_or_default().to_string()
 }
 
-/// The shells and every process under them.
-fn tree(shells: &[u32]) -> Vec<u32> {
-    let children = children();
-    let mut all: Vec<u32> = shells.to_vec();
-    let mut at = 0;
-    while let Some(&pid) = all.get(at) {
-        for child in children(pid) {
-            if !all.contains(&child) {
-                all.push(child);
-            }
-        }
-        at += 1;
-    }
-    all
-}
-
 fn loopback(v6: bool, address: [u8; 16]) -> bool {
     if v6 {
         Ipv6Addr::from(address).is_loopback()
@@ -74,31 +58,13 @@ fn loopback(v6: bool, address: [u8; 16]) -> bool {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use std::ffi::c_void;
     use std::mem::size_of;
 
     /// sys/proc_info.h's values, which libc doesn't name.
-    const PROC_PPID_ONLY: u32 = 6;
     const PROC_PIDFDSOCKETINFO: i32 = 3;
     const SOCKINFO_TCP: i32 = 2;
     const TSI_S_LISTEN: i32 = 1;
     const INI_IPV6: u8 = 2;
-
-    /// A process's children, asked of the kernel one parent at a time.
-    pub fn children() -> impl Fn(u32) -> Vec<u32> {
-        |ppid| {
-            let mut pids = vec![0 as libc::c_int; 256];
-            let size = i32::try_from(size_of::<libc::c_int>() * pids.len()).unwrap_or(0);
-            let got = unsafe {
-                libc::proc_listpids(PROC_PPID_ONLY, ppid, pids.as_mut_ptr().cast(), size)
-            };
-            let n = usize::try_from(got).unwrap_or(0) / size_of::<libc::c_int>();
-            pids[..n.min(pids.len())]
-                .iter()
-                .filter_map(|&p| u32::try_from(p).ok().filter(|&p| p > 0))
-                .collect()
-        }
-    }
 
     // sys/proc_info.h's socket_fdinfo, as far as a TCP socket's state and local address. The
     // kernel fills it whole or not at all: a reply of another size (a layout this mirror doesn't
@@ -208,19 +174,36 @@ mod platform {
 
     /// One socket's info, when the kernel gives all of it.
     fn socket(pid: i32, fd: i32) -> Option<SocketFdInfo> {
-        let mut info = std::mem::MaybeUninit::<SocketFdInfo>::zeroed();
+        // SAFETY: plain integers, for which all zeros is a value.
+        let mut info: SocketFdInfo = unsafe { std::mem::zeroed() };
         let size = i32::try_from(SOCKET_FDINFO_SIZE).ok()?;
+        // SAFETY: `info` holds `size` bytes, which is all the kernel writes.
         let got = unsafe {
-            libc::proc_pidfdinfo(
-                pid,
-                fd,
-                PROC_PIDFDSOCKETINFO,
-                info.as_mut_ptr().cast(),
-                size,
-            )
+            libc::proc_pidfdinfo(pid, fd, PROC_PIDFDSOCKETINFO, (&raw mut info).cast(), size)
         };
-        // SAFETY: zeroed, then filled whole when the reply is its size.
-        (got == size).then(|| unsafe { info.assume_init() })
+        (got == size).then_some(info)
+    }
+
+    /// A process's open files, however many: asked how many first, then read with room to spare.
+    fn files(pid: i32) -> Vec<libc::proc_fdinfo> {
+        let entry = size_of::<libc::proc_fdinfo>();
+        // SAFETY: a null buffer asks only for the size the list takes.
+        let needed =
+            unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, std::ptr::null_mut(), 0) };
+        // Files opened between the two calls: a few more than asked for.
+        let len = usize::try_from(needed).unwrap_or(0) / entry + 32;
+        let empty = libc::proc_fdinfo {
+            proc_fd: 0,
+            proc_fdtype: 0,
+        };
+        let mut fds = vec![empty; len];
+        let size = i32::try_from(entry * len).unwrap_or(0);
+        // SAFETY: the buffer holds `size` bytes, which is all the kernel writes.
+        let got = unsafe {
+            libc::proc_pidinfo(pid, libc::PROC_PIDLISTFDS, 0, fds.as_mut_ptr().cast(), size)
+        };
+        fds.truncate(usize::try_from(got).unwrap_or(0) / entry);
+        fds
     }
 
     /// Every (pid, port, loopback) the processes listen on.
@@ -230,25 +213,7 @@ mod platform {
             let Ok(cpid) = i32::try_from(pid) else {
                 continue;
             };
-            let mut fds = vec![
-                libc::proc_fdinfo {
-                    proc_fd: 0,
-                    proc_fdtype: 0
-                };
-                512
-            ];
-            let size = i32::try_from(size_of::<libc::proc_fdinfo>() * fds.len()).unwrap_or(0);
-            let got = unsafe {
-                libc::proc_pidinfo(
-                    cpid,
-                    libc::PROC_PIDLISTFDS,
-                    0,
-                    fds.as_mut_ptr() as *mut c_void,
-                    size,
-                )
-            };
-            let n = usize::try_from(got).unwrap_or(0) / size_of::<libc::proc_fdinfo>();
-            for fd in &fds[..n.min(fds.len())] {
+            for fd in files(cpid) {
                 if fd.proc_fdtype != libc::PROX_FDTYPE_SOCKET as u32 {
                     continue;
                 }
@@ -265,31 +230,6 @@ mod platform {
 #[cfg(target_os = "linux")]
 mod platform {
     use std::collections::HashMap;
-
-    /// Every process's parent, read once from /proc.
-    pub fn children() -> impl Fn(u32) -> Vec<u32> {
-        let mut by_parent: HashMap<u32, Vec<u32>> = HashMap::new();
-        for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
-            let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse().ok()) else {
-                continue;
-            };
-            let stat = std::fs::read_to_string(entry.path().join("stat")).unwrap_or_default();
-            if let Some(ppid) = parent(&stat) {
-                by_parent.entry(ppid).or_default().push(pid);
-            }
-        }
-        move |pid| by_parent.get(&pid).cloned().unwrap_or_default()
-    }
-
-    /// /proc/<pid>/stat's parent: the second field after the command's ")".
-    pub fn parent(stat: &str) -> Option<u32> {
-        stat.rsplit_once(')')?
-            .1
-            .split_whitespace()
-            .nth(1)?
-            .parse()
-            .ok()
-    }
 
     /// Every (pid, port, loopback) the processes listen on: their sockets' inodes, found in
     /// the kernel's TCP tables.
@@ -322,15 +262,12 @@ mod platform {
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 mod platform {
-    pub fn children() -> impl Fn(u32) -> Vec<u32> {
-        |_| Vec::new()
-    }
     pub fn sockets(_: &[u32]) -> Vec<(u32, u16, bool)> {
         Vec::new()
     }
 }
 
-use platform::{children, sockets};
+use platform::sockets;
 
 /// A listening socket in /proc/net/tcp{,6}.
 #[cfg(any(target_os = "linux", test))]
@@ -435,14 +372,6 @@ mod tests {
         assert!(parse_proc_net_tcp("", false).is_empty());
     }
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_stat_line_names_its_parent_past_the_command() {
-        assert_eq!(platform::parent("41 (node) S 40 41 40 0"), Some(40));
-        assert_eq!(platform::parent("42 (my (odd) name) R 7 42"), Some(7));
-        assert_eq!(platform::parent("garbage"), None);
-    }
-
     #[cfg(target_os = "macos")]
     #[test]
     fn only_a_listening_tcp_socket_gives_a_port() {
@@ -451,6 +380,7 @@ mod tests {
         let mut info: SocketFdInfo = unsafe { std::mem::zeroed() };
         assert_eq!(listening_port(&info), None, "not TCP");
         info.psi.kind = 2;
+        // SAFETY: the union's integers, zeroed, read as a TCP socket's.
         let mut tcp = unsafe { info.psi.proto.tcp };
         tcp.ini.lport = i32::from(5173u16.to_be());
         tcp.ini.vflag = 1;
@@ -463,6 +393,23 @@ mod tests {
         tcp.ini.laddr = [0; 16];
         info.psi.proto.tcp = tcp;
         assert_eq!(listening_port(&info), Some((5173, false)));
+    }
+
+    /// A dev server watching many files has hundreds open before its socket.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn finds_a_port_past_five_hundred_open_files() {
+        let files: Vec<std::fs::File> = (0..700)
+            .map(|_| std::fs::File::open("/dev/null").unwrap())
+            .collect();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let found = listening(&[std::process::id()]);
+        drop(files);
+        assert!(
+            found.iter().any(|p| p.port == port),
+            "{port} not in {found:?}"
+        );
     }
 
     /// The whole way through the kernel: this test's own listener, found under its own pid.
