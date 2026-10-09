@@ -20,15 +20,15 @@ pub mod server;
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    agent_awake, agent_device, agent_done, agent_js, agent_page, agent_picture, agent_tab,
-    clear_data, close, close_all, close_root, configure, console_clear, console_entries, create,
-    focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
+    agent_awake, agent_device, agent_dialogs, agent_done, agent_js, agent_page, agent_picture,
+    agent_tab, clear_data, close, close_all, close_root, configure, console_clear, console_entries,
+    create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
-    agent_awake, agent_device, agent_done, agent_js, agent_page, agent_picture, agent_tab,
-    clear_data, close, close_all, close_root, configure, console_clear, console_entries, create,
-    focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
+    agent_awake, agent_device, agent_dialogs, agent_done, agent_js, agent_page, agent_picture,
+    agent_tab, clear_data, close, close_all, close_root, configure, console_clear, console_entries,
+    create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
 };
 
 pub use registry::{Parked, Registry};
@@ -221,7 +221,10 @@ mod other {
     pub fn agent_tab(_: &AppHandle, _: u32, _: &str, _: Option<&str>) -> Res<(String, bool)> {
         Err(UNSUPPORTED.into())
     }
-    pub fn agent_awake(_: &str, _: bool) {}
+    pub fn agent_awake(_: &str, _: u64, _: bool) {}
+    pub fn agent_dialogs(_: &str, _: bool) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
     pub fn agent_js(
         _: &str,
         _: bool,

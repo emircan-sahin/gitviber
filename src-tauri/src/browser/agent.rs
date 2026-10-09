@@ -4,11 +4,13 @@
 use super::control::{self, AgentScreen, Command, Reply, Request, Scroll, Wait};
 use super::picks::{self, Bounds};
 use super::{Go, PageState};
-use crate::state::Res;
+use crate::state::{AppState, Res};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::path::Path;
-use std::sync::mpsc;
-use std::time::{Duration, Instant, SystemTime};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, LazyLock, Mutex, MutexGuard, PoisonError, TryLockError};
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 
 const AGENT: &str = include_str!("scripts/agent.js");
@@ -19,12 +21,10 @@ const SCRIPT: Duration = Duration::from_secs(30);
 /// How long a page gets to load after open, a click or a key before the reply goes anyway.
 const LOAD: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
-/// `wait --ms` at most: the CLI waits five minutes for any reply.
-const LONGEST_WAIT: Duration = Duration::from_secs(120);
 /// An eval's result, cut: an agent reads it.
 const EVAL_MAX: usize = 20_000;
-/// The result of the agent's script, as JSON however it came.
-const SERIALIZE: &str = "try { const s = JSON.stringify(value); return s === undefined ? String(value) : s; } catch { return String(value); }";
+/// What `eval`'s script gives: `=` and its value as JSON however it came, or `!` and what it threw.
+const SERIALIZE: &str = "try { const s = JSON.stringify(value); return `=${s === undefined ? String(value) : s}`; } catch { return `=${String(value)}`; }";
 
 pub fn run(app: &AppHandle, req: Request) -> Reply {
     command(app, req).unwrap_or_else(Reply::error)
@@ -32,25 +32,58 @@ pub fn run(app: &AppHandle, req: Request) -> Reply {
 
 fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     let cmd = control::parse(&req.cmd, &req.args)?;
-    match cmd {
-        Command::Help => return Ok(Reply::out(control::HELP.trim_end())),
-        Command::Devices => return Ok(Reply::out(control::device_list())),
-        _ => {}
-    }
     let pty = req
         .pty
         .ok_or("This terminal started before browser control was there: open a new one.")?;
-    let root = control::worktree_root(Path::new(&req.cwd))
+    // The pane's own folder, as its workspace knows it: the tab goes to that worktree.
+    let root = app
+        .state::<AppState>()
+        .ptys
+        .pane(pty)
+        .ok_or("This terminal isn't one of GitViber's open panes.")?
         .to_string_lossy()
         .into_owned();
     let first = match &cmd {
-        Command::Open(url) => Some(control::web_url(url)?),
+        Command::Open(url) => Some(url.clone()),
         _ => None,
     };
     let (id, made) = main(app, move |app| {
         super::agent_tab(app, pty, &root, first.as_deref())
     })?;
-    Tab::wake(app, id)?.run(cmd, made, &req.cwd)
+    let queue = queue(&id);
+    let _turn = take_turn(&queue, STEP)?;
+    let tab = Tab {
+        app: app.clone(),
+        id,
+        command: NEXT_COMMAND.fetch_add(1, Ordering::Relaxed),
+    };
+    tab.wake()?;
+    tab.run(cmd, made, &req.cwd)
+}
+
+static NEXT_COMMAND: AtomicU64 = AtomicU64::new(1);
+
+/// Each tab's turn: agents in a pane share its tab, and two commands at once would interleave
+/// their steps (a click between another's fill and its Enter).
+fn queue(id: &str) -> Arc<Mutex<()>> {
+    static QUEUES: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
+    let mut queues = QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
+    queues.entry(id.into()).or_default().clone()
+}
+
+fn take_turn(queue: &Mutex<()>, wait: Duration) -> Res<MutexGuard<'_, ()>> {
+    let until = Instant::now() + wait;
+    loop {
+        match queue.try_lock() {
+            Ok(turn) => return Ok(turn),
+            Err(TryLockError::Poisoned(turn)) => return Ok(turn.into_inner()),
+            Err(TryLockError::WouldBlock) if Instant::now() < until => std::thread::sleep(POLL / 5),
+            Err(TryLockError::WouldBlock) => return Err(
+                "Another command is still running on this pane's tab: try again once it's done."
+                    .into(),
+            ),
+        }
+    }
 }
 
 /// `f` on the main thread, its answer back here.
@@ -89,38 +122,36 @@ fn later<T: Send + 'static>(
         .map_err(|_| "The page didn't answer in time.".to_string())?
 }
 
-/// The pane's tab, awake for as long as this lives (agent_awake).
+/// The pane's tab for one command, awake from `wake` for as long as this lives. Its sleep is
+/// queued after the wake on the main thread even when the wake timed out here, so it can't stay
+/// awake.
 struct Tab {
     app: AppHandle,
     id: String,
+    command: u64,
 }
 
 impl Drop for Tab {
     fn drop(&mut self) {
-        let id = std::mem::take(&mut self.id);
+        let (id, command) = (std::mem::take(&mut self.id), self.command);
         let _ = self
             .app
-            .run_on_main_thread(move || super::agent_awake(&id, false));
+            .run_on_main_thread(move || super::agent_awake(&id, command, false));
     }
 }
 
 impl Tab {
-    fn wake(app: &AppHandle, id: String) -> Res<Self> {
-        let woken = id.clone();
-        main(app, move |_| {
-            super::agent_awake(&woken, true);
+    fn wake(&self) -> Res<()> {
+        let (id, command) = (self.id.clone(), self.command);
+        main(&self.app, move |_| {
+            super::agent_awake(&id, command, true);
             Ok(())
-        })?;
-        Ok(Self {
-            app: app.clone(),
-            id,
         })
     }
 
     fn run(&self, cmd: Command, made: bool, cwd: &str) -> Res<Reply> {
         match cmd {
             Command::Open(url) => {
-                let url = control::web_url(&url)?;
                 if !made {
                     let id = self.id.clone();
                     main(&self.app, move |_| super::navigate(&id, &url))?;
@@ -164,7 +195,15 @@ impl Tab {
             Command::Screenshot { path, target } => self.screenshot(path, target, cwd),
             Command::Console { errors, clear } => self.console(errors, clear),
             Command::Device(screen) => self.device(screen),
-            Command::Help | Command::Devices => Ok(Reply::out("")),
+            Command::Dialogs(accept) => {
+                let id = self.id.clone();
+                main(&self.app, move |_| super::agent_dialogs(&id, accept))?;
+                Ok(Reply::out(if accept {
+                    "The page's dialogs are accepted while commands run on it."
+                } else {
+                    "The page's dialogs are dismissed while commands run on it."
+                }))
+            }
         }
     }
 
@@ -243,15 +282,15 @@ impl Tab {
 
     fn wait(&self, what: Wait, timeout: Duration) -> Res<Reply> {
         if let Wait::Ms(ms) = what {
-            std::thread::sleep(Duration::from_millis(ms).min(LONGEST_WAIT));
+            std::thread::sleep(Duration::from_millis(ms));
             return Ok(Reply::out(format!("Waited {ms} ms")));
         }
         let until = Instant::now() + timeout;
         let found = |input: Value| match self.script(input) {
+            Ok(v) if v["invalid"] == true => Err("That isn't a CSS selector.".to_string()),
             Ok(v) => Ok(v["found"] == true),
             // Between pages there's no page to ask.
-            Err(e) if !e.starts_with("Not a CSS selector") => Ok(false),
-            Err(e) => Err(e),
+            Err(_) => Ok(false),
         };
         loop {
             let (done, said) = match &what {
@@ -280,6 +319,8 @@ impl Tab {
     }
 
     /// `js` in the page's own world: an expression, else statements (with their own return).
+    /// Only a form that doesn't compile is tried again, never one that ran: what it throws comes
+    /// back as its answer. Not through the page's eval(), which its CSP may forbid.
     fn eval(&self, js: &str) -> Res<Reply> {
         let run = |body: String| {
             let id = self.id.clone();
@@ -287,17 +328,26 @@ impl Tab {
                 super::agent_js(&id, true, &body, "", done)
             })?
         };
-        let expression = format!("const value = await (async () => ({js}\n))();\n{SERIALIZE}");
-        let statements = format!("const value = await (async () => {{\n{js}\n}})();\n{SERIALIZE}");
+        let body = |call: String| {
+            format!("let value;\ntry {{ value = await {call}; }} catch (e) {{ return `!${{e}}`; }}\n{SERIALIZE}")
+        };
+        let expression = body(format!("(async () => ({js}\n))()"));
+        let statements = body(format!("(async () => {{\n{js}\n}})()"));
         let out = match run(expression) {
             Err(e) if e.contains("SyntaxError") => run(statements),
             other => other,
+        }?;
+        match out.split_at_checked(1) {
+            Some(("=", value)) => Ok(Reply::out(super::cut(value, EVAL_MAX))),
+            Some(("!", thrown)) => Err(format!("The page threw {}", super::cut(thrown, EVAL_MAX))),
+            _ => Err("The page's answer wasn't readable.".into()),
         }
-        .map_err(|e| format!("The page threw {e}"))?;
-        Ok(Reply::out(super::cut(&out, EVAL_MAX)))
     }
 
     fn screenshot(&self, path: Option<String>, target: Option<String>, cwd: &str) -> Res<Reply> {
+        let path = path
+            .map(|p| control::picture_path(Path::new(cwd), &p))
+            .transpose()?;
         let rect = match target {
             Some(target) => {
                 let found = self.script(json!({ "cmd": "rect", "target": target }))?;
@@ -312,21 +362,16 @@ impl Tab {
         let png = later(&self.app, move |_, done| {
             super::agent_picture(&id, rect, done)
         })?
-        .ok_or("WebKit gave no picture of the page.")?;
+        .ok_or("No picture: the element doesn't show, or WebKit gave none.")?;
         let path = match path {
             Some(path) => {
-                let path = Path::new(cwd).join(path);
                 std::fs::write(&path, &png)
                     .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
-                path
+                path.display().to_string()
             }
-            None => {
-                let cache = self.app.path().app_cache_dir().map_err(|e| e.to_string())?;
-                picks::save(&picks::folder(&cache), &png, SystemTime::now())
-                    .map_err(|e| e.to_string())?
-            }
+            None => picks::save_png(&self.app, &png).ok_or("Couldn't save the picture.")?,
         };
-        Ok(Reply::out(path.display().to_string()))
+        Ok(Reply::out(path))
     }
 
     fn console(&self, errors: bool, clear: bool) -> Res<Reply> {
@@ -363,5 +408,32 @@ fn titled(url: &str, title: &str, between: &str) -> String {
         url.into()
     } else {
         format!("{url}{between}{title}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_tabs_commands_take_turns_and_one_kept_waiting_too_long_is_told() {
+        let queue = queue("tab-1");
+        assert!(Arc::ptr_eq(&queue, &super::queue("tab-1")));
+        assert!(!Arc::ptr_eq(&queue, &super::queue("tab-2")));
+        let first = take_turn(&queue, POLL).unwrap();
+        let (q, started) = (queue.clone(), Instant::now());
+        let waiting = std::thread::spawn(move || take_turn(&q, POLL * 3).map(drop));
+        assert!(waiting
+            .join()
+            .unwrap()
+            .unwrap_err()
+            .contains("still running"));
+        assert!(started.elapsed() >= POLL * 3);
+        // Its turn once the first is done.
+        let q = queue.clone();
+        let next = std::thread::spawn(move || take_turn(&q, STEP).map(drop));
+        std::thread::sleep(POLL);
+        drop(first);
+        assert!(next.join().unwrap().is_ok());
     }
 }

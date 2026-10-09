@@ -5,12 +5,12 @@
 use super::{emit, main_thread, url_text, view, Delegate, View, GONE};
 use crate::browser::console::{Counts, Entry};
 use crate::browser::cut;
-use crate::browser::picks::{self, Pick};
+use crate::browser::picks::{self, Bounds, Pick};
 use crate::state::Res;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly};
+use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
 use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
 use objc2_foundation::{
     ns_string, NSDictionary, NSError, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSUUID,
@@ -24,7 +24,7 @@ use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 const PICKER: &str = include_str!("../scripts/picker.js");
 const CONSOLE: &str = include_str!("../scripts/console.js");
@@ -278,7 +278,7 @@ fn picked(v: &View, json: &str) {
             .unwrap_or_default();
         let mut pick = pick.clone();
         pick.components = names.into_iter().take(5).map(|n| cut(&n, 80)).collect();
-        picture(&web, pick, delivery.clone());
+        picked_picture(&web, pick, delivery.clone());
     });
     let tag = NSString::from_str(&tag);
     let arguments =
@@ -296,32 +296,45 @@ fn picked(v: &View, json: &str) {
 }
 
 /// The element's picture, saved as a PNG in the app's cache, then the pick sent.
-fn picture(web: &WKWebView, pick: Pick, delivery: Delivery) {
-    let size = web.bounds().size;
-    let zoom = unsafe { web.pageZoom() };
-    let Some(rect) = picks::picture_rect(pick.bounds, zoom, (size.width, size.height)) else {
-        return delivery.send(pick);
-    };
-    let config = unsafe { WKSnapshotConfiguration::new(web.mtm()) };
-    let rect = NSRect::new(NSPoint::new(rect.x, rect.y), NSSize::new(rect.w, rect.h));
-    unsafe { config.setRect(rect) };
-    let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
-        let png = unsafe { image.as_ref() }.and_then(png);
-        let (mut pick, delivery) = (pick.clone(), delivery.clone());
+fn picked_picture(web: &WKWebView, pick: Pick, delivery: Delivery) {
+    picture(web, Some(pick.bounds), true, move |image| {
+        let png = image.as_deref().and_then(png);
+        let mut pick = pick;
         // Written off the main thread: a slow disk shouldn't hold the window.
         std::thread::spawn(move || {
-            pick.screenshot = png.and_then(|png| save_png(&delivery.app, &png));
+            pick.screenshot = png.and_then(|png| picks::save_png(&delivery.app, &png));
             delivery.send(pick);
         });
     });
-    unsafe { web.takeSnapshotWithConfiguration_completionHandler(Some(&config), &block) };
 }
 
-/// A PNG in the app's cache folder for pictures, its path; None when it couldn't be written.
-pub(super) fn save_png(app: &AppHandle, png: &[u8]) -> Option<String> {
-    let folder = picks::folder(&app.path().app_cache_dir().ok()?);
-    let path = picks::save(&folder, png, SystemTime::now()).ok()?;
-    Some(path.to_string_lossy().into_owned())
+/// The page as drawn, or the part of it `rect` names (CSS px from the viewport's top left, with
+/// a margin); after the next screen update, or as it is now, which a view about to hide needs.
+/// None when that part doesn't show, or WebKit gives no picture.
+pub(super) fn picture(
+    web: &WKWebView,
+    rect: Option<Bounds>,
+    after_updates: bool,
+    done: impl FnOnce(Option<Retained<NSImage>>) + 'static,
+) {
+    let config = unsafe { WKSnapshotConfiguration::new(web.mtm()) };
+    unsafe { config.setAfterScreenUpdates(after_updates) };
+    if let Some(rect) = rect {
+        let size = web.bounds().size;
+        let zoom = unsafe { web.pageZoom() };
+        let Some(r) = picks::picture_rect(rect, zoom, (size.width, size.height)) else {
+            return done(None);
+        };
+        unsafe { config.setRect(NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.w, r.h))) };
+    }
+    let done = Cell::new(Some(done));
+    let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
+        if let Some(done) = done.take() {
+            // SAFETY: WebKit's picture, or nil, alive for this call.
+            done(unsafe { image.as_ref() }.map(|i| i.retain()));
+        }
+    });
+    unsafe { web.takeSnapshotWithConfiguration_completionHandler(Some(&config), &block) };
 }
 
 pub(super) fn png(image: &NSImage) -> Option<Vec<u8>> {

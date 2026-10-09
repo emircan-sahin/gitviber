@@ -6,7 +6,9 @@
 mod agent;
 mod page_tools;
 
-pub use agent::{agent_awake, agent_device, agent_js, agent_page, agent_picture, agent_tab};
+pub use agent::{
+    agent_awake, agent_device, agent_dialogs, agent_js, agent_page, agent_picture, agent_tab,
+};
 pub use page_tools::{console_clear, console_entries, pick};
 
 use super::console::Log;
@@ -32,7 +34,7 @@ use objc2_app_kit::{
     NSWorkspace,
 };
 use objc2_foundation::{
-    ns_string, NSArray, NSDataBase64EncodingOptions, NSDate, NSDictionary, NSError,
+    ns_string, NSArray, NSCopying, NSDataBase64EncodingOptions, NSDate, NSDictionary, NSError,
     NSKeyValueChangeKey, NSKeyValueObservingOptions, NSNumber, NSObjectNSDelayedPerforming,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString,
     NSURLAuthenticationChallenge, NSURLAuthenticationMethodServerTrust, NSURLCredential,
@@ -41,8 +43,8 @@ use objc2_foundation::{
 use objc2_web_kit::{
     WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
     WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType, WKOpenPanelParameters,
-    WKSnapshotConfiguration, WKUIDelegate, WKUserContentController, WKWebView,
-    WKWebViewConfiguration, WKWebsiteDataStore, WKWindowFeatures,
+    WKUIDelegate, WKUserContentController, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore,
+    WKWindowFeatures,
 };
 use serde::Serialize;
 use std::cell::{Cell, OnceCell, RefCell};
@@ -315,10 +317,10 @@ struct DelegateIvars {
     /// The page's process ended once since the user last sent it somewhere: the next time it
     /// stays down, or a page that kills it on load would reload forever.
     crashed: Cell<bool>,
-    /// A terminal pane's agent tab (agent.rs): its page's dialogs answer themselves.
-    agent: Cell<bool>,
-    /// Commands running on it now: while any are, it stays awake and doesn't park.
-    awake: Cell<u32>,
+    /// The agent commands running on it now (agent.rs): while any are, it stays awake, doesn't
+    /// park, and its page's dialogs answer themselves, OK when `accept_dialogs`.
+    awake: RefCell<HashSet<u64>>,
+    accept_dialogs: Cell<bool>,
     /// The device an agent asked for, the size it takes while out of its tab's sight.
     agent_screen: RefCell<Option<super::control::AgentScreen>>,
 }
@@ -496,7 +498,7 @@ define_class!(
             frame: &WKFrameInfo,
             done: &DynBlock<dyn Fn()>,
         ) {
-            if agent::answered(self, web, "alert", message) || !self.may_ask(web) {
+            if agent::answered(self, web, "alert", message).is_some() || !self.may_ask(web) {
                 return done.call(());
             }
             let done = done.copy();
@@ -511,24 +513,31 @@ define_class!(
             frame: &WKFrameInfo,
             done: &DynBlock<dyn Fn(Bool)>,
         ) {
-            if agent::answered(self, web, "confirm", message) || !self.may_ask(web) {
+            if let Some(ok) = agent::answered(self, web, "confirm", message) {
+                return done.call((Bool::new(ok),));
+            }
+            if !self.may_ask(web) {
                 return done.call((Bool::NO,));
             }
             let done = done.copy();
             sheet(web, message, frame, true, move |ok| done.call((Bool::new(ok),)));
         }
 
-        /// prompt() answers as if cancelled: a text field in a sheet isn't worth it here.
+        /// prompt() answers as if cancelled (an agent's accepted, with its default text): a text
+        /// field in a sheet isn't worth it here.
         #[unsafe(method(webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:))]
         fn prompt(
             &self,
             web: &WKWebView,
             prompt: &NSString,
-            _default: Option<&NSString>,
+            default: Option<&NSString>,
             _frame: &WKFrameInfo,
             done: &DynBlock<dyn Fn(*mut NSString)>,
         ) {
-            agent::answered(self, web, "prompt", prompt);
+            if agent::answered(self, web, "prompt", prompt) == Some(true) {
+                let text = default.map_or_else(NSString::new, |d| d.copy());
+                return done.call((Retained::as_ptr(&text).cast_mut(),));
+            }
             done.call((std::ptr::null_mut(),));
         }
 
@@ -580,8 +589,8 @@ impl Delegate {
             console_pending: Cell::new(false),
             picking: RefCell::default(),
             crashed: Cell::new(false),
-            agent: Cell::new(false),
-            awake: Cell::new(0),
+            awake: RefCell::default(),
+            accept_dialogs: Cell::new(false),
             agent_screen: RefCell::default(),
         });
         unsafe { msg_send![super(this), init] }
@@ -1030,7 +1039,7 @@ pub fn configure(live_hidden: u32, park_after_min: u32, console: bool) {
 /// WebKit, which may not draw a hidden view at all.
 fn begin_park(id: &str, since: u64) {
     // Running an agent's command: it hides again after, and parks then if it's due.
-    let Some(v) = view(id).filter(|v| v.delegate.ivars().awake.get() == 0) else {
+    let Some(v) = view(id).filter(|v| v.delegate.ivars().awake.borrow().is_empty()) else {
         return;
     };
     let parked = Parked {
@@ -1226,15 +1235,10 @@ pub fn snapshot(app: &AppHandle, id: String) -> Res<Option<String>> {
 
 /// The page as drawn now: not after the next screen update, which a view about to be hidden
 /// may never have.
-fn take_snapshot(web: &WKWebView, done: impl Fn(Option<String>) + 'static) {
-    let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
-        done(unsafe { image.as_ref() }.and_then(jpeg));
+fn take_snapshot(web: &WKWebView, done: impl FnOnce(Option<String>) + 'static) {
+    page_tools::picture(web, None, false, move |image| {
+        done(image.as_deref().and_then(jpeg))
     });
-    unsafe {
-        let now = WKSnapshotConfiguration::new(web.mtm());
-        now.setAfterScreenUpdates(false);
-        web.takeSnapshotWithConfiguration_completionHandler(Some(&now), &block)
-    };
 }
 
 fn jpeg(image: &NSImage) -> Option<String> {

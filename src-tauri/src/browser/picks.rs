@@ -124,6 +124,18 @@ pub fn save(folder: &Path, png: &[u8], at: SystemTime) -> std::io::Result<PathBu
     Err(std::io::ErrorKind::AlreadyExists.into())
 }
 
+/// A PNG in the app's cache folder for pictures, its path; None when it couldn't be written.
+pub fn save_png(app: &tauri::AppHandle, png: &[u8]) -> Option<String> {
+    use tauri::Manager;
+    let path = save(
+        &folder(&app.path().app_cache_dir().ok()?),
+        png,
+        SystemTime::now(),
+    )
+    .ok()?;
+    Some(path.to_string_lossy().into_owned())
+}
+
 /// Pictures more than a day old, gone; run as the app starts.
 pub fn prune(folder: &Path, now: SystemTime) {
     for entry in std::fs::read_dir(folder).into_iter().flatten().flatten() {

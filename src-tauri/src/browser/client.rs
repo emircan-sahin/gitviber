@@ -2,7 +2,7 @@
 //! request to the running app (server.rs), prints the reply and exits with its status. Never
 //! starts the app itself.
 
-use super::control::{self, Reply, Request, HELP, OFF, OFF_TEXT};
+use super::control::{self, Reply, Request, CLI_WAIT, HELP, NOT_HERE, OFF, OFF_TEXT};
 use std::path::Path;
 
 /// When the binary was run as the CLI: its exit status. None for a normal launch.
@@ -43,8 +43,11 @@ pub fn parse_cli(args: Vec<String>) -> Cli {
 }
 
 enum Failure {
-    /// Nothing listening: control is off, or GitViber isn't running.
+    /// No socket: control is off (the app takes it away then).
     Off,
+    /// A socket nobody listens on: GitViber quit, or crashed.
+    NotRunning,
+    /// Connected, but no reply came that reads as one: GitViber went away mid-command.
     NoAnswer,
 }
 
@@ -57,12 +60,16 @@ fn run(args: Vec<String>) -> i32 {
         print!("{HELP}");
         return 0;
     };
+    // Answered here: the list is this binary's own, and needs no tab.
+    if cmd == "device" && cli.args == ["--list"] {
+        return print(&Reply::out(control::device_list()), cli.json);
+    }
     let (Ok(socket), Ok(token)) = (
         std::env::var(control::SOCKET_ENV),
         std::env::var(control::TOKEN_ENV),
     ) else {
         eprintln!("gitviber browser works in GitViber's own terminals.");
-        return OFF;
+        return NOT_HERE;
     };
     let request = Request {
         token,
@@ -80,6 +87,10 @@ fn run(args: Vec<String>) -> i32 {
         Err(Failure::Off) => {
             eprintln!("{OFF_TEXT}");
             OFF
+        }
+        Err(Failure::NotRunning) => {
+            eprintln!("GitViber isn't running.");
+            NOT_HERE
         }
         Err(Failure::NoAnswer) => {
             eprintln!("GitViber didn't answer.");
@@ -101,21 +112,13 @@ fn print(reply: &Reply, json: bool) -> i32 {
 
 #[cfg(unix)]
 fn ask(socket: &Path, request: &Request) -> Result<Reply, Failure> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::os::unix::net::UnixStream;
-    let mut stream = UnixStream::connect(socket).map_err(|_| Failure::Off)?;
+    use crate::local_socket::{ask_line, AskError};
     // A wait or a slow page takes a while; a stuck app doesn't keep the agent forever.
-    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(300)));
-    let mut line = serde_json::to_string(request).map_err(|_| Failure::NoAnswer)?;
-    line.push('\n');
-    stream
-        .write_all(line.as_bytes())
-        .map_err(|_| Failure::NoAnswer)?;
-    let mut reply = String::new();
-    BufReader::new(&stream)
-        .read_line(&mut reply)
-        .map_err(|_| Failure::NoAnswer)?;
-    serde_json::from_str(&reply).map_err(|_| Failure::NoAnswer)
+    ask_line(socket, request, Some(CLI_WAIT)).map_err(|e| match e {
+        AskError::Connect(std::io::ErrorKind::NotFound) => Failure::Off,
+        AskError::Connect(_) => Failure::NotRunning,
+        AskError::NoAnswer => Failure::NoAnswer,
+    })
 }
 
 #[cfg(not(unix))]
@@ -205,7 +208,7 @@ mod tests {
         }
         // Only where no GitViber terminal set these up (as here, not inside one): never a request.
         if std::env::var_os(control::SOCKET_ENV).is_none() {
-            assert_eq!(run(words(&["url"])), OFF);
+            assert_eq!(run(words(&["url"])), NOT_HERE);
         }
         // A double dash before the command still finds it; one after it keeps the rest as text.
         let cli = parse_cli(words(&["--", "fill", "#q", "--json"]));

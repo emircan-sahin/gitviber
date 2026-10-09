@@ -15,12 +15,17 @@ pub const SOCKET_ENV: &str = "GITVIBER_BROWSER_SOCKET";
 pub const TOKEN_ENV: &str = "GITVIBER_BROWSER_TOKEN";
 pub const PTY_ENV: &str = "GITVIBER_PTY";
 
-/// The CLI's exit status when control is off or GitViber isn't there to answer.
+/// The CLI's exit status when control is off.
 pub const OFF: i32 = 2;
 pub const OFF_TEXT: &str = "Browser control is off (Settings → Browser).";
+/// The CLI's exit status outside GitViber's terminals, or with GitViber gone.
+pub const NOT_HERE: i32 = 3;
 
 /// How long `wait` waits unless told.
 pub const WAIT: Duration = Duration::from_secs(10);
+/// The longest a command waits, inside the CLI's own wait for any reply.
+pub const LONGEST_WAIT: Duration = Duration::from_secs(120);
+pub const CLI_WAIT: Duration = Duration::from_secs(300);
 
 pub const HELP: &str = "\
 gitviber browser <command> [args]: this terminal pane's own browser tab in GitViber.
@@ -32,7 +37,7 @@ The pane's first command opens it, in the background; every agent in the pane sh
   snapshot [-i] [-s <css>] [-d <n>]
                                The page as a tree, with refs (e1, e2, ...) to act on: -i only
                                what can be clicked or typed in, -s under one element, -d so many
-                               levels deep. Refs last until the page changes.
+                               levels deep. Refs (also @e1 or ref=e1) last until the page changes.
   click <ref|css>              Click an element
   fill <ref|css> <text>        Replace a field's text
   type <ref|css> <text>        Type into a field, key by key
@@ -42,17 +47,20 @@ The pane's first command opens it, in the background; every agent in the pane sh
   scroll <up|down|ref|css> [px]
   wait <css> | --text <text> | --load | --ms <n> [--timeout <ms>]
                                Until an element shows, the text does, the page has loaded, or
-                               the time is up; 10 s at most unless --timeout says
+                               the time is up; 10 s at most unless --timeout says (120 s at most)
   eval <js>                    Runs in the page; prints the result as JSON
   screenshot [path] [--ref <ref|css>]
                                A PNG of the page, or of one element; prints its path
   console [--errors] [--clear] What the page logged
   device <name|WxH|off>        Show the page as a device; `device --list` names them
+  dialogs accept|dismiss       How the page's alert, confirm and prompt are answered while a
+                               command runs on it; dismiss unless told
   help
 
   --json                       The reply as JSON
 
-Exit status: 0 done; 1 failed, why on stderr; 2 browser control is off (Settings → Browser).
+Exit status: 0 done; 1 failed, why on stderr; 2 browser control is off (Settings → Browser);
+3 not in a GitViber terminal, or GitViber isn't running.
 ";
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -135,8 +143,8 @@ pub enum Command {
         clear: bool,
     },
     Device(Option<AgentScreen>),
-    Devices,
-    Help,
+    /// Whether the page's dialogs are accepted (OK) rather than dismissed.
+    Dialogs(bool),
 }
 
 #[derive(Debug, PartialEq)]
@@ -173,7 +181,7 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
         }
     };
     match cmd {
-        "open" | "goto" | "navigate" => target("open <url>").map(Command::Open),
+        "open" => web_url(&target("open <url>")?).map(Command::Open),
         "back" => none(Command::Back),
         "forward" => none(Command::Forward),
         "reload" => none(Command::Reload),
@@ -189,26 +197,28 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
             _ => Err("Usage: gitviber browser select <ref|css> <value>...".into()),
         },
         "hover" => target("hover <ref|css>").map(Command::Hover),
-        "press" | "key" => target("press <key>").map(Command::Press),
+        "press" => target("press <key>").map(Command::Press),
         "scroll" => scroll(args),
         "wait" => wait(args),
         "eval" if !args.is_empty() => Ok(Command::Eval(rest())),
         "eval" => Err("Usage: gitviber browser eval <js>".into()),
         "screenshot" => screenshot(args),
         "console" => console(args),
-        "device" => match args {
-            [list] if list == "--list" => Ok(Command::Devices),
-            [] => Err("Usage: gitviber browser device <name|WxH|off>, or device --list".into()),
-            _ => device(&rest()).map(Command::Device),
+        "device" if args.is_empty() => {
+            Err("Usage: gitviber browser device <name|WxH|off>, or device --list".into())
+        }
+        "device" => device(&rest()).map(Command::Device),
+        "dialogs" => match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            [] | ["dismiss"] => Ok(Command::Dialogs(false)),
+            ["accept"] => Ok(Command::Dialogs(true)),
+            _ => Err("Usage: gitviber browser dialogs accept|dismiss".into()),
         },
-        "help" | "--help" | "-h" => Ok(Command::Help),
         _ => Err(format!(
             "No command `{cmd}`: `gitviber browser help` lists them"
         )),
     }
 }
 
-/// The value after a flag.
 fn value<'a>(it: &mut impl Iterator<Item = &'a String>, flag: &str) -> Result<&'a String, String> {
     it.next().ok_or_else(|| format!("{flag} needs a value"))
 }
@@ -259,7 +269,10 @@ fn wait(args: &[String]) -> Result<Command, String> {
             "--text" => what = Some(Wait::Text(value(&mut it, arg)?.clone())),
             "--load" => what = Some(Wait::Load),
             "--ms" => what = Some(Wait::Ms(number(value(&mut it, arg)?, arg)?)),
-            "--timeout" => timeout = Duration::from_millis(number(value(&mut it, arg)?, arg)?),
+            "--timeout" => {
+                timeout =
+                    Duration::from_millis(number(value(&mut it, arg)?, arg)?).min(LONGEST_WAIT)
+            }
             _ if arg.starts_with("--") => return Err(format!("wait doesn't take {arg}")),
             _ => css.push(arg.as_str()),
         }
@@ -273,6 +286,10 @@ fn wait(args: &[String]) -> Result<Command, String> {
             )
         }
     };
+    let what = match what {
+        Wait::Ms(ms) => Wait::Ms(ms.min(LONGEST_WAIT.as_millis() as u64)),
+        w => w,
+    };
     Ok(Command::Wait(what, timeout))
 }
 
@@ -281,7 +298,7 @@ fn screenshot(args: &[String]) -> Result<Command, String> {
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--ref" | "--selector" => target = Some(value(&mut it, arg)?.clone()),
+            "--ref" => target = Some(value(&mut it, arg)?.clone()),
             _ if arg.starts_with("--") => return Err(format!("screenshot doesn't take {arg}")),
             _ if path.is_none() => path = Some(arg.clone()),
             _ => return Err("Usage: gitviber browser screenshot [path] [--ref <ref|css>]".into()),
@@ -324,13 +341,41 @@ pub fn web_url(typed: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-/// The worktree a folder is in: the nearest one up with a `.git` (a linked worktree's is a
-/// file), else the folder itself.
-pub fn worktree_root(cwd: &Path) -> PathBuf {
-    cwd.ancestors()
-        .find(|dir| dir.join(".git").exists())
-        .unwrap_or(cwd)
-        .to_path_buf()
+/// Where `screenshot <path>` writes: a .png under the CLI's folder (no `..` out of it), or at
+/// an absolute path; never over anything but a PNG.
+pub fn picture_path(cwd: &Path, path: &str) -> Result<PathBuf, String> {
+    let given = Path::new(path);
+    if !given
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+    {
+        return Err(format!("A screenshot's path ends in .png, not {path}"));
+    }
+    let full = if given.is_absolute() {
+        given.to_path_buf()
+    } else if given
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!(
+            "{path} leaves this folder: give an absolute path instead"
+        ));
+    } else {
+        cwd.join(given)
+    };
+    // A link, a folder or a file of another kind there stays as it is.
+    if let Ok(meta) = std::fs::symlink_metadata(&full) {
+        let mut head = [0u8; 8];
+        let png = meta.is_file()
+            && std::fs::File::open(&full)
+                .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head))
+                .is_ok()
+            && head == *b"\x89PNG\r\n\x1a\n";
+        if !png {
+            return Err(format!("{} is there and isn't a PNG", full.display()));
+        }
+    }
+    Ok(full)
 }
 
 /// The tab of each pane's agent: made on its first command, and again once the user closed it.
@@ -461,7 +506,6 @@ pub fn device_list() -> String {
     out.join("\n")
 }
 
-/// Page text on one line.
 fn flat(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -554,7 +598,7 @@ mod tests {
     fn commands_and_their_arguments() {
         assert_eq!(
             parse("open", &args("localhost:3000")),
-            Ok(Command::Open("localhost:3000".into()))
+            Ok(Command::Open("http://localhost:3000/".into()))
         );
         assert_eq!(
             parse("snapshot", &args("-i -s main -d 3")),
@@ -621,9 +665,21 @@ mod tests {
                 clear: true
             })
         );
-        assert_eq!(parse("device", &args("--list")), Ok(Command::Devices));
         assert_eq!(parse("device", &args("off")), Ok(Command::Device(None)));
-        assert_eq!(parse("help", &[]), Ok(Command::Help));
+        assert_eq!(parse("dialogs", &[]), Ok(Command::Dialogs(false)));
+        assert_eq!(
+            parse("dialogs", &args("accept")),
+            Ok(Command::Dialogs(true))
+        );
+        // The CLI answers these itself; the app knows no such commands.
+        for (cmd, a) in [
+            ("help", ""),
+            ("device", "--list"),
+            ("goto", "x.test"),
+            ("key", "Enter"),
+        ] {
+            assert!(parse(cmd, &args(a)).is_err(), "{cmd}");
+        }
     }
 
     #[test]
@@ -760,15 +816,47 @@ mod tests {
     }
 
     #[test]
-    fn a_folder_belongs_to_the_nearest_worktree_up() {
-        let base = std::env::temp_dir().join(format!("gitviber-control-{}", std::process::id()));
-        let inner = base.join("repo/.claude/worktrees/w1");
-        std::fs::create_dir_all(base.join("repo/.git")).unwrap();
-        std::fs::create_dir_all(inner.join("src")).unwrap();
-        std::fs::write(inner.join(".git"), "gitdir: ../../../.git/worktrees/w1").unwrap();
-        assert_eq!(worktree_root(&inner.join("src")), inner);
-        assert_eq!(worktree_root(&base.join("repo/.claude")), base.join("repo"));
-        assert_eq!(worktree_root(&base), base);
+    fn a_wait_never_outlasts_the_clis_five_minutes() {
+        assert!(LONGEST_WAIT < CLI_WAIT);
+        assert_eq!(
+            parse("wait", &args("--load --timeout 999999999")),
+            Ok(Command::Wait(Wait::Load, LONGEST_WAIT))
+        );
+        assert_eq!(
+            parse("wait", &args("--ms 999999999")),
+            Ok(Command::Wait(
+                Wait::Ms(LONGEST_WAIT.as_millis() as u64),
+                WAIT
+            ))
+        );
+    }
+
+    #[test]
+    fn a_screenshot_writes_a_png_under_its_folder_or_where_told_and_over_no_other_file() {
+        let base = std::env::temp_dir().join(format!("gitviber-shot-{}", std::process::id()));
+        std::fs::create_dir_all(base.join("out")).unwrap();
+        assert_eq!(picture_path(&base, "out/a.png"), Ok(base.join("out/a.png")));
+        assert_eq!(picture_path(&base, "B.PNG"), Ok(base.join("B.PNG")));
+        let elsewhere = base.join("out/abs.png");
+        assert_eq!(
+            picture_path(Path::new("/"), elsewhere.to_str().unwrap()),
+            Ok(elsewhere)
+        );
+        for bad in ["a.txt", "a", "../a.png", "out/../../a.png", "out"] {
+            assert!(picture_path(&base, bad).is_err(), "{bad}");
+        }
+        // An old picture is replaced; anything else there is kept.
+        std::fs::write(base.join("old.png"), b"\x89PNG\r\n\x1a\nrest").unwrap();
+        assert!(picture_path(&base, "old.png").is_ok());
+        std::fs::write(base.join("notes.png"), b"my notes").unwrap();
+        assert!(picture_path(&base, "notes.png").is_err());
+        std::fs::create_dir_all(base.join("dir.png")).unwrap();
+        assert!(picture_path(&base, "dir.png").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(base.join("old.png"), base.join("link.png")).unwrap();
+            assert!(picture_path(&base, "link.png").is_err());
+        }
         let _ = std::fs::remove_dir_all(&base);
     }
 

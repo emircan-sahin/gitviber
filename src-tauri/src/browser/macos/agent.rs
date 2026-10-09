@@ -7,17 +7,16 @@ use super::{
     Delegate, View, GONE, VIEWS,
 };
 use crate::browser::control::{AgentScreen, Route, Routes};
-use crate::browser::picks::{self, Bounds};
+use crate::browser::picks::Bounds;
 use crate::browser::PageState;
 use crate::state::Res;
 use block2::RcBlock;
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{msg_send, sel, DefinedClass};
-use objc2_app_kit::NSImage;
 use objc2_foundation::{
     ns_string, NSDictionary, NSError, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSUUID,
 };
-use objc2_web_kit::{WKContentWorld, WKSnapshotConfiguration, WKWebView};
+use objc2_web_kit::{WKContentWorld, WKWebView};
 use serde::Serialize;
 use std::cell::{Cell, RefCell};
 use std::time::SystemTime;
@@ -61,12 +60,7 @@ pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Re
             out_of_sight(&v, &route.id);
         }
     }
-    view(&route.id)
-        .ok_or(GONE)?
-        .delegate
-        .ivars()
-        .agent
-        .set(true);
+    view(&route.id).ok_or(GONE)?;
     if made {
         ROUTES.with_borrow_mut(|r| r.set(pty, route.clone()));
         let opened = Opened {
@@ -85,34 +79,45 @@ pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
 }
 
-/// Awake while a command runs (`on`), counted, as two agents in a pane may run one each. Out of
-/// its tab's sight WebKit would slow the page's timers and draw nothing: it shows meanwhile, off
-/// the window's edge at the size it would be, and hides again after.
-pub fn agent_awake(id: &str, on: bool) {
+/// Awake while `command` runs (`on`): each command wakes and sleeps once however often it asks,
+/// so one that timed out can't leave the view awake. Out of its tab's sight WebKit would slow the
+/// page's timers and draw nothing: it shows meanwhile, off the window's edge at the size it would
+/// be, and hides again after.
+pub fn agent_awake(id: &str, command: u64, on: bool) {
     let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
         return;
     };
     let d = v.delegate.ivars();
-    let was = d.awake.get();
     let shown = VIEWS.with_borrow(|r| r.shown(id));
-    if on {
-        d.awake.set(was + 1);
-        if was == 0 {
-            throttle(&v.web, false);
-            if !shown {
-                stop_timer(&v);
-                aside(&v);
-            }
-        }
-    } else if was > 0 {
-        d.awake.set(was - 1);
-        if was == 1 {
-            throttle(&v.web, true);
-            if !shown {
-                out_of_sight(&v, id);
-            }
-        }
+    let was_awake = !d.awake.borrow().is_empty();
+    let changed = if on {
+        d.awake.borrow_mut().insert(command)
+    } else {
+        d.awake.borrow_mut().remove(&command)
+    };
+    let awake = !d.awake.borrow().is_empty();
+    if !changed || awake == was_awake {
+        return;
     }
+    throttle(&v.web, !awake);
+    if !shown && awake {
+        stop_timer(&v);
+        aside(&v);
+    } else if !shown {
+        out_of_sight(&v, id);
+    }
+}
+
+/// How the page's dialogs are answered while an agent's command runs on it.
+pub fn agent_dialogs(id: &str, accept: bool) -> Res<()> {
+    main_thread()?;
+    view(id)
+        .ok_or(GONE)?
+        .delegate
+        .ivars()
+        .accept_dialogs
+        .set(accept);
+    Ok(())
 }
 
 /// Shown off the window's left edge, as the agent's device or the size it last had.
@@ -234,27 +239,11 @@ pub fn agent_picture(
     rect: Option<Bounds>,
     done: Box<dyn FnOnce(Option<Vec<u8>>)>,
 ) -> Res<()> {
-    let mtm = main_thread()?;
+    main_thread()?;
     let v = view(id).ok_or(GONE)?;
-    let config = unsafe { WKSnapshotConfiguration::new(mtm) };
-    if let Some(rect) = rect {
-        let size = v.web.bounds().size;
-        let zoom = unsafe { v.web.pageZoom() };
-        let r = picks::picture_rect(rect, zoom, (size.width, size.height))
-            .ok_or("The element doesn't show on the page.")?;
-        unsafe { config.setRect(NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.w, r.h))) };
-    }
-    let done = Cell::new(Some(done));
-    let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
-        if let Some(done) = done.take() {
-            // SAFETY: WebKit's picture, or nil, alive for this call.
-            done(unsafe { image.as_ref() }.and_then(page_tools::png));
-        }
+    page_tools::picture(&v.web, rect, true, move |image| {
+        done(image.as_deref().and_then(page_tools::png))
     });
-    unsafe {
-        v.web
-            .takeSnapshotWithConfiguration_completionHandler(Some(&config), &block)
-    };
     Ok(())
 }
 
@@ -289,7 +278,7 @@ pub fn agent_device(app: &AppHandle, id: &str, screen: Option<AgentScreen>) -> R
     if off && super::can_set_dpr(&v.web) {
         let _: () = unsafe { msg_send![&*v.web, _setOverrideDeviceScaleFactor: 0.0f64] };
     }
-    if v.delegate.ivars().awake.get() > 0 && !VIEWS.with_borrow(|r| r.shown(id)) {
+    if !v.delegate.ivars().awake.borrow().is_empty() && !VIEWS.with_borrow(|r| r.shown(id)) {
         if off {
             // Back to the window's size, not the device's it had.
             v.host.setFrame(NSRect::ZERO);
@@ -307,22 +296,25 @@ pub fn agent_device(app: &AppHandle, id: &str, screen: Option<AgentScreen>) -> R
     Ok(())
 }
 
-/// An agent's tab answers its page's dialogs itself (OK, Cancel, no text) and logs each; false
-/// for any other tab, whose dialogs the user answers.
+/// While an agent's command runs on the tab, its page's dialogs answer themselves (`dialogs`:
+/// dismissed unless accepted), each logged: whether it was accepted. None at any other time,
+/// when the user answers them.
 pub(super) fn answered(
     delegate: &Delegate,
     web: &WKWebView,
     what: &str,
     message: &NSString,
-) -> bool {
+) -> Option<bool> {
     let d = delegate.ivars();
-    if !d.agent.get() {
-        return false;
+    if d.awake.borrow().is_empty() {
+        return None;
     }
-    let answer = match what {
-        "alert" => "OK",
-        "confirm" => "Cancel",
-        _ => "no text",
+    let accept = d.accept_dialogs.get() || what == "alert";
+    let answer = match (what, accept) {
+        ("alert", _) => "OK",
+        ("prompt", true) => "with its default text",
+        (_, true) => "OK",
+        (_, false) => "Cancel",
     };
     let ts = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -335,5 +327,5 @@ pub(super) fn answered(
         .borrow_mut()
         .note(&line, &url_text(unsafe { web.URL() }), ts);
     delegate.console_changed();
-    true
+    Some(accept)
 }
