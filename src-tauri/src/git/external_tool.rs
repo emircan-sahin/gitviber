@@ -96,8 +96,11 @@ pub fn open_merge_tool(repo: &Path, path: &str) -> Result<(), String> {
     args.extend(["mergetool", "--gui", "--no-prompt", "--", path]);
     let started = std::time::SystemTime::now();
     let merged = run_tool(repo, "mergetool", &args);
-    if merged.is_err() {
-        remove_left_copies(path, started);
+    let kept = config_value(repo, None, "mergetool.keepTemporaries").is_some_and(|v| v == "true");
+    if merged.is_err() && !kept {
+        // Off this thread, as reading a crowded temp folder takes a while (ScratchDir::fresh).
+        let path = path.to_string();
+        std::thread::spawn(move || remove_left_copies(&path, started));
     }
     merged
 }
@@ -107,16 +110,12 @@ pub fn open_merge_tool(repo: &Path, path: &str) -> Result<(), String> {
 /// `started` goes, once the mergetool that made it (its copies carry its pid) is gone. Another
 /// mergetool of the same file name may be open in another worktree.
 fn remove_left_copies(path: &str, started: std::time::SystemTime) {
-    let Some(stem) = Path::new(path)
-        .file_stem()
-        .map(|s| s.to_string_lossy().into_owned())
-    else {
+    let Some(local) = local_copy(path) else {
         return;
     };
     let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
         return;
     };
-    let local = format!("{stem}_LOCAL_");
     let since = started - std::time::Duration::from_secs(1);
     for entry in entries.flatten() {
         if !entry
@@ -138,6 +137,16 @@ fn remove_left_copies(path: &str, started: std::time::SystemTime) {
             let _ = std::fs::remove_dir_all(entry.path());
         }
     }
+}
+
+/// How git-mergetool's LOCAL copy of `path` begins: its name less its last extension, which
+/// leaves nothing of a dotfile (`.env`'s is `_LOCAL_<pid>.env`).
+fn local_copy(path: &str) -> Option<String> {
+    let name = Path::new(path).file_name()?.to_string_lossy().into_owned();
+    let stem = name
+        .rsplit_once('.')
+        .map_or(name.as_str(), |(stem, _)| stem);
+    Some(format!("{stem}_LOCAL_"))
 }
 
 /// The pid in a copy's name, `a_LOCAL_<pid>.txt`.
@@ -168,6 +177,14 @@ mod tests {
             merge: merge.map(str::to_string),
             diff: diff.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn a_merge_tools_copies_are_named_as_git_mergetool_names_them() {
+        assert_eq!(local_copy("src/a.txt").as_deref(), Some("a_LOCAL_"));
+        assert_eq!(local_copy(".env").as_deref(), Some("_LOCAL_"));
+        assert_eq!(local_copy("Makefile").as_deref(), Some("Makefile_LOCAL_"));
+        assert_eq!(local_copy("a.test.ts").as_deref(), Some("a.test_LOCAL_"));
     }
 
     #[test]
