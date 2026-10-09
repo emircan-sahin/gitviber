@@ -37,6 +37,7 @@ import { useWorktreeColors } from "@/lib/git/worktreeColors";
 import { ProjectTile } from "@/features/projects/ProjectList";
 import { showConversations } from "@/features/palette/CommandPalette";
 import { GroupTab } from "./GroupTab";
+import { ZoomPager } from "./PaneDots";
 import { LayoutView, renamingPane, shape, showPaneSwitch } from "./PaneLayout";
 import { TerminalFind } from "./TerminalFind";
 
@@ -256,6 +257,8 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
             </Button>
           </Tip>
           <div className="mx-0.5 h-4 w-px bg-border-strong" />
+          {/* Zoomed, the pane has no header: which of the split's panes it is shows here. */}
+          {group && zoomed && <ZoomPager group={group} />}
           {group && group.panes.length > 1 && (
             <Tip label={zoomed ? "Show all panes" : "Zoom pane"} shortcut={zoomKey}>
               <Button variant="ghost" size="icon-sm" aria-pressed={zoomed} onClick={() => toggleZoom(root)}>
