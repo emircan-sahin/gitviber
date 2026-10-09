@@ -119,6 +119,31 @@ pub async fn browser_ports(state: State<'_, AppState>, ptys: Vec<u32>) -> Res<Ve
     blocking(move || Ok(ports::listening(&shells))).await
 }
 
+/// The next match of `text` in the page (or the one before): whether there was one; None where
+/// WebKit can't find.
+#[tauri::command]
+pub async fn browser_find(
+    app: AppHandle,
+    id: String,
+    text: String,
+    backwards: bool,
+    case_sensitive: bool,
+) -> Res<Option<bool>> {
+    blocking(move || browser::find(&app, id, text, backwards, case_sensitive)).await
+}
+
+/// The page's zoom outside device mode, 1 for 100%.
+#[tauri::command]
+pub fn browser_zoom(id: String, zoom: f64) -> Res<()> {
+    browser::zoom(&id, zoom)
+}
+
+/// The page light or dark, or as the app (None).
+#[tauri::command]
+pub fn browser_appearance(id: String, dark: Option<bool>) -> Res<()> {
+    browser::appearance(&id, dark)
+}
+
 #[tauri::command]
 pub async fn browser_snapshot(app: AppHandle, id: String) -> Res<Option<String>> {
     blocking(move || browser::snapshot(&app, id)).await

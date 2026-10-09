@@ -2,6 +2,7 @@
 //! here without its tab ever showing, kept awake while a command runs on it, and answering its
 //! page's dialogs by itself.
 
+use super::page_view::appearance;
 use super::{
     create, emit, main_thread, out_of_sight, page_tools, set_agent, stop_timer, url_text, view,
     Delegate, View, GONE, VIEWS,
@@ -19,11 +20,30 @@ use objc2_foundation::{
 use objc2_web_kit::{WKContentWorld, WKWebView};
 use serde::Serialize;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::time::SystemTime;
 use tauri::{AppHandle, Manager};
 
 thread_local! {
     static ROUTES: RefCell<Routes> = RefCell::default();
+    /// What agents asked of each tab, by id: kept apart from its view, so a parked tab made again
+    /// is the device it was, answers dialogs as told, and stays light or dark.
+    static ASKED: RefCell<HashMap<String, Asked>> = RefCell::default();
+}
+
+#[derive(Default, Clone)]
+struct Asked {
+    screen: Option<AgentScreen>,
+    accept_dialogs: bool,
+    dark: Option<bool>,
+}
+
+fn asked(id: &str) -> Asked {
+    ASKED.with_borrow(|a| a.get(id).cloned().unwrap_or_default())
+}
+
+fn ask(id: &str, change: impl FnOnce(&mut Asked)) {
+    ASKED.with_borrow_mut(|a| change(a.entry(id.into()).or_default()));
 }
 
 /// A tab out of sight that never showed takes a page this size.
@@ -54,7 +74,12 @@ pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Re
         let window = app
             .get_webview_window("main")
             .ok_or("The window isn't ready.")?;
-        create(&window, &route.id, &route.root, url, None)?;
+        let was = asked(&route.id);
+        let ua = was.screen.as_ref().and_then(|s| s.ua.as_deref());
+        create(&window, &route.id, &route.root, url, ua)?;
+        if was.dark.is_some() {
+            appearance(&route.id, was.dark)?;
+        }
         // Out of sight from the start: it counts toward the pages kept alive, and parks as they do.
         if let Some(v) = view(&route.id) {
             out_of_sight(&v, &route.id);
@@ -77,6 +102,7 @@ pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Re
 /// The app page reloaded: its tabs come back as the user's.
 pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
+    ASKED.with_borrow_mut(HashMap::clear);
 }
 
 /// Awake while `command` runs (`on`): each command wakes and sleeps once however often it asks,
@@ -111,18 +137,28 @@ pub fn agent_awake(id: &str, command: u64, on: bool) {
 /// How the page's dialogs are answered while an agent's command runs on it.
 pub fn agent_dialogs(id: &str, accept: bool) -> Res<()> {
     main_thread()?;
-    view(id)
-        .ok_or(GONE)?
-        .delegate
-        .ivars()
-        .accept_dialogs
-        .set(accept);
+    ask(id, |a| a.accept_dialogs = accept);
     Ok(())
+}
+
+/// The page light, dark or as the app (None), and the tab's own toggle the same
+/// (`browser-appearance`).
+pub fn agent_appearance(app: &AppHandle, id: &str, dark: Option<bool>) -> Res<()> {
+    appearance(id, dark)?;
+    ask(id, |a| a.dark = dark);
+    emit(app, "browser-appearance", Look { id, dark });
+    Ok(())
+}
+
+#[derive(Serialize, Clone)]
+struct Look<'a> {
+    id: &'a str,
+    dark: Option<bool>,
 }
 
 /// Shown off the window's left edge, as the agent's device or the size it last had.
 fn aside(v: &View) {
-    let screen = v.delegate.ivars().agent_screen.borrow().clone();
+    let screen = asked(&v.delegate.ivars().id).screen;
     let size = match &screen {
         Some(s) => NSSize::new(s.w, s.h),
         None => {
@@ -274,7 +310,7 @@ pub fn agent_device(app: &AppHandle, id: &str, screen: Option<AgentScreen>) -> R
     });
     set_agent(id, screen.as_ref().and_then(|s| s.ua.as_deref()))?;
     let off = screen.is_none();
-    *v.delegate.ivars().agent_screen.borrow_mut() = screen;
+    ask(id, |a| a.screen = screen);
     if off && super::can_set_dpr(&v.web) {
         let _: () = unsafe { msg_send![&*v.web, _setOverrideDeviceScaleFactor: 0.0f64] };
     }
@@ -309,7 +345,7 @@ pub(super) fn answered(
     if d.awake.borrow().is_empty() {
         return None;
     }
-    let accept = d.accept_dialogs.get() || what == "alert";
+    let accept = asked(&d.id).accept_dialogs || what == "alert";
     let answer = match (what, accept) {
         ("alert", _) => "OK",
         ("prompt", true) => "with its default text",

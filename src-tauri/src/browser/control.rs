@@ -53,6 +53,7 @@ The pane's first command opens it, in the background; every agent in the pane sh
                                A PNG of the page, or of one element; prints its path
   console [--errors] [--clear] What the page logged
   device <name|WxH|off>        Show the page as a device; `device --list` names them
+  appearance light|dark|auto   The page's prefers-color-scheme; auto is the app's
   dialogs accept|dismiss       How the page's alert, confirm and prompt are answered while a
                                command runs on it; dismiss unless told
   help
@@ -145,6 +146,8 @@ pub enum Command {
     Device(Option<AgentScreen>),
     /// Whether the page's dialogs are accepted (OK) rather than dismissed.
     Dialogs(bool),
+    /// Dark, light, or the app's (None).
+    Appearance(Option<bool>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -208,6 +211,12 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
             Err("Usage: gitviber browser device <name|WxH|off>, or device --list".into())
         }
         "device" => device(&rest()).map(Command::Device),
+        "appearance" => match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            ["dark"] => Ok(Command::Appearance(Some(true))),
+            ["light"] => Ok(Command::Appearance(Some(false))),
+            ["auto"] => Ok(Command::Appearance(None)),
+            _ => Err("Usage: gitviber browser appearance light|dark|auto".into()),
+        },
         "dialogs" => match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
             [] | ["dismiss"] => Ok(Command::Dialogs(false)),
             ["accept"] => Ok(Command::Dialogs(true)),
@@ -671,6 +680,15 @@ mod tests {
             parse("dialogs", &args("accept")),
             Ok(Command::Dialogs(true))
         );
+        assert_eq!(
+            parse("appearance", &args("dark")),
+            Ok(Command::Appearance(Some(true)))
+        );
+        assert_eq!(
+            parse("appearance", &args("auto")),
+            Ok(Command::Appearance(None))
+        );
+        assert!(parse("appearance", &args("sepia")).is_err() && parse("appearance", &[]).is_err());
         // The CLI answers these itself; the app knows no such commands.
         for (cmd, a) in [
             ("help", ""),

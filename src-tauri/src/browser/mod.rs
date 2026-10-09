@@ -20,15 +20,17 @@ pub mod server;
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    agent_awake, agent_device, agent_dialogs, agent_done, agent_js, agent_page, agent_picture,
-    agent_tab, clear_data, close, close_all, close_root, configure, console_clear, console_entries,
-    create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
+    agent_appearance, agent_awake, agent_device, agent_dialogs, agent_done, agent_js, agent_page,
+    agent_picture, agent_tab, appearance, clear_data, close, close_all, close_root, configure,
+    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, pick, place,
+    set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
-    agent_awake, agent_device, agent_dialogs, agent_done, agent_js, agent_page, agent_picture,
-    agent_tab, clear_data, close, close_all, close_root, configure, console_clear, console_entries,
-    create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
+    agent_appearance, agent_awake, agent_device, agent_dialogs, agent_done, agent_js, agent_page,
+    agent_picture, agent_tab, appearance, clear_data, close, close_all, close_root, configure,
+    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, pick, place,
+    set_agent, snapshot, zoom,
 };
 
 pub use registry::{Parked, Registry};
@@ -222,6 +224,18 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_awake(_: &str, _: u64, _: bool) {}
+    pub fn agent_appearance(_: &AppHandle, _: &str, _: Option<bool>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn appearance(_: &str, _: Option<bool>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn find(_: &AppHandle, _: String, _: String, _: bool, _: bool) -> Res<Option<bool>> {
+        Ok(None)
+    }
+    pub fn zoom(_: &str, _: f64) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
     pub fn agent_dialogs(_: &str, _: bool) -> Res<()> {
         Err(UNSUPPORTED.into())
     }

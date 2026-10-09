@@ -195,6 +195,15 @@ impl Tab {
             Command::Screenshot { path, target } => self.screenshot(path, target, cwd),
             Command::Console { errors, clear } => self.console(errors, clear),
             Command::Device(screen) => self.device(screen),
+            Command::Appearance(dark) => {
+                let id = self.id.clone();
+                main(&self.app, move |app| super::agent_appearance(app, &id, dark))?;
+                Ok(Reply::out(match dark {
+                    Some(true) => "The page is shown dark.",
+                    Some(false) => "The page is shown light.",
+                    None => "The page is shown as the app is.",
+                }))
+            }
             Command::Dialogs(accept) => {
                 let id = self.id.clone();
                 main(&self.app, move |_| super::agent_dialogs(&id, accept))?;

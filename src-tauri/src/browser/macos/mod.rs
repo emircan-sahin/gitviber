@@ -5,11 +5,14 @@
 
 mod agent;
 mod page_tools;
+mod page_view;
 
 pub use agent::{
-    agent_awake, agent_device, agent_dialogs, agent_js, agent_page, agent_picture, agent_tab,
+    agent_appearance, agent_awake, agent_device, agent_dialogs, agent_js, agent_page,
+    agent_picture, agent_tab,
 };
 pub use page_tools::{console_clear, console_entries, pick};
+pub use page_view::{appearance, find, zoom};
 
 use super::console::Log;
 use super::keys::{self, Key, Route};
@@ -318,11 +321,10 @@ struct DelegateIvars {
     /// stays down, or a page that kills it on load would reload forever.
     crashed: Cell<bool>,
     /// The agent commands running on it now (agent.rs): while any are, it stays awake, doesn't
-    /// park, and its page's dialogs answer themselves, OK when `accept_dialogs`.
+    /// park, and its page's dialogs answer themselves.
     awake: RefCell<HashSet<u64>>,
-    accept_dialogs: Cell<bool>,
-    /// The device an agent asked for, the size it takes while out of its tab's sight.
-    agent_screen: RefCell<Option<super::control::AgentScreen>>,
+    /// The page's own zoom (page_view.rs), outside device mode.
+    zoom: Cell<f64>,
 }
 
 define_class!(
@@ -590,8 +592,7 @@ impl Delegate {
             picking: RefCell::default(),
             crashed: Cell::new(false),
             awake: RefCell::default(),
-            accept_dialogs: Cell::new(false),
-            agent_screen: RefCell::default(),
+            zoom: Cell::new(1.0),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -910,7 +911,9 @@ pub fn place(id: &str, rect: Rect, screen: Option<Screen>) -> Res<()> {
 /// zoom comes from the width as placed, rounded, so the layout is exactly the device's.
 fn shape(v: &View, screen: Option<Screen>) {
     let width = v.host.frame().size.width;
-    let zoom = screen.and_then(|s| s.zoom(width)).unwrap_or(1.0);
+    let zoom = screen
+        .and_then(|s| s.zoom(width))
+        .unwrap_or(v.delegate.ivars().zoom.get());
     unsafe {
         if v.web.pageZoom() != zoom {
             v.web.setPageZoom(zoom);
