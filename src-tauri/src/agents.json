@@ -34,6 +34,7 @@
       "--permission-prompts": "1",
       "--plugin-dir": "1",
       "--plugin-url": "1",
+      "--prefill": "1",
       "--remote-control-session-name-prefix": "1",
       "--session-id": "1",
       "--setting-sources": "1",
@@ -62,7 +63,7 @@
       "--mcp-config": "*",
       "--tools": "*"
     },
-    "drop": ["-c", "--continue", "-r", "--resume", "--session-id", "--fork-session", "--from-pr", "--teleport", "--cloud", "-n", "--name", "-w", "--worktree", "--tmux", "--append-system-prompt-file"],
+    "drop": ["-c", "--continue", "-r", "--resume", "--session-id", "--fork-session", "--from-pr", "--teleport", "--cloud", "-n", "--name", "-w", "--worktree", "--tmux", "--prefill"],
     "skip": [
       "-p", "--print", "--bg", "--background", "--desktop", "-h", "--help", "-v", "--version",
       "agents", "attach", "auth", "auto-mode", "doctor", "gateway", "import", "install", "kill", "logs", "mcp",

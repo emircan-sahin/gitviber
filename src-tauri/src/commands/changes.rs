@@ -181,8 +181,8 @@ pub async fn handoff_command(
     model: Option<String>,
     effort: Option<String>,
     name: String,
-    context: String,
-    prompt: Option<String>,
+    text: String,
+    send: bool,
 ) -> Res<String> {
     blocking(move || {
         handoff::command(&handoff::Handoff {
@@ -190,8 +190,8 @@ pub async fn handoff_command(
             model: model.as_deref(),
             effort: effort.as_deref(),
             name: &name,
-            context: &context,
-            prompt: prompt.as_deref(),
+            text: &text,
+            send,
         })
     })
     .await

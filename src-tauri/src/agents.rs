@@ -771,16 +771,19 @@ mod tests {
                 Some(r"claude --resume abc-123 --append-system-prompt 'be brief, it'\''s late'"),
             ),
             (&["--", "--not-a-flag"], Some("claude --resume abc-123")),
-            // A guided review's hand-off (handoff.rs): its file is swept a day later, and the
-            // conversation keeps the prompt it was given.
+            // A guided review's hand-off (handoff.rs): its text went in once, to the prompt box or
+            // as the first message.
             (
                 &[
                     "-n",
                     "Review: PR #42",
-                    "--append-system-prompt-file",
-                    "/tmp/gitviber-handoff-x/context.md",
-                    "Look into it",
+                    "--prefill",
+                    "the review\nMy question follows. ",
                 ],
+                Some("claude --resume abc-123"),
+            ),
+            (
+                &["-n", "Risk: PR #42", "--", "the review\nLook into it."],
                 Some("claude --resume abc-123"),
             ),
             // npm's process.title blanks argv: nothing is kept, nothing breaks.

@@ -9,8 +9,8 @@ import { openTerminal, pasteToAgent, worktreeAgent } from "@/lib/terminal/termin
 
 /**
  * A guided review's section, risk or whole change handed to the user's agent CLI in the
- * worktree's terminal, for their own questions there: a new Claude Code session that starts with
- * it as context (handoff.rs), or the agent already running there. Another CLI gets it on the
+ * worktree's terminal, for their own questions there: as a paste would put it, in a new Claude Code
+ * session's prompt box (handoff.rs), or the agent already running there. Another CLI gets it on the
  * clipboard, as it has no way in at start.
  */
 
@@ -22,10 +22,13 @@ function handoff(a: Ask) {
   return { settings: s, context: handoffContext({ ...a, language: s.reviewLanguage }), prompt: risk ? riskPrompt(a.checkedOut) : null };
 }
 
-/** The context and what's asked, as one prompt to paste. */
-const asPrompt = (context: string, prompt: string | null) => `${context}\n\n${prompt ?? "My question: "}`;
+/**
+ * The context and what's asked, as one prompt to paste. Sent as it is (pasting, then Enter, is the
+ * habit), it has the agent say it's ready rather than answer a question that isn't there.
+ */
+const asPrompt = (context: string, prompt: string | null) => `${context}\n\n${prompt ?? "My question follows. If none does, just say in one line that you're ready, and wait for it."}`;
 
-/** In a new terminal tab of `root`: Claude Code with the review as context, or another CLI with it on the clipboard. */
+/** In a new terminal tab of `root`: Claude Code with the review in its prompt box (a risk sent), or another CLI with it on the clipboard. */
 export async function askAgent(root: string, a: Ask) {
   const { settings, context, prompt } = handoff(a);
   const { command, models, efforts } = reviewAgent(settings);
@@ -44,8 +47,8 @@ export async function askAgent(root: string, a: Ask) {
       model: (preset && modelOf(preset, models)) || null,
       effort: (preset && effortOf(preset, efforts)) || null,
       name: handoffName(a.sel, a.about),
-      context,
-      prompt,
+      text: asPrompt(context, prompt),
+      send: !!prompt,
     });
     openTerminal(root, line);
   } catch (e) {

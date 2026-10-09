@@ -131,8 +131,8 @@ export function ReviewSection() {
           <div className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground">Find Risks sends the same change after this instead:</div>
           <pre className="mt-2 rounded-md border border-border bg-background px-3 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap text-muted-foreground">{risksPrompt(s.reviewLanguage)}</pre>
           <div className="mt-3 text-[11.5px] leading-relaxed text-muted-foreground">
-            Ask Agent and Send to Agent open a new terminal tab: Claude Code starts with that part of the review as context (from a file only you can read, kept for a day) and this page's model and effort; codex, opencode and pi start with it on the clipboard. Their menu pastes it into
-            the agent already running in the worktree instead, without pressing Enter.
+            Ask Agent opens a new terminal tab where Claude Code starts with that part of the review in its prompt box, for your question after it, and with this page's model and effort; Send to Agent sends a risk right away. codex, opencode and pi start with it on the clipboard. Their
+            menu pastes it into the agent already running in the worktree instead, without pressing Enter.
           </div>
         </div>
       </Group>
