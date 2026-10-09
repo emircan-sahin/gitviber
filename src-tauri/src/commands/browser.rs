@@ -79,7 +79,7 @@ pub async fn browser_clear_data(app: AppHandle) -> Res<()> {
     blocking(move || browser::clear_data(&app)).await
 }
 
-/// What the terminals `ptys` run serves on: their shells' process trees' listening TCP ports.
+/// The TCP ports the programs in terminals `ptys` listen on, everything under their shells.
 #[tauri::command]
 pub async fn browser_ports(state: State<'_, AppState>, ptys: Vec<u32>) -> Res<Vec<ports::Port>> {
     let shells: Vec<u32> = ptys.iter().filter_map(|&id| state.ptys.shell(id)).collect();

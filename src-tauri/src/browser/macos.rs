@@ -33,8 +33,8 @@ use objc2_foundation::{
 use objc2_web_kit::{
     WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
     WKNavigationResponse, WKNavigationResponsePolicy, WKNavigationType, WKOpenPanelParameters,
-    WKUIDelegate, WKUserContentController, WKWebView, WKWebViewConfiguration, WKWebsiteDataStore,
-    WKWindowFeatures,
+    WKSnapshotConfiguration, WKUIDelegate, WKUserContentController, WKWebView,
+    WKWebViewConfiguration, WKWebsiteDataStore, WKWindowFeatures,
 };
 use serde::Serialize;
 use std::cell::{Cell, OnceCell, RefCell};
@@ -68,10 +68,10 @@ const COALESCE_SECS: f64 = 0.1;
 const DIALOGS: usize = 3;
 const DIALOG_WINDOW: Duration = Duration::from_secs(10);
 
-/// Asked once a page loads: whether a dev server reloads it on a change by itself (Vite,
-/// webpack's hot client, Next's React Refresh). A page that does isn't reloaded when an agent
-/// finishes, which would lose its state for nothing.
-const HMR_PROBE: &str = r#"!!(document.querySelector('script[src*="/@vite/client"],script[src*="react-refresh"],script[src*="webpack-dev-server"],script[src*="hot-update"]') || window.__vite_plugin_react_preamble_installed__ || Object.keys(window).some((k) => k.startsWith("webpackHotUpdate")))"#;
+/// Asked as an agent finishes: whether a dev server reloads the page on a change by itself
+/// (Vite, webpack, Next, Turbopack, Parcel). One that does isn't reloaded, which would lose its
+/// state for nothing.
+const HMR_PROBE: &str = r#"!!(document.querySelector('script[src*="/@vite/client"],script[src*="react-refresh"],script[src*="webpack-dev-server"],script[src*="hot-update"],script[src*="hmr-client"]') || window.__vite_plugin_react_preamble_installed__ || Object.keys(window).some((k) => /^(webpackHotUpdate|__turbopack|TURBOPACK|parcelHotUpdate)/.test(k)))"#;
 
 const GONE: &str = "This browser tab is closed.";
 
@@ -253,8 +253,12 @@ struct DelegateIvars {
     failed: RefCell<Option<Failed>>,
     /// When the last few alert() and confirm() showed.
     dialogs: RefCell<Vec<Instant>>,
-    /// The page has a dev server's hot reload (HMR_PROBE), as of its last load.
-    hmr: Cell<bool>,
+    /// The page has loaded something since the view was made: a parked page's picture can go.
+    committed: Cell<bool>,
+    /// The hide's park timer pending (gvParkDue:), its argument, to cancel it by.
+    timer: RefCell<Option<Retained<NSNumber>>>,
+    /// When the view last went out of its tab's sight, for a timer set again (`configure`).
+    hidden_at: Cell<Option<Instant>>,
     /// The page's process ended once since the user last sent it somewhere: the next time it
     /// stays down, or a page that kills it on load would reload forever.
     crashed: Cell<bool>,
@@ -285,8 +289,9 @@ define_class!(
         /// A park timer (`hide`): `since` is the hide that set it.
         #[unsafe(method(gvParkDue:))]
         fn park_due(&self, since: &NSNumber) {
+            self.ivars().timer.take();
             let (id, since) = (&self.ivars().id, since.unsignedLongLongValue());
-            if VIEWS.with_borrow(|r| r.still_hidden(id, since)) {
+            if PARK_AFTER.get() > 0 && VIEWS.with_borrow(|r| r.still_hidden(id, since)) {
                 begin_park(id, since);
             }
         }
@@ -361,22 +366,8 @@ define_class!(
         #[unsafe(method(webView:didCommitNavigation:))]
         fn did_commit(&self, _web: &WKWebView, _navigation: Option<&WKNavigation>) {
             self.ivars().failed.take();
-            self.ivars().hmr.set(false);
+            self.ivars().committed.set(true);
             self.changed();
-        }
-
-        #[unsafe(method(webView:didFinishNavigation:))]
-        fn did_finish(&self, web: &WKWebView, _navigation: Option<&WKNavigation>) {
-            let delegate = Weak::new(self);
-            let block = RcBlock::new(move |found: *mut AnyObject, _error: *mut NSError| {
-                // A JS boolean comes back as an NSNumber.
-                let found: Option<&AnyObject> = unsafe { found.as_ref() };
-                let yes = found.and_then(|f| f.downcast_ref::<NSNumber>()).is_some_and(|n| n.boolValue());
-                if let Some(d) = delegate.load() {
-                    d.ivars().hmr.set(yes);
-                }
-            });
-            unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(HMR_PROBE), Some(&block)) };
         }
 
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
@@ -514,7 +505,9 @@ impl Delegate {
             going: RefCell::default(),
             failed: RefCell::default(),
             dialogs: RefCell::default(),
-            hmr: Cell::new(false),
+            committed: Cell::new(false),
+            timer: RefCell::default(),
+            hidden_at: Cell::new(None),
             crashed: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
@@ -533,9 +526,10 @@ impl Delegate {
         self.changed();
     }
 
-    /// A dialog only from the page on show, and only a few at a time; the rest answer at once.
+    /// A dialog only from the page on show in its tab (a toast over it doesn't count), and only
+    /// a few at a time; the rest answer at once.
     fn may_ask(&self, web: &WKWebView) -> bool {
-        if web.isHiddenOrHasHiddenAncestor() {
+        if web.window().is_none() || !VIEWS.with_borrow(|r| r.shown(&self.ivars().id)) {
             return false;
         }
         let now = Instant::now();
@@ -594,6 +588,7 @@ impl Delegate {
             can_forward: unsafe { web.canGoForward() },
             insecure,
             failed: self.ivars().failed.borrow().clone(),
+            committed: self.ivars().committed.get(),
         }
     }
 }
@@ -690,10 +685,11 @@ pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) ->
             snapshot: None,
         });
     }
-    let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
-    let page = match parked.as_ref().map(|p| web_page(&p.url)) {
-        Some(Ok(page)) => page,
-        _ => web_page(url)?,
+    // Where it parked, else where the tab says; the parked entry goes only once a view is made.
+    let parked_at = VIEWS.with_borrow(|r| r.parked(id).and_then(|p| web_page(&p.url).ok()));
+    let page = match parked_at {
+        Some(page) => page,
+        None => web_page(url)?,
     };
     let ns_window = window
         .ns_window()
@@ -702,6 +698,7 @@ pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) ->
     let content = unsafe { ns_window.as_ref() }
         .and_then(|w| w.contentView())
         .ok_or("The window isn't ready.")?;
+    let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
 
     let config = unsafe { WKWebViewConfiguration::new(mtm) };
     unsafe {
@@ -792,6 +789,7 @@ pub fn place(id: &str, rect: Rect) -> Res<()> {
     }
     v.host.setHidden(false);
     VIEWS.with_borrow_mut(|r| r.show(id));
+    stop_timer(&v);
     Ok(())
 }
 
@@ -802,25 +800,55 @@ pub fn hide(id: &str, aside: bool) {
         return;
     };
     release_focus(&v);
-    v.host.setHidden(true);
     if aside {
+        v.host.setHidden(true);
         return;
     }
+    // Its picture while it still shows: hidden, WebKit may never give one. It parks with it.
+    let picture_of = id.to_string();
+    take_snapshot(&v.web, move |shot| {
+        VIEWS.with_borrow_mut(|r| r.set_picture(&picture_of, shot));
+    });
+    v.host.setHidden(true);
     let Some((since, over)) = VIEWS.with_borrow_mut(|r| r.hide(id)) else {
         return;
     };
-    let minutes = PARK_AFTER.get();
-    if minutes > 0 {
-        // One timer for this hide, never a poll; a later show or hide makes it moot (park_due).
-        let since = NSNumber::new_u64(since);
-        let delay = f64::from(minutes) * 60.0;
-        unsafe {
-            v.delegate
-                .performSelector_withObject_afterDelay(sel!(gvParkDue:), Some(&since), delay)
-        };
-    }
+    v.delegate.ivars().hidden_at.set(Some(Instant::now()));
+    start_timer(&v, since, Duration::ZERO);
     for (id, since) in over {
         begin_park(&id, since);
+    }
+}
+
+/// The hide numbered `since`'s one park timer, never a poll, from `elapsed` into it: a show
+/// stops it, a later hide replaces it, and with parking off there is none.
+fn start_timer(v: &View, since: u64, elapsed: Duration) {
+    stop_timer(v);
+    let minutes = PARK_AFTER.get();
+    if minutes == 0 {
+        return;
+    }
+    let after = Duration::from_secs(u64::from(minutes) * 60).saturating_sub(elapsed);
+    let since = NSNumber::new_u64(since);
+    unsafe {
+        v.delegate.performSelector_withObject_afterDelay(
+            sel!(gvParkDue:),
+            Some(&since),
+            after.as_secs_f64(),
+        )
+    };
+    *v.delegate.ivars().timer.borrow_mut() = Some(since);
+}
+
+fn stop_timer(v: &View) {
+    if let Some(since) = v.delegate.ivars().timer.take() {
+        unsafe {
+            NSObject::cancelPreviousPerformRequestsWithTarget_selector_object(
+                &v.delegate,
+                sel!(gvParkDue:),
+                Some(&since),
+            )
+        };
     }
 }
 
@@ -830,30 +858,35 @@ pub fn configure(live_hidden: u32, park_after_min: u32) {
         return;
     }
     PARK_AFTER.set(park_after_min);
+    // The pages already hidden go by the new timing, from when each hid.
+    for (id, since) in VIEWS.with_borrow(|r| r.hidden()) {
+        if let Some(v) = view(&id) {
+            let elapsed = v.delegate.ivars().hidden_at.get().map(|at| at.elapsed());
+            start_timer(&v, since, elapsed.unwrap_or_default());
+        }
+    }
+    // Settings bound it (BROWSER_LIVE_HIDDEN); this only keeps a stray value in reach.
     let live_hidden = usize::try_from(live_hidden.min(4)).unwrap_or(4);
     for (id, since) in VIEWS.with_borrow_mut(|r| r.set_live_hidden(live_hidden)) {
         begin_park(&id, since);
     }
 }
 
-/// Parks a hidden view: its picture taken, then the view closed, unless it showed meanwhile.
+/// Parks a hidden view at once, with the picture taken as it hid (or none): never waiting on
+/// WebKit, which may not draw a hidden view at all.
 fn begin_park(id: &str, since: u64) {
     let Some(v) = view(id) else {
         return;
     };
-    let url = url_text(unsafe { v.web.URL() });
-    let app = v.delegate.ivars().app.clone();
-    let id = id.to_string();
-    take_snapshot(&v.web, move |snapshot| {
-        let parked = Parked {
-            url: url.clone(),
-            snapshot,
-        };
-        if let Some(v) = VIEWS.with_borrow_mut(|r| r.park(&id, since, parked)) {
-            destroy(v);
-            emit(&app, "browser-parked", Id { id: &id });
-        }
-    });
+    let parked = Parked {
+        url: url_text(unsafe { v.web.URL() }),
+        snapshot: None,
+    };
+    if let Some(v) = VIEWS.with_borrow_mut(|r| r.park(id, since, parked)) {
+        let app = v.delegate.ivars().app.clone();
+        destroy(v);
+        emit(&app, "browser-parked", Id { id });
+    }
 }
 
 pub fn close(id: &str) {
@@ -943,10 +976,26 @@ pub fn agent_done(dir: &str) {
     let root = root_key(dir);
     let views: Vec<View> = VIEWS.with_borrow(|r| r.within(&root).into_iter().cloned().collect());
     for v in views {
-        let d = v.delegate.ivars();
-        if !d.hmr.get() && d.failed.borrow().is_none() {
-            unsafe { drop(v.web.reload()) };
+        if v.delegate.ivars().failed.borrow().is_some() {
+            continue;
         }
+        // Asked now, of the page as it is: reloaded when no dev server does it already.
+        let web = Weak::new(&*v.web);
+        let reload = RcBlock::new(move |found: *mut AnyObject, _error: *mut NSError| {
+            // SAFETY: WebKit's answer, an object or nil, alive for this call.
+            let found = unsafe { found.as_ref() };
+            let hot = found
+                .and_then(|f| f.downcast_ref::<NSNumber>())
+                .is_some_and(|n| n.boolValue());
+            if let (false, Some(web)) = (hot, web.load()) {
+                unsafe { drop(web.reload()) };
+            }
+        });
+        let probe = NSString::from_str(HMR_PROBE);
+        unsafe {
+            v.web
+                .evaluateJavaScript_completionHandler(&probe, Some(&reload))
+        };
     }
 }
 
@@ -1018,11 +1067,17 @@ pub fn snapshot(app: &AppHandle, id: String) -> Res<Option<String>> {
     Ok(rx.recv_timeout(Duration::from_secs(2)).ok().flatten())
 }
 
+/// The page as drawn now: not after the next screen update, which a view about to be hidden
+/// may never have.
 fn take_snapshot(web: &WKWebView, done: impl Fn(Option<String>) + 'static) {
     let block = RcBlock::new(move |image: *mut NSImage, _error: *mut NSError| {
         done(unsafe { image.as_ref() }.and_then(jpeg));
     });
-    unsafe { web.takeSnapshotWithConfiguration_completionHandler(None, &block) };
+    unsafe {
+        let now = WKSnapshotConfiguration::new(web.mtm());
+        now.setAfterScreenUpdates(false);
+        web.takeSnapshotWithConfiguration_completionHandler(Some(&now), &block)
+    };
 }
 
 fn jpeg(image: &NSImage) -> Option<String> {

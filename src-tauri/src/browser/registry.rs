@@ -1,5 +1,5 @@
 //! The open views and the memory policy over them, apart from AppKit so it can be tested. Each
-//! live view is a WebContent process (17 MB for a plain page, 150 MB and up for a heavy dev app):
+//! live view is a WebContent process (about 20 MB for a plain page, 150 MB and up for a dev app):
 //! a few hidden ones stay alive to come back at once, and the rest park. A parked view is closed,
 //! its address and a picture of it kept, and loads again when its tab shows.
 
@@ -17,6 +17,8 @@ struct Entry<V> {
     id: String,
     root: String,
     state: State<V>,
+    /// The page as it last showed, taken as it went out of sight: what it parks with.
+    picture: Option<String>,
 }
 
 enum State<V> {
@@ -82,6 +84,7 @@ impl<V> Registry<V> {
             id: id.into(),
             root: root.into(),
             state: State::Shown(view),
+            picture: None,
         });
     }
 
@@ -174,6 +177,42 @@ impl<V> Registry<V> {
         hidden.split_off(self.live_hidden.min(hidden.len()))
     }
 
+    /// A parked view, left where it is.
+    pub fn parked(&self, id: &str) -> Option<&Parked> {
+        self.views.iter().find_map(|e| match &e.state {
+            State::Parked(p) if e.id == id => Some(p),
+            _ => None,
+        })
+    }
+
+    /// Whether the view is on show in its tab (something may still be drawn over it).
+    pub fn shown(&self, id: &str) -> bool {
+        self.views
+            .iter()
+            .any(|e| e.id == id && matches!(e.state, State::Shown(_)))
+    }
+
+    /// The hidden views, with their hides' numbers.
+    pub fn hidden(&self) -> Vec<(String, u64)> {
+        self.views
+            .iter()
+            .filter_map(|e| match e.state {
+                State::Hidden(_, since) => Some((e.id.clone(), since)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The page's picture, which may come after it parked: then it's the parked one's.
+    pub fn set_picture(&mut self, id: &str, picture: Option<String>) {
+        if let Some(e) = self.entry(id) {
+            match &mut e.state {
+                State::Parked(p) => p.snapshot = picture,
+                _ => e.picture = picture,
+            }
+        }
+    }
+
     /// Whether the hide numbered `since` still stands: the view hasn't shown or closed since.
     pub fn still_hidden(&self, id: &str, since: u64) -> bool {
         self.views
@@ -182,13 +221,17 @@ impl<V> Registry<V> {
     }
 
     /// Parks a view hidden since `since`, giving its view to close; None when it showed again
-    /// (or closed) while its picture was taken.
-    pub fn park(&mut self, id: &str, since: u64, parked: Parked) -> Option<V> {
+    /// (or closed) since. With no picture of its own, it keeps the one taken as it hid.
+    pub fn park(&mut self, id: &str, since: u64, mut parked: Parked) -> Option<V> {
         if !self.still_hidden(id, since) {
             return None;
         }
+        let e = self.entry(id)?;
+        if parked.snapshot.is_none() {
+            parked.snapshot = e.picture.take();
+        }
         let mut view = None;
-        self.entry(id)?.restate(|s| match s {
+        e.restate(|s| match s {
             State::Hidden(v, _) => {
                 view = Some(v);
                 State::Parked(parked)
@@ -289,6 +332,42 @@ mod tests {
         r.insert("a", "/w", 2);
         assert_eq!(r.unpark("a"), None, "a live view isn't parked");
         assert_eq!(r.get("a"), Some(&2));
+    }
+
+    #[test]
+    fn a_park_keeps_the_picture_taken_as_the_view_hid_even_one_that_comes_later() {
+        let mut r = Registry::new();
+        r.insert("a", "/w", 1);
+        r.insert("b", "/w", 2);
+        let (a, _) = r.hide("a").unwrap();
+        r.set_picture("a", Some("data:a".into()));
+        assert!(!r.shown("a") && r.shown("b"));
+        assert_eq!(r.hidden(), [("a".to_string(), a)]);
+        let none = Parked {
+            url: "http://x.test/".into(),
+            snapshot: None,
+        };
+        assert_eq!(r.park("a", a, none), Some(1));
+        assert_eq!(
+            r.parked("a").and_then(|p| p.snapshot.as_deref()),
+            Some("data:a")
+        );
+        // Parked before its picture came: the picture still finds it.
+        let (b, _) = r.hide("b").unwrap();
+        r.park(
+            "b",
+            b,
+            Parked {
+                url: "http://y.test/".into(),
+                snapshot: None,
+            },
+        );
+        r.set_picture("b", Some("data:b".into()));
+        assert_eq!(
+            r.unpark("b").and_then(|p| p.snapshot),
+            Some("data:b".to_string())
+        );
+        assert!(r.hidden().is_empty());
     }
 
     #[test]

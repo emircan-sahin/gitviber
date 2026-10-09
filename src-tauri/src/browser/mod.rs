@@ -43,6 +43,8 @@ pub struct PageState {
     pub insecure: bool,
     /// The page that never loaded (no server on that port, say), shown by the app page instead.
     pub failed: Option<Failed>,
+    /// The page has loaded something since its view was made: a parked page's picture can go.
+    pub committed: bool,
 }
 
 /// A view made, or found open: its page, and the picture from when it parked, which stands in
@@ -165,7 +167,7 @@ mod other {
         Ok(false)
     }
     pub fn clear_data(_: &tauri::AppHandle) -> Res<()> {
-        Ok(())
+        Err(UNSUPPORTED.into())
     }
     pub fn snapshot(_: &tauri::AppHandle, _: String) -> Res<Option<String>> {
         Ok(None)

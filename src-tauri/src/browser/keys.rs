@@ -42,11 +42,8 @@ pub fn route_now(k: &Key) -> Route {
     route(k, &APP_KEYS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
-/// Who a key goes to: a chord bound to one of the app's commands goes to the app, anything else
-/// stays the page's. Editing stays the page's even when bound (⌘Z is also Undo Git Action), and
-/// on a layout that doesn't type ASCII a key counts by where it sits, so ⌘C on Cyrillic is still
-/// copy. Bindings match as commands.ts's eventChords does: by what's typed, and punctuation by
-/// its key too; a letter matched by its key alone would leave the app with a key it can't run.
+/// Who a key goes to: a chord bound to one of the app's commands, matched as commands.ts's
+/// eventChords matches it, goes to the app; editing and anything else stay the page's.
 pub fn route(k: &Key, app: &HashSet<String>) -> Route {
     let (cmd, ctrl, alt, shift) = (k.meta_key, k.ctrl_key, k.alt_key, k.shift_key);
     if !(cmd || ctrl) {
