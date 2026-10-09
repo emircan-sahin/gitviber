@@ -205,9 +205,10 @@ pub fn serve(app: tauri::AppHandle) {
 /// leaves prompts unanswered, as before.
 pub fn start(helper: PathBuf, emit: impl Fn(Event) -> bool + Send + Sync + 'static) {
     #[cfg(unix)]
-    std::thread::spawn(unix::sweep_dead);
-    #[cfg(unix)]
     if let Some(server) = unix::listen(helper, Box::new(emit), PROMPT_TIMEOUT) {
+        // Once this launch's own socket listens, and past it.
+        let ours = server.socket.parent().map(Path::to_path_buf);
+        std::thread::spawn(move || unix::sweep_dead(ours.as_deref()));
         if SERVER.set(server).is_ok() {
             unix::remove_at_exit();
         }
@@ -380,18 +381,20 @@ mod unix {
     }
 
     /// Removes the folders of launches that never got to remove their own (a crash, or `tauri
-    /// dev` restarting the app): a socket nothing listens on any more.
-    pub(super) fn sweep_dead() {
+    /// dev` restarting the app): a socket nothing listens on any more, never `ours`. A live launch
+    /// whose backlog is full refuses for a moment too, and would lose its folder: that takes a few
+    /// hundred prompts waiting at once.
+    pub(super) fn sweep_dead(ours: Option<&Path>) {
         let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
             return;
         };
         for entry in entries.flatten() {
             let name = entry.file_name();
-            let ours = name
+            let name_ours = name
                 .to_str()
                 .and_then(|n| n.strip_prefix("gitviber-"))
                 .is_some_and(|hex| hex.len() == 12 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
-            if !ours {
+            if !name_ours || Some(entry.path().as_path()) == ours {
                 continue;
             }
             let refused = UnixStream::connect(entry.path().join("askpass"))
@@ -556,7 +559,7 @@ mod unix {
             }
             drop(UnixListener::bind(dead.join("askpass")).unwrap());
             let _listening = UnixListener::bind(live.join("askpass")).unwrap();
-            sweep_dead();
+            sweep_dead(None);
             assert!(!dead.exists());
             assert!(live.exists());
             let _ = std::fs::remove_dir_all(&live);
