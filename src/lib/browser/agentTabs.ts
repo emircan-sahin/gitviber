@@ -2,20 +2,26 @@ import { useEffect } from "react";
 import { listenHere } from "../app/settingsWindow";
 import type { Selection } from "../repo/selection";
 import { createStore } from "../store";
-import { paneOfPty } from "../terminal/terminals";
+import { paneLabel } from "../terminal/terminals";
 import type { DeviceChoice } from "./devices";
 
 // Tabs an agent opened with `gitviber browser` (browser/macos/agent.rs), and the devices it showed
-// them as, for the workspace they belong to: taken in once it's open, never made the active tab.
+// them as, for the workspace they belong to (`root`: the folder its pane opened in, as pty.rs
+// keeps it): taken in once it's open, never made the active tab.
 
 type BrowserSelection = Extract<Selection, { kind: "browser" }>;
 
 const opened = createStore<readonly { root: string; sel: BrowserSelection }[]>([]);
+// Whose each is, by tab id, for as long as this page lives: the backend sends a pane's commands
+// to its tab until then (browser/control.rs Routes), and a reload starts them afresh.
+const owners = createStore<ReadonlyMap<string, number>>(new Map());
 listenHere<{ id: string; url: string; root: string; pty: number }>("browser-open", ({ payload: { id, url, root, pty } }) => {
-  // The pane's own folder is the one its workspace goes by; the backend's is found from the command's.
-  const at = paneOfPty(pty)?.cwd ?? root;
-  opened.set([...opened.get(), { root: at, sel: { kind: "browser", id, url, agent: { pty } } }]);
+  owners.set(new Map(owners.get()).set(id, pty));
+  opened.set([...opened.get(), { root, sel: { kind: "browser", id, url } }]);
 }).catch(() => {});
+
+/** The terminal (pty) whose agent opened tab `id`; undefined for the user's own tabs. */
+export const useAgentPty = (id: string) => owners.use().get(id);
 
 const devices = createStore<ReadonlyMap<string, DeviceChoice | null>>(new Map());
 listenHere<{ id: string; device: DeviceChoice | null }>("browser-device", ({ payload: { id, device } }) => devices.set(new Map(devices.get()).set(id, device))).catch(() => {});
@@ -46,6 +52,6 @@ export function useAgentTabs(root: string, tabs: readonly { key: string; sel: Se
 
 /** What an agent's tab says it is, by the pane whose agent opened it. */
 export function agentTabTitle(pty: number, page: string): string {
-  const pane = paneOfPty(pty);
-  return `${page}\nOpened by the agent in ${pane ? `“${pane.label}”` : "a terminal pane since closed"}`;
+  const pane = paneLabel(pty);
+  return `${page}\nOpened by the agent in ${pane ? `“${pane}”` : "a terminal pane since closed"}`;
 }

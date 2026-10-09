@@ -17,7 +17,7 @@ import { browserApi, github } from "@/lib/api";
 import { failed } from "@/lib/app/toast";
 import { pageHost, pageLabel } from "@/lib/browser/url";
 import { useBrowserState } from "@/lib/browser/store";
-import { agentTabTitle } from "@/lib/browser/agentTabs";
+import { agentTabTitle, useAgentPty } from "@/lib/browser/agentTabs";
 import { type Tab, type TabGroup, tabGroup } from "./tabs";
 
 interface Props {
@@ -148,6 +148,7 @@ function TabItem({
   const unsaved = useEdited().has(editPath(t.sel) ?? "");
   const closeKey = useShortcut("tab.close");
   const closeOthersKey = useShortcut("tab.closeOthers");
+  const agentPty = useAgentPty(t.sel.kind === "browser" ? t.sel.id : "");
   const el = useRef<HTMLDivElement | null>(null);
   // Runs before the node leaves the page, while it can still say whether it had focus.
   useLayoutEffect(
@@ -165,7 +166,7 @@ function TabItem({
       }}
       role="tab"
       aria-selected={isActive}
-      title={t.sel.kind === "browser" && t.sel.agent ? agentTabTitle(t.sel.agent.pty, selectionPath(t.sel)) : selectionPath(t.sel)}
+      title={agentPty === undefined ? selectionPath(t.sel) : agentTabTitle(agentPty, selectionPath(t.sel))}
       tabIndex={tabStop ? 0 : -1}
       onClick={guard(() => onActivate(t.key))}
       onDoubleClick={() => onPin(t.key)}
@@ -189,7 +190,7 @@ function TabItem({
       ) : t.sel.kind === "guide" ? (
         <Sparkles className="size-4 shrink-0 text-subtle" />
       ) : t.sel.kind === "browser" ? (
-        t.sel.agent ? (
+        agentPty !== undefined ? (
           <Bot className="size-4 shrink-0 text-subtle" aria-label="Opened by an agent" />
         ) : (
           <Globe className="size-4 shrink-0 text-subtle" />

@@ -618,11 +618,11 @@ export function focusTerminalPane(id: number) {
 /** Where a pane's shell was last seen (shellDir). */
 export const paneDir = (id: number) => panes.get(id)?.dir;
 
-/** The pane a shell runs in, by its pty (GITVIBER_PTY): where it opened, and what it's called. */
-export function paneOfPty(pty: number): { cwd: string; label: string } | null {
+/** What the pane a shell runs in is called, by its pty (GITVIBER_PTY); null once it's closed. */
+export function paneLabel(pty: number): string | null {
   const pane = [...panes.values()].find((p) => p.pty === pty);
   const info = pane && state.groups.flatMap((g) => g.panes).find((p) => p.id === pane.id);
-  return pane && info ? { cwd: pane.cwd, label: info.name || info.title || "Terminal" } : null;
+  return info ? info.name || info.title || "Terminal" : null;
 }
 
 /** False when the user kept it. */

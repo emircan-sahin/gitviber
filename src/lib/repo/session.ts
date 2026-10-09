@@ -47,13 +47,7 @@ const all = (key: string) => readJson(key, {}, isRecord);
 /** Stores `value` under `root` (null removes it), keeping the MAX most recently saved roots. */
 const put = (key: string, root: string, value: unknown) => putRecent(key, root, value, MAX);
 
-// Roots loaded since the app page did: an agent's tab from before is the user's now, as its pane
-// and what sent its commands to it (browser/control.rs Routes) are gone.
-const loadedSince = new Set<string>();
-
 export function loadWorkspace(root: string): WorkspaceSnapshot | null {
-  const fresh = !loadedSince.has(root);
-  loadedSince.add(root);
   const s = all(KEY)[root] as WorkspaceSnapshot | undefined;
   if (!s || !Array.isArray(s.tabs) || !Array.isArray(s.viewed)) return null;
   // Keys are re-derived: their format changes (PRs went from number to url), and a stale key
@@ -71,10 +65,9 @@ export function loadWorkspace(root: string): WorkspaceSnapshot | null {
   };
   // A browser tab with a device this build can't read shows its page as itself.
   const clean = (sel: Selection): Selection => {
-    if (sel.kind !== "browser") return sel;
-    const { device, agent, ...rest } = sel;
-    const ownAgent = !fresh && typeof agent?.pty === "number";
-    return { ...rest, ...(device === undefined || !isDeviceChoice(device) ? {} : { device }), ...(ownAgent ? { agent } : {}) };
+    if (sel.kind !== "browser" || sel.device === undefined || isDeviceChoice(sel.device)) return sel;
+    const { device: _, ...rest } = sel;
+    return rest;
   };
   const tabs = s.tabs.flatMap((t) => {
     const sel = typeof t?.sel?.kind === "string" ? clean(t.sel) : t?.sel;
