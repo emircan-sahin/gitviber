@@ -6,6 +6,17 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+### Added
+
+- **A browser in a tab.** `⇧⌘B` or the globe in the top bar opens a web page beside the code, on WebKit as Safari is: an address bar that takes `localhost:3000` as typed, back, forward and reload, the Web Inspector on `⌥⌘I`, and its own cookies and storage, apart from the app's. On Linux a tab shows localhost pages only.
+- **Open a dev server's port from the terminal.** A terminal pane's right-click menu lists the ports its programs listen on, and the address bar lists every port the worktree's terminals serve.
+- **Device mode (`⇧⌘M`).** Eleven phones and tablets drawn around the page, notch, corners and bezel included, upright or turned, or Responsive at any size you drag it to; the page gets the device's width, pixel ratio and user agent.
+- **Pick an element for the agent (`⇧⌘C`).** Click an element on the page and write a note: the worktree's agent gets its selector, React components, styles and a picture of it, pasted into its terminal.
+- **The page's console.** A badge counts the page's errors and warnings, failed requests included; the panel lists them, and Send Errors hands them to the agent.
+- **Find in the page, zoom it, and show it light or dark.** `⌘F` with `⌘G` / `⇧⌘G`, `⌘=` / `⌘−` / `⌘0` from 50% to 300%, and a switch for the page's `prefers-color-scheme`; each tab keeps its zoom and scheme.
+- **Agents can use the browser.** Turn it on in Settings → Browser, and each terminal pane's agent gets a tab of its own, opened in the background: `gitviber browser` opens pages, reads them as a tree it can act on, clicks, types, waits, takes screenshots, reads the console and shows the page as a device. `gitviber browser help` lists every command; Settings has a note to paste into `CLAUDE.md` or `AGENTS.md`.
+- **Pages give their memory back.** A page out of sight closes after a while and comes back where it was, its picture standing in until it loads; Settings → Browser sets how many stay open and for how long, can reload a worktree's pages when its agent finishes, and clears the browsing data.
+
 ## [0.1.12] - 2026-10-08
 
 ### Fixed
