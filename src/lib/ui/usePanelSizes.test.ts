@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { register } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 // The real usePanelSizes against the real react-resizable-panels layout code: the library's own
@@ -25,6 +25,7 @@ export async function resolve(spec, ctx, next) {
 
 const require = (p: string) => fileURLToPath(new URL(p, import.meta.url));
 const lib = mkdtempSync(join(tmpdir(), "rrp-"));
+after(() => rmSync(lib, { recursive: true, force: true }));
 const map = JSON.parse(readFileSync(require("../../../node_modules/react-resizable-panels/dist/react-resizable-panels.js.map"), "utf8"));
 map.sources.forEach((s: string, i: number) => {
   const p = join(lib, s.replace(/^(\.\.\/)+/, ""));

@@ -9,6 +9,8 @@
   let outline = null;
   let hovered = null;
   let nonce = "";
+  // Each pick's own tag on its element, the nonce and its number: ⇧-clicks may tag a few at once.
+  let picks = 0;
 
   const post = (message) => window.webkit.messageHandlers.gvPick.postMessage(JSON.stringify(message));
 
@@ -57,10 +59,10 @@
       text: cut((el.innerText || "").trim(), 200),
       box: { x: box.x, y: box.y, w: box.width, h: box.height },
       styles: Object.fromEntries(STYLES.map((s) => [s, computed.getPropertyValue(s)])),
-      nonce,
+      nonce: `${nonce}:${++picks}`,
     };
     // Read above, before it: for the page's own world, which reads React's fiber off the element.
-    el.setAttribute("data-gv-pick", nonce);
+    el.setAttribute("data-gv-pick", found.nonce);
     return found;
   };
 
@@ -80,11 +82,13 @@
   };
 
   const onMove = (e) => show(target(e));
+  // ⇧-click adds the element and picks on; a click picks the last one.
   const onClick = (e) => {
     swallow(e);
     const el = target(e) || hovered;
-    stop();
-    post(el ? { pick: pick(el) } : { cancelled: true });
+    const more = !!el && e.shiftKey;
+    if (!more) stop();
+    post(el ? { pick: { ...pick(el), more } } : { cancelled: true });
   };
   const onKey = (e) => {
     if (e.key !== "Escape") return;
@@ -106,6 +110,7 @@
   function start(next) {
     stop();
     nonce = next;
+    picks = 0;
     host = document.createElement("div");
     // A closed shadow root: the page's styles and scripts can't reach the outline.
     const root = host.attachShadow({ mode: "closed" });

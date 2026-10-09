@@ -1,13 +1,18 @@
-import { copyText } from "../app/clipboard";
 import { forTerminal } from "../review/notes";
-import { pasteToWorktree } from "../terminal/terminals";
+import { asPrompt, startAgentWith } from "../terminal/handoff";
 
 /**
- * Text from a browser tab for `root`'s agent: pasted into its terminal (the agent's pane, else
- * the one last used), not sent, as review notes go. With no terminal there, copied instead.
+ * Something from a browser tab (a picked element, the page's errors) for `root`'s agent, as Ask Agent
+ * hands a review: a new session in a terminal tab there with it in the prompt box, sent with the
+ * user's question, left there for them without one.
  */
-export function toAgent(root: string, text: string) {
-  const clean = forTerminal(text);
-  if (pasteToWorktree(root, clean)) return;
-  void copyText(clean, "No terminal in this worktree", "Copied instead: paste it where the agent runs.");
+export function askAgentAbout(root: string, content: string, name: string, question = "", model?: string) {
+  const q = question.trim();
+  void startAgentWith(root, asPrompt(forTerminal(content), q ? `My question: ${q}` : null), {
+    name,
+    send: !!q,
+    copied: "Copied for the agent",
+    failed: "Couldn't hand it to Claude Code",
+    model,
+  });
 }

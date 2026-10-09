@@ -19,6 +19,19 @@ export interface PaneAgent {
   state: AgentState | null;
 }
 
+/**
+ * What text for a worktree's agent does with the one running there (terminal/handoff.ts): goes in,
+ * waits while it works or asks something (a paste would land in its dialog or the user's draft),
+ * or a new session starts. One that doesn't report a state is taken as free.
+ */
+export type Handoff = { to: "paste" } | { to: "wait"; name: string; working: boolean } | { to: "start" };
+
+export function handoffTo(agent: Pick<PaneAgent, "name" | "state"> | undefined): Handoff {
+  if (!agent) return { to: "start" };
+  if (agent.state === "working" || agent.state === "waiting") return { to: "wait", name: agent.name, working: agent.state === "working" };
+  return { to: "paste" };
+}
+
 /** What the session save keeps of a pane's agent: one that can be resumed, and where it ran. */
 export interface SavedAgent {
   name: string;

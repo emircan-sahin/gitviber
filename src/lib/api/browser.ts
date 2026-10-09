@@ -66,6 +66,10 @@ export interface BrowserPick {
   /** Its picture, a PNG kept a day. */
   screenshot: string | null;
   url: string;
+  /** Picked with ⇧ held: one of a few, the picker still on. */
+  more?: boolean;
+  /** Its place among the picker's picks, from 1: a slow one may come after a later one. */
+  number?: number;
 }
 
 /** A line the page logged (browser/console.rs); "load" marks where a page began. */
@@ -98,8 +102,12 @@ function inOrder<T>(id: string, run: () => Promise<T>): Promise<T> {
 
 /** The browser tab's native view (commands/browser.rs); macOS only for now, the rest fail elsewhere. */
 export const browserApi = {
-  /** Tab `id`'s view in worktree `root`, loading `url`, hidden until placed; one already open stays as it is. */
-  create: (id: string, root: string, url: string, ua: string | null) => inOrder(id, () => invoke<BrowserCreated>("browser_create", { id, root, url, ua })),
+  /**
+   * Tab `id`'s view in worktree `root`, loading `url` as the tab shows it (its device's `ua`, `zoom`, `dark`: null for as
+   * the app), hidden until placed; one already open stays as it is.
+   */
+  create: (id: string, root: string, url: string, ua: string | null, zoom: number | null, dark: boolean | null) =>
+    inOrder(id, () => invoke<BrowserCreated>("browser_create", { id, root, url, ua, zoom, dark })),
   /** `screen`: the device it shows, in device mode. */
   place: (id: string, rect: NativeRect, screen: NativeScreen | null) => invoke<void>("browser_place", { id, rect, screen }),
   /** The device's user agent (null: WebKit's own), the page loaded again when it changes. */
@@ -113,6 +121,12 @@ export const browserApi = {
   focus: (id: string, page: boolean) => invoke<void>("browser_focus", { id, page }),
   /** The page as it shows, a JPEG data URL; null when there's none. */
   snapshot: (id: string) => invoke<string | null>("browser_snapshot", { id }),
+  /** The next match of `text` in the page (or the one before): whether there was one; null where WebKit can't find. */
+  find: (id: string, text: string, backwards: boolean, caseSensitive: boolean) => invoke<boolean | null>("browser_find", { id, text, backwards, caseSensitive }),
+  /** The page's zoom outside device mode, 1 for 100%. */
+  zoom: (id: string, zoom: number) => invoke<void>("browser_zoom", { id, zoom }),
+  /** The page light or dark (`prefers-color-scheme` follows), or as the app (null). */
+  appearance: (id: string, dark: boolean | null) => invoke<void>("browser_appearance", { id, dark }),
   /** Web Inspector for the page; false where it can't be opened from here. */
   inspect: (id: string) => invoke<boolean>("browser_inspect", { id }),
   /** The chords bound to the app's commands: only these leave a page (keys.rs). */

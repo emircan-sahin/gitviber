@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type AgentEntry, agentsWaiting, byUrgency, nextAgent, type PaneAgent, quitStops, restoredAgent, resumeOf, savedAgents } from "./agentState.ts";
+import { type AgentEntry, agentsWaiting, byUrgency, handoffTo, nextAgent, type PaneAgent, quitStops, restoredAgent, resumeOf, savedAgents } from "./agentState.ts";
 
 const claude = (state: PaneAgent["state"], command: string | null = "claude --resume a-1", session: string | null = "a-1"): PaneAgent => ({ name: "Claude Code", command, session, cwd: "/w", state });
 /** A change of state as the state file's watch tells it. */
@@ -113,4 +113,13 @@ test("a quit counts each pane once, agents before commands", () => {
   // An agent asking for permission is mid-turn: quitting stops it.
   assert.deepEqual(quitStops([{ busy: true, agent: claude("waiting") }]), ["1 agent working"]);
   assert.deepEqual(quitStops([{ busy: true }, { busy: true }, { busy: true, agent: claude("working") }, { busy: true, agent: claude("working") }, { busy: true, agent: claude("working") }]), ["3 agents working", "2 commands running"]);
+});
+
+test("text for a worktree's agent goes into a free one, waits for a busy one, else starts one", () => {
+  const agent = (state: PaneAgent["state"]) => ({ name: "Claude Code", state });
+  assert.deepEqual(handoffTo(undefined), { to: "start" });
+  assert.deepEqual(handoffTo(agent("idle")), { to: "paste" });
+  assert.deepEqual(handoffTo(agent(null)), { to: "paste" });
+  assert.deepEqual(handoffTo(agent("working")), { to: "wait", name: "Claude Code", working: true });
+  assert.deepEqual(handoffTo(agent("waiting")), { to: "wait", name: "Claude Code", working: false });
 });

@@ -103,6 +103,37 @@ It's made for agents too: paste a screenshot or drop files and Claude Code or Co
 paths, Shift+Enter reaches them as its own key, and on a Mac a trackpad swipe scrolls Claude
 Code's fullscreen view row by row, as it does vim and htop.
 
+### Test it in a browser
+
+Open a browser tab beside the code with `⇧⌘B` or the globe in the top bar, and check the agent's
+work where you read it. A terminal pane's right-click menu opens the ports its dev server listens
+on, and the address bar lists every port your worktree's terminals serve. Each tab is a page of its
+own, with `⌘F` to find in it, `⌘=` / `⌘−` to zoom it, a switch to show it light or dark whatever
+the app is, and the Web Inspector on `⌥⌘I`. On Linux a tab shows the pages on your own machine
+(localhost) only, without these tools.
+
+Device mode (`⇧⌘M`) draws a phone or tablet around the page, notch and corners included, and gives
+the page that device's width, pixel ratio and user agent, upright or turned; Responsive takes any
+size you drag it to. It's still your Mac's browser engine with a mouse: no touch events, hover still
+works, and `<meta name=viewport>` is ignored.
+
+`⇧⌘C` picks an element (⇧-click to gather a few, then click the last): ask what you want, pick the
+model, and a new agent session starts in your worktree's terminal with the page's address, each
+element's selector, React components, styles and a picture of it, and your question, as Ask Agent
+does with a review. The console counts the page's errors and warnings, failed requests too, and
+Send Errors to Agent asks about them the same way; a question about an element can take the
+page's errors along.
+
+A page out of sight closes after a while to give its memory back, and comes back where it was when
+you look again; Settings → Browser sets how many stay open and for how long, and can reload a
+worktree's pages when its agent finishes.
+
+Agents can drive the browser themselves once you turn it on in Settings → Browser (it's off until
+you do). Each terminal pane's agent gets a tab of its own, opened in the background without taking
+yours: it opens pages, reads them as a tree it can act on, clicks, types, takes screenshots and
+reads the console with `gitviber browser`. `gitviber browser help` lists it all, and Settings has a
+note to paste into your `CLAUDE.md` or `AGENTS.md`.
+
 ### Browse the code, not just the diff
 
 A full file explorer with change bars in the gutter, quick open (`⌘P`) and rename, create and
@@ -235,7 +266,12 @@ of GitViber, the OS, git, `gh` and WebKit, for you to paste into a bug report. M
 is cut down to GitHub's own HTML allowlist, and an image hosted outside GitHub loads only when you
 click it. Commit message suggestions go wherever the command you picked sends them. To show your
 Obsidian vault, GitViber reads Obsidian's own list of vaults on your disk; it never touches the
-vault's `.obsidian` folder.
+vault's `.obsidian` folder. Browser tabs keep their own cookies, site storage and cache, apart
+from the app's, and load pages straight from where they're served; your other browsers' sign-ins
+don't carry over, and Settings → Browser → Clear Browsing Data empties them. What an agent reads of a
+page, picks or console lines included, goes wherever that agent sends it. Letting agents use the
+browser opens a socket on your Mac only, in a folder only you can enter, that only GitViber's own
+terminals have the key to.
 
 ## FAQ
 
@@ -322,7 +358,11 @@ Reopening a closed tab and closing the other tabs have no default there either, 
 | `⌘R` | Rename the focused pane of a split terminal (in the terminal; a double-click on its header too) |
 | `⌘↑` `⌘↓` | Scroll to the previous / next command's prompt (in the terminal, with shell integration) |
 | `⌃⇧Space` | Label the links on screen: type a label to open its link, with Shift to copy it (in the terminal) |
-| `⌘=` `⌘−` `⌘0` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too) |
+| `⇧⌘B` | Open a browser tab |
+| `⌘L` `⌘R` `⌘[` `⌘]` | Address bar, reload, back, forward (in a browser tab) |
+| `⌘F` `⌘G` `⇧⌘G` | Find in the page, next / previous match (in a browser tab) |
+| `⇧⌘C` `⇧⌘M` `⌥⌘I` | Pick an element for the agent, device mode, Web Inspector (in a browser tab) |
+| `⌘=` `⌘−` `⌘0` | Zoom the interface; in the terminal, its font size (a pinch or Ctrl+scroll too); in a browser tab, the page |
 | `⌥⌘=` `⌥⌘−` `⌥⌘0` | Code font size |
 | `⌘W` | Close tab, or the terminal pane in focus |
 | `⌃⌘C` | Focus the commit message, from anywhere |

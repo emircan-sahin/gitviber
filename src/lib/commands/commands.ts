@@ -176,6 +176,13 @@ export const COMMANDS = [
   // As Chrome's device toolbar; the last device comes back.
   { id: "browser.toggleDevice", title: "Toggle Device Mode", category: "Browser", keys: ["shift+cmd+m"], local: "the browser" },
   { id: "browser.clearData", title: "Clear Browsing Data…", category: "Browser", keys: [] },
+  // In the page as in Safari: ⌘F finds in it, and the window's zoom keys zoom it, not the app.
+  { id: "browser.find", title: "Find in Page", category: "Browser", keys: ["cmd+f"], local: "the browser" },
+  { id: "browser.findNext", title: "Find Next in Page", category: "Browser", keys: ["cmd+g"], local: "the browser" },
+  { id: "browser.findPrev", title: "Find Previous in Page", category: "Browser", keys: ["shift+cmd+g"], local: "the browser" },
+  { id: "browser.zoomIn", title: "Zoom In Page", category: "Browser", keys: ["cmd+=", "shift+cmd+="], local: "the browser" },
+  { id: "browser.zoomOut", title: "Zoom Out Page", category: "Browser", keys: ["cmd+-"], local: "the browser" },
+  { id: "browser.zoomReset", title: "Actual Size", category: "Browser", keys: ["cmd+0"], local: "the browser" },
   { id: "explorer.rename", title: "Rename File", category: "Explorer", keys: ["f2"], local: "the explorer" },
   { id: "explorer.delete", title: "Delete File", category: "Explorer", keys: ["cmd+backspace"], local: "the explorer" },
   { id: "git.switchBranch", title: "Switch Branch", category: "Git", keys: [] },

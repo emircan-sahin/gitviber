@@ -40,6 +40,12 @@ pub struct Pick {
     pub screenshot: Option<String>,
     #[serde(default)]
     pub url: String,
+    /// Picked with ⇧ held: one of a few, the picker still on for the next.
+    #[serde(default)]
+    pub more: bool,
+    /// Its place among this picker's picks, from 1: they may arrive out of order.
+    #[serde(default)]
+    pub number: u32,
 }
 
 #[derive(Deserialize)]

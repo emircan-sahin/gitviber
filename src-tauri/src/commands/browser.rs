@@ -13,11 +13,13 @@ pub fn browser_create(
     root: String,
     url: String,
     ua: Option<String>,
+    zoom: Option<f64>,
+    dark: Option<bool>,
 ) -> Res<Created> {
     if window.label() != "main" {
         return Err("Browser tabs open in the main window.".into());
     }
-    browser::create(&window, &id, &root, &url, ua.as_deref())
+    browser::create(&window, &id, &root, &url, &browser::Look { ua, zoom, dark })
 }
 
 /// `screen`: the device it shows, in device mode.
@@ -117,6 +119,31 @@ pub async fn browser_clear_data(app: AppHandle) -> Res<()> {
 pub async fn browser_ports(state: State<'_, AppState>, ptys: Vec<u32>) -> Res<Vec<ports::Port>> {
     let shells: Vec<u32> = ptys.iter().filter_map(|&id| state.ptys.shell(id)).collect();
     blocking(move || Ok(ports::listening(&shells))).await
+}
+
+/// The next match of `text` in the page (or the one before): whether there was one; None where
+/// WebKit can't find.
+#[tauri::command]
+pub async fn browser_find(
+    app: AppHandle,
+    id: String,
+    text: String,
+    backwards: bool,
+    case_sensitive: bool,
+) -> Res<Option<bool>> {
+    blocking(move || browser::find(&app, id, text, backwards, case_sensitive)).await
+}
+
+/// The page's zoom outside device mode, 1 for 100%.
+#[tauri::command]
+pub fn browser_zoom(id: String, zoom: f64) -> Res<()> {
+    browser::zoom(&id, zoom)
+}
+
+/// The page light or dark, or as the app (None).
+#[tauri::command]
+pub fn browser_appearance(id: String, dark: Option<bool>) -> Res<()> {
+    browser::appearance(&id, dark)
 }
 
 #[tauri::command]

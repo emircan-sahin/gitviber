@@ -1,7 +1,7 @@
 //! The merge and diff tools set up for `git mergetool` / `git difftool`, run from the app.
 
 use super::cmd::command;
-use super::{config_value, run_with};
+use super::{config_value, run_text, run_with};
 use crate::process;
 use crate::scratch::ScratchDir;
 use serde::Serialize;
@@ -94,7 +94,81 @@ pub fn open_merge_tool(repo: &Path, path: &str) -> Result<(), String> {
         args.extend(["-c", "mergetool.keepBackup=false"]);
     }
     args.extend(["mergetool", "--gui", "--no-prompt", "--", path]);
-    run_tool(repo, "mergetool", &args)
+    let started = std::time::SystemTime::now();
+    let merged = run_tool(repo, "mergetool", &args);
+    if merged.is_err() && !keeps_temporaries(repo) {
+        // Off this thread, as reading a crowded temp folder takes a while (ScratchDir::fresh).
+        let path = path.to_string();
+        std::thread::spawn(move || remove_left_copies(&path, started));
+    }
+    merged
+}
+
+/// A tool that fails leaves git mergetool's temp folder of copies behind, and on macOS its
+/// `mktemp -t` won't put that folder anywhere but the system's: the one for `path` made since
+/// `started` goes, once the mergetool that made it (its copies carry its pid) is gone. Another
+/// mergetool of the same file name may be open in another worktree.
+fn remove_left_copies(path: &str, started: std::time::SystemTime) {
+    let Some(local) = local_copy(path) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let since = started - std::time::Duration::from_secs(1);
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("git-mergetool-")
+        {
+            continue;
+        }
+        let new = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t >= since);
+        let Some(pid) = new.then(|| maker(&entry.path(), &local)).flatten() else {
+            continue;
+        };
+        // Elsewhere there's no telling whether it still runs.
+        if cfg!(unix) && !super::worktree::process_alive(pid) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// mergetool.keepTemporaries as git reads a bool (yes, on, 1, a key with no value…).
+fn keeps_temporaries(repo: &Path) -> bool {
+    run_text(
+        repo,
+        &[
+            "config",
+            "--type=bool",
+            "--get",
+            "mergetool.keepTemporaries",
+        ],
+    )
+    .is_ok_and(|v| v.trim() == "true")
+}
+
+/// How git-mergetool's LOCAL copy of `path` begins: its name less its last extension, which
+/// leaves nothing of a dotfile (`.env`'s is `_LOCAL_<pid>.env`).
+fn local_copy(path: &str) -> Option<String> {
+    let name = Path::new(path).file_name()?.to_string_lossy().into_owned();
+    let stem = name
+        .rsplit_once('.')
+        .map_or(name.as_str(), |(stem, _)| stem);
+    Some(format!("{stem}_LOCAL_"))
+}
+
+/// The pid in a copy's name, `a_LOCAL_<pid>.txt`.
+fn maker(dir: &Path, local: &str) -> Option<u32> {
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|f| {
+        let name = f.file_name().to_string_lossy().into_owned();
+        let rest = name.strip_prefix(local)?;
+        rest.split('.').next()?.parse().ok()
+    })
 }
 
 /// Opens `path`'s unstaged changes, or with `staged` its staged ones, in the diff tool.
@@ -116,6 +190,37 @@ mod tests {
             merge: merge.map(str::to_string),
             diff: diff.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn keep_temporaries_reads_as_git_reads_a_bool() {
+        let repo = std::env::temp_dir().join(format!("gitviber-keeptemp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| crate::git::run(&repo, args).unwrap();
+        git(&["init", "-q"]);
+        assert!(!keeps_temporaries(&repo));
+        for (value, kept) in [
+            ("true", true),
+            ("Yes", true),
+            ("on", true),
+            ("1", true),
+            ("false", false),
+            ("off", false),
+            ("0", false),
+        ] {
+            git(&["config", "mergetool.keepTemporaries", value]);
+            assert_eq!(keeps_temporaries(&repo), kept, "{value}");
+        }
+        let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn a_merge_tools_copies_are_named_as_git_mergetool_names_them() {
+        assert_eq!(local_copy("src/a.txt").as_deref(), Some("a_LOCAL_"));
+        assert_eq!(local_copy(".env").as_deref(), Some("_LOCAL_"));
+        assert_eq!(local_copy("Makefile").as_deref(), Some("Makefile_LOCAL_"));
+        assert_eq!(local_copy("a.test.ts").as_deref(), Some("a.test_LOCAL_"));
     }
 
     #[test]

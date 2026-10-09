@@ -20,6 +20,8 @@ export function FindBox({
   onStep,
   onClose,
   focus,
+  toggles,
+  uncounted = false,
 }: {
   query: string;
   onQuery: (q: string) => void;
@@ -33,6 +35,10 @@ export function FindBox({
   onClose: () => void;
   /** Changes whenever Find asks for the box again: its text is selected, to type over. */
   focus: number;
+  /** Its own in place of Match Case, Whole Word and Regex. */
+  toggles?: React.ReactNode;
+  /** Where matches can't be counted, only found (a browser tab's page): `at` is null, or a total of 0 for none. */
+  uncounted?: boolean;
 }) {
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
@@ -40,6 +46,7 @@ export function FindBox({
     input.current?.select();
   }, [focus]);
   const none = !!query && (!!error || at?.total === 0);
+  const steps = uncounted ? !!query && !none : !!at?.total;
   return (
     <div data-find-box className="flex items-center gap-0.5 rounded-md border border-border-strong bg-elevated py-0.5 pr-0.5 pl-2 shadow-md shadow-black/30">
       <input
@@ -48,6 +55,8 @@ export function FindBox({
         onChange={(e) => onQuery(e.target.value)}
         onKeyDown={(e) => {
           if (flipOnKey(e, options, onOptions)) return;
+          // Enter that confirms an input method's word isn't a step.
+          if (e.key === "Enter" && (e.nativeEvent.isComposing || e.keyCode === 229)) return;
           if (e.key === "Enter") onStep(e.shiftKey ? -1 : 1);
           else if (e.key === "Escape") onClose();
           else return;
@@ -57,14 +66,14 @@ export function FindBox({
         spellCheck={false}
         className="h-6 w-40 min-w-0 bg-transparent text-[12px] outline-none placeholder:text-subtle"
       />
-      <FindToggles options={options} onOptions={onOptions} />
+      {toggles ?? <FindToggles options={options} onOptions={onOptions} />}
       <span aria-live="polite" title={error ?? undefined} className={cn("min-w-16 shrink-0 text-right text-[11px] whitespace-nowrap tabular-nums", none ? "text-removed" : "text-subtle")}>
         {!query ? "" : error ? "Invalid regex" : !at ? "" : !at.total ? "No results" : at.index ? `${at.index} of ${at.total}` : `${at.total}+`}
       </span>
-      <BoxButton label="Previous match (⇧↵)" disabled={!at?.total} onClick={() => onStep(-1)}>
+      <BoxButton label="Previous match (⇧↵)" disabled={!steps} onClick={() => onStep(-1)}>
         <ArrowUp className="size-3.5" />
       </BoxButton>
-      <BoxButton label="Next match (↵)" disabled={!at?.total} onClick={() => onStep(1)}>
+      <BoxButton label="Next match (↵)" disabled={!steps} onClick={() => onStep(1)}>
         <ArrowDown className="size-3.5" />
       </BoxButton>
       <BoxButton label="Close (Esc)" onClick={onClose}>
@@ -74,7 +83,7 @@ export function FindBox({
   );
 }
 
-function BoxButton({ label, disabled, pressed, onClick, children }: { label: string; disabled?: boolean; pressed?: boolean; onClick: () => void; children: React.ReactNode }) {
+export function BoxButton({ label, disabled, pressed, onClick, children }: { label: string; disabled?: boolean; pressed?: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
     <button
       aria-label={label}

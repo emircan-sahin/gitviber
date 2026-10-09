@@ -206,6 +206,9 @@ pub fn serve(app: tauri::AppHandle) {
 pub fn start(helper: PathBuf, emit: impl Fn(Event) -> bool + Send + Sync + 'static) {
     #[cfg(unix)]
     if let Some(server) = unix::listen(helper, Box::new(emit), PROMPT_TIMEOUT) {
+        // Once this launch's own socket listens, and past it.
+        let ours = server.socket.parent().map(Path::to_path_buf);
+        std::thread::spawn(move || unix::sweep_dead(ours.as_deref()));
         if SERVER.set(server).is_ok() {
             unix::remove_at_exit();
         }
@@ -377,6 +380,31 @@ mod unix {
         Some(server)
     }
 
+    /// Removes the folders of launches that never got to remove their own (a crash, or `tauri
+    /// dev` restarting the app): a socket nothing listens on any more, never `ours`. A live launch
+    /// whose backlog is full refuses for a moment too, and would lose its folder: that takes a few
+    /// hundred prompts waiting at once.
+    pub(super) fn sweep_dead(ours: Option<&Path>) {
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_ours = name
+                .to_str()
+                .and_then(|n| n.strip_prefix("gitviber-"))
+                .is_some_and(|hex| hex.len() == 12 && hex.bytes().all(|b| b.is_ascii_hexdigit()));
+            if !name_ours || Some(entry.path().as_path()) == ours {
+                continue;
+            }
+            let refused = UnixStream::connect(entry.path().join("askpass"))
+                .is_err_and(|e| e.kind() == ErrorKind::ConnectionRefused);
+            if refused {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+
     /// Takes the socket's directory with the app; a crash leaves an empty-ish folder in temp.
     pub(super) fn remove_at_exit() {
         extern "C" fn remove() {
@@ -519,6 +547,22 @@ mod unix {
 
         fn cleanup(server: &Server) {
             let _ = std::fs::remove_dir_all(server.socket.parent().unwrap());
+        }
+
+        #[test]
+        fn a_dead_launchs_socket_folder_goes_and_a_live_ones_stays() {
+            let folder =
+                || std::env::temp_dir().join(format!("gitviber-{}", random_hex(6).unwrap()));
+            let (dead, live) = (folder(), folder());
+            for dir in [&dead, &live] {
+                std::fs::create_dir(dir).unwrap();
+            }
+            drop(UnixListener::bind(dead.join("askpass")).unwrap());
+            let _listening = UnixListener::bind(live.join("askpass")).unwrap();
+            sweep_dead(None);
+            assert!(!dead.exists());
+            assert!(live.exists());
+            let _ = std::fs::remove_dir_all(&live);
         }
 
         #[test]

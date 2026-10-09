@@ -461,7 +461,10 @@ pub fn run() {
             commands::browser::browser_inspect,
             commands::browser::browser_clear_data,
             commands::browser::browser_ports,
-            commands::browser::browser_snapshot
+            commands::browser::browser_snapshot,
+            commands::browser::browser_find,
+            commands::browser::browser_zoom,
+            commands::browser::browser_appearance
         ])
         .build(context)
         .expect("error while building GitViber")
