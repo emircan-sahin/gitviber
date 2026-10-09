@@ -2,7 +2,7 @@ import { type ReactNode, useState } from "react";
 import { QuestionBox, useAskModel } from "@/components/QuestionBox";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover";
 import type { BrowserPick } from "@/lib/api";
-import { formatPicks, type ShownAs } from "@/lib/browser/format";
+import { ERRORS, formatPicks, type ShownAs } from "@/lib/browser/format";
 import { askAgentAbout } from "@/lib/browser/handoff";
 import { reviewAgent } from "@/lib/git/suggest";
 import { useSettings } from "@/lib/settings";
@@ -86,7 +86,9 @@ export function AskPopover({
               !!pageErrors?.count && (
                 <label className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
                   <input type="checkbox" checked={include} onChange={(e) => setInclude(e.target.checked)} />
-                  Include {pageErrors.count} page {pageErrors.count === 1 ? "error" : "errors"}
+                  {pageErrors.count > ERRORS
+                    ? `Include the latest ${ERRORS} of the page's ${pageErrors.count} errors`
+                    : `Include ${pageErrors.count} page ${pageErrors.count === 1 ? "error" : "errors"}`}
                 </label>
               )
             }
