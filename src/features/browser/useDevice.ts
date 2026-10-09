@@ -10,8 +10,8 @@ const LAST_KEY = "gitviber.browserDevice";
 
 /** A tab's device mode: the device it shows (kept with the tab), picked or toggled. */
 export function useDevice(tabKey: string, sel: BrowserSelection, onUpdate: (key: string, sel: Selection) => void) {
-  const choice = sel.device ?? null;
-  const device = choice && deviceOf(choice);
+  // A name no longer in devices.json shows the page as itself.
+  const choice = sel.device && deviceOf(sel.device) ? sel.device : null;
   const choose = useCallback(
     (next: DeviceChoice | null) => {
       if (next) writeJson(LAST_KEY, next);
@@ -21,6 +21,5 @@ export function useDevice(tabKey: string, sel: BrowserSelection, onUpdate: (key:
     [sel, tabKey, onUpdate],
   );
   const toggle = () => choose(choice ? null : readJson<DeviceChoice>(LAST_KEY, DEFAULT_DEVICE, isDeviceChoice));
-  // A name no longer in devices.json shows the page as itself.
-  return { choice: device ? choice : null, device, choose, toggle };
+  return { choice, choose, toggle };
 }

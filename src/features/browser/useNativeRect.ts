@@ -1,5 +1,6 @@
 import { type RefObject, useEffect, useState } from "react";
 import { browserApi, type NativeScreen } from "@/lib/api";
+import type { Fitted } from "@/lib/browser/fit";
 import { pageHasFocus } from "@/lib/browser/store";
 import { useSettings } from "@/lib/settings";
 import { useTerminalsMaximized } from "@/lib/terminal/terminals";
@@ -8,14 +9,8 @@ import { coveredBy, watchOverlays } from "@/lib/ui/overlays";
 /** Points to the half, as AppKit lays views out on a 2x screen. */
 const half = (v: number) => Math.round(v * 2) / 2;
 
-/** A device's screen as this page lays it out (fit.ts), in its CSS px. */
-export interface PageScreen {
-  /** This page's CSS px per device CSS px. */
-  scale: number;
-  radius: number;
-  dpr: number | null;
-  cutout: { x: number; y: number; w: number; h: number; r: number } | null;
-}
+/** A device's screen as fit.ts lays it out, and the pixel ratio the page should see. */
+export type PageScreen = Pick<Fitted, "viewport" | "radius" | "corners"> & { dpr: number | null };
 
 /**
  * Keeps tab `id`'s native view over `area` while `live`, as `screen` in device mode. This page
@@ -27,13 +22,9 @@ export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, l
   const scale = useSettings().uiScale;
   const maximized = useTerminalsMaximized();
   const [cover, setCover] = useState<string | null>(null);
-  const native: NativeScreen | null = screen && {
-    zoom: screen.scale * scale,
-    radius: screen.radius * scale,
-    dpr: screen.dpr,
-    cutout: screen.cutout && { x: screen.cutout.x * scale, y: screen.cutout.y * scale, w: screen.cutout.w * scale, h: screen.cutout.h * scale, r: screen.cutout.r * scale },
-  };
-  const shape = JSON.stringify(native);
+  const native: NativeScreen | null = screen && { width: screen.viewport.w, radius: screen.radius * scale, corners: screen.corners, dpr: screen.dpr };
+  // The effect runs again when the screen changes, not on each render's new object.
+  const shape = native && [native.width, native.radius, native.dpr, ...Object.values(native.corners)].join(" ");
 
   useEffect(() => {
     const el = area.current;
@@ -115,7 +106,6 @@ export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, l
       window.removeEventListener("resize", schedule);
       unwatch();
     };
-    // `native` is `shape` parsed: the effect runs again when it changes, not on each render.
   }, [area, id, live, scale, maximized, shape]);
 
   return live ? cover : null;

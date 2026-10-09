@@ -26,10 +26,9 @@ pub fn browser_place(id: String, rect: Rect, screen: Option<Screen>) -> Res<()> 
     browser::place(&id, rect, screen)
 }
 
-/// The device's user agent (None: WebKit's own); the page loads again when it changes. True
-/// when the pixel ratio can be set too.
+/// The device's user agent (None: WebKit's own); the page loads again when it changes.
 #[tauri::command]
-pub fn browser_set_agent(id: String, ua: Option<String>) -> Res<bool> {
+pub fn browser_set_agent(id: String, ua: Option<String>) -> Res<()> {
     browser::set_agent(&id, ua.as_deref())
 }
 

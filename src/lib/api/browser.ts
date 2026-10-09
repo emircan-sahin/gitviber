@@ -20,12 +20,12 @@ export interface BrowserState {
 
 export type BrowserGo = "back" | "forward" | "reload" | "hardReload" | "stop";
 
-/** A device's screen the view shows, in points: its page zoom, corners, pixel ratio and cutout (from the screen's top left). */
+/** A device's screen the view shows: the page's viewport width in device CSS px (its zoom comes from it), the corner radius in points and which corners the page reaches, and the pixel ratio. */
 export interface NativeScreen {
-  zoom: number;
+  width: number;
   radius: number;
+  corners: { topLeft: boolean; topRight: boolean; bottomRight: boolean; bottomLeft: boolean };
   dpr: number | null;
-  cutout: { x: number; y: number; w: number; h: number; r: number } | null;
 }
 
 /** Where the page's native view goes, in the app page's points from its top left. */
@@ -48,8 +48,8 @@ export interface BrowserKey {
   repeat: boolean;
 }
 
-/** A tab's view as made, or found open: a parked one's picture (`snapshot`) stands in until it loads again. */
-export type BrowserCreated = BrowserState & { snapshot: string | null };
+/** A tab's view as made, or found open: a parked one's picture (`snapshot`) stands in until it loads again; `dpr`, whether it can report a device's pixel ratio. */
+export type BrowserCreated = BrowserState & { snapshot: string | null; dpr: boolean };
 
 /** A program in a terminal listening on a port (browser/ports.rs). */
 export interface ListeningPort {
@@ -76,8 +76,8 @@ export const browserApi = {
   create: (id: string, root: string, url: string, ua: string | null) => inOrder(id, () => invoke<BrowserCreated>("browser_create", { id, root, url, ua })),
   /** `screen`: the device it shows, in device mode. */
   place: (id: string, rect: NativeRect, screen: NativeScreen | null) => invoke<void>("browser_place", { id, rect, screen }),
-  /** The device's user agent (null: WebKit's own), the page loaded again when it changes; true when its pixel ratio can be set too. */
-  setAgent: (id: string, ua: string | null) => invoke<boolean>("browser_set_agent", { id, ua }),
+  /** The device's user agent (null: WebKit's own), the page loaded again when it changes. */
+  setAgent: (id: string, ua: string | null) => invoke<void>("browser_set_agent", { id, ua }),
   /** `aside`: only while something of this page's is drawn over it; otherwise its tab is out of sight, and it may park. */
   hide: (id: string, aside: boolean) => invoke<void>("browser_hide", { id, aside }),
   close: (id: string) => inOrder(id, () => invoke<void>("browser_close", { id })),

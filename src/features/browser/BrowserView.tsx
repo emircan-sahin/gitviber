@@ -1,14 +1,13 @@
 import { TabletSmartphone } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
 import { browserApi, type BrowserGo, errorMessage, github } from "@/lib/api";
 import { failed, toast } from "@/lib/app/toast";
 import { onBrowserKey, setBrowserState, useBrowserState, useParks } from "@/lib/browser/store";
 import { RESPONSIVE } from "@/lib/browser/devices";
-import type { Fitted } from "@/lib/browser/fit";
 import { BLANK, isFrameable, pageLabel } from "@/lib/browser/url";
 import { commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
-import { cn } from "@/lib/utils";
 import { IS_LINUX } from "@/lib/platform";
 import type { Selection } from "@/lib/repo/selection";
 import { Placeholder } from "@/features/viewer/FileHeader";
@@ -16,7 +15,8 @@ import { AddressBar, type PageControl } from "./AddressBar";
 import { DeviceBar } from "./DeviceBar";
 import { DeviceFrame } from "./DeviceFrame";
 import { useDevice } from "./useDevice";
-import { type PageScreen, useNativeRect } from "./useNativeRect";
+import { useDeviceFit } from "./useDeviceFit";
+import { useNativeRect } from "./useNativeRect";
 
 type BrowserSelection = Extract<Selection, { kind: "browser" }>;
 
@@ -31,9 +31,18 @@ interface Props {
 const GO = { "browser.reload": "reload", "browser.back": "back", "browser.forward": "forward" } as const satisfies Record<string, BrowserGo>;
 const OWN = ["browser.focusAddress", "browser.inspect", "browser.toggleDevice", ...(Object.keys(GO) as (keyof typeof GO)[])] as const;
 
+const TOO_SMALL = "Too little room to show the device";
+
 /** A web page in a tab: a browser view of its own on macOS, a frame of this page's on Linux. */
 export function BrowserView(props: Props) {
   return IS_LINUX ? <FramePage {...props} /> : <NativePage {...props} />;
+}
+
+/** Device mode's choice and layout for a tab, Responsive's size kept as a drag ends. */
+function useTabDevice({ tabKey, sel, onUpdate }: Props, area: React.RefObject<HTMLDivElement | null>) {
+  const { choice, choose, toggle } = useDevice(tabKey, sel, onUpdate);
+  const { device, fitted, resize } = useDeviceFit(area, choice, (size) => choice && choose({ ...choice, ...size }));
+  return { choice, choose, toggle, device, fitted, resize: choice?.name === RESPONSIVE ? resize : undefined };
 }
 
 /**
@@ -41,7 +50,8 @@ export function BrowserView(props: Props) {
  * made as the tab first shows and lives on hidden while another does, until it parks (Settings →
  * Browser); closing the tab closes it (useTabs).
  */
-function NativePage({ tabKey, sel, root, onUpdate }: Props) {
+function NativePage(props: Props) {
+  const { tabKey, sel, root, onUpdate } = props;
   const { id } = sel;
   const state = useBrowserState(id);
   const parks = useParks(id);
@@ -49,13 +59,12 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
   const [error, setError] = useState<string | null>(null);
   // A parked page's picture, standing in until it has loaded again.
   const [restoring, setRestoring] = useState<string | null>(null);
-  const area = useRef<HTMLDivElement>(null);
-  const screenEl = useRef<HTMLDivElement>(null);
-  const field = useRef<HTMLInputElement>(null);
-  const { choice, device, choose, toggle } = useDevice(tabKey, sel, onUpdate);
-  const [fitted, setFitted] = useState<Fitted | null>(null);
-  // Whether WebKit lets the page see the device's pixel ratio here.
+  // Whether WebKit lets the page see a device's pixel ratio here.
   const [dpr, setDpr] = useState(true);
+  const area = useRef<HTMLDivElement>(null);
+  const pageEl = useRef<HTMLDivElement>(null);
+  const field = useRef<HTMLInputElement>(null);
+  const { choice, choose, toggle, device, fitted, resize } = useTabDevice(props, area);
   const ua = device?.ua || null;
 
   // On the first show and after each park, on its own id: where it loads next is the page's business.
@@ -63,10 +72,11 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
     let live = true;
     setMade(false);
     browserApi.create(id, root, sel.url, ua).then(
-      ({ snapshot, ...s }) => {
+      ({ snapshot, dpr: canSetDpr, ...s }) => {
         if (!live) return;
         setBrowserState(s);
         setRestoring(snapshot);
+        setDpr(canSetDpr);
         setMade(true);
         // A new tab starts at its address bar.
         if (sel.url === BLANK) field.current?.focus();
@@ -85,13 +95,14 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
     if (restoring && loaded) setRestoring(null);
   }, [restoring, loaded]);
 
-  // A device's user agent: the page loads again under it (rust: set_agent).
+  // A device's user agent: the page loads again under it (macos.rs set_agent).
   useEffect(() => {
-    if (made) void browserApi.setAgent(id, ua).then(setDpr, () => {});
+    if (made) void browserApi.setAgent(id, ua).catch(failed("Could not show the page as the device"));
   }, [made, id, ua]);
 
-  const screen: PageScreen | null = device && fitted && { scale: fitted.scale, radius: fitted.radius, dpr: device.dpr || null, cutout: fitted.cutout };
-  const cover = useNativeRect(device ? screenEl : area, id, made && !state?.failed && !restoring && (!device || !!fitted), screen);
+  const shown = !device || !!fitted?.fits;
+  const screen = device && fitted && { viewport: fitted.viewport, radius: fitted.radius, corners: fitted.corners, dpr: device.dpr || null };
+  const cover = useNativeRect(device ? pageEl : area, id, made && !state?.failed && !restoring && shown, screen);
 
   // The tab keeps where the page went, for the next launch: once it settles, not every redirect.
   const url = state?.url;
@@ -105,10 +116,13 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
   const inspect = () =>
     void browserApi
       .inspect(id)
-      .then((shown) => shown || toast("info", "Web Inspector", "Right-click the page and choose Inspect Element."))
+      .then((opened) => opened || toast("info", "Web Inspector", "Right-click the page and choose Inspect Element."))
       .catch(failed("Could not open Web Inspector"));
-  useCommands({ "browser.inspect": made ? inspect : undefined });
+  useCommands({ "browser.inspect": made ? inspect : undefined, "browser.toggleDevice": made ? toggle : undefined });
 
+  // The page's keys arrive through onBrowserKey, registered once: the latest toggle is read here.
+  const toggleRef = useRef(toggle);
+  toggleRef.current = toggle;
   /** One of the tab's own keys, run; false for any other key. */
   const runOwn = (e: KeyboardEvent) => {
     const command = commandIn(OWN, e);
@@ -130,9 +144,6 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
   };
   // runOwn reads only the id and refs.
   useEffect(() => onBrowserKey(id, runOwn), [id]);
-  const toggleRef = useRef(toggle);
-  toggleRef.current = toggle;
-  useCommands({ "browser.toggleDevice": made ? toggle : undefined });
 
   const page: PageControl = {
     navigate: (next) => void browserApi.navigate(id, next).catch(failed("Could not open the page")),
@@ -141,30 +152,36 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
   };
   const notLoaded = state?.failed;
   const picture = restoring ?? cover;
+  const image = picture && <img src={picture} alt="" className="absolute inset-0 size-full object-cover select-none" />;
   return (
     <div
       className="flex min-h-0 flex-1 flex-col"
       onKeyDown={(e) => {
         // Typed while the page steps aside (useNativeRect): the page's, so no app command runs.
-        const forPage = (e.target === area.current || e.target === screenEl.current) && !e.metaKey && !e.ctrlKey;
+        const forPage = (e.target === area.current || e.target === pageEl.current) && !e.metaKey && !e.ctrlKey;
         if (!runOwn(e.nativeEvent) && !forPage) return;
         e.preventDefault();
         e.stopPropagation();
       }}
     >
       <AddressBar url={sel.url} state={state} page={page} root={root} field={field} tools={<DeviceToggle on={!!choice} onToggle={toggle} />} />
-      {choice && device && <DeviceBar choice={choice} device={device} dpr={dpr} onChoice={choose} />}
+      {choice && device && <DeviceBar choice={choice} device={device} viewport={fitted?.viewport ?? null} dpr={dpr} onChoice={choose} />}
       <div ref={area} tabIndex={-1} className="relative min-h-0 flex-1 bg-background outline-none">
         {error ? (
           <Placeholder title="The browser can't open here" detail={error} />
         ) : notLoaded ? (
           <Placeholder title={`Can't open ${pageLabel(notLoaded.url)}`} detail={notLoaded.message} action={{ label: "Try Again", run: () => page.navigate(notLoaded.url) }} />
         ) : device && choice ? (
-          <DeviceFrame device={device} rotated={!!choice.rotated} screen={screenEl} onFit={setFitted} onResize={choice.name === RESPONSIVE ? (size) => choose({ ...choice, ...size }) : undefined}>
-            {picture && <img src={picture} alt="" className="absolute inset-0 size-full object-cover" />}
-          </DeviceFrame>
+          fitted &&
+          (fitted.fits ? (
+            <DeviceFrame device={device} rotated={!!choice.rotated} fitted={fitted} page={pageEl} resize={resize}>
+              {image}
+            </DeviceFrame>
+          ) : (
+            <Placeholder title={TOO_SMALL} />
+          ))
         ) : (
-          picture && <img src={picture} alt="" className="absolute inset-0 size-full object-cover select-none" />
+          image
         )}
       </div>
     </div>
@@ -176,14 +193,15 @@ function NativePage({ tabKey, sel, root, onUpdate }: Props) {
  * CSP's frame-src). A frame's page can't be followed from here: no back or forward, and its links
  * don't show in the address bar. Sandboxed: it can't navigate this page away.
  */
-function FramePage({ tabKey, sel, root, onUpdate }: Props) {
+function FramePage(props: Props) {
+  const { tabKey, sel, root, onUpdate } = props;
   const [url, setUrl] = useState(sel.url);
   const [loads, setLoads] = useState(0);
   const frame = useRef<HTMLIFrameElement>(null);
   const field = useRef<HTMLInputElement>(null);
-  const screenEl = useRef<HTMLDivElement>(null);
-  const { choice, device, choose, toggle } = useDevice(tabKey, sel, onUpdate);
-  const [fitted, setFitted] = useState<Fitted | null>(null);
+  const area = useRef<HTMLDivElement>(null);
+  const pageEl = useRef<HTMLDivElement>(null);
+  const { choice, choose, toggle, device, fitted, resize } = useTabDevice(props, area);
   useEffect(() => {
     if (sel.url === BLANK) field.current?.focus();
   }, []);
@@ -199,8 +217,8 @@ function FramePage({ tabKey, sel, root, onUpdate }: Props) {
     go: (to) => (to === "reload" || to === "hardReload") && setLoads((n) => n + 1),
     focus: () => frame.current?.focus(),
   };
-  // In device mode the frame is the device's size and scaled to its screen: no user agent or
-  // pixel ratio of its own here.
+  // In device mode the frame is the page's viewport in size, scaled to the screen: no user
+  // agent or pixel ratio of the device's here.
   const sized = device && fitted && { width: fitted.viewport.w, height: fitted.viewport.h, transform: `scale(${fitted.scale})`, transformOrigin: "0 0" };
   const content =
     url === BLANK ? null : isFrameable(url) ? (
@@ -210,7 +228,7 @@ function FramePage({ tabKey, sel, root, onUpdate }: Props) {
         src={url}
         title={pageLabel(url)}
         sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-popups allow-downloads"
-        className={cn("border-0 bg-white", !sized && "size-full")}
+        className={sized ? "border-0 bg-white" : "size-full border-0 bg-white"}
         style={sized || undefined}
       />
     ) : (
@@ -223,12 +241,17 @@ function FramePage({ tabKey, sel, root, onUpdate }: Props) {
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <AddressBar url={url} state={null} page={page} root={root} field={field} tools={<DeviceToggle on={!!choice} onToggle={toggle} />} />
-      {choice && device && <DeviceBar choice={choice} device={device} dpr={false} onChoice={choose} />}
-      <div className="relative min-h-0 flex-1 bg-background">
+      {choice && device && <DeviceBar choice={choice} device={device} viewport={fitted?.viewport ?? null} dpr={false} onChoice={choose} />}
+      <div ref={area} className="relative min-h-0 flex-1 bg-background">
         {device && choice && isFrameable(url) ? (
-          <DeviceFrame device={device} rotated={!!choice.rotated} screen={screenEl} onFit={setFitted} onResize={choice.name === RESPONSIVE ? (size) => choose({ ...choice, ...size }) : undefined}>
-            {content}
-          </DeviceFrame>
+          fitted &&
+          (fitted.fits ? (
+            <DeviceFrame device={device} rotated={!!choice.rotated} fitted={fitted} page={pageEl} resize={resize}>
+              {content}
+            </DeviceFrame>
+          ) : (
+            <Placeholder title={TOO_SMALL} />
+          ))
         ) : (
           content
         )}
@@ -241,18 +264,10 @@ function FramePage({ tabKey, sel, root, onUpdate }: Props) {
 function DeviceToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
   return (
     <Tip label={on ? "Leave device mode" : "Device mode"} shortcut={useShortcut("browser.toggleDevice")}>
-      <button
-        type="button"
-        aria-pressed={on}
-        aria-label="Device mode"
-        onClick={onToggle}
-        className={cn(
-          "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none hover:bg-hover focus-visible:bg-hover hover:text-foreground focus-visible:text-foreground",
-          on && "bg-active text-foreground",
-        )}
-      >
-        <TabletSmartphone className="size-3.5" />
-      </button>
+      <Button type="button" variant="ghost" size="icon-sm" aria-pressed={on} aria-label="Device mode" onClick={onToggle} className={on ? "bg-active text-foreground" : undefined}>
+        <TabletSmartphone />
+      </Button>
     </Tip>
   );
 }
+

@@ -1,4 +1,4 @@
-import data from "../../../src-tauri/src/browser/devices.json" with { type: "json" };
+import data from "./devices.json" with { type: "json" };
 
 // The devices a browser tab can show its page as (device mode), from devices.json.
 
@@ -61,13 +61,16 @@ export const RESPONSIVE_MAX = 3000;
 const NONE: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
 
 /** The device a choice names; Responsive is a bare screen of its size. Null for a name no longer known. */
+/** A Responsive side, whole CSS px in bounds, wherever it comes from (a field, a drag, storage). */
+export const clampSide = (n: number) => Math.round(Math.min(RESPONSIVE_MAX, Math.max(RESPONSIVE_MIN, n)));
+
 export function deviceOf(choice: DeviceChoice): Device | null {
   if (choice.name !== RESPONSIVE) return DEVICES.find((d) => d.name === choice.name) ?? null;
-  const side = (v: number | undefined, fallback: number) => Math.round(Math.min(RESPONSIVE_MAX, Math.max(RESPONSIVE_MIN, v ?? fallback)));
-  return { name: RESPONSIVE, w: side(choice.w, RESPONSIVE_SIZE.w), h: side(choice.h, RESPONSIVE_SIZE.h), dpr: 0, ua: "", radius: 0, safe: NONE, cutout: null, bezel: 0, platform: "web" };
+  const [w, h] = [clampSide(choice.w ?? RESPONSIVE_SIZE.w), clampSide(choice.h ?? RESPONSIVE_SIZE.h)];
+  return { name: RESPONSIVE, w, h, dpr: 0, ua: "", radius: 0, safe: NONE, cutout: null, bezel: 0, platform: "web" };
 }
 
-const side = (v: unknown) => v === undefined || (typeof v === "number" && Number.isFinite(v) && v > 0);
+const isSide = (v: unknown) => v === undefined || (typeof v === "number" && Number.isFinite(v) && v > 0);
 
 /** What a stored tab may hold as its device. */
 export const isDeviceChoice = (v: unknown): v is DeviceChoice =>
@@ -75,5 +78,5 @@ export const isDeviceChoice = (v: unknown): v is DeviceChoice =>
   v !== null &&
   typeof (v as DeviceChoice).name === "string" &&
   ((v as DeviceChoice).rotated === undefined || typeof (v as DeviceChoice).rotated === "boolean") &&
-  side((v as DeviceChoice).w) &&
-  side((v as DeviceChoice).h);
+  isSide((v as DeviceChoice).w) &&
+  isSide((v as DeviceChoice).h);

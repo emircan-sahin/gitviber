@@ -54,6 +54,8 @@ pub struct Created {
     #[serde(flatten)]
     pub page: PageState,
     pub snapshot: Option<String>,
+    /// Whether the view can report a device's pixel ratio (a private WebKit call).
+    pub dpr: bool,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -71,24 +73,43 @@ pub struct Rect {
     pub h: f64,
 }
 
-/// A device's screen the view shows (device mode), in points: the page zoom that lays the page
-/// out at the device's width, its corners and cutout, and the pixel ratio it reports.
+/// A device's screen the view shows (device mode): the page's viewport width in device CSS px,
+/// which its zoom comes from; the screen's corner radius in points, and the corners the page
+/// reaches; and the pixel ratio it reports.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Screen {
-    pub zoom: f64,
+    pub width: f64,
     pub radius: f64,
+    pub corners: Corners,
     pub dpr: Option<f64>,
-    pub cutout: Option<Cutout>,
 }
 
-/// The camera's island, notch or hole, from the screen's top left.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
-pub struct Cutout {
-    pub x: f64,
-    pub y: f64,
-    pub w: f64,
-    pub h: f64,
-    pub r: f64,
+#[serde(rename_all = "camelCase")]
+pub struct Corners {
+    pub top_left: bool,
+    pub top_right: bool,
+    pub bottom_right: bool,
+    pub bottom_left: bool,
+}
+
+impl Screen {
+    /// What the page may send: a screen any device or Responsive has, nothing NaN or absurd.
+    pub fn check(self) -> Result<Self, String> {
+        let ok = self.width.is_finite()
+            && (1.0..=10_000.0).contains(&self.width)
+            && self.radius.is_finite()
+            && self.radius >= 0.0
+            && self.dpr.is_none_or(|d| (1.0..=4.0).contains(&d));
+        ok.then_some(self)
+            .ok_or_else(|| format!("Not a device screen: {self:?}"))
+    }
+
+    /// The page zoom for a view `points` wide: exactly the viewport's width laid out in it.
+    pub fn zoom(&self, points: f64) -> Option<f64> {
+        let zoom = points / self.width;
+        (zoom.is_finite() && zoom > 0.0 && zoom <= 10.0).then_some(zoom)
+    }
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -176,7 +197,7 @@ mod other {
     pub fn place(_: &str, _: Rect, _: Option<Screen>) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
-    pub fn set_agent(_: &str, _: Option<&str>) -> Res<bool> {
+    pub fn set_agent(_: &str, _: Option<&str>) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
     pub fn hide(_: &str, _: bool) {}
@@ -547,21 +568,24 @@ mod tests {
     #[test]
     fn a_device_screen_reads_as_the_page_sends_it() {
         let full: Screen = serde_json::from_str(
-            r#"{"zoom":0.5,"radius":31,"dpr":3,"cutout":{"x":69.5,"y":7,"w":62.5,"h":18.5,"r":9.5}}"#,
+            r#"{"width":402,"radius":31,"corners":{"topLeft":false,"topRight":false,"bottomRight":true,"bottomLeft":true},"dpr":3}"#,
         )
         .unwrap();
         assert_eq!(full.dpr, Some(3.0));
-        assert_eq!(full.cutout.map(|c| (c.x, c.r)), Some((69.5, 9.5)));
-        // Responsive: no pixel ratio of its own, no cutout.
-        let bare: Screen =
-            serde_json::from_str(r#"{"zoom":1.25,"radius":0,"dpr":null,"cutout":null}"#).unwrap();
-        assert_eq!((bare.dpr, bare.cutout), (None, None));
-        // What JSON can't say (NaN, Infinity) the page can't send: a missing zoom is no screen.
+        assert!(full.corners.bottom_left && !full.corners.top_left);
+        assert_eq!(full.check(), Ok(full));
+        // Responsive: no pixel ratio of its own.
+        let bare: Screen = serde_json::from_str(
+            r#"{"width":1280,"radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
+        )
+        .unwrap();
+        assert_eq!(bare.check().map(|s| s.dpr), Ok(None));
+        // What JSON can't say (NaN, Infinity) the page can't send: a missing width is no screen.
         for no in [
-            r#"{"radius":0,"dpr":null,"cutout":null}"#,
-            r#"{"zoom":"1","radius":0,"dpr":null,"cutout":null}"#,
-            r#"{"zoom":NaN,"radius":0,"dpr":null,"cutout":null}"#,
-            r#"{"zoom":1,"radius":0,"dpr":null,"cutout":{"x":1}}"#,
+            r#"{"radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
+            r#"{"width":"1","radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
+            r#"{"width":NaN,"radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
+            r#"{"width":400,"radius":0,"corners":{"topLeft":true},"dpr":null}"#,
         ] {
             assert!(serde_json::from_str::<Screen>(no).is_err(), "{no}");
         }
@@ -570,5 +594,39 @@ mod tests {
             serde_json::from_str::<Option<Screen>>("null").unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn a_screen_out_of_bounds_is_refused_and_its_zoom_lays_out_its_width() {
+        let corners = Corners {
+            top_left: true,
+            top_right: true,
+            bottom_right: true,
+            bottom_left: true,
+        };
+        let at = |width, radius, dpr| Screen {
+            width,
+            radius,
+            corners,
+            dpr,
+        };
+        for bad in [
+            at(0.0, 0.0, None),
+            at(-402.0, 0.0, None),
+            at(20_000.0, 0.0, None),
+            at(402.0, -1.0, None),
+            at(402.0, f64::NAN, None),
+            at(402.0, 0.0, Some(0.5)),
+            at(402.0, 0.0, Some(5.0)),
+            at(402.0, 0.0, Some(f64::INFINITY)),
+        ] {
+            assert!(bad.check().is_err(), "{bad:?}");
+        }
+        let s = at(402.0, 31.0, Some(3.0));
+        // A view 300.5 points wide, rounded to the half point, still lays out at 402.
+        let zoom = s.zoom(300.5).unwrap();
+        assert!((300.5 / zoom - 402.0).abs() < 1e-9);
+        assert_eq!(s.zoom(0.0), None);
+        assert_eq!(s.zoom(f64::INFINITY), None);
     }
 }

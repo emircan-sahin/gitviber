@@ -4,6 +4,7 @@
 //! thread's own, and no callback takes a borrow of it, as WebKit calls back from within calls.
 
 use super::keys::{self, Key, Route};
+use super::Corners;
 use super::{
     host_key, is_loopback, loadable, policy, root_key, Created, Failed, Go, PageState, Parked,
     Policy, Rect, Registry, Screen,
@@ -80,8 +81,6 @@ struct View {
     host: Retained<Host>,
     web: Retained<WebView>,
     delegate: Retained<Delegate>,
-    /// The device's camera island, notch or hole, drawn over the page: the app page can't.
-    cutout: Retained<NSView>,
 }
 
 thread_local! {
@@ -167,7 +166,6 @@ impl Host {
     }
 }
 
-/// A layer-backed view filled with `color`.
 fn paint(view: &NSView, color: &NSColor) {
     view.setWantsLayer(true);
     unsafe {
@@ -179,15 +177,36 @@ fn paint(view: &NSView, color: &NSColor) {
     }
 }
 
-/// A layer-backed view's corners, what it holds clipped to them.
-fn round(view: &NSView, radius: f64) {
+/// Rounds `corners` of a layer-backed view, what it holds clipped to them.
+fn round(view: &NSView, radius: f64, corners: Corners) {
+    // CACornerMask, in the layer's coordinates, which run up from the bottom like the view's.
+    const BOTTOM_LEFT: usize = 1;
+    const BOTTOM_RIGHT: usize = 2;
+    const TOP_LEFT: usize = 4;
+    const TOP_RIGHT: usize = 8;
+    let mask = [
+        (corners.top_left, TOP_LEFT),
+        (corners.top_right, TOP_RIGHT),
+        (corners.bottom_right, BOTTOM_RIGHT),
+        (corners.bottom_left, BOTTOM_LEFT),
+    ]
+    .into_iter()
+    .filter_map(|(on, bit)| on.then_some(bit))
+    .sum::<usize>();
+    let radius = if mask == 0 { 0.0 } else { radius };
     unsafe {
         let layer: *mut AnyObject = msg_send![view, layer];
         if !layer.is_null() {
             let _: () = msg_send![layer, setCornerRadius: radius];
+            let _: () = msg_send![layer, setMaskedCorners: mask];
             let _: () = msg_send![layer, setMasksToBounds: Bool::new(radius > 0.0)];
         }
     }
+}
+
+/// Whether WebKit here lets a page see another pixel ratio (a private call).
+fn can_set_dpr(web: &WKWebView) -> bool {
+    web.respondsToSelector(sel!(_setOverrideDeviceScaleFactor:))
 }
 
 struct WebIvars {
@@ -710,6 +729,7 @@ pub fn create(
         return Ok(Created {
             page,
             snapshot: None,
+            dpr: can_set_dpr(&v.web),
         });
     }
     // Where it parked, else where the tab says; the parked entry goes only once a view is made.
@@ -770,10 +790,6 @@ pub fn create(
     // Kept to the top as the window resizes, until the page places it again.
     host.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
     host.addSubview(&web);
-    let cutout = NSView::initWithFrame(NSView::alloc(mtm), NSRect::ZERO);
-    paint(&cutout, &NSColor::blackColor());
-    cutout.setHidden(true);
-    host.addSubview(&cutout);
     content.addSubview_positioned_relativeTo(&host, NSWindowOrderingMode::Above, None);
     if let Some(ua) = ua {
         unsafe { web.setCustomUserAgent(Some(&NSString::from_str(ua))) };
@@ -787,12 +803,13 @@ pub fn create(
         host,
         web,
         delegate,
-        cutout,
     };
+    let dpr = can_set_dpr(&view.web);
     VIEWS.with_borrow_mut(|r| r.insert(id, &root_key(root), view));
     Ok(Created {
         page: state,
         snapshot: parked.and_then(|p| p.snapshot),
+        dpr,
     })
 }
 
@@ -808,6 +825,7 @@ fn log_process(web: &WKWebView, what: &str) {
 /// Shows the view at `rect`, in the app page's points, as `screen` when it shows a device.
 pub fn place(id: &str, rect: Rect, screen: Option<Screen>) -> Res<()> {
     main_thread()?;
+    let screen = screen.map(Screen::check).transpose()?;
     let v = view(id).ok_or(GONE)?;
     let page = app_page(&v.host).ok_or(GONE)?;
     let parent = unsafe { v.host.superview() }.ok_or(GONE)?;
@@ -833,37 +851,34 @@ pub fn place(id: &str, rect: Rect, screen: Option<Screen>) -> Res<()> {
 }
 
 /// The view as a device's screen, or as itself (None). The page lays out at the device's width
-/// through its zoom, which keeps text sharp where scaling the view's bounds would blur it.
+/// through its zoom, which keeps text sharp where scaling the view's bounds would blur it; the
+/// zoom comes from the width as placed, rounded, so the layout is exactly the device's.
 fn shape(v: &View, screen: Option<Screen>) {
-    let zoom = screen.map_or(1.0, |s| s.zoom);
+    let width = v.host.frame().size.width;
+    let zoom = screen.and_then(|s| s.zoom(width)).unwrap_or(1.0);
     unsafe {
         if v.web.pageZoom() != zoom {
             v.web.setPageZoom(zoom);
         }
     }
-    // Private; WebKit multiplies it by the zoom, so it's set divided by it.
-    if v.web
-        .respondsToSelector(sel!(_setOverrideDeviceScaleFactor:))
-    {
+    // WebKit multiplies it by the zoom, so it's set divided by it.
+    if can_set_dpr(&v.web) {
         let scale = screen.and_then(|s| s.dpr).map_or(0.0, |dpr| dpr / zoom);
         let _: () = unsafe { msg_send![&*v.web, _setOverrideDeviceScaleFactor: scale] };
     }
-    round(&v.host, screen.map_or(0.0, |s| s.radius));
-    match screen.and_then(|s| s.cutout) {
-        Some(c) => {
-            let height = v.host.frame().size.height;
-            let at = NSPoint::new(c.x, height - c.y - c.h);
-            v.cutout.setFrame(NSRect::new(at, NSSize::new(c.w, c.h)));
-            round(&v.cutout, c.r);
-            v.cutout.setHidden(false);
-        }
-        None => v.cutout.setHidden(true),
-    }
+    let every = Corners {
+        top_left: true,
+        top_right: true,
+        bottom_right: true,
+        bottom_left: true,
+    };
+    let radius = screen.map_or(0.0, |s| s.radius);
+    round(&v.host, radius, screen.map_or(every, |s| s.corners));
 }
 
 /// The device's user agent, or WebKit's own (None); a change loads the page again, as a server
-/// may answer another one. True when the pixel ratio can be set as well.
-pub fn set_agent(id: &str, ua: Option<&str>) -> Res<bool> {
+/// may answer another one.
+pub fn set_agent(id: &str, ua: Option<&str>) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
     let now = unsafe { v.web.customUserAgent() }.map(|s| s.to_string());
@@ -876,8 +891,7 @@ pub fn set_agent(id: &str, ua: Option<&str>) -> Res<bool> {
             unsafe { drop(v.web.reload()) };
         }
     }
-    Ok(v.web
-        .respondsToSelector(sel!(_setOverrideDeviceScaleFactor:)))
+    Ok(())
 }
 
 /// Hidden, WebKit slows its timers and animation frames. Out of its tab's sight (not just
@@ -1208,6 +1222,9 @@ mod tests {
             .unwrap();
         layer
             .verify_sel::<(Bool,), ()>(sel!(setMasksToBounds:))
+            .unwrap();
+        layer
+            .verify_sel::<(usize,), ()>(sel!(setMaskedCorners:))
             .unwrap();
         // Private: checked where this macOS has it.
         let scale = sel!(_setOverrideDeviceScaleFactor:);
