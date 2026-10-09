@@ -3,7 +3,8 @@
 /** A tab before its first address. */
 export const BLANK = "about:blank";
 
-const PORT = /^:?(\d{1,5})$/;
+// A port, then maybe a path, query or hash: `5173`, `:5173/docs?x#y`.
+const PORT = /^:?(\d{1,5})([/?#].*)?$/;
 // This machine (127.1 too, as ping takes it) and the LAN, which dev servers serve without a certificate.
 const PLAIN_HOST = /^(?:localhost|[\w-]+\.localhost|\d{1,3}(?:\.\d{1,3}){3}|127(?:\.\d{1,3}){1,2}|\[[\da-f:.]+\])(?::\d{1,5})?$/i;
 
@@ -23,7 +24,7 @@ function webUrl(text: string): string | null {
 }
 
 /**
- * The address to load for what's typed: a port is this machine's (`5173`, `:5173`), this machine
+ * The address to load for what's typed: a port is this machine's (`5173`, `:5173/docs`), this machine
  * and the LAN load over http, a name with a dot over https. There's no search: a bare word or text
  * with spaces is no address (null), and only web pages load.
  */
@@ -31,8 +32,8 @@ export function normalizeUrl(input: string): string | null {
   const text = input.trim();
   if (!text || /\s/.test(text)) return null;
   if (text === BLANK) return BLANK;
-  const port = PORT.exec(text)?.[1];
-  if (port) return Number(port) >= 1 && Number(port) <= 65535 ? `http://localhost:${Number(port)}/` : null;
+  const [, port, rest = "/"] = PORT.exec(text) ?? [];
+  if (port) return Number(port) >= 1 && Number(port) <= 65535 ? webUrl(`http://localhost:${Number(port)}${rest}`) : null;
   if (/^https?:\/\//i.test(text)) return webUrl(text);
   const host = text.split(/[/?#]/)[0];
   if (PLAIN_HOST.test(host)) return webUrl(`http://${text}`);

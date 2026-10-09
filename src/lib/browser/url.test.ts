@@ -70,7 +70,8 @@ test("odd but valid addresses: IPv6, unicode hosts, case, stray spaces", () => {
     ["[::1]:3000/a?b#c", "http://[::1]:3000/a?b#c"],
     ["0.0.0.0:3000", "http://0.0.0.0:3000/"],
     ["10.0.0.1", "http://10.0.0.1/"],
-    ["00080", "http://localhost:80/"],
+    // Port 80 is http's own: the URL parser writes none, and a stored tab reopens only as written.
+    ["00080", "http://localhost/"],
     ["65535", "http://localhost:65535/"],
     ["\tlocalhost:5173\n", "http://localhost:5173/"],
     ["bücher.example", "https://xn--bcher-kva.example/"],
@@ -194,4 +195,16 @@ test("what the address bar makes of a port is always framable on Linux", () => {
     const url = normalizeUrl(typed);
     assert.ok(url && isFrameable(url), `${typed} -> ${url}`);
   }
+});
+
+test("a port with a path, query or hash is this machine's page there", () => {
+  const cases: [string, string][] = [
+    ["5199/device.html", "http://localhost:5199/device.html"],
+    [":5199/x?y#z", "http://localhost:5199/x?y#z"],
+    ["3000?q=1", "http://localhost:3000/?q=1"],
+    ["3000#top", "http://localhost:3000/#top"],
+    ["8080/", "http://localhost:8080/"],
+  ];
+  for (const [typed, url] of cases) assert.equal(normalizeUrl(typed), url, typed);
+  for (const typed of ["0/x", "70000/x", "5199x", "5199 /x"]) assert.equal(normalizeUrl(typed), null, typed);
 });
