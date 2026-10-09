@@ -1,4 +1,4 @@
-import { ClipboardPaste, Columns2, Copy, Rows2, SquareTerminal, TextSelect, X } from "lucide-react";
+import { ClipboardPaste, Columns2, Copy, Globe, Rows2, SquareTerminal, TextSelect, X } from "lucide-react";
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useGroupRef } from "react-resizable-panels";
@@ -15,6 +15,7 @@ import {
   killPane,
   paneDir,
   paneMenuState,
+  panePty,
   paneTakesMouse,
   pasteIntoPane,
   renamePane,
@@ -29,6 +30,9 @@ import { folderName } from "@/lib/path";
 import { NameInput } from "@/components/NameInput";
 import { StatusDot } from "@/components/StatusDot";
 import { lookLabel, paneLook } from "@/lib/terminal/agentLook";
+import { portUrl } from "@/lib/browser/url";
+import { askOpenPage } from "@/lib/browser/pageRequest";
+import { usePortsOnOpen } from "@/features/browser/PortsMenu";
 
 /** A split's structure without its sizes: what a tab re-lays out on (a split or close), not a drag. */
 export const shape = (l: Layout): string => (typeof l === "number" ? String(l) : `${l.dir}(${l.children.map(shape).join()})`);
@@ -106,10 +110,21 @@ function PaneView({ id, dim, header }: { id: number; dim: number; header?: { pan
   useLayoutEffect(() => attachPane(id, ref.current!), [id]);
   // Read as the menu opens: the selection and the last command change under it.
   const [can, setCan] = useState(() => paneMenuState(id));
+  // What the pane's programs serve (a dev server): read again as the menu opens.
+  const { ports, read: readPorts } = usePortsOnOpen(() => {
+    const pty = panePty(id);
+    return pty === null ? [] : [pty];
+  });
   return (
     <div className="flex h-full flex-col">
       {header && <PaneHeader pane={header.pane} focused={header.focused} />}
-      <ContextMenu onOpenChange={(open) => open && setCan(paneMenuState(id))}>
+      <ContextMenu
+        onOpenChange={(open) => {
+          if (!open) return;
+          setCan(paneMenuState(id));
+          readPorts();
+        }}
+      >
         <ContextMenuTrigger asChild>
           {/* Inset from the edges like the code view's text; the scrollbar keeps the right edge, command marks the left. */}
           <div ref={ref} className="min-h-0 w-full flex-1 pt-2 pb-1 pl-3 transition-opacity duration-150" style={{ opacity: 1 - dim }} onContextMenu={(e) => paneTakesMouse(id, e.nativeEvent) && e.preventDefault()} />
@@ -134,6 +149,12 @@ function PaneView({ id, dim, header }: { id: number; dim: number; header?: { pan
           <ContextMenuItem disabled={!can.output} onSelect={() => selectLastOutput(id)}>
             <TextSelect /> Select Last Command Output
           </ContextMenuItem>
+          {ports.length > 0 && <ContextMenuSeparator />}
+          {ports.map((p) => (
+            <ContextMenuItem key={p.port} onSelect={() => askOpenPage(portUrl(p.port))}>
+              <Globe /> Open localhost:{p.port}
+            </ContextMenuItem>
+          ))}
         </ContextMenuContent>
       </ContextMenu>
     </div>

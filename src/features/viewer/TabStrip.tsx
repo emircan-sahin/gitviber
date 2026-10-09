@@ -1,4 +1,4 @@
-import { Files, GitCompareArrows, History, ListTree, Sparkles, X } from "lucide-react";
+import { Bot, ExternalLink, Files, GitCompareArrows, Globe, History, ListTree, RotateCw, Sparkles, X } from "lucide-react";
 import { type RefObject, useLayoutEffect, useRef } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuShortcut, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { compareLabel, editPath, onDisk, type Selection, selectionPath } from "@/lib/repo/selection";
@@ -13,6 +13,11 @@ import { basename, distinctFolders } from "@/lib/path";
 import { SortableList, useSortableItem } from "@/components/Sortable";
 import { IssueStateIcon, PullStateIcon } from "@/features/github/shared/StateBadges";
 import { FileIcon } from "@/components/FileIcon";
+import { browserApi, github } from "@/lib/api";
+import { failed } from "@/lib/app/toast";
+import { pageHost, pageLabel } from "@/lib/browser/url";
+import { useBrowserState } from "@/lib/browser/store";
+import { agentTabTitle, useAgentPty } from "@/lib/browser/agentTabs";
 import { type Tab, type TabGroup, tabGroup } from "./tabs";
 
 interface Props {
@@ -143,6 +148,7 @@ function TabItem({
   const unsaved = useEdited().has(editPath(t.sel) ?? "");
   const closeKey = useShortcut("tab.close");
   const closeOthersKey = useShortcut("tab.closeOthers");
+  const agentPty = useAgentPty(t.sel.kind === "browser" ? t.sel.id : "");
   const el = useRef<HTMLDivElement | null>(null);
   // Runs before the node leaves the page, while it can still say whether it had focus.
   useLayoutEffect(
@@ -160,7 +166,7 @@ function TabItem({
       }}
       role="tab"
       aria-selected={isActive}
-      title={selectionPath(t.sel)}
+      title={agentPty === undefined ? selectionPath(t.sel) : agentTabTitle(agentPty, selectionPath(t.sel))}
       tabIndex={tabStop ? 0 : -1}
       onClick={guard(() => onActivate(t.key))}
       onDoubleClick={() => onPin(t.key)}
@@ -183,12 +189,24 @@ function TabItem({
         <GitCompareArrows className="size-4 shrink-0 text-subtle" />
       ) : t.sel.kind === "guide" ? (
         <Sparkles className="size-4 shrink-0 text-subtle" />
+      ) : t.sel.kind === "browser" ? (
+        agentPty !== undefined ? (
+          <Bot className="size-4 shrink-0 text-subtle" aria-label="Opened by an agent" />
+        ) : (
+          <Globe className="size-4 shrink-0 text-subtle" />
+        )
       ) : (
         <FileIcon path={selectionPath(t.sel)} />
       )}
-      <span className={cn("truncate", t.preview && "italic")}>{tabLabel(t.sel)}</span>
-      {folder && <span className="min-w-0 shrink-[2] truncate text-[11px] text-subtle">{folder}</span>}
-      <TabKind sel={t.sel} />
+      {t.sel.kind === "browser" ? (
+        <PageTitle sel={t.sel} />
+      ) : (
+        <>
+          <span className={cn("truncate", t.preview && "italic")}>{tabLabel(t.sel)}</span>
+          {folder && <span className="min-w-0 shrink-[2] truncate text-[11px] text-subtle">{folder}</span>}
+          <TabKind sel={t.sel} />
+        </>
+      )}
       <button
         aria-label={unsaved ? "Close tab (unsaved changes)" : "Close tab"}
         // Off the Tab order: the tab closes with ⌫, and one stop per tab would crowd it.
@@ -235,6 +253,7 @@ function TabItem({
             <ContextMenuItem onSelect={() => onPin(t.key)}>Keep Open</ContextMenuItem>
           </>
         )}
+        {t.sel.kind === "browser" && <BrowserItems sel={t.sel} />}
         {file && (
           <>
             <ContextMenuSeparator />
@@ -248,6 +267,37 @@ function TabItem({
         )}
       </ContextMenuContent>
     </ContextMenu>
+  );
+}
+
+type PageSelection = Extract<Selection, { kind: "browser" }>;
+
+/** A page's tab by its title as it changes (the tab keeps the last), with its host beside it; by its address until it has one. */
+function PageTitle({ sel }: { sel: PageSelection }) {
+  const page = useBrowserState(sel.id);
+  const title = page?.title || sel.title;
+  const url = page?.url || sel.url;
+  return (
+    <>
+      <span className="truncate">{title || pageLabel(url)}</span>
+      {title && pageHost(url) && <span className="shrink-0 font-mono text-[10px] text-subtle">{pageHost(url)}</span>}
+    </>
+  );
+}
+
+/** A page's tab: reloaded where it stands (a tab not shown yet has nothing to reload), or opened in the system browser. */
+function BrowserItems({ sel }: { sel: PageSelection }) {
+  const url = useBrowserState(sel.id)?.url || sel.url;
+  return (
+    <>
+      <ContextMenuSeparator />
+      <ContextMenuItem onSelect={() => void browserApi.go(sel.id, "reload").catch(failed("Could not reload the page"))}>
+        <RotateCw /> Reload
+      </ContextMenuItem>
+      <ContextMenuItem disabled={!pageHost(url)} onSelect={() => void github.openUrl(url).catch(failed("Could not open the link"))}>
+        <ExternalLink /> Open in System Browser
+      </ContextMenuItem>
+    </>
   );
 }
 

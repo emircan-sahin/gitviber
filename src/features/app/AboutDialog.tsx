@@ -131,7 +131,7 @@ export function AboutDialog() {
 
 /** Written by scripts/licenses.mjs (`pnpm licenses:generate`). */
 type Licenses = {
-  packages: { name: string; version: string; license: string; url: string; source: "npm" | "cargo"; standard?: string; texts: number[] }[];
+  packages: { name: string; version: string; license: string; url: string; source: "npm" | "cargo" | "data"; standard?: string; texts: number[] }[];
   texts: string[];
 };
 
@@ -161,7 +161,7 @@ function LicensesDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="top-[10%] flex h-[80vh] max-w-2xl flex-col text-left">
         <DialogTitle>Third-Party Licenses</DialogTitle>
-        <DialogDescription>GitViber is built on these open-source packages. Click one to read its license.</DialogDescription>
+        <DialogDescription>GitViber is built on these open-source packages and data. Click one to read its license.</DialogDescription>
         <Input autoFocus value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter by name or license" className="mt-3 shrink-0" />
         <div className="mt-2 min-h-0 flex-1 overflow-y-auto">
           {!data ? (
@@ -182,7 +182,7 @@ function LicensesDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (
                     <span className="min-w-0 truncate">{p.name}</span>
                     <span className="shrink-0 font-mono text-[11px] text-subtle">{p.version}</span>
                     <span className="ml-auto shrink-0 truncate pl-3 text-[11px] text-muted-foreground">{p.license}</span>
-                    <span className="w-9 shrink-0 text-right text-[10.5px] text-subtle">{p.source === "npm" ? "npm" : "crate"}</span>
+                    <span className="w-9 shrink-0 text-right text-[10.5px] text-subtle">{p.source === "cargo" ? "crate" : p.source}</span>
                   </button>
                   {isOpen && (
                     <div className="mb-2 ml-7 mr-2 mt-1 space-y-2">

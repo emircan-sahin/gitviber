@@ -22,12 +22,14 @@ pub fn pty_spawn(
     output: tauri::ipc::Channel<tauri::ipc::Response>,
     exit: tauri::ipc::Channel<Option<pty::Exit>>,
 ) -> Res<pty::Spawned> {
+    let pane = cwd.clone();
     let cwd = folder.filter(|f| Path::new(f).is_dir()).unwrap_or(cwd);
     let scripts = integration
         .then(|| app.path().app_cache_dir().ok())
         .flatten()
         .map(|dir| dir.join("shell-integration"));
     state.ptys.spawn(
+        Path::new(&pane),
         Path::new(&cwd),
         cols,
         rows,

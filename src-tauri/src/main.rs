@@ -2,6 +2,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    // `gitviber browser …` from an agent in one of its terminals (browser/client.rs). Asked for
+    // by name, so ahead of askpass, which goes by its environment.
+    if let Some(code) = gitviber_lib::browser_cli() {
+        std::process::exit(code);
+    }
     // git and ssh run this binary to ask for a password (askpass.rs); that never opens the app.
     if let Some(code) = gitviber_lib::askpass::helper() {
         std::process::exit(code);

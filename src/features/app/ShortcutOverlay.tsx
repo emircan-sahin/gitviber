@@ -4,6 +4,7 @@ import { IS_MAC } from "@/lib/platform";
 import { canRun, eventChord, matchesCommand, runsAt, useCommands } from "@/lib/commands/keybindings";
 import { focusedPanel, type Panel } from "@/lib/ui/panels";
 import { untilReleased } from "@/lib/ui/held";
+import { overlaysChanged } from "@/lib/ui/overlays";
 import { pointerMoved } from "@/lib/ui/pointer";
 import { getSettings, useSettings } from "@/lib/settings";
 import { createStore } from "@/lib/store";
@@ -109,6 +110,7 @@ export function ShortcutOverlay() {
     setMore(!!el && el.scrollTop + el.clientHeight < el.scrollHeight - 1);
   };
   useLayoutEffect(measure, [state, keybindings]);
+  useEffect(overlaysChanged, [state]);
   // A pinned overlay stays up while the window is resized.
   useEffect(() => {
     const el = scroller.current;
@@ -195,6 +197,7 @@ export function ShortcutOverlay() {
   // Above the scrollbar layer (index.css .sb-layer, z-index 70). No backdrop-filter: over the terminal's WebGL canvas it isn't safe in WebKit.
   return (
     <div
+      data-overlay
       onMouseDown={(e) => e.preventDefault()}
       onClick={() => set(null)}
       onContextMenu={(e) => {

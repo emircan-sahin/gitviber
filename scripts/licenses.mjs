@@ -1,5 +1,6 @@
 // Writes src/lib/third-party-licenses.json: every npm and cargo package the app ships, with
-// the license files each one includes (MIT, Apache-2.0 and OFL require passing them on).
+// the license files each one includes (MIT, Apache-2.0 and OFL require passing them on), and
+// the data taken from other projects (DATA).
 // Shown under About → Third-Party Licenses. `--check` fails when the file is out of date,
 // so `pnpm check` catches a dependency change that wasn't followed by
 // `pnpm licenses:generate`.
@@ -91,6 +92,19 @@ function cargoPackages() {
   });
 }
 
+// Data from other projects the app ships, not as a package: credited as one.
+const DATA = [
+  {
+    // src/lib/browser/devices.json: the browser's device sizes, pixel ratios and user agents, as
+    // of the day they were taken (its version) and the commit main was at then.
+    name: "chrome-devtools-frontend",
+    version: "2026-10-09",
+    license: "BSD-3-Clause",
+    url: "https://chromium.googlesource.com/devtools/devtools-frontend/+/a23d72d27dd00adef0dd7130fcc0b2a99e5495bc/front_end/models/emulation/EmulatedDevices.ts",
+    texts: [readFileSync(path.join(root, "scripts/license-texts/chrome-devtools-frontend.txt"), "utf8").trim()],
+  },
+];
+
 // A package that ships no license file (a crate whose license sits at its workspace root,
 // say) gets the standard text of the license it offers, MIT when it's one of the choices.
 function withStandardText(p) {
@@ -116,10 +130,12 @@ function build() {
     if (!index.has(t)) index.set(t, texts.push(t) - 1);
     return index.get(t);
   };
-  const packages = [...npmPackages().map((p) => ({ ...p, source: "npm" })), ...cargoPackages().map((p) => ({ ...p, source: "cargo" }))]
+  const sorted = [...npmPackages().map((p) => ({ ...p, source: "npm" })), ...cargoPackages().map((p) => ({ ...p, source: "cargo" })), ...DATA.map((p) => ({ ...p, source: "data" }))]
     .map(withStandardText)
-    .sort((a, b) => cmp(a.name, b.name) || cmp(a.source, b.source) || cmp(a.version, b.version))
-    .map(({ texts: t, ...p }) => ({ ...p, texts: t.map(ref) }));
+    .sort((a, b) => cmp(a.name, b.name) || cmp(a.source, b.source) || cmp(a.version, b.version));
+  // DATA's texts numbered last: adding an entry there doesn't renumber every package's.
+  for (const p of sorted) if (p.source !== "data") p.texts.forEach(ref);
+  const packages = sorted.map(({ texts: t, ...p }) => ({ ...p, texts: t.map(ref) }));
   return `${JSON.stringify({ packages, texts }, null, 1)}\n`;
 }
 

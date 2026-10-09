@@ -9,7 +9,7 @@ pub(crate) struct ScratchDir(Option<PathBuf>);
 
 impl ScratchDir {
     pub(crate) fn new(purpose: &str) -> Result<Self, String> {
-        let name = crate::askpass::random_hex(8).ok_or("could not name a temporary folder")?;
+        let name = crate::local_socket::random_hex(8).ok_or("could not name a temporary folder")?;
         let dir = std::env::temp_dir().join(format!("gitviber-{purpose}-{name}"));
         let mut builder = std::fs::DirBuilder::new();
         #[cfg(unix)]

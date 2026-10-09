@@ -4,6 +4,8 @@ import { isRecord, putRecent, readJson, stringList, writeJson } from "../storage
 import { folderName, joinPath } from "../path";
 import { isNote, type ReviewNote } from "../review/notes";
 import { type HueChoice, isHueChoice } from "../git/worktrees";
+import { isPageUrl } from "../browser/url";
+import { isDeviceChoice } from "../browser/devices";
 
 /** What a worktree's window looked like, so reopening the app picks up where it was. */
 interface WorkspaceSnapshot {
@@ -54,14 +56,23 @@ export function loadWorkspace(root: string): WorkspaceSnapshot | null {
     try {
       // The key doesn't read a comparison's sides, but its tab and screen do.
       if (sel.kind === "compare" && !(isComparePoint(sel.base) && isComparePoint(sel.head))) return null;
+      // A page loads again as it opens: only a web page's address.
+      if (sel.kind === "browser" && !(typeof sel.id === "string" && isPageUrl(sel.url) && (sel.title === undefined || typeof sel.title === "string"))) return null;
       return selectionKey(sel);
     } catch {
       return null;
     }
   };
+  // A browser tab with a device this build can't read shows its page as itself.
+  const clean = (sel: Selection): Selection => {
+    if (sel.kind !== "browser" || sel.device === undefined || isDeviceChoice(sel.device)) return sel;
+    const { device: _, ...rest } = sel;
+    return rest;
+  };
   const tabs = s.tabs.flatMap((t) => {
-    const key = typeof t?.key === "string" && typeof t.sel?.kind === "string" ? rekey(t.sel) : null;
-    return key ? [{ ...t, old: t.key, key }] : [];
+    const sel = typeof t?.sel?.kind === "string" ? clean(t.sel) : t?.sel;
+    const key = typeof t?.key === "string" && typeof sel?.kind === "string" ? rekey(sel) : null;
+    return key ? [{ ...t, sel, old: t.key, key }] : [];
   });
   const active = tabs.find((t) => t.old === s.active)?.key ?? null;
   return { ...s, tabs: tabs.map(({ old: _, ...t }) => t), active };

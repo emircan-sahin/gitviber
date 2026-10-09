@@ -34,11 +34,14 @@ import { AllChanges } from "./AllChanges";
 import { CompareView } from "@/features/compare/CompareView";
 import { GuideView } from "@/features/review/GuideView";
 import { VaultView } from "@/features/obsidian/VaultView";
+import { BrowserView } from "@/features/browser/BrowserView";
 import { diffNote, placeholderFor } from "./placeholders";
 import { FileHeaderPath, Placeholder } from "./FileHeader";
 import { scrollSideways } from "@/lib/ui/useTabStrip";
 
 interface ViewerProps {
+  /** The worktree, whose pages a browser tab's view belongs to. */
+  root: string;
   tabs: Tab[];
   active: Tab | null;
   status: RepoStatus | null;
@@ -55,6 +58,8 @@ interface ViewerProps {
   onPin: (key: string) => void;
   onMoveTab: (from: number, to: number) => void;
   onOpen: (s: Selection, pin?: boolean) => void;
+  /** A tab whose page moved on, kept under its key. */
+  onUpdate: (key: string, sel: Selection) => void;
   /** History, filtered to a file's commits. */
   onShowHistory: (path: string) => void;
   onRevealInExplorer: (path: string) => void;
@@ -95,6 +100,8 @@ export function Viewer(props: ViewerProps) {
             <GuideView sel={active.sel} {...props} />
           ) : active.sel.kind === "vault" ? (
             <VaultView tab={active} sel={active.sel} onOpen={props.onOpen} />
+          ) : active.sel.kind === "browser" ? (
+            <BrowserView tabKey={active.key} sel={active.sel} root={props.root} onUpdate={props.onUpdate} />
           ) : (
             <Pane tab={active} sel={active.sel} {...props} />
           )}

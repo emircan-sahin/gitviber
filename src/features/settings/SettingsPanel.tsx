@@ -1,5 +1,5 @@
 import { ask } from "@/lib/app/ask";
-import { Bell, CircleArrowUp, Code2, Gem, GitBranch, GitCompareArrows, Keyboard, Palette, RotateCcw, ScanSearch, Sparkles, SquareArrowOutUpRight, SquareTerminal } from "lucide-react";
+import { Bell, CircleArrowUp, Code2, Gem, GitBranch, GitCompareArrows, Globe, Keyboard, Palette, RotateCcw, ScanSearch, Sparkles, SquareArrowOutUpRight, SquareTerminal } from "lucide-react";
 import { IS_MAC } from "@/lib/platform";
 import { resetSettings } from "@/lib/settings";
 import { cn } from "@/lib/utils";
@@ -16,6 +16,7 @@ import { type Recording, ShortcutsSection } from "./sections/Shortcuts";
 import { UpdatesSection } from "./sections/Updates";
 import { TerminalSection } from "./sections/Terminal";
 import { ObsidianSection } from "./sections/Obsidian";
+import { BrowserSection } from "./sections/Browser";
 
 const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette, group: "General" },
@@ -27,6 +28,7 @@ const SECTIONS = [
   { id: "diff", label: "Diff", icon: GitCompareArrows, group: "Workspace" },
   { id: "terminal", label: "Terminal", icon: SquareTerminal, group: "Workspace" },
   { id: "obsidian", label: "Obsidian", icon: Gem, group: "Workspace" },
+  { id: "browser", label: "Browser", icon: Globe, group: "Workspace" },
   { id: "git", label: "Git", icon: GitBranch, group: "Git" },
   { id: "commit", label: "Commit Messages", icon: Sparkles, group: "Git" },
   { id: "review", label: "Guided Review", icon: ScanSearch, group: "Git" },
@@ -104,6 +106,7 @@ export function SettingsPanel({
           {section === "diff" && <DiffSection />}
           {section === "terminal" && <TerminalSection />}
           {section === "obsidian" && <ObsidianSection />}
+          {section === "browser" && <BrowserSection />}
           {/* Keyed: the settings window stays open as the workspace opens another project. */}
           {section === "git" && <GitSection key={main} main={main} />}
           {section === "commit" && <CommitSection />}

@@ -618,6 +618,13 @@ export function focusTerminalPane(id: number) {
 /** Where a pane's shell was last seen (shellDir). */
 export const paneDir = (id: number) => panes.get(id)?.dir;
 
+/** What the pane a shell runs in is called, by its pty (GITVIBER_PTY); null once it's closed. */
+export function paneLabel(pty: number): string | null {
+  const pane = [...panes.values()].find((p) => p.pty === pty);
+  const info = pane && state.groups.flatMap((g) => g.panes).find((p) => p.id === pane.id);
+  return info ? info.name || info.title || "Terminal" : null;
+}
+
 /** False when the user kept it. */
 export function closeGroup(id: number) {
   return kill(state.groups.find((g) => g.id === id)?.panes.map((p) => p.id) ?? [], "this terminal", "Kill terminal");
@@ -853,6 +860,11 @@ const within = (cwd: string, dir: string) => cwd === dir || isInside(cwd, dir);
 
 /** How many terminals were started in `dir` or below it. */
 export const terminalsIn = (dir: string) => state.groups.reduce((n, g) => n + g.panes.filter((p) => within(p.cwd, dir)).length, 0);
+
+/** The sessions (pty ids) of the terminals started in `dir` or below it. */
+export const ptysIn = (dir: string) => [...panes.values()].flatMap((p) => (p.pty !== null && within(p.cwd, dir) ? [p.pty] : []));
+
+export const panePty = (id: number) => panes.get(id)?.pty ?? null;
 
 /** A folder was moved. Its shells went along (a cwd is the folder, not its path), so splits and restores follow. */
 export function folderMoved(from: string, to: string) {

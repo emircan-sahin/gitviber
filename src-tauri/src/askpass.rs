@@ -4,6 +4,7 @@
 //! Unix socket and prints the answer. Nothing typed is stored or logged: an answer goes to git
 //! once, and the user's credential helper decides what to keep, as in a terminal.
 
+use crate::local_socket::random_hex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -331,21 +332,12 @@ fn host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_string())
 }
 
-/// `n` random bytes, in hex.
-pub(crate) fn random_hex(n: usize) -> Option<String> {
-    use std::io::Read;
-    let mut bytes = vec![0u8; n];
-    std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(&mut bytes))
-        .ok()?;
-    Some(bytes.iter().map(|b| format!("{b:02x}")).collect())
-}
-
 #[cfg(unix)]
 mod unix {
     use super::*;
-    use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
-    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    use crate::local_socket::{ask_line, private_dir, serve_line};
+    use std::io::{ErrorKind, Read};
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::Path;
     use std::sync::mpsc::{channel, RecvTimeoutError};
@@ -362,8 +354,7 @@ mod unix {
         timeout: Duration,
     ) -> Option<Arc<Server>> {
         let dir = std::env::temp_dir().join(format!("gitviber-{}", random_hex(6)?));
-        // Fails if anything already sits at that path, so nobody can plant one for us.
-        std::fs::DirBuilder::new().mode(0o700).create(&dir).ok()?;
+        private_dir(&dir)?;
         let socket = dir.join("askpass");
         let listener = UnixListener::bind(&socket).ok()?;
         let _ = std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600));
@@ -400,21 +391,14 @@ mod unix {
 
     impl Server {
         fn handle(&self, stream: UnixStream) {
-            let answer = self.request(&stream);
-            let _ = stream.set_nonblocking(false);
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-            if let Ok(reply) = serde_json::to_string(&Reply { answer }) {
-                let _ = (&stream).write_all((reply + "\n").as_bytes());
-            }
+            serve_line(&stream, MAX_REQUEST, Duration::from_secs(5), |request| {
+                Reply {
+                    answer: request.and_then(|r| self.request(&stream, r)),
+                }
+            });
         }
 
-        fn request(&self, stream: &UnixStream) -> Option<String> {
-            stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-            let mut line = String::new();
-            BufReader::new(Read::take(stream, MAX_REQUEST))
-                .read_line(&mut line)
-                .ok()?;
-            let request: Request = serde_json::from_str(&line).ok()?;
+        fn request(&self, stream: &UnixStream, request: Request) -> Option<String> {
             let session = lock(&self.sessions).get(&request.token).cloned()?;
             let id = self.next.fetch_add(1, Ordering::Relaxed);
             let (tx, rx) = channel();
@@ -466,22 +450,14 @@ mod unix {
         }
     }
 
-    /// The helper's side: one request line, one reply line. Not until the connection closes:
-    /// on macOS an accepted socket is marked close-on-exec a step after accept(), and a child
-    /// spawned in between keeps it open after the app has answered.
     pub(super) fn ask(socket: &Path, request: &Request) -> Option<String> {
-        let mut stream = UnixStream::connect(socket).ok()?;
-        let mut line = serde_json::to_string(request).ok()?;
-        line.push('\n');
-        stream.write_all(line.as_bytes()).ok()?;
-        let mut reply = String::new();
-        BufReader::new(&stream).read_line(&mut reply).ok()?;
-        serde_json::from_str::<Reply>(&reply).ok()?.answer
+        ask_line::<_, Reply>(socket, request, None).ok()?.answer
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::io::{BufRead, BufReader, Write};
 
         /// A server in its own directory, answering each prompt with `respond`.
         fn server(

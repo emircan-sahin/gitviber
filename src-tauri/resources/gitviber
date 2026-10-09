@@ -4,6 +4,12 @@
 # GitViber → Install 'gitviber' Command links it onto PATH (cli.rs). `open -b` finds the app by
 # its bundle id wherever it's installed, and hands a running app the path; `--` keeps a path
 # starting with "-" from reading as an option.
+# In GitViber's own terminals (which set GITVIBER_EXE), `gitviber browser <command>` drives the
+# pane's browser tab instead (browser/client.rs); elsewhere `browser` is a folder like any other.
+if [ "$1" = browser ] && [ -n "$GITVIBER_EXE" ]; then
+  shift
+  exec "$GITVIBER_EXE" --browser "$@"
+fi
 [ $# -eq 0 ] && set -- .
 for path in "$@"; do
   if [ ! -e "$path" ]; then

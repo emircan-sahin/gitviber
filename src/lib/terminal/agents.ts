@@ -22,6 +22,14 @@ const info = (p: Pane) => state.groups.flatMap((g) => g.panes).find((i) => i.id 
 /** When each pane's agent was first seen or last changed state, for the agents list. */
 const since = new Map<number, number>();
 
+const finishes = new Set<(dir: string) => void>();
+
+/** `l` hears of each agent that finishes its turn (working → idle), with its pane's folder. */
+export function onAgentFinished(l: (dir: string) => void) {
+  finishes.add(l);
+  return () => void finishes.delete(l);
+}
+
 function apply(p: Pane, read: PaneAgent | null, live = false) {
   const i = info(p);
   if (!i) return;
@@ -33,6 +41,7 @@ function apply(p: Pane, read: PaneAgent | null, live = false) {
     if (agent.name !== i.agent?.name || agent.state !== i.agent.state) since.set(p.id, Date.now());
   }
   if (agent !== i.agent) update(p.id, (x) => ({ ...x, agent }));
+  if (note && agent?.state === "idle") for (const l of finishes) l(p.dir);
   // Woken (its background shell exited) before its finish was seen: that news is old, and its
   // next finish must be told again.
   if (live && agent?.state === "working" && i.agent?.state !== "working") lookedAt(p.id);

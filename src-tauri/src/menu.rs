@@ -196,6 +196,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
             &b.command("view.toggleGitPanel", "Toggle Git Panel")?,
             &b.command("view.toggleExplorer", "Toggle Explorer")?,
             &b.command("terminal.toggle", "Toggle Terminal")?,
+            &b.command("browser.open", "Open Browser")?,
             &sep()?,
             &b.command("view.focusGitPanel", "Focus Git Panel")?,
             &b.command("view.focusCode", "Focus Code View")?,

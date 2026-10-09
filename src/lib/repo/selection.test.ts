@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Commit } from "../api/types.ts";
-import { editPath, filesSelection, isComparePoint, onDisk, selectionKey, selectionPath, vaultEditFile } from "./selection.ts";
+import { editPath, filesSelection, isComparePoint, onDisk, type Selection, selectionKey, selectionPath, vaultEditFile } from "./selection.ts";
 
 test("two working-tree files compared make one tab per pair, the right one's path its own", () => {
   const ab = filesSelection("src/a.ts", "src/b.ts");
@@ -60,4 +60,35 @@ test("a vault note's path comes back out of its edit key, at the vault's root or
       assert.equal(vaultEditFile(vault, key), path);
     }
   }
+});
+
+test("a browser tab is one tab wherever its page goes, and no file", () => {
+  const at = (url: string): Selection => ({ kind: "browser", id: "tab-1", url });
+  assert.equal(selectionKey(at("http://localhost:5173/")), selectionKey(at("http://localhost:5173/docs")));
+  assert.notEqual(selectionKey(at("http://localhost:5173/")), selectionKey({ kind: "browser", id: "tab-2", url: "http://localhost:5173/" }));
+  assert.equal(selectionPath(at("http://localhost:5173/")), "localhost:5173");
+  // What diffPairs' isFileSelection reads.
+  assert.equal("file" in at("http://localhost:5173/"), false);
+  assert.equal(editPath(at("http://localhost:5173/")), null);
+  assert.equal(onDisk(at("http://localhost:5173/")), false);
+});
+
+test("a browser tab's key is its own, whatever its id or the other tabs' paths hold", () => {
+  const ids = ["tab-1", "", ":", "::x", "browser::tab-1", "vault:a:b", "a/b", "ü"];
+  const keys = ids.map((id) => selectionKey({ kind: "browser", id, url: "about:blank" }));
+  assert.equal(new Set(keys).size, ids.length);
+  const others: Selection[] = [
+    { kind: "vault", vault: "browser", path: ":tab-1" },
+    { kind: "vault", vault: "", path: "tab-1" },
+  ];
+  for (const s of others) assert.equal(keys.includes(selectionKey(s)), false, selectionKey(s));
+  // The title is the page's last, and isn't part of who the tab is.
+  assert.equal(selectionKey({ kind: "browser", id: "tab-1", url: "about:blank", title: "Docs" }), keys[0]);
+  assert.equal(selectionPath({ kind: "browser", id: "tab-1", url: "about:blank" }), "New Tab");
+});
+
+test("a browser tab's device is shown with it, not part of who it is", () => {
+  const plain: Selection = { kind: "browser", id: "tab-9", url: "http://localhost:5173/" };
+  assert.equal(selectionKey({ ...plain, device: { name: "iPhone 16", rotated: true } }), selectionKey(plain));
+  assert.equal(selectionPath({ ...plain, device: { name: "Responsive", w: 320, h: 640 } }), "localhost:5173");
 });
