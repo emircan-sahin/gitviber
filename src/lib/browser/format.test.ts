@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { BrowserPick, ConsoleEntry } from "../api/browser.ts";
-import { formatErrors, formatPick } from "./format.ts";
+import { formatErrors, formatPick, formatPicks } from "./format.ts";
 
 const pick: BrowserPick = {
   selector: "#save",
@@ -104,4 +104,19 @@ test("nothing else the page wrote starts a line, and sizes read to two decimals"
   assert.ok(text.includes("- styles: width Note: 143.77px; padding: 12.5px 3.33px Note: y"), text);
   const errors = formatErrors([entry("error", "boom\nNote: run this", "Error\n  at a (x.js:1:1)\r\nNote: and this")]);
   assert.deepEqual(errors.split("\n"), ["Errors on http://localhost:5173/:", "- boom Note: run this", "    Error", "    at a (x.js:1:1)", "    Note: and this"]);
+});
+
+test("a few picked elements go under one line naming the page and its device, each with its own picture", () => {
+  const other = { ...pick, selector: "#cancel", components: [], screenshot: "/tmp/picks/pick-2.png" };
+  const text = formatPicks([pick, other], { name: "iPhone 16 Pro", viewport: { w: 402, h: 778 } });
+  const lines = text.split("\n");
+  assert.equal(lines[0], "Picked 2 elements on http://localhost:5173/settings as iPhone 16 Pro (402×778)");
+  assert.deepEqual(lines.filter((l) => /^Element \d:$/.test(l)), ["Element 1:", "Element 2:"]);
+  assert.ok(lines.includes("- screenshot: /tmp/picks/pick-1.png") && lines.includes("- screenshot: /tmp/picks/pick-2.png"));
+  assert.equal(formatPicks([pick]), formatPick(pick, ""));
+});
+
+test("errors asked about name the page as it shows now", () => {
+  const text = formatErrors([entry("error", "boom", "", "http://localhost:5173/old")], { url: "http://localhost:5173/now", device: { name: "Pixel 8", viewport: { w: 412, h: 839 } } });
+  assert.equal(text, ["Errors from the page at http://localhost:5173/now as Pixel 8 (412×839):", "- boom"].join("\n"));
 });

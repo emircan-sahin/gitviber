@@ -3,23 +3,37 @@ import { browserApi, type BrowserPick } from "@/lib/api";
 import { failed } from "@/lib/app/toast";
 import { takePicked, usePicked } from "@/lib/browser/store";
 
-/** A tab's element picker: on until the page says what it picked (browser-picked), then its note. */
+/**
+ * A tab's element picker: on until the page says what it picked (browser-picked), then what's
+ * asked about them. ⇧-clicks gather a few on the way; a plain click picks the last.
+ */
 export function usePicker(id: string) {
   const [picking, setPicking] = useState(false);
-  const [pick, setPick] = useState<BrowserPick | null>(null);
+  const [picks, setPicks] = useState<BrowserPick[] | null>(null);
+  const gathered = useRef<BrowserPick[]>([]);
   const picked = usePicked(id);
   useEffect(() => {
-    if (picked === undefined) return;
-    setPicking(false);
+    if (!picked) return;
     takePicked(id);
-    // The keys come back from the page first, or the note's field would show focus and get none.
-    if (picked) void browserApi.focus(id, false).finally(() => setPick(picked)).catch(() => {});
+    let done: BrowserPick[] | null = null;
+    for (const p of picked) {
+      if (p?.more) {
+        gathered.current.push(p);
+        continue;
+      }
+      setPicking(false);
+      done = p ? [...gathered.current, p] : null;
+      gathered.current = [];
+    }
+    // The keys come back from the page first, or the question's field would show focus and get none.
+    if (done) void browserApi.focus(id, false).finally(() => setPicks(done)).catch(() => {});
   }, [picked, id]);
 
   const set = useCallback(
     (on: boolean) => {
       setPicking(on);
-      if (on) setPick(null);
+      gathered.current = [];
+      if (on) setPicks(null);
       // Into the page: Esc there ends the picker.
       void browserApi
         .pick(id, on)
@@ -42,5 +56,5 @@ export function usePicker(id: string) {
     return () => window.removeEventListener("keydown", onKey);
   }, [picking, set]);
 
-  return { picking, pick, toggle, closeNote: () => setPick(null) };
+  return { picking, picks, toggle, closeAsk: () => setPicks(null) };
 }

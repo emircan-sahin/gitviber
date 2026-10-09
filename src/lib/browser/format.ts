@@ -15,10 +15,12 @@ const flat = (s: string) => s.replace(/\s+/g, " ").trim();
 /** 143.765625px reads as 143.77px. */
 const rounded = (v: string) => v.replace(/-?\d*\.\d+(?=px)/g, (n) => String(Math.round(Number(n) * 100) / 100));
 
+/** The page's address, and the device it showed as: for the agent to see it the same way. */
+const pageOf = (url: string, device: ShownAs | null) => (device ? `${flat(url)} as ${device.name} (${device.viewport.w}×${device.viewport.h})` : flat(url));
+
 /** The element, where it is and what it looks like, the screenshot's path, then the note. */
 export function formatPick(pick: BrowserPick, note: string, device: ShownAs | null = null): string {
-  const url = flat(pick.url);
-  const on = device ? `${url} as ${device.name} (${device.viewport.w}×${device.viewport.h})` : url;
+  const on = pageOf(pick.url, device);
   const styles = Object.entries(pick.styles)
     .filter(([, v]) => v && v !== "none" && v !== "normal" && v !== "auto" && v !== "0px")
     .map(([k, v]) => `${flat(k)}: ${rounded(flat(v))}`)
@@ -37,13 +39,20 @@ export function formatPick(pick: BrowserPick, note: string, device: ShownAs | nu
   return lines.filter(Boolean).join("\n");
 }
 
+/** A few elements ⇧-clicked together, each as formatPick has it, under the page they're on. */
+export function formatPicks(picks: BrowserPick[], device: ShownAs | null = null): string {
+  if (picks.length === 1) return formatPick(picks[0], "", device);
+  const each = picks.map((p, i) => [`Element ${i + 1}:`, ...formatPick(p, "", device).split("\n").slice(1)].join("\n"));
+  return [`Picked ${picks.length} elements on ${pageOf(picks[0].url, device)}`, ...each].join("\n");
+}
+
 /** Stack lines kept under each error: where it was thrown, and a little of how it got there. */
 const STACK_LINES = 3;
 /** Errors sent at most, the latest. */
 const ERRORS = 20;
 
 /** The page's latest errors, each once with how often, oldest first; empty when there are none. */
-export function formatErrors(entries: ConsoleEntry[]): string {
+export function formatErrors(entries: ConsoleEntry[], page: { url: string; device: ShownAs | null } | null = null): string {
   const errors = entries.filter((e) => e.level === "error");
   const seen = new Map<string, { entry: ConsoleEntry; times: number }>();
   for (const e of errors) {
@@ -55,7 +64,8 @@ export function formatErrors(entries: ConsoleEntry[]): string {
   const latest = [...seen.values()].slice(-ERRORS);
   if (!latest.length) return "";
   const pages = new Set(latest.map((l) => flat(l.entry.url)));
-  const head = pages.size === 1 ? `Errors on ${[...pages][0]}:` : "Errors from the page:";
+  // The page as it shows now, for the agent to see it the same way; else where they were logged.
+  const head = page ? `Errors from the page at ${pageOf(page.url, page.device)}:` : pages.size === 1 ? `Errors on ${[...pages][0]}:` : "Errors from the page:";
   const body = latest.map(({ entry, times }) => {
     const stack = entry.stack
       .split("\n")

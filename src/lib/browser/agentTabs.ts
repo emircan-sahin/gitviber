@@ -46,8 +46,9 @@ export function useAgentTabs(root: string, tabs: readonly { key: string; sel: Se
   useEffect(() => {
     const next = new Map(chosen);
     for (const { key, sel } of tabs) {
-      const change = sel.kind === "browser" && next.get(sel.id);
-      if (!change || sel.kind !== "browser") continue;
+      if (sel.kind !== "browser") continue;
+      const change = next.get(sel.id);
+      if (!change) continue;
       next.delete(sel.id);
       const { device, scheme, ...rest } = { ...sel, ...change };
       update(key, { ...rest, ...(device && { device }), ...(scheme && { scheme }) });

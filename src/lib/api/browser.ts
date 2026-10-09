@@ -66,6 +66,8 @@ export interface BrowserPick {
   /** Its picture, a PNG kept a day. */
   screenshot: string | null;
   url: string;
+  /** Picked with ⇧ held: one of a few, the picker still on. */
+  more?: boolean;
 }
 
 /** A line the page logged (browser/console.rs); "load" marks where a page began. */
@@ -98,8 +100,12 @@ function inOrder<T>(id: string, run: () => Promise<T>): Promise<T> {
 
 /** The browser tab's native view (commands/browser.rs); macOS only for now, the rest fail elsewhere. */
 export const browserApi = {
-  /** Tab `id`'s view in worktree `root`, loading `url`, hidden until placed; one already open stays as it is. */
-  create: (id: string, root: string, url: string, ua: string | null) => inOrder(id, () => invoke<BrowserCreated>("browser_create", { id, root, url, ua })),
+  /**
+   * Tab `id`'s view in worktree `root`, loading `url` as the tab shows it (its device's `ua`, `zoom`, `dark`: null for as
+   * the app), hidden until placed; one already open stays as it is.
+   */
+  create: (id: string, root: string, url: string, ua: string | null, zoom: number | null, dark: boolean | null) =>
+    inOrder(id, () => invoke<BrowserCreated>("browser_create", { id, root, url, ua, zoom, dark })),
   /** `screen`: the device it shows, in device mode. */
   place: (id: string, rect: NativeRect, screen: NativeScreen | null) => invoke<void>("browser_place", { id, rect, screen }),
   /** The device's user agent (null: WebKit's own), the page loaded again when it changes. */

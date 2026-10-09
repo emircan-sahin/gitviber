@@ -2,9 +2,10 @@ import { Crosshair, type LucideIcon, Moon, Sun, SunMoon, TabletSmartphone } from
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
-import { browserApi, type BrowserGo, errorMessage, github } from "@/lib/api";
+import { browserApi, type BrowserGo, type BrowserPick, errorMessage, github } from "@/lib/api";
 import { failed, toast } from "@/lib/app/toast";
-import { onBrowserKey, setBrowserState, useBrowserState, useParks } from "@/lib/browser/store";
+import { formatErrors, type ShownAs } from "@/lib/browser/format";
+import { onBrowserKey, setBrowserState, useBrowserState, useLogged, useParks } from "@/lib/browser/store";
 import { RESPONSIVE } from "@/lib/browser/devices";
 import { type Scheme, zoomLabel } from "@/lib/browser/look";
 import { BLANK, isFrameable, pageLabel } from "@/lib/browser/url";
@@ -15,7 +16,7 @@ import type { Selection } from "@/lib/repo/selection";
 import { Placeholder } from "@/features/viewer/FileHeader";
 import { AddressBar, type PageControl } from "./AddressBar";
 import { ConsoleBadge, ConsolePanel } from "./ConsolePanel";
-import { PickNote } from "./PickNote";
+import { AskPopover, picksAbout } from "./AskPopover";
 import { DeviceBar } from "./DeviceBar";
 import { DeviceFrame } from "./DeviceFrame";
 import { useDevice } from "./useDevice";
@@ -87,9 +88,10 @@ function NativePage(props: Props) {
   const field = useRef<HTMLInputElement>(null);
   const { choice, choose, toggle, device, fitted, resize } = useTabDevice(props, area);
   const ua = device?.ua || null;
-  const capture = useSettings().browserConsole;
+  const { browserConsole: capture, uiScale } = useSettings();
   const [consoleOpen, setConsoleOpen] = useState(false);
-  const { picking, pick, toggle: togglePick, closeNote } = usePicker(id);
+  const { picking, picks, toggle: togglePick, closeAsk } = usePicker(id);
+  const errorCount = useLogged(id).errors;
   const find = useFindInPage(id);
   const look = usePageLook(tabKey, sel, onUpdate, made);
 
@@ -97,7 +99,8 @@ function NativePage(props: Props) {
   useEffect(() => {
     let live = true;
     setMade(false);
-    browserApi.create(id, root, sel.url, ua).then(
+    // As the tab shows it from the first paint; usePageLook keeps it so after.
+    browserApi.create(id, root, sel.url, ua, sel.zoom ?? null, sel.scheme ? sel.scheme === "dark" : null).then(
       ({ snapshot, dpr: canSetDpr, ...s }) => {
         if (!live) return;
         setBrowserState(s);
@@ -191,7 +194,36 @@ function NativePage(props: Props) {
   };
   const notLoaded = state?.failed;
   const picture = restoring ?? cover;
-  const image = picture && <img src={picture} alt="" className="absolute inset-0 size-full object-cover select-none" />;
+  const shownAs: ShownAs | null = device && fitted ? { name: device.name, viewport: fitted.viewport } : null;
+  // The picked elements on the page's picture while their question is asked, in this page's px:
+  // a page px is the device's scale here in device mode, else the page's zoom over the interface's.
+  const factor = device && fitted ? fitted.scale : look.zoom / uiScale;
+  const mark = (p: BrowserPick, i: number) => (
+    <div
+      key={i}
+      className="pointer-events-none absolute rounded-[2px] border-2 border-primary bg-primary/15"
+      style={{ left: p.box.x * factor, top: p.box.y * factor, width: Math.max(p.box.w * factor, 2), height: Math.max(p.box.h * factor, 2) }}
+    />
+  );
+  const asked = picks && (
+    <>
+      {picks.slice(0, -1).map(mark)}
+      <AskPopover
+        root={root}
+        about={picksAbout(picks, shownAs)}
+        pageErrors={{ count: errorCount, read: () => browserApi.console(id).then((entries) => formatErrors(entries, { url: state?.url ?? sel.url, device: shownAs })) }}
+        onClose={closeAsk}
+      >
+        {mark(picks[picks.length - 1], picks.length - 1)}
+      </AskPopover>
+    </>
+  );
+  const image = (
+    <>
+      {picture && <img src={picture} alt="" className="absolute inset-0 size-full object-cover select-none" />}
+      {asked}
+    </>
+  );
   return (
     <div
       className="flex min-h-0 flex-1 flex-col"
@@ -221,8 +253,9 @@ function NativePage(props: Props) {
       />
       {choice && device && <DeviceBar choice={choice} device={device} viewport={fitted?.viewport ?? null} dpr={dpr} onChoice={choose} />}
       {find.open && <FindBar find={find} />}
-      {pick && <PickNote pick={pick} device={device && fitted && { name: device.name, viewport: fitted.viewport }} root={root} onClose={closeNote} />}
-      {capture && consoleOpen && <ConsolePanel id={id} root={root} onClose={() => setConsoleOpen(false)} />}
+      {capture && consoleOpen && (
+        <ConsolePanel id={id} root={root} page={{ url: state?.url ?? sel.url, device: shownAs }} onAsk={closeAsk} onClose={() => setConsoleOpen(false)} />
+      )}
       <div ref={area} tabIndex={-1} className="relative min-h-0 flex-1 bg-background outline-none">
         {error ? (
           <Placeholder title="The browser can't open here" detail={error} />

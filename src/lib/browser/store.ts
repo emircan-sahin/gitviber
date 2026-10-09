@@ -79,8 +79,11 @@ sendAppKeys();
 
 // The element picker's result by tab: a pick to write a note on, or null when it ended without
 // one (cancelled, or the page moved on). Undefined: no picker news since the tab last took it.
-const picked = createStore<ReadonlyMap<string, BrowserPick | null>>(new Map());
-listenHere<{ id: string; pick: BrowserPick | null }>("browser-picked", ({ payload: { id, pick } }) => picked.set(new Map(picked.get()).set(id, pick))).catch(() => {});
+// Queued, as ⇧-clicks may bring a few before the tab takes them.
+const picked = createStore<ReadonlyMap<string, readonly (BrowserPick | null)[]>>(new Map());
+listenHere<{ id: string; pick: BrowserPick | null }>("browser-picked", ({ payload: { id, pick } }) =>
+  picked.set(new Map(picked.get()).set(id, [...(picked.get().get(id) ?? []), pick])),
+).catch(() => {});
 export const usePicked = (id: string) => picked.use().get(id);
 /** The tab has taken its picker news (shown the note, or seen it end). */
 export function takePicked(id: string) {

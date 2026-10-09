@@ -248,14 +248,28 @@ impl Delivery {
 /// its picture; `browser-picked` once all are in, or PICK_WAIT after the click.
 fn picked(v: &View, json: &str) {
     let d = v.delegate.ivars();
-    let Some(tag) = d.picking.take() else {
+    let Some(tag) = d.picking.borrow().clone() else {
         return;
     };
-    let mut pick = match picks::read(json) {
-        Ok(Some(pick)) if pick.nonce == tag => pick,
-        _ => return send_pick(&d.app, &d.id, None),
+    // The picker's nonce, then the pick's own number (picker.js).
+    let ours = |pick: &Pick| {
+        pick.nonce
+            .rsplit_once(':')
+            .is_some_and(|(nonce, _)| nonce == tag)
     };
+    let mut pick = match picks::read(json) {
+        Ok(Some(pick)) if ours(&pick) => pick,
+        _ => {
+            d.picking.take();
+            return send_pick(&d.app, &d.id, None);
+        }
+    };
+    // A ⇧-click's pick leaves the picker on for the next.
+    if !pick.more {
+        d.picking.take();
+    }
     pick.url = url_text(unsafe { v.web.URL() });
+    let mark = pick.nonce.clone();
     let delivery = Delivery {
         id: d.id.clone(),
         app: d.app.clone(),
@@ -280,9 +294,10 @@ fn picked(v: &View, json: &str) {
         pick.components = names.into_iter().take(5).map(|n| cut(&n, 80)).collect();
         picked_picture(&web, pick, delivery.clone());
     });
-    let tag = NSString::from_str(&tag);
+    // The pick's own tag on its element, not the picker's.
+    let mark = NSString::from_str(&mark);
     let arguments =
-        NSDictionary::<NSString, AnyObject>::from_slices(&[ns_string!("nonce")], &[&*tag]);
+        NSDictionary::<NSString, AnyObject>::from_slices(&[ns_string!("nonce")], &[&*mark]);
     unsafe {
         v.web
             .callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
