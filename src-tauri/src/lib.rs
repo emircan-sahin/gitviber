@@ -21,6 +21,7 @@ mod journal;
 mod launch;
 mod lfs;
 mod lines;
+mod local_socket;
 mod menu;
 mod navigation;
 mod network;
@@ -78,7 +79,8 @@ fn show(window: &tauri::WebviewWindow) {
     window_state::shown(window);
 }
 
-/// When this binary runs as `gitviber browser …` (browser/client.rs): its exit status.
+/// When this binary runs as `gitviber browser …` (browser/client.rs): its exit status. Here so
+/// main.rs reaches the CLI while the browser module stays the crate's own.
 pub fn browser_cli() -> Option<i32> {
     browser::client::helper()
 }

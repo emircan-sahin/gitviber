@@ -11,7 +11,7 @@ use tauri::AppHandle;
 /// matches.
 pub fn token() -> &'static str {
     static TOKEN: OnceLock<String> = OnceLock::new();
-    TOKEN.get_or_init(|| crate::askpass::random_hex(32).unwrap_or_default())
+    TOKEN.get_or_init(|| crate::local_socket::random_hex(32).unwrap_or_default())
 }
 
 /// Where the socket is: the same each launch, so a terminal from before a restart of the setting
@@ -72,8 +72,8 @@ pub fn set_enabled(_: &AppHandle, _: bool) {}
 #[cfg(unix)]
 mod unix {
     use super::*;
-    use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    use crate::local_socket::{private_dir, serve_line};
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex, PoisonError};
@@ -104,20 +104,6 @@ mod unix {
         }
     }
 
-    /// A folder of this user's alone, made so or found so; anything else there and no socket.
-    fn private_dir(dir: &std::path::Path) -> Option<()> {
-        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
-            Ok(()) => {}
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
-            Err(_) => return None,
-        }
-        let meta = std::fs::symlink_metadata(dir).ok()?;
-        if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } {
-            return None;
-        }
-        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).ok()
-    }
-
     fn listen(app: AppHandle) -> Option<Listening> {
         let path = socket_path();
         private_dir(path.parent()?)?;
@@ -134,31 +120,21 @@ mod unix {
                 }
                 if let Ok(stream) = stream {
                     let (app, stopped) = (app.clone(), stopped.clone());
-                    std::thread::spawn(move || handle(&app, &stream, &stopped));
+                    std::thread::spawn(move || {
+                        serve_line(
+                            &stream,
+                            MAX_REQUEST,
+                            Duration::from_secs(5),
+                            |req| match req {
+                                Some(req) => answer(&app, req, !stopped.load(Ordering::SeqCst)),
+                                None => Reply::error("Not a request."),
+                            },
+                        )
+                    });
                 }
             }
         });
         Some(Listening { path, stop })
-    }
-
-    fn handle(app: &AppHandle, stream: &UnixStream, stopped: &AtomicBool) {
-        let reply = match read(stream) {
-            Some(req) => answer(app, req, !stopped.load(Ordering::SeqCst)),
-            None => Reply::error("Not a request."),
-        };
-        let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
-        if let Ok(line) = serde_json::to_string(&reply) {
-            let _ = (&*stream).write_all((line + "\n").as_bytes());
-        }
-    }
-
-    fn read(stream: &UnixStream) -> Option<Request> {
-        stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
-        let mut line = String::new();
-        BufReader::new(Read::take(stream, MAX_REQUEST))
-            .read_line(&mut line)
-            .ok()?;
-        serde_json::from_str(&line).ok()
     }
 
     #[cfg(test)]
