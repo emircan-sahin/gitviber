@@ -1,13 +1,13 @@
-import { Crosshair, TabletSmartphone } from "lucide-react";
+import { Crosshair, type LucideIcon, TabletSmartphone } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
-import { browserApi, type BrowserGo, type BrowserPick, errorMessage, github } from "@/lib/api";
+import { browserApi, type BrowserGo, errorMessage, github } from "@/lib/api";
 import { failed, toast } from "@/lib/app/toast";
-import { onBrowserKey, setBrowserState, takePicked, useBrowserState, useParks, usePicked } from "@/lib/browser/store";
+import { onBrowserKey, setBrowserState, useBrowserState, useParks } from "@/lib/browser/store";
 import { RESPONSIVE } from "@/lib/browser/devices";
 import { BLANK, isFrameable, pageLabel } from "@/lib/browser/url";
-import { commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { type CommandId, commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { IS_LINUX } from "@/lib/platform";
 import { useSettings } from "@/lib/settings";
 import type { Selection } from "@/lib/repo/selection";
@@ -20,6 +20,7 @@ import { DeviceFrame } from "./DeviceFrame";
 import { useDevice } from "./useDevice";
 import { useDeviceFit } from "./useDeviceFit";
 import { useNativeRect } from "./useNativeRect";
+import { usePicker } from "./usePicker";
 
 type BrowserSelection = Extract<Selection, { kind: "browser" }>;
 
@@ -49,7 +50,7 @@ function useTabDevice({ tabKey, sel, onUpdate }: Props, area: React.RefObject<HT
 }
 
 /**
- * The address bar here, the page a native view laid over the area below (browser/macos.rs). It's
+ * The address bar here, the page a native view laid over the area below (browser/macos/). It's
  * made as the tab first shows and lives on hidden while another does, until it parks (Settings →
  * Browser); closing the tab closes it (useTabs).
  */
@@ -71,30 +72,7 @@ function NativePage(props: Props) {
   const ua = device?.ua || null;
   const capture = useSettings().browserConsole;
   const [consoleOpen, setConsoleOpen] = useState(false);
-  // The picker on, until the page says what it picked (browser-picked).
-  const [picking, setPicking] = useState(false);
-  const [pick, setPick] = useState<BrowserPick | null>(null);
-  const picked = usePicked(id);
-  useEffect(() => {
-    if (picked === undefined) return;
-    setPicking(false);
-    takePicked(id);
-    // The keys come back from the page first, or the note's field would show focus and get none.
-    if (picked) void browserApi.focus(id, false).then(
-      () => setPick(picked),
-      () => setPick(picked),
-    );
-  }, [picked, id]);
-  const togglePick = () => {
-    const on = !picking;
-    setPicking(on);
-    if (on) setPick(null);
-    // Into the page: Esc there ends the picker.
-    void browserApi
-      .pick(id, on)
-      .then(() => (on ? browserApi.focus(id, true) : undefined))
-      .catch(failed("Could not pick an element"));
-  };
+  const { picking, pick, toggle: togglePick, closeNote } = usePicker(id);
 
   // On the first show and after each park, on its own id: where it loads next is the page's business.
   useEffect(() => {
@@ -124,7 +102,7 @@ function NativePage(props: Props) {
     if (restoring && loaded) setRestoring(null);
   }, [restoring, loaded]);
 
-  // A device's user agent: the page loads again under it (macos.rs set_agent).
+  // A device's user agent: the page loads again under it (browser/macos set_agent).
   useEffect(() => {
     if (made) void browserApi.setAgent(id, ua).catch(failed("Could not show the page as the device"));
   }, [made, id, ua]);
@@ -204,14 +182,14 @@ function NativePage(props: Props) {
         field={field}
         tools={
           <>
-            <PickToggle on={picking} onToggle={togglePick} />
+            <ToolToggle tool={PICK} on={picking} onToggle={togglePick} />
             {capture && <ConsoleBadge id={id} open={consoleOpen} onToggle={() => setConsoleOpen((o) => !o)} />}
-            <DeviceToggle on={!!choice} onToggle={toggle} />
+            <ToolToggle tool={DEVICE} on={!!choice} onToggle={toggle} />
           </>
         }
       />
       {choice && device && <DeviceBar choice={choice} device={device} viewport={fitted?.viewport ?? null} dpr={dpr} onChoice={choose} />}
-      {pick && <PickNote pick={pick} device={device && fitted && { name: device.name, viewport: fitted.viewport }} root={root} onClose={() => setPick(null)} />}
+      {pick && <PickNote pick={pick} device={device && fitted && { name: device.name, viewport: fitted.viewport }} root={root} onClose={closeNote} />}
       {capture && consoleOpen && <ConsolePanel id={id} root={root} onClose={() => setConsoleOpen(false)} />}
       <div ref={area} tabIndex={-1} className="relative min-h-0 flex-1 bg-background outline-none">
         {error ? (
@@ -287,7 +265,7 @@ function FramePage(props: Props) {
     );
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <AddressBar url={url} state={null} page={page} root={root} field={field} tools={<DeviceToggle on={!!choice} onToggle={toggle} />} />
+      <AddressBar url={url} state={null} page={page} root={root} field={field} tools={<ToolToggle tool={DEVICE} on={!!choice} onToggle={toggle} />} />
       {choice && device && <DeviceBar choice={choice} device={device} viewport={fitted?.viewport ?? null} dpr={false} onChoice={choose} />}
       <div ref={area} className="relative min-h-0 flex-1 bg-background">
         {device && choice && isFrameable(url) ? (
@@ -307,25 +285,25 @@ function FramePage(props: Props) {
   );
 }
 
-/** The element picker on or off, in the address bar. */
-function PickToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+interface Tool {
+  command: CommandId;
+  icon: LucideIcon;
+  label: string;
+  on: string;
+  off: string;
+}
+
+const PICK: Tool = { command: "browser.pick", icon: Crosshair, label: "Pick an element", on: "Stop picking (Esc)", off: "Pick an element for the agent" };
+const DEVICE: Tool = { command: "browser.toggleDevice", icon: TabletSmartphone, label: "Device mode", on: "Leave device mode", off: "Device mode" };
+
+/** One of the page's tools on or off, in the address bar. */
+function ToolToggle({ tool, on, onToggle }: { tool: Tool; on: boolean; onToggle: () => void }) {
+  const Icon = tool.icon;
   return (
-    <Tip label={on ? "Stop picking (Esc)" : "Pick an element for the agent"} shortcut={useShortcut("browser.pick")}>
-      <Button type="button" variant="ghost" size="icon-sm" aria-pressed={on} aria-label="Pick an element" onClick={onToggle} className={on ? "bg-active text-foreground" : undefined}>
-        <Crosshair />
+    <Tip label={on ? tool.on : tool.off} shortcut={useShortcut(tool.command)}>
+      <Button type="button" variant="ghost" size="icon-sm" aria-pressed={on} aria-label={tool.label} onClick={onToggle} className={on ? "bg-active text-foreground" : undefined}>
+        <Icon />
       </Button>
     </Tip>
   );
 }
-
-/** Device mode on or off, in the address bar. */
-function DeviceToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
-  return (
-    <Tip label={on ? "Leave device mode" : "Device mode"} shortcut={useShortcut("browser.toggleDevice")}>
-      <Button type="button" variant="ghost" size="icon-sm" aria-pressed={on} aria-label="Device mode" onClick={onToggle} className={on ? "bg-active text-foreground" : undefined}>
-        <TabletSmartphone />
-      </Button>
-    </Tip>
-  );
-}
-
