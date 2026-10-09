@@ -56,3 +56,55 @@ test("every device's cutout stays inside its screen at any size and either way u
     }
   }
 });
+
+test("no area, a negative one or a sliver still gives a finite, centered fit at the smallest scale", () => {
+  for (const area of [{ w: 0, h: 0 }, { w: -50, h: 300 }, { w: 300, h: -1 }, { w: 2, h: 2 }]) {
+    const f = fit(phone, false, area);
+    assert.equal(f.scale, 0.05, JSON.stringify(area));
+    for (const v of [f.frame.x, f.frame.y, f.frame.w, f.frame.h, f.screen.x, f.screen.y, f.radius]) assert.ok(Number.isFinite(v), JSON.stringify(area));
+    assert.ok(Math.abs(f.frame.x - (area.w - f.frame.w) / 2) < 1e-9);
+    assert.deepEqual(f.viewport, { w: 400, h: 800 }, "the page still lays out at the device's size");
+  }
+});
+
+test("a big area never enlarges, and the screen keeps the device's shape at any scale", () => {
+  for (const d of [...DEVICES, deviceOf({ name: RESPONSIVE, w: 3000, h: 200 })!, deviceOf({ name: RESPONSIVE, w: 200, h: 3000 })!]) {
+    for (const rotated of [false, true]) {
+      assert.equal(fit(d, rotated, { w: 100_000, h: 100_000 }).scale, 1, d.name);
+      for (let i = 1; i <= 60; i++) {
+        const area = { w: 37 * i, h: 23 * i + 11 };
+        const f = fit(d, rotated, area);
+        const ratio = f.viewport.w / f.viewport.h;
+        assert.ok(Math.abs(f.screen.w / f.screen.h - ratio) < 1e-9, `${d.name} ${rotated} ${i}`);
+        assert.ok(Math.abs(f.screen.w - f.viewport.w * f.scale) < 1e-9);
+        // Where it fits at all, it fits whole, centered.
+        if (f.scale > 0.05) {
+          assert.ok(f.frame.x >= -1e-9 && f.frame.y >= -1e-9, `${d.name} ${rotated} ${JSON.stringify(area)}`);
+          assert.ok(f.frame.x + f.frame.w <= area.w + 1e-9 && f.frame.y + f.frame.h <= area.h + 1e-9);
+        }
+        assert.ok(f.screen.x >= f.frame.x && f.screen.x + f.screen.w <= f.frame.x + f.frame.w + 1e-9);
+      }
+    }
+  }
+});
+
+test("turned, a device's safe area and cutout go where its top went, and none is lost", () => {
+  for (const d of DEVICES) {
+    const up = fit(d, false, { w: 5000, h: 5000 });
+    const side = fit(d, true, { w: 5000, h: 5000 });
+    assert.deepEqual(side.viewport, { w: d.h, h: d.w }, d.name);
+    assert.deepEqual(side.safe, { top: d.safe.right, right: d.safe.bottom, bottom: d.safe.left, left: d.safe.top }, d.name);
+    const sum = (s: typeof d.safe) => s.top + s.right + s.bottom + s.left;
+    assert.equal(sum(side.safe), sum(up.safe));
+    if (!d.cutout) {
+      assert.equal(side.cutout, null);
+      continue;
+    }
+    const c = side.cutout!;
+    // The camera sits in the left safe area now, the same size turned, the same distance in.
+    assert.deepEqual([c.w, c.h, c.r], [d.cutout.h, d.cutout.w, d.cutout.r], d.name);
+    assert.equal(c.x, d.cutout.y);
+    assert.ok(c.x + c.w <= side.safe.left, `${d.name}: inside the left safe area`);
+    assert.ok(Math.abs(c.y + c.h / 2 - d.w / 2) <= 1, `${d.name}: a centered camera stays centered`);
+  }
+});

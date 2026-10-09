@@ -543,4 +543,32 @@ mod tests {
         assert_eq!(r.get("c"), Some(&3));
         assert_eq!(r.remove_root("/w/missing"), Vec::<i32>::new());
     }
+
+    #[test]
+    fn a_device_screen_reads_as_the_page_sends_it() {
+        let full: Screen = serde_json::from_str(
+            r#"{"zoom":0.5,"radius":31,"dpr":3,"cutout":{"x":69.5,"y":7,"w":62.5,"h":18.5,"r":9.5}}"#,
+        )
+        .unwrap();
+        assert_eq!(full.dpr, Some(3.0));
+        assert_eq!(full.cutout.map(|c| (c.x, c.r)), Some((69.5, 9.5)));
+        // Responsive: no pixel ratio of its own, no cutout.
+        let bare: Screen =
+            serde_json::from_str(r#"{"zoom":1.25,"radius":0,"dpr":null,"cutout":null}"#).unwrap();
+        assert_eq!((bare.dpr, bare.cutout), (None, None));
+        // What JSON can't say (NaN, Infinity) the page can't send: a missing zoom is no screen.
+        for no in [
+            r#"{"radius":0,"dpr":null,"cutout":null}"#,
+            r#"{"zoom":"1","radius":0,"dpr":null,"cutout":null}"#,
+            r#"{"zoom":NaN,"radius":0,"dpr":null,"cutout":null}"#,
+            r#"{"zoom":1,"radius":0,"dpr":null,"cutout":{"x":1}}"#,
+        ] {
+            assert!(serde_json::from_str::<Screen>(no).is_err(), "{no}");
+        }
+        // Out of device mode the page sends none.
+        assert_eq!(
+            serde_json::from_str::<Option<Screen>>("null").unwrap(),
+            None
+        );
+    }
 }

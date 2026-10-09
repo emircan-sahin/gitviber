@@ -37,3 +37,36 @@ test("a stored device choice is checked before a tab takes it", () => {
     assert.equal(isDeviceChoice(no), false, JSON.stringify(no));
   }
 });
+
+test("each device's user agent names its platform, and its sizes are whole CSS px", () => {
+  const says: Record<string, RegExp> = {
+    ios: /\(iPhone; CPU iPhone OS \d+_\d+ like Mac OS X\).*Mobile\/\w+ Safari/,
+    // iPadOS asks for desktop sites on the larger iPads, as DevTools' iPad Pro does.
+    ipados: /\((iPad; CPU OS \d+_\d+ like Mac OS X|Macintosh; Intel Mac OS X 10_15_7)\)/,
+    android: /\(Linux; Android \d+; [^)]+\) AppleWebKit\/537\.36 .*Chrome\/\d+\.0\.0\.0 Mobile Safari\/537\.36$/,
+  };
+  for (const d of DEVICES) {
+    assert.match(d.ua, says[d.platform], d.name);
+    assert.ok(!d.ua.includes("%s"), `${d.name}: DevTools' version placeholder filled in`);
+    for (const v of [d.w, d.h]) assert.ok(Number.isInteger(v), d.name);
+    // The phones and tablets ship at these ratios; a typo (25 for 2.5) shows here.
+    assert.ok([2, 2.625, 3, 3.5].includes(d.dpr), `${d.name}: ${d.dpr}`);
+  }
+});
+
+test("Responsive's sides stay in bounds wherever they come from", () => {
+  for (const [w, h, ew, eh] of [
+    [undefined, undefined, 400, 800],
+    [0.4, 199.6, RESPONSIVE_MIN, 200],
+    [-5, 1e9, RESPONSIVE_MIN, RESPONSIVE_MAX],
+    [2999.5, 3000.4, RESPONSIVE_MAX, RESPONSIVE_MAX],
+  ] as const) {
+    const r = deviceOf({ name: RESPONSIVE, w, h })!;
+    assert.deepEqual([r.w, r.h], [ew, eh], `${w}×${h}`);
+  }
+  // A stored choice past what a field or a drag gives is still a choice; deviceOf bounds it.
+  for (const ok of [{ name: RESPONSIVE, w: 1e6, h: 0.5 }, { name: "" }, { name: "Gone Phone", rotated: false }]) assert.equal(isDeviceChoice(ok), true, JSON.stringify(ok));
+  for (const no of [[], { name: RESPONSIVE, w: Infinity }, { name: RESPONSIVE, h: -0 }, { name: RESPONSIVE, w: 0 }, { name: "x", rotated: 1 }, { name: "x", w: null }]) {
+    assert.equal(isDeviceChoice(no), false, JSON.stringify(no));
+  }
+});

@@ -644,4 +644,13 @@ mod tests {
         }
         assert_eq!(route(&key("", "cmd"), &odd), Route::Page);
     }
+
+    #[test]
+    fn device_mode_leaves_a_page_while_minimize_stays_the_systems() {
+        let mut app = defaults();
+        app.insert("shift+cmd+m".into());
+        assert_eq!(route(&at("M", "KeyM", "shift+cmd"), &app), Route::App);
+        assert_eq!(route(&at("m", "KeyM", "cmd"), &app), Route::System);
+        assert_eq!(route(&at("m", "KeyM", "alt+shift+cmd"), &app), Route::Page);
+    }
 }
