@@ -78,6 +78,11 @@ fn show(window: &tauri::WebviewWindow) {
     window_state::shown(window);
 }
 
+/// When this binary runs as `gitviber browser …` (browser/client.rs): its exit status.
+pub fn browser_cli() -> Option<i32> {
+    browser::client::helper()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     shell::resolve_in_background();

@@ -3,8 +3,10 @@
 //! Everything here runs on the main thread, where AppKit's views belong: the registry is that
 //! thread's own, and no callback takes a borrow of it, as WebKit calls back from within calls.
 
+mod agent;
 mod page_tools;
 
+pub use agent::{agent_awake, agent_device, agent_js, agent_page, agent_picture, agent_tab};
 pub use page_tools::{console_clear, console_entries, pick};
 
 use super::console::Log;
@@ -313,6 +315,12 @@ struct DelegateIvars {
     /// The page's process ended once since the user last sent it somewhere: the next time it
     /// stays down, or a page that kills it on load would reload forever.
     crashed: Cell<bool>,
+    /// A terminal pane's agent tab (agent.rs): its page's dialogs answer themselves.
+    agent: Cell<bool>,
+    /// Commands running on it now: while any are, it stays awake and doesn't park.
+    awake: Cell<u32>,
+    /// The device an agent asked for, the size it takes while out of its tab's sight.
+    agent_screen: RefCell<Option<super::control::AgentScreen>>,
 }
 
 define_class!(
@@ -488,7 +496,7 @@ define_class!(
             frame: &WKFrameInfo,
             done: &DynBlock<dyn Fn()>,
         ) {
-            if !self.may_ask(web) {
+            if agent::answered(self, web, "alert", message) || !self.may_ask(web) {
                 return done.call(());
             }
             let done = done.copy();
@@ -503,7 +511,7 @@ define_class!(
             frame: &WKFrameInfo,
             done: &DynBlock<dyn Fn(Bool)>,
         ) {
-            if !self.may_ask(web) {
+            if agent::answered(self, web, "confirm", message) || !self.may_ask(web) {
                 return done.call((Bool::NO,));
             }
             let done = done.copy();
@@ -514,12 +522,13 @@ define_class!(
         #[unsafe(method(webView:runJavaScriptTextInputPanelWithPrompt:defaultText:initiatedByFrame:completionHandler:))]
         fn prompt(
             &self,
-            _web: &WKWebView,
-            _prompt: &NSString,
+            web: &WKWebView,
+            prompt: &NSString,
             _default: Option<&NSString>,
             _frame: &WKFrameInfo,
             done: &DynBlock<dyn Fn(*mut NSString)>,
         ) {
+            agent::answered(self, web, "prompt", prompt);
             done.call((std::ptr::null_mut(),));
         }
 
@@ -571,6 +580,9 @@ impl Delegate {
             console_pending: Cell::new(false),
             picking: RefCell::default(),
             crashed: Cell::new(false),
+            agent: Cell::new(false),
+            awake: Cell::new(0),
+            agent_screen: RefCell::default(),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -944,12 +956,17 @@ pub fn hide(id: &str, aside: bool) {
     take_snapshot(&v.web, move |shot| {
         VIEWS.with_borrow_mut(|r| r.set_picture(&picture_of, shot));
     });
+    out_of_sight(&v, id);
+}
+
+/// Hidden in the registry too: its park timer starts, and the hidden past the cap park.
+fn out_of_sight(v: &View, id: &str) {
     v.host.setHidden(true);
     let Some((since, over)) = VIEWS.with_borrow_mut(|r| r.hide(id)) else {
         return;
     };
     v.delegate.ivars().hidden_at.set(Some(Instant::now()));
-    start_timer(&v, since, Duration::ZERO);
+    start_timer(v, since, Duration::ZERO);
     for (id, since) in over {
         begin_park(&id, since);
     }
@@ -1012,7 +1029,8 @@ pub fn configure(live_hidden: u32, park_after_min: u32, console: bool) {
 /// Parks a hidden view at once, with the picture taken as it hid (or none): never waiting on
 /// WebKit, which may not draw a hidden view at all.
 fn begin_park(id: &str, since: u64) {
-    let Some(v) = view(id) else {
+    // Running an agent's command: it hides again after, and parks then if it's due.
+    let Some(v) = view(id).filter(|v| v.delegate.ivars().awake.get() == 0) else {
         return;
     };
     let parked = Parked {
@@ -1047,6 +1065,7 @@ pub fn close_root(root: &str) {
 /// The app page reloaded: its tabs come back as new views.
 pub fn close_all() {
     if main_thread().is_ok() {
+        agent::forget_all();
         VIEWS
             .with_borrow_mut(|r| r.take_all())
             .into_iter()
@@ -1267,6 +1286,23 @@ mod tests {
         let scale = sel!(_setOverrideDeviceScaleFactor:);
         if WKWebView::class().instance_method(scale).is_some() {
             WKWebView::class().verify_sel::<(f64,), ()>(scale).unwrap();
+        }
+        // agent.rs's throttling switches, each a BOOL setter.
+        let preferences = AnyClass::get(c"WKPreferences").unwrap();
+        for (class, sel) in [
+            (preferences, sel!(_setHiddenPageDOMTimerThrottlingEnabled:)),
+            (
+                preferences,
+                sel!(_setPageVisibilityBasedProcessSuppressionEnabled:),
+            ),
+            (
+                WKWebView::class(),
+                sel!(_setWindowOcclusionDetectionEnabled:),
+            ),
+        ] {
+            if class.instance_method(sel).is_some() {
+                class.verify_sel::<(Bool,), ()>(sel).unwrap();
+            }
         }
         NSURLCredential::class()
             .metaclass()

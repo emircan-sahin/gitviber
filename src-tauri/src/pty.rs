@@ -248,13 +248,17 @@ impl Ptys {
         for (key, value) in inject.iter().flat_map(|i| &i.env) {
             cmd.env(key, value);
         }
+        // `gitviber browser` (browser/client.rs): this pane's id, and how to reach the app.
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        for (key, value) in crate::browser::server::env(id) {
+            cmd.env(key, value);
+        }
         let mut child = crate::process::spawning(|| pair.slave.spawn_command(cmd))
             .map_err(|e| e.to_string())?;
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
-        let id = self.next.fetch_add(1, Ordering::Relaxed);
         let flow = Arc::new(Flow::default());
         self.sessions.lock().unwrap().insert(
             id,

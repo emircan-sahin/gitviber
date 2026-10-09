@@ -35,8 +35,13 @@ thread_local! {
     static CAPTURE: Cell<bool> = const { Cell::new(true) };
 }
 
+/// Whether pages keep their console (Settings → Browser).
+pub(super) fn capturing() -> bool {
+    CAPTURE.get()
+}
+
 /// GitViber's own content world: scripts there share the page's DOM, not its JavaScript.
-fn ours(mtm: MainThreadMarker) -> Retained<WKContentWorld> {
+pub(super) fn ours(mtm: MainThreadMarker) -> Retained<WKContentWorld> {
     unsafe { WKContentWorld::worldWithName(ns_string!("gitviber"), mtm) }
 }
 
@@ -319,7 +324,7 @@ pub(super) fn save_png(app: &AppHandle, png: &[u8]) -> Option<String> {
     Some(path.to_string_lossy().into_owned())
 }
 
-fn png(image: &NSImage) -> Option<Vec<u8>> {
+pub(super) fn png(image: &NSImage) -> Option<Vec<u8>> {
     let tiff = image.TIFFRepresentation()?;
     let bitmap = NSBitmapImageRep::imageRepWithData(&tiff)?;
     let none = NSDictionary::new();

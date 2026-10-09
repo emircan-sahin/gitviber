@@ -5,24 +5,30 @@
 // Elsewhere only the stubs below are used, until Linux gets its own page.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
+mod agent;
+pub mod client;
 pub mod console;
+pub mod control;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod picks;
 pub mod ports;
 mod registry;
+pub mod server;
 
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    agent_done, clear_data, close, close_all, close_root, configure, console_clear,
-    console_entries, create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
+    agent_awake, agent_device, agent_done, agent_js, agent_page, agent_picture, agent_tab,
+    clear_data, close, close_all, close_root, configure, console_clear, console_entries, create,
+    focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
-    agent_done, clear_data, close, close_all, close_root, configure, console_clear,
-    console_entries, create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
+    agent_awake, agent_device, agent_done, agent_js, agent_page, agent_picture, agent_tab,
+    clear_data, close, close_all, close_root, configure, console_clear, console_entries, create,
+    focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
 };
 
 pub use registry::{Parked, Registry};
@@ -205,10 +211,39 @@ pub fn root_key(path: &str) -> String {
 
 #[cfg(not(target_os = "macos"))]
 mod other {
-    use super::{console::Entry, Created, Go, Rect, Screen};
+    use super::{console::Entry, control::AgentScreen, picks::Bounds};
+    use super::{Created, Go, PageState, Rect, Screen};
     use crate::state::Res;
+    use tauri::AppHandle;
 
     const UNSUPPORTED: &str = "The browser tab needs macOS for now.";
+
+    pub fn agent_tab(_: &AppHandle, _: u32, _: &str, _: Option<&str>) -> Res<(String, bool)> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_awake(_: &str, _: bool) {}
+    pub fn agent_js(
+        _: &str,
+        _: bool,
+        _: &str,
+        _: &str,
+        _: Box<dyn FnOnce(Res<String>)>,
+    ) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_page(_: &str) -> Res<(PageState, bool)> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_picture(
+        _: &str,
+        _: Option<Bounds>,
+        _: Box<dyn FnOnce(Option<Vec<u8>>)>,
+    ) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_device(_: &AppHandle, _: &str, _: Option<AgentScreen>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
 
     pub fn create(
         _: &tauri::WebviewWindow,

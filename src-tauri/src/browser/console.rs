@@ -67,6 +67,18 @@ impl Log {
         true
     }
 
+    /// A warning of the app's own about the page (a dialog an agent's tab answered by itself).
+    pub fn note(&mut self, msg: &str, url: &str, ts: f64) {
+        self.counts.warnings = self.counts.warnings.saturating_add(1);
+        self.push(Entry {
+            level: "warn".into(),
+            msg: cut(msg, MAX_TEXT),
+            stack: String::new(),
+            url: cut(url, MAX_TEXT),
+            ts,
+        });
+    }
+
     /// A new page loaded: what came before belongs to the last one.
     pub fn loaded(&mut self, url: &str, ts: f64) {
         self.push(Entry {

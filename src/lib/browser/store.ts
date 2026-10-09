@@ -39,11 +39,11 @@ export const useParks = (id: string) => parks.use().get(id) ?? 0;
 // keep a console.
 let sentPolicy = "";
 function sendPolicy() {
-  const { browserLiveHidden, browserParkAfterMin, browserConsole } = getSettings();
-  const key = `${browserLiveHidden} ${browserParkAfterMin} ${browserConsole}`;
+  const { browserLiveHidden, browserParkAfterMin, browserConsole, browserAgentControl } = getSettings();
+  const key = `${browserLiveHidden} ${browserParkAfterMin} ${browserConsole} ${browserAgentControl}`;
   if (key === sentPolicy) return;
   sentPolicy = key;
-  void browserApi.configure(browserLiveHidden, browserParkAfterMin, browserConsole).catch(() => {});
+  void browserApi.configure(browserLiveHidden, browserParkAfterMin, browserConsole, browserAgentControl).catch(() => {});
 }
 subscribeSettings(sendPolicy);
 sendPolicy();
