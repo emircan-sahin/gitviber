@@ -32,7 +32,8 @@ export function PickNote({ pick, device, root, onClose }: { pick: BrowserPick; d
         value={note}
         onChange={(e) => setNote(e.currentTarget.value)}
         onKeyDown={(e) => {
-          if (e.key === "Enter") send();
+          // Enter that confirms an IME composition isn't a send (NameInput).
+          if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) send();
           else if (e.key === "Escape") onClose();
           else return;
           e.preventDefault();
