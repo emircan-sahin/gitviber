@@ -77,6 +77,8 @@ export const COMMANDS = [
   { id: "review.toggleViewed", title: "Toggle File Viewed", category: "Review", keys: ["v"] },
   // Changes then lists the branch's commits and uncommitted work since it left the default branch.
   { id: "review.branch", title: "Review Branch Against Base", category: "Review", keys: [] },
+  // The agent's guided review of what isn't committed yet: staged, unstaged and new files.
+  { id: "review.guideUncommitted", title: "Guided Review of Uncommitted Changes", category: "Review", keys: [] },
   // Every file of a Changes list in one scroll (the branch's while Changes reviews it).
   { id: "review.openAll", title: "Open All Changes", category: "Review", keys: [] },
   { id: "review.openAllStaged", title: "Open All Staged Changes", category: "Review", keys: [] },

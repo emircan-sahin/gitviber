@@ -463,6 +463,29 @@ impl Scratch {
         }
     }
 
+    /// Ours that a killed run left in the git dir (each copy as big as the index), once older
+    /// than any run of ours could still be using.
+    pub(crate) fn sweep(repo: &Path, age: Duration) {
+        let Ok((_, dir)) = Self::paths(repo, "index", ".") else {
+            return;
+        };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let ours = name.to_string_lossy().contains(".gitviber.");
+            let old = || {
+                e.metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|t| t.elapsed().is_ok_and(|a| a > age))
+            };
+            if ours && old() {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+
     /// `bytes` in a file made new (never one already there, nor through a link).
     pub(crate) fn file(repo: &Path, bytes: &[u8]) -> Result<Self, String> {
         let (path, _) = Self::paths(repo, "merge", "index")?;
@@ -482,6 +505,13 @@ impl Scratch {
         let index = Scratch(path);
         if real.exists() {
             std::fs::copy(&real, &index.0).map_err(|e| e.to_string())?;
+            // A copy keeps the index's time, often hours back: `sweep` would take it for one a
+            // killed run left, and git would read a missing index as an empty one.
+            OpenOptions::new()
+                .write(true)
+                .open(&index.0)
+                .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+                .map_err(|e| e.to_string())?;
         }
         Ok(index)
     }
@@ -499,7 +529,7 @@ impl Scratch {
             .ok_or_else(|| "temporary path isn't UTF-8".into())
     }
 
-    /// git with this as its index.
+    /// git with this as its index; given up after a read's timeout inside `git::reading`.
     pub(crate) fn git(
         &self,
         repo: &Path,
@@ -508,7 +538,7 @@ impl Scratch {
     ) -> Result<Vec<u8>, String> {
         let mut cmd = git::command(repo, args);
         cmd.env("GIT_INDEX_FILE", &self.0);
-        crate::process::exec(cmd, "git", &[], input, None)
+        crate::process::exec(cmd, "git", &[], input, git::read_timeout())
     }
 }
 

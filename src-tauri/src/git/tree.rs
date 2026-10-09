@@ -44,6 +44,11 @@ pub fn parent_or_empty(repo: &Path, rev: &str) -> Result<String, String> {
     if run(repo, &["rev-parse", "--verify", "-q", &parent]).is_ok() {
         return Ok(parent);
     }
+    empty_tree(repo)
+}
+
+/// The repository's empty tree (its id depends on the object format).
+pub fn empty_tree(repo: &Path) -> Result<String, String> {
     run_text(repo, &["hash-object", "-t", "tree", "/dev/null"]).map(|s| s.trim().to_string())
 }
 

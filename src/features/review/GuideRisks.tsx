@@ -17,7 +17,9 @@ interface Props {
   /** The risks as written; null when the answer wasn't the JSON asked for. */
   risks: Risk[] | null;
   /** The answer as kept, for its raw text, who wrote it and when. */
-  saved: { text: string; head: string; program: string; at: number };
+  saved: { text: string; program: string; at: number };
+  /** The commit it read; null for uncommitted changes. */
+  commit: string | null;
   /** The change has moved since the risks were found. */
   outdated: boolean;
   running: boolean;
@@ -29,7 +31,7 @@ interface Props {
 }
 
 /** Find Risks' answer: the risks most severe first, each with its place and its way to the agent. */
-export function GuideRisks({ risks, saved, outdated, running, onFind, onGo, action }: Props) {
+export function GuideRisks({ risks, saved, commit, outdated, running, onFind, onGo, action }: Props) {
   return (
     <section aria-labelledby="guide-risks" className="mb-6 rounded-lg border border-border p-3">
       <div className="mb-2 flex items-center gap-2">
@@ -38,7 +40,14 @@ export function GuideRisks({ risks, saved, outdated, running, onFind, onGo, acti
           Risks{risks && ` (${risks.length})`}
         </h2>
         <span className="min-w-0 flex-1 truncate text-[12px] text-muted-foreground">
-          · found by {saved.program} at <span className="font-mono">{saved.head.slice(0, 7)}</span>, {relativeTime(saved.at / 1000)}
+          · found by {saved.program}
+          {commit && (
+            <>
+              {" "}
+              at <span className="font-mono">{commit.slice(0, 7)}</span>
+            </>
+          )}
+          , {relativeTime(saved.at / 1000)}
         </span>
         {!running && (
           <Button size="sm" variant="ghost" onClick={onFind}>

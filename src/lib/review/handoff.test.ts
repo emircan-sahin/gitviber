@@ -3,7 +3,8 @@ import { test } from "node:test";
 import type { Commit, Pull } from "../api/index.ts";
 import type { GuideSelection } from "../repo/selection.ts";
 import type { Guide, GuideSection } from "./guide.ts";
-import { handoffContext, type HandoffInput, handoffName, isCheckedOut, riskPrompt } from "./handoff.ts";
+import { EMPTY_TREE } from "../git/refs.ts";
+import { handoffContext, type HandoffInput, handoffName, isCheckedOut, placedIn, riskPrompt, worktreeAt } from "./handoff.ts";
 import type { Risk } from "./risks.ts";
 
 const BASE = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -15,6 +16,7 @@ const SELS: Record<string, GuideSelection> = {
   commit: { kind: "guide", of: "commit", commit },
   branch: { kind: "guide", of: "branch", base: "refs/heads/main", label: "main" },
   pull: { kind: "guide", of: "pull", pull, target: null },
+  changes: { kind: "guide", of: "changes" },
 };
 
 const section: GuideSection = {
@@ -56,8 +58,7 @@ test("checked out, the files on disk are the head; not, it's read with git and l
   const many = handoffContext(input({ about: { section: { ...section, files: Array.from({ length: 41 }, (_, i) => `f${i}.ts`) }, n: 1, total: 1 } }));
   assert.match(many, /`git diff 1111111aaaaa 2222222bbbbb`/);
   assert.match(handoffContext(input({ moved: true })), /The branch has moved since the review read it at 2222222/);
-  // A commit or PR checked out has no uncommitted changes to warn of.
-  assert.match(handoffContext(input({ sel: SELS.pull })), /It's checked out here: the files on disk are its head\. Its diff/);
+  assert.match(handoffContext(input({ sel: SELS.pull })), /It's checked out here: the files on disk are its head, plus any uncommitted changes/);
 });
 
 test("a section brings its summary, check, risk and notes; a risk its place and why; the whole change its sections", () => {
@@ -88,6 +89,42 @@ test("checked out: a branch always; a commit or PR only while HEAD is its head",
   assert.equal(isCheckedOut(SELS.pull, "2222222", HEAD), true);
   assert.equal(isCheckedOut(SELS.commit, "3333333", HEAD), false);
   assert.equal(isCheckedOut(SELS.commit, undefined, HEAD), false);
+});
+
+test("the worktree a change's head is checked out in: the current one first, never a bare or pruned one", () => {
+  const w = (path: string, head: string | null, extra = {}) => ({ path, head, current: false, bare: false, prunable: false, ...extra });
+  assert.equal(worktreeAt([w("/main", "1111111"), w("/pr-42", "2222222")], HEAD)?.path, "/pr-42");
+  assert.equal(worktreeAt([w("/a", "2222222"), w("/here", "2222222", { current: true })], HEAD)?.path, "/here");
+  assert.equal(worktreeAt([w("/gone", "2222222", { prunable: true }), w("/bare", "2222222", { bare: true }), w("/new", null)], HEAD), null);
+});
+
+test("a hand-off not checked out where it was asked goes to the worktree that has it, as it is there", () => {
+  const w = (path: string, head: string) => ({ path, head, current: false, bare: false, prunable: false });
+  const away = input({ sel: SELS.pull, checkedOut: false, moved: true });
+  const there = placedIn(away, [w("/main", "1111111"), w("/pr-42", "2222222")]);
+  assert.equal(there.path, "/pr-42");
+  assert.equal(there.a.checkedOut, true);
+  assert.equal(there.a.moved, false);
+  assert.deepEqual(placedIn(away, [w("/main", "1111111")]), { path: null, a: away });
+  // Checked out where it was asked: it stays.
+  const here = input({});
+  assert.equal(placedIn(here, [w("/pr-42", "2222222")]).path, null);
+});
+
+test("uncommitted changes are read on disk as they are now, and as the review's snapshot", () => {
+  const text = handoffContext(input({ sel: SELS.changes, branch: "main", about: { section, n: 1, total: 2 }, moved: true }));
+  assert.match(text, /The change: the uncommitted changes in this worktree on main \(staged, unstaged and new files\) against HEAD 1111111\./);
+  assert.match(text, /`git status` lists them and `git diff HEAD` shows the edits \(new files aren't in it: read them on disk\)/);
+  assert.match(text, /`git diff 1111111aaaaa 2222222bbbbb -- src\/retry\.ts src\/upload\.ts`/);
+  assert.match(text, /They've changed since the review read them/);
+  assert.ok(!text.includes("isn't checked out"));
+  const unborn = handoffContext(input({ sel: SELS.changes, base: EMPTY_TREE }));
+  assert.match(unborn, /against no commit yet\./);
+  // The empty tree isn't stored: git finds it only by its whole id, and there's no HEAD to diff.
+  assert.match(unborn, new RegExp(`\`git diff ${EMPTY_TREE} 2222222bbbbb\``));
+  assert.ok(!unborn.includes("git diff HEAD") && unborn.includes("every file is new"));
+  assert.equal(isCheckedOut(SELS.changes, "3333333", HEAD), true);
+  assert.equal(handoffName(SELS.changes, { section, n: 1, total: 2 }), "Review: uncommitted · Retry helper");
 });
 
 test("the session's name says what's asked about", () => {

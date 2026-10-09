@@ -1,13 +1,14 @@
 import { Bug, LoaderCircle, RotateCw, Sparkles, Square, TriangleAlert } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { flushSync } from "react-dom";
 import { PageFind } from "@/components/FindBox";
 import { Button } from "@/components/ui/button";
-import type { RepoStatus } from "@/lib/api";
+import { api, type RepoStatus } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { programOf, reviewAgent } from "@/lib/git/suggest";
 import { type ChangesSelection, type GuideSelection, type Selection, selectionKey } from "@/lib/repo/selection";
 import { type Category, type GuideSection, matchPath, parseGuide, placeFiles } from "@/lib/review/guide";
+import { EMPTY_TREE } from "@/lib/git/refs";
 import { type HandoffAbout, isCheckedOut } from "@/lib/review/handoff";
 import { parseRisks, type Risk } from "@/lib/review/risks";
 import { useSettings } from "@/lib/settings";
@@ -19,6 +20,7 @@ import { useFixedFiles } from "@/features/viewer/fixedFiles";
 import type { Ask } from "./askAgent";
 import { AskAgentButton } from "./AskAgentButton";
 import { cancelGuide, cancelRisks, findRisks, generateGuide, guideId, markDone, useGuide, useRisks } from "./guides";
+import { guideCopy } from "./guideCopy";
 import { GuideRisks, RisksRun } from "./GuideRisks";
 import { GuideDiagram } from "./GuideDiagram";
 import { CATEGORY_UI } from "./categories";
@@ -62,10 +64,18 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   const guide = useMemo(() => (saved ? parseGuide(saved.text) : null), [saved]);
   const risksOf = useRisks(id);
   const risks = useMemo(() => (risksOf.saved ? parseRisks(risksOf.saved.text) : null), [risksOf.saved]);
-  // Whether what was read at `head` is behind: status.head is HEAD's short id; a pull request's head is as its list last read it.
-  const movedFrom = (head: string) => (sel.of === "branch" ? !!status?.head && !head.startsWith(status.head) : sel.of === "pull" && head !== sel.pull.headSha);
-  const moved = saved && movedFrom(saved.head);
-  const what = sel.of === "commit" ? "this commit" : sel.of === "pull" ? "this pull request" : "this branch";
+  const stamp = useChangesStamp(sel.of === "changes", revision);
+  // Whether what a run read is behind.
+  const movedFrom = (read: { head: string; stamp?: string }) => {
+    if (sel.of === "changes") return !!stamp && !!read.stamp && read.stamp !== stamp;
+    // status.head is HEAD's short id.
+    if (sel.of === "branch") return !!status?.head && !read.head.startsWith(status.head);
+    // As the PR list last read its head.
+    if (sel.of === "pull") return read.head !== sel.pull.headSha;
+    return false;
+  };
+  const moved = saved && movedFrom(saved);
+  const copy = guideCopy(sel, branch);
 
   // The files as Open All reads them: the commit's, or the range the guide read.
   const base = saved?.base;
@@ -79,7 +89,10 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
           : sel.of === "pull"
             ? // As the PR's page opens its files, so they share its tabs and viewed marks.
               { kind: "changes", list: "range", range: { number: sel.pull.number, pullUrl: sel.pull.url, base, head } }
-            : { kind: "changes", list: "range", range: { base, head, label: `${sel.label}...${head.slice(0, 7)}` } },
+            : sel.of === "changes"
+              ? // `head` is a snapshot's tree, which reads back as a commit's would.
+                { kind: "changes", list: "range", range: { base, head, label: "Uncommitted" } }
+              : { kind: "changes", list: "range", range: { base, head, label: `${sel.label}...${head.slice(0, 7)}` } },
     [sel, base, head],
   );
   const fixed = useFixedFiles(changes);
@@ -169,7 +182,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
   const findingRisks = risksOf.run === "running";
   const find = () => void findRisks(id, sel);
   // What the agent is handed: the range a run read (the guide's, or the risks'), and the part asked about.
-  const askOf = (range: { base: string; head: string }, about: HandoffAbout): Ask => ({
+  const askOf = (range: { base: string; head: string; stamp?: string }, about: HandoffAbout): Ask => ({
     sel,
     branch,
     base: range.base,
@@ -177,7 +190,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
     guide,
     about,
     checkedOut: isCheckedOut(sel, status?.head, range.head),
-    moved: movedFrom(range.head),
+    moved: movedFrom(range),
   });
   // A risk's file, where the guide shows its diff; else in a tab of its own.
   const goToRisk = (r: Risk) => {
@@ -194,7 +207,8 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
     <GuideRisks
       risks={risks}
       saved={found}
-      outdated={movedFrom(found.head)}
+      outdated={movedFrom(found)}
+      commit={sel.of === "changes" ? null : found.head}
       running={findingRisks}
       onFind={find}
       onGo={goToRisk}
@@ -215,7 +229,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
       <div className={cn("mx-auto max-w-[1440px] px-6 py-5", nav && "[--stick:36px] @6xl:[--stick:0px]")}>
         <header className="mb-5">
           <div className="flex items-start gap-3">
-            <h1 className="min-w-0 flex-1 text-[20px] leading-snug font-semibold select-text">{guide?.title || (sel.of === "commit" ? sel.commit.subject : sel.of === "pull" ? sel.pull.title : `${branch ?? "HEAD"} since ${sel.label}`)}</h1>
+            <h1 className="min-w-0 flex-1 text-[20px] leading-snug font-semibold select-text">{guide?.title || copy.title}</h1>
             {saved && <AskAgentButton root={root} ask={() => askOf(saved, null)} what="this review" />}
             {!risksOf.saved && !findingRisks && (
               <Button size="sm" variant="secondary" onClick={find}>
@@ -245,6 +259,16 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
                   <>
                     {" "}
                     at <span className="font-mono">{saved.head.slice(0, 7)}</span>
+                  </>
+                )}
+              </span>
+            ) : sel.of === "changes" ? (
+              <span>
+                Uncommitted changes{branch && <> on <span className="font-mono">{branch}</span></>}
+                {saved && (
+                  <>
+                    {" "}
+                    against <span className="font-mono">{saved.base === EMPTY_TREE ? "no commit yet" : saved.base.slice(0, 7)}</span>
                   </>
                 )}
               </span>
@@ -280,7 +304,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
 
         {running && (
           <Notice role="status" icon={<LoaderCircle className="animate-spin" />}>
-            Asking {program} to explain {what}. It can take a few minutes, and it goes on while you look at other tabs.
+            Asking {program} to explain {copy.what}. It can take a few minutes, and it goes on while you look at other tabs.
           </Notice>
         )}
         {run === "stopped" && <Notice icon={<Square />}>Stopped before {program} was done{saved ? ": this is the guided review from before." : "."}</Notice>}
@@ -291,7 +315,13 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
         )}
         {moved && !running && (
           <Notice icon={<TriangleAlert />} className="text-modified">
-            Outdated: {sel.of === "pull" ? `#${sel.pull.number}` : (branch ?? "HEAD")} has moved since this review read it at <span className="font-mono">{saved.head.slice(0, 7)}</span>. Regenerate to review where it is now.
+            {sel.of === "changes" ? (
+              "Outdated: the changes have moved since this review read them. Regenerate to review them as they are now."
+            ) : (
+              <>
+                Outdated: {sel.of === "pull" ? `#${sel.pull.number}` : (branch ?? "HEAD")} has moved since this review read it at <span className="font-mono">{saved.head.slice(0, 7)}</span>. Regenerate to review where it is now.
+              </>
+            )}
           </Notice>
         )}
         {fixed.error && (
@@ -300,24 +330,19 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
           </Notice>
         )}
         <RisksRun program={program} run={risksOf.run} onCancel={() => cancelRisks(id)} />
+        {/* Under the notices, where Find Risks said it was looking, above the guide or its absence. */}
+        {risksBlock}
 
         {!saved ? (
           <>
-            {/* Risks found while the guide isn't there (stopped, failed, or dropped from storage). */}
-            {risksBlock}
             {!running && (
               <p className="text-[13px] text-muted-foreground">
-                {program} reads {sel.of === "commit"
-                  ? "the commit's message and diff"
-                  : sel.of === "pull"
-                    ? "the pull request's commits and their diff, fetching them first when they're missing,"
-                    : "the branch's commits and their diff (not uncommitted changes)"} and explains it as sections in the order to review them, by category, with a diagram when a flow or data model changes.
+                {program} reads {copy.reads} and explains it as sections in the order to review them, by category, with a diagram when a flow or data model changes.
               </p>
             )}
           </>
         ) : !guide ? (
           <>
-            {risksBlock}
             <Notice icon={<TriangleAlert />}>The answer wasn't in the shape asked for; here it is as written.</Notice>
             <GuideMarkdown text={saved.text} />
           </>
@@ -352,7 +377,6 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
                   </div>
                 )}
               </div>
-              {risksBlock}
               {(counts.size > 1 || (highs > 0 && highs < total)) && (
                 <CategoryFilter
                   counts={counts}
@@ -399,6 +423,27 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
       </div>
     </div>
   );
+}
+
+// After the repo changes: a burst of saves asks once.
+const STAMP_WAIT = 800;
+
+/**
+ * The uncommitted changes' stamp now, asked again a moment after the repo changes; null while
+ * unknown, or `on` is false. Not useAsyncValue: a burst of saves cancels the wait, and asks once.
+ */
+function useChangesStamp(on: boolean, revision: number) {
+  const [stamp, setStamp] = useState<string | null>(null);
+  useEffect(() => {
+    if (!on) return setStamp(null);
+    let live = true;
+    const t = window.setTimeout(() => api.changesStamp().then((s) => live && setStamp(s), () => {}), STAMP_WAIT);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [on, revision]);
+  return stamp;
 }
 
 function Count({ n, of }: { n: number; of: number }) {

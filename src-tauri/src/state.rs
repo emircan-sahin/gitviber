@@ -144,3 +144,17 @@ pub(crate) fn watch_network(
 pub(crate) fn short(sha: &str) -> &str {
     &sha[..sha.len().min(7)]
 }
+
+/// The first `max` of `items` for a message: "a, b, c and 4 more".
+pub(crate) fn some_of(items: &[&str], max: usize) -> String {
+    let shown = items
+        .iter()
+        .take(max)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    match items.len().saturating_sub(max) {
+        0 => shown,
+        more => format!("{shown} and {more} more"),
+    }
+}

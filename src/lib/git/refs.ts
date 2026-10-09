@@ -3,6 +3,9 @@ import { plural } from "../format.ts";
 import { folderName } from "../path.ts";
 import { IS_MAC, IS_WINDOWS } from "../platform.ts";
 
+/** git's empty tree (SHA-1), what changes before a repository's first commit are against. */
+export const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 /** refs/heads/main → main, refs/remotes/origin/main → origin/main. */
 export const shortRef = (ref: string) => ref.replace(/^refs\/(heads|remotes|tags)\//, "");
 

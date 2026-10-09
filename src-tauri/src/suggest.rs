@@ -242,11 +242,13 @@ fn subjects(repo: &Path, from: &str, to: &str) -> Result<String, String> {
     Ok(format!("{heading}\n{}", subjects.join("\n")))
 }
 
-/// What a guided review is of: a commit, HEAD's branch since it left `base` (a full ref), or a
-/// pull request's commits (fetched already) since its head left `base`, whatever HEAD is.
+/// What a guided review is of: a commit, HEAD's branch since it left `base` (a full ref), a
+/// pull request's commits (fetched already) since its head left `base`, whatever HEAD is, or the
+/// worktree's uncommitted changes.
 #[derive(Deserialize)]
 #[serde(tag = "of", rename_all = "lowercase")]
 pub enum Target {
+    Changes,
     Commit {
         sha: String,
     },
@@ -267,6 +269,9 @@ pub struct Guided {
     pub text: String,
     pub base: String,
     pub head: String,
+    /// Uncommitted changes' `git::changes_stamp` as they were read, to tell when they've moved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stamp: Option<String>,
 }
 
 /// What a guide's agent gets besides its command line: arguments to add as they are (the
@@ -300,6 +305,7 @@ struct Range {
     /// `base` and `head` as object ids, for the diff and the note.
     from: String,
     to: String,
+    stamp: Option<String>,
 }
 
 fn guide_range(repo: &Path, target: &Target) -> Result<Range, String> {
@@ -307,6 +313,27 @@ fn guide_range(repo: &Path, target: &Target) -> Result<Range, String> {
         git::run_text(repo, &["rev-parse", "--verify", "-q", rev]).map(|s| s.trim().to_string())
     };
     match target {
+        Target::Changes => {
+            // Before the snapshot: an edit between the two marks the review outdated early, never
+            // late.
+            let stamp = git::changes_stamp(repo)?;
+            let snap = git::reading(|| git::worktree_snapshot(repo))?;
+            if snap.is_empty(repo)? {
+                return Err(if snap.left_out.is_empty() {
+                    "There are no uncommitted changes.".into()
+                } else {
+                    "The only changes are new files too big or too many to review, or nested repositories.".into()
+                });
+            }
+            Ok(Range {
+                base: snap.base.clone(),
+                head: snap.tree.clone(),
+                header: changes_header(repo, &snap),
+                from: snap.base,
+                to: snap.tree,
+                stamp: Some(stamp),
+            })
+        }
         Target::Commit { sha } => {
             git::validate_rev(sha)?;
             let base = git::parent_or_empty(repo, sha)?;
@@ -319,6 +346,7 @@ fn guide_range(repo: &Path, target: &Target) -> Result<Range, String> {
                 header,
                 from,
                 to,
+                stamp: None,
             })
         }
         Target::Branch { base } => {
@@ -331,6 +359,7 @@ fn guide_range(repo: &Path, target: &Target) -> Result<Range, String> {
                 header,
                 from,
                 to: head,
+                stamp: None,
             })
         }
         Target::Pull { base, head, title } => {
@@ -348,9 +377,50 @@ fn guide_range(repo: &Path, target: &Target) -> Result<Range, String> {
                 header,
                 from,
                 to,
+                stamp: None,
             })
         }
     }
+}
+
+/// What uncommitted changes are against, and what of them the review can't see.
+fn changes_header(repo: &Path, snap: &git::Snapshot) -> String {
+    let text = |args: &[&str]| {
+        git::run_text(repo, args)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    };
+    let branch = text(&["symbolic-ref", "--short", "-q", "HEAD"]);
+    let on = if branch.is_empty() {
+        String::new()
+    } else {
+        format!(" on the branch {branch}")
+    };
+    let against = if snap.born {
+        let subject = text(&["log", "-1", "--format=%s", "HEAD", "--"]);
+        format!("HEAD {} \"{subject}\"", crate::state::short(&snap.base))
+    } else {
+        "no commit yet, so every file is new".to_string()
+    };
+    let mut header = format!("Uncommitted changes in the worktree{on}, staged and not, new files included, against {against}.");
+    if git::run(repo, &["rev-parse", "-q", "--verify", "MERGE_HEAD"]).is_ok() {
+        header.push_str(
+            " A merge is in progress: conflicted files are as they are on disk, markers and all.",
+        );
+    }
+    if repo.join(".gitmodules").exists() {
+        header.push_str(
+            " A submodule shows only when its commit moved, not its own uncommitted edits.",
+        );
+    }
+    if !snap.left_out.is_empty() {
+        let left: Vec<&str> = snap.left_out.iter().map(String::as_str).collect();
+        let shown = crate::state::some_of(&left, 20);
+        header.push_str(&format!(
+            " Left out, as new files too big or too many to read, or nested repositories: {shown}."
+        ));
+    }
+    header
 }
 
 /// The prompt's input for a guide: the header, the list of changed files, and the diffs that fit;
@@ -358,6 +428,7 @@ fn guide_range(repo: &Path, target: &Target) -> Result<Range, String> {
 struct GuideInput {
     base: String,
     head: String,
+    stamp: Option<String>,
     text: String,
     note: String,
     patch: Option<String>,
@@ -365,7 +436,7 @@ struct GuideInput {
 }
 
 /// What the prompt says of a guide's input, ahead of what its diffs are (one of the next three).
-const LIST_NOTE: &str = "Below are the commit's message, or the branch's or pull request's commits, then a list of every changed file, a line each: its status letter, lines added and removed, its path (after \"←\", the path it was renamed from), tags, and after \"@@\" the functions or sections its changes are in";
+const LIST_NOTE: &str = "Below is what the change is (a commit's message, the branch's or pull request's commits, or the uncommitted changes), then a list of every changed file, a line each: its status letter, lines added and removed, its path (after \"←\", the path it was renamed from), tags, and after \"@@\" the functions or sections its changes are in";
 const PREFIX_NOTE: &str = "; then the start of the patch, cut at a line's end.";
 const SOME_NOTE: &str = "; then the whole diffs of the files not tagged [file only], [generated] or [binary] (binary files have none).";
 const ALL_NOTE: &str = "; then every file's whole diff, except for [generated] and [binary] files.";
@@ -381,6 +452,7 @@ fn guide_input(repo: &Path, target: &Target) -> Result<GuideInput, String> {
         header,
         from,
         to,
+        stamp,
     } = guide_range(repo, target)?;
     let files = git::range_files(repo, &from, &to)?;
     let patch = pinned_diff(repo, &[&from, &to, "--"])?;
@@ -422,6 +494,7 @@ fn guide_input(repo: &Path, target: &Target) -> Result<GuideInput, String> {
     Ok(GuideInput {
         base,
         head,
+        stamp,
         text,
         note,
         patch,
@@ -571,6 +644,7 @@ pub(crate) fn guide_within(
         text: text?,
         base: input.base,
         head: input.head,
+        stamp: input.stamp,
     })
 }
 

@@ -201,20 +201,9 @@ pub fn cherry_pick_into(target: &Path, sha: &str) -> Result<bool, String> {
         blocking.sort_unstable();
         blocking.dedup();
         let branch = st.branch.as_deref().unwrap_or("that worktree");
-        let shown = blocking
-            .iter()
-            .take(5)
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let more = blocking.len().saturating_sub(5);
-        let more = if more > 0 {
-            format!(" and {more} more")
-        } else {
-            String::new()
-        };
+        let shown = crate::state::some_of(&blocking, 5);
         return Err(format!(
-            "{branch} has uncommitted changes in the way ({shown}{more}). Commit or stash them in that worktree first."
+            "{branch} has uncommitted changes in the way ({shown}). Commit or stash them in that worktree first."
         ));
     }
     cherry_pick(target, sha)

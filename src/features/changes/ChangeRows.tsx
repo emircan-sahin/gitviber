@@ -1,4 +1,4 @@
-import { Check, ChevronDown, ChevronRight, FolderGit2, GitMerge, Plus } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, FolderGit2, GitMerge, Plus, Sparkles } from "lucide-react";
 import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { Tip } from "@/components/ui/tooltip";
@@ -44,8 +44,11 @@ export function Section({ title, count, tone, action, pinned, children }: { titl
   );
 }
 
-/** How far the review is: files, lines, and how many are marked viewed, over a progress bar. */
-export function ReviewSummary({ files, add, del, reviewed }: { files: number; add: number; del: number; reviewed: number }) {
+/**
+ * How far the review is: files, lines, and how many are marked viewed, over a progress bar.
+ * `onGuide`: the agent's guided review of these changes, from a ✦ beside the counts.
+ */
+export function ReviewSummary({ files, add, del, reviewed, onGuide }: { files: number; add: number; del: number; reviewed: number; onGuide?: () => void }) {
   return (
     <div className="shrink-0 border-b border-border px-3 py-2">
       <div className="flex items-center gap-2 text-[11.5px]">
@@ -55,6 +58,17 @@ export function ReviewSummary({ files, add, del, reviewed }: { files: number; ad
         <span className="font-mono text-[11px]">
           <span className="text-added">+{add}</span> <span className="text-removed">-{del}</span>
         </span>
+        {onGuide && (
+          <Tip label="Guided review of the uncommitted changes">
+            <button
+              aria-label="Guided review of the uncommitted changes"
+              onClick={onGuide}
+              className="flex size-4 shrink-0 items-center justify-center rounded-sm text-subtle hover:bg-hover hover:text-foreground focus-visible:bg-hover focus-visible:text-foreground"
+            >
+              <Sparkles className="size-3" />
+            </button>
+          </Tip>
+        )}
         <span className="ml-auto text-muted-foreground">
           <span className={cn("font-semibold", reviewed === files ? "text-added" : "text-foreground")}>{reviewed}</span>/{files} reviewed
         </span>

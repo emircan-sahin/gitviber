@@ -37,6 +37,7 @@ mod shell_path;
 mod stash;
 mod stash_edges;
 mod suggest;
+mod suggest_changes;
 mod suggest_guide;
 mod sync;
 mod terminal_links;

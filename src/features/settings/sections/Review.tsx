@@ -123,7 +123,8 @@ export function ReviewSection() {
             {guidePrompt(s.reviewLanguage)}
             {"\n\n"}
             <span className="text-subtle">
-              [a commit's message, or the subjects of the branch's commits since it left the base (not uncommitted changes); a list of every changed file; then as many whole diffs as fit
+              [a commit's message, the subjects of the branch's or pull request's commits since it left the base, or for uncommitted changes what they're against (staged, unstaged and
+              new files; new files past the size caps are left out and named); a list of every changed file; then as many whole diffs as fit
               in {GUIDE_LIMIT_KB} KB, lockfiles and generated files left out. When any diff is left out, the whole patch goes in a temporary file only you can read, named in the prompt and
               deleted when the run ends. Claude Code also gets the answer's shape as <span className="font-mono">--json-schema</span>, and it and opencode are let read that file.]
             </span>

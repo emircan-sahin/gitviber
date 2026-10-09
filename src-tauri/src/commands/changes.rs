@@ -174,6 +174,12 @@ pub async fn suggest_guide(
     out
 }
 
+/// What the uncommitted changes are now, cheaply: a guide of them is outdated once it differs.
+#[tauri::command]
+pub async fn changes_stamp(state: State<'_, AppState>) -> Res<String> {
+    read_repo(&state, git::changes_stamp).await
+}
+
 /// A guided review handed to Claude Code in a terminal: the line to type at the shell's prompt.
 #[tauri::command]
 pub async fn handoff_command(

@@ -293,6 +293,7 @@ pub fn run() {
             commands::changes::suggest_guide,
             commands::changes::suggest_cancel,
             commands::changes::handoff_command,
+            commands::changes::changes_stamp,
             commands::history::commit_details,
             commands::sync::push,
             commands::sync::remote_was_ours,

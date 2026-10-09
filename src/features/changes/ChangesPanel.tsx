@@ -30,6 +30,7 @@ import { RowAction } from "@/components/RowAction";
 import { primaryKey } from "@/lib/platform";
 import { useNotes } from "@/lib/review/noteStore";
 import { ReviewNotes } from "@/features/review/ReviewNotes";
+import { openGuide } from "@/features/review/guides";
 
 interface Props {
   status: RepoStatus;
@@ -670,7 +671,7 @@ export function ChangesPanel({ status: full, head, main, activeKey, onOpen, onHo
     <div className="flex h-full flex-col">
       {filter.bar}
       {status.operation?.kind === "bisect" ? <BisectBar refresh={refresh} /> : status.operation && <OperationBanner status={full} refresh={refresh} />}
-      {total.length > 0 && <ReviewSummary files={total.length} add={add} del={del} reviewed={reviewed} />}
+      {total.length > 0 && <ReviewSummary files={total.length} add={add} del={del} reviewed={reviewed} onGuide={() => openGuide({ kind: "guide", of: "changes" }, status, onOpen)} />}
       <div
         ref={list}
         onKeyDown={onListKey}

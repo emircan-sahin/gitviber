@@ -318,6 +318,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
     "review.nextFile": () => step(1),
     "review.prevFile": () => step(-1),
     "review.branch": startReview,
+    // Nested repositories aside, as the Changes list leaves them.
+    "review.guideUncommitted": status && uncommitted.length ? () => openGuide({ kind: "guide", of: "changes" }, status, open) : undefined,
     "git.applyPatch": () => void openApplyPatch(),
     "review.openAll": status?.unstaged.length ? () => openAll("unstaged") : undefined,
     "review.openAllStaged": status?.staged.length ? () => openAll("staged") : undefined,

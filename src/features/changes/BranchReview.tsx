@@ -77,7 +77,7 @@ interface Props {
   viewed: (s: Selection) => boolean;
   setViewed: (s: Selection[], on: boolean) => void;
   onBase: (ref: string) => void;
-  /** A guided review of the branch's commits since `base`; none while suggestions are off. */
+  /** A guided review of the branch's commits since `base`. */
   onGuide: (base: string) => void;
   onClose: () => void;
 }

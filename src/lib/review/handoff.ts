@@ -1,3 +1,5 @@
+import type { Worktree } from "../api/types.ts";
+import { EMPTY_TREE } from "../git/refs.ts";
 import type { GuideSelection } from "../repo/selection.ts";
 import { clip, languageName } from "./answer.ts";
 import type { Guide, GuideSection } from "./guide.ts";
@@ -35,27 +37,57 @@ const MAX_PART = 1500;
 const MAX_FILES = 40;
 
 const short = (sha: string) => sha.slice(0, 7);
-// Long enough for git to find in a big repository; a commit's base (`sha^`, the empty tree) as it is.
-const rev = (r: string) => (/^[0-9a-f]{40,64}$/i.test(r) ? r.slice(0, 12) : r);
+// Long enough for git to find in a big repository; a commit's base (`sha^`) and the empty tree,
+// which git only finds whole (it isn't stored), as they are.
+const rev = (r: string) => (r !== EMPTY_TREE && /^[0-9a-f]{40,64}$/i.test(r) ? r.slice(0, 12) : r);
 const quote = (s: string) => `"${s.replace(/\s+/g, " ").trim()}"`;
 const pathArg = (p: string) => (/^[\w./@+-]+$/.test(p) ? p : `'${p.replace(/'/g, "'\\''")}'`);
 
-/** Whether the worktree has the change's head checked out: a branch's always; a commit or a PR's when HEAD is it (`statusHead`: HEAD's short id). */
-export const isCheckedOut = (sel: GuideSelection, statusHead: string | null | undefined, head: string) => sel.of === "branch" || (!!statusHead && head.startsWith(statusHead));
+/** Whether the worktree has the change's head checked out: a branch's and the uncommitted changes' always; a commit or a PR's when HEAD is it (`statusHead`: HEAD's short id). */
+export const isCheckedOut = (sel: GuideSelection, statusHead: string | null | undefined, head: string) =>
+  sel.of === "branch" || sel.of === "changes" || (!!statusHead && head.startsWith(statusHead));
+
+
+
+type WorktreeHead = Pick<Worktree, "path" | "head" | "current" | "bare" | "prunable">;
+
+/** The worktree (of `worktrees`, heads as short ids) that has `head` checked out, where the agent can read and fix it: the current one first. */
+export function worktreeAt(worktrees: WorktreeHead[], head: string) {
+  const at = worktrees.filter((w) => !w.bare && !w.prunable && !!w.head && head.startsWith(w.head));
+  return at.find((w) => w.current) ?? at[0] ?? null;
+}
+
+/**
+ * Where a hand-off not checked out where it was asked goes: the worktree that has it (null for
+ * none), checked out there, and as it is there, not moved.
+ */
+export function placedIn<T extends Pick<HandoffInput, "head" | "checkedOut" | "moved">>(a: T, worktrees: WorktreeHead[]): { path: string | null; a: T } {
+  if (a.checkedOut) return { path: null, a };
+  const at = worktreeAt(worktrees, a.head);
+  return at ? { path: at.path, a: { ...a, checkedOut: true, moved: false } } : { path: null, a };
+}
 
 function what(sel: GuideSelection, branch: string | null, base: string, head: string) {
   const range = `${short(base)}..${short(head)}`;
   if (sel.of === "commit") return `commit ${short(sel.commit.sha)} ${quote(sel.commit.subject)} by ${sel.commit.authorName}`;
   if (sel.of === "pull") return `pull request #${sel.pull.number} ${quote(sel.pull.title)} by ${sel.pull.author} (${sel.pull.headRef} into ${sel.pull.baseRef}), commits ${range}`;
+  if (sel.of === "changes") return `the uncommitted changes in this worktree${branch ? ` on ${branch}` : ""} (staged, unstaged and new files) against ${base === EMPTY_TREE ? "no commit yet" : `HEAD ${short(base)}`}`;
   return `the branch ${branch ?? "HEAD"} since it left ${sel.label}, commits ${range}`;
 }
 
 function reading(i: HandoffInput, files: string[]) {
   const paths = files.length && files.length <= MAX_FILES ? ` -- ${files.map(pathArg).join(" ")}` : "";
+  // The review read a snapshot of them (a tree, git/snapshot.rs); the disk has them as they are now.
+  if (i.sel.of === "changes") {
+    const moved = i.moved ? " They've changed since the review read them: its line numbers may be off." : "";
+    const now = i.base === EMPTY_TREE ? "there's no commit yet, so every file is new: read them on disk" : "`git status` lists them and `git diff HEAD` shows the edits (new files aren't in it: read them on disk)";
+    return `They're on disk here, as they are now: ${now}. The review read them as \`git diff ${rev(i.base)} ${rev(i.head)}${paths}\` shows.${moved}`;
+  }
   // A commit's diff from the commit alone: its root's base, the empty tree, isn't a revision git finds.
   const diff = i.sel.of === "commit" ? `\`git show ${rev(i.head)}${paths}\`` : `\`git diff ${rev(i.base)} ${rev(i.head)}${paths}\``;
   if (!i.checkedOut) return `It isn't checked out here: the files on disk are another version. Read it with ${diff} and \`git show ${rev(i.head)}:<path>\`, and don't edit files for it.`;
-  const head = i.sel.of === "branch" ? "the files on disk are its head, plus any uncommitted changes, which the review didn't read" : "the files on disk are its head";
+  // A checked-out commit or PR may have edits of its own too.
+  const head = "the files on disk are its head, plus any uncommitted changes, which the review didn't read";
   const moved = i.moved ? ` The branch has moved since the review read it at ${short(i.head)}: line numbers in the review may be off.` : "";
   return `It's checked out here: ${head}. Its diff: ${diff}.${moved}`;
 }
@@ -122,7 +154,7 @@ export const riskPrompt = (checkedOut: boolean) =>
 
 /** The session's name in the agent (its prompt box, resume list and terminal title); handoff.rs makes it one short line. */
 export function handoffName(sel: GuideSelection, about: HandoffAbout) {
-  const of = sel.of === "commit" ? short(sel.commit.sha) : sel.of === "pull" ? `PR #${sel.pull.number}` : sel.label;
+  const of = sel.of === "commit" ? short(sel.commit.sha) : sel.of === "pull" ? `PR #${sel.pull.number}` : sel.of === "changes" ? "uncommitted" : sel.label;
   const part = !about ? "" : "section" in about ? about.section.title : about.risk.title;
   return `${about && "risk" in about ? "Risk" : "Review"}: ${of}${part ? ` · ${part}` : ""}`;
 }

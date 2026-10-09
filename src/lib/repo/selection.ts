@@ -45,10 +45,12 @@ export type Selection =
   // A file in an Obsidian vault (`vault`: its folder), outside the repo; `path` is vault-relative.
   | { kind: "vault"; vault: string; path: string }
   // An agent's guided review (features/review/GuideView) of a commit, of HEAD's branch since
-  // `base` (a full ref, `label` its short name), or of a pull request (`target`: the repo it's on).
+  // `base` (a full ref, `label` its short name), of a pull request (`target`: the repo it's on), or
+  // of the worktree's uncommitted changes.
   | { kind: "guide"; of: "commit"; commit: Commit }
   | { kind: "guide"; of: "branch"; base: string; label: string }
-  | { kind: "guide"; of: "pull"; pull: Pull; target: Target };
+  | { kind: "guide"; of: "pull"; pull: Pull; target: Target }
+  | { kind: "guide"; of: "changes" };
 
 export type GuideSelection = Extract<Selection, { kind: "guide" }>;
 
@@ -82,7 +84,7 @@ export function selectionPath(s: Selection) {
   if (s.kind === "issue") return `#${s.issue.number} ${s.issue.title}`;
   if (s.kind === "changes") return s.list === "commit" ? `Commit ${s.commit.shortSha}` : s.list === "range" ? `All Changes · ${rangeLabel(s.range)}` : LIST_TITLES[s.list];
   if (s.kind === "compare") return "Compare";
-  if (s.kind === "guide") return s.of === "commit" ? `Explain ${s.commit.shortSha}` : `Guided Review · ${s.of === "pull" ? `#${s.pull.number}` : s.label}`;
+  if (s.kind === "guide") return s.of === "commit" ? `Explain ${s.commit.shortSha}` : `Guided Review · ${s.of === "pull" ? `#${s.pull.number}` : s.of === "changes" ? "Uncommitted" : s.label}`;
   return s.file.path;
 }
 
@@ -132,7 +134,9 @@ export function selectionKey(s: Selection) {
                   ? s.commit.sha
                   : s.of === "pull"
                     ? s.pull.url
-                    : s.base
+                    : s.of === "changes"
+                      ? "changes"
+                      : s.base
                 : "";
   return `${s.kind}:${scope}:${selectionPath(s)}`;
 }

@@ -213,8 +213,10 @@ export const api = {
   suggestMessage: (command: string, prompt: string, scope: "staged" | "all" | "amend") => invoke<string>("suggest_message", { command, prompt, scope }),
   /** The same for a pull request from HEAD into `base` (refs/remotes/…): its commits, PR template and diff. */
   suggestPull: (command: string, prompt: string, base: string) => invoke<string>("suggest_pull", { command, prompt, base }),
-  /** The same for a guided review of `target` (only what's committed), with the range it read. */
+  /** The same for a guided review of `target` (or its risks, `kind`), with the range it read. */
   suggestGuide: (command: string, prompt: string, target: GuideTarget, agent: GuideAgent, kind: "guide" | "risks") => invoke<Guided>("suggest_guide", { command, prompt, target, agent, kind }),
+  /** What the uncommitted changes are now, cheaply: a guide of them is outdated once it differs from its `stamp`. */
+  changesStamp: () => invoke<string>("changes_stamp"),
   /** Writes a guided review's text to a private file and returns the line that starts Claude Code with it, in its prompt box or `send` (handoff.rs). */
   handoffCommand: (h: { command: string; model: string | null; effort: string | null; name: string; text: string; send: boolean }) => invoke<string>("handoff_command", h),
   /** Stops the run of `kind`, leaving the others. */

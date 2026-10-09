@@ -158,7 +158,7 @@ fn guide_gets_a_commit_or_the_branch_and_names_the_range() {
     let root = sha("HEAD");
     let g = go(Target::Commit { sha: root.clone() }).unwrap();
     assert!(
-        g.text.starts_with("PROMPT\n\nBelow are the commit's message")
+        g.text.starts_with("PROMPT\n\nBelow is what the change is (a commit's message")
             && g.text.contains(
                 "\n\nThe commit's message:\nAdd a\n\nWhy it's here.\n\nChanged files (1):\nA +1 -0 a.txt\n\n"
             ),
