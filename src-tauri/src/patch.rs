@@ -464,7 +464,8 @@ impl Scratch {
     }
 
     /// Ours that a killed run left in the git dir (each copy as big as the index), once older
-    /// than any run of ours could still be using.
+    /// than any run could still be using and its process is gone: a copy keeps the index's
+    /// time, which can be hours back while a run still reads it.
     pub(crate) fn sweep(repo: &Path, age: Duration) {
         let Ok((_, dir)) = Self::paths(repo, "index", ".") else {
             return;
@@ -474,13 +475,21 @@ impl Scratch {
         };
         for e in entries.flatten() {
             let name = e.file_name();
-            let ours = name.to_string_lossy().contains(".gitviber.");
+            let name = name.to_string_lossy();
+            let Some((_, rest)) = name.split_once(".gitviber.") else {
+                continue;
+            };
+            let running = rest
+                .split('.')
+                .next()
+                .and_then(|pid| pid.parse::<u32>().ok())
+                .is_some_and(crate::git::process_alive);
             let old = || {
                 e.metadata()
                     .and_then(|m| m.modified())
                     .is_ok_and(|t| t.elapsed().is_ok_and(|a| a > age))
             };
-            if ours && old() {
+            if !running && old() {
                 let _ = std::fs::remove_file(e.path());
             }
         }
@@ -505,12 +514,15 @@ impl Scratch {
         let index = Scratch(path);
         if real.exists() {
             std::fs::copy(&real, &index.0).map_err(|e| e.to_string())?;
-            // A copy keeps the index's time, often hours back: `sweep` would take it for one a
-            // killed run left, and git would read a missing index as an empty one.
+            // The index's own time, which a copy doesn't keep everywhere: git re-reads a file
+            // changed in the second the index was written only while it can tell (racy git).
+            let time = std::fs::metadata(&real)
+                .and_then(|m| m.modified())
+                .map_err(|e| e.to_string())?;
             OpenOptions::new()
                 .write(true)
                 .open(&index.0)
-                .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+                .and_then(|f| f.set_modified(time))
                 .map_err(|e| e.to_string())?;
         }
         Ok(index)

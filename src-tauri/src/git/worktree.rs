@@ -93,13 +93,13 @@ pub fn with_live_locks(mut list: Vec<Worktree>) -> Vec<Worktree> {
 
 /// `kill -0` without spawning `kill`: true when the process exists and is ours to signal.
 #[cfg(unix)]
-pub(super) fn process_alive(pid: u32) -> bool {
+pub(crate) fn process_alive(pid: u32) -> bool {
     // 0 and anything past pid_t would name a whole process group, or every process.
     libc::pid_t::try_from(pid).is_ok_and(|pid| pid > 0 && unsafe { libc::kill(pid, 0) } == 0)
 }
 
 #[cfg(not(unix))]
-pub(super) fn process_alive(_pid: u32) -> bool {
+pub(crate) fn process_alive(_pid: u32) -> bool {
     false
 }
 

@@ -204,6 +204,26 @@ fn a_copy_of_an_old_index_is_never_taken_for_a_killed_run_s() {
 }
 
 #[test]
+fn an_edit_in_the_index_s_own_second_with_the_same_size_is_still_seen() {
+    let sb = Sandbox::new("changes-racy");
+    let r = sb.path("r");
+    init(&r);
+    write_commit(&r, "a.txt", "one\n", "a");
+    // The same size and time as the index has for it, and the index written that second.
+    let when = fs::metadata(r.join("a.txt")).unwrap().modified().unwrap();
+    fs::write(r.join("a.txt"), "two\n").unwrap();
+    for f in ["a.txt", ".git/index"] {
+        fs::File::options()
+            .write(true)
+            .open(r.join(f))
+            .unwrap()
+            .set_modified(when)
+            .unwrap();
+    }
+    assert!(guide(&r).unwrap().text.contains("two"));
+}
+
+#[test]
 fn a_killed_run_s_index_copy_is_swept_once_old_and_a_fresh_one_kept() {
     let sb = Sandbox::new("changes-sweep");
     let r = sb.path("r");
