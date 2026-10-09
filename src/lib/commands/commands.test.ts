@@ -238,13 +238,14 @@ test("the terminal's own keys only run there, and keep ⌘W from closing a tab o
   assert.deepEqual(bindingsFor("terminal.split", {}, false), ["shift+cmd+d"]);
   assert.equal(commandFor("shift+cmd+w", {}, false), undefined);
   assert.equal(commandFor("cmd+w", {}, false)?.id, "tab.close");
-  // Split down, pane focus and maximize: ⇧⌘D, ⇧⌘arrows and ⌘↵ outside the terminal stay what they were.
+  // Split down, pane focus and maximize: ⇧⌘D, ⇧⌘ and ⌥⌘ arrows and ⌘↵ outside the terminal stay what they were.
   assert.deepEqual(bindingsFor("terminal.splitDown", {}, true), ["shift+cmd+d"]);
   assert.deepEqual(bindingsFor("terminal.splitDown", {}, false), ["alt+shift+cmd+d"], "Ctrl+Shift+D splits right there");
   assert.deepEqual(bindingsFor("terminal.toggleMaximize", {}, false), ["alt+shift+cmd+enter"], "Ctrl+Enter is a program's, Ctrl+Shift+Enter zooms a pane");
-  assert.deepEqual(bindingsFor("terminal.zoomPane", {}, true), ["shift+cmd+enter"], "as in cmux");
-  assert.deepEqual(bindingsFor("terminal.focusLeft", {}, true), ["shift+cmd+left", "alt+cmd+left"]);
-  assert.deepEqual(bindingsFor("terminal.prevPane", {}, true), [], "⌥⌘← focuses the pane on the left");
+  assert.deepEqual(bindingsFor("terminal.zoomPane", {}, true), ["shift+cmd+enter"]);
+  assert.deepEqual(bindingsFor("terminal.focusLeft", {}, true), ["alt+cmd+left"], "by side");
+  assert.deepEqual(bindingsFor("terminal.prevPane", {}, true), ["shift+cmd+left"], "pages through the numbered panes");
+  assert.deepEqual(bindingsFor("terminal.focusUp", {}, true), ["shift+cmd+up", "alt+cmd+up"]);
   assert.deepEqual(bindingsFor("terminal.focusLeft", {}, false), [], "the shell's or the desktop's there");
   const arrows = ["left", "right", "up", "down"].flatMap((k) => [`shift+cmd+${k}`, `alt+cmd+${k}`]);
   for (const mac of [true, false])

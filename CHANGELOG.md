@@ -17,6 +17,14 @@ on GitHub are its section below.
 - **Find in the page, zoom it, and show it light or dark.** `⌘F` with `⌘G` / `⇧⌘G`, `⌘=` / `⌘−` / `⌘0` from 50% to 300%, and a switch for the page's `prefers-color-scheme`; each tab keeps its zoom and scheme.
 - **Agents can use the browser.** Turn it on in Settings → Browser, and each terminal pane's agent gets a tab of its own, opened in the background: `gitviber browser` opens pages, reads them as a tree it can act on, clicks, types, waits, takes screenshots, reads the console and shows the page as a device. `gitviber browser help` lists every command; Settings has a note to paste into `CLAUDE.md` or `AGENTS.md`.
 - **Pages give their memory back.** A page out of sight closes after a while and comes back where it was, its picture standing in until it loads; Settings → Browser sets how many stay open and for how long, can reload a worktree's pages when its agent finishes, and clears the browsing data.
+- **Numbered terminal panes.** Each pane of a split shows its number in its title bar, counted row by row from the top as they're drawn, the focused one's in the accent color. The number shows over the pane for a moment as the keys move to it.
+- **A pager while one pane is zoomed.** With a split's pane filling the panel (`⇧⌘↵`), the terminal's toolbar shows which pane it is (‹ 2 / 3 ›) and a dot for each, so an agent working in another pane stays in sight. Click an arrow or a dot to show another pane, still zoomed.
+- **A dot per pane on a split terminal's tab,** colored by the state of the agent in it, the focused pane's larger. The tab's tooltip lists each pane by number with what runs there.
+
+### Changed
+
+- **`⇧⌘←` / `⇧⌘→` page through a split's panes by number,** wrapping around from the last to the first. `⌥⌘` arrows, and `⇧⌘↑` / `⇧⌘↓`, still move to the pane on that side.
+- **The Agents menu groups agents by terminal tab,** the tab with an agent that needs you first, and shows which pane of a split each one runs in (2 / 3) with the pane's name.
 
 ### Fixed
 

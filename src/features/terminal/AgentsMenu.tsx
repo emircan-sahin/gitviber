@@ -1,5 +1,5 @@
-import { Bot } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Bot, SquareTerminal } from "lucide-react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tip } from "@/components/ui/tooltip";
@@ -12,7 +12,7 @@ import { folderName } from "@/lib/path";
 import { worktreeOf } from "@/lib/git/worktrees";
 import { useAgentList } from "@/lib/terminal/agents";
 import { isNews, LOOK_LABEL, lookOf, mostUrgent } from "@/lib/terminal/agentLook";
-import { type AgentEntry, agentsWaiting } from "@/lib/terminal/agentState";
+import { type AgentEntry, agentsWaiting, byTab } from "@/lib/terminal/agentState";
 import { revealPane } from "@/lib/terminal/terminals";
 import { cn } from "@/lib/utils";
 
@@ -26,8 +26,8 @@ function where(cwd: string, worktrees: Worktree[]) {
 }
 
 /**
- * Every agent running in a terminal, in any tab or project: the ones that need the user first,
- * how long each has been in its state, and a click to its pane. Shown once there's an agent.
+ * Every agent running in a terminal, in any tab or project, by tab: the tabs whose agents need the
+ * user first, how long each has been in its state, and a click to its pane. Shown once there's an agent.
  */
 export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
   const list = useAgentList();
@@ -52,6 +52,10 @@ export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
   // Every agent at rest and looked at: nothing on the button.
   const loudest = mostUrgent(list.map((e) => lookOf(e.state, e.unseen)));
   const now = Date.now();
+  const tabs = byTab(list);
+  // Headers say where once for a tab's agents, in place of each row's own line. One agent alone
+  // keeps its line instead; several in one tab get a header too, which their rows' numbers go with.
+  const headed = tabs.length > 1 || tabs[0].length > 1;
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <Tip label={`Agents${summary ? ` · ${summary}` : ""}`}>
@@ -73,32 +77,54 @@ export function AgentsMenu({ worktrees }: { worktrees: Worktree[] }) {
         }}
       >
         <DropdownMenuLabel>Agents</DropdownMenuLabel>
-        {list.map((e) => {
-          const look = lookOf(e.state, e.unseen);
+        {tabs.map((tab) => {
+          const head = tab[0].tabName ?? where(tab[0].tabCwd, worktrees);
           return (
-            <DropdownMenuItem
-              key={e.pane}
-              onSelect={() => {
-                picked.current = true;
-                revealPane(e.pane);
-              }}
-              className="items-start py-1.5"
-            >
-              <span className="flex h-4 w-1.5 shrink-0 items-center">
-                <StatusDot look={look} className="in-data-[highlighted]:text-primary-foreground" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="flex min-w-0 items-center gap-2">
-                  <span className="truncate font-medium">{e.name}</span>
-                  <span className={cn("ml-auto shrink-0 text-[10.5px] tabular-nums", isNews(look) ? [LOOK_TEXT[look], "in-data-[highlighted]:text-primary-foreground"] : "opacity-70")}>
-                    {LABEL[e.state]}
-                    {look === "unread" && `, ${LOOK_LABEL.unread.toLowerCase()}`}
-                    {e.since > 0 && ` · ${shortDuration((now - e.since) / 1000)}`}
-                  </span>
-                </span>
-                <span className="block truncate text-[10.5px] opacity-70">{where(e.cwd, worktrees)}</span>
-              </span>
-            </DropdownMenuItem>
+            <Fragment key={tab[0].tab}>
+              {headed && (
+                <DropdownMenuLabel className="flex items-center gap-1.5 pt-1.5 pb-0.5 font-normal tracking-normal normal-case">
+                  <SquareTerminal className="size-3 shrink-0" />
+                  <span className="truncate">{head}</span>
+                </DropdownMenuLabel>
+              )}
+              {tab.map((e) => {
+                const look = lookOf(e.state, e.unseen);
+                const place = where(e.cwd, worktrees);
+                return (
+                  <DropdownMenuItem
+                    key={e.pane}
+                    onSelect={() => {
+                      picked.current = true;
+                      revealPane(e.pane);
+                    }}
+                    className="items-start py-1.5"
+                  >
+                    <span className="flex h-4 w-1.5 shrink-0 items-center">
+                      <StatusDot look={look} className="in-data-[highlighted]:text-primary-foreground" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="flex min-w-0 items-center gap-2">
+                        <span className="truncate font-medium">{e.name}</span>
+                        {/* Its pane's number, as the pane's header and the tab's dots count them. */}
+                        {e.of > 1 && (
+                          <span className="shrink-0 font-mono text-[10px] tabular-nums opacity-70">
+                            {e.at} / {e.of}
+                          </span>
+                        )}
+                        {e.paneName && <span className="min-w-0 truncate text-[10.5px] opacity-70">{e.paneName}</span>}
+                        <span className={cn("ml-auto shrink-0 text-[10.5px] tabular-nums", isNews(look) ? [LOOK_TEXT[look], "in-data-[highlighted]:text-primary-foreground"] : "opacity-70")}>
+                          {LABEL[e.state]}
+                          {look === "unread" && `, ${LOOK_LABEL.unread.toLowerCase()}`}
+                          {e.since > 0 && ` · ${shortDuration((now - e.since) / 1000)}`}
+                        </span>
+                      </span>
+                      {/* The header says where, unless this pane opened somewhere else. */}
+                      {(!headed || place !== head) && <span className="block truncate text-[10.5px] opacity-70">{place}</span>}
+                    </span>
+                  </DropdownMenuItem>
+                );
+              })}
+            </Fragment>
           );
         })}
       </DropdownMenuContent>

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Direction, equalize, type Layout, leaves, mapPanes, neighbor, type Rect, removePane, resize, row, savedLayout, splitPane, type Split } from "./layout.ts";
+import { type Direction, equalize, type Layout, leaves, mapPanes, neighbor, paneOrder, paneRects, type Rect, removePane, resize, row, savedLayout, splitPane, type Split, stepIn } from "./layout.ts";
 
 /** Where each pane is drawn in a 1200×800 tab with 1px dividers, as the panel lays them out. */
 function drawn(l: Layout, box: Rect = { x: 0, y: 0, width: 1200, height: 800 }, out = new Map<number, Rect>()) {
@@ -28,6 +28,39 @@ test("splits go right or down, and a split already going that way takes one more
   l = splitPane(l, 2, 4, "col");
   assert.deepEqual(l, { dir: "row", children: [1, 3, { dir: "col", children: [2, 4], sizes: [50, 50] }], sizes: [25, 25, 50] });
   assert.deepEqual(leaves(l), [1, 3, 2, 4]);
+});
+
+test("panes are numbered by where they're drawn: row by row from the top, each left to right", () => {
+  const col = (children: Layout[], sizes = children.map(() => 100 / children.length)): Layout => ({ dir: "col", children, sizes });
+  const across = (children: Layout[], sizes = children.map(() => 100 / children.length)): Layout => ({ dir: "row", children, sizes });
+  // 1 top left, 2 top right, 3 bottom left, 4 bottom right: split right first, or down first.
+  assert.deepEqual(paneOrder(across([col([1, 3]), col([2, 4])])), [1, 2, 3, 4]);
+  assert.deepEqual(paneOrder(col([across([1, 2]), across([3, 4])])), [1, 2, 3, 4]);
+  // A tall pane on the left starts the top row; the right column's lower panes follow, left to right.
+  assert.deepEqual(paneOrder(across([1, col([2, across([3, 4])])])), [1, 2, 3, 4]);
+  assert.deepEqual(paneOrder(across([col([1, 4], [70, 30]), col([2, 3], [40, 60])])), [1, 2, 3, 4]);
+  // A divider dragged a hair off its neighbour's still leaves one row.
+  assert.deepEqual(paneOrder(across([col([1, 3], [50, 50]), col([2, 4], [50.4, 49.6])])), [1, 2, 3, 4]);
+  // Tree order isn't screen order: a split down inside the left of a row.
+  const l = across([col([7, 4]), 9]);
+  assert.deepEqual(leaves(l), [7, 4, 9]);
+  assert.deepEqual(paneOrder(l), [7, 9, 4]);
+  assert.deepEqual(paneOrder(5), [5]);
+  const r = paneRects(across([1, col([2, 3], [25, 75])], [40, 60]));
+  assert.deepEqual(round(r.get(3)), { x: 0.4, y: 0.25, width: 0.6, height: 0.75 });
+});
+
+test("the numbered panes step in order and wrap past either end, as pages turn", () => {
+  const order = [7, 9, 4];
+  assert.deepEqual(order.map((id) => stepIn(order, id, 1)), [9, 4, 7]);
+  assert.deepEqual(order.map((id) => stepIn(order, id, -1)), [4, 7, 9]);
+  // One pane, or one that isn't in the tab: nowhere to go.
+  assert.equal(stepIn([7], 7, 1), undefined);
+  assert.equal(stepIn(order, 5, 1), undefined);
+  // Round the whole tab and back to where it started.
+  let at = 4;
+  for (let i = 0; i < order.length; i++) at = stepIn(order, at, -1)!;
+  assert.equal(at, 4);
 });
 
 test("closing a pane gives its space to the rest in proportion, and a split left with one pane gives way to it", () => {

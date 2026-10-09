@@ -10,8 +10,45 @@ export interface Split {
 
 export type Direction = "left" | "right" | "up" | "down";
 
-/** The panes in reading order: what ⌥⌘←/→ step through, and the order a tab lists them in. */
+/** The panes in tree order: the order a tab keeps and saves them in. */
 export const leaves = (l: Layout): number[] => (typeof l === "number" ? [l] : l.children.flatMap(leaves));
+
+/** Each pane's box in a unit square, from its splits' directions and sizes. */
+export function paneRects(l: Layout, box: Rect = { x: 0, y: 0, width: 1, height: 1 }, out = new Map<number, Rect>()): Map<number, Rect> {
+  if (typeof l === "number") return out.set(l, box);
+  const total = l.sizes.reduce((a, b) => a + b, 0) || 1;
+  let at = 0;
+  l.children.forEach((c, i) => {
+    const share = l.sizes[i] / total;
+    const part = l.dir === "row" ? { ...box, x: box.x + at * box.width, width: share * box.width } : { ...box, y: box.y + at * box.height, height: share * box.height };
+    paneRects(c, part, out);
+    at += share;
+  });
+  return out;
+}
+
+/** Tops this close (of the tab's height) are one row: a divider dragged a hair off its neighbour's. */
+const ROW = 0.01;
+
+/**
+ * The panes as numbered, by where they're drawn rather than how the splits were made: row by row
+ * from the top, each left to right. A 2×2 grid split right first or down first numbers the same.
+ */
+export function paneOrder(l: Layout): number[] {
+  const rows: [number, Rect][][] = [];
+  for (const pane of [...paneRects(l)].sort((a, b) => a[1].y - b[1].y)) {
+    const last = rows[rows.length - 1];
+    if (last && pane[1].y - last[0][1].y <= ROW) last.push(pane);
+    else rows.push([pane]);
+  }
+  return rows.flatMap((r) => r.sort((a, b) => a[1].x - b[1].x).map(([id]) => id));
+}
+
+/** The pane one step from `from` in `order`, past either end to the other, as pages turn. */
+export function stepIn(order: number[], from: number, dir: 1 | -1): number | undefined {
+  const at = order.indexOf(from);
+  return order.length < 2 || at < 0 ? undefined : order[(at + dir + order.length) % order.length];
+}
 
 /** Panes side by side at equal widths: a tab saved before splits went both ways. */
 export const row = (ids: number[]): Layout => (ids.length === 1 ? ids[0] : { dir: "row", children: ids, sizes: ids.map(() => 100 / ids.length) });

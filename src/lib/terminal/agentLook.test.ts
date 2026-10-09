@@ -88,7 +88,7 @@ test("an agent its background shell wakes before its finish is looked at is coun
   pane.needsYou = true;
   pane.agent = nextAgent(pane.agent, claude("working"), true).agent!;
   assert.equal(paneLook(pane), "working");
-  const entry = { pane: 1, name: "Claude Code", state: shownState(pane.agent.state), unseen: pane.needsYou, cwd: "/w", since: 0 };
+  const entry = { pane: 1, name: "Claude Code", state: shownState(pane.agent.state), unseen: pane.needsYou, cwd: "/w", since: 0, tab: 1, at: 1, of: 1, tabCwd: "/w" };
   // The Dock badge, the Agents button's summary and the list's order all read this one.
   assert.equal(agentsWaiting([entry]), isNews(paneLook(pane)) ? 1 : 0);
 });
