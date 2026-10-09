@@ -429,6 +429,7 @@ pub fn run() {
             commands::app::reduce_transparency,
             commands::browser::browser_create,
             commands::browser::browser_place,
+            commands::browser::browser_set_agent,
             commands::browser::browser_hide,
             commands::browser::browser_close,
             commands::browser::browser_navigate,

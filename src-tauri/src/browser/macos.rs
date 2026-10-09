@@ -6,7 +6,7 @@
 use super::keys::{self, Key, Route};
 use super::{
     host_key, is_loopback, loadable, policy, root_key, Created, Failed, Go, PageState, Parked,
-    Policy, Rect, Registry,
+    Policy, Rect, Registry, Screen,
 };
 use crate::state::Res;
 use block2::{DynBlock, RcBlock};
@@ -80,6 +80,8 @@ struct View {
     host: Retained<Host>,
     web: Retained<WebView>,
     delegate: Retained<Delegate>,
+    /// The device's camera island, notch or hole, drawn over the page: the app page can't.
+    cutout: Retained<NSView>,
 }
 
 thread_local! {
@@ -160,15 +162,31 @@ impl Host {
     fn new(mtm: MainThreadMarker) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(());
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: NSRect::ZERO] };
-        this.setWantsLayer(true);
-        unsafe {
-            let color: *mut CGColor = msg_send![&*NSColor::windowBackgroundColor(), CGColor];
-            let layer: *mut AnyObject = msg_send![&*this, layer];
-            if !layer.is_null() {
-                let _: () = msg_send![layer, setBackgroundColor: color];
-            }
-        }
+        paint(&this, &NSColor::windowBackgroundColor());
         this
+    }
+}
+
+/// A layer-backed view filled with `color`.
+fn paint(view: &NSView, color: &NSColor) {
+    view.setWantsLayer(true);
+    unsafe {
+        let color: *mut CGColor = msg_send![color, CGColor];
+        let layer: *mut AnyObject = msg_send![view, layer];
+        if !layer.is_null() {
+            let _: () = msg_send![layer, setBackgroundColor: color];
+        }
+    }
+}
+
+/// A layer-backed view's corners, what it holds clipped to them.
+fn round(view: &NSView, radius: f64) {
+    unsafe {
+        let layer: *mut AnyObject = msg_send![view, layer];
+        if !layer.is_null() {
+            let _: () = msg_send![layer, setCornerRadius: radius];
+            let _: () = msg_send![layer, setMasksToBounds: Bool::new(radius > 0.0)];
+        }
     }
 }
 
@@ -259,6 +277,8 @@ struct DelegateIvars {
     timer: RefCell<Option<Retained<NSNumber>>>,
     /// When the view last went out of its tab's sight, for a timer set again (`configure`).
     hidden_at: Cell<Option<Instant>>,
+    /// The device it shows (device mode), as last placed.
+    screen: Cell<Option<Screen>>,
     /// The page's process ended once since the user last sent it somewhere: the next time it
     /// stays down, or a page that kills it on load would reload forever.
     crashed: Cell<bool>,
@@ -508,6 +528,7 @@ impl Delegate {
             committed: Cell::new(false),
             timer: RefCell::default(),
             hidden_at: Cell::new(None),
+            screen: Cell::new(None),
             crashed: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
@@ -676,7 +697,13 @@ fn load(web: &WKWebView, url: &NSURL) {
 
 /// The view for tab `id` of worktree `root`, loading `url`; hidden until placed. One that is
 /// already open stays as it is; a parked one opens again where it was, its picture returned.
-pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) -> Res<Created> {
+pub fn create(
+    window: &tauri::WebviewWindow,
+    id: &str,
+    root: &str,
+    url: &str,
+    ua: Option<&str>,
+) -> Res<Created> {
     let mtm = main_thread()?;
     if let Some(v) = view(id) {
         let page = v.delegate.state(&v.web);
@@ -743,7 +770,14 @@ pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) ->
     // Kept to the top as the window resizes, until the page places it again.
     host.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
     host.addSubview(&web);
+    let cutout = NSView::initWithFrame(NSView::alloc(mtm), NSRect::ZERO);
+    paint(&cutout, &NSColor::blackColor());
+    cutout.setHidden(true);
+    host.addSubview(&cutout);
     content.addSubview_positioned_relativeTo(&host, NSWindowOrderingMode::Above, None);
+    if let Some(ua) = ua {
+        unsafe { web.setCustomUserAgent(Some(&NSString::from_str(ua))) };
+    }
     load(&web, &page);
     #[cfg(debug_assertions)]
     log_process(&web, "made");
@@ -753,6 +787,7 @@ pub fn create(window: &tauri::WebviewWindow, id: &str, root: &str, url: &str) ->
         host,
         web,
         delegate,
+        cutout,
     };
     VIEWS.with_borrow_mut(|r| r.insert(id, &root_key(root), view));
     Ok(Created {
@@ -770,8 +805,8 @@ fn log_process(web: &WKWebView, what: &str) {
     }
 }
 
-/// Shows the view at `rect`, in the app page's points.
-pub fn place(id: &str, rect: Rect) -> Res<()> {
+/// Shows the view at `rect`, in the app page's points, as `screen` when it shows a device.
+pub fn place(id: &str, rect: Rect, screen: Option<Screen>) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
     let page = app_page(&v.host).ok_or(GONE)?;
@@ -784,13 +819,65 @@ pub fn place(id: &str, rect: Rect) -> Res<()> {
     };
     let rect = NSRect::new(NSPoint::new(rect.x, y), NSSize::new(rect.w, rect.h));
     let frame = page.convertRect_toView(rect, Some(&parent));
-    if v.host.frame() != frame {
+    let moved = v.host.frame() != frame;
+    if moved {
         v.host.setFrame(frame);
+    }
+    if v.delegate.ivars().screen.replace(screen) != screen || moved {
+        shape(&v, screen);
     }
     v.host.setHidden(false);
     VIEWS.with_borrow_mut(|r| r.show(id));
     stop_timer(&v);
     Ok(())
+}
+
+/// The view as a device's screen, or as itself (None). The page lays out at the device's width
+/// through its zoom, which keeps text sharp where scaling the view's bounds would blur it.
+fn shape(v: &View, screen: Option<Screen>) {
+    let zoom = screen.map_or(1.0, |s| s.zoom);
+    unsafe {
+        if v.web.pageZoom() != zoom {
+            v.web.setPageZoom(zoom);
+        }
+    }
+    // Private; WebKit multiplies it by the zoom, so it's set divided by it.
+    if v.web
+        .respondsToSelector(sel!(_setOverrideDeviceScaleFactor:))
+    {
+        let scale = screen.and_then(|s| s.dpr).map_or(0.0, |dpr| dpr / zoom);
+        let _: () = unsafe { msg_send![&*v.web, _setOverrideDeviceScaleFactor: scale] };
+    }
+    round(&v.host, screen.map_or(0.0, |s| s.radius));
+    match screen.and_then(|s| s.cutout) {
+        Some(c) => {
+            let height = v.host.frame().size.height;
+            let at = NSPoint::new(c.x, height - c.y - c.h);
+            v.cutout.setFrame(NSRect::new(at, NSSize::new(c.w, c.h)));
+            round(&v.cutout, c.r);
+            v.cutout.setHidden(false);
+        }
+        None => v.cutout.setHidden(true),
+    }
+}
+
+/// The device's user agent, or WebKit's own (None); a change loads the page again, as a server
+/// may answer another one. True when the pixel ratio can be set as well.
+pub fn set_agent(id: &str, ua: Option<&str>) -> Res<bool> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    let now = unsafe { v.web.customUserAgent() }.map(|s| s.to_string());
+    if now.as_deref().filter(|s| !s.is_empty()) != ua {
+        unsafe {
+            v.web
+                .setCustomUserAgent(ua.map(NSString::from_str).as_deref())
+        };
+        if loadable(&url_text(unsafe { v.web.URL() })) {
+            unsafe { drop(v.web.reload()) };
+        }
+    }
+    Ok(v.web
+        .respondsToSelector(sel!(_setOverrideDeviceScaleFactor:)))
 }
 
 /// Hidden, WebKit slows its timers and animation frames. Out of its tab's sight (not just
@@ -1116,6 +1203,17 @@ mod tests {
         NSURLProtectionSpace::class()
             .verify_sel::<(), *mut SecTrust>(sel!(serverTrust))
             .unwrap();
+        layer
+            .verify_sel::<(f64,), ()>(sel!(setCornerRadius:))
+            .unwrap();
+        layer
+            .verify_sel::<(Bool,), ()>(sel!(setMasksToBounds:))
+            .unwrap();
+        // Private: checked where this macOS has it.
+        let scale = sel!(_setOverrideDeviceScaleFactor:);
+        if WKWebView::class().instance_method(scale).is_some() {
+            WKWebView::class().verify_sel::<(f64,), ()>(scale).unwrap();
+        }
         NSURLCredential::class()
             .metaclass()
             .verify_sel::<(*mut SecTrust,), *mut NSURLCredential>(sel!(credentialForTrust:))

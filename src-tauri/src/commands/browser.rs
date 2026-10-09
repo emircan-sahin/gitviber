@@ -1,7 +1,7 @@
 //! The browser tab's native view (browser/). Sync, so they run on the main thread, where
 //! AppKit's views belong; the snapshot waits on WebKit, so it's async.
 
-use crate::browser::{self, ports, Created, Go, Rect};
+use crate::browser::{self, ports, Created, Go, Rect, Screen};
 use crate::state::{blocking, AppState, Res};
 use tauri::{AppHandle, State, WebviewWindow};
 
@@ -12,16 +12,25 @@ pub fn browser_create(
     id: String,
     root: String,
     url: String,
+    ua: Option<String>,
 ) -> Res<Created> {
     if window.label() != "main" {
         return Err("Browser tabs open in the main window.".into());
     }
-    browser::create(&window, &id, &root, &url)
+    browser::create(&window, &id, &root, &url, ua.as_deref())
 }
 
+/// `screen`: the device it shows, in device mode.
 #[tauri::command]
-pub fn browser_place(id: String, rect: Rect) -> Res<()> {
-    browser::place(&id, rect)
+pub fn browser_place(id: String, rect: Rect, screen: Option<Screen>) -> Res<()> {
+    browser::place(&id, rect, screen)
+}
+
+/// The device's user agent (None: WebKit's own); the page loads again when it changes. True
+/// when the pixel ratio can be set too.
+#[tauri::command]
+pub fn browser_set_agent(id: String, ua: Option<String>) -> Res<bool> {
+    browser::set_agent(&id, ua.as_deref())
 }
 
 /// `aside`: only while something of the app page's is over it, its tab still on show.

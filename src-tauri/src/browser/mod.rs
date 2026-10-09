@@ -15,12 +15,12 @@ pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
     agent_done, clear_data, close, close_all, close_root, configure, create, focus, go, hide,
-    inspect, navigate, place, snapshot,
+    inspect, navigate, place, set_agent, snapshot,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
     agent_done, clear_data, close, close_all, close_root, configure, create, focus, go, hide,
-    inspect, navigate, place, snapshot,
+    inspect, navigate, place, set_agent, snapshot,
 };
 
 pub use registry::{Parked, Registry};
@@ -69,6 +69,26 @@ pub struct Rect {
     pub y: f64,
     pub w: f64,
     pub h: f64,
+}
+
+/// A device's screen the view shows (device mode), in points: the page zoom that lays the page
+/// out at the device's width, its corners and cutout, and the pixel ratio it reports.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Screen {
+    pub zoom: f64,
+    pub radius: f64,
+    pub dpr: Option<f64>,
+    pub cutout: Option<Cutout>,
+}
+
+/// The camera's island, notch or hole, from the screen's top left.
+#[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Cutout {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub r: f64,
 }
 
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
@@ -139,15 +159,24 @@ pub fn root_key(path: &str) -> String {
 
 #[cfg(not(target_os = "macos"))]
 mod other {
-    use super::{Created, Go, Rect};
+    use super::{Created, Go, Rect, Screen};
     use crate::state::Res;
 
     const UNSUPPORTED: &str = "The browser tab needs macOS for now.";
 
-    pub fn create(_: &tauri::WebviewWindow, _: &str, _: &str, _: &str) -> Res<Created> {
+    pub fn create(
+        _: &tauri::WebviewWindow,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: Option<&str>,
+    ) -> Res<Created> {
         Err(UNSUPPORTED.into())
     }
-    pub fn place(_: &str, _: Rect) -> Res<()> {
+    pub fn place(_: &str, _: Rect, _: Option<Screen>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn set_agent(_: &str, _: Option<&str>) -> Res<bool> {
         Err(UNSUPPORTED.into())
     }
     pub fn hide(_: &str, _: bool) {}
