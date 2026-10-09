@@ -23,7 +23,6 @@ function handoff(a: Ask, question = "") {
   return { context: handoffContext({ ...a, language: getSettings().reviewLanguage }), prompt: risk ? riskPrompt(a.checkedOut) : q ? `My question: ${q}` : null };
 }
 
-
 /**
  * Where the agent works: the worktree that has the change checked out, so it reads the files on
  * disk and can fix them there, else `root` (the one open), reading the change with git.

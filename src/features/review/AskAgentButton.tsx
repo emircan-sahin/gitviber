@@ -23,7 +23,8 @@ export function AskAgentButton({ root, ask, label = "Ask Agent", what = "this", 
   const choice = useAskModel("review");
   const start = (q = "") => {
     setOpen(false);
-    void askAgent(root, ask(), q, choice.model);
+    // The box's model when it was asked in; a risk's Send to Agent runs as Settings say.
+    void askAgent(root, ask(), q, question ? choice.model : undefined);
   };
   const main = (
     <Button size="sm" variant="secondary" className="rounded-r-none" disabled={!root} onClick={question ? undefined : () => start()}>

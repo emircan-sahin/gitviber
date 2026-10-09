@@ -4,13 +4,22 @@ import { Textarea } from "@/components/ui/textarea";
 import { modelOf, presetOf, reviewAgent } from "@/lib/git/suggest";
 import { useSettings } from "@/lib/settings";
 import { readJson, writeJson } from "@/lib/storage";
+import { createStore } from "@/lib/store";
 
-/** The model the agent starts with, as the question's box picks it. */
+/** The model the agent starts with, as the question's box picks it; "" is the CLI's own. */
 export interface ModelPick {
   choices: string[];
   value: string;
   onChange: (model: string) => void;
 }
+
+type AskKind = "review" | "browser";
+
+// Each kind's last pick, one for every box of its kind on screen; null before any.
+const picked = (["review", "browser"] as const).reduce(
+  (all, kind) => ({ ...all, [kind]: createStore(readJson<string | null>(`gitviber.askModel.${kind}`, null, (v): v is string => typeof v === "string")) }),
+  {} as Record<AskKind, ReturnType<typeof createStore<string | null>>>,
+);
 
 // Claude Code's own names for its newest models of each size; Settings takes any id.
 const CLAUDE_MODELS = ["opus", "sonnet", "haiku"];
@@ -20,19 +29,19 @@ const CLAUDE_MODELS = ["opus", "sonnet", "haiku"];
  * setting: Settings → Guided Review's model until one's picked. Only for Claude Code, the one agent
  * that starts with the question in hand; null elsewhere.
  */
-export function useAskModel(kind: "review" | "browser"): { picker: ModelPick | null; model: string | undefined } {
+export function useAskModel(kind: AskKind): { picker: ModelPick | null; model: string | undefined } {
   const { command, models } = reviewAgent(useSettings());
-  const key = `gitviber.askModel.${kind}`;
-  const [last, setLast] = useState(() => readJson(key, "", (v): v is string => typeof v === "string"));
+  const last = picked[kind].use();
   const preset = presetOf(command);
   if (preset !== "claude") return { picker: null, model: undefined };
-  const value = last || modelOf(preset, models);
-  const choices = [...new Set([value, modelOf(preset, models), ...CLAUDE_MODELS].filter(Boolean))];
+  const settings = modelOf(preset, models);
+  const value = last ?? settings;
+  const choices = [...new Set([value, settings, ...CLAUDE_MODELS])];
   const onChange = (model: string) => {
-    writeJson(key, model);
-    setLast(model);
+    writeJson(`gitviber.askModel.${kind}`, model);
+    picked[kind].set(model);
   };
-  return { picker: { choices, value, onChange }, model: value || undefined };
+  return { picker: { choices, value, onChange }, model: value };
 }
 
 // How tall the question grows before it scrolls: about sixteen lines.
@@ -40,20 +49,18 @@ const MAX_HEIGHT = 320;
 
 /**
  * The question to send with something handed to the agent (a review, a browser tab's pick), if
- * any: ↵ asks it, Skip opens the session without one, Esc cancels where there's `onCancel`.
+ * any: ↵ asks it, Skip opens the session without one; Esc is the popover's around it.
  */
 export function QuestionBox({
   agent,
   what,
   onAsk,
-  onCancel,
   model,
   extra,
 }: {
   agent: string;
   what: string;
   onAsk: (question?: string) => void;
-  onCancel?: () => void;
   model?: ModelPick | null;
   /** Under the question: what else can go with it. */
   extra?: ReactNode;
@@ -93,12 +100,8 @@ export function QuestionBox({
         className="py-1.5"
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Your question (optional)"
+        placeholder="Your question (optional). ↵ asks, ⇧↵ is a new line."
         onKeyDown={(e) => {
-          if (e.key === "Escape" && onCancel) {
-            e.preventDefault();
-            return onCancel();
-          }
           // ↵ asks, ⇧↵ is a new line; not while an input method is composing a word.
           if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
           e.preventDefault();
@@ -117,7 +120,7 @@ export function QuestionBox({
           >
             {model.choices.map((m) => (
               <option key={m} value={m}>
-                {m}
+                {m || "Default"}
               </option>
             ))}
           </select>

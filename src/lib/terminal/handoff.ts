@@ -8,8 +8,8 @@ import { type Handoff, handoffTo } from "./agentState";
 import { openTerminal, worktreeAgent } from "./terminals";
 
 // Text handed to the agent CLI in a worktree's terminal, one way for every caller (a review's Ask
-// Agent, a browser tab's pick or errors): into the agent running there while it's free, else in a
-// new session. Never into a plain shell.
+// Agent, a browser tab's pick or errors): a new session started with it. A review can also paste
+// into the agent already running there, while it's free; never into a plain shell.
 
 /** The agent CLI's name for the user: Claude Code, or the program the command runs. */
 export function agentName(command: string) {
@@ -42,7 +42,7 @@ export interface StartWith {
   /** The toast titles when another CLI gets it on the clipboard, and when Claude Code can't start. */
   copied: string;
   failed: string;
-  /** Claude Code's model for this one (the question box's), else the review agent's own. */
+  /** Claude Code's model for this one (the question box's; "" the CLI's own), else the review agent's. */
   model?: string;
 }
 
@@ -65,8 +65,9 @@ export async function startAgentWith(root: string, text: string, how: StartWith)
     // A preset's model and effort, as the review ran with; a custom command's are its own business.
     const line = await api.handoffCommand({
       command,
-      model: how.model || (preset && modelOf(preset, models)) || null,
-      effort: (preset && effortOf(preset, efforts)) || null,
+      model: (how.model ?? (preset && modelOf(preset, models))) || null,
+      // Settings' effort is for Settings' model: another may not take it (haiku has no max).
+      effort: (preset && (how.model === undefined || how.model === modelOf(preset, models)) && effortOf(preset, efforts)) || null,
       name: how.name,
       text,
       send: how.send,
