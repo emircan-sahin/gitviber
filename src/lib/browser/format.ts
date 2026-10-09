@@ -10,22 +10,27 @@ export interface ShownAs {
 }
 
 const px = (n: number) => Math.round(n);
+/** What the page wrote, on one line: a newline in it can't start a line an agent reads as ours. */
+const flat = (s: string) => s.replace(/\s+/g, " ").trim();
+/** 143.765625px reads as 143.77px. */
+const rounded = (v: string) => v.replace(/-?\d*\.\d+(?=px)/g, (n) => String(Math.round(Number(n) * 100) / 100));
 
 /** The element, where it is and what it looks like, the screenshot's path, then the note. */
 export function formatPick(pick: BrowserPick, note: string, device: ShownAs | null = null): string {
-  const on = device ? `${pick.url} as ${device.name} (${device.viewport.w}×${device.viewport.h})` : pick.url;
+  const url = flat(pick.url);
+  const on = device ? `${url} as ${device.name} (${device.viewport.w}×${device.viewport.h})` : url;
   const styles = Object.entries(pick.styles)
     .filter(([, v]) => v && v !== "none" && v !== "normal" && v !== "auto" && v !== "0px")
-    .map(([k, v]) => `${k}: ${v}`)
+    .map(([k, v]) => `${flat(k)}: ${rounded(flat(v))}`)
     .join("; ");
   const lines = [
     `Picked an element on ${on}`,
-    `- selector: ${pick.selector}`,
-    pick.components.length > 0 && `- React: ${pick.components.join(" < ")}`,
+    `- selector: ${flat(pick.selector)}`,
+    pick.components.length > 0 && `- React: ${pick.components.map(flat).join(" < ")}`,
     pick.text && `- text: ${JSON.stringify(pick.text)}`,
     `- box: ${px(pick.box.w)}×${px(pick.box.h)} at ${px(pick.box.x)},${px(pick.box.y)}`,
     styles && `- styles: ${styles}`,
-    `- html: ${pick.html.replace(/\s+/g, " ")}`,
+    `- html: ${flat(pick.html)}`,
     pick.screenshot && `- screenshot: ${pick.screenshot}`,
     note.trim() && `Note: ${note.trim()}`,
   ];
@@ -49,17 +54,17 @@ export function formatErrors(entries: ConsoleEntry[]): string {
   }
   const latest = [...seen.values()].slice(-ERRORS);
   if (!latest.length) return "";
-  const pages = new Set(latest.map((l) => l.entry.url));
+  const pages = new Set(latest.map((l) => flat(l.entry.url)));
   const head = pages.size === 1 ? `Errors on ${[...pages][0]}:` : "Errors from the page:";
   const body = latest.map(({ entry, times }) => {
     const stack = entry.stack
       .split("\n")
-      .map((l) => l.trim())
+      .map(flat)
       .filter((l) => l && !entry.msg.includes(l))
       .slice(0, STACK_LINES)
       .map((l) => `    ${l}`);
-    const where = pages.size > 1 ? ` (${entry.url})` : "";
-    return [`- ${times > 1 ? `(×${times}) ` : ""}${entry.msg}${where}`, ...stack].join("\n");
+    const where = pages.size > 1 ? ` (${flat(entry.url)})` : "";
+    return [`- ${times > 1 ? `(×${times}) ` : ""}${flat(entry.msg)}${where}`, ...stack].join("\n");
   });
   return [head, ...body].join("\n");
 }
