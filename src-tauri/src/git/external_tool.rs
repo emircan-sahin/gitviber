@@ -94,7 +94,59 @@ pub fn open_merge_tool(repo: &Path, path: &str) -> Result<(), String> {
         args.extend(["-c", "mergetool.keepBackup=false"]);
     }
     args.extend(["mergetool", "--gui", "--no-prompt", "--", path]);
-    run_tool(repo, "mergetool", &args)
+    let started = std::time::SystemTime::now();
+    let merged = run_tool(repo, "mergetool", &args);
+    if merged.is_err() {
+        remove_left_copies(path, started);
+    }
+    merged
+}
+
+/// A tool that fails leaves git mergetool's temp folder of copies behind, and on macOS its
+/// `mktemp -t` won't put that folder anywhere but the system's: the one for `path` made since
+/// `started` goes, once the mergetool that made it (its copies carry its pid) is gone. Another
+/// mergetool of the same file name may be open in another worktree.
+fn remove_left_copies(path: &str, started: std::time::SystemTime) {
+    let Some(stem) = Path::new(path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let local = format!("{stem}_LOCAL_");
+    let since = started - std::time::Duration::from_secs(1);
+    for entry in entries.flatten() {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("git-mergetool-")
+        {
+            continue;
+        }
+        let new = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|t| t >= since);
+        let Some(pid) = new.then(|| maker(&entry.path(), &local)).flatten() else {
+            continue;
+        };
+        // Elsewhere there's no telling whether it still runs.
+        if cfg!(unix) && !super::worktree::process_alive(pid) {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// The pid in a copy's name, `a_LOCAL_<pid>.txt`.
+fn maker(dir: &Path, local: &str) -> Option<u32> {
+    std::fs::read_dir(dir).ok()?.flatten().find_map(|f| {
+        let name = f.file_name().to_string_lossy().into_owned();
+        let rest = name.strip_prefix(local)?;
+        rest.split('.').next()?.parse().ok()
+    })
 }
 
 /// Opens `path`'s unstaged changes, or with `staged` its staged ones, in the diff tool.
