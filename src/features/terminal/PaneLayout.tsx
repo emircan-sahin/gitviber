@@ -1,5 +1,5 @@
 import { ClipboardPaste, Columns2, Copy, Globe, Rows2, TextSelect, X } from "lucide-react";
-import { Fragment, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useGroupRef } from "react-resizable-panels";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
@@ -16,6 +16,7 @@ import {
   paneDir,
   paneMenuState,
   panePty,
+  panesInOrder,
   paneTakesMouse,
   pasteIntoPane,
   renamePane,
@@ -69,10 +70,11 @@ export function LayoutView({ group, node, focused, dim, path = [] }: { group: Te
   }, [sizes]);
   if (typeof node === "number") {
     // A pane in a split gets a header, as in cmux: what runs in each, and which one has the keys.
-    // Numbered in reading order (the tab's panes), as ⇧⌘←/→ step through them.
-    const at = group.panes.findIndex((p) => p.id === node);
-    const number = group.panes.length > 1 && at >= 0 ? { n: at + 1, of: group.panes.length } : undefined;
-    const pane = path.length && number ? group.panes[at] : undefined;
+    // Numbered by where it's drawn, as ⇧⌘←/→ step through them.
+    const order = panesInOrder(group);
+    const at = order.findIndex((p) => p.id === node);
+    const number = order.length > 1 && at >= 0 ? { n: at + 1, of: order.length } : undefined;
+    const pane = path.length && number ? order[at] : undefined;
     return <PaneView id={node} dim={node === focused ? 0 : dim} number={number} header={pane && { pane, focused: node === focused }} />;
   }
   const row = node.dir === "row";
@@ -125,7 +127,8 @@ export function showPaneSwitch(id: number | undefined) {
 /** `dim`: how far it fades into the panel's background, while another pane of its tab has focus. */
 function PaneView({ id, dim, number, header }: { id: number; dim: number; number?: PaneNumber; header?: { pane: PaneInfo; focused: boolean } }) {
   const ref = useRef<HTMLDivElement>(null);
-  const flash = switched.use();
+  // Only the pane it's for re-renders on a switch.
+  const flash = useSyncExternalStore(switched.subscribe, () => (switched.get()?.id === id ? switched.get()!.key : 0));
   // Layout effect: the pane is in place before paint, so focusing it next frame works.
   useLayoutEffect(() => attachPane(id, ref.current!), [id]);
   // Read as the menu opens: the selection and the last command change under it.
@@ -138,9 +141,9 @@ function PaneView({ id, dim, number, header }: { id: number; dim: number; number
   return (
     <div className="relative flex h-full flex-col">
       {header && number && <PaneHeader pane={header.pane} focused={header.focused} number={number} />}
-      {flash?.id === id && number && (
+      {flash > 0 && number && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-          <span key={flash.key} className="pane-switch rounded-full border border-border-strong bg-elevated px-3 py-1 font-mono text-[13px] text-foreground tabular-nums shadow-md shadow-black/40">
+          <span key={flash} className="pane-switch rounded-full border border-border-strong bg-elevated px-3 py-1 font-mono text-[13px] text-foreground tabular-nums shadow-md shadow-black/40">
             {number.n} / {number.of}
           </span>
         </div>
