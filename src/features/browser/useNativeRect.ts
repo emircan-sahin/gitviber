@@ -22,9 +22,9 @@ export function useNativeRect(area: RefObject<HTMLElement | null>, id: string, l
   const scale = useSettings().uiScale;
   const maximized = useTerminalsMaximized();
   const [cover, setCover] = useState<string | null>(null);
-  const native: NativeScreen | null = screen && { width: screen.viewport.w, radius: screen.radius * scale, corners: screen.corners, dpr: screen.dpr };
+  const native: NativeScreen | null = screen && { width: screen.viewport.w, height: screen.viewport.h, radius: screen.radius * scale, corners: screen.corners, dpr: screen.dpr };
   // The effect runs again when the screen changes, not on each render's new object.
-  const shape = native && [native.width, native.radius, native.dpr, ...Object.values(native.corners)].join(" ");
+  const shape = native && [native.width, native.height, native.radius, native.dpr, ...Object.values(native.corners)].join(" ");
 
   useEffect(() => {
     const el = area.current;

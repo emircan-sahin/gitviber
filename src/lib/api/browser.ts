@@ -20,9 +20,10 @@ export interface BrowserState {
 
 export type BrowserGo = "back" | "forward" | "reload" | "hardReload" | "stop";
 
-/** A device's screen the view shows: the page's viewport width in device CSS px (its zoom comes from it), the corner radius in points and which corners the page reaches, and the pixel ratio. */
+/** A device's screen the view shows: the page's viewport in device CSS px (its zoom and height come from it), the corner radius in points and which corners the page reaches, and the pixel ratio. */
 export interface NativeScreen {
   width: number;
+  height: number;
   radius: number;
   corners: { topLeft: boolean; topRight: boolean; bottomRight: boolean; bottomLeft: boolean };
   dpr: number | null;

@@ -73,12 +73,13 @@ pub struct Rect {
     pub h: f64,
 }
 
-/// A device's screen the view shows (device mode): the page's viewport width in device CSS px,
-/// which its zoom comes from; the screen's corner radius in points, and the corners the page
+/// A device's screen the view shows (device mode): the page's viewport in device CSS px, which
+/// its zoom and height come from; the screen's corner radius in points, and the corners the page
 /// reaches; and the pixel ratio it reports.
 #[derive(Deserialize, Clone, Copy, Debug, PartialEq)]
 pub struct Screen {
     pub width: f64,
+    pub height: f64,
     pub radius: f64,
     pub corners: Corners,
     pub dpr: Option<f64>,
@@ -96,8 +97,9 @@ pub struct Corners {
 impl Screen {
     /// What the page may send: a screen any device or Responsive has, nothing NaN or absurd.
     pub fn check(self) -> Result<Self, String> {
-        let ok = self.width.is_finite()
-            && (1.0..=10_000.0).contains(&self.width)
+        let ok = [self.width, self.height]
+            .iter()
+            .all(|side| (1.0..=10_000.0).contains(side))
             && self.radius.is_finite()
             && self.radius >= 0.0
             && self.dpr.is_none_or(|d| (1.0..=4.0).contains(&d));
@@ -109,6 +111,18 @@ impl Screen {
     pub fn zoom(&self, points: f64) -> Option<f64> {
         let zoom = points / self.width;
         (zoom.is_finite() && zoom > 0.0 && zoom <= 10.0).then_some(zoom)
+    }
+
+    /// The rect as placed: its width (rounded by the page) sets the zoom, and its height follows
+    /// from it, so the page lays out at the viewport's height as exactly as its width.
+    pub fn fit(&self, rect: Rect) -> Rect {
+        match self.zoom(rect.w) {
+            Some(zoom) => Rect {
+                h: self.height * zoom,
+                ..rect
+            },
+            None => rect,
+        }
     }
 }
 
@@ -568,7 +582,7 @@ mod tests {
     #[test]
     fn a_device_screen_reads_as_the_page_sends_it() {
         let full: Screen = serde_json::from_str(
-            r#"{"width":402,"radius":31,"corners":{"topLeft":false,"topRight":false,"bottomRight":true,"bottomLeft":true},"dpr":3}"#,
+            r#"{"width":402,"height":778,"radius":31,"corners":{"topLeft":false,"topRight":false,"bottomRight":true,"bottomLeft":true},"dpr":3}"#,
         )
         .unwrap();
         assert_eq!(full.dpr, Some(3.0));
@@ -576,16 +590,16 @@ mod tests {
         assert_eq!(full.check(), Ok(full));
         // Responsive: no pixel ratio of its own.
         let bare: Screen = serde_json::from_str(
-            r#"{"width":1280,"radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
+            r#"{"width":1280,"height":800,"radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
         )
         .unwrap();
         assert_eq!(bare.check().map(|s| s.dpr), Ok(None));
         // What JSON can't say (NaN, Infinity) the page can't send: a missing width is no screen.
         for no in [
             r#"{"radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
-            r#"{"width":"1","radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
-            r#"{"width":NaN,"radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
-            r#"{"width":400,"radius":0,"corners":{"topLeft":true},"dpr":null}"#,
+            r#"{"width":"1","height":800,"radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
+            r#"{"width":NaN,"height":800,"radius":0,"corners":{"topLeft":true,"topRight":true,"bottomRight":true,"bottomLeft":true},"dpr":null}"#,
+            r#"{"width":400,"height":800,"radius":0,"corners":{"topLeft":true},"dpr":null}"#,
         ] {
             assert!(serde_json::from_str::<Screen>(no).is_err(), "{no}");
         }
@@ -606,8 +620,9 @@ mod tests {
         };
         let at = |width, radius, dpr| Screen {
             width,
-            radius,
+            height: 778.0,
             corners,
+            radius,
             dpr,
         };
         for bad in [
@@ -623,9 +638,19 @@ mod tests {
             assert!(bad.check().is_err(), "{bad:?}");
         }
         let s = at(402.0, 31.0, Some(3.0));
-        // A view 300.5 points wide, rounded to the half point, still lays out at 402.
+        // A view 300.5 points wide, rounded to the half point, still lays out at 402 × 778.
         let zoom = s.zoom(300.5).unwrap();
         assert!((300.5 / zoom - 402.0).abs() < 1e-9);
+        let placed = s.fit(Rect {
+            x: 10.0,
+            y: 20.0,
+            w: 300.5,
+            h: 581.0,
+        });
+        assert_eq!((placed.x, placed.y, placed.w), (10.0, 20.0, 300.5));
+        assert!((placed.h / zoom - 778.0).abs() < 1e-9, "{placed:?}");
+        let flat = Screen { height: 0.0, ..s };
+        assert!(flat.check().is_err());
         assert_eq!(s.zoom(0.0), None);
         assert_eq!(s.zoom(f64::INFINITY), None);
     }

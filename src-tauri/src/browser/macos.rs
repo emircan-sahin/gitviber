@@ -826,6 +826,7 @@ fn log_process(web: &WKWebView, what: &str) {
 pub fn place(id: &str, rect: Rect, screen: Option<Screen>) -> Res<()> {
     main_thread()?;
     let screen = screen.map(Screen::check).transpose()?;
+    let rect = screen.map_or(rect, |s| s.fit(rect));
     let v = view(id).ok_or(GONE)?;
     let page = app_page(&v.host).ok_or(GONE)?;
     let parent = unsafe { v.host.superview() }.ok_or(GONE)?;

@@ -42,17 +42,20 @@ test("the page gets the screen less its status bar and home indicator, rounded w
   assert.deepEqual(side.corners, { topLeft: false, topRight: true, bottomRight: true, bottomLeft: false });
 });
 
-test("the page lays out at its viewport's width once its rect is rounded to half points", () => {
+test("the page lays out at its viewport's width and height once its rect is rounded to half points", () => {
   const half = (v: number) => Math.round(v * 2) / 2;
   const d = DEVICES.find((x) => x.name === "iPhone 16 Pro")!;
   const bad: string[] = [];
   for (const ui of [0.9, 1, 1.1, 1.25]) {
     for (let h = 300; h < 900; h++) {
       const f = fit(d, false, { w: 2000, h });
-      // As browser/macos.rs zooms it: the placed width over the viewport's.
+      // As browser/macos.rs zooms and sizes it: the placed width over the viewport's, and the
+      // height from that zoom rather than rounded on its own (which gave 777 for 778).
       const placed = half(f.page.w * ui);
       const zoom = placed / f.viewport.w;
-      if (Math.abs(placed / zoom - d.w) > 1e-9 || Math.abs(zoom - f.scale * ui) > 0.01) bad.push(`ui ${ui}, area h ${h}`);
+      const height = f.viewport.h * zoom;
+      const off = Math.abs(placed / zoom - d.w) > 1e-9 || Math.abs(height / zoom - f.viewport.h) > 1e-9 || Math.abs(height - f.page.h * ui) > 0.5;
+      if (off || Math.abs(zoom - f.scale * ui) > 0.01) bad.push(`ui ${ui}, area h ${h}`);
     }
   }
   assert.deepEqual(bad.slice(0, 3), []);
