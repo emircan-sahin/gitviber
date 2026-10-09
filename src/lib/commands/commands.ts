@@ -169,9 +169,9 @@ export const COMMANDS = [
   { id: "browser.forward", title: "Go Forward", category: "Browser", keys: ["cmd+]"], local: "the browser" },
   // As Safari's; where WebKit can't open it from here, the page's menu has Inspect Element.
   { id: "browser.inspect", title: "Show Web Inspector", category: "Browser", keys: ["alt+cmd+i"], local: "the browser" },
-  // As Chrome's device toolbar; the last device comes back.
   // As Chrome's inspect-element key: picks an element to tell an agent about.
   { id: "browser.pick", title: "Pick an Element for the Agent", category: "Browser", keys: ["shift+cmd+c"], local: "the browser" },
+  // As Chrome's device toolbar; the last device comes back.
   { id: "browser.toggleDevice", title: "Toggle Device Mode", category: "Browser", keys: ["shift+cmd+m"], local: "the browser" },
   { id: "browser.clearData", title: "Clear Browsing Data…", category: "Browser", keys: [] },
   { id: "explorer.rename", title: "Rename File", category: "Explorer", keys: ["f2"], local: "the explorer" },

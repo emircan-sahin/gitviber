@@ -60,10 +60,10 @@ export const RESPONSIVE_MAX = 3000;
 
 const NONE: Insets = { top: 0, right: 0, bottom: 0, left: 0 };
 
-/** The device a choice names; Responsive is a bare screen of its size. Null for a name no longer known. */
 /** A Responsive side, whole CSS px in bounds, wherever it comes from (a field, a drag, storage). */
 export const clampSide = (n: number) => Math.round(Math.min(RESPONSIVE_MAX, Math.max(RESPONSIVE_MIN, n)));
 
+/** The device a choice names; Responsive is a bare screen of its size. Null for a name no longer known. */
 export function deviceOf(choice: DeviceChoice): Device | null {
   if (choice.name !== RESPONSIVE) return DEVICES.find((d) => d.name === choice.name) ?? null;
   const [w, h] = [clampSide(choice.w ?? RESPONSIVE_SIZE.w), clampSide(choice.h ?? RESPONSIVE_SIZE.h)];

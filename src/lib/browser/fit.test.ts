@@ -49,7 +49,7 @@ test("the page lays out at its viewport's width and height once its rect is roun
   for (const ui of [0.9, 1, 1.1, 1.25]) {
     for (let h = 300; h < 900; h++) {
       const f = fit(d, false, { w: 2000, h });
-      // As browser/macos.rs zooms and sizes it: the placed width over the viewport's, and the
+      // As browser/macos/ zooms and sizes it: the placed width over the viewport's, and the
       // height from that zoom rather than rounded on its own (which gave 777 for 778).
       const placed = half(f.page.w * ui);
       const zoom = placed / f.viewport.w;
