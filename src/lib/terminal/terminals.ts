@@ -32,7 +32,7 @@ import { paneKeys } from "./keys";
 import { forgetFind, watchFind } from "./find";
 import { endHints, toggleHints } from "./hints";
 import { copyFromProgram, pasteInto, pasteText } from "./pasteInput";
-import { type Direction, equalize, type Layout, neighbor, removePane, resize, type Split, splitPane } from "./layout";
+import { type Direction, equalize, type Layout, neighbor, removePane, resize, stepIn, type Split, splitPane } from "./layout";
 
 export { dismissRestore, restoreSession, resumable } from "./session";
 export { usePaneLooks } from "./agents";
@@ -792,16 +792,17 @@ export function revealPane(id: number) {
   focusActive();
 }
 
-/** The next split pane of the open tab, wrapping around. */
+/** The next split pane of the open tab by number, wrapping around; the pane it went to. */
 export function stepPane(dir: 1 | -1) {
   const g = activeGroup();
-  if (!g || g.panes.length < 2) return;
-  const at = g.panes.findIndex((p) => p.id === g.focused);
-  focusPane(g.panes[(at + dir + g.panes.length) % g.panes.length].id);
+  const id = g && stepIn(g.panes.map((p) => p.id), g.focused, dir);
+  if (id === undefined) return;
+  focusPane(id);
   focusActive();
+  return id;
 }
 
-/** The open tab's pane on that side of the focused one (⇧⌘ or ⌥⌘ arrows), as drawn: a pane's minimum size can outweigh its saved share. */
+/** The open tab's pane on that side of the focused one (⌥⌘ arrows), as drawn: a pane's minimum size can outweigh its saved share. */
 export function focusToward(dir: Direction) {
   const g = activeGroup();
   if (!g) return;
@@ -810,6 +811,7 @@ export function focusToward(dir: Direction) {
   if (id === undefined) return;
   focusPane(id);
   focusActive();
+  return id;
 }
 
 /** A divider dragged: the new sizes of the split at `path` (layout.ts resize), kept for the session save. */

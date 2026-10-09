@@ -10,8 +10,14 @@ export interface Split {
 
 export type Direction = "left" | "right" | "up" | "down";
 
-/** The panes in reading order: what ⌥⌘←/→ step through, and the order a tab lists them in. */
+/** The panes in reading order: how they're numbered, what ⇧⌘←/→ step through, and the order a tab lists them in. */
 export const leaves = (l: Layout): number[] => (typeof l === "number" ? [l] : l.children.flatMap(leaves));
+
+/** The pane one step from `from` in `order`, past either end to the other, as pages turn. */
+export function stepIn(order: number[], from: number, dir: 1 | -1): number | undefined {
+  const at = order.indexOf(from);
+  return order.length < 2 || at < 0 ? undefined : order[(at + dir + order.length) % order.length];
+}
 
 /** Panes side by side at equal widths: a tab saved before splits went both ways. */
 export const row = (ids: number[]): Layout => (ids.length === 1 ? ids[0] : { dir: "row", children: ids, sizes: ids.map(() => 100 / ids.length) });

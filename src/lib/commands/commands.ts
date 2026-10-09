@@ -137,12 +137,12 @@ export const COMMANDS = [
   { id: "terminal.splitDown", title: "Split Terminal Down", category: "Terminal", keys: ["shift+cmd+d"], keysOther: ["alt+shift+cmd+d"], local: "the terminal", noRepeat: true },
   { id: "terminal.clear", title: "Clear Terminal", category: "Terminal", keys: ["cmd+k"], keysOther: ["shift+cmd+k"], local: "the terminal" },
   { id: "terminal.close", title: "Close Terminal Pane", category: "Terminal", keys: ["cmd+w"], keysOther: ["shift+cmd+w"], local: "the terminal" },
-  // ⌥⌘arrows went to the pane on that side, as in cmux; in one row it's the same pane.
-  { id: "terminal.prevPane", title: "Previous Terminal Pane", category: "Terminal", keys: [], keysOther: ["ctrl+alt+left"], local: "the terminal" },
-  { id: "terminal.nextPane", title: "Next Terminal Pane", category: "Terminal", keys: [], keysOther: ["ctrl+alt+right"], local: "the terminal" },
+  // ⇧⌘←/→ page through the panes by their numbers, wrapping; ⌥⌘arrows go by side, as in cmux.
+  { id: "terminal.prevPane", title: "Previous Terminal Pane", category: "Terminal", keys: ["shift+cmd+left"], keysOther: ["ctrl+alt+left"], local: "the terminal" },
+  { id: "terminal.nextPane", title: "Next Terminal Pane", category: "Terminal", keys: ["shift+cmd+right"], keysOther: ["ctrl+alt+right"], local: "the terminal" },
   // Unbound elsewhere: Ctrl+Shift+arrows select by word in shells (PSReadLine), GNOME takes Ctrl+Alt+Shift+arrows, and Alt+arrows move by word.
-  { id: "terminal.focusLeft", title: "Focus Terminal Pane Left", category: "Terminal", keys: ["shift+cmd+left", "alt+cmd+left"], keysOther: [], local: "the terminal" },
-  { id: "terminal.focusRight", title: "Focus Terminal Pane Right", category: "Terminal", keys: ["shift+cmd+right", "alt+cmd+right"], keysOther: [], local: "the terminal" },
+  { id: "terminal.focusLeft", title: "Focus Terminal Pane Left", category: "Terminal", keys: ["alt+cmd+left"], keysOther: [], local: "the terminal" },
+  { id: "terminal.focusRight", title: "Focus Terminal Pane Right", category: "Terminal", keys: ["alt+cmd+right"], keysOther: [], local: "the terminal" },
   { id: "terminal.focusUp", title: "Focus Terminal Pane Above", category: "Terminal", keys: ["shift+cmd+up", "alt+cmd+up"], keysOther: [], local: "the terminal" },
   { id: "terminal.focusDown", title: "Focus Terminal Pane Below", category: "Terminal", keys: ["shift+cmd+down", "alt+cmd+down"], keysOther: [], local: "the terminal" },
   // Esc stays the program's (Claude Code, vim). Elsewhere Ctrl+Enter is a program's (kitty keyboard protocol), and Ctrl+Shift+Enter zooms a pane.

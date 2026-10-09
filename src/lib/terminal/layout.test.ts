@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type Direction, equalize, type Layout, leaves, mapPanes, neighbor, type Rect, removePane, resize, row, savedLayout, splitPane, type Split } from "./layout.ts";
+import { type Direction, equalize, type Layout, leaves, mapPanes, neighbor, type Rect, removePane, resize, row, savedLayout, splitPane, type Split, stepIn } from "./layout.ts";
 
 /** Where each pane is drawn in a 1200×800 tab with 1px dividers, as the panel lays them out. */
 function drawn(l: Layout, box: Rect = { x: 0, y: 0, width: 1200, height: 800 }, out = new Map<number, Rect>()) {
@@ -28,6 +28,21 @@ test("splits go right or down, and a split already going that way takes one more
   l = splitPane(l, 2, 4, "col");
   assert.deepEqual(l, { dir: "row", children: [1, 3, { dir: "col", children: [2, 4], sizes: [50, 50] }], sizes: [25, 25, 50] });
   assert.deepEqual(leaves(l), [1, 3, 2, 4]);
+});
+
+test("the numbered panes step in reading order and wrap past either end, as pages turn", () => {
+  // Left column top and bottom, then the right one: 1, 2, 3.
+  const order = leaves({ dir: "row", children: [{ dir: "col", children: [7, 4], sizes: [50, 50] }, 9], sizes: [50, 50] });
+  assert.deepEqual(order, [7, 4, 9]);
+  assert.deepEqual([7, 4, 9].map((id) => stepIn(order, id, 1)), [4, 9, 7]);
+  assert.deepEqual([7, 4, 9].map((id) => stepIn(order, id, -1)), [9, 7, 4]);
+  // One pane, or one that isn't in the tab: nowhere to go.
+  assert.equal(stepIn([7], 7, 1), undefined);
+  assert.equal(stepIn(order, 5, 1), undefined);
+  // Round the whole tab and back to where it started.
+  let at = 4;
+  for (let i = 0; i < order.length; i++) at = stepIn(order, at, -1)!;
+  assert.equal(at, 4);
 });
 
 test("closing a pane gives its space to the rest in proportion, and a split left with one pane gives way to it", () => {
