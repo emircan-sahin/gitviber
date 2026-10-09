@@ -6,8 +6,14 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+## [0.1.13] - 2026-10-09
+
 ### Added
 
+- **Ask Agent from a guided review.** Each section, each risk and the whole change start a new Claude Code session in the worktree's terminal with that part of the review in its prompt box: write your question and it's sent with it, or Skip to ask it there. The session opens in the worktree where the change is checked out, so the agent can fix the files; the button's menu pastes into the agent already running instead, or copies it.
+- **Find Risks** lists a change's concrete problems beside its guided review, most severe first: wrong logic, edge cases, races, security and data loss.
+- **A guided review of what isn't committed yet,** from the ✦ in the Changes summary or the palette: staged, unstaged and new files, without touching the index.
+- **Guided Review from a pull request's menu,** whatever is checked out; a push to the pull request marks the review outdated.
 - **A browser in a tab.** `⇧⌘B` or the globe in the top bar opens a web page beside the code: an address bar that takes `localhost:3000` as typed, back, forward and reload, the Web Inspector on `⌥⌘I`, and its own cookies and storage, apart from the app's. On Linux a tab shows localhost pages only.
 - **Open a dev server's port from the terminal.** A terminal pane's right-click menu lists the ports its programs listen on, and the address bar lists every port the worktree's terminals serve.
 - **Device mode (`⇧⌘M`).** Eleven phones and tablets drawn around the page, notch, corners and bezel included, upright or turned, or Responsive at any size you drag it to; the page gets the device's width, pixel ratio and user agent.
@@ -25,10 +31,14 @@ on GitHub are its section below.
 
 - **`⇧⌘←` / `⇧⌘→` page through a split's panes by number,** wrapping around from the last to the first. `⌥⌘` arrows, and `⇧⌘↑` / `⇧⌘↓`, still move to the pane on that side.
 - **The Agents menu groups agents by terminal tab,** the tab with an agent that needs you first, and shows which pane of a split each one runs in (2 / 3) with the pane's name.
+- **Explain Commit and Guided Review show for everyone,** not only with commit message suggestions turned on.
+- **The Updates page checks for an update when it opens,** while automatic checks are on.
+- **Esc in an empty explorer search goes back to the files,** after the first Esc clears it.
 
 ### Fixed
 
 - **A merge tool that fails leaves no copies behind** in the temp folder.
+- **Inline code on a see-through window** is a tint of the text instead of a white chip on light themes.
 
 ## [0.1.12] - 2026-10-08
 
@@ -564,7 +574,8 @@ with `.deb`, `.rpm` and AppImage builds for Linux.
   repository from the welcome screen.
 - Help → Show Logs and Copy Diagnostics for bug reports. No telemetry.
 
-[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.12...HEAD
+[Unreleased]: https://github.com/emircan-sahin/gitviber/compare/v0.1.13...HEAD
+[0.1.13]: https://github.com/emircan-sahin/gitviber/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/emircan-sahin/gitviber/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/emircan-sahin/gitviber/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/emircan-sahin/gitviber/compare/v0.1.9...v0.1.10
