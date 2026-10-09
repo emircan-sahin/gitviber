@@ -39,6 +39,11 @@ export function BrowserSection() {
           />
         </Field>
       </Group>
+      <Group title="Console">
+        <Field label="Keep the page's console" hint="A browser tab keeps what its page logs as errors and warnings, shows how many, and sends the errors to the worktree's agent on request. Off, pages load without it.">
+          <Switch checked={s.browserConsole} onChange={(v) => updateSettings({ browserConsole: v })} />
+        </Field>
+      </Group>
       <Group title="Agents">
         <Field
           label="Reload when an agent finishes"
