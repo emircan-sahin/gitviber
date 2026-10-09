@@ -6,6 +6,7 @@ import { isNote, type ReviewNote } from "../review/notes";
 import { type HueChoice, isHueChoice } from "../git/worktrees";
 import { isPageUrl } from "../browser/url";
 import { isDeviceChoice } from "../browser/devices";
+import { isScheme, isZoom } from "../browser/look";
 
 /** What a worktree's window looked like, so reopening the app picks up where it was. */
 interface WorkspaceSnapshot {
@@ -63,11 +64,11 @@ export function loadWorkspace(root: string): WorkspaceSnapshot | null {
       return null;
     }
   };
-  // A browser tab with a device this build can't read shows its page as itself.
+  // A browser tab with a device, zoom or scheme this build can't read shows its page as itself.
   const clean = (sel: Selection): Selection => {
-    if (sel.kind !== "browser" || sel.device === undefined || isDeviceChoice(sel.device)) return sel;
-    const { device: _, ...rest } = sel;
-    return rest;
+    if (sel.kind !== "browser") return sel;
+    const { device, zoom, scheme, ...rest } = sel;
+    return { ...rest, ...(isDeviceChoice(device) && { device }), ...(isZoom(zoom) && { zoom }), ...(isScheme(scheme) && { scheme }) };
   };
   const tabs = s.tabs.flatMap((t) => {
     const sel = typeof t?.sel?.kind === "string" ? clean(t.sel) : t?.sel;

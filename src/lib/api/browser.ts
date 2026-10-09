@@ -113,6 +113,12 @@ export const browserApi = {
   focus: (id: string, page: boolean) => invoke<void>("browser_focus", { id, page }),
   /** The page as it shows, a JPEG data URL; null when there's none. */
   snapshot: (id: string) => invoke<string | null>("browser_snapshot", { id }),
+  /** The next match of `text` in the page (or the one before): whether there was one; null where WebKit can't find. */
+  find: (id: string, text: string, backwards: boolean, caseSensitive: boolean) => invoke<boolean | null>("browser_find", { id, text, backwards, caseSensitive }),
+  /** The page's zoom outside device mode, 1 for 100%. */
+  zoom: (id: string, zoom: number) => invoke<void>("browser_zoom", { id, zoom }),
+  /** The page light or dark (`prefers-color-scheme` follows), or as the app (null). */
+  appearance: (id: string, dark: boolean | null) => invoke<void>("browser_appearance", { id, dark }),
   /** Web Inspector for the page; false where it can't be opened from here. */
   inspect: (id: string) => invoke<boolean>("browser_inspect", { id }),
   /** The chords bound to the app's commands: only these leave a page (keys.rs). */

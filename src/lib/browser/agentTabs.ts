@@ -4,6 +4,7 @@ import type { Selection } from "../repo/selection";
 import { createStore } from "../store";
 import { paneLabel } from "../terminal/terminals";
 import type { DeviceChoice } from "./devices";
+import type { Scheme } from "./look";
 
 // Tabs an agent opened with `gitviber browser` (browser/macos/agent.rs), and the devices it showed
 // them as, for the workspace they belong to (`root`: the folder its pane opened in, as pty.rs
@@ -23,10 +24,15 @@ listenHere<{ id: string; url: string; root: string; pty: number }>("browser-open
 /** The terminal (pty) whose agent opened tab `id`; undefined for the user's own tabs. */
 export const useAgentPty = (id: string) => owners.use().get(id);
 
-const devices = createStore<ReadonlyMap<string, DeviceChoice | null>>(new Map());
-listenHere<{ id: string; device: DeviceChoice | null }>("browser-device", ({ payload: { id, device } }) => devices.set(new Map(devices.get()).set(id, device))).catch(() => {});
+// What agents changed of their tabs' looks, by tab id, until the tab takes it in: a device, or
+// light or dark (null: back to none).
+type Asked = { device?: DeviceChoice | null; scheme?: Scheme | null };
+const asked = createStore<ReadonlyMap<string, Asked>>(new Map());
+const ask = (id: string, change: Asked) => asked.set(new Map(asked.get()).set(id, { ...asked.get().get(id), ...change }));
+listenHere<{ id: string; device: DeviceChoice | null }>("browser-device", ({ payload: { id, device } }) => ask(id, { device })).catch(() => {});
+listenHere<{ id: string; dark: boolean | null }>("browser-appearance", ({ payload: { id, dark } }) => ask(id, { scheme: dark === null ? null : dark ? "dark" : "light" })).catch(() => {});
 
-/** `root`'s agent tabs added as they come, and its tabs' devices as their agents choose them. */
+/** `root`'s agent tabs added as they come, and its tabs' devices and schemes as their agents choose them. */
 export function useAgentTabs(root: string, tabs: readonly { key: string; sel: Selection }[], add: (sel: Selection) => void, update: (key: string, sel: Selection) => void) {
   const waiting = opened.use();
   useEffect(() => {
@@ -36,17 +42,17 @@ export function useAgentTabs(root: string, tabs: readonly { key: string; sel: Se
     for (const o of mine) add(o.sel);
   }, [waiting, root, add]);
 
-  const chosen = devices.use();
+  const chosen = asked.use();
   useEffect(() => {
     const next = new Map(chosen);
     for (const { key, sel } of tabs) {
-      if (sel.kind !== "browser" || !next.has(sel.id)) continue;
-      const device = next.get(sel.id);
+      const change = sel.kind === "browser" && next.get(sel.id);
+      if (!change || sel.kind !== "browser") continue;
       next.delete(sel.id);
-      const { device: _, ...rest } = sel;
-      update(key, device ? { ...rest, device } : rest);
+      const { device, scheme, ...rest } = { ...sel, ...change };
+      update(key, { ...rest, ...(device && { device }), ...(scheme && { scheme }) });
     }
-    if (next.size !== chosen.size) devices.set(next);
+    if (next.size !== chosen.size) asked.set(next);
   }, [chosen, tabs, update]);
 }
 

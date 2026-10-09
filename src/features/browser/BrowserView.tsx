@@ -1,4 +1,4 @@
-import { Crosshair, type LucideIcon, TabletSmartphone } from "lucide-react";
+import { Crosshair, type LucideIcon, Moon, Sun, SunMoon, TabletSmartphone } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
@@ -6,6 +6,7 @@ import { browserApi, type BrowserGo, errorMessage, github } from "@/lib/api";
 import { failed, toast } from "@/lib/app/toast";
 import { onBrowserKey, setBrowserState, useBrowserState, useParks } from "@/lib/browser/store";
 import { RESPONSIVE } from "@/lib/browser/devices";
+import { type Scheme, zoomLabel } from "@/lib/browser/look";
 import { BLANK, isFrameable, pageLabel } from "@/lib/browser/url";
 import { type CommandId, commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { IS_LINUX } from "@/lib/platform";
@@ -21,6 +22,9 @@ import { useDevice } from "./useDevice";
 import { useDeviceFit } from "./useDeviceFit";
 import { useNativeRect } from "./useNativeRect";
 import { usePicker } from "./usePicker";
+import { FindBar, useFindInPage } from "./FindBar";
+import { usePageLook } from "./usePageLook";
+import { useFind } from "@/lib/ui/find";
 
 type BrowserSelection = Extract<Selection, { kind: "browser" }>;
 
@@ -33,7 +37,20 @@ interface Props {
 
 /** The tab's own keys, in its address bar or its page; the GO ones go to the page. */
 const GO = { "browser.reload": "reload", "browser.back": "back", "browser.forward": "forward" } as const satisfies Record<string, BrowserGo>;
-const OWN = ["browser.focusAddress", "browser.inspect", "browser.toggleDevice", "browser.pick", ...(Object.keys(GO) as (keyof typeof GO)[])] as const;
+const OWN = [
+  "browser.focusAddress",
+  "browser.inspect",
+  "browser.toggleDevice",
+  "browser.pick",
+  "browser.find",
+  "browser.findNext",
+  "browser.findPrev",
+  "browser.zoomIn",
+  "browser.zoomOut",
+  "browser.zoomReset",
+  ...(Object.keys(GO) as (keyof typeof GO)[]),
+] as const;
+type Own = Exclude<(typeof OWN)[number], keyof typeof GO>;
 
 const TOO_SMALL = "Too little room to show the device";
 
@@ -73,6 +90,8 @@ function NativePage(props: Props) {
   const capture = useSettings().browserConsole;
   const [consoleOpen, setConsoleOpen] = useState(false);
   const { picking, pick, toggle: togglePick, closeNote } = usePicker(id);
+  const find = useFindInPage(id);
+  const look = usePageLook(tabKey, sel, onUpdate, made);
 
   // On the first show and after each park, on its own id: where it loads next is the page's business.
   useEffect(() => {
@@ -125,22 +144,10 @@ function NativePage(props: Props) {
       .inspect(id)
       .then((opened) => opened || toast("info", "Web Inspector", "Right-click the page and choose Inspect Element."))
       .catch(failed("Could not open Web Inspector"));
-  useCommands({ "browser.inspect": made ? inspect : undefined, "browser.toggleDevice": made ? toggle : undefined, "browser.pick": made ? togglePick : undefined });
-
-  // The page's keys arrive through onBrowserKey, registered once: the latest toggles are read here.
-  const toggleRef = useRef(toggle);
-  toggleRef.current = toggle;
-  const pickRef = useRef(togglePick);
-  pickRef.current = togglePick;
-  /** One of the tab's own keys, run; false for any other key. */
-  const runOwn = (e: KeyboardEvent) => {
-    const command = commandIn(OWN, e);
-    if (!command) return false;
-    if (command === "browser.inspect") inspect();
-    else if (command === "browser.toggleDevice") toggleRef.current();
-    else if (command === "browser.pick") pickRef.current();
-    else if (command !== "browser.focusAddress") void browserApi.go(id, GO[command]).catch(() => {});
-    else {
+  // Device mode zooms the page to fit, so its own zoom waits until that's off.
+  const zoomBy = (by: -1 | 0 | 1) => !choice && look.zoomBy(by);
+  const own: Record<Own, () => void> = {
+    "browser.focusAddress": () =>
       // Keys come back to this page first, or they'd still go to the page's view.
       void browserApi
         .focus(id, false)
@@ -148,8 +155,30 @@ function NativePage(props: Props) {
         .then(() => {
           field.current?.focus();
           field.current?.select();
-        });
-    }
+        }),
+    "browser.inspect": inspect,
+    "browser.toggleDevice": toggle,
+    "browser.pick": togglePick,
+    "browser.find": find.show,
+    "browser.findNext": () => find.step(false),
+    "browser.findPrev": () => find.step(true),
+    "browser.zoomIn": () => zoomBy(1),
+    "browser.zoomOut": () => zoomBy(-1),
+    "browser.zoomReset": () => zoomBy(0),
+  };
+  useCommands(made ? own : {});
+  // Find from the menu, or with focus elsewhere in the code view, finds in the page.
+  useFind("code", made ? find.show : null);
+
+  // The page's keys arrive through onBrowserKey, registered once: the latest actions are read here.
+  const ownRef = useRef(own);
+  ownRef.current = own;
+  /** One of the tab's own keys, run; false for any other key. */
+  const runOwn = (e: KeyboardEvent) => {
+    const command = commandIn(OWN, e);
+    if (!command) return false;
+    if (command in GO) void browserApi.go(id, GO[command as keyof typeof GO]).catch(() => {});
+    else ownRef.current[command as Own]();
     return true;
   };
   // runOwn reads only the id and refs.
@@ -184,11 +213,14 @@ function NativePage(props: Props) {
           <>
             <ToolToggle tool={PICK} on={picking} onToggle={togglePick} />
             {capture && <ConsoleBadge id={id} open={consoleOpen} onToggle={() => setConsoleOpen((o) => !o)} />}
+            {!choice && look.zoom !== 1 && <ZoomChip zoom={look.zoom} onReset={() => look.zoomBy(0)} />}
+            <SchemeToggle scheme={look.scheme} onCycle={look.cycleScheme} />
             <ToolToggle tool={DEVICE} on={!!choice} onToggle={toggle} />
           </>
         }
       />
       {choice && device && <DeviceBar choice={choice} device={device} viewport={fitted?.viewport ?? null} dpr={dpr} onChoice={choose} />}
+      {find.open && <FindBar find={find} />}
       {pick && <PickNote pick={pick} device={device && fitted && { name: device.name, viewport: fitted.viewport }} root={root} onClose={closeNote} />}
       {capture && consoleOpen && <ConsolePanel id={id} root={root} onClose={() => setConsoleOpen(false)} />}
       <div ref={area} tabIndex={-1} className="relative min-h-0 flex-1 bg-background outline-none">
@@ -295,6 +327,35 @@ interface Tool {
 
 const PICK: Tool = { command: "browser.pick", icon: Crosshair, label: "Pick an element", on: "Stop picking (Esc)", off: "Pick an element for the agent" };
 const DEVICE: Tool = { command: "browser.toggleDevice", icon: TabletSmartphone, label: "Device mode", on: "Leave device mode", off: "Device mode" };
+
+/** The page's zoom when it isn't 100%; a click sets it back. */
+function ZoomChip({ zoom, onReset }: { zoom: number; onReset: () => void }) {
+  return (
+    <Tip label="Actual Size" shortcut={useShortcut("browser.zoomReset")}>
+      <Button type="button" variant="ghost" size="sm" aria-label={`Page zoom ${zoomLabel(zoom)}, reset`} onClick={onReset} className="h-6 px-1.5 font-mono text-[11px] tabular-nums">
+        {zoomLabel(zoom)}
+      </Button>
+    </Tip>
+  );
+}
+
+const SCHEMES = {
+  auto: { icon: SunMoon, label: "Page as the app (click for light)" },
+  light: { icon: Sun, label: "Page light (click for dark)" },
+  dark: { icon: Moon, label: "Page dark (click for as the app)" },
+};
+
+/** Light, dark or as the app, for the page's prefers-color-scheme. */
+function SchemeToggle({ scheme, onCycle }: { scheme: Scheme | undefined; onCycle: () => void }) {
+  const { icon: Icon, label } = SCHEMES[scheme ?? "auto"];
+  return (
+    <Tip label={label}>
+      <Button type="button" variant="ghost" size="icon-sm" aria-label={label} onClick={onCycle} className={scheme ? "bg-active text-foreground" : undefined}>
+        <Icon />
+      </Button>
+    </Tip>
+  );
+}
 
 /** One of the page's tools on or off, in the address bar. */
 function ToolToggle({ tool, on, onToggle }: { tool: Tool; on: boolean; onToggle: () => void }) {
