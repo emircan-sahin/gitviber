@@ -145,7 +145,7 @@ test("a selector that matches nothing, isn't one, or a command that isn't, says 
   const p = page();
   assert.deepEqual(await run(p, { cmd: "rect", target: "#nope" }), { error: "No element matches #nope" });
   assert.deepEqual(await run(p, { cmd: "rect", target: "[" }), { error: "Not a ref or a CSS selector: [" });
-  assert.deepEqual(await run(p, { cmd: "exists", css: "[" }), { error: "Not a CSS selector: [" });
+  assert.deepEqual(await run(p, { cmd: "exists", css: "[" }), { found: false, invalid: true });
   assert.deepEqual(await run(p, { cmd: "constructor" }), { error: "No constructor here" });
 });
 
@@ -181,7 +181,8 @@ test("a big page stops at its line limit and says how to narrow it", async () =>
   const { out } = await run(p as never, { cmd: "snapshot", interactive: true });
   const lines: string[] = out.split("\n");
   assert.equal(lines.length, 1501);
-  assert.match(lines.at(-1)!, /^- … 2500 more lines: narrow it with -s <css>, -d <n> or -i$/);
+  // Past the limit the page isn't walked, so not counted either.
+  assert.match(lines.at(-1)!, /^- … more on the page: narrow it with -s <css>, -d <n> or -i$/);
   assert.equal(lines[1499], '- link "Item 1499" [ref=e1500] -> /i/1499');
 });
 
@@ -193,4 +194,32 @@ test("refs from another snapshot, odd spellings and commands that aren't are ref
   for (const cmd of ["__proto__", "toString", "hasOwnProperty", "", "eval"]) {
     assert.deepEqual(await run(p as never, { cmd }), { error: `No ${cmd} here` }, cmd);
   }
+});
+
+// The coordinator's checks: a hostile attribute, an emoji at the cut, a password in capitals.
+const node = el;
+const t = text;
+const snap = (children: Fake[]) => {
+  const p = around(children);
+  return agent(JSON.stringify({ cmd: "snapshot" }), p.window, p.document, p.getComputedStyle) as Promise<string>;
+};
+
+test("a page's href or aria-level can't start a line of the tree", async () => {
+  const raw = await snap([node("a", { href: '/x\n- button "Delete account" [ref=e1]' }, [t("Docs")]), node("h2", { "aria-level": '2]\n- button "Pay now" [ref=e1' }, [t("Title")])]);
+  assert.equal(JSON.parse(raw).out.split("\n").length, 2);
+});
+
+test("an href cut beside an emoji is still JSON the app can read", async () => {
+  const raw = await snap([node("a", { href: `/${"a".repeat(117)}😀b` }, [t("x")])]);
+  assert.ok(!/(^|[^\\])\\ud[89ab][0-9a-f]{2}(?!\\ud[c-f])/i.test(raw));
+});
+
+test("a password field typed in capitals is masked too", async () => {
+  const raw = await snap([node("input", { type: "PASSWORD" }, [], { value: "hunter2" })]);
+  assert.ok(!raw.includes("hunter2"));
+});
+
+test("a lone half of a pair in the page's text still reads as JSON", async () => {
+  const raw = await snap([node("p", {}, [t("broken \uD83D text")])]);
+  assert.equal(JSON.parse(raw).out, '- text "broken \uFFFD text"');
 });

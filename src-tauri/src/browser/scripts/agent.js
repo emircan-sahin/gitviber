@@ -17,8 +17,13 @@ const SKIP = new Set(["script", "style", "noscript", "template", "head", "svg", 
 // What a clickable div may hold that an agent acts on by itself: then it's no leaf.
 const ACTIONABLE = "a[href], button, input, select, textarea, [role=button], [role=link], [role=checkbox], [role=tab]";
 
-const flat = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
-const cut = (s, n = NAME) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
+const flat = (s) => String(s ?? "").toWellFormed().replace(/\s+/g, " ").trim();
+// Never through a pair: half of one is no JSON the app reads.
+const cut = (s, n = NAME) => {
+  if (s.length <= n) return s;
+  const end = /[\uD800-\uDBFF]/.test(s[n - 2]) ? n - 2 : n - 1;
+  return `${s.slice(0, end)}…`;
+};
 const quote = (s) => JSON.stringify(s);
 
 function roleOf(el) {
@@ -59,14 +64,17 @@ function nameOf(el, byText) {
 
 function valueOf(el) {
   if (el.localName === "select") return flat(el.options?.[el.selectedIndex]?.textContent);
-  if (el.getAttribute("type") === "password") return el.value ? "•".repeat(Math.min(el.value.length, 8)) : "";
+  if ((el.getAttribute("type") ?? "").toLowerCase() === "password") return el.value ? "•".repeat(Math.min(el.value.length, 8)) : "";
   return "value" in el && typeof el.value === "string" ? el.value : flat(el.textContent);
 }
 
 /** One line of the tree: role, name, ref, and what an agent needs to know of its state. */
 function line(el, role, name, ref) {
   let out = `- ${role}${name ? ` ${quote(cut(name))}` : ""}`;
-  if (role === "heading") out += ` [level=${el.getAttribute("aria-level") ?? el.localName.slice(1)}]`;
+  if (role === "heading") {
+    const level = el.getAttribute("aria-level");
+    out += ` [level=${/^\d{1,2}$/.test(level ?? "") ? level : /^h[1-6]$/.test(el.localName) ? el.localName[1] : "?"}]`;
+  }
   if (ref) out += ` [ref=${ref}]`;
   if (el.checked === true || el.getAttribute("aria-checked") === "true") out += " [checked]";
   if (el.disabled === true || el.getAttribute("aria-disabled") === "true") out += " [disabled]";
@@ -74,7 +82,7 @@ function line(el, role, name, ref) {
   if (expanded) out += expanded === "true" ? " [expanded]" : " [collapsed]";
   if (el.getAttribute("aria-selected") === "true") out += " [selected]";
   if (role === "textbox" || role === "searchbox" || role === "combobox" || role === "spinbutton" || role === "slider") out += ` value=${quote(cut(valueOf(el)))}`;
-  if (role === "link") out += ` -> ${cut(el.getAttribute("href") ?? "", 120)}`;
+  if (role === "link") out += ` -> ${cut(flat(el.getAttribute("href")), 120)}`;
   return out;
 }
 
@@ -83,10 +91,14 @@ function snapshot({ interactive = false, scope = null, depth = null }) {
   if (!root) throw new Error(`No element matches ${scope}`);
   state.refs = new Map();
   const lines = [];
-  let more = 0;
-  const emit = (level, text) => (lines.length < LINES ? lines.push(`${"  ".repeat(interactive ? 0 : level)}${text}`) : more++);
+  let full = false;
+  const emit = (level, text) => {
+    if (lines.length < LINES) lines.push(`${"  ".repeat(interactive ? 0 : level)}${text}`);
+    else full = true;
+  };
+  // Past the limit nothing more is looked at: a huge page costs no more than a big one.
   const visit = (node, level, pointer) => {
-    if (depth !== null && level > depth) return;
+    if (full || (depth !== null && level > depth)) return;
     if (node.nodeType === 3) {
       const text = interactive ? "" : flat(node.nodeValue);
       if (text) emit(level, `- text ${quote(cut(text, 200))}`);
@@ -119,7 +131,7 @@ function snapshot({ interactive = false, scope = null, depth = null }) {
     for (const child of children) visit(child, next, pointer || style.cursor === "pointer");
   };
   visit(root, 0, false);
-  if (more) lines.push(`- … ${more} more lines: narrow it with -s <css>, -d <n> or -i`);
+  if (full) lines.push("- … more on the page: narrow it with -s <css>, -d <n> or -i");
   return { out: lines.length ? lines.join("\n") : "(nothing on the page)" };
 }
 
@@ -307,7 +319,7 @@ function exists({ css }) {
   try {
     el = document.querySelector(css);
   } catch {
-    throw new Error(`Not a CSS selector: ${css}`);
+    return { found: false, invalid: true };
   }
   return { found: !!el && shows(el) };
 }
@@ -322,10 +334,15 @@ function rect({ target }) {
   return { rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
 }
 
+// A page's lone half of a pair would reach the app as JSON it can't read.
+function wellFormed(_key, value) {
+  return typeof value === "string" ? value.toWellFormed() : value;
+}
+
 const run = { snapshot, click, fill, type, press, select, hover, scroll, exists, hasText, rect };
 try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);
-  return JSON.stringify(run[cmd](a));
+  return JSON.stringify(run[cmd](a), wellFormed);
 } catch (e) {
-  return JSON.stringify({ error: String(e?.message ?? e) });
+  return JSON.stringify({ error: String(e?.message ?? e) }, wellFormed);
 }
