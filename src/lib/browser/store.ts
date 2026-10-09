@@ -6,7 +6,7 @@ import { getSettings, subscribeSettings } from "../settings";
 import { createStore } from "../store";
 import { onAgentFinished } from "../terminal/agents";
 
-// What the browser tabs' native views report (browser/macos.rs), and the keys they hand back.
+// What the browser tabs' native views report (browser/macos/), and the keys they hand back.
 
 const states = createStore<ReadonlyMap<string, BrowserState>>(new Map());
 
@@ -92,6 +92,18 @@ export function takePicked(id: string) {
 const logged = createStore<ReadonlyMap<string, { errors: number; warnings: number }>>(new Map());
 listenHere<{ id: string; errors: number; warnings: number }>("browser-console", ({ payload: { id, ...counts } }) => logged.set(new Map(logged.get()).set(id, counts))).catch(() => {});
 export const useLogged = (id: string) => logged.use().get(id) ?? { errors: 0, warnings: 0 };
+
+/** A closed tab's page, forgotten: its view went with it, and a reopened one starts afresh. */
+export function forgetBrowser(id: string) {
+  const drop = <V>(store: ReturnType<typeof createStore<ReadonlyMap<string, V>>>) => {
+    const next = new Map(store.get());
+    if (next.delete(id)) store.set(next);
+  };
+  drop(states);
+  drop(parks);
+  drop(picked);
+  drop(logged);
+}
 
 // Keys typed into a page that the app takes: its tab's own first, then the app's commands, as
 // if typed into this page.

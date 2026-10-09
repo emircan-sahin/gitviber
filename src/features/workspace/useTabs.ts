@@ -1,6 +1,7 @@
 import { arrayMove } from "@dnd-kit/sortable";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi, type RepoStatus } from "@/lib/api";
+import { forgetBrowser } from "@/lib/browser/store";
 import { newerCopy, useGitHubCacheVersion } from "@/lib/github/githubCache";
 import { editPath, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
 import type { loadWorkspace } from "@/lib/repo/session";
@@ -39,7 +40,11 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     const shut = tabsNow.current.flatMap((t, index) => (gone.has(t.key) ? [{ sel: t.sel, index }] : []));
     if (!shut.length) return;
     // A closed browser tab's page goes with it; reopened, it loads again.
-    for (const { sel } of shut) if (sel.kind === "browser") void browserApi.close(sel.id).catch(() => {});
+    for (const { sel } of shut) {
+      if (sel.kind !== "browser") continue;
+      void browserApi.close(sel.id).catch(() => {});
+      forgetBrowser(sel.id);
+    }
     // The leftmost comes back first, so each returns to its own place.
     setClosed((c) => [...c.filter((t) => !gone.has(selectionKey(t.sel))), ...shut.reverse()].slice(-20));
     setTabState(({ tabs: prev, active }) => {
