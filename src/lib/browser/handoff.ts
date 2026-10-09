@@ -1,4 +1,4 @@
-import { failed, toast } from "../app/toast";
+import { copyText } from "../app/clipboard";
 import { forTerminal } from "../review/notes";
 import { pasteToWorktree } from "../terminal/terminals";
 
@@ -9,7 +9,5 @@ import { pasteToWorktree } from "../terminal/terminals";
 export function toAgent(root: string, text: string) {
   const clean = forTerminal(text);
   if (pasteToWorktree(root, clean)) return;
-  void navigator.clipboard
-    .writeText(clean)
-    .then(() => toast("info", "No terminal in this worktree", "Copied instead: paste it where the agent runs."), failed("Could not copy"));
+  void copyText(clean, "No terminal in this worktree", "Copied instead: paste it where the agent runs.");
 }
