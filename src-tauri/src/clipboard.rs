@@ -133,22 +133,25 @@ pub fn keep_dropped(paths: Vec<String>) -> Vec<String> {
     paths
         .into_iter()
         .map(|p| {
-            let path = Path::new(&p);
-            if !p.contains("/TemporaryItems/") || !path.is_file() {
+            if !p.contains("/TemporaryItems/") {
                 return p;
             }
-            let name = path
-                .file_name()
-                .map_or("dropped".into(), |n| n.to_string_lossy());
-            new_paste_file(&name)
-                .and_then(|to| {
-                    std::fs::copy(path, &to)
-                        .map(|_| to)
-                        .map_err(|e| e.to_string())
-                })
-                .map_or(p.clone(), |to| to.to_string_lossy().into_owned())
+            copy_dropped(Path::new(&p)).unwrap_or(p)
         })
         .collect()
+}
+
+/// A copy of a dropped file where macOS won't take it back, named as it was.
+fn copy_dropped(path: &Path) -> Option<String> {
+    if !path.is_file() {
+        return None;
+    }
+    let name = path
+        .file_name()
+        .map_or("dropped".into(), |n| n.to_string_lossy());
+    let to = new_paste_file(&name).ok()?;
+    std::fs::copy(path, &to).ok()?;
+    Some(to.to_string_lossy().into_owned())
 }
 
 /// What ⌘V pastes into the terminal: copied files' paths first (a Finder copy also carries the
@@ -447,21 +450,21 @@ mod tests {
         );
     }
 
+    // Not in a folder named TemporaryItems of its own: macOS won't let one be removed again.
     #[test]
     fn a_screenshot_thumbnail_is_copied_before_macos_takes_it_back() {
-        let dir = std::env::temp_dir().join(format!(
-            "gv-drop-test-{}/TemporaryItems",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("gv-drop-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let shot = dir.join("Screenshot.png");
         std::fs::write(&shot, b"png").unwrap();
-        let kept = keep_dropped(vec![shot.to_string_lossy().into_owned()]);
-        assert_ne!(kept[0], shot.to_string_lossy());
-        assert!(kept[0].ends_with("-Screenshot.png"));
-        assert_eq!(std::fs::read(&kept[0]).unwrap(), b"png");
-        let _ = std::fs::remove_file(&kept[0]);
-        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        let kept = copy_dropped(&shot).unwrap();
+        assert!(kept.ends_with("-Screenshot.png"));
+        assert_eq!(std::fs::read(&kept).unwrap(), b"png");
+        let _ = std::fs::remove_file(&kept);
+        let _ = std::fs::remove_dir_all(&dir);
+        // One that's gone by now stays as it was dropped.
+        let gone = "/private/var/folders/x/T/TemporaryItems/NSIRD_screencaptureui_x/Shot.png";
+        assert_eq!(keep_dropped(vec![gone.into()]), vec![gone.to_string()]);
     }
 
     #[test]
