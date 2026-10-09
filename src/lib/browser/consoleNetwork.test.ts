@@ -57,7 +57,7 @@ test("failed fetches log as warnings or errors with the method, the address and 
   assert.deepEqual(
     p.sent.map((s) => [s.level, s.msg]),
     [
-      ["warn", "[network] POST /api/missing?x=1 → 404"],
+      ["warn", "[network] POST /api/missing?… → 404"],
       ["error", "[network] PUT /api/boom → 500"],
       ["error", "[network] GET https://other.test/data failed"],
     ],
@@ -89,4 +89,38 @@ test("XMLHttpRequest failures log too, and a long address is cut", async () => {
   assert.ok(p.sent[1].msg.length < 330, "cut");
   assert.equal(p.sent[2].msg, "[network] GET /api/z failed");
   assert.equal(p.sent.length, 3);
+});
+
+test("a fetch failure the page never handles is still an unhandled rejection", async () => {
+  const p = page([new TypeError("Load failed")]);
+  const seen: unknown[] = [];
+  const on = (e: unknown) => void seen.push(e);
+  // The test runner's own listener would count it as this test's failure: set aside meanwhile.
+  const runners = process.listeners("unhandledRejection");
+  process.removeAllListeners("unhandledRejection");
+  process.on("unhandledRejection", on);
+  void (p.window.fetch as any)("/x");
+  await settle();
+  process.off("unhandledRejection", on);
+  for (const l of runners) process.on("unhandledRejection", l);
+  assert.equal(seen.length, 1);
+});
+
+test("an XMLHttpRequest used twice logs its second failure once, under its second address", async () => {
+  const p = page([]);
+  const r = new (p.window.XMLHttpRequest as any)();
+  r.open("GET", "/a"); r.send(); r.finish("load", 200);
+  r.open("GET", "/b"); r.send(); r.finish("load", 500);
+  assert.deepEqual(p.sent.map((s) => s.msg), ["[network] GET /b → 500"]);
+});
+
+test("a token in a failed request's query isn't logged for the agent", async () => {
+  const p = page([401]);
+  await (p.window.fetch as any)("/api/me?access_token=s3cr3t&x=1").catch(() => {});
+  await settle();
+  assert.ok(!p.sent[0].msg.includes("s3cr3t"));
+  const q = page([500]);
+  await (q.window.fetch as any)("https://api.other.test/v1/x?key=k3y").catch(() => {});
+  await settle();
+  assert.equal(q.sent[0].msg, "[network] GET https://api.other.test/v1/x?… → 500");
 });

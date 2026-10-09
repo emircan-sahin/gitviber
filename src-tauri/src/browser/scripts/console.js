@@ -80,15 +80,16 @@
   window.addEventListener("error", (e) => send("error", [e.error ?? e.message], e.error?.stack ?? `${e.filename}:${e.lineno}:${e.colno}`));
   window.addEventListener("unhandledrejection", (e) => send("error", ["Unhandled rejection:", e.reason]));
 
-  // Requests that failed, as `[network] GET /api/x → 500`: the address only, never a body or a
-  // header. A 4xx is a warning; a 5xx, or no answer at all, an error. One the page aborted is no
-  // failure.
+  // Requests that failed, as `[network] GET /api/x → 500`: the address without its query, which
+  // can carry a token, and never a body or a header. A 4xx is a warning; a 5xx, or no answer at
+  // all, an error. One the page aborted is no failure.
   const where = (url) => {
     try {
       const u = new URL(url, location.href);
-      return cut(u.origin === new URL(location.href).origin ? `${u.pathname}${u.search}` : u.href, 300);
+      const path = u.origin === new URL(location.href).origin ? u.pathname : `${u.origin}${u.pathname}`;
+      return cut(`${path}${u.search ? "?…" : ""}`, 300);
     } catch {
-      return cut(String(url), 300);
+      return cut(String(url).split("?")[0], 300);
     }
   };
   const failed = (method, url, status) =>
@@ -96,23 +97,31 @@
   const fetch0 = window.fetch;
   if (typeof fetch0 === "function") {
     window.fetch = function (input, init) {
-      const result = fetch0.apply(this, arguments);
+      let request = null;
       try {
-        const method = String(init?.method ?? input?.method ?? "GET").toUpperCase();
-        const url = String(input?.url ?? input);
-        result.then(
-          (r) => r.status >= 400 && failed(method, url, r.status),
-          (e) => e?.name !== "AbortError" && failed(method, url, 0),
-        );
+        request = [String(init?.method ?? input?.method ?? "GET").toUpperCase(), String(input?.url ?? input)];
       } catch {
         // An odd argument is the page's own fetch's to refuse.
       }
-      return result;
+      // A promise of its own, passing the answer on: one the page never handles still reports as
+      // unhandled.
+      return fetch0.apply(this, arguments).then(
+        (response) => {
+          if (request && response.status >= 400) failed(...request, response.status);
+          return response;
+        },
+        (error) => {
+          if (request && error?.name !== "AbortError") failed(...request, 0);
+          throw error;
+        },
+      );
     };
   }
   const XHR = window.XMLHttpRequest;
   if (typeof XHR === "function") {
+    // Each object's request now, read as it ends: one object may be opened again and again.
     const requests = new WeakMap();
+    const watched = new WeakSet();
     const open = XHR.prototype.open;
     XHR.prototype.open = function (method, url) {
       requests.set(this, [String(method).toUpperCase(), String(url)]);
@@ -120,11 +129,12 @@
     };
     const sendRequest = XHR.prototype.send;
     XHR.prototype.send = function () {
-      const request = requests.get(this);
-      if (request) {
-        this.addEventListener("load", () => this.status >= 400 && failed(...request, this.status));
-        this.addEventListener("error", () => failed(...request, 0));
-        this.addEventListener("timeout", () => failed(...request, 0));
+      if (!watched.has(this)) {
+        watched.add(this);
+        const now = () => requests.get(this) ?? ["GET", ""];
+        this.addEventListener("load", () => this.status >= 400 && failed(...now(), this.status));
+        this.addEventListener("error", () => failed(...now(), 0));
+        this.addEventListener("timeout", () => failed(...now(), 0));
       }
       return sendRequest.apply(this, arguments);
     };
