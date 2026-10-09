@@ -68,6 +68,8 @@ export interface BrowserPick {
   url: string;
   /** Picked with ⇧ held: one of a few, the picker still on. */
   more?: boolean;
+  /** Its place among the picker's picks, from 1: a slow one may come after a later one. */
+  number?: number;
 }
 
 /** A line the page logged (browser/console.rs); "load" marks where a page began. */

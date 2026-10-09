@@ -110,6 +110,7 @@
   function start(next) {
     stop();
     nonce = next;
+    picks = 0;
     host = document.createElement("div");
     // A closed shadow root: the page's styles and scripts can't reach the outline.
     const root = host.attachShadow({ mode: "closed" });

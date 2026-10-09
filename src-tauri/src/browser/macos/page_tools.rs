@@ -270,6 +270,10 @@ fn picked(v: &View, json: &str) {
     }
     pick.url = url_text(unsafe { v.web.URL() });
     let mark = pick.nonce.clone();
+    pick.number = mark
+        .rsplit_once(':')
+        .and_then(|(_, n)| n.parse().ok())
+        .unwrap_or(0);
     let delivery = Delivery {
         id: d.id.clone(),
         app: d.app.clone(),
