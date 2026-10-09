@@ -16,10 +16,12 @@ import { openTerminal, pasteToAgent, worktreeAgent } from "@/lib/terminal/termin
 
 export type Ask = Omit<HandoffInput, "language">;
 
-function handoff(a: Ask) {
+/** What's asked: a risk's look into it, else the user's question; null leaves it to them. */
+function handoff(a: Ask, question = "") {
   const s = getSettings();
   const risk = !!a.about && "risk" in a.about;
-  return { settings: s, context: handoffContext({ ...a, language: s.reviewLanguage }), prompt: risk ? riskPrompt(a.checkedOut) : null };
+  const q = question.trim();
+  return { settings: s, context: handoffContext({ ...a, language: s.reviewLanguage }), prompt: risk ? riskPrompt(a.checkedOut) : q ? `My question: ${q}` : null };
 }
 
 /**
@@ -28,9 +30,12 @@ function handoff(a: Ask) {
  */
 const asPrompt = (context: string, prompt: string | null) => `${context}\n\n${prompt ?? "My question follows. If none does, just say in one line that you're ready, and wait for it."}`;
 
-/** In a new terminal tab of `root`: Claude Code with the review in its prompt box (a risk sent), or another CLI with it on the clipboard. */
-export async function askAgent(root: string, a: Ask) {
-  const { settings, context, prompt } = handoff(a);
+/**
+ * In a new terminal tab of `root`: Claude Code with the review in its prompt box, sent when there's
+ * a question (the user's, or a risk's), or another CLI with it on the clipboard.
+ */
+export async function askAgent(root: string, a: Ask, question = "") {
+  const { settings, context, prompt } = handoff(a, question);
   const { command, models, efforts } = reviewAgent(settings);
   const preset = presetOf(command);
   if (programOf(command).toLowerCase() !== "claude") {

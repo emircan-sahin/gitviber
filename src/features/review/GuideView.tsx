@@ -198,7 +198,7 @@ export function GuideView({ sel, status, branchRows, revision, viewed, toggleVie
       running={findingRisks}
       onFind={find}
       onGo={goToRisk}
-      action={(r) => <AskAgentButton root={root} ask={() => askOf(found, { risk: r })} label="Send to Agent" what="this risk" />}
+      action={(r) => <AskAgentButton root={root} ask={() => askOf(found, { risk: r })} label="Send to Agent" what="this risk" question={false} />}
     />
   );
   const done = guide && saved ? guide.sections.filter((_, i) => saved.done.includes(i)).length : 0;
