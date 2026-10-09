@@ -87,8 +87,9 @@ diff, edit the new side right there and save with `⌘S`, or stash just the line
 
 A real terminal sits under the diff (`⌘J`), with tabs and splits. Run the tests, start the dev
 server or talk to the agent without leaving the change you're reading. Each pane of a split has a
-title bar with what runs there, and `⌘R` names it. The terminal has its own font, size, cursor and
-scrollback in Settings, and `⌘=` / `⌘−` in the terminal or a pinch over it size its text.
+numbered title bar with what runs there, `⇧⌘←` / `⇧⌘→` page through them, and `⌘R` names it.
+The terminal has its own font, size, cursor and scrollback in Settings, and `⌘=` / `⌘−` in the
+terminal or a pinch over it size its text.
 `⌘`-click a path it prints to open the file at that line, or a folder to show it in the explorer;
 a commit's SHA opens it in History, and `#123` or a link to one of the repo's pull requests or
 issues opens it in its own tab. `⌃⇧Space` puts a letter on every one of those links on screen, in
@@ -316,7 +317,8 @@ Reopening a closed tab and closing the other tabs have no default there either, 
 | `⌘J` or `⌃` `` ` `` | Toggle the terminal |
 | `⌘T` | New terminal |
 | `⌘D` `⇧⌘D` `⌘K` | Split right, split down, clear (in the terminal) |
-| `⌥⌘←` `⌥⌘→` `⌥⌘↑` `⌥⌘↓` or `⇧⌘` arrows | Focus the terminal pane on that side |
+| `⇧⌘←` `⇧⌘→` | Previous / next terminal pane by its number, wrapping around (in the terminal) |
+| `⌥⌘←` `⌥⌘→` `⌥⌘↑` `⌥⌘↓`, `⇧⌘↑` `⇧⌘↓` | Focus the terminal pane on that side (in the terminal) |
 | `⌘↵` | Maximize the terminal over the workspace, and back (in the terminal) |
 | `⇧⌘↵` | Show only the focused terminal pane in the panel, and all of them again (in the terminal) |
 | `⌘R` | Rename the focused pane of a split terminal (in the terminal; a double-click on its header too) |

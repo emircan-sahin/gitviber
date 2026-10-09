@@ -6,6 +6,16 @@ on GitHub are its section below.
 
 ## [Unreleased]
 
+### Added
+
+- **Numbered terminal panes.** Each pane of a split shows its number in its title bar, the focused one's in the accent color, and the number shows over the pane for a moment as the keys move to it.
+- **A dot per pane on a split terminal's tab,** colored by the state of the agent in it, the focused pane's larger. The tab's tooltip lists each pane by number with what runs there.
+
+### Changed
+
+- **`⇧⌘←` / `⇧⌘→` page through a split's panes by number,** wrapping around from the last to the first. `⌥⌘` arrows, and `⇧⌘↑` / `⇧⌘↓`, still move to the pane on that side.
+- **The Agents menu groups agents by terminal tab,** the tab with an agent that needs you first, and shows which pane of a split each one runs in (2/3) with the pane's name.
+
 ## [0.1.12] - 2026-10-08
 
 ### Fixed
