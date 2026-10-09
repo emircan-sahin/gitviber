@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi, type BrowserPick } from "@/lib/api";
 import { failed } from "@/lib/app/toast";
 import { takePicked, usePicked } from "@/lib/browser/store";
@@ -16,15 +16,18 @@ export function usePicker(id: string) {
     if (picked) void browserApi.focus(id, false).finally(() => setPick(picked)).catch(() => {});
   }, [picked, id]);
 
-  const set = (on: boolean) => {
-    setPicking(on);
-    if (on) setPick(null);
-    // Into the page: Esc there ends the picker.
-    void browserApi
-      .pick(id, on)
-      .then(() => (on ? browserApi.focus(id, true) : undefined))
-      .catch(failed("Could not pick an element"));
-  };
+  const set = useCallback(
+    (on: boolean) => {
+      setPicking(on);
+      if (on) setPick(null);
+      // Into the page: Esc there ends the picker.
+      void browserApi
+        .pick(id, on)
+        .then(() => (on ? browserApi.focus(id, true) : undefined))
+        .catch(failed("Could not pick an element"));
+    },
+    [id],
+  );
   const toggle = () => set(!picking);
 
   // Off as the tab hides, or it would still swallow the page's clicks and ⇧⌘C would turn it on again.
@@ -37,7 +40,7 @@ export function usePicker(id: string) {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && set(false);
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [picking, id]);
+  }, [picking, set]);
 
   return { picking, pick, toggle, closeNote: () => setPick(null) };
 }
