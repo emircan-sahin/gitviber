@@ -116,7 +116,9 @@ test("a few picked elements go under one line naming the page and its device, ea
   assert.equal(formatPicks([pick]), formatPick(pick, ""));
 });
 
-test("errors asked about name the page as it shows now", () => {
-  const text = formatErrors([entry("error", "boom", "", "http://localhost:5173/old")], { url: "http://localhost:5173/now", device: { name: "Pixel 8", viewport: { w: 412, h: 839 } } });
-  assert.equal(text, ["Errors from the page at http://localhost:5173/now as Pixel 8 (412×839):", "- boom"].join("\n"));
+test("errors asked about name the page as it shows now, and an earlier page's keep their own address", () => {
+  const now = { url: "http://localhost:5173/now", device: { name: "Pixel 8", viewport: { w: 412, h: 839 } } };
+  const text = formatErrors([entry("error", "old boom", "", "http://localhost:5173/old"), entry("error", "boom", "", "http://localhost:5173/now")], now);
+  assert.equal(text, ["Errors from the page at http://localhost:5173/now as Pixel 8 (412×839):", "- old boom (http://localhost:5173/old)", "- boom"].join("\n"));
+  assert.equal(formatErrors([entry("error", "boom", "", "http://localhost:5173/now")], now).split("\n")[1], "- boom");
 });

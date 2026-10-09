@@ -49,7 +49,7 @@ export function formatPicks(picks: BrowserPick[], device: ShownAs | null = null)
 /** Stack lines kept under each error: where it was thrown, and a little of how it got there. */
 const STACK_LINES = 3;
 /** Errors sent at most, the latest. */
-const ERRORS = 20;
+export const ERRORS = 20;
 
 /** The page's latest errors, each once with how often, oldest first; empty when there are none. */
 export function formatErrors(entries: ConsoleEntry[], page: { url: string; device: ShownAs | null } | null = null): string {
@@ -73,7 +73,9 @@ export function formatErrors(entries: ConsoleEntry[], page: { url: string; devic
       .filter((l) => l && !entry.msg.includes(l))
       .slice(0, STACK_LINES)
       .map((l) => `    ${l}`);
-    const where = pages.size > 1 ? ` (${flat(entry.url)})` : "";
+    // Its own page whenever that isn't the one named above: an earlier load's, or one of several.
+    const elsewhere = page ? flat(entry.url) !== flat(page.url) : pages.size > 1;
+    const where = elsewhere ? ` (${flat(entry.url)})` : "";
     return [`- ${times > 1 ? `(×${times}) ` : ""}${flat(entry.msg)}${where}`, ...stack].join("\n");
   });
   return [head, ...body].join("\n");
