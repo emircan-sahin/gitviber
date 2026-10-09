@@ -10,7 +10,7 @@ import { readJson, writeJson } from "../storage";
 import { type AgentEntry, agentsWaiting, type AgentState, byUrgency, nextAgent, type PaneAgent, quitStops } from "./agentState";
 import { type Look, paneLook, shownState } from "./agentLook";
 import { lookedAt, needsYou } from "./needsYou";
-import { panes, type Pane, state, subscribe, update } from "./terminals";
+import { panes, type Pane, panesInOrder, state, subscribe, update } from "./terminals";
 
 // The coding agents in the panes (agents.rs): looked up for the panes a session save round
 // saves, at ⌘Q and after a prompt; their state comes as "agent-state" events from a watch on
@@ -109,7 +109,7 @@ export function usePaneLooks() {
 /** Every pane's agent, in every tab: the ones that need the user first, longest waiting first within each. */
 export function agentList(): AgentEntry[] {
   const list = state.groups.flatMap((g) =>
-    g.panes.flatMap((p, i): AgentEntry[] => {
+    panesInOrder(g).flatMap((p, i): AgentEntry[] => {
       if (!p.agent) return [];
       // Not the program's title: it changes as often as the agent works, and would re-render the list each time.
       const where = { tab: g.id, at: i + 1, of: g.panes.length, paneName: p.name, tabName: g.name, tabCwd: g.panes[0].cwd };
