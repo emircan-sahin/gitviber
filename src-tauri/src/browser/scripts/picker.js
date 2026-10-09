@@ -1,9 +1,10 @@
-// The element picker (browser/macos.rs pick). Runs in GitViber's own content world: the page
+// The element picker (browser/macos/page_tools.rs pick). Runs in GitViber's own content world: the page
 // can't see this code or post to gvPick, so it can't forge a pick. Defined once a page, then
 // started and stopped by name.
 (() => {
   if (window.__gvPicker) return;
-  const STYLES = ["display", "position", "color", "background-color", "font-size", "font-weight", "font-family", "padding", "margin", "width", "height"];
+  // What says how it looks, without the font stack or the size the box already gives.
+  const STYLES = ["display", "position", "color", "background-color", "font-size", "font-weight", "padding"];
   let host = null;
   let outline = null;
   let hovered = null;
@@ -39,28 +40,31 @@
     return parts.join(" > ");
   };
 
+  // To max UTF-16 units with the ellipsis, never splitting a pair (as console.js).
+  const cut = (s, max) => {
+    if (s.length <= max) return s;
+    const end = /[\uD800-\uDBFF]/.test(s[max - 2]) ? max - 2 : max - 1;
+    return `${s.slice(0, end)}…`;
+  };
+
   const pick = (el) => {
     const box = el.getBoundingClientRect();
     const computed = getComputedStyle(el);
-    const styles = Object.fromEntries(STYLES.map((s) => [s, computed.getPropertyValue(s)]));
-    // For the page's own world, which reads React's fiber off the element (macos.rs).
-    el.setAttribute("data-gv-pick", nonce);
-    const html = el.outerHTML;
-    return {
+    const found = {
       selector: selector(el),
       tag: el.localName,
-      html: html.length > 600 ? `${html.slice(0, 600)}…` : html,
-      text: (el.innerText || "").trim().slice(0, 200),
+      html: cut(el.outerHTML, 600),
+      text: cut((el.innerText || "").trim(), 200),
       box: { x: box.x, y: box.y, w: box.width, h: box.height },
-      styles,
+      styles: Object.fromEntries(STYLES.map((s) => [s, computed.getPropertyValue(s)])),
       nonce,
     };
+    // Read above, before it: for the page's own world, which reads React's fiber off the element.
+    el.setAttribute("data-gv-pick", nonce);
+    return found;
   };
 
-  const target = (e) => {
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    return el && el !== host ? el : null;
-  };
+  const target = (e) => document.elementFromPoint(e.clientX, e.clientY);
 
   const show = (el) => {
     hovered = el;
