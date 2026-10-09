@@ -65,10 +65,27 @@ pub fn browser_set_app_keys(chords: Vec<String>) {
     browser::set_app_keys(chords);
 }
 
-/// The memory policy (Settings → Browser): hidden views kept alive, and minutes to park.
+/// Settings → Browser: hidden views kept alive, minutes to park, and the console on or off.
 #[tauri::command]
-pub fn browser_configure(live_hidden: u32, park_after_min: u32) {
-    browser::configure(live_hidden, park_after_min);
+pub fn browser_configure(live_hidden: u32, park_after_min: u32, console: bool) {
+    browser::configure(live_hidden, park_after_min, console);
+}
+
+/// The element picker on or off; what it picks comes as `browser-picked`.
+#[tauri::command]
+pub fn browser_pick(id: String, on: bool) -> Res<()> {
+    browser::pick(&id, on)
+}
+
+/// What the page logged as errors and warnings, oldest first, with a mark where each load began.
+#[tauri::command]
+pub fn browser_console(id: String) -> Res<Vec<browser::console::Entry>> {
+    browser::console(&id)
+}
+
+#[tauri::command]
+pub fn browser_console_clear(id: String) -> Res<()> {
+    browser::console_clear(&id)
 }
 
 /// An agent in `dir` finished its turn: its worktree's pages load again (the setting's on).

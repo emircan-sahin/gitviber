@@ -1,4 +1,4 @@
-import { browserApi, type BrowserKey, type BrowserState, github } from "../api";
+import { browserApi, type BrowserKey, type BrowserPick, type BrowserState, github } from "../api";
 import { listenHere } from "../app/settingsWindow";
 import { failed, toast } from "../app/toast";
 import { bindingsFor, COMMANDS } from "../commands/commands";
@@ -35,14 +35,15 @@ listenHere<{ id: string }>("browser-parked", ({ payload: { id } }) => {
 export const useParks = (id: string) => parks.use().get(id) ?? 0;
 
 
-// Settings → Browser: how many pages out of sight stay alive, and for how long.
+// Settings → Browser: how many pages out of sight stay alive, for how long, and whether they
+// keep a console.
 let sentPolicy = "";
 function sendPolicy() {
-  const { browserLiveHidden, browserParkAfterMin } = getSettings();
-  const key = `${browserLiveHidden} ${browserParkAfterMin}`;
+  const { browserLiveHidden, browserParkAfterMin, browserConsole } = getSettings();
+  const key = `${browserLiveHidden} ${browserParkAfterMin} ${browserConsole}`;
   if (key === sentPolicy) return;
   sentPolicy = key;
-  void browserApi.configure(browserLiveHidden, browserParkAfterMin).catch(() => {});
+  void browserApi.configure(browserLiveHidden, browserParkAfterMin, browserConsole).catch(() => {});
 }
 subscribeSettings(sendPolicy);
 sendPolicy();
@@ -75,6 +76,22 @@ function sendAppKeys() {
 }
 subscribeSettings(sendAppKeys);
 sendAppKeys();
+
+// The element picker's result by tab: a pick to write a note on, or null when it ended without
+// one (cancelled, or the page moved on). Undefined: no picker news since the tab last took it.
+const picked = createStore<ReadonlyMap<string, BrowserPick | null>>(new Map());
+listenHere<{ id: string; pick: BrowserPick | null }>("browser-picked", ({ payload: { id, pick } }) => picked.set(new Map(picked.get()).set(id, pick))).catch(() => {});
+export const usePicked = (id: string) => picked.use().get(id);
+/** The tab has taken its picker news (shown the note, or seen it end). */
+export function takePicked(id: string) {
+  const next = new Map(picked.get());
+  if (next.delete(id)) picked.set(next);
+}
+
+// What each tab's page logged since its console was last cleared (console.rs), for its badge.
+const logged = createStore<ReadonlyMap<string, { errors: number; warnings: number }>>(new Map());
+listenHere<{ id: string; errors: number; warnings: number }>("browser-console", ({ payload: { id, ...counts } }) => logged.set(new Map(logged.get()).set(id, counts))).catch(() => {});
+export const useLogged = (id: string) => logged.use().get(id) ?? { errors: 0, warnings: 0 };
 
 // Keys typed into a page that the app takes: its tab's own first, then the app's commands, as
 // if typed into this page.

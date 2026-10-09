@@ -166,6 +166,13 @@ pub fn run() {
             if let Ok(dir) = app.path().app_log_dir() {
                 errors::init(dir);
             }
+            // Picks' pictures from earlier sessions, past the day an agent might read them in.
+            if let Ok(cache) = app.path().app_cache_dir() {
+                let folder = browser::picks::folder(&cache);
+                std::thread::spawn(move || {
+                    browser::picks::prune(&folder, std::time::SystemTime::now())
+                });
+            }
             askpass::serve(app.handle().clone());
             notifications::setup(app.handle());
             #[cfg(target_os = "macos")]
@@ -437,6 +444,9 @@ pub fn run() {
             commands::browser::browser_focus,
             commands::browser::browser_set_app_keys,
             commands::browser::browser_configure,
+            commands::browser::browser_pick,
+            commands::browser::browser_console,
+            commands::browser::browser_console_clear,
             commands::browser::browser_agent_done,
             commands::browser::browser_inspect,
             commands::browser::browser_clear_data,

@@ -122,6 +122,11 @@ impl<V> Registry<V> {
             .collect()
     }
 
+    /// Every live view.
+    pub fn live(&self) -> Vec<&V> {
+        self.views.iter().filter_map(Entry::view).collect()
+    }
+
     /// The live views of the worktree that holds `dir`.
     pub fn within(&self, dir: &str) -> Vec<&V> {
         let inside = |root: &str| dir == root || dir.starts_with(&format!("{root}/"));

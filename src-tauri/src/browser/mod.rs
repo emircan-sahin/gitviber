@@ -5,22 +5,24 @@
 // Elsewhere only the stubs below are used, until Linux gets its own page.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
 
+pub mod console;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod picks;
 pub mod ports;
 mod registry;
 
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    agent_done, clear_data, close, close_all, close_root, configure, create, focus, go, hide,
-    inspect, navigate, place, set_agent, snapshot,
+    agent_done, clear_data, close, close_all, close_root, configure, console, console_clear,
+    create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
-    agent_done, clear_data, close, close_all, close_root, configure, create, focus, go, hide,
-    inspect, navigate, place, set_agent, snapshot,
+    agent_done, clear_data, close, close_all, close_root, configure, console, console_clear,
+    create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
 };
 
 pub use registry::{Parked, Registry};
@@ -194,7 +196,7 @@ pub fn root_key(path: &str) -> String {
 
 #[cfg(not(target_os = "macos"))]
 mod other {
-    use super::{Created, Go, Rect, Screen};
+    use super::{console::Entry, Created, Go, Rect, Screen};
     use crate::state::Res;
 
     const UNSUPPORTED: &str = "The browser tab needs macOS for now.";
@@ -218,7 +220,16 @@ mod other {
     pub fn close(_: &str) {}
     pub fn close_root(_: &str) {}
     pub fn close_all() {}
-    pub fn configure(_: u32, _: u32) {}
+    pub fn configure(_: u32, _: u32, _: bool) {}
+    pub fn pick(_: &str, _: bool) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn console(_: &str) -> Res<Vec<Entry>> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn console_clear(_: &str) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
     pub fn agent_done(_: &str) {}
     pub fn navigate(_: &str, _: &str) -> Res<()> {
         Err(UNSUPPORTED.into())

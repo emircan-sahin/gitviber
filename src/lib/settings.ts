@@ -233,6 +233,8 @@ export interface Settings {
   browserParkAfterMin: number;
   /** A worktree's browser pages load again when an agent there finishes, unless their dev server reloads them itself. */
   browserReloadOnAgentDone: boolean;
+  /** Browser tabs keep what their pages log as errors and warnings, for the console badge. */
+  browserConsole: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
   svgPreview: boolean;
   /** The last mode picked on a changed image (an SVG preview's too). Set from the viewer, not the dialog. */
@@ -347,6 +349,7 @@ const DEFAULTS: Settings = {
   browserLiveHidden: 2,
   browserParkAfterMin: 10,
   browserReloadOnAgentDone: false,
+  browserConsole: true,
   svgPreview: false,
   imageCompare: "side",
   blame: false,
@@ -450,6 +453,7 @@ function load(): Settings {
     if (!BROWSER_LIVE_HIDDEN.includes(s.browserLiveHidden)) s.browserLiveHidden = DEFAULTS.browserLiveHidden;
     if (!BROWSER_PARK_AFTER.includes(s.browserParkAfterMin)) s.browserParkAfterMin = DEFAULTS.browserParkAfterMin;
     if (typeof s.browserReloadOnAgentDone !== "boolean") s.browserReloadOnAgentDone = DEFAULTS.browserReloadOnAgentDone;
+    if (typeof s.browserConsole !== "boolean") s.browserConsole = DEFAULTS.browserConsole;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     if (!["side", "swipe", "onion"].includes(s.imageCompare)) s.imageCompare = DEFAULTS.imageCompare;
     if (typeof s.blame !== "boolean") s.blame = DEFAULTS.blame;

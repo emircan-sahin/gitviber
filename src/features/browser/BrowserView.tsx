@@ -1,17 +1,20 @@
-import { TabletSmartphone } from "lucide-react";
+import { Crosshair, TabletSmartphone } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Tip } from "@/components/ui/tooltip";
-import { browserApi, type BrowserGo, errorMessage, github } from "@/lib/api";
+import { browserApi, type BrowserGo, type BrowserPick, errorMessage, github } from "@/lib/api";
 import { failed, toast } from "@/lib/app/toast";
-import { onBrowserKey, setBrowserState, useBrowserState, useParks } from "@/lib/browser/store";
+import { onBrowserKey, setBrowserState, takePicked, useBrowserState, useParks, usePicked } from "@/lib/browser/store";
 import { RESPONSIVE } from "@/lib/browser/devices";
 import { BLANK, isFrameable, pageLabel } from "@/lib/browser/url";
 import { commandIn, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { IS_LINUX } from "@/lib/platform";
+import { useSettings } from "@/lib/settings";
 import type { Selection } from "@/lib/repo/selection";
 import { Placeholder } from "@/features/viewer/FileHeader";
 import { AddressBar, type PageControl } from "./AddressBar";
+import { ConsoleBadge, ConsolePanel } from "./ConsolePanel";
+import { PickNote } from "./PickNote";
 import { DeviceBar } from "./DeviceBar";
 import { DeviceFrame } from "./DeviceFrame";
 import { useDevice } from "./useDevice";
@@ -29,7 +32,7 @@ interface Props {
 
 /** The tab's own keys, in its address bar or its page; the GO ones go to the page. */
 const GO = { "browser.reload": "reload", "browser.back": "back", "browser.forward": "forward" } as const satisfies Record<string, BrowserGo>;
-const OWN = ["browser.focusAddress", "browser.inspect", "browser.toggleDevice", ...(Object.keys(GO) as (keyof typeof GO)[])] as const;
+const OWN = ["browser.focusAddress", "browser.inspect", "browser.toggleDevice", "browser.pick", ...(Object.keys(GO) as (keyof typeof GO)[])] as const;
 
 const TOO_SMALL = "Too little room to show the device";
 
@@ -66,6 +69,32 @@ function NativePage(props: Props) {
   const field = useRef<HTMLInputElement>(null);
   const { choice, choose, toggle, device, fitted, resize } = useTabDevice(props, area);
   const ua = device?.ua || null;
+  const capture = useSettings().browserConsole;
+  const [consoleOpen, setConsoleOpen] = useState(false);
+  // The picker on, until the page says what it picked (browser-picked).
+  const [picking, setPicking] = useState(false);
+  const [pick, setPick] = useState<BrowserPick | null>(null);
+  const picked = usePicked(id);
+  useEffect(() => {
+    if (picked === undefined) return;
+    setPicking(false);
+    takePicked(id);
+    // The keys come back from the page first, or the note's field would show focus and get none.
+    if (picked) void browserApi.focus(id, false).then(
+      () => setPick(picked),
+      () => setPick(picked),
+    );
+  }, [picked, id]);
+  const togglePick = () => {
+    const on = !picking;
+    setPicking(on);
+    if (on) setPick(null);
+    // Into the page: Esc there ends the picker.
+    void browserApi
+      .pick(id, on)
+      .then(() => (on ? browserApi.focus(id, true) : undefined))
+      .catch(failed("Could not pick an element"));
+  };
 
   // On the first show and after each park, on its own id: where it loads next is the page's business.
   useEffect(() => {
@@ -118,17 +147,20 @@ function NativePage(props: Props) {
       .inspect(id)
       .then((opened) => opened || toast("info", "Web Inspector", "Right-click the page and choose Inspect Element."))
       .catch(failed("Could not open Web Inspector"));
-  useCommands({ "browser.inspect": made ? inspect : undefined, "browser.toggleDevice": made ? toggle : undefined });
+  useCommands({ "browser.inspect": made ? inspect : undefined, "browser.toggleDevice": made ? toggle : undefined, "browser.pick": made ? togglePick : undefined });
 
-  // The page's keys arrive through onBrowserKey, registered once: the latest toggle is read here.
+  // The page's keys arrive through onBrowserKey, registered once: the latest toggles are read here.
   const toggleRef = useRef(toggle);
   toggleRef.current = toggle;
+  const pickRef = useRef(togglePick);
+  pickRef.current = togglePick;
   /** One of the tab's own keys, run; false for any other key. */
   const runOwn = (e: KeyboardEvent) => {
     const command = commandIn(OWN, e);
     if (!command) return false;
     if (command === "browser.inspect") inspect();
     else if (command === "browser.toggleDevice") toggleRef.current();
+    else if (command === "browser.pick") pickRef.current();
     else if (command !== "browser.focusAddress") void browserApi.go(id, GO[command]).catch(() => {});
     else {
       // Keys come back to this page first, or they'd still go to the page's view.
@@ -164,8 +196,23 @@ function NativePage(props: Props) {
         e.stopPropagation();
       }}
     >
-      <AddressBar url={sel.url} state={state} page={page} root={root} field={field} tools={<DeviceToggle on={!!choice} onToggle={toggle} />} />
+      <AddressBar
+        url={sel.url}
+        state={state}
+        page={page}
+        root={root}
+        field={field}
+        tools={
+          <>
+            <PickToggle on={picking} onToggle={togglePick} />
+            {capture && <ConsoleBadge id={id} open={consoleOpen} onToggle={() => setConsoleOpen((o) => !o)} />}
+            <DeviceToggle on={!!choice} onToggle={toggle} />
+          </>
+        }
+      />
       {choice && device && <DeviceBar choice={choice} device={device} viewport={fitted?.viewport ?? null} dpr={dpr} onChoice={choose} />}
+      {pick && <PickNote pick={pick} device={device && fitted && { name: device.name, viewport: fitted.viewport }} root={root} onClose={() => setPick(null)} />}
+      {capture && consoleOpen && <ConsolePanel id={id} root={root} onClose={() => setConsoleOpen(false)} />}
       <div ref={area} tabIndex={-1} className="relative min-h-0 flex-1 bg-background outline-none">
         {error ? (
           <Placeholder title="The browser can't open here" detail={error} />
@@ -257,6 +304,17 @@ function FramePage(props: Props) {
         )}
       </div>
     </div>
+  );
+}
+
+/** The element picker on or off, in the address bar. */
+function PickToggle({ on, onToggle }: { on: boolean; onToggle: () => void }) {
+  return (
+    <Tip label={on ? "Stop picking (Esc)" : "Pick an element for the agent"} shortcut={useShortcut("browser.pick")}>
+      <Button type="button" variant="ghost" size="icon-sm" aria-pressed={on} aria-label="Pick an element" onClick={onToggle} className={on ? "bg-active text-foreground" : undefined}>
+        <Crosshair />
+      </Button>
+    </Tip>
   );
 }
 

@@ -52,6 +52,31 @@ export interface BrowserKey {
 /** A tab's view as made, or found open: a parked one's picture (`snapshot`) stands in until it loads again; `dpr`, whether it can report a device's pixel ratio. */
 export type BrowserCreated = BrowserState & { snapshot: string | null; dpr: boolean };
 
+/** An element picked on a page (browser/picks.rs), as it goes to an agent. */
+export interface BrowserPick {
+  selector: string;
+  tag: string;
+  html: string;
+  text: string;
+  /** In the page's CSS px, from its viewport's top left. */
+  box: { x: number; y: number; w: number; h: number };
+  styles: Record<string, string>;
+  /** React components it's in, nearest first; none outside React or in a minified build's names. */
+  components: string[];
+  /** Its picture, a PNG kept a day. */
+  screenshot: string | null;
+  url: string;
+}
+
+/** A line the page logged (browser/console.rs); "load" marks where a page began. */
+export interface ConsoleEntry {
+  level: "error" | "warn" | "load";
+  msg: string;
+  stack: string;
+  url: string;
+  ts: number;
+}
+
 /** A program in a terminal listening on a port (browser/ports.rs). */
 export interface ListeningPort {
   port: number;
@@ -92,8 +117,12 @@ export const browserApi = {
   inspect: (id: string) => invoke<boolean>("browser_inspect", { id }),
   /** The chords bound to the app's commands: only these leave a page (keys.rs). */
   setAppKeys: (chords: string[]) => invoke<void>("browser_set_app_keys", { chords }),
-  /** Hidden views kept alive, and the minutes until one parks (0: never). */
-  configure: (liveHidden: number, parkAfterMin: number) => invoke<void>("browser_configure", { liveHidden, parkAfterMin }),
+  /** Hidden views kept alive, the minutes until one parks (0: never), and the console on or off. */
+  configure: (liveHidden: number, parkAfterMin: number, console: boolean) => invoke<void>("browser_configure", { liveHidden, parkAfterMin, console }),
+  /** The element picker on or off; its pick comes as `browser-picked`. */
+  pick: (id: string, on: boolean) => invoke<void>("browser_pick", { id, on }),
+  console: (id: string) => invoke<ConsoleEntry[]>("browser_console", { id }),
+  consoleClear: (id: string) => invoke<void>("browser_console_clear", { id }),
   /** An agent in `dir` finished: its worktree's pages load again, but those a dev server reloads itself. */
   agentDone: (dir: string) => invoke<void>("browser_agent_done", { dir }),
   /** Cookies, storage and cache of the browser tabs; the app's own are apart. */

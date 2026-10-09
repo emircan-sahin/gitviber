@@ -3,6 +3,11 @@
 //! Everything here runs on the main thread, where AppKit's views belong: the registry is that
 //! thread's own, and no callback takes a borrow of it, as WebKit calls back from within calls.
 
+mod tools;
+
+pub use tools::{console, console_clear, pick};
+
+use super::console::Log;
 use super::keys::{self, Key, Route};
 use super::Corners;
 use super::{
@@ -62,6 +67,8 @@ const OBSERVED: [&str; 6] = [
 
 /// A burst of changes (progress ticks during a load) goes to the page as one event.
 const COALESCE_SECS: f64 = 0.1;
+/// And a burst of console lines (a render loop throwing).
+const CONSOLE_SECS: f64 = 0.25;
 
 /// alert() and confirm() a page may show in DIALOG_WINDOW; past them they answer by themselves,
 /// so `while (true) alert()` can't hold the window. A window, not a load: an app that routes
@@ -298,6 +305,11 @@ struct DelegateIvars {
     hidden_at: Cell<Option<Instant>>,
     /// The device it shows (device mode), as last placed.
     screen: Cell<Option<Screen>>,
+    /// What the page logged (scripts/console.js), and whether a `browser-console` is on its way.
+    console: RefCell<Log>,
+    console_pending: Cell<bool>,
+    /// The picker's tag while it's on (tools.rs pick).
+    picking: RefCell<Option<String>>,
     /// The page's process ended once since the user last sent it somewhere: the next time it
     /// stays down, or a page that kills it on load would reload forever.
     crashed: Cell<bool>,
@@ -333,6 +345,12 @@ define_class!(
             if PARK_AFTER.get() > 0 && VIEWS.with_borrow(|r| r.still_hidden(id, since)) {
                 begin_park(id, since);
             }
+        }
+
+        #[unsafe(method(gvSendConsole))]
+        fn send_console(&self) {
+            self.ivars().console_pending.set(false);
+            tools::send_counts(self);
         }
 
         #[unsafe(method(gvSendState))]
@@ -403,9 +421,10 @@ define_class!(
         }
 
         #[unsafe(method(webView:didCommitNavigation:))]
-        fn did_commit(&self, _web: &WKWebView, _navigation: Option<&WKNavigation>) {
+        fn did_commit(&self, web: &WKWebView, _navigation: Option<&WKNavigation>) {
             self.ivars().failed.take();
             self.ivars().committed.set(true);
+            tools::loaded(self, &url_text(unsafe { web.URL() }));
             self.changed();
         }
 
@@ -548,6 +567,9 @@ impl Delegate {
             timer: RefCell::default(),
             hidden_at: Cell::new(None),
             screen: Cell::new(None),
+            console: RefCell::default(),
+            console_pending: Cell::new(false),
+            picking: RefCell::default(),
             crashed: Cell::new(false),
         });
         unsafe { msg_send![super(this), init] }
@@ -557,6 +579,15 @@ impl Delegate {
         if !self.ivars().pending.replace(true) {
             unsafe {
                 self.performSelector_withObject_afterDelay(sel!(gvSendState), None, COALESCE_SECS)
+            };
+        }
+    }
+
+    /// The console's counts went up: sent once a burst of lines has settled.
+    fn console_changed(&self) {
+        if !self.ivars().console_pending.replace(true) {
+            unsafe {
+                self.performSelector_withObject_afterDelay(sel!(gvSendConsole), None, CONSOLE_SECS)
             };
         }
     }
@@ -751,7 +782,9 @@ pub fn create(
     unsafe {
         config.setWebsiteDataStore(&data_store(mtm));
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
-        config.setUserContentController(&WKUserContentController::new(mtm));
+        let content = WKUserContentController::new(mtm);
+        tools::install(&content, id, mtm);
+        config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);
         // Inspect Element in the page's menu; private, so only where WebKit still has it.
@@ -955,10 +988,12 @@ fn stop_timer(v: &View) {
 }
 
 /// How many hidden views stay alive, and after how many minutes one parks (0: never).
-pub fn configure(live_hidden: u32, park_after_min: u32) {
+pub fn configure(live_hidden: u32, park_after_min: u32, console: bool) {
     if main_thread().is_err() {
         return;
     }
+    let views: Vec<View> = VIEWS.with_borrow(|r| r.live().into_iter().cloned().collect());
+    tools::capture(console, &views);
     PARK_AFTER.set(park_after_min);
     // The pages already hidden go by the new timing, from when each hid.
     for (id, since) in VIEWS.with_borrow(|r| r.hidden()) {
@@ -1019,8 +1054,8 @@ pub fn close_all() {
     }
 }
 
-/// In this order: a page left loading, observed, or with a delegate would keep its web content
-/// process alive.
+/// In this order: a page left loading, observed, with its message handlers (the controller holds
+/// them strongly) or with a delegate would keep its web content process alive.
 fn destroy(v: View) {
     unsafe {
         v.web.stopLoading();
@@ -1029,6 +1064,7 @@ fn destroy(v: View) {
             v.web
                 .removeObserver_forKeyPath(&v.delegate, &NSString::from_str(key));
         }
+        tools::uninstall(&v.web.configuration().userContentController());
         v.web.setNavigationDelegate(None);
         v.web.setUIDelegate(None);
     }
