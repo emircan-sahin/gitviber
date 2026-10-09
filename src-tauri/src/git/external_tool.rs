@@ -1,7 +1,7 @@
 //! The merge and diff tools set up for `git mergetool` / `git difftool`, run from the app.
 
 use super::cmd::command;
-use super::{config_value, run_with};
+use super::{config_value, run_text, run_with};
 use crate::process;
 use crate::scratch::ScratchDir;
 use serde::Serialize;
@@ -96,8 +96,7 @@ pub fn open_merge_tool(repo: &Path, path: &str) -> Result<(), String> {
     args.extend(["mergetool", "--gui", "--no-prompt", "--", path]);
     let started = std::time::SystemTime::now();
     let merged = run_tool(repo, "mergetool", &args);
-    let kept = config_value(repo, None, "mergetool.keepTemporaries").is_some_and(|v| v == "true");
-    if merged.is_err() && !kept {
+    if merged.is_err() && !keeps_temporaries(repo) {
         // Off this thread, as reading a crowded temp folder takes a while (ScratchDir::fresh).
         let path = path.to_string();
         std::thread::spawn(move || remove_left_copies(&path, started));
@@ -139,6 +138,20 @@ fn remove_left_copies(path: &str, started: std::time::SystemTime) {
     }
 }
 
+/// mergetool.keepTemporaries as git reads a bool (yes, on, 1, a key with no value…).
+fn keeps_temporaries(repo: &Path) -> bool {
+    run_text(
+        repo,
+        &[
+            "config",
+            "--type=bool",
+            "--get",
+            "mergetool.keepTemporaries",
+        ],
+    )
+    .is_ok_and(|v| v.trim() == "true")
+}
+
 /// How git-mergetool's LOCAL copy of `path` begins: its name less its last extension, which
 /// leaves nothing of a dotfile (`.env`'s is `_LOCAL_<pid>.env`).
 fn local_copy(path: &str) -> Option<String> {
@@ -177,6 +190,29 @@ mod tests {
             merge: merge.map(str::to_string),
             diff: diff.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn keep_temporaries_reads_as_git_reads_a_bool() {
+        let repo = std::env::temp_dir().join(format!("gitviber-keeptemp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&repo);
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| crate::git::run(&repo, args).unwrap();
+        git(&["init", "-q"]);
+        assert!(!keeps_temporaries(&repo));
+        for (value, kept) in [
+            ("true", true),
+            ("Yes", true),
+            ("on", true),
+            ("1", true),
+            ("false", false),
+            ("off", false),
+            ("0", false),
+        ] {
+            git(&["config", "mergetool.keepTemporaries", value]);
+            assert_eq!(keeps_temporaries(&repo), kept, "{value}");
+        }
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[test]
