@@ -34,8 +34,7 @@ pub use other::{
 };
 
 #[cfg(target_os = "macos")]
-pub use registry::Parked;
-pub use registry::Registry;
+pub use registry::{Parked, Registry};
 use serde::{Deserialize, Serialize};
 use tauri::Url;
 
@@ -317,6 +316,7 @@ mod other {
 
 #[cfg(test)]
 mod tests {
+    use super::registry::Registry;
     use super::*;
 
     #[test]
