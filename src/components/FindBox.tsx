@@ -55,6 +55,8 @@ export function FindBox({
         onChange={(e) => onQuery(e.target.value)}
         onKeyDown={(e) => {
           if (flipOnKey(e, options, onOptions)) return;
+          // Enter that confirms an input method's word isn't a step.
+          if (e.key === "Enter" && (e.nativeEvent.isComposing || e.keyCode === 229)) return;
           if (e.key === "Enter") onStep(e.shiftKey ? -1 : 1);
           else if (e.key === "Escape") onClose();
           else return;
