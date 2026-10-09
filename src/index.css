@@ -1107,8 +1107,22 @@
     opacity: 0.35;
   }
 }
+/* A pane's number as the keys move to it (PaneLayout): held, then faded, 700 ms in all. */
+.pane-switch {
+  animation: pane-switch 700ms ease-in forwards;
+}
+@keyframes pane-switch {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .agent-working,
+  .pane-switch,
   .logo-draw,
   .logo-draw *,
   .splash-text,

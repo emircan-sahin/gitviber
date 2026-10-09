@@ -37,7 +37,7 @@ import { useWorktreeColors } from "@/lib/git/worktreeColors";
 import { ProjectTile } from "@/features/projects/ProjectList";
 import { showConversations } from "@/features/palette/CommandPalette";
 import { GroupTab } from "./GroupTab";
-import { LayoutView, renamingPane, shape } from "./PaneLayout";
+import { LayoutView, renamingPane, shape, showPaneSwitch } from "./PaneLayout";
 import { TerminalFind } from "./TerminalFind";
 
 /** What the workspace needs even while the panel is hidden: the panel shortcuts, and following the worktree that's open. */
@@ -97,12 +97,12 @@ export function TerminalPanel({ root, worktrees, projects }: Props) {
     "terminal.splitDown": () => void splitActive("col"),
     "terminal.clear": () => void clearFocused(),
     "terminal.close": () => void closeFocused(),
-    "terminal.prevPane": () => stepPane(-1),
-    "terminal.nextPane": () => stepPane(1),
-    "terminal.focusLeft": () => focusToward("left"),
-    "terminal.focusRight": () => focusToward("right"),
-    "terminal.focusUp": () => focusToward("up"),
-    "terminal.focusDown": () => focusToward("down"),
+    "terminal.prevPane": () => showPaneSwitch(stepPane(-1)),
+    "terminal.nextPane": () => showPaneSwitch(stepPane(1)),
+    "terminal.focusLeft": () => showPaneSwitch(focusToward("left")),
+    "terminal.focusRight": () => showPaneSwitch(focusToward("right")),
+    "terminal.focusUp": () => showPaneSwitch(focusToward("up")),
+    "terminal.focusDown": () => showPaneSwitch(focusToward("down")),
     "terminal.hints": showLinkHints,
     "terminal.equalizePanes": group && group.panes.length > 1 ? () => equalizeSplit(group.id) : undefined,
     // Only a pane with a header on screen: a split, not zoomed.

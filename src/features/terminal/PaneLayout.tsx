@@ -1,4 +1,4 @@
-import { ClipboardPaste, Columns2, Copy, Globe, Rows2, SquareTerminal, TextSelect, X } from "lucide-react";
+import { ClipboardPaste, Columns2, Copy, Globe, Rows2, TextSelect, X } from "lucide-react";
 import { Fragment, useLayoutEffect, useRef, useState } from "react";
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { useGroupRef } from "react-resizable-panels";
@@ -69,8 +69,11 @@ export function LayoutView({ group, node, focused, dim, path = [] }: { group: Te
   }, [sizes]);
   if (typeof node === "number") {
     // A pane in a split gets a header, as in cmux: what runs in each, and which one has the keys.
-    const pane = path.length ? group.panes.find((p) => p.id === node) : undefined;
-    return <PaneView id={node} dim={node === focused ? 0 : dim} header={pane && { pane, focused: node === focused }} />;
+    // Numbered in reading order (the tab's panes), as ⇧⌘←/→ step through them.
+    const at = group.panes.findIndex((p) => p.id === node);
+    const number = group.panes.length > 1 && at >= 0 ? { n: at + 1, of: group.panes.length } : undefined;
+    const pane = path.length && number ? group.panes[at] : undefined;
+    return <PaneView id={node} dim={node === focused ? 0 : dim} number={number} header={pane && { pane, focused: node === focused }} />;
   }
   const row = node.dir === "row";
   return (
@@ -103,9 +106,26 @@ export function LayoutView({ group, node, focused, dim, path = [] }: { group: Te
   );
 }
 
+type PaneNumber = { n: number; of: number };
+
+let switches = 0;
+let fade = 0;
+/** The pane the keys just moved to, showing "2 / 3" a moment; a new count restarts its fade. */
+const switched = createStore<{ id: number; key: number } | null>(null);
+
+/** The pane a key moved to (Previous / Next Terminal Pane, or one by side) shows its number. */
+export function showPaneSwitch(id: number | undefined) {
+  if (id === undefined) return;
+  switched.set({ id, key: ++switches });
+  window.clearTimeout(fade);
+  // As long as .pane-switch's fade, and the same under reduced motion, which drops the fade.
+  fade = window.setTimeout(() => switched.set(null), 700);
+}
+
 /** `dim`: how far it fades into the panel's background, while another pane of its tab has focus. */
-function PaneView({ id, dim, header }: { id: number; dim: number; header?: { pane: PaneInfo; focused: boolean } }) {
+function PaneView({ id, dim, number, header }: { id: number; dim: number; number?: PaneNumber; header?: { pane: PaneInfo; focused: boolean } }) {
   const ref = useRef<HTMLDivElement>(null);
+  const flash = switched.use();
   // Layout effect: the pane is in place before paint, so focusing it next frame works.
   useLayoutEffect(() => attachPane(id, ref.current!), [id]);
   // Read as the menu opens: the selection and the last command change under it.
@@ -116,8 +136,15 @@ function PaneView({ id, dim, header }: { id: number; dim: number; header?: { pan
     return pty === null ? [] : [pty];
   });
   return (
-    <div className="flex h-full flex-col">
-      {header && <PaneHeader pane={header.pane} focused={header.focused} />}
+    <div className="relative flex h-full flex-col">
+      {header && number && <PaneHeader pane={header.pane} focused={header.focused} number={number} />}
+      {flash?.id === id && number && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+          <span key={flash.key} className="pane-switch rounded-full border border-border-strong bg-elevated px-3 py-1 font-mono text-[13px] text-foreground tabular-nums shadow-md shadow-black/40">
+            {number.n} / {number.of}
+          </span>
+        </div>
+      )}
       <ContextMenu
         onOpenChange={(open) => {
           if (!open) return;
@@ -164,8 +191,8 @@ function PaneView({ id, dim, header }: { id: number; dim: number; header?: { pan
 /** The split pane whose header shows its name field (⌘R, or a double-click on the header). */
 export const renamingPane = createStore<number | null>(null);
 
-/** A split pane's title bar: the user's name for it, else the program's title, else its folder; and its own split and kill. */
-function PaneHeader({ pane, focused }: { pane: PaneInfo; focused: boolean }) {
+/** A split pane's title bar: its number, the user's name for it, else the program's title, else its folder; and its own split and kill. */
+function PaneHeader({ pane, focused, number }: { pane: PaneInfo; focused: boolean; number: PaneNumber }) {
   const id = pane.id;
   const renaming = renamingPane.use() === id;
   const title = pane.name ?? (pane.title || folderName(paneDir(id) ?? pane.cwd));
@@ -196,7 +223,7 @@ function PaneHeader({ pane, focused }: { pane: PaneInfo; focused: boolean }) {
       className="group/pane relative flex h-6 shrink-0 cursor-default items-center gap-1.5 border-b border-border bg-panel pr-1 pl-2.5 text-[11.5px] select-none"
     >
       {focused && <span className="absolute inset-x-0 top-0 h-0.5 bg-primary" />}
-      <SquareTerminal className={cn("size-3 shrink-0", focused ? "text-primary" : "text-subtle")} />
+      <span className={cn("shrink-0 rounded-sm px-1 font-mono text-[10px] leading-4 tabular-nums", focused ? "bg-primary text-primary-foreground" : "bg-elevated text-muted-foreground")}>{number.n}</span>
       {renaming ? (
         <NameInput
           initial={title}
