@@ -1,21 +1,27 @@
-import { CaseSensitive, ChevronDown, ChevronUp, X } from "lucide-react";
+import { CaseSensitive } from "lucide-react";
 import { useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Tip } from "@/components/ui/tooltip";
+import { BoxButton, FindBox } from "@/components/FindBox";
 import { browserApi } from "@/lib/api";
+import { NO_OPTIONS } from "@/lib/ui/findQuery";
 
-/** Find in a tab's page (WebKit's own find, which selects each match): the bar's state and steps. */
+/** Find in a tab's page (WebKit's own find, which selects each match): the box's state and steps. */
 export function useFindInPage(id: string) {
   const [open, setOpen] = useState(false);
+  // Each time Find asks for the box: its text is selected again, to type over.
+  const [asked, setAsked] = useState(0);
   const [query, setQuery] = useState("");
-  const [caseSensitive, setCaseSensitive] = useState(false);
+  const [matchCase, setMatchCase] = useState(false);
   // Whether the last find matched; null before one, or where WebKit can't say.
   const [found, setFound] = useState<boolean | null>(null);
-  const input = useRef<HTMLInputElement>(null);
-  const run = (text: string, backwards: boolean, matchCase = caseSensitive) => {
+  // The latest find: an answer for a query typed over since says nothing of this one.
+  const latest = useRef(0);
+  const run = (text: string, backwards: boolean, caseSensitive = matchCase) => {
+    const n = ++latest.current;
     if (!text) return setFound(null);
-    void browserApi.find(id, text, backwards, matchCase).then(setFound, () => setFound(null));
+    void browserApi.find(id, text, backwards, caseSensitive).then(
+      (f) => n === latest.current && setFound(f),
+      () => n === latest.current && setFound(null),
+    );
   };
   const show = () =>
     // The keys come back from the page first, or the field would show focus and get none.
@@ -24,25 +30,24 @@ export function useFindInPage(id: string) {
       .catch(() => {})
       .then(() => {
         setOpen(true);
-        input.current?.focus();
-        input.current?.select();
+        setAsked((n) => n + 1);
       });
   return {
     open,
+    asked,
     query,
-    caseSensitive,
+    matchCase,
     found,
-    input,
     show,
-    /** The next match (⌘G), or the one before; with nothing to find yet, the bar. */
+    /** The next match (⌘G), or the one before; with nothing to find yet, the box. */
     step: (backwards: boolean) => (open && query ? run(query, backwards) : show()),
     type: (text: string) => {
       setQuery(text);
       run(text, false);
     },
     toggleCase: () => {
-      setCaseSensitive(!caseSensitive);
-      run(query, false, !caseSensitive);
+      setMatchCase(!matchCase);
+      run(query, false, !matchCase);
     },
     /** Closed, the keys back to the page. */
     close: () => {
@@ -53,55 +58,29 @@ export function useFindInPage(id: string) {
   };
 }
 
-/** The find bar under the address, as the pick note is: one over the page would have it step aside. */
+/**
+ * The find box under the address, as the app's other views have it: in a row of its own, as one
+ * over the page would have it step aside. WebKit says only whether a query matched, never how often.
+ */
 export function FindBar({ find }: { find: ReturnType<typeof useFindInPage> }) {
   return (
-    <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-2 text-[12px]">
-      <Input
-        ref={find.input}
-        autoFocus
-        aria-label="Find in page"
-        placeholder="Find in page"
-        value={find.query}
-        onChange={(e) => find.type(e.currentTarget.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) find.step(e.shiftKey);
-          else if (e.key === "Escape") find.close();
-          else return;
-          e.preventDefault();
-        }}
-        className="h-6 max-w-72 min-w-0 flex-1"
+    <div className="flex shrink-0 justify-end border-b border-border px-2 py-1">
+      <FindBox
+        query={find.query}
+        onQuery={find.type}
+        options={{ ...NO_OPTIONS, matchCase: find.matchCase }}
+        onOptions={(o) => o.matchCase !== find.matchCase && find.toggleCase()}
+        at={find.found === false ? { index: 0, total: 0 } : null}
+        uncounted
+        onStep={(dir) => find.step(dir < 0)}
+        onClose={find.close}
+        focus={find.asked}
+        toggles={
+          <BoxButton label="Match Case" pressed={find.matchCase} onClick={find.toggleCase}>
+            <CaseSensitive className="size-4" />
+          </BoxButton>
+        }
       />
-      {find.found === false && <span className="shrink-0 px-1 text-muted-foreground">No matches</span>}
-      <Tip label="Match Case">
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Match case"
-          aria-pressed={find.caseSensitive}
-          onClick={find.toggleCase}
-          className={find.caseSensitive ? "bg-active text-foreground" : undefined}
-        >
-          <CaseSensitive />
-        </Button>
-      </Tip>
-      <Tip label="Previous Match">
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Previous match" disabled={!find.query} onClick={() => find.step(true)}>
-          <ChevronUp />
-        </Button>
-      </Tip>
-      <Tip label="Next Match">
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Next match" disabled={!find.query} onClick={() => find.step(false)}>
-          <ChevronDown />
-        </Button>
-      </Tip>
-      <div className="flex-1" />
-      <Tip label="Close (Esc)">
-        <Button type="button" variant="ghost" size="icon-sm" aria-label="Close find" onClick={find.close}>
-          <X />
-        </Button>
-      </Tip>
     </div>
   );
 }
