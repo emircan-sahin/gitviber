@@ -115,18 +115,18 @@ the app is, and the Web Inspector on `⌥⌘I`. On Linux a tab shows the pages o
 Device mode (`⇧⌘M`) draws a phone or tablet around the page, notch and corners included, and gives
 the page that device's width, pixel ratio and user agent, upright or turned; Responsive takes any
 size you drag it to. It's still your Mac's browser engine with a mouse: no touch events, hover still
-works, `<meta name=viewport>` is ignored, and an Android device's page isn't drawn by Android's
-engine.
+works, and `<meta name=viewport>` is ignored.
 
 `⇧⌘C` picks an element (⇧-click to gather a few, then click the last): ask what you want, pick the
 model, and a new agent session starts in your worktree's terminal with the page's address, each
 element's selector, React components, styles and a picture of it, and your question, as Ask Agent
 does with a review. The console counts the page's errors and warnings, failed requests too, and
 Send Errors to Agent asks about them the same way; a question about an element can take the
-page's errors along. A page out of
-sight closes after a while to give its memory back, and comes back where it was when you look
-again; Settings → Browser sets how many stay open and for how long, and can reload a worktree's
-pages when its agent finishes.
+page's errors along.
+
+A page out of sight closes after a while to give its memory back, and comes back where it was when
+you look again; Settings → Browser sets how many stay open and for how long, and can reload a
+worktree's pages when its agent finishes.
 
 Agents can drive the browser themselves once you turn it on in Settings → Browser (it's off until
 you do). Each terminal pane's agent gets a tab of its own, opened in the background without taking
