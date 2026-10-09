@@ -198,13 +198,22 @@ function NativePage(props: Props) {
   // The picked elements on the page's picture while their question is asked, in this page's px:
   // a page px is the device's scale here in device mode, else the page's zoom over the interface's.
   const factor = device && fitted ? fitted.scale : look.zoom / uiScale;
-  const mark = (p: BrowserPick, i: number) => (
-    <div
-      key={i}
-      className="pointer-events-none absolute rounded-[2px] border-2 border-primary bg-primary/15"
-      style={{ left: p.box.x * factor, top: p.box.y * factor, width: Math.max(p.box.w * factor, 2), height: Math.max(p.box.h * factor, 2) }}
-    />
-  );
+  // Inside what shows of the page: a tall element, or one scrolled half away, is outlined where it shows.
+  const room = device && fitted ? fitted.page : { w: area.current?.clientWidth ?? 0, h: area.current?.clientHeight ?? 0 };
+  const within = (v: number, most: number) => Math.min(Math.max(v, 0), most);
+  const mark = (p: BrowserPick, i: number) => {
+    const left = within(p.box.x * factor, room.w - 2);
+    const top = within(p.box.y * factor, room.h - 2);
+    const right = within((p.box.x + p.box.w) * factor, room.w);
+    const bottom = within((p.box.y + p.box.h) * factor, room.h);
+    return (
+      <div
+        key={i}
+        className="pointer-events-none absolute rounded-[2px] border-2 border-primary bg-primary/15"
+        style={{ left, top, width: Math.max(right - left, 2), height: Math.max(bottom - top, 2) }}
+      />
+    );
+  };
   const asked = picks && (
     <>
       {picks.slice(0, -1).map(mark)}
@@ -256,7 +265,7 @@ function NativePage(props: Props) {
       {capture && consoleOpen && (
         <ConsolePanel id={id} root={root} page={{ url: state?.url ?? sel.url, device: shownAs }} onAsk={closeAsk} onClose={() => setConsoleOpen(false)} />
       )}
-      <div ref={area} tabIndex={-1} className="relative min-h-0 flex-1 bg-background outline-none">
+      <div ref={area} tabIndex={-1} className="relative min-h-0 flex-1 overflow-hidden bg-background outline-none">
         {error ? (
           <Placeholder title="The browser can't open here" detail={error} />
         ) : notLoaded ? (
