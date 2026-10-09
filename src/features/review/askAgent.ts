@@ -2,7 +2,8 @@ import { api, errorMessage } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
 import { toast } from "@/lib/app/toast";
 import { effortOf, modelOf, presetOf, programOf, reviewAgent, SUGGEST_PRESETS } from "@/lib/git/suggest";
-import { handoffContext, type HandoffInput, handoffName, riskPrompt } from "@/lib/review/handoff";
+import { handoffContext, type HandoffInput, handoffName, placedIn, riskPrompt } from "@/lib/review/handoff";
+import { basename } from "@/lib/path";
 import { getSettings } from "@/lib/settings";
 import { refreshAgents } from "@/lib/terminal/agents";
 import { openTerminal, pasteToAgent, worktreeAgent } from "@/lib/terminal/terminals";
@@ -31,10 +32,22 @@ function handoff(a: Ask, question = "") {
 const asPrompt = (context: string, prompt: string | null) => `${context}\n\n${prompt ?? "My question follows. If none does, just say in one line that you're ready, and wait for it."}`;
 
 /**
- * In a new terminal tab of `root`: Claude Code with the review in its prompt box, sent when there's
- * a question (the user's, or a risk's), or another CLI with it on the clipboard.
+ * Where the agent works: the worktree that has the change checked out, so it reads the files on
+ * disk and can fix them there, else `root` (the one open), reading the change with git.
  */
-export async function askAgent(root: string, a: Ask, question = "") {
+async function placed(root: string, a: Ask): Promise<{ root: string; a: Ask }> {
+  if (a.checkedOut) return { root, a };
+  const there = placedIn(a, await api.worktrees().catch(() => []));
+  return { root: there.path ?? root, a: there.a };
+}
+
+/**
+ * In a new terminal tab of the change's worktree: Claude Code with the review in its prompt box,
+ * sent when there's a question (the user's, or a risk's), or another CLI with it on the clipboard.
+ */
+export async function askAgent(open: string, ask: Ask, question = "") {
+  const { root, a } = await placed(open, ask);
+  if (root !== open) toast("info", `In worktree ${basename(root)}`, "Where the change is checked out, so the agent reads its files and can edit them.");
   const { settings, context, prompt } = handoff(a, question);
   const { command, models, efforts } = reviewAgent(settings);
   const preset = presetOf(command);
@@ -62,14 +75,15 @@ export async function askAgent(root: string, a: Ask, question = "") {
 }
 
 /**
- * Into the agent already running in `root`'s terminal, Enter left to the user: its session is warm.
+ * Into the agent already running in the change's worktree, Enter left to the user: its session is warm.
  * Not while it works or asks something: the paste would land in its dialog or the user's draft.
  */
-export async function pasteToRunningAgent(root: string, a: Ask) {
+export async function pasteToRunningAgent(open: string, ask: Ask) {
+  const { root, a } = await placed(open, ask);
   // A session started a moment ago isn't known until it's looked up.
   await refreshAgents();
   const agent = worktreeAgent(root);
-  if (!agent) return toast("info", "No agent runs in this worktree's terminal", "Ask Agent starts one in a new terminal tab.");
+  if (!agent) return toast("info", `No agent runs in ${basename(root)}'s terminal`, "Ask Agent starts one in a new terminal tab.");
   if (agent.state === "working" || agent.state === "waiting")
     return toast("info", `${agent.name} is ${agent.state === "working" ? "working" : "waiting on you"}`, "Paste once it's done, or ask in a new session with Ask Agent.");
   const { context, prompt } = handoff(a);
