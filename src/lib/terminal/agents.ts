@@ -109,9 +109,11 @@ export function usePaneLooks() {
 /** Every pane's agent, in every tab: the ones that need the user first, longest waiting first within each. */
 export function agentList(): AgentEntry[] {
   const list = state.groups.flatMap((g) =>
-    g.panes.flatMap((p): AgentEntry[] => {
+    g.panes.flatMap((p, i): AgentEntry[] => {
       if (!p.agent) return [];
-      return [{ pane: p.id, name: p.agent.name, state: shownState(p.agent.state), unseen: !!p.needsYou, cwd: p.cwd, since: since.get(p.id) ?? 0 }];
+      // Not the program's title: it changes as often as the agent works, and would re-render the list each time.
+      const where = { tab: g.id, at: i + 1, of: g.panes.length, paneName: p.name, tabName: g.name, tabCwd: g.panes[0].cwd };
+      return [{ pane: p.id, name: p.agent.name, state: shownState(p.agent.state), unseen: !!p.needsYou, cwd: p.cwd, since: since.get(p.id) ?? 0, ...where }];
     }),
   );
   return list.sort(byUrgency);

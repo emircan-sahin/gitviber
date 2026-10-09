@@ -84,6 +84,15 @@ export interface AgentEntry {
   cwd: string;
   /** Since when it's been in `state` (ms); 0 when not known. */
   since: number;
+  /** Its terminal tab, and its pane's number there (1-based, reading order) of how many. */
+  tab: number;
+  at: number;
+  of: number;
+  /** The names the user gave its pane and its tab, if any. */
+  paneName?: string;
+  tabName?: string;
+  /** Where its tab's first pane opened, which the tab is named after. */
+  tabCwd: string;
 }
 
 // In the order of their dots (agentLook), so the list, its button and the badge can't disagree.
@@ -92,6 +101,13 @@ const rank = (e: AgentEntry) => LOOKS.indexOf(lookOf(e.state, e.unseen) ?? "work
 
 /** The agents that need the user first, then the working ones, then the finished; the longest in its state first. */
 export const byUrgency = (a: AgentEntry, b: AgentEntry) => rank(a) - rank(b) || a.since - b.since;
+
+/** The agents by terminal tab: the tab whose agent is most urgent first, as the list orders them, and each tab's by pane number. */
+export function byTab(list: AgentEntry[]): AgentEntry[][] {
+  const tabs = new Map<number, AgentEntry[]>();
+  for (const e of [...list].sort(byUrgency)) tabs.set(e.tab, [...(tabs.get(e.tab) ?? []), e]);
+  return [...tabs.values()].map((t) => t.sort((a, b) => a.at - b.at));
+}
 
 /** How many agents wait for the user, for the Dock badge: the ones whose dot is a question or news. */
 export const agentsWaiting = (list: AgentEntry[]) => list.filter((e) => isNews(lookOf(e.state, e.unseen))).length;

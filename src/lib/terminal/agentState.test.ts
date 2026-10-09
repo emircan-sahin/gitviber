@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type AgentEntry, agentsWaiting, byUrgency, nextAgent, type PaneAgent, quitStops, restoredAgent, resumeOf, savedAgents } from "./agentState.ts";
+import { type AgentEntry, agentsWaiting, byTab, byUrgency, nextAgent, type PaneAgent, quitStops, restoredAgent, resumeOf, savedAgents } from "./agentState.ts";
 
 const claude = (state: PaneAgent["state"], command: string | null = "claude --resume a-1", session: string | null = "a-1"): PaneAgent => ({ name: "Claude Code", command, session, cwd: "/w", state });
 /** A change of state as the state file's watch tells it. */
@@ -71,7 +71,7 @@ test("a restored agent's command is typed for Enter, or run", () => {
 });
 
 test("the agents list puts the ones that need the user first, and counts them for the badge", () => {
-  const e = (pane: number, state: AgentEntry["state"], since: number, unseen = false): AgentEntry => ({ pane, name: "Claude Code", state, unseen, cwd: "/w", since });
+  const e = (pane: number, state: AgentEntry["state"], since: number, unseen = false): AgentEntry => ({ pane, name: "Claude Code", state, unseen, cwd: "/w", since, tab: 1, at: pane, of: 6, tabCwd: "/w" });
   const list = [e(1, "finished", 10), e(2, "working", 30), e(3, "finished", 50, true), e(4, "waiting", 40), e(5, "running", 20), e(6, "waiting", 5)];
   assert.deepEqual(
     [...list].sort(byUrgency).map((x) => x.pane),
@@ -81,8 +81,33 @@ test("the agents list puts the ones that need the user first, and counts them fo
   assert.equal(agentsWaiting([]), 0);
 });
 
+test("the agents list groups by terminal tab, the tab with the most urgent agent first, each tab by pane number", () => {
+  const e = (tab: number, at: number, state: AgentEntry["state"], since: number, unseen = false): AgentEntry => ({ pane: tab * 10 + at, name: "Claude Code", state, unseen, cwd: "/w", since, tab, at, of: 3, tabCwd: "/w" });
+  const list = [
+    // Tab 1: three working agents.
+    e(1, 3, "working", 10),
+    e(1, 1, "working", 20),
+    e(1, 2, "working", 30),
+    // Tab 2: one asking, behind a finished one.
+    e(2, 1, "finished", 5),
+    e(2, 2, "waiting", 40),
+    // Tab 3: a finish not looked at yet.
+    e(3, 1, "finished", 50, true),
+  ];
+  const tabs = byTab(list);
+  // Asking, then news, then working: the order of the dots.
+  assert.deepEqual(
+    tabs.map((t) => t.map((x) => `${x.tab}.${x.at}`)),
+    [["2.1", "2.2"], ["3.1"], ["1.1", "1.2", "1.3"]],
+  );
+  // Every agent once, and the list itself left as it was.
+  assert.equal(tabs.flat().length, list.length);
+  assert.equal(list[0].at, 3);
+  assert.deepEqual(byTab([]), []);
+});
+
 test("the badge counts each agent once, and drops to 0 as panes close", () => {
-  const e = (pane: number, state: AgentEntry["state"], unseen = false): AgentEntry => ({ pane, name: "Claude Code", state, unseen, cwd: "/w", since: 0 });
+  const e = (pane: number, state: AgentEntry["state"], unseen = false): AgentEntry => ({ pane, name: "Claude Code", state, unseen, cwd: "/w", since: 0, tab: 1, at: 1, of: 1, tabCwd: "/w" });
   // A question not looked at yet is both waiting and unseen: one agent, one count.
   const all = [e(1, "waiting", true), e(2, "finished", true), e(3, "working"), e(4, "running", true), e(5, "finished")];
   assert.equal(agentsWaiting(all), 3);

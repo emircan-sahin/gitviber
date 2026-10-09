@@ -28,7 +28,7 @@ const agent = (state: AgentState | null): PaneAgent => ({ name: "Claude Code", c
 
 /** agentList's entries, without its `since`. */
 const entries = (panes: Sim[]): AgentEntry[] =>
-  panes.filter((p) => p.agent).map((p) => ({ pane: p.id, name: p.agent!.name, state: shownState(p.agent!.state), unseen: p.needsYou, cwd: p.cwd, since: 0 }));
+  panes.filter((p) => p.agent).map((p) => ({ pane: p.id, name: p.agent!.name, state: shownState(p.agent!.state), unseen: p.needsYou, cwd: p.cwd, since: 0, tab: p.group, at: 1, of: 1, tabCwd: p.cwd }));
 
 function run(seed: number, check: (panes: Sim[]) => void) {
   const r = rng(seed);
