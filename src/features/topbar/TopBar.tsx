@@ -6,6 +6,7 @@ import {
   CloudOff,
   GitMerge,
   GitPullRequestArrow,
+  Globe,
   Loader2,
   PanelLeft,
   PanelLeftDashed,
@@ -25,7 +26,7 @@ import { api, cancelNetwork, type Pull } from "@/lib/api";
 import { toast } from "@/lib/app/toast";
 import { folderName } from "@/lib/path";
 import { IS_MAC } from "@/lib/platform";
-import { useCommands, useShortcut } from "@/lib/commands/keybindings";
+import { runCommand, useCommands, useShortcut } from "@/lib/commands/keybindings";
 import { openTerminal, togglePanel, usePaneLooks, useTerminalsOpen } from "@/lib/terminal/terminals";
 import { isNews, LOOK_LABEL, mostUrgent } from "@/lib/terminal/agentLook";
 import { useNetActivity } from "@/lib/repo/netActivity";
@@ -282,6 +283,11 @@ export function TopBar({ repo, root, main, recent, onOpenRepo, onForgetRepo, onR
       )}
       <div className="mx-1 h-4 w-px bg-border-strong" />
       <AgentsMenu worktrees={worktrees} />
+      <Tip label="Open browser" shortcut={useShortcut("browser.open")}>
+        <Button variant="ghost" size="icon" onClick={() => runCommand("browser.open")}>
+          <Globe />
+        </Button>
+      </Tip>
       <Tip label={terminalOpen ? "Hide terminal" : isNews(look) ? `Show terminal · a terminal: ${LOOK_LABEL[look].toLowerCase()}` : "Show terminal"} shortcut={useShortcut("terminal.toggle")}>
         <Button variant="ghost" size="icon" onClick={() => togglePanel(root)} className={cn("relative", terminalOpen && "text-foreground")}>
           <SquareTerminal />
