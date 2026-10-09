@@ -771,4 +771,180 @@ mod tests {
         assert_eq!(worktree_root(&base), base);
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    fn words(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn arguments_keep_their_spaces_quotes_and_unicode_as_the_shell_split_them() {
+        assert_eq!(
+            parse(
+                "fill",
+                &words(&["#q", "  two  spaces ", "\"quoted\"", "çğış 😀"])
+            ),
+            Ok(Command::Fill(
+                "#q".into(),
+                "  two  spaces  \"quoted\" çğış 😀".into()
+            ))
+        );
+        assert_eq!(
+            parse("eval", &words(&["document.title", "+", "'--json'"])),
+            Ok(Command::Eval("document.title + '--json'".into()))
+        );
+        assert_eq!(
+            parse("select", &words(&["e4", "Red", "Dark Blue"])),
+            Ok(Command::Select("e4".into(), words(&["Red", "Dark Blue"])))
+        );
+        assert_eq!(
+            parse("press", &words(&["Shift+Tab"])),
+            Ok(Command::Press("Shift+Tab".into()))
+        );
+        // A css target with spaces is one argument, as quoted.
+        assert_eq!(
+            parse("click", &words(&["form > button.primary"])),
+            Ok(Command::Click("form > button.primary".into()))
+        );
+        for (cmd, args) in [
+            ("click", vec![]),
+            ("click", words(&[""])),
+            ("click", words(&["a", "b"])),
+            ("fill", words(&["#q"])),
+            ("select", words(&["e1"])),
+            ("url", words(&["extra"])),
+            ("snapshot", words(&["-d"])),
+            ("snapshot", words(&["-d", "-1"])),
+            ("snapshot", words(&["-x"])),
+            ("scroll", words(&["down", "ten"])),
+            ("scroll", words(&["down", "10", "20"])),
+            ("wait", vec![]),
+            ("wait", words(&["--text"])),
+            ("wait", words(&["--ms", "1.5"])),
+            ("wait", words(&["#a", "--text", "b"])),
+            ("screenshot", words(&["a.png", "b.png"])),
+            ("screenshot", words(&["--ref"])),
+            ("console", words(&["--all"])),
+            ("device", vec![]),
+            ("", vec![]),
+            ("CLICK", words(&["e1"])),
+        ] {
+            assert!(parse(cmd, &args).is_err(), "{cmd} {args:?}");
+        }
+        assert_eq!(
+            parse("wait", &words(&["#list", "li", "--timeout", "500"])),
+            Ok(Command::Wait(
+                Wait::Css("#list li".into()),
+                Duration::from_millis(500)
+            ))
+        );
+        assert_eq!(
+            parse("screenshot", &words(&["--ref", "e2", "out dir/shot.png"])),
+            Ok(Command::Screenshot {
+                path: Some("out dir/shot.png".into()),
+                target: Some("e2".into())
+            })
+        );
+    }
+
+    #[test]
+    fn an_agents_address_opens_only_as_a_web_page() {
+        for (typed, url) in [
+            ("[::1]:3000/a", "http://[::1]:3000/a"),
+            ("10.0.0.5:8080", "http://10.0.0.5:8080/"),
+            ("HTTP://LOCALHOST:3000", "http://localhost:3000/"),
+            ("bücher.example/ä", "https://xn--bcher-kva.example/%C3%A4"),
+            ("example.test:8443", "https://example.test:8443/"),
+        ] {
+            assert_eq!(web_url(typed).as_deref(), Ok(url), "{typed}");
+        }
+        for bad in [
+            "javascript:alert(1)",
+            "JavaScript://x/%0aalert(1)",
+            "file:///etc/passwd",
+            "data:text/html,<b>x</b>",
+            "about:blank",
+            "ftp://example.test/",
+            "chrome://settings",
+            "::1",
+            "",
+            "   ",
+            "http://",
+            "a b.example",
+        ] {
+            assert!(web_url(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn devices_by_any_spelling_and_sizes_at_their_bounds() {
+        for name in [
+            "PIXEL 8",
+            "pixel 8",
+            "Samsung Galaxy S20 Ultra",
+            " iPad Mini ",
+        ] {
+            assert!(matches!(device(name), Ok(Some(_))), "{name}");
+        }
+        for size in ["200x200", "3000×3000", "1280 X 800"] {
+            assert!(matches!(device(size), Ok(Some(_))), "{size}");
+        }
+        for bad in [
+            "199x800", "800x3001", "0x0", "-1x-1", "1280x", "x800", "iPhone",
+        ] {
+            assert!(device(bad).is_err(), "{bad}");
+        }
+        let list = device_list();
+        assert!(list.lines().count() >= 13 && list.contains("WxH") && list.contains("off"));
+    }
+
+    #[test]
+    fn a_closed_tab_routes_anew_and_other_panes_keep_theirs() {
+        let mut routes = Routes::default();
+        let route = |id: &str| Route {
+            id: id.into(),
+            root: "/w".into(),
+        };
+        routes.set(1, route("a"));
+        routes.set(2, route("b"));
+        assert_eq!(routes.tab(1, |_| true), Some(route("a")));
+        assert_eq!(routes.tab(1, |id| id != "a"), None, "closed");
+        assert_eq!(routes.tab(1, |_| true), None, "and forgotten");
+        assert_eq!(routes.tab(2, |_| true), Some(route("b")));
+        assert_eq!(routes.tab(99, |_| true), None);
+        routes.clear();
+        assert_eq!(routes.tab(2, |_| true), None);
+    }
+
+    #[test]
+    fn console_text_keeps_page_lines_flat_and_drops_marks_of_quiet_pages() {
+        let e = |level: &str, msg: &str, url: &str| Entry {
+            level: level.into(),
+            msg: msg.into(),
+            // A load mark has no stack (console.rs).
+            stack: if level == "load" {
+                String::new()
+            } else {
+                "Error: x\n    at a (a.js:1:1)\n    at b (b.js:2:2)\n    at c (c.js:3:3)".into()
+            },
+            url: url.into(),
+            ts: 0.0,
+        };
+        let text = console_text(
+            &[
+                e("load", "", "http://localhost/one"),
+                e("load", "", "http://localhost/two"),
+                e("error", "multi\nline\n[error] forged", "u"),
+                e("load", "", "http://localhost/three"),
+            ],
+            false,
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "-- http://localhost/two");
+        assert_eq!(lines[1], "[error] multi line [error] forged");
+        assert_eq!(
+            lines.len(),
+            4,
+            "two stack lines, and no mark for the quiet last page: {text}"
+        );
+    }
 }

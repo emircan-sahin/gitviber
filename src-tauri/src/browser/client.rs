@@ -190,4 +190,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(matches!(ask(&socket, &request), Err(Failure::Off)));
     }
+
+    #[test]
+    fn help_needs_no_app_and_outside_its_terminals_the_cli_says_so() {
+        let words = |s: &[&str]| s.iter().map(|w| (*w).to_string()).collect::<Vec<_>>();
+        for help in [
+            vec![],
+            words(&["help"]),
+            words(&["--help"]),
+            words(&["-h"]),
+            words(&["--json"]),
+        ] {
+            assert_eq!(run(help.clone()), 0, "{help:?}");
+        }
+        // Only where no GitViber terminal set these up (as here, not inside one): never a request.
+        if std::env::var_os(control::SOCKET_ENV).is_none() {
+            assert_eq!(run(words(&["url"])), OFF);
+        }
+        // A double dash before the command still finds it; one after it keeps the rest as text.
+        let cli = parse_cli(words(&["--", "fill", "#q", "--json"]));
+        assert_eq!((cli.json, cli.cmd.as_deref()), (false, Some("fill")));
+        assert_eq!(cli.args, ["#q", "--json"]);
+        let unicode = parse_cli(words(&["type", "e1", "çğış 😀", "--json"]));
+        assert!(unicode.json && unicode.args == ["e1", "çğış 😀"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reply_that_isnt_one_or_a_server_that_hangs_up_is_no_answer() {
+        use std::io::{BufRead, BufReader, Write};
+        let dir = std::env::temp_dir().join(format!("gitviber-cli-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let socket = dir.join("b.sock");
+        let _ = std::fs::remove_file(&socket);
+        let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+        let server = std::thread::spawn(move || {
+            for reply in [&b"not json\n"[..], b""] {
+                let (stream, _) = listener.accept().unwrap();
+                let mut line = String::new();
+                BufReader::new(&stream).read_line(&mut line).unwrap();
+                (&stream).write_all(reply).unwrap();
+            }
+        });
+        let request = Request {
+            token: "t".into(),
+            pty: None,
+            cwd: String::new(),
+            cmd: "url".into(),
+            args: vec![],
+        };
+        assert!(matches!(ask(&socket, &request), Err(Failure::NoAnswer)));
+        assert!(matches!(ask(&socket, &request), Err(Failure::NoAnswer)));
+        server.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

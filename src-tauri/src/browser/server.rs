@@ -160,4 +160,68 @@ mod unix {
             .ok()?;
         serde_json::from_str(&line).ok()
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::private_dir;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        fn mode(path: &std::path::Path) -> u32 {
+            std::fs::symlink_metadata(path).unwrap().mode() & 0o777
+        }
+
+        #[test]
+        fn the_sockets_folder_is_this_users_alone_or_there_is_none() {
+            let base =
+                std::env::temp_dir().join(format!("gitviber-server-test-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&base);
+            std::fs::create_dir_all(&base).unwrap();
+            // Made private.
+            let fresh = base.join("fresh");
+            assert_eq!(private_dir(&fresh), Some(()));
+            assert_eq!(mode(&fresh), 0o700);
+            // Found open to others: closed again.
+            let open = base.join("open");
+            std::fs::create_dir(&open).unwrap();
+            std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o777)).unwrap();
+            assert_eq!(private_dir(&open), Some(()));
+            assert_eq!(mode(&open), 0o700);
+            // A file, or a link to a folder someone placed there: no socket, and the link's target
+            // keeps its mode.
+            let file = base.join("file");
+            std::fs::write(&file, b"x").unwrap();
+            assert_eq!(private_dir(&file), None);
+            let target = base.join("target");
+            std::fs::create_dir(&target).unwrap();
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let link = base.join("link");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            assert_eq!(private_dir(&link), None);
+            assert_eq!(mode(&target), 0o755);
+            // A folder that can't be made (its parent is a file): none.
+            assert_eq!(private_dir(&file.join("below")), None);
+            let _ = std::fs::remove_dir_all(&base);
+        }
+
+        #[test]
+        fn the_socket_and_the_token_are_this_launchs_and_each_pane_gets_them() {
+            let token = super::super::token();
+            assert_eq!(token.len(), 64);
+            assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
+            assert_eq!(super::super::token(), token, "one a launch");
+            let path = super::super::socket_path();
+            let uid = unsafe { libc::getuid() };
+            assert!(path.parent().unwrap().ends_with(format!("gitviber-{uid}")));
+            let env = super::super::env(7);
+            let get = |k: &str| {
+                env.iter()
+                    .find(|(key, _)| *key == k)
+                    .map(|(_, v)| v.as_str())
+            };
+            assert_eq!(get(super::super::control::PTY_ENV), Some("7"));
+            assert_eq!(get(super::super::control::TOKEN_ENV), Some(token));
+            assert_eq!(get(super::super::control::SOCKET_ENV), path.to_str());
+            assert!(get(super::super::control::EXE_ENV).is_some());
+        }
+    }
 }
