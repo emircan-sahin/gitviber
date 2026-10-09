@@ -1,5 +1,5 @@
 import { ChevronDown, Copy, MessageSquareText, SquareTerminal } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -62,12 +62,29 @@ export function AskAgentButton({ root, ask, label = "Ask Agent", what = "this", 
   );
 }
 
+// How tall the question grows before it scrolls: about sixteen lines.
+const MAX_HEIGHT = 320;
+
 /** The question to send with the review, if any: ↵ asks it, Skip opens the session without one. */
 function QuestionBox({ agent, what, onAsk }: { agent: string; what: string; onAsk: (question?: string) => void }) {
   const [text, setText] = useState("");
+  const field = useRef<HTMLTextAreaElement>(null);
+  // Three lines, growing down with what's typed; a scrollbar only once it stops growing.
+  useLayoutEffect(() => {
+    const el = field.current;
+    if (!el) return;
+    // Empty: back to its rows; measured before the popover has its width, it came out too tall.
+    el.style.height = text ? "auto" : "";
+    el.style.overflowY = "";
+    if (!text) return;
+    // Its border isn't in scrollHeight.
+    const full = el.scrollHeight + el.offsetHeight - el.clientHeight;
+    el.style.height = `${Math.min(full, MAX_HEIGHT)}px`;
+    el.style.overflowY = full > MAX_HEIGHT ? "auto" : "hidden";
+  }, [text]);
   return (
     <form
-      className="flex flex-col gap-2 p-3"
+      className="flex flex-col gap-1.5 p-2.5"
       onSubmit={(e) => {
         e.preventDefault();
         if (text.trim()) onAsk(text);
@@ -77,9 +94,11 @@ function QuestionBox({ agent, what, onAsk }: { agent: string; what: string; onAs
         Ask {agent} about {what}
       </label>
       <Textarea
+        ref={field}
         id="ask-agent-question"
         autoFocus
         rows={3}
+        className="py-1.5"
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Your question (optional)"
