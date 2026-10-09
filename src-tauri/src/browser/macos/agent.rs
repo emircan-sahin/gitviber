@@ -4,12 +4,12 @@
 
 use super::page_view::appearance;
 use super::{
-    create, emit, main_thread, out_of_sight, page_tools, set_agent, stop_timer, url_text, view,
-    Delegate, View, GONE, VIEWS,
+    ask, asked, create, emit, main_thread, out_of_sight, page_tools, set_agent, stop_timer,
+    url_text, view, Delegate, View, GONE, VIEWS,
 };
 use crate::browser::control::{AgentScreen, Route, Routes};
 use crate::browser::picks::Bounds;
-use crate::browser::PageState;
+use crate::browser::{Look, PageState};
 use crate::state::Res;
 use block2::RcBlock;
 use objc2::runtime::{AnyObject, Bool};
@@ -26,24 +26,6 @@ use tauri::{AppHandle, Manager};
 
 thread_local! {
     static ROUTES: RefCell<Routes> = RefCell::default();
-    /// What agents asked of each tab, by id: kept apart from its view, so a parked tab made again
-    /// is the device it was, answers dialogs as told, and stays light or dark.
-    static ASKED: RefCell<HashMap<String, Asked>> = RefCell::default();
-}
-
-#[derive(Default, Clone)]
-struct Asked {
-    screen: Option<AgentScreen>,
-    accept_dialogs: bool,
-    dark: Option<bool>,
-}
-
-fn asked(id: &str) -> Asked {
-    ASKED.with_borrow(|a| a.get(id).cloned().unwrap_or_default())
-}
-
-fn ask(id: &str, change: impl FnOnce(&mut Asked)) {
-    ASKED.with_borrow_mut(|a| change(a.entry(id.into()).or_default()));
 }
 
 /// A tab out of sight that never showed takes a page this size.
@@ -75,11 +57,12 @@ pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Re
             .get_webview_window("main")
             .ok_or("The window isn't ready.")?;
         let was = asked(&route.id);
-        let ua = was.screen.as_ref().and_then(|s| s.ua.as_deref());
-        create(&window, &route.id, &route.root, url, ua)?;
-        if was.dark.is_some() {
-            appearance(&route.id, was.dark)?;
-        }
+        let look = Look {
+            ua: was.screen.and_then(|s| s.ua),
+            zoom: None,
+            dark: was.dark,
+        };
+        create(&window, &route.id, &route.root, url, &look)?;
         // Out of sight from the start: it counts toward the pages kept alive, and parks as they do.
         if let Some(v) = view(&route.id) {
             out_of_sight(&v, &route.id);
@@ -102,7 +85,7 @@ pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Re
 /// The app page reloaded: its tabs come back as the user's.
 pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
-    ASKED.with_borrow_mut(HashMap::clear);
+    super::ASKED.with_borrow_mut(HashMap::clear);
 }
 
 /// Awake while `command` runs (`on`): each command wakes and sleeps once however often it asks,
@@ -145,13 +128,12 @@ pub fn agent_dialogs(id: &str, accept: bool) -> Res<()> {
 /// (`browser-appearance`).
 pub fn agent_appearance(app: &AppHandle, id: &str, dark: Option<bool>) -> Res<()> {
     appearance(id, dark)?;
-    ask(id, |a| a.dark = dark);
-    emit(app, "browser-appearance", Look { id, dark });
+    emit(app, "browser-appearance", Shown { id, dark });
     Ok(())
 }
 
 #[derive(Serialize, Clone)]
-struct Look<'a> {
+struct Shown<'a> {
     id: &'a str,
     dark: Option<bool>,
 }

@@ -13,11 +13,13 @@ pub fn browser_create(
     root: String,
     url: String,
     ua: Option<String>,
+    zoom: Option<f64>,
+    dark: Option<bool>,
 ) -> Res<Created> {
     if window.label() != "main" {
         return Err("Browser tabs open in the main window.".into());
     }
-    browser::create(&window, &id, &root, &url, ua.as_deref())
+    browser::create(&window, &id, &root, &url, &browser::Look { ua, zoom, dark })
 }
 
 /// `screen`: the device it shows, in device mode.

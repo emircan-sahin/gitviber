@@ -57,6 +57,15 @@ pub struct PageState {
     pub committed: bool,
 }
 
+/// How a tab shows its page from its first load: its device's user agent, its zoom (outside
+/// device mode) and light or dark (None: as the app).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Look {
+    pub ua: Option<String>,
+    pub zoom: Option<f64>,
+    pub dark: Option<bool>,
+}
+
 /// A view made, or found open: its page, and the picture from when it parked, which stands in
 /// until it loads again.
 #[derive(Serialize, Clone, Debug)]
@@ -214,7 +223,7 @@ pub fn root_key(path: &str) -> String {
 #[cfg(not(target_os = "macos"))]
 mod other {
     use super::{console::Entry, control::AgentScreen, picks::Bounds};
-    use super::{Created, Go, PageState, Rect, Screen};
+    use super::{Created, Go, Look, PageState, Rect, Screen};
     use crate::state::Res;
     use tauri::AppHandle;
 
@@ -262,13 +271,7 @@ mod other {
         Err(UNSUPPORTED.into())
     }
 
-    pub fn create(
-        _: &tauri::WebviewWindow,
-        _: &str,
-        _: &str,
-        _: &str,
-        _: Option<&str>,
-    ) -> Res<Created> {
+    pub fn create(_: &tauri::WebviewWindow, _: &str, _: &str, _: &str, _: &Look) -> Res<Created> {
         Err(UNSUPPORTED.into())
     }
     pub fn place(_: &str, _: Rect, _: Option<Screen>) -> Res<()> {

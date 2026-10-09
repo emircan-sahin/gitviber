@@ -1,7 +1,7 @@
 //! What a tab's tools do to its page besides loading it: find in it, zoom it (outside device
 //! mode, which sets its own zoom to fit), and show it light or dark.
 
-use super::{main_thread, view, GONE};
+use super::{ask, main_thread, view, Delegate, GONE};
 use crate::state::Res;
 use block2::RcBlock;
 use objc2::{sel, DefinedClass};
@@ -9,13 +9,13 @@ use objc2_app_kit::{
     NSAppearance, NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
 };
 use objc2_foundation::{NSObjectProtocol, NSString};
-use objc2_web_kit::{WKFindConfiguration, WKFindResult};
+use objc2_web_kit::{WKFindConfiguration, WKFindResult, WKWebView};
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::time::Duration;
 use tauri::AppHandle;
 
-/// As far as the tab's steps go (zoom.ts), Safari's.
+/// As far as look.ts's ZOOMS go.
 const ZOOMS: std::ops::RangeInclusive<f64> = 0.5..=3.0;
 
 /// The next match of `text` (or the one before), wrapping round: whether there was one. None
@@ -68,18 +68,29 @@ pub fn find(
 pub fn zoom(id: &str, zoom: f64) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
-    let zoom = zoom.clamp(*ZOOMS.start(), *ZOOMS.end());
-    v.delegate.ivars().zoom.set(zoom);
-    if v.delegate.ivars().screen.get().is_none() {
-        unsafe { v.web.setPageZoom(zoom) };
-    }
+    zoom_view(&v.web, &v.delegate, zoom);
     Ok(())
+}
+
+pub(super) fn zoom_view(web: &WKWebView, delegate: &Delegate, zoom: f64) {
+    let zoom = zoom.clamp(*ZOOMS.start(), *ZOOMS.end());
+    delegate.ivars().zoom.set(zoom);
+    if delegate.ivars().screen.get().is_none() {
+        unsafe { web.setPageZoom(zoom) };
+    }
 }
 
 /// The page light or dark (`prefers-color-scheme` follows), or as the app's window (None).
 pub fn appearance(id: &str, dark: Option<bool>) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
+    show_as(id, &v.web, dark);
+    Ok(())
+}
+
+/// Light, dark or as the app, and kept for the tab whoever chose it, the user or an agent: a parked
+/// tab made again by an agent's command shows as it did.
+pub(super) fn show_as(id: &str, web: &WKWebView, dark: Option<bool>) {
     let named = dark.and_then(|dark| {
         // SAFETY: AppKit's own names, there for the life of the app.
         let name = unsafe {
@@ -91,6 +102,6 @@ pub fn appearance(id: &str, dark: Option<bool>) -> Res<()> {
         };
         NSAppearance::appearanceNamed(name)
     });
-    v.web.setAppearance(named.as_deref());
-    Ok(())
+    web.setAppearance(named.as_deref());
+    ask(id, |a| a.dark = dark);
 }

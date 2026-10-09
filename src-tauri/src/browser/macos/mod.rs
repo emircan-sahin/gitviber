@@ -18,8 +18,8 @@ use super::console::Log;
 use super::keys::{self, Key, Route};
 use super::Corners;
 use super::{
-    host_key, is_loopback, loadable, policy, root_key, Created, Failed, Go, PageState, Parked,
-    Policy, Rect, Registry, Screen,
+    host_key, is_loopback, loadable, policy, root_key, Created, Failed, Go, Look, PageState,
+    Parked, Policy, Rect, Registry, Screen,
 };
 use crate::state::Res;
 use block2::{DynBlock, RcBlock};
@@ -51,7 +51,7 @@ use objc2_web_kit::{
 };
 use serde::Serialize;
 use std::cell::{Cell, OnceCell, RefCell};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager, Url};
@@ -103,6 +103,31 @@ thread_local! {
     static EPHEMERAL: OnceCell<Retained<WKWebsiteDataStore>> = const { OnceCell::new() };
     /// A hidden view parks after this many minutes (browserParkAfterMin); 0 never.
     static PARK_AFTER: Cell<u32> = const { Cell::new(10) };
+}
+
+/// What was asked of a tab, by id, apart from its view: a parked tab made again keeps it. Light or
+/// dark is the user's or an agent's (page_view.rs); the device and the dialogs' answers an agent's.
+#[derive(Default, Clone)]
+struct Asked {
+    screen: Option<super::control::AgentScreen>,
+    accept_dialogs: bool,
+    dark: Option<bool>,
+}
+
+thread_local! {
+    static ASKED: RefCell<HashMap<String, Asked>> = RefCell::default();
+}
+
+fn asked(id: &str) -> Asked {
+    ASKED.with_borrow(|a| a.get(id).cloned().unwrap_or_default())
+}
+
+fn ask(id: &str, change: impl FnOnce(&mut Asked)) {
+    ASKED.with_borrow_mut(|a| change(a.entry(id.into()).or_default()));
+}
+
+fn forget(id: &str) {
+    ASKED.with_borrow_mut(|a| a.remove(id));
 }
 
 fn view(id: &str) -> Option<View> {
@@ -774,7 +799,7 @@ pub fn create(
     id: &str,
     root: &str,
     url: &str,
-    ua: Option<&str>,
+    look: &Look,
 ) -> Res<Created> {
     let mtm = main_thread()?;
     if let Some(v) = view(id) {
@@ -846,9 +871,14 @@ pub fn create(
     host.setAutoresizingMask(NSAutoresizingMaskOptions::ViewMinYMargin);
     host.addSubview(&web);
     content.addSubview_positioned_relativeTo(&host, NSWindowOrderingMode::Above, None);
-    if let Some(ua) = ua {
+    // Before the first load, so the page's first paint is already as the tab shows it.
+    if let Some(ua) = &look.ua {
         unsafe { web.setCustomUserAgent(Some(&NSString::from_str(ua))) };
     }
+    if let Some(zoom) = look.zoom {
+        page_view::zoom_view(&web, &delegate, zoom);
+    }
+    page_view::show_as(id, &web, look.dark);
     load(&web, &page);
     #[cfg(debug_assertions)]
     log_process(&web, "made");
@@ -1058,6 +1088,7 @@ fn begin_park(id: &str, since: u64) {
 
 pub fn close(id: &str) {
     if main_thread().is_ok() {
+        forget(id);
         if let Some(v) = VIEWS.with_borrow_mut(|r| r.remove(id)) {
             destroy(v);
         }
@@ -1067,10 +1098,10 @@ pub fn close(id: &str) {
 /// A worktree removed (`root` as root_key wrote it before the folder went): its pages go too.
 pub fn close_root(root: &str) {
     if main_thread().is_ok() {
-        VIEWS
-            .with_borrow_mut(|r| r.remove_root(root))
-            .into_iter()
-            .for_each(destroy);
+        for v in VIEWS.with_borrow_mut(|r| r.remove_root(root)) {
+            forget(&v.delegate.ivars().id);
+            destroy(v);
+        }
     }
 }
 
