@@ -108,18 +108,22 @@ Code's fullscreen view row by row, as it does vim and htop.
 Open a browser tab beside the code with `⇧⌘B` or the globe in the top bar, and check the agent's
 work where you read it. A terminal pane's right-click menu opens the ports its dev server listens
 on, and the address bar lists every port your worktree's terminals serve. Each tab is a page of its
-own on WebKit, as Safari is, with `⌘F` to find in it, `⌘=` / `⌘−` to zoom it, a switch to show it
-light or dark whatever the app is, and the Web Inspector on `⌥⌘I`. On Linux a tab shows the
-pages on your own machine (localhost) only.
+own, with `⌘F` to find in it, `⌘=` / `⌘−` to zoom it, a switch to show it light or dark whatever
+the app is, and the Web Inspector on `⌥⌘I`. On Linux a tab shows the pages on your own machine
+(localhost) only, without these tools.
 
 Device mode (`⇧⌘M`) draws a phone or tablet around the page, notch and corners included, and gives
 the page that device's width, pixel ratio and user agent, upright or turned; Responsive takes any
-size you drag it to. It's still your Mac's WebKit with a mouse: no touch events, and an Android
-device's page isn't Chrome's.
+size you drag it to. It's still your Mac's browser engine with a mouse: no touch events, hover still
+works, `<meta name=viewport>` is ignored, and an Android device's page isn't drawn by Android's
+engine.
 
-`⇧⌘C` picks an element: click it, write what you want, and the agent's terminal gets its selector,
-its React components, its styles and a picture of it. The console counts the page's errors and
-warnings, failed requests too, and Send Errors hands them to the agent in one go. A page out of
+`⇧⌘C` picks an element (⇧-click to gather a few, then click the last): ask what you want, pick the
+model, and a new agent session starts in your worktree's terminal with the page's address, each
+element's selector, React components, styles and a picture of it, and your question, as Ask Agent
+does with a review. The console counts the page's errors and warnings, failed requests too, and
+Send Errors to Agent asks about them the same way; a question about an element can take the
+page's errors along. A page out of
 sight closes after a while to give its memory back, and comes back where it was when you look
 again; Settings → Browser sets how many stay open and for how long, and can reload a worktree's
 pages when its agent finishes.
@@ -263,10 +267,11 @@ is cut down to GitHub's own HTML allowlist, and an image hosted outside GitHub l
 click it. Commit message suggestions go wherever the command you picked sends them. To show your
 Obsidian vault, GitViber reads Obsidian's own list of vaults on your disk; it never touches the
 vault's `.obsidian` folder. Browser tabs keep their own cookies, site storage and cache, apart
-from the app's, and load pages straight from where they're served; Chrome's sign-ins don't carry
-over, and Settings → Browser → Clear Browsing Data empties them. Letting agents use the browser opens
-a socket on your Mac only, in a folder only you can enter, that only GitViber's own terminals have
-the key to.
+from the app's, and load pages straight from where they're served; your other browsers' sign-ins
+don't carry over, and Settings → Browser → Clear Browsing Data empties them. What an agent reads of a
+page, picks or console lines included, goes wherever that agent sends it. Letting agents use the
+browser opens a socket on your Mac only, in a folder only you can enter, that only GitViber's own
+terminals have the key to.
 
 ## FAQ
 
