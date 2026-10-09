@@ -122,7 +122,6 @@ impl<V> Registry<V> {
             .collect()
     }
 
-    /// Every live view.
     pub fn live(&self) -> Vec<&V> {
         self.views.iter().filter_map(Entry::view).collect()
     }

@@ -80,7 +80,7 @@ pub fn browser_pick(id: String, on: bool) -> Res<()> {
 /// What the page logged as errors and warnings, oldest first, with a mark where each load began.
 #[tauri::command]
 pub fn browser_console(id: String) -> Res<Vec<browser::console::Entry>> {
-    browser::console(&id)
+    browser::console_entries(&id)
 }
 
 #[tauri::command]

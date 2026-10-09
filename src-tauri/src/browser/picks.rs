@@ -1,6 +1,7 @@
 //! An element picked on a page (scripts/picker.js), for the note that goes to an agent: what
 //! the picker reads, checked and bounded, and where its picture is kept a day.
 
+use super::cut;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -35,7 +36,6 @@ pub struct Pick {
     /// The React components it's in, nearest first; none outside React.
     #[serde(default)]
     pub components: Vec<String>,
-    /// Its picture, a PNG kept a day.
     #[serde(default)]
     pub screenshot: Option<String>,
     #[serde(default)]
@@ -49,16 +49,6 @@ struct Message {
     cancelled: bool,
 }
 
-fn cut(s: &mut String, max: usize) {
-    if s.len() > max {
-        let mut at = max;
-        while !s.is_char_boundary(at) {
-            at -= 1;
-        }
-        s.truncate(at);
-    }
-}
-
 /// A picker message: Some(pick), or None when the user cancelled. Err for anything else, which
 /// only GitViber's own world could have sent and shouldn't.
 pub fn read(json: &str) -> Result<Option<Pick>, String> {
@@ -66,13 +56,13 @@ pub fn read(json: &str) -> Result<Option<Pick>, String> {
     match (message.pick, message.cancelled) {
         (_, true) => Ok(None),
         (Some(mut pick), false) => {
-            // Bounded here too: the agent gets this as typed text.
-            cut(&mut pick.selector, 1000);
-            cut(&mut pick.tag, 64);
-            cut(&mut pick.html, 610);
-            cut(&mut pick.text, 210);
+            // Bounded here too, to what picker.js cuts them to: the agent gets this as typed text.
+            pick.selector = cut(&pick.selector, 1000);
+            pick.tag = cut(&pick.tag, 64);
+            pick.html = cut(&pick.html, 600);
+            pick.text = cut(&pick.text, 200);
             pick.styles.retain(|k, _| k.len() <= 40);
-            pick.styles.values_mut().for_each(|v| cut(v, 200));
+            pick.styles.values_mut().for_each(|v| *v = cut(v, 200));
             let b = pick.bounds;
             if ![b.x, b.y, b.w, b.h].iter().all(|v| v.is_finite()) {
                 return Err("A pick without a box".into());
@@ -98,17 +88,40 @@ pub fn picture_rect(b: Bounds, zoom: f64, size: (f64, f64)) -> Option<Bounds> {
     })
 }
 
-/// Where picks' pictures go, in the app's cache folder.
 pub fn folder(cache: &Path) -> PathBuf {
     cache.join("browser-picks")
 }
 
-/// A pick's picture, named for when it was taken.
 pub fn picture_path(folder: &Path, at: SystemTime) -> PathBuf {
     let ms = at
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis());
     folder.join(format!("pick-{ms}.png"))
+}
+
+/// A picture saved under a name of its own: a second in the same millisecond (two tabs) gets
+/// the next free one, never another's file.
+pub fn save(folder: &Path, png: &[u8], at: SystemTime) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(folder)?;
+    let first = picture_path(folder, at);
+    let stem = first.with_extension("");
+    for n in 0..100 {
+        let path = if n == 0 {
+            first.clone()
+        } else {
+            PathBuf::from(format!("{}-{n}.png", stem.display()))
+        };
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut file) => return std::io::Write::write_all(&mut file, png).map(|()| path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::ErrorKind::AlreadyExists.into())
 }
 
 /// Pictures more than a day old, gone; run as the app starts.
@@ -157,7 +170,7 @@ mod tests {
             &format!(r#""text":"{}""#, "ü".repeat(500)),
         );
         let pick = read(&long).unwrap().unwrap();
-        assert!(pick.text.len() <= 210 && pick.text.chars().all(|c| c == 'ü'));
+        assert!(pick.text.chars().count() == 200 && pick.text.chars().all(|c| c == 'ü'));
     }
 
     #[test]
@@ -251,7 +264,7 @@ mod tests {
         ] {
             assert!(read(no).is_err(), "{no}");
         }
-        // Every field bounded, on a char edge, and odd style names dropped.
+        // Every field bounded in characters, and odd style names dropped.
         let wide = "界".repeat(2000);
         let message = serde_json::json!({ "pick": {
             "selector": wide, "tag": wide, "html": wide, "text": wide,
@@ -263,16 +276,16 @@ mod tests {
         for (text, max) in [
             (&pick.selector, 1000),
             (&pick.tag, 64),
-            (&pick.html, 610),
-            (&pick.text, 210),
+            (&pick.html, 600),
+            (&pick.text, 200),
         ] {
             assert!(
-                text.len() <= max && text.chars().all(|c| c == '界'),
+                text.chars().count() == max && text.chars().all(|c| c == '界'),
                 "{max}"
             );
         }
         assert_eq!(pick.styles.len(), 1);
-        assert!(pick.styles["color"].len() <= 200);
+        assert_eq!(pick.styles["color"].chars().count(), 200);
         // An empty or inside-out box shows nowhere.
         assert_eq!(picture_rect(pick.bounds, 1.0, (1000.0, 1000.0)), None);
     }
@@ -334,6 +347,18 @@ mod tests {
         assert_eq!(folder(&dir), dir.join("browser-picks"));
         let at = SystemTime::UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
         assert_eq!(picture_path(&dir, at), dir.join("pick-1700000000123.png"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_pictures_in_one_millisecond_keep_both() {
+        let dir = std::env::temp_dir().join(format!("gitviber-picks-save-{}", std::process::id()));
+        let at = SystemTime::UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
+        let a = save(&dir, b"a", at).unwrap();
+        let b = save(&dir, b"b", at).unwrap();
+        assert_eq!(a, dir.join("pick-1700000000123.png"));
+        assert_eq!(b, dir.join("pick-1700000000123-1.png"));
+        assert_eq!(std::fs::read(&a).unwrap(), b"a");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

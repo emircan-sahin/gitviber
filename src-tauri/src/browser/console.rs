@@ -1,13 +1,18 @@
 //! What a page logs as errors and warnings (scripts/console.js), kept per view for the browser
 //! tab's console badge and panel: the latest few hundred, with a mark where each load began.
 
+use super::cut;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 /// Entries a view keeps; older ones go.
 const KEEP: usize = 500;
-/// What console.js cuts a message and stack to, and the backend holds it to whatever arrives.
+/// What console.js cuts a message and stack to, in characters, and the backend holds it to
+/// whatever arrives.
 const MAX_TEXT: usize = 2048;
+/// A line console.js sends is three such texts and a little: past this it's no line of its, and
+/// isn't parsed at all.
+const MAX_LINE: usize = 3 * 4 * MAX_TEXT + 1024;
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq)]
 pub struct Entry {
@@ -34,17 +39,6 @@ pub struct Log {
     counts: Counts,
 }
 
-fn cut(mut s: String) -> String {
-    if s.len() > MAX_TEXT {
-        let mut at = MAX_TEXT;
-        while !s.is_char_boundary(at) {
-            at -= 1;
-        }
-        s.truncate(at);
-    }
-    s
-}
-
 impl Log {
     fn push(&mut self, entry: Entry) {
         if self.entries.len() == KEEP {
@@ -55,17 +49,20 @@ impl Log {
 
     /// One line of console.js's JSON; anything else (a page posting its own) is no entry.
     pub fn add(&mut self, json: &str) -> bool {
+        if json.len() > MAX_LINE {
+            return false;
+        }
         let Ok(mut entry) = serde_json::from_str::<Entry>(json) else {
             return false;
         };
         match entry.level.as_str() {
-            "error" => self.counts.errors += 1,
-            "warn" => self.counts.warnings += 1,
+            "error" => self.counts.errors = self.counts.errors.saturating_add(1),
+            "warn" => self.counts.warnings = self.counts.warnings.saturating_add(1),
             _ => return false,
         }
-        entry.msg = cut(entry.msg);
-        entry.stack = cut(entry.stack);
-        entry.url = cut(entry.url);
+        entry.msg = cut(&entry.msg, MAX_TEXT);
+        entry.stack = cut(&entry.stack, MAX_TEXT);
+        entry.url = cut(&entry.url, MAX_TEXT);
         self.push(entry);
         true
     }
@@ -76,7 +73,7 @@ impl Log {
             level: "load".into(),
             msg: String::new(),
             stack: String::new(),
-            url: cut(url.into()),
+            url: cut(url, MAX_TEXT),
             ts,
         });
     }
@@ -148,10 +145,10 @@ mod tests {
         }
         // A missing stack is an empty one.
         assert!(log.add(r#"{"level":"error","msg":"x","url":"u","ts":1}"#));
-        let long = "é".repeat(MAX_TEXT);
+        let long = "é".repeat(MAX_TEXT + 5);
         assert!(log.add(&line("warn", &long)));
         let msg = &log.entries()[1].msg;
-        assert!(msg.len() <= MAX_TEXT && msg.chars().all(|c| c == 'é'));
+        assert!(msg.chars().count() == MAX_TEXT && msg.chars().all(|c| c == 'é'));
         assert_eq!(
             log.counts(),
             Counts {
@@ -197,7 +194,7 @@ mod tests {
         );
         // A mark's url is cut like a line's.
         log.loaded(&"x".repeat(5 * MAX_TEXT), 0.0);
-        assert_eq!(log.entries().last().unwrap().url.len(), MAX_TEXT);
+        assert_eq!(log.entries().last().unwrap().url.chars().count(), MAX_TEXT);
     }
 
     #[test]
@@ -222,11 +219,7 @@ mod tests {
         assert!(log.add(&big));
         let e = &log.entries()[0];
         for text in [&e.msg, &e.stack, &e.url] {
-            assert!(
-                text.len() <= MAX_TEXT
-                    && text.len() > MAX_TEXT - 4
-                    && text.chars().all(|c| c == '😀')
-            );
+            assert!(text.chars().count() == MAX_TEXT && text.chars().all(|c| c == '😀'));
         }
         // Random bytes never panic.
         let mut seed: u64 = 3;
@@ -240,5 +233,18 @@ mod tests {
                 .collect();
             let _ = log.add(&junk);
         }
+    }
+
+    #[test]
+    fn an_oversized_line_is_refused_unread_and_counts_never_wrap() {
+        let mut log = Log::default();
+        let huge = format!(
+            r#"{{"level":"error","msg":"{}","url":"u","ts":1}}"#,
+            "x".repeat(MAX_LINE)
+        );
+        assert!(!log.add(&huge));
+        log.counts.errors = u32::MAX;
+        assert!(log.add(&line("error", "one more")));
+        assert_eq!(log.counts().errors, u32::MAX);
     }
 }

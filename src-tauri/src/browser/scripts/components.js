@@ -1,4 +1,4 @@
-// A picked element's React components, nearest first (browser/macos/tools.rs). The body of an
+// A picked element's React components, nearest first (browser/macos/page_tools.rs). The body of an
 // async function run in the page's own world, which alone sees React's fiber on the element;
 // `nonce` is the tag picker.js left on it. A production build's names are minified.
 const el = document.querySelector(`[data-gv-pick="${CSS.escape(nonce)}"]`);

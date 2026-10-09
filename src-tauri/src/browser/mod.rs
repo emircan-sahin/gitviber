@@ -16,13 +16,13 @@ mod registry;
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    agent_done, clear_data, close, close_all, close_root, configure, console, console_clear,
-    create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
+    agent_done, clear_data, close, close_all, close_root, configure, console_clear,
+    console_entries, create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
-    agent_done, clear_data, close, close_all, close_root, configure, console, console_clear,
-    create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
+    agent_done, clear_data, close, close_all, close_root, configure, console_clear,
+    console_entries, create, focus, go, hide, inspect, navigate, pick, place, set_agent, snapshot,
 };
 
 pub use registry::{Parked, Registry};
@@ -168,6 +168,15 @@ pub fn loadable(url: &str) -> bool {
     policy(url, true, false) == Policy::Allow
 }
 
+/// At most `max` characters of a page's text, as the page's scripts cut it (by character, not
+/// byte: a limit of the page's own can't split one).
+pub fn cut(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((at, _)) => s[..at].to_string(),
+        None => s.to_string(),
+    }
+}
+
 /// A host as a URL and a certificate challenge both name it: IPv6 without brackets, lowercase.
 pub fn host_key(host: &str) -> String {
     host.trim_start_matches('[')
@@ -224,7 +233,7 @@ mod other {
     pub fn pick(_: &str, _: bool) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
-    pub fn console(_: &str) -> Res<Vec<Entry>> {
+    pub fn console_entries(_: &str) -> Res<Vec<Entry>> {
         Err(UNSUPPORTED.into())
     }
     pub fn console_clear(_: &str) -> Res<()> {
@@ -318,6 +327,14 @@ mod tests {
         ] {
             assert!(!is_loopback(no), "{no}");
         }
+    }
+
+    #[test]
+    fn page_text_is_cut_by_character() {
+        assert_eq!(cut("héllo", 2), "hé");
+        assert_eq!(cut("😀😀😀", 2), "😀😀");
+        assert_eq!(cut("ab", 5), "ab");
+        assert_eq!(cut("", 0), "");
     }
 
     #[test]

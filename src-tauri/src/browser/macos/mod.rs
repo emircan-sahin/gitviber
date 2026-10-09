@@ -5,7 +5,7 @@
 
 mod page_tools;
 
-pub use page_tools::{console, console_clear, pick};
+pub use page_tools::{console_clear, console_entries, pick};
 
 use super::console::Log;
 use super::keys::{self, Key, Route};
