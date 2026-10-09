@@ -86,3 +86,9 @@ test("a browser tab's key is its own, whatever its id or the other tabs' paths h
   assert.equal(selectionKey({ kind: "browser", id: "tab-1", url: "about:blank", title: "Docs" }), keys[0]);
   assert.equal(selectionPath({ kind: "browser", id: "tab-1", url: "about:blank" }), "New Tab");
 });
+
+test("a browser tab's device is shown with it, not part of who it is", () => {
+  const plain: Selection = { kind: "browser", id: "tab-9", url: "http://localhost:5173/" };
+  assert.equal(selectionKey({ ...plain, device: { name: "iPhone 16", rotated: true } }), selectionKey(plain));
+  assert.equal(selectionPath({ ...plain, device: { name: "Responsive", w: 320, h: 640 } }), "localhost:5173");
+});

@@ -1,4 +1,5 @@
 import type { Commit, FileChange, Issue, Pull, Target } from "../api";
+import type { DeviceChoice } from "../browser/devices.ts";
 import { pageLabel } from "../browser/url.ts";
 
 /**
@@ -51,8 +52,9 @@ export type Selection =
   | { kind: "guide"; of: "branch"; base: string; label: string }
   | { kind: "guide"; of: "pull"; pull: Pull; target: Target }
   // A web page (features/browser): `id` names the tab's native view, whatever it loads; no `file`,
-  // so nothing takes it for a repo file. `title` is the page's last, for a tab not loaded yet.
-  | { kind: "browser"; id: string; url: string; title?: string };
+  // so nothing takes it for a repo file. `title` is the page's last, for a tab not loaded yet;
+  // `device`, the one it shows its page as (device mode).
+  | { kind: "browser"; id: string; url: string; title?: string; device?: DeviceChoice };
 
 export type GuideSelection = Extract<Selection, { kind: "guide" }>;
 

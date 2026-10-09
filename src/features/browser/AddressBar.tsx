@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowRight, ExternalLink, RotateCw, ShieldAlert, X } from "lucide-react";
-import { type FormEvent, type RefObject, useState } from "react";
+import { type FormEvent, type ReactNode, type RefObject, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { DisabledTip, Tip } from "@/components/ui/tooltip";
@@ -27,10 +27,12 @@ interface Props {
   root: string;
   /** The address field, for ⌘L. */
   field: RefObject<HTMLInputElement | null>;
+  /** Buttons of the page's own, before the ports menu (device mode). */
+  tools?: ReactNode;
 }
 
 /** Back, forward, reload, the address (a port, a host or a URL; Enter loads it), the terminals' ports, and the system browser. */
-export function AddressBar({ url, state, page, root, field }: Props) {
+export function AddressBar({ url, state, page, root, field, tools }: Props) {
   const current = state?.url || url;
   // What's typed while the field has focus; otherwise it shows where the page is.
   const [typed, setTyped] = useState<string | null>(null);
@@ -118,6 +120,7 @@ export function AddressBar({ url, state, page, root, field }: Props) {
           </span>
         </Tip>
       )}
+      {tools}
       <PortsMenu root={root} onOpen={open} />
       <DisabledTip label="Open in Browser" disabled={current === BLANK}>
         <Button type="button" variant="ghost" size="icon-sm" disabled={current === BLANK} onClick={() => void github.openUrl(current).catch(failed("Could not open the link"))}>
