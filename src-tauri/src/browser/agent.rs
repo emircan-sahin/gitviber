@@ -420,7 +420,7 @@ impl Tab {
             } => self.acted(json!({ "cmd": "press", "key": chord })),
             Command::Press { chord, hold, .. } => self.press(&chord, hold),
             Command::Key(down, key) => {
-                let on = self.focused()?;
+                let on = self.focused(down)?;
                 let keys = if down {
                     Keys::Down(key.clone())
                 } else {
@@ -536,7 +536,7 @@ impl Tab {
     /// A chord down and up, held `hold` in between if asked, on the element with focus: its keys
     /// may send the page somewhere.
     fn press(&self, chord: &str, hold: Option<Duration>) -> Res<Reply> {
-        let on = self.focused()?;
+        let on = self.focused(true)?;
         self.moved(|| {
             let half = |half| Keys::Press(chord.into(), half);
             match hold {
@@ -552,10 +552,17 @@ impl Tab {
         })
     }
 
-    /// What has the page's focus, as a reply names it.
-    fn focused(&self) -> Res<String> {
+    /// What has the page's focus, as a reply names it. For a key going down, not a <select>,
+    /// whose menu a key opens, holding GitViber until it closes.
+    fn focused(&self, down: bool) -> Res<String> {
         let focused = self.script(json!({ "cmd": "focused" }))?;
-        Ok(focused["label"].as_str().unwrap_or("the page").to_string())
+        let label = focused["label"].as_str().unwrap_or("the page");
+        if down && focused["menu"] == true {
+            return Err(format!(
+                "{label} has focus: a key there opens its native menu. Use select"
+            ));
+        }
+        Ok(label.to_string())
     }
 
     /// Where a pointer command acts, and what's there (agent.js `point`).

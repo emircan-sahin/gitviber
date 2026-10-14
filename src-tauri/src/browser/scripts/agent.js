@@ -209,10 +209,11 @@ function focus({ target }) {
   return { label: label(el) };
 }
 
-/** What has focus, for a key's reply. */
+/** What has focus, for a key's reply, and whether it's a <select> a key would open the menu of. */
 const focused = () => {
   const el = document.activeElement;
-  return { label: el && el !== document.body ? label(el) : "the page" };
+  const menu = el?.localName === "select" && !el.multiple && el.size <= 1;
+  return { label: el && el !== document.body ? label(el) : "the page", menu };
 };
 
 function mouse(el, types, at) {

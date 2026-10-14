@@ -302,13 +302,14 @@ define_class!(
 
         /// Not in its panel, where the page takes focus for its agents, not from the app page.
         /// An agent's right click fires the page's contextmenu, but no menu: one with no items
-        /// doesn't show, and a menu would hold the main thread until dismissed.
+        /// doesn't show, and a menu would hold the main thread until dismissed. None at all in
+        /// a panel, where no one would see it to dismiss it.
         #[unsafe(method(willOpenMenu:withEvent:))]
         fn will_open_menu(&self, menu: &AnyObject, event: &NSEvent) {
             let _: () = unsafe { msg_send![super(self), willOpenMenu: menu, withEvent: event] };
             let menus = &self.ivars().menus;
-            if menus.get() > 0 {
-                menus.set(menus.get() - 1);
+            if menus.get() > 0 || panel::in_panel(self) {
+                menus.set(menus.get().saturating_sub(1));
                 let _: () = unsafe { msg_send![menu, removeAllItems] };
             }
         }
