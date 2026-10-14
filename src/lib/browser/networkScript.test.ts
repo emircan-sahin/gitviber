@@ -144,24 +144,70 @@ test("the page gets its own rejection, and an abort is no failure", async () => 
   );
 });
 
-test("a big body is kept to its start but sized in full, and the page still reads all of it", async () => {
-  const big = "é".repeat(20_000);
+test("a big body is kept to its start, its copy let go there, and timing gives the rest", async () => {
+  let pulls = 0;
+  const chunk = new TextEncoder().encode("é".repeat(1000));
+  const big = new ReadableStream<Uint8Array>({
+    pull(c) {
+      if (++pulls > 40) c.close();
+      else c.enqueue(chunk);
+    },
+  });
   const p = page(async () => new Response(big, { headers: { "content-type": "text/plain; charset=utf-8" } }));
   const response: Response = await p.window.fetch("/big");
-  assert.equal(await response.text(), big);
   await settle();
+  // The page hasn't read: its copy stopped past 8192 characters, and so did the source.
+  assert.ok(pulls < 15, `${pulls} pulls`);
   const body = p.entries()[0].responseBody;
-  assert.equal(body.cut, true);
-  assert.equal(body.size, 40_000);
-  assert.equal(body.text.length, 8192);
-  assert.ok(body.text.endsWith("…"));
+  assert.deepEqual([body.cut, body.atLeast, body.text.length], [true, true, 8192]);
+  assert.ok(body.text.endsWith("…") && body.size >= 8192);
+  assert.equal((await response.text()).length, 40_000, "the page still reads all of it");
+  assert.equal(p.entries()[0].duration, undefined);
+  p.resources([{ entryType: "resource", initiatorType: "fetch", name: "http://localhost:5173/big", startTime: 1, duration: 42, decodedBodySize: 80_000 }]);
+  const e = p.entries()[0];
+  assert.deepEqual([e.duration, e.size], [42, 80_000]);
+  assert.equal(p.entries().length, 1, "a fetch's own timing is no entry of its own");
 });
 
-test("a binary body is only its type and size", async () => {
-  const p = page(async () => new Response(new Uint8Array(3000), { headers: { "content-type": "image/png" } }));
-  await p.window.fetch("/logo.png");
+test("a page letting go of its body by any way lets go of the source too", async () => {
+  const ways: [string, (r: Response) => Promise<unknown>][] = [
+    ["body.cancel()", (r) => r.body!.cancel()],
+    ["a piped stream's reader", async (r) => {
+      const reader = r.body!.pipeThrough(new TextDecoderStream()).getReader();
+      await reader.read();
+      return reader.cancel();
+    }],
+    ["for await ... break", async (r) => {
+      for await (const _ of r.body as unknown as AsyncIterable<Uint8Array>) break;
+    }],
+  ];
+  for (const [way, letGo] of ways) {
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("data: one\n\n"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const p = page(async () => new Response(stream, { headers: { "content-type": "text/event-stream" } }));
+    const response: Response = await p.window.fetch("/events");
+    await settle();
+    let settled = false;
+    void letGo(response).then(() => (settled = true));
+    await settle();
+    assert.ok(settled && cancelled, way);
+    assert.equal(p.entries()[0].responseBody.text, "data: one\n\n", way);
+  }
+});
+
+test("a binary body is only its type and size, never read", async () => {
+  const p = page(async () => new Response(new Uint8Array(3000), { headers: { "content-type": "image/png", "content-length": "3000" } }));
+  const response: Response = await p.window.fetch("/logo.png");
+  assert.equal(response.body!.locked, false);
   await settle();
-  assert.deepEqual(p.entries()[0].responseBody, { type: "image/png", size: 3000, cut: false });
+  assert.deepEqual(p.entries()[0].responseBody, { type: "image/png", size: 3000 });
 });
 
 test("a stream that never ends doesn't hold the page up", async () => {
@@ -290,7 +336,7 @@ test("a WebSocket is the page's own class still, and its frames and close are lo
 test("everything else comes from resource timing, in batches, without fetch's twice", () => {
   const p = page();
   const list = [
-    { entryType: "navigation", initiatorType: "navigation", name: "http://localhost:5173/", startTime: 0, duration: 120, transferSize: 900 },
+    { entryType: "navigation", initiatorType: "navigation", name: "http://localhost:5173/", startTime: 0, duration: 120, decodedBodySize: 900 },
     { entryType: "resource", initiatorType: "fetch", name: "http://localhost:5173/api", startTime: 5, duration: 9, transferSize: 10 },
     ...Array.from({ length: 150 }, (_, i) => ({
       entryType: "resource",

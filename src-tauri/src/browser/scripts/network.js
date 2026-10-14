@@ -1,26 +1,28 @@
 // What the page sends and loads, for `gitviber browser network` (browser/network.rs): its fetch
 // and XMLHttpRequest calls with headers and bodies as the page sees them, its WebSockets with
-// their frames, and everything else it loads as resource timing has it. Runs in an agent tab's
-// own world at document start; the page could post to gvNetwork itself, which only adds
-// requests to its own log.
+// their frames, and everything else it loads as resource timing has it. Runs in the page's own
+// world at document start; the page could post to gvNetwork itself, which only adds requests to
+// its own log.
 (() => {
   const handler = window.webkit?.messageHandlers?.gvNetwork;
   if (!handler || window.__gvNetwork) return;
   window.__gvNetwork = true;
-  /** Characters of a body kept, and of a WebSocket frame. */
+  // Characters kept of a body, a frame, an address and a header; network.rs holds posts to the
+  // same, and refuses one past 1 MiB.
   const BODY = 8192;
   const FRAME = 1024;
-  /** Bytes of a fetch's body read for its size and its end; past this it's left to the page. */
-  const READ = 8 << 20;
+  const URL_TEXT = 4096;
+  const NAME = 256;
+  const VALUE = 2048;
   const HEADERS = 100;
-  // A page requesting in a loop would otherwise post (and the app parse) every one of them.
+  // A page requesting in a loop, or a socket streaming ticks, would otherwise post (and the app
+  // parse) every one of them. Frames have their own room: a busy socket hides no request.
   const PER_SECOND = 100;
   const later = setTimeout;
   const stringify = JSON.stringify;
   const clock = performance;
   const now = () => clock.timeOrigin + clock.now();
-  // To `max` UTF-16 units with the ellipsis, never splitting a pair (the app's JSON parser
-  // refuses half of one).
+  // To `max` UTF-16 units with the ellipsis, never splitting a pair.
   const cut = (s, max) => {
     if (s.length <= max) return s;
     const end = /[\uD800-\uDBFF]/.test(s[max - 2]) ? max - 2 : max - 1;
@@ -34,9 +36,13 @@
     }
     return n;
   };
+  // A lone surrogate (a page's own text cut mid-pair) as U+FFFD: the app's JSON parser refuses
+  // a post with one.
+  const whole = (key, v) =>
+    typeof v === "string" ? v.replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g, (c) => (c.length === 2 ? c : "�")) : v;
   const post = (updates) => {
     try {
-      handler.postMessage(stringify(updates));
+      handler.postMessage(stringify(updates, whole));
     } catch {
       // A request the page made unsendable is no reason to break its request.
     }
@@ -45,43 +51,46 @@
   // Each entry posts once as it starts and again as it ends, under a key of this document's.
   const doc = Math.random().toString(36).slice(2, 10);
   let count = 0;
-  let since = 0;
-  let sent = 0;
-  let skipped = 0;
-  const room = (counted = true) => {
+  const requests = { since: 0, sent: 0 };
+  const frames = { since: 0, sent: 0 };
+  const room = (r) => {
     const t = Date.now();
-    if (t - since >= 1000) {
-      since = t;
-      sent = 0;
+    if (t - r.since >= 1000) {
+      r.since = t;
+      r.sent = 0;
     }
-    if (sent < PER_SECOND) {
-      sent++;
-      return true;
-    }
-    if (counted && !skipped++) {
-      later(() => {
-        post([{ skipped }]);
-        skipped = 0;
-      }, 1000);
-    }
-    return false;
+    if (r.sent === PER_SECOND) return false;
+    r.sent++;
+    return true;
   };
-  /** A new entry, or null past the limit. */
+  let skipped = 0;
+  /** A new entry, or null past the limit, counted. */
   const begin = (fields) => {
-    if (!room()) return null;
-    const rec = { key: `${doc}:${++count}`, start: now() };
+    if (!room(requests)) {
+      if (!skipped++) {
+        later(() => {
+          post([{ skipped }]);
+          skipped = 0;
+        }, 1000);
+      }
+      return null;
+    }
+    const rec = { key: `${doc}:${++count}`, start: now(), url: fields.url };
     post([{ ...fields, key: rec.key, start: rec.start }]);
     return rec;
   };
   const update = (rec, fields) => rec && post([{ ...fields, key: rec.key }]);
   const ended = (rec) => now() - rec.start;
+  const failure = (e) => (e?.name === "AbortError" ? "aborted" : "failed");
 
   const full = (url) => {
+    let href;
     try {
-      return new URL(url, document.baseURI).href;
+      href = new URL(url, document.baseURI).href;
     } catch {
-      return String(url);
+      href = String(url);
     }
+    return cut(href, URL_TEXT);
   };
   // Only what reads without side effects: a page's own iterator would be used up before its
   // request saw it.
@@ -92,7 +101,7 @@
     try {
       for (const [name, value] of new Headers(h)) {
         if (out.length === HEADERS) break;
-        out.push([name, cut(value, 2048)]);
+        out.push([cut(name, NAME), cut(value, VALUE)]);
       }
     } catch {
       // Headers the request itself refuses.
@@ -106,7 +115,7 @@
       .slice(0, HEADERS)
       .map((l) => {
         const at = l.indexOf(":");
-        return [l.slice(0, at).trim().toLowerCase(), cut(l.slice(at + 1).trim(), 2048)];
+        return [cut(l.slice(0, at).trim().toLowerCase(), NAME), cut(l.slice(at + 1).trim(), VALUE)];
       });
   const text = (s, type) => ({ text: cut(s, BODY), size: bytes(s), cut: s.length > BODY, ...(type && { type }) });
   const TOO_LONG = {};
@@ -140,52 +149,139 @@
     if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return { type: "binary", size: body.byteLength };
     return { type: body instanceof ReadableStream ? "stream" : "object" };
   };
-  const TEXT = /^text\/|json|xml|javascript|ecmascript|urlencoded|graphql/i;
-  // A body as it streams in, on a copy of the page's: text kept to BODY, counted to its end for
-  // its size, but never past READ, nor an event stream past what's kept, which may never end.
-  const read = async (stream, type) => {
-    const reader = stream.getReader();
-    const textual = !type || TEXT.test(type);
-    const endless = /event-stream/i.test(type);
+
+  // A copy of a body holds the connection open until it, too, is let go: so the copy stops at
+  // BODY characters, and goes the moment the page lets go of its own stream, by cancelling it,
+  // its reader, a stream piped from it or its async iteration. (A fetch aborted ends both.)
+  const copies = new WeakMap();
+  const release = (s) => copies.get(s)?.();
+  const linked = (from, to) => {
+    if (copies.has(from)) copies.set(to, copies.get(from));
+    return to;
+  };
+  const S = typeof ReadableStream === "function" ? ReadableStream.prototype : null;
+  if (S) {
+    const cancel0 = S.cancel;
+    const getReader0 = S.getReader;
+    const pipeThrough0 = S.pipeThrough;
+    const values0 = S.values;
+    S.cancel = function cancel() {
+      const result = cancel0.apply(this, arguments);
+      release(this);
+      return result;
+    };
+    S.getReader = function getReader() {
+      return linked(this, getReader0.apply(this, arguments));
+    };
+    if (pipeThrough0) {
+      S.pipeThrough = function pipeThrough(transform) {
+        return linked(this, pipeThrough0.apply(this, arguments));
+      };
+    }
+    if (values0) {
+      S.values = S[Symbol.asyncIterator] = function values() {
+        const it = values0.apply(this, arguments);
+        if (copies.has(this)) {
+          const stream = this;
+          const return0 = it.return;
+          it.return = function () {
+            release(stream);
+            return return0.apply(this, arguments);
+          };
+        }
+        return it;
+      };
+    }
+    for (const Reader of [globalThis.ReadableStreamDefaultReader, globalThis.ReadableStreamBYOBReader]) {
+      const readerCancel0 = Reader?.prototype.cancel;
+      if (!readerCancel0) continue;
+      Reader.prototype.cancel = function cancel() {
+        const result = readerCancel0.apply(this, arguments);
+        release(this);
+        return result;
+      };
+    }
+  }
+  /** The start of a body as text, from `copy`; `page` is the page's own stream, if it has one. */
+  const readCopy = async (copy, page) => {
+    const reader = copy.getReader();
+    let gone = false;
+    if (page) {
+      copies.set(page, () => {
+        gone = true;
+        reader.cancel().catch(() => {});
+      });
+    }
     const decoder = new TextDecoder();
     let kept = "";
     let size = 0;
     let end = false;
     let error;
     try {
-      while (size <= READ && !(endless && kept.length > BODY)) {
+      while (kept.length <= BODY) {
         const { done, value } = await reader.read();
         if (done) {
-          end = true;
+          end = !gone;
           break;
         }
         size += value.byteLength;
-        if (textual && kept.length <= BODY) kept += decoder.decode(value, { stream: true });
+        kept += decoder.decode(value, { stream: true });
       }
     } catch (e) {
-      error = e?.name === "AbortError" ? "aborted" : "failed";
+      error = failure(e);
     }
-    if (!end && !error) reader.cancel().catch(() => {});
-    const body = { type: type || undefined, size: end ? size : undefined, cut: !end || kept.length > BODY };
-    if (textual) body.text = cut(kept, BODY);
-    return { body, end, error };
+    if (page) copies.delete(page);
+    if (!end && !gone && !error) reader.cancel().catch(() => {});
+    return { kept, size, end, error };
   };
-  const failure = (e) => (e?.name === "AbortError" ? "aborted" : "failed");
+  const TEXT = /^text\/|json|xml|javascript|ecmascript|urlencoded|graphql/i;
+
+  // A fetch's own timing entry comes once its response has ended: its full duration and size,
+  // where the copy let go early. Matched by address, oldest first.
+  const timing = typeof PerformanceObserver === "function" && (PerformanceObserver.supportedEntryTypes ?? []).includes("resource");
+  const awaiting = new Map();
+  const expect = (rec) => {
+    if (!timing) return;
+    const list = awaiting.get(rec.url) ?? [];
+    if (list.push(rec) > 20) list.shift();
+    awaiting.set(rec.url, list);
+    if (awaiting.size > 200) awaiting.delete(awaiting.keys().next().value);
+  };
+  /** The oldest fetch of `url` still waiting for its entry, or `rec` itself, taken off. */
+  const timed = (url, rec) => {
+    const list = awaiting.get(url) ?? [];
+    const at = rec ? list.indexOf(rec) : 0;
+    const found = at < 0 ? undefined : list.splice(at, 1)[0];
+    if (!list.length) awaiting.delete(url);
+    return found;
+  };
 
   const fetch0 = window.fetch;
   if (typeof fetch0 === "function") {
     const answered = (rec, response) => {
       const type = response.headers.get("content-type") ?? "";
+      const length = Number(response.headers.get("content-length")) || undefined;
       update(rec, {
         status: response.status,
-        statusText: response.statusText,
-        to: response.redirected ? response.url : undefined,
+        statusText: cut(response.statusText, NAME),
+        to: response.redirected ? cut(response.url, URL_TEXT) : undefined,
         responseHeaders: pairs(response.headers),
       });
       if (!response.body) return update(rec, { duration: ended(rec) });
-      // A copy, read alongside the page's: its own body stays unread and streams as it would.
-      read(response.clone().body, type).then(({ body, end, error }) =>
-        update(rec, { responseBody: body, duration: end || error ? ended(rec) : undefined, error }),
+      if (type && !TEXT.test(type)) return update(rec, { responseBody: { type, size: length } });
+      const copy = response.clone();
+      readCopy(copy.body, response.body).then(({ kept, size, end, error }) =>
+        update(rec, {
+          responseBody: {
+            text: cut(kept, BODY),
+            type: type || undefined,
+            size: end ? size : (length ?? size),
+            cut: !end || kept.length > BODY,
+            ...(!end && length === undefined && { atLeast: true }),
+          },
+          duration: end || error ? ended(rec) : undefined,
+          error,
+        }),
       );
     };
     // Named and sized as WebKit's own.
@@ -198,18 +294,19 @@
         const has = init && "body" in init;
         rec = begin({
           kind: "fetch",
-          method: String(init?.method ?? request?.method ?? "GET").toUpperCase(),
+          method: cut(String(init?.method ?? request?.method ?? "GET").toUpperCase(), NAME),
           url: full(request ? request.url : input),
           requestHeaders: pairs(headers),
           requestBody: has ? sentBody(init.body) : undefined,
         });
         // A Request's own body, from a copy made before the page's request uses it up.
         if (rec && !has && request?.body && !request.bodyUsed) {
-          const copy = request.clone();
-          read(copy.body, request.headers.get("content-type") ?? "").then(({ body }) =>
-            update(rec, { requestBody: body }),
+          const type = request.headers.get("content-type") ?? "";
+          readCopy(request.clone().body).then(({ kept, size, end }) =>
+            update(rec, { requestBody: { text: cut(kept, BODY), type: type || undefined, size, cut: !end, ...(!end && { atLeast: true }) } }),
           );
         }
+        if (rec) expect(rec);
       } catch {
         // An odd argument is the page's own fetch's to refuse.
       }
@@ -227,6 +324,7 @@
           return response;
         },
         (error) => {
+          timed(rec.url, rec);
           update(rec, { error: failure(error), duration: ended(rec) });
           throw error;
         },
@@ -236,9 +334,11 @@
 
   const XHR = window.XMLHttpRequest;
   if (typeof XHR === "function") {
-    // Each object's request now: one object may be opened again and again.
+    // Each object's request now: one object may be opened again and again, even from its own
+    // load handler, which runs before the loadend this listens for.
     const opened = new WeakMap();
     const sending = new WeakMap();
+    const stale = new WeakMap();
     const watched = new WeakSet();
     const proto = XHR.prototype;
     const open0 = proto.open;
@@ -249,15 +349,36 @@
       switch (xhr.responseType) {
         case "":
         case "text": {
-          const s = xhr.responseText;
-          return { ...text(s, type), size };
+          const t = text(xhr.responseText, type);
+          return size === undefined ? t : { ...t, size };
         }
         case "json": {
           const s = json(xhr.response);
           return s === null ? { type, size, cut: true } : { ...text(s, type), size };
         }
         default:
-          return { type: type || xhr.responseType, size };
+          return { type: type || xhr.responseType, size: size ?? xhr.response?.size ?? xhr.response?.byteLength };
+      }
+    };
+    /** The object's request, ended as `how` said, or as the object stands. */
+    const done = (xhr, how, size) => {
+      const rec = sending.get(xhr);
+      if (!rec) return;
+      sending.delete(xhr);
+      try {
+        const fields = { duration: ended(rec) };
+        const failed = how ?? (xhr.readyState !== 4 ? "abort" : xhr.status === 0 ? "error" : null);
+        if (failed) fields.error = { abort: "aborted", timeout: "timeout" }[failed] ?? "failed";
+        else {
+          fields.status = xhr.status;
+          fields.statusText = cut(xhr.statusText, NAME);
+          fields.responseHeaders = lines(xhr.getAllResponseHeaders());
+          if (xhr.responseURL && xhr.responseURL !== rec.url) fields.to = cut(xhr.responseURL, URL_TEXT);
+          fields.responseBody = xhrBody(xhr, size);
+        }
+        update(rec, fields);
+      } catch {
+        update(rec, { duration: ended(rec) });
       }
     };
     const watch = (xhr) => {
@@ -266,31 +387,23 @@
       let how = null;
       for (const type of ["abort", "error", "timeout"]) xhr.addEventListener(type, () => (how = type));
       xhr.addEventListener("loadend", (e) => {
-        const rec = sending.get(xhr);
-        sending.delete(xhr);
         const failed = how;
         how = null;
-        if (!rec) return;
-        try {
-          const fields = { duration: ended(rec) };
-          if (failed) fields.error = { abort: "aborted", timeout: "timeout" }[failed] ?? "failed";
-          else {
-            fields.status = xhr.status;
-            fields.statusText = xhr.statusText;
-            fields.responseHeaders = lines(xhr.getAllResponseHeaders());
-            if (xhr.responseURL && xhr.responseURL !== rec.url) fields.to = xhr.responseURL;
-            fields.responseBody = xhrBody(xhr, e.loaded);
-          }
-          update(rec, fields);
-        } catch {
-          update(rec, { duration: ended(rec) });
-        }
+        // Its request was ended by an open() in the page's own handler, before this.
+        if (stale.get(xhr)) return void stale.set(xhr, stale.get(xhr) - 1);
+        done(xhr, failed, e.loaded);
       });
     };
     proto.open = function open(method, url) {
+      // Opened again: the request it had ends now, before open() clears what it got. One in
+      // flight is dropped without an event; a finished one's loadend is still to come.
+      if (sending.has(this)) {
+        if (this.readyState === 4) stale.set(this, (stale.get(this) ?? 0) + 1);
+        done(this);
+      }
       const result = open0.apply(this, arguments);
       try {
-        opened.set(this, { method: String(method).toUpperCase(), url: full(url), headers: [] });
+        opened.set(this, { method: cut(String(method).toUpperCase(), NAME), url: full(url), headers: [] });
       } catch {
         opened.delete(this);
       }
@@ -299,7 +412,7 @@
     proto.setRequestHeader = function setRequestHeader(name, value) {
       const result = header0.apply(this, arguments);
       const o = opened.get(this);
-      if (o && o.headers.length < HEADERS) o.headers.push([String(name).toLowerCase(), cut(String(value), 2048)]);
+      if (o && o.headers.length < HEADERS) o.headers.push([cut(String(name).toLowerCase(), NAME), cut(String(value), VALUE)]);
       return result;
     };
     proto.send = function send() {
@@ -310,7 +423,6 @@
         try {
           rec = begin({ kind: "xhr", method: o.method, url: o.url, requestHeaders: o.headers, requestBody: sentBody(arguments[0]) });
           if (rec) {
-            rec.url = o.url;
             sending.set(this, rec);
             watch(this);
           }
@@ -338,7 +450,7 @@
       if (!s) return;
       s.n++;
       // Past the limit a frame isn't posted: its number tells the gap.
-      if (!room(false)) return;
+      if (!room(frames)) return;
       const f = { n: s.n, out, at: ended(s.rec) };
       if (typeof data === "string") Object.assign(f, { text: cut(data, FRAME), size: bytes(data) });
       else f.size = data?.size ?? data?.byteLength ?? 0;
@@ -359,14 +471,14 @@
       if (!new.target) return WS.apply(this, arguments);
       const ws = Reflect.construct(WS, arguments, new.target);
       try {
-        const rec = begin({ kind: "ws", method: "GET", url: ws.url });
+        const rec = begin({ kind: "ws", method: "GET", url: cut(ws.url, URL_TEXT) });
         if (rec) {
           sockets.set(ws, { rec, n: 0 });
           ws.addEventListener("open", () => update(rec, { status: 101, statusText: "Switching Protocols" }));
           ws.addEventListener("message", (e) => frame(ws, false, e.data));
           ws.addEventListener("error", () => update(rec, { error: "failed" }));
           ws.addEventListener("close", (e) =>
-            update(rec, { close: { code: e.code, reason: cut(e.reason, 256), clean: e.wasClean }, duration: ended(rec) }),
+            update(rec, { close: { code: e.code, reason: cut(e.reason, NAME), clean: e.wasClean }, duration: ended(rec) }),
           );
         }
       } catch {
@@ -384,22 +496,28 @@
     }
   }
 
-  // Everything else, as WebKit timed it: fetch's and XMLHttpRequest's own are above, in full.
-  // The ones before this ran come buffered.
-  if (typeof PerformanceObserver === "function") {
-    const types = PerformanceObserver.supportedEntryTypes ?? [];
+  // Everything else, as WebKit timed it; fetch's and XMLHttpRequest's own are above, in full,
+  // and a fetch's entry only finishes its own. The ones before this ran come buffered.
+  if (timing) {
+    const types = PerformanceObserver.supportedEntryTypes;
     const seen = (list) => {
       const out = [];
       for (const e of list.getEntries()) {
-        if (e.initiatorType === "fetch" || e.initiatorType === "xmlhttprequest") continue;
+        if (e.initiatorType === "xmlhttprequest") continue;
+        const size = e.decodedBodySize || e.encodedBodySize || undefined;
+        if (e.initiatorType === "fetch") {
+          const rec = timed(cut(e.name, URL_TEXT));
+          if (rec) out.push({ key: rec.key, duration: e.duration, size });
+          continue;
+        }
         out.push({
           key: `${doc}:${++count}`,
           kind: "resource",
-          initiator: e.entryType === "navigation" ? "navigation" : e.initiatorType,
-          url: e.name,
+          initiator: e.entryType === "navigation" ? "navigation" : cut(e.initiatorType, NAME),
+          url: cut(e.name, URL_TEXT),
           start: clock.timeOrigin + e.startTime,
           duration: e.duration,
-          size: e.transferSize || e.encodedBodySize || undefined,
+          size,
           // Where the engine has it.
           status: e.responseStatus || undefined,
         });

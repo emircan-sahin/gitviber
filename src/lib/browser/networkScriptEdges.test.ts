@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 // network.js on the hard cases: odd bodies, aborts, streams the page lets go of, reused
 // XMLHttpRequests, busy sockets, cuts at a surrogate pair, and a dev page busy for a quarter of
-// an hour. Tests named "BUG:" are marked todo: they show a fault the script still has.
+// an hour.
 const source = readFileSync(new URL("../../../src-tauri/src/browser/scripts/network.js", import.meta.url), "utf8");
 
 type Rec = Record<string, any>;
@@ -213,7 +213,7 @@ test("a body the page reads at once, a big one and one already used: the page's 
   assert.equal(again, used, "a response that can't be copied still reaches the page");
   await settle(50);
   const body = p.entries()[0].responseBody;
-  assert.deepEqual([body.size, body.cut, body.text], [undefined, true, undefined], "past READ it's left to the page");
+  assert.deepEqual([body.size, body.cut, body.text], [undefined, undefined, undefined], "a binary body is never read, and has no Content-Length here");
 });
 
 test("a redirect names where it ended", async () => {
@@ -228,8 +228,7 @@ test("a redirect names where it ended", async () => {
 });
 
 test(
-  "BUG: the page cancelling an endless body of its own still lets go of the connection",
-  { todo: "network.js's copy keeps reading: the source is never cancelled and the page's cancel() never settles" },
+  "the page cancelling an endless body of its own still lets go of the connection",
   async () => {
     for (const type of ["application/x-ndjson", "text/event-stream"]) {
       const s = feed();
@@ -278,8 +277,7 @@ test("XMLHttpRequest bodies of each responseType, and a synchronous one", () => 
 });
 
 test(
-  "BUG: an XMLHttpRequest opened again while in flight logs its new request, not the old one's",
-  { todo: "open() ends a request in flight without loadend: `sending` keeps the old entry, the new send is skipped" },
+  "an XMLHttpRequest opened again while in flight logs its new request, not the old one's",
   () => {
     const p = page();
     const r = new p.window.XMLHttpRequest();
@@ -298,8 +296,7 @@ test(
 );
 
 test(
-  "BUG: a poll that opens its XMLHttpRequest again from its own load handler is logged each time",
-  { todo: "loadend comes after the page's load handler re-opened it: the first entry reads the reset object, the next is never logged" },
+  "a poll that opens its XMLHttpRequest again from its own load handler is logged each time",
   () => {
     const p = page();
     const r = new p.window.XMLHttpRequest();
@@ -354,14 +351,13 @@ test("a WebSocket subclass, its protocols, binary frames and a burst all behave 
       [3, false, 5],
     ],
   );
-  // One second's room is a hundred posts, the socket's own start among them.
-  assert.equal(e.frames.length, 99);
-  assert.equal(e.frames.at(-1).n, 99);
+  // One second's room is a hundred frames, apart from the requests'.
+  assert.equal(e.frames.length, 100);
+  assert.equal(e.frames.at(-1).n, 100);
 });
 
 test(
-  "BUG: a chatty socket doesn't keep the page's requests out of the log",
-  { todo: "frames spend the same hundred-a-second room as requests, so a ticker socket hides every fetch" },
+  "a chatty socket doesn't keep the page's requests out of the log",
   async () => {
     const p = page();
     const ws = new p.window.WebSocket("/ticker");
@@ -416,8 +412,7 @@ test("cuts never split a surrogate pair, whatever falls on the edge", async () =
 });
 
 test(
-  "BUG: a page's own lone surrogate doesn't cost it its entry",
-  { todo: "posted as \\ud83d, which the app's JSON parser refuses: the whole start of the request is lost" },
+  "a page's own lone surrogate doesn't cost it its entry",
   async () => {
     const p = page();
     // A body cut mid-emoji by the page's own code, as happens.
@@ -427,8 +422,7 @@ test(
 );
 
 test(
-  "BUG: a fetch of a long data: URL is posted with its address cut",
-  { todo: "the address goes out whole; past 1 MiB the app drops the post, and with it the entry" },
+  "a fetch of a long data: URL is posted with its address cut",
   async () => {
     const p = page();
     await p.window.fetch(`data:image/png;base64,${"A".repeat(1_500_000)}`);
@@ -510,6 +504,6 @@ test("a busy dev page for fifteen minutes: bounded posts, the page's answers int
   const events = all.find((e) => e.url.endsWith("/events"))!;
   assert.equal(events.duration, undefined, "the event stream is still open");
   assert.equal(p.timers.length, 0, "nothing skipped at one request a second");
-  // Not awaited: the copy still reading keeps the cancel from settling (the BUG above).
-  void sse.body!.cancel().catch(() => {});
+  // The page letting go of its stream settles at once: the copy goes with it.
+  await sse.body!.cancel();
 });
