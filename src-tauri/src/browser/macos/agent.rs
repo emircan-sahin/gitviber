@@ -4,13 +4,14 @@
 
 use super::page_view::appearance;
 use super::{
-    ask, asked, create, emit, main_thread, out_of_sight, page_tools, set_agent, stop_timer,
-    url_text, view, Delegate, View, GONE, VIEWS,
+    apply, ask, asked, create, emit, main_thread, page_tools, set_agent, url_text, view, Delegate,
+    View, GONE, VIEWS,
 };
 use crate::browser::control::{
     origin, unused_after, AgentScreen, Listed, NewTab, Route, Routes, IDLE,
 };
 use crate::browser::picks::Bounds;
+use crate::browser::Step;
 use crate::browser::{Look, PageState};
 use crate::state::{AppState, Res};
 use block2::RcBlock;
@@ -204,8 +205,14 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<()> {
         create(&window, &route.id, &route.root, url, &look, true)?;
     }
     let v = view(&route.id).ok_or(GONE)?;
-    if made || VIEWS.with_borrow_mut(|r| r.wake(&route.id)) {
-        woke(&v);
+    let woke = if made {
+        Some(Step::Offscreen)
+    } else {
+        VIEWS.with_borrow_mut(|r| r.wake(&route.id))
+    };
+    if let Some(step) = woke {
+        throttle(&v.web, false);
+        apply(&v, step);
     }
     if !running(&v) {
         restart_idle(&v);
@@ -254,25 +261,11 @@ pub fn agent_running(id: &str, command: u64, on: bool) {
     }
 }
 
-/// The registry made the view awake (registry.rs `wake`): unthrottled, and off-screen when out
-/// of sight, as there WebKit would slow the page's timers and draw nothing.
-fn woke(v: &View) {
-    throttle(&v.web, false);
-    if VIEWS.with_borrow(|r| r.offscreen(&v.delegate.ivars().id)) {
-        stop_timer(v);
-        offscreen(v);
-    }
-}
-
 /// Back to a hidden tab's ways: throttled, and out of sight parking in time.
 fn sleep(v: &View) {
-    let id = &v.delegate.ivars().id;
-    if !VIEWS.with_borrow_mut(|r| r.sleep(id)) {
-        return;
-    }
-    throttle(&v.web, true);
-    if VIEWS.with_borrow(|r| r.offscreen(id)) {
-        out_of_sight(v, id);
+    if let Some(step) = VIEWS.with_borrow_mut(|r| r.sleep(&v.delegate.ivars().id)) {
+        throttle(&v.web, true);
+        apply(v, step);
     }
 }
 

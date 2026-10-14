@@ -22,7 +22,7 @@ use super::keys::{self, Key, Route};
 use super::Corners;
 use super::{
     host_key, is_loopback, loadable, policy, root_key, Created, Failed, Go, Look, PageState,
-    Parked, Policy, Rect, Registry, Screen,
+    Parked, Policy, Rect, Registry, Screen, Step,
 };
 use crate::state::Res;
 use block2::{DynBlock, RcBlock};
@@ -1011,12 +1011,8 @@ pub fn hide(id: &str, aside: bool) {
     };
     release_focus(&v);
     if aside {
-        // An agent's awake tab never hides: hidden, WebKit stops its animation frames.
-        if VIEWS.with_borrow(|r| r.awake(id)) {
-            agent::offscreen(&v);
-        } else {
-            v.host.setHidden(true);
-        }
+        let step = VIEWS.with_borrow_mut(|r| r.cover(id));
+        apply(&v, step);
         return;
     }
     // Its picture while it still shows: hidden, WebKit may never give one. It parks with it.
@@ -1027,23 +1023,32 @@ pub fn hide(id: &str, aside: bool) {
     out_of_sight(&v, id);
 }
 
-/// Hidden in the registry too: its park timer starts, and the hidden past the cap park. An
-/// agent's awake view goes off-screen instead.
+/// Hidden in the registry too, or off-screen for an agent's awake view.
 fn out_of_sight(v: &View, id: &str) {
-    let Some((since, over)) = VIEWS.with_borrow_mut(|r| r.hide(id)) else {
-        if VIEWS.with_borrow(|r| r.offscreen(id)) {
+    let step = VIEWS.with_borrow_mut(|r| r.hide(id));
+    apply(
+        v,
+        step.map_or(Step::Offscreen, |(since, over)| Step::Hide(since, over)),
+    );
+}
+
+/// The host where the registry moved its view.
+fn apply(v: &View, step: Step) {
+    match step {
+        Step::Stay => {}
+        Step::Offscreen => {
             stop_timer(v);
             agent::offscreen(v);
-        } else {
-            v.host.setHidden(true);
         }
-        return;
-    };
-    v.host.setHidden(true);
-    v.delegate.ivars().hidden_at.set(Some(Instant::now()));
-    start_timer(v, since, Duration::ZERO);
-    for (id, since) in over {
-        begin_park(&id, since);
+        Step::Cover => v.host.setHidden(true),
+        Step::Hide(since, over) => {
+            v.host.setHidden(true);
+            v.delegate.ivars().hidden_at.set(Some(Instant::now()));
+            start_timer(v, since, Duration::ZERO);
+            for (id, since) in over {
+                begin_park(&id, since);
+            }
+        }
     }
 }
 
