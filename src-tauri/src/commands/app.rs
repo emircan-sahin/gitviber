@@ -124,9 +124,10 @@ pub fn pty_cwd(state: State<'_, AppState>, id: u32) -> Option<String> {
 #[tauri::command]
 pub fn pty_kill(state: State<'_, AppState>, id: u32) {
     state.agents.forget(id);
+    // Gone first: a command between the two makes no tab for it (browser/macos/agent.rs).
+    state.ptys.kill(id);
     // Sync, so on the main thread, where the views are.
     browser::agent_pane_closed(id);
-    state.ptys.kill(id)
 }
 
 /// How many terminals (of `ids`, or all) are running a command, which restarting the app or

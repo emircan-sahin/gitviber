@@ -9,8 +9,9 @@ mod page_tools;
 mod page_view;
 
 pub use agent::{
-    agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_js, agent_new_tab,
-    agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab, agent_tabs,
+    agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab, agent_js,
+    agent_new_tab, agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab,
+    agent_tabs,
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_set_cookies, agent_shared};
 pub use page_tools::{console_clear, console_entries, pick};
@@ -393,6 +394,11 @@ define_class!(
         #[unsafe(method(gvIdleDue))]
         fn idle_due(&self) {
             agent::idle(&self.ivars().id);
+        }
+
+        #[unsafe(method(gvUnusedDue))]
+        fn unused_due(&self) {
+            agent::unused(&self.ivars().id);
         }
 
         #[unsafe(method(gvSendConsole))]
@@ -1115,6 +1121,7 @@ fn begin_park(id: &str, since: u64) {
 pub fn close(id: &str) {
     if main_thread().is_ok() {
         forget(id);
+        agent::forget_tab(id);
         if let Some(v) = VIEWS.with_borrow_mut(|r| r.remove(id)) {
             destroy(v);
         }
@@ -1126,6 +1133,7 @@ pub fn close_root(root: &str) {
     if main_thread().is_ok() {
         for v in VIEWS.with_borrow_mut(|r| r.remove_root(root)) {
             forget(&v.delegate.ivars().id);
+            agent::forget_tab(&v.delegate.ivars().id);
             destroy(v);
         }
     }

@@ -2,7 +2,7 @@
 //! (server.rs) as a few steps on the main thread, where the views are, waiting in between.
 
 use super::control::{
-    self, AgentScreen, Command, Listed, Reply, Request, Scroll, Sessions, Tabs, Wait,
+    self, AgentScreen, Command, Listed, NewTab, Pane, Reply, Request, Scroll, Sessions, Tabs, Wait,
 };
 use super::picks::{self, Bounds};
 use super::sessions::{self, Session, Shelf};
@@ -38,28 +38,17 @@ pub fn run(app: &AppHandle, req: Request) -> Reply {
 }
 
 fn command(app: &AppHandle, req: Request) -> Res<Reply> {
-    let cmd = control::parse(&req.cmd, &req.args)?;
-    let pty = req
-        .pty
-        .ok_or("This terminal started before browser control was there: open a new one.")?;
-    // The pane's own folder, as its workspace knows it: the tab goes to that worktree.
-    let root = app
-        .state::<AppState>()
-        .ptys
-        .pane(pty)
-        .ok_or("This terminal isn't one of GitViber's open panes.")?
-        .to_string_lossy()
-        .into_owned();
-    let name = match req.tab.as_deref() {
-        Some("") => return Err("--tab needs the tab's name".into()),
-        Some(name) => Some(control::tab_name(name)?),
-        None => None,
-    };
-    match cmd {
-        Command::Tab(op) => return tabs(app, pty, root, name, op, &req.cwd),
-        Command::Session(op) => return sessions(app, pty, root, name, op),
-        _ => {}
+    if let Some(op) = control::parse_pane(&req.cmd, &req.args) {
+        let op = op?;
+        let (pty, root) = pane(app, &req)?;
+        return match op {
+            Pane::Tab(op) => tabs(app, pty, root, req.tab, op, &req.cwd),
+            Pane::Session(op) => sessions(app, pty, root, req.tab, op),
+        };
     }
+    let cmd = control::parse(&req.cmd, &req.args)?;
+    let (pty, root) = pane(app, &req)?;
+    let name = target(req.tab)?;
     let first = match &cmd {
         Command::Open(url) => Some(url.clone()),
         _ => None,
@@ -69,6 +58,29 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     })?;
     // `made`: just made, at the address an open asks for.
     drive(app, id, |tab| tab.run(cmd, made, &req.cwd))
+}
+
+/// The pane the request came from, and its own folder as its workspace knows it: its tabs go to
+/// that worktree.
+fn pane(app: &AppHandle, req: &Request) -> Res<(u32, String)> {
+    let pty = req
+        .pty
+        .ok_or("This terminal started before browser control was there: open a new one.")?;
+    let root = app
+        .state::<AppState>()
+        .ptys
+        .pane(pty)
+        .ok_or("This terminal isn't one of GitViber's open panes.")?;
+    Ok((pty, root.to_string_lossy().into_owned()))
+}
+
+/// The tab named by `--tab` or GITVIBER_BROWSER_TAB, read only where a command goes to a tab.
+fn target(name: Option<String>) -> Res<Option<String>> {
+    match name.as_deref() {
+        Some("") => Err("--tab needs the tab's name".into()),
+        Some(name) => control::tab_name(name).map(Some),
+        None => Ok(None),
+    }
 }
 
 /// `steps` on tab `id` in its turn, as one command.
@@ -84,13 +96,13 @@ fn drive<T>(app: &AppHandle, id: String, steps: impl FnOnce(&Tab) -> Res<T>) -> 
     steps(&tab)
 }
 
-/// `tab …`; `name`: the tab the command would go to (`--tab`), which `tab close` closes unless
-/// it names one.
+/// `tab …`; `to`: the tab a command would go to, which `tab new` takes as its name and `tab
+/// close` closes, unless they name one.
 fn tabs(
     app: &AppHandle,
     pty: u32,
     root: String,
-    name: Option<String>,
+    to: Option<String>,
     op: Tabs,
     cwd: &str,
 ) -> Res<Reply> {
@@ -100,57 +112,75 @@ fn tabs(
             url,
             shared,
             session,
+            idle,
         } => {
-            // Read first: a session that isn't there makes no tab.
-            let saved = match session {
-                Some(s) => Some((shelf(app, &root)?.load(&s)?, s)),
-                None => None,
-            };
-            let first = url.clone().filter(|_| saved.is_none());
-            let (name, id) = main(app, move |app| {
-                super::agent_new_tab(app, pty, &root, name.as_deref(), shared, first.as_deref())
-            })?;
-            if saved.is_none() && url.is_none() {
-                return Ok(Reply::out(name));
+            let name = name.map_or_else(|| target(to), |n| Ok(Some(n)))?;
+            if let Some(s) = &session {
+                // A session that isn't there makes no tab.
+                shelf(app, &root)?.load(s)?;
             }
-            let said = drive(app, id, |tab| {
-                let mut said = vec![name.clone()];
-                if let Some((session, s)) = &saved {
-                    said.push(tab.load_session(s, session)?);
-                }
-                if let Some(url) = url {
-                    let opened = tab.run(Command::Open(url), saved.is_none(), cwd)?;
-                    said.push(opened.out.unwrap_or_default());
-                }
-                Ok(said.join("\n"))
-            })
-            .map_err(|e| format!("{name}\n{e}"))?;
-            Ok(Reply::out(said))
+            let idle = idle.map_or(control::IDLE, |m| Duration::from_secs(u64::from(m) * 60));
+            // Loaded with a session, it goes to the session's origin first.
+            let first = url.clone().filter(|_| session.is_none());
+            let at = root.clone();
+            let (id, name) = main(app, move |app| {
+                let new = NewTab {
+                    name: name.as_deref(),
+                    default: false,
+                    shared,
+                    idle,
+                };
+                super::agent_new_tab(app, pty, &at, new, first.as_deref())
+            })?;
+            let mut said = vec![name.clone()];
+            // What was done so far, then what went wrong.
+            let more = |said: &mut Vec<String>, step: Res<String>| -> Res<()> {
+                let out = step.map_err(|e| format!("{}\n{e}", said.join("\n")))?;
+                said.push(out);
+                Ok(())
+            };
+            if let Some(s) = &session {
+                more(&mut said, load(app, id.clone(), &root, s))?;
+            }
+            if let Some(url) = url {
+                let made = session.is_none();
+                let opened = drive(app, id, |tab| tab.run(Command::Open(url), made, cwd));
+                more(&mut said, opened.map(|r| r.out.unwrap_or_default()))?;
+            }
+            Ok(Reply::out(said.join("\n")))
         }
         Tabs::List => {
             let tabs = main(app, move |_| super::agent_tabs(pty))?;
-            Ok(Reply::out(tabs_text(&tabs)))
+            Ok(Reply {
+                data: serde_json::to_value(&tabs).ok(),
+                ..Reply::out(tabs_text(&tabs))
+            })
         }
         Tabs::Close(named) => {
-            let name = named.or(name);
-            let closed = main(app, move |app| {
-                super::agent_close_tab(app, pty, name.as_deref())
-            })?;
+            let name = named.map_or_else(|| target(to), |n| Ok(Some(n)))?;
+            let id = main(app, move |_| super::agent_find_tab(pty, name.as_deref()))?;
+            // After a command running on it, not through it.
+            let queue = queue(&id);
+            let _turn = take_turn(&queue, STEP)?;
+            let gone = id.clone();
+            let closed = main(app, move |app| super::agent_close_tab(app, &gone))?;
+            forget_queue(&id);
             Ok(Reply::out(format!("Closed tab {closed}")))
         }
     }
 }
 
-/// `session …`, saved with the pane's repository; `name`: the tab the command goes to.
+/// `session …`, saved with the pane's repository; `to`: the tab the command goes to.
 fn sessions(
     app: &AppHandle,
     pty: u32,
     root: String,
-    name: Option<String>,
+    to: Option<String>,
     op: Sessions,
 ) -> Res<Reply> {
     let shelf = shelf(app, &root)?;
-    let tab = move || {
+    let tab = || {
+        let (root, name) = (root.clone(), target(to)?);
         main(app, move |app| {
             super::agent_tab(app, pty, &root, name.as_deref(), None)
         })
@@ -170,12 +200,15 @@ fn sessions(
                 summary(&session)
             )))
         }
-        Sessions::Load(s) => {
-            let session = shelf.load(&s)?;
-            drive(app, tab()?, |tab| tab.load_session(&s, &session)).map(Reply::out)
-        }
+        Sessions::Load(s) => load(app, tab()?, &root, &s).map(Reply::out),
         Sessions::Clear => drive(app, tab()?, Tab::clear_session).map(Reply::out),
     }
+}
+
+/// Session `name` into tab `id`.
+fn load(app: &AppHandle, id: String, root: &str, name: &str) -> Res<String> {
+    let session = shelf(app, root)?.load(name)?;
+    drive(app, id, |tab| tab.load_session(name, &session))
 }
 
 fn shelf(app: &AppHandle, root: &str) -> Res<Shelf> {
@@ -193,10 +226,19 @@ static NEXT_COMMAND: AtomicU64 = AtomicU64::new(1);
 
 /// Each tab's turn: agents in a pane share its tabs, and two commands at once would interleave
 /// their steps (a click between another's fill and its Enter).
+static QUEUES: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
+
 fn queue(id: &str) -> Arc<Mutex<()>> {
-    static QUEUES: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
     let mut queues = QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
     queues.entry(id.into()).or_default().clone()
+}
+
+/// The tab closed: its turn goes with it.
+pub(super) fn forget_queue(id: &str) {
+    QUEUES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .remove(id);
 }
 
 fn take_turn(queue: &Mutex<()>, wait: Duration) -> Res<MutexGuard<'_, ()>> {
@@ -288,8 +330,6 @@ impl Tab {
                 }
                 self.arrived("Opened")
             }
-            // Of the pane's tabs and sessions, not one page's: `tabs` and `sessions` answer them.
-            Command::Tab(_) | Command::Session(_) => Err("Not a command for a page.".into()),
             Command::Back => self.go(Go::Back, "Back at"),
             Command::Forward => self.go(Go::Forward, "Forward at"),
             Command::Reload => self.go(Go::Reload, "Reloaded"),
@@ -641,13 +681,17 @@ fn tabs_text(tabs: &[Listed]) -> String {
         return "No tabs: the pane's next command opens its default one.".into();
     }
     let lines = tabs.iter().map(|t| {
-        let page = titled(&t.url, &t.title, " — ");
-        let default = if t.default { "default, " } else { "" };
+        let default = if t.default { " (default)" } else { "" };
+        let idle = match t.idle {
+            0 => "never idles".to_string(),
+            m => format!("idles after {m}m"),
+        };
         let data = if t.shared { "shared" } else { "private" };
+        let used = ago(Duration::from_secs(t.used));
+        let page = titled(&t.origin, &t.title, "  ");
         format!(
-            "{}  {page}  ({default}{data}, used {})",
-            t.name,
-            ago(t.idle)
+            "{}{default}  {}  used {used}  {idle}  {data}  {page}",
+            t.name, t.state
         )
     });
     lines.collect::<Vec<_>>().join("\n")
@@ -683,9 +727,9 @@ fn sessions_text(saved: &[(String, Session)], now: u64) -> String {
 
 fn ago(idle: Duration) -> String {
     match idle.as_secs() {
-        s @ 0..60 => format!("{s} s ago"),
-        s @ 60..3600 => format!("{} min ago", s / 60),
-        s => format!("{} h ago", s / 3600),
+        s @ 0..60 => format!("{s}s ago"),
+        s @ 60..3600 => format!("{}m ago", s / 60),
+        s => format!("{}h ago", s / 3600),
     }
 }
 
@@ -694,26 +738,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_tab_list_marks_the_default_and_says_when_each_was_used() {
-        let tab = |name: &str, default: bool, url: &str, title: &str, secs: u64| Listed {
+    fn the_tab_list_gives_each_tabs_state_use_idle_data_and_page_on_a_line() {
+        let tab = |name: &str, state, used, idle, origin: &str, title: &str| Listed {
             name: name.into(),
-            default,
+            default: name == "t1",
+            state,
+            used,
+            idle,
             shared: name == "t3",
-            url: url.into(),
+            origin: origin.into(),
             title: title.into(),
-            idle: Duration::from_secs(secs),
         };
+        let tabs = [
+            tab("t1", "awake", 5, 10, "http://localhost:3000", "App"),
+            tab("rv268", "sleeping", 125, 0, "about:blank", ""),
+            tab("t3", "parked", 7300, 30, "https://example.test", ""),
+        ];
         assert_eq!(
-            tabs_text(&[
-                tab("t1", true, "http://localhost:3000/", "App", 5),
-                tab("rv268", false, "about:blank", "", 125),
-                tab("t3", false, "https://example.test/", "", 7300),
-            ]),
-            "t1  http://localhost:3000/ — App  (default, private, used 5 s ago)\n\
-             rv268  about:blank  (private, used 2 min ago)\n\
-             t3  https://example.test/  (shared, used 2 h ago)"
+            tabs_text(&tabs),
+            "t1 (default)  awake  used 5s ago  idles after 10m  private  http://localhost:3000  App\n\
+             rv268  sleeping  used 2m ago  never idles  private  about:blank\n\
+             t3  parked  used 2h ago  idles after 30m  shared  https://example.test"
         );
         assert!(tabs_text(&[]).starts_with("No tabs"));
+        // --json: the same fields.
+        let json = serde_json::to_value(&tabs[1]).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "name": "rv268", "default": false, "state": "sleeping", "used": 125,
+                "idle": 0, "shared": false, "origin": "about:blank", "title": "" })
+        );
     }
 
     #[test]
@@ -739,7 +793,7 @@ mod tests {
             "1 cookies, 1 localStorage and 0 sessionStorage items of https://app.test"
         );
         let text = sessions_text(&[("mert".into(), session)], 1_000 + 3 * 3600);
-        assert_eq!(text, "mert  https://app.test  1 cookies  (saved 3 h ago)");
+        assert_eq!(text, "mert  https://app.test  1 cookies  (saved 3h ago)");
         assert!(!text.contains("s3cret") && !text.contains("t0ken"));
         assert!(sessions_text(&[], 0).starts_with("No sessions"));
     }

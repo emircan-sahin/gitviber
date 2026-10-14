@@ -7,10 +7,12 @@ use super::{
     ask, asked, create, emit, main_thread, out_of_sight, page_tools, set_agent, stop_timer,
     url_text, view, Delegate, View, GONE, VIEWS,
 };
-use crate::browser::control::{AgentScreen, Listed, Route, Routes};
+use crate::browser::control::{
+    origin, unused_after, AgentScreen, Listed, NewTab, Route, Routes, IDLE,
+};
 use crate::browser::picks::Bounds;
 use crate::browser::{Look, PageState};
-use crate::state::Res;
+use crate::state::{AppState, Res};
 use block2::RcBlock;
 use objc2::runtime::{AnyObject, Bool, NSObject};
 use objc2::{msg_send, sel, DefinedClass};
@@ -22,7 +24,7 @@ use objc2_web_kit::{WKContentWorld, WKWebView, WKWebsiteDataStore};
 use serde::Serialize;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 use tauri::{AppHandle, Manager};
 
 thread_local! {
@@ -31,8 +33,6 @@ thread_local! {
 
 /// A tab out of sight that never showed takes a page this size.
 const SIZE: NSSize = NSSize::new(1280.0, 800.0);
-/// An awake tab no command touched this long sleeps: agents forget to close tabs.
-const IDLE: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Serialize, Clone)]
 struct Opened<'a> {
@@ -53,101 +53,128 @@ pub fn agent_tab(
     url: Option<&str>,
 ) -> Res<(String, bool)> {
     main_thread()?;
-    match ROUTES.with_borrow_mut(|r| r.tab(pty, name, open))? {
+    match ROUTES.with_borrow_mut(|r| r.tab(pty, name, is_open))? {
         Some(route) => {
             live(app, &route, "about:blank")?;
             Ok((route.id, false))
         }
-        None => new_tab(app, pty, root, None, true, false, url).map(|(_, id)| (id, true)),
+        None => {
+            let new = NewTab {
+                name: None,
+                default: true,
+                shared: false,
+                idle: IDLE,
+            };
+            new_tab(app, pty, root, new, url).map(|(id, _)| (id, true))
+        }
     }
 }
 
-/// Another tab of the pane's, named so (else t1, t2, ...), at `url`, in the user's website data
-/// (`shared`) or its own: its name and id.
+/// Another tab of the pane's, as `new` asks, at `url`: its id and name.
 pub fn agent_new_tab(
     app: &AppHandle,
     pty: u32,
     root: &str,
-    name: Option<&str>,
-    shared: bool,
+    new: NewTab,
     url: Option<&str>,
 ) -> Res<(String, String)> {
     main_thread()?;
-    new_tab(app, pty, root, name, false, shared, url)
+    new_tab(app, pty, root, new, url)
 }
 
 /// The pane's tabs, open or parked.
 pub fn agent_tabs(pty: u32) -> Res<Vec<Listed>> {
     main_thread()?;
-    let tabs = ROUTES.with_borrow_mut(|r| r.list(pty, open));
+    let tabs = ROUTES.with_borrow_mut(|r| r.list(pty, is_open));
     Ok(tabs
         .into_iter()
         .map(|t| {
-            let (url, title) = match view(&t.route.id) {
+            let id = &t.route.id;
+            let (state, url, title) = match view(id) {
                 Some(v) => {
                     let page = v.delegate.state(&v.web);
-                    (page.url, page.title)
+                    let awake = VIEWS.with_borrow(|r| r.awake(id));
+                    let state = if awake { "awake" } else { "sleeping" };
+                    (state, page.url, page.title)
                 }
                 None => {
-                    let parked =
-                        VIEWS.with_borrow(|r| r.parked(&t.route.id).map(|p| p.url.clone()));
-                    (parked.unwrap_or_default(), String::new())
+                    let parked = VIEWS.with_borrow(|r| r.parked(id).map(|p| p.url.clone()));
+                    ("parked", parked.unwrap_or_default(), String::new())
                 }
             };
             Listed {
                 name: t.name,
                 default: t.default,
+                state,
+                used: t.used.elapsed().as_secs(),
+                idle: t.idle.as_secs() / 60,
                 shared: t.shared,
-                url,
+                origin: origin(&url),
                 title,
-                idle: t.used.elapsed(),
             }
         })
         .collect())
 }
 
-/// Closes the tab named so (the default one if None), its tab in the workspace too
-/// (`browser-closed`): its name.
-pub fn agent_close_tab(app: &AppHandle, pty: u32, name: Option<&str>) -> Res<String> {
+/// The tab named so (the default one if None), not made when there's none.
+pub fn agent_find_tab(pty: u32, name: Option<&str>) -> Res<String> {
     main_thread()?;
-    let tab = ROUTES.with_borrow_mut(|r| r.close(pty, name, open))?;
-    super::close(&tab.route.id);
-    emit(app, "browser-closed", super::Id { id: &tab.route.id });
-    Ok(tab.name)
+    ROUTES
+        .with_borrow_mut(|r| r.tab(pty, name, is_open))?
+        .map(|route| route.id)
+        .ok_or_else(|| "No default tab open: name the one to close".into())
+}
+
+/// Closes the agent's tab `id`, its tab in the workspace too (`browser-closed`): its name.
+pub fn agent_close_tab(app: &AppHandle, id: &str) -> Res<String> {
+    main_thread()?;
+    let name = ROUTES
+        .with_borrow(|r| r.named(id).map(|t| t.name.clone()))
+        .ok_or(GONE)?;
+    super::close(id);
+    emit(app, "browser-closed", super::Id { id });
+    Ok(name)
+}
+
+/// The tab closed, by the user or with its worktree: no agent drives it again, even reopened.
+pub(super) fn forget_tab(id: &str) {
+    ROUTES.with_borrow_mut(|r| r.close(id));
 }
 
 /// Whether the tab is still there for its agents: live, or parked to load again.
-fn open(id: &str) -> bool {
+fn is_open(id: &str) -> bool {
     VIEWS.with_borrow(|r| r.get(id).is_some() || r.parked(id).is_some())
 }
 
 /// A tab made for the pane, which the workspace hears as `browser-open` and adds without
-/// showing: its name and id. Unless `shared`, its cookies and storage are its own, in memory
+/// showing: its id and name. Unless `shared`, its cookies and storage are its own, in memory
 /// and kept while it parks, so two tabs can be two accounts.
 fn new_tab(
     app: &AppHandle,
     pty: u32,
     root: &str,
-    name: Option<&str>,
-    default: bool,
-    shared: bool,
+    new: NewTab,
     url: Option<&str>,
 ) -> Res<(String, String)> {
     let mtm = main_thread()?;
-    let name = ROUTES.with_borrow_mut(|r| r.name(pty, name, open))?;
+    // A command that passed its pane's check as the pane closed makes no tab for it.
+    if app.state::<AppState>().ptys.pane(pty).is_none() {
+        return Err("This terminal isn't one of GitViber's open panes.".into());
+    }
     let route = Route {
         id: NSUUID::new().UUIDString().to_string().to_lowercase(),
         root: root.into(),
     };
+    let shared = new.shared;
+    // An agent's tab before its view is made, so its first page loads as one.
+    let name = ROUTES.with_borrow_mut(|r| r.add(pty, new, route.clone(), is_open))?;
     if !shared {
         let store = unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) };
         ask(&route.id, |a| a.store = Some(store));
     }
-    // An agent's tab before its view is made, so its first page loads as one.
-    ROUTES.with_borrow_mut(|r| r.add(pty, &name, route.clone(), default, shared));
     let url = url.unwrap_or("about:blank");
     if let Err(e) = live(app, &route, url) {
-        let _ = ROUTES.with_borrow_mut(|r| r.close(pty, Some(&name), |_| true));
+        forget_tab(&route.id);
         super::forget(&route.id);
         return Err(e);
     }
@@ -158,7 +185,7 @@ fn new_tab(
         pty,
     };
     emit(app, "browser-open", opened);
-    Ok((name, route.id))
+    Ok((route.id, name))
 }
 
 /// The tab's view made, at `url`, when it has none (new, or parked), and awake.
@@ -180,7 +207,7 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<()> {
     if made || VIEWS.with_borrow_mut(|r| r.wake(&route.id)) {
         woke(&v);
     }
-    if v.delegate.ivars().running.borrow().is_empty() {
+    if !running(&v) {
         restart_idle(&v);
     }
     Ok(())
@@ -199,6 +226,7 @@ pub fn agent_pane_closed(pty: u32) {
     }
     for route in ROUTES.with_borrow_mut(|r| r.release(pty)) {
         if let Some(v) = view(&route.id) {
+            stop_idle(&v);
             sleep(&v);
         }
     }
@@ -239,7 +267,6 @@ fn woke(v: &View) {
 /// Back to a hidden tab's ways: throttled, and out of sight parking in time.
 fn sleep(v: &View) {
     let id = &v.delegate.ivars().id;
-    stop_idle(v);
     if !VIEWS.with_borrow_mut(|r| r.sleep(id)) {
         return;
     }
@@ -249,32 +276,54 @@ fn sleep(v: &View) {
     }
 }
 
-/// From now, the time an awake tab may go without a command before it sleeps.
+/// From now, the time the agent's tab may go without a command before it sleeps, and before it
+/// closes unused (gvIdleDue, gvUnusedDue); neither for one that never idles.
 fn restart_idle(v: &View) {
     stop_idle(v);
-    if VIEWS.with_borrow(|r| r.awake(&v.delegate.ivars().id)) {
-        let after = IDLE.as_secs_f64();
+    let idle = ROUTES.with_borrow(|r| r.named(&v.delegate.ivars().id).map(|t| t.idle));
+    let Some(unused) = idle.and_then(unused_after) else {
+        return;
+    };
+    for (due, after) in [(sel!(gvIdleDue), idle), (sel!(gvUnusedDue), Some(unused))] {
+        let after = after.unwrap_or_default().as_secs_f64();
         unsafe {
             v.delegate
-                .performSelector_withObject_afterDelay(sel!(gvIdleDue), None, after)
+                .performSelector_withObject_afterDelay(due, None, after)
         };
     }
 }
 
 fn stop_idle(v: &View) {
-    unsafe {
-        NSObject::cancelPreviousPerformRequestsWithTarget_selector_object(
-            &v.delegate,
-            sel!(gvIdleDue),
-            None,
-        )
-    };
+    for due in [sel!(gvIdleDue), sel!(gvUnusedDue)] {
+        unsafe {
+            NSObject::cancelPreviousPerformRequestsWithTarget_selector_object(
+                &v.delegate,
+                due,
+                None,
+            )
+        };
+    }
+}
+
+fn running(v: &View) -> bool {
+    !v.delegate.ivars().running.borrow().is_empty()
 }
 
 /// Its idle timer is up: asleep, unless a command runs on it.
 pub(super) fn idle(id: &str) {
-    if let Some(v) = view(id).filter(|v| v.delegate.ivars().running.borrow().is_empty()) {
+    if let Some(v) = view(id).filter(|v| !running(v)) {
         sleep(&v);
+    }
+}
+
+/// No command for so long: the agent forgot it, and it closes as `tab close` would.
+pub(super) fn unused(id: &str) {
+    let Some(v) = view(id).filter(|v| !running(v)) else {
+        return;
+    };
+    let app = v.delegate.ivars().app.clone();
+    if agent_close_tab(&app, id).is_ok() {
+        crate::browser::agent::forget_queue(id);
     }
 }
 

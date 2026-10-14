@@ -29,11 +29,12 @@ pub fn parse_cli(args: Vec<String>) -> Cli {
     let mut json = false;
     let mut tab = None;
     let mut rest = vec![];
-    let mut it = args.into_iter();
+    let mut it = args.into_iter().peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--json" => json = true,
-            "--tab" => tab = Some(it.next().unwrap_or_default()),
+            // A flag or `--` after it isn't its name.
+            "--tab" => tab = Some(it.next_if(|n| !n.starts_with('-')).unwrap_or_default()),
             "--" => break,
             _ => rest.push(arg),
         }
@@ -66,6 +67,10 @@ fn run(args: Vec<String>) -> i32 {
         print!("{HELP}");
         return 0;
     };
+    if cli.tab.as_deref() == Some("") {
+        eprintln!("--tab needs the tab's name: --tab <name>");
+        return 1;
+    }
     // Answered here: the list is this binary's own, and needs no tab.
     if cmd == "device" && cli.args == ["--list"] {
         return print(&Reply::out(control::device_list()), cli.json);
@@ -167,6 +172,14 @@ mod tests {
         assert_eq!(tabbed.args, ["e5"]);
         assert_eq!(cli("url --tab").tab.as_deref(), Some(""));
         assert_eq!(cli("fill e3 -- --tab x").tab, None);
+        // Neither `--` nor a flag is a name.
+        let bare = cli("fill --tab -- e3 --tab");
+        assert_eq!(
+            (bare.tab.as_deref(), bare.args),
+            (Some(""), vec!["e3".into(), "--tab".into()])
+        );
+        let flagged = cli("snapshot --tab --json");
+        assert_eq!((flagged.tab.as_deref(), flagged.json), (Some(""), true));
     }
 
     #[test]
@@ -224,6 +237,11 @@ mod tests {
         ] {
             assert_eq!(run(help.clone()), 0, "{help:?}");
         }
+        assert_eq!(
+            run(words(&["url", "--tab"])),
+            1,
+            "a --tab with no name never asks"
+        );
         // Only where no GitViber terminal set these up (as here, not inside one): never a request.
         if std::env::var_os(control::SOCKET_ENV).is_none() {
             assert_eq!(run(words(&["url"])), NOT_HERE);

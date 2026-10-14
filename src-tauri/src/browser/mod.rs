@@ -22,18 +22,18 @@ pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
     agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
-    agent_dialogs, agent_done, agent_js, agent_new_tab, agent_page, agent_pane_closed,
-    agent_picture, agent_running, agent_set_cookies, agent_shared, agent_tab, agent_tabs,
-    appearance, clear_data, close, close_all, close_root, configure, console_clear,
+    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_page,
+    agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_shared, agent_tab,
+    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
     console_entries, create, find, focus, go, hide, inspect, navigate, pick, place, set_agent,
     snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
     agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
-    agent_dialogs, agent_done, agent_js, agent_new_tab, agent_page, agent_pane_closed,
-    agent_picture, agent_running, agent_set_cookies, agent_shared, agent_tab, agent_tabs,
-    appearance, clear_data, close, close_all, close_root, configure, console_clear,
+    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_page,
+    agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_shared, agent_tab,
+    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
     console_entries, create, find, focus, go, hide, inspect, navigate, pick, place, set_agent,
     snapshot, zoom,
 };
@@ -230,7 +230,7 @@ pub fn root_key(path: &str) -> String {
 mod other {
     use super::{
         console::Entry,
-        control::{AgentScreen, Listed},
+        control::{AgentScreen, Listed, NewTab},
         picks::Bounds,
         sessions::Cookie,
     };
@@ -253,10 +253,12 @@ mod other {
         _: &AppHandle,
         _: u32,
         _: &str,
-        _: Option<&str>,
-        _: bool,
+        _: NewTab,
         _: Option<&str>,
     ) -> Res<(String, String)> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_find_tab(_: u32, _: Option<&str>) -> Res<String> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_shared(_: &str) -> Res<bool> {
@@ -274,7 +276,7 @@ mod other {
     pub fn agent_tabs(_: u32) -> Res<Vec<Listed>> {
         Err(UNSUPPORTED.into())
     }
-    pub fn agent_close_tab(_: &AppHandle, _: u32, _: Option<&str>) -> Res<String> {
+    pub fn agent_close_tab(_: &AppHandle, _: &str) -> Res<String> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_running(_: &str, _: u64, _: bool) {}
