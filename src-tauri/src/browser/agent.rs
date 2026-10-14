@@ -588,7 +588,8 @@ impl Tab {
         let spot = self.spot(&click.target)?;
         if spot.picker {
             return Err(format!(
-                "{} opens a native menu, which would hold GitViber until it closed: use select",
+                "{} opens a native picker, which would hold GitViber until it closed: select or \
+                 fill it instead",
                 spot.label
             ));
         }

@@ -65,10 +65,10 @@ fn stand_in_for_buttons() {
         return;
     };
     let ours: Pressed = pressed;
-    // SAFETY: an implementation of the same signature; the original is kept before any event
-    // of ours can reach it, on the main thread.
-    let original = unsafe { method.set_implementation(std::mem::transmute::<Pressed, Imp>(ours)) };
-    let _ = PRESSED.set(original);
+    // SAFETY: an implementation of the same signature, set on the main thread with the
+    // original kept first.
+    let _ = PRESSED.set(method.implementation());
+    unsafe { method.set_implementation(std::mem::transmute::<Pressed, Imp>(ours)) };
 }
 
 /// `-[NSApplication sendEvent:]` as it was.
