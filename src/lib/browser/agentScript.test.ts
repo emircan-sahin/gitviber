@@ -43,6 +43,7 @@ function el(tag: string, attrs: Record<string, string> = {}, children: (Fake | s
     querySelector: () => null,
     scrollIntoView: () => {},
     getBoundingClientRect: () => ({ x: 10, y: 20, width: 100, height: 30 }),
+    getClientRects: () => [{}],
     ...props,
   };
   return node;

@@ -190,6 +190,102 @@ function center(el) {
   return { clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 };
 }
 
+/** Frames an element gets to show, stop moving or come out from under another one. */
+const FRAMES = 30;
+// A page that draws no frames (out of sight, throttled) still moves on.
+const frame = () =>
+  new Promise((done) => {
+    const late = setTimeout(done, 50);
+    window.requestAnimationFrame?.(() => {
+      clearTimeout(late);
+      done();
+    });
+  });
+
+/** How an element reads in an error: <div#consent.banner>. */
+function tagOf(el) {
+  const id = el.id ? `#${el.id}` : "";
+  const classes = typeof el.className === "string" ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 2) : [];
+  return `<${el.localName}${cut(flat(id + classes.map((c) => `.${c}`).join("")), 40)}>`;
+}
+
+const disabled = (el) => el.matches?.(":disabled") || el.disabled === true || el.getAttribute("aria-disabled") === "true";
+
+/** Why an element can't be acted on now, or nothing: on the page, drawn, and enabled. */
+function unready(el, enabled) {
+  if (!el.isConnected) return "left the page: take a new snapshot";
+  const style = getComputedStyle(el);
+  if (style.visibility === "hidden" || style.visibility === "collapse") return "isn't visible (visibility: hidden)";
+  if (!el.getClientRects().length) return "isn't visible (display: none, here or above)";
+  const r = el.getBoundingClientRect();
+  if (!r.width || !r.height) return "isn't visible (no size)";
+  if (enabled && disabled(el)) return "is disabled";
+  return null;
+}
+
+/** Whether a pointer at the top element `hit` reaches `el`: it's `el`, inside it, or its label. */
+function reaches(el, hit) {
+  for (let n = hit; n; n = n.parentNode ?? n.host) {
+    if (n === el) return true;
+    if (n.localName === "label" && [...(el.labels ?? [])].includes(n)) return true;
+  }
+  return false;
+}
+
+/** The top element at a point, into shadow roots as far as they go. */
+function top(x, y) {
+  let hit = document.elementFromPoint(x, y);
+  while (hit?.shadowRoot) {
+    const inner = hit.shadowRoot.elementFromPoint(x, y);
+    if (!inner || inner === hit) break;
+    hit = inner;
+  }
+  return hit;
+}
+
+/**
+ * Where a pointer acts on `target` (an element, a ref or CSS), in the viewport's CSS px, once it
+ * can, as Playwright checks: on the page, visible, enabled (unless `enabled` is false), still for
+ * a frame, and the top element at its middle is it or inside it (unless `hit` is false). Else it
+ * throws why, after FRAMES of waiting. Native input (a click --at) takes its point from here too.
+ */
+async function point(target, { enabled = true, hit = true } = {}) {
+  const el = typeof target === "string" ? find(target) : target;
+  let why;
+  for (let i = 0; i < FRAMES; i++, await frame()) {
+    why = unready(el, enabled);
+    if (why) continue;
+    center(el);
+    const was = el.getBoundingClientRect();
+    await frame();
+    const r = el.getBoundingClientRect();
+    if (r.x !== was.x || r.y !== was.y || r.width !== was.width || r.height !== was.height) {
+      why = "is still moving";
+      continue;
+    }
+    // The middle of what shows of it: a box taller than the viewport is clicked where it shows.
+    const left = Math.max(r.x, 0), right = Math.min(r.x + r.width, window.innerWidth ?? Infinity);
+    const high = Math.max(r.y, 0), low = Math.min(r.y + r.height, window.innerHeight ?? Infinity);
+    if (right <= left || low <= high) {
+      why = "is outside the viewport";
+      continue;
+    }
+    const at = { x: (left + right) / 2, y: (high + low) / 2 };
+    if (!hit) return at;
+    const over = top(at.x, at.y);
+    if (over && reaches(el, over)) return at;
+    if (!over) why = "is outside the viewport";
+    else if (over.contains?.(el)) why = "doesn't take the pointer (pointer-events: none?)";
+    else {
+      // The cover itself, not a line of text in it.
+      let cover = over;
+      while (cover.parentElement && !cover.parentElement.contains(el)) cover = cover.parentElement;
+      why = `is covered by ${tagOf(cover)}`;
+    }
+  }
+  throw new Error(`${label(el)} ${why}`);
+}
+
 function mouse(el, types, at) {
   for (const type of types) {
     const init = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: type.endsWith("down") ? 1 : 0, ...at };
@@ -212,30 +308,93 @@ function insert(el, text) {
   if (fieldOf(el)) setValue(el, el.value + text);
 }
 
-function click({ target }) {
-  const el = find(target);
-  if (el.disabled === true || el.getAttribute("aria-disabled") === "true") throw new Error(`${label(el)} is disabled`);
-  const at = center(el);
-  mouse(el, ["pointerover", "mouseover", "pointermove", "mousemove", "pointerdown", "mousedown"], at);
+/** A click at `at` as the mouse gives one: its events in turn, focus between, then the click. */
+function clickAt(el, at) {
+  const where = { clientX: at.x, clientY: at.y };
+  mouse(el, ["pointerover", "mouseover", "pointermove", "mousemove", "pointerdown", "mousedown"], where);
   el.focus?.({ preventScroll: true });
-  mouse(el, ["pointerup", "mouseup"], at);
+  mouse(el, ["pointerup", "mouseup"], where);
   el.click();
+}
+
+async function click({ target }) {
+  const el = find(target);
+  clickAt(el, await point(el));
   return { out: `Clicked ${label(el)}` };
 }
 
-function fill({ target, text }) {
-  const el = find(target);
-  if (el.localName === "select") throw new Error(`${label(el)} is a <select>: use select`);
-  center(el);
+const TEXT_TYPES = new Set(["text", "search", "email", "url", "tel", "password", "number"]);
+// What the browser takes for each, as Playwright checks it: anything else it drops for "".
+const FORMATS = {
+  date: [/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD"],
+  time: [/^\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?$/, "HH:MM or HH:MM:SS"],
+  "datetime-local": [/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?$/, "YYYY-MM-DDTHH:MM"],
+  month: [/^\d{4}-\d{2}$/, "YYYY-MM"],
+  week: [/^\d{4}-W\d{2}$/, "YYYY-Www"],
+  color: [/^#[\da-f]{6}$/i, "#rrggbb"],
+  range: [/^-?\d+(\.\d+)?$/, "a number"],
+};
+
+const typeOf = (el) => (el.type || el.getAttribute("type") || "text").toLowerCase();
+const editable = (el) => el.isContentEditable ?? ["", "true", "plaintext-only"].includes(el.getAttribute("contenteditable"));
+
+/** The field an element stands for: a label's control, or the one field inside a wrapper. */
+function control(el) {
+  if (el.localName === "label" && el.control) return el.control;
+  if (["input", "textarea", "select"].includes(el.localName) || editable(el)) return el;
+  const inner = el.querySelectorAll?.("input:not([type=hidden]), textarea, select, [contenteditable]:not([contenteditable=false])") ?? [];
+  return inner.length === 1 ? inner[0] : el;
+}
+
+/** What fill or type can write into `el`: "text", "format" (a date's, a color's, ...) or "rich" (contenteditable); else why not. */
+function writable(el) {
+  let kind;
+  if (el.localName === "textarea") kind = "text";
+  else if (el.localName === "input") {
+    const type = typeOf(el);
+    if (type === "checkbox" || type === "radio") throw new Error(`${label(el)} is a ${type}: use check or uncheck`);
+    if (type === "file") throw new Error(`${label(el)} is a file input: fill can't choose files`);
+    if (FORMATS[type]) kind = "format";
+    else if (TEXT_TYPES.has(type)) kind = "text";
+    else throw new Error(`${label(el)} is an <input type=${type}>: it takes no text`);
+  } else if (el.localName === "select") throw new Error(`${label(el)} is a <select>: use select`);
+  else if (editable(el)) kind = "rich";
+  else throw new Error(`${label(el)} isn't a text field: fill takes an input, a textarea or a contenteditable element`);
+  if (el.readOnly === true || el.getAttribute("aria-readonly") === "true") throw new Error(`${label(el)} is read-only`);
+  return kind;
+}
+
+/** What a field holds now, as fill compares it. */
+const holds = (el) => (el.localName === "input" || el.localName === "textarea" ? el.value : flat(el.innerText ?? el.textContent));
+
+async function fill({ target, text, secret = false }) {
+  const el = control(find(target));
+  const kind = writable(el);
+  if (kind === "format" && text) {
+    const [shape, hint] = FORMATS[typeOf(el)];
+    if (!shape.test(text)) throw new Error(`Malformed value for ${label(el)} (a ${typeOf(el)} input): ${secret ? "the secret" : quote(text)} isn't ${hint}`);
+  }
+  await point(el, { hit: false });
   el.focus?.({ preventScroll: true });
-  if (fieldOf(el)) el.select();
-  else window.getSelection()?.selectAllChildren(el);
-  const done = document.execCommand(text ? "insertText" : "delete", false, text);
-  if (fieldOf(el) ? el.value !== text : !done) {
-    if (fieldOf(el)) setValue(el, text);
-    else el.textContent = text;
+  if (kind === "format") setValue(el, text);
+  else {
+    if (fieldOf(el)) el.select?.();
+    else window.getSelection?.()?.selectAllChildren(el);
+    const done = document.execCommand?.(text ? "insertText" : "delete", false, text);
+    if (fieldOf(el) ? el.value !== text : !done) {
+      if (fieldOf(el)) setValue(el, text);
+      else el.textContent = text;
+    }
   }
   el.dispatchEvent(new Event("change", { bubbles: true }));
+  // Read back: a maxlength, a mask or the page's own handler may have kept something else.
+  const now = holds(el);
+  const same = kind === "rich" ? now === flat(text) : kind === "format" && typeOf(el) === "color" ? now.toLowerCase() === text.toLowerCase() : now === text;
+  if (!same) {
+    const long = el.maxLength > 0 && text.length > el.maxLength ? ` (maxlength ${el.maxLength})` : "";
+    const it = secret ? "something else" : quote(cut(now, 120));
+    throw new Error(`${label(el)} didn't take ${secret ? "the secret" : quote(cut(text, 120))}: it holds ${it}${long}`);
+  }
   return { out: `Filled ${label(el)}` };
 }
 
@@ -247,9 +406,10 @@ function keyEvent(el, type, key, mods = {}) {
   return el.dispatchEvent(new KeyboardEvent(type, { key, code, bubbles: true, cancelable: true, composed: true, ...mods }));
 }
 
-function type({ target, text }) {
-  const el = find(target);
-  center(el);
+async function type({ target, text }) {
+  const el = control(find(target));
+  writable(el);
+  await point(el, { hit: false });
   el.focus?.({ preventScroll: true });
   if (fieldOf(el)) el.setSelectionRange?.(el.value.length, el.value.length);
   for (const ch of text) {
@@ -302,26 +462,56 @@ function press({ key: chord }) {
   return { out: `Pressed ${chord} on ${label(el)}` };
 }
 
-function select({ target, values }) {
-  const el = find(target);
+async function select({ target, values }) {
+  const el = control(find(target));
   if (el.localName !== "select") throw new Error(`${label(el)} isn't a <select>`);
   const options = [...el.options];
   const text = (o) => flat(o.textContent);
   const chosen = values.map((v) => {
     const o = options.find((o) => o.value === v) ?? options.find((o) => text(o).toLowerCase() === v.toLowerCase());
     if (!o) throw new Error(`No option ${quote(v)} in ${label(el)}: ${cut(options.map((o) => quote(text(o))).join(", "), 300)}`);
+    if (o.disabled) throw new Error(`Option ${quote(text(o))} in ${label(el)} is disabled`);
     return o;
   });
   if (chosen.length > 1 && !el.multiple) throw new Error(`${label(el)} takes one option`);
+  await point(el, { hit: false });
   for (const o of options) o.selected = chosen.includes(o);
   el.dispatchEvent(new Event("input", { bubbles: true }));
   el.dispatchEvent(new Event("change", { bubbles: true }));
+  // Read back: the page's change handler may have put it back.
+  const now = options.filter((o) => o.selected);
+  if (now.length !== chosen.length || chosen.some((o) => !o.selected)) {
+    throw new Error(`${label(el)} didn't keep the choice: it shows ${now.map((o) => quote(text(o))).join(", ") || "nothing"}`);
+  }
   return { out: `Selected ${chosen.map((o) => quote(text(o))).join(", ")} in ${label(el)}` };
 }
 
-function hover({ target }) {
+const TOGGLES = new Set(["checkbox", "radio", "switch", "menuitemcheckbox", "menuitemradio"]);
+
+/** check (`on`) or uncheck: a click when it isn't so already, and the state read back after. */
+async function check({ target, on }) {
+  const found = find(target);
+  const el = TOGGLES.has(roleOf(found)) ? found : control(found);
+  const native = el.localName === "input" && (typeOf(el) === "checkbox" || typeOf(el) === "radio");
+  const role = native ? typeOf(el) : roleOf(el);
+  if (!TOGGLES.has(role)) throw new Error(`${label(el)} isn't a checkbox, radio or switch`);
+  if (!on && (role === "radio" || role === "menuitemradio")) throw new Error(`${label(el)} is a radio button: check another of its group instead`);
+  const checked = () => (native ? el.checked === true : el.getAttribute("aria-checked") === "true");
+  const word = on ? "checked" : "unchecked";
+  if (checked() === on) return { out: `${label(el)} was ${word} already` };
+  // A styled checkbox hides its input and shows its label: the click goes there.
+  const shown = !native || !unready(el, false);
+  const via = shown ? el : ([...(el.labels ?? [])].find((l) => !unready(l, false)) ?? el);
+  if (disabled(el)) throw new Error(`${label(el)} is disabled`);
+  clickAt(via, await point(via));
+  if (checked() !== on) throw new Error(`Clicked ${label(el)}, but it's still ${on ? "unchecked" : "checked"}`);
+  return { out: `${on ? "Checked" : "Unchecked"} ${label(el)}` };
+}
+
+async function hover({ target }) {
   const el = find(target);
-  mouse(el, ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"], center(el));
+  const at = await point(el, { enabled: false });
+  mouse(el, ["pointerover", "pointerenter", "mouseover", "mouseenter", "pointermove", "mousemove"], { clientX: at.x, clientY: at.y });
   return { out: `Hovered ${label(el)}` };
 }
 
@@ -364,7 +554,10 @@ function wellFormed(_key, value) {
   return typeof value === "string" ? value.toWellFormed() : value;
 }
 
-const run = { snapshot, click, fill, type, press, select, hover, scroll, exists, hasText, rect };
+/** For native input: where a click on `target` lands, once it can. */
+const where = async ({ target }) => await point(target);
+
+const run = { snapshot, click, fill, type, press, select, check, hover, scroll, exists, hasText, rect, point: where };
 try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);
   return JSON.stringify({ ...(await run[cmd](a)), last: state.next - 1 }, wellFormed);

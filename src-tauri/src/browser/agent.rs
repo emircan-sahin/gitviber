@@ -388,6 +388,9 @@ impl Tab {
             Command::Select(target, values) => {
                 self.act(json!({ "cmd": "select", "target": target, "values": values }))
             }
+            Command::Check(target, on) => {
+                self.acted(json!({ "cmd": "check", "target": target, "on": on }))
+            }
             Command::Hover(target) => self.act(json!({ "cmd": "hover", "target": target })),
             Command::Press(key) => self.acted(json!({ "cmd": "press", "key": key })),
             Command::Scroll(to, px) => {

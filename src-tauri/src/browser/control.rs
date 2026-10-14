@@ -73,10 +73,13 @@ unless the user has it on show.
                                levels deep. Refs (also @e1 or ref=e1) stay with their element;
                                one whose element left, or from another page, fails as stale.
                                --json: also the refs gone since the last snapshot
-  click <ref|css>              Click an element
-  fill <ref|css> <text>        Replace a field's text
+  click <ref|css>              Click an element once it shows, is enabled, holds still and is
+                               on top at its middle; else why not: covered by <div#consent>
+  fill <ref|css> <text>        Replace a text field's text (date, time, color as the input takes
+                               them), read back after
   type <ref|css> <text>        Type into a field, key by key
-  select <ref|css> <value>...  Choose a <select>'s options, by value or label
+  select <ref|css> <value>...  Choose a <select>'s options, by value or label, read back after
+  check | uncheck <ref|css>    A checkbox, radio or switch on or off, read back after
   hover <ref|css>              The mouse over an element (no CSS :hover)
   press <key>                  A key to the focused element: Enter, Tab, Escape, ArrowDown, Meta+a
   scroll <up|down|ref|css> [px]
@@ -209,6 +212,8 @@ pub enum Command {
     Fill(String, String),
     Type(String, String),
     Select(String, Vec<String>),
+    /// check (true) or uncheck a checkbox, radio or switch.
+    Check(String, bool),
     Hover(String),
     Press(String),
     Scroll(Scroll, Option<u32>),
@@ -312,6 +317,8 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
             }
             _ => Err("Usage: gitviber browser select <ref|css> <value>...".into()),
         },
+        "check" => target("check <ref|css>").map(|t| Command::Check(t, true)),
+        "uncheck" => target("uncheck <ref|css>").map(|t| Command::Check(t, false)),
         "hover" => target("hover <ref|css>").map(Command::Hover),
         "press" => target("press <key>").map(Command::Press),
         "scroll" => scroll(args),
@@ -1079,6 +1086,14 @@ mod tests {
             ))
         );
         assert_eq!(
+            parse("check", &args("e7")),
+            Ok(Command::Check("e7".into(), true))
+        );
+        assert_eq!(
+            parse("uncheck", &args("#terms")),
+            Ok(Command::Check("#terms".into(), false))
+        );
+        assert_eq!(
             parse("scroll", &args("down 400")),
             Ok(Command::Scroll(Scroll::Down, Some(400)))
         );
@@ -1159,6 +1174,8 @@ mod tests {
             ("click", ""),
             ("click", "e1 e2"),
             ("fill", "e1"),
+            ("check", ""),
+            ("uncheck", "e1 e2"),
             ("back", "now"),
             ("snapshot", "-x"),
             ("snapshot", "-d many"),
