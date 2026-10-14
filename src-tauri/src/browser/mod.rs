@@ -196,6 +196,13 @@ pub fn cut(s: &str, max: usize) -> String {
     }
 }
 
+/// Milliseconds since the epoch, as a page stamps its own.
+pub fn epoch_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |t| t.as_secs_f64() * 1000.0)
+}
+
 /// A host as a URL and a certificate challenge both name it: IPv6 without brackets, lowercase.
 pub fn host_key(host: &str) -> String {
     host.trim_start_matches('[')

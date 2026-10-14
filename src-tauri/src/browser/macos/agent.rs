@@ -9,7 +9,7 @@ use super::{
 };
 use crate::browser::control::{AgentScreen, Route, Routes};
 use crate::browser::picks::Bounds;
-use crate::browser::{Look, PageState};
+use crate::browser::{epoch_ms, Look, PageState};
 use crate::state::Res;
 use block2::RcBlock;
 use objc2::runtime::{AnyObject, Bool};
@@ -21,7 +21,6 @@ use objc2_web_kit::{WKContentWorld, WKWebView};
 use serde::Serialize;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::time::SystemTime;
 use tauri::{AppHandle, Manager};
 
 thread_local! {
@@ -90,7 +89,8 @@ pub(super) fn routed(id: &str) -> bool {
     ROUTES.with_borrow(|r| r.has(id))
 }
 
-/// The app page reloaded: its tabs come back as the user's.
+/// The app page reloaded: its tabs come back as the user's. Their views all go with it
+/// (close_all), so none stays a user's tab with network.js on it.
 pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
     super::ASKED.with_borrow_mut(HashMap::clear);
@@ -342,9 +342,7 @@ pub(super) fn answered(
         (_, true) => "OK",
         (_, false) => "Cancel",
     };
-    let ts = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_millis() as f64);
+    let ts = epoch_ms();
     let line = format!(
         "{what}({:?}) answered {answer} by itself",
         message.to_string()

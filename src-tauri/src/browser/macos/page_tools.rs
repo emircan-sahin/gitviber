@@ -5,9 +5,9 @@
 
 use super::{emit, main_thread, url_text, view, Delegate, View, GONE};
 use crate::browser::console::{Counts, Entry};
-use crate::browser::cut;
 use crate::browser::network;
 use crate::browser::picks::{self, Bounds, Pick};
+use crate::browser::{cut, epoch_ms};
 use crate::state::Res;
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -25,7 +25,7 @@ use serde::Serialize;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use tauri::AppHandle;
 
 const PICKER: &str = include_str!("../scripts/picker.js");
@@ -189,10 +189,7 @@ pub(super) fn send_counts(delegate: &Delegate) {
 /// A new page committed: the console marks where it began, and a pick on the last one ends.
 pub(super) fn loaded(delegate: &Delegate, url: &str) {
     let d = delegate.ivars();
-    let ts = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0.0, |t| t.as_millis() as f64);
-    d.console.borrow_mut().loaded(url, ts);
+    d.console.borrow_mut().loaded(url, epoch_ms());
     if d.picking.take().is_some() {
         send_pick(&d.app, &d.id, None);
     }

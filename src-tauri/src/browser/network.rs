@@ -2,10 +2,9 @@
 //! browser network`: its requests with their headers and bodies, its WebSockets with their
 //! latest frames, and the rest it loaded. Only ever read by the agent, never written anywhere.
 
-use super::control::Reply;
 use super::cut;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::VecDeque;
 
 /// Requests (fetch, XMLHttpRequest, WebSocket) a view keeps; older ones go.
@@ -15,20 +14,53 @@ const KEEP: usize = 300;
 const KEEP_RESOURCES: usize = 500;
 /// Frames a WebSocket keeps, its latest.
 const FRAMES: usize = 50;
-/// What network.js cuts a body and a frame to, in characters; the backend holds it to them.
+// Characters kept of each part of an entry. network.js cuts its own to these; whatever else a
+// page posts is held to them here.
 const BODY: usize = 8192;
 const FRAME: usize = 1024;
 const URL: usize = 4096;
+/// A header's name, a status text, a body's type, a close reason.
+const NAME: usize = 256;
+const VALUE: usize = 2048;
+/// A method, an error, an initiator.
+const WORD: usize = 32;
 const HEADERS: usize = 100;
-const HEADER: usize = 2048;
 /// Characters of one list of headers in all: real ones are a few hundred, a page's own could
-/// be the whole of HEADERS × HEADER for each of three hundred requests.
+/// be the whole of HEADERS × VALUE for each of three hundred requests.
 const HEADERS_TEXT: usize = 16 * 1024;
 /// A post is a few updates, or a hundred resources: past this it's none of network.js's.
 const MAX_LINE: usize = 1 << 20;
 /// What an entry shows of its address in a list; `network <id>` has all of it.
 const LIST_URL: usize = 300;
-pub const KINDS: [&str; 4] = ["fetch", "xhr", "ws", "resource"];
+
+#[derive(Deserialize, Serialize, Clone, Copy, Debug, Default, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Kind {
+    #[default]
+    Fetch,
+    Xhr,
+    Ws,
+    Resource,
+}
+
+impl Kind {
+    const ALL: [Kind; 4] = [Kind::Fetch, Kind::Xhr, Kind::Ws, Kind::Resource];
+
+    fn name(self) -> &'static str {
+        match self {
+            Kind::Fetch => "fetch",
+            Kind::Xhr => "xhr",
+            Kind::Ws => "ws",
+            Kind::Resource => "resource",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Kind> {
+        Self::ALL
+            .into_iter()
+            .find(|k| k.name().eq_ignore_ascii_case(s))
+    }
+}
 
 #[derive(Deserialize, Serialize, Clone, Debug, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -38,9 +70,12 @@ pub struct Body {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
-    /// Bytes; None when it wasn't read to its end.
+    /// Bytes; None when not known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<f64>,
+    /// The size is only what was read: the body is at least that.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub at_least: bool,
     /// The text is only its start.
     #[serde(default)]
     pub cut: bool,
@@ -75,8 +110,7 @@ pub struct Entry {
     pub id: u32,
     #[serde(skip)]
     key: String,
-    /// One of KINDS.
-    pub kind: String,
+    pub kind: Kind,
     pub method: String,
     pub url: String,
     /// Where a redirect ended.
@@ -93,7 +127,8 @@ pub struct Entry {
     pub status_text: String,
     /// "failed", "aborted" or "timeout".
     pub error: Option<String>,
-    /// Bytes of the response, as it came.
+    /// Bytes of the response's body, decoded: as read to its end, else as resource timing has
+    /// them. None: not known (the response body may still say at least how many).
     pub size: Option<f64>,
     pub request_headers: Vec<(String, String)>,
     pub response_headers: Vec<(String, String)>,
@@ -117,7 +152,7 @@ fn is_zero(n: &u32) -> bool {
 #[serde(default, rename_all = "camelCase")]
 struct Update {
     key: String,
-    kind: Option<String>,
+    kind: Option<Kind>,
     method: Option<String>,
     url: Option<String>,
     to: Option<String>,
@@ -147,26 +182,85 @@ pub struct Log {
     dropped: u64,
 }
 
+/// A page's text as the terminal may show it: cut, and no control character (an escape
+/// sequence, a carriage return over its own line) but a body's or a frame's lines and tabs.
+/// Every string a page posts goes through here, once, as it's kept.
+fn clean(s: &str, max: usize, lines: bool) -> String {
+    cut(s, max)
+        .chars()
+        .map(|c| match c {
+            '\n' | '\t' if lines => c,
+            c if c.is_control() => '\u{FFFD}',
+            c => c,
+        })
+        .collect()
+}
+
+fn line(s: &str, max: usize) -> String {
+    clean(s, max, false)
+}
+
+fn text(s: &str, max: usize) -> String {
+    clean(&s.replace("\r\n", "\n"), max, true)
+}
+
 fn headers(list: Vec<(String, String)>) -> Vec<(String, String)> {
     let mut left = HEADERS_TEXT;
     list.into_iter()
         .take(HEADERS)
-        .map(|(k, v)| (cut(&k, 256), cut(&v, HEADER)))
+        .map(|(k, v)| (line(&k, NAME), line(&v, VALUE)))
         .take_while(|(k, v)| {
-            let n = k.chars().count() + v.chars().count();
-            left = left.saturating_sub(n);
+            left = left.saturating_sub(k.chars().count() + v.chars().count());
             left > 0
         })
         .collect()
 }
 
 fn body(mut b: Body) -> Body {
-    if let Some(text) = &b.text {
-        b.cut |= text.chars().nth(BODY).is_some();
-        b.text = Some(cut(text, BODY));
+    if let Some(t) = &b.text {
+        b.cut |= t.chars().nth(BODY).is_some();
+        b.text = Some(text(t, BODY));
     }
-    b.r#type = b.r#type.map(|t| cut(&t, 256));
+    b.r#type = b.r#type.map(|t| line(&t, NAME));
     b
+}
+
+/// The post with each lone surrogate escape as U+FFFD: a page's own text cut mid-pair would
+/// otherwise cost it the whole post, as serde_json refuses one.
+fn paired(json: &str) -> String {
+    let b = json.as_bytes();
+    let hex = |at: usize| {
+        json.get(at..at + 4)
+            .filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit()))
+            .and_then(|h| u16::from_str_radix(h, 16).ok())
+    };
+    let (mut out, mut from, mut i) = (String::with_capacity(json.len()), 0, 0);
+    while i < b.len() {
+        if b[i] != b'\\' {
+            i += 1;
+            continue;
+        }
+        let Some(u) = (b.get(i + 1) == Some(&b'u')).then(|| hex(i + 2)).flatten() else {
+            i += 2;
+            continue;
+        };
+        let low = (b.get(i + 6..i + 8) == Some(b"\\u"))
+            .then(|| hex(i + 8))
+            .flatten()
+            .is_some_and(|n| (0xDC00..=0xDFFF).contains(&n));
+        match u {
+            0xD800..=0xDBFF if low => i += 12,
+            0xD800..=0xDFFF => {
+                out.push_str(&json[from..i]);
+                out.push_str("\\ufffd");
+                i += 6;
+                from = i;
+            }
+            _ => i += 6,
+        }
+    }
+    out.push_str(&json[from..]);
+    out
 }
 
 impl Log {
@@ -176,7 +270,9 @@ impl Log {
         if json.len() > MAX_LINE {
             return false;
         }
-        let Ok(updates) = serde_json::from_str::<Vec<Update>>(json) else {
+        let Ok(updates) = serde_json::from_str::<Vec<Update>>(json)
+            .or_else(|_| serde_json::from_str::<Vec<Update>>(&paired(json)))
+        else {
             return false;
         };
         let mut any = false;
@@ -206,26 +302,21 @@ impl Log {
         }
         // A new one names its kind and address; an update of one gone (cleared, or pushed out)
         // is nothing.
-        let (Some(kind), Some(url)) = (&u.kind, &u.url) else {
+        let (Some(kind), Some(url)) = (u.kind, &u.url) else {
             return false;
         };
-        if !KINDS.contains(&kind.as_str()) {
-            return false;
-        }
-        self.next = self.next.wrapping_add(1).max(1);
+        self.next += 1;
         let mut e = Entry {
             id: self.next,
             key: u.key.clone(),
-            kind: kind.clone(),
-            url: cut(url, URL),
+            kind,
+            url: line(url, URL),
             ..Entry::default()
         };
-        let resource = kind == "resource";
         merge(&mut e, u);
-        let (ring, keep) = if resource {
-            (&mut self.resources, KEEP_RESOURCES)
-        } else {
-            (&mut self.requests, KEEP)
+        let (ring, keep) = match kind {
+            Kind::Resource => (&mut self.resources, KEEP_RESOURCES),
+            _ => (&mut self.requests, KEEP),
         };
         if ring.len() == keep {
             ring.pop_front();
@@ -263,15 +354,14 @@ impl Log {
 }
 
 fn merge(e: &mut Entry, u: Update) {
-    let text = |s: String, max: usize| cut(&s, max);
     if let Some(m) = u.method {
-        e.method = text(m, 16);
+        e.method = line(&m, WORD);
     }
     if let Some(to) = u.to {
-        e.to = Some(text(to, URL));
+        e.to = Some(line(&to, URL));
     }
     if let Some(i) = u.initiator {
-        e.initiator = Some(text(i, 32));
+        e.initiator = Some(line(&i, WORD));
     }
     if let Some(s) = u.start {
         e.start = s;
@@ -283,10 +373,10 @@ fn merge(e: &mut Entry, u: Update) {
         e.status = u.status;
     }
     if let Some(s) = u.status_text {
-        e.status_text = text(s, 256);
+        e.status_text = line(&s, NAME);
     }
     if let Some(err) = u.error {
-        e.error = Some(text(err, 32));
+        e.error = Some(line(&err, WORD));
     }
     if u.size.is_some() {
         e.size = u.size;
@@ -301,13 +391,13 @@ fn merge(e: &mut Entry, u: Update) {
         e.request_body = Some(body(b));
     }
     if let Some(b) = u.response_body {
-        if e.size.is_none() {
+        if e.size.is_none() && !b.at_least {
             e.size = b.size;
         }
         e.response_body = Some(body(b));
     }
     if let Some(mut f) = u.frame {
-        f.text = f.text.map(|t| cut(&t, FRAME));
+        f.text = f.text.map(|t| text(&t, FRAME));
         e.frame_count = e.frame_count.max(f.n);
         if e.frames.len() == FRAMES {
             e.frames.pop_front();
@@ -315,7 +405,7 @@ fn merge(e: &mut Entry, u: Update) {
         e.frames.push_back(f);
     }
     if let Some(mut c) = u.close {
-        c.reason = text(c.reason, 256);
+        c.reason = line(&c.reason, NAME);
         e.close = Some(c);
     }
 }
@@ -325,7 +415,7 @@ pub struct Filter {
     pub failed: bool,
     /// Part of the address, any case.
     pub text: Option<String>,
-    pub kind: Option<String>,
+    pub kind: Option<Kind>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -351,12 +441,9 @@ pub fn ask(args: &[String]) -> Result<Ask, String> {
             "--filter" => filter.text = Some(value()?.to_lowercase()),
             "--type" => {
                 let kind = value()?;
-                if !KINDS.contains(&kind.as_str()) {
-                    return Err(format!(
-                        "--type is fetch, xhr, ws or resource, not {kind:?}"
-                    ));
-                }
-                filter.kind = Some(kind.clone());
+                filter.kind = Some(Kind::parse(kind).ok_or_else(|| {
+                    format!("--type is fetch, xhr, ws or resource, not {kind:?}")
+                })?);
             }
             _ => return Err(format!("network doesn't take {arg:?}")),
         }
@@ -375,21 +462,21 @@ impl Entry {
 
     fn shown(&self, f: &Filter) -> bool {
         (!f.failed || self.failed())
-            && f.kind.as_ref().is_none_or(|k| *k == self.kind)
+            && f.kind.is_none_or(|k| k == self.kind)
             && f.text
                 .as_ref()
                 .is_none_or(|t| self.url.to_lowercase().contains(t.as_str()))
     }
 
     /// The method column: a resource's initiator, as nothing else names it.
-    fn what(&self) -> String {
-        match self.kind.as_str() {
-            "ws" => "WS".into(),
-            "resource" => match self.initiator.as_deref() {
-                Some("navigation") | None => "page".into(),
-                Some(i) => i.into(),
+    fn what(&self) -> &str {
+        match self.kind {
+            Kind::Ws => "WS",
+            Kind::Resource => match self.initiator.as_deref() {
+                Some("navigation") | None => "page",
+                Some(i) => i,
             },
-            _ => self.method.clone(),
+            _ => &self.method,
         }
     }
 
@@ -400,11 +487,11 @@ impl Entry {
         if let Some(e) = &self.error {
             return e.clone();
         }
-        match (self.status, self.kind.as_str()) {
-            (Some(101), "ws") => "open".into(),
+        match (self.status, self.kind) {
+            (Some(101), Kind::Ws) => "open".into(),
             (Some(0), _) => "opaque".into(),
             (Some(s), _) => s.to_string(),
-            (None, "resource") => "-".into(),
+            (None, Kind::Resource) => "-".into(),
             (None, _) => "…".into(),
         }
     }
@@ -412,22 +499,34 @@ impl Entry {
     fn took(&self) -> String {
         match self.duration {
             Some(ms) => ms_text(ms),
-            None if self.kind == "ws" && self.status.is_some() => "open".into(),
+            None if self.kind == Kind::Ws && self.status.is_some() => "open".into(),
             None => "…".into(),
         }
     }
 
     fn amount(&self) -> String {
-        if self.kind == "ws" {
+        if self.kind == Kind::Ws {
             return format!("{} fr", self.frame_count);
         }
-        self.size.map_or_else(|| "-".into(), bytes_text)
+        match (self.size, &self.response_body) {
+            (Some(size), _) => bytes_text(size),
+            (
+                None,
+                Some(Body {
+                    size: Some(size),
+                    at_least: true,
+                    ..
+                }),
+            ) => format!("≥{}", bytes_text(*size)),
+            _ => "-".into(),
+        }
     }
 }
 
 fn ms_text(ms: f64) -> String {
+    let ms = ms.round();
     if ms < 1000.0 {
-        format!("{} ms", ms.round())
+        format!("{ms} ms")
     } else {
         format!("{:.1} s", ms / 1000.0)
     }
@@ -441,26 +540,15 @@ fn bytes_text(n: f64) -> String {
     }
 }
 
-/// What a page's text may put in a terminal: its own lines and tabs, no escape sequences.
-fn printable(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            '\n' | '\t' => c,
-            c if c.is_control() => '\u{FFFD}',
-            c => c,
-        })
-        .collect()
-}
-
-fn line(e: &Entry) -> String {
+fn list_line(e: &Entry) -> String {
     format!(
-        "{:>4}  {:<7} {:>6} {:>8} {:>9}  {}",
+        "{:>4}  {:<7} {:>7} {:>8} {:>9}  {}",
         e.id,
         e.what(),
         e.state(),
         e.took(),
         e.amount(),
-        printable(&cut(&e.url, LIST_URL)).replace(['\n', '\t'], " ")
+        cut(&e.url, LIST_URL)
     )
 }
 
@@ -470,7 +558,7 @@ pub fn list_text(log: &Log, filter: &Filter) -> String {
         .entries()
         .into_iter()
         .filter(|e| e.shown(filter))
-        .map(line)
+        .map(list_line)
         .collect();
     let mut out = vec![];
     if log.dropped() > 0 {
@@ -492,32 +580,32 @@ pub fn list_text(log: &Log, filter: &Filter) -> String {
     out.join("\n")
 }
 
-fn indented(text: &str) -> String {
-    printable(text)
-        .lines()
-        .map(|l| format!("  {l}"))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 fn body_text(name: &str, b: &Body) -> String {
     let mut about = vec![];
     if let Some(t) = &b.r#type {
         about.push(t.clone());
     }
-    about.push(
-        b.size
-            .map_or_else(|| "not read to its end".into(), bytes_text),
-    );
+    about.push(match b.size {
+        Some(size) if b.at_least => format!("at least {}", bytes_text(size)),
+        Some(size) => bytes_text(size),
+        None => "size not known".into(),
+    });
     let head = format!("{name} ({}):", about.join(", "));
-    match &b.text {
-        Some(text) if b.cut => format!(
-            "{head}\n{}\n  [cut: the first {} characters]",
-            indented(text),
+    let Some(text) = &b.text else {
+        return head;
+    };
+    let body = text
+        .lines()
+        .map(|l| format!("  {l}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if b.cut {
+        format!(
+            "{head}\n{body}\n  [cut: the first {} characters]",
             text.chars().count()
-        ),
-        Some(text) => format!("{head}\n{}", indented(text)),
-        None => head,
+        )
+    } else {
+        format!("{head}\n{body}")
     }
 }
 
@@ -527,13 +615,13 @@ pub fn entry_text(e: &Entry, now: f64) -> String {
         "#{} {} {} ({})",
         e.id,
         e.what(),
-        printable(&e.url),
-        e.kind
+        e.url,
+        e.kind.name()
     )];
     if let Some(to) = &e.to {
-        out.push(format!("Redirected to {}", printable(to)));
+        out.push(format!("Redirected to {to}"));
     }
-    let status = match (&e.close, &e.error, e.status) {
+    out.push(match (&e.close, &e.error, e.status) {
         (Some(c), _, _) => format!(
             "Closed: {}{}{}",
             c.code,
@@ -545,14 +633,11 @@ pub fn entry_text(e: &Entry, now: f64) -> String {
             if c.clean { "" } else { ", not cleanly" }
         ),
         (None, Some(err), _) => format!("Failed: {err}"),
-        (None, None, Some(101)) if e.kind == "ws" => "Open".into(),
-        (None, None, Some(s)) => format!("Status: {s} {}", printable(&e.status_text))
-            .trim_end()
-            .into(),
-        (None, None, None) if e.kind == "resource" => "Loaded".into(),
+        (None, None, Some(101)) if e.kind == Kind::Ws => "Open".into(),
+        (None, None, Some(s)) => format!("Status: {s} {}", e.status_text).trim_end().into(),
+        (None, None, None) if e.kind == Kind::Resource => "Loaded".into(),
         (None, None, None) => "Waiting for an answer".into(),
-    };
-    out.push(status);
+    });
     let mut when = vec![format!("Started {} ago", ms_text((now - e.start).max(0.0)))];
     match e.duration {
         Some(ms) => when.push(format!("took {}", ms_text(ms))),
@@ -563,25 +648,17 @@ pub fn entry_text(e: &Entry, now: f64) -> String {
         when.push(bytes_text(size));
     }
     out.push(when.join("; "));
-    for (name, list) in [
-        ("Request headers", &e.request_headers),
-        ("Response headers", &e.response_headers),
+    for (side, list, b) in [
+        ("Request", &e.request_headers, &e.request_body),
+        ("Response", &e.response_headers, &e.response_body),
     ] {
         if !list.is_empty() {
-            out.push(format!("{name}:"));
-            out.extend(
-                list.iter()
-                    .map(|(k, v)| format!("  {}: {}", printable(k), printable(v))),
-            );
+            out.push(format!("{side} headers:"));
+            out.extend(list.iter().map(|(k, v)| format!("  {k}: {v}")));
         }
-        if name == "Request headers" {
-            if let Some(b) = &e.request_body {
-                out.push(body_text("Request body", b));
-            }
+        if let Some(b) = b {
+            out.push(body_text(&format!("{side} body"), b));
         }
-    }
-    if let Some(b) = &e.response_body {
-        out.push(body_text("Response body", b));
     }
     if e.frame_count > 0 {
         out.push(if e.frames.len() as u32 == e.frame_count {
@@ -595,7 +672,7 @@ pub fn entry_text(e: &Entry, now: f64) -> String {
         });
         for f in &e.frames {
             let what = match &f.text {
-                Some(t) => printable(t).replace(['\n', '\t'], " "),
+                Some(t) => t.replace(['\n', '\t'], " "),
                 None => "[binary]".into(),
             };
             out.push(format!(
@@ -610,7 +687,7 @@ pub fn entry_text(e: &Entry, now: f64) -> String {
 }
 
 /// The list as `--json` has it: each entry without its headers, bodies and frames.
-fn list_json(log: &Log, filter: &Filter) -> serde_json::Value {
+fn list_json(log: &Log, filter: &Filter) -> Value {
     let entries: Vec<_> = log
         .entries()
         .into_iter()
@@ -619,37 +696,30 @@ fn list_json(log: &Log, filter: &Filter) -> serde_json::Value {
             json!({
                 "id": e.id, "kind": e.kind, "method": e.method, "initiator": e.initiator,
                 "url": e.url, "status": e.status, "error": e.error, "start": e.start,
-                "duration": e.duration, "size": e.size, "frames": e.frame_count,
+                "duration": e.duration, "size": e.size, "frameCount": e.frame_count,
             })
         })
         .collect();
     json!({ "dropped": log.dropped(), "entries": entries })
 }
 
-/// `network`'s reply, its JSON alongside for `--json`; a list may clear the log after.
-pub fn answer(log: &mut Log, ask: &Ask, now: f64) -> Result<Reply, String> {
+/// `network`'s answer as text, and as JSON for `--json`; a list may clear the log after.
+pub fn answer(log: &mut Log, ask: &Ask, now: f64) -> Result<(String, Value), String> {
     match ask {
         Ask::One(id) => {
             let e = log.get(*id).ok_or_else(|| {
                 format!("No request #{id}: `gitviber browser network` lists them")
             })?;
-            Ok(Reply::data(entry_text(e, now), json!(e)))
+            Ok((entry_text(e, now), json!(e)))
         }
         Ask::List { filter, clear } => {
-            let (text, data) = (list_text(log, filter), list_json(log, filter));
+            let answer = (list_text(log, filter), list_json(log, filter));
             if *clear {
                 log.clear();
             }
-            Ok(Reply::data(text, data))
+            Ok(answer)
         }
     }
-}
-
-/// Milliseconds since the epoch, as network.js stamps its entries.
-pub fn now() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0.0, |t| t.as_secs_f64() * 1000.0)
 }
 
 #[cfg(test)]
@@ -689,7 +759,7 @@ mod tests {
                 filter: Filter {
                     failed: true,
                     text: Some("/api/".into()),
-                    kind: Some("xhr".into()),
+                    kind: Some(Kind::Xhr),
                 },
                 clear: true
             })
@@ -735,8 +805,8 @@ mod tests {
         );
         assert_eq!(e.request_headers[0].1, "application/json");
         assert_eq!(
-            line(e),
-            "   1  POST       201    85 ms       8 B  http://localhost:5173/api/items"
+            list_line(e),
+            "   1  POST        201    85 ms       8 B  http://localhost:5173/api/items"
         );
         let full = entry_text(e, 5000.0);
         for part in [
@@ -833,7 +903,7 @@ mod tests {
         );
         assert_eq!(
             ids(Filter {
-                kind: Some("ws".into()),
+                kind: Some(Kind::Ws),
                 ..Filter::default()
             }),
             [5]
@@ -859,13 +929,47 @@ mod tests {
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines[0],
-            "   6  img          -     2 ms    2.0 KB  http://localhost/a.png"
+            "   6  img           -     2 ms    2.0 KB  http://localhost/a.png"
         );
         assert!(lines[3].contains(" failed "), "{}", lines[3]);
         assert!(
-            lines[5].contains("WS        open     open      0 fr"),
+            lines[5].contains("WS         open     open      0 fr"),
             "{}",
             lines[5]
+        );
+    }
+
+    #[test]
+    fn columns_line_up_whatever_the_state_and_a_cut_body_says_at_least() {
+        let mut log = Log::default();
+        post(
+            &mut log,
+            json!([
+                { "key": "a", "kind": "fetch", "method": "GET", "url": "http://localhost/a", "start": 1.0, "error": "aborted", "duration": 999.6 },
+                { "key": "b", "kind": "xhr", "method": "GET", "url": "http://localhost/b", "start": 2.0, "error": "timeout", "duration": 12.0 },
+                { "key": "c", "kind": "fetch", "method": "GET", "url": "http://localhost/c", "start": 3.0, "status": 200,
+                  "responseBody": { "text": "x", "size": 8200.0, "atLeast": true, "cut": true } },
+            ]),
+        );
+        let text = list_text(&log, &Filter::default());
+        let at: Vec<usize> = text
+            .lines()
+            .map(|l| l[..l.find("http").unwrap()].chars().count())
+            .collect();
+        assert!(at.windows(2).all(|w| w[0] == w[1]), "{text}");
+        assert!(text.contains("aborted    1.0 s"), "{text}");
+        assert!(text.contains("≥8.0 KB"), "{text}");
+        assert!(entry_text(log.get(3).unwrap(), 3.0).contains("(at least 8.0 KB):"));
+        assert_eq!(Kind::parse("WS"), Some(Kind::Ws));
+        assert_eq!(
+            ask(&["--type".into(), "Fetch".into()]),
+            Ok(Ask::List {
+                filter: Filter {
+                    kind: Some(Kind::Fetch),
+                    ..Filter::default()
+                },
+                clear: false
+            })
         );
     }
 
@@ -909,9 +1013,9 @@ mod tests {
         );
         assert!(e.failed());
         assert!(
-            line(e).contains("WS        1006    2.5 s    100 fr"),
+            list_line(e).contains("WS         1006    2.5 s    100 fr"),
             "{}",
-            line(e)
+            list_line(e)
         );
         let full = entry_text(e, 3000.0);
         assert!(full.contains("Closed: 1006, not cleanly"), "{full}");
@@ -941,7 +1045,7 @@ mod tests {
         )));
         let emoji = "😀".repeat(3 * BODY);
         let many: Vec<(String, String)> = (0..300)
-            .map(|i| (format!("x-{i}"), "v".repeat(HEADER + 10)))
+            .map(|i| (format!("x-{i}"), "v".repeat(VALUE + 10)))
             .collect();
         assert!(post(
             &mut log,
@@ -951,7 +1055,7 @@ mod tests {
         ));
         let e = log.get(1).unwrap();
         assert_eq!(e.url.chars().count(), URL);
-        assert_eq!(e.response_headers[0].1.chars().count(), HEADER);
+        assert_eq!(e.response_headers[0].1.chars().count(), VALUE);
         let held: usize = e
             .response_headers
             .iter()
@@ -984,21 +1088,17 @@ mod tests {
     fn one_entry_or_the_list_answers_with_json_beside_the_text_and_clear_empties_it() {
         let mut log = Log::default();
         fetch(&mut log, "a", "http://localhost/api", 0.0);
-        let one = answer(&mut log, &Ask::One(1), 10.0).unwrap();
-        let data = one.data.unwrap();
+        let (text, data) = answer(&mut log, &Ask::One(1), 10.0).unwrap();
         assert_eq!(
             (data["id"].clone(), data["kind"].clone()),
             (json!(1), json!("fetch"))
         );
         assert!(data.get("key").is_none(), "the page's own key stays inside");
-        assert!(one
-            .out
-            .unwrap()
-            .starts_with("#1 GET http://localhost/api (fetch)\nWaiting for an answer"));
+        assert!(text.starts_with("#1 GET http://localhost/api (fetch)\nWaiting for an answer"));
         assert!(answer(&mut log, &Ask::One(2), 0.0)
             .unwrap_err()
             .contains("No request #2"));
-        let listed = answer(
+        let (text, data) = answer(
             &mut log,
             &Ask::List {
                 filter: Filter::default(),
@@ -1007,8 +1107,9 @@ mod tests {
             0.0,
         )
         .unwrap();
-        assert_eq!(listed.data.unwrap()["entries"].as_array().unwrap().len(), 1);
-        assert!(listed.out.unwrap().contains("http://localhost/api"));
+        assert_eq!(data["entries"].as_array().unwrap().len(), 1);
+        assert_eq!(data["entries"][0]["frameCount"], 0);
+        assert!(text.contains("http://localhost/api"));
         assert!(log.entries().is_empty());
     }
 
@@ -1102,8 +1203,7 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: a fetch's method, an error, an initiator and a body's type reach the terminal raw"]
-    fn bug_no_field_a_page_posts_reaches_the_terminal_raw() {
+    fn no_field_a_page_posts_reaches_the_terminal_raw() {
         let mut log = Log::default();
         // fetch("/", { method: "\x1b[2J" }) posts its start before WebKit refuses the method; a
         // server's Content-Type may carry byte 0x9b, which Headers hands over as U+009B.
@@ -1127,11 +1227,25 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "BUG: a lone surrogate the page sent (posted as \\ud83d) loses the whole post"]
-    fn bug_a_lone_surrogate_costs_only_itself() {
+    fn a_lone_surrogate_costs_only_itself() {
         let mut log = Log::default();
         assert!(log.add(
             r#"[{"key":"s","kind":"fetch","method":"POST","url":"http://localhost/save","requestBody":{"text":"{\"note\":\"hi \ud83d\"}","size":17,"cut":false}}]"#
         ));
+        let text = |log: &Log, id| {
+            log.get(id)
+                .unwrap()
+                .request_body
+                .as_ref()
+                .unwrap()
+                .text
+                .clone()
+        };
+        assert_eq!(text(&log, 1).as_deref(), Some("{\"note\":\"hi \u{FFFD}\"}"));
+        // A pair stays a pair, a lone low half goes too, and an escaped backslash is no escape.
+        assert!(log.add(
+            r#"[{"key":"t","kind":"fetch","url":"u","requestBody":{"text":"\ud83d\ude00 \udc00 \\ud83d"}}]"#
+        ));
+        assert_eq!(text(&log, 2).as_deref(), Some("😀 \u{FFFD} \\ud83d"));
     }
 }

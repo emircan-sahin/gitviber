@@ -195,12 +195,7 @@ impl Tab {
             Command::Eval(js) => self.eval(&js),
             Command::Screenshot { path, target } => self.screenshot(path, target, cwd),
             Command::Console { errors, clear } => self.console(errors, clear),
-            Command::Network(ask) => {
-                let (id, now) = (self.id.clone(), network::now());
-                main(&self.app, move |_| {
-                    super::network_log(&id, |log| network::answer(log, &ask, now))
-                })?
-            }
+            Command::Network(ask) => self.network(ask),
             Command::Device(screen) => self.device(screen),
             Command::Appearance(dark) => {
                 let id = self.id.clone();
@@ -403,6 +398,14 @@ impl Tab {
             main(&self.app, move |_| super::console_clear(&id))?;
         }
         Ok(Reply::out(control::console_text(&entries, errors)))
+    }
+
+    fn network(&self, ask: network::Ask) -> Res<Reply> {
+        let (id, now) = (self.id.clone(), super::epoch_ms());
+        let (text, data) = main(&self.app, move |_| {
+            super::network_log(&id, |log| network::answer(log, &ask, now))
+        })??;
+        Ok(Reply::data(text, data))
     }
 
     fn device(&self, screen: Option<AgentScreen>) -> Res<Reply> {
