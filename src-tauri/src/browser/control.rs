@@ -39,8 +39,9 @@ a name no open tab of the pane has fails. Agents in one pane share its tabs; the
 are out of their reach. Each tab, the default one too, has cookies and storage of its own, gone
 when it closes, unless --shared. A tab no command touched for 10 minutes sleeps: slowed, and in
 time parked to save memory, its next command loading it again. Unused for an hour, it closes,
-unless the user has it on show. The mouse and the wheel reach the page as the user's own input
-(trusted events), without moving the real pointer.
+unless the user has it on show. The mouse, the wheel, press and type reach the page as the
+user's own input (trusted events), without moving the real pointer or taking the user's focus;
+fill, select and --synthetic go by the page's script.
 
   tab new [name] [url] [--shared] [--session <name>] [--idle <minutes>]
                                Another tab, at url if given; prints its name: the one --tab or
@@ -81,14 +82,24 @@ unless the user has it on show. The mouse and the wheel reach the page as the us
   rightclick <ref|css> | --at <x>,<y>
                                Twice, or with the right button: contextmenu fires, no menu opens
   fill <ref|css> <text>        Replace a field's text
-  type <ref|css> <text>        Type into a field, key by key
+  type <ref|css> <text> [--synthetic]
+                               Type into a field: focused, its caret at the end, the text put in
+                               as an input method does, in any language, whatever the keyboard.
+                               No key events: press sends those
   select <ref|css> <value>...  Choose a <select>'s options, by value or label
   hover <ref|css|x,y>          The mouse over an element or a point; CSS :hover applies
   drag <ref|css|x,y> <ref|css|x,y>
                                Pressed at one, moved to the other with the button held, let go:
                                pointer and mouse events. Not HTML5 drag-and-drop, which an
                                element that's draggable starts: refused
-  press <key>                  A key to the focused element: Enter, Tab, Escape, ArrowDown, Meta+a
+  press <key> [--hold <ms>] [--synthetic]
+                               A key to the focused element, down and up, as a Mac keyboard
+                               sends it: Enter, Tab, Escape, ArrowDown, F5, a, A, ?, Meta+a,
+                               Shift+Tab. --hold: down that long. Meta+a and Meta+z/Shift+z do
+                               what the Edit menu does, in the page
+  key down <key> | key up <key>
+                               A key held down until let go, as a game reads W; held modifiers
+                               (key down Shift) go with later keys and clicks
   scroll <up|down|ref|css> [px]
                                The wheel where the mouse is (hover first to scroll a panel), by
                                80% of the page's height unless told; an element into view
@@ -219,11 +230,22 @@ pub enum Command {
     },
     Click(Click),
     Fill(String, String),
-    Type(String, String),
+    Type {
+        target: String,
+        text: String,
+        synthetic: bool,
+    },
     Select(String, Vec<String>),
     Hover(Target),
     Drag(Target, Target),
-    Press(String),
+    Press {
+        chord: String,
+        /// How long the key stays down.
+        hold: Option<Duration>,
+        synthetic: bool,
+    },
+    /// A key held down (true) or let go.
+    Key(bool, String),
     Scroll(Scroll, Option<u32>),
     Wait(Wait, Duration),
     Eval(String),
@@ -344,7 +366,22 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
         "dblclick" => click(cmd, args, 2, false),
         "rightclick" => click(cmd, args, 1, true),
         "fill" => target_and_text("fill <ref|css> <text>").map(|(t, x)| Command::Fill(t, x)),
-        "type" => target_and_text("type <ref|css> <text>").map(|(t, x)| Command::Type(t, x)),
+        "type" => {
+            let synthetic = args.iter().any(|a| a == "--synthetic");
+            let args: Vec<String> = args
+                .iter()
+                .filter(|a| *a != "--synthetic")
+                .cloned()
+                .collect();
+            match &args[..] {
+                [target, text @ ..] if !text.is_empty() => Ok(Command::Type {
+                    target: target.clone(),
+                    text: text.join(" "),
+                    synthetic,
+                }),
+                _ => Err("Usage: gitviber browser type <ref|css> <text> [--synthetic]".into()),
+            }
+        }
         "select" => match args {
             [target, values @ ..] if !values.is_empty() => {
                 Ok(Command::Select(target.clone(), values.to_vec()))
@@ -358,7 +395,14 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
             }
             _ => Err("Usage: gitviber browser drag <ref|css|x,y> <ref|css|x,y>".into()),
         },
-        "press" => target("press <key>").map(Command::Press),
+        "press" => press(args),
+        "key" => match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+            [way @ ("down" | "up"), key] => match input::key(key) {
+                Some(_) => Ok(Command::Key(way == "down", key.into())),
+                None => Err(input::unknown(key)),
+            },
+            _ => Err("Usage: gitviber browser key down <key> | key up <key>".into()),
+        },
         "scroll" => scroll(args),
         "wait" => wait(args),
         "eval" if !args.is_empty() => Ok(Command::Eval(rest())),
@@ -525,6 +569,38 @@ fn click(cmd: &str, args: &[String], count: u8, right: bool) -> Result<Command, 
         right,
         synthetic,
     }))
+}
+
+fn press(args: &[String]) -> Result<Command, String> {
+    let (mut hold, mut synthetic, mut chord) = (None, false, None);
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--hold" => {
+                let ms = number(value(&mut it, arg)?, arg)?;
+                hold = Some(Duration::from_millis(ms).min(LONGEST_WAIT));
+            }
+            "--synthetic" => synthetic = true,
+            _ if chord.is_none() && !arg.is_empty() => chord = Some(arg.clone()),
+            _ => {
+                return Err(
+                    "Usage: gitviber browser press <key> [--hold <ms>] [--synthetic]".into(),
+                )
+            }
+        }
+    }
+    let chord = chord.ok_or("Usage: gitviber browser press <key> [--hold <ms>] [--synthetic]")?;
+    if synthetic && hold.is_some() {
+        return Err("--hold holds a native key: not with --synthetic".into());
+    }
+    if !synthetic {
+        input::chord(&chord)?;
+    }
+    Ok(Command::Press {
+        chord,
+        hold,
+        synthetic,
+    })
 }
 
 fn snapshot(args: &[String]) -> Result<Command, String> {
@@ -1155,7 +1231,11 @@ mod tests {
         // Unquoted words are one text.
         assert_eq!(
             parse("type", &args("e3 hello there")),
-            Ok(Command::Type("e3".into(), "hello there".into()))
+            Ok(Command::Type {
+                target: "e3".into(),
+                text: "hello there".into(),
+                synthetic: false
+            })
         );
         assert_eq!(
             parse("select", &args("e4 red blue")),
@@ -1299,6 +1379,57 @@ mod tests {
             ("rightclick", ""),
             ("drag", "e1"),
             ("drag", "e1 e2 e3"),
+        ] {
+            assert!(parse(cmd, &args(a)).is_err(), "{cmd} {a}");
+        }
+    }
+
+    #[test]
+    fn keys_are_checked_as_they_come_and_held_by_name() {
+        assert_eq!(
+            parse("press", &args("w --hold 600")),
+            Ok(Command::Press {
+                chord: "w".into(),
+                hold: Some(Duration::from_millis(600)),
+                synthetic: false
+            })
+        );
+        // Script keys go as they always went, any name.
+        assert_eq!(
+            parse("press", &args("--synthetic Hyper+x")),
+            Ok(Command::Press {
+                chord: "Hyper+x".into(),
+                hold: None,
+                synthetic: true
+            })
+        );
+        assert_eq!(
+            parse("key", &args("down Shift")),
+            Ok(Command::Key(true, "Shift".into()))
+        );
+        assert_eq!(
+            parse("key", &args("up w")),
+            Ok(Command::Key(false, "w".into()))
+        );
+        assert_eq!(
+            parse("type", &args("--synthetic e3 hi there")),
+            Ok(Command::Type {
+                target: "e3".into(),
+                text: "hi there".into(),
+                synthetic: true
+            })
+        );
+        for (cmd, a) in [
+            ("press", "ş"),
+            ("press", "Hyper+x"),
+            ("press", "a b"),
+            ("press", "--hold"),
+            ("press", "a --hold soon"),
+            ("press", "a --hold 5 --synthetic"),
+            ("key", "down"),
+            ("key", "hold w"),
+            ("key", "down Hyper"),
+            ("type", "--synthetic e3"),
         ] {
             assert!(parse(cmd, &args(a)).is_err(), "{cmd} {a}");
         }
@@ -1759,7 +1890,11 @@ mod tests {
         );
         assert_eq!(
             parse("press", &words(&["Shift+Tab"])),
-            Ok(Command::Press("Shift+Tab".into()))
+            Ok(Command::Press {
+                chord: "Shift+Tab".into(),
+                hold: None,
+                synthetic: false
+            })
         );
         // A css target with spaces is one argument, as quoted.
         assert_eq!(

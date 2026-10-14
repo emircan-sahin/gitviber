@@ -5,7 +5,7 @@ use super::control::{
     self, AgentScreen, Click, Command, Found, Listed, NewTab, Pane, Reply, Request, Scroll,
     Sessions, Tabs, Target, Wait,
 };
-use super::input::{self, Pointer};
+use super::input::{self, Half, Keys, Pointer};
 use super::network;
 use super::picks::{self, Bounds};
 use super::sessions::{self, Session, Shelf};
@@ -387,8 +387,17 @@ impl Tab {
             Command::Fill(target, text) => {
                 self.act(json!({ "cmd": "fill", "target": target, "text": text }))
             }
-            Command::Type(target, text) => {
-                self.act(json!({ "cmd": "type", "target": target, "text": text }))
+            Command::Type {
+                target,
+                text,
+                synthetic: true,
+            } => self.act(json!({ "cmd": "type", "target": target, "text": text })),
+            Command::Type { target, text, .. } => {
+                let focused = self.script(json!({ "cmd": "focus", "target": target }))?;
+                let id = self.id.clone();
+                main(&self.app, move |_| super::agent_text(&id, &text))?;
+                let label = focused["label"].as_str().unwrap_or_default();
+                Ok(Reply::out(format!("Typed into {label}")))
             }
             Command::Select(target, values) => {
                 self.act(json!({ "cmd": "select", "target": target, "values": values }))
@@ -399,7 +408,26 @@ impl Tab {
                 Ok(Reply::out(format!("Hovered {} at {}", spot.label, xy(at))))
             }
             Command::Drag(from, to) => self.drag(&from, &to),
-            Command::Press(key) => self.acted(json!({ "cmd": "press", "key": key })),
+            Command::Press {
+                chord,
+                synthetic: true,
+                ..
+            } => self.acted(json!({ "cmd": "press", "key": chord })),
+            Command::Press { chord, hold, .. } => self.press(&chord, hold),
+            Command::Key(down, key) => {
+                let on = self.focused()?;
+                let keys = if down {
+                    Keys::Down(key.clone())
+                } else {
+                    Keys::Up(key.clone())
+                };
+                self.keys(keys)?;
+                Ok(Reply::out(if down {
+                    format!("Holding {key} down on {on}")
+                } else {
+                    format!("Let go of {key} on {on}")
+                }))
+            }
             Command::Scroll(Scroll::To(target), _) => {
                 self.act(json!({ "cmd": "scroll", "to": target }))
             }
@@ -475,6 +503,37 @@ impl Tab {
         } else {
             format!("{did}\nNow at {}", titled(&page.url, &page.title, " — "))
         }))
+    }
+
+    /// Key events from the keyboard, as `keys` asks.
+    fn keys(&self, keys: Keys) -> Res<()> {
+        let id = self.id.clone();
+        main(&self.app, move |_| super::agent_keys(&id, keys))
+    }
+
+    /// A chord down and up, held `hold` in between if asked, on the element with focus: its keys
+    /// may send the page somewhere.
+    fn press(&self, chord: &str, hold: Option<Duration>) -> Res<Reply> {
+        let on = self.focused()?;
+        self.moved(|| {
+            let half = |half| Keys::Press(chord.into(), half);
+            match hold {
+                None => self.keys(half(Half::Both))?,
+                Some(hold) => {
+                    self.keys(half(Half::Down))?;
+                    std::thread::sleep(hold);
+                    self.keys(half(Half::Up))?;
+                }
+            }
+            let held = hold.map_or_else(String::new, |h| format!(" for {} ms", h.as_millis()));
+            Ok(format!("Pressed {chord}{held} on {on}"))
+        })
+    }
+
+    /// What has the page's focus, as a reply names it.
+    fn focused(&self) -> Res<String> {
+        let focused = self.script(json!({ "cmd": "focused" }))?;
+        Ok(focused["label"].as_str().unwrap_or("the page").to_string())
     }
 
     /// Where a pointer command acts, and what's there (agent.js `point`).

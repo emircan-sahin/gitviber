@@ -194,6 +194,27 @@ function point({ target, x, y }) {
   return { x, y, label: el ? label(el) : "the page", picker, drag, scrolled };
 }
 
+/** Focused for typing, its caret at the end of its text: where native typing goes in. */
+function focus({ target }) {
+  const el = find(target);
+  center(el);
+  el.focus?.({ preventScroll: true });
+  try {
+    if (fieldOf(el)) el.setSelectionRange(el.value.length, el.value.length);
+    else if (el.isContentEditable) getSelection()?.collapse(el, el.childNodes.length);
+  } catch {
+    // An email or number field has no caret to place: it types at its end anyway.
+  }
+  if (!el.contains(document.activeElement)) throw new Error(`${label(el)} doesn't take focus: click it, or fill it`);
+  return { label: label(el) };
+}
+
+/** What has focus, for a key's reply. */
+const focused = () => {
+  const el = document.activeElement;
+  return { label: el && el !== document.body ? label(el) : "the page" };
+};
+
 function mouse(el, types, at) {
   for (const type of types) {
     const init = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: type.endsWith("down") ? 1 : 0, ...at };
@@ -368,7 +389,7 @@ function wellFormed(_key, value) {
   return typeof value === "string" ? value.toWellFormed() : value;
 }
 
-const run = { snapshot, click, fill, type, press, select, hover, scroll, exists, hasText, rect, point };
+const run = { snapshot, click, fill, type, press, select, hover, scroll, exists, hasText, rect, point, focus, focused };
 try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);
   return JSON.stringify(run[cmd](a), wellFormed);

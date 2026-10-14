@@ -16,7 +16,7 @@ pub use agent::{
     agent_tabs,
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
-pub use native::agent_pointer;
+pub use native::{agent_keys, agent_pointer, agent_text};
 pub use page_tools::{console_clear, console_entries, network_log, pick};
 pub use page_view::{appearance, find, zoom};
 
@@ -264,6 +264,8 @@ struct WebIvars {
     /// Native menus to drop as they open: an agent's right clicks' (native.rs). Its command's
     /// end clears them, so a page that opened none doesn't eat the user's next one.
     menus: Cell<u32>,
+    /// The keys its agents hold down, from one command to the next.
+    held: RefCell<super::input::Held>,
 }
 
 define_class!(
@@ -912,6 +914,7 @@ pub fn create(
         id: id.into(),
         app: window.app_handle().clone(),
         menus: Cell::new(0),
+        held: RefCell::default(),
     });
     let web: Retained<WebView> =
         unsafe { msg_send![super(web), initWithFrame: NSRect::ZERO, configuration: &*config] };

@@ -4,15 +4,15 @@
 //! user's focus and the app's activation stay as they are.
 
 use super::{main_thread, view, WebView, GONE};
-use crate::browser::input::{self, Pointer};
+use crate::browser::input::{self, Edit, Half, KeyStep, Keys, Pointer};
 use crate::state::Res;
 use block2::RcBlock;
 use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{msg_send, sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSScreen};
-use objc2_foundation::{NSObjectProtocol, NSPoint, NSProcessInfo, NSTimer};
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSScreen, NSWindow};
+use objc2_foundation::{NSObjectProtocol, NSPoint, NSProcessInfo, NSRange, NSString, NSTimer};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::c_void;
@@ -85,8 +85,8 @@ pub(super) fn ours(event: &NSEvent) -> bool {
 }
 
 /// The modifiers an agent holds down on the tab, on each of its events.
-fn held(_web: &WebView) -> NSEventModifierFlags {
-    NSEventModifierFlags::empty()
+fn held(web: &WebView) -> NSEventModifierFlags {
+    NSEventModifierFlags(web.ivars().held.borrow().flags() as usize)
 }
 
 /// One pointer event at `at` (CSS px; where the pointer last was when None, else the middle of
@@ -170,6 +170,102 @@ fn mouse(
     NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
         kind, location, flags, uptime(), window, None, number, clicks, pressure,
     )
+}
+
+/// Key events on the tab, as `keys` asks, with the keys its agents hold (input.rs `Held`); then
+/// what the Edit menu does for a ⌘ key.
+pub fn agent_keys(id: &str, keys: Keys) -> Res<()> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    let window = v.web.window().ok_or("The page isn't drawn now.")?;
+    let mut held = v.web.ivars().held.borrow_mut();
+    let (steps, edit) = match &keys {
+        Keys::Press(chord, half) => held.press(chord, *half)?,
+        Keys::Down(name) => (held.down(name)?, None),
+        Keys::Up(name) => (held.up(name)?, None),
+    };
+    drop(held);
+    for step in steps {
+        key(&v.web, &window, step)?;
+    }
+    if let Some(edit) = edit {
+        edit_page(&v.web, edit);
+    }
+    Ok(())
+}
+
+fn key(web: &WebView, window: &NSWindow, step: KeyStep) -> Res<()> {
+    let (kind, code, flags, chars, bare) = match &step {
+        KeyStep::Flags { code, flags } => (NSEventType::FlagsChanged, *code, *flags, "", ""),
+        KeyStep::Down(s) => (NSEventType::KeyDown, s.code, s.flags, &*s.chars, &*s.bare),
+        KeyStep::Up(s) => (NSEventType::KeyUp, s.code, s.flags, &*s.chars, &*s.bare),
+    };
+    let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+        kind,
+        NSPoint::ZERO,
+        NSEventModifierFlags(flags as usize),
+        uptime(),
+        window.windowNumber(),
+        None,
+        &NSString::from_str(chars),
+        &NSString::from_str(bare),
+        false,
+        code,
+    )
+    .ok_or("AppKit made no key event.")?;
+    remember(&event);
+    match step {
+        KeyStep::Flags { .. } => web.flagsChanged(&event),
+        // An arrow moves the caret by lines in a contenteditable only through the window's text
+        // input, which sees it as the first responder's.
+        KeyStep::Down(_) if (0x7B..=0x7E).contains(&code) && web.focused() => {
+            window.sendEvent(&event)
+        }
+        KeyStep::Down(_) => web.keyDown(&event),
+        KeyStep::Up(_) => web.keyUp(&event),
+    }
+    Ok(())
+}
+
+/// What the Edit menu would do for a ⌘ key, on the page's own web view: AppKit sends it no
+/// menu action for a key it didn't see.
+fn edit_page(web: &WebView, edit: Edit) {
+    match edit {
+        Edit::SelectAll => {
+            let _: () = unsafe { msg_send![web, selectAll: None::<&AnyObject>] };
+        }
+        Edit::Undo | Edit::Redo => {
+            let undo: *mut AnyObject = unsafe { msg_send![web, undoManager] };
+            if let Some(undo) = unsafe { undo.as_ref() } {
+                let _: () = if edit == Edit::Undo {
+                    unsafe { msg_send![undo, undo] }
+                } else {
+                    unsafe { msg_send![undo, redo] }
+                };
+            }
+        }
+        Edit::Copy | Edit::Cut | Edit::Paste => {}
+    }
+}
+
+/// `text` put in at the page's caret as an input method puts it (NSTextInputClient), a
+/// character at a time: the page gets its input events, whatever the user's keyboard or input
+/// source; a line break is an Enter.
+pub fn agent_text(id: &str, text: &str) -> Res<()> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    // NSNotFound: at the caret, replacing the selection.
+    let nowhere = NSRange::new(isize::MAX as usize, 0);
+    for (n, line) in text.split('\n').enumerate() {
+        if n > 0 {
+            agent_keys(id, Keys::Press("Enter".into(), Half::Both))?;
+        }
+        for c in line.chars() {
+            let c = NSString::from_str(c.encode_utf8(&mut [0; 4]));
+            let _: () = unsafe { msg_send![&*v.web, insertText: &*c, replacementRange: nowhere] };
+        }
+    }
+    Ok(())
 }
 
 /// CGEventRef: AppKit makes no wheel event of its own, so one comes from CoreGraphics.
@@ -335,5 +431,11 @@ mod tests {
         assert!(NSEvent::class()
             .class_method(sel!(pressedMouseButtons))
             .is_some());
+        web.verify_sel::<(Option<&AnyObject>,), ()>(sel!(selectAll:))
+            .unwrap();
+        web.verify_sel::<(&NSString, NSRange), ()>(sel!(insertText:replacementRange:))
+            .unwrap();
+        web.verify_sel::<(), *mut AnyObject>(sel!(undoManager))
+            .unwrap();
     }
 }
