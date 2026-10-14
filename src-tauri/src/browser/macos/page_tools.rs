@@ -1,10 +1,12 @@
-//! The element picker and the console on a page's view (scripts/picker.js, console.js): the
-//! picker in GitViber's own content world, which the page can't see or post into; the console
-//! in the page's, where its logging is.
+//! The element picker, the console and the network log on a page's view (scripts/picker.js,
+//! console.js, network.js): the picker in GitViber's own content world, which the page can't see
+//! or post into; the console and the network log in the page's, where its logging and its
+//! requests are.
 
 use super::{emit, main_thread, url_text, view, Delegate, View, GONE};
 use crate::browser::console::{Counts, Entry};
 use crate::browser::cut;
+use crate::browser::network;
 use crate::browser::picks::{self, Bounds, Pick};
 use crate::state::Res;
 use block2::RcBlock;
@@ -28,6 +30,7 @@ use tauri::AppHandle;
 
 const PICKER: &str = include_str!("../scripts/picker.js");
 const CONSOLE: &str = include_str!("../scripts/console.js");
+const NETWORK: &str = include_str!("../scripts/network.js");
 const COMPONENTS: &str = include_str!("../scripts/components.js");
 
 thread_local! {
@@ -52,7 +55,7 @@ struct MessagesIvars {
 }
 
 define_class!(
-    /// gvPick from the picker's world, gvConsole from the page's.
+    /// gvPick from the picker's world, gvConsole and gvNetwork from the page's.
     // SAFETY: NSObject has no subclassing requirements, and Messages has no Drop.
     #[unsafe(super(NSObject))]
     #[name = "GitViberBrowserMessages"]
@@ -74,6 +77,9 @@ define_class!(
             };
             match unsafe { message.name() }.to_string().as_str() {
                 "gvConsole" if CAPTURE.get() => logged(&v.delegate, &text),
+                "gvNetwork" => {
+                    v.delegate.ivars().network.borrow_mut().add(&text);
+                }
                 "gvPick" => picked(&v, &text),
                 _ => {}
             }
@@ -81,9 +87,15 @@ define_class!(
     }
 );
 
-/// The picker's and the console's handlers on a new view's user content controller, and
-/// console.js when the console is on.
-pub(super) fn install(content: &WKUserContentController, id: &str, mtm: MainThreadMarker) {
+/// The picker's and the console's handlers on a new view's user content controller, and its
+/// page scripts (`add_scripts`). Only an agent's tab gets the network log: no one else asks for
+/// it, and the user's own pages shouldn't pay for copying every response.
+pub(super) fn install(
+    content: &WKUserContentController,
+    id: &str,
+    agent: bool,
+    mtm: MainThreadMarker,
+) {
     let messages = Messages::alloc(mtm).set_ivars(MessagesIvars { id: id.into() });
     let messages: Retained<Messages> = unsafe { msg_send![super(messages), init] };
     let handler = ProtocolObject::from_ref(&*messages);
@@ -95,17 +107,33 @@ pub(super) fn install(content: &WKUserContentController, id: &str, mtm: MainThre
         );
         let page = WKContentWorld::pageWorld(mtm);
         content.addScriptMessageHandler_contentWorld_name(handler, &page, ns_string!("gvConsole"));
+        if agent {
+            content.addScriptMessageHandler_contentWorld_name(
+                handler,
+                &page,
+                ns_string!("gvNetwork"),
+            );
+        }
+    }
+    add_scripts(content, agent, mtm);
+}
+
+/// network.js in an agent's tab, whatever the console switch says (an agent asks for its
+/// network itself); console.js while the console is on.
+fn add_scripts(content: &WKUserContentController, agent: bool, mtm: MainThreadMarker) {
+    if agent {
+        add_script(content, NETWORK, mtm);
     }
     if CAPTURE.get() {
-        add_console(content, mtm);
+        add_script(content, CONSOLE, mtm);
     }
 }
 
-fn add_console(content: &WKUserContentController, mtm: MainThreadMarker) {
+fn add_script(content: &WKUserContentController, source: &str, mtm: MainThreadMarker) {
     unsafe {
         let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
             WKUserScript::alloc(mtm),
-            &NSString::from_str(CONSOLE),
+            &NSString::from_str(source),
             WKUserScriptInjectionTime::AtDocumentStart,
             true,
             &WKContentWorld::pageWorld(mtm),
@@ -132,11 +160,9 @@ pub fn capture(on: bool, views: &[View]) {
     }
     for v in views {
         let content = unsafe { v.web.configuration().userContentController() };
-        // console.js is a view's only user script.
+        // There's no taking one script out: all go, and what stays comes back.
         unsafe { content.removeAllUserScripts() };
-        if on {
-            add_console(&content, mtm);
-        }
+        add_scripts(&content, super::agent::routed(&v.delegate.ivars().id), mtm);
     }
 }
 
@@ -185,6 +211,14 @@ pub fn console_clear(id: &str) -> Res<()> {
     v.delegate.ivars().console.borrow_mut().clear();
     send_counts(&v.delegate);
     Ok(())
+}
+
+/// `f` on the view's network log (network.js), as `gitviber browser network` reads it.
+pub fn network_log<T>(id: &str, f: impl FnOnce(&mut network::Log) -> T) -> Res<T> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    let out = f(&mut v.delegate.ivars().network.borrow_mut());
+    Ok(out)
 }
 
 #[derive(Serialize, Clone)]

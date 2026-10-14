@@ -52,6 +52,10 @@ pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Re
         root: root.into(),
     });
     let url = url.unwrap_or("about:blank");
+    // Routed before its view is made: an agent's tab logs its network from the first load.
+    if made {
+        ROUTES.with_borrow_mut(|r| r.set(pty, route.clone()));
+    }
     if view(&route.id).is_none() {
         let window = app
             .get_webview_window("main")
@@ -70,7 +74,6 @@ pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Re
     }
     view(&route.id).ok_or(GONE)?;
     if made {
-        ROUTES.with_borrow_mut(|r| r.set(pty, route.clone()));
         let opened = Opened {
             id: &route.id,
             url,
@@ -80,6 +83,11 @@ pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Re
         emit(app, "browser-open", opened);
     }
     Ok((route.id, made))
+}
+
+/// Whether tab `id` is a pane's agent's.
+pub(super) fn routed(id: &str) -> bool {
+    ROUTES.with_borrow(|r| r.has(id))
 }
 
 /// The app page reloaded: its tabs come back as the user's.

@@ -3,6 +3,7 @@
 //! part is scripts/agent.js; apart from AppKit, so it can be tested.
 
 use super::console::Entry;
+use super::network;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -52,6 +53,10 @@ The pane's first command opens it, in the background; every agent in the pane sh
   screenshot [path] [--ref <ref|css>]
                                A PNG of the page, or of one element; prints its path
   console [--errors] [--clear] What the page logged
+  network [--failed] [--filter <text>] [--type fetch|xhr|ws|resource] [--clear]
+                               What the page requested and loaded, one line each with an id;
+                               the newest 300 requests and 500 other loads
+  network <id>                 One in full: headers, bodies, WebSocket frames
   device <name|WxH|off>        Show the page as a device; `device --list` names them
   appearance light|dark|auto   The page's prefers-color-scheme; auto is the app's
   dialogs accept|dismiss       How the page's alert, confirm and prompt are answered while a
@@ -82,6 +87,9 @@ pub struct Reply {
     pub out: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The reply as JSON, for `--json`, where a command has more to say than its text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
     /// The exit status when not 0 or 1 (OFF).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<i32>,
@@ -93,6 +101,13 @@ impl Reply {
             ok: true,
             out: Some(text.into()),
             ..Self::default()
+        }
+    }
+
+    pub fn data(text: impl Into<String>, data: serde_json::Value) -> Self {
+        Self {
+            data: Some(data),
+            ..Self::out(text)
         }
     }
 
@@ -143,6 +158,7 @@ pub enum Command {
         errors: bool,
         clear: bool,
     },
+    Network(network::Ask),
     Device(Option<AgentScreen>),
     /// Whether the page's dialogs are accepted (OK) rather than dismissed.
     Dialogs(bool),
@@ -207,6 +223,7 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
         "eval" => Err("Usage: gitviber browser eval <js>".into()),
         "screenshot" => screenshot(args),
         "console" => console(args),
+        "network" => network::ask(args).map(Command::Network),
         "device" if args.is_empty() => {
             Err("Usage: gitviber browser device <name|WxH|off>, or device --list".into())
         }
@@ -414,6 +431,10 @@ impl Routes {
 
     pub fn set(&mut self, pty: u32, route: Route) {
         self.tabs.insert(pty, route);
+    }
+
+    pub fn has(&self, id: &str) -> bool {
+        self.tabs.values().any(|r| r.id == id)
     }
 
     pub fn clear(&mut self) {
@@ -674,6 +695,14 @@ mod tests {
                 clear: true
             })
         );
+        assert_eq!(
+            parse("network", &args("4")),
+            Ok(Command::Network(network::Ask::One(4)))
+        );
+        assert!(matches!(
+            parse("network", &args("--failed --type fetch")),
+            Ok(Command::Network(network::Ask::List { clear: false, .. }))
+        ));
         assert_eq!(parse("device", &args("off")), Ok(Command::Device(None)));
         assert_eq!(parse("dialogs", &[]), Ok(Command::Dialogs(false)));
         assert_eq!(
@@ -715,6 +744,7 @@ mod tests {
             ("scroll", "down far"),
             ("screenshot", "a.png b.png"),
             ("console", "--all"),
+            ("network", "--type img"),
             ("device", ""),
             ("frobnicate", ""),
         ] {

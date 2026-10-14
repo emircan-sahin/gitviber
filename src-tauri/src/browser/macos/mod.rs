@@ -11,11 +11,12 @@ pub use agent::{
     agent_appearance, agent_awake, agent_device, agent_dialogs, agent_js, agent_page,
     agent_picture, agent_tab,
 };
-pub use page_tools::{console_clear, console_entries, pick};
+pub use page_tools::{console_clear, console_entries, network_log, pick};
 pub use page_view::{appearance, find, zoom};
 
 use super::console::Log;
 use super::keys::{self, Key, Route};
+use super::network;
 use super::Corners;
 use super::{
     host_key, is_loopback, loadable, policy, root_key, Created, Failed, Go, Look, PageState,
@@ -340,6 +341,8 @@ struct DelegateIvars {
     /// What the page logged (scripts/console.js), and whether a `browser-console` is on its way.
     console: RefCell<Log>,
     console_pending: Cell<bool>,
+    /// What an agent's page requested (scripts/network.js); other pages post nothing to it.
+    network: RefCell<network::Log>,
     /// The picker's tag while it's on (page_tools.rs pick).
     picking: RefCell<Option<String>>,
     /// The page's process ended once since the user last sent it somewhere: the next time it
@@ -614,6 +617,7 @@ impl Delegate {
             screen: Cell::new(None),
             console: RefCell::default(),
             console_pending: Cell::new(false),
+            network: RefCell::default(),
             picking: RefCell::default(),
             crashed: Cell::new(false),
             awake: RefCell::default(),
@@ -830,7 +834,7 @@ pub fn create(
         config.setWebsiteDataStore(&data_store(mtm));
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         let content = WKUserContentController::new(mtm);
-        page_tools::install(&content, id, mtm);
+        page_tools::install(&content, id, agent::routed(id), mtm);
         config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);

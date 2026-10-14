@@ -2,6 +2,7 @@
 //! (server.rs) as a few steps on the main thread, where the views are, waiting in between.
 
 use super::control::{self, AgentScreen, Command, Reply, Request, Scroll, Wait};
+use super::network;
 use super::picks::{self, Bounds};
 use super::{Go, PageState};
 use crate::state::{AppState, Res};
@@ -194,6 +195,12 @@ impl Tab {
             Command::Eval(js) => self.eval(&js),
             Command::Screenshot { path, target } => self.screenshot(path, target, cwd),
             Command::Console { errors, clear } => self.console(errors, clear),
+            Command::Network(ask) => {
+                let (id, now) = (self.id.clone(), network::now());
+                main(&self.app, move |_| {
+                    super::network_log(&id, |log| network::answer(log, &ask, now))
+                })?
+            }
             Command::Device(screen) => self.device(screen),
             Command::Appearance(dark) => {
                 let id = self.id.clone();

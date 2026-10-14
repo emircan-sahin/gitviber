@@ -101,13 +101,22 @@ fn run(args: Vec<String>) -> i32 {
 
 fn print(reply: &Reply, json: bool) -> i32 {
     if json {
-        println!("{}", serde_json::to_string(reply).unwrap_or_default());
+        println!("{}", json_text(reply));
     } else if let Some(error) = &reply.error {
         eprintln!("{error}");
     } else if let Some(out) = reply.out.as_deref().filter(|o| !o.is_empty()) {
         println!("{out}");
     }
     reply.exit_code()
+}
+
+/// `--json`'s line: a reply's data stands in for its text.
+fn json_text(reply: &Reply) -> String {
+    let mut value = serde_json::to_value(reply).unwrap_or_default();
+    if let (Some(map), Some(_)) = (value.as_object_mut(), &reply.data) {
+        map.remove("out");
+    }
+    value.to_string()
 }
 
 #[cfg(unix)]
@@ -161,6 +170,12 @@ mod tests {
             ..Reply::error(OFF_TEXT)
         };
         assert_eq!(print(&off, true), 2);
+        assert_eq!(
+            json_text(&Reply::out("done")),
+            r#"{"ok":true,"out":"done"}"#
+        );
+        let data = Reply::data("1  GET 200", serde_json::json!({ "entries": [] }));
+        assert_eq!(json_text(&data), r#"{"data":{"entries":[]},"ok":true}"#);
     }
 
     #[cfg(unix)]

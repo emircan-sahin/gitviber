@@ -12,6 +12,7 @@ pub mod control;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod network;
 pub mod picks;
 pub mod ports;
 mod registry;
@@ -22,15 +23,15 @@ pub use keys::set_app_keys;
 pub use macos::{
     agent_appearance, agent_awake, agent_device, agent_dialogs, agent_done, agent_js, agent_page,
     agent_picture, agent_tab, appearance, clear_data, close, close_all, close_root, configure,
-    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, pick, place,
-    set_agent, snapshot, zoom,
+    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, network_log,
+    pick, place, set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
     agent_appearance, agent_awake, agent_device, agent_dialogs, agent_done, agent_js, agent_page,
     agent_picture, agent_tab, appearance, clear_data, close, close_all, close_root, configure,
-    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, pick, place,
-    set_agent, snapshot, zoom,
+    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, network_log,
+    pick, place, set_agent, snapshot, zoom,
 };
 
 #[cfg(target_os = "macos")]
@@ -223,7 +224,7 @@ pub fn root_key(path: &str) -> String {
 
 #[cfg(not(target_os = "macos"))]
 mod other {
-    use super::{console::Entry, control::AgentScreen, picks::Bounds};
+    use super::{console::Entry, control::AgentScreen, network::Log, picks::Bounds};
     use super::{Created, Go, Look, PageState, Rect, Screen};
     use crate::state::Res;
     use tauri::AppHandle;
@@ -293,6 +294,9 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn console_clear(_: &str) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn network_log<T>(_: &str, _: impl FnOnce(&mut Log) -> T) -> Res<T> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_done(_: &str) {}
