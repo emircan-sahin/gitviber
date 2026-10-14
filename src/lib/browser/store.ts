@@ -35,15 +35,15 @@ listenHere<{ id: string }>("browser-parked", ({ payload: { id } }) => {
 export const useParks = (id: string) => parks.use().get(id) ?? 0;
 
 
-// Settings → Browser: how many pages out of sight stay alive, for how long, and whether they
-// keep a console.
+// Settings → Browser: how many pages out of sight stay alive, for how long, how many agents' tabs
+// draw at once, and whether they keep a console.
 let sentPolicy = "";
 function sendPolicy() {
-  const { browserLiveHidden, browserParkAfterMin, browserConsole, browserAgentControl } = getSettings();
-  const key = `${browserLiveHidden} ${browserParkAfterMin} ${browserConsole} ${browserAgentControl}`;
+  const { browserLiveHidden, browserParkAfterMin, browserAgentDrawn, browserConsole, browserAgentControl } = getSettings();
+  const key = `${browserLiveHidden} ${browserParkAfterMin} ${browserAgentDrawn} ${browserConsole} ${browserAgentControl}`;
   if (key === sentPolicy) return;
   sentPolicy = key;
-  void browserApi.configure(browserLiveHidden, browserParkAfterMin, browserConsole, browserAgentControl).catch(() => {});
+  void browserApi.configure(browserLiveHidden, browserParkAfterMin, browserAgentDrawn, browserConsole, browserAgentControl).catch(() => {});
 }
 subscribeSettings(sendPolicy);
 sendPolicy();

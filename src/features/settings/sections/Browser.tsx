@@ -5,7 +5,7 @@ import { Field, Group } from "@/features/settings/controls";
 import { copyText } from "@/lib/app/clipboard";
 import { clearBrowsingData } from "@/lib/browser/clearData";
 import { IS_LINUX } from "@/lib/platform";
-import { BROWSER_LIVE_HIDDEN, BROWSER_PARK_AFTER, updateSettings, useSettings } from "@/lib/settings";
+import { BROWSER_AGENT_DRAWN, BROWSER_LIVE_HIDDEN, BROWSER_PARK_AFTER, updateSettings, useSettings } from "@/lib/settings";
 
 const minutes = (n: number) => (n === 0 ? "Never" : n < 60 ? `${n} min` : `${n / 60} h`);
 
@@ -70,6 +70,17 @@ export function BrowserSection() {
           hint="An agent in a terminal can open pages, read them, click, type and take screenshots with the gitviber browser command. A terminal pane's agents get tabs of their own, opened in the background without taking your active tab, each signed in apart from your browsing unless the agent asks for yours. Off, the command says so and does nothing."
         >
           <Switch checked={s.browserAgentControl} onChange={(v) => updateSettings({ browserAgentControl: v })} />
+        </Field>
+        <Field
+          label="Agent tabs drawing at once"
+          hint="Agents' tabs out of sight keep drawing while they're used, each like an open page: more uses more memory and energy. Past this many, the one an agent used longest ago sleeps until its next command."
+        >
+          <Segmented<string>
+            value={String(s.browserAgentDrawn)}
+            onChange={(v) => updateSettings({ browserAgentDrawn: Number(v) })}
+            options={BROWSER_AGENT_DRAWN.map((n) => ({ value: String(n), label: String(n) }))}
+            variant="field"
+          />
         </Field>
         {s.browserAgentControl && (
           <div className="border-b border-border py-3.5 last:border-0">

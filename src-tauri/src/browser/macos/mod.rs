@@ -1246,8 +1246,9 @@ fn stop_timer(v: &View) {
     }
 }
 
-/// How many hidden views stay alive, and after how many minutes one parks (0: never).
-pub fn configure(live_hidden: u32, park_after_min: u32, console: bool) {
+/// How many hidden views stay alive, after how many minutes one parks (0: never), and how many
+/// agents' tabs draw out of sight at once: past a lower cap, the longest unused sleep at once.
+pub fn configure(live_hidden: u32, park_after_min: u32, agent_drawn: u32, console: bool) {
     if main_thread().is_err() {
         return;
     }
@@ -1266,6 +1267,10 @@ pub fn configure(live_hidden: u32, park_after_min: u32, console: bool) {
     for (id, since) in VIEWS.with_borrow_mut(|r| r.set_live_hidden(live_hidden)) {
         begin_park(&id, since);
     }
+    // Settings bound it too (BROWSER_AGENT_DRAWN).
+    let agent_drawn = usize::try_from(agent_drawn.clamp(1, 24)).unwrap_or(24);
+    VIEWS.with_borrow_mut(|r| r.set_awake_drawn(agent_drawn));
+    agent::sleep_past_cap("");
 }
 
 /// Parks a hidden view at once, with the picture taken as it hid (or none): never waiting on

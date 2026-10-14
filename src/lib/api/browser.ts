@@ -131,9 +131,9 @@ export const browserApi = {
   inspect: (id: string) => invoke<boolean>("browser_inspect", { id }),
   /** The chords bound to the app's commands: only these leave a page (keys.rs). */
   setAppKeys: (chords: string[]) => invoke<void>("browser_set_app_keys", { chords }),
-  /** Hidden views kept alive, the minutes until one parks (0: never), and the console on or off. */
-  configure: (liveHidden: number, parkAfterMin: number, console: boolean, agentControl: boolean) =>
-    invoke<void>("browser_configure", { liveHidden, parkAfterMin, console, agentControl }),
+  /** Hidden views kept alive, the minutes until one parks (0: never), agents' tabs drawn out of sight at once, and the console on or off. */
+  configure: (liveHidden: number, parkAfterMin: number, agentDrawn: number, console: boolean, agentControl: boolean) =>
+    invoke<void>("browser_configure", { liveHidden, parkAfterMin, agentDrawn, console, agentControl }),
   /** The element picker on or off; its pick comes as `browser-picked`. */
   pick: (id: string, on: boolean) => invoke<void>("browser_pick", { id, on }),
   console: (id: string) => invoke<ConsoleEntry[]>("browser_console", { id }),

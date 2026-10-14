@@ -44,7 +44,7 @@ pub use other::{
 pub use sessions::Shelf;
 
 #[cfg(target_os = "macos")]
-pub use registry::{Parked, Registry, Step, AWAKE_OFFSCREEN};
+pub use registry::{Parked, Registry, Step};
 use serde::{Deserialize, Serialize};
 use tauri::Url;
 
@@ -376,7 +376,7 @@ mod other {
     pub fn close(_: &str) {}
     pub fn close_root(_: &str) {}
     pub fn close_all() {}
-    pub fn configure(_: u32, _: u32, _: bool) {}
+    pub fn configure(_: u32, _: u32, _: u32, _: bool) {}
     pub fn pick(_: &str, _: bool) -> Res<()> {
         Err(UNSUPPORTED.into())
     }

@@ -5,13 +5,14 @@
 
 /// How many hidden views stay alive until settings say (browserLiveHidden).
 const LIVE_HIDDEN: usize = 2;
-/// How many agents' tabs draw out of sight at once, each in a panel at full rate (its backing
-/// store about 16 MB at 2x for a 1280×800 page): past it, the least recently used sleeps.
-pub const AWAKE_OFFSCREEN: usize = 6;
+/// How many agents' tabs draw out of sight at once until settings say (browserAgentDrawn), each
+/// in a panel at full rate: past it, the least recently used sleeps.
+const AWAKE_DRAWN: usize = 12;
 
 pub struct Registry<V> {
     views: Vec<Entry<V>>,
     live_hidden: usize,
+    awake_drawn: usize,
     /// Every hide gets the next number: a park timer set by one tells a later one apart.
     hides: u64,
     /// Every use of an awake view gets the next number, to tell which went longest unused.
@@ -91,6 +92,7 @@ impl<V> Registry<V> {
         Self {
             views: Vec::new(),
             live_hidden: LIVE_HIDDEN,
+            awake_drawn: AWAKE_DRAWN,
             hides: 0,
             uses: 0,
         }
@@ -271,16 +273,33 @@ impl<V> Registry<V> {
         }
     }
 
-    /// The views drawn off-screen past `cap`, the longest unused first: they sleep.
-    pub fn over_awake(&self, cap: usize) -> Vec<String> {
+    /// Every view drawn off-screen, the longest unused first.
+    pub fn drawn(&self) -> Vec<String> {
         let mut drawn: Vec<&Entry<V>> = self
             .views
             .iter()
             .filter(|e| self.offscreen(&e.id))
             .collect();
         drawn.sort_by_key(|e| e.used);
+        drawn.into_iter().map(|e| e.id.clone()).collect()
+    }
+
+    /// The views drawn off-screen past `cap`, the longest unused first: they sleep.
+    #[cfg(test)]
+    fn over_awake(&self, cap: usize) -> Vec<String> {
+        let mut drawn = self.drawn();
         let over = drawn.len().saturating_sub(cap);
-        drawn[..over].iter().map(|e| e.id.clone()).collect()
+        drawn.truncate(over);
+        drawn
+    }
+
+    /// How many may draw off-screen at once (`over_awake`).
+    pub fn awake_drawn(&self) -> usize {
+        self.awake_drawn
+    }
+
+    pub fn set_awake_drawn(&mut self, n: usize) {
+        self.awake_drawn = n;
     }
 
     pub fn awake(&self, id: &str) -> bool {
@@ -494,6 +513,9 @@ mod tests {
         r.sleep("b");
         assert!(r.over_awake(2).is_empty());
         assert_eq!(r.over_awake(0), ["d", "a"]);
+        assert_eq!(r.drawn(), r.over_awake(0));
+        r.set_awake_drawn(1);
+        assert_eq!(r.over_awake(r.awake_drawn()), ["d"]);
     }
 
     #[test]
@@ -925,11 +947,12 @@ mod tests {
     /// `sleep_past_cap` does, skipping a tab a command runs on) among the user's shows, hides,
     /// covers, idle sleeps and closes: the cap names exactly the longest unused of the views
     /// drawn off-screen, never the one just used nor one on show, and after a command no more
-    /// than AWAKE_OFFSCREEN are drawn but for those a command still runs on.
+    /// than CAP are drawn but for those a command still runs on.
     #[test]
     fn random_agent_commands_keep_the_awake_cap_and_sleep_the_longest_unused() {
         use std::collections::{HashMap, HashSet};
         const TABS: usize = 14;
+        const CAP: usize = 6;
         let ids: Vec<String> = (0..TABS).map(|i| format!("t{i}")).collect();
         let mut r = Registry::new();
         let mut running: HashSet<String> = HashSet::new();
@@ -963,8 +986,8 @@ mod tests {
                     let before = drawn(&r);
                     let mut by_use = before.clone();
                     by_use.sort_by_key(|d| used[d]);
-                    let over = r.over_awake(AWAKE_OFFSCREEN);
-                    let expected = &by_use[..before.len().saturating_sub(AWAKE_OFFSCREEN)];
+                    let over = r.over_awake(CAP);
+                    let expected = &by_use[..before.len().saturating_sub(CAP)];
                     assert_eq!(over, expected, "the longest unused, first");
                     assert!(!over.contains(&id), "{id}, just used, sleeps");
                     for gone in &over {
@@ -982,12 +1005,12 @@ mod tests {
                     let after = drawn(&r);
                     let busy = after.iter().filter(|d| running.contains(*d)).count();
                     assert!(
-                        after.len() <= AWAKE_OFFSCREEN + busy,
+                        after.len() <= CAP + busy,
                         "{} drawn, {busy} busy",
                         after.len()
                     );
                     if running.is_empty() {
-                        assert!(after.len() <= AWAKE_OFFSCREEN);
+                        assert!(after.len() <= CAP);
                     }
                     most = most.max(after.len());
                     assert!(r.awake(&id) && (r.shown(&id) || r.offscreen(&id)), "{id}");
@@ -1036,7 +1059,7 @@ mod tests {
             running.retain(|id| r.get(id).is_some());
             // What's drawn off-screen is exactly what the cap counts, all of it awake; a view on
             // show and uncovered is never among it.
-            let all = r.over_awake(0);
+            let all = r.drawn();
             let mut drawn_now = drawn(&r);
             drawn_now.sort_by_key(|d| used.get(d).copied().unwrap_or_default());
             assert_eq!(all, drawn_now);
@@ -1049,9 +1072,6 @@ mod tests {
                 }
             }
         }
-        assert!(
-            most >= AWAKE_OFFSCREEN,
-            "the fuzz never reached the cap ({most})"
-        );
+        assert!(most >= CAP, "the fuzz never reached the cap ({most})");
     }
 }

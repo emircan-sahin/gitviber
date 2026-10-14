@@ -68,17 +68,18 @@ pub fn browser_set_app_keys(chords: Vec<String>) {
     browser::set_app_keys(chords);
 }
 
-/// Settings → Browser: hidden views kept alive, minutes to park, the console on or off, and
-/// whether agents may use the browser (`gitviber browser`).
+/// Settings → Browser: hidden views kept alive, minutes to park, agents' tabs drawn out of sight
+/// at once, the console on or off, and whether agents may use the browser (`gitviber browser`).
 #[tauri::command]
 pub fn browser_configure(
     app: AppHandle,
     live_hidden: u32,
     park_after_min: u32,
+    agent_drawn: u32,
     console: bool,
     agent_control: bool,
 ) {
-    browser::configure(live_hidden, park_after_min, console);
+    browser::configure(live_hidden, park_after_min, agent_drawn, console);
     browser::server::set_enabled(&app, agent_control);
 }
 

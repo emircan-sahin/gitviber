@@ -11,8 +11,8 @@ use crate::browser::control::{
     origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE,
 };
 use crate::browser::picks::Bounds;
+use crate::browser::Step;
 use crate::browser::{epoch_ms, Look, PageState};
-use crate::browser::{Step, AWAKE_OFFSCREEN};
 use crate::state::{AppState, Res};
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -240,12 +240,12 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<bool> {
     Ok(made)
 }
 
-/// Past AWAKE_OFFSCREEN, the tabs drawn out of sight longest unused sleep: each panel is a
-/// window's backing store, and its page runs at full rate. One a command runs on, or `keep`
-/// (the one a command is about to), is passed over for the next.
+/// Past the cap (Settings → Browser), the tabs drawn out of sight longest unused sleep: each
+/// panel is a window's backing store, and its page runs at full rate. One a command runs on, or
+/// `keep` (the one a command is about to), is passed over for the next.
 pub(super) fn sleep_past_cap(keep: &str) {
-    let drawn = VIEWS.with_borrow(|r| r.over_awake(0));
-    let mut over = drawn.len().saturating_sub(AWAKE_OFFSCREEN);
+    let (drawn, cap) = VIEWS.with_borrow(|r| (r.drawn(), r.awake_drawn()));
+    let mut over = drawn.len().saturating_sub(cap);
     for id in drawn.iter().filter(|id| *id != keep) {
         if over == 0 {
             break;

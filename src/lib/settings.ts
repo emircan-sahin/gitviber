@@ -171,6 +171,8 @@ export const TERMINAL_LINE_HEIGHTS = [1, 1.1, 1.2, 1.3];
 export const BROWSER_LIVE_HIDDEN = [0, 1, 2, 3, 4];
 /** Minutes a browser tab's page stays alive out of sight; 0 is until the cap parks it. */
 export const BROWSER_PARK_AFTER = [0, 5, 10, 30, 60];
+/** Agents' tabs drawing out of sight at once, each like an open page; past it the longest unused sleeps. */
+export const BROWSER_AGENT_DRAWN = [4, 8, 12, 16, 24];
 
 export interface Settings {
   codeFont: CodeFont;
@@ -231,6 +233,8 @@ export interface Settings {
   browserLiveHidden: number;
   /** One of BROWSER_PARK_AFTER. */
   browserParkAfterMin: number;
+  /** One of BROWSER_AGENT_DRAWN. */
+  browserAgentDrawn: number;
   /** A worktree's browser pages load again when an agent there finishes, unless their dev server reloads them itself. */
   browserReloadOnAgentDone: boolean;
   /** Browser tabs keep what their pages log as errors and warnings, for the console badge. */
@@ -350,6 +354,7 @@ const DEFAULTS: Settings = {
   hiddenVaults: [],
   browserLiveHidden: 2,
   browserParkAfterMin: 10,
+  browserAgentDrawn: 12,
   browserReloadOnAgentDone: false,
   browserConsole: true,
   browserAgentControl: false,
@@ -455,6 +460,7 @@ function load(): Settings {
     s.hiddenVaults = Array.isArray(s.hiddenVaults) ? s.hiddenVaults.filter((p: unknown) => typeof p === "string") : [];
     if (!BROWSER_LIVE_HIDDEN.includes(s.browserLiveHidden)) s.browserLiveHidden = DEFAULTS.browserLiveHidden;
     if (!BROWSER_PARK_AFTER.includes(s.browserParkAfterMin)) s.browserParkAfterMin = DEFAULTS.browserParkAfterMin;
+    if (!BROWSER_AGENT_DRAWN.includes(s.browserAgentDrawn)) s.browserAgentDrawn = DEFAULTS.browserAgentDrawn;
     if (typeof s.browserReloadOnAgentDone !== "boolean") s.browserReloadOnAgentDone = DEFAULTS.browserReloadOnAgentDone;
     if (typeof s.browserConsole !== "boolean") s.browserConsole = DEFAULTS.browserConsole;
     if (typeof s.browserAgentControl !== "boolean") s.browserAgentControl = DEFAULTS.browserAgentControl;
