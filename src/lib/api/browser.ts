@@ -94,9 +94,15 @@ export interface ListeningPort {
 export interface SkillTarget {
   agent: string;
   path: string;
-  /** noAgent: its folder isn't there; theirs: a file without GitViber's marker, left alone. */
-  status: "written" | "none" | "noAgent" | "theirs" | "failed";
+  /** newer: a newer GitViber's, kept; noAgent: its folder isn't there; theirs: no GitViber marker, left alone. */
+  status: "written" | "absent" | "newer" | "noAgent" | "theirs" | "failed";
   error?: string;
+}
+
+/** Each agent's skill, and `why` nothing is listed (no HOME) or nothing changes (a dev build). */
+export interface Skill {
+  targets: SkillTarget[];
+  why?: string;
 }
 
 // A tab's view is made and closed in the order asked: a close right after a create, then a
@@ -143,8 +149,10 @@ export const browserApi = {
   /** Hidden views kept alive, the minutes until one parks (0: never), and the console on or off. */
   configure: (liveHidden: number, parkAfterMin: number, console: boolean, agentControl: boolean) =>
     invoke<void>("browser_configure", { liveHidden, parkAfterMin, console, agentControl }),
-  /** Each agent's skill written (`on`) or removed, and where it stands. */
-  skill: (on: boolean) => invoke<SkillTarget[]>("browser_skill", { on }),
+  /** Each agent's skill written (`on`) or removed, and where it stands, told to Settings too; main window only. */
+  skill: (on: boolean) => invoke<Skill>("browser_skill", { on }),
+  /** Where each agent's skill stands, changing nothing. */
+  skillStatus: () => invoke<Skill>("browser_skill_status"),
   /** The skill's text for a CLAUDE.md or AGENTS.md, for agents without skills. */
   agentNote: () => invoke<string>("browser_agent_note"),
   /** The element picker on or off; its pick comes as `browser-picked`. */

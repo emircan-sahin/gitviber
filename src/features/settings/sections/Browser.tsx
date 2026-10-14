@@ -3,10 +3,11 @@ import { Button } from "@/components/ui/button";
 import { Segmented } from "@/components/ui/segmented";
 import { Switch } from "@/components/ui/switch";
 import { Field, Group } from "@/features/settings/controls";
-import { browserApi, type SkillTarget } from "@/lib/api";
+import { browserApi, type Skill } from "@/lib/api";
 import { copyText } from "@/lib/app/clipboard";
+import { listenHere } from "@/lib/app/settingsWindow";
 import { clearBrowsingData } from "@/lib/browser/clearData";
-import { skillLine, skillWanted } from "@/lib/browser/skill";
+import { skillLines, skillWanted } from "@/lib/browser/skill";
 import { IS_LINUX } from "@/lib/platform";
 import { BROWSER_LIVE_HIDDEN, BROWSER_PARK_AFTER, updateSettings, useSettings } from "@/lib/settings";
 
@@ -21,23 +22,27 @@ function useAgentNote(on: boolean) {
   return note;
 }
 
-// Where each agent's skill stands, synced as it's asked: the main window does the same at launch.
-function useSkill(on: boolean, shown: boolean) {
-  const [targets, setTargets] = useState<SkillTarget[]>([]);
+// Where each agent's skill stands. Only the main window writes it (store.ts), and says so after.
+function useSkill(shown: boolean) {
+  const [skill, setSkill] = useState<Skill | null>(null);
   useEffect(() => {
     if (!shown) return;
     let live = true;
-    void browserApi.skill(on).then((t) => live && setTargets(t), () => {});
-    return () => void (live = false);
-  }, [on, shown]);
-  return targets;
+    void browserApi.skillStatus().then((s) => live && setSkill(s), () => {});
+    const unlisten = listenHere<Skill>("browser-skill", ({ payload }) => live && setSkill(payload));
+    return () => {
+      live = false;
+      void unlisten.then((u) => u()).catch(() => {});
+    };
+  }, [shown]);
+  return skill;
 }
 
 export function BrowserSection() {
   const s = useSettings();
   const note = useAgentNote(s.browserAgentControl && !IS_LINUX);
   const skillOn = skillWanted(s);
-  const skill = useSkill(skillOn, s.browserAgentControl && !IS_LINUX);
+  const skill = useSkill(s.browserAgentControl && !IS_LINUX);
   if (IS_LINUX) {
     return (
       <Group>
@@ -91,9 +96,9 @@ export function BrowserSection() {
             hint={
               <>
                 A skill on when and how to use the browser, rewritten as GitViber updates and deleted when this or agent control is turned off. A file there of your own is never touched.
-                {skill.map((t) => (
-                  <span key={t.agent} className="mt-0.5 block font-mono text-[11px] break-all">
-                    {skillLine(t, skillOn)}
+                {[...skillLines(skill?.targets ?? [], skillOn), ...(skill?.why ? [skill.why] : [])].map((line) => (
+                  <span key={line} className="mt-0.5 block font-mono text-[11px] break-all">
+                    {line}
                   </span>
                 ))}
               </>

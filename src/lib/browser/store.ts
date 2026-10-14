@@ -49,7 +49,8 @@ function sendPolicy() {
 subscribeSettings(sendPolicy);
 sendPolicy();
 
-// The agents' skill, at launch too: a new version's HELP replaces the one an older one wrote.
+// The agents' skill, written from this window alone (Settings only reads it), and at launch: a new
+// version's HELP replaces the one an older one wrote.
 let sentSkill: boolean | null = null;
 function sendSkill() {
   const on = skillWanted(getSettings());
