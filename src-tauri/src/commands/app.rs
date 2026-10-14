@@ -1,7 +1,7 @@
 use crate::state::{blocking, AppState, Res};
 use crate::{
-    agents, cli, clipboard, conversations, errors, git, launch, menu, notifications, process, pty,
-    translucency, updates,
+    agents, browser, cli, clipboard, conversations, errors, git, launch, menu, notifications,
+    process, pty, translucency, updates,
 };
 use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -124,6 +124,8 @@ pub fn pty_cwd(state: State<'_, AppState>, id: u32) -> Option<String> {
 #[tauri::command]
 pub fn pty_kill(state: State<'_, AppState>, id: u32) {
     state.agents.forget(id);
+    // Sync, so on the main thread, where the views are.
+    browser::agent_pane_closed(id);
     state.ptys.kill(id)
 }
 

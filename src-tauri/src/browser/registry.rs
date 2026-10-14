@@ -26,6 +26,9 @@ enum State<V> {
     Shown(V),
     /// Out of sight since the hide numbered so.
     Hidden(V, u64),
+    /// Out of its tab's sight but drawn, off the window's edge, for the agents of the pane that
+    /// opened it: it neither parks nor counts toward the cap.
+    Aside(V),
     Parked(Parked),
 }
 
@@ -40,7 +43,7 @@ pub struct Parked {
 impl<V> Entry<V> {
     fn view(&self) -> Option<&V> {
         match &self.state {
-            State::Shown(v) | State::Hidden(v, _) => Some(v),
+            State::Shown(v) | State::Hidden(v, _) | State::Aside(v) => Some(v),
             State::Parked(_) => None,
         }
     }
@@ -53,7 +56,7 @@ impl<V> Entry<V> {
 
     fn into_view(self) -> Option<V> {
         match self.state {
-            State::Shown(v) | State::Hidden(v, _) => Some(v),
+            State::Shown(v) | State::Hidden(v, _) | State::Aside(v) => Some(v),
             State::Parked(_) => None,
         }
     }
@@ -139,10 +142,25 @@ impl<V> Registry<V> {
     pub fn show(&mut self, id: &str) {
         if let Some(e) = self.entry(id) {
             e.restate(|s| match s {
-                State::Hidden(v, _) => State::Shown(v),
+                State::Hidden(v, _) | State::Aside(v) => State::Shown(v),
                 s => s,
             });
         }
+    }
+
+    /// Kept drawn out of its tab's sight; false for a view that isn't live.
+    pub fn aside(&mut self, id: &str) -> bool {
+        let mut live = false;
+        if let Some(e) = self.entry(id) {
+            e.restate(|s| match s {
+                State::Shown(v) | State::Hidden(v, _) | State::Aside(v) => {
+                    live = true;
+                    State::Aside(v)
+                }
+                s => s,
+            });
+        }
+        live
     }
 
     /// Out of sight: the hide's number, for its park timer, and the hidden views past the cap
@@ -152,7 +170,7 @@ impl<V> Registry<V> {
         let since = self.hides;
         let mut live = false;
         self.entry(id)?.restate(|s| match s {
-            State::Shown(v) | State::Hidden(v, _) => {
+            State::Shown(v) | State::Hidden(v, _) | State::Aside(v) => {
                 live = true;
                 State::Hidden(v, since)
             }
@@ -307,6 +325,29 @@ mod tests {
     }
 
     #[test]
+    fn an_agents_view_aside_never_parks_nor_counts_until_it_hides() {
+        let mut r = Registry::new();
+        for id in ["a", "b", "c"] {
+            r.insert(id, "/w", id);
+        }
+        let (a, _) = r.hide("a").unwrap();
+        assert!(r.aside("a") && r.aside("b"));
+        assert!(!r.shown("a") && r.get("a") == Some(&"a"));
+        assert!(r.hidden().is_empty() && !r.still_hidden("a", a));
+        assert_eq!(r.park("a", a, parked("http://x.test/")), None);
+        assert!(r.set_live_hidden(0).is_empty(), "none hidden to park");
+        // Shown, then the agent's pane gone: hidden as any other, and parking.
+        r.show("b");
+        assert!(r.shown("b"));
+        let (b, over) = r.hide("b").unwrap();
+        assert_eq!(over, [("b".to_string(), b)]);
+        let (since, _) = r.hide("c").unwrap();
+        r.park("c", since, parked("http://x.test/"));
+        assert!(!r.aside("c"), "a parked view isn't live");
+        assert!(!r.aside("nope"));
+    }
+
+    #[test]
     fn a_timer_from_before_the_view_showed_again_parks_nothing() {
         let mut r = Registry::new();
         r.insert("a", "/w", 1);
@@ -420,6 +461,7 @@ mod tests {
     enum Is {
         Shown,
         Hidden(u64),
+        Aside,
         Parked,
     }
 
@@ -450,7 +492,7 @@ mod tests {
         for n in 0..20_000u32 {
             let id = format!("t{}", lcg(&mut seed) % 12);
             let root = format!("/w/{}", lcg(&mut seed) % 3);
-            match lcg(&mut seed) % 9 {
+            match lcg(&mut seed) % 10 {
                 // A tab shows: its view made, or a parked one made again, or the live one shown.
                 0 | 1 => match model.iter().position(|m| m.0 == id) {
                     Some(at) if model[at].3 == Is::Parked => {
@@ -499,6 +541,14 @@ mod tests {
                         model.remove(at);
                     }
                     assert_eq!(r.remove(&id), live);
+                }
+                // An agent's tab kept drawn: out of the cap's count.
+                8 => {
+                    let at = model.iter().position(|m| m.0 == id && m.3 != Is::Parked);
+                    assert_eq!(r.aside(&id), at.is_some());
+                    if let Some(at) = at {
+                        model[at].3 = Is::Aside;
+                    }
                 }
                 7 => {
                     cap = lcg(&mut seed) % 5;

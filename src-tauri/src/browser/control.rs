@@ -416,6 +416,11 @@ impl Routes {
         self.tabs.insert(pty, route);
     }
 
+    /// The pane closed: its tab, the user's from now on.
+    pub fn release(&mut self, pty: u32) -> Vec<Route> {
+        self.tabs.remove(&pty).into_iter().collect()
+    }
+
     pub fn clear(&mut self) {
         self.tabs.clear();
     }
@@ -1017,6 +1022,9 @@ mod tests {
         assert_eq!(routes.tab(1, |_| true), None, "and forgotten");
         assert_eq!(routes.tab(2, |_| true), Some(route("b")));
         assert_eq!(routes.tab(99, |_| true), None);
+        assert_eq!(routes.release(2), [route("b")]);
+        assert!(routes.release(2).is_empty());
+        routes.set(2, route("c"));
         routes.clear();
         assert_eq!(routes.tab(2, |_| true), None);
     }

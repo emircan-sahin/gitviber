@@ -8,8 +8,8 @@ mod page_tools;
 mod page_view;
 
 pub use agent::{
-    agent_appearance, agent_awake, agent_device, agent_dialogs, agent_js, agent_page,
-    agent_picture, agent_tab,
+    agent_appearance, agent_device, agent_dialogs, agent_js, agent_page, agent_pane_closed,
+    agent_picture, agent_running, agent_tab,
 };
 pub use page_tools::{console_clear, console_entries, pick};
 pub use page_view::{appearance, find, zoom};
@@ -345,9 +345,11 @@ struct DelegateIvars {
     /// The page's process ended once since the user last sent it somewhere: the next time it
     /// stays down, or a page that kills it on load would reload forever.
     crashed: Cell<bool>,
-    /// The agent commands running on it now (agent.rs): while any are, it stays awake, doesn't
-    /// park, and its page's dialogs answer themselves.
-    awake: RefCell<HashSet<u64>>,
+    /// The agent commands running on it now (agent.rs): while any are, it doesn't idle, and its
+    /// page's dialogs answer themselves.
+    running: RefCell<HashSet<u64>>,
+    /// In use by its pane's agents (agent.rs): drawn and unthrottled, aside when out of sight.
+    awake: Cell<bool>,
     /// The page's own zoom (page_view.rs), outside device mode.
     zoom: Cell<f64>,
 }
@@ -382,6 +384,12 @@ define_class!(
             if PARK_AFTER.get() > 0 && VIEWS.with_borrow(|r| r.still_hidden(id, since)) {
                 begin_park(id, since);
             }
+        }
+
+        /// No agent's command touched the tab for a while (agent.rs `wake`).
+        #[unsafe(method(gvIdleDue))]
+        fn idle_due(&self) {
+            agent::idle(&self.ivars().id);
         }
 
         #[unsafe(method(gvSendConsole))]
@@ -616,7 +624,8 @@ impl Delegate {
             console_pending: Cell::new(false),
             picking: RefCell::default(),
             crashed: Cell::new(false),
-            awake: RefCell::default(),
+            running: RefCell::default(),
+            awake: Cell::new(false),
             zoom: Cell::new(1.0),
         });
         unsafe { msg_send![super(this), init] }
@@ -983,7 +992,8 @@ pub fn set_agent(id: &str, ua: Option<&str>) -> Res<()> {
 }
 
 /// Hidden, WebKit slows its timers and animation frames. Out of its tab's sight (not just
-/// `aside` for something drawn over it), it parks past the cap or once its timer is up.
+/// `aside` for something drawn over it), it parks past the cap or once its timer is up; an
+/// agent's tab in use is drawn off the window's edge instead (agent.rs).
 pub fn hide(id: &str, aside: bool) {
     let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
         return;
@@ -998,7 +1008,11 @@ pub fn hide(id: &str, aside: bool) {
     take_snapshot(&v.web, move |shot| {
         VIEWS.with_borrow_mut(|r| r.set_picture(&picture_of, shot));
     });
-    out_of_sight(&v, id);
+    if v.delegate.ivars().awake.get() {
+        agent::keep_aside(&v);
+    } else {
+        out_of_sight(&v, id);
+    }
 }
 
 /// Hidden in the registry too: its park timer starts, and the hidden past the cap park.
@@ -1071,8 +1085,7 @@ pub fn configure(live_hidden: u32, park_after_min: u32, console: bool) {
 /// Parks a hidden view at once, with the picture taken as it hid (or none): never waiting on
 /// WebKit, which may not draw a hidden view at all.
 fn begin_park(id: &str, since: u64) {
-    // Running an agent's command: it hides again after, and parks then if it's due.
-    let Some(v) = view(id).filter(|v| v.delegate.ivars().awake.borrow().is_empty()) else {
+    let Some(v) = view(id) else {
         return;
     };
     let parked = Parked {

@@ -1,21 +1,22 @@
 //! The views `gitviber browser` drives (browser/agent.rs): each terminal pane's agent tab, made
-//! here without its tab ever showing, kept awake while a command runs on it, and answering its
+//! here without its tab ever showing, kept drawing while its agents use it, and answering its
 //! page's dialogs by itself.
 
 use super::page_view::appearance;
 use super::{
     ask, asked, create, emit, main_thread, out_of_sight, page_tools, set_agent, stop_timer,
-    url_text, view, Delegate, View, GONE, VIEWS,
+    url_text, view, Delegate, View, GONE, PARK_AFTER, VIEWS,
 };
 use crate::browser::control::{AgentScreen, Route, Routes};
 use crate::browser::picks::Bounds;
 use crate::browser::{Look, PageState};
 use crate::state::Res;
 use block2::RcBlock;
-use objc2::runtime::{AnyObject, Bool};
+use objc2::runtime::{AnyObject, Bool, NSObject};
 use objc2::{msg_send, sel, DefinedClass};
 use objc2_foundation::{
-    ns_string, NSDictionary, NSError, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSUUID,
+    ns_string, NSDictionary, NSError, NSObjectNSDelayedPerforming, NSObjectProtocol, NSPoint,
+    NSRect, NSSize, NSString, NSUUID,
 };
 use objc2_web_kit::{WKContentWorld, WKWebView};
 use serde::Serialize;
@@ -39,9 +40,9 @@ struct Opened<'a> {
     pty: u32,
 }
 
-/// The pane's tab, live: made in the background on its first command (at `url`, if one), made
-/// again once the user closed it, and back from parking where it was. Its id, and whether it's
-/// new, which the workspace hears as `browser-open` and adds without showing.
+/// The pane's tab, live and awake: made in the background on its first command (at `url`, if
+/// one), made again once the user closed it, and back from parking where it was. Its id, and
+/// whether it's new, which the workspace hears as `browser-open` and adds without showing.
 pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Res<(String, bool)> {
     main_thread()?;
     let open = |id: &str| VIEWS.with_borrow(|r| r.get(id).is_some() || r.parked(id).is_some());
@@ -63,12 +64,8 @@ pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Re
             dark: was.dark,
         };
         create(&window, &route.id, &route.root, url, &look)?;
-        // Out of sight from the start: it counts toward the pages kept alive, and parks as they do.
-        if let Some(v) = view(&route.id) {
-            out_of_sight(&v, &route.id);
-        }
     }
-    view(&route.id).ok_or(GONE)?;
+    wake(&view(&route.id).ok_or(GONE)?);
     if made {
         ROUTES.with_borrow_mut(|r| r.set(pty, route.clone()));
         let opened = Opened {
@@ -88,32 +85,95 @@ pub(super) fn forget_all() {
     super::ASKED.with_borrow_mut(HashMap::clear);
 }
 
-/// Awake while `command` runs (`on`): each command wakes and sleeps once however often it asks,
-/// so one that timed out can't leave the view awake. Out of its tab's sight WebKit would slow the
-/// page's timers and draw nothing: it shows meanwhile, off the window's edge at the size it would
-/// be, and hides again after.
-pub fn agent_awake(id: &str, command: u64, on: bool) {
+/// The pane closed: its tabs are the user's from now on, asleep as theirs are.
+pub fn agent_pane_closed(pty: u32) {
+    if main_thread().is_err() {
+        return;
+    }
+    for route in ROUTES.with_borrow_mut(|r| r.release(pty)) {
+        if let Some(v) = view(&route.id) {
+            sleep(&v);
+        }
+    }
+}
+
+/// `command` running on the tab (`on`) or done: meanwhile its page's dialogs answer themselves
+/// and it doesn't idle. Each command starts and ends once however often it asks, so one that
+/// timed out can't leave the tab answering.
+pub fn agent_running(id: &str, command: u64, on: bool) {
     let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
         return;
     };
-    let d = v.delegate.ivars();
-    let shown = VIEWS.with_borrow(|r| r.shown(id));
-    let was_awake = !d.awake.borrow().is_empty();
-    let changed = if on {
-        d.awake.borrow_mut().insert(command)
+    let mut running = v.delegate.ivars().running.borrow_mut();
+    if on {
+        running.insert(command);
     } else {
-        d.awake.borrow_mut().remove(&command)
-    };
-    let awake = !d.awake.borrow().is_empty();
-    if !changed || awake == was_awake {
+        running.remove(&command);
+    }
+    let idle = running.is_empty();
+    drop(running);
+    idle_in(&v, idle);
+}
+
+/// In use by its pane's agents: unthrottled, and drawn off the window's edge while its tab
+/// doesn't show, as out of sight WebKit would slow the page's timers and draw nothing. Asleep
+/// once no command touched it for the park timer's minutes, or with its pane gone.
+fn wake(v: &View) {
+    let d = v.delegate.ivars();
+    if !d.awake.replace(true) {
+        throttle(&v.web, false);
+        if !VIEWS.with_borrow(|r| r.shown(&d.id)) {
+            keep_aside(v);
+        }
+    }
+    idle_in(v, d.running.borrow().is_empty());
+}
+
+/// Back to a hidden tab's ways: throttled, and out of sight parking in time.
+fn sleep(v: &View) {
+    let d = v.delegate.ivars();
+    idle_in(v, false);
+    if !d.awake.replace(false) {
         return;
     }
-    throttle(&v.web, !awake);
-    if !shown && awake {
-        stop_timer(&v);
-        aside(&v);
-    } else if !shown {
-        out_of_sight(&v, id);
+    throttle(&v.web, true);
+    if !VIEWS.with_borrow(|r| r.shown(&d.id)) {
+        out_of_sight(v, &d.id);
+    }
+}
+
+/// Out of its tab's sight, still drawn: no park timer, and not one of the hidden the cap counts.
+pub(super) fn keep_aside(v: &View) {
+    stop_timer(v);
+    VIEWS.with_borrow_mut(|r| r.aside(&v.delegate.ivars().id));
+    aside(v);
+}
+
+/// The idle timer (gvIdleDue) set again from now (`on`), or stopped; none for a tab asleep, or
+/// with parking off.
+fn idle_in(v: &View, on: bool) {
+    unsafe {
+        NSObject::cancelPreviousPerformRequestsWithTarget_selector_object(
+            &v.delegate,
+            sel!(gvIdleDue),
+            None,
+        )
+    };
+    let minutes = PARK_AFTER.get();
+    if on && minutes > 0 && v.delegate.ivars().awake.get() {
+        let after = f64::from(minutes) * 60.0;
+        unsafe {
+            v.delegate
+                .performSelector_withObject_afterDelay(sel!(gvIdleDue), None, after)
+        };
+    }
+}
+
+/// Its idle timer is up: asleep, unless a command runs on it.
+pub(super) fn idle(id: &str) {
+    let running = |v: &View| !v.delegate.ivars().running.borrow().is_empty();
+    if let Some(v) = view(id).filter(|v| PARK_AFTER.get() > 0 && !running(v)) {
+        sleep(&v);
     }
 }
 
@@ -168,7 +228,7 @@ fn aside(v: &View) {
 }
 
 /// WebKit's slowing of pages out of sight, and of a window covered by others, off while an
-/// agent's command runs; private, so only where WebKit still has it.
+/// agent's tab is in use; private, so only where WebKit still has it.
 fn throttle(web: &WKWebView, on: bool) {
     let on = Bool::new(on);
     let preferences = unsafe { web.configuration().preferences() };
@@ -296,7 +356,7 @@ pub fn agent_device(app: &AppHandle, id: &str, screen: Option<AgentScreen>) -> R
     if off && super::can_set_dpr(&v.web) {
         let _: () = unsafe { msg_send![&*v.web, _setOverrideDeviceScaleFactor: 0.0f64] };
     }
-    if !v.delegate.ivars().awake.borrow().is_empty() && !VIEWS.with_borrow(|r| r.shown(id)) {
+    if v.delegate.ivars().awake.get() && !VIEWS.with_borrow(|r| r.shown(id)) {
         if off {
             // Back to the window's size, not the device's it had.
             v.host.setFrame(NSRect::ZERO);
@@ -324,7 +384,7 @@ pub(super) fn answered(
     message: &NSString,
 ) -> Option<bool> {
     let d = delegate.ivars();
-    if d.awake.borrow().is_empty() {
+    if d.running.borrow().is_empty() {
         return None;
     }
     let accept = asked(&d.id).accept_dialogs || what == "alert";

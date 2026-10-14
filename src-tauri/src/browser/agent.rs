@@ -57,7 +57,7 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
         id,
         command: NEXT_COMMAND.fetch_add(1, Ordering::Relaxed),
     };
-    tab.wake()?;
+    tab.start()?;
     tab.run(cmd, made, &req.cwd)
 }
 
@@ -122,9 +122,9 @@ fn later<T: Send + 'static>(
         .map_err(|_| "The page didn't answer in time.".to_string())?
 }
 
-/// The pane's tab for one command, awake from `wake` for as long as this lives. Its sleep is
-/// queued after the wake on the main thread even when the wake timed out here, so it can't stay
-/// awake.
+/// The pane's tab for one command, running it from `start` for as long as this lives. Its end
+/// is queued after the start on the main thread even when the start timed out here, so the tab
+/// can't stay answering its dialogs.
 struct Tab {
     app: AppHandle,
     id: String,
@@ -136,15 +136,15 @@ impl Drop for Tab {
         let (id, command) = (std::mem::take(&mut self.id), self.command);
         let _ = self
             .app
-            .run_on_main_thread(move || super::agent_awake(&id, command, false));
+            .run_on_main_thread(move || super::agent_running(&id, command, false));
     }
 }
 
 impl Tab {
-    fn wake(&self) -> Res<()> {
+    fn start(&self) -> Res<()> {
         let (id, command) = (self.id.clone(), self.command);
         main(&self.app, move |_| {
-            super::agent_awake(&id, command, true);
+            super::agent_running(&id, command, true);
             Ok(())
         })
     }
