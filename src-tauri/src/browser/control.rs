@@ -4,6 +4,7 @@
 
 use super::console::Entry;
 use super::network;
+use super::picks::Bounds;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -108,8 +109,12 @@ unless the user has it on show.
                                at most unless --timeout says (120 s at most). A timeout says
                                what was still not so
   eval <js>                    Runs in the page; prints the result as JSON
-  screenshot [path] [--ref <ref|css>]
-                               A PNG of the page, or of one element; prints its path
+  screenshot [path] [--ref <ref|css> | --clip x,y,w,h] [--scale <0.1-2>] [--refs]
+                               What the viewport shows, or one element of it, or a clip (CSS
+                               px), at 1 px a CSS px unless --scale says, its longest side 2000
+                               px at most; --refs draws each interactive element's ref on it. A
+                               PNG, or a JPEG where the path ends in .jpg; to the app's cache
+                               unless a path is given. Prints its path and size
   console [--errors] [--clear] What the page logged
   network [--failed] [--filter <text>] [--type fetch|xhr|ws|resource] [--clear]
                                What the page requested and loaded, one line each with an id;
@@ -242,10 +247,7 @@ pub enum Command {
     Scroll(Scroll, Option<u32>),
     Wait(Wait, Duration),
     Eval(String),
-    Screenshot {
-        path: Option<String>,
-        target: Option<String>,
-    },
+    Screenshot(Shot),
     Console {
         errors: bool,
         clear: bool,
@@ -302,6 +304,20 @@ pub struct Snap {
     pub boxes: bool,
     /// Written to this file in full, not printed.
     pub file: Option<String>,
+}
+
+/// `screenshot`'s ask.
+#[derive(Debug, PartialEq)]
+pub struct Shot {
+    pub path: Option<String>,
+    /// One element: a ref or CSS.
+    pub target: Option<String>,
+    /// A part of the viewport, CSS px.
+    pub clip: Option<Bounds>,
+    /// Pixels a CSS px: 1 unless told.
+    pub scale: f64,
+    /// The interactive elements' refs drawn on it.
+    pub refs: bool,
 }
 
 /// `get`'s ask: what of the element (text, html, value, attr, styles, box), the attribute or
@@ -605,18 +621,53 @@ fn wait(args: &[String]) -> Result<Command, String> {
     Ok(Command::Wait(what, timeout))
 }
 
+/// The scale a screenshot may take.
+const SCALES: std::ops::RangeInclusive<f64> = 0.1..=2.0;
+
 fn screenshot(args: &[String]) -> Result<Command, String> {
-    let (mut path, mut target) = (None, None);
+    let usage = "Usage: gitviber browser screenshot [path] [--ref <ref|css> | --clip x,y,w,h] \
+                 [--scale <0.1-2>] [--refs]";
+    let mut shot = Shot {
+        path: None,
+        target: None,
+        clip: None,
+        scale: 1.0,
+        refs: false,
+    };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--ref" => target = Some(value(&mut it, arg)?.clone()),
+            "--ref" => shot.target = Some(value(&mut it, arg)?.clone()),
+            "--clip" => shot.clip = Some(clip(value(&mut it, arg)?)?),
+            "--scale" => {
+                let scale = value(&mut it, arg)?;
+                shot.scale = scale
+                    .parse()
+                    .ok()
+                    .filter(|s| SCALES.contains(s))
+                    .ok_or_else(|| format!("--scale is 0.1 to 2, not {scale:?}"))?;
+            }
+            "--refs" => shot.refs = true,
             _ if arg.starts_with("--") => return Err(format!("screenshot doesn't take {arg}")),
-            _ if path.is_none() => path = Some(arg.clone()),
-            _ => return Err("Usage: gitviber browser screenshot [path] [--ref <ref|css>]".into()),
+            _ if shot.path.is_none() => shot.path = Some(arg.clone()),
+            _ => return Err(usage.into()),
         }
     }
-    Ok(Command::Screenshot { path, target })
+    if shot.target.is_some() && shot.clip.is_some() {
+        return Err("screenshot takes one of --ref and --clip".into());
+    }
+    Ok(Command::Screenshot(shot))
+}
+
+/// `--clip x,y,w,h`: CSS px from the viewport's top left, of some size.
+fn clip(s: &str) -> Result<Bounds, String> {
+    let n: Vec<f64> = s.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+    match n[..] {
+        [x, y, w, h] if w > 0.0 && h > 0.0 && n.iter().all(|v| v.is_finite()) => {
+            Ok(Bounds { x, y, w, h })
+        }
+        _ => Err(format!("--clip is x,y,w,h in CSS px, not {s:?}")),
+    }
 }
 
 fn console(args: &[String]) -> Result<Command, String> {
@@ -662,27 +713,41 @@ pub fn web_url(typed: &str) -> Result<String, String> {
     Ok(url.to_string())
 }
 
-/// Where `screenshot <path>` writes: a .png under the CLI's folder (no `..` out of it), or at
-/// an absolute path; never over anything but a PNG.
+/// Whether a screenshot's path asks for a JPEG (.jpg, .jpeg) rather than a PNG.
+pub fn jpeg(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg"))
+}
+
+/// Where `screenshot <path>` writes: a .png, .jpg or .jpeg under the CLI's folder (no `..` out
+/// of it), or at an absolute path, written in the format its name says; never over anything
+/// but a picture of that format.
 pub fn picture_path(cwd: &Path, path: &str) -> Result<PathBuf, String> {
     let given = Path::new(path);
-    if !given
+    let png = given
         .extension()
-        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
-    {
-        return Err(format!("A screenshot's path ends in .png, not {path}"));
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"));
+    if !png && !jpeg(given) {
+        return Err(format!(
+            "A screenshot's path ends in .png, .jpg or .jpeg, not {path}"
+        ));
     }
     let full = placed(cwd, path)?;
     // A link, a folder or a file of another kind there stays as it is.
     if let Ok(meta) = std::fs::symlink_metadata(&full) {
         let mut head = [0u8; 8];
-        let png = meta.is_file()
+        let read = meta.is_file()
             && std::fs::File::open(&full)
                 .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut head))
-                .is_ok()
-            && head == *b"\x89PNG\r\n\x1a\n";
-        if !png {
-            return Err(format!("{} is there and isn't a PNG", full.display()));
+                .is_ok();
+        let same = if png {
+            head == *b"\x89PNG\r\n\x1a\n"
+        } else {
+            head[..3] == [0xff, 0xd8, 0xff]
+        };
+        if !read || !same {
+            let kind = if png { "a PNG" } else { "a JPEG" };
+            return Err(format!("{} is there and isn't {kind}", full.display()));
         }
     }
     Ok(full)
@@ -1278,10 +1343,31 @@ mod tests {
         );
         assert_eq!(
             parse("screenshot", &args("shot.png --ref e2")),
-            Ok(Command::Screenshot {
+            Ok(Command::Screenshot(Shot {
                 path: Some("shot.png".into()),
-                target: Some("e2".into())
-            })
+                target: Some("e2".into()),
+                clip: None,
+                scale: 1.0,
+                refs: false
+            }))
+        );
+        assert_eq!(
+            parse(
+                "screenshot",
+                &args("--clip 0,40.5,300,200 --scale 0.5 --refs")
+            ),
+            Ok(Command::Screenshot(Shot {
+                path: None,
+                target: None,
+                clip: Some(Bounds {
+                    x: 0.0,
+                    y: 40.5,
+                    w: 300.0,
+                    h: 200.0
+                }),
+                scale: 0.5,
+                refs: true
+            }))
         );
         assert_eq!(
             parse("console", &args("--errors --clear")),
@@ -1351,6 +1437,12 @@ mod tests {
             ("wait", "--soon"),
             ("scroll", "down far"),
             ("screenshot", "a.png b.png"),
+            ("screenshot", "--scale 3"),
+            ("screenshot", "--scale 0"),
+            ("screenshot", "--clip 0,0,10"),
+            ("screenshot", "--clip 0,0,-5,10"),
+            ("screenshot", "--ref e1 --clip 0,0,5,5"),
+            ("screenshot", "--full"),
             ("console", "--all"),
             ("network", "--type img"),
             ("device", ""),
@@ -1772,9 +1864,18 @@ mod tests {
             picture_path(Path::new("/"), elsewhere.to_str().unwrap()),
             Ok(elsewhere)
         );
-        for bad in ["a.txt", "a", "../a.png", "out/../../a.png", "out"] {
+        for bad in ["a.txt", "a.webp", "a", "../a.png", "out/../../a.png", "out"] {
             assert!(picture_path(&base, bad).is_err(), "{bad}");
         }
+        assert!(jpeg(&picture_path(&base, "c.JPG").unwrap()));
+        assert!(!jpeg(&picture_path(&base, "c.png").unwrap()));
+        // A name's format is what goes in it, and only over a picture of that format.
+        std::fs::write(base.join("old.jpg"), b"\xff\xd8\xff\xe0rest").unwrap();
+        assert!(picture_path(&base, "old.jpg").is_ok());
+        std::fs::write(base.join("png.jpg"), b"\x89PNG\r\n\x1a\nrest").unwrap();
+        assert!(picture_path(&base, "png.jpg")
+            .unwrap_err()
+            .contains("isn't a JPEG"));
         // An old picture is replaced; anything else there is kept.
         std::fs::write(base.join("old.png"), b"\x89PNG\r\n\x1a\nrest").unwrap();
         assert!(picture_path(&base, "old.png").is_ok());
@@ -1855,13 +1956,11 @@ mod tests {
                 Duration::from_millis(500)
             ))
         );
-        assert_eq!(
+        assert!(matches!(
             parse("screenshot", &words(&["--ref", "e2", "out dir/shot.png"])),
-            Ok(Command::Screenshot {
-                path: Some("out dir/shot.png".into()),
-                target: Some("e2".into())
-            })
-        );
+            Ok(Command::Screenshot(Shot { path: Some(p), target: Some(t), .. }))
+                if p == "out dir/shot.png" && t == "e2"
+        ));
     }
 
     #[test]

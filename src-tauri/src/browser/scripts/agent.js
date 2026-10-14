@@ -693,6 +693,40 @@ async function changes({ quiet = 100, most = 500 }) {
   return { added, removed, texts, attributes, dialogs: dialogs() - w.dialogs, state: pageState() };
 }
 
+/** Labels a screenshot draws at most. */
+const LABELS = 300;
+
+/**
+ * For a screenshot: the part of the viewport it takes, in CSS px (an element's box, scrolled
+ * to; `clip`; else all of it), kept to what shows; with `refs`, where each interactive element
+ * is in it, from its top left, every one of them given its ref first.
+ */
+function view({ target = null, clip = null, refs = false }) {
+  let r = clip ?? { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
+  const el = target && find(target);
+  if (el) {
+    center(el);
+    const b = el.getBoundingClientRect();
+    r = { x: b.x, y: b.y, w: b.width, h: b.height };
+  }
+  const x0 = Math.max(r.x, 0), y0 = Math.max(r.y, 0);
+  const x1 = Math.min(r.x + r.w, window.innerWidth), y1 = Math.min(r.y + r.h, window.innerHeight);
+  if (x1 <= x0 || y1 <= y0) throw new Error(el ? `${label(el)} doesn't show in the viewport` : `The clip is outside the ${window.innerWidth}×${window.innerHeight} viewport`);
+  const rect = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+  const labels = [];
+  if (refs) {
+    walk({ interactive: true, most: FILE_LINES, chars: FILE_CHARS });
+    for (const [ref, weak] of state.refs) {
+      const it = weak.deref();
+      if (!it?.isConnected || !it.getClientRects().length || labels.length === LABELS) continue;
+      const b = it.getBoundingClientRect();
+      if (b.x + b.width <= x0 || b.y + b.height <= y0 || b.x >= x1 || b.y >= y1) continue;
+      labels.push({ ref, x: b.x - x0, y: b.y - y0, w: b.width, h: b.height });
+    }
+  }
+  return { rect, labels };
+}
+
 // A page's lone half of a pair would reach the app as JSON it can't read.
 function wellFormed(_key, value) {
   return typeof value === "string" ? value.toWellFormed() : value;
@@ -701,7 +735,7 @@ function wellFormed(_key, value) {
 /** For native input: where a click on `target` lands, once it can. */
 const where = async ({ target }) => await point(target);
 
-const run = { snapshot, find: search, get, click, fill, type, press, select, check, hover, scroll, exists, hasText, rect, point: where, changes };
+const run = { snapshot, find: search, get, click, fill, type, press, select, check, hover, scroll, exists, hasText, rect, view, point: where, changes };
 try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);
   // An action's changes are counted from just before it.

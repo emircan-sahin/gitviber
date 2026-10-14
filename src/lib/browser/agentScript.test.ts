@@ -298,3 +298,18 @@ test("get reads one thing of an element, a password's value masked", async () =>
   assert.deepEqual([box.out, box.box], ["10,20,100,30 (outside the viewport: scroll to it first)", { x: 10, y: 20, w: 100, h: 30 }]);
   assert.equal((await get("colour", "e5")).error, "No get colour");
 });
+
+test("a screenshot takes what shows of the viewport, an element or a clip, and where each ref is", async () => {
+  const p = page();
+  Object.assign(p.window, { innerWidth: 1280, innerHeight: 800 });
+  assert.deepEqual((await run(p, { cmd: "view" })).rect, { x: 0, y: 0, w: 1280, h: 800 });
+  const clipped = await run(p, { cmd: "view", clip: { x: 1200, y: -10, w: 200, h: 100 } });
+  assert.deepEqual(clipped.rect, { x: 1200, y: 0, w: 80, h: 90 });
+  assert.match((await run(p, { cmd: "view", clip: { x: 2000, y: 0, w: 10, h: 10 } })).error, /outside the 1280×800 viewport/);
+  // Refs are given to every interactive element first, then each one's box from the picture's corner.
+  const { labels } = await run(p, { cmd: "view", clip: { x: 5, y: 10, w: 400, h: 400 }, refs: true });
+  assert.equal(labels.length, 6);
+  assert.deepEqual(labels[0], { ref: "e1", x: 5, y: 10, w: 100, h: 30 });
+  const one = await run(p, { cmd: "view", target: "e5" });
+  assert.deepEqual([one.rect, one.labels], [{ x: 10, y: 20, w: 100, h: 30 }, []]);
+});

@@ -10,11 +10,10 @@ mod page_view;
 
 pub use agent::{
     agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab, agent_js,
-    agent_new_tab, agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab,
-    agent_tabs,
+    agent_new_tab, agent_page, agent_pane_closed, agent_running, agent_tab, agent_tabs,
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
-pub use page_tools::{console_clear, console_entries, network_log, pick};
+pub use page_tools::{agent_picture, console_clear, console_entries, network_log, pick};
 pub use page_view::{appearance, find, zoom};
 
 use super::console::Log;

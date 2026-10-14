@@ -5,6 +5,7 @@
 
 use super::{emit, main_thread, url_text, view, Delegate, View, GONE};
 use crate::browser::console::{Counts, Entry};
+use crate::browser::marks::{Picture, Pixels};
 use crate::browser::network;
 use crate::browser::picks::{self, Bounds, Pick};
 use crate::browser::{cut, epoch_ms};
@@ -12,10 +13,16 @@ use crate::state::Res;
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
-use objc2::{define_class, msg_send, DefinedClass, MainThreadMarker, MainThreadOnly, Message};
-use objc2_app_kit::{NSBitmapImageFileType, NSBitmapImageRep, NSImage};
+use objc2::{
+    define_class, msg_send, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, Message,
+};
+use objc2_app_kit::{
+    NSBitmapImageFileType, NSBitmapImageRep, NSCompositingOperation, NSDeviceRGBColorSpace,
+    NSGraphicsContext, NSImage, NSImageCompressionFactor, NSImageInterpolation,
+};
 use objc2_foundation::{
-    ns_string, NSDictionary, NSError, NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSUUID,
+    ns_string, NSDictionary, NSError, NSNumber, NSObjectProtocol, NSPoint, NSRect, NSSize,
+    NSString, NSTimer, NSUUID,
 };
 use objc2_web_kit::{
     WKContentWorld, WKScriptMessage, WKScriptMessageHandler, WKSnapshotConfiguration,
@@ -23,6 +30,8 @@ use objc2_web_kit::{
 };
 use serde::Serialize;
 use std::cell::Cell;
+use std::ptr::NonNull;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -367,14 +376,28 @@ pub(super) fn picture(
     after_updates: bool,
     done: impl FnOnce(Option<Retained<NSImage>>) + 'static,
 ) {
-    let config = unsafe { WKSnapshotConfiguration::new(web.mtm()) };
-    unsafe { config.setAfterScreenUpdates(after_updates) };
+    let mut points = None;
     if let Some(rect) = rect {
         let size = web.bounds().size;
         let zoom = unsafe { web.pageZoom() };
         let Some(r) = picks::picture_rect(rect, zoom, (size.width, size.height)) else {
             return done(None);
         };
+        points = Some(r);
+    }
+    snap(web, points, after_updates, done);
+}
+
+/// The view as drawn, or `rect` of it (its points).
+fn snap(
+    web: &WKWebView,
+    rect: Option<Bounds>,
+    after_updates: bool,
+    done: impl FnOnce(Option<Retained<NSImage>>) + 'static,
+) {
+    let config = unsafe { WKSnapshotConfiguration::new(web.mtm()) };
+    unsafe { config.setAfterScreenUpdates(after_updates) };
+    if let Some(r) = rect {
         unsafe { config.setRect(NSRect::new(NSPoint::new(r.x, r.y), NSSize::new(r.w, r.h))) };
     }
     let done = Cell::new(Some(done));
@@ -385,6 +408,118 @@ pub(super) fn picture(
         }
     });
     unsafe { web.takeSnapshotWithConfiguration_completionHandler(Some(&config), &block) };
+}
+
+/// How long an agent's picture waits for the next screen update before it takes the page as
+/// drawn: a view that isn't drawing may never get one.
+const UPDATE_WAIT: f64 = 2.0;
+
+type Taken = Box<dyn FnOnce(Option<Retained<NSImage>>)>;
+
+/// An agent's screenshot (marks.rs): `rect` of the viewport after the next screen update, or as
+/// drawn once UPDATE_WAIT has gone, redrawn at exactly its size in pixels whatever the screen's
+/// scale (a Retina view gives twice that), its labels drawn on; a PNG or a JPEG.
+pub fn agent_picture(
+    id: &str,
+    picture: Picture,
+    done: Box<dyn FnOnce(Option<Vec<u8>>)>,
+) -> Res<()> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    let zoom = unsafe { v.web.pageZoom() };
+    let size = v.web.bounds().size;
+    let r = picture.rect;
+    let (x0, y0) = ((r.x * zoom).max(0.0), (r.y * zoom).max(0.0));
+    let (x1, y1) = (
+        ((r.x + r.w) * zoom).min(size.width),
+        ((r.y + r.h) * zoom).min(size.height),
+    );
+    if x1 <= x0 || y1 <= y0 {
+        done(None);
+        return Ok(());
+    }
+    let points = Bounds {
+        x: x0,
+        y: y0,
+        w: x1 - x0,
+        h: y1 - y0,
+    };
+    let taken: Taken =
+        Box::new(move |image| done(image.as_deref().and_then(|i| redrawn(i, &picture))));
+    let first = Rc::new(Cell::new(Some(taken)));
+    let now = first.clone();
+    snap(&v.web, Some(points), true, move |image| {
+        if let Some(taken) = now.take() {
+            taken(image);
+        }
+    });
+    let web = v.web.clone();
+    let late = RcBlock::new(move |_: NonNull<NSTimer>| {
+        if let Some(taken) = first.take() {
+            snap(&web, Some(points), false, taken);
+        }
+    });
+    unsafe { NSTimer::scheduledTimerWithTimeInterval_repeats_block(UPDATE_WAIT, false, &late) };
+    Ok(())
+}
+
+/// `image` drawn into a bitmap of `picture.size` pixels, its labels on it, encoded.
+fn redrawn(image: &NSImage, picture: &Picture) -> Option<Vec<u8>> {
+    let (w, h) = picture.size;
+    let rep = unsafe {
+        NSBitmapImageRep::initWithBitmapDataPlanes_pixelsWide_pixelsHigh_bitsPerSample_samplesPerPixel_hasAlpha_isPlanar_colorSpaceName_bytesPerRow_bitsPerPixel(
+            NSBitmapImageRep::alloc(),
+            std::ptr::null_mut(),
+            w as isize,
+            h as isize,
+            8,
+            4,
+            true,
+            false,
+            NSDeviceRGBColorSpace,
+            0,
+            0,
+        )
+    }?;
+    let context = NSGraphicsContext::graphicsContextWithBitmapImageRep(&rep)?;
+    NSGraphicsContext::saveGraphicsState_class();
+    NSGraphicsContext::setCurrentContext(Some(&context));
+    context.setImageInterpolation(NSImageInterpolation::High);
+    let all = NSRect::new(NSPoint::ZERO, NSSize::new(f64::from(w), f64::from(h)));
+    image.drawInRect_fromRect_operation_fraction(
+        all,
+        NSRect::ZERO,
+        NSCompositingOperation::Copy,
+        1.0,
+    );
+    context.flushGraphics();
+    NSGraphicsContext::restoreGraphicsState_class();
+    let data = rep.bitmapData();
+    if !picture.labels.is_empty() && !data.is_null() {
+        let stride = rep.bytesPerRow() as usize;
+        // SAFETY: the bitmap's own buffer, `stride` bytes a row for its `h` rows, held by `rep`.
+        let data = unsafe { std::slice::from_raw_parts_mut(data, stride * h as usize) };
+        let big = f64::from(w) >= picture.rect.w;
+        let mut pixels = Pixels {
+            data,
+            width: w,
+            height: h,
+            stride,
+        };
+        pixels.draw(&picture.labels, big);
+    }
+    let (kind, properties) = if picture.jpeg {
+        let quality = NSNumber::new_f64(0.85);
+        let key = unsafe { NSImageCompressionFactor };
+        (
+            NSBitmapImageFileType::JPEG,
+            NSDictionary::<NSString, AnyObject>::from_slices(&[key], &[&*quality]),
+        )
+    } else {
+        (NSBitmapImageFileType::PNG, NSDictionary::new())
+    };
+    let data = unsafe { rep.representationUsingType_properties(kind, &properties) }?;
+    Some(data.to_vec())
 }
 
 pub(super) fn png(image: &NSImage) -> Option<Vec<u8>> {

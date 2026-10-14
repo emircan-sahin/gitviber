@@ -12,6 +12,9 @@ pub mod control;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
+// Drawn on by macOS's screenshots only; the other platforms have none yet.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+mod marks;
 pub mod network;
 mod output;
 pub mod picks;
@@ -241,8 +244,8 @@ mod other {
     use super::{
         console::Entry,
         control::{AgentScreen, Found, Listed, NewTab},
+        marks::Picture,
         network::Log,
-        picks::Bounds,
         sessions::Cookie,
     };
     use super::{Created, Go, Look, PageState, Rect, Screen};
@@ -319,11 +322,7 @@ mod other {
     pub fn agent_page(_: &str) -> Res<(PageState, bool)> {
         Err(UNSUPPORTED.into())
     }
-    pub fn agent_picture(
-        _: &str,
-        _: Option<Bounds>,
-        _: Box<dyn FnOnce(Option<Vec<u8>>)>,
-    ) -> Res<()> {
+    pub fn agent_picture(_: &str, _: Picture, _: Box<dyn FnOnce(Option<Vec<u8>>)>) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_device(_: &AppHandle, _: &str, _: Option<AgentScreen>) -> Res<()> {

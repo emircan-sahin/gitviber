@@ -5,6 +5,7 @@ use super::control::{
     self, AgentScreen, Command, Found, Listed, NewTab, Pane, Reply, Request, Scroll, Sessions,
     Tabs, Wait,
 };
+use super::marks;
 use super::network;
 use super::output;
 use super::picks::{self, Bounds};
@@ -433,7 +434,7 @@ impl Tab {
             }
             Command::Wait(what, timeout) => self.wait(what, timeout),
             Command::Eval(js) => self.eval(&js),
-            Command::Screenshot { path, target } => self.screenshot(path, target, cwd),
+            Command::Screenshot(shot) => self.screenshot(shot, cwd),
             Command::Console { errors, clear } => self.console(errors, clear),
             Command::Network(ask) => self.network(ask),
             Command::Device(screen) => self.device(screen),
@@ -767,34 +768,56 @@ impl Tab {
         }
     }
 
-    fn screenshot(&self, path: Option<String>, target: Option<String>, cwd: &str) -> Res<Reply> {
-        let path = path
+    /// The viewport, one element or a clip of it as drawn, at 1 px a CSS px unless scaled, the
+    /// refs drawn on it if asked; written where told, else to the app's cache.
+    fn screenshot(&self, shot: control::Shot, cwd: &str) -> Res<Reply> {
+        let path = shot
+            .path
             .map(|p| control::picture_path(Path::new(cwd), &p))
             .transpose()?;
-        let rect = match target {
-            Some(target) => {
-                let found = self.script(json!({ "cmd": "rect", "target": target }))?;
-                Some(
-                    serde_json::from_value::<Bounds>(found["rect"].clone())
-                        .map_err(|_| "The element has no box.")?,
-                )
-            }
-            None => None,
+        let input =
+            json!({ "cmd": "view", "target": shot.target, "clip": shot.clip, "refs": shot.refs });
+        let found = self.script(input)?;
+        let rect: Bounds = serde_json::from_value(found["rect"].clone())
+            .map_err(|_| "The page gave no box to take.")?;
+        let (w, h, scale) = marks::picture_size(rect.w, rect.h, shot.scale);
+        let labels = found["labels"].as_array().into_iter().flatten();
+        let at = |l: &Value, k: &str| l[k].as_f64().unwrap_or(0.0) * scale;
+        let picture = marks::Picture {
+            rect,
+            size: (w, h),
+            labels: labels
+                .map(|l| marks::Label {
+                    text: l["ref"].as_str().unwrap_or_default().into(),
+                    x: at(l, "x"),
+                    y: at(l, "y"),
+                    w: at(l, "w"),
+                    h: at(l, "h"),
+                })
+                .collect(),
+            jpeg: path.as_deref().is_some_and(control::jpeg),
         };
         let id = self.id.clone();
-        let png = later(&self.app, move |_, done| {
-            super::agent_picture(&id, rect, done)
+        let bytes = later(&self.app, move |_, done| {
+            super::agent_picture(&id, picture, done)
         })?
-        .ok_or("No picture: the element doesn't show, or WebKit gave none.")?;
+        .ok_or("No picture: WebKit gave none.")?;
         let path = match path {
             Some(path) => {
-                std::fs::write(&path, &png)
+                std::fs::write(&path, &bytes)
                     .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
                 path.display().to_string()
             }
-            None => picks::save_png(&self.app, &png).ok_or("Couldn't save the picture.")?,
+            None => picks::save_png(&self.app, &bytes).ok_or("Couldn't save the picture.")?,
         };
-        Ok(Reply::out(path))
+        let shrunk = if scale < shot.scale {
+            ", shrunk to stay within 2000 px"
+        } else {
+            ""
+        };
+        Ok(Reply::out(format!(
+            "{path} ({w}×{h} px, {scale:.2} px a CSS px{shrunk})"
+        )))
     }
 
     fn console(&self, errors: bool, clear: bool) -> Res<Reply> {
