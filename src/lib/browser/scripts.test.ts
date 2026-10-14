@@ -7,7 +7,7 @@ import { test } from "node:test";
 const script = (name: string) => readFileSync(new URL(`../../../src-tauri/src/browser/scripts/${name}`, import.meta.url), "utf8");
 
 test("the page scripts parse, the component walk as the function body WebKit runs it as", () => {
-  for (const name of ["picker.js", "console.js"]) assert.doesNotThrow(() => new Function(script(name)), name);
+  for (const name of ["picker.js", "console.js", "network.js"]) assert.doesNotThrow(() => new Function(script(name)), name);
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   assert.doesNotThrow(() => new AsyncFunction("nonce", script("components.js")));
 });
