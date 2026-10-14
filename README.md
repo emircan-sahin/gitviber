@@ -142,9 +142,9 @@ So agents know the command is there, and when to use it instead of your own brow
 writes a skill for them while agent control is on: `~/.claude/skills/gitviber-browser/SKILL.md`
 for Claude Code and `~/.agents/skills/gitviber-browser/SKILL.md` for Codex, each only if that agent
 is installed (`~/.claude` or `~/.codex` is there). It holds `gitviber browser help` as this version
-prints it, is rewritten when an update changes that, and is deleted when you turn agent control or
-Settings → Browser → Teach Claude Code and Codex off. A `gitviber-browser` skill of your own there
-is never touched. For other agents, Settings has the same text to paste into your `CLAUDE.md` or
+prints it, is rewritten when an update changes that (never by an older version), and is deleted
+when you turn agent control or Settings → Browser → Teach Claude Code and Codex off, or uninstall
+that agent. A `gitviber-browser` skill of your own there is never touched. For other agents, Settings has the same text to paste into your `CLAUDE.md` or
 `AGENTS.md`.
 
 ### Browse the code, not just the diff
