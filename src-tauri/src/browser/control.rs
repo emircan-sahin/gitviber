@@ -60,7 +60,7 @@ time parked to save memory, its next command loading it again. Unused for an hou
                                cleared, then the saved ones set. Not into a --shared tab
   session clear                The tab's own cookies and storage, gone
   session list                 Each saved session's name, origin, cookie count and age
-  session delete <name>        Names are one whatever their case
+  session delete <name>        A saved session gone. A session's name is one whatever its case
 
   open <url>                   Load a page (http or https; localhost:3000 works) and wait for it
   back | forward | reload      Through its history, waiting for the page
