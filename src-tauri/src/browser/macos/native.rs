@@ -3,10 +3,10 @@
 //! (`isTrusted`, user activation). Never posted to the window server: the real cursor, the
 //! user's focus and the app's activation stay as they are.
 
-use super::{ask, asked, main_thread, view, WebView, GONE};
+use super::{ask, asked, main_thread, view, Delegate, WebView, GONE};
 use crate::browser::input::{self, Edit, Half, KeyStep, Keys, Pointer};
 use crate::state::Res;
-use block2::RcBlock;
+use block2::{DynBlock, RcBlock};
 use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
@@ -14,10 +14,13 @@ use objc2::{msg_send, sel, ClassType, DefinedClass, MainThreadMarker, MainThread
 use objc2_app_kit::{
     NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSScreen, NSWindow,
 };
-use objc2_foundation::{NSObjectProtocol, NSPoint, NSProcessInfo, NSRange, NSString, NSTimer};
+use objc2_foundation::{
+    NSArray, NSObjectProtocol, NSPoint, NSProcessInfo, NSRange, NSString, NSTimer, NSURL,
+};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::ffi::c_void;
+use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::sync::OnceLock;
 
@@ -335,6 +338,53 @@ pub fn agent_text(id: &str, text: &str) -> Res<()> {
         }
     }
     Ok(())
+}
+
+/// The next file chooser on the tab gets `files` (an agent's `upload`), the user's never.
+pub fn agent_upload(id: &str, files: Vec<PathBuf>) -> Res<()> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    v.delegate.ivars().chosen.take();
+    *v.delegate.ivars().upload.borrow_mut() = Some(files);
+    Ok(())
+}
+
+/// How many files the chooser took, or why none, once it came; `stop`: no chooser after this
+/// gets them.
+pub fn agent_chosen(id: &str, stop: bool) -> Res<Option<Res<usize>>> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    if stop {
+        v.delegate.ivars().upload.take();
+        return Ok(v.delegate.ivars().chosen.take());
+    }
+    let chosen = v.delegate.ivars().chosen.borrow().clone();
+    Ok(chosen)
+}
+
+/// The page's file chooser answered with an agent's `files`: none where it takes one only.
+pub(super) fn choose(
+    delegate: &Delegate,
+    files: Vec<PathBuf>,
+    many: bool,
+    done: &DynBlock<dyn Fn(*mut NSArray<NSURL>)>,
+) {
+    let outcome = if files.len() > 1 && !many {
+        done.call((std::ptr::null_mut(),));
+        Err(format!(
+            "The page's chooser takes one file, not {}",
+            files.len()
+        ))
+    } else {
+        let urls: Vec<Retained<NSURL>> = files
+            .iter()
+            .map(|f| NSURL::fileURLWithPath(&NSString::from_str(&f.to_string_lossy())))
+            .collect();
+        let urls = NSArray::from_retained_slice(&urls);
+        done.call((Retained::as_ptr(&urls).cast_mut(),));
+        Ok(files.len())
+    };
+    *delegate.ivars().chosen.borrow_mut() = Some(outcome);
 }
 
 /// CGEventRef: AppKit makes no wheel event of its own, so one comes from CoreGraphics.

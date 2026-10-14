@@ -36,6 +36,8 @@ const STORAGE_READ: &str = "return JSON.stringify({ origin: location.origin, loc
 /// Written only on the session's origin; elsewhere, where the page is instead.
 const STORAGE_WRITE: &str = "const s = JSON.parse(input); if (location.origin !== s.origin) return location.origin; localStorage.clear(); sessionStorage.clear(); for (const [k, v] of s.local) localStorage.setItem(k, v); for (const [k, v] of s.session) sessionStorage.setItem(k, v); return '';";
 const NO_INDEXED_DB: &str = "IndexedDB isn't carried.";
+/// How long a page has to open its file chooser after the click that asks for it.
+const CHOOSER: Duration = Duration::from_secs(3);
 /// The page's height and how far down it is, for the wheel: its window's, not a panel's in it.
 const SCROLLED: &str = "return JSON.stringify([innerHeight, Math.round(scrollY), Math.max(0, Math.round(document.documentElement.scrollHeight - innerHeight))]);";
 /// What a copy takes: the focused field's selected text (none of a password's), else the page's.
@@ -410,6 +412,7 @@ impl Tab {
                 Ok(Reply::out(format!("Hovered {} at {}", spot.label, xy(at))))
             }
             Command::Drag(from, to) => self.drag(&from, &to),
+            Command::Upload(target, files) => self.upload(target, &files, cwd),
             Command::Press {
                 chord,
                 synthetic: true,
@@ -594,6 +597,42 @@ impl Tab {
             };
             Ok(format!("{done} {} at {}", spot.label, xy((spot.x, spot.y))))
         })
+    }
+
+    /// `files` (from the CLI's folder) for the file chooser a click on `target` opens: none
+    /// after this command gets them, chosen or not.
+    fn upload(&self, target: String, files: &[String], cwd: &str) -> Res<Reply> {
+        let files = control::upload_paths(Path::new(cwd), files)?;
+        let id = self.id.clone();
+        main(&self.app, move |_| super::agent_upload(&id, files))?;
+        let chosen = self.click(Click {
+            target: Target::El(target),
+            count: 1,
+            right: false,
+            synthetic: false,
+        });
+        let chosen = chosen.and_then(|clicked| {
+            let clicked = clicked.out.unwrap_or_default();
+            let until = Instant::now() + CHOOSER;
+            loop {
+                let id = self.id.clone();
+                if let Some(chosen) = main(&self.app, move |_| super::agent_chosen(&id, false))? {
+                    let n = chosen?;
+                    let files = if n == 1 { "file" } else { "files" };
+                    return Ok(format!("{clicked}\nUploaded {n} {files}"));
+                }
+                if Instant::now() >= until {
+                    return Err(format!(
+                        "{clicked}, but no file chooser opened: name the page's <input \
+                         type=file>, its label or its upload button"
+                    ));
+                }
+                std::thread::sleep(POLL);
+            }
+        });
+        let id = self.id.clone();
+        main(&self.app, move |_| super::agent_chosen(&id, true))?;
+        chosen.map(Reply::out)
     }
 
     /// Pressed at `from`, moved to `to` with the button held, let go: both ends as they show

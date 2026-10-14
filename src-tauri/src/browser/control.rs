@@ -87,6 +87,9 @@ fill, select and --synthetic go by the page's script.
                                as an input method does, in any language, whatever the keyboard.
                                No key events: press sends those
   select <ref|css> <value>...  Choose a <select>'s options, by value or label
+  upload <ref|css> <file>...   Files for the page's file chooser, from this folder: the element
+                               clicked (an <input type=file>, its label, the page's own upload
+                               button) and its chooser answered with them, for this tab only
   hover <ref|css|x,y>          The mouse over an element or a point; CSS :hover applies
   drag <ref|css|x,y> <ref|css|x,y>
                                Pressed at one, moved to the other with the button held, let go:
@@ -247,6 +250,8 @@ pub enum Command {
     },
     /// A key held down (true) or let go.
     Key(bool, String),
+    /// Files for the file chooser a click on the element opens.
+    Upload(String, Vec<String>),
     Scroll(Scroll, Option<u32>),
     Wait(Wait, Duration),
     Eval(String),
@@ -397,6 +402,12 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
             _ => Err("Usage: gitviber browser drag <ref|css|x,y> <ref|css|x,y>".into()),
         },
         "press" => press(args),
+        "upload" => match args {
+            [target, files @ ..] if !target.is_empty() && !files.is_empty() => {
+                Ok(Command::Upload(target.clone(), files.to_vec()))
+            }
+            _ => Err("Usage: gitviber browser upload <ref|css> <file>...".into()),
+        },
         "key" => match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
             [way @ ("down" | "up"), key] => match input::key(key) {
                 Some(_) => Ok(Command::Key(way == "down", key.into())),
@@ -761,6 +772,22 @@ pub fn picture_path(cwd: &Path, path: &str) -> Result<PathBuf, String> {
         }
     }
     Ok(full)
+}
+
+/// The files `upload` gives a page, from the CLI's folder unless absolute: each a file that's
+/// there.
+pub fn upload_paths(cwd: &Path, files: &[String]) -> Result<Vec<PathBuf>, String> {
+    files
+        .iter()
+        .map(|file| {
+            let full = cwd.join(file);
+            if full.is_file() {
+                Ok(full)
+            } else {
+                Err(format!("No file {}", full.display()))
+            }
+        })
+        .collect()
 }
 
 /// The tabs each pane's agents opened, by name. A command goes to the one it names, else to the
@@ -1434,6 +1461,30 @@ mod tests {
         ] {
             assert!(parse(cmd, &args(a)).is_err(), "{cmd} {a}");
         }
+    }
+
+    #[test]
+    fn uploads_are_files_that_are_there_from_the_clis_folder() {
+        let dir = std::env::temp_dir().join(format!("gv-upload-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("shots")).unwrap();
+        std::fs::write(dir.join("avatar.png"), b"\x89PNG").unwrap();
+        std::fs::write(dir.join("shots/one two.png"), b"\x89PNG").unwrap();
+        let ok = upload_paths(&dir, &words(&["avatar.png", "shots/one two.png"])).unwrap();
+        assert_eq!(ok, [dir.join("avatar.png"), dir.join("shots/one two.png")]);
+        let absolute = dir.join("avatar.png").display().to_string();
+        assert_eq!(
+            upload_paths(Path::new("/elsewhere"), std::slice::from_ref(&absolute)),
+            Ok(vec![PathBuf::from(absolute)])
+        );
+        for no in ["missing.png", "shots"] {
+            assert!(upload_paths(&dir, &words(&[no])).is_err(), "{no}");
+        }
+        assert_eq!(
+            parse("upload", &words(&["e7", "a.png", "b c.pdf"])),
+            Ok(Command::Upload("e7".into(), words(&["a.png", "b c.pdf"])))
+        );
+        assert!(parse("upload", &words(&["e7"])).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

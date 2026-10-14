@@ -16,7 +16,9 @@ pub use agent::{
     agent_tabs,
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
-pub use native::{agent_clipboard, agent_keys, agent_pointer, agent_text};
+pub use native::{
+    agent_chosen, agent_clipboard, agent_keys, agent_pointer, agent_text, agent_upload,
+};
 pub use page_tools::{console_clear, console_entries, network_log, pick};
 pub use page_view::{appearance, find, zoom};
 
@@ -402,6 +404,10 @@ struct DelegateIvars {
     panel: RefCell<Option<Retained<panel::Panel>>>,
     /// Where an agent's pointer last was, in CSS px (native.rs).
     pointer: Cell<Option<(f64, f64)>>,
+    /// The files an agent's `upload` gives the next file chooser, and how many it took, or why
+    /// none (native.rs).
+    upload: RefCell<Option<Vec<std::path::PathBuf>>>,
+    chosen: RefCell<Option<Res<usize>>>,
 }
 
 define_class!(
@@ -651,7 +657,9 @@ define_class!(
             done.call((std::ptr::null_mut(),));
         }
 
-        /// An <input type=file>: the open panel, as a sheet on the app's window.
+        /// An <input type=file>: the files an agent's `upload` gives, else the open panel, as a
+        /// sheet on the app's window, for a page on show only: one in a panel or a hidden tab
+        /// would wait on a sheet no one sees.
         #[unsafe(method(webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:))]
         fn open_panel(
             &self,
@@ -660,7 +668,12 @@ define_class!(
             _frame: &WKFrameInfo,
             done: &DynBlock<dyn Fn(*mut NSArray<NSURL>)>,
         ) {
-            let Some(window) = web.window() else {
+            if let Some(files) = self.ivars().upload.take() {
+                let many = unsafe { parameters.allowsMultipleSelection() };
+                return native::choose(self, files, many, done);
+            }
+            let shown = VIEWS.with_borrow(|r| r.shown(&self.ivars().id));
+            let Some(window) = web.window().filter(|_| shown && !panel::in_panel(web)) else {
                 return done.call((std::ptr::null_mut(),));
             };
             let panel = NSOpenPanel::openPanel(self.mtm());
@@ -713,6 +726,8 @@ impl Delegate {
             zoom: Cell::new(1.0),
             panel: RefCell::default(),
             pointer: Cell::new(None),
+            upload: RefCell::default(),
+            chosen: RefCell::default(),
         });
         unsafe { msg_send![super(this), init] }
     }

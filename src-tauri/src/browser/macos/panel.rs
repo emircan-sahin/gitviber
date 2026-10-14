@@ -10,7 +10,7 @@ use objc2::rc::Retained;
 use objc2::runtime::Bool;
 use objc2::{define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSAutoresizingMaskOptions, NSBackingStoreType, NSColor, NSPanel, NSScreen,
+    NSAutoresizingMaskOptions, NSBackingStoreType, NSColor, NSPanel, NSScreen, NSView,
     NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowOrderingMode,
     NSWindowSharingType, NSWindowStyleMask,
 };
@@ -143,9 +143,9 @@ pub(super) fn release(v: &View) {
     panel.orderOut(None);
 }
 
-/// Whether `web` draws in a panel: no sheet, focus or menu of the user's belongs there.
-pub(super) fn in_panel(web: &super::WebView) -> bool {
-    web.window()
+/// Whether `view` draws in a panel: no sheet or focus of the user's belongs there.
+pub(super) fn in_panel(view: &NSView) -> bool {
+    view.window()
         .is_some_and(|w| w.isKindOfClass(Panel::class()))
 }
 
