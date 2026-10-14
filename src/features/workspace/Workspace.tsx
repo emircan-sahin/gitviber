@@ -146,8 +146,8 @@ export function Workspace({ root, main, recent, onOpenRepo, onForgetRepo, onReor
   // the tabs are, below: a change there renders this again before anything is drawn.
   const [branchOnShow, setBranchOnShow] = useState(false);
   const branchReview = useBranchReview(review, repo.revision, reviewing || branchOnShow);
-  const { tabs, activeKey, setActiveKey, open: openTab, add, update, closeTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
-  useAgentTabs(root, tabs, add, update);
+  const { tabs, activeKey, setActiveKey, open: openTab, add, update, closeTabs, discardTabs, close, closeAround, reopen, canReopen, moveTab, goTab, stepTab, pin, onPathMoved } = useTabs(saved, status, branchReview.review && branchReview.rows);
+  useAgentTabs(root, tabs, add, update, discardTabs);
   const branchTab = activeKey === selectionKey({ kind: "changes", list: "branch" });
   if (branchTab !== branchOnShow) setBranchOnShow(branchTab);
   // A file opened while the terminal covers the code view (⌘P, a path clicked in the terminal) comes into view.

@@ -3,7 +3,7 @@
 
 use crate::browser::{self, ports, Created, Go, Rect, Screen};
 use crate::state::{blocking, AppState, Res};
-use tauri::{AppHandle, State, WebviewWindow};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 /// Only the workspace has browser tabs; the settings window places nothing.
 #[tauri::command]
@@ -19,7 +19,8 @@ pub fn browser_create(
     if window.label() != "main" {
         return Err("Browser tabs open in the main window.".into());
     }
-    browser::create(&window, &id, &root, &url, &browser::Look { ua, zoom, dark })
+    let look = browser::Look { ua, zoom, dark };
+    browser::create(&window, &id, &root, &url, &look, false)
 }
 
 /// `screen`: the device it shows, in device mode.
@@ -109,9 +110,15 @@ pub fn browser_inspect(id: String) -> Res<bool> {
     browser::inspect(&id)
 }
 
+/// The pages' website data, and the sessions agents saved from them.
 #[tauri::command]
 pub async fn browser_clear_data(app: AppHandle) -> Res<()> {
-    blocking(move || browser::clear_data(&app)).await
+    blocking(move || {
+        browser::clear_data(&app)?;
+        let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        browser::Shelf::clear_all(&data).map_err(|e| format!("Couldn't delete saved sessions: {e}"))
+    })
+    .await
 }
 
 /// The TCP ports the programs in terminals `ptys` listen on, everything under their shells.

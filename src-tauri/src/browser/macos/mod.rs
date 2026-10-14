@@ -4,22 +4,26 @@
 //! thread's own, and no callback takes a borrow of it, as WebKit calls back from within calls.
 
 mod agent;
+mod cookies;
 mod page_tools;
 mod page_view;
 
 pub use agent::{
-    agent_appearance, agent_awake, agent_device, agent_dialogs, agent_js, agent_page,
-    agent_picture, agent_tab,
+    agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab, agent_js,
+    agent_new_tab, agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab,
+    agent_tabs,
 };
-pub use page_tools::{console_clear, console_entries, pick};
+pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
+pub use page_tools::{console_clear, console_entries, network_log, pick};
 pub use page_view::{appearance, find, zoom};
 
 use super::console::Log;
 use super::keys::{self, Key, Route};
+use super::network;
 use super::Corners;
 use super::{
     host_key, is_loopback, loadable, policy, root_key, Created, Failed, Go, Look, PageState,
-    Parked, Policy, Rect, Registry, Screen,
+    Parked, Policy, Rect, Registry, Screen, Step,
 };
 use crate::state::Res;
 use block2::{DynBlock, RcBlock};
@@ -106,12 +110,15 @@ thread_local! {
 }
 
 /// What was asked of a tab, by id, apart from its view: a parked tab made again keeps it. Light or
-/// dark is the user's or an agent's (page_view.rs); the device and the dialogs' answers an agent's.
+/// dark is the user's or an agent's (page_view.rs); an agent asks for the rest: the device, how
+/// dialogs are answered, and a website data store of the tab's own.
 #[derive(Default, Clone)]
 struct Asked {
     screen: Option<super::control::AgentScreen>,
     accept_dialogs: bool,
     dark: Option<bool>,
+    /// Its cookies and storage, apart from the user's (None: theirs, `data_store`).
+    store: Option<Retained<WKWebsiteDataStore>>,
 }
 
 thread_local! {
@@ -340,14 +347,16 @@ struct DelegateIvars {
     /// What the page logged (scripts/console.js), and whether a `browser-console` is on its way.
     console: RefCell<Log>,
     console_pending: Cell<bool>,
+    /// What an agent's page requested (scripts/network.js); other pages post nothing to it.
+    network: RefCell<network::Log>,
     /// The picker's tag while it's on (page_tools.rs pick).
     picking: RefCell<Option<String>>,
     /// The page's process ended once since the user last sent it somewhere: the next time it
     /// stays down, or a page that kills it on load would reload forever.
     crashed: Cell<bool>,
-    /// The agent commands running on it now (agent.rs): while any are, it stays awake, doesn't
-    /// park, and its page's dialogs answer themselves.
-    awake: RefCell<HashSet<u64>>,
+    /// The agent commands running on it now (agent.rs): while any are, it doesn't idle, and its
+    /// page's dialogs answer themselves.
+    running: RefCell<HashSet<u64>>,
     /// The page's own zoom (page_view.rs), outside device mode.
     zoom: Cell<f64>,
 }
@@ -382,6 +391,12 @@ define_class!(
             if PARK_AFTER.get() > 0 && VIEWS.with_borrow(|r| r.still_hidden(id, since)) {
                 begin_park(id, since);
             }
+        }
+
+        /// No agent's command touched the tab for a while (agent.rs `restart_idle`).
+        #[unsafe(method(gvIdleDue))]
+        fn idle_due(&self) {
+            agent::idle(&self.ivars().id);
         }
 
         #[unsafe(method(gvSendConsole))]
@@ -614,9 +629,10 @@ impl Delegate {
             screen: Cell::new(None),
             console: RefCell::default(),
             console_pending: Cell::new(false),
+            network: RefCell::default(),
             picking: RefCell::default(),
             crashed: Cell::new(false),
-            awake: RefCell::default(),
+            running: RefCell::default(),
             zoom: Cell::new(1.0),
         });
         unsafe { msg_send![super(this), init] }
@@ -792,14 +808,16 @@ fn load(web: &WKWebView, url: &NSURL) {
     unsafe { web.loadRequest(&NSURLRequest::requestWithURL(url)) };
 }
 
-/// The view for tab `id` of worktree `root`, loading `url`; hidden until placed. One that is
-/// already open stays as it is; a parked one opens again where it was, its picture returned.
+/// The view for tab `id` of worktree `root`, loading `url`; hidden until placed, or an agent's
+/// awake one (`awake`, agent.rs) drawn off-screen. One that is already open stays as it is; a
+/// parked one opens again where it was, its picture returned.
 pub fn create(
     window: &tauri::WebviewWindow,
     id: &str,
     root: &str,
     url: &str,
     look: &Look,
+    awake: bool,
 ) -> Res<Created> {
     let mtm = main_thread()?;
     if let Some(v) = view(id) {
@@ -826,11 +844,12 @@ pub fn create(
     let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
 
     let config = unsafe { WKWebViewConfiguration::new(mtm) };
+    let store = asked(id).store.unwrap_or_else(|| data_store(mtm));
     unsafe {
-        config.setWebsiteDataStore(&data_store(mtm));
+        config.setWebsiteDataStore(&store);
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         let content = WKUserContentController::new(mtm);
-        page_tools::install(&content, id, mtm);
+        page_tools::install(&content, id, agent::routed(id), mtm);
         config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);
@@ -890,7 +909,7 @@ pub fn create(
         delegate,
     };
     let dpr = can_set_dpr(&view.web);
-    VIEWS.with_borrow_mut(|r| r.insert(id, &root_key(root), view));
+    VIEWS.with_borrow_mut(|r| r.insert(id, &root_key(root), view, awake));
     Ok(Created {
         page: state,
         snapshot: parked.and_then(|p| p.snapshot),
@@ -983,14 +1002,16 @@ pub fn set_agent(id: &str, ua: Option<&str>) -> Res<()> {
 }
 
 /// Hidden, WebKit slows its timers and animation frames. Out of its tab's sight (not just
-/// `aside` for something drawn over it), it parks past the cap or once its timer is up.
+/// `aside` for something drawn over it), it parks past the cap or once its timer is up; an
+/// agent's awake tab is drawn off-screen instead (agent.rs).
 pub fn hide(id: &str, aside: bool) {
     let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
         return;
     };
     release_focus(&v);
     if aside {
-        v.host.setHidden(true);
+        let step = VIEWS.with_borrow_mut(|r| r.cover(id));
+        apply(&v, step);
         return;
     }
     // Its picture while it still shows: hidden, WebKit may never give one. It parks with it.
@@ -998,19 +1019,31 @@ pub fn hide(id: &str, aside: bool) {
     take_snapshot(&v.web, move |shot| {
         VIEWS.with_borrow_mut(|r| r.set_picture(&picture_of, shot));
     });
-    out_of_sight(&v, id);
+    // Hidden in the registry too, or off-screen for an agent's awake view.
+    let step = VIEWS.with_borrow_mut(|r| r.hide(id));
+    apply(
+        &v,
+        step.map_or(Step::Offscreen, |(since, over)| Step::Hide(since, over)),
+    );
 }
 
-/// Hidden in the registry too: its park timer starts, and the hidden past the cap park.
-fn out_of_sight(v: &View, id: &str) {
-    v.host.setHidden(true);
-    let Some((since, over)) = VIEWS.with_borrow_mut(|r| r.hide(id)) else {
-        return;
-    };
-    v.delegate.ivars().hidden_at.set(Some(Instant::now()));
-    start_timer(v, since, Duration::ZERO);
-    for (id, since) in over {
-        begin_park(&id, since);
+/// The host where the registry moved its view.
+fn apply(v: &View, step: Step) {
+    match step {
+        Step::Stay => {}
+        Step::Offscreen => {
+            stop_timer(v);
+            agent::offscreen(v);
+        }
+        Step::Cover => v.host.setHidden(true),
+        Step::Hide(since, over) => {
+            v.host.setHidden(true);
+            v.delegate.ivars().hidden_at.set(Some(Instant::now()));
+            start_timer(v, since, Duration::ZERO);
+            for (id, since) in over {
+                begin_park(&id, since);
+            }
+        }
     }
 }
 
@@ -1071,8 +1104,7 @@ pub fn configure(live_hidden: u32, park_after_min: u32, console: bool) {
 /// Parks a hidden view at once, with the picture taken as it hid (or none): never waiting on
 /// WebKit, which may not draw a hidden view at all.
 fn begin_park(id: &str, since: u64) {
-    // Running an agent's command: it hides again after, and parks then if it's due.
-    let Some(v) = view(id).filter(|v| v.delegate.ivars().awake.borrow().is_empty()) else {
+    let Some(v) = view(id) else {
         return;
     };
     let parked = Parked {
@@ -1089,6 +1121,7 @@ fn begin_park(id: &str, since: u64) {
 pub fn close(id: &str) {
     if main_thread().is_ok() {
         forget(id);
+        agent::forget_tab(id);
         if let Some(v) = VIEWS.with_borrow_mut(|r| r.remove(id)) {
             destroy(v);
         }
@@ -1100,6 +1133,7 @@ pub fn close_root(root: &str) {
     if main_thread().is_ok() {
         for v in VIEWS.with_borrow_mut(|r| r.remove_root(root)) {
             forget(&v.delegate.ivars().id);
+            agent::forget_tab(&v.delegate.ivars().id);
             destroy(v);
         }
     }

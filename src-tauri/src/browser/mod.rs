@@ -12,29 +12,36 @@ pub mod control;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod network;
 pub mod picks;
 pub mod ports;
 mod registry;
 pub mod server;
+mod sessions;
 
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    agent_appearance, agent_awake, agent_device, agent_dialogs, agent_done, agent_js, agent_page,
-    agent_picture, agent_tab, appearance, clear_data, close, close_all, close_root, configure,
-    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, pick, place,
+    agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
+    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_own_store,
+    agent_page, agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab,
+    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
+    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
     set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
-    agent_appearance, agent_awake, agent_device, agent_dialogs, agent_done, agent_js, agent_page,
-    agent_picture, agent_tab, appearance, clear_data, close, close_all, close_root, configure,
-    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, pick, place,
+    agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
+    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_own_store,
+    agent_page, agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab,
+    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
+    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
     set_agent, snapshot, zoom,
 };
+pub use sessions::Shelf;
 
 #[cfg(target_os = "macos")]
-pub use registry::{Parked, Registry};
+pub use registry::{Parked, Registry, Step};
 use serde::{Deserialize, Serialize};
 use tauri::Url;
 
@@ -195,6 +202,13 @@ pub fn cut(s: &str, max: usize) -> String {
     }
 }
 
+/// Milliseconds since the epoch, as a page stamps its own.
+pub fn epoch_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |t| t.as_secs_f64() * 1000.0)
+}
+
 /// A host as a URL and a certificate challenge both name it: IPv6 without brackets, lowercase.
 pub fn host_key(host: &str) -> String {
     host.trim_start_matches('[')
@@ -223,17 +237,60 @@ pub fn root_key(path: &str) -> String {
 
 #[cfg(not(target_os = "macos"))]
 mod other {
-    use super::{console::Entry, control::AgentScreen, picks::Bounds};
+    use super::{
+        console::Entry,
+        control::{AgentScreen, Found, Listed, NewTab},
+        network::Log,
+        picks::Bounds,
+        sessions::Cookie,
+    };
     use super::{Created, Go, Look, PageState, Rect, Screen};
     use crate::state::Res;
     use tauri::AppHandle;
 
     const UNSUPPORTED: &str = "The browser tab needs macOS for now.";
 
-    pub fn agent_tab(_: &AppHandle, _: u32, _: &str, _: Option<&str>) -> Res<(String, bool)> {
+    pub fn agent_tab(
+        _: &AppHandle,
+        _: u32,
+        _: &str,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Res<(String, Found)> {
         Err(UNSUPPORTED.into())
     }
-    pub fn agent_awake(_: &str, _: u64, _: bool) {}
+    pub fn agent_new_tab(
+        _: &AppHandle,
+        _: u32,
+        _: &str,
+        _: NewTab,
+        _: Option<&str>,
+    ) -> Res<(String, String)> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_find_tab(_: u32, _: Option<&str>) -> Res<String> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_cookies(_: &str, _: Box<dyn FnOnce(Vec<Cookie>)>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_set_cookies(_: &str, _: Vec<Cookie>, _: Box<dyn FnOnce(())>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_own_store(_: &str) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_clear_store(_: &str, _: Box<dyn FnOnce(())>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_tabs(_: u32) -> Res<Vec<Listed>> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_close_tab(_: &AppHandle, _: &str) -> Res<String> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_running(_: &str, _: u64, _: bool) {}
+    pub fn agent_pane_closed(_: u32) {}
     pub fn agent_appearance(_: &AppHandle, _: &str, _: Option<bool>) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
@@ -272,7 +329,14 @@ mod other {
         Err(UNSUPPORTED.into())
     }
 
-    pub fn create(_: &tauri::WebviewWindow, _: &str, _: &str, _: &str, _: &Look) -> Res<Created> {
+    pub fn create(
+        _: &tauri::WebviewWindow,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &Look,
+        _: bool,
+    ) -> Res<Created> {
         Err(UNSUPPORTED.into())
     }
     pub fn place(_: &str, _: Rect, _: Option<Screen>) -> Res<()> {
@@ -293,6 +357,9 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn console_clear(_: &str) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn network_log<T>(_: &str, _: impl FnOnce(&mut Log) -> T) -> Res<T> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_done(_: &str) {}
@@ -411,15 +478,15 @@ mod tests {
     #[test]
     fn a_worktree_closes_with_its_views() {
         let mut r = Registry::new();
-        r.insert("a", "/w/one", 1);
-        r.insert("b", "/w/two", 2);
-        r.insert("c", "/w/one", 3);
+        r.insert("a", "/w/one", 1, false);
+        r.insert("b", "/w/two", 2, false);
+        r.insert("c", "/w/one", 3, false);
         assert_eq!(r.remove_root("/w/one"), [1, 3]);
         assert_eq!(r.get("a"), None);
         assert_eq!(r.get("b"), Some(&2));
         assert_eq!(r.remove("b"), Some(2));
         assert_eq!(r.remove("b"), None);
-        r.insert("d", "/w/two", 4);
+        r.insert("d", "/w/two", 4, false);
         assert_eq!(r.take_all(), [4]);
         assert_eq!(r.get("d"), None);
     }
@@ -628,7 +695,7 @@ mod tests {
                 // create() opens an id once: one already open stays as it is.
                 0 | 1 => {
                     if r.get(&id).is_none() {
-                        r.insert(&id, &root, n);
+                        r.insert(&id, &root, n, false);
                         model.push((id, root, n));
                     }
                 }
@@ -655,9 +722,9 @@ mod tests {
     #[test]
     fn closing_a_root_leaves_other_roots_with_the_same_prefix() {
         let mut r = Registry::new();
-        r.insert("a", "/w/one", 1);
-        r.insert("b", "/w/one-two", 2);
-        r.insert("c", "/w/one/", 3);
+        r.insert("a", "/w/one", 1, false);
+        r.insert("b", "/w/one-two", 2, false);
+        r.insert("c", "/w/one/", 3, false);
         assert_eq!(r.remove_root("/w/one"), [1]);
         assert_eq!(r.get("b"), Some(&2));
         assert_eq!(r.get("c"), Some(&3));

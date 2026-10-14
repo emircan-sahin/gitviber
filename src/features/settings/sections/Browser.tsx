@@ -67,7 +67,7 @@ export function BrowserSection() {
         </Field>
         <Field
           label="Let agents use the browser"
-          hint="An agent in a terminal can open pages, read them, click, type and take screenshots with the gitviber browser command. Each terminal pane gets a tab of its own, opened in the background without taking your active tab. Off, the command says so and does nothing."
+          hint="An agent in a terminal can open pages, read them, click, type and take screenshots with the gitviber browser command. A terminal pane's agents get tabs of their own, opened in the background without taking your active tab, each signed in apart from your browsing unless the agent asks for yours. Off, the command says so and does nothing."
         >
           <Switch checked={s.browserAgentControl} onChange={(v) => updateSettings({ browserAgentControl: v })} />
         </Field>

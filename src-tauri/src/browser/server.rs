@@ -1,14 +1,14 @@
 //! The socket `gitviber browser` talks to (client.rs): in a folder only this user can enter,
 //! there only while Settings → Browser lets agents use the browser, and answering only requests
-//! with this launch's token, which the app's terminals alone are given.
+//! with a token from this launch, which each of the app's terminals is given for its own pane.
 
 use super::control::{self, Reply, Request};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tauri::AppHandle;
 
-/// This launch's token: 32 random bytes, hex. Empty when none could be had, which no request
-/// matches.
+/// This launch's secret, each pane's token made from it (control.rs `pane_token`): 32 random
+/// bytes, hex. Empty when none could be had, which no request matches.
 pub fn token() -> &'static str {
     static TOKEN: OnceLock<String> = OnceLock::new();
     TOKEN.get_or_init(|| crate::local_socket::random_hex(32).unwrap_or_default())
@@ -41,15 +41,17 @@ pub fn env(pty: u32) -> Vec<(&'static str, String)> {
             control::SOCKET_ENV,
             socket_path().to_string_lossy().into_owned(),
         ));
-        env.push((control::TOKEN_ENV, token().to_string()));
+        env.push((control::TOKEN_ENV, control::pane_token(token(), pty)));
     }
     env
 }
 
-/// The answer to a request: none without this launch's token, none while control is off.
+/// The answer to a request: none without its pane's token from this launch, none while control
+/// is off.
 fn answer(app: &AppHandle, req: Request, on: bool) -> Reply {
     let ours = token();
-    if ours.is_empty() || !control::same_token(&req.token, ours) {
+    let pane = req.pty.map(|pty| control::pane_token(ours, pty));
+    if ours.is_empty() || !pane.is_some_and(|pane| control::same_token(&req.token, &pane)) {
         return Reply::error(
             "This terminal is from another launch of GitViber: open a new one to use the browser.",
         );
@@ -195,7 +197,8 @@ mod unix {
                     .map(|(_, v)| v.as_str())
             };
             assert_eq!(get(super::super::control::PTY_ENV), Some("7"));
-            assert_eq!(get(super::super::control::TOKEN_ENV), Some(token));
+            let pane = super::super::control::pane_token(token, 7);
+            assert_eq!(get(super::super::control::TOKEN_ENV), Some(pane.as_str()));
             assert_eq!(get(super::super::control::SOCKET_ENV), path.to_str());
             assert!(get(super::super::control::EXE_ENV).is_some());
         }

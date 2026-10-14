@@ -17,18 +17,24 @@ pub fn helper() -> Option<i32> {
 #[derive(Debug, PartialEq)]
 pub struct Cli {
     pub json: bool,
+    /// `--tab <name>`; an empty one when no name came after it.
+    pub tab: Option<String>,
     pub cmd: Option<String>,
     pub args: Vec<String>,
 }
 
-/// `--json` anywhere before a `--`; after one, everything is an argument, even `--json`.
+/// `--json` and `--tab <name>` anywhere before a `--`; after one, everything is an argument,
+/// even `--json`.
 pub fn parse_cli(args: Vec<String>) -> Cli {
     let mut json = false;
+    let mut tab = None;
     let mut rest = vec![];
-    let mut it = args.into_iter();
-    for arg in it.by_ref() {
+    let mut it = args.into_iter().peekable();
+    while let Some(arg) = it.next() {
         match arg.as_str() {
             "--json" => json = true,
+            // A flag or `--` after it isn't its name.
+            "--tab" => tab = Some(it.next_if(|n| !n.starts_with('-')).unwrap_or_default()),
             "--" => break,
             _ => rest.push(arg),
         }
@@ -37,6 +43,7 @@ pub fn parse_cli(args: Vec<String>) -> Cli {
     let mut rest = rest.into_iter();
     Cli {
         json,
+        tab,
         cmd: rest.next(),
         args: rest.collect(),
     }
@@ -60,6 +67,10 @@ fn run(args: Vec<String>) -> i32 {
         print!("{HELP}");
         return 0;
     };
+    if cli.tab.as_deref() == Some("") {
+        eprintln!("--tab needs the tab's name: --tab <name>");
+        return 1;
+    }
     // Answered here: the list is this binary's own, and needs no tab.
     if cmd == "device" && cli.args == ["--list"] {
         return print(&Reply::out(control::device_list()), cli.json);
@@ -76,6 +87,11 @@ fn run(args: Vec<String>) -> i32 {
         pty: std::env::var(control::PTY_ENV)
             .ok()
             .and_then(|p| p.parse().ok()),
+        tab: cli.tab.or_else(|| {
+            std::env::var(control::TAB_ENV)
+                .ok()
+                .filter(|t| !t.is_empty())
+        }),
         cwd: std::env::current_dir()
             .map(|d| d.to_string_lossy().into_owned())
             .unwrap_or_default(),
@@ -101,13 +117,22 @@ fn run(args: Vec<String>) -> i32 {
 
 fn print(reply: &Reply, json: bool) -> i32 {
     if json {
-        println!("{}", serde_json::to_string(reply).unwrap_or_default());
+        println!("{}", json_text(reply));
     } else if let Some(error) = &reply.error {
         eprintln!("{error}");
     } else if let Some(out) = reply.out.as_deref().filter(|o| !o.is_empty()) {
         println!("{out}");
     }
     reply.exit_code()
+}
+
+/// `--json`'s line: a reply's data stands in for its text.
+fn json_text(reply: &Reply) -> String {
+    let mut value = serde_json::to_value(reply).unwrap_or_default();
+    if let (Some(map), Some(_)) = (value.as_object_mut(), &reply.data) {
+        map.remove("out");
+    }
+    value.to_string()
 }
 
 #[cfg(unix)]
@@ -140,6 +165,7 @@ mod tests {
             cli("--json snapshot -i"),
             Cli {
                 json: true,
+                tab: None,
                 cmd: Some("snapshot".into()),
                 args: vec!["-i".into()]
             }
@@ -150,6 +176,32 @@ mod tests {
         assert_eq!(text.cmd.as_deref(), Some("fill"));
         assert_eq!(text.args, ["e3", "--json", "--"]);
         assert_eq!(cli("").cmd, None);
+        let tabbed = cli("click --tab rv268 e5");
+        assert_eq!(tabbed.tab.as_deref(), Some("rv268"));
+        assert_eq!(tabbed.args, ["e5"]);
+        assert_eq!(cli("url --tab").tab.as_deref(), Some(""));
+        assert_eq!(cli("fill e3 -- --tab x").tab, None);
+        // Neither `--` nor a flag is a name.
+        let bare = cli("fill --tab -- e3 --tab");
+        assert_eq!(
+            (bare.tab.as_deref(), bare.args),
+            (Some(""), vec!["e3".into(), "--tab".into()])
+        );
+        let flagged = cli("snapshot --tab --json");
+        assert_eq!((flagged.tab.as_deref(), flagged.json), (Some(""), true));
+    }
+
+    #[test]
+    fn json_gives_the_fields_in_place_of_the_text_where_there_are_some() {
+        let text: serde_json::Value =
+            serde_json::from_str(&json_text(&Reply::out("done"))).unwrap();
+        assert_eq!(text, serde_json::json!({ "ok": true, "out": "done" }));
+        let tabs = Reply::data("t1  awake", serde_json::json!({ "tabs": [] }));
+        let fields: serde_json::Value = serde_json::from_str(&json_text(&tabs)).unwrap();
+        assert_eq!(
+            fields,
+            serde_json::json!({ "ok": true, "data": { "tabs": [] } })
+        );
     }
 
     #[test]
@@ -183,6 +235,7 @@ mod tests {
         let request = Request {
             token: "t".into(),
             pty: Some(4),
+            tab: Some("t2".into()),
             cwd: "/tmp/app".into(),
             cmd: "url".into(),
             args: vec![],
@@ -206,6 +259,11 @@ mod tests {
         ] {
             assert_eq!(run(help.clone()), 0, "{help:?}");
         }
+        assert_eq!(
+            run(words(&["url", "--tab"])),
+            1,
+            "a --tab with no name never asks"
+        );
         // Only where no GitViber terminal set these up (as here, not inside one): never a request.
         if std::env::var_os(control::SOCKET_ENV).is_none() {
             assert_eq!(run(words(&["url"])), NOT_HERE);
@@ -238,6 +296,7 @@ mod tests {
         let request = Request {
             token: "t".into(),
             pty: None,
+            tab: None,
             cwd: String::new(),
             cmd: "url".into(),
             args: vec![],
