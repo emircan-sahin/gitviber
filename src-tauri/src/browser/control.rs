@@ -51,12 +51,16 @@ time parked to save memory, its next command loading it again. Unused for an hou
                                would go to, unless named
   --tab <name>                 With any command: the tab it goes to
 
-  session save <name>          The tab's cookies, and its page's localStorage and sessionStorage,
-                               saved for this repository (not IndexedDB)
-  session load <name>          Into a tab of its own: its cookies and storage cleared, then the
-                               saved ones set, at the saved page's origin
-  session clear                A tab of its own's cookies and storage, gone
-  session list | delete <name>
+  session save <name> [--force]
+                               The tab's cookies, and its page's localStorage and sessionStorage
+                               (not IndexedDB), saved for this repository and its worktrees; over
+                               a session of that name only with --force. Not from a --shared tab
+  session load <name>          Into the tab, on the page's origin the session was saved at (a
+                               blank tab goes there first): the tab's cookies and storage
+                               cleared, then the saved ones set. Not into a --shared tab
+  session clear                The tab's own cookies and storage, gone
+  session list                 Each saved session's name, origin, cookie count and age
+  session delete <name>        Names are one whatever their case
 
   open <url>                   Load a page (http or https; localhost:3000 works) and wait for it
   back | forward | reload      Through its history, waiting for the page
@@ -208,7 +212,8 @@ pub enum Tabs {
 
 #[derive(Debug, PartialEq)]
 pub enum Sessions {
-    Save(String),
+    /// Over one of the same name too (`--force`).
+    Save(String, bool),
     Load(String),
     Clear,
     List,
@@ -361,14 +366,17 @@ fn tabs(args: &[String]) -> Result<Tabs, String> {
 
 fn sessions(args: &[String]) -> Result<Sessions, String> {
     match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        ["save", name] => Ok(Sessions::Save(session_name(name)?)),
+        ["save", name] => Ok(Sessions::Save(session_name(name)?, false)),
+        ["save", name, "--force"] | ["save", "--force", name] => {
+            Ok(Sessions::Save(session_name(name)?, true))
+        }
         ["load", name] => Ok(Sessions::Load(session_name(name)?)),
         ["clear"] => Ok(Sessions::Clear),
         ["list"] => Ok(Sessions::List),
         ["delete", name] => Ok(Sessions::Delete(session_name(name)?)),
         _ => Err(
-            "Usage: gitviber browser session save <name> | load <name> | clear | list | \
-                  delete <name>"
+            "Usage: gitviber browser session save <name> [--force] | load <name> | clear | \
+                  list | delete <name>"
                 .into(),
         ),
     }
@@ -1252,7 +1260,11 @@ mod tests {
         );
         assert_eq!(
             pane("session", "save mert"),
-            Ok(Pane::Session(Sessions::Save("mert".into())))
+            Ok(Pane::Session(Sessions::Save("mert".into(), false)))
+        );
+        assert_eq!(
+            pane("session", "save mert --force"),
+            Ok(Pane::Session(Sessions::Save("mert".into(), true)))
         );
         assert_eq!(
             pane("session", "load mert"),

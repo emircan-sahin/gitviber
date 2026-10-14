@@ -1,7 +1,7 @@
-//! An agent tab's cookies, for its sessions (browser/sessions.rs): read from whichever store the
-//! tab has, but set or cleared only in one of its own, never in the user's.
+//! An agent tab's cookies, for its sessions (browser/sessions.rs): read, set and cleared only in
+//! a store of its own, never in the user's.
 
-use super::{asked, data_store, main_thread};
+use super::{asked, main_thread};
 use crate::browser::sessions::Cookie;
 use crate::state::Res;
 use block2::RcBlock;
@@ -18,18 +18,13 @@ use std::cell::Cell;
 use std::ptr::NonNull;
 use std::rc::Rc;
 
-const SHARED: &str = "This tab is in your own cookies and logins (--shared): sessions load and \
-                      clear only in a tab of its own.";
-
-/// Whether the tab is in the user's website data.
-pub fn agent_shared(id: &str) -> Res<bool> {
-    main_thread()?;
-    Ok(asked(id).store.is_none())
-}
+/// The user's own logins never go into a session, nor does one go over them.
+const SHARED: &str = "This tab is in your own cookies and logins (--shared): sessions save, \
+                      load and clear only in a tab of its own.";
 
 pub fn agent_cookies(id: &str, done: Box<dyn FnOnce(Vec<Cookie>)>) -> Res<()> {
-    let mtm = main_thread()?;
-    let store = asked(id).store.unwrap_or_else(|| data_store(mtm));
+    main_thread()?;
+    let store = own(id)?;
     let done = Cell::new(Some(done));
     let block = RcBlock::new(move |cookies: NonNull<NSArray<NSHTTPCookie>>| {
         if let Some(done) = done.take() {

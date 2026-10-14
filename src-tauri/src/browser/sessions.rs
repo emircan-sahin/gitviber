@@ -1,6 +1,7 @@
 //! Logins an agent saved from a tab (`session save`) to load into another: its cookies, and the
-//! storage of the page's origin. They hold login tokens, so they're kept in the app's data folder,
-//! a folder a repository, readable by this user alone; never printed in full nor sent anywhere.
+//! storage of the page's origin. They hold login tokens: they're kept in the app's data folder,
+//! in one folder for each repository, readable by this user alone, and never printed in full nor
+//! sent anywhere.
 
 use super::root_key;
 use serde::{Deserialize, Serialize};
@@ -32,44 +33,65 @@ pub struct Cookie {
     pub same_site: Option<String>,
 }
 
-/// Whether a page on `host` gets a cookie set for `domain` (a leading dot or not).
-pub fn for_host(host: &str, domain: &str) -> bool {
-    let domain = domain.trim_start_matches('.').to_ascii_lowercase();
-    let host = host.to_ascii_lowercase();
-    !domain.is_empty() && (host == domain || host.ends_with(&format!(".{domain}")))
+/// What a worktree's sessions are kept by: its repository, so its other worktrees share them
+/// (git's common folder); the folder itself outside one.
+pub fn repository(root: &str) -> String {
+    let root = Path::new(root);
+    crate::git::run_text(root, &["rev-parse", "--git-common-dir"])
+        .ok()
+        .and_then(|common| root.join(common.trim()).canonicalize().ok())
+        .map_or_else(
+            || root_key(&root.to_string_lossy()),
+            |p| p.to_string_lossy().into_owned(),
+        )
 }
 
-/// The sessions saved for one repository.
+/// The sessions saved for one repository. Names are one whatever their case, as the Mac's
+/// folders take them.
 pub struct Shelf {
     dir: PathBuf,
 }
 
 impl Shelf {
-    /// `data`: the app's data folder; `root`: the repository, as its tabs know it.
-    pub fn of(data: &Path, root: &str) -> Self {
-        let key = format!("{:x}", Sha256::digest(root_key(root)));
+    /// `data`: the app's data folder; `repository`: what `repository` gave.
+    pub fn of(data: &Path, repository: &str) -> Self {
+        let key = format!("{:x}", Sha256::digest(repository));
         Self {
-            dir: data.join("browser-sessions").join(&key[..32]),
+            dir: shelves(data).join(&key[..32]),
         }
     }
 
     fn file(&self, name: &str) -> PathBuf {
-        self.dir.join(format!("{name}.json"))
+        self.dir.join(format!("{}.json", name.to_ascii_lowercase()))
     }
 
-    /// Written whole or not at all, readable by this user alone.
-    pub fn save(&self, name: &str, session: &Session) -> Result<(), String> {
+    /// Written whole or not at all, readable by this user alone; over one of the same name only
+    /// when `force`.
+    pub fn save(&self, name: &str, session: &Session, force: bool) -> Result<(), String> {
         let failed = |e: std::io::Error| format!("Couldn't save the session: {e}");
         private_dirs(&self.dir).map_err(failed)?;
-        let json = serde_json::to_vec(session).map_err(|e| e.to_string())?;
-        let part = self.dir.join(format!(".{name}.part"));
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create(true).truncate(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-        std::io::Write::write_all(&mut options.open(&part).map_err(failed)?, &json)
-            .map_err(failed)?;
-        std::fs::rename(&part, self.file(name)).map_err(failed)
+        let json = serde_json::to_string(session).map_err(|e| e.to_string())?;
+        // Its own: two saves at once each write theirs whole.
+        let part = self.dir.join(format!(
+            ".{}.part",
+            crate::local_socket::random_hex(8).ok_or("Couldn't save the session.")?
+        ));
+        let file = self.file(name);
+        let placed = crate::scratch::write_private(&part, &json).and_then(|()| {
+            if force {
+                std::fs::rename(&part, &file)
+            } else {
+                // A link fails where a file is already, which a check before it wouldn't.
+                std::fs::hard_link(&part, &file)
+            }
+        });
+        let _ = std::fs::remove_file(&part);
+        match placed {
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(format!(
+                "A session {name} is saved already: `session save {name} --force` replaces it"
+            )),
+            placed => placed.map_err(failed),
+        }
     }
 
     pub fn load(&self, name: &str) -> Result<Session, String> {
@@ -98,9 +120,22 @@ impl Shelf {
     pub fn delete(&self, name: &str) -> Result<(), String> {
         std::fs::remove_file(self.file(name)).map_err(|_| format!("No session {name}"))
     }
+
+    /// Every repository's, as Clear Browsing Data empties the browser.
+    pub fn clear_all(data: &Path) -> std::io::Result<()> {
+        match std::fs::remove_dir_all(shelves(data)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            done => done,
+        }
+    }
 }
 
-/// The folder and those above it up to the app's data folder, the two of ours this user's alone.
+fn shelves(data: &Path) -> PathBuf {
+    data.join("browser-sessions")
+}
+
+/// The app's data folder made if it isn't there, and below it the sessions' folder and the
+/// repository's, each this user's alone.
 fn private_dirs(dir: &Path) -> std::io::Result<()> {
     let shelf = dir.parent().unwrap_or(dir);
     std::fs::create_dir_all(shelf.parent().unwrap_or(shelf))?;
@@ -143,11 +178,17 @@ mod tests {
         let one = Shelf::of(&data, "/w/one");
         let two = Shelf::of(&data, "/w/two");
         assert!(one.list().is_empty());
-        one.save("mert", &session("http://localhost:3000")).unwrap();
-        one.save("ayse", &session("https://app.test")).unwrap();
+        one.save("mert", &session("http://localhost:3000"), false)
+            .unwrap();
+        one.save("ayse", &session("https://app.test"), false)
+            .unwrap();
         assert_eq!(one.load("mert"), Ok(session("http://localhost:3000")));
-        // Saved again: the newer one, whole.
-        one.save("mert", &session("https://app.test")).unwrap();
+        // Saved again: refused, unless forced; then the newer one, whole.
+        let again = one.save("mert", &session("https://app.test"), false);
+        assert!(again.unwrap_err().contains("--force"));
+        assert_eq!(one.load("mert").unwrap().origin, "http://localhost:3000");
+        one.save("mert", &session("https://app.test"), true)
+            .unwrap();
         assert_eq!(one.load("mert").unwrap().origin, "https://app.test");
         let names: Vec<String> = one.list().into_iter().map(|s| s.0).collect();
         assert_eq!(names, ["ayse", "mert"]);
@@ -164,11 +205,17 @@ mod tests {
         assert!(one.delete("mert").is_err() && one.load("mert").is_err());
         std::fs::write(one.file("broken"), "{").unwrap();
         assert_eq!(one.list().len(), 1, "one that doesn't read is left out");
+        let left: Vec<_> = std::fs::read_dir(&one.dir).unwrap().flatten().collect();
+        assert_eq!(left.len(), 2, "no part of a save left behind");
+        // Clear Browsing Data: every repository's go.
+        Shelf::clear_all(&data).unwrap();
+        assert!(one.list().is_empty() && !shelves(&data).exists());
+        Shelf::clear_all(&data).unwrap();
         let _ = std::fs::remove_dir_all(&data);
     }
 
     /// Two tabs saving under one name at once (each tab has its own turn, so nothing orders
-    /// them): the file reads as one of them whole, never a mix. Both write the same `.part`.
+    /// them): the file reads as one of them whole, never a mix.
     #[test]
     fn saves_under_one_name_at_once_leave_one_whole_session() {
         let data =
@@ -188,7 +235,7 @@ mod tests {
                     let (shelf, barrier) = (shelf.clone(), barrier.clone());
                     std::thread::spawn(move || {
                         barrier.wait();
-                        shelf.save("same", &s)
+                        shelf.save("same", &s, true)
                     })
                 })
                 .collect();
@@ -206,35 +253,58 @@ mod tests {
         );
     }
 
-    /// macOS folders ignore case by default: two names `named` tells apart are one file.
+    /// macOS folders ignore case by default: names apart only in case are one session, whatever
+    /// the folder does.
     #[test]
-    fn names_that_differ_only_in_case_are_two_sessions() {
+    fn names_that_differ_only_in_case_are_one_session() {
         let data =
             std::env::temp_dir().join(format!("gitviber-sessions-case-{}", std::process::id()));
         let shelf = Shelf::of(&data, "/w/case");
-        shelf.save("Prod", &session("https://prod.test")).unwrap();
         shelf
-            .save("prod", &session("http://localhost:3000"))
+            .save("Prod", &session("https://prod.test"), false)
             .unwrap();
-        let prod = shelf.load("Prod").map(|s| s.origin);
+        let taken = shelf.save("prod", &session("http://localhost:3000"), false);
+        let kept = shelf.load("PROD").map(|s| s.origin);
+        shelf
+            .save("prod", &session("http://localhost:3000"), true)
+            .unwrap();
+        let replaced = shelf.load("Prod").map(|s| s.origin);
         let names: Vec<String> = shelf.list().into_iter().map(|s| s.0).collect();
         let _ = std::fs::remove_dir_all(&data);
-        assert_eq!(
-            prod,
-            Ok("https://prod.test".into()),
-            "Prod was overwritten by prod"
-        );
-        assert_eq!(names, ["Prod", "prod"]);
+        assert!(taken.is_err(), "prod is Prod");
+        assert_eq!(kept, Ok("https://prod.test".into()));
+        assert_eq!(replaced, Ok("http://localhost:3000".into()));
+        assert_eq!(names, ["prod"]);
     }
 
     #[test]
-    fn a_cookie_goes_to_its_domain_and_the_hosts_under_it() {
-        assert!(for_host("app.test", ".app.test"));
-        assert!(for_host("api.app.test", "app.test"));
-        assert!(for_host("App.Test", "app.test"));
-        assert!(!for_host("myapp.test", "app.test"));
-        assert!(!for_host("app.test", "api.app.test"));
-        assert!(!for_host("app.test", ""));
-        assert!(!for_host("app.test", "."));
+    fn a_repositorys_worktrees_share_its_sessions() {
+        let base =
+            std::env::temp_dir().join(format!("gitviber-sessions-repo-{}", std::process::id()));
+        let (main, linked, plain) = (base.join("main"), base.join("linked"), base.join("plain"));
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&plain).unwrap();
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.test"])
+                .args(args)
+                .current_dir(&main)
+                .output()
+                .unwrap()
+                .status
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "first"]);
+        git(&["worktree", "add", "-q", "../linked"]);
+        let key = |p: &Path| repository(&p.to_string_lossy());
+        let shared = key(&main);
+        assert_eq!(key(&linked), shared);
+        assert_eq!(key(&main.join(".")), shared);
+        // Outside a repository, the folder itself.
+        assert_eq!(key(&plain), root_key(&plain.to_string_lossy()));
+        assert_eq!(repository("/no/such/folder"), "/no/such/folder");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

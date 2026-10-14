@@ -30,7 +30,8 @@ const EVAL_MAX: usize = 20_000;
 const SERIALIZE: &str = "try { const s = JSON.stringify(value); return `=${s === undefined ? String(value) : s}`; } catch { return `=${String(value)}`; }";
 /// The page's storage for a session; in GitViber's world, where the page can't stand in for it.
 const STORAGE_READ: &str = "return JSON.stringify({ origin: location.origin, local: Object.entries(localStorage), session: Object.entries(sessionStorage) });";
-const STORAGE_WRITE: &str = "const s = JSON.parse(input); localStorage.clear(); sessionStorage.clear(); for (const [k, v] of s.local) localStorage.setItem(k, v); for (const [k, v] of s.session) sessionStorage.setItem(k, v); return '';";
+/// Written only on the session's origin; elsewhere, where the page is instead.
+const STORAGE_WRITE: &str = "const s = JSON.parse(input); if (location.origin !== s.origin) return location.origin; localStorage.clear(); sessionStorage.clear(); for (const [k, v] of s.local) localStorage.setItem(k, v); for (const [k, v] of s.session) sessionStorage.setItem(k, v); return '';";
 const NO_INDEXED_DB: &str = "IndexedDB isn't carried.";
 
 pub fn run(app: &AppHandle, req: Request) -> Reply {
@@ -192,9 +193,9 @@ fn sessions(
             shelf.delete(&s)?;
             Ok(Reply::out(format!("Deleted session {s}")))
         }
-        Sessions::Save(s) => {
+        Sessions::Save(s, force) => {
             let session = drive(app, tab()?, Tab::session)?;
-            shelf.save(&s, &session)?;
+            shelf.save(&s, &session, force)?;
             Ok(Reply::out(format!(
                 "Saved session {s}: {}. {NO_INDEXED_DB}",
                 summary(&session)
@@ -213,7 +214,7 @@ fn load(app: &AppHandle, id: String, root: &str, name: &str) -> Res<String> {
 
 fn shelf(app: &AppHandle, root: &str) -> Res<Shelf> {
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(Shelf::of(&data, root))
+    Ok(Shelf::of(&data, &sessions::repository(root)))
 }
 
 fn now() -> u64 {
@@ -582,8 +583,7 @@ impl Tab {
         Ok(Reply::out(format!("Showing the page as {shown}")))
     }
 
-    /// The tab's login: its cookies (in the user's own data, only those of the page's site), and
-    /// its page's storage.
+    /// The tab's login: the cookies of its own store, and its page's storage.
     fn session(&self) -> Res<Session> {
         #[derive(serde::Deserialize)]
         struct Storage {
@@ -591,6 +591,8 @@ impl Tab {
             local: Vec<(String, String)>,
             session: Vec<(String, String)>,
         }
+        let id = self.id.clone();
+        let cookies = later(&self.app, move |_, done| super::agent_cookies(&id, done))?;
         let blank = "Open the page whose login to save first: this one keeps no storage.";
         let id = self.id.clone();
         let read = later(&self.app, move |_, done| {
@@ -598,17 +600,8 @@ impl Tab {
         })?
         .map_err(|_| blank)?;
         let storage: Storage = serde_json::from_str(&read).map_err(|_| blank)?;
-        let host = Url::parse(&storage.origin)
-            .ok()
-            .filter(|u| matches!(u.scheme(), "http" | "https"))
-            .and_then(|u| u.host_str().map(str::to_string))
-            .ok_or(blank)?;
-        let id = self.id.clone();
-        let shared = main(&self.app, move |_| super::agent_shared(&id))?;
-        let id = self.id.clone();
-        let mut cookies = later(&self.app, move |_, done| super::agent_cookies(&id, done))?;
-        if shared {
-            cookies.retain(|c| sessions::for_host(&host, &c.domain));
+        if !on_web(&storage.origin) {
+            return Err(blank.into());
         }
         Ok(Session {
             origin: storage.origin,
@@ -619,9 +612,32 @@ impl Tab {
         })
     }
 
-    /// Session `s` in place of whatever the tab's own store had: its cookies set, then its
-    /// storage written at its origin, which loads again to read it.
+    /// Session `s` in place of what the tab's own store had, on the origin it was saved at (a
+    /// blank tab goes there first): its cookies set, its storage written, and the page loaded
+    /// again to read them. A tab elsewhere, or still loading, is left as it was.
     fn load_session(&self, name: &str, s: &Session) -> Res<String> {
+        let (mut page, mut loading) = self.loaded(LOAD)?;
+        if !on_web(&page.url) {
+            let (id, origin) = (self.id.clone(), s.origin.clone());
+            main(&self.app, move |_| super::navigate(&id, &origin))?;
+            (page, loading) = self.loaded(LOAD)?;
+            if let Some(failed) = page.failed {
+                return Err(format!("Couldn't open {}: {}", failed.url, failed.message));
+            }
+        }
+        let here = control::origin(&page.url);
+        if here != s.origin {
+            return Err(format!(
+                "Session {name} is for {}; this tab is on {here}.",
+                s.origin
+            ));
+        }
+        if loading {
+            return Err(
+                "The page is still loading: `gitviber browser wait --load`, then load the session."
+                    .into(),
+            );
+        }
         let id = self.id.clone();
         later(&self.app, move |_, done| {
             super::agent_clear_store(&id, done)
@@ -630,17 +646,17 @@ impl Tab {
         later(&self.app, move |_, done| {
             super::agent_set_cookies(&id, cookies, done)
         })?;
-        let (id, origin) = (self.id.clone(), s.origin.clone());
-        main(&self.app, move |_| super::navigate(&id, &origin))?;
-        self.loaded(LOAD)?;
-        if !s.local.is_empty() || !s.session.is_empty() {
-            let input = json!({ "local": s.local, "session": s.session }).to_string();
-            let id = self.id.clone();
-            later(&self.app, move |_, done| {
-                super::agent_js(&id, false, STORAGE_WRITE, &input, done)
-            })??;
-            self.reload()?;
+        let input = json!({ "origin": s.origin, "local": s.local, "session": s.session });
+        let id = self.id.clone();
+        let moved = later(&self.app, move |_, done| {
+            super::agent_js(&id, false, STORAGE_WRITE, &input.to_string(), done)
+        })??;
+        if !moved.is_empty() {
+            return Err(format!(
+                "The page went to {moved} as session {name} loaded: its storage wasn't written."
+            ));
         }
+        self.reload()?;
         Ok(format!(
             "Loaded session {name}: {}. {NO_INDEXED_DB}",
             summary(s)
@@ -664,6 +680,11 @@ impl Tab {
         main(&self.app, move |_| super::go(&id, Go::Reload))?;
         self.loaded(LOAD).map(drop)
     }
+}
+
+/// On a web page's origin, where logins and storage are.
+fn on_web(url: &str) -> bool {
+    Url::parse(url).is_ok_and(|u| matches!(u.scheme(), "http" | "https"))
 }
 
 /// An address with its page's title, when it has one.

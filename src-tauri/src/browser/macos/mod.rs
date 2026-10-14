@@ -13,7 +13,7 @@ pub use agent::{
     agent_new_tab, agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab,
     agent_tabs,
 };
-pub use cookies::{agent_clear_store, agent_cookies, agent_set_cookies, agent_shared};
+pub use cookies::{agent_clear_store, agent_cookies, agent_set_cookies};
 pub use page_tools::{console_clear, console_entries, pick};
 pub use page_view::{appearance, find, zoom};
 
@@ -109,8 +109,8 @@ thread_local! {
 }
 
 /// What was asked of a tab, by id, apart from its view: a parked tab made again keeps it. Light or
-/// dark is the user's or an agent's (page_view.rs); the device, the dialogs' answers and a store
-/// of its own an agent's.
+/// dark is the user's or an agent's (page_view.rs); an agent asks for the rest: the device, how
+/// dialogs are answered, and a website data store of the tab's own.
 #[derive(Default, Clone)]
 struct Asked {
     screen: Option<super::control::AgentScreen>,
