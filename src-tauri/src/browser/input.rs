@@ -109,6 +109,25 @@ pub fn to_view(at: (f64, f64), zoom: f64, height: f64, flipped: bool) -> (f64, f
     (x, if flipped { y } else { height - y })
 }
 
+/// Text as `type` puts it in: a line break of any kind is one, so `\r\n` leaves no `\r`.
+pub fn as_typed(text: &str) -> String {
+    text.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+/// Whether `s` was meant as a point, two numbers with a comma, though maybe not a valid one
+/// (`-5,10`): a selector never looks like that.
+pub fn looks_like_point(s: &str) -> bool {
+    let number = |s: &str| {
+        let s = s.trim();
+        !s.is_empty()
+            && s.chars().any(|c| c.is_ascii_digit())
+            && s.chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, '.' | '-' | '+'))
+    };
+    s.split_once(',')
+        .is_some_and(|(x, y)| number(x) && number(y))
+}
+
 /// `412,300` as a point; None for anything else (a ref, a selector).
 pub fn point(s: &str) -> Option<(f64, f64)> {
     let (x, y) = s.split_once(',')?;
@@ -286,6 +305,15 @@ pub fn key(name: &str) -> Option<Key> {
     })
 }
 
+/// Whether a chord going down on a focused <select> opens its menu, as Space and the up and
+/// down arrows do on a Mac; Tab, Escape, Enter and the rest don't.
+pub fn opens_menu(chord: &str) -> bool {
+    let Ok((_, last)) = self::chord(chord) else {
+        return false;
+    };
+    key(last).is_some_and(|k| matches!(k.code, 0x31 | 0x7D | 0x7E))
+}
+
 /// `Meta+Shift+a`: the modifiers' names and the key's; `+` alone, or last, is the plus key.
 pub fn chord(chord: &str) -> Result<(Vec<&str>, &str), String> {
     let (mods, last) = match chord.strip_suffix("++") {
@@ -346,13 +374,36 @@ pub enum Half {
 #[derive(Default, Debug)]
 pub struct Held {
     flags: u64,
-    keys: Vec<u16>,
+    keys: Vec<Key>,
 }
 
 impl Held {
     /// The modifiers held, as NSEventModifierFlags.
     pub fn flags(&self) -> u64 {
         self.flags
+    }
+
+    fn holds(&self, key: &Key) -> bool {
+        self.keys.iter().any(|k| k.code == key.code)
+    }
+
+    /// Every held key let go, then every modifier: the pane that held them closed.
+    pub fn release_all(&mut self) -> Vec<KeyStep> {
+        let mut steps: Vec<KeyStep> = self
+            .keys
+            .drain(..)
+            .map(|k| KeyStep::Up(k.stroke(self.flags)))
+            .collect();
+        for (_, flag, code) in MODIFIERS {
+            if self.flags & flag != 0 {
+                self.flags &= !flag;
+                steps.push(KeyStep::Flags {
+                    code,
+                    flags: self.flags,
+                });
+            }
+        }
+        steps
     }
 
     /// A chord pressed and let go: its modifiers down that aren't already, the key down and up,
@@ -390,6 +441,8 @@ impl Held {
                 });
             }
             Some(_) => {}
+            // Held down already (`key down`): it stays down, as a key can't go down twice.
+            None if self.holds(&key) => {}
             None => {
                 let stroke = key.stroke(flags);
                 edit = edit_of(stroke.flags, key.plain);
@@ -421,10 +474,11 @@ impl Held {
                     flags: self.flags,
                 }])
             }
-            None if self.keys.contains(&key.code) => Err(format!("{name} is held already")),
+            None if self.holds(&key) => Err(format!("{name} is held already")),
             None => {
-                self.keys.push(key.code);
-                Ok(vec![KeyStep::Down(key.stroke(self.flags))])
+                let down = KeyStep::Down(key.stroke(self.flags));
+                self.keys.push(key);
+                Ok(vec![down])
             }
         }
     }
@@ -434,7 +488,7 @@ impl Held {
         let key = self::key(name).ok_or_else(|| unknown(name))?;
         let held = match key.modifier {
             Some(flag) => self.flags & flag != 0,
-            None => self.keys.contains(&key.code),
+            None => self.holds(&key),
         };
         if !held {
             return Err(format!("{name} isn't held: `key down {name}` first"));
@@ -448,7 +502,7 @@ impl Held {
                 }]
             }
             None => {
-                self.keys.retain(|&c| c != key.code);
+                self.keys.retain(|k| k.code != key.code);
                 vec![KeyStep::Up(key.stroke(self.flags))]
             }
         })
@@ -1041,7 +1095,6 @@ mod tests {
     /// A key held down and then pressed again goes down a second time with no up between, and
     /// its `key up` then sends an up of its own: two ups for a key a keyboard sent one for.
     #[test]
-    #[ignore = "bug: press of a key held by `key down` sends down+up while it's still held"]
     fn pressing_a_key_already_held_down_doesnt_send_a_second_down() {
         let mut held = Held::default();
         held.down("w").unwrap();
@@ -1184,7 +1237,6 @@ mod tests {
     /// apart, planned all at once. 100,000,000 px is 833,334 events (hours of wheel turns the
     /// command can't stop, a 13 MB plan), u32::MAX is 35,791,395 (a 570 MB plan).
     #[test]
-    #[ignore = "bug: a huge scroll plans millions of wheel events, with no bound"]
     fn a_huge_scroll_is_refused_or_bounded_before_it_becomes_millions_of_wheel_events() {
         use crate::browser::control::{parse, Command};
         let px = match parse("scroll", &["down".into(), "100000000".into()]) {
@@ -1194,5 +1246,75 @@ mod tests {
         };
         let turns = wheel(px, false).len();
         assert!(turns <= 10_000, "{turns} wheel events for one scroll");
+    }
+
+    #[test]
+    fn a_closed_pane_lets_go_of_every_held_key_and_modifier() {
+        let mut held = Held::default();
+        held.down("Shift").unwrap();
+        held.down("Meta").unwrap();
+        held.down("w").unwrap();
+        let steps = held.release_all();
+        assert!(
+            matches!(&steps[0], KeyStep::Up(s) if s.code == 0x0D && s.flags == SHIFT | COMMAND)
+        );
+        assert_eq!(
+            steps[1..],
+            [
+                KeyStep::Flags {
+                    code: 0x38,
+                    flags: COMMAND
+                },
+                KeyStep::Flags {
+                    code: 0x37,
+                    flags: 0
+                },
+            ]
+        );
+        assert_eq!(held.flags(), 0);
+        assert!(held.release_all().is_empty() && held.down("w").is_ok());
+    }
+
+    #[test]
+    fn line_breaks_of_any_kind_type_as_one_each() {
+        assert_eq!(as_typed("a\n\nb"), "a\n\nb");
+        assert_eq!(as_typed("a\r\nb\rc"), "a\nb\nc");
+        assert_eq!(as_typed("\r\n\r\n"), "\n\n");
+    }
+
+    #[test]
+    fn a_negative_or_broken_point_still_looks_like_one() {
+        for yes in ["412,300", "-5,10", "5,-3", "1..2,3", " 1 , 2 "] {
+            assert!(looks_like_point(yes), "{yes}");
+        }
+        for no in ["e3", "a, b", "#x,.y", "h1,h2", "-,-", "1,", ""] {
+            assert!(!looks_like_point(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn only_space_and_the_up_and_down_arrows_open_a_selects_menu() {
+        for yes in [
+            "Space",
+            " ",
+            "ArrowDown",
+            "Up",
+            "Alt+ArrowDown",
+            "Shift+Space",
+        ] {
+            assert!(opens_menu(yes), "{yes}");
+        }
+        for no in [
+            "Tab",
+            "Shift+Tab",
+            "Escape",
+            "Enter",
+            "Shift",
+            "ArrowLeft",
+            "a",
+            "ş",
+        ] {
+            assert!(!opens_menu(no), "{no}");
+        }
     }
 }

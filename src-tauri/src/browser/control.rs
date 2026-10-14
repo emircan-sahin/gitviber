@@ -74,22 +74,23 @@ fill, select and --synthetic go by the page's script.
                                The page as a tree, with refs (e1, e2, ...) to act on: -i only
                                what can be clicked or typed in, -s under one element, -d so many
                                levels deep. Refs (also @e1 or ref=e1) last until the page changes.
-  click <ref|css> | --at <x>,<y> [--synthetic]
-                               Click an element, or a point (CSS px from the page's top left),
-                               as the mouse does: moved there, pressed, let go. Not a <select>:
-                               select. --synthetic: by the page's script, where native fails
-  dblclick <ref|css> | --at <x>,<y>
-  rightclick <ref|css> | --at <x>,<y>
-                               Twice, or with the right button: contextmenu fires, no menu opens
+  click <ref|css|x,y> [--synthetic]
+                               Click an element, or a point (x,y: CSS px from the page's top
+                               left, in view), as the mouse does: moved there, pressed, let go.
+                               Not a <select>: select. --synthetic: by the page's script, where
+                               native fails
+  dblclick <ref|css|x,y>
+  rightclick <ref|css|x,y>     Twice, or with the right button: contextmenu fires, no menu opens
   fill <ref|css> <text>        Replace a field's text
-  type <ref|css> <text> [--synthetic]
+  type [--synthetic] <ref|css> <text>
                                Type into a field: focused, its caret at the end, the text put in
-                               as an input method does, in any language, whatever the keyboard.
-                               No key events: press sends those
+                               as an input method does, in any language, whatever the keyboard;
+                               a line break as text. No key events: press sends those
   select <ref|css> <value>...  Choose a <select>'s options, by value or label
-  upload <ref|css> <file>...   Files for the page's file chooser, from this folder: the element
-                               clicked (an <input type=file>, its label, the page's own upload
-                               button) and its chooser answered with them, for this tab only
+  upload <ref|css> <file>...   Files for the page's file chooser, relative to this folder or
+                               absolute: the element clicked (an <input type=file>, its label,
+                               the page's own upload button) and the chooser that opens answered
+                               with them, for this tab only
   hover <ref|css|x,y>          The mouse over an element or a point; CSS :hover applies
   drag <ref|css|x,y> <ref|css|x,y>
                                Pressed at one, moved to the other with the button held, let go:
@@ -98,15 +99,16 @@ fill, select and --synthetic go by the page's script.
   press <key> [--hold <ms>] [--synthetic]
                                A key to the focused element, down and up, as a Mac keyboard
                                sends it: Enter, Tab, Escape, ArrowDown, F5, a, A, ?, Meta+a,
-                               Shift+Tab. --hold: down that long. Meta+a, c, x, v and z do what
-                               the Edit menu does, in the page; c, x and v on the tab's own
-                               clipboard, never the user's, as is the page's own clipboard use
+                               Shift+Tab. --hold: down that long. Meta+a, c, x, v and z the page
+                               doesn't take do what the Edit menu does; c, x and v on the page's
+                               own clipboard while a command runs, never the user's
   key down <key> | key up <key>
                                A key held down until let go, as a game reads W; held modifiers
                                (key down Shift) go with later keys and clicks
   scroll <up|down|ref|css> [px]
                                The wheel where the mouse is (hover first to scroll a panel), by
-                               80% of the page's height unless told; an element into view
+                               80% of the page's height unless told, 20000 at most; an element
+                               into view
   wait <css> | --text <text> | --load | --ms <n> [--timeout <ms>]
                                Until an element shows, the text does, the page has loaded, or
                                the time is up; 10 s at most unless --timeout says (120 s at most)
@@ -312,11 +314,21 @@ pub enum Target {
 }
 
 impl Target {
-    /// `412,300` is a point; a ref or a selector never looks like one.
-    fn of(arg: &str) -> Self {
-        input::point(arg).map_or_else(|| Self::El(arg.into()), |(x, y)| Self::At(x, y))
+    /// `412,300` is a point; a ref or a selector never looks like one, nor like `-5,10`, which
+    /// is no point on the page.
+    fn of(arg: &str) -> Result<Self, String> {
+        match input::point(arg) {
+            Some((x, y)) => Ok(Self::At(x, y)),
+            None if input::looks_like_point(arg) => Err(format!(
+                "{arg} isn't a point: x,y in CSS px from the page's top left, as 412,300"
+            )),
+            None => Ok(Self::El(arg.into())),
+        }
     }
 }
+
+/// The most one `scroll` turns the wheel, in px: past it a command would run for minutes.
+pub const MOST_SCROLL: u32 = 20_000;
 
 #[derive(Debug, PartialEq)]
 pub struct Click {
@@ -373,13 +385,9 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
         "rightclick" => click(cmd, args, 1, true),
         "fill" => target_and_text("fill <ref|css> <text>").map(|(t, x)| Command::Fill(t, x)),
         "type" => {
-            let synthetic = args.iter().any(|a| a == "--synthetic");
-            let args: Vec<String> = args
-                .iter()
-                .filter(|a| *a != "--synthetic")
-                .cloned()
-                .collect();
-            match &args[..] {
+            // Only before the target: the text may say anything.
+            let synthetic = args.first().is_some_and(|a| a == "--synthetic");
+            match &args[usize::from(synthetic)..] {
                 [target, text @ ..] if !text.is_empty() => Ok(Command::Type {
                     target: target.clone(),
                     text: text.join(" "),
@@ -394,10 +402,10 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
             }
             _ => Err("Usage: gitviber browser select <ref|css> <value>...".into()),
         },
-        "hover" => target("hover <ref|css|x,y>").map(|t| Command::Hover(Target::of(&t))),
+        "hover" => Target::of(&target("hover <ref|css|x,y>")?).map(Command::Hover),
         "drag" => match args {
             [from, to] if !from.is_empty() && !to.is_empty() => {
-                Ok(Command::Drag(Target::of(from), Target::of(to)))
+                Ok(Command::Drag(Target::of(from)?, Target::of(to)?))
             }
             _ => Err("Usage: gitviber browser drag <ref|css|x,y> <ref|css|x,y>".into()),
         },
@@ -551,26 +559,19 @@ fn named(what: &str, name: &str) -> Result<String, String> {
     }
 }
 
-/// `click`, `dblclick` or `rightclick` (`count`, `right`): at an element, or `--at x,y`.
+/// `click`, `dblclick` or `rightclick` (`count`, `right`): at an element, or at a point.
 fn click(cmd: &str, args: &[String], count: u8, right: bool) -> Result<Command, String> {
-    let usage = || format!("Usage: gitviber browser {cmd} <ref|css> | --at <x>,<y>");
-    let (mut synthetic, mut at, mut words) = (false, None, vec![]);
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--synthetic" if cmd == "click" => synthetic = true,
-            "--at" => {
-                let (x, y) = input::point(value(&mut it, arg)?)
-                    .ok_or("--at takes a point in CSS px, as --at 412,300")?;
-                at = Some(Target::At(x, y));
-            }
-            _ => words.push(arg.as_str()),
-        }
+    let synthetic = cmd == "click" && args.iter().any(|a| a == "--synthetic");
+    let words: Vec<&String> = args
+        .iter()
+        .filter(|a| !synthetic || *a != "--synthetic")
+        .collect();
+    if let Some(flag) = words.iter().find(|w| w.starts_with("--")) {
+        return Err(format!("{cmd} doesn't take {flag}"));
     }
-    let target = match (at, &words[..]) {
-        (Some(at), []) => at,
-        (None, [one]) if !one.is_empty() => Target::of(one),
-        _ => return Err(usage()),
+    let target = match &words[..] {
+        [one] if !one.is_empty() => Target::of(one)?,
+        _ => return Err(format!("Usage: gitviber browser {cmd} <ref|css|x,y>")),
     };
     if synthetic && matches!(target, Target::At(..)) {
         return Err("--synthetic clicks an element, not a point".into());
@@ -641,7 +642,12 @@ fn scroll(args: &[String]) -> Result<Command, String> {
         None => return Err("Usage: gitviber browser scroll <up|down|ref|css> [px]".into()),
     };
     let px = match args.get(1..) {
-        Some([px]) => Some(number(px, "scroll")?),
+        Some([px]) => match number(px, "scroll")? {
+            px if px > MOST_SCROLL => {
+                return Err(format!("scroll turns {MOST_SCROLL} px at most a command"))
+            }
+            px => Some(px),
+        },
         Some([]) | None => None,
         Some(_) => return Err("Usage: gitviber browser scroll <up|down|ref|css> [px]".into()),
     };
@@ -1351,7 +1357,7 @@ mod tests {
     fn pointer_commands_take_an_element_or_a_point() {
         let at = |x, y| Target::At(x, y);
         assert_eq!(
-            parse("click", &args("--at 412,300")),
+            parse("click", &args("412,300")),
             Ok(Command::Click(Click {
                 target: at(412.0, 300.0),
                 count: 1,
@@ -1438,6 +1444,19 @@ mod tests {
         assert_eq!(
             parse("key", &args("up w")),
             Ok(Command::Key(false, "w".into()))
+        );
+        // Only a leading --synthetic is the flag: the text may say it.
+        assert_eq!(
+            parse("type", &args("e3 say --synthetic")),
+            Ok(Command::Type {
+                target: "e3".into(),
+                text: "say --synthetic".into(),
+                synthetic: false
+            })
+        );
+        assert_eq!(
+            parse("scroll", &args("down 20000")),
+            Ok(Command::Scroll(Scroll::Down, Some(MOST_SCROLL)))
         );
         assert_eq!(
             parse("type", &args("--synthetic e3 hi there")),
@@ -2117,7 +2136,7 @@ mod tests {
     #[test]
     fn pointer_commands_take_a_point_or_one_target_and_nothing_else() {
         assert_eq!(
-            parse("click", &args("--at 0.5,10.25")),
+            parse("click", &args("0.5,10.25")),
             Ok(Command::Click(Click {
                 target: Target::At(0.5, 10.25),
                 count: 1,
@@ -2143,12 +2162,12 @@ mod tests {
             parse("drag", &args("0,0 e5")),
             Ok(Command::Drag(Target::At(0.0, 0.0), Target::El("e5".into())))
         );
-        // A negative point isn't one: a selector, which finds nothing.
-        assert_eq!(
-            parse("hover", &args("-5,10")),
-            Ok(Command::Hover(Target::El("-5,10".into())))
-        );
+        // A negative point is no point on the page, and no selector either.
+        assert!(parse("hover", &args("-5,10")).is_err());
         for (cmd, a) in [
+            ("click", "-5,10"),
+            ("drag", "e1 5,-3"),
+            ("scroll", "down 20001"),
             ("click", "--at -5,10"),
             ("click", "--at 5"),
             ("click", "--at"),
