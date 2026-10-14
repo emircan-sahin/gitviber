@@ -7,7 +7,7 @@ use super::{
     apply, ask, asked, create, emit, main_thread, page_tools, set_agent, url_text, view, Delegate,
     View, GONE, VIEWS,
 };
-use crate::browser::control::{origin, AgentScreen, Listed, NewTab, Route, Routes, IDLE};
+use crate::browser::control::{origin, AgentScreen, Listed, NewTab, Route, Routes, TabState, IDLE};
 use crate::browser::picks::Bounds;
 use crate::browser::Step;
 use crate::browser::{Look, PageState};
@@ -100,20 +100,24 @@ pub fn agent_tabs(pty: u32) -> Res<Vec<Listed>> {
                 Some(v) => {
                     let page = v.delegate.state(&v.web);
                     let awake = VIEWS.with_borrow(|r| r.awake(id));
-                    let state = if awake { "awake" } else { "sleeping" };
+                    let state = if awake {
+                        TabState::Awake
+                    } else {
+                        TabState::Sleeping
+                    };
                     (state, page.url, page.title)
                 }
                 None => {
                     let parked = VIEWS.with_borrow(|r| r.parked(id).map(|p| p.url.clone()));
-                    ("parked", parked.unwrap_or_default(), String::new())
+                    (TabState::Parked, parked.unwrap_or_default(), String::new())
                 }
             };
             Listed {
                 name: t.name,
                 default: t.default,
                 state,
-                used: t.used.elapsed().as_secs(),
-                idle: t.idle.as_secs() / 60,
+                used_s: t.used.elapsed().as_secs(),
+                idle_min: t.idle.as_secs() / 60,
                 shared: t.shared,
                 origin: origin(&url),
                 title,

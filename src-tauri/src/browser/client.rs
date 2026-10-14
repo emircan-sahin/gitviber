@@ -117,13 +117,21 @@ fn run(args: Vec<String>) -> i32 {
 
 fn print(reply: &Reply, json: bool) -> i32 {
     if json {
-        println!("{}", serde_json::to_string(reply).unwrap_or_default());
+        println!("{}", json_text(reply));
     } else if let Some(error) = &reply.error {
         eprintln!("{error}");
     } else if let Some(out) = reply.out.as_deref().filter(|o| !o.is_empty()) {
         println!("{out}");
     }
     reply.exit_code()
+}
+
+fn json_text(reply: &Reply) -> String {
+    let mut value = serde_json::to_value(reply).unwrap_or_default();
+    if let (Some(map), Some(_)) = (value.as_object_mut(), &reply.data) {
+        map.remove("out");
+    }
+    value.to_string()
 }
 
 #[cfg(unix)]
@@ -180,6 +188,19 @@ mod tests {
         );
         let flagged = cli("snapshot --tab --json");
         assert_eq!((flagged.tab.as_deref(), flagged.json), (Some(""), true));
+    }
+
+    #[test]
+    fn json_gives_the_fields_in_place_of_the_text_where_there_are_some() {
+        let text: serde_json::Value =
+            serde_json::from_str(&json_text(&Reply::out("done"))).unwrap();
+        assert_eq!(text, serde_json::json!({ "ok": true, "out": "done" }));
+        let tabs = Reply::data("t1  awake", serde_json::json!({ "tabs": [] }));
+        let fields: serde_json::Value = serde_json::from_str(&json_text(&tabs)).unwrap();
+        assert_eq!(
+            fields,
+            serde_json::json!({ "ok": true, "data": { "tabs": [] } })
+        );
     }
 
     #[test]

@@ -117,12 +117,12 @@ pub struct Reply {
     pub out: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// The reply as JSON, for `--json`, where a command has more to say than its text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
     /// The exit status when not 0 or 1 (OFF).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<i32>,
-    /// What `out` says, as fields, for --json.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub data: Option<serde_json::Value>,
 }
 
 impl Reply {
@@ -131,6 +131,13 @@ impl Reply {
             ok: true,
             out: Some(text.into()),
             ..Self::default()
+        }
+    }
+
+    pub fn data(text: impl Into<String>, data: serde_json::Value) -> Self {
+        Self {
+            data: Some(data),
+            ..Self::out(text)
         }
     }
 
@@ -784,15 +791,35 @@ impl Routes {
 pub struct Listed {
     pub name: String,
     pub default: bool,
-    /// "awake", "sleeping" or "parked".
-    pub state: &'static str,
+    pub state: TabState,
     /// Seconds since a command last went to it.
-    pub used: u64,
+    pub used_s: u64,
     /// Minutes it may go without a command before it sleeps; 0 never.
-    pub idle: u64,
+    pub idle_min: u64,
     pub shared: bool,
     pub origin: String,
     pub title: String,
+}
+
+#[derive(Serialize, Debug, PartialEq, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum TabState {
+    /// Drawn and unthrottled for its agents.
+    Awake,
+    /// Slowed as any hidden tab, to park in time.
+    Sleeping,
+    /// Its view closed to save memory; its next command loads it again.
+    Parked,
+}
+
+impl std::fmt::Display for TabState {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Awake => "awake",
+            Self::Sleeping => "sleeping",
+            Self::Parked => "parked",
+        })
+    }
 }
 
 /// A device an agent's tab shows its page as: its viewport in CSS px, and what WebKit is told.
