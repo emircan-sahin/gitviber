@@ -3,7 +3,7 @@
 
 use crate::browser::{self, ports, Created, Go, Rect, Screen};
 use crate::state::{blocking, AppState, Res};
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 
 /// Only the workspace has browser tabs; the settings window places nothing.
 #[tauri::command]
@@ -82,11 +82,23 @@ pub fn browser_configure(
     browser::server::set_enabled(&app, agent_control);
 }
 
-/// Settings → Browser: the gitviber-browser skill written for each agent (`on`: agent control
-/// and the skill setting both on) or removed, and where each one stands.
+/// The gitviber-browser skill written for each agent (`on`: agent control and the skill setting
+/// both on) or removed, then where each stands, told to Settings. Only the main window writes:
+/// two windows turning it on and off at once could leave either.
 #[tauri::command]
-pub async fn browser_skill(on: bool) -> Res<Vec<browser::skill::Target>> {
-    blocking(move || Ok(browser::skill::sync(on))).await
+pub async fn browser_skill(window: WebviewWindow, on: bool) -> Res<browser::skill::Skill> {
+    if window.label() != "main" {
+        return Err("The skill is written from the main window.".into());
+    }
+    let skill = blocking(move || Ok(browser::skill::sync(Some(on)))).await?;
+    let _ = window.emit_to("settings", "browser-skill", &skill);
+    Ok(skill)
+}
+
+/// Where each agent's skill stands, changing nothing: for Settings.
+#[tauri::command]
+pub async fn browser_skill_status() -> Res<browser::skill::Skill> {
+    blocking(|| Ok(browser::skill::sync(None))).await
 }
 
 /// The skill's text for an agent's instructions file, for agents without skills.
