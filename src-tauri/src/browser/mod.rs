@@ -22,18 +22,18 @@ pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
     agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
-    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_page,
-    agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab, agent_tabs,
-    appearance, clear_data, close, close_all, close_root, configure, console_clear,
+    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_own_store,
+    agent_page, agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab,
+    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
     console_entries, create, find, focus, go, hide, inspect, navigate, pick, place, set_agent,
     snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
     agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
-    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_page,
-    agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab, agent_tabs,
-    appearance, clear_data, close, close_all, close_root, configure, console_clear,
+    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_own_store,
+    agent_page, agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab,
+    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
     console_entries, create, find, focus, go, hide, inspect, navigate, pick, place, set_agent,
     snapshot, zoom,
 };
@@ -266,6 +266,9 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_set_cookies(_: &str, _: Vec<Cookie>, _: Box<dyn FnOnce(())>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_own_store(_: &str) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_clear_store(_: &str, _: Box<dyn FnOnce(())>) -> Res<()> {

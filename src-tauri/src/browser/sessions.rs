@@ -34,16 +34,21 @@ pub struct Cookie {
 }
 
 /// What a worktree's sessions are kept by: its repository, so its other worktrees share them
-/// (git's common folder); the folder itself outside one.
-pub fn repository(root: &str) -> String {
+/// (git's common folder); the folder itself outside one. Any other failure is said, not taken
+/// for no repository, where the sessions saved would seem gone.
+pub fn repository(root: &str) -> Result<String, String> {
     let root = Path::new(root);
-    crate::git::run_text(root, &["rev-parse", "--git-common-dir"])
-        .ok()
-        .and_then(|common| root.join(common.trim()).canonicalize().ok())
-        .map_or_else(
-            || root_key(&root.to_string_lossy()),
-            |p| p.to_string_lossy().into_owned(),
-        )
+    let common =
+        crate::git::reading(|| crate::git::run_text(root, &["rev-parse", "--git-common-dir"]));
+    match common {
+        Ok(common) => root
+            .join(common.trim())
+            .canonicalize()
+            .map(|p| p.to_string_lossy().into_owned())
+            .map_err(|e| format!("Couldn't find the repository's sessions: {e}")),
+        Err(e) if e.contains("not a git repository") => Ok(root_key(&root.to_string_lossy())),
+        Err(e) => Err(format!("Couldn't find the repository's sessions: {e}")),
+    }
 }
 
 /// The sessions saved for one repository. Names are one whatever their case, as the Mac's
@@ -277,6 +282,7 @@ mod tests {
         assert_eq!(names, ["prod"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_repositorys_worktrees_share_its_sessions() {
         let base =
@@ -298,13 +304,17 @@ mod tests {
         git(&["init", "-q"]);
         git(&["commit", "-q", "--allow-empty", "-m", "first"]);
         git(&["worktree", "add", "-q", "../linked"]);
-        let key = |p: &Path| repository(&p.to_string_lossy());
+        let key = |p: &Path| repository(&p.to_string_lossy()).unwrap();
         let shared = key(&main);
         assert_eq!(key(&linked), shared);
         assert_eq!(key(&main.join(".")), shared);
         // Outside a repository, the folder itself.
         assert_eq!(key(&plain), root_key(&plain.to_string_lossy()));
-        assert_eq!(repository("/no/such/folder"), "/no/such/folder");
+        // Outside it through a symlink: the folder it leads to.
+        std::os::unix::fs::symlink(&plain, base.join("alias")).unwrap();
+        assert_eq!(key(&base.join("alias")), key(&plain));
+        // A folder git can't even start in isn't taken for one outside a repository.
+        assert!(repository("/no/such/folder").is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -326,7 +336,7 @@ mod tests {
             .success();
         assert!(ok, "git init");
         std::os::unix::fs::symlink(&main, base.join("alias")).unwrap();
-        let key = |p: &Path| repository(&p.to_string_lossy());
+        let key = |p: &Path| repository(&p.to_string_lossy()).unwrap();
         let shared = key(&main);
         assert_eq!(key(&deeper), shared);
         assert_eq!(key(&base.join("alias")), shared);

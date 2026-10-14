@@ -22,6 +22,12 @@ use std::rc::Rc;
 const SHARED: &str = "This tab is in your own cookies and logins (--shared): sessions save, \
                       load and clear only in a tab of its own.";
 
+/// The tab has a store of its own, which sessions may change; an error for a shared one.
+pub fn agent_own_store(id: &str) -> Res<()> {
+    main_thread()?;
+    own(id).map(drop)
+}
+
 pub fn agent_cookies(id: &str, done: Box<dyn FnOnce(Vec<Cookie>)>) -> Res<()> {
     main_thread()?;
     let store = own(id)?;

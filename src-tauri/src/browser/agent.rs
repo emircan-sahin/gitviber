@@ -61,18 +61,13 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     drive(app, id, |tab| tab.run(cmd, made, &req.cwd))
 }
 
-/// The pane the request came from, and its own folder as its workspace knows it: its tabs go to
-/// that worktree.
+/// The pane the request came from (its token says so: server.rs), and its own folder as its
+/// workspace knows it: its tabs go to that worktree.
 fn pane(app: &AppHandle, req: &Request) -> Res<(u32, String)> {
-    let pty = req
-        .pty
-        .ok_or("This terminal started before browser control was there: open a new one.")?;
-    let root = app
-        .state::<AppState>()
-        .ptys
-        .pane(pty)
-        .ok_or("This terminal isn't one of GitViber's open panes.")?;
-    Ok((pty, root.to_string_lossy().into_owned()))
+    let ptys = &app.state::<AppState>().ptys;
+    req.pty
+        .and_then(|pty| Some((pty, ptys.pane(pty)?.to_string_lossy().into_owned())))
+        .ok_or_else(|| "This terminal isn't one of GitViber's open panes.".into())
 }
 
 /// The tab named by `--tab` or GITVIBER_BROWSER_TAB, read only where a command goes to a tab.
@@ -116,13 +111,14 @@ fn tabs(
             idle,
         } => {
             let name = name.map_or_else(|| target(to), |n| Ok(Some(n)))?;
-            if let Some(s) = &session {
-                // A session that isn't there makes no tab.
-                shelf(app, &root)?.load(s)?;
-            }
+            // Read first: a session that isn't there makes no tab.
+            let saved = match session {
+                Some(s) => Some((shelf(app, &root)?.load(&s)?, s)),
+                None => None,
+            };
             let idle = idle.map_or(control::IDLE, |m| Duration::from_secs(u64::from(m) * 60));
             // Loaded with a session, it goes to the session's origin first.
-            let first = url.clone().filter(|_| session.is_none());
+            let first = url.clone().filter(|_| saved.is_none());
             let at = root.clone();
             let (id, name) = main(app, move |app| {
                 let new = NewTab {
@@ -140,11 +136,11 @@ fn tabs(
                 said.push(out);
                 Ok(())
             };
-            if let Some(s) = &session {
-                more(&mut said, load(app, id.clone(), &root, s))?;
+            if let Some((session, s)) = &saved {
+                more(&mut said, load(app, id.clone(), s, session))?;
             }
             if let Some(url) = url {
-                let made = session.is_none();
+                let made = saved.is_none();
                 let opened = drive(app, id, |tab| tab.run(Command::Open(url), made, cwd));
                 more(&mut said, opened.map(|r| r.out.unwrap_or_default()))?;
             }
@@ -152,10 +148,8 @@ fn tabs(
         }
         Tabs::List => {
             let tabs = main(app, move |_| super::agent_tabs(pty))?;
-            Ok(Reply {
-                data: serde_json::to_value(&tabs).ok(),
-                ..Reply::out(tabs_text(&tabs))
-            })
+            let data = serde_json::to_value(&tabs).map_err(|e| e.to_string())?;
+            Ok(Reply::data(tabs_text(&tabs), json!({ "tabs": data })))
         }
         Tabs::Close(named) => {
             let name = named.map_or_else(|| target(to), |n| Ok(Some(n)))?;
@@ -178,7 +172,7 @@ fn sessions(
     to: Option<String>,
     op: Sessions,
 ) -> Res<Reply> {
-    let shelf = shelf(app, &root)?;
+    let shelf = || shelf(app, &root);
     let tab = || {
         let (root, name) = (root.clone(), target(to)?);
         main(app, move |app| {
@@ -187,12 +181,13 @@ fn sessions(
         .map(|(id, _)| id)
     };
     match op {
-        Sessions::List => Ok(Reply::out(sessions_text(&shelf.list(), now()))),
+        Sessions::List => Ok(Reply::out(sessions_text(&shelf()?.list(), now()))),
         Sessions::Delete(s) => {
-            shelf.delete(&s)?;
+            shelf()?.delete(&s)?;
             Ok(Reply::out(format!("Deleted session {s}")))
         }
         Sessions::Save(s, force) => {
+            let shelf = shelf()?;
             let session = drive(app, tab()?, Tab::session)?;
             shelf.save(&s, &session, force)?;
             Ok(Reply::out(format!(
@@ -200,20 +195,22 @@ fn sessions(
                 summary(&session)
             )))
         }
-        Sessions::Load(s) => load(app, tab()?, &root, &s).map(Reply::out),
+        Sessions::Load(s) => {
+            let session = shelf()?.load(&s)?;
+            load(app, tab()?, &s, &session).map(Reply::out)
+        }
         Sessions::Clear => drive(app, tab()?, Tab::clear_session).map(Reply::out),
     }
 }
 
-/// Session `name` into tab `id`.
-fn load(app: &AppHandle, id: String, root: &str, name: &str) -> Res<String> {
-    let session = shelf(app, root)?.load(name)?;
-    drive(app, id, |tab| tab.load_session(name, &session))
+/// Session `name` into tab `id`, for `session load` and `tab new --session` alike.
+fn load(app: &AppHandle, id: String, name: &str, session: &Session) -> Res<String> {
+    drive(app, id, |tab| tab.load_session(name, session))
 }
 
 fn shelf(app: &AppHandle, root: &str) -> Res<Shelf> {
     let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(Shelf::of(&data, &sessions::repository(root)))
+    Ok(Shelf::of(&data, &sessions::repository(root)?))
 }
 
 fn now() -> u64 {
@@ -606,8 +603,11 @@ impl Tab {
 
     /// Session `s` in place of what the tab's own store had, on the origin it was saved at (a
     /// blank tab goes there first): its cookies set, its storage written, and the page loaded
-    /// again to read them. A tab elsewhere, or still loading, is left as it was.
+    /// again to read them. A shared tab, one on another origin, or one still loading is left as
+    /// it was; a page that leaves as the session goes in keeps its cookies, not its storage.
     fn load_session(&self, name: &str, s: &Session) -> Res<String> {
+        let id = self.id.clone();
+        main(&self.app, move |_| super::agent_own_store(&id))?;
         let (mut page, mut loading) = self.loaded(LOAD)?;
         if !on_web(&page.url) {
             let (id, origin) = (self.id.clone(), s.origin.clone());
@@ -645,7 +645,8 @@ impl Tab {
         })??;
         if !moved.is_empty() {
             return Err(format!(
-                "The page went to {moved} as session {name} loaded: its storage wasn't written."
+                "The page went to {moved} as session {name} loaded: its cookies are the \
+                 session's, its storage isn't. Load it again."
             ));
         }
         self.reload()?;
@@ -695,12 +696,12 @@ fn tabs_text(tabs: &[Listed]) -> String {
     }
     let lines = tabs.iter().map(|t| {
         let default = if t.default { " (default)" } else { "" };
-        let idle = match t.idle {
+        let idle = match t.idle_min {
             0 => "never idles".to_string(),
             m => format!("idles after {m}m"),
         };
         let data = if t.shared { "shared" } else { "private" };
-        let used = ago(Duration::from_secs(t.used));
+        let used = ago(Duration::from_secs(t.used_s));
         let page = titled(&t.origin, &t.title, "  ");
         format!(
             "{}{default}  {}  used {used}  {idle}  {data}  {page}",
@@ -748,24 +749,25 @@ fn ago(idle: Duration) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::control::TabState;
     use super::*;
 
     #[test]
     fn the_tab_list_gives_each_tabs_state_use_idle_data_and_page_on_a_line() {
-        let tab = |name: &str, state, used, idle, origin: &str, title: &str| Listed {
+        let tab = |name: &str, state, used_s, idle_min, origin: &str, title: &str| Listed {
             name: name.into(),
             default: name == "t1",
             state,
-            used,
-            idle,
+            used_s,
+            idle_min,
             shared: name == "t3",
             origin: origin.into(),
             title: title.into(),
         };
         let tabs = [
-            tab("t1", "awake", 5, 10, "http://localhost:3000", "App"),
-            tab("rv268", "sleeping", 125, 0, "about:blank", ""),
-            tab("t3", "parked", 7300, 30, "https://example.test", ""),
+            tab("t1", TabState::Awake, 5, 10, "http://localhost:3000", "App"),
+            tab("rv268", TabState::Sleeping, 125, 0, "about:blank", ""),
+            tab("t3", TabState::Parked, 7300, 30, "https://example.test", ""),
         ];
         assert_eq!(
             tabs_text(&tabs),
@@ -778,8 +780,8 @@ mod tests {
         let json = serde_json::to_value(&tabs[1]).unwrap();
         assert_eq!(
             json,
-            serde_json::json!({ "name": "rv268", "default": false, "state": "sleeping", "used": 125,
-                "idle": 0, "shared": false, "origin": "about:blank", "title": "" })
+            serde_json::json!({ "name": "rv268", "default": false, "state": "sleeping", "used_s": 125,
+                "idle_min": 0, "shared": false, "origin": "about:blank", "title": "" })
         );
     }
 
