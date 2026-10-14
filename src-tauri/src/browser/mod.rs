@@ -12,6 +12,7 @@ pub mod control;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
+pub mod network;
 pub mod picks;
 pub mod ports;
 mod registry;
@@ -25,8 +26,8 @@ pub use macos::{
     agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_own_store,
     agent_page, agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab,
     agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
-    console_entries, create, find, focus, go, hide, inspect, navigate, pick, place, set_agent,
-    snapshot, zoom,
+    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
+    set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
@@ -34,8 +35,8 @@ pub use other::{
     agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_own_store,
     agent_page, agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab,
     agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
-    console_entries, create, find, focus, go, hide, inspect, navigate, pick, place, set_agent,
-    snapshot, zoom,
+    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
+    set_agent, snapshot, zoom,
 };
 pub use sessions::Shelf;
 
@@ -201,6 +202,13 @@ pub fn cut(s: &str, max: usize) -> String {
     }
 }
 
+/// Milliseconds since the epoch, as a page stamps its own.
+pub fn epoch_ms() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0.0, |t| t.as_secs_f64() * 1000.0)
+}
+
 /// A host as a URL and a certificate challenge both name it: IPv6 without brackets, lowercase.
 pub fn host_key(host: &str) -> String {
     host.trim_start_matches('[')
@@ -232,6 +240,7 @@ mod other {
     use super::{
         console::Entry,
         control::{AgentScreen, Listed, NewTab},
+        network::Log,
         picks::Bounds,
         sessions::Cookie,
     };
@@ -348,6 +357,9 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn console_clear(_: &str) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn network_log<T>(_: &str, _: impl FnOnce(&mut Log) -> T) -> Res<T> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_done(_: &str) {}

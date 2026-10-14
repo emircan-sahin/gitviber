@@ -10,7 +10,7 @@ use super::{
 use crate::browser::control::{origin, AgentScreen, Listed, NewTab, Route, Routes, TabState, IDLE};
 use crate::browser::picks::Bounds;
 use crate::browser::Step;
-use crate::browser::{Look, PageState};
+use crate::browser::{epoch_ms, Look, PageState};
 use crate::state::{AppState, Res};
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -25,7 +25,7 @@ use serde::Serialize;
 use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
 use std::ptr::NonNull;
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 use tauri::{AppHandle, Manager};
 
 thread_local! {
@@ -233,7 +233,13 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<()> {
     Ok(())
 }
 
-/// The app page reloaded: its tabs come back as the user's.
+/// Whether tab `id` is a pane's agent's.
+pub(super) fn routed(id: &str) -> bool {
+    ROUTES.with_borrow(|r| r.named(id).is_some())
+}
+
+/// The app page reloaded: its tabs come back as the user's. Their views all go with it
+/// (close_all), so none stays a user's tab with network.js on it.
 pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
     arm_sweep();
@@ -581,9 +587,7 @@ pub(super) fn answered(
         (_, true) => "OK",
         (_, false) => "Cancel",
     };
-    let ts = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0.0, |d| d.as_millis() as f64);
+    let ts = epoch_ms();
     let line = format!(
         "{what}({:?}) answered {answer} by itself",
         message.to_string()

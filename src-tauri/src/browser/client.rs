@@ -126,6 +126,7 @@ fn print(reply: &Reply, json: bool) -> i32 {
     reply.exit_code()
 }
 
+/// `--json`'s line: a reply's data stands in for its text.
 fn json_text(reply: &Reply) -> String {
     let mut value = serde_json::to_value(reply).unwrap_or_default();
     if let (Some(map), Some(_)) = (value.as_object_mut(), &reply.data) {
@@ -212,6 +213,12 @@ mod tests {
             ..Reply::error(OFF_TEXT)
         };
         assert_eq!(print(&off, true), 2);
+        assert_eq!(
+            json_text(&Reply::out("done")),
+            r#"{"ok":true,"out":"done"}"#
+        );
+        let data = Reply::data("1  GET 200", serde_json::json!({ "entries": [] }));
+        assert_eq!(json_text(&data), r#"{"data":{"entries":[]},"ok":true}"#);
     }
 
     #[cfg(unix)]

@@ -4,6 +4,7 @@
 use super::control::{
     self, AgentScreen, Command, Listed, NewTab, Pane, Reply, Request, Scroll, Sessions, Tabs, Wait,
 };
+use super::network;
 use super::picks::{self, Bounds};
 use super::sessions::{self, Session, Shelf};
 use super::{Go, PageState};
@@ -356,6 +357,7 @@ impl Tab {
             Command::Eval(js) => self.eval(&js),
             Command::Screenshot { path, target } => self.screenshot(path, target, cwd),
             Command::Console { errors, clear } => self.console(errors, clear),
+            Command::Network(ask) => self.network(ask),
             Command::Device(screen) => self.device(screen),
             Command::Appearance(dark) => {
                 let id = self.id.clone();
@@ -558,6 +560,14 @@ impl Tab {
             main(&self.app, move |_| super::console_clear(&id))?;
         }
         Ok(Reply::out(control::console_text(&entries, errors)))
+    }
+
+    fn network(&self, ask: network::Ask) -> Res<Reply> {
+        let (id, now) = (self.id.clone(), super::epoch_ms());
+        let (text, data) = main(&self.app, move |_| {
+            super::network_log(&id, |log| network::answer(log, &ask, now))
+        })??;
+        Ok(Reply::data(text, data))
     }
 
     fn device(&self, screen: Option<AgentScreen>) -> Res<Reply> {
