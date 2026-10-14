@@ -12,6 +12,7 @@ interface Style {
   display: string;
   visibility: string;
   cursor: string;
+  getPropertyValue?: (property: string) => string;
 }
 
 interface Fake {

@@ -92,14 +92,14 @@ function el(tag: string, attrs: Record<string, string> = {}, children: (Node | s
   return node;
 }
 
-type Record = { type: string; addedNodes?: { nodeType: number }[]; removedNodes?: { nodeType: number }[] };
+type Mutation = { type: string; addedNodes?: { nodeType: number }[]; removedNodes?: { nodeType: number }[] };
 
 /** The page's one MutationObserver, which a test's page fires as it changes. */
 class Observer {
   static live: Observer | null = null;
-  pending: Record[] = [];
-  fn: (records: Record[]) => void;
-  constructor(fn: (records: Record[]) => void) {
+  pending: Mutation[] = [];
+  fn: (records: Mutation[]) => void;
+  constructor(fn: (records: Mutation[]) => void) {
     this.fn = fn;
   }
   observe() {
@@ -111,7 +111,7 @@ class Observer {
   takeRecords() {
     return this.pending.splice(0);
   }
-  static fire(given: Record[], later = false) {
+  static fire(given: Mutation[], later = false) {
     const o = Observer.live;
     if (!o) return;
     // As a MutationRecord has them: both lists, empty or not.

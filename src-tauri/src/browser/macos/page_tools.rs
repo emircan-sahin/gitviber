@@ -204,6 +204,13 @@ pub(super) fn loaded(delegate: &Delegate, url: &str) {
     }
 }
 
+/// The alert() or confirm() open on the tab's page, waiting for the user, if one is.
+pub fn agent_dialog(id: &str) -> Res<Option<&'static str>> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    Ok(v.delegate.ivars().asking.get())
+}
+
 pub fn console_entries(id: &str) -> Res<Vec<Entry>> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;

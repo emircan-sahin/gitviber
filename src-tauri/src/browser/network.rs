@@ -384,6 +384,43 @@ pub struct Filter {
     /// Part of the address, any case.
     pub text: Option<String>,
     pub kind: Option<Kind>,
+    /// GET, POST, ...: uppercase.
+    pub method: Option<String>,
+    /// A status (404), or its hundred (4 for 4xx).
+    pub status: Option<Status>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Status {
+    Is(u16),
+    Class(u16),
+}
+
+impl Status {
+    fn parse(s: &str) -> Option<Status> {
+        let lower = s.to_ascii_lowercase();
+        match lower.strip_suffix("xx") {
+            Some(d) if d.len() == 1 => d
+                .parse()
+                .ok()
+                .filter(|d| (1..=5).contains(d))
+                .map(Status::Class),
+            Some(_) => None,
+            None => s
+                .parse()
+                .ok()
+                .filter(|n| (100..600).contains(n))
+                .map(Status::Is),
+        }
+    }
+
+    fn holds(self, status: Option<u16>) -> bool {
+        match (self, status) {
+            (Status::Is(want), Some(s)) => s == want,
+            (Status::Class(c), Some(s)) => s / 100 == c,
+            (_, None) => false,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -407,6 +444,13 @@ pub fn ask(args: &[String]) -> Result<Ask, String> {
             "--failed" => filter.failed = true,
             "--clear" => clear = true,
             "--filter" => filter.text = Some(value()?.to_lowercase()),
+            "--method" => filter.method = Some(value()?.to_ascii_uppercase()),
+            "--status" => {
+                let s = value()?;
+                filter.status = Some(Status::parse(s).ok_or_else(|| {
+                    format!("--status is a status (404) or a class (4xx), not {s:?}")
+                })?);
+            }
             "--type" => {
                 let kind = value()?;
                 filter.kind = Some(Kind::parse(kind).ok_or_else(|| {
@@ -431,6 +475,8 @@ impl Entry {
     fn shown(&self, f: &Filter) -> bool {
         (!f.failed || self.failed())
             && f.kind.is_none_or(|k| k == self.kind)
+            && f.method.as_ref().is_none_or(|m| *m == self.method)
+            && f.status.is_none_or(|s| s.holds(self.status))
             && f.text
                 .as_ref()
                 .is_none_or(|t| self.url.to_lowercase().contains(t.as_str()))
@@ -762,13 +808,31 @@ mod tests {
                     failed: true,
                     text: Some("/api/".into()),
                     kind: Some(Kind::Xhr),
+                    ..Filter::default()
                 },
                 clear: true
+            })
+        );
+        assert_eq!(
+            ask(&words("--method post --status 5XX")),
+            Ok(Ask::List {
+                filter: Filter {
+                    method: Some("POST".into()),
+                    status: Some(Status::Class(5)),
+                    ..Filter::default()
+                },
+                clear: false
             })
         );
         for bad in [
             "--type",
             "--type http",
+            "--method",
+            "--status",
+            "--status 6xx",
+            "--status 4x",
+            "--status 99",
+            "--status ok",
             "--filter",
             "--all",
             "12 --clear",
@@ -777,6 +841,46 @@ mod tests {
         ] {
             assert!(ask(&words(bad)).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn the_list_narrows_by_method_and_status() {
+        let mut log = Log::default();
+        for (key, method, status) in [
+            ("a", "GET", 200),
+            ("b", "POST", 500),
+            ("c", "POST", 201),
+            ("d", "GET", 404),
+        ] {
+            assert!(post(
+                &mut log,
+                json!([{ "key": key, "kind": "fetch", "method": method, "url": format!("http://localhost/{key}"),
+                    "start": 0.0, "status": status }])
+            ));
+        }
+        let shown = |f: Filter| {
+            let text = list_text(&log, &f);
+            text.lines()
+                .map(|l| l.rsplit('/').next().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        let post_only = Filter {
+            method: Some("POST".into()),
+            ..Filter::default()
+        };
+        assert_eq!(shown(post_only), ["b", "c"]);
+        let class = |c| Filter {
+            status: Some(Status::Class(c)),
+            ..Filter::default()
+        };
+        assert_eq!(shown(class(4)), ["d"]);
+        assert_eq!(shown(class(2)), ["a", "c"]);
+        let get_404 = Filter {
+            method: Some("GET".into()),
+            status: Some(Status::Is(404)),
+            ..Filter::default()
+        };
+        assert_eq!(shown(get_404), ["d"]);
     }
 
     #[test]

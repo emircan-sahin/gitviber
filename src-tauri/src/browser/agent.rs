@@ -36,8 +36,8 @@ const SETTLE: Duration = Duration::from_millis(500);
 const QUIET: Duration = Duration::from_millis(100);
 /// An eval's result, cut: an agent reads it.
 const EVAL_MAX: usize = 20_000;
-/// What `eval`'s script gives: `=` and its value as JSON however it came, or `!` and what it threw.
-const SERIALIZE: &str = "try { const s = JSON.stringify(value); return `=${s === undefined ? String(value) : s}`; } catch { return `=${String(value)}`; }";
+/// What `eval`'s script gives: `=` and its value however it came, or `!` and what it threw.
+const SERIALIZE: &str = include_str!("scripts/serialize.js");
 /// The page's storage for a session; in GitViber's world, where the page can't stand in for it.
 const STORAGE_READ: &str = "return JSON.stringify({ origin: location.origin, local: Object.entries(localStorage), session: Object.entries(sessionStorage) });";
 /// Written only on the session's origin; elsewhere, where the page is instead.
@@ -481,7 +481,7 @@ impl Tab {
             Command::Wait(what, timeout) => self.wait(what, timeout),
             Command::Eval(js) => self.eval(&js),
             Command::Screenshot(shot) => self.screenshot(shot, cwd),
-            Command::Console { errors, clear } => self.console(errors, clear),
+            Command::Console { level, all, clear } => self.console(level.as_deref(), all, clear),
             Command::Network(ask) => self.network(ask),
             Command::Device(screen) => self.device(screen),
             Command::Appearance(dark) => {
@@ -545,6 +545,11 @@ impl Tab {
     /// always, all here, once.
     fn finish(&self, reply: Res<Reply>, said: &str) -> Reply {
         let mut reply = reply.unwrap_or_else(Reply::error);
+        // Before the marks, whose nonce is new each time.
+        let state = match (&reply.state, &reply.error) {
+            (_, Some(error)) => Some(format!("failed: {error}")),
+            (state, None) => state.clone(),
+        };
         if reply.untrusted {
             let origin = self
                 .page()
@@ -566,11 +571,16 @@ impl Tab {
         if let Some(data) = &mut reply.data {
             output::each_string(data, &|s| self.clean(s));
         }
-        let state = match (&reply.state, &reply.error) {
-            (_, Some(error)) => Some(format!("failed: {error}")),
-            (state, None) => state.clone(),
-        };
         let looped = state.is_some_and(|s| remember(&self.id, |m| m.history.again(said, &s)));
+        // Said on every reply while it's open, a failure's too.
+        if let Some(kind) = self.dialog() {
+            let open = dialog_open(kind);
+            let text = reply.error.as_mut().or(reply.out.as_mut());
+            if let Some(text) = text.filter(|t| !t.contains(&open)) {
+                text.push('\n');
+                text.push_str(&open);
+            }
+        }
         if looped {
             let text = reply.error.as_mut().or(reply.out.as_mut());
             if let Some(text) = text {
@@ -579,6 +589,22 @@ impl Tab {
             }
         }
         reply
+    }
+
+    /// The alert() or confirm() open on the page, waiting for the user, if one is.
+    fn dialog(&self) -> Option<&'static str> {
+        let id = self.id.clone();
+        main(&self.app, move |_| super::agent_dialog(&id))
+            .ok()
+            .flatten()
+    }
+
+    /// Fails at once while a dialog holds the page's scripts, which would wait for it.
+    fn unblocked(&self) -> Res<()> {
+        match self.dialog() {
+            Some(kind) => Err(dialog_open(kind)),
+            None => Ok(()),
+        }
     }
 
     /// Text as a reply may give it: tokens in addresses hidden unless --reveal, and the tab's
@@ -607,6 +633,7 @@ impl Tab {
 
     /// As `script`, waiting `wait` at most.
     fn script_for(&self, mut input: Value, wait: Duration) -> Res<Value> {
+        self.unblocked()?;
         input["floor"] = json!(remember(&self.id, |m| m.last_ref));
         let (id, input) = (self.id.clone(), input.to_string());
         let out = later_for(&self.app, wait, move |_, done| {
@@ -805,6 +832,7 @@ impl Tab {
     /// Expression `js` in the page's world: None once it's true, else what it was. A promise
     /// that doesn't settle in `wait` counts as not yet.
     fn truthy(&self, js: &str, wait: Duration) -> Res<Option<String>> {
+        self.unblocked()?;
         let ms = wait.min(Duration::from_secs(2)).as_millis();
         let body = format!(
             "const pending = Symbol();\nlet value;\ntry {{ value = await Promise.race([(async () => ({js}\n))(), new Promise((r) => setTimeout(r, {ms}, pending))]); }} catch (e) {{ return `!${{e}}`; }}\nif (value === pending) return '~';\nif (value) return '+';\ntry {{ return `-${{JSON.stringify(value) ?? String(value)}}`; }} catch {{ return `-${{String(value)}}`; }}"
@@ -833,6 +861,7 @@ impl Tab {
     /// Only a form that doesn't compile is tried again, never one that ran: what it throws comes
     /// back as its answer. Not through the page's eval(), which its CSP may forbid.
     fn eval(&self, js: &str) -> Res<Reply> {
+        self.unblocked()?;
         let run = |body: String| {
             let id = self.id.clone();
             later(&self.app, move |_, done| {
@@ -913,7 +942,7 @@ impl Tab {
         )))
     }
 
-    fn console(&self, errors: bool, clear: bool) -> Res<Reply> {
+    fn console(&self, level: Option<&str>, all: bool, clear: bool) -> Res<Reply> {
         if !self.page()?.1 {
             return Ok(Reply::out(
                 "The page's console isn't kept (Settings → Browser → Console).",
@@ -927,7 +956,7 @@ impl Tab {
         }
         Ok(Reply {
             untrusted: true,
-            ..Reply::out(control::console_text(&entries, errors))
+            ..Reply::out(control::console_text(&entries, level, all))
         })
     }
 
@@ -1055,6 +1084,10 @@ impl Tab {
         main(&self.app, move |_| super::go(&id, Go::Reload))?;
         self.loaded(LOAD).map(drop)
     }
+}
+
+fn dialog_open(kind: &str) -> String {
+    format!("A {kind}() dialog is open on the page, waiting for the user to answer it: the page's scripts wait too.")
 }
 
 /// On a web page's origin, where logins and storage are.

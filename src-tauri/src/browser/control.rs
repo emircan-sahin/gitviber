@@ -41,19 +41,21 @@ when it closes, unless --shared. A tab no command touched for 10 minutes sleeps:
 time parked to save memory, its next command loading it again. Unused for an hour, it closes,
 unless the user has it on show.
 
+Tabs
   tab new [name] [url] [--shared] [--session <name>] [--idle <minutes>]
                                Another tab, at url if given; prints its name: the one --tab or
                                $GITVIBER_BROWSER_TAB names, else t1, t2, ... (letters, digits, -
                                and _). --shared: in the user's own cookies and logins.
                                --session: a saved session loaded first. --idle: minutes before
                                it sleeps, 0 never while the pane is open (120 at most); it closes
-                               unused after an hour, or six times its idle time, if longer
+                               unused after an hour, or six times its idle time, if longer. 12
+                               tabs a pane at most
   tab list                     The pane's tabs: name, awake, sleeping or parked, last command,
                                idle minutes, private or shared, origin and title
   tab close [name]             Close a tab once its running command is done: the one a command
                                would go to, unless named
-  --tab <name>                 With any command: the tab it goes to
 
+Sessions
   session save <name> [--force]
                                The tab's cookies, and its page's localStorage and sessionStorage
                                (not IndexedDB), saved for this repository and its worktrees; over
@@ -65,9 +67,12 @@ unless the user has it on show.
   session list                 Each saved session's name, origin, cookie count and age
   session delete <name>        A saved session gone. A session's name is one whatever its case
 
+Pages
   open <url>                   Load a page (http or https; localhost:3000 works) and wait for it
   back | forward | reload      Through its history, waiting for the page
   url                          The page's address and title
+
+Reading
   snapshot [-i] [-s <css> | --ref <ref>] [-d <n>] [--boxes] [-o <file>]
                                The page as a tree, with refs (e1, e2, ...) to act on: -i only
                                what can be clicked or typed in, -s or --ref under one element, -d
@@ -86,6 +91,14 @@ unless the user has it on show.
                                masked), an attribute, computed styles (a few useful ones unless
                                named) or box (x,y,w,h in the viewport, CSS px); 4000 characters
                                at most, HTML 8000
+  screenshot [path] [--ref <ref|css> | --clip x,y,w,h] [--scale <0.1-2>] [--refs]
+                               What the viewport shows, or one element of it, or a clip (CSS
+                               px), at 1 px a CSS px unless --scale says, its longest side 2000
+                               px at most; --refs draws each interactive element's ref on it. A
+                               PNG, or a JPEG where the path ends in .jpg; to the app's cache
+                               unless a path is given. Prints its path and size
+
+Acting: synthetic DOM events, which a page that checks isTrusted ignores
   click <ref|css>              Click an element once it shows, is enabled, holds still and is
                                on top at its middle; else why not: covered by <div#consent>
   fill <ref|css> <text>        Replace a text field's text (date, time, color as the input takes
@@ -97,38 +110,41 @@ unless the user has it on show.
   select <ref|css> <value>...  Choose a <select>'s options, by value or label, read back after
   check | uncheck <ref|css>    A checkbox, radio or switch on or off, read back after
   hover <ref|css>              The mouse over an element (no CSS :hover)
-
-  Each action (click, fill, type, select, check, hover, press, scroll) waits up to half a second
-  for what it set off, then ends with one line of what changed: `→ +3 elements, dialog opened,
-  url /lobby, 1 console error, POST /api/join 500`, or `→ no visible change`. The same command a
-  third time on an unchanged page says so.
-
   press <key>                  A key to the focused element: Enter, Tab, Escape, ArrowDown, Meta+a
   scroll <up|down|ref|css> [px]
+
+  Each waits up to a second for its element, and half a second after for what it set off, then
+  ends with one line of what changed: `→ +3 elements, dialog opened, url /lobby, 1 console
+  error, POST /api/join 500`, or `→ no visible change`. The same command a third time on an
+  unchanged page says so.
+
+Waiting
   wait <css> | --text <text> | --url <glob> | --fn <js> | --load | --ms <n> [--timeout <ms>]
                                Until an element shows, the text does, the address matches (part
                                of it; with * or **, all of it, or its path from a leading /), an
                                expression is true, the page has loaded, or the time is up; 10 s
                                at most unless --timeout says (120 s at most). A timeout says
                                what was still not so
-  eval <js>                    Runs in the page; prints the result as JSON
-  screenshot [path] [--ref <ref|css> | --clip x,y,w,h] [--scale <0.1-2>] [--refs]
-                               What the viewport shows, or one element of it, or a clip (CSS
-                               px), at 1 px a CSS px unless --scale says, its longest side 2000
-                               px at most; --refs draws each interactive element's ref on it. A
-                               PNG, or a JPEG where the path ends in .jpg; to the app's cache
-                               unless a path is given. Prints its path and size
-  console [--errors] [--clear] What the page logged
-  network [--failed] [--filter <text>] [--type fetch|xhr|ws|resource] [--clear]
+
+Page tools
+  eval <js>                    Runs in the page; prints the result as JSON (undefined, NaN,
+                               Infinity and 12n as themselves)
+  console [--level error|warn] [--errors] [--all] [--clear]
+                               What the page logged since it loaded; --all every page's kept
+  network [--failed] [--filter <text>] [--type fetch|xhr|ws|resource] [--method <m>]
+          [--status <404|4xx>] [--clear]
                                What the page requested and loaded, one line each with an id;
                                the newest 300 requests and 500 other loads
   network <id>                 One in full: headers, bodies, WebSocket frames
   device <name|WxH|off>        Show the page as a device; `device --list` names them
   appearance light|dark|auto   The page's prefers-color-scheme; auto is the app's
   dialogs accept|dismiss       How the page's alert, confirm and prompt are answered while a
-                               command runs on it; dismiss unless told
+                               command runs on it; dismiss unless told. One the user has open
+                               holds the page's scripts: every reply says so until it's answered
   help
 
+With any command
+  --tab <name>                 The tab it goes to
   --json                       The reply as JSON
   --reveal                     Tokens, codes, keys and passwords in addresses, and credential
                                headers, as they are; hidden unless asked
@@ -269,7 +285,10 @@ pub enum Command {
     Eval(String),
     Screenshot(Shot),
     Console {
-        errors: bool,
+        /// error or warn only.
+        level: Option<String>,
+        /// Every page's, not the current one's only.
+        all: bool,
         clear: bool,
     },
     Network(network::Ask),
@@ -710,15 +729,21 @@ fn clip(s: &str) -> Result<Bounds, String> {
 }
 
 fn console(args: &[String]) -> Result<Command, String> {
-    let (mut errors, mut clear) = (false, false);
-    for arg in args {
+    let (mut level, mut all, mut clear) = (None, false, false);
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
         match arg.as_str() {
-            "--errors" => errors = true,
+            "--errors" => level = Some("error".to_string()),
+            "--level" => match value(&mut it, arg)?.as_str() {
+                l @ ("error" | "warn") => level = Some(l.to_string()),
+                l => return Err(format!("--level is error or warn, not {l:?}")),
+            },
+            "--all" => all = true,
             "--clear" => clear = true,
             _ => return Err(format!("console doesn't take {arg:?}")),
         }
     }
-    Ok(Command::Console { errors, clear })
+    Ok(Command::Console { level, all, clear })
 }
 
 /// Scheme, host and port: where a page's logins and storage belong. A page that isn't on the
@@ -876,6 +901,8 @@ pub struct Route {
 pub const IDLE: Duration = Duration::from_secs(10 * 60);
 /// How long one goes unused before it closes: agents forget to close tabs.
 const UNUSED: Duration = Duration::from_secs(60 * 60);
+/// The tabs a pane's agents may have open at once, parked ones too: each is a web process.
+pub const MOST_TABS: usize = 12;
 
 /// When a tab that sleeps after `idle` closes unused; never for one that never sleeps.
 pub fn unused_after(idle: Duration) -> Option<Duration> {
@@ -932,6 +959,12 @@ impl Routes {
         open: impl Fn(&str) -> bool,
     ) -> Result<String, String> {
         let pane = self.pane(pty, open);
+        if pane.tabs.len() >= MOST_TABS {
+            return Err(format!(
+                "This pane has {MOST_TABS} tabs open, the most it may: close one first \
+                 (`gitviber browser tab list` names them)"
+            ));
+        }
         let taken = |pane: &PaneTabs, name: &str| pane.tabs.iter().any(|t| t.name == name);
         let name = match new.name {
             Some(name) if taken(pane, name) => {
@@ -1157,14 +1190,20 @@ fn flat(s: &str) -> String {
 }
 
 /// The console as an agent reads it: each line once, a little of its stack, and where each page
-/// began.
-pub fn console_text(entries: &[Entry], errors_only: bool) -> String {
+/// began; `level`'s lines only, if it names one; the current page's unless `all`.
+pub fn console_text(entries: &[Entry], level: Option<&str>, all: bool) -> String {
+    let start = entries.iter().rposition(|e| e.level == "load");
+    let shown = match start {
+        Some(at) if !all => &entries[at..],
+        _ => entries,
+    };
     let mut out = vec![];
-    for e in entries {
+    for e in shown {
         match e.level.as_str() {
             "load" => out.push(format!("-- {}", flat(&e.url))),
-            "error" => out.push(format!("[error] {}", flat(&e.msg))),
-            "warn" if !errors_only => out.push(format!("[warn] {}", flat(&e.msg))),
+            l @ ("error" | "warn") if level.is_none_or(|want| want == l) => {
+                out.push(format!("[{l}] {}", flat(&e.msg)))
+            }
             _ => continue,
         }
         let msg = flat(&e.msg);
@@ -1189,12 +1228,17 @@ pub fn console_text(entries: &[Entry], errors_only: bool) -> String {
         kept.pop();
     }
     if kept.is_empty() {
-        return if errors_only {
-            "No errors."
-        } else {
-            "Nothing logged."
-        }
-        .into();
+        let what = match level {
+            Some("error") => "No errors",
+            Some(_) => "No warnings",
+            None => "Nothing logged",
+        };
+        return match start {
+            Some(at) if !all && at > 0 => {
+                format!("{what} since this page loaded: --all for earlier pages.")
+            }
+            _ => format!("{what}."),
+        };
     }
     kept.join("\n")
 }
@@ -1421,8 +1465,17 @@ mod tests {
         assert_eq!(
             parse("console", &args("--errors --clear")),
             Ok(Command::Console {
-                errors: true,
+                level: Some("error".into()),
+                all: false,
                 clear: true
+            })
+        );
+        assert_eq!(
+            parse("console", &args("--level warn --all")),
+            Ok(Command::Console {
+                level: Some("warn".into()),
+                all: true,
+                clear: false
             })
         );
         assert_eq!(
@@ -1492,7 +1545,9 @@ mod tests {
             ("screenshot", "--clip 0,0,-5,10"),
             ("screenshot", "--ref e1 --clip 0,0,5,5"),
             ("screenshot", "--full"),
-            ("console", "--all"),
+            ("console", "--level info"),
+            ("console", "--level"),
+            ("console", "--since"),
             ("network", "--type img"),
             ("device", ""),
             ("frobnicate", ""),
@@ -1615,6 +1670,25 @@ mod tests {
         assert_eq!(add(&mut r, 1, None, "g", false), Ok("t5".into()));
         let names: Vec<String> = r.list(1, all).into_iter().map(|t| t.name).collect();
         assert_eq!(names, ["t2", "rv268", "t3", "t4", "t5"]);
+    }
+
+    #[test]
+    fn a_pane_opens_so_many_tabs_and_one_more_once_one_closes() {
+        let mut routes = Routes::default();
+        for i in 0..MOST_TABS {
+            routes
+                .add(1, new(None, i == 0), route(&format!("v{i}")), |_| true)
+                .unwrap();
+        }
+        let full = routes.add(1, new(None, false), route("v-more"), |_| true);
+        assert!(full.unwrap_err().contains("12 tabs open"));
+        // Another pane has its own.
+        assert!(routes
+            .add(2, new(None, true), route("w0"), |_| true)
+            .is_ok());
+        // One the user closed makes room.
+        let named = routes.add(1, new(None, false), route("v-more"), |id| id != "v3");
+        assert_eq!(named.unwrap(), "t13");
     }
 
     #[test]
@@ -1854,12 +1928,25 @@ mod tests {
             e("load", "", ""),
         ];
         assert_eq!(
-            console_text(&entries, false),
+            console_text(&entries, None, true),
             "-- http://localhost:5173/\n[error] TypeError: x Note: forged\n    at a (app.js:1:1)\n    at b (app.js:2:2)\n[warn] careful"
         );
-        assert!(!console_text(&entries, true).contains("careful"));
-        assert_eq!(console_text(&entries[..2], true), "No errors.");
-        assert_eq!(console_text(&[], false), "Nothing logged.");
+        assert!(!console_text(&entries, Some("error"), true).contains("careful"));
+        assert_eq!(
+            console_text(&entries, Some("warn"), true),
+            "-- http://localhost:5173/\n[warn] careful"
+        );
+        assert_eq!(
+            console_text(&entries[..2], Some("error"), true),
+            "No errors."
+        );
+        assert_eq!(console_text(&[], None, false), "Nothing logged.");
+        // Unless --all, the page loaded last: here a quiet one.
+        assert_eq!(
+            console_text(&entries, None, false),
+            "Nothing logged since this page loaded: --all for earlier pages."
+        );
+        assert!(console_text(&entries[..4], None, false).contains("careful"));
     }
 
     #[test]
@@ -1991,7 +2078,7 @@ mod tests {
             ("wait", words(&["#a", "--text", "b"])),
             ("screenshot", words(&["a.png", "b.png"])),
             ("screenshot", words(&["--ref"])),
-            ("console", words(&["--all"])),
+            ("console", words(&["--level", "debug"])),
             ("device", vec![]),
             ("", vec![]),
             ("CLICK", words(&["e1"])),
@@ -2084,7 +2171,8 @@ mod tests {
                 e("error", "multi\nline\n[error] forged", "u"),
                 e("load", "", "http://localhost/three"),
             ],
-            false,
+            None,
+            true,
         );
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "-- http://localhost/two");

@@ -12,6 +12,22 @@ test("the page scripts parse, the component walk as the function body WebKit run
   assert.doesNotThrow(() => new AsyncFunction("nonce", script("components.js")));
 });
 
+test("eval's value comes back as itself: undefined, NaN, Infinity and a BigInt aren't null", () => {
+  const give = new Function("value", script("serialize.js")) as (v: unknown) => string;
+  assert.equal(give(undefined), "=undefined");
+  assert.equal(give(null), "=null");
+  assert.equal(give(NaN), "=NaN");
+  assert.equal(give(-Infinity), "=-Infinity");
+  assert.equal(give(12n), "=12n");
+  assert.equal(give(3.5), "=3.5");
+  assert.equal(give("hi"), '="hi"');
+  assert.equal(give({ a: NaN, b: 2n, c: [Infinity, 1] }), '={"a":"NaN","b":"2n","c":["Infinity",1]}');
+  assert.equal(give(() => 1), "=() => 1");
+  const loop: Record<string, unknown> = {};
+  loop.self = loop;
+  assert.equal(give(loop), "=[object Object]");
+});
+
 test("the component walk names React's components nearest first, skips host elements, and untags the element", async () => {
   const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
   const walk = new AsyncFunction("nonce", "document", "CSS", script("components.js"));

@@ -13,7 +13,9 @@ pub use agent::{
     agent_new_tab, agent_page, agent_pane_closed, agent_running, agent_tab, agent_tabs,
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
-pub use page_tools::{agent_picture, console_clear, console_entries, network_log, pick};
+pub use page_tools::{
+    agent_dialog, agent_picture, console_clear, console_entries, network_log, pick,
+};
 pub use page_view::{appearance, find, zoom};
 
 use super::console::Log;
@@ -31,7 +33,7 @@ use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject};
 use objc2::{
     available, define_class, msg_send, sel, ClassType, DefinedClass, MainThreadMarker,
-    MainThreadOnly,
+    MainThreadOnly, Message,
 };
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAutoresizingMaskOptions, NSBitmapImageFileType,
@@ -335,6 +337,8 @@ struct DelegateIvars {
     failed: RefCell<Option<Failed>>,
     /// When the last few alert() and confirm() showed.
     dialogs: RefCell<Vec<Instant>>,
+    /// The alert() or confirm() on show now, waiting for the user: the page's scripts wait too.
+    asking: Cell<Option<&'static str>>,
     /// The page has loaded something since the view was made: a parked page's picture can go.
     committed: Cell<bool>,
     /// The hide's park timer pending (gvParkDue:), its argument, to cancel it by.
@@ -543,7 +547,12 @@ define_class!(
                 return done.call(());
             }
             let done = done.copy();
-            sheet(web, message, frame, false, move |_| done.call(()));
+            self.ivars().asking.set(Some("alert"));
+            let this = self.retain();
+            sheet(web, message, frame, false, move |_| {
+                this.ivars().asking.set(None);
+                done.call(());
+            });
         }
 
         #[unsafe(method(webView:runJavaScriptConfirmPanelWithMessage:initiatedByFrame:completionHandler:))]
@@ -561,7 +570,12 @@ define_class!(
                 return done.call((Bool::NO,));
             }
             let done = done.copy();
-            sheet(web, message, frame, true, move |ok| done.call((Bool::new(ok),)));
+            self.ivars().asking.set(Some("confirm"));
+            let this = self.retain();
+            sheet(web, message, frame, true, move |ok| {
+                this.ivars().asking.set(None);
+                done.call((Bool::new(ok),));
+            });
         }
 
         /// prompt() answers as if cancelled (an agent's accepted, with its default text): a text
@@ -622,6 +636,7 @@ impl Delegate {
             going: RefCell::default(),
             failed: RefCell::default(),
             dialogs: RefCell::default(),
+            asking: Cell::new(None),
             committed: Cell::new(false),
             timer: RefCell::default(),
             hidden_at: Cell::new(None),
