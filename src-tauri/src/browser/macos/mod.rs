@@ -1019,14 +1019,10 @@ pub fn hide(id: &str, aside: bool) {
     take_snapshot(&v.web, move |shot| {
         VIEWS.with_borrow_mut(|r| r.set_picture(&picture_of, shot));
     });
-    out_of_sight(&v, id);
-}
-
-/// Hidden in the registry too, or off-screen for an agent's awake view.
-fn out_of_sight(v: &View, id: &str) {
+    // Hidden in the registry too, or off-screen for an agent's awake view.
     let step = VIEWS.with_borrow_mut(|r| r.hide(id));
     apply(
-        v,
+        &v,
         step.map_or(Step::Offscreen, |(since, over)| Step::Hide(since, over)),
     );
 }
