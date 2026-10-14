@@ -1,9 +1,11 @@
 //! Where an agent's awake tab draws while out of its tab's sight: a panel of its own outside
 //! every screen. WebKit stops a page whose window isn't visible (the main window minimized, the
 //! app hidden), and takes one in a window that isn't key as inactive (no :hover); the panel is
-//! neither, and never key in fact, so it takes no keys or focus from the user.
-//! One per tab, as each has its own size (`device WxH`) and its own first responder: two pages
-//! sharing a window couldn't both be focused.
+//! neither while an agent's command runs, and never key in fact, so it takes no keys or focus
+//! from the user. One per tab, as each has its own size (`device WxH`) and its own first
+//! responder: two pages sharing a window couldn't both be focused. A window's backing store at
+//! 2x is about 16 MB for a 1280×800 page, so a released panel or two are kept to be used again
+//! rather than made anew each time a tab goes out of sight.
 
 use super::{content_view, View};
 use objc2::rc::Retained;
@@ -11,20 +13,34 @@ use objc2::runtime::Bool;
 use objc2::{define_class, msg_send, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSAutoresizingMaskOptions, NSBackingStoreType, NSColor, NSPanel, NSScreen, NSView,
-    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowOrderingMode,
-    NSWindowSharingType, NSWindowStyleMask,
+    NSWindowAnimationBehavior, NSWindowCollectionBehavior, NSWindowDidBecomeKeyNotification,
+    NSWindowDidResignKeyNotification, NSWindowOrderingMode, NSWindowSharingType, NSWindowStyleMask,
 };
-use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize};
+use objc2_foundation::{NSNotificationCenter, NSObjectProtocol, NSPoint, NSRect, NSSize};
+use std::cell::{Cell, RefCell};
 
 /// Between the screens and the panel: a screen added at their edge later doesn't reach it.
 const MARGIN: f64 = 10_000.0;
+/// Released panels kept to be used again.
+const SPARE: usize = 2;
+
+thread_local! {
+    static SPARES: RefCell<Vec<Retained<Panel>>> = RefCell::default();
+}
+
+pub(super) struct PanelIvars {
+    /// Whether it reports itself key: while an agent's command runs on its page.
+    key: Cell<bool>,
+}
 
 define_class!(
-    /// Reports itself key without becoming key, as WebKitTestRunner's window does: WebKit draws
-    /// the page as active (hover, focus) while AppKit's key window stays the user's.
+    /// Reports itself key without becoming key while an agent's command runs, as
+    /// WebKitTestRunner's window does: WebKit draws the page as active (hover, focus) while
+    /// AppKit's key window stays the user's.
     // SAFETY: NSPanel has no subclassing requirements, and Panel has no Drop.
     #[unsafe(super(NSPanel))]
     #[name = "GitViberBrowserPanel"]
+    #[ivars = PanelIvars]
     pub(super) struct Panel;
 
     impl Panel {
@@ -40,6 +56,17 @@ define_class!(
 
         #[unsafe(method(isKeyWindow))]
         fn is_key(&self) -> Bool {
+            Bool::new(self.ivars().key.get())
+        }
+
+        /// No window of the user's: VoiceOver, window switchers and tilers pass it by.
+        #[unsafe(method(isAccessibilityElement))]
+        fn is_accessibility_element(&self) -> Bool {
+            Bool::NO
+        }
+
+        #[unsafe(method(accessibilityIsIgnored))]
+        fn accessibility_is_ignored(&self) -> Bool {
             Bool::YES
         }
     }
@@ -47,7 +74,9 @@ define_class!(
 
 impl Panel {
     fn new(mtm: MainThreadMarker, size: NSSize) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(());
+        let this = Self::alloc(mtm).set_ivars(PanelIvars {
+            key: Cell::new(false),
+        });
         let style = NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel;
         let this: Retained<Self> = unsafe {
             msg_send![super(this), initWithContentRect: frame(mtm, size), styleMask: style, backing: NSBackingStoreType::Buffered, defer: false]
@@ -62,12 +91,13 @@ impl Panel {
         this.setHidesOnDeactivate(false);
         // Drawn on while the app is hidden (⌘H).
         this.setCanHide(false);
-        // Out of Mission Control, which would otherwise shrink it, and of ⌘`.
+        // Out of Mission Control, which would otherwise shrink it, and of ⌘`. Not on all
+        // Spaces: a window there could keep ⌘Tab from going to GitViber's own, and with
+        // occlusion detection off the page draws on whichever Space the panel is.
         this.setCollectionBehavior(
             NSWindowCollectionBehavior::Transient
                 | NSWindowCollectionBehavior::IgnoresCycle
-                | NSWindowCollectionBehavior::Stationary
-                | NSWindowCollectionBehavior::CanJoinAllSpaces,
+                | NSWindowCollectionBehavior::Stationary,
         );
         this.setExcludedFromWindowsMenu(true);
         this.setAnimationBehavior(NSWindowAnimationBehavior::None);
@@ -95,12 +125,18 @@ fn outside(size: (f64, f64), screens: impl Iterator<Item = (f64, f64, f64, f64)>
     (left - size.0 - MARGIN, bottom - size.1 - MARGIN)
 }
 
-/// The view drawn in its panel at `size`, made for it the first time, with the page its first
-/// responder there: focused as a page in the key window is.
+/// The view drawn in its panel at `size`, a spare one or made for it the first time, with the
+/// page its first responder there, active while an agent's command runs on it.
 pub(super) fn hold(v: &View, size: NSSize) {
     let mtm = v.host.mtm();
     let mut slot = v.delegate.ivars().panel.borrow_mut();
-    let panel = slot.get_or_insert_with(|| Panel::new(mtm, size)).clone();
+    let panel = slot
+        .get_or_insert_with(|| {
+            SPARES
+                .with_borrow_mut(Vec::pop)
+                .unwrap_or_else(|| Panel::new(mtm, size))
+        })
+        .clone();
     drop(slot);
     if panel.contentRectForFrameRect(panel.frame()).size != size {
         panel.setFrame_display(frame(mtm, size), false);
@@ -125,9 +161,43 @@ pub(super) fn hold(v: &View, size: NSSize) {
     if !v.web.focused() {
         panel.makeFirstResponder(Some(&v.web));
     }
+    activate(v, !v.delegate.ivars().running.borrow().is_empty());
 }
 
-/// The view back in the main window, hidden there until it's placed, and its panel gone.
+/// Its page active, as in the key window, only while an agent's command runs: a page with
+/// focus in a password field would otherwise hold the system's secure input, which takes the
+/// input methods of every app, the user's terminal too. WebKit hears it as the window becoming
+/// or ceasing to be key.
+pub(super) fn activate(v: &View, on: bool) {
+    let Some(panel) = v.delegate.ivars().panel.borrow().clone() else {
+        return;
+    };
+    if panel.ivars().key.replace(on) != on {
+        let name = unsafe {
+            if on {
+                NSWindowDidBecomeKeyNotification
+            } else {
+                NSWindowDidResignKeyNotification
+            }
+        };
+        unsafe {
+            NSNotificationCenter::defaultCenter().postNotificationName_object(name, Some(&panel))
+        };
+    }
+}
+
+/// Out of sight and kept to be used again, if there's room for it.
+pub(super) fn spare(panel: Retained<Panel>) {
+    panel.orderOut(None);
+    panel.ivars().key.set(false);
+    SPARES.with_borrow_mut(|spares| {
+        if spares.len() < SPARE {
+            spares.push(panel);
+        }
+    });
+}
+
+/// The view back in the main window, hidden there until it's placed, and its panel spared.
 pub(super) fn release(v: &View) {
     let Some(panel) = v.delegate.ivars().panel.take() else {
         return;
@@ -140,7 +210,7 @@ pub(super) fn release(v: &View) {
     if let Some(content) = content_view(&v.delegate.ivars().app) {
         content.addSubview_positioned_relativeTo(&v.host, NSWindowOrderingMode::Above, None);
     }
-    panel.orderOut(None);
+    spare(panel);
 }
 
 /// Whether `view` draws in a panel: no sheet or focus of the user's belongs there.

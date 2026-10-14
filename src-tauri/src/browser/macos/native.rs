@@ -3,12 +3,12 @@
 //! (`isTrusted`, user activation). Never posted to the window server: the real cursor, the
 //! user's focus and the app's activation stay as they are.
 
-use super::{ask, asked, main_thread, view, Delegate, WebView, GONE};
-use crate::browser::input::{self, Edit, Half, KeyStep, Keys, Pointer};
+use super::{main_thread, page_tools, view, Delegate, View, WebView, GONE};
+use crate::browser::input::{self, Edit, KeyStep, Keys, Pointer};
 use crate::state::Res;
 use block2::{DynBlock, RcBlock};
 use objc2::encode::{Encoding, RefEncode};
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{msg_send, sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
@@ -18,7 +18,6 @@ use objc2_foundation::{
     NSArray, NSObjectProtocol, NSPoint, NSProcessInfo, NSRange, NSString, NSTimer, NSURL,
 };
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::ptr::NonNull;
@@ -27,65 +26,119 @@ use std::sync::OnceLock;
 /// Without WebKit's own wait for the mouse events it holds, about a frame between events, so
 /// it doesn't coalesce them.
 const PACE_SECS: f64 = 0.016;
-/// Events of ours remembered, to know them again as WebKit hands them back: a long scroll's
-/// wheel turns mustn't push out a key sent just before.
-const REMEMBERED: usize = 256;
 
 thread_local! {
-    /// The buttons WebKit reads as held while one of our events goes in (`pressed`).
+    /// The buttons WebKit reads as held while one of our events goes in (`real_buttons`).
     static BUTTONS: Cell<Option<usize>> = const { Cell::new(None) };
-    /// Our latest events, by type and timestamp.
-    static OURS: RefCell<VecDeque<(usize, u64)>> = RefCell::default();
+    /// Our key downs and presses, for as long as WebKit holds them: it lets each go once it
+    /// has answered it, and with that the entry is dead.
+    static SENT: RefCell<Vec<Sent>> = RefCell::default();
     static NUMBER: Cell<isize> = const { Cell::new(0) };
+}
+
+/// An event of ours WebKit may hand back: its tab, and for a key what the Edit menu does when
+/// no page takes it.
+struct Sent {
+    event: Weak<NSEvent>,
+    web: Option<Weak<WebView>>,
+    edit: Option<Edit>,
+}
+
+fn remember(event: &NSEvent, web: Option<&WebView>, edit: Option<Edit>) {
+    SENT.with_borrow_mut(|sent| {
+        sent.retain(|s| s.event.load().is_some());
+        sent.push(Sent {
+            event: Weak::new(event),
+            web: web.map(Weak::new),
+            edit,
+        });
+    });
+}
+
+fn is(sent: &Sent, event: &NSEvent) -> bool {
+    sent.event.load().is_some_and(|e| std::ptr::eq(&*e, event))
+}
+
+/// Whether `event` is one of ours, this very object, as WebKit hands it back.
+pub(super) fn ours(event: &NSEvent) -> bool {
+    SENT.with_borrow(|sent| sent.iter().any(|s| is(s, event)))
+}
+
+/// Ours, handed back: no longer looked for, its tab and edit to the caller.
+fn answered(event: &NSEvent) -> Option<Sent> {
+    SENT.with_borrow_mut(|sent| {
+        let at = sent.iter().position(|s| is(s, event))?;
+        Some(sent.swap_remove(at))
+    })
 }
 
 /// `+[NSEvent pressedMouseButtons]` as it was: WebKit gives pointer events the buttons the real
 /// mouse holds, none while an agent's press or drag goes in, so ours stand in for them then.
-static PRESSED: OnceLock<Imp> = OnceLock::new();
+static REAL_BUTTONS: OnceLock<Imp> = OnceLock::new();
 
-type Pressed = extern "C-unwind" fn(&AnyClass, Sel) -> usize;
+type PressedButtons = extern "C-unwind" fn(&AnyClass, Sel) -> usize;
 
-extern "C-unwind" fn pressed(class: &AnyClass, sel: Sel) -> usize {
+extern "C-unwind" fn pressed_buttons(class: &AnyClass, sel: Sel) -> usize {
     if let Some(held) = BUTTONS.with(Cell::get) {
         return held;
     }
-    let Some(&original) = PRESSED.get() else {
+    let Some(&original) = REAL_BUTTONS.get() else {
         return 0;
     };
     // SAFETY: the class method's own implementation, of this same signature.
-    let original = unsafe { std::mem::transmute::<Imp, Pressed>(original) };
+    let original = unsafe { std::mem::transmute::<Imp, PressedButtons>(original) };
     original(class, sel)
 }
 
 fn stand_in_for_buttons() {
-    if PRESSED.get().is_some() {
+    if REAL_BUTTONS.get().is_some() {
         return;
     }
     let Some(method) = NSEvent::class().class_method(sel!(pressedMouseButtons)) else {
         return;
     };
-    let ours: Pressed = pressed;
+    let ours: PressedButtons = pressed_buttons;
     // SAFETY: an implementation of the same signature, set on the main thread with the
     // original kept first.
-    let _ = PRESSED.set(method.implementation());
-    unsafe { method.set_implementation(std::mem::transmute::<Pressed, Imp>(ours)) };
+    let _ = REAL_BUTTONS.set(method.implementation());
+    unsafe { method.set_implementation(std::mem::transmute::<PressedButtons, Imp>(ours)) };
 }
 
-/// `-[NSApplication sendEvent:]` as it was.
+/// Our buttons stand in for the real mouse's while this lives, and not a moment longer, even
+/// should WebKit panic out of the event.
+struct Holding;
+
+impl Holding {
+    fn buttons(buttons: usize) -> Self {
+        stand_in_for_buttons();
+        BUTTONS.set(Some(buttons));
+        Self
+    }
+}
+
+impl Drop for Holding {
+    fn drop(&mut self) {
+        BUTTONS.set(None);
+    }
+}
+
+/// `-[NSApplication sendEvent:]` as it was, on the class that has it (tao's TaoApp).
 static SEND_EVENT: OnceLock<Imp> = OnceLock::new();
 
 type SendEvent = extern "C-unwind" fn(&AnyObject, Sel, &NSEvent);
 
-/// A key of ours no page handled comes back here: WebKit sends it on as the app's (its
-/// doneWithKeyEvent), to the key window and the menus. The page had it already; the user's
-/// terminal mustn't type it, nor a ⌘W close the user's pane.
+/// A key down of ours no page took comes back here: WebKit sends it on as the app's (its
+/// doneWithKeyEvent), to the menus and the key window. The page had it already; the user's
+/// terminal mustn't type it, nor a ⌘W close the user's pane. What the Edit menu does for it
+/// is done in its own page instead.
 extern "C-unwind" fn send_event(app: &AnyObject, sel: Sel, event: &NSEvent) {
-    let key = matches!(
-        event.r#type(),
-        NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged
-    );
-    if key && ours(event) {
-        return;
+    if event.r#type() == NSEventType::KeyDown {
+        if let Some(sent) = answered(event) {
+            if let (Some(edit), Some(web)) = (sent.edit, sent.web.and_then(|w| w.load())) {
+                edit_page(&web, edit);
+            }
+            return;
+        }
     }
     if let Some(&original) = SEND_EVENT.get() {
         // SAFETY: the method's own implementation, of this same signature.
@@ -94,15 +147,36 @@ extern "C-unwind" fn send_event(app: &AnyObject, sel: Sel, event: &NSEvent) {
     }
 }
 
+/// The class whose own `sel` a message to an instance of `class` runs.
+fn owner(class: &AnyClass, sel: Sel) -> Option<&AnyClass> {
+    let mut at = Some(class);
+    while let Some(c) = at {
+        if c.instance_methods().iter().any(|m| m.name() == sel) {
+            return Some(c);
+        }
+        at = c.superclass();
+    }
+    None
+}
+
 /// Keys of ours dropped as they come back, from the first one on.
 fn drop_resent_keys(mtm: MainThreadMarker) {
     if SEND_EVENT.get().is_some() {
         return;
     }
     let app = NSApplication::sharedApplication(mtm);
-    let Some(method) = app.class().instance_method(sel!(sendEvent:)) else {
+    let sel = sel!(sendEvent:);
+    let Some(class) = owner(app.class(), sel) else {
         return;
     };
+    let Some(method) = class.instance_method(sel) else {
+        return;
+    };
+    #[cfg(debug_assertions)]
+    eprintln!(
+        "browser: agents' unanswered keys stop at {}'s sendEvent:",
+        class.name().to_string_lossy()
+    );
     let ours: SendEvent = send_event;
     // SAFETY: an implementation of the same signature, set on the main thread, where events
     // come, with the original kept first.
@@ -112,21 +186,6 @@ fn drop_resent_keys(mtm: MainThreadMarker) {
 
 fn uptime() -> f64 {
     NSProcessInfo::processInfo().systemUptime()
-}
-
-fn remember(event: &NSEvent) {
-    OURS.with_borrow_mut(|ours| {
-        if ours.len() == REMEMBERED {
-            ours.pop_front();
-        }
-        ours.push_back((event.r#type().0, event.timestamp().to_bits()));
-    });
-}
-
-/// Whether `event` is one of ours, as WebKit hands it back.
-pub(super) fn ours(event: &NSEvent) -> bool {
-    let key = (event.r#type().0, event.timestamp().to_bits());
-    OURS.with_borrow(|ours| ours.contains(&key))
 }
 
 /// The modifiers an agent holds down on the tab, on each of its events.
@@ -159,10 +218,12 @@ pub fn agent_pointer(
         _ => mouse(what, location, flags, window.windowNumber())
             .ok_or("AppKit made no mouse event.")?,
     };
-    remember(&event);
+    // A press is what WebKit starts a drag from (`refuse_drag`).
+    if matches!(what, Pointer::Down { .. }) {
+        remember(&event, Some(web), None);
+    }
     v.delegate.ivars().pointer.set(Some(at));
-    stand_in_for_buttons();
-    BUTTONS.set(Some(what.buttons()));
+    let holding = Holding::buttons(what.buttons());
     unsafe {
         match what {
             Pointer::Move if web.respondsToSelector(sel!(_simulateMouseMove:)) => {
@@ -183,7 +244,7 @@ pub fn agent_pointer(
             Pointer::Wheel { .. } => web.scrollWheel(&event),
         }
     }
-    BUTTONS.set(None);
+    drop(holding);
     after_pending(web, move || done(at));
     Ok(())
 }
@@ -217,10 +278,10 @@ fn mouse(
     )
 }
 
-/// Key events on the tab, as `keys` asks, with the keys its agents hold (input.rs `Held`); then
-/// what the Edit menu does for a ⌘ key, but for a copy, cut or paste, left to the caller: those
-/// read the page's selection first (`agent_clipboard`).
-pub fn agent_keys(id: &str, keys: Keys) -> Res<Option<Edit>> {
+/// Key events on the tab, as `keys` asks, with the keys its agents hold (input.rs `Held`). What
+/// the Edit menu does for a ⌘ key comes after, and only if the page didn't take the key
+/// (`send_event`).
+pub fn agent_keys(id: &str, keys: Keys) -> Res<()> {
     let mtm = main_thread()?;
     drop_resent_keys(mtm);
     let v = view(id).ok_or(GONE)?;
@@ -232,13 +293,25 @@ pub fn agent_keys(id: &str, keys: Keys) -> Res<Option<Edit>> {
         Keys::Up(name) => (held.up(name)?, None),
     };
     drop(held);
-    for step in steps {
-        key(&v.web, &window, step)?;
-    }
-    Ok(edit.filter(|&edit| !edit_page(&v.web, edit)))
+    send_keys(&v.web, &window, steps, edit)
 }
 
-fn key(web: &WebView, window: &NSWindow, step: KeyStep) -> Res<()> {
+/// The keys its agents held let go: the pane that held them closed.
+pub(super) fn release_keys(v: &View) {
+    let steps = v.web.ivars().held.borrow_mut().release_all();
+    if let Some(window) = v.web.window() {
+        let _ = send_keys(&v.web, &window, steps, None);
+    }
+}
+
+fn send_keys(web: &WebView, window: &NSWindow, steps: Vec<KeyStep>, edit: Option<Edit>) -> Res<()> {
+    for step in steps {
+        key(web, window, step, edit)?;
+    }
+    Ok(())
+}
+
+fn key(web: &WebView, window: &NSWindow, step: KeyStep, edit: Option<Edit>) -> Res<()> {
     let (kind, code, flags, chars, bare) = match &step {
         KeyStep::Flags { code, flags } => (NSEventType::FlagsChanged, *code, *flags, "", ""),
         KeyStep::Down(s) => (NSEventType::KeyDown, s.code, s.flags, &*s.chars, &*s.bare),
@@ -257,90 +330,75 @@ fn key(web: &WebView, window: &NSWindow, step: KeyStep) -> Res<()> {
         code,
     )
     .ok_or("AppKit made no key event.")?;
-    remember(&event);
     match step {
         KeyStep::Flags { .. } => web.flagsChanged(&event),
-        // An arrow moves the caret by lines in a contenteditable only through the window's text
-        // input, which sees it as the first responder's.
-        KeyStep::Down(_) if (0x7B..=0x7E).contains(&code) && web.focused() => {
-            window.sendEvent(&event)
+        KeyStep::Down(_) => {
+            remember(&event, Some(web), edit);
+            // An arrow moves the caret by lines in a contenteditable only through the window's
+            // text input, which sees it as the first responder's.
+            if (0x7B..=0x7E).contains(&code) && web.focused() {
+                window.sendEvent(&event);
+            } else {
+                web.keyDown(&event);
+            }
         }
-        KeyStep::Down(_) => web.keyDown(&event),
         KeyStep::Up(_) => web.keyUp(&event),
     }
     Ok(())
 }
 
-/// What the Edit menu would do for a ⌘ key, on the page's own web view: AppKit sends it no
-/// menu action for a key it didn't see. False for a copy, cut or paste, which go by the tab's
-/// own clipboard instead.
-fn edit_page(web: &WebView, edit: Edit) -> bool {
+/// What the Edit menu would do for a ⌘ key no page took, on the page's own web view: AppKit
+/// sends it no menu action for a key it didn't see. Copy, cut and paste go by the page's own
+/// clipboard (scripts/clipboard.js), never the user's.
+fn edit_page(web: &WebView, edit: Edit) {
+    let undo = &web.ivars().undo;
     match edit {
         Edit::SelectAll => {
             let _: () = unsafe { msg_send![web, selectAll: None::<&AnyObject>] };
         }
-        Edit::Undo | Edit::Redo => {
-            let undo: *mut AnyObject = unsafe { msg_send![web, undoManager] };
-            if let Some(undo) = unsafe { undo.as_ref() } {
-                let _: () = if edit == Edit::Undo {
-                    unsafe { msg_send![undo, undo] }
-                } else {
-                    unsafe { msg_send![undo, redo] }
-                };
-            }
+        Edit::Undo => {
+            let _: () = unsafe { msg_send![&**undo, undo] };
         }
-        Edit::Copy | Edit::Cut | Edit::Paste => return false,
-    }
-    true
-}
-
-/// The rest of ⌘C, ⌘X or ⌘V, on the tab's own clipboard, never the user's: what the page had
-/// selected kept (a copy, a cut), the selection deleted (a cut), or what's kept put in at the
-/// caret (a paste), as typed.
-pub fn agent_clipboard(id: &str, edit: Edit, selected: Option<String>) -> Res<()> {
-    main_thread()?;
-    let v = view(id).ok_or(GONE)?;
-    if let Some(selected) = selected {
-        ask(id, |a| a.clipboard = selected);
-    }
-    match edit {
-        Edit::Cut => {
-            let _: () = unsafe { msg_send![&*v.web, delete: None::<&AnyObject>] };
+        Edit::Redo => {
+            let _: () = unsafe { msg_send![&**undo, redo] };
         }
+        Edit::Copy => page_tools::clipboard(web, "copy", |_| {}),
+        Edit::Cut => page_tools::clipboard(web, "cut", |_| {}),
+        // A paste event with the text, which the page may take; else the text goes in as typed.
         Edit::Paste => {
-            let kept = NSString::from_str(&asked(id).clipboard);
-            if kept.length() > 0 {
-                let _: () =
-                    unsafe { msg_send![&*v.web, insertText: &*kept, replacementRange: CARET] };
-            }
+            let target = Weak::new(web);
+            page_tools::clipboard(web, "paste", move |text| {
+                if let (Some(web), Some(text)) = (target.load(), text.filter(|t| !t.is_empty())) {
+                    insert(&web, &text);
+                }
+            });
         }
-        _ => {}
     }
-    Ok(())
 }
 
 /// NSNotFound: at the caret, in place of what's selected.
 const CARET: NSRange = NSRange::new(isize::MAX as usize, 0);
 
+fn insert(web: &WebView, text: &str) {
+    let text = NSString::from_str(text);
+    let _: () = unsafe { msg_send![web, insertText: &*text, replacementRange: CARET] };
+}
+
 /// `text` put in at the page's caret as an input method puts it (NSTextInputClient), a
 /// character at a time: the page gets its input events, whatever the user's keyboard or input
-/// source; a line break is an Enter.
+/// source. A line break goes in as text too, in order with the rest: a key event's would come
+/// back from WebKit later than the text after it.
 pub fn agent_text(id: &str, text: &str) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
-    for (n, line) in text.split('\n').enumerate() {
-        if n > 0 {
-            agent_keys(id, Keys::Press("Enter".into(), Half::Both))?;
-        }
-        for c in line.chars() {
-            let c = NSString::from_str(c.encode_utf8(&mut [0; 4]));
-            let _: () = unsafe { msg_send![&*v.web, insertText: &*c, replacementRange: CARET] };
-        }
+    for c in input::as_typed(text).chars() {
+        insert(&v.web, c.encode_utf8(&mut [0; 4]));
     }
     Ok(())
 }
 
-/// The next file chooser on the tab gets `files` (an agent's `upload`), the user's never.
+/// The next file chooser on the tab, while this command runs, gets `files` (an agent's
+/// `upload`), the user's never.
 pub fn agent_upload(id: &str, files: Vec<PathBuf>) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
@@ -349,17 +407,21 @@ pub fn agent_upload(id: &str, files: Vec<PathBuf>) -> Res<()> {
     Ok(())
 }
 
-/// How many files the chooser took, or why none, once it came; `stop`: no chooser after this
-/// gets them.
-pub fn agent_chosen(id: &str, stop: bool) -> Res<Option<Res<usize>>> {
+/// How many files the chooser took, or why none, once it came.
+pub fn agent_chosen(id: &str) -> Res<Option<Res<usize>>> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
-    if stop {
-        v.delegate.ivars().upload.take();
-        return Ok(v.delegate.ivars().chosen.take());
-    }
     let chosen = v.delegate.ivars().chosen.borrow().clone();
     Ok(chosen)
+}
+
+/// The upload over: no chooser after this gets its files.
+pub fn agent_upload_done(id: &str) -> Res<()> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    v.delegate.ivars().upload.take();
+    v.delegate.ivars().chosen.take();
+    Ok(())
 }
 
 /// The page's file chooser answered with an agent's `files`: none where it takes one only.
@@ -554,18 +616,27 @@ mod tests {
             .unwrap();
         web.verify_sel::<(&NSString, NSRange), ()>(sel!(insertText:replacementRange:))
             .unwrap();
-        web.verify_sel::<(), *mut AnyObject>(sel!(undoManager))
-            .unwrap();
-        web.verify_sel::<(Option<&AnyObject>,), ()>(sel!(delete:))
-            .unwrap();
-        NSApplication::class()
-            .verify_sel::<(&NSEvent,), ()>(sel!(sendEvent:))
-            .unwrap();
+        let undo = AnyClass::get(c"NSUndoManager").unwrap();
+        undo.verify_sel::<(), ()>(sel!(undo)).unwrap();
+        undo.verify_sel::<(), ()>(sel!(redo)).unwrap();
     }
 
-    fn key_event(timestamp: f64) -> Retained<NSEvent> {
+    /// The class `drop_resent_keys` swaps `sendEvent:` on is the one that has it, here
+    /// NSApplication's own; in the app, tao's subclass, which has its own.
+    #[test]
+    fn the_send_event_swapped_is_the_class_that_has_it() {
+        let app = NSApplication::class();
+        let class = owner(app, sel!(sendEvent:)).unwrap();
+        assert_eq!(class.name(), app.name());
+        class
+            .verify_sel::<(&NSEvent,), ()>(sel!(sendEvent:))
+            .unwrap();
+        assert!(owner(app, sel!(gvNoSuchMessage)).is_none());
+    }
+
+    fn key_event(kind: NSEventType, timestamp: f64) -> Retained<NSEvent> {
         NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-            NSEventType::KeyDown,
+            kind,
             NSPoint::ZERO,
             NSEventModifierFlags(0),
             timestamp,
@@ -579,77 +650,67 @@ mod tests {
         .unwrap()
     }
 
-    /// Ours known again by type and time; the same key at any other time (the user's) isn't,
-    /// nor a mouse event at the very same time.
+    /// Ours known again as the very object WebKit hands back; another event, even one alike
+    /// in every field (the user's at the same instant), isn't.
     #[test]
     fn the_leak_guard_knows_ours_and_nothing_else() {
         let at = uptime();
-        let sent = key_event(at);
-        remember(&sent);
+        let sent = key_event(NSEventType::KeyDown, at);
+        remember(&sent, None, None);
         assert!(ours(&sent));
         assert!(
-            ours(&key_event(at)),
-            "the same event, as WebKit hands it back"
+            !ours(&key_event(NSEventType::KeyDown, at)),
+            "alike, not ours"
         );
-        assert!(!ours(&key_event(at + 1e-9)));
-        assert!(!ours(&key_event(uptime())));
-        let up = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-            NSEventType::KeyUp, NSPoint::ZERO, NSEventModifierFlags(0), at, 0, None,
-            &NSString::from_str("w"), &NSString::from_str("w"), false, 0x0D,
-        )
-        .unwrap();
-        assert!(!ours(&up), "a key up at the same time is another event");
-        // Two of ours made back to back never share a time, so one's echo can't stand for the
-        // other's.
-        let times: Vec<u64> = (0..1000).map(|_| uptime().to_bits()).collect();
-        assert!(times.windows(2).all(|w| w[0] <= w[1]));
+        assert!(!ours(&key_event(NSEventType::KeyUp, at)));
+        // Handed back once, it's answered and no longer looked for.
+        assert!(answered(&sent).is_some());
+        assert!(!ours(&sent) && answered(&sent).is_none());
     }
 
-    /// The guard remembers the last REMEMBERED events of every tab, pointer ones too: a key
-    /// WebKit hands back after more than that many (a scroll past 30,720 px, a long drag, other
-    /// tabs' agents, all while that page is slow to answer) isn't known, and goes on to the
-    /// user's key window: a ⌘W closing their pane, a letter typed in their terminal.
+    /// A key WebKit still holds stays ours however many events come after it (a long scroll,
+    /// a drag, other tabs' agents), and once WebKit lets it go there's nothing left to keep.
     #[test]
-    #[ignore = "bug: the 256-event ring forgets a pending key once pointer events push it out"]
     fn a_key_sent_just_before_a_long_scroll_is_still_known_as_ours() {
-        let sent = key_event(uptime());
-        remember(&sent);
-        for (n, _) in input::wheel(40_000, false).iter().enumerate() {
-            let turn = mouse(Pointer::Move, NSPoint::ZERO, NSEventModifierFlags(0), 0).unwrap();
-            remember(&turn);
-            assert!(
-                n < REMEMBERED || ours(&sent),
-                "forgotten after {n} wheel turns"
-            );
+        use objc2::rc::autoreleasepool;
+        let sent = autoreleasepool(|_| key_event(NSEventType::KeyDown, uptime()));
+        remember(&sent, None, None);
+        for _ in input::wheel(40_000, false) {
+            autoreleasepool(|_| {
+                let turn = mouse(Pointer::Move, NSPoint::ZERO, NSEventModifierFlags(0), 0);
+                remember(&turn.unwrap(), None, None);
+            });
         }
         assert!(ours(&sent));
+        drop(sent);
+        assert!(SENT.with_borrow_mut(|s| {
+            s.retain(|s| s.event.load().is_some());
+            s.is_empty()
+        }));
     }
 
-    /// `type` puts in a line break as an Enter, every one in the same turn of the main thread,
-    /// before WebKit can hand any back: past 128 of them the first Enters are forgotten, and
-    /// one the page doesn't handle (a text field outside a form) reaches the user's terminal.
+    /// Every Enter of a long multi-line burst is still known while WebKit holds it.
     #[test]
-    #[ignore = "bug: a `type` of 129+ lines forgets its first Enters before WebKit hands them back"]
     fn every_enter_of_a_long_multiline_type_is_still_known_as_ours() {
-        let enter = || {
-            let at = uptime();
-            let make = |kind| {
-                NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
-                    kind, NSPoint::ZERO, NSEventModifierFlags(0), at, 0, None,
-                    &NSString::from_str("\r"), &NSString::from_str("\r"), false, 0x24,
-                )
-                .unwrap()
-            };
-            (make(NSEventType::KeyDown), make(NSEventType::KeyUp))
-        };
-        let mut downs = vec![];
-        for _ in 0..200 {
-            let (down, up) = enter();
-            remember(&down);
-            remember(&up);
-            downs.push(down);
-        }
+        let downs: Vec<_> = (0..200)
+            .map(|_| {
+                let down = key_event(NSEventType::KeyDown, uptime());
+                remember(&down, None, None);
+                down
+            })
+            .collect();
         let forgotten = downs.iter().filter(|d| !ours(d)).count();
         assert_eq!(forgotten, 0, "{forgotten} of 200 Enters forgotten");
+    }
+
+    /// A panic out of an event's delivery leaves no agent buttons held for the app.
+    #[test]
+    fn held_buttons_end_with_the_event_even_on_a_panic() {
+        let _ = std::panic::catch_unwind(|| {
+            let _holding = Holding::buttons(1);
+            assert_eq!(BUTTONS.with(Cell::get), Some(1));
+            panic!("WebKit threw");
+        });
+        assert_eq!(BUTTONS.with(Cell::get), None);
     }
 }

@@ -5,7 +5,7 @@ use super::control::{
     self, AgentScreen, Click, Command, Found, Listed, NewTab, Pane, Reply, Request, Scroll,
     Sessions, Tabs, Target, Wait,
 };
-use super::input::{self, Edit, Half, Keys, Pointer};
+use super::input::{self, Half, Keys, Pointer};
 use super::network;
 use super::picks::{self, Bounds};
 use super::sessions::{self, Session, Shelf};
@@ -40,8 +40,6 @@ const NO_INDEXED_DB: &str = "IndexedDB isn't carried.";
 const CHOOSER: Duration = Duration::from_secs(3);
 /// The page's height and how far down it is, for the wheel: its window's, not a panel's in it.
 const SCROLLED: &str = "return JSON.stringify([innerHeight, Math.round(scrollY), Math.max(0, Math.round(document.documentElement.scrollHeight - innerHeight))]);";
-/// What a copy takes: the focused field's selected text (none of a password's), else the page's.
-const SELECTED: &str = "const el = document.activeElement; if (el && (el.localName === 'input' || el.localName === 'textarea') && typeof el.selectionStart === 'number') return el.type === 'password' ? '' : el.value.slice(el.selectionStart, el.selectionEnd); return String(getSelection() ?? '');";
 /// How long a page gets to scroll after the wheel turns: WebKit scrolls on a thread of its own.
 const SCROLLING: Duration = Duration::from_millis(100);
 
@@ -420,7 +418,7 @@ impl Tab {
             } => self.acted(json!({ "cmd": "press", "key": chord })),
             Command::Press { chord, hold, .. } => self.press(&chord, hold),
             Command::Key(down, key) => {
-                let on = self.focused(down)?;
+                let on = self.focused(down.then_some(&*key))?;
                 let keys = if down {
                     Keys::Down(key.clone())
                 } else {
@@ -510,33 +508,16 @@ impl Tab {
         }))
     }
 
-    /// Key events from the keyboard, as `keys` asks; a ⌘C, ⌘X or ⌘V then on the tab's own
-    /// clipboard.
+    /// Key events from the keyboard, as `keys` asks.
     fn keys(&self, keys: Keys) -> Res<()> {
         let id = self.id.clone();
-        let Some(edit) = main(&self.app, move |_| super::agent_keys(&id, keys))? else {
-            return Ok(());
-        };
-        let selected = match edit {
-            Edit::Copy | Edit::Cut => {
-                let id = self.id.clone();
-                let read = later(&self.app, move |_, done| {
-                    super::agent_js(&id, false, SELECTED, "", done)
-                })??;
-                Some(read)
-            }
-            _ => None,
-        };
-        let id = self.id.clone();
-        main(&self.app, move |_| {
-            super::agent_clipboard(&id, edit, selected)
-        })
+        main(&self.app, move |_| super::agent_keys(&id, keys))
     }
 
     /// A chord down and up, held `hold` in between if asked, on the element with focus: its keys
     /// may send the page somewhere.
     fn press(&self, chord: &str, hold: Option<Duration>) -> Res<Reply> {
-        let on = self.focused(true)?;
+        let on = self.focused(Some(chord))?;
         self.moved(|| {
             let half = |half| Keys::Press(chord.into(), half);
             match hold {
@@ -552,14 +533,15 @@ impl Tab {
         })
     }
 
-    /// What has the page's focus, as a reply names it. For a key going down, not a <select>,
-    /// whose menu a key opens, holding GitViber until it closes.
-    fn focused(&self, down: bool) -> Res<String> {
+    /// What has the page's focus, as a reply names it. Refused: a key going `down` that opens a
+    /// focused <select>'s native menu, which would hold GitViber until it closed.
+    fn focused(&self, down: Option<&str>) -> Res<String> {
         let focused = self.script(json!({ "cmd": "focused" }))?;
         let label = focused["label"].as_str().unwrap_or("the page");
-        if down && focused["menu"] == true {
+        if focused["menu"] == true && down.is_some_and(input::opens_menu) {
             return Err(format!(
-                "{label} has focus: a key there opens its native menu. Use select"
+                "{label} has focus, and {} would open its native menu: use select",
+                down.unwrap_or_default()
             ));
         }
         Ok(label.to_string())
@@ -584,6 +566,26 @@ impl Tab {
         })
     }
 
+    /// Pointer events in turn; one failing while a button is down lets the button go, so the
+    /// page isn't left mid-press.
+    fn presses(&self, steps: impl IntoIterator<Item = (Pointer, Option<(f64, f64)>)>) -> Res<()> {
+        let mut down = None;
+        for (what, at) in steps {
+            if let Err(e) = self.pointer(what, at) {
+                if let Some(up) = down {
+                    let _ = self.pointer(up, None);
+                }
+                return Err(e);
+            }
+            down = match what {
+                Pointer::Down { right, clicks } => Some(Pointer::Up { right, clicks }),
+                Pointer::Up { .. } => None,
+                _ => down,
+            };
+        }
+        Ok(())
+    }
+
     fn click(&self, click: Click) -> Res<Reply> {
         let spot = self.spot(&click.target)?;
         if spot.picker {
@@ -595,9 +597,11 @@ impl Tab {
         }
         let at = Some((spot.x, spot.y));
         self.moved(|| {
-            for what in input::clicks(click.count, click.right) {
-                self.pointer(what, at)?;
-            }
+            self.presses(
+                input::clicks(click.count, click.right)
+                    .into_iter()
+                    .map(|p| (p, at)),
+            )?;
             let done = match (click.count, click.right) {
                 (_, true) => "Right-clicked",
                 (2, _) => "Double-clicked",
@@ -611,20 +615,24 @@ impl Tab {
     /// after this command gets them, chosen or not.
     fn upload(&self, target: String, files: &[String], cwd: &str) -> Res<Reply> {
         let files = control::upload_paths(Path::new(cwd), files)?;
+        let spot = self.spot(&Target::El(target))?;
         let id = self.id.clone();
         main(&self.app, move |_| super::agent_upload(&id, files))?;
-        let chosen = self.click(Click {
-            target: Target::El(target),
-            count: 1,
-            right: false,
-            synthetic: false,
+        let at = Some((spot.x, spot.y));
+        let chosen = self.moved(|| {
+            self.presses(input::clicks(1, false).into_iter().map(|p| (p, at)))?;
+            Ok(format!(
+                "Clicked {} at {}",
+                spot.label,
+                xy((spot.x, spot.y))
+            ))
         });
         let chosen = chosen.and_then(|clicked| {
             let clicked = clicked.out.unwrap_or_default();
             let until = Instant::now() + CHOOSER;
             loop {
                 let id = self.id.clone();
-                if let Some(chosen) = main(&self.app, move |_| super::agent_chosen(&id, false))? {
+                if let Some(chosen) = main(&self.app, move |_| super::agent_chosen(&id))? {
                     let n = chosen?;
                     let files = if n == 1 { "file" } else { "files" };
                     return Ok(format!("{clicked}\nUploaded {n} {files}"));
@@ -639,7 +647,7 @@ impl Tab {
             }
         });
         let id = self.id.clone();
-        main(&self.app, move |_| super::agent_chosen(&id, true))?;
+        main(&self.app, move |_| super::agent_upload_done(&id))?;
         chosen.map(Reply::out)
     }
 
@@ -665,9 +673,8 @@ impl Tab {
             ));
         }
         self.moved(|| {
-            for (what, at) in input::drag((a.x, a.y), (b.x, b.y)) {
-                self.pointer(what, Some(at))?;
-            }
+            let steps = input::drag((a.x, a.y), (b.x, b.y));
+            self.presses(steps.into_iter().map(|(p, at)| (p, Some(at))))?;
             Ok(format!(
                 "Dragged {} at {} to {} at {}",
                 a.label,

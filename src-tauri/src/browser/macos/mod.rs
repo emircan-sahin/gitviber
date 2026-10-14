@@ -18,7 +18,7 @@ pub use agent::{
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
 pub use native::{
-    agent_chosen, agent_clipboard, agent_keys, agent_pointer, agent_text, agent_upload,
+    agent_chosen, agent_keys, agent_pointer, agent_text, agent_upload, agent_upload_done,
 };
 pub use page_tools::{console_clear, console_entries, network_log, pick};
 pub use page_view::{appearance, find, zoom};
@@ -35,7 +35,7 @@ use crate::state::Res;
 use block2::{DynBlock, RcBlock};
 use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::{Retained, Weak};
-use objc2::runtime::{AnyObject, Bool, NSObject, ProtocolObject};
+use objc2::runtime::{AnyClass, AnyObject, Bool, NSObject, ProtocolObject, Sel};
 use objc2::{
     available, define_class, msg_send, sel, ClassType, DefinedClass, MainThreadMarker,
     MainThreadOnly,
@@ -125,8 +125,6 @@ struct Asked {
     dark: Option<bool>,
     /// Its cookies and storage, apart from the user's (None: theirs, `data_store`).
     store: Option<Retained<WKWebsiteDataStore>>,
-    /// What an agent's ⌘C or ⌘X took: its own clipboard, never the user's (native.rs).
-    clipboard: String,
 }
 
 thread_local! {
@@ -271,6 +269,12 @@ struct WebIvars {
     menus: Cell<u32>,
     /// The keys its agents hold down, from one command to the next.
     held: RefCell<super::input::Held>,
+    /// Its own undo: an agent's ⌘Z can't reach the app page's edits, and the page's history
+    /// is one whichever window it's in.
+    undo: Retained<AnyObject>,
+    /// What an agent's tab's clipboard script answers to (scripts/clipboard.js), and only
+    /// that: the page can't switch it.
+    clipboard: String,
 }
 
 define_class!(
@@ -328,6 +332,34 @@ define_class!(
             refused.unwrap_or_else(|| unsafe {
                 msg_send![super(self), beginDraggingSessionWithItems: items, event: event, source: source]
             })
+        }
+
+        #[unsafe(method(undoManager))]
+        fn undo_manager(&self) -> *mut AnyObject {
+            Retained::as_ptr(&self.ivars().undo).cast_mut()
+        }
+
+        /// The Edit menu's Undo and Redo, for the page with the window's focus: its history is
+        /// its own (`undoManager`), not the window's.
+        #[unsafe(method(undo:))]
+        fn undo(&self, _sender: Option<&AnyObject>) {
+            let _: () = unsafe { msg_send![&*self.ivars().undo, undo] };
+        }
+
+        #[unsafe(method(redo:))]
+        fn redo(&self, _sender: Option<&AnyObject>) {
+            let _: () = unsafe { msg_send![&*self.ivars().undo, redo] };
+        }
+
+        #[unsafe(method(validateUserInterfaceItem:))]
+        fn validate(&self, item: &AnyObject) -> Bool {
+            let action: Option<Sel> = unsafe { msg_send![item, action] };
+            let undo = &*self.ivars().undo;
+            match action {
+                Some(a) if a == sel!(undo:) => unsafe { msg_send![undo, canUndo] },
+                Some(a) if a == sel!(redo:) => unsafe { msg_send![undo, canRedo] },
+                _ => unsafe { msg_send![super(self), validateUserInterfaceItem: item] },
+            }
         }
 
         #[unsafe(method(becomeFirstResponder))]
@@ -553,6 +585,13 @@ define_class!(
             self.ivars().failed.take();
             self.ivars().committed.set(true);
             page_tools::loaded(self, &url_text(unsafe { web.URL() }));
+            // A page loads with its own clipboard calls the user's, as an agent's command
+            // running on it says otherwise.
+            if !self.ivars().running.borrow().is_empty() {
+                if let Some(web) = self.ivars().web.load() {
+                    page_tools::guard_clipboard(&web, true);
+                }
+            }
             self.changed();
         }
 
@@ -670,7 +709,9 @@ define_class!(
             _frame: &WKFrameInfo,
             done: &DynBlock<dyn Fn(*mut NSArray<NSURL>)>,
         ) {
-            if let Some(files) = self.ivars().upload.take() {
+            // Only while the agent's `upload` runs: a chooser after it is the page's own doing.
+            let running = !self.ivars().running.borrow().is_empty();
+            if let Some(files) = self.ivars().upload.take().filter(|_| running) {
                 let many = unsafe { parameters.allowsMultipleSelection() };
                 return native::choose(self, files, many, done);
             }
@@ -759,7 +800,9 @@ impl Delegate {
     /// A dialog only from the page on show in its tab (a toast over it doesn't count), and only
     /// a few at a time; the rest answer at once.
     fn may_ask(&self, web: &WKWebView) -> bool {
-        if web.window().is_none() || !VIEWS.with_borrow(|r| r.shown(&self.ivars().id)) {
+        // Covered and awake, the page is in its panel: a sheet there would wait forever.
+        let shown = VIEWS.with_borrow(|r| r.shown(&self.ivars().id));
+        if web.window().is_none() || !shown || panel::in_panel(web) {
             return false;
         }
         let now = Instant::now();
@@ -949,21 +992,17 @@ pub fn create(
     memory::watch();
     let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
 
+    let clipboard = NSUUID::new().UUIDString().to_string();
     let config = unsafe { WKWebViewConfiguration::new(mtm) };
     let store = asked(id).store.unwrap_or_else(|| data_store(mtm));
     unsafe {
         config.setWebsiteDataStore(&store);
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         let content = WKUserContentController::new(mtm);
-        page_tools::install(&content, id, agent::routed(id), mtm);
+        page_tools::install(&content, id, agent::routed(id).then_some(&*clipboard), mtm);
         config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);
-        // WebKit's default, kept for an agent's tab whatever the user's get: an element of its
-        // page in full screen would take over the user's screen.
-        if agent::routed(id) {
-            preferences.setElementFullscreenEnabled(false);
-        }
         // Inspect Element in the page's menu; private, so only where WebKit still has it.
         if preferences.respondsToSelector(sel!(_setDeveloperExtrasEnabled:)) {
             let _: () = msg_send![&*preferences, _setDeveloperExtrasEnabled: Bool::YES];
@@ -974,6 +1013,8 @@ pub fn create(
         app: window.app_handle().clone(),
         menus: Cell::new(0),
         held: RefCell::default(),
+        undo: unsafe { msg_send![AnyClass::get(c"NSUndoManager").ok_or(GONE)?, new] },
+        clipboard,
     });
     let web: Retained<WebView> =
         unsafe { msg_send![super(web), initWithFrame: NSRect::ZERO, configuration: &*config] };
@@ -1125,7 +1166,11 @@ pub fn hide(id: &str, aside: bool) {
     release_focus(&v);
     if aside {
         let step = VIEWS.with_borrow_mut(|r| r.cover(id));
+        let offscreen = step == Step::Offscreen;
         apply(&v, step);
+        if offscreen {
+            agent::sleep_past_cap("");
+        }
         return;
     }
     // Its picture while it still shows: hidden, WebKit may never give one. It parks with it.
@@ -1133,12 +1178,16 @@ pub fn hide(id: &str, aside: bool) {
     take_snapshot(&v.web, move |shot| {
         VIEWS.with_borrow_mut(|r| r.set_picture(&picture_of, shot));
     });
-    // Hidden in the registry too, or off-screen for an agent's awake view.
+    // Hidden in the registry too, or off-screen for an agent's awake view, one more in a panel.
     let step = VIEWS.with_borrow_mut(|r| r.hide(id));
+    let offscreen = step.is_none();
     apply(
         &v,
         step.map_or(Step::Offscreen, |(since, over)| Step::Hide(since, over)),
     );
+    if offscreen {
+        agent::sleep_past_cap("");
+    }
 }
 
 /// The host where the registry moved its view.
@@ -1285,7 +1334,7 @@ fn destroy(v: View) {
     release_focus(&v);
     v.host.removeFromSuperview();
     if let Some(panel) = v.delegate.ivars().panel.take() {
-        panel.orderOut(None);
+        panel::spare(panel);
     }
     #[cfg(debug_assertions)]
     log_process(&v.web, "closed");

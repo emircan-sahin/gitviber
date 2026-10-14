@@ -5,9 +5,9 @@
 
 /// How many hidden views stay alive until settings say (browserLiveHidden).
 const LIVE_HIDDEN: usize = 2;
-/// How many agents' tabs draw out of sight at once, each in a panel at full rate: past it, the
-/// least recently used sleeps.
-pub const AWAKE_OFFSCREEN: usize = 8;
+/// How many agents' tabs draw out of sight at once, each in a panel at full rate (its backing
+/// store about 16 MB at 2x for a 1280×800 page): past it, the least recently used sleeps.
+pub const AWAKE_OFFSCREEN: usize = 6;
 
 pub struct Registry<V> {
     views: Vec<Entry<V>>,

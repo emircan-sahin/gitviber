@@ -172,6 +172,7 @@ function center(el) {
  * agent.rs refuses both, as one holds the app and the other follows the real mouse.
  */
 function point({ target, x, y }) {
+  if (target == null && (x >= innerWidth || y >= innerHeight)) throw new Error(`${x},${y} is outside the page's view (${innerWidth}×${innerHeight})`);
   let el = target == null ? document.elementFromPoint(x, y) : find(target);
   let scrolled = false;
   if (target != null) {

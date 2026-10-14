@@ -1,9 +1,9 @@
-//! The element picker, the console and the network log on a page's view (scripts/picker.js,
-//! console.js, network.js): the picker in GitViber's own content world, which the page can't see
-//! or post into; the console and the network log in the page's, where its logging and its
-//! requests are.
+//! The element picker, the console, the network log and an agent's tab's clipboard on a page's
+//! view (scripts/picker.js, console.js, network.js, clipboard.js): the picker in GitViber's own
+//! content world, which the page can't see or post into; the rest in the page's, where its
+//! logging, its requests and its clipboard calls are.
 
-use super::{emit, main_thread, url_text, view, Delegate, View, GONE};
+use super::{emit, main_thread, url_text, view, Delegate, View, WebView, GONE};
 use crate::browser::console::{Counts, Entry};
 use crate::browser::network;
 use crate::browser::picks::{self, Bounds, Pick};
@@ -91,10 +91,11 @@ define_class!(
 /// The picker's and the console's handlers on a new view's user content controller, and its
 /// page scripts (`add_scripts`). Only an agent's tab gets the network log: no one else asks for
 /// it, and the user's own pages shouldn't pay for copying every response.
+/// `agent`: an agent's tab's, with what its clipboard script answers to.
 pub(super) fn install(
     content: &WKUserContentController,
     id: &str,
-    agent: bool,
+    agent: Option<&str>,
     mtm: MainThreadMarker,
 ) {
     let messages = Messages::alloc(mtm).set_ivars(MessagesIvars { id: id.into() });
@@ -108,7 +109,7 @@ pub(super) fn install(
         );
         let page = WKContentWorld::pageWorld(mtm);
         content.addScriptMessageHandler_contentWorld_name(handler, &page, ns_string!("gvConsole"));
-        if agent {
+        if agent.is_some() {
             content.addScriptMessageHandler_contentWorld_name(
                 handler,
                 &page,
@@ -120,11 +121,18 @@ pub(super) fn install(
 }
 
 /// network.js in an agent's tab, whatever the console switch says (an agent asks for its
-/// network itself), and clipboard.js in each of its frames; console.js while the console is on.
-fn add_scripts(content: &WKUserContentController, agent: bool, mtm: MainThreadMarker) {
-    if agent {
+/// network itself), and clipboard.js in each of its frames, answering to `agent`'s key only;
+/// console.js while the console is on.
+fn add_scripts(content: &WKUserContentController, agent: Option<&str>, mtm: MainThreadMarker) {
+    if let Some(key) = agent {
         add_script(content, NETWORK, true, mtm);
-        add_script(content, CLIPBOARD, false, mtm);
+        let key = serde_json::to_string(key).unwrap_or_default();
+        add_script(
+            content,
+            &CLIPBOARD.replacen("__GV_KEY__", &key, 1),
+            false,
+            mtm,
+        );
     }
     if CAPTURE.get() {
         add_script(content, CONSOLE, true, mtm);
@@ -169,7 +177,55 @@ pub fn capture(on: bool, views: &[View]) {
         let content = unsafe { v.web.configuration().userContentController() };
         // There's no taking one script out: all go, and what stays comes back.
         unsafe { content.removeAllUserScripts() };
-        add_scripts(&content, super::agent::routed(&v.delegate.ivars().id), mtm);
+        let routed = super::agent::routed(&v.delegate.ivars().id);
+        let key = routed.then_some(&*v.web.ivars().clipboard);
+        add_scripts(&content, key, mtm);
+    }
+}
+
+/// An agent's tab's clipboard script (clipboard.js) asked `ask`: `on` or `off`, its calls kept
+/// to the page or the user's again; `copy`, `cut` or `paste` on the page's own clipboard. `done`
+/// gets its answer: for a paste, the text, unless the page took the paste event.
+pub(super) fn clipboard(web: &WebView, ask: &str, done: impl FnOnce(Option<String>) + 'static) {
+    let mtm = web.mtm();
+    let (key, ask) = (
+        NSString::from_str(&web.ivars().clipboard),
+        NSString::from_str(ask),
+    );
+    let arguments = NSDictionary::<NSString, AnyObject>::from_slices(
+        &[ns_string!("key"), ns_string!("ask")],
+        &[&*key, &*ask],
+    );
+    let done = Cell::new(Some(done));
+    let block = RcBlock::new(move |value: *mut AnyObject, _error: *mut NSError| {
+        // SAFETY: WebKit's answer, an object or nil, alive for this call.
+        let text = unsafe { value.as_ref() }
+            .and_then(|v| v.downcast_ref::<NSString>())
+            .map(|s| s.to_string());
+        if let Some(done) = done.take() {
+            done(text);
+        }
+    });
+    // `window` can't be redefined by the page, nor the script's own property on it.
+    let body = ns_string!(
+        "return typeof window.__gvClipboard === 'function' ? window.__gvClipboard(key, ask) ?? null : null;"
+    );
+    unsafe {
+        web.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
+            body,
+            Some(&arguments),
+            None,
+            &WKContentWorld::pageWorld(mtm),
+            Some(&block),
+        )
+    };
+}
+
+/// The page's own clipboard calls kept to it while an agent's command runs (`on`), the user's
+/// again after.
+pub(super) fn guard_clipboard(web: &WebView, on: bool) {
+    if super::agent::routed(&web.ivars().id) || !on {
+        clipboard(web, if on { "on" } else { "off" }, |_| {});
     }
 }
 
@@ -412,5 +468,14 @@ mod tests {
     #[test]
     fn the_message_handler_matches_its_protocol() {
         let _ = Messages::class();
+    }
+
+    /// The tab's key goes in once, as a JSON string, and nothing else answers for it.
+    #[test]
+    fn the_clipboard_script_answers_to_its_tabs_key_only() {
+        assert_eq!(CLIPBOARD.matches("__GV_KEY__").count(), 1);
+        let key = serde_json::to_string("6F1D2A93-made-up").unwrap();
+        let script = CLIPBOARD.replacen("__GV_KEY__", &key, 1);
+        assert!(script.contains("const key = \"6F1D2A93-made-up\";"));
     }
 }

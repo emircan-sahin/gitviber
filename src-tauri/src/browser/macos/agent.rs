@@ -4,8 +4,8 @@
 
 use super::page_view::appearance;
 use super::{
-    apply, ask, asked, content_view, create, emit, main_thread, page_tools, panel, set_agent,
-    url_text, view, Delegate, View, GONE, VIEWS,
+    apply, ask, asked, content_view, create, emit, main_thread, native, page_tools, panel,
+    set_agent, url_text, view, Delegate, View, GONE, VIEWS,
 };
 use crate::browser::control::{
     origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE,
@@ -236,17 +236,24 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<bool> {
         restart_idle(&v);
     }
     VIEWS.with_borrow_mut(|r| r.touch(&route.id));
-    sleep_past_cap();
+    sleep_past_cap(&route.id);
     Ok(made)
 }
 
-/// Past AWAKE_OFFSCREEN, the tabs drawn out of sight longest unused sleep, but for one a command
-/// runs on: each panel is a window's backing store, and its page runs at full rate.
-fn sleep_past_cap() {
-    for id in VIEWS.with_borrow(|r| r.over_awake(AWAKE_OFFSCREEN)) {
-        if let Some(v) = view(&id).filter(|v| !running(v)) {
+/// Past AWAKE_OFFSCREEN, the tabs drawn out of sight longest unused sleep: each panel is a
+/// window's backing store, and its page runs at full rate. One a command runs on, or `keep`
+/// (the one a command is about to), is passed over for the next.
+pub(super) fn sleep_past_cap(keep: &str) {
+    let drawn = VIEWS.with_borrow(|r| r.over_awake(0));
+    let mut over = drawn.len().saturating_sub(AWAKE_OFFSCREEN);
+    for id in drawn.iter().filter(|id| *id != keep) {
+        if over == 0 {
+            break;
+        }
+        if let Some(v) = view(id).filter(|v| !running(v)) {
             stop_idle(&v);
             sleep(&v);
+            over -= 1;
         }
     }
 }
@@ -273,6 +280,8 @@ pub fn agent_pane_closed(pty: u32) {
     }
     for route in ROUTES.with_borrow_mut(|r| r.release(pty)) {
         if let Some(v) = view(&route.id) {
+            native::release_keys(&v);
+            page_tools::guard_clipboard(&v.web, false);
             stop_idle(&v);
             sleep(&v);
         }
@@ -287,6 +296,7 @@ pub fn agent_running(id: &str, command: u64, on: bool) {
         return;
     };
     let mut running = v.delegate.ivars().running.borrow_mut();
+    let was_idle = running.is_empty();
     if on {
         running.insert(command);
     } else {
@@ -294,6 +304,11 @@ pub fn agent_running(id: &str, command: u64, on: bool) {
     }
     let idle = running.is_empty();
     drop(running);
+    // The page's clipboard and its panel's key, for the length of an agent's commands.
+    if idle != was_idle {
+        page_tools::guard_clipboard(&v.web, !idle);
+        panel::activate(&v, !idle);
+    }
     if idle {
         v.web.ivars().menus.set(0);
         restart_idle(&v);
