@@ -7,6 +7,7 @@ mod agent;
 mod cookies;
 mod page_tools;
 mod page_view;
+mod panel;
 
 pub use agent::{
     agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab, agent_js,
@@ -287,10 +288,11 @@ define_class!(
             }
         }
 
+        /// Not in its panel, where the page takes focus for its agents, not from the app page.
         #[unsafe(method(becomeFirstResponder))]
         fn become_first_responder(&self) -> Bool {
             let took: Bool = unsafe { msg_send![super(self), becomeFirstResponder] };
-            if took.as_bool() {
+            if took.as_bool() && !panel::in_panel(self) {
                 emit(&self.ivars().app, "browser-focus", Id { id: &self.ivars().id });
             }
             took
@@ -359,6 +361,8 @@ struct DelegateIvars {
     running: RefCell<HashSet<u64>>,
     /// The page's own zoom (page_view.rs), outside device mode.
     zoom: Cell<f64>,
+    /// Where it draws while an agent's and out of its tab's sight (panel.rs).
+    panel: RefCell<Option<Retained<panel::Panel>>>,
 }
 
 define_class!(
@@ -634,6 +638,7 @@ impl Delegate {
             crashed: Cell::new(false),
             running: RefCell::default(),
             zoom: Cell::new(1.0),
+            panel: RefCell::default(),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -784,6 +789,21 @@ fn data_store(mtm: MainThreadMarker) -> Retained<WKWebsiteDataStore> {
     }
 }
 
+/// The main window's content view, where the hosts lie over the app page.
+fn content_view(app: &AppHandle) -> Option<Retained<NSView>> {
+    window_content(&app.get_webview_window("main")?).ok()
+}
+
+fn window_content(window: &tauri::WebviewWindow) -> Res<Retained<NSView>> {
+    let ns_window = window
+        .ns_window()
+        .map_err(|e| e.to_string())?
+        .cast::<NSWindow>();
+    unsafe { ns_window.as_ref() }
+        .and_then(|w| w.contentView())
+        .ok_or_else(|| "The window isn't ready.".into())
+}
+
 /// The app page's own web view, beside the hosts in the window's content view.
 fn app_page(host: &NSView) -> Option<Retained<NSView>> {
     let parent = unsafe { host.superview() }?;
@@ -834,13 +854,7 @@ pub fn create(
         Some(page) => page,
         None => web_page(url)?,
     };
-    let ns_window = window
-        .ns_window()
-        .map_err(|e| e.to_string())?
-        .cast::<NSWindow>();
-    let content = unsafe { ns_window.as_ref() }
-        .and_then(|w| w.contentView())
-        .ok_or("The window isn't ready.")?;
+    let content = window_content(window)?;
     let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
 
     let config = unsafe { WKWebViewConfiguration::new(mtm) };
@@ -932,6 +946,7 @@ pub fn place(id: &str, rect: Rect, screen: Option<Screen>) -> Res<()> {
     let screen = screen.map(Screen::check).transpose()?;
     let rect = screen.map_or(rect, |s| s.fit(rect));
     let v = view(id).ok_or(GONE)?;
+    panel::release(&v);
     let page = app_page(&v.host).ok_or(GONE)?;
     let parent = unsafe { v.host.superview() }.ok_or(GONE)?;
     // From the page's top left, in its own coordinates whichever way up they run.
@@ -1003,7 +1018,7 @@ pub fn set_agent(id: &str, ua: Option<&str>) -> Res<()> {
 
 /// Hidden, WebKit slows its timers and animation frames. Out of its tab's sight (not just
 /// `aside` for something drawn over it), it parks past the cap or once its timer is up; an
-/// agent's awake tab is drawn off-screen instead (agent.rs).
+/// agent's awake tab is drawn in its panel instead (panel.rs).
 pub fn hide(id: &str, aside: bool) {
     let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
         return;
@@ -1035,8 +1050,12 @@ fn apply(v: &View, step: Step) {
             stop_timer(v);
             agent::offscreen(v);
         }
-        Step::Cover => v.host.setHidden(true),
+        Step::Cover => {
+            panel::release(v);
+            v.host.setHidden(true);
+        }
         Step::Hide(since, over) => {
+            panel::release(v);
             v.host.setHidden(true);
             v.delegate.ivars().hidden_at.set(Some(Instant::now()));
             start_timer(v, since, Duration::ZERO);
@@ -1166,6 +1185,9 @@ fn destroy(v: View) {
     }
     release_focus(&v);
     v.host.removeFromSuperview();
+    if let Some(panel) = v.delegate.ivars().panel.take() {
+        panel.orderOut(None);
+    }
     #[cfg(debug_assertions)]
     log_process(&v.web, "closed");
 }

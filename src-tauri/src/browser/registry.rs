@@ -30,8 +30,8 @@ enum State<V> {
     Shown(V),
     /// Out of sight since the hide numbered so.
     Hidden(V, u64),
-    /// Out of its tab's sight but drawn, off the window's edge, while it's awake: it neither
-    /// parks nor counts toward the cap.
+    /// Out of its tab's sight but drawn, in a panel of its own off every screen, while it's
+    /// awake: it neither parks nor counts toward the cap.
     Offscreen(V),
     Parked(Parked),
 }
@@ -40,7 +40,7 @@ enum State<V> {
 #[derive(Debug, PartialEq)]
 pub enum Step {
     Stay,
-    /// Drawn off the window's edge.
+    /// Drawn in its panel, off every screen.
     Offscreen,
     /// Hidden under what covers it, still its tab's.
     Cover,
@@ -243,7 +243,7 @@ impl<V> Registry<V> {
         (!awake).then(|| (since, self.over_cap()))
     }
 
-    /// Drawn off the window's edge for its agents: out of sight, or under a cover.
+    /// Drawn in its panel for its agents: out of sight, or under a cover.
     pub fn offscreen(&self, id: &str) -> bool {
         self.views.iter().any(|e| {
             e.id == id

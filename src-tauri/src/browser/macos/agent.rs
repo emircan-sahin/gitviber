@@ -4,8 +4,8 @@
 
 use super::page_view::appearance;
 use super::{
-    apply, ask, asked, create, emit, main_thread, page_tools, set_agent, url_text, view, Delegate,
-    View, GONE, VIEWS,
+    apply, ask, asked, content_view, create, emit, main_thread, page_tools, panel, set_agent,
+    url_text, view, Delegate, View, GONE, VIEWS,
 };
 use crate::browser::control::{
     origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE,
@@ -19,8 +19,8 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject};
 use objc2::{msg_send, sel, DefinedClass};
 use objc2_foundation::{
-    ns_string, NSDictionary, NSError, NSObjectNSDelayedPerforming, NSObjectProtocol, NSPoint,
-    NSRect, NSSize, NSString, NSTimer, NSUUID,
+    ns_string, NSDictionary, NSError, NSObjectNSDelayedPerforming, NSObjectProtocol, NSRect,
+    NSSize, NSString, NSTimer, NSUUID,
 };
 use objc2_web_kit::{WKContentWorld, WKWebView, WKWebsiteDataStore};
 use serde::Serialize;
@@ -398,14 +398,14 @@ struct Shown<'a> {
     dark: Option<bool>,
 }
 
-/// Shown off the window's left edge, as the agent's device or the size it last had.
+/// Drawn in its panel (panel.rs), as the agent's device or the size it last had.
 pub(super) fn offscreen(v: &View) {
     let screen = asked(&v.delegate.ivars().id).screen;
     let size = match &screen {
         Some(s) => NSSize::new(s.w, s.h),
         None => {
             let frame = v.host.frame().size;
-            let window = unsafe { v.host.superview() }.map(|p| p.bounds().size);
+            let window = content_view(&v.delegate.ivars().app).map(|c| c.bounds().size);
             if frame.width >= 1.0 && frame.height >= 1.0 {
                 frame
             } else {
@@ -413,8 +413,7 @@ pub(super) fn offscreen(v: &View) {
             }
         }
     };
-    v.host
-        .setFrame(NSRect::new(NSPoint::new(-size.width - 100.0, 0.0), size));
+    panel::hold(v, size);
     if let Some(s) = screen {
         // Laid out at the device's own width; device mode sets its zoom again when it shows.
         unsafe { v.web.setPageZoom(1.0) };
@@ -424,7 +423,6 @@ pub(super) fn offscreen(v: &View) {
             let _: () = unsafe { msg_send![&*v.web, _setOverrideDeviceScaleFactor: dpr] };
         }
     }
-    v.host.setHidden(false);
 }
 
 /// WebKit's slowing of pages out of sight, and of a window covered by others, off while an
