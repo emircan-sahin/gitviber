@@ -154,7 +154,6 @@ pub fn agent_close_tab(app: &AppHandle, id: &str) -> Res<String> {
 /// The tab closed, by the user or with its worktree: no agent drives it again, even reopened.
 pub(super) fn forget_tab(id: &str) {
     ROUTES.with_borrow_mut(|r| r.close(id));
-    arm_sweep();
 }
 
 /// Whether the tab is still there for its agents: live, or parked to load again.
@@ -248,11 +247,13 @@ pub(super) fn routed(id: &str) -> bool {
 /// (close_all), so none stays a user's tab with network.js on it.
 pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
-    arm_sweep();
     super::ASKED.with_borrow_mut(HashMap::clear);
 }
 
-/// The pane closed: its tabs are the user's from now on, asleep as theirs are.
+/// The pane closed: its tabs are the user's from now on, asleep as theirs are. Their page keeps
+/// network.js until it parks or closes (a view made again is the user's, without it): its log
+/// is in memory, bounded, and no agent reaches it now, and the scripts it shares its controller
+/// with would have to go to take it out.
 pub fn agent_pane_closed(pty: u32) {
     if main_thread().is_err() {
         return;
@@ -263,7 +264,6 @@ pub fn agent_pane_closed(pty: u32) {
             sleep(&v);
         }
     }
-    arm_sweep();
 }
 
 /// `command` running on the tab (`on`) or done: meanwhile its page's dialogs answer themselves
@@ -323,19 +323,19 @@ fn stop_idle(v: &View) {
 }
 
 /// The one timer for every agent tab's close deadline (control.rs `Routes::due`), apart from
-/// the views, so a tab that parked closes too.
+/// the views, so a tab that parked closes too. Set again only for a sooner one: one set for
+/// later than due finds nothing to close, and sets itself again.
 fn arm_sweep() {
-    let due = ROUTES.with_borrow(Routes::due);
+    let Some(due) = ROUTES.with_borrow(Routes::due) else {
+        return;
+    };
     SWEEP.with_borrow_mut(|armed| {
-        if armed.as_ref().map(|a| a.0) == due {
+        if armed.as_ref().is_some_and(|a| a.0 <= due) {
             return;
         }
         if let Some((_, timer)) = armed.take() {
             timer.invalidate();
         }
-        let Some(due) = due else {
-            return;
-        };
         let after = due.saturating_duration_since(Instant::now());
         let sweep = RcBlock::new(|_: NonNull<NSTimer>| sweep());
         let timer = unsafe {
@@ -349,14 +349,15 @@ fn arm_sweep() {
     });
 }
 
-/// Closes the agents' tabs unused past their time, as `tab close` would; one the user is looking
-/// at gets more time instead.
+/// Closes the agents' tabs unused past their time, as `tab close` would, never through a command
+/// running on one; one the user is looking at gets more time instead.
 fn sweep() {
     SWEEP.with_borrow_mut(|armed| armed.take());
     let now = Instant::now();
     let app = APP.with(|a| a.get().cloned());
     for id in ROUTES.with_borrow(|r| r.expired(now)) {
-        if VIEWS.with_borrow(|r| r.shown(&id)) {
+        let busy = view(&id).is_some_and(|v| running(&v));
+        if busy || VIEWS.with_borrow(|r| r.shown(&id)) {
             ROUTES.with_borrow_mut(|r| r.postpone(&id, now));
         } else if let Some(app) = &app {
             let _ = agent_close_tab(app, &id);
