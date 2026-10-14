@@ -237,6 +237,8 @@ export interface Settings {
   browserConsole: boolean;
   /** Agents in the terminals may drive a browser tab of their pane's with `gitviber browser`. */
   browserAgentControl: boolean;
+  /** While agent control is on, Claude Code and Codex get a skill on `gitviber browser` (browser/skill.rs). */
+  browserAgentSkill: boolean;
   /** The last Code / Preview choice on an SVG; the next one opens the same way. Set from the viewer, not the dialog. */
   svgPreview: boolean;
   /** The last mode picked on a changed image (an SVG preview's too). Set from the viewer, not the dialog. */
@@ -353,6 +355,8 @@ const DEFAULTS: Settings = {
   browserReloadOnAgentDone: false,
   browserConsole: true,
   browserAgentControl: false,
+  // On, as agent control is the opt-in: an agent that doesn't know the command never uses it.
+  browserAgentSkill: true,
   svgPreview: false,
   imageCompare: "side",
   blame: false,
@@ -458,6 +462,7 @@ function load(): Settings {
     if (typeof s.browserReloadOnAgentDone !== "boolean") s.browserReloadOnAgentDone = DEFAULTS.browserReloadOnAgentDone;
     if (typeof s.browserConsole !== "boolean") s.browserConsole = DEFAULTS.browserConsole;
     if (typeof s.browserAgentControl !== "boolean") s.browserAgentControl = DEFAULTS.browserAgentControl;
+    if (typeof s.browserAgentSkill !== "boolean") s.browserAgentSkill = DEFAULTS.browserAgentSkill;
     if (typeof s.svgPreview !== "boolean") s.svgPreview = DEFAULTS.svgPreview;
     if (!["side", "swipe", "onion"].includes(s.imageCompare)) s.imageCompare = DEFAULTS.imageCompare;
     if (typeof s.blame !== "boolean") s.blame = DEFAULTS.blame;

@@ -90,6 +90,15 @@ export interface ListeningPort {
   loopback: boolean;
 }
 
+/** Where an agent's gitviber-browser skill stands (browser/skill.rs): `path` under `~/`. */
+export interface SkillTarget {
+  agent: string;
+  path: string;
+  /** noAgent: its folder isn't there; theirs: a file without GitViber's marker, left alone. */
+  status: "written" | "none" | "noAgent" | "theirs" | "failed";
+  error?: string;
+}
+
 // A tab's view is made and closed in the order asked: a close right after a create, then a
 // reopen (⇧⌘T), must reach the backend as create, close, create, or the reopened tab has none.
 const lifecycle = new Map<string, Promise<unknown>>();
@@ -134,6 +143,10 @@ export const browserApi = {
   /** Hidden views kept alive, the minutes until one parks (0: never), and the console on or off. */
   configure: (liveHidden: number, parkAfterMin: number, console: boolean, agentControl: boolean) =>
     invoke<void>("browser_configure", { liveHidden, parkAfterMin, console, agentControl }),
+  /** Each agent's skill written (`on`) or removed, and where it stands. */
+  skill: (on: boolean) => invoke<SkillTarget[]>("browser_skill", { on }),
+  /** The skill's text for a CLAUDE.md or AGENTS.md, for agents without skills. */
+  agentNote: () => invoke<string>("browser_agent_note"),
   /** The element picker on or off; its pick comes as `browser-picked`. */
   pick: (id: string, on: boolean) => invoke<void>("browser_pick", { id, on }),
   console: (id: string) => invoke<ConsoleEntry[]>("browser_console", { id }),
