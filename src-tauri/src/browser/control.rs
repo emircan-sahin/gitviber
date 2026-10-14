@@ -2077,4 +2077,110 @@ mod tests {
             "two stack lines, and no mark for the quiet last page: {text}"
         );
     }
+
+    /// Links and `..` go by what they point at: a link to a file is that file, one to a folder
+    /// or to nothing isn't; the same file twice is two files.
+    #[cfg(unix)]
+    #[test]
+    fn uploads_follow_links_to_files_and_refuse_links_to_folders_or_nothing() {
+        use std::os::unix::fs::symlink;
+        let dir = std::env::temp_dir().join(format!("gv-upload-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("real.txt"), b"made up").unwrap();
+        symlink(dir.join("real.txt"), dir.join("to-file")).unwrap();
+        symlink(dir.join("sub"), dir.join("to-dir")).unwrap();
+        symlink(dir.join("gone.txt"), dir.join("dangling")).unwrap();
+        assert_eq!(
+            upload_paths(&dir, &words(&["to-file", "sub/../real.txt", "real.txt"])),
+            Ok(vec![
+                dir.join("to-file"),
+                dir.join("sub/../real.txt"),
+                dir.join("real.txt")
+            ])
+        );
+        assert_eq!(
+            upload_paths(&dir.join("sub"), &words(&["../real.txt", "../real.txt"]))
+                .unwrap()
+                .len(),
+            2
+        );
+        for no in ["to-dir", "dangling", "", ".", "sub/", "~/real.txt"] {
+            let e = upload_paths(&dir, &words(&[no])).unwrap_err();
+            assert!(e.starts_with("No file "), "{no:?}: {e}");
+        }
+        // One missing among good ones refuses them all.
+        assert!(upload_paths(&dir, &words(&["real.txt", "nope.txt"])).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pointer_commands_take_a_point_or_one_target_and_nothing_else() {
+        assert_eq!(
+            parse("click", &args("--at 0.5,10.25")),
+            Ok(Command::Click(Click {
+                target: Target::At(0.5, 10.25),
+                count: 1,
+                right: false,
+                synthetic: false
+            }))
+        );
+        // A bare point clicks there too.
+        assert_eq!(
+            parse("rightclick", &args("12,30")),
+            Ok(Command::Click(Click {
+                target: Target::At(12.0, 30.0),
+                count: 1,
+                right: true,
+                synthetic: false
+            }))
+        );
+        assert_eq!(
+            parse("hover", &args("1.5,2")),
+            Ok(Command::Hover(Target::At(1.5, 2.0)))
+        );
+        assert_eq!(
+            parse("drag", &args("0,0 e5")),
+            Ok(Command::Drag(Target::At(0.0, 0.0), Target::El("e5".into())))
+        );
+        // A negative point isn't one: a selector, which finds nothing.
+        assert_eq!(
+            parse("hover", &args("-5,10")),
+            Ok(Command::Hover(Target::El("-5,10".into())))
+        );
+        for (cmd, a) in [
+            ("click", "--at -5,10"),
+            ("click", "--at 5"),
+            ("click", "--at"),
+            ("click", "--at 1,2 e3"),
+            ("click", "--at 1,2 --synthetic"),
+            ("click", "--synthetic 1,2"),
+            ("dblclick", "--synthetic e3"),
+            ("rightclick", "--synthetic e3"),
+            ("hover", "--at 1,2"),
+            ("hover", "a b"),
+            ("drag", "e1"),
+            ("drag", "e1 e2 e3"),
+            ("scroll", "down -5"),
+            ("scroll", "down 1.5"),
+            ("scroll", "down 4294967296"),
+            ("scroll", "down 5 6"),
+            ("press", "--hold -1 a"),
+            ("press", "a --synthetic --hold 5"),
+            ("upload", "e1"),
+            ("key", "down a b"),
+            ("key", "down ş"),
+        ] {
+            assert!(parse(cmd, &args(a)).is_err(), "{cmd} {a}");
+        }
+        // A hold past the longest wait is held that long.
+        assert_eq!(
+            parse("press", &args("a --hold 99999999")),
+            Ok(Command::Press {
+                chord: "a".into(),
+                hold: Some(LONGEST_WAIT),
+                synthetic: false
+            })
+        );
+    }
 }

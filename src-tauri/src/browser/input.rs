@@ -704,4 +704,495 @@ mod tests {
         assert_eq!(held.flags(), 0);
         assert!(held.up("Shift").is_err());
     }
+
+    /// Every key the US table has, by either character: one code, that character typed, Shift
+    /// only for the shifted one, and the DOM code keys.rs reads back names that physical key.
+    #[test]
+    fn every_us_key_types_its_own_character_by_either_of_its_characters() {
+        let dom = |c: char| match c {
+            'a'..='z' => format!("Key{}", c.to_ascii_uppercase()),
+            '0'..='9' => format!("Digit{c}"),
+            '-' => "Minus".into(),
+            '=' => "Equal".into(),
+            '[' => "BracketLeft".into(),
+            ']' => "BracketRight".into(),
+            '\\' => "Backslash".into(),
+            ';' => "Semicolon".into(),
+            '\'' => "Quote".into(),
+            ',' => "Comma".into(),
+            '.' => "Period".into(),
+            '/' => "Slash".into(),
+            '`' => "Backquote".into(),
+            _ => panic!("{c}"),
+        };
+        let mut codes = std::collections::HashSet::new();
+        for (plain, shifted, code) in US {
+            assert!(codes.insert(code), "{plain}: code {code:#x} twice");
+            assert_eq!(crate::browser::keys::code(code), dom(plain), "{plain}");
+            let p = key(&plain.to_string()).unwrap();
+            let s = key(&shifted.to_string()).unwrap();
+            assert_eq!((p.code, s.code), (code, code), "{plain}{shifted}");
+            assert_eq!((p.modifier, s.modifier), (None, None));
+            let (ps, ss) = (p.stroke(0), s.stroke(0));
+            assert_eq!((ps.chars.as_str(), ps.flags), (&*plain.to_string(), 0));
+            assert_eq!(
+                (ss.chars.as_str(), ss.flags),
+                (&*shifted.to_string(), SHIFT)
+            );
+            // Shift held on the plain one types the shifted one, as the key itself does.
+            assert_eq!(p.stroke(SHIFT), ss, "{plain} with Shift held");
+            assert_eq!(ss.bare, ss.chars);
+        }
+        // Every letter and digit, and each sign a US keyboard types.
+        assert_eq!(US.len(), 26 + 10 + 11);
+        for c in ('a'..='z')
+            .chain('A'..='Z')
+            .chain('0'..='9')
+            .chain("`~!@#$%^&*()-_=+[]{}\\|;:'\",<.>/?".chars())
+        {
+            assert!(key(&c.to_string()).is_some(), "{c}");
+        }
+    }
+
+    /// The named keys in any case, with the codes and AppKit characters a Mac keyboard gives.
+    #[test]
+    fn named_keys_in_any_case_have_a_macs_codes_and_characters() {
+        #[rustfmt::skip]
+        let named: [(&str, u16, char, u64); 18] = [
+            ("Enter", 0x24, '\r', 0), ("Return", 0x24, '\r', 0), ("Tab", 0x30, '\t', 0),
+            ("Space", 0x31, ' ', 0), ("Backspace", 0x33, '\u{7f}', 0),
+            ("Escape", 0x35, '\u{1b}', 0), ("Esc", 0x35, '\u{1b}', 0),
+            ("Delete", 0x75, '\u{f728}', FUNCTION), ("Home", 0x73, '\u{f729}', FUNCTION),
+            ("End", 0x77, '\u{f72b}', FUNCTION), ("PageUp", 0x74, '\u{f72c}', FUNCTION),
+            ("PageDown", 0x79, '\u{f72d}', FUNCTION),
+            ("ArrowLeft", 0x7B, '\u{f702}', FUNCTION | NUMERIC_PAD),
+            ("ArrowRight", 0x7C, '\u{f703}', FUNCTION | NUMERIC_PAD),
+            ("ArrowDown", 0x7D, '\u{f701}', FUNCTION | NUMERIC_PAD),
+            ("ArrowUp", 0x7E, '\u{f700}', FUNCTION | NUMERIC_PAD),
+            ("Insert", 0x72, '\u{f727}', FUNCTION), ("Help", 0x72, '\u{f746}', FUNCTION),
+        ];
+        for (name, code, c, flags) in named {
+            for spelt in [
+                name.to_string(),
+                name.to_ascii_lowercase(),
+                name.to_ascii_uppercase(),
+            ] {
+                let k = key(&spelt).unwrap_or_else(|| panic!("{spelt}"));
+                let s = k.stroke(0);
+                assert_eq!(
+                    (k.code, s.chars.as_str(), s.flags),
+                    (code, &*c.to_string(), flags)
+                );
+                assert_eq!(k.modifier, None);
+            }
+        }
+        assert_eq!(key(" "), key("Space"));
+        for (short, long) in [
+            ("Up", "ArrowUp"),
+            ("DOWN", "ArrowDown"),
+            ("left", "ArrowLeft"),
+        ] {
+            assert_eq!(key(short), key(long), "{short}");
+        }
+        // Shift+Tab is AppKit's back tab; Shift leaves the others' characters as they are.
+        assert_eq!(key("Tab").unwrap().stroke(SHIFT).chars, "\u{19}");
+        assert_eq!(key("Enter").unwrap().stroke(SHIFT).chars, "\r");
+        const F: [u16; 12] = [
+            0x7A, 0x78, 0x63, 0x76, 0x60, 0x61, 0x62, 0x64, 0x65, 0x6D, 0x67, 0x6F,
+        ];
+        for (n, code) in (1..=12u32).zip(F) {
+            for spelt in [format!("F{n}"), format!("f{n}")] {
+                let k = key(&spelt).unwrap();
+                let s = k.stroke(0);
+                let c = char::from_u32(0xf703 + n).unwrap();
+                assert_eq!((k.code, s.chars, s.flags), (code, c.to_string(), FUNCTION));
+            }
+        }
+        for none in [
+            "F0", "F13", "F01x", "f", "Fn", "Enterr", "Arrow", "Del", "KeyA",
+        ] {
+            // "f" alone is the letter; the others aren't keys.
+            if none == "f" {
+                assert_eq!(key(none).unwrap().code, 0x03);
+            } else {
+                assert_eq!(key(none), None, "{none}");
+            }
+        }
+        #[rustfmt::skip]
+        let mods = [
+            ("Shift", SHIFT, 0x38), ("Control", CONTROL, 0x3B), ("Ctrl", CONTROL, 0x3B),
+            ("Alt", OPTION, 0x3A), ("Option", OPTION, 0x3A), ("Meta", COMMAND, 0x37),
+            ("Cmd", COMMAND, 0x37), ("Command", COMMAND, 0x37), ("ControlOrMeta", COMMAND, 0x37),
+            ("Super", COMMAND, 0x37),
+        ];
+        for (name, flag, code) in mods {
+            for spelt in [
+                name.to_string(),
+                name.to_ascii_uppercase(),
+                name.to_ascii_lowercase(),
+            ] {
+                let k = key(&spelt).unwrap();
+                assert_eq!((k.modifier, k.code), (Some(flag), code), "{spelt}");
+            }
+        }
+    }
+
+    /// Turkish letters, and any other a US keyboard has no key for, are refused by name, with
+    /// the way to type them: never sent as some other key.
+    #[test]
+    fn letters_no_us_key_types_are_refused_and_sent_to_type() {
+        let mut held = Held::default();
+        for c in [
+            "ğ", "ü", "ş", "ı", "ö", "ç", "Ğ", "Ü", "Ş", "İ", "Ö", "Ç", "é", "ß", "€", "£", "§",
+            "±", "ä", "ñ", "日", "😀", "\t", "\n", "\u{0}",
+        ] {
+            assert_eq!(key(c), None, "{c:?}");
+            let e = chord(c).unwrap_err();
+            assert!(e.contains("`type`"), "{c:?}: {e}");
+            assert!(chord(&format!("Meta+{c}")).is_err(), "Meta+{c:?}");
+            assert!(held.press(c, Half::Both).is_err(), "{c:?}");
+            assert!(held.down(c).is_err(), "{c:?}");
+            assert!(held.up(c).is_err(), "{c:?}");
+        }
+        // Lowercasing İ or ı mustn't land on i's key, nor K (Kelvin sign) on k's.
+        for c in ["İ", "ı", "\u{212a}", "\u{17f}"] {
+            assert_eq!(key(c), None, "{c:?}");
+        }
+        assert_eq!(held.flags(), 0);
+    }
+
+    #[test]
+    fn chords_parse_modifiers_in_any_case_and_refuse_what_isnt_one() {
+        fn ok(c: &str) -> (Vec<&str>, &str) {
+            chord(c).unwrap_or_else(|e| panic!("{c}: {e}"))
+        }
+        assert_eq!(ok("Meta+Shift+a"), (vec!["Meta", "Shift"], "a"));
+        assert_eq!(ok("Control+Alt+Delete"), (vec!["Control", "Alt"], "Delete"));
+        assert_eq!(ok("META+shift+A"), (vec!["META", "shift"], "A"));
+        assert_eq!(ok("Meta++"), (vec!["Meta"], "+"));
+        assert_eq!(ok("Meta+++"), (vec!["Meta"], "+"));
+        assert_eq!(ok("++"), (vec![], "+"));
+        assert_eq!(ok("Shift+Control"), (vec!["Shift"], "Control"));
+        for bad in [
+            "",
+            "Shift+",
+            "Meta+",
+            "a+b",
+            "Hyper+x",
+            "Meta+Hyper+x",
+            "Meta + a",
+            " a",
+            "Meta+ab",
+            "Enter+a",
+            "F5+a",
+        ] {
+            assert!(chord(bad).is_err(), "{bad:?}");
+        }
+        // A modifier named twice goes down once, and comes up once.
+        let held = Held::default();
+        let (steps, _) = held.press("Ctrl+Control+a", Half::Both).unwrap();
+        let flags = steps
+            .iter()
+            .filter(|s| matches!(s, KeyStep::Flags { .. }))
+            .count();
+        assert_eq!(flags, 2, "{steps:?}");
+        // ⌃⌥⌦ carries every flag it should.
+        let (steps, _) = held.press("Control+Alt+Delete", Half::Both).unwrap();
+        let down = steps
+            .iter()
+            .find_map(|s| match s {
+                KeyStep::Down(s) => Some(s),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!((down.code, down.flags), (0x75, CONTROL | OPTION | FUNCTION));
+        // A chord that ends on a modifier presses that modifier inside the others.
+        let (steps, edit) = held.press("Shift+Control", Half::Both).unwrap();
+        assert_eq!(edit, None);
+        assert_eq!(
+            steps,
+            [
+                KeyStep::Flags {
+                    code: 0x38,
+                    flags: SHIFT
+                },
+                KeyStep::Flags {
+                    code: 0x3B,
+                    flags: SHIFT | CONTROL
+                },
+                KeyStep::Flags {
+                    code: 0x3B,
+                    flags: SHIFT
+                },
+                KeyStep::Flags {
+                    code: 0x38,
+                    flags: 0
+                },
+            ]
+        );
+    }
+
+    /// Every press, whatever is held: each key down has its up, the modifiers it added come up
+    /// again so the flags end where they were held, the halves make the whole, and the press
+    /// changes nothing held.
+    #[test]
+    fn every_press_ends_with_the_held_flags_and_its_halves_make_the_whole() {
+        let chords = [
+            "a",
+            "A",
+            "?",
+            "Enter",
+            "Shift+Tab",
+            "Meta+a",
+            "Meta+Shift+z",
+            "Meta+Z",
+            "Control+a",
+            "Control+Shift+a",
+            "Alt+ArrowLeft",
+            "Control+Alt+Delete",
+            "Shift",
+            "Meta",
+            "Meta+Shift",
+            "Shift+Shift+x",
+            "F5",
+            "Meta++",
+            "+",
+            "Control+Alt+Shift+Meta+k",
+            "ControlOrMeta+c",
+        ];
+        for held_mods in [
+            &[][..],
+            &["Shift"],
+            &["Meta"],
+            &["Control", "Alt"],
+            &["Shift", "Meta"],
+        ] {
+            let mut held = Held::default();
+            for m in held_mods {
+                held.down(m).unwrap();
+            }
+            let before = held.flags();
+            for c in chords {
+                let (all, edit) = held.press(c, Half::Both).unwrap();
+                let (down, down_edit) = held.press(c, Half::Down).unwrap();
+                let (up, up_edit) = held.press(c, Half::Up).unwrap();
+                assert_eq!([down, up].concat(), all, "{c} with {held_mods:?}");
+                assert_eq!((down_edit, up_edit), (edit, None), "{c}");
+                assert_eq!(held.flags(), before, "{c} changed what's held");
+                // The last flags change goes back to what's held.
+                if let Some(KeyStep::Flags { flags, .. }) = all
+                    .iter()
+                    .rev()
+                    .find(|s| matches!(s, KeyStep::Flags { .. }))
+                {
+                    assert_eq!(*flags, before, "{c} with {held_mods:?}: {all:?}");
+                }
+                let downs: Vec<_> = all
+                    .iter()
+                    .filter_map(|s| match s {
+                        KeyStep::Down(s) => Some(s),
+                        _ => None,
+                    })
+                    .collect();
+                let ups: Vec<_> = all
+                    .iter()
+                    .filter_map(|s| match s {
+                        KeyStep::Up(s) => Some(s),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(downs, ups, "{c}");
+                // Each key event carries what's held at least.
+                for s in downs {
+                    assert_eq!(s.flags & before, before, "{c}");
+                }
+            }
+        }
+    }
+
+    /// A failed key command leaves nothing held that wasn't, and lets go of nothing that was.
+    #[test]
+    fn a_failed_key_command_changes_nothing_held() {
+        let mut held = Held::default();
+        held.down("Shift").unwrap();
+        held.down("w").unwrap();
+        for bad in ["Hyper+x", "ş", "Meta+", "", "Shift+Hyper"] {
+            assert!(held.press(bad, Half::Both).is_err(), "{bad}");
+            assert!(held.press(bad, Half::Down).is_err(), "{bad}");
+        }
+        for bad in ["Hyper", "ğ", "", "Shift", "w", "W"] {
+            assert!(held.down(bad).is_err(), "down {bad}");
+        }
+        for bad in ["Hyper", "İ", "Meta", "x", "Control"] {
+            assert!(held.up(bad).is_err(), "up {bad}");
+        }
+        assert_eq!(held.flags(), SHIFT);
+        // Both still held, and let go once each.
+        assert_eq!(held.up("W").unwrap().len(), 1);
+        assert!(held.up("w").is_err());
+        assert_eq!(held.up("SHIFT").unwrap().len(), 1);
+        assert_eq!(held.flags(), 0);
+        // A key up with no key down first is refused for every kind of key.
+        for k in ["a", "Enter", "F5", "Shift", "Meta", "ArrowUp"] {
+            assert!(held.up(k).is_err(), "{k}");
+        }
+    }
+
+    /// A key held down and then pressed again goes down a second time with no up between, and
+    /// its `key up` then sends an up of its own: two ups for a key a keyboard sent one for.
+    #[test]
+    #[ignore = "bug: press of a key held by `key down` sends down+up while it's still held"]
+    fn pressing_a_key_already_held_down_doesnt_send_a_second_down() {
+        let mut held = Held::default();
+        held.down("w").unwrap();
+        let (steps, _) = held.press("w", Half::Both).unwrap();
+        assert!(
+            !steps
+                .iter()
+                .any(|s| matches!(s, KeyStep::Down(s) if s.code == 0x0D)),
+            "{steps:?}"
+        );
+    }
+
+    #[test]
+    fn points_take_fractions_and_refuse_signs_and_other_numbers() {
+        assert_eq!(point("0,0"), Some((0.0, 0.0)));
+        assert_eq!(point("0.25,1999.75"), Some((0.25, 1999.75)));
+        assert_eq!(point("5.,3"), Some((5.0, 3.0)));
+        assert_eq!(point(".5,3"), Some((0.5, 3.0)));
+        for no in [
+            "+5,3",
+            "-0,3",
+            "5,-3",
+            ".,3",
+            "1..2,3",
+            "1.2.3,4",
+            "0x10,5",
+            "inf,1",
+            "NaN,1",
+            "\u{661},2",
+            "1,2 ",
+            "",
+            ",",
+            " , ",
+            "1;2",
+            "1 2",
+        ] {
+            // "1,2 " has its spaces trimmed: a point all the same.
+            if no == "1,2 " {
+                assert_eq!(point(no), Some((1.0, 2.0)));
+                continue;
+            }
+            assert_eq!(point(no), None, "{no:?}");
+        }
+    }
+
+    #[test]
+    fn view_points_scale_by_zoom_and_flip_about_the_views_height() {
+        // Fractional CSS px stay fractional; a point past the bottom lands below an unflipped
+        // view's origin, one past the right past its width: no clamping here.
+        assert_eq!(to_view((10.5, 0.25), 2.0, 600.0, true), (21.0, 0.5));
+        assert_eq!(to_view((10.5, 0.25), 2.0, 600.0, false), (21.0, 599.5));
+        assert_eq!(to_view((0.0, 700.0), 1.0, 600.0, false), (0.0, -100.0));
+        assert_eq!(to_view((5000.0, 0.0), 1.0, 600.0, true), (5000.0, 0.0));
+        // Flipping twice is the identity, at any zoom.
+        for zoom in [0.25, 0.5, 1.0, 1.25, 3.0] {
+            let (x, y) = to_view((123.0, 45.0), zoom, 800.0, false);
+            assert_eq!((x, 800.0 - y), to_view((123.0, 45.0), zoom, 800.0, true));
+        }
+    }
+
+    #[test]
+    fn drags_step_evenly_either_way_holding_only_the_left_button() {
+        for (a, b) in [
+            ((0.0, 0.0), (0.0, 0.0)),
+            ((300.0, 40.0), (10.0, 400.0)),
+            ((0.5, 0.5), (1.5, 0.5)),
+        ] {
+            let steps = drag(a, b);
+            assert_eq!(steps.len(), DRAG_STEPS + 3);
+            assert_eq!(steps[0], (Pointer::Move, a));
+            assert_eq!(
+                steps[1],
+                (
+                    Pointer::Down {
+                        right: false,
+                        clicks: 1
+                    },
+                    a
+                )
+            );
+            assert_eq!(
+                steps[DRAG_STEPS + 2],
+                (
+                    Pointer::Up {
+                        right: false,
+                        clicks: 1
+                    },
+                    b
+                )
+            );
+            assert_eq!(steps[DRAG_STEPS + 1].1, b);
+            let buttons: Vec<usize> = steps.iter().map(|s| s.0.buttons()).collect();
+            assert_eq!(buttons[0], 0);
+            assert!(buttons[1..=DRAG_STEPS + 1].iter().all(|&b| b == 1));
+            assert_eq!(buttons[DRAG_STEPS + 2], 0);
+            // Each move goes the same way along the line, as far as the last.
+            let (dx, dy) = (
+                (b.0 - a.0) / DRAG_STEPS as f64,
+                (b.1 - a.1) / DRAG_STEPS as f64,
+            );
+            for w in steps[1..=DRAG_STEPS + 1].windows(2) {
+                assert!(((w[1].1 .0 - w[0].1 .0) - dx).abs() < 1e-9);
+                assert!(((w[1].1 .1 - w[0].1 .1) - dy).abs() < 1e-9);
+            }
+        }
+        // A right click holds the right button; a triple click counts to three.
+        assert_eq!(clicks(3, false).len(), 7);
+        assert_eq!(clicks(0, false).len(), 3, "no clicks is still one");
+        assert_eq!(
+            Pointer::Up {
+                right: true,
+                clicks: 1
+            }
+            .buttons(),
+            0
+        );
+    }
+
+    #[test]
+    fn wheel_turns_add_up_to_the_distance_signed_by_the_way() {
+        for px in [1, 119, 120, 121, 240, 1000, 30_721] {
+            for up in [false, true] {
+                let turns = wheel(px, up);
+                assert_eq!(turns.len() as u32, px.div_ceil(WHEEL_STEP), "{px}");
+                let mut sum = 0.0;
+                for t in turns {
+                    let Pointer::Wheel { dy } = t else {
+                        panic!("{t:?}")
+                    };
+                    assert!(dy != 0.0 && dy.abs() <= f64::from(WHEEL_STEP));
+                    assert_eq!(dy < 0.0, up, "{px} up={up}");
+                    sum += dy;
+                }
+                assert_eq!(sum.abs(), f64::from(px));
+            }
+        }
+    }
+
+    /// `scroll down <px>` takes any u32: at 120 px a turn, each turn a native event a frame
+    /// apart, planned all at once. 100,000,000 px is 833,334 events (hours of wheel turns the
+    /// command can't stop, a 13 MB plan), u32::MAX is 35,791,395 (a 570 MB plan).
+    #[test]
+    #[ignore = "bug: a huge scroll plans millions of wheel events, with no bound"]
+    fn a_huge_scroll_is_refused_or_bounded_before_it_becomes_millions_of_wheel_events() {
+        use crate::browser::control::{parse, Command};
+        let px = match parse("scroll", &["down".into(), "100000000".into()]) {
+            Err(_) => return,
+            Ok(Command::Scroll(_, Some(px))) => px,
+            Ok(other) => panic!("{other:?}"),
+        };
+        let turns = wheel(px, false).len();
+        assert!(turns <= 10_000, "{turns} wheel events for one scroll");
+    }
 }
