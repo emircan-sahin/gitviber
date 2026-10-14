@@ -355,11 +355,15 @@ fn toplevel_tells_no_repo_from_git_failing() {
     assert!(err.starts_with("Folder not found"), "{err}");
     assert_eq!(toplevel(&dir).unwrap_err(), NOT_A_REPO);
     // A .git file pointing nowhere is a broken repo, so git's own message comes through.
-    // Not checked for the path: git 2.55 prints "not a git repository: (null)".
+    // Not checked for the path: git 2.55 prints "not a git repository: (null)", and newer ones
+    // "gitfile does not point to a valid repository".
     fs::write(dir.join(".git"), "gitdir: /nowhere/at/all\n").unwrap();
     let err = toplevel(&dir).unwrap_err();
     assert_ne!(err, NOT_A_REPO);
-    assert!(err.contains("not a git repository"), "{err}");
+    assert!(
+        err.contains("not a git repository") || err.contains("gitfile does not point"),
+        "{err}"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
