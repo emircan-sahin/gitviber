@@ -77,6 +77,7 @@ block2 = "=0.6.2"
 # its delegates and AppKit around it (browser/macos.rs), typed where raw messages would guess.
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",
+  "block2",
   "objc2-core-foundation",
   "NSArray",
   "NSData",
@@ -91,6 +92,7 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "NSSet",
   "NSString",
   "NSThread",
+  "NSTimer",
   "NSURL",
   "NSURLAuthenticationChallenge",
   "NSURLCredential",

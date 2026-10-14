@@ -165,7 +165,6 @@ fn tabs(
             let _turn = take_turn(&queue, STEP)?;
             let gone = id.clone();
             let closed = main(app, move |app| super::agent_close_tab(app, &gone))?;
-            forget_queue(&id);
             Ok(Reply::out(format!("Closed tab {closed}")))
         }
     }
@@ -226,20 +225,13 @@ fn now() -> u64 {
 static NEXT_COMMAND: AtomicU64 = AtomicU64::new(1);
 
 /// Each tab's turn: agents in a pane share its tabs, and two commands at once would interleave
-/// their steps (a click between another's fill and its Enter).
-static QUEUES: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
-
+/// their steps (a click between another's fill and its Enter). Kept only while a command holds
+/// or waits for one, so a closed tab's goes with its last command.
 fn queue(id: &str) -> Arc<Mutex<()>> {
+    static QUEUES: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
     let mut queues = QUEUES.lock().unwrap_or_else(PoisonError::into_inner);
+    queues.retain(|_, q| Arc::strong_count(q) > 1);
     queues.entry(id.into()).or_default().clone()
-}
-
-/// The tab closed: its turn goes with it.
-pub(super) fn forget_queue(id: &str) {
-    QUEUES
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .remove(id);
 }
 
 fn take_turn(queue: &Mutex<()>, wait: Duration) -> Res<MutexGuard<'_, ()>> {
@@ -839,5 +831,10 @@ mod tests {
         std::thread::sleep(POLL);
         drop(first);
         assert!(next.join().unwrap().is_ok());
+        // Nobody holding or waiting: the next one asked for lets it go.
+        let kept = Arc::downgrade(&queue);
+        drop(queue);
+        let _ = super::queue("tab-3");
+        assert!(kept.upgrade().is_none(), "a closed tab's turn doesn't stay");
     }
 }

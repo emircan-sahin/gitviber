@@ -36,7 +36,8 @@ the one $GITVIBER_BROWSER_TAB names, else the pane's default tab, which its firs
 a name no open tab of the pane has fails. Agents in one pane share its tabs; the user's own tabs
 are out of their reach. Each tab, the default one too, has cookies and storage of its own, gone
 when it closes, unless --shared. A tab no command touched for 10 minutes sleeps: slowed, and in
-time parked to save memory, its next command loading it again. Unused for an hour, it closes.
+time parked to save memory, its next command loading it again. Unused for an hour, it closes,
+unless the user has it on show.
 
   tab new [name] [url] [--shared] [--session <name>] [--idle <minutes>]
                                Another tab, at url if given; prints its name: the one --tab or
@@ -619,6 +620,15 @@ pub struct Named {
     /// How long it may go without a command before it sleeps; zero never.
     pub idle: Duration,
     pub used: Instant,
+    /// When it closes unused (`unused_after`), unless a command or the user's eye comes first.
+    pub closes: Option<Instant>,
+}
+
+impl Named {
+    fn used_at(&mut self, now: Instant) {
+        self.used = now;
+        self.closes = unused_after(self.idle).map(|after| now + after);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -667,7 +677,7 @@ impl Routes {
         });
         match (found, name) {
             (Some(t), _) => {
-                t.used = Instant::now();
+                t.used_at(Instant::now());
                 Ok(Some(t.route.clone()))
             }
             (None, Some(name)) => Err(format!(
@@ -703,15 +713,42 @@ impl Routes {
                 }
             },
         };
+        let now = Instant::now();
         pane.tabs.push(Named {
             name: name.clone(),
             route,
             default: new.default,
             shared: new.shared,
             idle: new.idle,
-            used: Instant::now(),
+            used: now,
+            closes: unused_after(new.idle).map(|after| now + after),
         });
         Ok(name)
+    }
+
+    fn all(&self) -> impl Iterator<Item = &Named> {
+        self.panes.values().flat_map(|p| &p.tabs)
+    }
+
+    /// The soonest a tab closes unused, for the one timer that closes them.
+    pub fn due(&self) -> Option<Instant> {
+        self.all().filter_map(|t| t.closes).min()
+    }
+
+    /// The tabs unused past their time at `now`.
+    pub fn expired(&self, now: Instant) -> Vec<String> {
+        self.all()
+            .filter(|t| t.closes.is_some_and(|at| at <= now))
+            .map(|t| t.route.id.clone())
+            .collect()
+    }
+
+    /// Tab `id` closes unused that much later from `now`: the user is looking at it.
+    pub fn postpone(&mut self, id: &str, now: Instant) {
+        let mut tabs = self.panes.values_mut().flat_map(|p| &mut p.tabs);
+        if let Some(t) = tabs.find(|t| t.route.id == id) {
+            t.closes = unused_after(t.idle).map(|after| now + after);
+        }
     }
 
     pub fn list(&mut self, pty: u32, open: impl Fn(&str) -> bool) -> Vec<Named> {
@@ -720,10 +757,7 @@ impl Routes {
 
     /// A live pane's agent tab by its id: whether there's one, and what it was opened with.
     pub fn named(&self, id: &str) -> Option<&Named> {
-        self.panes
-            .values()
-            .flat_map(|p| &p.tabs)
-            .find(|t| t.route.id == id)
+        self.all().find(|t| t.route.id == id)
     }
 
     /// Tab `id` out of its pane.
@@ -1234,6 +1268,51 @@ mod tests {
         assert_eq!(unused_after(IDLE), Some(min(60)));
         assert_eq!(unused_after(min(30)), Some(min(180)));
         assert_eq!(unused_after(Duration::ZERO), None, "one that never sleeps");
+    }
+
+    #[test]
+    fn unused_tabs_come_due_soonest_first_and_one_on_show_waits() {
+        let mut r = Routes::default();
+        let min = |m: u64| Duration::from_secs(m * 60);
+        let idle = |idle| NewTab {
+            name: None,
+            default: false,
+            shared: false,
+            idle,
+        };
+        let start = Instant::now();
+        assert_eq!(r.due(), None);
+        r.add(1, idle(IDLE), route("a"), |_| true).unwrap();
+        r.add(1, idle(min(30)), route("b"), |_| true).unwrap();
+        r.add(2, idle(Duration::ZERO), route("never"), |_| true)
+            .unwrap();
+        let due = r.due().unwrap();
+        assert!(
+            due >= start + min(60) && due <= Instant::now() + min(60),
+            "a's hour"
+        );
+        assert!(r.expired(Instant::now()).is_empty());
+        assert_eq!(r.expired(start + min(61)), ["a"]);
+        let later = start + min(200);
+        let mut gone = r.expired(later);
+        gone.sort();
+        assert_eq!(
+            gone,
+            ["a", "b"],
+            "b's six times thirty minutes; never, never"
+        );
+        // On show when it came due: another hour from then.
+        r.postpone("a", start + min(61));
+        assert_eq!(r.expired(start + min(62)), Vec::<String>::new());
+        assert!(r.due().unwrap() >= start + min(121));
+        // A command restarts its time; a closed tab or pane takes its deadline with it.
+        std::thread::sleep(Duration::from_millis(2));
+        r.tab(1, Some("t2"), |_| true).unwrap();
+        assert!(r.named("b").unwrap().closes.unwrap() > start + min(180));
+        r.close("a");
+        r.release(1);
+        assert_eq!(r.due(), None);
+        r.postpone("nope", later);
     }
 
     #[test]

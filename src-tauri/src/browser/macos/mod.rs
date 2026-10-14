@@ -396,11 +396,6 @@ define_class!(
             agent::idle(&self.ivars().id);
         }
 
-        #[unsafe(method(gvUnusedDue))]
-        fn unused_due(&self) {
-            agent::unused(&self.ivars().id);
-        }
-
         #[unsafe(method(gvSendConsole))]
         fn send_console(&self) {
             self.ivars().console_pending.set(false);

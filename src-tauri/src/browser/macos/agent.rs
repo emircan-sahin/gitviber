@@ -7,29 +7,33 @@ use super::{
     apply, ask, asked, create, emit, main_thread, page_tools, set_agent, url_text, view, Delegate,
     View, GONE, VIEWS,
 };
-use crate::browser::control::{
-    origin, unused_after, AgentScreen, Listed, NewTab, Route, Routes, IDLE,
-};
+use crate::browser::control::{origin, AgentScreen, Listed, NewTab, Route, Routes, IDLE};
 use crate::browser::picks::Bounds;
 use crate::browser::Step;
 use crate::browser::{Look, PageState};
 use crate::state::{AppState, Res};
 use block2::RcBlock;
+use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, NSObject};
 use objc2::{msg_send, sel, DefinedClass};
 use objc2_foundation::{
     ns_string, NSDictionary, NSError, NSObjectNSDelayedPerforming, NSObjectProtocol, NSPoint,
-    NSRect, NSSize, NSString, NSUUID,
+    NSRect, NSSize, NSString, NSTimer, NSUUID,
 };
 use objc2_web_kit::{WKContentWorld, WKWebView, WKWebsiteDataStore};
 use serde::Serialize;
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::collections::HashMap;
-use std::time::SystemTime;
+use std::ptr::NonNull;
+use std::time::{Instant, SystemTime};
 use tauri::{AppHandle, Manager};
 
 thread_local! {
     static ROUTES: RefCell<Routes> = RefCell::default();
+    /// The timer that closes agents' tabs left unused, set for the soonest (`arm_sweep`), and
+    /// when it's due.
+    static SWEEP: RefCell<Option<(Instant, Retained<NSTimer>)>> = RefCell::default();
+    static APP: OnceCell<AppHandle> = const { OnceCell::new() };
 }
 
 /// A tab out of sight that never showed takes a page this size.
@@ -54,11 +58,8 @@ pub fn agent_tab(
     url: Option<&str>,
 ) -> Res<(String, bool)> {
     main_thread()?;
-    match ROUTES.with_borrow_mut(|r| r.tab(pty, name, is_open))? {
-        Some(route) => {
-            live(app, &route, "about:blank")?;
-            Ok((route.id, false))
-        }
+    let tab = match ROUTES.with_borrow_mut(|r| r.tab(pty, name, is_open))? {
+        Some(route) => live(app, &route, "about:blank").map(|()| (route.id, false)),
         None => {
             let new = NewTab {
                 name: None,
@@ -68,7 +69,9 @@ pub fn agent_tab(
             };
             new_tab(app, pty, root, new, url).map(|(id, _)| (id, true))
         }
-    }
+    };
+    arm_sweep();
+    tab
 }
 
 /// Another tab of the pane's, as `new` asks, at `url`: its id and name.
@@ -80,7 +83,9 @@ pub fn agent_new_tab(
     url: Option<&str>,
 ) -> Res<(String, String)> {
     main_thread()?;
-    new_tab(app, pty, root, new, url)
+    let tab = new_tab(app, pty, root, new, url);
+    arm_sweep();
+    tab
 }
 
 /// The pane's tabs, open or parked.
@@ -140,6 +145,7 @@ pub fn agent_close_tab(app: &AppHandle, id: &str) -> Res<String> {
 /// The tab closed, by the user or with its worktree: no agent drives it again, even reopened.
 pub(super) fn forget_tab(id: &str) {
     ROUTES.with_borrow_mut(|r| r.close(id));
+    arm_sweep();
 }
 
 /// Whether the tab is still there for its agents: live, or parked to load again.
@@ -158,6 +164,9 @@ fn new_tab(
     url: Option<&str>,
 ) -> Res<(String, String)> {
     let mtm = main_thread()?;
+    APP.with(|a| {
+        a.get_or_init(|| app.clone());
+    });
     // A command that passed its pane's check as the pane closed makes no tab for it.
     if app.state::<AppState>().ptys.pane(pty).is_none() {
         return Err("This terminal isn't one of GitViber's open panes.".into());
@@ -223,6 +232,7 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<()> {
 /// The app page reloaded: its tabs come back as the user's.
 pub(super) fn forget_all() {
     ROUTES.with_borrow_mut(Routes::clear);
+    arm_sweep();
     super::ASKED.with_borrow_mut(HashMap::clear);
 }
 
@@ -237,6 +247,7 @@ pub fn agent_pane_closed(pty: u32) {
             sleep(&v);
         }
     }
+    arm_sweep();
 }
 
 /// `command` running on the tab (`on`) or done: meanwhile its page's dialogs answer themselves
@@ -269,33 +280,73 @@ fn sleep(v: &View) {
     }
 }
 
-/// From now, the time the agent's tab may go without a command before it sleeps, and before it
-/// closes unused (gvIdleDue, gvUnusedDue); neither for one that never idles.
+/// From now, the time the agent's tab may go without a command before it sleeps (gvIdleDue);
+/// none for one that never idles.
 fn restart_idle(v: &View) {
     stop_idle(v);
     let idle = ROUTES.with_borrow(|r| r.named(&v.delegate.ivars().id).map(|t| t.idle));
-    let Some(unused) = idle.and_then(unused_after) else {
-        return;
-    };
-    for (due, after) in [(sel!(gvIdleDue), idle), (sel!(gvUnusedDue), Some(unused))] {
-        let after = after.unwrap_or_default().as_secs_f64();
+    if let Some(idle) = idle.filter(|idle| !idle.is_zero()) {
         unsafe {
-            v.delegate
-                .performSelector_withObject_afterDelay(due, None, after)
+            v.delegate.performSelector_withObject_afterDelay(
+                sel!(gvIdleDue),
+                None,
+                idle.as_secs_f64(),
+            )
         };
     }
 }
 
 fn stop_idle(v: &View) {
-    for due in [sel!(gvIdleDue), sel!(gvUnusedDue)] {
-        unsafe {
-            NSObject::cancelPreviousPerformRequestsWithTarget_selector_object(
-                &v.delegate,
-                due,
-                None,
+    unsafe {
+        NSObject::cancelPreviousPerformRequestsWithTarget_selector_object(
+            &v.delegate,
+            sel!(gvIdleDue),
+            None,
+        )
+    };
+}
+
+/// The one timer for every agent tab's close deadline (control.rs `Routes::due`), apart from
+/// the views, so a tab that parked closes too.
+fn arm_sweep() {
+    let due = ROUTES.with_borrow(Routes::due);
+    SWEEP.with_borrow_mut(|armed| {
+        if armed.as_ref().map(|a| a.0) == due {
+            return;
+        }
+        if let Some((_, timer)) = armed.take() {
+            timer.invalidate();
+        }
+        let Some(due) = due else {
+            return;
+        };
+        let after = due.saturating_duration_since(Instant::now());
+        let sweep = RcBlock::new(|_: NonNull<NSTimer>| sweep());
+        let timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+                after.as_secs_f64(),
+                false,
+                &sweep,
             )
         };
+        *armed = Some((due, timer));
+    });
+}
+
+/// Closes the agents' tabs unused past their time, as `tab close` would; one the user is looking
+/// at gets more time instead.
+fn sweep() {
+    SWEEP.with_borrow_mut(|armed| armed.take());
+    let now = Instant::now();
+    let app = APP.with(|a| a.get().cloned());
+    for id in ROUTES.with_borrow(|r| r.expired(now)) {
+        if VIEWS.with_borrow(|r| r.shown(&id)) {
+            ROUTES.with_borrow_mut(|r| r.postpone(&id, now));
+        } else if let Some(app) = &app {
+            let _ = agent_close_tab(app, &id);
+        }
     }
+    arm_sweep();
 }
 
 fn running(v: &View) -> bool {
@@ -306,17 +357,6 @@ fn running(v: &View) -> bool {
 pub(super) fn idle(id: &str) {
     if let Some(v) = view(id).filter(|v| !running(v)) {
         sleep(&v);
-    }
-}
-
-/// No command for so long: the agent forgot it, and it closes as `tab close` would.
-pub(super) fn unused(id: &str) {
-    let Some(v) = view(id).filter(|v| !running(v)) else {
-        return;
-    };
-    let app = v.delegate.ivars().app.clone();
-    if agent_close_tab(&app, id).is_ok() {
-        crate::browser::agent::forget_queue(id);
     }
 }
 
