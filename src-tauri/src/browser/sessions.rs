@@ -307,4 +307,30 @@ mod tests {
         assert_eq!(repository("/no/such/folder"), "/no/such/folder");
         let _ = std::fs::remove_dir_all(&base);
     }
+
+    /// git answers a subfolder with a path relative to it (`../../.git`), and a symlinked one
+    /// with its own spelling: both still reach the repository's sessions.
+    #[cfg(unix)]
+    #[test]
+    fn a_pane_in_a_subfolder_or_through_a_symlink_keeps_to_its_repositorys_sessions() {
+        let base =
+            std::env::temp_dir().join(format!("gitviber-sessions-sub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (main, deeper) = (base.join("main"), base.join("main/app/src"));
+        std::fs::create_dir_all(&deeper).unwrap();
+        let ok = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&main)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git init");
+        std::os::unix::fs::symlink(&main, base.join("alias")).unwrap();
+        let key = |p: &Path| repository(&p.to_string_lossy());
+        let shared = key(&main);
+        assert_eq!(key(&deeper), shared);
+        assert_eq!(key(&base.join("alias")), shared);
+        assert_eq!(key(&base.join("alias/app")), shared);
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }
