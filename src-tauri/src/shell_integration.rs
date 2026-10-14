@@ -3,7 +3,6 @@
 //! dotfiles: zsh through ZDOTDIR, bash 4.4+ in POSIX mode through ENV. fish 4 marks its own prompts.
 
 use std::ffi::OsString;
-use std::io::Write;
 use std::path::Path;
 
 const FILES: [(&str, &str); 3] = [
@@ -79,19 +78,7 @@ fn write(dir: &Path) -> std::io::Result<()> {
         if current {
             continue;
         }
-        let temp = parent.join(format!(
-            ".{}.{}",
-            std::process::id(),
-            path.file_name().unwrap_or_default().to_string_lossy()
-        ));
-        let _ = std::fs::remove_file(&temp);
-        let mut file = std::fs::OpenOptions::new();
-        file.write(true).create_new(true);
-        #[cfg(unix)]
-        std::os::unix::fs::OpenOptionsExt::mode(&mut file, 0o600);
-        file.open(&temp)?.write_all(text.as_bytes())?;
-        // A rename replaces what's at `path`, a link included, rather than writing where it points.
-        std::fs::rename(&temp, &path)?;
+        crate::scratch::place_private(&path, text, true)?;
     }
     Ok(())
 }
