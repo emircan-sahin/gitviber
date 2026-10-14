@@ -7,13 +7,15 @@
   const handler = window.webkit?.messageHandlers?.gvNetwork;
   if (!handler || window.__gvNetwork) return;
   window.__gvNetwork = true;
-  // Characters kept of a body, a frame, an address and a header; network.rs holds posts to the
-  // same, and refuses one past 1 MiB.
+  // Characters kept of a body, a frame, an address, a name (a header's, a status text, a close
+  // reason), a header's value and a word (a method, an initiator): network.rs keeps the same,
+  // and refuses a post past 1 MiB.
   const BODY = 8192;
   const FRAME = 1024;
   const URL_TEXT = 4096;
   const NAME = 256;
   const VALUE = 2048;
+  const WORD = 32;
   const HEADERS = 100;
   // A page requesting in a loop, or a socket streaming ticks, would otherwise post (and the app
   // parse) every one of them. Frames have their own room: a busy socket hides no request.
@@ -65,7 +67,7 @@
   };
   let skipped = 0;
   /** A new entry, or null past the limit, counted. */
-  const begin = (fields) => {
+  const begin = (fields, href) => {
     if (!room(requests)) {
       if (!skipped++) {
         later(() => {
@@ -75,7 +77,7 @@
       }
       return null;
     }
-    const rec = { key: `${doc}:${++count}`, start: now(), url: fields.url };
+    const rec = { key: `${doc}:${++count}`, start: now(), href };
     post([{ ...fields, key: rec.key, start: rec.start }]);
     return rec;
   };
@@ -83,14 +85,15 @@
   const ended = (rec) => now() - rec.start;
   const failure = (e) => (e?.name === "AbortError" ? "aborted" : "failed");
 
-  const full = (url) => {
-    let href;
+  // An address as the request goes out: whole, without its fragment.
+  const resolved = (url) => {
     try {
-      href = new URL(url, document.baseURI).href;
+      const u = new URL(url, document.baseURI);
+      u.hash = "";
+      return u.href;
     } catch {
-      href = String(url);
+      return String(url);
     }
-    return cut(href, URL_TEXT);
   };
   // Only what reads without side effects: a page's own iterator would be used up before its
   // request saw it.
@@ -150,68 +153,9 @@
     return { type: body instanceof ReadableStream ? "stream" : "object" };
   };
 
-  // A copy of a body holds the connection open until it, too, is let go: so the copy stops at
-  // BODY characters, and goes the moment the page lets go of its own stream, by cancelling it,
-  // its reader, a stream piped from it or its async iteration. (A fetch aborted ends both.)
-  const copies = new WeakMap();
-  const release = (s) => copies.get(s)?.();
-  const linked = (from, to) => {
-    if (copies.has(from)) copies.set(to, copies.get(from));
-    return to;
-  };
-  const S = typeof ReadableStream === "function" ? ReadableStream.prototype : null;
-  if (S) {
-    const cancel0 = S.cancel;
-    const getReader0 = S.getReader;
-    const pipeThrough0 = S.pipeThrough;
-    const values0 = S.values;
-    S.cancel = function cancel() {
-      const result = cancel0.apply(this, arguments);
-      release(this);
-      return result;
-    };
-    S.getReader = function getReader() {
-      return linked(this, getReader0.apply(this, arguments));
-    };
-    if (pipeThrough0) {
-      S.pipeThrough = function pipeThrough(transform) {
-        return linked(this, pipeThrough0.apply(this, arguments));
-      };
-    }
-    if (values0) {
-      S.values = S[Symbol.asyncIterator] = function values() {
-        const it = values0.apply(this, arguments);
-        if (copies.has(this)) {
-          const stream = this;
-          const return0 = it.return;
-          it.return = function () {
-            release(stream);
-            return return0.apply(this, arguments);
-          };
-        }
-        return it;
-      };
-    }
-    for (const Reader of [globalThis.ReadableStreamDefaultReader, globalThis.ReadableStreamBYOBReader]) {
-      const readerCancel0 = Reader?.prototype.cancel;
-      if (!readerCancel0) continue;
-      Reader.prototype.cancel = function cancel() {
-        const result = readerCancel0.apply(this, arguments);
-        release(this);
-        return result;
-      };
-    }
-  }
-  /** The start of a body as text, from `copy`; `page` is the page's own stream, if it has one. */
-  const readCopy = async (copy, page) => {
+  /** The start of a body as text, read from a copy to BODY characters, then let go. */
+  const readCopy = async (copy) => {
     const reader = copy.getReader();
-    let gone = false;
-    if (page) {
-      copies.set(page, () => {
-        gone = true;
-        reader.cancel().catch(() => {});
-      });
-    }
     const decoder = new TextDecoder();
     let kept = "";
     let size = 0;
@@ -221,7 +165,7 @@
       while (kept.length <= BODY) {
         const { done, value } = await reader.read();
         if (done) {
-          end = !gone;
+          end = true;
           break;
         }
         size += value.byteLength;
@@ -230,29 +174,42 @@
     } catch (e) {
       error = failure(e);
     }
-    if (page) copies.delete(page);
-    if (!end && !gone && !error) reader.cancel().catch(() => {});
+    if (!end && !error) reader.cancel().catch(() => {});
     return { kept, size, end, error };
   };
+  // A copy holds the page's connection open until it too is let go, and nothing tells it the
+  // page let go: so a body that may stream on is never copied, only one of a type read whole,
+  // or whose Content-Length says it ends. Left: a page stopping such a body with cancel() before
+  // BODY characters came waits for them (or the end); an abort ends both at once.
+  const STREAMS = /event-stream|ndjson|jsonl|multipart\/x-mixed-replace|grpc/i;
+  const WHOLE = /json|xml|html|javascript|ecmascript/i;
   const TEXT = /^text\/|json|xml|javascript|ecmascript|urlencoded|graphql/i;
+  const copied = (type, length) => !STREAMS.test(type) && (length ? !type || TEXT.test(type) : WHOLE.test(type));
 
-  // A fetch's own timing entry comes once its response has ended: its full duration and size,
-  // where the copy let go early. Matched by address, oldest first.
+  // A fetch's own timing entry comes once its response has ended: its full duration and size.
+  // Matched to the fetch of its address that started nearest its start; a blob: or data: one
+  // gets none.
   const timing = typeof PerformanceObserver === "function" && (PerformanceObserver.supportedEntryTypes ?? []).includes("resource");
   const awaiting = new Map();
   const expect = (rec) => {
-    if (!timing) return;
-    const list = awaiting.get(rec.url) ?? [];
+    if (!timing || !/^https?:/.test(rec.href)) return;
+    const list = awaiting.get(rec.href) ?? [];
     if (list.push(rec) > 20) list.shift();
-    awaiting.set(rec.url, list);
+    awaiting.set(rec.href, list);
     if (awaiting.size > 200) awaiting.delete(awaiting.keys().next().value);
   };
-  /** The oldest fetch of `url` still waiting for its entry, or `rec` itself, taken off. */
-  const timed = (url, rec) => {
-    const list = awaiting.get(url) ?? [];
-    const at = rec ? list.indexOf(rec) : 0;
+  /** `rec`, or the fetch of `href` that started nearest `start`, taken off. */
+  const timed = (href, rec, start) => {
+    const list = awaiting.get(href) ?? [];
+    let at = rec ? list.indexOf(rec) : -1;
+    if (!rec) {
+      for (let i = 0, best = Infinity; i < list.length; i++) {
+        const off = Math.abs(list[i].start - start);
+        if (off < best) [at, best] = [i, off];
+      }
+    }
     const found = at < 0 ? undefined : list.splice(at, 1)[0];
-    if (!list.length) awaiting.delete(url);
+    if (!list.length) awaiting.delete(href);
     return found;
   };
 
@@ -260,29 +217,30 @@
   if (typeof fetch0 === "function") {
     const answered = (rec, response) => {
       const type = response.headers.get("content-type") ?? "";
-      const length = Number(response.headers.get("content-length")) || undefined;
       update(rec, {
         status: response.status,
         statusText: cut(response.statusText, NAME),
         to: response.redirected ? cut(response.url, URL_TEXT) : undefined,
         responseHeaders: pairs(response.headers),
       });
-      if (!response.body) return update(rec, { duration: ended(rec) });
-      if (type && !TEXT.test(type)) return update(rec, { responseBody: { type, size: length } });
-      const copy = response.clone();
-      readCopy(copy.body, response.body).then(({ kept, size, end, error }) =>
+      // Until its headers, for a body not read; timing's entry gives the whole when it ends.
+      if (!response.body || !copied(type, response.headers.has("content-length"))) {
+        return update(rec, { duration: ended(rec), ...(response.body && { responseBody: { type: type || undefined } }) });
+      }
+      readCopy(response.clone().body).then(({ kept, size, end, error }) => {
+        if (error) timed(rec.href, rec);
         update(rec, {
           responseBody: {
             text: cut(kept, BODY),
             type: type || undefined,
-            size: end ? size : (length ?? size),
+            size,
             cut: !end || kept.length > BODY,
-            ...(!end && length === undefined && { atLeast: true }),
+            ...(!end && { atLeast: true }),
           },
-          duration: end || error ? ended(rec) : undefined,
+          duration: ended(rec),
           error,
-        }),
-      );
+        });
+      });
     };
     // Named and sized as WebKit's own.
     window.fetch = function fetch(input) {
@@ -292,13 +250,17 @@
         const request = input instanceof Request ? input : null;
         const headers = init?.headers ?? request?.headers;
         const has = init && "body" in init;
-        rec = begin({
-          kind: "fetch",
-          method: cut(String(init?.method ?? request?.method ?? "GET").toUpperCase(), NAME),
-          url: full(request ? request.url : input),
-          requestHeaders: pairs(headers),
-          requestBody: has ? sentBody(init.body) : undefined,
-        });
+        const href = resolved(request ? request.url : input);
+        rec = begin(
+          {
+            kind: "fetch",
+            method: cut(String(init?.method ?? request?.method ?? "GET").toUpperCase(), WORD),
+            url: cut(href, URL_TEXT),
+            requestHeaders: pairs(headers),
+            requestBody: has ? sentBody(init.body) : undefined,
+          },
+          href,
+        );
         // A Request's own body, from a copy made before the page's request uses it up.
         if (rec && !has && request?.body && !request.bodyUsed) {
           const type = request.headers.get("content-type") ?? "";
@@ -324,7 +286,7 @@
           return response;
         },
         (error) => {
-          timed(rec.url, rec);
+          timed(rec.href, rec);
           update(rec, { error: failure(error), duration: ended(rec) });
           throw error;
         },
@@ -373,7 +335,7 @@
           fields.status = xhr.status;
           fields.statusText = cut(xhr.statusText, NAME);
           fields.responseHeaders = lines(xhr.getAllResponseHeaders());
-          if (xhr.responseURL && xhr.responseURL !== rec.url) fields.to = cut(xhr.responseURL, URL_TEXT);
+          if (xhr.responseURL && xhr.responseURL !== rec.href) fields.to = cut(xhr.responseURL, URL_TEXT);
           fields.responseBody = xhrBody(xhr, size);
         }
         update(rec, fields);
@@ -403,7 +365,8 @@
       }
       const result = open0.apply(this, arguments);
       try {
-        opened.set(this, { method: cut(String(method).toUpperCase(), NAME), url: full(url), headers: [] });
+        const href = resolved(url);
+        opened.set(this, { method: cut(String(method).toUpperCase(), WORD), href, url: cut(href, URL_TEXT), headers: [] });
       } catch {
         opened.delete(this);
       }
@@ -421,7 +384,7 @@
       // Sent once per open; a second send is the page's own error.
       if (o && !sending.has(this) && this.readyState === 1) {
         try {
-          rec = begin({ kind: "xhr", method: o.method, url: o.url, requestHeaders: o.headers, requestBody: sentBody(arguments[0]) });
+          rec = begin({ kind: "xhr", method: o.method, url: o.url, requestHeaders: o.headers, requestBody: sentBody(arguments[0]) }, o.href);
           if (rec) {
             sending.set(this, rec);
             watch(this);
@@ -471,7 +434,7 @@
       if (!new.target) return WS.apply(this, arguments);
       const ws = Reflect.construct(WS, arguments, new.target);
       try {
-        const rec = begin({ kind: "ws", method: "GET", url: cut(ws.url, URL_TEXT) });
+        const rec = begin({ kind: "ws", method: "GET", url: cut(ws.url, URL_TEXT) }, ws.url);
         if (rec) {
           sockets.set(ws, { rec, n: 0 });
           ws.addEventListener("open", () => update(rec, { status: 101, statusText: "Switching Protocols" }));
@@ -506,14 +469,14 @@
         if (e.initiatorType === "xmlhttprequest") continue;
         const size = e.decodedBodySize || e.encodedBodySize || undefined;
         if (e.initiatorType === "fetch") {
-          const rec = timed(cut(e.name, URL_TEXT));
+          const rec = timed(resolved(e.name), null, clock.timeOrigin + e.startTime);
           if (rec) out.push({ key: rec.key, duration: e.duration, size });
           continue;
         }
         out.push({
           key: `${doc}:${++count}`,
           kind: "resource",
-          initiator: e.entryType === "navigation" ? "navigation" : cut(e.initiatorType, NAME),
+          initiator: e.entryType === "navigation" ? "navigation" : cut(e.initiatorType, WORD),
           url: cut(e.name, URL_TEXT),
           start: clock.timeOrigin + e.startTime,
           duration: e.duration,

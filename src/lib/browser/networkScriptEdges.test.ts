@@ -407,7 +407,7 @@ test("the limit is a hundred a second, counted again each second, every skip rep
 });
 
 test("cuts never split a surrogate pair, whatever falls on the edge", async () => {
-  const p = page(async (_, init) => new Response(init?.body ?? ""));
+  const p = page(async (_, init) => new Response(init?.body ?? "", { headers: { "content-type": "application/json" } }));
   for (const pad of [0, 1]) {
     const body = "a".repeat(8190 + pad) + "😀".repeat(10);
     await p.window.fetch("/emoji", { method: "POST", body, headers: { "content-type": "text/plain" } });
@@ -517,13 +517,13 @@ test("a busy dev page for fifteen minutes: bounded posts, the page's answers int
   assert.ok(poll.responseHeaders.every(([, v]: string[]) => v.length <= 2048));
   assert.ok(poll.responseBody.text.length <= 8192 && poll.responseBody.size > 0);
   const events = all.find((e) => e.url.endsWith("/events"))!;
-  assert.equal(events.duration, undefined, "the event stream is still open");
+  assert.deepEqual(events.responseBody, { type: "text/event-stream" }, "an event stream is never copied");
   assert.equal(p.timers.length, 0, "nothing skipped at one request a second");
   // The page letting go of its stream settles at once: the copy goes with it.
   await sse.body!.cancel();
 });
 
-test("the stream methods it wraps keep their names, lengths and places, and other streams behave as ever", async () => {
+test("the engine's stream methods are left as they are, and other streams behave as ever", async () => {
   page();
   assert.deepEqual(streamMethods(), nativeStreamMethods);
   const bytes = new ReadableStream({
@@ -562,8 +562,7 @@ test("an XMLHttpRequest the page opens again from its own loadend, ahead of the 
 });
 
 test(
-  "BUG: a page letting go through its own clone, a tee or an aborted pipeTo lets go of the source, and its promise settles",
-  { todo: "only cancel, getReader, pipeThrough and values are wrapped; these cancel the page's body inside the engine" },
+  "a page letting go through its own clone, a tee or an aborted pipeTo lets go of the source, and its promise settles",
   async () => {
     const ways: [string, (r: Response) => Promise<unknown>][] = [
       ["its own clone", (r) => { const c = r.clone(); return Promise.all([r.body!.cancel(), c.body!.cancel()]); }],
@@ -591,11 +590,11 @@ test(
 );
 
 test(
-  "BUG: a cancel the page's stream refuses leaves the log's copy reading",
-  { todo: "the wrappers release the copy even when the engine's cancel rejects" },
+  "a cancel the page's stream refuses leaves the log's copy reading",
   async () => {
     const s = feed();
-    const p = page(async () => new Response(s.stream, { headers: { "content-type": "text/plain" } }));
+    // A Content-Length says it ends: copied.
+    const p = page(async () => new Response(s.stream, { headers: { "content-type": "text/plain", "content-length": "2" } }));
     const response: Response = await p.window.fetch("/log");
     const reader = response.body!.getReader();
     s.push("a");
@@ -613,8 +612,7 @@ test(
 );
 
 test(
-  "BUG: two fetches of one address at once each get their own timing entry",
-  { todo: "entries are matched oldest first, not by their startTime" },
+  "two fetches of one address at once each get their own timing entry",
   async () => {
     const p = page(async () => new Response("{}", { headers: { "content-type": "application/json" } }));
     await p.window.fetch("/api/x");
@@ -637,8 +635,7 @@ test(
 );
 
 test(
-  "BUG: a fetch whose body the page cancelled ends in the log, and takes no later fetch's timing",
-  { todo: "a cancelled load has no timing entry, so it stays awaited (and unended) and takes the next one's" },
+  "a fetch whose body the page cancelled ends in the log, and takes no later fetch's timing",
   async () => {
     const s = feed();
     const answers = [
@@ -664,8 +661,7 @@ test(
 );
 
 test(
-  "BUG: a binary fetch of a blob: or data: address ends in the log",
-  { todo: "a binary body waits for a timing entry these schemes never get" },
+  "a binary fetch of a blob: or data: address ends in the log",
   async () => {
     const p = page(async () => new Response(new Uint8Array(4), { headers: { "content-type": "image/png" } }));
     await p.window.fetch("data:image/png;base64,AAAAAA==");

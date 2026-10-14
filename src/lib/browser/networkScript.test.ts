@@ -153,7 +153,7 @@ test("a big body is kept to its start, its copy let go there, and timing gives t
       else c.enqueue(chunk);
     },
   });
-  const p = page(async () => new Response(big, { headers: { "content-type": "text/plain; charset=utf-8" } }));
+  const p = page(async () => new Response(big, { headers: { "content-type": "application/json" } }));
   const response: Response = await p.window.fetch("/big");
   await settle();
   // The page hasn't read: its copy stopped past 8192 characters, and so did the source.
@@ -162,79 +162,45 @@ test("a big body is kept to its start, its copy let go there, and timing gives t
   assert.deepEqual([body.cut, body.atLeast, body.text.length], [true, true, 8192]);
   assert.ok(body.text.endsWith("…") && body.size >= 8192);
   assert.equal((await response.text()).length, 40_000, "the page still reads all of it");
-  assert.equal(p.entries()[0].duration, undefined);
+  assert.ok(p.entries()[0].duration >= 0, "until the copy let go");
   p.resources([{ entryType: "resource", initiatorType: "fetch", name: "http://localhost:5173/big", startTime: 1, duration: 42, decodedBodySize: 80_000 }]);
   const e = p.entries()[0];
   assert.deepEqual([e.duration, e.size], [42, 80_000]);
   assert.equal(p.entries().length, 1, "a fetch's own timing is no entry of its own");
 });
 
-test("a page letting go of its body by any way lets go of the source too", async () => {
-  const ways: [string, (r: Response) => Promise<unknown>][] = [
-    ["body.cancel()", (r) => r.body!.cancel()],
-    ["a piped stream's reader", async (r) => {
-      const reader = r.body!.pipeThrough(new TextDecoderStream()).getReader();
-      await reader.read();
-      return reader.cancel();
-    }],
-    ["for await ... break", async (r) => {
-      for await (const _ of r.body as unknown as AsyncIterable<Uint8Array>) break;
-    }],
-  ];
-  for (const [way, letGo] of ways) {
+test("a binary body is only its type, never read", async () => {
+  const p = page(async () => new Response(new Uint8Array(3000), { headers: { "content-type": "image/png", "content-length": "3000" } }));
+  const response: Response = await p.window.fetch("/logo.png");
+  assert.equal(response.body!.locked, false);
+  await settle();
+  assert.deepEqual(p.entries()[0].responseBody, { type: "image/png" });
+});
+
+test("a body that may stream on is never copied: the page's stream is its alone", async () => {
+  for (const type of ["text/event-stream", "application/x-ndjson", "text/plain"]) {
+    let push: (s: string) => void = () => {};
     let cancelled = false;
     const stream = new ReadableStream<Uint8Array>({
       start(c) {
-        c.enqueue(new TextEncoder().encode("data: one\n\n"));
+        push = (s) => c.enqueue(new TextEncoder().encode(s));
       },
       cancel() {
         cancelled = true;
       },
     });
-    const p = page(async () => new Response(stream, { headers: { "content-type": "text/event-stream" } }));
+    const p = page(async () => new Response(stream, { headers: { "content-type": type } }));
     const response: Response = await p.window.fetch("/events");
+    push("data: one\n\n");
+    const reader = response.body!.getReader();
+    assert.equal(new TextDecoder().decode((await reader.read()).value), "data: one\n\n");
     await settle();
-    let settled = false;
-    void letGo(response).then(() => (settled = true));
-    await settle();
-    assert.ok(settled && cancelled, way);
-    assert.equal(p.entries()[0].responseBody.text, "data: one\n\n", way);
+    const e = p.entries()[0];
+    assert.deepEqual([e.status, e.responseBody], [200, { type }], type);
+    assert.ok(e.duration >= 0, "until its headers");
+    await reader.cancel();
+    assert.ok(cancelled, `${type}: the page's cancel reaches the source`);
   }
-});
-
-test("a binary body is only its type and size, never read", async () => {
-  const p = page(async () => new Response(new Uint8Array(3000), { headers: { "content-type": "image/png", "content-length": "3000" } }));
-  const response: Response = await p.window.fetch("/logo.png");
-  assert.equal(response.body!.locked, false);
-  await settle();
-  assert.deepEqual(p.entries()[0].responseBody, { type: "image/png", size: 3000 });
-});
-
-test("a stream that never ends doesn't hold the page up", async () => {
-  let push: (s: string) => void = () => {};
-  const stream = new ReadableStream<Uint8Array>({
-    start(c) {
-      push = (s) => c.enqueue(new TextEncoder().encode(s));
-    },
-  });
-  const p = page(async () => new Response(stream, { headers: { "content-type": "text/event-stream" } }));
-  const response: Response = await p.window.fetch("/events");
-  push("data: one\n\n");
-  const reader = response.body!.getReader();
-  const first = await reader.read();
-  assert.equal(new TextDecoder().decode(first.value), "data: one\n\n");
-  await settle();
-  const e = p.entries()[0];
-  assert.equal(e.status, 200);
-  assert.equal(e.duration, undefined, "still streaming");
-  // Past what's kept the copy lets go, and the page reads on.
-  push("x".repeat(9000));
-  push("data: two\n\n");
-  await settle();
-  assert.equal(p.entries()[0].responseBody.cut, true);
-  const rest = await reader.read();
-  assert.ok(rest.value && rest.value.length > 0);
-  reader.cancel();
 });
 
 test("a Request's body and odd headers reach the page's fetch untouched", async () => {
@@ -293,6 +259,18 @@ test("an XMLHttpRequest is logged with its headers, its body and how it ended", 
   assert.equal(two.method, "GET");
   assert.equal(two.error, "aborted");
   assert.equal(two.status, undefined);
+});
+
+test("an XMLHttpRequest to an address with a fragment isn't taken for a redirect", () => {
+  const p = page();
+  const r = new p.window.XMLHttpRequest();
+  r.open("GET", "/api/y#top");
+  r.send();
+  r.responseURL = "http://localhost:5173/api/y";
+  r.finish(200, "{}");
+  const [e] = p.entries();
+  assert.equal(e.url, "http://localhost:5173/api/y");
+  assert.equal(e.to, undefined);
 });
 
 test("an XMLHttpRequest the page misuses throws as ever and logs nothing", () => {
