@@ -5,7 +5,7 @@
 use super::page_view::appearance;
 use super::{
     ask, asked, create, emit, main_thread, out_of_sight, page_tools, set_agent, stop_timer,
-    url_text, view, Delegate, View, GONE, PARK_AFTER, VIEWS,
+    url_text, view, Delegate, View, GONE, VIEWS,
 };
 use crate::browser::control::{AgentScreen, Listed, Route, Routes};
 use crate::browser::picks::Bounds;
@@ -22,7 +22,7 @@ use objc2_web_kit::{WKContentWorld, WKWebView, WKWebsiteDataStore};
 use serde::Serialize;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use tauri::{AppHandle, Manager};
 
 thread_local! {
@@ -31,6 +31,8 @@ thread_local! {
 
 /// A tab out of sight that never showed takes a page this size.
 const SIZE: NSSize = NSSize::new(1280.0, 800.0);
+/// An awake tab no command touched this long sleeps: agents forget to close tabs.
+const IDLE: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Serialize, Clone)]
 struct Opened<'a> {
@@ -161,7 +163,8 @@ fn new_tab(
 
 /// The tab's view made, at `url`, when it has none (new, or parked), and awake.
 fn live(app: &AppHandle, route: &Route, url: &str) -> Res<()> {
-    if view(&route.id).is_none() {
+    let made = view(&route.id).is_none();
+    if made {
         let window = app
             .get_webview_window("main")
             .ok_or("The window isn't ready.")?;
@@ -171,9 +174,15 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<()> {
             zoom: None,
             dark: was.dark,
         };
-        create(&window, &route.id, &route.root, url, &look)?;
+        create(&window, &route.id, &route.root, url, &look, true)?;
     }
-    wake(&view(&route.id).ok_or(GONE)?);
+    let v = view(&route.id).ok_or(GONE)?;
+    if made || VIEWS.with_borrow_mut(|r| r.wake(&route.id)) {
+        woke(&v);
+    }
+    if v.delegate.ivars().running.borrow().is_empty() {
+        restart_idle(&v);
+    }
     Ok(())
 }
 
@@ -210,56 +219,41 @@ pub fn agent_running(id: &str, command: u64, on: bool) {
     }
     let idle = running.is_empty();
     drop(running);
-    idle_in(&v, idle);
+    if idle {
+        restart_idle(&v);
+    } else {
+        stop_idle(&v);
+    }
 }
 
-/// In use by its pane's agents: unthrottled, and drawn off the window's edge while its tab
-/// doesn't show, as out of sight WebKit would slow the page's timers and draw nothing. Asleep
-/// once no command touched it for the park timer's minutes, or with its pane gone.
-fn wake(v: &View) {
-    let d = v.delegate.ivars();
-    if !d.awake.replace(true) {
-        throttle(&v.web, false);
-        if !VIEWS.with_borrow(|r| r.shown(&d.id)) {
-            keep_aside(v);
-        }
+/// The registry made the view awake (registry.rs `wake`): unthrottled, and off-screen when out
+/// of sight, as there WebKit would slow the page's timers and draw nothing.
+fn woke(v: &View) {
+    throttle(&v.web, false);
+    if VIEWS.with_borrow(|r| r.offscreen(&v.delegate.ivars().id)) {
+        stop_timer(v);
+        offscreen(v);
     }
-    idle_in(v, d.running.borrow().is_empty());
 }
 
 /// Back to a hidden tab's ways: throttled, and out of sight parking in time.
 fn sleep(v: &View) {
-    let d = v.delegate.ivars();
-    idle_in(v, false);
-    if !d.awake.replace(false) {
+    let id = &v.delegate.ivars().id;
+    stop_idle(v);
+    if !VIEWS.with_borrow_mut(|r| r.sleep(id)) {
         return;
     }
     throttle(&v.web, true);
-    if !VIEWS.with_borrow(|r| r.shown(&d.id)) {
-        out_of_sight(v, &d.id);
+    if VIEWS.with_borrow(|r| r.offscreen(id)) {
+        out_of_sight(v, id);
     }
 }
 
-/// Out of its tab's sight, still drawn: no park timer, and not one of the hidden the cap counts.
-pub(super) fn keep_aside(v: &View) {
-    stop_timer(v);
-    VIEWS.with_borrow_mut(|r| r.aside(&v.delegate.ivars().id));
-    aside(v);
-}
-
-/// The idle timer (gvIdleDue) set again from now (`on`), or stopped; none for a tab asleep, or
-/// with parking off.
-fn idle_in(v: &View, on: bool) {
-    unsafe {
-        NSObject::cancelPreviousPerformRequestsWithTarget_selector_object(
-            &v.delegate,
-            sel!(gvIdleDue),
-            None,
-        )
-    };
-    let minutes = PARK_AFTER.get();
-    if on && minutes > 0 && v.delegate.ivars().awake.get() {
-        let after = f64::from(minutes) * 60.0;
+/// From now, the time an awake tab may go without a command before it sleeps.
+fn restart_idle(v: &View) {
+    stop_idle(v);
+    if VIEWS.with_borrow(|r| r.awake(&v.delegate.ivars().id)) {
+        let after = IDLE.as_secs_f64();
         unsafe {
             v.delegate
                 .performSelector_withObject_afterDelay(sel!(gvIdleDue), None, after)
@@ -267,10 +261,19 @@ fn idle_in(v: &View, on: bool) {
     }
 }
 
+fn stop_idle(v: &View) {
+    unsafe {
+        NSObject::cancelPreviousPerformRequestsWithTarget_selector_object(
+            &v.delegate,
+            sel!(gvIdleDue),
+            None,
+        )
+    };
+}
+
 /// Its idle timer is up: asleep, unless a command runs on it.
 pub(super) fn idle(id: &str) {
-    let running = |v: &View| !v.delegate.ivars().running.borrow().is_empty();
-    if let Some(v) = view(id).filter(|v| PARK_AFTER.get() > 0 && !running(v)) {
+    if let Some(v) = view(id).filter(|v| v.delegate.ivars().running.borrow().is_empty()) {
         sleep(&v);
     }
 }
@@ -297,7 +300,7 @@ struct Shown<'a> {
 }
 
 /// Shown off the window's left edge, as the agent's device or the size it last had.
-fn aside(v: &View) {
+pub(super) fn offscreen(v: &View) {
     let screen = asked(&v.delegate.ivars().id).screen;
     let size = match &screen {
         Some(s) => NSSize::new(s.w, s.h),
@@ -454,12 +457,12 @@ pub fn agent_device(app: &AppHandle, id: &str, screen: Option<AgentScreen>) -> R
     if off && super::can_set_dpr(&v.web) {
         let _: () = unsafe { msg_send![&*v.web, _setOverrideDeviceScaleFactor: 0.0f64] };
     }
-    if v.delegate.ivars().awake.get() && !VIEWS.with_borrow(|r| r.shown(id)) {
+    if VIEWS.with_borrow(|r| r.offscreen(id)) {
         if off {
             // Back to the window's size, not the device's it had.
             v.host.setFrame(NSRect::ZERO);
         }
-        aside(&v);
+        offscreen(&v);
     }
     emit(
         app,

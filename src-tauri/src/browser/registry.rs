@@ -19,6 +19,8 @@ struct Entry<V> {
     state: State<V>,
     /// The page as it last showed, taken as it went out of sight: what it parks with.
     picture: Option<String>,
+    /// In use by the agents of the pane that opened it: out of its tab's sight, it's Offscreen.
+    awake: bool,
 }
 
 enum State<V> {
@@ -26,9 +28,9 @@ enum State<V> {
     Shown(V),
     /// Out of sight since the hide numbered so.
     Hidden(V, u64),
-    /// Out of its tab's sight but drawn, off the window's edge, for the agents of the pane that
-    /// opened it: it neither parks nor counts toward the cap.
-    Aside(V),
+    /// Out of its tab's sight but drawn, off the window's edge, while it's awake: it neither
+    /// parks nor counts toward the cap.
+    Offscreen(V),
     Parked(Parked),
 }
 
@@ -43,7 +45,7 @@ pub struct Parked {
 impl<V> Entry<V> {
     fn view(&self) -> Option<&V> {
         match &self.state {
-            State::Shown(v) | State::Hidden(v, _) | State::Aside(v) => Some(v),
+            State::Shown(v) | State::Hidden(v, _) | State::Offscreen(v) => Some(v),
             State::Parked(_) => None,
         }
     }
@@ -56,7 +58,7 @@ impl<V> Entry<V> {
 
     fn into_view(self) -> Option<V> {
         match self.state {
-            State::Shown(v) | State::Hidden(v, _) | State::Aside(v) => Some(v),
+            State::Shown(v) | State::Hidden(v, _) | State::Offscreen(v) => Some(v),
             State::Parked(_) => None,
         }
     }
@@ -80,14 +82,20 @@ impl<V> Registry<V> {
         self.views.iter().find(|e| e.id == id)?.view()
     }
 
-    /// A new view, shown; one parked under the same id makes way.
-    pub fn insert(&mut self, id: &str, root: &str, view: V) {
+    /// A new view, shown, or Offscreen when it's an agent's awake; one parked under the same id
+    /// makes way.
+    pub fn insert(&mut self, id: &str, root: &str, view: V, awake: bool) {
         self.views.retain(|e| e.id != id);
         self.views.push(Entry {
             id: id.into(),
             root: root.into(),
-            state: State::Shown(view),
+            state: if awake {
+                State::Offscreen(view)
+            } else {
+                State::Shown(view)
+            },
             picture: None,
+            awake,
         });
     }
 
@@ -142,41 +150,62 @@ impl<V> Registry<V> {
     pub fn show(&mut self, id: &str) {
         if let Some(e) = self.entry(id) {
             e.restate(|s| match s {
-                State::Hidden(v, _) | State::Aside(v) => State::Shown(v),
+                State::Hidden(v, _) | State::Offscreen(v) => State::Shown(v),
                 s => s,
             });
         }
     }
 
-    /// Kept drawn out of its tab's sight; false for a view that isn't live.
-    pub fn aside(&mut self, id: &str) -> bool {
-        let mut live = false;
-        if let Some(e) = self.entry(id) {
-            e.restate(|s| match s {
-                State::Shown(v) | State::Hidden(v, _) | State::Aside(v) => {
-                    live = true;
-                    State::Aside(v)
-                }
-                s => s,
-            });
-        }
-        live
+    /// In use by its pane's agents: out of sight, it's Offscreen from now on. True when it was
+    /// asleep (or isn't live: false).
+    pub fn wake(&mut self, id: &str) -> bool {
+        let Some(e) = self.entry(id).filter(|e| e.view().is_some() && !e.awake) else {
+            return false;
+        };
+        e.awake = true;
+        e.restate(|s| match s {
+            State::Hidden(v, _) => State::Offscreen(v),
+            s => s,
+        });
+        true
+    }
+
+    /// No longer in use by its agents: out of sight, it hides (`hide`) as any other. True when
+    /// it was awake.
+    pub fn sleep(&mut self, id: &str) -> bool {
+        self.entry(id)
+            .map(|e| std::mem::replace(&mut e.awake, false))
+            .unwrap_or_default()
     }
 
     /// Out of sight: the hide's number, for its park timer, and the hidden views past the cap
-    /// (the longest hidden first) with theirs. None for a view that isn't live.
+    /// (the longest hidden first) with theirs. None for a view that isn't live, or one awake,
+    /// which goes Offscreen instead.
     pub fn hide(&mut self, id: &str) -> Option<(u64, Vec<(String, u64)>)> {
         self.hides += 1;
         let since = self.hides;
-        let mut live = false;
-        self.entry(id)?.restate(|s| match s {
-            State::Shown(v) | State::Hidden(v, _) | State::Aside(v) => {
-                live = true;
-                State::Hidden(v, since)
+        let e = self.entry(id)?;
+        e.view()?;
+        let awake = e.awake;
+        e.restate(|s| match s {
+            State::Shown(v) | State::Hidden(v, _) | State::Offscreen(v) if awake => {
+                State::Offscreen(v)
             }
+            State::Shown(v) | State::Hidden(v, _) | State::Offscreen(v) => State::Hidden(v, since),
             s => s,
         });
-        live.then(|| (since, self.over_cap()))
+        (!awake).then(|| (since, self.over_cap()))
+    }
+
+    /// Drawn off the window's edge for its agents.
+    pub fn offscreen(&self, id: &str) -> bool {
+        self.views
+            .iter()
+            .any(|e| e.id == id && matches!(e.state, State::Offscreen(_)))
+    }
+
+    pub fn awake(&self, id: &str) -> bool {
+        self.views.iter().any(|e| e.id == id && e.awake)
     }
 
     /// Fewer to keep alive: those past it park now.
@@ -286,7 +315,7 @@ mod tests {
     fn the_longest_hidden_park_first_past_the_cap() {
         let mut r = Registry::new();
         for id in ["a", "b", "c", "d"] {
-            r.insert(id, "/w/one", id);
+            r.insert(id, "/w/one", id, false);
         }
         let (a, over) = r.hide("a").unwrap();
         assert!(over.is_empty());
@@ -307,7 +336,7 @@ mod tests {
         let mut r = Registry::new();
         let mut since = Vec::new();
         for id in ["a", "b", "c"] {
-            r.insert(id, "/w", id);
+            r.insert(id, "/w", id, false);
         }
         for id in ["a", "b"] {
             since.push(r.hide(id).unwrap().0);
@@ -325,32 +354,39 @@ mod tests {
     }
 
     #[test]
-    fn an_agents_view_aside_never_parks_nor_counts_until_it_hides() {
+    fn an_awake_view_is_drawn_offscreen_and_neither_parks_nor_counts_until_it_sleeps() {
         let mut r = Registry::new();
-        for id in ["a", "b", "c"] {
-            r.insert(id, "/w", id);
+        r.insert("new", "/w", 0, true);
+        assert!(r.offscreen("new") && r.awake("new") && !r.shown("new"));
+        for (id, n) in [("a", 1), ("b", 2), ("c", 3)] {
+            r.insert(id, "/w", n, false);
         }
         let (a, _) = r.hide("a").unwrap();
-        assert!(r.aside("a") && r.aside("b"));
-        assert!(!r.shown("a") && r.get("a") == Some(&"a"));
+        assert!(r.wake("a") && r.wake("b"));
+        assert!(!r.wake("a"), "already awake");
+        assert!(r.offscreen("a") && r.get("a") == Some(&1));
+        assert!(r.shown("b"), "an awake view on show stays so");
         assert!(r.hidden().is_empty() && !r.still_hidden("a", a));
         assert_eq!(r.park("a", a, parked("http://x.test/")), None);
+        // Out of sight while awake: off-screen, not Hidden.
+        assert_eq!(r.hide("b"), None);
+        assert!(r.offscreen("b"));
         assert!(r.set_live_hidden(0).is_empty(), "none hidden to park");
-        // Shown, then the agent's pane gone: hidden as any other, and parking.
-        r.show("b");
-        assert!(r.shown("b"));
+        // Asleep: it hides as any other, and parks.
+        assert!(r.sleep("b") && !r.sleep("b"));
         let (b, over) = r.hide("b").unwrap();
         assert_eq!(over, [("b".to_string(), b)]);
+        assert!(!r.offscreen("b") && !r.awake("b"));
         let (since, _) = r.hide("c").unwrap();
         r.park("c", since, parked("http://x.test/"));
-        assert!(!r.aside("c"), "a parked view isn't live");
-        assert!(!r.aside("nope"));
+        assert!(!r.wake("c"), "a parked view isn't live");
+        assert!(!r.wake("nope") && !r.sleep("nope"));
     }
 
     #[test]
     fn a_timer_from_before_the_view_showed_again_parks_nothing() {
         let mut r = Registry::new();
-        r.insert("a", "/w", 1);
+        r.insert("a", "/w", 1, false);
         let (first, _) = r.hide("a").unwrap();
         r.show("a");
         assert!(!r.still_hidden("a", first));
@@ -369,12 +405,12 @@ mod tests {
     #[test]
     fn a_parked_view_comes_back_once_where_it_was() {
         let mut r = Registry::new();
-        r.insert("a", "/w", 1);
+        r.insert("a", "/w", 1, false);
         let (since, _) = r.hide("a").unwrap();
         r.park("a", since, parked("http://localhost:3000/docs"));
         assert_eq!(r.unpark("a"), Some(parked("http://localhost:3000/docs")));
         assert_eq!(r.unpark("a"), None);
-        r.insert("a", "/w", 2);
+        r.insert("a", "/w", 2, false);
         assert_eq!(r.unpark("a"), None, "a live view isn't parked");
         assert_eq!(r.get("a"), Some(&2));
     }
@@ -382,8 +418,8 @@ mod tests {
     #[test]
     fn a_park_keeps_the_picture_taken_as_the_view_hid_even_one_that_comes_later() {
         let mut r = Registry::new();
-        r.insert("a", "/w", 1);
-        r.insert("b", "/w", 2);
+        r.insert("a", "/w", 1, false);
+        r.insert("b", "/w", 2, false);
         let (a, _) = r.hide("a").unwrap();
         r.set_picture("a", Some("data:a".into()));
         assert!(!r.shown("a") && r.shown("b"));
@@ -418,15 +454,15 @@ mod tests {
     #[test]
     fn closing_takes_parked_views_too_and_gives_only_live_ones() {
         let mut r = Registry::new();
-        r.insert("a", "/w/one", 1);
-        r.insert("b", "/w/one", 2);
-        r.insert("c", "/w/two", 3);
+        r.insert("a", "/w/one", 1, false);
+        r.insert("b", "/w/one", 2, false);
+        r.insert("c", "/w/two", 3, false);
         let (since, _) = r.hide("a").unwrap();
         r.park("a", since, parked("http://x.test/"));
         assert_eq!(r.remove_root("/w/one"), [2]);
         assert_eq!(r.unpark("a"), None);
         assert_eq!(r.remove("c"), Some(3));
-        r.insert("d", "/w/one", 4);
+        r.insert("d", "/w/one", 4, false);
         let (since, _) = r.hide("d").unwrap();
         r.park("d", since, parked("http://x.test/"));
         assert_eq!(r.remove("d"), None);
@@ -437,9 +473,9 @@ mod tests {
     #[test]
     fn a_worktrees_live_views_are_those_its_folders_hold() {
         let mut r = Registry::new();
-        r.insert("a", "/w/one", 1);
-        r.insert("b", "/w/one-two", 2);
-        r.insert("c", "/w/one", 3);
+        r.insert("a", "/w/one", 1, false);
+        r.insert("b", "/w/one-two", 2, false);
+        r.insert("c", "/w/one", 3, false);
         let (since, _) = r.hide("c").unwrap();
         r.park("c", since, parked("http://x.test/"));
         assert_eq!(r.within("/w/one"), [&1]);
@@ -461,7 +497,6 @@ mod tests {
     enum Is {
         Shown,
         Hidden(u64),
-        Aside,
         Parked,
     }
 
@@ -492,13 +527,13 @@ mod tests {
         for n in 0..20_000u32 {
             let id = format!("t{}", lcg(&mut seed) % 12);
             let root = format!("/w/{}", lcg(&mut seed) % 3);
-            match lcg(&mut seed) % 10 {
+            match lcg(&mut seed) % 9 {
                 // A tab shows: its view made, or a parked one made again, or the live one shown.
                 0 | 1 => match model.iter().position(|m| m.0 == id) {
                     Some(at) if model[at].3 == Is::Parked => {
                         assert!(r.unpark(&id).is_some());
                         model.remove(at);
-                        r.insert(&id, &root, n);
+                        r.insert(&id, &root, n, false);
                         model.push((id, root, n, Is::Shown));
                     }
                     Some(at) => {
@@ -507,7 +542,7 @@ mod tests {
                         model[at].3 = Is::Shown;
                     }
                     None => {
-                        r.insert(&id, &root, n);
+                        r.insert(&id, &root, n, false);
                         model.push((id, root, n, Is::Shown));
                     }
                 },
@@ -541,14 +576,6 @@ mod tests {
                         model.remove(at);
                     }
                     assert_eq!(r.remove(&id), live);
-                }
-                // An agent's tab kept drawn: out of the cap's count.
-                8 => {
-                    let at = model.iter().position(|m| m.0 == id && m.3 != Is::Parked);
-                    assert_eq!(r.aside(&id), at.is_some());
-                    if let Some(at) = at {
-                        model[at].3 = Is::Aside;
-                    }
                 }
                 7 => {
                     cap = lcg(&mut seed) % 5;
@@ -585,87 +612,100 @@ mod tests {
         assert_eq!(r.take_all(), live);
     }
 
-    /// Agent tabs kept aside among the user's: whatever runs, an aside view is never parked, never
-    /// one the cap names, never shown nor hidden; a parked one never goes aside.
+    /// Agents' tabs among the user's, waking and sleeping as the app does it (a view put to sleep
+    /// out of sight hides at once): an awake view is never Hidden, parked, nor one the cap names,
+    /// a new awake one starts off-screen, and only an awake one is off-screen.
     #[test]
-    fn random_runs_never_park_a_view_aside_nor_set_a_parked_one_aside() {
+    fn random_runs_never_hide_park_or_cap_an_awake_view() {
+        use std::collections::HashSet;
         let mut r = Registry::new();
         let mut hides: Vec<(String, u64)> = Vec::new();
-        let mut aside: std::collections::HashSet<String> = Default::default();
+        let mut awake: HashSet<String> = HashSet::new();
         let mut cap = LIVE_HIDDEN;
         let mut seed = 23;
-        let check_over = |over: &[(String, u64)], aside: &std::collections::HashSet<String>| {
+        let not_awake = |over: &[(String, u64)], awake: &HashSet<String>| {
             for (id, _) in over {
-                assert!(!aside.contains(id), "the cap named {id}, which is aside");
+                assert!(!awake.contains(id), "the cap named {id}, which is awake");
             }
         };
         for n in 0..20_000u32 {
             let id = format!("t{}", lcg(&mut seed) % 8);
-            match lcg(&mut seed) % 8 {
+            match lcg(&mut seed) % 9 {
                 0 => {
-                    if r.parked(&id).is_some() {
-                        r.unpark(&id);
-                    }
                     if r.get(&id).is_none() {
-                        r.insert(&id, "/w", n);
-                        aside.remove(&id);
+                        r.unpark(&id);
+                        let agents = lcg(&mut seed).is_multiple_of(2);
+                        r.insert(&id, "/w", n, agents);
+                        if agents {
+                            assert!(r.offscreen(&id), "a new awake view starts off-screen");
+                            awake.insert(id.clone());
+                        } else {
+                            awake.remove(&id);
+                        }
                     }
                 }
-                1 => {
-                    r.show(&id);
-                    aside.remove(&id);
-                }
-                2 => {
-                    if let Some((since, over)) = r.hide(&id) {
-                        aside.remove(&id);
-                        check_over(&over, &aside);
+                1 => r.show(&id),
+                2 => match r.hide(&id) {
+                    Some((since, over)) => {
+                        assert!(!awake.contains(&id), "{id} awake and Hidden");
+                        not_awake(&over, &awake);
                         hides.push((id.clone(), since));
                         for (gone, since) in over {
                             assert!(r.park(&gone, since, parked("http://x.test/")).is_some());
                         }
                     }
-                }
-                3 | 4 => {
-                    let was_parked = r.parked(&id).is_some();
-                    let live = r.aside(&id);
-                    assert_eq!(live, r.get(&id).is_some());
-                    if was_parked {
-                        assert!(!live && r.parked(&id).is_some(), "{id} parked stays parked");
+                    None if awake.contains(&id) => assert!(r.offscreen(&id)),
+                    None => assert!(r.get(&id).is_none()),
+                },
+                3 => {
+                    let woke = r.wake(&id);
+                    assert_eq!(woke, r.get(&id).is_some() && !awake.contains(&id));
+                    if r.get(&id).is_some() {
+                        awake.insert(id.clone());
+                        assert!(r.shown(&id) || r.offscreen(&id));
                     }
-                    if live {
-                        aside.insert(id.clone());
+                }
+                4 => {
+                    assert_eq!(r.sleep(&id), awake.remove(&id));
+                    if r.offscreen(&id) {
+                        let (since, over) = r.hide(&id).expect("asleep, it hides");
+                        not_awake(&over, &awake);
+                        hides.push((id.clone(), since));
+                        for (gone, since) in over {
+                            r.park(&gone, since, parked("http://x.test/"));
+                        }
                     }
                 }
                 5 if !hides.is_empty() => {
                     let (id, since) = hides.swap_remove(lcg(&mut seed) % hides.len());
                     let got = r.park(&id, since, parked("http://x.test/"));
-                    if aside.contains(&id) {
-                        assert_eq!(got, None, "{id} parked while aside");
+                    if awake.contains(&id) {
+                        assert_eq!(got, None, "{id} parked while awake");
                     }
                 }
                 6 => {
                     cap = lcg(&mut seed) % 4;
                     let over = r.set_live_hidden(cap);
-                    check_over(&over, &aside);
+                    not_awake(&over, &awake);
                     for (gone, since) in over {
                         r.park(&gone, since, parked("http://x.test/"));
                     }
                 }
                 _ => {
                     r.remove(&id);
-                    aside.remove(&id);
+                    awake.remove(&id);
                 }
             }
             let hidden = r.hidden();
             assert!(hidden.len() <= cap, "{} hidden past {cap}", hidden.len());
-            for id in &aside {
-                assert!(r.get(id).is_some(), "{id} aside and gone");
-                assert!(!r.shown(id) && r.parked(id).is_none(), "{id}");
-                assert!(
-                    !hidden.iter().any(|h| &h.0 == id),
-                    "{id} aside counts as hidden"
-                );
-                assert!(!hides.iter().any(|(h, s)| h == id && r.still_hidden(h, *s)));
+            for id in (0..8).map(|i| format!("t{i}")) {
+                assert_eq!(r.awake(&id), awake.contains(&id), "{id}");
+                if awake.contains(&id) {
+                    assert!(r.get(&id).is_some() && r.parked(&id).is_none(), "{id}");
+                    assert!(!hidden.iter().any(|h| h.0 == id), "{id} awake and Hidden");
+                } else {
+                    assert!(!r.offscreen(&id), "{id} off-screen asleep");
+                }
             }
         }
     }
@@ -674,7 +714,7 @@ mod tests {
     fn hiding_again_restarts_the_clock_and_keeps_the_most_recent() {
         let mut r = Registry::new();
         for id in ["a", "b", "c"] {
-            r.insert(id, "/w", id);
+            r.insert(id, "/w", id, false);
         }
         let (a1, _) = r.hide("a").unwrap();
         r.hide("b").unwrap();
@@ -686,7 +726,7 @@ mod tests {
         assert_eq!(over.iter().map(|o| o.0.as_str()).collect::<Vec<_>>(), ["b"]);
         // A cap of none parks even the one just hidden.
         let mut r = Registry::new();
-        r.insert("x", "/w", 1);
+        r.insert("x", "/w", 1, false);
         assert!(r.set_live_hidden(0).is_empty(), "shown views never park");
         let (since, over) = r.hide("x").unwrap();
         assert_eq!(over, [("x".to_string(), since)]);
@@ -695,10 +735,10 @@ mod tests {
     #[test]
     fn a_reopened_id_replaces_its_parked_entry_and_unknown_ids_do_nothing() {
         let mut r = Registry::new();
-        r.insert("a", "/w", 1);
+        r.insert("a", "/w", 1, false);
         let (since, _) = r.hide("a").unwrap();
         r.park("a", since, parked("http://localhost:1/"));
-        r.insert("a", "/w", 2);
+        r.insert("a", "/w", 2, false);
         assert_eq!(r.get("a"), Some(&2));
         assert_eq!(r.unpark("a"), None);
         assert_eq!(r.remove("a"), Some(2));
@@ -713,9 +753,9 @@ mod tests {
     #[test]
     fn a_worktree_holds_its_subfolders_but_not_its_namesakes() {
         let mut r = Registry::new();
-        r.insert("a", "/w/app", 1);
-        r.insert("b", "/w/app-2", 2);
-        r.insert("c", "/w/app/nested", 3);
+        r.insert("a", "/w/app", 1, false);
+        r.insert("b", "/w/app-2", 2, false);
+        r.insert("c", "/w/app/nested", 3, false);
         assert_eq!(r.within("/w/app/"), [&1]);
         assert_eq!(r.within("/w/app/nested/src"), [&1, &3]);
         assert_eq!(r.within("/w/app-2/x"), [&2]);

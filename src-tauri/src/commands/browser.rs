@@ -19,7 +19,8 @@ pub fn browser_create(
     if window.label() != "main" {
         return Err("Browser tabs open in the main window.".into());
     }
-    browser::create(&window, &id, &root, &url, &browser::Look { ua, zoom, dark })
+    let look = browser::Look { ua, zoom, dark };
+    browser::create(&window, &id, &root, &url, &look, false)
 }
 
 /// `screen`: the device it shows, in device mode.

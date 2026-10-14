@@ -317,7 +317,14 @@ mod other {
         Err(UNSUPPORTED.into())
     }
 
-    pub fn create(_: &tauri::WebviewWindow, _: &str, _: &str, _: &str, _: &Look) -> Res<Created> {
+    pub fn create(
+        _: &tauri::WebviewWindow,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: &Look,
+        _: bool,
+    ) -> Res<Created> {
         Err(UNSUPPORTED.into())
     }
     pub fn place(_: &str, _: Rect, _: Option<Screen>) -> Res<()> {
@@ -456,15 +463,15 @@ mod tests {
     #[test]
     fn a_worktree_closes_with_its_views() {
         let mut r = Registry::new();
-        r.insert("a", "/w/one", 1);
-        r.insert("b", "/w/two", 2);
-        r.insert("c", "/w/one", 3);
+        r.insert("a", "/w/one", 1, false);
+        r.insert("b", "/w/two", 2, false);
+        r.insert("c", "/w/one", 3, false);
         assert_eq!(r.remove_root("/w/one"), [1, 3]);
         assert_eq!(r.get("a"), None);
         assert_eq!(r.get("b"), Some(&2));
         assert_eq!(r.remove("b"), Some(2));
         assert_eq!(r.remove("b"), None);
-        r.insert("d", "/w/two", 4);
+        r.insert("d", "/w/two", 4, false);
         assert_eq!(r.take_all(), [4]);
         assert_eq!(r.get("d"), None);
     }
@@ -673,7 +680,7 @@ mod tests {
                 // create() opens an id once: one already open stays as it is.
                 0 | 1 => {
                     if r.get(&id).is_none() {
-                        r.insert(&id, &root, n);
+                        r.insert(&id, &root, n, false);
                         model.push((id, root, n));
                     }
                 }
@@ -700,9 +707,9 @@ mod tests {
     #[test]
     fn closing_a_root_leaves_other_roots_with_the_same_prefix() {
         let mut r = Registry::new();
-        r.insert("a", "/w/one", 1);
-        r.insert("b", "/w/one-two", 2);
-        r.insert("c", "/w/one/", 3);
+        r.insert("a", "/w/one", 1, false);
+        r.insert("b", "/w/one-two", 2, false);
+        r.insert("c", "/w/one/", 3, false);
         assert_eq!(r.remove_root("/w/one"), [1]);
         assert_eq!(r.get("b"), Some(&2));
         assert_eq!(r.get("c"), Some(&3));

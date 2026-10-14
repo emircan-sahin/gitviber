@@ -353,8 +353,6 @@ struct DelegateIvars {
     /// The agent commands running on it now (agent.rs): while any are, it doesn't idle, and its
     /// page's dialogs answer themselves.
     running: RefCell<HashSet<u64>>,
-    /// In use by its pane's agents (agent.rs): drawn and unthrottled, aside when out of sight.
-    awake: Cell<bool>,
     /// The page's own zoom (page_view.rs), outside device mode.
     zoom: Cell<f64>,
 }
@@ -391,7 +389,7 @@ define_class!(
             }
         }
 
-        /// No agent's command touched the tab for a while (agent.rs `wake`).
+        /// No agent's command touched the tab for a while (agent.rs `restart_idle`).
         #[unsafe(method(gvIdleDue))]
         fn idle_due(&self) {
             agent::idle(&self.ivars().id);
@@ -630,7 +628,6 @@ impl Delegate {
             picking: RefCell::default(),
             crashed: Cell::new(false),
             running: RefCell::default(),
-            awake: Cell::new(false),
             zoom: Cell::new(1.0),
         });
         unsafe { msg_send![super(this), init] }
@@ -806,14 +803,16 @@ fn load(web: &WKWebView, url: &NSURL) {
     unsafe { web.loadRequest(&NSURLRequest::requestWithURL(url)) };
 }
 
-/// The view for tab `id` of worktree `root`, loading `url`; hidden until placed. One that is
-/// already open stays as it is; a parked one opens again where it was, its picture returned.
+/// The view for tab `id` of worktree `root`, loading `url`; hidden until placed, or an agent's
+/// awake one (`awake`, agent.rs) drawn off-screen. One that is already open stays as it is; a
+/// parked one opens again where it was, its picture returned.
 pub fn create(
     window: &tauri::WebviewWindow,
     id: &str,
     root: &str,
     url: &str,
     look: &Look,
+    awake: bool,
 ) -> Res<Created> {
     let mtm = main_thread()?;
     if let Some(v) = view(id) {
@@ -905,7 +904,7 @@ pub fn create(
         delegate,
     };
     let dpr = can_set_dpr(&view.web);
-    VIEWS.with_borrow_mut(|r| r.insert(id, &root_key(root), view));
+    VIEWS.with_borrow_mut(|r| r.insert(id, &root_key(root), view, awake));
     Ok(Created {
         page: state,
         snapshot: parked.and_then(|p| p.snapshot),
@@ -999,14 +998,19 @@ pub fn set_agent(id: &str, ua: Option<&str>) -> Res<()> {
 
 /// Hidden, WebKit slows its timers and animation frames. Out of its tab's sight (not just
 /// `aside` for something drawn over it), it parks past the cap or once its timer is up; an
-/// agent's tab in use is drawn off the window's edge instead (agent.rs).
+/// agent's awake tab is drawn off-screen instead (agent.rs).
 pub fn hide(id: &str, aside: bool) {
     let (Ok(_), Some(v)) = (main_thread(), view(id)) else {
         return;
     };
     release_focus(&v);
     if aside {
-        v.host.setHidden(true);
+        // An agent's awake tab never hides: hidden, WebKit stops its animation frames.
+        if VIEWS.with_borrow(|r| r.awake(id)) {
+            agent::offscreen(&v);
+        } else {
+            v.host.setHidden(true);
+        }
         return;
     }
     // Its picture while it still shows: hidden, WebKit may never give one. It parks with it.
@@ -1014,19 +1018,22 @@ pub fn hide(id: &str, aside: bool) {
     take_snapshot(&v.web, move |shot| {
         VIEWS.with_borrow_mut(|r| r.set_picture(&picture_of, shot));
     });
-    if v.delegate.ivars().awake.get() {
-        agent::keep_aside(&v);
-    } else {
-        out_of_sight(&v, id);
-    }
+    out_of_sight(&v, id);
 }
 
-/// Hidden in the registry too: its park timer starts, and the hidden past the cap park.
+/// Hidden in the registry too: its park timer starts, and the hidden past the cap park. An
+/// agent's awake view goes off-screen instead.
 fn out_of_sight(v: &View, id: &str) {
-    v.host.setHidden(true);
     let Some((since, over)) = VIEWS.with_borrow_mut(|r| r.hide(id)) else {
+        if VIEWS.with_borrow(|r| r.offscreen(id)) {
+            stop_timer(v);
+            agent::offscreen(v);
+        } else {
+            v.host.setHidden(true);
+        }
         return;
     };
+    v.host.setHidden(true);
     v.delegate.ivars().hidden_at.set(Some(Instant::now()));
     start_timer(v, since, Duration::ZERO);
     for (id, since) in over {
