@@ -1,8 +1,11 @@
 //! `gitviber browser` commands (control.rs), each run on its request's connection thread
 //! (server.rs) as a few steps on the main thread, where the views are, waiting in between.
 
-use super::control::{self, AgentScreen, Command, Listed, Reply, Request, Scroll, Tabs, Wait};
+use super::control::{
+    self, AgentScreen, Command, Listed, Reply, Request, Scroll, Sessions, Tabs, Wait,
+};
 use super::picks::{self, Bounds};
+use super::sessions::{self, Session, Shelf};
 use super::{Go, PageState};
 use crate::state::{AppState, Res};
 use serde_json::{json, Value};
@@ -10,8 +13,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, LazyLock, Mutex, MutexGuard, PoisonError, TryLockError};
-use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
+use std::time::{Duration, Instant, SystemTime};
+use tauri::{AppHandle, Manager, Url};
 
 const AGENT: &str = include_str!("scripts/agent.js");
 /// A step on the main thread answers at once: past this the app is stuck.
@@ -25,6 +28,10 @@ const POLL: Duration = Duration::from_millis(100);
 const EVAL_MAX: usize = 20_000;
 /// What `eval`'s script gives: `=` and its value as JSON however it came, or `!` and what it threw.
 const SERIALIZE: &str = "try { const s = JSON.stringify(value); return `=${s === undefined ? String(value) : s}`; } catch { return `=${String(value)}`; }";
+/// The page's storage for a session; in GitViber's world, where the page can't stand in for it.
+const STORAGE_READ: &str = "return JSON.stringify({ origin: location.origin, local: Object.entries(localStorage), session: Object.entries(sessionStorage) });";
+const STORAGE_WRITE: &str = "const s = JSON.parse(input); localStorage.clear(); sessionStorage.clear(); for (const [k, v] of s.local) localStorage.setItem(k, v); for (const [k, v] of s.session) sessionStorage.setItem(k, v); return '';";
+const NO_INDEXED_DB: &str = "IndexedDB isn't carried.";
 
 pub fn run(app: &AppHandle, req: Request) -> Reply {
     command(app, req).unwrap_or_else(Reply::error)
@@ -48,8 +55,10 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
         Some(name) => Some(control::tab_name(name)?),
         None => None,
     };
-    if let Command::Tab(op) = cmd {
-        return tabs(app, pty, root, name, op, &req.cwd);
+    match cmd {
+        Command::Tab(op) => return tabs(app, pty, root, name, op, &req.cwd),
+        Command::Session(op) => return sessions(app, pty, root, name, op),
+        _ => {}
     }
     let first = match &cmd {
         Command::Open(url) => Some(url.clone()),
@@ -58,11 +67,12 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     let (id, made) = main(app, move |app| {
         super::agent_tab(app, pty, &root, name.as_deref(), first.as_deref())
     })?;
-    drive(app, id, cmd, made, &req.cwd)
+    // `made`: just made, at the address an open asks for.
+    drive(app, id, |tab| tab.run(cmd, made, &req.cwd))
 }
 
-/// `cmd` on tab `id` in its turn; `made`: the tab was just made, at the address an open asks for.
-fn drive(app: &AppHandle, id: String, cmd: Command, made: bool, cwd: &str) -> Res<Reply> {
+/// `steps` on tab `id` in its turn, as one command.
+fn drive<T>(app: &AppHandle, id: String, steps: impl FnOnce(&Tab) -> Res<T>) -> Res<T> {
     let queue = queue(&id);
     let _turn = take_turn(&queue, STEP)?;
     let tab = Tab {
@@ -71,7 +81,7 @@ fn drive(app: &AppHandle, id: String, cmd: Command, made: bool, cwd: &str) -> Re
         command: NEXT_COMMAND.fetch_add(1, Ordering::Relaxed),
     };
     tab.start()?;
-    tab.run(cmd, made, cwd)
+    steps(&tab)
 }
 
 /// `tab …`; `name`: the tab the command would go to (`--tab`), which `tab close` closes unless
@@ -85,20 +95,37 @@ fn tabs(
     cwd: &str,
 ) -> Res<Reply> {
     match op {
-        Tabs::New { name, url } => {
-            let first = url.clone();
-            let (name, id) = main(app, move |app| {
-                super::agent_new_tab(app, pty, &root, name.as_deref(), first.as_deref())
-            })?;
-            let Some(url) = url else {
-                return Ok(Reply::out(name));
+        Tabs::New {
+            name,
+            url,
+            shared,
+            session,
+        } => {
+            // Read first: a session that isn't there makes no tab.
+            let saved = match session {
+                Some(s) => Some((shelf(app, &root)?.load(&s)?, s)),
+                None => None,
             };
-            let opened = drive(app, id, Command::Open(url), true, cwd)
-                .map_err(|e| format!("{name}\n{e}"))?;
-            Ok(Reply::out(format!(
-                "{name}\n{}",
-                opened.out.unwrap_or_default()
-            )))
+            let first = url.clone().filter(|_| saved.is_none());
+            let (name, id) = main(app, move |app| {
+                super::agent_new_tab(app, pty, &root, name.as_deref(), shared, first.as_deref())
+            })?;
+            if saved.is_none() && url.is_none() {
+                return Ok(Reply::out(name));
+            }
+            let said = drive(app, id, |tab| {
+                let mut said = vec![name.clone()];
+                if let Some((session, s)) = &saved {
+                    said.push(tab.load_session(s, session)?);
+                }
+                if let Some(url) = url {
+                    let opened = tab.run(Command::Open(url), saved.is_none(), cwd)?;
+                    said.push(opened.out.unwrap_or_default());
+                }
+                Ok(said.join("\n"))
+            })
+            .map_err(|e| format!("{name}\n{e}"))?;
+            Ok(Reply::out(said))
         }
         Tabs::List => {
             let tabs = main(app, move |_| super::agent_tabs(pty))?;
@@ -112,6 +139,54 @@ fn tabs(
             Ok(Reply::out(format!("Closed tab {closed}")))
         }
     }
+}
+
+/// `session …`, saved with the pane's repository; `name`: the tab the command goes to.
+fn sessions(
+    app: &AppHandle,
+    pty: u32,
+    root: String,
+    name: Option<String>,
+    op: Sessions,
+) -> Res<Reply> {
+    let shelf = shelf(app, &root)?;
+    let tab = move || {
+        main(app, move |app| {
+            super::agent_tab(app, pty, &root, name.as_deref(), None)
+        })
+        .map(|(id, _)| id)
+    };
+    match op {
+        Sessions::List => Ok(Reply::out(sessions_text(&shelf.list(), now()))),
+        Sessions::Delete(s) => {
+            shelf.delete(&s)?;
+            Ok(Reply::out(format!("Deleted session {s}")))
+        }
+        Sessions::Save(s) => {
+            let session = drive(app, tab()?, Tab::session)?;
+            shelf.save(&s, &session)?;
+            Ok(Reply::out(format!(
+                "Saved session {s}: {}. {NO_INDEXED_DB}",
+                summary(&session)
+            )))
+        }
+        Sessions::Load(s) => {
+            let session = shelf.load(&s)?;
+            drive(app, tab()?, |tab| tab.load_session(&s, &session)).map(Reply::out)
+        }
+        Sessions::Clear => drive(app, tab()?, Tab::clear_session).map(Reply::out),
+    }
+}
+
+fn shelf(app: &AppHandle, root: &str) -> Res<Shelf> {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(Shelf::of(&data, root))
+}
+
+fn now() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 static NEXT_COMMAND: AtomicU64 = AtomicU64::new(1);
@@ -213,8 +288,8 @@ impl Tab {
                 }
                 self.arrived("Opened")
             }
-            // Of the pane's tabs, not one page's: `tabs` answers them.
-            Command::Tab(_) => Err("Not a command for a page.".into()),
+            // Of the pane's tabs and sessions, not one page's: `tabs` and `sessions` answer them.
+            Command::Tab(_) | Command::Session(_) => Err("Not a command for a page.".into()),
             Command::Back => self.go(Go::Back, "Back at"),
             Command::Forward => self.go(Go::Forward, "Forward at"),
             Command::Reload => self.go(Go::Reload, "Reloaded"),
@@ -466,6 +541,89 @@ impl Tab {
         self.loaded(LOAD)?;
         Ok(Reply::out(format!("Showing the page as {shown}")))
     }
+
+    /// The tab's login: its cookies (in the user's own data, only those of the page's site), and
+    /// its page's storage.
+    fn session(&self) -> Res<Session> {
+        #[derive(serde::Deserialize)]
+        struct Storage {
+            origin: String,
+            local: Vec<(String, String)>,
+            session: Vec<(String, String)>,
+        }
+        let blank = "Open the page whose login to save first: this one keeps no storage.";
+        let id = self.id.clone();
+        let read = later(&self.app, move |_, done| {
+            super::agent_js(&id, false, STORAGE_READ, "", done)
+        })?
+        .map_err(|_| blank)?;
+        let storage: Storage = serde_json::from_str(&read).map_err(|_| blank)?;
+        let host = Url::parse(&storage.origin)
+            .ok()
+            .filter(|u| matches!(u.scheme(), "http" | "https"))
+            .and_then(|u| u.host_str().map(str::to_string))
+            .ok_or(blank)?;
+        let id = self.id.clone();
+        let shared = main(&self.app, move |_| super::agent_shared(&id))?;
+        let id = self.id.clone();
+        let mut cookies = later(&self.app, move |_, done| super::agent_cookies(&id, done))?;
+        if shared {
+            cookies.retain(|c| sessions::for_host(&host, &c.domain));
+        }
+        Ok(Session {
+            origin: storage.origin,
+            saved: now(),
+            cookies,
+            local: storage.local,
+            session: storage.session,
+        })
+    }
+
+    /// Session `s` in place of whatever the tab's own store had: its cookies set, then its
+    /// storage written at its origin, which loads again to read it.
+    fn load_session(&self, name: &str, s: &Session) -> Res<String> {
+        let id = self.id.clone();
+        later(&self.app, move |_, done| {
+            super::agent_clear_store(&id, done)
+        })?;
+        let (id, cookies) = (self.id.clone(), s.cookies.clone());
+        later(&self.app, move |_, done| {
+            super::agent_set_cookies(&id, cookies, done)
+        })?;
+        let (id, origin) = (self.id.clone(), s.origin.clone());
+        main(&self.app, move |_| super::navigate(&id, &origin))?;
+        self.loaded(LOAD)?;
+        if !s.local.is_empty() || !s.session.is_empty() {
+            let input = json!({ "local": s.local, "session": s.session }).to_string();
+            let id = self.id.clone();
+            later(&self.app, move |_, done| {
+                super::agent_js(&id, false, STORAGE_WRITE, &input, done)
+            })??;
+            self.reload()?;
+        }
+        Ok(format!(
+            "Loaded session {name}: {}. {NO_INDEXED_DB}",
+            summary(s)
+        ))
+    }
+
+    /// The tab's own store emptied, and its page loaded again without it.
+    fn clear_session(&self) -> Res<String> {
+        let id = self.id.clone();
+        later(&self.app, move |_, done| {
+            super::agent_clear_store(&id, done)
+        })?;
+        if super::loadable(&self.page()?.0.url) {
+            self.reload()?;
+        }
+        Ok("Cleared the tab's cookies and storage.".into())
+    }
+
+    fn reload(&self) -> Res<()> {
+        let id = self.id.clone();
+        main(&self.app, move |_| super::go(&id, Go::Reload))?;
+        self.loaded(LOAD).map(drop)
+    }
 }
 
 /// An address with its page's title, when it has one.
@@ -485,7 +643,40 @@ fn tabs_text(tabs: &[Listed]) -> String {
     let lines = tabs.iter().map(|t| {
         let page = titled(&t.url, &t.title, " — ");
         let default = if t.default { "default, " } else { "" };
-        format!("{}  {page}  ({default}used {})", t.name, ago(t.idle))
+        let data = if t.shared { "shared" } else { "private" };
+        format!(
+            "{}  {page}  ({default}{data}, used {})",
+            t.name,
+            ago(t.idle)
+        )
+    });
+    lines.collect::<Vec<_>>().join("\n")
+}
+
+/// What a session holds, never its values.
+fn summary(s: &Session) -> String {
+    format!(
+        "{} cookies, {} localStorage and {} sessionStorage items of {}",
+        s.cookies.len(),
+        s.local.len(),
+        s.session.len(),
+        s.origin
+    )
+}
+
+/// `session list` at `now` (seconds since 1970).
+fn sessions_text(saved: &[(String, Session)], now: u64) -> String {
+    if saved.is_empty() {
+        return "No sessions saved for this repository.".into();
+    }
+    let lines = saved.iter().map(|(name, s)| {
+        let age = Duration::from_secs(now.saturating_sub(s.saved));
+        format!(
+            "{name}  {}  {} cookies  (saved {})",
+            s.origin,
+            s.cookies.len(),
+            ago(age)
+        )
     });
     lines.collect::<Vec<_>>().join("\n")
 }
@@ -507,6 +698,7 @@ mod tests {
         let tab = |name: &str, default: bool, url: &str, title: &str, secs: u64| Listed {
             name: name.into(),
             default,
+            shared: name == "t3",
             url: url.into(),
             title: title.into(),
             idle: Duration::from_secs(secs),
@@ -517,11 +709,39 @@ mod tests {
                 tab("rv268", false, "about:blank", "", 125),
                 tab("t3", false, "https://example.test/", "", 7300),
             ]),
-            "t1  http://localhost:3000/ — App  (default, used 5 s ago)\n\
-             rv268  about:blank  (used 2 min ago)\n\
-             t3  https://example.test/  (used 2 h ago)"
+            "t1  http://localhost:3000/ — App  (default, private, used 5 s ago)\n\
+             rv268  about:blank  (private, used 2 min ago)\n\
+             t3  https://example.test/  (shared, used 2 h ago)"
         );
         assert!(tabs_text(&[]).starts_with("No tabs"));
+    }
+
+    #[test]
+    fn sessions_are_told_by_what_they_hold_never_its_values() {
+        let session = Session {
+            origin: "https://app.test".into(),
+            saved: 1_000,
+            cookies: vec![sessions::Cookie {
+                name: "sid".into(),
+                value: "s3cret".into(),
+                domain: "app.test".into(),
+                path: "/".into(),
+                expires: None,
+                secure: true,
+                http_only: true,
+                same_site: None,
+            }],
+            local: vec![("token".into(), "t0ken".into())],
+            session: vec![],
+        };
+        assert_eq!(
+            summary(&session),
+            "1 cookies, 1 localStorage and 0 sessionStorage items of https://app.test"
+        );
+        let text = sessions_text(&[("mert".into(), session)], 1_000 + 3 * 3600);
+        assert_eq!(text, "mert  https://app.test  1 cookies  (saved 3 h ago)");
+        assert!(!text.contains("s3cret") && !text.contains("t0ken"));
+        assert!(sessions_text(&[], 0).starts_with("No sessions"));
     }
 
     #[test]

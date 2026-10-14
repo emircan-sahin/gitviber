@@ -4,6 +4,7 @@
 //! thread's own, and no callback takes a borrow of it, as WebKit calls back from within calls.
 
 mod agent;
+mod cookies;
 mod page_tools;
 mod page_view;
 
@@ -11,6 +12,7 @@ pub use agent::{
     agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_js, agent_new_tab,
     agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab, agent_tabs,
 };
+pub use cookies::{agent_clear_store, agent_cookies, agent_set_cookies, agent_shared};
 pub use page_tools::{console_clear, console_entries, pick};
 pub use page_view::{appearance, find, zoom};
 
@@ -106,12 +108,15 @@ thread_local! {
 }
 
 /// What was asked of a tab, by id, apart from its view: a parked tab made again keeps it. Light or
-/// dark is the user's or an agent's (page_view.rs); the device and the dialogs' answers an agent's.
+/// dark is the user's or an agent's (page_view.rs); the device, the dialogs' answers and a store
+/// of its own an agent's.
 #[derive(Default, Clone)]
 struct Asked {
     screen: Option<super::control::AgentScreen>,
     accept_dialogs: bool,
     dark: Option<bool>,
+    /// Its cookies and storage, apart from the user's (None: theirs, `data_store`).
+    store: Option<Retained<WKWebsiteDataStore>>,
 }
 
 thread_local! {
@@ -835,8 +840,9 @@ pub fn create(
     let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
 
     let config = unsafe { WKWebViewConfiguration::new(mtm) };
+    let store = asked(id).store.unwrap_or_else(|| data_store(mtm));
     unsafe {
-        config.setWebsiteDataStore(&data_store(mtm));
+        config.setWebsiteDataStore(&store);
         // Its own, so none of the app page's scripts (Tauri's IPC) reach this page.
         let content = WKUserContentController::new(mtm);
         page_tools::install(&content, id, mtm);

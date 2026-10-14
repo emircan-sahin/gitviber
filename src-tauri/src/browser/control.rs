@@ -33,13 +33,24 @@ pub const HELP: &str = "\
 gitviber browser <command> [args]: this terminal pane's own browser tabs in GitViber, opened in
 the background and drawn while its agents use them. A command goes to the tab --tab names, else
 the one $GITVIBER_BROWSER_TAB names, else the pane's default tab, which its first command opens.
-Agents in one pane share its tabs; the user's own tabs are out of their reach.
+Agents in one pane share its tabs; the user's own tabs are out of their reach. Each tab, the
+default one too, has cookies and storage of its own, gone when it closes, unless --shared.
 
-  tab new [name] [url]         Another tab, at url if given; prints its name: t1, t2, ... unless
-                               named (letters, digits, - and _)
-  tab list                     The pane's tabs: name, address, title, and when last used
+  tab new [name] [url] [--shared] [--session <name>]
+                               Another tab, at url if given; prints its name: t1, t2, ... unless
+                               named (letters, digits, - and _). --shared: in the user's own
+                               cookies and logins. --session: a saved session loaded first
+  tab list                     The pane's tabs: name, address, title, private or shared, and
+                               when last used
   tab close [name]             Close a tab: the one a command would go to, unless named
   --tab <name>                 With any command: the tab it goes to
+
+  session save <name>          The tab's cookies, and its page's localStorage and sessionStorage,
+                               saved for this repository (not IndexedDB)
+  session load <name>          Into a tab of its own: its cookies and storage cleared, then the
+                               saved ones set, at the saved page's origin
+  session clear                A tab of its own's cookies and storage, gone
+  session list | delete <name>
 
   open <url>                   Load a page (http or https; localhost:3000 works) and wait for it
   back | forward | reload      Through its history, waiting for the page
@@ -135,6 +146,7 @@ pub enum Command {
     Reload,
     Url,
     Tab(Tabs),
+    Session(Sessions),
     Snapshot {
         interactive: bool,
         scope: Option<String>,
@@ -169,9 +181,22 @@ pub enum Tabs {
     New {
         name: Option<String>,
         url: Option<String>,
+        /// In the user's website data, not one of its own.
+        shared: bool,
+        /// A saved session loaded into it first.
+        session: Option<String>,
     },
     List,
     Close(Option<String>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Sessions {
+    Save(String),
+    Load(String),
+    Clear,
+    List,
+    Delete(String),
 }
 
 #[derive(Debug, PartialEq)]
@@ -214,6 +239,7 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
         "reload" => none(Command::Reload),
         "url" => none(Command::Url),
         "tab" => tabs(args).map(Command::Tab),
+        "session" => sessions(args).map(Command::Session),
         "snapshot" => snapshot(args),
         "click" => target("click <ref|css>").map(Command::Click),
         "fill" => target_and_text("fill <ref|css> <text>").map(|(t, x)| Command::Fill(t, x)),
@@ -263,37 +289,67 @@ fn number<T: std::str::FromStr>(s: &str, flag: &str) -> Result<T, String> {
 }
 
 fn tabs(args: &[String]) -> Result<Tabs, String> {
-    let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    // One word after `new` is a name when it could be one; an address has a dot, colon or slash.
-    let named = |s: &str| tab_name(s).is_ok();
-    match args[..] {
-        ["new"] => Ok(Tabs::New {
-            name: None,
-            url: None,
-        }),
-        ["new", one] if named(one) => Ok(Tabs::New {
-            name: Some(one.into()),
-            url: None,
-        }),
-        ["new", url] => Ok(Tabs::New {
-            name: None,
-            url: Some(web_url(url)?),
-        }),
-        ["new", name, url] => Ok(Tabs::New {
-            name: Some(tab_name(name)?),
-            url: Some(web_url(url)?),
-        }),
-        ["list"] => Ok(Tabs::List),
-        ["close"] => Ok(Tabs::Close(None)),
-        ["close", name] => Ok(Tabs::Close(Some(tab_name(name)?))),
-        _ => {
-            Err("Usage: gitviber browser tab new [name] [url] | tab list | tab close [name]".into())
+    let usage = "Usage: gitviber browser tab new [name] [url] [--shared] [--session <name>] | \
+                 tab list | tab close [name]";
+    let (mut shared, mut session, mut words) = (false, None, vec![]);
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--shared" => shared = true,
+            "--session" => session = Some(session_name(value(&mut it, "--session")?)?),
+            _ => words.push(arg.as_str()),
         }
+    }
+    let new = |name: Option<&str>, url: Option<&str>| {
+        if shared && session.is_some() {
+            return Err("--session loads into a tab of its own: not with --shared".to_string());
+        }
+        Ok(Tabs::New {
+            name: name.map(tab_name).transpose()?,
+            url: url.map(web_url).transpose()?,
+            shared,
+            session: session.clone(),
+        })
+    };
+    let flags = shared || session.is_some();
+    match words[..] {
+        ["new"] => new(None, None),
+        // One word is a name when it could be one; an address has a dot, colon or slash.
+        ["new", one] if tab_name(one).is_ok() => new(Some(one), None),
+        ["new", url] => new(None, Some(url)),
+        ["new", name, url] => new(Some(name), Some(url)),
+        ["list"] if !flags => Ok(Tabs::List),
+        ["close"] if !flags => Ok(Tabs::Close(None)),
+        ["close", name] if !flags => Ok(Tabs::Close(Some(tab_name(name)?))),
+        _ => Err(usage.into()),
     }
 }
 
-/// A tab's name as given: kept to what a shell passes as is, and no flag.
+fn sessions(args: &[String]) -> Result<Sessions, String> {
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["save", name] => Ok(Sessions::Save(session_name(name)?)),
+        ["load", name] => Ok(Sessions::Load(session_name(name)?)),
+        ["clear"] => Ok(Sessions::Clear),
+        ["list"] => Ok(Sessions::List),
+        ["delete", name] => Ok(Sessions::Delete(session_name(name)?)),
+        _ => Err(
+            "Usage: gitviber browser session save <name> | load <name> | clear | list | \
+                  delete <name>"
+                .into(),
+        ),
+    }
+}
+
 pub fn tab_name(name: &str) -> Result<String, String> {
+    named("tab", name)
+}
+
+fn session_name(name: &str) -> Result<String, String> {
+    named("session", name)
+}
+
+/// A name as given: kept to what a shell passes as is and a file can be called, and no flag.
+fn named(what: &str, name: &str) -> Result<String, String> {
     let fits = (1..=32).contains(&name.len())
         && !name.starts_with('-')
         && name
@@ -303,7 +359,7 @@ pub fn tab_name(name: &str) -> Result<String, String> {
         Ok(name.into())
     } else {
         Err(format!(
-            "A tab's name is letters, digits, - and _, 32 at most: not {name:?}"
+            "A {what}'s name is letters, digits, - and _, 32 at most: not {name:?}"
         ))
     }
 }
@@ -480,6 +536,8 @@ pub struct Named {
     pub route: Route,
     /// Where commands that name no tab go; the pane's first such command opened it.
     pub default: bool,
+    /// In the user's website data, not its own.
+    pub shared: bool,
     pub used: Instant,
 }
 
@@ -549,11 +607,12 @@ impl Routes {
     }
 
     /// A tab made for the pane, under the name `name` gave it.
-    pub fn add(&mut self, pty: u32, name: &str, route: Route, default: bool) {
+    pub fn add(&mut self, pty: u32, name: &str, route: Route, default: bool, shared: bool) {
         self.panes.entry(pty).or_default().tabs.push(Named {
             name: name.into(),
             route,
             default,
+            shared,
             used: Instant::now(),
         });
     }
@@ -597,6 +656,7 @@ impl Routes {
 pub struct Listed {
     pub name: String,
     pub default: bool,
+    pub shared: bool,
     pub url: String,
     pub title: String,
     /// Since a command last went to it.
@@ -942,7 +1002,7 @@ mod tests {
     /// `add` as the app does it: a name first, then the tab under it.
     fn made(r: &mut Routes, pty: u32, name: Option<&str>, id: &str, default: bool) -> String {
         let name = r.name(pty, name, |_| true).unwrap();
-        r.add(pty, &name, route(id), default);
+        r.add(pty, &name, route(id), default, false);
         name
     }
 
@@ -1047,6 +1107,8 @@ mod tests {
             Ok(Command::Tab(Tabs::New {
                 name: name.map(Into::into),
                 url: url.map(Into::into),
+                shared: false,
+                session: None,
             }))
         };
         assert_eq!(parse("tab", &args("new")), new(None, None));
@@ -1080,11 +1142,67 @@ mod tests {
             "new a.b c",
             "close a/b",
             "new a file:///etc/passwd",
+            "new a --session",
+            "new a --session ../x",
+            "new a --shared --session b",
+            "list --shared",
+            "close --session a",
         ] {
             assert!(parse("tab", &args(bad)).is_err(), "{bad:?}");
         }
         for bad in ["", "-x", "a b", "a.b", "é", &"x".repeat(33)] {
             assert!(tab_name(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(
+            parse("tab", &args("new --shared mert localhost:3000")),
+            Ok(Command::Tab(Tabs::New {
+                name: Some("mert".into()),
+                url: Some("http://localhost:3000/".into()),
+                shared: true,
+                session: None
+            }))
+        );
+        assert_eq!(
+            parse("tab", &args("new p2 --session ayse")),
+            Ok(Command::Tab(Tabs::New {
+                name: Some("p2".into()),
+                url: None,
+                shared: false,
+                session: Some("ayse".into())
+            }))
+        );
+        assert_eq!(
+            parse("session", &args("save mert")),
+            Ok(Command::Session(Sessions::Save("mert".into())))
+        );
+        assert_eq!(
+            parse("session", &args("load mert")),
+            Ok(Command::Session(Sessions::Load("mert".into())))
+        );
+        assert_eq!(
+            parse("session", &args("clear")),
+            Ok(Command::Session(Sessions::Clear))
+        );
+        assert_eq!(
+            parse("session", &args("list")),
+            Ok(Command::Session(Sessions::List))
+        );
+        assert_eq!(
+            parse("session", &args("delete mert")),
+            Ok(Command::Session(Sessions::Delete("mert".into())))
+        );
+        // A name is a file's in the sessions' folder, and never a way out of it.
+        for bad in [
+            "",
+            "save",
+            "save ../x",
+            "save .x",
+            "load a/b",
+            "clear x",
+            "delete",
+            "save a b",
+        ] {
+            assert!(parse("session", &args(bad)).is_err(), "{bad:?}");
         }
         assert_eq!(tab_name("Mert-2_b"), Ok("Mert-2_b".into()));
         // A pane's command names its tab apart from its arguments.

@@ -16,21 +16,24 @@ pub mod picks;
 pub mod ports;
 mod registry;
 pub mod server;
+mod sessions;
 
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_done, agent_js,
-    agent_new_tab, agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab,
-    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
+    agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
+    agent_dialogs, agent_done, agent_js, agent_new_tab, agent_page, agent_pane_closed,
+    agent_picture, agent_running, agent_set_cookies, agent_shared, agent_tab, agent_tabs,
+    appearance, clear_data, close, close_all, close_root, configure, console_clear,
     console_entries, create, find, focus, go, hide, inspect, navigate, pick, place, set_agent,
     snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
-    agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_done, agent_js,
-    agent_new_tab, agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab,
-    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
+    agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
+    agent_dialogs, agent_done, agent_js, agent_new_tab, agent_page, agent_pane_closed,
+    agent_picture, agent_running, agent_set_cookies, agent_shared, agent_tab, agent_tabs,
+    appearance, clear_data, close, close_all, close_root, configure, console_clear,
     console_entries, create, find, focus, go, hide, inspect, navigate, pick, place, set_agent,
     snapshot, zoom,
 };
@@ -229,6 +232,7 @@ mod other {
         console::Entry,
         control::{AgentScreen, Listed},
         picks::Bounds,
+        sessions::Cookie,
     };
     use super::{Created, Go, Look, PageState, Rect, Screen};
     use crate::state::Res;
@@ -250,8 +254,21 @@ mod other {
         _: u32,
         _: &str,
         _: Option<&str>,
+        _: bool,
         _: Option<&str>,
     ) -> Res<(String, String)> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_shared(_: &str) -> Res<bool> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_cookies(_: &str, _: Box<dyn FnOnce(Vec<Cookie>)>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_set_cookies(_: &str, _: Vec<Cookie>, _: Box<dyn FnOnce(())>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_clear_store(_: &str, _: Box<dyn FnOnce(())>) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_tabs(_: u32) -> Res<Vec<Listed>> {

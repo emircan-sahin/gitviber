@@ -18,7 +18,7 @@ use objc2_foundation::{
     ns_string, NSDictionary, NSError, NSObjectNSDelayedPerforming, NSObjectProtocol, NSPoint,
     NSRect, NSSize, NSString, NSUUID,
 };
-use objc2_web_kit::{WKContentWorld, WKWebView};
+use objc2_web_kit::{WKContentWorld, WKWebView, WKWebsiteDataStore};
 use serde::Serialize;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -56,20 +56,22 @@ pub fn agent_tab(
             live(app, &route, "about:blank")?;
             Ok((route.id, false))
         }
-        None => new_tab(app, pty, root, None, true, url).map(|(_, id)| (id, true)),
+        None => new_tab(app, pty, root, None, true, false, url).map(|(_, id)| (id, true)),
     }
 }
 
-/// Another tab of the pane's, named so (else t1, t2, ...), at `url`: its name and id.
+/// Another tab of the pane's, named so (else t1, t2, ...), at `url`, in the user's website data
+/// (`shared`) or its own: its name and id.
 pub fn agent_new_tab(
     app: &AppHandle,
     pty: u32,
     root: &str,
     name: Option<&str>,
+    shared: bool,
     url: Option<&str>,
 ) -> Res<(String, String)> {
     main_thread()?;
-    new_tab(app, pty, root, name, false, url)
+    new_tab(app, pty, root, name, false, shared, url)
 }
 
 /// The pane's tabs, open or parked.
@@ -93,6 +95,7 @@ pub fn agent_tabs(pty: u32) -> Res<Vec<Listed>> {
             Listed {
                 name: t.name,
                 default: t.default,
+                shared: t.shared,
                 url,
                 title,
                 idle: t.used.elapsed(),
@@ -117,23 +120,35 @@ fn open(id: &str) -> bool {
 }
 
 /// A tab made for the pane, which the workspace hears as `browser-open` and adds without
-/// showing: its name and id.
+/// showing: its name and id. Unless `shared`, its cookies and storage are its own, in memory
+/// and kept while it parks, so two tabs can be two accounts.
 fn new_tab(
     app: &AppHandle,
     pty: u32,
     root: &str,
     name: Option<&str>,
     default: bool,
+    shared: bool,
     url: Option<&str>,
 ) -> Res<(String, String)> {
+    let mtm = main_thread()?;
     let name = ROUTES.with_borrow_mut(|r| r.name(pty, name, open))?;
     let route = Route {
         id: NSUUID::new().UUIDString().to_string().to_lowercase(),
         root: root.into(),
     };
+    if !shared {
+        let store = unsafe { WKWebsiteDataStore::nonPersistentDataStore(mtm) };
+        ask(&route.id, |a| a.store = Some(store));
+    }
+    // An agent's tab before its view is made, so its first page loads as one.
+    ROUTES.with_borrow_mut(|r| r.add(pty, &name, route.clone(), default, shared));
     let url = url.unwrap_or("about:blank");
-    live(app, &route, url)?;
-    ROUTES.with_borrow_mut(|r| r.add(pty, &name, route.clone(), default));
+    if let Err(e) = live(app, &route, url) {
+        let _ = ROUTES.with_borrow_mut(|r| r.close(pty, Some(&name), |_| true));
+        super::forget(&route.id);
+        return Err(e);
+    }
     let opened = Opened {
         id: &route.id,
         url,
