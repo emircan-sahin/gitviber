@@ -686,10 +686,13 @@ impl Tab {
         }
         let most = until.saturating_duration_since(Instant::now()).max(QUIET);
         let input = json!({ "cmd": "changes", "quiet": QUIET.as_millis() as u64, "most": most.as_millis() as u64 });
-        // Between documents there's no page to ask: it's another one by then.
-        let seen = self
-            .script(input)
-            .unwrap_or_else(|_| json!({ "gone": true }));
+        // Between documents there's no page to ask: it's another one by then. A dialog the user
+        // has open holds this one's scripts instead.
+        let seen = match self.script(input) {
+            Ok(seen) => seen,
+            Err(_) if self.dialog().is_some() => json!({}),
+            Err(_) => json!({ "gone": true }),
+        };
         let count = |k: &str| seen[k].as_u64().unwrap_or(0);
         let id = self.id.clone();
         let logged = main(&self.app, move |_| super::console_entries(&id))?;

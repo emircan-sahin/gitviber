@@ -441,7 +441,9 @@ const editable = (el) => el.isContentEditable ?? ["", "true", "plaintext-only"].
 function control(el) {
   if (el.localName === "label" && el.control) return el.control;
   if (["input", "textarea", "select"].includes(el.localName) || editable(el)) return el;
-  const inner = el.querySelectorAll?.("input:not([type=hidden]), textarea, select, [contenteditable]:not([contenteditable=false])") ?? [];
+  const fields = "input:not([type=hidden]), textarea, select, [contenteditable]:not([contenteditable=false])";
+  // A web component's field is in its shadow root.
+  const inner = [...(el.querySelectorAll?.(fields) ?? []), ...(el.shadowRoot?.querySelectorAll(fields) ?? [])];
   return inner.length === 1 ? inner[0] : el;
 }
 
