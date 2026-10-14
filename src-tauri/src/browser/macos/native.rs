@@ -562,4 +562,94 @@ mod tests {
             .verify_sel::<(&NSEvent,), ()>(sel!(sendEvent:))
             .unwrap();
     }
+
+    fn key_event(timestamp: f64) -> Retained<NSEvent> {
+        NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyDown,
+            NSPoint::ZERO,
+            NSEventModifierFlags(0),
+            timestamp,
+            0,
+            None,
+            &NSString::from_str("w"),
+            &NSString::from_str("w"),
+            false,
+            0x0D,
+        )
+        .unwrap()
+    }
+
+    /// Ours known again by type and time; the same key at any other time (the user's) isn't,
+    /// nor a mouse event at the very same time.
+    #[test]
+    fn the_leak_guard_knows_ours_and_nothing_else() {
+        let at = uptime();
+        let sent = key_event(at);
+        remember(&sent);
+        assert!(ours(&sent));
+        assert!(
+            ours(&key_event(at)),
+            "the same event, as WebKit hands it back"
+        );
+        assert!(!ours(&key_event(at + 1e-9)));
+        assert!(!ours(&key_event(uptime())));
+        let up = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            NSEventType::KeyUp, NSPoint::ZERO, NSEventModifierFlags(0), at, 0, None,
+            &NSString::from_str("w"), &NSString::from_str("w"), false, 0x0D,
+        )
+        .unwrap();
+        assert!(!ours(&up), "a key up at the same time is another event");
+        // Two of ours made back to back never share a time, so one's echo can't stand for the
+        // other's.
+        let times: Vec<u64> = (0..1000).map(|_| uptime().to_bits()).collect();
+        assert!(times.windows(2).all(|w| w[0] <= w[1]));
+    }
+
+    /// The guard remembers the last REMEMBERED events of every tab, pointer ones too: a key
+    /// WebKit hands back after more than that many (a scroll past 30,720 px, a long drag, other
+    /// tabs' agents, all while that page is slow to answer) isn't known, and goes on to the
+    /// user's key window: a ⌘W closing their pane, a letter typed in their terminal.
+    #[test]
+    #[ignore = "bug: the 256-event ring forgets a pending key once pointer events push it out"]
+    fn a_key_sent_just_before_a_long_scroll_is_still_known_as_ours() {
+        let sent = key_event(uptime());
+        remember(&sent);
+        for (n, _) in input::wheel(40_000, false).iter().enumerate() {
+            let turn = mouse(Pointer::Move, NSPoint::ZERO, NSEventModifierFlags(0), 0).unwrap();
+            remember(&turn);
+            assert!(
+                n < REMEMBERED || ours(&sent),
+                "forgotten after {n} wheel turns"
+            );
+        }
+        assert!(ours(&sent));
+    }
+
+    /// `type` puts in a line break as an Enter, every one in the same turn of the main thread,
+    /// before WebKit can hand any back: past 128 of them the first Enters are forgotten, and
+    /// one the page doesn't handle (a text field outside a form) reaches the user's terminal.
+    #[test]
+    #[ignore = "bug: a `type` of 129+ lines forgets its first Enters before WebKit hands them back"]
+    fn every_enter_of_a_long_multiline_type_is_still_known_as_ours() {
+        let enter = || {
+            let at = uptime();
+            let make = |kind| {
+                NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+                    kind, NSPoint::ZERO, NSEventModifierFlags(0), at, 0, None,
+                    &NSString::from_str("\r"), &NSString::from_str("\r"), false, 0x24,
+                )
+                .unwrap()
+            };
+            (make(NSEventType::KeyDown), make(NSEventType::KeyUp))
+        };
+        let mut downs = vec![];
+        for _ in 0..200 {
+            let (down, up) = enter();
+            remember(&down);
+            remember(&up);
+            downs.push(down);
+        }
+        let forgotten = downs.iter().filter(|d| !ours(d)).count();
+        assert_eq!(forgotten, 0, "{forgotten} of 200 Enters forgotten");
+    }
 }
