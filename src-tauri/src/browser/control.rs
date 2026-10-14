@@ -1,12 +1,12 @@
 //! `gitviber browser …` from an agent in a GitViber terminal: the request it sends over the
-//! socket (server.rs), what it may ask, and the tab each terminal pane's agent gets. The page's
+//! socket (server.rs), what it may ask, and the tabs each terminal pane's agents get. The page's
 //! part is scripts/agent.js; apart from AppKit, so it can be tested.
 
 use super::console::Entry;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::Url;
 
 /// What a terminal's shell gets (pty.rs), and the CLI reads back.
@@ -14,6 +14,8 @@ pub const EXE_ENV: &str = "GITVIBER_EXE";
 pub const SOCKET_ENV: &str = "GITVIBER_BROWSER_SOCKET";
 pub const TOKEN_ENV: &str = "GITVIBER_BROWSER_TOKEN";
 pub const PTY_ENV: &str = "GITVIBER_PTY";
+/// The tab a command goes to when it names none (`--tab`): set by the agent, not the app.
+pub const TAB_ENV: &str = "GITVIBER_BROWSER_TAB";
 
 /// The CLI's exit status when control is off.
 pub const OFF: i32 = 2;
@@ -28,8 +30,16 @@ pub const LONGEST_WAIT: Duration = Duration::from_secs(120);
 pub const CLI_WAIT: Duration = Duration::from_secs(300);
 
 pub const HELP: &str = "\
-gitviber browser <command> [args]: this terminal pane's own browser tab in GitViber.
-The pane's first command opens it, in the background; every agent in the pane shares it.
+gitviber browser <command> [args]: this terminal pane's own browser tabs in GitViber, opened in
+the background and drawn while its agents use them. A command goes to the tab --tab names, else
+the one $GITVIBER_BROWSER_TAB names, else the pane's default tab, which its first command opens.
+Agents in one pane share its tabs; the user's own tabs are out of their reach.
+
+  tab new [name] [url]         Another tab, at url if given; prints its name: t1, t2, ... unless
+                               named (letters, digits, - and _)
+  tab list                     The pane's tabs: name, address, title, and when last used
+  tab close [name]             Close a tab: the one a command would go to, unless named
+  --tab <name>                 With any command: the tab it goes to
 
   open <url>                   Load a page (http or https; localhost:3000 works) and wait for it
   back | forward | reload      Through its history, waiting for the page
@@ -67,8 +77,11 @@ Exit status: 0 done; 1 failed, why on stderr; 2 browser control is off (Settings
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Request {
     pub token: String,
-    /// The pane it came from (PTY_ENV); its tab is this pane's.
+    /// The pane it came from (PTY_ENV); its tabs are this pane's.
     pub pty: Option<u32>,
+    /// The tab it goes to (`--tab`, else TAB_ENV); the pane's default one if none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tab: Option<String>,
     pub cwd: String,
     pub cmd: String,
     #[serde(default)]
@@ -121,6 +134,7 @@ pub enum Command {
     Forward,
     Reload,
     Url,
+    Tab(Tabs),
     Snapshot {
         interactive: bool,
         scope: Option<String>,
@@ -148,6 +162,16 @@ pub enum Command {
     Dialogs(bool),
     /// Dark, light, or the app's (None).
     Appearance(Option<bool>),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Tabs {
+    New {
+        name: Option<String>,
+        url: Option<String>,
+    },
+    List,
+    Close(Option<String>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -189,6 +213,7 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
         "forward" => none(Command::Forward),
         "reload" => none(Command::Reload),
         "url" => none(Command::Url),
+        "tab" => tabs(args).map(Command::Tab),
         "snapshot" => snapshot(args),
         "click" => target("click <ref|css>").map(Command::Click),
         "fill" => target_and_text("fill <ref|css> <text>").map(|(t, x)| Command::Fill(t, x)),
@@ -235,6 +260,52 @@ fn value<'a>(it: &mut impl Iterator<Item = &'a String>, flag: &str) -> Result<&'
 fn number<T: std::str::FromStr>(s: &str, flag: &str) -> Result<T, String> {
     s.parse()
         .map_err(|_| format!("{flag} takes a whole number, not {s:?}"))
+}
+
+fn tabs(args: &[String]) -> Result<Tabs, String> {
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    // One word after `new` is a name when it could be one; an address has a dot, colon or slash.
+    let named = |s: &str| tab_name(s).is_ok();
+    match args[..] {
+        ["new"] => Ok(Tabs::New {
+            name: None,
+            url: None,
+        }),
+        ["new", one] if named(one) => Ok(Tabs::New {
+            name: Some(one.into()),
+            url: None,
+        }),
+        ["new", url] => Ok(Tabs::New {
+            name: None,
+            url: Some(web_url(url)?),
+        }),
+        ["new", name, url] => Ok(Tabs::New {
+            name: Some(tab_name(name)?),
+            url: Some(web_url(url)?),
+        }),
+        ["list"] => Ok(Tabs::List),
+        ["close"] => Ok(Tabs::Close(None)),
+        ["close", name] => Ok(Tabs::Close(Some(tab_name(name)?))),
+        _ => {
+            Err("Usage: gitviber browser tab new [name] [url] | tab list | tab close [name]".into())
+        }
+    }
+}
+
+/// A tab's name as given: kept to what a shell passes as is, and no flag.
+pub fn tab_name(name: &str) -> Result<String, String> {
+    let fits = (1..=32).contains(&name.len())
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if fits {
+        Ok(name.into())
+    } else {
+        Err(format!(
+            "A tab's name is letters, digits, - and _, 32 at most: not {name:?}"
+        ))
+    }
 }
 
 fn snapshot(args: &[String]) -> Result<Command, String> {
@@ -387,10 +458,29 @@ pub fn picture_path(cwd: &Path, path: &str) -> Result<PathBuf, String> {
     Ok(full)
 }
 
-/// The tab of each pane's agent: made on its first command, and again once the user closed it.
+/// The tabs each pane's agents opened, by name. A command goes to the one it names, else to the
+/// pane's default tab: agents in a pane share its environment, so none picks a tab for the
+/// others. Tabs the user closed (`open` says) drop out as the pane's are asked for.
 #[derive(Default)]
 pub struct Routes {
-    tabs: HashMap<u32, Route>,
+    panes: HashMap<u32, Pane>,
+}
+
+#[derive(Default)]
+struct Pane {
+    /// In the order made.
+    tabs: Vec<Named>,
+    /// Names given (t1, t2, ...) so far.
+    named: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Named {
+    pub name: String,
+    pub route: Route,
+    /// Where commands that name no tab go; the pane's first such command opened it.
+    pub default: bool,
+    pub used: Instant,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -400,30 +490,117 @@ pub struct Route {
 }
 
 impl Routes {
-    /// The pane's tab while it's still open (`open`); None when one is to be made.
-    pub fn tab(&mut self, pty: u32, open: impl Fn(&str) -> bool) -> Option<Route> {
-        match self.tabs.get(&pty) {
-            Some(route) if open(&route.id) => Some(route.clone()),
-            Some(_) => {
-                self.tabs.remove(&pty);
-                None
+    fn pane(&mut self, pty: u32, open: impl Fn(&str) -> bool) -> &mut Pane {
+        let pane = self.panes.entry(pty).or_default();
+        pane.tabs.retain(|t| open(&t.route.id));
+        pane
+    }
+
+    /// The tab named so, else the default one, used now; None when the default is to be made.
+    pub fn tab(
+        &mut self,
+        pty: u32,
+        name: Option<&str>,
+        open: impl Fn(&str) -> bool,
+    ) -> Result<Option<Route>, String> {
+        let pane = self.pane(pty, open);
+        let found = pane.tabs.iter_mut().find(|t| match name {
+            Some(name) => t.name == name,
+            None => t.default,
+        });
+        match (found, name) {
+            (Some(t), _) => {
+                t.used = Instant::now();
+                Ok(Some(t.route.clone()))
             }
-            None => None,
+            (None, Some(name)) => Err(format!(
+                "No tab {name} in this pane: `gitviber browser tab new {name}` opens it"
+            )),
+            (None, None) => Ok(None),
         }
     }
 
-    pub fn set(&mut self, pty: u32, route: Route) {
-        self.tabs.insert(pty, route);
+    /// The name a new tab takes: the one asked for while no open tab has it, else the next free
+    /// t1, t2, ...
+    pub fn name(
+        &mut self,
+        pty: u32,
+        asked: Option<&str>,
+        open: impl Fn(&str) -> bool,
+    ) -> Result<String, String> {
+        let pane = self.pane(pty, open);
+        let taken = |pane: &Pane, name: &str| pane.tabs.iter().any(|t| t.name == name);
+        if let Some(name) = asked {
+            return if taken(pane, name) {
+                Err(format!(
+                    "Tab {name} is open already: give another name, or close it first"
+                ))
+            } else {
+                Ok(name.into())
+            };
+        }
+        loop {
+            pane.named += 1;
+            let name = format!("t{}", pane.named);
+            if !taken(pane, &name) {
+                return Ok(name);
+            }
+        }
     }
 
-    /// The pane closed: its tab, the user's from now on.
+    /// A tab made for the pane, under the name `name` gave it.
+    pub fn add(&mut self, pty: u32, name: &str, route: Route, default: bool) {
+        self.panes.entry(pty).or_default().tabs.push(Named {
+            name: name.into(),
+            route,
+            default,
+            used: Instant::now(),
+        });
+    }
+
+    pub fn list(&mut self, pty: u32, open: impl Fn(&str) -> bool) -> Vec<Named> {
+        self.pane(pty, open).tabs.clone()
+    }
+
+    /// The tab named so (the default one if None), out of the pane.
+    pub fn close(
+        &mut self,
+        pty: u32,
+        name: Option<&str>,
+        open: impl Fn(&str) -> bool,
+    ) -> Result<Named, String> {
+        let pane = self.pane(pty, open);
+        let at = pane.tabs.iter().position(|t| match name {
+            Some(name) => t.name == name,
+            None => t.default,
+        });
+        match (at, name) {
+            (Some(at), _) => Ok(pane.tabs.remove(at)),
+            (None, Some(name)) => Err(format!("No tab {name} in this pane")),
+            (None, None) => Err("No default tab open: name the one to close".into()),
+        }
+    }
+
+    /// The pane closed: its tabs, the user's from now on.
     pub fn release(&mut self, pty: u32) -> Vec<Route> {
-        self.tabs.remove(&pty).into_iter().collect()
+        let tabs = self.panes.remove(&pty).map(|p| p.tabs).unwrap_or_default();
+        tabs.into_iter().map(|t| t.route).collect()
     }
 
     pub fn clear(&mut self) {
-        self.tabs.clear();
+        self.panes.clear();
     }
+}
+
+/// A tab as `tab list` tells it.
+#[derive(Debug, PartialEq)]
+pub struct Listed {
+    pub name: String,
+    pub default: bool,
+    pub url: String,
+    pub title: String,
+    /// Since a command last went to it.
+    pub idle: Duration,
 }
 
 /// A device an agent's tab shows its page as: its viewport in CSS px, and what WebKit is told.
@@ -755,39 +932,166 @@ mod tests {
         }
     }
 
+    fn route(id: &str) -> Route {
+        Route {
+            id: id.into(),
+            root: "/w".into(),
+        }
+    }
+
+    /// `add` as the app does it: a name first, then the tab under it.
+    fn made(r: &mut Routes, pty: u32, name: Option<&str>, id: &str, default: bool) -> String {
+        let name = r.name(pty, name, |_| true).unwrap();
+        r.add(pty, &name, route(id), default);
+        name
+    }
+
     #[test]
-    fn each_pane_keeps_its_own_tab_until_the_user_closes_it() {
+    fn each_pane_keeps_its_own_default_tab_until_the_user_closes_it() {
         let mut routes = Routes::default();
         let open = |ids: &'static [&'static str]| move |id: &str| ids.contains(&id);
-        assert_eq!(routes.tab(1, open(&[])), None);
-        routes.set(
-            1,
-            Route {
-                id: "t1".into(),
-                root: "/w".into(),
-            },
+        assert_eq!(routes.tab(1, None, open(&[])), Ok(None));
+        made(&mut routes, 1, None, "t1", true);
+        made(&mut routes, 2, None, "t2", true);
+        assert_eq!(
+            routes.tab(1, None, open(&["t1", "t2"])),
+            Ok(Some(route("t1")))
         );
-        routes.set(
-            2,
-            Route {
-                id: "t2".into(),
-                root: "/w".into(),
-            },
+        assert_eq!(
+            routes.tab(2, None, open(&["t1", "t2"])),
+            Ok(Some(route("t2")))
         );
-        assert_eq!(routes.tab(1, open(&["t1", "t2"])).unwrap().id, "t1");
-        assert_eq!(routes.tab(2, open(&["t1", "t2"])).unwrap().id, "t2");
         // Closed: the next command makes another.
-        assert_eq!(routes.tab(1, open(&["t2"])), None);
-        routes.set(
-            1,
-            Route {
-                id: "t3".into(),
-                root: "/w".into(),
-            },
+        assert_eq!(routes.tab(1, None, open(&["t2"])), Ok(None));
+        made(&mut routes, 1, None, "t3", true);
+        assert_eq!(
+            routes.tab(1, None, open(&["t2", "t3"])),
+            Ok(Some(route("t3")))
         );
-        assert_eq!(routes.tab(1, open(&["t2", "t3"])).unwrap().id, "t3");
+        assert_eq!(routes.tab(99, None, |_| true), Ok(None));
         routes.clear();
-        assert_eq!(routes.tab(2, open(&["t2"])), None);
+        assert_eq!(routes.tab(2, None, open(&["t2"])), Ok(None));
+    }
+
+    #[test]
+    fn tabs_go_by_name_and_names_stay_theirs() {
+        let mut r = Routes::default();
+        assert_eq!(made(&mut r, 1, None, "a", true), "t1");
+        assert_eq!(made(&mut r, 1, Some("rv268"), "b", false), "rv268");
+        assert_eq!(made(&mut r, 1, None, "c", false), "t2");
+        // Another pane counts its own, and can't reach these.
+        assert_eq!(made(&mut r, 2, None, "d", false), "t1");
+        assert_eq!(
+            r.tab(2, Some("rv268"), |_| true).unwrap_err(),
+            "No tab rv268 in this pane: `gitviber browser tab new rv268` opens it"
+        );
+        assert_eq!(r.tab(1, Some("rv268"), |_| true), Ok(Some(route("b"))));
+        // A name in use is refused; one whose tab closed is free again.
+        assert!(r
+            .name(1, Some("rv268"), |_| true)
+            .unwrap_err()
+            .contains("open already"));
+        assert_eq!(
+            r.close(1, Some("rv268"), |_| true).unwrap().route,
+            route("b")
+        );
+        assert_eq!(r.name(1, Some("rv268"), |_| true), Ok("rv268".into()));
+        // Closing t1 leaves t2 as it was, and t1 isn't given again.
+        assert_eq!(r.close(1, None, |_| true).unwrap().name, "t1");
+        assert_eq!(r.tab(1, Some("t2"), |_| true), Ok(Some(route("c"))));
+        assert_eq!(r.tab(1, None, |_| true), Ok(None), "no default now");
+        assert_eq!(made(&mut r, 1, None, "e", true), "t3");
+        // A name the agent took that an auto name would have been is skipped.
+        made(&mut r, 1, Some("t4"), "f", false);
+        assert_eq!(made(&mut r, 1, None, "g", false), "t5");
+        assert_eq!(
+            r.close(1, Some("nope"), |_| true).unwrap_err(),
+            "No tab nope in this pane"
+        );
+        let names: Vec<String> = r.list(1, |_| true).into_iter().map(|t| t.name).collect();
+        assert_eq!(names, ["t2", "t3", "t4", "t5"]);
+    }
+
+    #[test]
+    fn a_tab_the_user_closed_drops_out_and_a_closed_pane_lets_its_tabs_go() {
+        let mut r = Routes::default();
+        made(&mut r, 1, None, "a", true);
+        made(&mut r, 1, None, "b", false);
+        made(&mut r, 2, None, "c", true);
+        let list = r.list(1, |id| id != "a");
+        assert_eq!(list.len(), 1);
+        assert_eq!((list[0].name.as_str(), list[0].default), ("t2", false));
+        assert_eq!(
+            r.close(1, None, |_| true).unwrap_err(),
+            "No default tab open: name the one to close"
+        );
+        assert_eq!(r.release(1), [route("b")]);
+        assert!(r.release(1).is_empty());
+        assert_eq!(r.list(1, |_| true), []);
+        assert_eq!(r.tab(2, None, |_| true), Ok(Some(route("c"))));
+    }
+
+    #[test]
+    fn using_a_tab_marks_when() {
+        let mut r = Routes::default();
+        made(&mut r, 1, None, "a", true);
+        let before = r.list(1, |_| true)[0].used;
+        std::thread::sleep(Duration::from_millis(2));
+        r.tab(1, None, |_| true).unwrap();
+        assert!(r.list(1, |_| true)[0].used > before);
+    }
+
+    #[test]
+    fn tab_commands_and_names() {
+        let new = |name: Option<&str>, url: Option<&str>| {
+            Ok(Command::Tab(Tabs::New {
+                name: name.map(Into::into),
+                url: url.map(Into::into),
+            }))
+        };
+        assert_eq!(parse("tab", &args("new")), new(None, None));
+        assert_eq!(parse("tab", &args("new mert")), new(Some("mert"), None));
+        assert_eq!(
+            parse("tab", &args("new localhost:3000")),
+            new(None, Some("http://localhost:3000/"))
+        );
+        assert_eq!(
+            parse("tab", &args("new example.test")),
+            new(None, Some("https://example.test/"))
+        );
+        assert_eq!(
+            parse("tab", &args("new p_2 example.test/a")),
+            new(Some("p_2"), Some("https://example.test/a"))
+        );
+        assert_eq!(parse("tab", &args("list")), Ok(Command::Tab(Tabs::List)));
+        assert_eq!(
+            parse("tab", &args("close")),
+            Ok(Command::Tab(Tabs::Close(None)))
+        );
+        assert_eq!(
+            parse("tab", &args("close t2")),
+            Ok(Command::Tab(Tabs::Close(Some("t2".into()))))
+        );
+        for bad in [
+            "",
+            "2",
+            "list x",
+            "new a b c",
+            "new a.b c",
+            "close a/b",
+            "new a file:///etc/passwd",
+        ] {
+            assert!(parse("tab", &args(bad)).is_err(), "{bad:?}");
+        }
+        for bad in ["", "-x", "a b", "a.b", "é", &"x".repeat(33)] {
+            assert!(tab_name(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(tab_name("Mert-2_b"), Ok("Mert-2_b".into()));
+        // A pane's command names its tab apart from its arguments.
+        let req: Request =
+            serde_json::from_str(r#"{"token":"","pty":1,"tab":"rv268","cwd":"/","cmd":"url"}"#)
+                .unwrap();
+        assert_eq!(req.tab.as_deref(), Some("rv268"));
     }
 
     #[test]
@@ -1006,27 +1310,6 @@ mod tests {
         }
         let list = device_list();
         assert!(list.lines().count() >= 13 && list.contains("WxH") && list.contains("off"));
-    }
-
-    #[test]
-    fn a_closed_tab_routes_anew_and_other_panes_keep_theirs() {
-        let mut routes = Routes::default();
-        let route = |id: &str| Route {
-            id: id.into(),
-            root: "/w".into(),
-        };
-        routes.set(1, route("a"));
-        routes.set(2, route("b"));
-        assert_eq!(routes.tab(1, |_| true), Some(route("a")));
-        assert_eq!(routes.tab(1, |id| id != "a"), None, "closed");
-        assert_eq!(routes.tab(1, |_| true), None, "and forgotten");
-        assert_eq!(routes.tab(2, |_| true), Some(route("b")));
-        assert_eq!(routes.tab(99, |_| true), None);
-        assert_eq!(routes.release(2), [route("b")]);
-        assert!(routes.release(2).is_empty());
-        routes.set(2, route("c"));
-        routes.clear();
-        assert_eq!(routes.tab(2, |_| true), None);
     }
 
     #[test]

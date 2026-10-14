@@ -17,18 +17,23 @@ pub fn helper() -> Option<i32> {
 #[derive(Debug, PartialEq)]
 pub struct Cli {
     pub json: bool,
+    /// `--tab <name>`; an empty one when no name came after it.
+    pub tab: Option<String>,
     pub cmd: Option<String>,
     pub args: Vec<String>,
 }
 
-/// `--json` anywhere before a `--`; after one, everything is an argument, even `--json`.
+/// `--json` and `--tab <name>` anywhere before a `--`; after one, everything is an argument,
+/// even `--json`.
 pub fn parse_cli(args: Vec<String>) -> Cli {
     let mut json = false;
+    let mut tab = None;
     let mut rest = vec![];
     let mut it = args.into_iter();
-    for arg in it.by_ref() {
+    while let Some(arg) = it.next() {
         match arg.as_str() {
             "--json" => json = true,
+            "--tab" => tab = Some(it.next().unwrap_or_default()),
             "--" => break,
             _ => rest.push(arg),
         }
@@ -37,6 +42,7 @@ pub fn parse_cli(args: Vec<String>) -> Cli {
     let mut rest = rest.into_iter();
     Cli {
         json,
+        tab,
         cmd: rest.next(),
         args: rest.collect(),
     }
@@ -76,6 +82,11 @@ fn run(args: Vec<String>) -> i32 {
         pty: std::env::var(control::PTY_ENV)
             .ok()
             .and_then(|p| p.parse().ok()),
+        tab: cli.tab.or_else(|| {
+            std::env::var(control::TAB_ENV)
+                .ok()
+                .filter(|t| !t.is_empty())
+        }),
         cwd: std::env::current_dir()
             .map(|d| d.to_string_lossy().into_owned())
             .unwrap_or_default(),
@@ -140,6 +151,7 @@ mod tests {
             cli("--json snapshot -i"),
             Cli {
                 json: true,
+                tab: None,
                 cmd: Some("snapshot".into()),
                 args: vec!["-i".into()]
             }
@@ -150,6 +162,11 @@ mod tests {
         assert_eq!(text.cmd.as_deref(), Some("fill"));
         assert_eq!(text.args, ["e3", "--json", "--"]);
         assert_eq!(cli("").cmd, None);
+        let tabbed = cli("click --tab rv268 e5");
+        assert_eq!(tabbed.tab.as_deref(), Some("rv268"));
+        assert_eq!(tabbed.args, ["e5"]);
+        assert_eq!(cli("url --tab").tab.as_deref(), Some(""));
+        assert_eq!(cli("fill e3 -- --tab x").tab, None);
     }
 
     #[test]
@@ -183,6 +200,7 @@ mod tests {
         let request = Request {
             token: "t".into(),
             pty: Some(4),
+            tab: Some("t2".into()),
             cwd: "/tmp/app".into(),
             cmd: "url".into(),
             args: vec![],
@@ -238,6 +256,7 @@ mod tests {
         let request = Request {
             token: "t".into(),
             pty: None,
+            tab: None,
             cwd: String::new(),
             cmd: "url".into(),
             args: vec![],

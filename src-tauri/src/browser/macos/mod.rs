@@ -8,8 +8,8 @@ mod page_tools;
 mod page_view;
 
 pub use agent::{
-    agent_appearance, agent_device, agent_dialogs, agent_js, agent_page, agent_pane_closed,
-    agent_picture, agent_running, agent_tab,
+    agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_js, agent_new_tab,
+    agent_page, agent_pane_closed, agent_picture, agent_running, agent_tab, agent_tabs,
 };
 pub use page_tools::{console_clear, console_entries, pick};
 pub use page_view::{appearance, find, zoom};

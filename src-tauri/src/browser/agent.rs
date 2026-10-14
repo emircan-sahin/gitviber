@@ -1,7 +1,7 @@
 //! `gitviber browser` commands (control.rs), each run on its request's connection thread
 //! (server.rs) as a few steps on the main thread, where the views are, waiting in between.
 
-use super::control::{self, AgentScreen, Command, Reply, Request, Scroll, Wait};
+use super::control::{self, AgentScreen, Command, Listed, Reply, Request, Scroll, Tabs, Wait};
 use super::picks::{self, Bounds};
 use super::{Go, PageState};
 use crate::state::{AppState, Res};
@@ -43,13 +43,26 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
         .ok_or("This terminal isn't one of GitViber's open panes.")?
         .to_string_lossy()
         .into_owned();
+    let name = match req.tab.as_deref() {
+        Some("") => return Err("--tab needs the tab's name".into()),
+        Some(name) => Some(control::tab_name(name)?),
+        None => None,
+    };
+    if let Command::Tab(op) = cmd {
+        return tabs(app, pty, root, name, op, &req.cwd);
+    }
     let first = match &cmd {
         Command::Open(url) => Some(url.clone()),
         _ => None,
     };
     let (id, made) = main(app, move |app| {
-        super::agent_tab(app, pty, &root, first.as_deref())
+        super::agent_tab(app, pty, &root, name.as_deref(), first.as_deref())
     })?;
+    drive(app, id, cmd, made, &req.cwd)
+}
+
+/// `cmd` on tab `id` in its turn; `made`: the tab was just made, at the address an open asks for.
+fn drive(app: &AppHandle, id: String, cmd: Command, made: bool, cwd: &str) -> Res<Reply> {
     let queue = queue(&id);
     let _turn = take_turn(&queue, STEP)?;
     let tab = Tab {
@@ -58,12 +71,52 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
         command: NEXT_COMMAND.fetch_add(1, Ordering::Relaxed),
     };
     tab.start()?;
-    tab.run(cmd, made, &req.cwd)
+    tab.run(cmd, made, cwd)
+}
+
+/// `tab …`; `name`: the tab the command would go to (`--tab`), which `tab close` closes unless
+/// it names one.
+fn tabs(
+    app: &AppHandle,
+    pty: u32,
+    root: String,
+    name: Option<String>,
+    op: Tabs,
+    cwd: &str,
+) -> Res<Reply> {
+    match op {
+        Tabs::New { name, url } => {
+            let first = url.clone();
+            let (name, id) = main(app, move |app| {
+                super::agent_new_tab(app, pty, &root, name.as_deref(), first.as_deref())
+            })?;
+            let Some(url) = url else {
+                return Ok(Reply::out(name));
+            };
+            let opened = drive(app, id, Command::Open(url), true, cwd)
+                .map_err(|e| format!("{name}\n{e}"))?;
+            Ok(Reply::out(format!(
+                "{name}\n{}",
+                opened.out.unwrap_or_default()
+            )))
+        }
+        Tabs::List => {
+            let tabs = main(app, move |_| super::agent_tabs(pty))?;
+            Ok(Reply::out(tabs_text(&tabs)))
+        }
+        Tabs::Close(named) => {
+            let name = named.or(name);
+            let closed = main(app, move |app| {
+                super::agent_close_tab(app, pty, name.as_deref())
+            })?;
+            Ok(Reply::out(format!("Closed tab {closed}")))
+        }
+    }
 }
 
 static NEXT_COMMAND: AtomicU64 = AtomicU64::new(1);
 
-/// Each tab's turn: agents in a pane share its tab, and two commands at once would interleave
+/// Each tab's turn: agents in a pane share its tabs, and two commands at once would interleave
 /// their steps (a click between another's fill and its Enter).
 fn queue(id: &str) -> Arc<Mutex<()>> {
     static QUEUES: LazyLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = LazyLock::new(Mutex::default);
@@ -78,10 +131,12 @@ fn take_turn(queue: &Mutex<()>, wait: Duration) -> Res<MutexGuard<'_, ()>> {
             Ok(turn) => return Ok(turn),
             Err(TryLockError::Poisoned(turn)) => return Ok(turn.into_inner()),
             Err(TryLockError::WouldBlock) if Instant::now() < until => std::thread::sleep(POLL / 5),
-            Err(TryLockError::WouldBlock) => return Err(
-                "Another command is still running on this pane's tab: try again once it's done."
-                    .into(),
-            ),
+            Err(TryLockError::WouldBlock) => {
+                return Err(
+                    "Another command is still running on this tab: try again once it's done."
+                        .into(),
+                )
+            }
         }
     }
 }
@@ -158,6 +213,8 @@ impl Tab {
                 }
                 self.arrived("Opened")
             }
+            // Of the pane's tabs, not one page's: `tabs` answers them.
+            Command::Tab(_) => Err("Not a command for a page.".into()),
             Command::Back => self.go(Go::Back, "Back at"),
             Command::Forward => self.go(Go::Forward, "Forward at"),
             Command::Reload => self.go(Go::Reload, "Reloaded"),
@@ -420,9 +477,52 @@ fn titled(url: &str, title: &str, between: &str) -> String {
     }
 }
 
+/// `tab list`: a line a tab, the default one marked.
+fn tabs_text(tabs: &[Listed]) -> String {
+    if tabs.is_empty() {
+        return "No tabs: the pane's next command opens its default one.".into();
+    }
+    let lines = tabs.iter().map(|t| {
+        let page = titled(&t.url, &t.title, " — ");
+        let default = if t.default { "default, " } else { "" };
+        format!("{}  {page}  ({default}used {})", t.name, ago(t.idle))
+    });
+    lines.collect::<Vec<_>>().join("\n")
+}
+
+fn ago(idle: Duration) -> String {
+    match idle.as_secs() {
+        s @ 0..60 => format!("{s} s ago"),
+        s @ 60..3600 => format!("{} min ago", s / 60),
+        s => format!("{} h ago", s / 3600),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_tab_list_marks_the_default_and_says_when_each_was_used() {
+        let tab = |name: &str, default: bool, url: &str, title: &str, secs: u64| Listed {
+            name: name.into(),
+            default,
+            url: url.into(),
+            title: title.into(),
+            idle: Duration::from_secs(secs),
+        };
+        assert_eq!(
+            tabs_text(&[
+                tab("t1", true, "http://localhost:3000/", "App", 5),
+                tab("rv268", false, "about:blank", "", 125),
+                tab("t3", false, "https://example.test/", "", 7300),
+            ]),
+            "t1  http://localhost:3000/ — App  (default, used 5 s ago)\n\
+             rv268  about:blank  (used 2 min ago)\n\
+             t3  https://example.test/  (used 2 h ago)"
+        );
+        assert!(tabs_text(&[]).starts_with("No tabs"));
+    }
 
     #[test]
     fn a_tabs_commands_take_turns_and_one_kept_waiting_too_long_is_told() {

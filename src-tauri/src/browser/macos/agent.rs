@@ -7,7 +7,7 @@ use super::{
     ask, asked, create, emit, main_thread, out_of_sight, page_tools, set_agent, stop_timer,
     url_text, view, Delegate, View, GONE, PARK_AFTER, VIEWS,
 };
-use crate::browser::control::{AgentScreen, Route, Routes};
+use crate::browser::control::{AgentScreen, Listed, Route, Routes};
 use crate::browser::picks::Bounds;
 use crate::browser::{Look, PageState};
 use crate::state::Res;
@@ -40,19 +40,112 @@ struct Opened<'a> {
     pty: u32,
 }
 
-/// The pane's tab, live and awake: made in the background on its first command (at `url`, if
-/// one), made again once the user closed it, and back from parking where it was. Its id, and
-/// whether it's new, which the workspace hears as `browser-open` and adds without showing.
-pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Res<(String, bool)> {
+/// The tab named so, else the pane's default one, live and awake: the default made in the
+/// background on the pane's first command (at `url`, if one) and again once the user closed it,
+/// and either back from parking where it was. Its id, and whether it's new.
+pub fn agent_tab(
+    app: &AppHandle,
+    pty: u32,
+    root: &str,
+    name: Option<&str>,
+    url: Option<&str>,
+) -> Res<(String, bool)> {
     main_thread()?;
-    let open = |id: &str| VIEWS.with_borrow(|r| r.get(id).is_some() || r.parked(id).is_some());
-    let found = ROUTES.with_borrow_mut(|r| r.tab(pty, open));
-    let made = found.is_none();
-    let route = found.unwrap_or_else(|| Route {
+    match ROUTES.with_borrow_mut(|r| r.tab(pty, name, open))? {
+        Some(route) => {
+            live(app, &route, "about:blank")?;
+            Ok((route.id, false))
+        }
+        None => new_tab(app, pty, root, None, true, url).map(|(_, id)| (id, true)),
+    }
+}
+
+/// Another tab of the pane's, named so (else t1, t2, ...), at `url`: its name and id.
+pub fn agent_new_tab(
+    app: &AppHandle,
+    pty: u32,
+    root: &str,
+    name: Option<&str>,
+    url: Option<&str>,
+) -> Res<(String, String)> {
+    main_thread()?;
+    new_tab(app, pty, root, name, false, url)
+}
+
+/// The pane's tabs, open or parked.
+pub fn agent_tabs(pty: u32) -> Res<Vec<Listed>> {
+    main_thread()?;
+    let tabs = ROUTES.with_borrow_mut(|r| r.list(pty, open));
+    Ok(tabs
+        .into_iter()
+        .map(|t| {
+            let (url, title) = match view(&t.route.id) {
+                Some(v) => {
+                    let page = v.delegate.state(&v.web);
+                    (page.url, page.title)
+                }
+                None => {
+                    let parked =
+                        VIEWS.with_borrow(|r| r.parked(&t.route.id).map(|p| p.url.clone()));
+                    (parked.unwrap_or_default(), String::new())
+                }
+            };
+            Listed {
+                name: t.name,
+                default: t.default,
+                url,
+                title,
+                idle: t.used.elapsed(),
+            }
+        })
+        .collect())
+}
+
+/// Closes the tab named so (the default one if None), its tab in the workspace too
+/// (`browser-closed`): its name.
+pub fn agent_close_tab(app: &AppHandle, pty: u32, name: Option<&str>) -> Res<String> {
+    main_thread()?;
+    let tab = ROUTES.with_borrow_mut(|r| r.close(pty, name, open))?;
+    super::close(&tab.route.id);
+    emit(app, "browser-closed", super::Id { id: &tab.route.id });
+    Ok(tab.name)
+}
+
+/// Whether the tab is still there for its agents: live, or parked to load again.
+fn open(id: &str) -> bool {
+    VIEWS.with_borrow(|r| r.get(id).is_some() || r.parked(id).is_some())
+}
+
+/// A tab made for the pane, which the workspace hears as `browser-open` and adds without
+/// showing: its name and id.
+fn new_tab(
+    app: &AppHandle,
+    pty: u32,
+    root: &str,
+    name: Option<&str>,
+    default: bool,
+    url: Option<&str>,
+) -> Res<(String, String)> {
+    let name = ROUTES.with_borrow_mut(|r| r.name(pty, name, open))?;
+    let route = Route {
         id: NSUUID::new().UUIDString().to_string().to_lowercase(),
         root: root.into(),
-    });
+    };
     let url = url.unwrap_or("about:blank");
+    live(app, &route, url)?;
+    ROUTES.with_borrow_mut(|r| r.add(pty, &name, route.clone(), default));
+    let opened = Opened {
+        id: &route.id,
+        url,
+        root: &route.root,
+        pty,
+    };
+    emit(app, "browser-open", opened);
+    Ok((name, route.id))
+}
+
+/// The tab's view made, at `url`, when it has none (new, or parked), and awake.
+fn live(app: &AppHandle, route: &Route, url: &str) -> Res<()> {
     if view(&route.id).is_none() {
         let window = app
             .get_webview_window("main")
@@ -66,17 +159,7 @@ pub fn agent_tab(app: &AppHandle, pty: u32, root: &str, url: Option<&str>) -> Re
         create(&window, &route.id, &route.root, url, &look)?;
     }
     wake(&view(&route.id).ok_or(GONE)?);
-    if made {
-        ROUTES.with_borrow_mut(|r| r.set(pty, route.clone()));
-        let opened = Opened {
-            id: &route.id,
-            url,
-            root: &route.root,
-            pty,
-        };
-        emit(app, "browser-open", opened);
-    }
-    Ok((route.id, made))
+    Ok(())
 }
 
 /// The app page reloaded: its tabs come back as the user's.
