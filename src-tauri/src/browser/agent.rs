@@ -13,6 +13,7 @@ use super::sessions::{self, Session, Shelf};
 use super::{Go, PageState};
 use crate::state::{AppState, Res};
 use serde_json::{json, Value};
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -51,10 +52,21 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     if let Some(op) = control::parse_pane(&req.cmd, &req.args) {
         let op = op?;
         let (pty, root) = pane(app, &req)?;
-        return match op {
+        let reply = match op {
             Pane::Tab(op) => tabs(app, pty, root, req.tab, op, &req.cwd),
             Pane::Session(op) => sessions(app, pty, root, req.tab, op),
         };
+        return reply.map(|mut r| {
+            if !req.reveal {
+                for text in [&mut r.out, &mut r.error].into_iter().flatten() {
+                    *text = output::redact_urls(text);
+                }
+                if let Some(data) = &mut r.data {
+                    output::each_string(data, &output::redact_urls);
+                }
+            }
+            r
+        });
     }
     let cmd = control::parse(&req.cmd, &req.args)?;
     let (pty, root) = pane(app, &req)?;
@@ -68,8 +80,19 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     })?;
     // Made: just made, at the address an open asks for.
     let made = found == Found::Made;
+    if let Command::FillSecret(_, name) = &cmd {
+        let value = req
+            .secret
+            .clone()
+            .ok_or("No value came with --secret: run it as `gitviber browser`.")?;
+        remember(&id, |m| {
+            m.secrets.retain(|(n, _)| n != name);
+            m.secrets.push((name.clone(), value));
+        });
+    }
     let said = format!("{} {}", req.cmd, req.args.join(" "));
     drive(app, id, found, |tab| {
+        tab.reveal.set(req.reveal);
         let reply = tab.run(cmd, made, &req.cwd);
         Ok(tab.finish(reply, &said))
     })
@@ -107,6 +130,7 @@ fn drive<T>(
         app: app.clone(),
         id,
         command: NEXT_COMMAND.fetch_add(1, Ordering::Relaxed),
+        reveal: Cell::new(false),
     };
     tab.start()?;
     if found == Found::Restored {
@@ -261,6 +285,8 @@ struct Memory {
     /// The highest ref the tab handed out, on any of its pages.
     last_ref: u64,
     history: output::History,
+    /// Filled with `fill --secret`, by name: hidden from every reply after.
+    secrets: Vec<(String, String)>,
 }
 
 fn memories() -> MutexGuard<'static, HashMap<String, Memory>> {
@@ -351,6 +377,8 @@ struct Tab {
     app: AppHandle,
     id: String,
     command: u64,
+    /// `--reveal`: tokens and credential headers left in its reply.
+    reveal: Cell<bool>,
 }
 
 impl Drop for Tab {
@@ -393,6 +421,7 @@ impl Tab {
                 let out = found["out"].as_str().unwrap_or_default();
                 Ok(Reply {
                     state: Some(out.into()),
+                    untrusted: true,
                     ..Reply::out(out)
                 })
             }
@@ -406,10 +435,27 @@ impl Tab {
                 };
                 Ok(Reply {
                     state: Some(out.into()),
+                    untrusted: true,
                     ..reply
                 })
             }
             Command::Click(target) => self.acted(json!({ "cmd": "click", "target": target })),
+            Command::FillSecret(target, name) => {
+                let value = remember(&self.id, |m| {
+                    let found = m.secrets.iter().find(|(n, _)| *n == name);
+                    found.map(|(_, v)| v.clone())
+                });
+                let value = value.ok_or("No value came with --secret.")?;
+                let input =
+                    json!({ "cmd": "fill", "target": target, "text": value, "secret": true });
+                let reply = self.acted(input)?;
+                Ok(Reply {
+                    out: reply
+                        .out
+                        .map(|o| o.replacen('\n', &format!(" from ${name}\n"), 1)),
+                    ..reply
+                })
+            }
             Command::Fill(target, text) => {
                 self.acted(json!({ "cmd": "fill", "target": target, "text": text }))
             }
@@ -474,12 +520,18 @@ impl Tab {
         let out = found["out"].as_str().unwrap_or_default();
         let reply = match file {
             Some(path) => {
-                std::fs::write(&path, format!("{out}\n"))
+                // The file is read later as page text too: marked, and kept clean, as a reply is.
+                let origin = control::origin(&self.page()?.0.url);
+                let marked = output::untrusted(out, &origin, &output::nonce());
+                std::fs::write(&path, format!("{}\n", self.clean(&marked)))
                     .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
                 let lines = out.lines().count();
                 Reply::out(format!("Wrote {} ({lines} lines)", path.display()))
             }
-            None => Reply::data(out, json!({ "snapshot": out, "removed": found["removed"] })),
+            None => Reply {
+                untrusted: true,
+                ..Reply::data(out, json!({ "snapshot": out, "removed": found["removed"] }))
+            },
         };
         Ok(Reply {
             state: Some(out.into()),
@@ -489,8 +541,31 @@ impl Tab {
 
     /// A command's reply (`said`: as typed) as the agent gets it, a failure too: with a nudge
     /// when it's the same as the last two, the page no different after each.
+    /// Page text marked as such, tokens in addresses hidden unless --reveal, and secrets
+    /// always, all here, once.
     fn finish(&self, reply: Res<Reply>, said: &str) -> Reply {
         let mut reply = reply.unwrap_or_else(Reply::error);
+        if reply.untrusted {
+            let origin = self
+                .page()
+                .map_or_else(|_| String::new(), |p| control::origin(&p.0.url));
+            let nonce = output::nonce();
+            for text in [&mut reply.out, &mut reply.error].into_iter().flatten() {
+                *text = output::untrusted(text, &origin, &nonce);
+            }
+            if let Some(Value::Object(data)) = &mut reply.data {
+                data.insert(
+                    "untrusted".into(),
+                    json!({ "origin": origin, "nonce": nonce }),
+                );
+            }
+        }
+        for text in [&mut reply.out, &mut reply.error].into_iter().flatten() {
+            *text = self.clean(text);
+        }
+        if let Some(data) = &mut reply.data {
+            output::each_string(data, &|s| self.clean(s));
+        }
         let state = match (&reply.state, &reply.error) {
             (_, Some(error)) => Some(format!("failed: {error}")),
             (state, None) => state.clone(),
@@ -504,6 +579,18 @@ impl Tab {
             }
         }
         reply
+    }
+
+    /// Text as a reply may give it: tokens in addresses hidden unless --reveal, and the tab's
+    /// secrets by their names only.
+    fn clean(&self, text: &str) -> String {
+        let text = if self.reveal.get() {
+            text.to_string()
+        } else {
+            output::redact_urls(text)
+        };
+        let secrets = remember(&self.id, |m| m.secrets.clone());
+        output::hide_secrets(&text, &secrets)
     }
 
     /// The page, and whether its console is kept.
@@ -761,11 +848,17 @@ impl Tab {
             Err(e) if e.contains("SyntaxError") => run(statements),
             other => other,
         }?;
-        match out.split_at_checked(1) {
-            Some(("=", value)) => Ok(Reply::out(super::cut(value, EVAL_MAX))),
-            Some(("!", thrown)) => Err(format!("The page threw {}", super::cut(thrown, EVAL_MAX))),
-            _ => Err("The page's answer wasn't readable.".into()),
-        }
+        let reply = match out.split_at_checked(1) {
+            Some(("=", value)) => Reply::out(super::cut(value, EVAL_MAX)),
+            Some(("!", thrown)) => {
+                Reply::error(format!("The page threw {}", super::cut(thrown, EVAL_MAX)))
+            }
+            _ => return Err("The page's answer wasn't readable.".into()),
+        };
+        Ok(Reply {
+            untrusted: true,
+            ..reply
+        })
     }
 
     /// The viewport, one element or a clip of it as drawn, at 1 px a CSS px unless scaled, the
@@ -832,15 +925,21 @@ impl Tab {
             let id = self.id.clone();
             main(&self.app, move |_| super::console_clear(&id))?;
         }
-        Ok(Reply::out(control::console_text(&entries, errors)))
+        Ok(Reply {
+            untrusted: true,
+            ..Reply::out(control::console_text(&entries, errors))
+        })
     }
 
     fn network(&self, ask: network::Ask) -> Res<Reply> {
-        let (id, now) = (self.id.clone(), super::epoch_ms());
+        let (id, now, reveal) = (self.id.clone(), super::epoch_ms(), self.reveal.get());
         let (text, data) = main(&self.app, move |_| {
-            super::network_log(&id, |log| network::answer(log, &ask, now))
+            super::network_log(&id, |log| network::answer(log, &ask, now, reveal))
         })??;
-        Ok(Reply::data(text, data))
+        Ok(Reply {
+            untrusted: true,
+            ..Reply::data(text, data)
+        })
     }
 
     fn device(&self, screen: Option<AgentScreen>) -> Res<Reply> {

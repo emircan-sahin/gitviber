@@ -17,6 +17,7 @@ pub fn helper() -> Option<i32> {
 #[derive(Debug, PartialEq)]
 pub struct Cli {
     pub json: bool,
+    pub reveal: bool,
     /// `--tab <name>`; an empty one when no name came after it.
     pub tab: Option<String>,
     pub cmd: Option<String>,
@@ -26,13 +27,14 @@ pub struct Cli {
 /// `--json` and `--tab <name>` anywhere before a `--`; after one, everything is an argument,
 /// even `--json`.
 pub fn parse_cli(args: Vec<String>) -> Cli {
-    let mut json = false;
+    let (mut json, mut reveal) = (false, false);
     let mut tab = None;
     let mut rest = vec![];
     let mut it = args.into_iter().peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--json" => json = true,
+            "--reveal" => reveal = true,
             // A flag or `--` after it isn't its name.
             "--tab" => tab = Some(it.next_if(|n| !n.starts_with('-')).unwrap_or_default()),
             "--" => break,
@@ -43,6 +45,7 @@ pub fn parse_cli(args: Vec<String>) -> Cli {
     let mut rest = rest.into_iter();
     Cli {
         json,
+        reveal,
         tab,
         cmd: rest.next(),
         args: rest.collect(),
@@ -75,6 +78,13 @@ fn run(args: Vec<String>) -> i32 {
     if cmd == "device" && cli.args == ["--list"] {
         return print(&Reply::out(control::device_list()), cli.json);
     }
+    let secret = match secret(&cmd, &cli.args) {
+        Ok(secret) => secret,
+        Err(e) => {
+            eprintln!("{e}");
+            return 1;
+        }
+    };
     let (Ok(socket), Ok(token)) = (
         std::env::var(control::SOCKET_ENV),
         std::env::var(control::TOKEN_ENV),
@@ -97,6 +107,8 @@ fn run(args: Vec<String>) -> i32 {
             .unwrap_or_default(),
         cmd,
         args: cli.args,
+        reveal: cli.reveal,
+        secret,
     };
     match ask(Path::new(&socket), &request) {
         Ok(reply) => print(&reply, cli.json),
@@ -112,6 +124,16 @@ fn run(args: Vec<String>) -> i32 {
             eprintln!("GitViber didn't answer.");
             1
         }
+    }
+}
+
+/// `fill <target> --secret <NAME>`: $NAME's value, read here so the agent never types it.
+fn secret(cmd: &str, args: &[String]) -> Result<Option<String>, String> {
+    match args {
+        [_, flag, name] if cmd == "fill" && flag == "--secret" => std::env::var(name)
+            .map(Some)
+            .map_err(|_| format!("${name} isn't set in this shell: export it first")),
+        _ => Ok(None),
     }
 }
 
@@ -165,12 +187,15 @@ mod tests {
             cli("--json snapshot -i"),
             Cli {
                 json: true,
+                reveal: false,
                 tab: None,
                 cmd: Some("snapshot".into()),
                 args: vec!["-i".into()]
             }
         );
         assert!(cli("url --json").json);
+        assert!(cli("--reveal network").reveal && cli("network 3 --reveal").reveal);
+        assert!(!cli("fill e1 -- --reveal").reveal);
         let text = cli("fill e3 -- --json --");
         assert!(!text.json);
         assert_eq!(text.cmd.as_deref(), Some("fill"));
@@ -189,6 +214,18 @@ mod tests {
         );
         let flagged = cli("snapshot --tab --json");
         assert_eq!((flagged.tab.as_deref(), flagged.json), (Some(""), true));
+    }
+
+    #[test]
+    fn a_secret_comes_from_the_environment_and_only_for_fill() {
+        let words = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+        let home = std::env::var("HOME").ok();
+        assert_eq!(secret("fill", &words("e1 --secret HOME")), Ok(home));
+        assert!(secret("fill", &words("e1 --secret GITVIBER_NO_SUCH_VAR"))
+            .unwrap_err()
+            .contains("$GITVIBER_NO_SUCH_VAR isn't set"));
+        assert_eq!(secret("type", &words("e1 --secret HOME")), Ok(None));
+        assert_eq!(secret("fill", &words("e1 hello")), Ok(None));
     }
 
     #[test]
@@ -239,6 +276,8 @@ mod tests {
             cwd: "/tmp/app".into(),
             cmd: "url".into(),
             args: vec![],
+            reveal: false,
+            secret: None,
         };
         let reply = ask(&socket, &request).ok().unwrap();
         assert_eq!(reply, Reply::out("http://localhost:5173/"));
@@ -300,6 +339,8 @@ mod tests {
             cwd: String::new(),
             cmd: "url".into(),
             args: vec![],
+            reveal: false,
+            secret: None,
         };
         assert!(matches!(ask(&socket, &request), Err(Failure::NoAnswer)));
         assert!(matches!(ask(&socket, &request), Err(Failure::NoAnswer)));

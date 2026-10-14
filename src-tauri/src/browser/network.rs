@@ -672,14 +672,47 @@ fn list_json(log: &Log, filter: &Filter) -> Value {
     json!({ "dropped": log.dropped(), "entries": entries })
 }
 
+/// Headers that carry a credential: their values hidden unless --reveal.
+fn secret_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    matches!(
+        name.as_str(),
+        "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
+    ) || name.starts_with("x-")
+        && ["token", "key", "secret", "auth"]
+            .iter()
+            .any(|w| name.contains(w))
+}
+
+impl Entry {
+    /// As shown unless --reveal: its credential headers' values hidden (its address's tokens
+    /// go at the reply, with every address's).
+    fn redacted(&self) -> Entry {
+        let hide = |list: &[(String, String)]| {
+            list.iter()
+                .map(|(k, v)| {
+                    let v = if secret_header(k) { "[redacted]" } else { v };
+                    (k.clone(), v.to_string())
+                })
+                .collect()
+        };
+        Entry {
+            request_headers: hide(&self.request_headers),
+            response_headers: hide(&self.response_headers),
+            ..self.clone()
+        }
+    }
+}
+
 /// `network`'s answer as text, and as JSON for `--json`; a list may clear the log after.
-pub fn answer(log: &mut Log, ask: &Ask, now: f64) -> Result<(String, Value), String> {
+pub fn answer(log: &mut Log, ask: &Ask, now: f64, reveal: bool) -> Result<(String, Value), String> {
     match ask {
         Ask::One(id) => {
             let e = log.get(*id).ok_or_else(|| {
                 format!("No request #{id}: `gitviber browser network` lists them")
             })?;
-            Ok((entry_text(e, now), json!(e)))
+            let e = if reveal { e.clone() } else { e.redacted() };
+            Ok((entry_text(&e, now), json!(e)))
         }
         Ask::List { filter, clear } => {
             let answer = (list_text(log, filter), list_json(log, filter));
@@ -1057,14 +1090,14 @@ mod tests {
     fn one_entry_or_the_list_answers_with_json_beside_the_text_and_clear_empties_it() {
         let mut log = Log::default();
         fetch(&mut log, "a", "http://localhost/api", 0.0);
-        let (text, data) = answer(&mut log, &Ask::One(1), 10.0).unwrap();
+        let (text, data) = answer(&mut log, &Ask::One(1), 10.0, true).unwrap();
         assert_eq!(
             (data["id"].clone(), data["kind"].clone()),
             (json!(1), json!("fetch"))
         );
         assert!(data.get("key").is_none(), "the page's own key stays inside");
         assert!(text.starts_with("#1 GET http://localhost/api (fetch)\nWaiting for an answer"));
-        assert!(answer(&mut log, &Ask::One(2), 0.0)
+        assert!(answer(&mut log, &Ask::One(2), 0.0, true)
             .unwrap_err()
             .contains("No request #2"));
         let (text, data) = answer(
@@ -1074,12 +1107,35 @@ mod tests {
                 clear: true,
             },
             0.0,
+            false,
         )
         .unwrap();
         assert_eq!(data["entries"].as_array().unwrap().len(), 1);
         assert_eq!(data["entries"][0]["frameCount"], 0);
         assert!(text.contains("http://localhost/api"));
         assert!(log.entries().is_empty());
+    }
+
+    #[test]
+    fn credential_headers_are_hidden_unless_revealed() {
+        let mut log = Log::default();
+        assert!(post(
+            &mut log,
+            json!([{ "key": "a", "kind": "fetch", "method": "GET", "url": "http://localhost/api", "start": 0.0,
+                "requestHeaders": [["Authorization", "Bearer t0ken"], ["X-Api-Key", "k3y"], ["Accept", "*/*"]],
+                "responseHeaders": [["Set-Cookie", "sid=s3ss"], ["Content-Type", "text/plain"]] }])
+        ));
+        let (text, data) = answer(&mut log, &Ask::One(1), 0.0, false).unwrap();
+        for hidden in ["t0ken", "k3y", "s3ss"] {
+            assert!(
+                !text.contains(hidden) && !data.to_string().contains(hidden),
+                "{hidden}"
+            );
+        }
+        assert!(text.contains("  Authorization: [redacted]") && text.contains("  Accept: */*"));
+        assert!(text.contains("  Content-Type: text/plain"));
+        let (shown, _) = answer(&mut log, &Ask::One(1), 0.0, true).unwrap();
+        assert!(shown.contains("Bearer t0ken") && shown.contains("sid=s3ss"));
     }
 
     #[test]
