@@ -46,7 +46,7 @@ pub fn repository(root: &str) -> Result<String, String> {
             .canonicalize()
             .map(|p| p.to_string_lossy().into_owned())
             .map_err(|e| format!("Couldn't find the repository's sessions: {e}")),
-        Err(e) if e.contains("not a git repository") => Ok(root_key(&root.to_string_lossy())),
+        Err(e) if crate::git::outside_any_repository(&e) => Ok(root_key(&root.to_string_lossy())),
         Err(e) => Err(format!("Couldn't find the repository's sessions: {e}")),
     }
 }
@@ -313,8 +313,11 @@ mod tests {
         // Outside it through a symlink: the folder it leads to.
         std::os::unix::fs::symlink(&plain, base.join("alias")).unwrap();
         assert_eq!(key(&base.join("alias")), key(&plain));
-        // A folder git can't even start in isn't taken for one outside a repository.
+        // A folder git can't even start in isn't taken for one outside a repository, nor is a
+        // worktree whose repository moved away.
         assert!(repository("/no/such/folder").is_err());
+        std::fs::rename(&main, base.join("moved")).unwrap();
+        assert!(repository(&linked.to_string_lossy()).is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 

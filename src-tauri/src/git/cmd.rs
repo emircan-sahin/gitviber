@@ -146,6 +146,12 @@ pub(super) fn has_head(repo: &Path) -> bool {
 /// toplevel's error for an existing folder outside any repository; the page offers `git init`.
 pub const NOT_A_REPO: &str = "git:not-a-repo";
 
+/// git's error for a folder outside any repository. Not "fatal: not a git repository: <path>",
+/// which is a .git file gone bad: a worktree whose repository moved.
+pub fn outside_any_repository(error: &str) -> bool {
+    error.contains("not a git repository (or any")
+}
+
 /// Only git's "not a git repository" means that; anything else (git missing, a
 /// `safe.directory` refusal, a broken config) is shown in git's own words.
 pub fn toplevel(path: &Path) -> Result<String, String> {
@@ -155,8 +161,7 @@ pub fn toplevel(path: &Path) -> Result<String, String> {
     run_text(path, &["rev-parse", "--show-toplevel"])
         .map(|s| s.trim().to_string())
         .map_err(|e| {
-            // Not "fatal: not a git repository: <path>", which is a .git file gone bad.
-            if e.contains("not a git repository (or any") {
+            if outside_any_repository(&e) {
                 NOT_A_REPO.to_string()
             } else {
                 e
