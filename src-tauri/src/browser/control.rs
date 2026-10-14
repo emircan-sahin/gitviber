@@ -46,7 +46,7 @@ unless the user has it on show.
                                and _). --shared: in the user's own cookies and logins.
                                --session: a saved session loaded first. --idle: minutes before
                                it sleeps, 0 never while the pane is open (120 at most); it closes
-                               unused after an hour, or six times that
+                               unused after an hour, or six times its idle time, if longer
   tab list                     The pane's tabs: name, awake, sleeping or parked, last command,
                                idle minutes, private or shared, origin and title
   tab close [name]             Close a tab once its running command is done: the one a command

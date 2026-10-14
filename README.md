@@ -136,7 +136,7 @@ taking yours and named so each agent keeps to its own: with `gitviber browser` t
 them as a tree they can act on, click, type, take screenshots and read the console. Each tab signs
 in apart from the others and from you, so two tabs can be two accounts, and a login can be saved as
 a session for another tab to load. A tab no command touched for a while slows down, and one left
-unused for an hour closes. `gitviber browser help` lists it all, and Settings has a note to paste
+unused for an hour closes, unless it's on show. `gitviber browser help` lists it all, and Settings has a note to paste
 into your `CLAUDE.md` or `AGENTS.md`.
 
 ### Browse the code, not just the diff
@@ -277,8 +277,9 @@ don't carry over, and Settings → Browser → Clear Browsing Data empties them.
 keep theirs in memory, apart from yours, unless the agent asks for yours. Logins an agent saves as
 sessions (`gitviber browser session save`), their cookies and site storage included, are kept in
 the app's data folder, readable by you alone, and never printed or sent anywhere; Clear Browsing
-Data deletes them too. What an agent reads of a page, picks or console lines included, goes
-wherever that agent sends it. Letting agents use the browser opens a socket on your Mac only, in a
+Data deletes them too. An agent's tab logs the requests its page makes, headers and bodies
+included, in memory only and only in agents' tabs, for its agent to read. What an agent reads of a
+page, picks, console lines or requests included, goes wherever that agent sends it. Letting agents use the browser opens a socket on your Mac only, in a
 folder only you can enter, that only GitViber's own terminals have the keys to. Each pane's key
 reaches only that pane's tabs, so an agent that changes which pane it says it's in gets nowhere;
 another program running as you can still read a pane's key from its environment (`ps -E`), as it
