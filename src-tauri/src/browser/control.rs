@@ -145,6 +145,33 @@ impl Reply {
     }
 }
 
+/// Pane `pty`'s own token from the launch's `secret`: GITVIBER_PTY is the agent's to change, so
+/// a pane's token reaches its own tabs and sessions only.
+pub fn pane_token(secret: &str, pty: u32) -> String {
+    hmac(secret.as_bytes(), pty.to_string().as_bytes())
+}
+
+/// HMAC-SHA256, hex.
+fn hmac(key: &[u8], data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > block.len() {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let pad = |byte: u8| block.map(|k| k ^ byte);
+    let inner = Sha256::new()
+        .chain_update(pad(0x36))
+        .chain_update(data)
+        .finalize();
+    let outer = Sha256::new()
+        .chain_update(pad(0x5c))
+        .chain_update(inner)
+        .finalize();
+    format!("{outer:x}")
+}
+
 /// The token as sent against ours, in time that doesn't depend on where they differ.
 pub fn same_token(sent: &str, ours: &str) -> bool {
     let (a, b) = (sent.as_bytes(), ours.as_bytes());
@@ -904,6 +931,33 @@ mod tests {
         assert_eq!(off.exit_code(), 2);
         assert_eq!(Reply::error("x").exit_code(), 1);
         assert_eq!(Reply::out("").exit_code(), 0);
+    }
+
+    #[test]
+    fn each_pane_has_a_token_of_its_own_that_no_other_pane_can_pass_for() {
+        let secret = "a1".repeat(32);
+        let one = pane_token(&secret, 1);
+        assert_eq!(one.len(), 64);
+        assert_eq!(pane_token(&secret, 1), one);
+        assert_ne!(pane_token(&secret, 2), one);
+        assert_ne!(pane_token(&"b2".repeat(32), 1), one);
+        assert!(
+            !same_token(&secret, &one),
+            "the launch's secret isn't a pane's token"
+        );
+        // RFC 4231's test cases 2 (a key shorter than a block) and 6 (longer, hashed first).
+        assert_eq!(
+            hmac(b"Jefe", b"what do ya want for nothing?"),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        assert_eq!(
+            hmac(
+                &[0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            ),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+        assert_eq!(pane_token("Jefe", 7), hmac(b"Jefe", b"7"));
     }
 
     #[test]
