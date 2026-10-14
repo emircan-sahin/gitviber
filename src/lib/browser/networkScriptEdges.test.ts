@@ -6,6 +6,21 @@ import { test } from "node:test";
 // XMLHttpRequests, busy sockets, cuts at a surrogate pair, and a dev page busy for a quarter of
 // an hour.
 const source = readFileSync(new URL("../../../src-tauri/src/browser/scripts/network.js", import.meta.url), "utf8");
+// The engine's own stream methods, before any test's page wraps them.
+const streamMethods = () => {
+  const R = ReadableStream.prototype as any;
+  const own = (o: object, k: PropertyKey) => {
+    const { value, ...rest } = Object.getOwnPropertyDescriptor(o, k)!;
+    return { ...rest, name: value.name, length: value.length };
+  };
+  return {
+    ...Object.fromEntries(["cancel", "getReader", "pipeThrough", "values"].map((k) => [k, own(R, k)])),
+    asyncIterator: R[Symbol.asyncIterator] === R.values,
+    readerCancel: own(ReadableStreamDefaultReader.prototype, "cancel"),
+    byobCancel: own(ReadableStreamBYOBReader.prototype, "cancel"),
+  };
+};
+const nativeStreamMethods = streamMethods();
 
 type Rec = Record<string, any>;
 type Listener = (e?: any) => void;
@@ -507,3 +522,154 @@ test("a busy dev page for fifteen minutes: bounded posts, the page's answers int
   // The page letting go of its stream settles at once: the copy goes with it.
   await sse.body!.cancel();
 });
+
+test("the stream methods it wraps keep their names, lengths and places, and other streams behave as ever", async () => {
+  page();
+  assert.deepEqual(streamMethods(), nativeStreamMethods);
+  const bytes = new ReadableStream({
+    type: "bytes",
+    pull(c) {
+      c.enqueue(new Uint8Array([1, 2]));
+      c.close();
+    },
+  });
+  const byob = bytes.getReader({ mode: "byob" });
+  assert.deepEqual([...(await byob.read(new Uint8Array(4))).value!], [1, 2]);
+  assert.throws(() => bytes.getReader(), TypeError, "a locked stream still throws at once");
+  await assert.rejects((ReadableStream.prototype.cancel as any).call({}), TypeError, "and a wrong this still rejects");
+});
+
+test("an XMLHttpRequest the page opens again from its own loadend, ahead of the log's, is logged once each time", () => {
+  const p = page();
+  const r = new p.window.XMLHttpRequest();
+  let polls = 0;
+  const poll = () => {
+    r.open("GET", `/api/poll?n=${++polls}`);
+    r.send();
+  };
+  // Registered before the first send, so it runs before network.js's own loadend listener.
+  r.addEventListener("loadend", () => polls < 3 && poll());
+  poll();
+  for (const n of [1, 2, 3]) r.finish(200, `{"n":${n}}`);
+  assert.deepEqual(
+    p.entries().map((e) => [new URL(e.url).search, e.status, e.responseBody?.text]),
+    [
+      ["?n=1", 200, '{"n":1}'],
+      ["?n=2", 200, '{"n":2}'],
+      ["?n=3", 200, '{"n":3}'],
+    ],
+  );
+});
+
+test(
+  "BUG: a page letting go through its own clone, a tee or an aborted pipeTo lets go of the source, and its promise settles",
+  { todo: "only cancel, getReader, pipeThrough and values are wrapped; these cancel the page's body inside the engine" },
+  async () => {
+    const ways: [string, (r: Response) => Promise<unknown>][] = [
+      ["its own clone", (r) => { const c = r.clone(); return Promise.all([r.body!.cancel(), c.body!.cancel()]); }],
+      ["a tee", (r) => { const [a, b] = r.body!.tee(); return Promise.all([a.cancel(), b.cancel()]); }],
+      ["an aborted pipeTo", (r) => {
+        const stop = new AbortController();
+        const piped = r.body!.pipeTo(new WritableStream(), { signal: stop.signal });
+        stop.abort();
+        return piped.catch(() => {});
+      }],
+    ];
+    for (const [way, letGo] of ways) {
+      const s = feed();
+      const p = page(async () => new Response(s.stream, { headers: { "content-type": "text/event-stream" } }));
+      const response: Response = await p.window.fetch("/events");
+      s.push("data: one\n\n");
+      await settle();
+      let settled = false;
+      void letGo(response).then(() => (settled = true));
+      await settle();
+      assert.ok(settled, `${way}: the page's own promise waits on the log's copy`);
+      assert.ok(s.cancelled, `${way}: the source stays open`);
+    }
+  },
+);
+
+test(
+  "BUG: a cancel the page's stream refuses leaves the log's copy reading",
+  { todo: "the wrappers release the copy even when the engine's cancel rejects" },
+  async () => {
+    const s = feed();
+    const p = page(async () => new Response(s.stream, { headers: { "content-type": "text/plain" } }));
+    const response: Response = await p.window.fetch("/log");
+    const reader = response.body!.getReader();
+    s.push("a");
+    await settle();
+    await assert.rejects(response.body!.cancel(), TypeError, "locked: the page's cancel is refused");
+    s.push("b");
+    s.close();
+    let all = "";
+    for (let r = await reader.read(); !r.done; r = await reader.read()) all += new TextDecoder().decode(r.value);
+    await settle();
+    assert.equal(all, "ab");
+    const body = p.entries()[0].responseBody;
+    assert.deepEqual([body.text, body.cut], ["ab", false]);
+  },
+);
+
+test(
+  "BUG: two fetches of one address at once each get their own timing entry",
+  { todo: "entries are matched oldest first, not by their startTime" },
+  async () => {
+    const p = page(async () => new Response("{}", { headers: { "content-type": "application/json" } }));
+    await p.window.fetch("/api/x");
+    await new Promise((r) => setTimeout(r, 5));
+    await p.window.fetch("/api/x");
+    await settle();
+    const [slow, fast] = p.entries();
+    const entry = (e: Rec, duration: number) => ({
+      entryType: "resource",
+      initiatorType: "fetch",
+      name: "http://localhost:5173/api/x",
+      startTime: e.start - performance.timeOrigin,
+      duration,
+    });
+    // The second ends first, so its entry comes first.
+    p.resources([entry(fast, 3)]);
+    p.resources([entry(slow, 900)]);
+    assert.deepEqual(p.entries().map((e) => e.duration), [900, 3]);
+  },
+);
+
+test(
+  "BUG: a fetch whose body the page cancelled ends in the log, and takes no later fetch's timing",
+  { todo: "a cancelled load has no timing entry, so it stays awaited (and unended) and takes the next one's" },
+  async () => {
+    const s = feed();
+    const answers = [
+      () => new Response(s.stream, { headers: { "content-type": "text/plain" } }),
+      () => new Response("ok", { headers: { "content-type": "text/plain" } }),
+    ];
+    const p = page(async () => answers.shift()!());
+    const first: Response = await p.window.fetch("/api/chat");
+    s.push("partial");
+    await settle();
+    await first.body!.cancel();
+    await settle();
+    assert.notEqual(p.entries()[0].duration, undefined, "a stopped stream still ends");
+    await new Promise((r) => setTimeout(r, 5));
+    await p.window.fetch("/api/chat");
+    await settle();
+    const second = p.entries()[1];
+    p.resources([
+      { entryType: "resource", initiatorType: "fetch", name: second.url, startTime: second.start - performance.timeOrigin, duration: 77 },
+    ]);
+    assert.equal(p.entries()[1].duration, 77);
+  },
+);
+
+test(
+  "BUG: a binary fetch of a blob: or data: address ends in the log",
+  { todo: "a binary body waits for a timing entry these schemes never get" },
+  async () => {
+    const p = page(async () => new Response(new Uint8Array(4), { headers: { "content-type": "image/png" } }));
+    await p.window.fetch("data:image/png;base64,AAAAAA==");
+    await settle();
+    assert.notEqual(p.entries()[0].duration, undefined);
+  },
+);
