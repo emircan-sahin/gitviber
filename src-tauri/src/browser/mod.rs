@@ -42,7 +42,7 @@ pub use other::{
 pub use sessions::Shelf;
 
 #[cfg(target_os = "macos")]
-pub use registry::{Parked, Registry, Step};
+pub use registry::{Parked, Registry, Step, AWAKE_OFFSCREEN};
 use serde::{Deserialize, Serialize};
 use tauri::Url;
 

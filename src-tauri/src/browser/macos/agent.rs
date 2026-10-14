@@ -11,8 +11,8 @@ use crate::browser::control::{
     origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE,
 };
 use crate::browser::picks::Bounds;
-use crate::browser::Step;
 use crate::browser::{epoch_ms, Look, PageState};
+use crate::browser::{Step, AWAKE_OFFSCREEN};
 use crate::state::{AppState, Res};
 use block2::RcBlock;
 use objc2::rc::Retained;
@@ -235,7 +235,20 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<bool> {
     if !running(&v) {
         restart_idle(&v);
     }
+    VIEWS.with_borrow_mut(|r| r.touch(&route.id));
+    sleep_past_cap();
     Ok(made)
+}
+
+/// Past AWAKE_OFFSCREEN, the tabs drawn out of sight longest unused sleep, but for one a command
+/// runs on: each panel is a window's backing store, and its page runs at full rate.
+fn sleep_past_cap() {
+    for id in VIEWS.with_borrow(|r| r.over_awake(AWAKE_OFFSCREEN)) {
+        if let Some(v) = view(&id).filter(|v| !running(v)) {
+            stop_idle(&v);
+            sleep(&v);
+        }
+    }
 }
 
 /// Whether tab `id` is a pane's agent's.

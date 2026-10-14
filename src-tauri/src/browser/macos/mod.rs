@@ -5,6 +5,7 @@
 
 mod agent;
 mod cookies;
+mod memory;
 mod native;
 mod page_tools;
 mod page_view;
@@ -944,6 +945,7 @@ pub fn create(
         None => web_page(url)?,
     };
     let content = window_content(window)?;
+    memory::watch();
     let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
 
     let config = unsafe { WKWebViewConfiguration::new(mtm) };
