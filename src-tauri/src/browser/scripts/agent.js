@@ -90,18 +90,26 @@ function line(el, role, name, ref) {
   return out;
 }
 
-function snapshot({ interactive = false, scope = null, depth = null }) {
-  const root = scope ? document.querySelector(scope) : (document.body ?? document.documentElement);
-  if (!root) throw new Error(`No element matches ${scope}`);
+/**
+ * The page under `scope` (a ref or CSS; the body if none) as lines of the tree: each element
+ * with a role, refs on what acts, `depth` levels at most. Past `most` lines or `chars` characters
+ * nothing more is looked at but counted: a huge page costs little more than a big one.
+ */
+function walk({ interactive = false, scope = null, depth = null, boxes = false, most = LINES, chars = CHARS }) {
+  const root = scope ? find(scope) : (document.body ?? document.documentElement);
   const lines = [];
-  let full = false;
+  let [full, size, omitted] = [false, 0, 0];
   const emit = (level, text) => {
-    if (lines.length < LINES) lines.push(`${"  ".repeat(interactive ? 0 : level)}${text}`);
-    else full = true;
+    const at = `${"  ".repeat(interactive ? 0 : level)}${text}`;
+    if (lines.length < most && size + at.length < chars) {
+      lines.push(at);
+      size += at.length + 1;
+    } else full = true;
   };
-  // Past the limit nothing more is looked at: a huge page costs no more than a big one.
+  const count = (node) => (node.nodeType === 1 ? 1 + [...node.childNodes].reduce((n, c) => n + count(c), 0) : 0);
   const visit = (node, level, pointer) => {
-    if (full || (depth !== null && level > depth)) return;
+    if (full) return void (omitted += count(node));
+    if (depth !== null && level > depth) return;
     if (node.nodeType === 3) {
       const text = interactive ? "" : flat(node.nodeValue);
       if (text) emit(level, `- text ${quote(cut(text, 200))}`);
@@ -120,9 +128,10 @@ function snapshot({ interactive = false, scope = null, depth = null }) {
       const acts = INTERACTIVE.has(role);
       const name = nameOf(el, leaf);
       if (!interactive || acts) {
-        let ref = null;
-        if (acts) ref = refOf(el);
-        emit(level, line(el, role, name, ref));
+        const ref = acts ? refOf(el) : null;
+        let text = line(el, role, name, ref);
+        if (boxes && ref) text += ` [box=${boxOf(el).join(",")}]`;
+        emit(level, text);
         next = level + 1;
       }
       if (leaf) return;
@@ -131,8 +140,98 @@ function snapshot({ interactive = false, scope = null, depth = null }) {
     for (const child of children) visit(child, next, pointer || style.cursor === "pointer");
   };
   visit(root, 0, false);
-  if (full) lines.push("- … more on the page: narrow it with -s <css>, -d <n> or -i");
+  return { lines, omitted: full ? Math.max(omitted, 1) : 0 };
+}
+
+/** Lines and characters a snapshot gives at most (an agent's tool cuts its output near 30 000), and one written to a file. */
+const CHARS = 25000;
+const FILE_LINES = 20000;
+const FILE_CHARS = 2000000;
+
+function snapshot({ file = false, ...ask }) {
+  const { lines, omitted } = walk(file ? { ...ask, most: FILE_LINES, chars: FILE_CHARS } : ask);
+  if (omitted) lines.push(`- … omitted ~${omitted} elements: narrow it with --ref, -s, -d or -i`);
   return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: prune() };
+}
+
+/** An element's box in the viewport, CSS px: x, y, width, height. */
+function boxOf(el) {
+  const r = el.getBoundingClientRect();
+  return [r.x, r.y, r.width, r.height].map(Math.round);
+}
+
+/** Matches a find shows at most, each with the line before and after it. */
+const MATCHES = 30;
+
+/** The tree's lines that have `pattern` (any case), or match it as /regex/flags. */
+function search({ pattern }) {
+  const re = /^\/(.+)\/([a-z]*)$/.exec(pattern);
+  let test;
+  if (re) {
+    let r;
+    try {
+      r = new RegExp(re[1], re[2].replace("g", ""));
+    } catch {
+      throw new Error(`Not a regular expression: ${pattern}`);
+    }
+    test = (s) => r.test(s);
+  } else {
+    const low = pattern.toLowerCase();
+    test = (s) => s.toLowerCase().includes(low);
+  }
+  const { lines } = walk({ most: FILE_LINES, chars: FILE_CHARS });
+  const hits = lines.flatMap((l, i) => (test(l.trimStart()) ? [i] : []));
+  if (!hits.length) throw new Error(`Nothing on the page matches ${pattern}`);
+  const kept = [...new Set(hits.slice(0, MATCHES).flatMap((i) => [i - 1, i, i + 1]))].filter((i) => i >= 0 && i < lines.length);
+  const out = [];
+  kept.forEach((i, k) => {
+    if (k && i > kept[k - 1] + 1) out.push("--");
+    out.push(lines[i]);
+  });
+  if (hits.length > MATCHES) out.push(`… ${hits.length - MATCHES} more matches: narrow the pattern`);
+  return { out: out.join("\n"), count: hits.length };
+}
+
+/** Characters `get` gives at most. */
+const GET_TEXT = 4000;
+const GET_HTML = 8000;
+/** What `get styles` shows unless told. */
+const STYLES = ["display", "visibility", "opacity", "position", "z-index", "pointer-events", "color", "background-color", "font-size"];
+
+const capped = (s, n) => (s.length > n ? `${cut(s, n + 1)}\n… ${s.length - n} more characters: get a smaller element` : s);
+const masked = (el, value) => (typeOf(el) === "password" && value ? "•".repeat(Math.min(value.length, 8)) : value);
+
+/** One thing about an element: its text, HTML, value, an attribute, computed styles or box. */
+function get({ what, target, names = [] }) {
+  const el = find(target);
+  switch (what) {
+    case "text":
+      return { out: capped(el.innerText ?? el.textContent ?? "", GET_TEXT) };
+    case "html":
+      return { out: capped(el.outerHTML ?? "", GET_HTML) };
+    case "value": {
+      if (el.localName === "select") return { out: [...el.options].filter((o) => o.selected).map((o) => flat(o.textContent)).join("\n") };
+      if (typeOf(el) === "checkbox" || typeOf(el) === "radio") return { out: el.checked ? "checked" : "unchecked" };
+      if (!fieldOf(el)) return { out: capped(el.innerText ?? el.textContent ?? "", GET_TEXT) };
+      return { out: capped(masked(el, el.value), GET_TEXT) };
+    }
+    case "attr": {
+      const value = el.getAttribute(names[0]);
+      if (value === null) throw new Error(`${label(el)} has no ${names[0]} attribute`);
+      return { out: capped(names[0] === "value" ? masked(el, value) : value, GET_TEXT) };
+    }
+    case "styles": {
+      const style = getComputedStyle(el);
+      return { out: (names.length ? names : STYLES).map((p) => `${p}: ${style.getPropertyValue(p)}`).join("\n") };
+    }
+    case "box": {
+      const [x, y, w, h] = boxOf(el);
+      const inside = x + w > 0 && y + h > 0 && x < window.innerWidth && y < window.innerHeight;
+      return { out: `${x},${y},${w},${h}${inside ? "" : " (outside the viewport: scroll to it first)"}`, box: { x, y, w, h } };
+    }
+    default:
+      throw new Error(`No get ${what}`);
+  }
 }
 
 /** The element's ref: the one it had, else the next. */
@@ -602,7 +701,7 @@ function wellFormed(_key, value) {
 /** For native input: where a click on `target` lands, once it can. */
 const where = async ({ target }) => await point(target);
 
-const run = { snapshot, click, fill, type, press, select, check, hover, scroll, exists, hasText, rect, point: where, changes };
+const run = { snapshot, find: search, get, click, fill, type, press, select, check, hover, scroll, exists, hasText, rect, point: where, changes };
 try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);
   // An action's changes are counted from just before it.

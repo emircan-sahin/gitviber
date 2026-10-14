@@ -36,7 +36,7 @@ function el(tag: string, attrs: Record<string, string> = {}, children: (Fake | s
     get textContent() {
       return childNodes.map((c) => c.textContent).join("");
     },
-    style: { display: "block", visibility: "visible", cursor: "auto", ...(style as Partial<Style>) },
+    style: { display: "block", visibility: "visible", cursor: "auto", ...(style as Partial<Style>), getPropertyValue: (p: string) => ({ color: "rgb(0, 0, 0)", "z-index": "10" })[p] ?? "" },
     isConnected: true,
     getAttribute: (k: string) => attrs[k] ?? null,
     hasAttribute: (k: string) => k in attrs,
@@ -196,15 +196,18 @@ test("a page's aria can hide or rename, but never smuggles lines or refs into th
   assert.match((await run(p as never, { cmd: "click", target: "e3" })).error, /is disabled/);
 });
 
-test("a big page stops at its line limit and says how to narrow it", async () => {
-  const items = Array.from({ length: 4000 }, (_, i) => el("li", {}, [el("a", { href: `/i/${i}` }, [`Item ${i}`])]));
-  const p = around([el("ul", {}, items)]);
-  const { out } = await run(p as never, { cmd: "snapshot", interactive: true });
+test("a big page stops at its line limit and says how much it left out", async () => {
+  const items = Array.from({ length: 4000 }, (_, i) => el("p", {}, [`${i}`]));
+  const p = around([el("div", {}, items)]);
+  const { out } = await run(p as never, { cmd: "snapshot" });
   const lines: string[] = out.split("\n");
   assert.equal(lines.length, 1501);
-  // Past the limit the page isn't walked, so not counted either.
-  assert.match(lines.at(-1)!, /^- … more on the page: narrow it with -s <css>, -d <n> or -i$/);
-  assert.equal(lines[1499], '- link "Item 1499" [ref=e1500] -> /i/1499');
+  assert.equal(lines[1499], '- text "1499"');
+  // Past the limit the rest is only counted.
+  assert.equal(lines.at(-1), "- … omitted ~2499 elements: narrow it with --ref, -s, -d or -i");
+  // Written to a file, it all goes.
+  const file = (await run(p as never, { cmd: "snapshot", file: true })).out.split("\n");
+  assert.equal(file.length, 4000);
 });
 
 test("refs from another snapshot, odd spellings and commands that aren't are refused", async () => {
@@ -243,4 +246,55 @@ test("a password field typed in capitals is masked too", async () => {
 test("a lone half of a pair in the page's text still reads as JSON", async () => {
   const raw = await snap([node("p", {}, [t("broken \uD83D text")])]);
   assert.equal(JSON.parse(raw).out, '- text "broken \uFFFD text"');
+});
+
+test("a snapshot stops at its characters too, before an agent's tool would cut it", async () => {
+  const items = Array.from({ length: 600 }, (_, i) => el("button", {}, [`${"Long name ".repeat(7)}${i}`]));
+  const { out } = await run(around(items) as never, { cmd: "snapshot" });
+  assert.ok(out.length < 25000, `${out.length}`);
+  assert.match(out.split("\n").at(-1), /^- … omitted ~\d+ elements: narrow it with --ref, -s, -d or -i$/);
+});
+
+test("--ref reads one element's part of the tree, --boxes where each ref is", async () => {
+  const p = page();
+  await run(p, { cmd: "snapshot" });
+  const nav = (await run(p, { cmd: "snapshot", scope: "e2", boxes: true })).out;
+  assert.equal(nav, '- link "Docs" [ref=e2] -> /docs [box=10,20,100,30]');
+  assert.equal((await run(p, { cmd: "snapshot", scope: "e40" })).error, "No ref e40 on this page: take a new snapshot");
+});
+
+test("find gives the lines that match, each with a line around it, and says when none do", async () => {
+  const p = page();
+  const { out, count } = await run(p, { cmd: "find", pattern: "sign in" });
+  assert.equal(count, 2);
+  assert.equal(
+    out,
+    [
+      "- main",
+      '  - heading "Sign in" [level=1]',
+      "  - form",
+      "--",
+      '    - textbox "Password" [ref=e4] value="•••••••"',
+      '    - button "Sign in" [ref=e5]',
+      '    - clickable "Forgot?" [ref=e6]',
+    ].join("\n"),
+  );
+  const regex = (await run(p, { cmd: "find", pattern: "/^- link \"D/" })).out;
+  assert.equal(regex, ['    - link "Home" [ref=e1] -> /', '    - link "Docs" [ref=e2] -> /docs', "- main"].join("\n"));
+  assert.equal((await run(p, { cmd: "find", pattern: "Checkout" })).error, "Nothing on the page matches Checkout");
+  assert.equal((await run(p, { cmd: "find", pattern: "/(/" })).error, "Not a regular expression: /(/");
+});
+
+test("get reads one thing of an element, a password's value masked", async () => {
+  const p = page();
+  await run(p, { cmd: "snapshot" });
+  const get = async (what: string, target: string, names: string[] = []) => run(p, { cmd: "get", what, target, names });
+  assert.equal((await get("text", "e5")).out, "Sign  in\n");
+  assert.equal((await get("value", "e4")).out, "•••••••");
+  assert.equal((await get("attr", "e2", ["href"])).out, "/docs");
+  assert.equal((await get("attr", "e2", ["target"])).error, 'link "Docs" has no target attribute');
+  assert.equal((await get("styles", "e5", ["color", "z-index"])).out, "color: rgb(0, 0, 0)\nz-index: 10");
+  const box = await get("box", "e5");
+  assert.deepEqual([box.out, box.box], ["10,20,100,30 (outside the viewport: scroll to it first)", { x: 10, y: 20, w: 100, h: 30 }]);
+  assert.equal((await get("colour", "e5")).error, "No get colour");
 });

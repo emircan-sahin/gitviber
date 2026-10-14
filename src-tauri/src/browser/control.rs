@@ -67,12 +67,24 @@ unless the user has it on show.
   open <url>                   Load a page (http or https; localhost:3000 works) and wait for it
   back | forward | reload      Through its history, waiting for the page
   url                          The page's address and title
-  snapshot [-i] [-s <css>] [-d <n>]
+  snapshot [-i] [-s <css> | --ref <ref>] [-d <n>] [--boxes] [-o <file>]
                                The page as a tree, with refs (e1, e2, ...) to act on: -i only
-                               what can be clicked or typed in, -s under one element, -d so many
-                               levels deep. Refs (also @e1 or ref=e1) stay with their element;
-                               one whose element left, or from another page, fails as stale.
-                               --json: also the refs gone since the last snapshot
+                               what can be clicked or typed in, -s or --ref under one element, -d
+                               so many levels deep, --boxes each ref's x,y,w,h in the viewport
+                               (CSS px), -o all of it into a .txt, .md or .yaml file (its path
+                               and line count printed). Past 1500 lines or 25 000 characters it
+                               stops and says how many elements it left out. Refs (also @e1 or
+                               ref=e1) stay with their element; one whose element left, or from
+                               another page, fails as stale. --json: also the refs gone since
+  find <text|/regex/>          The tree's lines with the text (any case) or matching the regex,
+                               each with the line before and after it; 30 at most
+  get text|html|value|box <ref|css>
+  get attr <name> <ref|css>
+  get styles [property...] <ref|css>
+                               One thing of an element: its text, HTML, value (a password's
+                               masked), an attribute, computed styles (a few useful ones unless
+                               named) or box (x,y,w,h in the viewport, CSS px); 4000 characters
+                               at most, HTML 8000
   click <ref|css>              Click an element once it shows, is enabled, holds still and is
                                on top at its middle; else why not: covered by <div#consent>
   fill <ref|css> <text>        Replace a text field's text (date, time, color as the input takes
@@ -215,11 +227,10 @@ pub enum Command {
     Forward,
     Reload,
     Url,
-    Snapshot {
-        interactive: bool,
-        scope: Option<String>,
-        depth: Option<u32>,
-    },
+    Snapshot(Snap),
+    /// The tree's lines with this text, or matching it as /regex/.
+    Find(String),
+    Get(Get),
     Click(String),
     Fill(String, String),
     Type(String, String),
@@ -280,6 +291,28 @@ pub enum Sessions {
     Delete(String),
 }
 
+/// `snapshot`'s ask.
+#[derive(Debug, Default, PartialEq)]
+pub struct Snap {
+    pub interactive: bool,
+    /// Under this element only: a ref or CSS.
+    pub scope: Option<String>,
+    pub depth: Option<u32>,
+    /// Each ref's box in the viewport, CSS px.
+    pub boxes: bool,
+    /// Written to this file in full, not printed.
+    pub file: Option<String>,
+}
+
+/// `get`'s ask: what of the element (text, html, value, attr, styles, box), the attribute or
+/// properties it names, and the element.
+#[derive(Debug, PartialEq)]
+pub struct Get {
+    pub what: String,
+    pub names: Vec<String>,
+    pub target: String,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Scroll {
     Up,
@@ -324,6 +357,9 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
         "reload" => none(Command::Reload),
         "url" => none(Command::Url),
         "snapshot" => snapshot(args),
+        "find" if !args.is_empty() => Ok(Command::Find(rest())),
+        "find" => Err("Usage: gitviber browser find <text|/regex/>".into()),
+        "get" => get(args),
         "click" => target("click <ref|css>").map(Command::Click),
         "fill" => target_and_text("fill <ref|css> <text>").map(|(t, x)| Command::Fill(t, x)),
         "type" => target_and_text("type <ref|css> <text>").map(|(t, x)| Command::Type(t, x)),
@@ -474,21 +510,45 @@ fn named(what: &str, name: &str) -> Result<String, String> {
 }
 
 fn snapshot(args: &[String]) -> Result<Command, String> {
-    let (mut interactive, mut scope, mut depth) = (false, None, None);
+    let mut snap = Snap::default();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
-            "-i" | "--interactive" => interactive = true,
-            "-s" | "--selector" => scope = Some(value(&mut it, arg)?.clone()),
-            "-d" | "--depth" => depth = Some(number(value(&mut it, arg)?, arg)?),
+            "-i" | "--interactive" => snap.interactive = true,
+            "-s" | "--selector" | "--ref" if snap.scope.is_some() => {
+                return Err("snapshot takes one of -s and --ref".into())
+            }
+            "-s" | "--selector" | "--ref" => snap.scope = Some(value(&mut it, arg)?.clone()),
+            "-d" | "--depth" => snap.depth = Some(number(value(&mut it, arg)?, arg)?),
+            "--boxes" => snap.boxes = true,
+            "-o" | "--output" => snap.file = Some(value(&mut it, arg)?.clone()),
             _ => return Err(format!("snapshot doesn't take {arg:?}")),
         }
     }
-    Ok(Command::Snapshot {
-        interactive,
-        scope,
-        depth,
-    })
+    Ok(Command::Snapshot(snap))
+}
+
+fn get(args: &[String]) -> Result<Command, String> {
+    let usage = "Usage: gitviber browser get text|html|value|box <ref|css> | get attr <name> \
+                 <ref|css> | get styles [property...] <ref|css>";
+    let (what, middle, target) = match args {
+        [what, middle @ .., target] => (what.as_str(), middle, target),
+        _ => return Err(usage.into()),
+    };
+    let fits = match what {
+        "text" | "html" | "value" | "box" => middle.is_empty(),
+        "attr" => middle.len() == 1,
+        "styles" => true,
+        _ => false,
+    };
+    if !fits || target.starts_with('-') {
+        return Err(usage.into());
+    }
+    Ok(Command::Get(Get {
+        what: what.into(),
+        names: middle.to_vec(),
+        target: target.clone(),
+    }))
 }
 
 fn scroll(args: &[String]) -> Result<Command, String> {
@@ -612,18 +672,7 @@ pub fn picture_path(cwd: &Path, path: &str) -> Result<PathBuf, String> {
     {
         return Err(format!("A screenshot's path ends in .png, not {path}"));
     }
-    let full = if given.is_absolute() {
-        given.to_path_buf()
-    } else if given
-        .components()
-        .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        return Err(format!(
-            "{path} leaves this folder: give an absolute path instead"
-        ));
-    } else {
-        cwd.join(given)
-    };
+    let full = placed(cwd, path)?;
     // A link, a folder or a file of another kind there stays as it is.
     if let Ok(meta) = std::fs::symlink_metadata(&full) {
         let mut head = [0u8; 8];
@@ -637,6 +686,42 @@ pub fn picture_path(cwd: &Path, path: &str) -> Result<PathBuf, String> {
         }
     }
     Ok(full)
+}
+
+/// `path` under the CLI's folder (no `..` out of it), or as is when absolute.
+fn placed(cwd: &Path, path: &str) -> Result<PathBuf, String> {
+    let given = Path::new(path);
+    if given.is_absolute() {
+        Ok(given.to_path_buf())
+    } else if given
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        Err(format!(
+            "{path} leaves this folder: give an absolute path instead"
+        ))
+    } else {
+        Ok(cwd.join(given))
+    }
+}
+
+/// Where `snapshot -o <path>` writes: a .txt, .md or .yaml file (as `placed`), over a file only.
+pub fn text_path(cwd: &Path, path: &str) -> Result<PathBuf, String> {
+    let text = Path::new(path).extension().is_some_and(|e| {
+        ["txt", "md", "yml", "yaml"]
+            .iter()
+            .any(|t| e.eq_ignore_ascii_case(t))
+    });
+    if !text {
+        return Err(format!(
+            "A snapshot's file ends in .txt, .md or .yaml, not {path}"
+        ));
+    }
+    let full = placed(cwd, path)?;
+    match std::fs::symlink_metadata(&full) {
+        Ok(meta) if !meta.is_file() => Err(format!("{} is there and isn't a file", full.display())),
+        _ => Ok(full),
+    }
 }
 
 /// The tabs each pane's agents opened, by name. A command goes to the one it names, else to the
@@ -1086,12 +1171,43 @@ mod tests {
         );
         assert_eq!(
             parse("snapshot", &args("-i -s main -d 3")),
-            Ok(Command::Snapshot {
+            Ok(Command::Snapshot(Snap {
                 interactive: true,
                 scope: Some("main".into()),
-                depth: Some(3)
-            })
+                depth: Some(3),
+                ..Snap::default()
+            }))
         );
+        assert_eq!(
+            parse("snapshot", &args("--ref e12 --boxes -o page.txt")),
+            Ok(Command::Snapshot(Snap {
+                scope: Some("e12".into()),
+                boxes: true,
+                file: Some("page.txt".into()),
+                ..Snap::default()
+            }))
+        );
+        assert_eq!(
+            parse("find", &args("Sign in")),
+            Ok(Command::Find("Sign in".into()))
+        );
+        assert_eq!(
+            parse("get", &args("attr href e4")),
+            Ok(Command::Get(Get {
+                what: "attr".into(),
+                names: vec!["href".into()],
+                target: "e4".into()
+            }))
+        );
+        assert_eq!(
+            parse("get", &args("styles color z-index #modal")),
+            Ok(Command::Get(Get {
+                what: "styles".into(),
+                names: vec!["color".into(), "z-index".into()],
+                target: "#modal".into()
+            }))
+        );
+        assert!(matches!(parse("get", &args("box e3")), Ok(Command::Get(_))));
         assert_eq!(
             parse("fill", &args("e3 a@b.test")),
             Ok(Command::Fill("e3".into(), "a@b.test".into()))
@@ -1219,6 +1335,14 @@ mod tests {
             ("back", "now"),
             ("snapshot", "-x"),
             ("snapshot", "-d many"),
+            ("snapshot", "-s main --ref e2"),
+            ("snapshot", "-o"),
+            ("find", ""),
+            ("get", "text"),
+            ("get", "text e1 e2"),
+            ("get", "attr e1"),
+            ("get", "colour e1"),
+            ("get", "value --all"),
             ("wait", ""),
             ("wait", "--text"),
             ("wait", "--load .x"),
@@ -1611,6 +1735,30 @@ mod tests {
                 WAIT
             ))
         );
+    }
+
+    #[test]
+    fn a_snapshot_file_is_text_under_its_folder_or_where_told_and_never_a_folder() {
+        let dir = std::env::temp_dir().join(format!("gitviber-snap-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("notes.md")).unwrap();
+        assert_eq!(text_path(&dir, "page.txt"), Ok(dir.join("page.txt")));
+        assert_eq!(
+            text_path(&dir, "/tmp/a.YAML"),
+            Ok(PathBuf::from("/tmp/a.YAML"))
+        );
+        assert!(text_path(&dir, "page.json").is_err());
+        assert!(text_path(&dir, "../page.txt")
+            .unwrap_err()
+            .contains("leaves"));
+        assert!(text_path(&dir, "notes.md")
+            .unwrap_err()
+            .contains("isn't a file"));
+        std::fs::write(dir.join("old.txt"), "x").unwrap();
+        assert!(
+            text_path(&dir, "old.txt").is_ok(),
+            "a snapshot file again goes over itself"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -386,19 +386,26 @@ impl Tab {
                 let page = self.page()?.0;
                 Ok(Reply::out(titled(&page.url, &page.title, "\n")))
             }
-            Command::Snapshot {
-                interactive,
-                scope,
-                depth,
-            } => {
-                let input = json!({ "cmd": "snapshot", "interactive": interactive, "scope": scope, "depth": depth });
-                let found = self.script(input)?;
+            Command::Snapshot(snap) => self.snapshot(snap, cwd),
+            Command::Find(pattern) => {
+                let found = self.script(json!({ "cmd": "find", "pattern": pattern }))?;
                 let out = found["out"].as_str().unwrap_or_default();
-                // --json: the refs whose element left the page since, too.
-                let data = json!({ "snapshot": out, "removed": found["removed"] });
                 Ok(Reply {
                     state: Some(out.into()),
-                    ..Reply::data(out, data)
+                    ..Reply::out(out)
+                })
+            }
+            Command::Get(get) => {
+                let input = json!({ "cmd": "get", "what": get.what, "names": get.names, "target": get.target });
+                let found = self.script(input)?;
+                let out = found["out"].as_str().unwrap_or_default();
+                let reply = match found.get("box") {
+                    Some(b) => Reply::data(out, json!({ "box": b })),
+                    None => Reply::out(out),
+                };
+                Ok(Reply {
+                    state: Some(out.into()),
+                    ..reply
                 })
             }
             Command::Click(target) => self.acted(json!({ "cmd": "click", "target": target })),
@@ -451,6 +458,32 @@ impl Tab {
                 }))
             }
         }
+    }
+
+    /// The page as a tree; with --json the refs gone since too; with -o, in full in a file.
+    fn snapshot(&self, snap: control::Snap, cwd: &str) -> Res<Reply> {
+        let file = snap
+            .file
+            .as_deref()
+            .map(|f| control::text_path(Path::new(cwd), f))
+            .transpose()?;
+        let input = json!({ "cmd": "snapshot", "interactive": snap.interactive, "scope": snap.scope,
+            "depth": snap.depth, "boxes": snap.boxes, "file": file.is_some() });
+        let found = self.script(input)?;
+        let out = found["out"].as_str().unwrap_or_default();
+        let reply = match file {
+            Some(path) => {
+                std::fs::write(&path, format!("{out}\n"))
+                    .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+                let lines = out.lines().count();
+                Reply::out(format!("Wrote {} ({lines} lines)", path.display()))
+            }
+            None => Reply::data(out, json!({ "snapshot": out, "removed": found["removed"] })),
+        };
+        Ok(Reply {
+            state: Some(out.into()),
+            ..reply
+        })
     }
 
     /// A command's reply (`said`: as typed) as the agent gets it, a failure too: with a nudge
