@@ -2183,4 +2183,76 @@ mod tests {
             "two stack lines, and no mark for the quiet last page: {text}"
         );
     }
+
+    #[test]
+    #[ignore = "bug: `fill e3 --secret` with its name forgotten fills the literal text --secret"]
+    fn fill_secret_without_a_name_is_a_usage_error() {
+        assert!(parse("fill", &args("e3 --secret")).is_err());
+    }
+
+    #[test]
+    #[ignore = "bug: --clip drops the parts that aren't numbers and takes the rest"]
+    fn a_clip_with_a_word_in_it_is_refused() {
+        for clip in ["10,abc,20,30,40", "10,20,30,40,", "1,,2,3,4"] {
+            assert!(
+                parse("screenshot", &args(&format!("--clip {clip}"))).is_err(),
+                "{clip}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "bug: wait takes the last of --text/--url/--fn/--load/--ms and drops the rest silently"]
+    fn a_wait_for_two_things_is_refused() {
+        for a in [
+            "--text Done --url /lobby",
+            "--load --ms 500",
+            "--fn ok --text Done",
+        ] {
+            assert!(parse("wait", &args(a)).is_err(), "{a}");
+        }
+    }
+
+    #[test]
+    fn the_new_flags_without_their_values_fail() {
+        for (cmd, a) in [
+            ("snapshot", "--ref"),
+            ("snapshot", "-s"),
+            ("snapshot", "-d"),
+            ("snapshot", "--output"),
+            ("snapshot", "--ref e1 -s main"),
+            ("snapshot", "-d -1"),
+            ("snapshot", "--boxes=1"),
+            ("screenshot", "--clip"),
+            ("screenshot", "--scale"),
+            ("screenshot", "--scale NaN"),
+            ("screenshot", "--scale inf"),
+            ("screenshot", "--scale 2.01"),
+            ("screenshot", "--clip nan,0,5,5"),
+            ("screenshot", "--clip 0,0,inf,5"),
+            ("screenshot", "--clip 0,0,0,5"),
+            ("screenshot", "--refs=1"),
+            ("wait", "--timeout"),
+            ("wait", "--timeout soon .x"),
+            ("wait", "--ms -5"),
+            ("wait", "--text a b"),
+            ("get", "styles"),
+            ("get", "attr href --x"),
+            ("network", "--method"),
+            ("network", "--status 4xx --status"),
+        ] {
+            assert!(parse(cmd, &args(a)).is_err(), "{cmd} {a}");
+        }
+        // The bounds themselves are taken.
+        assert!(parse("screenshot", &args("--scale 0.1")).is_ok());
+        assert!(parse("screenshot", &args("--scale 2")).is_ok());
+        assert!(parse("screenshot", &args("--clip -20,-20,5,5")).is_ok());
+        assert_eq!(
+            parse("wait", &args("--ms 999999999")),
+            Ok(Command::Wait(
+                Wait::Ms(LONGEST_WAIT.as_millis() as u64),
+                WAIT
+            ))
+        );
+    }
 }

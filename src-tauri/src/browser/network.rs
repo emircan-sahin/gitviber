@@ -1373,4 +1373,24 @@ mod tests {
         ));
         assert_eq!(log.get(2).unwrap().url, "http://localhost/\u{FFFD}gnp.exe");
     }
+
+    #[test]
+    #[ignore = "bug: tokens in request and response bodies show unless --reveal, as headers' don't"]
+    fn credentials_in_bodies_are_hidden_unless_revealed() {
+        let mut log = Log::default();
+        assert!(post(
+            &mut log,
+            json!([{ "key": "a", "kind": "fetch", "method": "POST", "url": "http://localhost/oauth/token", "start": 0.0,
+                "status": 200,
+                "requestBody": { "text": "grant_type=authorization_code&code=c0de&client_secret=s3cr3t", "size": 60.0 },
+                "responseBody": { "text": "{\"access_token\":\"t0k3n\",\"refresh_token\":\"r3fr3sh\"}", "type": "application/json", "size": 50.0 } }])
+        ));
+        let (text, data) = answer(&mut log, &Ask::One(1), 10.0, false).unwrap();
+        for hidden in ["c0de", "s3cr3t", "t0k3n", "r3fr3sh"] {
+            assert!(
+                !text.contains(hidden) && !data.to_string().contains(hidden),
+                "{hidden}: {text}"
+            );
+        }
+    }
 }

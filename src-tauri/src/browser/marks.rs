@@ -204,4 +204,30 @@ mod tests {
         p.draw(&labels, true);
         assert_eq!(data.len(), 400);
     }
+
+    #[test]
+    #[ignore = "bug: a tag past the right edge is cut, so e12 reads as e1, another ref"]
+    fn a_label_at_the_right_edge_shows_its_whole_ref() {
+        let ink = |width: u32| {
+            let stride = width as usize * 4;
+            let mut data = vec![0u8; stride * 30];
+            let mut p = Pixels {
+                data: &mut data,
+                width,
+                height: 30,
+                stride,
+            };
+            let label = Label {
+                text: "e12".into(),
+                x: 8.0,
+                y: 12.0,
+                w: 10.0,
+                h: 10.0,
+            };
+            p.draw(&[label], false);
+            data.chunks(4).filter(|px| *px == INK).count()
+        };
+        // The tag is 19 px wide from x 8: in a 20 px picture its "2" falls outside.
+        assert_eq!(ink(20), ink(60), "every glyph of the ref drawn");
+    }
 }
