@@ -173,6 +173,7 @@ fn tabs(
             let _turn = take_turn(&queue, STEP)?;
             let gone = id.clone();
             let closed = main(app, move |app| super::agent_close_tab(app, &gone))?;
+            memories().remove(&id);
             Ok(Reply::out(format!("Closed tab {closed}")))
         }
     }
@@ -242,6 +243,22 @@ fn now() -> u64 {
 }
 
 static NEXT_COMMAND: AtomicU64 = AtomicU64::new(1);
+
+/// What a tab's commands leave for the next, by tab id; gone when an agent closes the tab.
+#[derive(Default)]
+struct Memory {
+    /// The highest ref the tab handed out, on any of its pages.
+    last_ref: u64,
+}
+
+fn memories() -> MutexGuard<'static, HashMap<String, Memory>> {
+    static MEMORY: LazyLock<Mutex<HashMap<String, Memory>>> = LazyLock::new(Mutex::default);
+    MEMORY.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn remember<T>(id: &str, f: impl FnOnce(&mut Memory) -> T) -> T {
+    f(memories().entry(id.into()).or_default())
+}
 
 /// Each tab's turn: agents in a pane share its tabs, and two commands at once would interleave
 /// their steps (a click between another's fill and its Enter). Kept only while a command holds
@@ -353,7 +370,14 @@ impl Tab {
                 interactive,
                 scope,
                 depth,
-            } => self.act(json!({ "cmd": "snapshot", "interactive": interactive, "scope": scope, "depth": depth })),
+            } => {
+                let input = json!({ "cmd": "snapshot", "interactive": interactive, "scope": scope, "depth": depth });
+                let found = self.script(input)?;
+                let out = found["out"].as_str().unwrap_or_default();
+                // --json: the refs whose element left the page since, too.
+                let data = json!({ "snapshot": out, "removed": found["removed"] });
+                Ok(Reply::data(out, data))
+            }
             Command::Click(target) => self.acted(json!({ "cmd": "click", "target": target })),
             Command::Fill(target, text) => {
                 self.act(json!({ "cmd": "fill", "target": target, "text": text }))
@@ -382,7 +406,9 @@ impl Tab {
             Command::Device(screen) => self.device(screen),
             Command::Appearance(dark) => {
                 let id = self.id.clone();
-                main(&self.app, move |app| super::agent_appearance(app, &id, dark))?;
+                main(&self.app, move |app| {
+                    super::agent_appearance(app, &id, dark)
+                })?;
                 Ok(Reply::out(match dark {
                     Some(true) => "The page is shown dark.",
                     Some(false) => "The page is shown light.",
@@ -407,14 +433,19 @@ impl Tab {
         main(&self.app, move |_| super::agent_page(&id))
     }
 
-    /// agent.js on the page, given `input`: its answer, or the error it gave.
-    fn script(&self, input: Value) -> Res<Value> {
+    /// agent.js on the page, given `input`: its answer, or the error it gave. Each call tells the
+    /// page the tab's highest ref so far, and learns it back (agent.js's `floor`).
+    fn script(&self, mut input: Value) -> Res<Value> {
+        input["floor"] = json!(remember(&self.id, |m| m.last_ref));
         let (id, input) = (self.id.clone(), input.to_string());
         let out = later(&self.app, move |_, done| {
             super::agent_js(&id, false, AGENT, &input, done)
         })??;
         let value: Value =
             serde_json::from_str(&out).map_err(|_| "The page's answer wasn't readable.")?;
+        if let Some(last) = value["last"].as_u64() {
+            remember(&self.id, |m| m.last_ref = m.last_ref.max(last));
+        }
         match value.get("error").and_then(Value::as_str) {
             Some(error) => Err(error.into()),
             None => Ok(value),

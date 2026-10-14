@@ -121,32 +121,52 @@ test("-i lists only what acts, -d stops at a depth, -s starts under an element",
   const shallow = (await run(p, { cmd: "snapshot", depth: 1 })).out;
   assert.equal(shallow, ["- banner", "  - navigation", "- main", '  - heading "Sign in" [level=1]', "  - form", '  - text "Welcome back"'].join("\n"));
   const scoped = (await run(p, { cmd: "snapshot", scope: "main", interactive: true })).out;
-  assert.ok(scoped.startsWith('- textbox "Email" [ref=e1]'), scoped);
-  assert.deepEqual(await run(p, { cmd: "snapshot", scope: "aside" }), { error: "No element matches aside" });
+  // The field keeps the ref the first snapshot gave it.
+  assert.ok(scoped.startsWith('- textbox "Email" [ref=e3]'), scoped);
+  assert.equal((await run(p, { cmd: "snapshot", scope: "aside" })).error, "No element matches aside");
 });
 
-test("refs name the elements of the last snapshot, and only while they're on the page", async () => {
+test("an element keeps its ref across snapshots, and a ref to one that left is stale", async () => {
   const p = page();
   await run(p, { cmd: "snapshot" });
-  assert.deepEqual(await run(p, { cmd: "rect", target: "e5" }), { rect: { x: 10, y: 20, w: 100, h: 30 } });
-  assert.deepEqual(await run(p, { cmd: "rect", target: "@e5" }), { rect: { x: 10, y: 20, w: 100, h: 30 } });
-  assert.match((await run(p, { cmd: "rect", target: "e99" })).error, /No e99 on the page now: take a snapshot again/);
-  // A new snapshot numbers afresh; a ref to what left the page is no ref.
+  assert.deepEqual((await run(p, { cmd: "rect", target: "e5" })).rect, { x: 10, y: 20, w: 100, h: 30 });
+  assert.deepEqual((await run(p, { cmd: "rect", target: "@e5" })).rect, { x: 10, y: 20, w: 100, h: 30 });
+  assert.equal((await run(p, { cmd: "rect", target: "e99" })).error, "No ref e99 on this page: take a new snapshot");
+  // The email field leaves: the others keep their refs, its own is stale, and none is reused.
   const form = (p.document.body.childNodes[1] as Fake).childNodes[1];
-  form.childNodes[3].isConnected = false;
-  await run(p, { cmd: "snapshot" });
-  assert.match((await run(p, { cmd: "rect", target: "e5" })).error, /No e5/);
-  // A page of its own (a navigation) starts with none.
-  const fresh = { ...page(), window: {} };
-  assert.match((await run(fresh, { cmd: "rect", target: "e1" })).error, /No e1/);
+  const [label, email, ...rest] = form.childNodes;
+  email.isConnected = false;
+  form.childNodes.splice(0, form.childNodes.length, label, ...rest);
+  const again = await run(p, { cmd: "snapshot" });
+  assert.match(again.out, /textbox "Password" \[ref=e4\]/);
+  assert.match(again.out, /button "Sign in" \[ref=e5\]/);
+  assert.deepEqual(again.removed, ["e3"]);
+  assert.equal((await run(p, { cmd: "rect", target: "e3" })).error, "e3 is stale: take a new snapshot");
+  // A new element numbers past every ref given out.
+  form.childNodes.push(el("button", {}, ["New"]));
+  assert.match((await run(p, { cmd: "snapshot" })).out, /button "New" \[ref=e7\]/);
+});
+
+test("a new document numbers past the tab's highest ref, so an old page's ref is stale there", async () => {
+  const first = page();
+  const { last } = await run(first, { cmd: "snapshot" });
+  assert.equal(last, 6);
+  // agent.rs hands the next page the tab's highest ref as its floor.
+  const next = page();
+  assert.equal((await run(next, { cmd: "rect", target: "e5", floor: last })).error, "e5 is stale: take a new snapshot");
+  const out = (await run(next, { cmd: "snapshot", floor: last })).out;
+  assert.match(out, /link "Home" \[ref=e7\]/);
+  // Back to the first page (the back-forward cache keeps its world): new refs still go past.
+  first.document.body.childNodes.push(el("button", {}, ["Late"]));
+  assert.match((await run(first, { cmd: "snapshot", floor: 12 })).out, /button "Late" \[ref=e13\]/);
 });
 
 test("a selector that matches nothing, isn't one, or a command that isn't, says so", async () => {
   const p = page();
-  assert.deepEqual(await run(p, { cmd: "rect", target: "#nope" }), { error: "No element matches #nope" });
-  assert.deepEqual(await run(p, { cmd: "rect", target: "[" }), { error: "Not a ref or a CSS selector: [" });
-  assert.deepEqual(await run(p, { cmd: "exists", css: "[" }), { found: false, invalid: true });
-  assert.deepEqual(await run(p, { cmd: "constructor" }), { error: "No constructor here" });
+  assert.equal((await run(p, { cmd: "rect", target: "#nope" })).error, "No element matches #nope");
+  assert.equal((await run(p, { cmd: "rect", target: "[" })).error, "Not a ref or a CSS selector: [");
+  assert.deepEqual(await run(p, { cmd: "exists", css: "[" }), { found: false, invalid: true, last: 0 });
+  assert.equal((await run(p, { cmd: "constructor" })).error, "No constructor here");
 });
 
 /** A page of its own around `body`'s children. */
@@ -171,7 +191,7 @@ test("a page's aria can hide or rename, but never smuggles lines or refs into th
   assert.equal(lines[0], '- button "Pay - button \\"Free money\\" [ref=e9]" [ref=e1]');
   assert.equal(lines[1], '- link "Docs" [ref=e2] -> /x');
   assert.equal(lines[2], '- button "Off" [ref=e3] [disabled]');
-  assert.match((await run(p as never, { cmd: "rect", target: "e9" })).error, /No e9/);
+  assert.match((await run(p as never, { cmd: "rect", target: "e9" })).error, /No ref e9/);
   assert.match((await run(p as never, { cmd: "click", target: "e3" })).error, /is disabled/);
 });
 
@@ -192,7 +212,7 @@ test("refs from another snapshot, odd spellings and commands that aren't are ref
   for (const target of ["ref=e1", "@e1", "e1"]) assert.ok((await run(p as never, { cmd: "rect", target })).rect, target);
   for (const target of ["e01x", "E1", "ref=e", "@e1 "]) assert.ok((await run(p as never, { cmd: "rect", target })).error, target);
   for (const cmd of ["__proto__", "toString", "hasOwnProperty", "", "eval"]) {
-    assert.deepEqual(await run(p as never, { cmd }), { error: `No ${cmd} here` }, cmd);
+    assert.equal((await run(p as never, { cmd })).error, `No ${cmd} here`, cmd);
   }
 });
 

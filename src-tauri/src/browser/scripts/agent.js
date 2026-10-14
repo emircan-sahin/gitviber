@@ -2,8 +2,12 @@
 // on, and acting on what it named. The body of an async function run in GitViber's own content
 // world with `input` as JSON: the page can't see this code or its refs, and the refs (WeakRefs
 // in this world's window) go with the page.
-const { cmd, ...a } = JSON.parse(input);
-const state = (window.__gvAgent ??= { refs: new Map() });
+const { cmd, floor = 0, ...a } = JSON.parse(input);
+// An element keeps its ref across snapshots. `floor` is the highest ref the tab ever handed out
+// (agent.rs keeps it): a new document, or one back from the back-forward cache, numbers past it,
+// so an old page's e5 can never name an element of this one.
+const state = (window.__gvAgent ??= { refs: new Map(), ids: new WeakMap(), next: floor + 1 });
+state.next = Math.max(state.next, floor + 1);
 
 /** Lines a snapshot gives at most: past them, -s, -d or -i narrow it. */
 const LINES = 1500;
@@ -89,7 +93,6 @@ function line(el, role, name, ref) {
 function snapshot({ interactive = false, scope = null, depth = null }) {
   const root = scope ? document.querySelector(scope) : (document.body ?? document.documentElement);
   if (!root) throw new Error(`No element matches ${scope}`);
-  state.refs = new Map();
   const lines = [];
   let full = false;
   const emit = (level, text) => {
@@ -118,10 +121,7 @@ function snapshot({ interactive = false, scope = null, depth = null }) {
       const name = nameOf(el, leaf);
       if (!interactive || acts) {
         let ref = null;
-        if (acts) {
-          ref = `e${state.refs.size + 1}`;
-          state.refs.set(ref, new WeakRef(el));
-        }
+        if (acts) ref = refOf(el);
         emit(level, line(el, role, name, ref));
         next = level + 1;
       }
@@ -132,16 +132,41 @@ function snapshot({ interactive = false, scope = null, depth = null }) {
   };
   visit(root, 0, false);
   if (full) lines.push("- … more on the page: narrow it with -s <css>, -d <n> or -i");
-  return { out: lines.length ? lines.join("\n") : "(nothing on the page)" };
+  return { out: lines.length ? lines.join("\n") : "(nothing on the page)", removed: prune() };
 }
 
-/** The element a ref (e3, @e3, ref=e3) from the last snapshot names, or a CSS selector does. */
+/** The element's ref: the one it had, else the next. */
+function refOf(el) {
+  let ref = state.ids.get(el);
+  if (!ref) {
+    ref = `e${state.next++}`;
+    state.ids.set(el, ref);
+  }
+  state.refs.set(ref, new WeakRef(el));
+  return ref;
+}
+
+/** Refs whose element left the page, dropped: what `snapshot --json` reports removed. */
+function prune() {
+  const gone = [];
+  for (const [ref, weak] of state.refs) {
+    if (weak.deref()?.isConnected) continue;
+    state.refs.delete(ref);
+    gone.push(ref);
+  }
+  return gone;
+}
+
+/** The element a ref (e3, @e3, ref=e3) names, or a CSS selector does. */
 function find(target) {
-  const ref = /^(?:@|ref=)?(e\d+)$/.exec(target);
+  const ref = /^(?:@|ref=)?e(\d+)$/.exec(target);
   if (ref) {
-    const el = state.refs.get(ref[1])?.deref();
-    if (!el?.isConnected) throw new Error(`No ${ref[1]} on the page now: take a snapshot again`);
-    return el;
+    const name = `e${ref[1]}`;
+    const el = state.refs.get(name)?.deref();
+    if (el?.isConnected) return el;
+    // Past the highest ever given: a ref made up, not one gone stale.
+    if (Number(ref[1]) >= state.next) throw new Error(`No ref ${name} on this page: take a new snapshot`);
+    throw new Error(`${name} is stale: take a new snapshot`);
   }
   let el;
   try {
@@ -342,7 +367,7 @@ function wellFormed(_key, value) {
 const run = { snapshot, click, fill, type, press, select, hover, scroll, exists, hasText, rect };
 try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);
-  return JSON.stringify(run[cmd](a), wellFormed);
+  return JSON.stringify({ ...(await run[cmd](a)), last: state.next - 1 }, wellFormed);
 } catch (e) {
-  return JSON.stringify({ error: String(e?.message ?? e) }, wellFormed);
+  return JSON.stringify({ error: String(e?.message ?? e), last: state.next - 1 }, wellFormed);
 }

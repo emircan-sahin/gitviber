@@ -70,7 +70,9 @@ unless the user has it on show.
   snapshot [-i] [-s <css>] [-d <n>]
                                The page as a tree, with refs (e1, e2, ...) to act on: -i only
                                what can be clicked or typed in, -s under one element, -d so many
-                               levels deep. Refs (also @e1 or ref=e1) last until the page changes.
+                               levels deep. Refs (also @e1 or ref=e1) stay with their element;
+                               one whose element left, or from another page, fails as stale.
+                               --json: also the refs gone since the last snapshot
   click <ref|css>              Click an element
   fill <ref|css> <text>        Replace a field's text
   type <ref|css> <text>        Type into a field, key by key
