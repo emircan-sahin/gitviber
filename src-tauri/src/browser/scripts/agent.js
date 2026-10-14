@@ -165,6 +165,35 @@ function center(el) {
   return { clientX: r.x + r.width / 2, clientY: r.y + r.height / 2 };
 }
 
+/**
+ * Where a native click lands, in CSS px of the viewport: on the element a ref or CSS names
+ * (scrolled into view unless it shows whole), or on the one at x, y. Whether a press there opens
+ * a native menu (a <select>'s, a colour picker) or a drag would start HTML5 drag-and-drop:
+ * agent.rs refuses both, as one holds the app and the other follows the real mouse.
+ */
+function point({ target, x, y }) {
+  let el = target == null ? document.elementFromPoint(x, y) : find(target);
+  let scrolled = false;
+  if (target != null) {
+    // A hidden file input is clicked through its label, as the page's own button does.
+    if (el.localName === "input" && el.type === "file" && !el.getClientRects().length) el = el.labels?.[0] ?? el;
+    let r = el.getBoundingClientRect();
+    if (r.top < 0 || r.left < 0 || r.bottom > innerHeight || r.right > innerWidth) {
+      center(el);
+      scrolled = true;
+      r = el.getBoundingClientRect();
+    }
+    if (!r.width || !r.height) throw new Error(`${label(el)} has no box to click`);
+    x = r.x + r.width / 2;
+    y = r.y + r.height / 2;
+  }
+  const menu = el?.closest("select");
+  const picker = (!!menu && !menu.multiple && menu.size <= 1) || (el?.localName === "input" && el.type === "color");
+  const selection = getSelection();
+  const drag = !!el?.closest('[draggable="true"], a[href]:not([draggable="false"]), img:not([draggable="false"])') || (!!el && !selection.isCollapsed && selection.containsNode(el, true));
+  return { x, y, label: el ? label(el) : "the page", picker, drag, scrolled };
+}
+
 function mouse(el, types, at) {
   for (const type of types) {
     const init = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: type.endsWith("down") ? 1 : 0, ...at };
@@ -339,7 +368,7 @@ function wellFormed(_key, value) {
   return typeof value === "string" ? value.toWellFormed() : value;
 }
 
-const run = { snapshot, click, fill, type, press, select, hover, scroll, exists, hasText, rect };
+const run = { snapshot, click, fill, type, press, select, hover, scroll, exists, hasText, rect, point };
 try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);
   return JSON.stringify(run[cmd](a), wellFormed);

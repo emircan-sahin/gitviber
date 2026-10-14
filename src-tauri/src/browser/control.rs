@@ -3,6 +3,7 @@
 //! part is scripts/agent.js; apart from AppKit, so it can be tested.
 
 use super::console::Entry;
+use super::input;
 use super::network;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -38,7 +39,8 @@ a name no open tab of the pane has fails. Agents in one pane share its tabs; the
 are out of their reach. Each tab, the default one too, has cookies and storage of its own, gone
 when it closes, unless --shared. A tab no command touched for 10 minutes sleeps: slowed, and in
 time parked to save memory, its next command loading it again. Unused for an hour, it closes,
-unless the user has it on show.
+unless the user has it on show. The mouse and the wheel reach the page as the user's own input
+(trusted events), without moving the real pointer.
 
   tab new [name] [url] [--shared] [--session <name>] [--idle <minutes>]
                                Another tab, at url if given; prints its name: the one --tab or
@@ -71,13 +73,25 @@ unless the user has it on show.
                                The page as a tree, with refs (e1, e2, ...) to act on: -i only
                                what can be clicked or typed in, -s under one element, -d so many
                                levels deep. Refs (also @e1 or ref=e1) last until the page changes.
-  click <ref|css>              Click an element
+  click <ref|css> | --at <x>,<y> [--synthetic]
+                               Click an element, or a point (CSS px from the page's top left),
+                               as the mouse does: moved there, pressed, let go. Not a <select>:
+                               select. --synthetic: by the page's script, where native fails
+  dblclick <ref|css> | --at <x>,<y>
+  rightclick <ref|css> | --at <x>,<y>
+                               Twice, or with the right button: contextmenu fires, no menu opens
   fill <ref|css> <text>        Replace a field's text
   type <ref|css> <text>        Type into a field, key by key
   select <ref|css> <value>...  Choose a <select>'s options, by value or label
-  hover <ref|css>              The mouse over an element (no CSS :hover)
+  hover <ref|css|x,y>          The mouse over an element or a point; CSS :hover applies
+  drag <ref|css|x,y> <ref|css|x,y>
+                               Pressed at one, moved to the other with the button held, let go:
+                               pointer and mouse events. Not HTML5 drag-and-drop, which an
+                               element that's draggable starts: refused
   press <key>                  A key to the focused element: Enter, Tab, Escape, ArrowDown, Meta+a
   scroll <up|down|ref|css> [px]
+                               The wheel where the mouse is (hover first to scroll a panel), by
+                               80% of the page's height unless told; an element into view
   wait <css> | --text <text> | --load | --ms <n> [--timeout <ms>]
                                Until an element shows, the text does, the page has loaded, or
                                the time is up; 10 s at most unless --timeout says (120 s at most)
@@ -203,11 +217,12 @@ pub enum Command {
         scope: Option<String>,
         depth: Option<u32>,
     },
-    Click(String),
+    Click(Click),
     Fill(String, String),
     Type(String, String),
     Select(String, Vec<String>),
-    Hover(String),
+    Hover(Target),
+    Drag(Target, Target),
     Press(String),
     Scroll(Scroll, Option<u32>),
     Wait(Wait, Duration),
@@ -261,6 +276,30 @@ pub enum Sessions {
     Delete(String),
 }
 
+/// Where a pointer command acts: an element by ref or CSS, or a point in the viewport (CSS px).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Target {
+    El(String),
+    At(f64, f64),
+}
+
+impl Target {
+    /// `412,300` is a point; a ref or a selector never looks like one.
+    fn of(arg: &str) -> Self {
+        input::point(arg).map_or_else(|| Self::El(arg.into()), |(x, y)| Self::At(x, y))
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Click {
+    pub target: Target,
+    /// 2 for a double click.
+    pub count: u8,
+    pub right: bool,
+    /// By the page's script (untrusted), for a page where native clicks fail.
+    pub synthetic: bool,
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Scroll {
     Up,
@@ -301,7 +340,9 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
         "reload" => none(Command::Reload),
         "url" => none(Command::Url),
         "snapshot" => snapshot(args),
-        "click" => target("click <ref|css>").map(Command::Click),
+        "click" => click(cmd, args, 1, false),
+        "dblclick" => click(cmd, args, 2, false),
+        "rightclick" => click(cmd, args, 1, true),
         "fill" => target_and_text("fill <ref|css> <text>").map(|(t, x)| Command::Fill(t, x)),
         "type" => target_and_text("type <ref|css> <text>").map(|(t, x)| Command::Type(t, x)),
         "select" => match args {
@@ -310,7 +351,13 @@ pub fn parse(cmd: &str, args: &[String]) -> Result<Command, String> {
             }
             _ => Err("Usage: gitviber browser select <ref|css> <value>...".into()),
         },
-        "hover" => target("hover <ref|css>").map(Command::Hover),
+        "hover" => target("hover <ref|css|x,y>").map(|t| Command::Hover(Target::of(&t))),
+        "drag" => match args {
+            [from, to] if !from.is_empty() && !to.is_empty() => {
+                Ok(Command::Drag(Target::of(from), Target::of(to)))
+            }
+            _ => Err("Usage: gitviber browser drag <ref|css|x,y> <ref|css|x,y>".into()),
+        },
         "press" => target("press <key>").map(Command::Press),
         "scroll" => scroll(args),
         "wait" => wait(args),
@@ -446,6 +493,38 @@ fn named(what: &str, name: &str) -> Result<String, String> {
             "A {what}'s name is letters, digits, - and _, 32 at most: not {name:?}"
         ))
     }
+}
+
+/// `click`, `dblclick` or `rightclick` (`count`, `right`): at an element, or `--at x,y`.
+fn click(cmd: &str, args: &[String], count: u8, right: bool) -> Result<Command, String> {
+    let usage = || format!("Usage: gitviber browser {cmd} <ref|css> | --at <x>,<y>");
+    let (mut synthetic, mut at, mut words) = (false, None, vec![]);
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--synthetic" if cmd == "click" => synthetic = true,
+            "--at" => {
+                let (x, y) = input::point(value(&mut it, arg)?)
+                    .ok_or("--at takes a point in CSS px, as --at 412,300")?;
+                at = Some(Target::At(x, y));
+            }
+            _ => words.push(arg.as_str()),
+        }
+    }
+    let target = match (at, &words[..]) {
+        (Some(at), []) => at,
+        (None, [one]) if !one.is_empty() => Target::of(one),
+        _ => return Err(usage()),
+    };
+    if synthetic && matches!(target, Target::At(..)) {
+        return Err("--synthetic clicks an element, not a point".into());
+    }
+    Ok(Command::Click(Click {
+        target,
+        count,
+        right,
+        synthetic,
+    }))
 }
 
 fn snapshot(args: &[String]) -> Result<Command, String> {
@@ -986,12 +1065,21 @@ mod tests {
         s.split_whitespace().map(String::from).collect()
     }
 
+    fn clicked(target: &str) -> Command {
+        Command::Click(Click {
+            target: Target::El(target.into()),
+            count: 1,
+            right: false,
+            synthetic: false,
+        })
+    }
+
     #[test]
     fn requests_and_replies_read_as_json_lines() {
         let line = r#"{"token":"t0k","pty":3,"cwd":"/tmp/app","cmd":"click","args":["e2"]}"#;
         let req: Request = serde_json::from_str(line).unwrap();
         assert_eq!(req.pty, Some(3));
-        assert_eq!(parse(&req.cmd, &req.args), Ok(Command::Click("e2".into())));
+        assert_eq!(parse(&req.cmd, &req.args), Ok(clicked("e2")));
         // A pane started before the variable existed sends none.
         let bare: Request =
             serde_json::from_str(r#"{"token":"","pty":null,"cwd":"/","cmd":"url"}"#).unwrap();
@@ -1148,6 +1236,71 @@ mod tests {
             ("key", "Enter"),
         ] {
             assert!(parse(cmd, &args(a)).is_err(), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn pointer_commands_take_an_element_or_a_point() {
+        let at = |x, y| Target::At(x, y);
+        assert_eq!(
+            parse("click", &args("--at 412,300")),
+            Ok(Command::Click(Click {
+                target: at(412.0, 300.0),
+                count: 1,
+                right: false,
+                synthetic: false
+            }))
+        );
+        assert_eq!(
+            parse("click", &args("e4 --synthetic")),
+            Ok(Command::Click(Click {
+                target: Target::El("e4".into()),
+                count: 1,
+                right: false,
+                synthetic: true
+            }))
+        );
+        assert_eq!(
+            parse("dblclick", &args("e2")),
+            Ok(Command::Click(Click {
+                target: Target::El("e2".into()),
+                count: 2,
+                right: false,
+                synthetic: false
+            }))
+        );
+        assert_eq!(
+            parse("rightclick", &args("12,40")),
+            Ok(Command::Click(Click {
+                target: at(12.0, 40.0),
+                count: 1,
+                right: true,
+                synthetic: false
+            }))
+        );
+        assert_eq!(
+            parse("hover", &args("nav a.docs")),
+            Err("Usage: gitviber browser hover <ref|css|x,y>".into())
+        );
+        assert_eq!(
+            parse("hover", &[String::from("nav a.docs")]),
+            Ok(Command::Hover(Target::El("nav a.docs".into())))
+        );
+        assert_eq!(
+            parse("drag", &args("e3 640,200")),
+            Ok(Command::Drag(Target::El("e3".into()), at(640.0, 200.0)))
+        );
+        for (cmd, a) in [
+            ("click", "--at"),
+            ("click", "--at e3"),
+            ("click", "--at 1,2 e3"),
+            ("click", "--at 1,2 --synthetic"),
+            ("dblclick", "e1 --synthetic"),
+            ("rightclick", ""),
+            ("drag", "e1"),
+            ("drag", "e1 e2 e3"),
+        ] {
+            assert!(parse(cmd, &args(a)).is_err(), "{cmd} {a}");
         }
     }
 
@@ -1611,7 +1764,7 @@ mod tests {
         // A css target with spaces is one argument, as quoted.
         assert_eq!(
             parse("click", &words(&["form > button.primary"])),
-            Ok(Command::Click("form > button.primary".into()))
+            Ok(clicked("form > button.primary"))
         );
         for (cmd, args) in [
             ("click", vec![]),

@@ -9,6 +9,7 @@ mod agent;
 pub mod client;
 pub mod console;
 pub mod control;
+mod input;
 mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -24,19 +25,19 @@ pub use keys::set_app_keys;
 pub use macos::{
     agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
     agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_own_store,
-    agent_page, agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab,
-    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
-    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
-    set_agent, snapshot, zoom,
+    agent_page, agent_pane_closed, agent_picture, agent_pointer, agent_running, agent_set_cookies,
+    agent_tab, agent_tabs, appearance, clear_data, close, close_all, close_root, configure,
+    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, network_log,
+    pick, place, set_agent, snapshot, zoom,
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
     agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
     agent_dialogs, agent_done, agent_find_tab, agent_js, agent_new_tab, agent_own_store,
-    agent_page, agent_pane_closed, agent_picture, agent_running, agent_set_cookies, agent_tab,
-    agent_tabs, appearance, clear_data, close, close_all, close_root, configure, console_clear,
-    console_entries, create, find, focus, go, hide, inspect, navigate, network_log, pick, place,
-    set_agent, snapshot, zoom,
+    agent_page, agent_pane_closed, agent_picture, agent_pointer, agent_running, agent_set_cookies,
+    agent_tab, agent_tabs, appearance, clear_data, close, close_all, close_root, configure,
+    console_clear, console_entries, create, find, focus, go, hide, inspect, navigate, network_log,
+    pick, place, set_agent, snapshot, zoom,
 };
 pub use sessions::Shelf;
 
@@ -240,6 +241,7 @@ mod other {
     use super::{
         console::Entry,
         control::{AgentScreen, Found, Listed, NewTab},
+        input::Pointer,
         network::Log,
         picks::Bounds,
         sessions::Cookie,
@@ -326,6 +328,14 @@ mod other {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_device(_: &AppHandle, _: &str, _: Option<AgentScreen>) -> Res<()> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_pointer(
+        _: &str,
+        _: Pointer,
+        _: Option<(f64, f64)>,
+        _: Box<dyn FnOnce((f64, f64))>,
+    ) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
 

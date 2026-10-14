@@ -282,6 +282,7 @@ pub fn agent_running(id: &str, command: u64, on: bool) {
     let idle = running.is_empty();
     drop(running);
     if idle {
+        v.web.ivars().menus.set(0);
         restart_idle(&v);
     } else {
         stop_idle(&v);

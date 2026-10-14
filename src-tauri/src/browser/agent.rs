@@ -2,9 +2,10 @@
 //! (server.rs) as a few steps on the main thread, where the views are, waiting in between.
 
 use super::control::{
-    self, AgentScreen, Command, Found, Listed, NewTab, Pane, Reply, Request, Scroll, Sessions,
-    Tabs, Wait,
+    self, AgentScreen, Click, Command, Found, Listed, NewTab, Pane, Reply, Request, Scroll,
+    Sessions, Tabs, Target, Wait,
 };
+use super::input::{self, Pointer};
 use super::network;
 use super::picks::{self, Bounds};
 use super::sessions::{self, Session, Shelf};
@@ -35,6 +36,10 @@ const STORAGE_READ: &str = "return JSON.stringify({ origin: location.origin, loc
 /// Written only on the session's origin; elsewhere, where the page is instead.
 const STORAGE_WRITE: &str = "const s = JSON.parse(input); if (location.origin !== s.origin) return location.origin; localStorage.clear(); sessionStorage.clear(); for (const [k, v] of s.local) localStorage.setItem(k, v); for (const [k, v] of s.session) sessionStorage.setItem(k, v); return '';";
 const NO_INDEXED_DB: &str = "IndexedDB isn't carried.";
+/// The page's height and how far down it is, for the wheel: its window's, not a panel's in it.
+const SCROLLED: &str = "return JSON.stringify([innerHeight, Math.round(scrollY), Math.max(0, Math.round(document.documentElement.scrollHeight - innerHeight))]);";
+/// How long a page gets to scroll after the wheel turns: WebKit scrolls on a thread of its own.
+const SCROLLING: Duration = Duration::from_millis(100);
 
 pub fn run(app: &AppHandle, req: Request) -> Reply {
     command(app, req).unwrap_or_else(Reply::error)
@@ -306,6 +311,25 @@ fn later<T: Send + 'static>(
         .map_err(|_| "The page didn't answer in time.".to_string())?
 }
 
+/// What's where a pointer command acts (agent.js `point`).
+#[derive(serde::Deserialize)]
+struct Spot {
+    x: f64,
+    y: f64,
+    label: String,
+    #[serde(default)]
+    picker: bool,
+    #[serde(default)]
+    drag: bool,
+    #[serde(default)]
+    scrolled: bool,
+}
+
+/// A point as a reply shows it: whole CSS px.
+fn xy((x, y): (f64, f64)) -> String {
+    format!("{},{}", x.round(), y.round())
+}
+
 /// The pane's tab for one command, running it from `start` for as long as this lives. Its end
 /// is queued after the start on the main thread even when the start timed out here, so the tab
 /// can't stay answering its dialogs.
@@ -354,7 +378,12 @@ impl Tab {
                 scope,
                 depth,
             } => self.act(json!({ "cmd": "snapshot", "interactive": interactive, "scope": scope, "depth": depth })),
-            Command::Click(target) => self.acted(json!({ "cmd": "click", "target": target })),
+            Command::Click(Click {
+                target: Target::El(target),
+                synthetic: true,
+                ..
+            }) => self.acted(json!({ "cmd": "click", "target": target })),
+            Command::Click(click) => self.click(click),
             Command::Fill(target, text) => {
                 self.act(json!({ "cmd": "fill", "target": target, "text": text }))
             }
@@ -364,16 +393,17 @@ impl Tab {
             Command::Select(target, values) => {
                 self.act(json!({ "cmd": "select", "target": target, "values": values }))
             }
-            Command::Hover(target) => self.act(json!({ "cmd": "hover", "target": target })),
-            Command::Press(key) => self.acted(json!({ "cmd": "press", "key": key })),
-            Command::Scroll(to, px) => {
-                let to = match to {
-                    Scroll::Up => "up".to_string(),
-                    Scroll::Down => "down".to_string(),
-                    Scroll::To(target) => target,
-                };
-                self.act(json!({ "cmd": "scroll", "to": to, "px": px }))
+            Command::Hover(target) => {
+                let spot = self.spot(&target)?;
+                let at = self.pointer(Pointer::Move, Some((spot.x, spot.y)))?;
+                Ok(Reply::out(format!("Hovered {} at {}", spot.label, xy(at))))
             }
+            Command::Drag(from, to) => self.drag(&from, &to),
+            Command::Press(key) => self.acted(json!({ "cmd": "press", "key": key })),
+            Command::Scroll(Scroll::To(target), _) => {
+                self.act(json!({ "cmd": "scroll", "to": target }))
+            }
+            Command::Scroll(way, px) => self.wheel(way == Scroll::Up, px),
             Command::Wait(what, timeout) => self.wait(what, timeout),
             Command::Eval(js) => self.eval(&js),
             Command::Screenshot { path, target } => self.screenshot(path, target, cwd),
@@ -426,11 +456,18 @@ impl Tab {
         Ok(Reply::out(value["out"].as_str().unwrap_or_default()))
     }
 
-    /// A click or a key, which may send the page somewhere: the reply waits for it, and says.
+    /// A click or a key by the page's script, which may send the page somewhere.
     fn acted(&self, input: Value) -> Res<Reply> {
+        self.moved(|| {
+            let did = self.script(input)?;
+            Ok(did["out"].as_str().unwrap_or_default().to_string())
+        })
+    }
+
+    /// `act`, which may send the page somewhere: the reply waits for it, and says.
+    fn moved(&self, act: impl FnOnce() -> Res<String>) -> Res<Reply> {
         let before = self.page()?.0.url;
-        let did = self.script(input)?;
-        let did = did["out"].as_str().unwrap_or_default();
+        let did = act()?;
         std::thread::sleep(POLL);
         let (page, _) = self.loaded(LOAD)?;
         Ok(Reply::out(if page.url == before {
@@ -438,6 +475,115 @@ impl Tab {
         } else {
             format!("{did}\nNow at {}", titled(&page.url, &page.title, " — "))
         }))
+    }
+
+    /// Where a pointer command acts, and what's there (agent.js `point`).
+    fn spot(&self, target: &Target) -> Res<Spot> {
+        let input = match target {
+            Target::El(target) => json!({ "cmd": "point", "target": target }),
+            Target::At(x, y) => json!({ "cmd": "point", "x": x, "y": y }),
+        };
+        serde_json::from_value(self.script(input)?)
+            .map_err(|_| "The page's answer wasn't readable.".into())
+    }
+
+    /// One native pointer event, at `at` or where the pointer is: where it went, once WebKit
+    /// has it.
+    fn pointer(&self, what: Pointer, at: Option<(f64, f64)>) -> Res<(f64, f64)> {
+        let id = self.id.clone();
+        later(&self.app, move |_, done| {
+            super::agent_pointer(&id, what, at, done)
+        })
+    }
+
+    fn click(&self, click: Click) -> Res<Reply> {
+        let spot = self.spot(&click.target)?;
+        if spot.picker {
+            return Err(format!(
+                "{} opens a native menu, which would hold GitViber until it closed: use select",
+                spot.label
+            ));
+        }
+        let at = Some((spot.x, spot.y));
+        self.moved(|| {
+            for what in input::clicks(click.count, click.right) {
+                self.pointer(what, at)?;
+            }
+            let done = match (click.count, click.right) {
+                (_, true) => "Right-clicked",
+                (2, _) => "Double-clicked",
+                _ => "Clicked",
+            };
+            Ok(format!("{done} {} at {}", spot.label, xy((spot.x, spot.y))))
+        })
+    }
+
+    /// Pressed at `from`, moved to `to` with the button held, let go: both ends as they show
+    /// together, as moving to one may scroll the other away.
+    fn drag(&self, from: &Target, to: &Target) -> Res<Reply> {
+        let mut a = self.spot(from)?;
+        let b = self.spot(to)?;
+        if b.scrolled {
+            a = self.spot(from)?;
+            if a.scrolled {
+                return Err(format!(
+                    "{} and {} don't show together: scroll so both do, or drag to a point",
+                    a.label, b.label
+                ));
+            }
+        }
+        if a.drag {
+            return Err(format!(
+                "{} is draggable: HTML5 drag-and-drop follows the real mouse, so it isn't driven \
+                 here. Drag from a part of it that isn't, or use eval",
+                a.label
+            ));
+        }
+        self.moved(|| {
+            for (what, at) in input::drag((a.x, a.y), (b.x, b.y)) {
+                self.pointer(what, Some(at))?;
+            }
+            Ok(format!(
+                "Dragged {} at {} to {} at {}",
+                a.label,
+                xy((a.x, a.y)),
+                b.label,
+                xy((b.x, b.y))
+            ))
+        })
+    }
+
+    /// The wheel where the pointer is, by `px` or most of the page's height; by script where
+    /// AppKit makes no wheel event.
+    fn wheel(&self, up: bool, px: Option<u32>) -> Res<Reply> {
+        let [height, _, _] = self.scrolled()?;
+        let px = px.unwrap_or((height * 0.8).round() as u32);
+        let way = if up { "up" } else { "down" };
+        let mut at = None;
+        for turn in input::wheel(px, up) {
+            match self.pointer(turn, at) {
+                Ok(here) => at = Some(here),
+                Err(e) if e == input::NO_WHEEL && at.is_none() => {
+                    return self.act(json!({ "cmd": "scroll", "to": way, "px": px }));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        std::thread::sleep(SCROLLING);
+        let [_, y, most] = self.scrolled()?;
+        let at = at.map_or_else(String::new, |at| format!(" at {}", xy(at)));
+        Ok(Reply::out(format!(
+            "Scrolled {way} {px} px{at}: the page at {y} of {most}"
+        )))
+    }
+
+    /// The page's height, how far down it is, and how far it goes (SCROLLED).
+    fn scrolled(&self) -> Res<[f64; 3]> {
+        let id = self.id.clone();
+        let out = later(&self.app, move |_, done| {
+            super::agent_js(&id, false, SCROLLED, "", done)
+        })??;
+        serde_json::from_str(&out).map_err(|_| "The page's answer wasn't readable.".into())
     }
 
     fn go(&self, to: Go, done: &str) -> Res<Reply> {

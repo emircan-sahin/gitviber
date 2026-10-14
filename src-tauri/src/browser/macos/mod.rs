@@ -5,6 +5,7 @@
 
 mod agent;
 mod cookies;
+mod native;
 mod page_tools;
 mod page_view;
 mod panel;
@@ -15,6 +16,7 @@ pub use agent::{
     agent_tabs,
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
+pub use native::agent_pointer;
 pub use page_tools::{console_clear, console_entries, network_log, pick};
 pub use page_view::{appearance, find, zoom};
 
@@ -259,6 +261,9 @@ fn can_set_dpr(web: &WKWebView) -> bool {
 struct WebIvars {
     id: String,
     app: AppHandle,
+    /// Native menus to drop as they open: an agent's right clicks' (native.rs). Its command's
+    /// end clears them, so a page that opened none doesn't eat the user's next one.
+    menus: Cell<u32>,
 }
 
 define_class!(
@@ -289,6 +294,34 @@ define_class!(
         }
 
         /// Not in its panel, where the page takes focus for its agents, not from the app page.
+        /// An agent's right click fires the page's contextmenu, but no menu: one with no items
+        /// doesn't show, and a menu would hold the main thread until dismissed.
+        #[unsafe(method(willOpenMenu:withEvent:))]
+        fn will_open_menu(&self, menu: &AnyObject, event: &NSEvent) {
+            let _: () = unsafe { msg_send![super(self), willOpenMenu: menu, withEvent: event] };
+            let menus = &self.ivars().menus;
+            if menus.get() > 0 {
+                menus.set(menus.get() - 1);
+                let _: () = unsafe { msg_send![menu, removeAllItems] };
+            }
+        }
+
+        /// An AppKit drag from an agent's press would follow the real mouse: it ends at once.
+        #[unsafe(method_id(beginDraggingSessionWithItems:event:source:))]
+        fn begin_dragging(
+            &self,
+            items: &AnyObject,
+            event: &NSEvent,
+            source: &AnyObject,
+        ) -> Retained<AnyObject> {
+            let refused = native::ours(event)
+                .then(|| native::refuse_drag(self, event))
+                .flatten();
+            refused.unwrap_or_else(|| unsafe {
+                msg_send![super(self), beginDraggingSessionWithItems: items, event: event, source: source]
+            })
+        }
+
         #[unsafe(method(becomeFirstResponder))]
         fn become_first_responder(&self) -> Bool {
             let took: Bool = unsafe { msg_send![super(self), becomeFirstResponder] };
@@ -363,6 +396,8 @@ struct DelegateIvars {
     zoom: Cell<f64>,
     /// Where it draws while an agent's and out of its tab's sight (panel.rs).
     panel: RefCell<Option<Retained<panel::Panel>>>,
+    /// Where an agent's pointer last was, in CSS px (native.rs).
+    pointer: Cell<Option<(f64, f64)>>,
 }
 
 define_class!(
@@ -639,6 +674,7 @@ impl Delegate {
             running: RefCell::default(),
             zoom: Cell::new(1.0),
             panel: RefCell::default(),
+            pointer: Cell::new(None),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -875,6 +911,7 @@ pub fn create(
     let web = WebView::alloc(mtm).set_ivars(WebIvars {
         id: id.into(),
         app: window.app_handle().clone(),
+        menus: Cell::new(0),
     });
     let web: Retained<WebView> =
         unsafe { msg_send![super(web), initWithFrame: NSRect::ZERO, configuration: &*config] };
