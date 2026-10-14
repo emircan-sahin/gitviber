@@ -303,6 +303,11 @@ impl Log {
             .find(|e| e.id == id)
     }
 
+    /// The highest id given so far: an entry past it is newer.
+    pub fn newest(&self) -> u32 {
+        self.next
+    }
+
     pub fn dropped(&self) -> u64 {
         self.dropped
     }
@@ -417,7 +422,7 @@ pub fn ask(args: &[String]) -> Result<Ask, String> {
 impl Entry {
     /// A status past 399, a request that got no answer, or a socket that closed badly; not one
     /// the page aborted itself.
-    fn failed(&self) -> bool {
+    pub fn failed(&self) -> bool {
         self.status.is_some_and(|s| s >= 400)
             || self.error.as_deref().is_some_and(|e| e != "aborted")
             || self.close.as_ref().is_some_and(|c| !c.clean)
@@ -443,7 +448,8 @@ impl Entry {
         }
     }
 
-    fn state(&self) -> String {
+    /// Its status as the list shows it: 200, failed, open, … while it runs.
+    pub fn state(&self) -> String {
         if let Some(c) = &self.close {
             return c.code.to_string();
         }

@@ -6,6 +6,7 @@ use super::control::{
     Tabs, Wait,
 };
 use super::network;
+use super::output;
 use super::picks::{self, Bounds};
 use super::sessions::{self, Session, Shelf};
 use super::{Go, PageState};
@@ -26,6 +27,11 @@ const SCRIPT: Duration = Duration::from_secs(30);
 /// How long a page gets to load after open, a click or a key before the reply goes anyway.
 const LOAD: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(100);
+/// How long an action's requests and redraws get to land before its reply says what changed,
+/// as Playwright lets a click's effects settle; a load it starts gets LOAD.
+const SETTLE: Duration = Duration::from_millis(500);
+/// The page still this long counts as done redrawing.
+const QUIET: Duration = Duration::from_millis(100);
 /// An eval's result, cut: an agent reads it.
 const EVAL_MAX: usize = 20_000;
 /// What `eval`'s script gives: `=` and its value as JSON however it came, or `!` and what it threw.
@@ -61,7 +67,11 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
     })?;
     // Made: just made, at the address an open asks for.
     let made = found == Found::Made;
-    drive(app, id, found, |tab| tab.run(cmd, made, &req.cwd))
+    let said = format!("{} {}", req.cmd, req.args.join(" "));
+    drive(app, id, found, |tab| {
+        let reply = tab.run(cmd, made, &req.cwd);
+        Ok(tab.finish(reply, &said))
+    })
 }
 
 /// The pane the request came from (its token says so: server.rs), and its own folder as its
@@ -249,6 +259,7 @@ static NEXT_COMMAND: AtomicU64 = AtomicU64::new(1);
 struct Memory {
     /// The highest ref the tab handed out, on any of its pages.
     last_ref: u64,
+    history: output::History,
 }
 
 fn memories() -> MutexGuard<'static, HashMap<String, Memory>> {
@@ -307,6 +318,15 @@ fn later<T: Send + 'static>(
     app: &AppHandle,
     f: impl FnOnce(&AppHandle, Box<dyn FnOnce(T)>) -> Res<()> + Send + 'static,
 ) -> Res<T> {
+    later_for(app, SCRIPT, f)
+}
+
+/// As `later`, waiting `wait` at most.
+fn later_for<T: Send + 'static>(
+    app: &AppHandle,
+    wait: Duration,
+    f: impl FnOnce(&AppHandle, Box<dyn FnOnce(T)>) -> Res<()> + Send + 'static,
+) -> Res<T> {
     let (tx, rx) = mpsc::channel::<Res<T>>();
     let handle = app.clone();
     app.run_on_main_thread(move || {
@@ -319,7 +339,7 @@ fn later<T: Send + 'static>(
         }
     })
     .map_err(|e| e.to_string())?;
-    rx.recv_timeout(SCRIPT)
+    rx.recv_timeout(wait)
         .map_err(|_| "The page didn't answer in time.".to_string())?
 }
 
@@ -376,22 +396,25 @@ impl Tab {
                 let out = found["out"].as_str().unwrap_or_default();
                 // --json: the refs whose element left the page since, too.
                 let data = json!({ "snapshot": out, "removed": found["removed"] });
-                Ok(Reply::data(out, data))
+                Ok(Reply {
+                    state: Some(out.into()),
+                    ..Reply::data(out, data)
+                })
             }
             Command::Click(target) => self.acted(json!({ "cmd": "click", "target": target })),
             Command::Fill(target, text) => {
-                self.act(json!({ "cmd": "fill", "target": target, "text": text }))
+                self.acted(json!({ "cmd": "fill", "target": target, "text": text }))
             }
             Command::Type(target, text) => {
-                self.act(json!({ "cmd": "type", "target": target, "text": text }))
+                self.acted(json!({ "cmd": "type", "target": target, "text": text }))
             }
             Command::Select(target, values) => {
-                self.act(json!({ "cmd": "select", "target": target, "values": values }))
+                self.acted(json!({ "cmd": "select", "target": target, "values": values }))
             }
             Command::Check(target, on) => {
                 self.acted(json!({ "cmd": "check", "target": target, "on": on }))
             }
-            Command::Hover(target) => self.act(json!({ "cmd": "hover", "target": target })),
+            Command::Hover(target) => self.acted(json!({ "cmd": "hover", "target": target })),
             Command::Press(key) => self.acted(json!({ "cmd": "press", "key": key })),
             Command::Scroll(to, px) => {
                 let to = match to {
@@ -399,7 +422,7 @@ impl Tab {
                     Scroll::Down => "down".to_string(),
                     Scroll::To(target) => target,
                 };
-                self.act(json!({ "cmd": "scroll", "to": to, "px": px }))
+                self.acted(json!({ "cmd": "scroll", "to": to, "px": px }))
             }
             Command::Wait(what, timeout) => self.wait(what, timeout),
             Command::Eval(js) => self.eval(&js),
@@ -430,6 +453,25 @@ impl Tab {
         }
     }
 
+    /// A command's reply (`said`: as typed) as the agent gets it, a failure too: with a nudge
+    /// when it's the same as the last two, the page no different after each.
+    fn finish(&self, reply: Res<Reply>, said: &str) -> Reply {
+        let mut reply = reply.unwrap_or_else(Reply::error);
+        let state = match (&reply.state, &reply.error) {
+            (_, Some(error)) => Some(format!("failed: {error}")),
+            (state, None) => state.clone(),
+        };
+        let looped = state.is_some_and(|s| remember(&self.id, |m| m.history.again(said, &s)));
+        if looped {
+            let text = reply.error.as_mut().or(reply.out.as_mut());
+            if let Some(text) = text {
+                text.push('\n');
+                text.push_str(output::NUDGE);
+            }
+        }
+        reply
+    }
+
     /// The page, and whether its console is kept.
     fn page(&self) -> Res<(PageState, bool)> {
         let id = self.id.clone();
@@ -438,10 +480,15 @@ impl Tab {
 
     /// agent.js on the page, given `input`: its answer, or the error it gave. Each call tells the
     /// page the tab's highest ref so far, and learns it back (agent.js's `floor`).
-    fn script(&self, mut input: Value) -> Res<Value> {
+    fn script(&self, input: Value) -> Res<Value> {
+        self.script_for(input, SCRIPT)
+    }
+
+    /// As `script`, waiting `wait` at most.
+    fn script_for(&self, mut input: Value, wait: Duration) -> Res<Value> {
         input["floor"] = json!(remember(&self.id, |m| m.last_ref));
         let (id, input) = (self.id.clone(), input.to_string());
-        let out = later(&self.app, move |_, done| {
+        let out = later_for(&self.app, wait, move |_, done| {
             super::agent_js(&id, false, AGENT, &input, done)
         })??;
         let value: Value =
@@ -455,23 +502,80 @@ impl Tab {
         }
     }
 
-    fn act(&self, input: Value) -> Res<Reply> {
-        let value = self.script(input)?;
-        Ok(Reply::out(value["out"].as_str().unwrap_or_default()))
-    }
-
-    /// A click or a key, which may send the page somewhere: the reply waits for it, and says.
-    fn acted(&self, input: Value) -> Res<Reply> {
-        let before = self.page()?.0.url;
+    /// An action, which may change the page or send it somewhere: its changes counted from
+    /// just before it, what it set off waited for, and a line of what changed after it.
+    fn acted(&self, mut input: Value) -> Res<Reply> {
+        let url = self.page()?.0.url;
+        let id = self.id.clone();
+        let request = main(&self.app, move |_| super::network_log(&id, |l| l.newest()))?;
+        let at = super::epoch_ms();
+        input["watch"] = json!(true);
         let did = self.script(input)?;
         let did = did["out"].as_str().unwrap_or_default();
-        std::thread::sleep(POLL);
-        let (page, _) = self.loaded(LOAD)?;
-        Ok(Reply::out(if page.url == before {
-            did.to_string()
-        } else {
-            format!("{did}\nNow at {}", titled(&page.url, &page.title, " — "))
-        }))
+        let (line, state) = self.changed(url, at, request)?;
+        Ok(Reply {
+            state: Some(state),
+            ..Reply::out(format!("{did}\n{line}"))
+        })
+    }
+
+    /// Once an action's loads, requests (past id `request`) and redraws have landed, or SETTLE
+    /// has gone, a load LOAD: what changed since `at` on the page that was at `url`, and the page
+    /// as it is now.
+    fn changed(&self, url: String, at: f64, request: u32) -> Res<(String, String)> {
+        let until = Instant::now() + SETTLE;
+        std::thread::sleep(POLL / 2);
+        loop {
+            if self.page()?.0.loading {
+                self.loaded(LOAD)?;
+                break;
+            }
+            let running = self.requests(request)?.iter().any(|r| r.state == "…");
+            if !running || Instant::now() >= until {
+                break;
+            }
+            std::thread::sleep(POLL / 2);
+        }
+        let most = until.saturating_duration_since(Instant::now()).max(QUIET);
+        let input = json!({ "cmd": "changes", "quiet": QUIET.as_millis() as u64, "most": most.as_millis() as u64 });
+        // Between documents there's no page to ask: it's another one by then.
+        let seen = self
+            .script(input)
+            .unwrap_or_else(|_| json!({ "gone": true }));
+        let count = |k: &str| seen[k].as_u64().unwrap_or(0);
+        let id = self.id.clone();
+        let logged = main(&self.app, move |_| super::console_entries(&id))?;
+        let logged = logged.iter().filter(|e| e.ts >= at);
+        let page = self.page()?.0;
+        let c = output::Changes {
+            added: count("added"),
+            removed: count("removed"),
+            texts: count("texts"),
+            attributes: count("attributes"),
+            dialogs: seen["dialogs"].as_i64().unwrap_or(0),
+            new_page: seen["gone"] == true,
+            url_before: url,
+            errors: logged.clone().filter(|e| e.level == "error").count(),
+            answered: logged
+                .filter(|e| e.level == "warn")
+                .filter_map(|e| output::answered(&e.msg))
+                .collect(),
+            requests: self.requests(request)?,
+            url: page.url.clone(),
+        };
+        let state = seen["state"].as_str().unwrap_or(&page.url).to_string();
+        Ok((output::changed(&c), state))
+    }
+
+    /// The requests past id `after` in the tab's network log.
+    fn requests(&self, after: u32) -> Res<Vec<output::Request>> {
+        let id = self.id.clone();
+        main(&self.app, move |_| {
+            super::network_log(&id, |log| {
+                let newer = log.entries().into_iter().filter(|e| e.id > after);
+                newer.filter_map(output::Request::of).collect()
+            })
+        })
     }
 
     fn go(&self, to: Go, done: &str) -> Res<Reply> {
@@ -508,42 +612,100 @@ impl Tab {
         }
     }
 
+    /// Until `what` is so, or `timeout` is up (one deadline for all its asking): then what was
+    /// still not so, as a fact rather than a call to wait longer.
     fn wait(&self, what: Wait, timeout: Duration) -> Res<Reply> {
         if let Wait::Ms(ms) = what {
             std::thread::sleep(Duration::from_millis(ms));
             return Ok(Reply::out(format!("Waited {ms} ms")));
         }
-        let until = Instant::now() + timeout;
-        let found = |input: Value| match self.script(input) {
-            Ok(v) if v["invalid"] == true => Err("That isn't a CSS selector.".to_string()),
-            Ok(v) => Ok(v["found"] == true),
-            // Between pages there's no page to ask.
-            Err(_) => Ok(false),
+        let wanted = match &what {
+            Wait::Css(css) => format!("{css} to show"),
+            Wait::Text(text) => format!("{text:?} to show"),
+            Wait::Load => "the page to load".into(),
+            Wait::Url(glob) => format!("the address to match {glob}"),
+            Wait::Fn(js) => format!("`{}` to be true", super::cut(js, 80)),
+            Wait::Ms(_) => String::new(),
         };
+        let until = Instant::now() + timeout;
         loop {
-            let (done, said) = match &what {
-                Wait::Load => (!self.page()?.0.loading, "the page to load".to_string()),
-                Wait::Css(css) => (
-                    found(json!({ "cmd": "exists", "css": css }))?,
-                    format!("{css} to show"),
-                ),
-                Wait::Text(text) => (
-                    found(json!({ "cmd": "hasText", "text": text }))?,
-                    format!("{text:?} to show"),
-                ),
-                Wait::Ms(_) => (true, String::new()),
+            let left = until.saturating_duration_since(Instant::now());
+            let still = self.not_yet(&what, left.max(POLL))?;
+            let Some(still) = still else {
+                return Ok(Reply::out(format!("Done waiting for {wanted}")));
             };
-            if done {
-                return Ok(Reply::out(format!("Done waiting for {said}")));
-            }
             if Instant::now() >= until {
                 return Err(format!(
-                    "Timed out after {} ms waiting for {said}",
-                    timeout.as_millis()
+                    "Timed out after {} waiting for {wanted}: {still}",
+                    duration_text(timeout)
                 ));
             }
             std::thread::sleep(POLL * 2);
         }
+    }
+
+    /// What isn't so yet of `what`, asking the page for `wait` at most; None once it is.
+    fn not_yet(&self, what: &Wait, wait: Duration) -> Res<Option<String>> {
+        // Between pages there's no page to ask.
+        let asked = |input: Value| match self.script_for(input, wait) {
+            Ok(v) if v["invalid"] == true => Err("That isn't a CSS selector.".to_string()),
+            Ok(v) => Ok(Some(v)),
+            Err(_) => Ok(None),
+        };
+        let page = || self.page().map(|p| p.0);
+        Ok(match what {
+            Wait::Load => page()?.loading.then(|| {
+                format!(
+                    "{} was still loading",
+                    page().map(|p| p.url).unwrap_or_default()
+                )
+            }),
+            Wait::Url(glob) => {
+                let url = page()?.url;
+                (!output::url_matches(glob, &url)).then(|| format!("the page is at {url}"))
+            }
+            Wait::Css(css) => match asked(json!({ "cmd": "exists", "css": css }))? {
+                Some(v) if v["found"] == true => None,
+                Some(v) if v["count"].as_u64().unwrap_or(0) > 0 => {
+                    Some(format!("{} element(s) match it, none showing", v["count"]))
+                }
+                Some(_) => Some("no element matches it".into()),
+                None => Some("the page didn't answer".into()),
+            },
+            Wait::Text(text) => match asked(json!({ "cmd": "hasText", "text": text }))? {
+                Some(v) if v["found"] == true => None,
+                _ => Some("the page's text doesn't have it".into()),
+            },
+            Wait::Fn(js) => self.truthy(js, wait)?,
+            Wait::Ms(_) => None,
+        })
+    }
+
+    /// Expression `js` in the page's world: None once it's true, else what it was. A promise
+    /// that doesn't settle in `wait` counts as not yet.
+    fn truthy(&self, js: &str, wait: Duration) -> Res<Option<String>> {
+        let ms = wait.min(Duration::from_secs(2)).as_millis();
+        let body = format!(
+            "const pending = Symbol();\nlet value;\ntry {{ value = await Promise.race([(async () => ({js}\n))(), new Promise((r) => setTimeout(r, {ms}, pending))]); }} catch (e) {{ return `!${{e}}`; }}\nif (value === pending) return '~';\nif (value) return '+';\ntry {{ return `-${{JSON.stringify(value) ?? String(value)}}`; }} catch {{ return `-${{String(value)}}`; }}"
+        );
+        let id = self.id.clone();
+        let out = later_for(&self.app, wait + POLL, move |_, done| {
+            super::agent_js(&id, true, &body, "", done)
+        })?;
+        let out = match out {
+            Ok(out) => out,
+            Err(e) if e.contains("SyntaxError") => {
+                return Err(format!("--fn takes a JavaScript expression: {e}"))
+            }
+            // Between pages there's no page to ask.
+            Err(_) => return Ok(Some("the page didn't answer".into())),
+        };
+        Ok(match out.split_at_checked(1) {
+            Some(("+", _)) => None,
+            Some(("-", value)) => Some(format!("it was {}", super::cut(value, 200))),
+            Some(("!", thrown)) => Some(format!("it threw {}", super::cut(thrown, 200))),
+            _ => Some("it hadn't settled".into()),
+        })
     }
 
     /// `js` in the page's own world: an expression, else statements (with their own return).
@@ -802,6 +964,15 @@ fn sessions_text(saved: &[(String, Session)], now: u64) -> String {
         )
     });
     lines.collect::<Vec<_>>().join("\n")
+}
+
+/// A wait's length as said: 10 s, 1.5 s, 300 ms.
+fn duration_text(d: Duration) -> String {
+    match d.as_millis() {
+        ms if ms < 1000 => format!("{ms} ms"),
+        ms if ms % 1000 == 0 => format!("{} s", ms / 1000),
+        ms => format!("{:.1} s", ms as f64 / 1000.0),
+    }
 }
 
 fn ago(idle: Duration) -> String {

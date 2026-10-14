@@ -528,15 +528,15 @@ function scroll({ to, px }) {
 
 const shows = (el) => el.getClientRects().length > 0 && getComputedStyle(el).visibility !== "hidden";
 
-/** For wait: whether an element matching `css` shows. */
+/** For wait: whether an element matching `css` shows, and how many match. */
 function exists({ css }) {
-  let el;
+  let all;
   try {
-    el = document.querySelector(css);
+    all = [...document.querySelectorAll(css)];
   } catch {
     return { found: false, invalid: true };
   }
-  return { found: !!el && shows(el) };
+  return { found: all.some(shows), count: all.length };
 }
 
 const hasText = ({ text }) => ({ found: (document.body?.innerText ?? "").includes(text) });
@@ -549,6 +549,51 @@ function rect({ target }) {
   return { rect: { x: r.x, y: r.y, w: r.width, h: r.height } };
 }
 
+const DIALOGS = "dialog[open], [role=dialog], [role=alertdialog], [aria-modal=true]";
+const dialogs = () => [...document.querySelectorAll(DIALOGS)].filter(shows).length;
+
+/** The page as an agent would find it again: the same after an action that did nothing. */
+const pageState = () => `${location.href}|${document.getElementsByTagName("*").length}|${document.body?.textContent.length}|${Math.round(window.scrollY ?? 0)}`;
+
+/** What changes on the page from now, an action's, until `changes` reads it. */
+function watch() {
+  state.watch?.observer.disconnect();
+  const seen = { added: 0, removed: 0, texts: 0, attributes: 0, at: Date.now() };
+  const count = (records) => {
+    if (records.length) seen.at = Date.now();
+    for (const r of records) {
+      if (r.type === "attributes") seen.attributes++;
+      else if (r.type === "characterData") seen.texts++;
+      else {
+        for (const n of r.addedNodes) {
+          if (n.nodeType === 1) seen.added++;
+          else if (n.nodeType === 3) seen.texts++;
+        }
+        for (const n of r.removedNodes) if (n.nodeType === 1) seen.removed++;
+      }
+    }
+  };
+  const observer = new MutationObserver(count);
+  observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
+  state.watch = { observer, seen, count, dialogs: dialogs() };
+}
+
+/**
+ * What changed since `watch`, once the page has been still for `quiet` ms or `most` have gone
+ * (a spinner never stops); the watch ends. None on another document: the watch went with the old.
+ */
+async function changes({ quiet = 100, most = 500 }) {
+  const w = state.watch;
+  if (!w) return { gone: true, state: pageState() };
+  const until = Date.now() + most;
+  while (Date.now() < until && Date.now() - w.seen.at < quiet) await new Promise((r) => setTimeout(r, 25));
+  w.count(w.observer.takeRecords());
+  w.observer.disconnect();
+  state.watch = null;
+  const { added, removed, texts, attributes } = w.seen;
+  return { added, removed, texts, attributes, dialogs: dialogs() - w.dialogs, state: pageState() };
+}
+
 // A page's lone half of a pair would reach the app as JSON it can't read.
 function wellFormed(_key, value) {
   return typeof value === "string" ? value.toWellFormed() : value;
@@ -557,10 +602,14 @@ function wellFormed(_key, value) {
 /** For native input: where a click on `target` lands, once it can. */
 const where = async ({ target }) => await point(target);
 
-const run = { snapshot, click, fill, type, press, select, check, hover, scroll, exists, hasText, rect, point: where };
+const run = { snapshot, click, fill, type, press, select, check, hover, scroll, exists, hasText, rect, point: where, changes };
 try {
   if (!Object.hasOwn(run, cmd)) throw new Error(`No ${cmd} here`);
+  // An action's changes are counted from just before it.
+  if (a.watch) watch();
   return JSON.stringify({ ...(await run[cmd](a)), last: state.next - 1 }, wellFormed);
 } catch (e) {
+  state.watch?.observer.disconnect();
+  state.watch = null;
   return JSON.stringify({ error: String(e?.message ?? e), last: state.next - 1 }, wellFormed);
 }

@@ -6,7 +6,7 @@ import { test } from "node:test";
 // could act on, and fill, select and check read back what they did.
 const source = readFileSync(new URL("../../../src-tauri/src/browser/scripts/agent.js", import.meta.url), "utf8");
 const AsyncFunction = Object.getPrototypeOf(async () => {}).constructor;
-const globals = ["window", "document", "getComputedStyle", "Event", "InputEvent", "MouseEvent", "PointerEvent", "KeyboardEvent", "HTMLInputElement", "HTMLTextAreaElement"];
+const globals = ["window", "document", "getComputedStyle", "Event", "InputEvent", "MouseEvent", "PointerEvent", "KeyboardEvent", "HTMLInputElement", "HTMLTextAreaElement", "MutationObserver", "location"];
 const agent = new AsyncFunction("input", ...globals, source);
 
 class FakeEvent {
@@ -92,11 +92,41 @@ function el(tag: string, attrs: Record<string, string> = {}, children: (Node | s
   return node;
 }
 
+type Record = { type: string; addedNodes?: { nodeType: number }[]; removedNodes?: { nodeType: number }[] };
+
+/** The page's one MutationObserver, which a test's page fires as it changes. */
+class Observer {
+  static live: Observer | null = null;
+  pending: Record[] = [];
+  fn: (records: Record[]) => void;
+  constructor(fn: (records: Record[]) => void) {
+    this.fn = fn;
+  }
+  observe() {
+    Observer.live = this;
+  }
+  disconnect() {
+    if (Observer.live === this) Observer.live = null;
+  }
+  takeRecords() {
+    return this.pending.splice(0);
+  }
+  static fire(given: Record[], later = false) {
+    const o = Observer.live;
+    if (!o) return;
+    // As a MutationRecord has them: both lists, empty or not.
+    const records = given.map((r) => ({ addedNodes: [], removedNodes: [], ...r }));
+    if (later) o.pending.push(...records);
+    else o.fn(records);
+  }
+}
+
 /** A page around `children`, whose top element anywhere is `hit` (the element acted on unless set). */
 function page(children: Node[]) {
   const body = el("body", {}, children);
   const p = {
     hit: null as Node | null,
+    location: { href: "http://localhost:3000/join" },
     window: { innerWidth: 1280, innerHeight: 800, requestAnimationFrame: (f: () => void) => queueMicrotask(f) },
     document: {
       body,
@@ -104,12 +134,20 @@ function page(children: Node[]) {
       activeElement: null,
       getElementById: () => null,
       querySelector: (css: string) => find(body, css),
+      querySelectorAll: (css: string) => (css.startsWith("dialog") ? all(body).filter((n) => n.getAttribute("role") === "dialog") : []),
+      getElementsByTagName: () => all(body),
       execCommand: () => false,
       elementFromPoint: () => p.hit,
     },
     getComputedStyle: (e: Node) => e.style,
   };
   return p;
+}
+
+/** Every element under `root`. */
+function all(root: Node): Node[] {
+  const kids = (root.childNodes ?? []).filter((k) => k.nodeType === 1);
+  return kids.flatMap((k) => [k, ...all(k)]);
 }
 
 /** `#id` in the stand-in page. */
@@ -123,7 +161,7 @@ function find(root: Node, css: string): Node | null {
 }
 
 async function run(p: ReturnType<typeof page>, input: Record<string, unknown>) {
-  const args = [p.window, p.document, p.getComputedStyle, FakeEvent, FakeEvent, FakeEvent, FakeEvent, FakeEvent, valueSetter, valueSetter];
+  const args = [p.window, p.document, p.getComputedStyle, FakeEvent, FakeEvent, FakeEvent, FakeEvent, FakeEvent, valueSetter, valueSetter, Observer, p.location];
   return JSON.parse(await agent(JSON.stringify(input), ...args));
 }
 
@@ -275,4 +313,50 @@ test("select reads the choice back, and refuses a disabled option", async () => 
   // The page's change handler puts it back.
   size.on = { change: () => options.forEach((o, i) => (o.selected = i === 0)) };
   assert.equal((await run(p, { cmd: "select", target: "#size", values: ["m"] })).error, 'combobox didn\'t keep the choice: it shows "Small"');
+});
+
+test("an action's changes are counted from just before it until the page holds still", async () => {
+  const dialog = el("div", { role: "dialog" }, ["Joined"], { style: { display: "none" } });
+  const join = el("button", {}, ["Join"], { id: "join" });
+  const p = page([join, dialog]);
+  p.hit = join;
+  join.onClick = () => {
+    dialog.style.display = "block";
+    Observer.fire([{ type: "childList", addedNodes: [{ nodeType: 1 }, { nodeType: 1 }, { nodeType: 3 }], removedNodes: [{ nodeType: 1 }] }, { type: "attributes" }]);
+    // One more lands after the click returns, before the page goes still.
+    Observer.fire([{ type: "childList", addedNodes: [{ nodeType: 1 }] }], true);
+    p.location.href = "http://localhost:3000/lobby";
+  };
+  assert.equal((await run(p, { cmd: "click", target: "#join", watch: true })).out, 'Clicked button "Join"');
+  const seen = await run(p, { cmd: "changes", quiet: 30, most: 200 });
+  assert.deepEqual(
+    { added: seen.added, removed: seen.removed, texts: seen.texts, attributes: seen.attributes, dialogs: seen.dialogs },
+    { added: 3, removed: 1, texts: 1, attributes: 1, dialogs: 1 },
+  );
+  assert.match(seen.state, /^http:\/\/localhost:3000\/lobby\|/);
+  assert.equal(Observer.live, null, "the watch ends as it's read");
+  // Read again, or on a page that never watched (another document): none of this page's.
+  assert.equal((await run(p, { cmd: "changes" })).gone, true);
+});
+
+test("a page that never holds still is read at the most, and a failed action leaves no watch", async () => {
+  const busy = el("button", {}, ["Spin"], { id: "spin" });
+  const p = page([busy]);
+  p.hit = busy;
+  await run(p, { cmd: "click", target: "#spin", watch: true });
+  const timer = setInterval(() => Observer.fire([{ type: "attributes" }]), 5);
+  const started = Date.now();
+  const seen = await run(p, { cmd: "changes", quiet: 50, most: 120 });
+  clearInterval(timer);
+  assert.ok(Date.now() - started < 400, "capped");
+  assert.ok(seen.attributes > 0);
+  busy.disabled = true;
+  assert.match((await run(p, { cmd: "click", target: "#spin", watch: true })).error, /is disabled/);
+  assert.equal(Observer.live, null);
+  // A still page's state is the same each time: what the loop nudge compares.
+  busy.disabled = false;
+  await run(p, { cmd: "click", target: "#spin", watch: true });
+  const a = (await run(p, { cmd: "changes", quiet: 0, most: 0 })).state;
+  await run(p, { cmd: "click", target: "#spin", watch: true });
+  assert.equal((await run(p, { cmd: "changes", quiet: 0, most: 0 })).state, a);
 });

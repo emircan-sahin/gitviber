@@ -81,11 +81,20 @@ unless the user has it on show.
   select <ref|css> <value>...  Choose a <select>'s options, by value or label, read back after
   check | uncheck <ref|css>    A checkbox, radio or switch on or off, read back after
   hover <ref|css>              The mouse over an element (no CSS :hover)
+
+  Each action (click, fill, type, select, check, hover, press, scroll) waits up to half a second
+  for what it set off, then ends with one line of what changed: `→ +3 elements, dialog opened,
+  url /lobby, 1 console error, POST /api/join 500`, or `→ no visible change`. The same command a
+  third time on an unchanged page says so.
+
   press <key>                  A key to the focused element: Enter, Tab, Escape, ArrowDown, Meta+a
   scroll <up|down|ref|css> [px]
-  wait <css> | --text <text> | --load | --ms <n> [--timeout <ms>]
-                               Until an element shows, the text does, the page has loaded, or
-                               the time is up; 10 s at most unless --timeout says (120 s at most)
+  wait <css> | --text <text> | --url <glob> | --fn <js> | --load | --ms <n> [--timeout <ms>]
+                               Until an element shows, the text does, the address matches (part
+                               of it; with * or **, all of it, or its path from a leading /), an
+                               expression is true, the page has loaded, or the time is up; 10 s
+                               at most unless --timeout says (120 s at most). A timeout says
+                               what was still not so
   eval <js>                    Runs in the page; prints the result as JSON
   screenshot [path] [--ref <ref|css>]
                                A PNG of the page, or of one element; prints its path
@@ -133,6 +142,9 @@ pub struct Reply {
     /// The exit status when not 0 or 1 (OFF).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<i32>,
+    /// The page as the command left it, for the nudge out of a loop (agent.rs); never sent.
+    #[serde(skip)]
+    pub state: Option<String>,
 }
 
 impl Reply {
@@ -281,6 +293,10 @@ pub enum Wait {
     Text(String),
     Load,
     Ms(u64),
+    /// The page's address, as output::url_matches takes it.
+    Url(String),
+    /// A JavaScript expression in the page, until it's true.
+    Fn(String),
 }
 
 /// The command a request names, or how to say it.
@@ -497,6 +513,8 @@ fn wait(args: &[String]) -> Result<Command, String> {
         match arg.as_str() {
             "--text" => what = Some(Wait::Text(value(&mut it, arg)?.clone())),
             "--load" => what = Some(Wait::Load),
+            "--url" => what = Some(Wait::Url(value(&mut it, arg)?.clone())),
+            "--fn" => what = Some(Wait::Fn(value(&mut it, arg)?.clone())),
             "--ms" => what = Some(Wait::Ms(number(value(&mut it, arg)?, arg)?)),
             "--timeout" => {
                 timeout =
@@ -509,9 +527,14 @@ fn wait(args: &[String]) -> Result<Command, String> {
     let what = match (what, css.is_empty()) {
         (Some(w), true) => w,
         (None, false) => Wait::Css(css.join(" ")),
+        (Some(Wait::Fn(_)), false) => {
+            return Err("Quote --fn's expression as one argument: wait --fn \"…\"".into())
+        }
         _ => {
             return Err(
-                "Usage: gitviber browser wait <css> | --text <text> | --load | --ms <n>".into(),
+                "Usage: gitviber browser wait <css> | --text <text> | --url <glob> | \
+                        --fn <js> | --load | --ms <n>"
+                    .into(),
             )
         }
     };
@@ -1117,6 +1140,23 @@ mod tests {
             Ok(Command::Wait(Wait::Load, WAIT))
         );
         assert_eq!(
+            parse("wait", &args("--url **/lobby --timeout 500")),
+            Ok(Command::Wait(
+                Wait::Url("**/lobby".into()),
+                Duration::from_millis(500)
+            ))
+        );
+        assert_eq!(
+            parse("wait", &words(&["--fn", "window.ready === true"])),
+            Ok(Command::Wait(
+                Wait::Fn("window.ready === true".into()),
+                WAIT
+            ))
+        );
+        assert!(parse("wait", &args("--fn window.ready === true"))
+            .unwrap_err()
+            .contains("Quote"));
+        assert_eq!(
             parse("eval", &args("document.title")),
             Ok(Command::Eval("document.title".into()))
         );
@@ -1182,6 +1222,9 @@ mod tests {
             ("wait", ""),
             ("wait", "--text"),
             ("wait", "--load .x"),
+            ("wait", "--url"),
+            ("wait", "--fn"),
+            ("wait", "--soon"),
             ("scroll", "down far"),
             ("screenshot", "a.png b.png"),
             ("console", "--all"),
