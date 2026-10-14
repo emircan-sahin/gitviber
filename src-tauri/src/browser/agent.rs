@@ -5,7 +5,7 @@ use super::control::{
     self, AgentScreen, Click, Command, Found, Listed, NewTab, Pane, Reply, Request, Scroll,
     Sessions, Tabs, Target, Wait,
 };
-use super::input::{self, Half, Keys, Pointer};
+use super::input::{self, Edit, Half, Keys, Pointer};
 use super::network;
 use super::picks::{self, Bounds};
 use super::sessions::{self, Session, Shelf};
@@ -38,6 +38,8 @@ const STORAGE_WRITE: &str = "const s = JSON.parse(input); if (location.origin !=
 const NO_INDEXED_DB: &str = "IndexedDB isn't carried.";
 /// The page's height and how far down it is, for the wheel: its window's, not a panel's in it.
 const SCROLLED: &str = "return JSON.stringify([innerHeight, Math.round(scrollY), Math.max(0, Math.round(document.documentElement.scrollHeight - innerHeight))]);";
+/// What a copy takes: the focused field's selected text (none of a password's), else the page's.
+const SELECTED: &str = "const el = document.activeElement; if (el && (el.localName === 'input' || el.localName === 'textarea') && typeof el.selectionStart === 'number') return el.type === 'password' ? '' : el.value.slice(el.selectionStart, el.selectionEnd); return String(getSelection() ?? '');";
 /// How long a page gets to scroll after the wheel turns: WebKit scrolls on a thread of its own.
 const SCROLLING: Duration = Duration::from_millis(100);
 
@@ -505,10 +507,27 @@ impl Tab {
         }))
     }
 
-    /// Key events from the keyboard, as `keys` asks.
+    /// Key events from the keyboard, as `keys` asks; a ⌘C, ⌘X or ⌘V then on the tab's own
+    /// clipboard.
     fn keys(&self, keys: Keys) -> Res<()> {
         let id = self.id.clone();
-        main(&self.app, move |_| super::agent_keys(&id, keys))
+        let Some(edit) = main(&self.app, move |_| super::agent_keys(&id, keys))? else {
+            return Ok(());
+        };
+        let selected = match edit {
+            Edit::Copy | Edit::Cut => {
+                let id = self.id.clone();
+                let read = later(&self.app, move |_, done| {
+                    super::agent_js(&id, false, SELECTED, "", done)
+                })??;
+                Some(read)
+            }
+            _ => None,
+        };
+        let id = self.id.clone();
+        main(&self.app, move |_| {
+            super::agent_clipboard(&id, edit, selected)
+        })
     }
 
     /// A chord down and up, held `hold` in between if asked, on the element with focus: its keys

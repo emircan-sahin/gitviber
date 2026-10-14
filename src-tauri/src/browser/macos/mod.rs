@@ -16,7 +16,7 @@ pub use agent::{
     agent_tabs,
 };
 pub use cookies::{agent_clear_store, agent_cookies, agent_own_store, agent_set_cookies};
-pub use native::{agent_keys, agent_pointer, agent_text};
+pub use native::{agent_clipboard, agent_keys, agent_pointer, agent_text};
 pub use page_tools::{console_clear, console_entries, network_log, pick};
 pub use page_view::{appearance, find, zoom};
 
@@ -122,6 +122,8 @@ struct Asked {
     dark: Option<bool>,
     /// Its cookies and storage, apart from the user's (None: theirs, `data_store`).
     store: Option<Retained<WKWebsiteDataStore>>,
+    /// What an agent's ⌘C or ⌘X took: its own clipboard, never the user's (native.rs).
+    clipboard: String,
 }
 
 thread_local! {
@@ -440,6 +442,31 @@ define_class!(
             agent::idle(&self.ivars().id);
         }
 
+        /// Tab past the page's last control: focus goes on to the window's next view, as WebKit
+        /// would send it, but not while an agent's keys go in, from a page without the window's
+        /// focus, or out of a panel: the user's focus stays where it is. Private: WebKit asks,
+        /// where it still does.
+        #[unsafe(method(_webView:takeFocus:))]
+        fn take_focus(&self, _web: &WKWebView, direction: isize) {
+            let Some(web) = self.ivars().web.load() else {
+                return;
+            };
+            let agents = !self.ivars().running.borrow().is_empty();
+            let mine = web.focused() && !agents && !panel::in_panel(&web);
+            let Some(window) = web.window().filter(|_| mine) else {
+                return;
+            };
+            // _WKFocusDirectionForward.
+            if direction == 1 {
+                match last_key_view(&web) {
+                    Some(last) => window.selectKeyViewFollowingView(&last),
+                    None => window.selectKeyViewFollowingView(&web),
+                }
+            } else {
+                window.selectKeyViewPrecedingView(&web);
+            }
+        }
+
         #[unsafe(method(gvSendConsole))]
         fn send_console(&self) {
             self.ivars().console_pending.set(false);
@@ -652,6 +679,15 @@ define_class!(
         }
     }
 );
+
+/// The last view of the web view's own key view loop, after which the window's next key view
+/// comes, as WebKit finds it (private, where it still has it).
+fn last_key_view(web: &WebView) -> Option<Retained<NSView>> {
+    if !web.respondsToSelector(sel!(_findLastViewInKeyViewLoop)) {
+        return None;
+    }
+    unsafe { msg_send![web, _findLastViewInKeyViewLoop] }
+}
 
 impl Delegate {
     fn new(mtm: MainThreadMarker, id: &str, app: AppHandle, web: &WebView) -> Retained<Self> {
@@ -905,6 +941,11 @@ pub fn create(
         config.setUserContentController(&content);
         let preferences = config.preferences();
         preferences.setJavaScriptCanOpenWindowsAutomatically(false);
+        // WebKit's default, kept for an agent's tab whatever the user's get: an element of its
+        // page in full screen would take over the user's screen.
+        if agent::routed(id) {
+            preferences.setElementFullscreenEnabled(false);
+        }
         // Inspect Element in the page's menu; private, so only where WebKit still has it.
         if preferences.respondsToSelector(sel!(_setDeveloperExtrasEnabled:)) {
             let _: () = msg_send![&*preferences, _setDeveloperExtrasEnabled: Bool::YES];
@@ -1437,6 +1478,12 @@ mod tests {
             if class.instance_method(sel).is_some() {
                 class.verify_sel::<(Bool,), ()>(sel).unwrap();
             }
+        }
+        let last = sel!(_findLastViewInKeyViewLoop);
+        if WKWebView::class().instance_method(last).is_some() {
+            WKWebView::class()
+                .verify_sel::<(), *mut NSView>(last)
+                .unwrap();
         }
         NSURLCredential::class()
             .metaclass()

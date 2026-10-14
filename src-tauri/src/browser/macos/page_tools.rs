@@ -32,6 +32,7 @@ const PICKER: &str = include_str!("../scripts/picker.js");
 const CONSOLE: &str = include_str!("../scripts/console.js");
 const NETWORK: &str = include_str!("../scripts/network.js");
 const COMPONENTS: &str = include_str!("../scripts/components.js");
+const CLIPBOARD: &str = include_str!("../scripts/clipboard.js");
 
 thread_local! {
     /// Settings → Browser's console switch: off, pages load without console.js.
@@ -119,23 +120,29 @@ pub(super) fn install(
 }
 
 /// network.js in an agent's tab, whatever the console switch says (an agent asks for its
-/// network itself); console.js while the console is on.
+/// network itself), and clipboard.js in each of its frames; console.js while the console is on.
 fn add_scripts(content: &WKUserContentController, agent: bool, mtm: MainThreadMarker) {
     if agent {
-        add_script(content, NETWORK, mtm);
+        add_script(content, NETWORK, true, mtm);
+        add_script(content, CLIPBOARD, false, mtm);
     }
     if CAPTURE.get() {
-        add_script(content, CONSOLE, mtm);
+        add_script(content, CONSOLE, true, mtm);
     }
 }
 
-fn add_script(content: &WKUserContentController, source: &str, mtm: MainThreadMarker) {
+fn add_script(
+    content: &WKUserContentController,
+    source: &str,
+    main_frame: bool,
+    mtm: MainThreadMarker,
+) {
     unsafe {
         let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
             WKUserScript::alloc(mtm),
             &NSString::from_str(source),
             WKUserScriptInjectionTime::AtDocumentStart,
-            true,
+            main_frame,
             &WKContentWorld::pageWorld(mtm),
         );
         content.addUserScript(&script);

@@ -23,8 +23,8 @@ mod sessions;
 pub use keys::set_app_keys;
 #[cfg(target_os = "macos")]
 pub use macos::{
-    agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
-    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_keys, agent_new_tab,
+    agent_appearance, agent_clear_store, agent_clipboard, agent_close_tab, agent_cookies,
+    agent_device, agent_dialogs, agent_done, agent_find_tab, agent_js, agent_keys, agent_new_tab,
     agent_own_store, agent_page, agent_pane_closed, agent_picture, agent_pointer, agent_running,
     agent_set_cookies, agent_tab, agent_tabs, agent_text, appearance, clear_data, close, close_all,
     close_root, configure, console_clear, console_entries, create, find, focus, go, hide, inspect,
@@ -32,8 +32,8 @@ pub use macos::{
 };
 #[cfg(not(target_os = "macos"))]
 pub use other::{
-    agent_appearance, agent_clear_store, agent_close_tab, agent_cookies, agent_device,
-    agent_dialogs, agent_done, agent_find_tab, agent_js, agent_keys, agent_new_tab,
+    agent_appearance, agent_clear_store, agent_clipboard, agent_close_tab, agent_cookies,
+    agent_device, agent_dialogs, agent_done, agent_find_tab, agent_js, agent_keys, agent_new_tab,
     agent_own_store, agent_page, agent_pane_closed, agent_picture, agent_pointer, agent_running,
     agent_set_cookies, agent_tab, agent_tabs, agent_text, appearance, clear_data, close, close_all,
     close_root, configure, console_clear, console_entries, create, find, focus, go, hide, inspect,
@@ -241,7 +241,7 @@ mod other {
     use super::{
         console::Entry,
         control::{AgentScreen, Found, Listed, NewTab},
-        input::{Keys, Pointer},
+        input::{Edit, Keys, Pointer},
         network::Log,
         picks::Bounds,
         sessions::Cookie,
@@ -330,7 +330,10 @@ mod other {
     pub fn agent_device(_: &AppHandle, _: &str, _: Option<AgentScreen>) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
-    pub fn agent_keys(_: &str, _: Keys) -> Res<()> {
+    pub fn agent_keys(_: &str, _: Keys) -> Res<Option<Edit>> {
+        Err(UNSUPPORTED.into())
+    }
+    pub fn agent_clipboard(_: &str, _: Edit, _: Option<String>) -> Res<()> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_text(_: &str, _: &str) -> Res<()> {

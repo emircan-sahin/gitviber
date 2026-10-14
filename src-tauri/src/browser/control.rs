@@ -95,8 +95,9 @@ fill, select and --synthetic go by the page's script.
   press <key> [--hold <ms>] [--synthetic]
                                A key to the focused element, down and up, as a Mac keyboard
                                sends it: Enter, Tab, Escape, ArrowDown, F5, a, A, ?, Meta+a,
-                               Shift+Tab. --hold: down that long. Meta+a and Meta+z/Shift+z do
-                               what the Edit menu does, in the page
+                               Shift+Tab. --hold: down that long. Meta+a, c, x, v and z do what
+                               the Edit menu does, in the page; c, x and v on the tab's own
+                               clipboard, never the user's, as is the page's own clipboard use
   key down <key> | key up <key>
                                A key held down until let go, as a game reads W; held modifiers
                                (key down Shift) go with later keys and clicks

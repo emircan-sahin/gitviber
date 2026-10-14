@@ -3,7 +3,7 @@
 //! (`isTrusted`, user activation). Never posted to the window server: the real cursor, the
 //! user's focus and the app's activation stay as they are.
 
-use super::{main_thread, view, WebView, GONE};
+use super::{ask, asked, main_thread, view, WebView, GONE};
 use crate::browser::input::{self, Edit, Half, KeyStep, Keys, Pointer};
 use crate::state::Res;
 use block2::RcBlock;
@@ -11,7 +11,9 @@ use objc2::encode::{Encoding, RefEncode};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
 use objc2::{msg_send, sel, ClassType, DefinedClass, MainThreadMarker, MainThreadOnly};
-use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSScreen, NSWindow};
+use objc2_app_kit::{
+    NSApplication, NSEvent, NSEventModifierFlags, NSEventType, NSScreen, NSWindow,
+};
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSProcessInfo, NSRange, NSString, NSTimer};
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -22,8 +24,9 @@ use std::sync::OnceLock;
 /// Without WebKit's own wait for the mouse events it holds, about a frame between events, so
 /// it doesn't coalesce them.
 const PACE_SECS: f64 = 0.016;
-/// Events of ours remembered, to know them again as WebKit hands them back.
-const REMEMBERED: usize = 64;
+/// Events of ours remembered, to know them again as WebKit hands them back: a long scroll's
+/// wheel turns mustn't push out a key sent just before.
+const REMEMBERED: usize = 256;
 
 thread_local! {
     /// The buttons WebKit reads as held while one of our events goes in (`pressed`).
@@ -63,6 +66,45 @@ fn stand_in_for_buttons() {
     // of ours can reach it, on the main thread.
     let original = unsafe { method.set_implementation(std::mem::transmute::<Pressed, Imp>(ours)) };
     let _ = PRESSED.set(original);
+}
+
+/// `-[NSApplication sendEvent:]` as it was.
+static SEND_EVENT: OnceLock<Imp> = OnceLock::new();
+
+type SendEvent = extern "C-unwind" fn(&AnyObject, Sel, &NSEvent);
+
+/// A key of ours no page handled comes back here: WebKit sends it on as the app's (its
+/// doneWithKeyEvent), to the key window and the menus. The page had it already; the user's
+/// terminal mustn't type it, nor a ⌘W close the user's pane.
+extern "C-unwind" fn send_event(app: &AnyObject, sel: Sel, event: &NSEvent) {
+    let key = matches!(
+        event.r#type(),
+        NSEventType::KeyDown | NSEventType::KeyUp | NSEventType::FlagsChanged
+    );
+    if key && ours(event) {
+        return;
+    }
+    if let Some(&original) = SEND_EVENT.get() {
+        // SAFETY: the method's own implementation, of this same signature.
+        let original = unsafe { std::mem::transmute::<Imp, SendEvent>(original) };
+        original(app, sel, event);
+    }
+}
+
+/// Keys of ours dropped as they come back, from the first one on.
+fn drop_resent_keys(mtm: MainThreadMarker) {
+    if SEND_EVENT.get().is_some() {
+        return;
+    }
+    let app = NSApplication::sharedApplication(mtm);
+    let Some(method) = app.class().instance_method(sel!(sendEvent:)) else {
+        return;
+    };
+    let ours: SendEvent = send_event;
+    // SAFETY: an implementation of the same signature, set on the main thread, where events
+    // come, with the original kept first.
+    let _ = SEND_EVENT.set(method.implementation());
+    unsafe { method.set_implementation(std::mem::transmute::<SendEvent, Imp>(ours)) };
 }
 
 fn uptime() -> f64 {
@@ -173,9 +215,11 @@ fn mouse(
 }
 
 /// Key events on the tab, as `keys` asks, with the keys its agents hold (input.rs `Held`); then
-/// what the Edit menu does for a ⌘ key.
-pub fn agent_keys(id: &str, keys: Keys) -> Res<()> {
-    main_thread()?;
+/// what the Edit menu does for a ⌘ key, but for a copy, cut or paste, left to the caller: those
+/// read the page's selection first (`agent_clipboard`).
+pub fn agent_keys(id: &str, keys: Keys) -> Res<Option<Edit>> {
+    let mtm = main_thread()?;
+    drop_resent_keys(mtm);
     let v = view(id).ok_or(GONE)?;
     let window = v.web.window().ok_or("The page isn't drawn now.")?;
     let mut held = v.web.ivars().held.borrow_mut();
@@ -188,10 +232,7 @@ pub fn agent_keys(id: &str, keys: Keys) -> Res<()> {
     for step in steps {
         key(&v.web, &window, step)?;
     }
-    if let Some(edit) = edit {
-        edit_page(&v.web, edit);
-    }
-    Ok(())
+    Ok(edit.filter(|&edit| !edit_page(&v.web, edit)))
 }
 
 fn key(web: &WebView, window: &NSWindow, step: KeyStep) -> Res<()> {
@@ -228,8 +269,9 @@ fn key(web: &WebView, window: &NSWindow, step: KeyStep) -> Res<()> {
 }
 
 /// What the Edit menu would do for a ⌘ key, on the page's own web view: AppKit sends it no
-/// menu action for a key it didn't see.
-fn edit_page(web: &WebView, edit: Edit) {
+/// menu action for a key it didn't see. False for a copy, cut or paste, which go by the tab's
+/// own clipboard instead.
+fn edit_page(web: &WebView, edit: Edit) -> bool {
     match edit {
         Edit::SelectAll => {
             let _: () = unsafe { msg_send![web, selectAll: None::<&AnyObject>] };
@@ -244,9 +286,38 @@ fn edit_page(web: &WebView, edit: Edit) {
                 };
             }
         }
-        Edit::Copy | Edit::Cut | Edit::Paste => {}
+        Edit::Copy | Edit::Cut | Edit::Paste => return false,
     }
+    true
 }
+
+/// The rest of ⌘C, ⌘X or ⌘V, on the tab's own clipboard, never the user's: what the page had
+/// selected kept (a copy, a cut), the selection deleted (a cut), or what's kept put in at the
+/// caret (a paste), as typed.
+pub fn agent_clipboard(id: &str, edit: Edit, selected: Option<String>) -> Res<()> {
+    main_thread()?;
+    let v = view(id).ok_or(GONE)?;
+    if let Some(selected) = selected {
+        ask(id, |a| a.clipboard = selected);
+    }
+    match edit {
+        Edit::Cut => {
+            let _: () = unsafe { msg_send![&*v.web, delete: None::<&AnyObject>] };
+        }
+        Edit::Paste => {
+            let kept = NSString::from_str(&asked(id).clipboard);
+            if kept.length() > 0 {
+                let _: () =
+                    unsafe { msg_send![&*v.web, insertText: &*kept, replacementRange: CARET] };
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// NSNotFound: at the caret, in place of what's selected.
+const CARET: NSRange = NSRange::new(isize::MAX as usize, 0);
 
 /// `text` put in at the page's caret as an input method puts it (NSTextInputClient), a
 /// character at a time: the page gets its input events, whatever the user's keyboard or input
@@ -254,15 +325,13 @@ fn edit_page(web: &WebView, edit: Edit) {
 pub fn agent_text(id: &str, text: &str) -> Res<()> {
     main_thread()?;
     let v = view(id).ok_or(GONE)?;
-    // NSNotFound: at the caret, replacing the selection.
-    let nowhere = NSRange::new(isize::MAX as usize, 0);
     for (n, line) in text.split('\n').enumerate() {
         if n > 0 {
             agent_keys(id, Keys::Press("Enter".into(), Half::Both))?;
         }
         for c in line.chars() {
             let c = NSString::from_str(c.encode_utf8(&mut [0; 4]));
-            let _: () = unsafe { msg_send![&*v.web, insertText: &*c, replacementRange: nowhere] };
+            let _: () = unsafe { msg_send![&*v.web, insertText: &*c, replacementRange: CARET] };
         }
     }
     Ok(())
@@ -436,6 +505,11 @@ mod tests {
         web.verify_sel::<(&NSString, NSRange), ()>(sel!(insertText:replacementRange:))
             .unwrap();
         web.verify_sel::<(), *mut AnyObject>(sel!(undoManager))
+            .unwrap();
+        web.verify_sel::<(Option<&AnyObject>,), ()>(sel!(delete:))
+            .unwrap();
+        NSApplication::class()
+            .verify_sel::<(&NSEvent,), ()>(sel!(sendEvent:))
             .unwrap();
     }
 }
