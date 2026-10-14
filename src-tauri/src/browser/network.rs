@@ -1011,4 +1011,127 @@ mod tests {
         assert!(listed.out.unwrap().contains("http://localhost/api"));
         assert!(log.entries().is_empty());
     }
+
+    #[test]
+    fn a_dev_page_busy_for_long_stays_within_its_rings() {
+        let mut log = Log::default();
+        let resources = |from: usize, n: usize| -> Vec<Value> {
+            (from..from + n)
+                .map(|i| {
+                    json!({ "key": format!("d:r{i}"), "kind": "resource", "initiator": "script",
+                                 "url": format!("http://localhost:5173/src/Thing{i}.tsx?import"),
+                                 "start": i as f64, "duration": 4.0, "size": 1200.0 })
+                })
+                .collect()
+        };
+        for batch in resources(0, 641).chunks(100) {
+            assert!(post(&mut log, Value::Array(batch.to_vec())));
+        }
+        assert!(post(
+            &mut log,
+            json!([{ "key": "d:hmr", "kind": "ws", "method": "GET", "url": "ws://localhost:5173/?token=t-1", "start": 1.0 }])
+        ));
+        let headers: Vec<(String, String)> = (0..120)
+            .map(|i| (format!("x-h{i}"), "v".repeat(140)))
+            .collect();
+        let (mut requests, mut loads, mut frames) = (1usize, 641usize, 0u32);
+        for s in 0..900usize {
+            let key = format!("d:p{s}");
+            let start = 1000.0 * s as f64;
+            assert!(post(
+                &mut log,
+                json!([{ "key": key, "kind": "fetch", "method": "GET", "url": format!("http://localhost:5173/api/poll?n={s}"),
+                         "start": start, "requestHeaders": headers }])
+            ));
+            assert!(post(
+                &mut log,
+                json!([{ "key": key, "status": 200, "statusText": "OK", "responseHeaders": headers }])
+            ));
+            assert!(post(
+                &mut log,
+                json!([{ "key": key, "duration": 5.0,
+                         "responseBody": { "type": "application/json", "text": "é😀".repeat(9000), "size": 50000.0, "cut": true } }])
+            ));
+            requests += 1;
+            if s % 5 == 0 {
+                assert!(post(
+                    &mut log,
+                    json!([{ "key": format!("d:x{s}"), "kind": "xhr", "method": "POST", "url": "http://localhost:5173/api/metrics",
+                             "start": start + 1.0, "status": 204, "duration": 2.0 }])
+                ));
+                requests += 1;
+            }
+            if s % 30 == 0 {
+                for _ in 0..21 {
+                    frames += 1;
+                    // Once pushed out, the socket's frames go nowhere.
+                    let _ = post(
+                        &mut log,
+                        json!([{ "key": "d:hmr", "frame": { "n": frames, "out": false, "at": start, "text": "u".repeat(5000), "size": 5000.0 } }]),
+                    );
+                }
+                for batch in resources(10_000 + s * 40, 40).chunks(100) {
+                    assert!(post(&mut log, Value::Array(batch.to_vec())));
+                }
+                loads += 40;
+            }
+        }
+        assert_eq!(log.requests.len(), KEEP);
+        assert_eq!(log.resources.len(), KEEP_RESOURCES);
+        assert_eq!(
+            log.dropped(),
+            (requests - KEEP + loads - KEEP_RESOURCES) as u64
+        );
+        for e in log.entries() {
+            for list in [&e.request_headers, &e.response_headers] {
+                let held: usize = list
+                    .iter()
+                    .map(|(k, v)| k.chars().count() + v.chars().count())
+                    .sum();
+                assert!(list.len() <= HEADERS && held <= HEADERS_TEXT);
+            }
+            for b in [&e.request_body, &e.response_body].into_iter().flatten() {
+                assert!(b.text.as_ref().is_none_or(|t| t.chars().count() <= BODY));
+            }
+            assert!(e.frames.len() <= FRAMES);
+        }
+        let list = list_text(&log, &Filter::default());
+        assert_eq!(list.lines().count(), 1 + KEEP + KEEP_RESOURCES);
+        let last = log.get(log.next).unwrap();
+        assert!(entry_text(last, 1e9).len() < 200_000);
+    }
+
+    #[test]
+    #[ignore = "BUG: a fetch's method, an error, an initiator and a body's type reach the terminal raw"]
+    fn bug_no_field_a_page_posts_reaches_the_terminal_raw() {
+        let mut log = Log::default();
+        // fetch("/", { method: "\x1b[2J" }) posts its start before WebKit refuses the method; a
+        // server's Content-Type may carry byte 0x9b, which Headers hands over as U+009B.
+        assert!(post(
+            &mut log,
+            json!([{ "key": "e", "kind": "fetch", "method": "\u{1b}[2J", "url": "http://localhost/", "start": 0.0,
+                     "error": "\u{9b}31m", "responseBody": { "type": "text/\u{1b}]8;;http://x.test\u{7}", "size": 1.0 } }])
+        ));
+        assert!(post(
+            &mut log,
+            json!([{ "key": "r", "kind": "resource", "initiator": "\u{1b}[1m", "url": "http://localhost/a.js", "start": 1.0 }])
+        ));
+        let mut shown = vec![list_text(&log, &Filter::default())];
+        shown.extend(log.entries().into_iter().map(|e| entry_text(e, 0.0)));
+        for s in shown {
+            assert!(
+                !s.chars().any(|c| c.is_control() && c != '\n' && c != '\t'),
+                "{s:?}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "BUG: a lone surrogate the page sent (posted as \\ud83d) loses the whole post"]
+    fn bug_a_lone_surrogate_costs_only_itself() {
+        let mut log = Log::default();
+        assert!(log.add(
+            r#"[{"key":"s","kind":"fetch","method":"POST","url":"http://localhost/save","requestBody":{"text":"{\"note\":\"hi \ud83d\"}","size":17,"cut":false}}]"#
+        ));
+    }
 }
