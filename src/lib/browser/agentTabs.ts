@@ -11,6 +11,8 @@ import type { Scheme } from "./look";
 // keeps it): taken in once it's open, never made the active tab.
 
 type BrowserSelection = Extract<Selection, { kind: "browser" }>;
+type Tab = { key: string; sel: Selection };
+const isBrowser = (t: Tab): t is { key: string; sel: BrowserSelection } => t.sel.kind === "browser";
 
 const opened = createStore<readonly { root: string; sel: BrowserSelection }[]>([]);
 // Whose each is, by tab id, for as long as this page lives: the backend sends a pane's commands
@@ -21,12 +23,31 @@ listenHere<{ id: string; url: string; root: string; pty: number }>("browser-open
   opened.set([...opened.get(), { root, sel: { kind: "browser", id, url } }]);
 }).catch(() => {});
 
-// Tabs their agents closed (`tab close`), by id, until their workspace closes them too.
+// Tabs their agents closed (`tab close`, or unused for long), by id, until their workspace closes
+// them too; one not taken in yet just isn't.
 const shut = createStore<ReadonlySet<string>>(new Set());
 listenHere<{ id: string }>("browser-closed", ({ payload: { id } }) => {
-  opened.set(opened.get().filter((o) => o.sel.id !== id));
-  shut.set(new Set(shut.get()).add(id));
+  const waiting = opened.get();
+  if (waiting.some((o) => o.sel.id === id)) {
+    opened.set(waiting.filter((o) => o.sel.id !== id));
+    forgetAgentTab(id);
+  } else shut.set(new Set(shut.get()).add(id));
 }).catch(() => {});
+
+/** A closed tab is no agent's: reopened, it's the user's (the backend forgets it too). */
+export function forgetAgentTab(id: string) {
+  const drop = <V>(store: ReturnType<typeof createStore<ReadonlyMap<string, V>>>) => {
+    const next = new Map(store.get());
+    if (next.delete(id)) store.set(next);
+  };
+  drop(owners);
+  drop(asked);
+  if (shut.get().has(id)) {
+    const left = new Set(shut.get());
+    left.delete(id);
+    shut.set(left);
+  }
+}
 
 /** The terminal (pty) whose agent opened tab `id`; undefined for the user's own tabs. */
 export const useAgentPty = (id: string) => owners.use().get(id);
@@ -39,8 +60,8 @@ const ask = (id: string, change: Asked) => asked.set(new Map(asked.get()).set(id
 listenHere<{ id: string; device: DeviceChoice | null }>("browser-device", ({ payload: { id, device } }) => ask(id, { device })).catch(() => {});
 listenHere<{ id: string; dark: boolean | null }>("browser-appearance", ({ payload: { id, dark } }) => ask(id, { scheme: dark === null ? null : dark ? "dark" : "light" })).catch(() => {});
 
-/** `root`'s agent tabs added and closed as their agents say, and its tabs' devices and schemes as they choose them. */
-export function useAgentTabs(root: string, tabs: readonly { key: string; sel: Selection }[], add: (sel: Selection) => void, update: (key: string, sel: Selection) => void, close: (keys: string[]) => void) {
+/** `root`'s agent tabs added and closed as their agents say (`discard`: closed for good, no ⇧⌘T), and its tabs' devices and schemes as they choose them. */
+export function useAgentTabs(root: string, tabs: readonly Tab[], add: (sel: Selection) => void, update: (key: string, sel: Selection) => void, discard: (keys: string[]) => void) {
   const waiting = opened.use();
   useEffect(() => {
     const mine = waiting.filter((o) => o.root === root);
@@ -51,19 +72,14 @@ export function useAgentTabs(root: string, tabs: readonly { key: string; sel: Se
 
   const closing = shut.use();
   useEffect(() => {
-    const gone = tabs.filter((t) => t.sel.kind === "browser" && closing.has(t.sel.id));
-    if (!gone.length) return;
-    const left = new Set(closing);
-    for (const t of gone) if (t.sel.kind === "browser") left.delete(t.sel.id);
-    shut.set(left);
-    close(gone.map((t) => t.key));
-  }, [closing, tabs, close]);
+    const gone = tabs.filter(isBrowser).filter((t) => closing.has(t.sel.id));
+    if (gone.length) discard(gone.map((t) => t.key));
+  }, [closing, tabs, discard]);
 
   const chosen = asked.use();
   useEffect(() => {
     const next = new Map(chosen);
-    for (const { key, sel } of tabs) {
-      if (sel.kind !== "browser") continue;
+    for (const { key, sel } of tabs.filter(isBrowser)) {
       const change = next.get(sel.id);
       if (!change) continue;
       next.delete(sel.id);

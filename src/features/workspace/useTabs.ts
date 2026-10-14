@@ -1,6 +1,7 @@
 import { arrayMove } from "@dnd-kit/sortable";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { browserApi, type RepoStatus } from "@/lib/api";
+import { forgetAgentTab } from "@/lib/browser/agentTabs";
 import { forgetBrowser } from "@/lib/browser/store";
 import { newerCopy, useGitHubCacheVersion } from "@/lib/github/githubCache";
 import { editPath, type Selection, selectionKey, selectionPath } from "@/lib/repo/selection";
@@ -41,7 +42,8 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
   const [closed, setClosed] = useState<{ sel: Selection; index: number }[]>([]);
   const tabsNow = useRef(tabs);
   tabsNow.current = tabs;
-  const dropTabs = useCallback((keys: string[]) => {
+  // `reopen`: onto ⇧⌘T's list; not a tab its agent closed, whose page can't come back as it was.
+  const dropTabs = useCallback((keys: string[], reopen = true) => {
     const gone = new Set(keys);
     const shut = tabsNow.current.flatMap((t, index) => (gone.has(t.key) ? [{ sel: t.sel, index }] : []));
     if (!shut.length) return;
@@ -50,9 +52,10 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
       if (sel.kind !== "browser") continue;
       void browserApi.close(sel.id).catch(() => {});
       forgetBrowser(sel.id);
+      forgetAgentTab(sel.id);
     }
     // The leftmost comes back first, so each returns to its own place.
-    setClosed((c) => [...c.filter((t) => !gone.has(selectionKey(t.sel))), ...shut.reverse()].slice(-20));
+    if (reopen) setClosed((c) => [...c.filter((t) => !gone.has(selectionKey(t.sel))), ...shut.reverse()].slice(-20));
     setTabState(({ tabs: prev, active }) => {
       const next = prev.filter((t) => !gone.has(t.key));
       if (!active || !gone.has(active)) return { tabs: next, active };
@@ -71,6 +74,7 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     [dropTabs],
   );
   const close = useCallback((key: string) => closeTabs([key]), [closeTabs]);
+  const discardTabs = useCallback((keys: string[]) => dropTabs(keys, false), [dropTabs]);
   // Close Others and the like, around the active tab.
   const closeAround = (which: TabGroup) => {
     const i = tabs.findIndex((t) => t.key === activeKey);
@@ -194,5 +198,5 @@ export function useTabs(saved: ReturnType<typeof loadWorkspace>, status: RepoSta
     });
   }, [gitHubVersion]);
 
-  return { tabs, activeKey, setActiveKey, open, add, update, closeTabs, close, closeAround, reopen, canReopen: closed.length > 0, moveTab, goTab, stepTab, pin, onPathMoved };
+  return { tabs, activeKey, setActiveKey, open, add, update, closeTabs, discardTabs, close, closeAround, reopen, canReopen: closed.length > 0, moveTab, goTab, stepTab, pin, onPathMoved };
 }
