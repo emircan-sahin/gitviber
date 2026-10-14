@@ -131,10 +131,13 @@ you look again; Settings → Browser sets how many stay open and for how long, a
 worktree's pages when its agent finishes.
 
 Agents can drive the browser themselves once you turn it on in Settings → Browser (it's off until
-you do). Each terminal pane's agent gets a tab of its own, opened in the background without taking
-yours: it opens pages, reads them as a tree it can act on, clicks, types, takes screenshots and
-reads the console with `gitviber browser`. `gitviber browser help` lists it all, and Settings has a
-note to paste into your `CLAUDE.md` or `AGENTS.md`.
+you do). The agents in a terminal pane get tabs of their own, opened in the background without
+taking yours and named so each agent keeps to its own: with `gitviber browser` they open pages, read
+them as a tree they can act on, click, type, take screenshots and read the console. Each tab signs
+in apart from the others and from you, so two tabs can be two accounts, and a login can be saved as
+a session for another tab to load. A tab no command touched for a while slows down, and one left
+unused for an hour closes. `gitviber browser help` lists it all, and Settings has a note to paste
+into your `CLAUDE.md` or `AGENTS.md`.
 
 ### Browse the code, not just the diff
 
@@ -270,10 +273,13 @@ click it. Commit message suggestions go wherever the command you picked sends th
 Obsidian vault, GitViber reads Obsidian's own list of vaults on your disk; it never touches the
 vault's `.obsidian` folder. Browser tabs keep their own cookies, site storage and cache, apart
 from the app's, and load pages straight from where they're served; your other browsers' sign-ins
-don't carry over, and Settings → Browser → Clear Browsing Data empties them. What an agent reads of a
-page, picks or console lines included, goes wherever that agent sends it. Letting agents use the
-browser opens a socket on your Mac only, in a folder only you can enter, that only GitViber's own
-terminals have the key to.
+don't carry over, and Settings → Browser → Clear Browsing Data empties them. An agent's tabs each
+keep theirs in memory, apart from yours, unless the agent asks for yours. Logins an agent saves as
+sessions (`gitviber browser session save`), their cookies and site storage included, are kept in
+the app's data folder, readable by you alone, and never printed or sent anywhere; Clear Browsing
+Data deletes them too. What an agent reads of a page, picks or console lines included, goes
+wherever that agent sends it. Letting agents use the browser opens a socket on your Mac only, in a
+folder only you can enter, that only GitViber's own terminals have the keys to, each pane its own.
 
 ## FAQ
 
