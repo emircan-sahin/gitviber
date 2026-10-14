@@ -167,6 +167,66 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
     }
 
+    /// Two tabs saving under one name at once (each tab has its own turn, so nothing orders
+    /// them): the file reads as one of them whole, never a mix. Both write the same `.part`.
+    #[test]
+    fn saves_under_one_name_at_once_leave_one_whole_session() {
+        let data =
+            std::env::temp_dir().join(format!("gitviber-sessions-race-{}", std::process::id()));
+        let shelf = std::sync::Arc::new(Shelf::of(&data, "/w/race"));
+        let mut long = session("https://app.test");
+        long.local = (0..400)
+            .map(|i| (format!("k{i}"), "v".repeat(64)))
+            .collect();
+        let short = session("https://b.test");
+        let (rounds, mut torn, mut failed) = (3000, 0, 0);
+        for _ in 0..rounds {
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let saves: Vec<_> = [long.clone(), short.clone()]
+                .into_iter()
+                .map(|s| {
+                    let (shelf, barrier) = (shelf.clone(), barrier.clone());
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        shelf.save("same", &s)
+                    })
+                })
+                .collect();
+            let said: Vec<_> = saves.into_iter().map(|t| t.join().unwrap()).collect();
+            let got = shelf.load("same");
+            if got != Ok(long.clone()) && got != Ok(short.clone()) {
+                torn += 1;
+            }
+            failed += said.iter().filter(|s| s.is_err()).count();
+        }
+        let _ = std::fs::remove_dir_all(&data);
+        assert_eq!(
+            torn, 0,
+            "of {rounds} rounds, {torn} left a file neither save wrote ({failed} saves failed)"
+        );
+    }
+
+    /// macOS folders ignore case by default: two names `named` tells apart are one file.
+    #[test]
+    fn names_that_differ_only_in_case_are_two_sessions() {
+        let data =
+            std::env::temp_dir().join(format!("gitviber-sessions-case-{}", std::process::id()));
+        let shelf = Shelf::of(&data, "/w/case");
+        shelf.save("Prod", &session("https://prod.test")).unwrap();
+        shelf
+            .save("prod", &session("http://localhost:3000"))
+            .unwrap();
+        let prod = shelf.load("Prod").map(|s| s.origin);
+        let names: Vec<String> = shelf.list().into_iter().map(|s| s.0).collect();
+        let _ = std::fs::remove_dir_all(&data);
+        assert_eq!(
+            prod,
+            Ok("https://prod.test".into()),
+            "Prod was overwritten by prod"
+        );
+        assert_eq!(names, ["Prod", "prod"]);
+    }
+
     #[test]
     fn a_cookie_goes_to_its_domain_and_the_hosts_under_it() {
         assert!(for_host("app.test", ".app.test"));
