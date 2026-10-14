@@ -82,6 +82,19 @@ pub fn browser_configure(
     browser::server::set_enabled(&app, agent_control);
 }
 
+/// Settings → Browser: the gitviber-browser skill written for each agent (`on`: agent control
+/// and the skill setting both on) or removed, and where each one stands.
+#[tauri::command]
+pub async fn browser_skill(on: bool) -> Res<Vec<browser::skill::Target>> {
+    blocking(move || Ok(browser::skill::sync(on))).await
+}
+
+/// The skill's text for an agent's instructions file, for agents without skills.
+#[tauri::command]
+pub fn browser_agent_note() -> String {
+    browser::skill::note()
+}
+
 /// The element picker on or off; what it picks comes as `browser-picked`.
 #[tauri::command]
 pub fn browser_pick(id: String, on: bool) -> Res<()> {

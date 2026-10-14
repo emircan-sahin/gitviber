@@ -454,6 +454,8 @@ pub fn run() {
             commands::browser::browser_focus,
             commands::browser::browser_set_app_keys,
             commands::browser::browser_configure,
+            commands::browser::browser_skill,
+            commands::browser::browser_agent_note,
             commands::browser::browser_pick,
             commands::browser::browser_console,
             commands::browser::browser_console_clear,
