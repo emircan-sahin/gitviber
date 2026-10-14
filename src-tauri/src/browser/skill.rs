@@ -307,4 +307,130 @@ mod tests {
         assert_eq!(targets[0].status, Status::Failed);
         assert!(targets[0].error.is_some());
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_skill_is_replaced_by_a_file_never_written_through() {
+        let home = home();
+        let h = home.path();
+        let file = claude(h);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        // Ours, but kept elsewhere (a dotfiles repo): the link goes, what it points at stays.
+        let elsewhere = h.join("dotfiles-skill.md");
+        let old = format!("---\n---\n{MARKER}\nold help");
+        std::fs::write(&elsewhere, &old).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &file).unwrap();
+        assert_eq!(sync_in(h, true, &text())[0].status, Status::Written);
+        assert!(!std::fs::symlink_metadata(&file).unwrap().is_symlink());
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), old);
+
+        // Theirs behind a link: neither the link nor its file touched, on or off.
+        std::fs::remove_file(&file).unwrap();
+        std::fs::write(&elsewhere, "mine").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &file).unwrap();
+        for on in [true, false] {
+            assert_eq!(sync_in(h, on, &text())[0].status, Status::Theirs);
+            assert!(std::fs::symlink_metadata(&file).unwrap().is_symlink());
+            assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "mine");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_skills_folder_gets_the_skill_where_it_points() {
+        let home = home();
+        let h = home.path();
+        let shared = h.join("dotfiles/skills");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::create_dir(h.join(".claude")).unwrap();
+        std::os::unix::fs::symlink(&shared, h.join(".claude/skills")).unwrap();
+        assert_eq!(sync_in(h, true, &text())[0].status, Status::Written);
+        assert!(shared.join("gitviber-browser/SKILL.md").is_file());
+        assert_eq!(sync_in(h, false, &text())[0].status, Status::None);
+        assert!(!shared.join("gitviber-browser").exists() && shared.is_dir());
+    }
+
+    #[test]
+    fn a_folder_named_skill_md_fails_and_stays() {
+        let home = home();
+        let h = home.path();
+        let file = claude(h);
+        std::fs::create_dir_all(file.join("inside")).unwrap();
+        for on in [true, false] {
+            let target = &sync_in(h, on, &text())[0];
+            assert_eq!(target.status, Status::Failed);
+            assert!(target.error.is_some());
+            assert!(file.join("inside").is_dir());
+        }
+    }
+
+    #[test]
+    fn a_file_not_utf8_is_theirs_and_kept() {
+        let home = home();
+        let h = home.path();
+        let file = claude(h);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let bytes = [MARKER.as_bytes(), b"\n\xff\xfe"].concat();
+        std::fs::write(&file, &bytes).unwrap();
+        for on in [true, false] {
+            assert_eq!(sync_in(h, on, &text())[0].status, Status::Theirs);
+            assert_eq!(std::fs::read(&file).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn two_writers_at_once_leave_one_whole_skill_and_no_part_files() {
+        let home = home();
+        let h = home.path().to_path_buf();
+        std::fs::create_dir(h.join(".claude")).unwrap();
+        let texts = [
+            format!("---\n---\n{MARKER}\n{}", "a".repeat(64 * 1024)),
+            format!("---\n---\n{MARKER}\n{}", "b".repeat(64 * 1024)),
+        ];
+        std::thread::scope(|s| {
+            for text in &texts {
+                let h = &h;
+                s.spawn(move || {
+                    for _ in 0..200 {
+                        let status = sync_in(h, true, text)[0].status;
+                        assert_eq!(status, Status::Written);
+                    }
+                });
+            }
+        });
+        let left = std::fs::read_to_string(claude(&h)).unwrap();
+        assert!(texts.contains(&left));
+        let entries = std::fs::read_dir(claude(&h).parent().unwrap())
+            .unwrap()
+            .count();
+        assert_eq!(entries, 1);
+    }
+
+    #[test]
+    #[ignore = "bug: the marker counts anywhere in the file, so a user's own skill quoting it is deleted"]
+    fn a_skill_that_only_quotes_the_marker_is_theirs() {
+        let home = home();
+        let h = home.path();
+        let file = claude(h);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let mine = format!(
+            "---\nname: gitviber-browser\ndescription: my notes\n---\n# Mine\n\nGitViber marks its own with:\n\n```\n{MARKER}\n```\n"
+        );
+        std::fs::write(&file, &mine).unwrap();
+        assert_eq!(sync_in(h, false, &text())[0].status, Status::Theirs);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), mine);
+    }
+
+    #[test]
+    #[ignore = "bug: a part file a crash left behind is never swept, and keeps the folder from going"]
+    fn a_part_file_left_by_a_crash_is_swept_with_the_skill() {
+        let home = home();
+        let h = home.path();
+        std::fs::create_dir(h.join(".claude")).unwrap();
+        sync_in(h, true, &text());
+        let folder = claude(h).parent().unwrap().to_path_buf();
+        std::fs::write(folder.join(".SKILL.md.0123456789abcdef.part"), "half").unwrap();
+        assert_eq!(sync_in(h, false, &text())[0].status, Status::None);
+        assert!(!folder.exists());
+    }
 }
