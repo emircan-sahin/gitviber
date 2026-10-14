@@ -239,7 +239,7 @@ pub fn root_key(path: &str) -> String {
 mod other {
     use super::{
         console::Entry,
-        control::{AgentScreen, Listed, NewTab},
+        control::{AgentScreen, Found, Listed, NewTab},
         network::Log,
         picks::Bounds,
         sessions::Cookie,
@@ -256,7 +256,7 @@ mod other {
         _: &str,
         _: Option<&str>,
         _: Option<&str>,
-    ) -> Res<(String, bool)> {
+    ) -> Res<(String, Found)> {
         Err(UNSUPPORTED.into())
     }
     pub fn agent_new_tab(

@@ -2,7 +2,8 @@
 //! (server.rs) as a few steps on the main thread, where the views are, waiting in between.
 
 use super::control::{
-    self, AgentScreen, Command, Listed, NewTab, Pane, Reply, Request, Scroll, Sessions, Tabs, Wait,
+    self, AgentScreen, Command, Found, Listed, NewTab, Pane, Reply, Request, Scroll, Sessions,
+    Tabs, Wait,
 };
 use super::network;
 use super::picks::{self, Bounds};
@@ -55,11 +56,12 @@ fn command(app: &AppHandle, req: Request) -> Res<Reply> {
         Command::Open(url) => Some(url.clone()),
         _ => None,
     };
-    let (id, made) = main(app, move |app| {
+    let (id, found) = main(app, move |app| {
         super::agent_tab(app, pty, &root, name.as_deref(), first.as_deref())
     })?;
-    // `made`: just made, at the address an open asks for.
-    drive(app, id, |tab| tab.run(cmd, made, &req.cwd))
+    // Made: just made, at the address an open asks for.
+    let made = found == Found::Made;
+    drive(app, id, found, |tab| tab.run(cmd, made, &req.cwd))
 }
 
 /// The pane the request came from (its token says so: server.rs), and its own folder as its
@@ -80,8 +82,14 @@ fn target(name: Option<String>) -> Res<Option<String>> {
     }
 }
 
-/// `steps` on tab `id` in its turn, as one command.
-fn drive<T>(app: &AppHandle, id: String, steps: impl FnOnce(&Tab) -> Res<T>) -> Res<T> {
+/// `steps` on tab `id` in its turn, as one command; on a tab just loaded again from parking,
+/// once its page has, as reading or acting on it before then finds nothing.
+fn drive<T>(
+    app: &AppHandle,
+    id: String,
+    found: Found,
+    steps: impl FnOnce(&Tab) -> Res<T>,
+) -> Res<T> {
     let queue = queue(&id);
     let _turn = take_turn(&queue, STEP)?;
     let tab = Tab {
@@ -90,6 +98,9 @@ fn drive<T>(app: &AppHandle, id: String, steps: impl FnOnce(&Tab) -> Res<T>) -> 
         command: NEXT_COMMAND.fetch_add(1, Ordering::Relaxed),
     };
     tab.start()?;
+    if found == Found::Restored {
+        tab.loaded(LOAD)?;
+    }
     steps(&tab)
 }
 
@@ -138,11 +149,13 @@ fn tabs(
                 Ok(())
             };
             if let Some((session, s)) = &saved {
-                more(&mut said, load(app, id.clone(), s, session))?;
+                more(&mut said, load(app, (id.clone(), Found::Made), s, session))?;
             }
             if let Some(url) = url {
                 let made = saved.is_none();
-                let opened = drive(app, id, |tab| tab.run(Command::Open(url), made, cwd));
+                let opened = drive(app, id, Found::Made, |tab| {
+                    tab.run(Command::Open(url), made, cwd)
+                });
                 more(&mut said, opened.map(|r| r.out.unwrap_or_default()))?;
             }
             Ok(Reply::out(said.join("\n")))
@@ -173,23 +186,23 @@ fn sessions(
     to: Option<String>,
     op: Sessions,
 ) -> Res<Reply> {
-    let shelf = || shelf(app, &root);
+    let shelf_here = || shelf(app, &root);
     let tab = || {
         let (root, name) = (root.clone(), target(to)?);
         main(app, move |app| {
             super::agent_tab(app, pty, &root, name.as_deref(), None)
         })
-        .map(|(id, _)| id)
     };
     match op {
-        Sessions::List => Ok(Reply::out(sessions_text(&shelf()?.list(), now()))),
+        Sessions::List => Ok(Reply::out(sessions_text(&shelf_here()?.list(), now()))),
         Sessions::Delete(s) => {
-            shelf()?.delete(&s)?;
+            shelf_here()?.delete(&s)?;
             Ok(Reply::out(format!("Deleted session {s}")))
         }
         Sessions::Save(s, force) => {
-            let shelf = shelf()?;
-            let session = drive(app, tab()?, Tab::session)?;
+            let shelf = shelf_here()?;
+            let (id, found) = tab()?;
+            let session = drive(app, id, found, Tab::session)?;
             shelf.save(&s, &session, force)?;
             Ok(Reply::out(format!(
                 "Saved session {s}: {}. {NO_INDEXED_DB}",
@@ -197,16 +210,24 @@ fn sessions(
             )))
         }
         Sessions::Load(s) => {
-            let session = shelf()?.load(&s)?;
+            let session = shelf_here()?.load(&s)?;
             load(app, tab()?, &s, &session).map(Reply::out)
         }
-        Sessions::Clear => drive(app, tab()?, Tab::clear_session).map(Reply::out),
+        Sessions::Clear => {
+            let (id, found) = tab()?;
+            drive(app, id, found, Tab::clear_session).map(Reply::out)
+        }
     }
 }
 
-/// Session `name` into tab `id`, for `session load` and `tab new --session` alike.
-fn load(app: &AppHandle, id: String, name: &str, session: &Session) -> Res<String> {
-    drive(app, id, |tab| tab.load_session(name, session))
+/// Session `name` into the tab, for `session load` and `tab new --session` alike.
+fn load(
+    app: &AppHandle,
+    (id, found): (String, Found),
+    name: &str,
+    session: &Session,
+) -> Res<String> {
+    drive(app, id, found, |tab| tab.load_session(name, session))
 }
 
 fn shelf(app: &AppHandle, root: &str) -> Res<Shelf> {

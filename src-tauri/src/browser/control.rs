@@ -793,6 +793,14 @@ impl Routes {
     }
 }
 
+/// How a command's tab came to be live: open already, just made, or loaded again from parking.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Found {
+    Open,
+    Made,
+    Restored,
+}
+
 /// A tab as `tab list` tells it, and --json gives it.
 #[derive(Serialize, Debug, PartialEq)]
 pub struct Listed {

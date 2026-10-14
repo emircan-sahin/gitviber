@@ -7,7 +7,9 @@ use super::{
     apply, ask, asked, create, emit, main_thread, page_tools, set_agent, url_text, view, Delegate,
     View, GONE, VIEWS,
 };
-use crate::browser::control::{origin, AgentScreen, Listed, NewTab, Route, Routes, TabState, IDLE};
+use crate::browser::control::{
+    origin, AgentScreen, Found, Listed, NewTab, Route, Routes, TabState, IDLE,
+};
 use crate::browser::picks::Bounds;
 use crate::browser::Step;
 use crate::browser::{epoch_ms, Look, PageState};
@@ -49,17 +51,20 @@ struct Opened<'a> {
 
 /// The tab named so, else the pane's default one, live and awake: the default made in the
 /// background on the pane's first command (at `url`, if one) and again once the user closed it,
-/// and either back from parking where it was. Its id, and whether it's new.
+/// and either back from parking where it was. Its id, and how it was found.
 pub fn agent_tab(
     app: &AppHandle,
     pty: u32,
     root: &str,
     name: Option<&str>,
     url: Option<&str>,
-) -> Res<(String, bool)> {
+) -> Res<(String, Found)> {
     main_thread()?;
     let tab = match ROUTES.with_borrow_mut(|r| r.tab(pty, name, is_open))? {
-        Some(route) => live(app, &route, "about:blank").map(|()| (route.id, false)),
+        Some(route) => live(app, &route, "about:blank").map(|made| {
+            let found = if made { Found::Restored } else { Found::Open };
+            (route.id, found)
+        }),
         None => {
             let new = NewTab {
                 name: None,
@@ -67,7 +72,7 @@ pub fn agent_tab(
                 shared: false,
                 idle: IDLE,
             };
-            new_tab(app, pty, root, new, url).map(|(id, _)| (id, true))
+            new_tab(app, pty, root, new, url).map(|(id, _)| (id, Found::Made))
         }
     };
     arm_sweep();
@@ -202,8 +207,9 @@ fn new_tab(
     Ok((route.id, name))
 }
 
-/// The tab's view made, at `url`, when it has none (new, or parked), and awake.
-fn live(app: &AppHandle, route: &Route, url: &str) -> Res<()> {
+/// The tab's view made, at `url`, when it has none (new, or parked), and awake: whether it was
+/// made.
+fn live(app: &AppHandle, route: &Route, url: &str) -> Res<bool> {
     let made = view(&route.id).is_none();
     if made {
         let window = app
@@ -230,7 +236,7 @@ fn live(app: &AppHandle, route: &Route, url: &str) -> Res<()> {
     if !running(&v) {
         restart_idle(&v);
     }
-    Ok(())
+    Ok(made)
 }
 
 /// Whether tab `id` is a pane's agent's.
