@@ -279,7 +279,10 @@ sessions (`gitviber browser session save`), their cookies and site storage inclu
 the app's data folder, readable by you alone, and never printed or sent anywhere; Clear Browsing
 Data deletes them too. What an agent reads of a page, picks or console lines included, goes
 wherever that agent sends it. Letting agents use the browser opens a socket on your Mac only, in a
-folder only you can enter, that only GitViber's own terminals have the keys to, each pane its own.
+folder only you can enter, that only GitViber's own terminals have the keys to. Each pane's key
+reaches only that pane's tabs, so an agent that changes which pane it says it's in gets nowhere;
+another program running as you can still read a pane's key from its environment (`ps -E`), as it
+could read anything else of yours.
 
 ## FAQ
 
