@@ -585,6 +585,91 @@ mod tests {
         assert_eq!(r.take_all(), live);
     }
 
+    /// Agent tabs kept aside among the user's: whatever runs, an aside view is never parked, never
+    /// one the cap names, never shown nor hidden; a parked one never goes aside.
+    #[test]
+    fn random_runs_never_park_a_view_aside_nor_set_a_parked_one_aside() {
+        let mut r = Registry::new();
+        let mut hides: Vec<(String, u64)> = Vec::new();
+        let mut aside: std::collections::HashSet<String> = Default::default();
+        let mut cap = LIVE_HIDDEN;
+        let mut seed = 23;
+        let check_over = |over: &[(String, u64)], aside: &std::collections::HashSet<String>| {
+            for (id, _) in over {
+                assert!(!aside.contains(id), "the cap named {id}, which is aside");
+            }
+        };
+        for n in 0..20_000u32 {
+            let id = format!("t{}", lcg(&mut seed) % 8);
+            match lcg(&mut seed) % 8 {
+                0 => {
+                    if r.parked(&id).is_some() {
+                        r.unpark(&id);
+                    }
+                    if r.get(&id).is_none() {
+                        r.insert(&id, "/w", n);
+                        aside.remove(&id);
+                    }
+                }
+                1 => {
+                    r.show(&id);
+                    aside.remove(&id);
+                }
+                2 => {
+                    if let Some((since, over)) = r.hide(&id) {
+                        aside.remove(&id);
+                        check_over(&over, &aside);
+                        hides.push((id.clone(), since));
+                        for (gone, since) in over {
+                            assert!(r.park(&gone, since, parked("http://x.test/")).is_some());
+                        }
+                    }
+                }
+                3 | 4 => {
+                    let was_parked = r.parked(&id).is_some();
+                    let live = r.aside(&id);
+                    assert_eq!(live, r.get(&id).is_some());
+                    if was_parked {
+                        assert!(!live && r.parked(&id).is_some(), "{id} parked stays parked");
+                    }
+                    if live {
+                        aside.insert(id.clone());
+                    }
+                }
+                5 if !hides.is_empty() => {
+                    let (id, since) = hides.swap_remove(lcg(&mut seed) % hides.len());
+                    let got = r.park(&id, since, parked("http://x.test/"));
+                    if aside.contains(&id) {
+                        assert_eq!(got, None, "{id} parked while aside");
+                    }
+                }
+                6 => {
+                    cap = lcg(&mut seed) % 4;
+                    let over = r.set_live_hidden(cap);
+                    check_over(&over, &aside);
+                    for (gone, since) in over {
+                        r.park(&gone, since, parked("http://x.test/"));
+                    }
+                }
+                _ => {
+                    r.remove(&id);
+                    aside.remove(&id);
+                }
+            }
+            let hidden = r.hidden();
+            assert!(hidden.len() <= cap, "{} hidden past {cap}", hidden.len());
+            for id in &aside {
+                assert!(r.get(id).is_some(), "{id} aside and gone");
+                assert!(!r.shown(id) && r.parked(id).is_none(), "{id}");
+                assert!(
+                    !hidden.iter().any(|h| &h.0 == id),
+                    "{id} aside counts as hidden"
+                );
+                assert!(!hides.iter().any(|(h, s)| h == id && r.still_hidden(h, *s)));
+            }
+        }
+    }
+
     #[test]
     fn hiding_again_restarts_the_clock_and_keeps_the_most_recent() {
         let mut r = Registry::new();
