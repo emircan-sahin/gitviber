@@ -70,7 +70,7 @@ pub struct Body {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
-    /// Bytes; None when not known.
+    /// Bytes, decoded; None when not known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<f64>,
     /// The size is only what was read: the body is at least that.
@@ -183,13 +183,15 @@ pub struct Log {
 }
 
 /// A page's text as the terminal may show it: cut, and no control character (an escape
-/// sequence, a carriage return over its own line) but a body's or a frame's lines and tabs.
-/// Every string a page posts goes through here, once, as it's kept.
+/// sequence, a carriage return over its own line) or bidi override (text shown in another
+/// order than it reads) but a body's or a frame's lines and tabs. Every string a page posts
+/// goes through here, once, as it's kept.
 fn clean(s: &str, max: usize, lines: bool) -> String {
     cut(s, max)
         .chars()
         .map(|c| match c {
             '\n' | '\t' if lines => c,
+            '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' => '\u{FFFD}',
             c if c.is_control() => '\u{FFFD}',
             c => c,
         })
@@ -225,44 +227,6 @@ fn body(mut b: Body) -> Body {
     b
 }
 
-/// The post with each lone surrogate escape as U+FFFD: a page's own text cut mid-pair would
-/// otherwise cost it the whole post, as serde_json refuses one.
-fn paired(json: &str) -> String {
-    let b = json.as_bytes();
-    let hex = |at: usize| {
-        json.get(at..at + 4)
-            .filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit()))
-            .and_then(|h| u16::from_str_radix(h, 16).ok())
-    };
-    let (mut out, mut from, mut i) = (String::with_capacity(json.len()), 0, 0);
-    while i < b.len() {
-        if b[i] != b'\\' {
-            i += 1;
-            continue;
-        }
-        let Some(u) = (b.get(i + 1) == Some(&b'u')).then(|| hex(i + 2)).flatten() else {
-            i += 2;
-            continue;
-        };
-        let low = (b.get(i + 6..i + 8) == Some(b"\\u"))
-            .then(|| hex(i + 8))
-            .flatten()
-            .is_some_and(|n| (0xDC00..=0xDFFF).contains(&n));
-        match u {
-            0xD800..=0xDBFF if low => i += 12,
-            0xD800..=0xDFFF => {
-                out.push_str(&json[from..i]);
-                out.push_str("\\ufffd");
-                i += 6;
-                from = i;
-            }
-            _ => i += 6,
-        }
-    }
-    out.push_str(&json[from..]);
-    out
-}
-
 impl Log {
     /// One post of network.js's: its updates in order. Anything else (a page posting its own
     /// junk) changes nothing.
@@ -270,9 +234,8 @@ impl Log {
         if json.len() > MAX_LINE {
             return false;
         }
-        let Ok(updates) = serde_json::from_str::<Vec<Update>>(json)
-            .or_else(|_| serde_json::from_str::<Vec<Update>>(&paired(json)))
-        else {
+        // network.js posts a lone surrogate as U+FFFD: one in a post is the page's own.
+        let Ok(updates) = serde_json::from_str::<Vec<Update>>(json) else {
             return false;
         };
         let mut any = false;
@@ -1227,25 +1190,21 @@ mod tests {
     }
 
     #[test]
-    fn a_lone_surrogate_costs_only_itself() {
+    fn a_post_with_a_lone_surrogate_is_the_pages_own_and_refused() {
+        // network.js posts one as U+FFFD (networkScriptEdges.test.ts); a pair is no lone one.
         let mut log = Log::default();
-        assert!(log.add(
+        assert!(!log.add(
             r#"[{"key":"s","kind":"fetch","method":"POST","url":"http://localhost/save","requestBody":{"text":"{\"note\":\"hi \ud83d\"}","size":17,"cut":false}}]"#
         ));
-        let text = |log: &Log, id| {
-            log.get(id)
-                .unwrap()
-                .request_body
-                .as_ref()
-                .unwrap()
-                .text
-                .clone()
-        };
-        assert_eq!(text(&log, 1).as_deref(), Some("{\"note\":\"hi \u{FFFD}\"}"));
-        // A pair stays a pair, a lone low half goes too, and an escaped backslash is no escape.
         assert!(log.add(
-            r#"[{"key":"t","kind":"fetch","url":"u","requestBody":{"text":"\ud83d\ude00 \udc00 \\ud83d"}}]"#
+            r#"[{"key":"t","kind":"fetch","url":"u","requestBody":{"text":"\ud83d\ude00 \\ud83d"}}]"#
         ));
-        assert_eq!(text(&log, 2).as_deref(), Some("😀 \u{FFFD} \\ud83d"));
+        let body = log.get(1).unwrap().request_body.clone().unwrap();
+        assert_eq!(body.text.as_deref(), Some("😀 \\ud83d"));
+        // Text shown in another order than it reads is no text of the page's either.
+        assert!(log.add(
+            r#"[{"key":"b","kind":"fetch","method":"GET","url":"http://localhost/\u202egnp.exe","start":0}]"#
+        ));
+        assert_eq!(log.get(2).unwrap().url, "http://localhost/\u{FFFD}gnp.exe");
     }
 }
