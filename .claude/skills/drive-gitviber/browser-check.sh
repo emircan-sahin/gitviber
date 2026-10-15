@@ -94,7 +94,7 @@ typeset -A NEEDS=(
   # Acting as a person could, stable refs, the change line, reading in parts, honest output.
   stale_ref "fails as stale" covered "covered by" smooth_scroll "covered by" fill_honest "check | uncheck"
   change_line "→ no visible change" find_get "find <|get styles|-o <file>" screenshot_1x "--clip|--scale|--refs"
-  untrusted "--reveal" secret "--secret" frames "iframe"
+  untrusted "--reveal" secret "--secret" frames "frame of the page's origin"
   # Native input.
   trusted "--synthetic" hover "CSS :hover applies" keys "key down <key>|--hold" clipboard_safe "--synthetic"
   ownership "tab release"
@@ -206,21 +206,36 @@ check_idle_park() {
   value idl1 1+1 >/dev/null
   local s=$(state idl1)
   pass_if "a sleeping tab wakes" '[[ $s == awake ]]' "after a command: $s"
-  # What the app has now, to put back: the frontend only sends it again when a setting changes.
-  local policy='JSON.parse(localStorage.getItem("gitviber.settings.v2") || "{}")'
-  local said=$(invoke browser_configure '{ liveHidden: 0, parkAfterMin: 10, console: true, agentControl: true }' 2>&1)
+  local said=$(configure 0 2>&1)
   until_ok 15 '[[ $(state idl2) == parked ]]'
   ok=$?
   # A tab on show never parks: the strip's active tab tells whether idl2 was one.
   local shown=$(js 'const t = $("[role=tab][aria-selected=true]"); return t ? t.title.split("\n")[0] : "none"' 2>&1)
-  pass_if "park (liveHidden 0)" '(( ok == 0 ))' "sleeping tab: $(state idl2); configure said ${said:-nothing}; active tab: $shown"
-  js "const s = $policy; return await window.__TAURI_INTERNALS__.invoke('browser_configure', { liveHidden: s.browserLiveHidden ?? 2,
-    parkAfterMin: s.browserParkAfterMin ?? 10, console: s.browserConsole ?? true, agentControl: true })" >/dev/null
+  pass_if "park (liveHidden 0)" '(( ok == 0 ))' "sleeping tab: $(state idl2); configure: $said; active tab: $shown"
+  # Put back as the settings have it: the frontend only sends it again when a setting changes.
+  said=$(configure 2>&1)
+  [[ $said == configured ]] || record "configure put back" FAIL "$said"
   gbx --tab idl2 wait --load
   sleep 1
   local hello=$(gb --json --tab idl2 network | py net-id fetch /api/hello 200)
   pass_if "network after restore" '[[ -n $hello && $(state idl2) == awake ]]' "$(state idl2), fetch #${hello:-none}"
   close idl1 idl2
+}
+
+# browser_configure with the app's own settings, and `live_hidden` in place of its cap when given.
+# A build with "Agent tabs drawing at once" needs agentDrawn; one without it is asked again
+# without, should it refuse the key.
+configure() {
+  js "const s = JSON.parse(localStorage.getItem('gitviber.settings.v2') || '{}');
+    const args = { liveHidden: ${1:-s.browserLiveHidden ?? 2}, parkAfterMin: s.browserParkAfterMin ?? 10,
+      console: s.browserConsole ?? true, agentControl: true, agentDrawn: s.browserAgentDrawn ?? 12 };
+    const call = () => window.__TAURI_INTERNALS__.invoke('browser_configure', args);
+    try { await call(); } catch (e) {
+      if (!String(e).includes('agentDrawn')) throw e;
+      delete args.agentDrawn;
+      await call();
+    }
+    return 'configured';"
 }
 
 agent_tabs() { js 'return $$("[role=tab] [aria-label=\"Opened by an agent\"]").length' }
@@ -375,7 +390,8 @@ check_frames() {
   gbx --tab fr click "$(py snapshot-ref '"Oops"' <<<$snap)"
   gbx --tab fr console
   pass_if "console: a frame's error" '[[ $OUT == *"(frame"* && $OUT == *"inner oops"* ]]' "${${OUT:-$ERR}[1,120]}"
-  pass_if "cross-origin frame's hint" '[[ $snap == *"127.0.0.1:$SB"* ]]' "${${(M)${(f)snap}:#*$SB*}:-none}"
+  gbx --tab fr snapshot
+  pass_if "cross-origin frame's hint" '[[ $OUT == *"127.0.0.1:$SB"* ]]' "${${(M)${(f)OUT}:#*$SB*}:-${${OUT:-$ERR}[1,120]}}"
   close fr
 }
 
@@ -412,14 +428,27 @@ check_keys() {
 
 check_clipboard_safe() {
   page cb $URL_A/native || { record clipboard_safe FAIL "tab new: $ERR"; return }
-  # Read only: the check never writes the user's clipboard, so a failure leaves the page's text there.
+  local page_text=gitviber-check-copied
   local before=$(pbpaste 2>/dev/null)
   gbx --tab cb click '#copy'
   sleep 1
   local after=$(pbpaste 2>/dev/null)
-  local note="unchanged"
-  [[ $after == "$before" ]] || note="your clipboard now holds the page's text"
-  pass_if "page can't write your clipboard" '[[ $after == "$before" ]]' "$note"
+  # Never any of the user's own text: a password may be there. Only whose it is and how long.
+  local note="clipboard holds: the user's text, ${#after} characters"
+  [[ -n $after ]] || note="clipboard holds: no text"
+  if [[ $after == $page_text ]]; then
+    note="clipboard holds: the page's text"
+    # The page's text got through: what the user had there goes back (text only; none to put back
+    # when it held something else).
+    if [[ -n $before && $before != $page_text ]] && print -rn -- "$before" | pbcopy; then
+      note+="; put back what it held before"
+    else
+      note+="; nothing to put back"
+    fi
+    record "page can't write your clipboard" FAIL "$note"
+  else
+    record "page can't write your clipboard" PASS "$note"
+  fi
   close cb
 }
 

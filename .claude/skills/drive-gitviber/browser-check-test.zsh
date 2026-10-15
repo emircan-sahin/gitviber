@@ -67,6 +67,31 @@ print -r -- "  click <ref|css>   Click an element
   tab release [name]   Give a tab back" > $help
 expect "a check's needs missing from help are named" "$(py missing $help "key down <key>" "--hold" "tab release")" "key down <key>, --hold"
 
+# clipboard_safe against a stand-in clipboard: never the user's own here. In a subshell, as it
+# stands in for commands; its failures come back as its status.
+(
+  fails=0
+  CLIP=""
+  pbpaste() { print -rn -- "$CLIP" }
+  pbcopy() { CLIP=$(cat) }
+  page() { return 0 }
+  close() { : }
+  sleep() { : }
+  writes=1
+  gbx() { (( writes )) && CLIP=gitviber-check-copied; RC=0 }
+  : > $RESULTS
+  CLIP="the user's own copied text, which is longer than sixty characters in all"
+  check_clipboard_safe
+  expect "a page that wrote it fails, and the user's text goes back" "${$(<$RESULTS)//$'\t'/|}|$CLIP" \
+    "page can't write your clipboard|FAIL|clipboard holds: the page's text; put back what it held before|the user's own copied text, which is longer than sixty characters in all"
+  : > $RESULTS; writes=0
+  check_clipboard_safe
+  expect "a page that didn't passes, naming none of the user's text" "${$(<$RESULTS)//$'\t'/|}" \
+    "page can't write your clipboard|PASS|clipboard holds: the user's text, 72 characters"
+ exit $fails
+)
+(( fails += $? ))
+
 # The dev log as tauri writes it: cargo's lines in color.
 print -r -- $'     Running DevCommand (`cargo  run --no-default-features --color always --`)\n   Compiling gitviber v0.1.13' > $T/dev.log
 built $T/dev.log
