@@ -1,19 +1,21 @@
 //! A page's WebContent process ending (macos/crashes.rs): loaded again, but not again and
-//! again for a page that brings it down as it loads. Apart from AppKit, so it can be tested.
+//! again for a page that brings it down as it loads, or every little while. Apart from AppKit,
+//! so it can be tested.
 
 use std::time::{Duration, Instant};
 
 /// Ending again this soon after its reload is a loop: the page is left stopped.
 const LOOP: Duration = Duration::from_secs(30);
+/// And so is ending this often in WINDOW, however far apart: each reload holds its parking.
+const TIMES: usize = 3;
+const WINDOW: Duration = Duration::from_secs(5 * 60);
 /// A reload counts as running this long even before WebKit says it's loading.
 const STARTING: Duration = Duration::from_secs(2);
-/// WebKit may tell one ending twice, with its reason and without.
-const SAME: Duration = Duration::from_millis(100);
 
 #[derive(Default)]
 pub struct Crashes {
-    /// When it last ended, and when it was last reloaded for it.
-    ended: Option<Instant>,
+    /// When it ended lately, within WINDOW, and when it was last reloaded for it.
+    ended: Vec<Instant>,
     reloaded: Option<Instant>,
     /// Why it keeps ending, once it's left stopped.
     stopped: Option<String>,
@@ -22,20 +24,22 @@ pub struct Crashes {
 #[derive(Debug, PartialEq)]
 pub enum Ended {
     Reload,
-    /// Again within LOOP of its reload: left stopped.
+    /// Within LOOP of its reload, or the TIMES-th in WINDOW: left stopped.
     Stop,
-    /// Told already, or stopped already.
+    /// Stopped already.
     Nothing,
 }
 
 impl Crashes {
     pub fn ended(&mut self, why: &str, now: Instant) -> Ended {
-        let since = |at: Option<Instant>| at.map(|at| now.saturating_duration_since(at));
-        if since(self.ended).is_some_and(|d| d < SAME) || self.stopped.is_some() {
+        if self.stopped.is_some() {
             return Ended::Nothing;
         }
-        self.ended = Some(now);
-        if since(self.reloaded).is_some_and(|d| d < LOOP) {
+        let gone = |at: Instant| now.saturating_duration_since(at);
+        self.ended.retain(|&at| gone(at) < WINDOW);
+        self.ended.push(now);
+        let soon = self.reloaded.is_some_and(|at| gone(at) < LOOP);
+        if soon || self.ended.len() >= TIMES {
             self.reloaded = None;
             self.stopped = Some(why.into());
             return Ended::Stop;
@@ -71,9 +75,16 @@ pub fn reason(code: Option<isize>) -> &'static str {
         Some(1) => "too much CPU",
         Some(2) => "ended by the app",
         Some(3) => "crashed",
+        Some(4) => "its process crashed too often, and WebKit won't start it again",
         Some(_) => "for a reason WebKit didn't name",
         None => "crashed, or memory ran short",
     }
+}
+
+/// Memory is short on this Mac (kern.memorystatus_vm_pressure_level: 1 normal, 2 warning, 4
+/// critical): a page that just ended isn't kept from parking.
+pub fn pressed(level: i32) -> bool {
+    level >= 2
 }
 
 pub fn reloaded(why: &str) -> String {
@@ -81,17 +92,16 @@ pub fn reloaded(why: &str) -> String {
 }
 
 pub fn stopped(why: &str) -> String {
-    format!(
-        "the page's process ended again within {} s of its reload ({why}): it's left stopped",
-        LOOP.as_secs()
-    )
+    format!("the page's process keeps ending ({why}): it's left stopped, not reloaded")
 }
 
 /// The page's error, as its tab shows it.
 pub fn keeps_crashing(why: &str) -> String {
     format!(
-        "The page keeps crashing: its process ended twice within {} s ({why}).",
-        LOOP.as_secs()
+        "The page keeps crashing ({why}): its process ended within {} s of a reload, or {TIMES} \
+         times in {} minutes.",
+        LOOP.as_secs(),
+        WINDOW.as_secs() / 60
     )
 }
 
@@ -112,8 +122,6 @@ mod tests {
         let mut c = Crashes::default();
         let t0 = Instant::now();
         assert_eq!(c.ended("crashed", t0), Ended::Reload);
-        // The same ending told twice is one.
-        assert_eq!(c.ended("crashed", t0 + SAME / 2), Ended::Nothing);
         assert_eq!(c.ended("out of memory", t0 + LOOP / 2), Ended::Stop);
         assert_eq!(c.stopped(), Some("out of memory"));
         assert_eq!(
@@ -125,9 +133,21 @@ mod tests {
         c.sent();
         assert_eq!(c.stopped(), None);
         assert_eq!(c.ended("crashed", t0 + LOOP * 4), Ended::Reload);
+    }
+
+    #[test]
+    fn a_page_ending_every_little_while_stops_on_its_third_in_the_window() {
+        let mut c = Crashes::default();
+        let t0 = Instant::now();
+        let every = LOOP + Duration::from_secs(1);
+        assert_eq!(c.ended("crashed", t0), Ended::Reload);
+        assert_eq!(c.ended("crashed", t0 + every), Ended::Reload);
+        assert_eq!(c.ended("crashed", t0 + every * 2), Ended::Stop);
         // Far apart, each reloads.
-        assert_eq!(c.ended("crashed", t0 + LOOP * 6), Ended::Reload);
-        assert_eq!(c.ended("crashed", t0 + LOOP * 8), Ended::Reload);
+        let mut c = Crashes::default();
+        for i in 0..5 {
+            assert_eq!(c.ended("crashed", t0 + WINDOW * i), Ended::Reload, "{i}");
+        }
     }
 
     #[test]
@@ -153,11 +173,19 @@ mod tests {
             "the page's process ended (out of memory) and was reloaded; console and network \
              logs restarted"
         );
-        assert!(stopped("crashed").contains("within 30 s of its reload (crashed)"));
+        assert_eq!(
+            reason(Some(4)),
+            "its process crashed too often, and WebKit won't start it again"
+        );
+        assert_eq!(
+            stopped("crashed"),
+            "the page's process keeps ending (crashed): it's left stopped, not reloaded"
+        );
         assert_eq!(
             try_again("crashed"),
-            "The page keeps crashing: its process ended twice within 30 s (crashed). `reload` \
-             or `open <url>` tries again."
+            "The page keeps crashing (crashed): its process ended within 30 s of a reload, or 3 \
+             times in 5 minutes. `reload` or `open <url>` tries again."
         );
+        assert!(!pressed(1) && pressed(2) && pressed(4));
     }
 }

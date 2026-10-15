@@ -47,9 +47,10 @@ pub(super) fn recovering(v: &View) -> bool {
         .recovering(Instant::now(), loading)
 }
 
-/// A park of a view mid-recovery waits for it, tried again shortly: true when held.
+/// A park of a view mid-recovery waits for it, tried again shortly: true when held. Not while
+/// memory is short, when a page that just ended of it is the one to let go.
 pub(super) fn hold_park(v: &View, id: &str, since: u64) -> bool {
-    if !recovering(v) {
+    if !recovering(v) || memory_pressed() {
         return false;
     }
     let id = id.to_string();
@@ -66,4 +67,19 @@ pub(super) fn check(v: &View) -> Res<()> {
         Some(why) => Err(crashes::try_again(why)),
         None => Ok(()),
     }
+}
+
+fn memory_pressed() -> bool {
+    let mut level: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let read = unsafe {
+        libc::sysctlbyname(
+            c"kern.memorystatus_vm_pressure_level".as_ptr(),
+            (&raw mut level).cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    read == 0 && crashes::pressed(level)
 }

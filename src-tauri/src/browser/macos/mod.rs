@@ -534,7 +534,7 @@ define_class!(
         }
 
         /// The page's process crashed or was reclaimed: loaded again, rather than blank
-        /// (crashes.rs). Where WebKit has the private one with its reason, it calls that instead.
+        /// (crashes.rs). Only where WebKit lacks the private one below, which it calls instead.
         #[unsafe(method(webViewWebContentProcessDidTerminate:))]
         fn process_ended(&self, web: &WKWebView) {
             crashes::ended(self, web, None);
