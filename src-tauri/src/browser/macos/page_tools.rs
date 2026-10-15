@@ -140,13 +140,15 @@ fn add_scripts(content: &WKUserContentController, agent: bool, mtm: MainThreadMa
     }
 }
 
+/// In every frame, not the page's alone: a frame's errors and requests (a payment form, an
+/// embedded login) are often what went wrong. Each posts to the tab's one log, naming its frame.
 fn add_script(content: &WKUserContentController, source: &str, mtm: MainThreadMarker) {
     unsafe {
         let script = WKUserScript::initWithSource_injectionTime_forMainFrameOnly_inContentWorld(
             WKUserScript::alloc(mtm),
             &NSString::from_str(source),
             WKUserScriptInjectionTime::AtDocumentStart,
-            true,
+            false,
             &WKContentWorld::pageWorld(mtm),
         );
         content.addUserScript(&script);

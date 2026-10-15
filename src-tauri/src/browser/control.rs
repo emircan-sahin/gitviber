@@ -83,7 +83,10 @@ Reading
                                lines or 25 000 characters it
                                stops and says how many elements it left out. Refs (also @e1 or
                                ref=e1) stay with their element; one whose element left, or from
-                               another page, fails as stale. --json: also the refs gone since
+                               another page or a frame that moved on, fails as stale. A frame of
+                               the page's origin reads as part of it, its refs acted on as any;
+                               another origin's frame is named only. --json: also the refs gone
+                               since
   find <text|/regex/>          The tree's lines with the text (any case) or matching the regex,
                                each with the line before and after it; 30 at most
   get text|html|value|box <ref|css>
@@ -133,11 +136,13 @@ Page tools
   eval <js>                    Runs in the page; prints the result as JSON (undefined, NaN,
                                Infinity and 12n as themselves)
   console [--level error|warn] [--all] [--clear]
-                               What the page logged since it loaded; --all every page's kept
+                               What the page and its frames logged since it loaded (a frame's
+                               lines name it); --all every page's kept
   network [--failed] [--filter <text>] [--type fetch|xhr|ws|resource] [--method <m>]
           [--status <404|4xx>] [--clear]
-                               What the page requested and loaded, one line each with an id;
-                               the newest 300 requests and 500 other loads
+                               What the page and its frames requested and loaded, one line each
+                               with an id (a frame's naming it); the newest 300 requests and 500
+                               other loads
   network <id>                 One in full: headers, bodies, WebSocket frames
   device <name|WxH|off>        Show the page as a device; `device --list` names them
   appearance light|dark|auto   The page's prefers-color-scheme; auto is the app's
@@ -1315,7 +1320,12 @@ pub fn console_text(entries: &[Entry], level: Option<&str>, all: bool) -> String
         match e.level.as_str() {
             "load" => out.push(format!("-- {}", flat(&e.url))),
             l @ ("error" | "warn") if level.is_none_or(|want| want == l) => {
-                out.push(format!("[{l}] {}", flat(&e.msg)))
+                let frame = e.frame.as_deref().map(|f| format!("(frame {}) ", flat(f)));
+                out.push(format!(
+                    "[{l}] {}{}",
+                    frame.unwrap_or_default(),
+                    flat(&e.msg)
+                ))
             }
             _ => continue,
         }
@@ -2024,6 +2034,7 @@ mod tests {
             stack: stack.into(),
             url: "http://localhost:5173/".into(),
             ts: 0.0,
+            frame: None,
         };
         let entries = [
             e("load", "", ""),
@@ -2056,6 +2067,15 @@ mod tests {
             "Nothing logged since this page loaded: --all for earlier pages."
         );
         assert!(console_text(&entries[..4], None, false).contains("careful"));
+        // A frame's line says which.
+        let framed = Entry {
+            frame: Some("https://ads.example.test".into()),
+            ..e("error", "blocked", "")
+        };
+        assert_eq!(
+            console_text(&[framed], None, true),
+            "[error] (frame https://ads.example.test) blocked"
+        );
     }
 
     #[test]
@@ -2274,6 +2294,7 @@ mod tests {
             },
             url: url.into(),
             ts: 0.0,
+            frame: None,
         };
         let text = console_text(
             &[
