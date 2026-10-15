@@ -8,6 +8,7 @@
     "preview": "vite preview",
     "typecheck": "tsc",
     "og": "node scripts/og/render.mjs",
+    "capture": "node scripts/capture/render.mjs",
     "check:locales": "node scripts/check-locales.mjs"
   },
   "dependencies": {
