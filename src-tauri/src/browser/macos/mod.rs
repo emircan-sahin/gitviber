@@ -7,6 +7,7 @@ mod agent;
 mod cookies;
 mod page_tools;
 mod page_view;
+mod popups;
 
 pub use agent::{
     agent_appearance, agent_close_tab, agent_device, agent_dialogs, agent_find_tab, agent_js,
@@ -520,16 +521,24 @@ define_class!(
 
     unsafe impl WKUIDelegate for Delegate {
         /// A link to a new window (target=_blank, window.open) opens here: tabs come from the app.
+        /// An agent's tab gets it as a tab of its own, its opener kept (popups.rs).
         #[unsafe(method_id(webView:createWebViewWithConfiguration:forNavigationAction:windowFeatures:))]
         fn new_window(
             &self,
             web: &WKWebView,
-            _configuration: &WKWebViewConfiguration,
+            configuration: &WKWebViewConfiguration,
             action: &WKNavigationAction,
             _features: &WKWindowFeatures,
         ) -> Option<Retained<WKWebView>> {
-            unsafe { web.loadRequest(&action.request()) };
-            None
+            popups::open(self, configuration, action).or_else(|| {
+                unsafe { web.loadRequest(&action.request()) };
+                None
+            })
+        }
+
+        #[unsafe(method(webViewDidClose:))]
+        fn did_close(&self, _web: &WKWebView) {
+            popups::closed(self);
         }
 
         #[unsafe(method(webView:runJavaScriptAlertPanelWithMessage:initiatedByFrame:completionHandler:))]
@@ -843,7 +852,11 @@ pub fn create(
         .ok_or("The window isn't ready.")?;
     let parked = VIEWS.with_borrow_mut(|r| r.unpark(id));
 
-    let config = unsafe { WKWebViewConfiguration::new(mtm) };
+    // A popup's comes from WebKit with its opener (popups.rs), and WebKit loads its page.
+    let given = popups::given();
+    let config = given
+        .clone()
+        .unwrap_or_else(|| unsafe { WKWebViewConfiguration::new(mtm) });
     let store = asked(id).store.unwrap_or_else(|| data_store(mtm));
     unsafe {
         config.setWebsiteDataStore(&store);
@@ -898,7 +911,9 @@ pub fn create(
         page_view::zoom_view(&web, &delegate, zoom);
     }
     page_view::show_as(id, &web, look.dark);
-    load(&web, &page);
+    if given.is_none() {
+        load(&web, &page);
+    }
     #[cfg(debug_assertions)]
     log_process(&web, "made");
 

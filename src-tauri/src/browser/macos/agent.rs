@@ -258,6 +258,7 @@ pub fn agent_pane_closed(pty: u32) {
     if main_thread().is_err() {
         return;
     }
+    crate::browser::notes::forget(pty);
     for route in ROUTES.with_borrow_mut(|r| r.release(pty)) {
         if let Some(v) = view(&route.id) {
             stop_idle(&v);
@@ -604,4 +605,47 @@ pub(super) fn answered(
         .note(&line, &url_text(unsafe { web.URL() }), ts);
     delegate.console_changed();
     Some(accept)
+}
+
+/// Agent tab `id`'s pane and name, for what's told of it (notes.rs).
+pub(super) fn pane_of(id: &str) -> Option<(u32, String)> {
+    ROUTES.with_borrow(|r| r.pane_of(id).map(|(pty, t)| (pty, t.name.clone())))
+}
+
+/// A popup of agent tab `opener`'s page (popups.rs), a tab of the same pane from now on, named
+/// for it (`browser-open` as any other), and awake in its cookies, device and look: its id and
+/// name. Its view is the one `create` makes from WebKit's configuration, which loads `url`.
+pub(super) fn adopt(app: &AppHandle, opener: &str, url: &str) -> Res<(String, String)> {
+    let (pty, parent) = ROUTES
+        .with_borrow(|r| r.pane_of(opener).map(|(pty, t)| (pty, t.clone())))
+        .ok_or(GONE)?;
+    let open = ROUTES.with_borrow_mut(|r| r.list(pty, is_open));
+    let name = crate::browser::popups::name(&parent.name, |n| open.iter().any(|t| t.name == n));
+    let route = Route {
+        id: NSUUID::new().UUIDString().to_string().to_lowercase(),
+        root: parent.route.root.clone(),
+    };
+    let new = NewTab {
+        name: Some(&name),
+        default: false,
+        shared: parent.shared,
+        idle: parent.idle,
+    };
+    ROUTES.with_borrow_mut(|r| r.add(pty, new, route.clone(), is_open))?;
+    let was = asked(opener);
+    ask(&route.id, |a| *a = was);
+    if let Err(e) = live(app, &route, url) {
+        forget_tab(&route.id);
+        super::forget(&route.id);
+        return Err(e);
+    }
+    let opened = Opened {
+        id: &route.id,
+        url,
+        root: &route.root,
+        pty,
+    };
+    emit(app, "browser-open", opened);
+    arm_sweep();
+    Ok((route.id, name))
 }

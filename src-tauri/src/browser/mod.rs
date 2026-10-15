@@ -13,7 +13,9 @@ mod keys;
 #[cfg(target_os = "macos")]
 mod macos;
 pub mod network;
+mod notes;
 pub mod picks;
+mod popups;
 pub mod ports;
 mod registry;
 pub mod server;

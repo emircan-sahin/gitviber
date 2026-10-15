@@ -6,6 +6,7 @@ use super::control::{
     Tabs, Wait,
 };
 use super::network;
+use super::notes;
 use super::picks::{self, Bounds};
 use super::sessions::{self, Session, Shelf};
 use super::{Go, PageState};
@@ -37,7 +38,19 @@ const STORAGE_WRITE: &str = "const s = JSON.parse(input); if (location.origin !=
 const NO_INDEXED_DB: &str = "IndexedDB isn't carried.";
 
 pub fn run(app: &AppHandle, req: Request) -> Reply {
-    command(app, req).unwrap_or_else(Reply::error)
+    let pty = req.pty;
+    DROVE.take();
+    let reply = command(app, req).unwrap_or_else(Reply::error);
+    // What happened to the pane's tabs meanwhile (notes.rs): a popup, a download, a crash.
+    match pty {
+        Some(pty) => notes::tell(reply, pty, DROVE.take().as_deref()),
+        None => reply,
+    }
+}
+
+thread_local! {
+    /// The tab this thread's command went to (`drive`), for its notes to tell others by name.
+    static DROVE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 fn command(app: &AppHandle, req: Request) -> Res<Reply> {
@@ -92,6 +105,7 @@ fn drive<T>(
 ) -> Res<T> {
     let queue = queue(&id);
     let _turn = take_turn(&queue, STEP)?;
+    DROVE.set(Some(id.clone()));
     let tab = Tab {
         app: app.clone(),
         id,
@@ -228,6 +242,19 @@ fn load(
     session: &Session,
 ) -> Res<String> {
     drive(app, id, found, |tab| tab.load_session(name, session))
+}
+
+/// Agent tab `id` closed as `tab close` closes it, once the command running on it is done: its
+/// page closed itself (window.close()), maybe in that very command.
+pub(super) fn close_soon(app: &AppHandle, id: String) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let queue = queue(&id);
+        let Ok(_turn) = take_turn(&queue, control::CLI_WAIT) else {
+            return;
+        };
+        let _ = main(&app, move |app| super::agent_close_tab(app, &id));
+    });
 }
 
 fn shelf(app: &AppHandle, root: &str) -> Res<Shelf> {

@@ -38,7 +38,9 @@ a name no open tab of the pane has fails. Agents in one pane share its tabs; the
 are out of their reach. Each tab, the default one too, has cookies and storage of its own, gone
 when it closes, unless --shared. A tab no command touched for 10 minutes sleeps: slowed, and in
 time parked to save memory, its next command loading it again. Unused for an hour, it closes,
-unless the user has it on show.
+unless the user has it on show. A popup (window.open, a target=_blank link) opens as another tab
+named for its opener (t1-popup1), in the opener's cookies; a popup that closes itself closes its
+tab. Replies end with what happened meanwhile, each line starting with →.
 
   tab new [name] [url] [--shared] [--session <name>] [--idle <minutes>]
                                Another tab, at url if given; prints its name: the one --tab or
@@ -774,6 +776,13 @@ impl Routes {
         self.all().find(|t| t.route.id == id)
     }
 
+    /// Agent tab `id` with the pane it's in.
+    pub fn pane_of(&self, id: &str) -> Option<(u32, &Named)> {
+        self.panes
+            .iter()
+            .find_map(|(pty, p)| Some((*pty, p.tabs.iter().find(|t| t.route.id == id)?)))
+    }
+
     /// Tab `id` out of its pane.
     pub fn close(&mut self, id: &str) -> Option<Named> {
         self.panes.values_mut().find_map(|p| {
@@ -1301,7 +1310,11 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!((list[0].name.as_str(), list[0].default), ("t2", false));
         assert_eq!(r.tab(1, None, all), Ok(None));
+        let pane_of = |r: &Routes, id| r.pane_of(id).map(|(pty, t)| (pty, t.name.clone()));
+        assert_eq!(pane_of(&r, "b"), Some((1, "t2".into())));
+        assert_eq!(pane_of(&r, "c"), Some((2, "t1".into())));
         assert_eq!(r.release(1), [route("b")]);
+        assert_eq!(pane_of(&r, "b"), None);
         assert!(r.release(1).is_empty() && r.named("b").is_none());
         assert_eq!(r.list(1, all), []);
         assert_eq!(r.tab(2, None, all), Ok(Some(route("c"))));
