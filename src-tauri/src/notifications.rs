@@ -1,5 +1,5 @@
 //! Desktop notifications (src/lib/app/notify.ts). On macOS they go through
-//! UNUserNotificationCenter, as cmux does: permission is asked for when the user turns them on
+//! UNUserNotificationCenter: permission is asked for when the user turns them on
 //! (which is what lists the app in System Settings → Notifications), the answer can be read
 //! back, and a click comes back to us. tauri-plugin-notification's desktop side reports
 //! "granted" without asking and posts through the NSUserNotificationCenter deprecated since
@@ -89,8 +89,8 @@ mod mac {
 
     static APP: OnceLock<AppHandle> = OnceLock::new();
 
-    // cmux bounds every call the same way: one stuck in XPC to usernotificationsd would
-    // otherwise hold a thread for good.
+    // Every call is bounded: one stuck in XPC to usernotificationsd would otherwise hold a
+    // thread for good.
     const REPLY: Duration = Duration::from_secs(2);
     // The answer to the permission prompt comes once the user clicks, so it gets longer.
     const ANSWER: Duration = Duration::from_secs(120);
